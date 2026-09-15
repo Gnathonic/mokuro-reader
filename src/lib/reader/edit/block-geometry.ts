@@ -131,3 +131,62 @@ export function readingOrder(blocks: { box: number[] }[], vertical: boolean): nu
       : blocks[a].box[1] - blocks[b].box[1] || blocks[a].box[0] - blocks[b].box[0]
   );
 }
+
+// ---------------------------------------------------------------------------
+// Line quads — the editor treats each OCR line as an object of its own.
+// ---------------------------------------------------------------------------
+
+/** Axis-aligned quad for a rectangle (mokuro's corner order: tl, tr, br, bl). */
+export function rectQuad(x: number, y: number, w: number, h: number): number[][] {
+  return [
+    [x, y],
+    [x + w, y],
+    [x + w, y + h],
+    [x, y + h]
+  ];
+}
+
+/** Bounding box of a quad. */
+export function quadBounds(quad: number[][]): Box {
+  return unionBox(quad.map(([x, y]) => [x, y, x, y]));
+}
+
+export interface LineGeometry {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  /** Taller than wide → vertical writing. Decided per LINE, not per block:
+   * mokuro blocks routinely mix orientations (tables of contents, SFX). */
+  vertical: boolean;
+  /** The cross-writing-axis extent of the quad — the glyph size. */
+  fontSize: number;
+}
+
+export function lineGeometry(quad: number[][]): LineGeometry {
+  const [x0, y0, x1, y1] = quadBounds(quad);
+  const width = x1 - x0;
+  const height = y1 - y0;
+  const vertical = height > width;
+  return {
+    left: x0,
+    top: y0,
+    width,
+    height,
+    vertical,
+    fontSize: Math.max(1, Math.round(vertical ? width : height))
+  };
+}
+
+/** Median per-line font size across a block's quads. */
+export function medianLineFontSize(quads: number[][][]): number {
+  const sizes = quads.map((q) => lineGeometry(q).fontSize).sort((a, b) => a - b);
+  if (sizes.length === 0) return 0;
+  const mid = Math.floor(sizes.length / 2);
+  return sizes.length % 2 ? sizes[mid] : Math.round((sizes[mid - 1] + sizes[mid]) / 2);
+}
+
+/** The smallest box containing `box` and every quad — a box never shrinks. */
+export function boxContainingQuads(box: number[], quads: number[][][]): Box {
+  return unionBox([box, ...quads.map(quadBounds)]);
+}

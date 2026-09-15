@@ -111,3 +111,17 @@ describe('readingOrder', () => {
     expect(readingOrder(blocks, false)).toEqual([0, 1, 2]);
   });
 });
+
+describe('quad helpers', () => {
+  it('rectQuad / quadBounds round-trip and medianLineFontSize', async () => {
+    const { rectQuad, quadBounds, medianLineFontSize } = await import('./block-geometry');
+    expect(quadBounds(rectQuad(5, 6, 10, 20))).toEqual([5, 6, 15, 26]);
+    expect(
+      medianLineFontSize([
+        rectQuad(0, 0, 40, 200),
+        rectQuad(0, 0, 500, 90),
+        rectQuad(0, 0, 30, 300)
+      ])
+    ).toBe(40);
+  });
+});

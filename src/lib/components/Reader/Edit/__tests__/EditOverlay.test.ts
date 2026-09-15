@@ -135,3 +135,138 @@ describe('EditOverlay', () => {
     expect(session.tool).toBe('select');
   });
 });
+
+describe('EditOverlay — line-centric rendering', () => {
+  function rect(x: number, y: number, w: number, h: number) {
+    return [
+      [x, y],
+      [x + w, y],
+      [x + w, y + h],
+      [x, y + h]
+    ];
+  }
+  /** The Chainsaw Man 02 p.9 table-of-contents block: 13 lines, mixed quads. */
+  function tocPage(): Page {
+    const quads = [
+      rect(800, 1710, 541, 99),
+      rect(1500, 1820, 44, 252),
+      rect(1440, 1820, 44, 300),
+      rect(1380, 1820, 44, 280),
+      rect(1320, 1820, 44, 260),
+      rect(1260, 1820, 44, 400),
+      rect(1000, 1720, 38, 908),
+      rect(1010, 1750, 40, 500),
+      rect(940, 1820, 44, 300),
+      rect(880, 1820, 44, 300),
+      rect(820, 1820, 44, 300),
+      rect(800, 2500, 500, 90),
+      rect(800, 2560, 300, 80)
+    ];
+    return {
+      version: '0.2.1',
+      img_width: 1746,
+      img_height: 2800,
+      img_path: '009.jpg',
+      blocks: [
+        {
+          box: [760, 1704, 1561, 2655],
+          vertical: false,
+          font_size: 295,
+          lines: Array.from({ length: 13 }, (_, i) => `line${i}`),
+          lines_coords: quads
+        },
+        { box: [10, 10, 60, 200], vertical: true, font_size: 20, lines: ['a', 'b', 'c'] }
+      ]
+    };
+  }
+  function mountToc() {
+    const p = tocPage();
+    const session = new EditSession({
+      volumeUuid: 'v1',
+      getPage: () => p,
+      persist: async () => {},
+      debounceMs: 100000
+    });
+    const utils = render(EditOverlay, { props: { page: p, pageIndex: 0, session } });
+    return { ...utils, session, p };
+  }
+
+  it('renders every line at its quad with per-line orientation and font size, whatever the font setting', () => {
+    const { container } = mountToc();
+    const block = container.querySelectorAll<HTMLElement>('.editBlock')[0];
+    const lines = block.querySelectorAll<HTMLElement>('.line.positioned');
+    expect(lines).toHaveLength(13);
+    // horizontal quad 0
+    expect(lines[0].style.writingMode).toBe('horizontal-tb');
+    expect(lines[0].style.fontSize).toBe('99px');
+    expect(lines[0].style.left).toBe('40px'); // 800 - box left 760
+    expect(lines[0].style.top).toBe('6px');
+    // vertical quad 1
+    expect(lines[1].style.writingMode).toBe('vertical-rl');
+    expect(lines[1].style.fontSize).toBe('44px');
+    // nothing clips: the container and the block let lines overflow
+    expect(getComputedStyle(block).overflow).not.toBe('hidden');
+  });
+
+  it('in editing state all 13 lines are contenteditable, positioned, and focusable', async () => {
+    const { container } = mountToc();
+    const block = container.querySelectorAll<HTMLElement>('.editBlock')[0];
+    await fireEvent.dblClick(block);
+    await tick();
+    const lines = block.querySelectorAll<HTMLElement>('[contenteditable]');
+    expect(lines).toHaveLength(13);
+    for (const line of lines) {
+      expect(line.classList.contains('positioned')).toBe(true);
+      expect(line.style.left).not.toBe('');
+      line.focus();
+      expect(document.activeElement).toBe(line);
+    }
+    expect(lines[6].style.writingMode).toBe('vertical-rl');
+    expect(lines[12].style.writingMode).toBe('horizontal-tb');
+  });
+
+  it('a block without quads renders its lines in flow with a font size that fits them all', () => {
+    const { container } = mountToc();
+    const bare = container.querySelectorAll<HTMLElement>('.editBlock')[1];
+    const lines = bare.querySelectorAll<HTMLElement>('.line');
+    expect(lines).toHaveLength(3);
+    expect(lines[0].classList.contains('positioned')).toBe(false);
+    // 50px wide vertical box, 3 columns → 16px, below the block's 20px
+    expect(bare.style.fontSize).toBe('16px');
+  });
+
+  it('clicking a line inside the selected block selects that line; Enter/Backspace keep quads parallel', async () => {
+    const { container, session } = mountToc();
+    const block = container.querySelectorAll<HTMLElement>('.editBlock')[0];
+    block.setPointerCapture = vi.fn();
+    block.releasePointerCapture = vi.fn();
+    await pointer(block, 'pointerdown', { id: 1 });
+    await pointer(block, 'pointerup', { id: 1 });
+    expect(session.selection).toEqual([{ pageIndex: 0, blockIndex: 0 }]);
+    await tick();
+    const line3 = block.querySelectorAll<HTMLElement>('.line.positioned')[3];
+    line3.setPointerCapture = vi.fn();
+    line3.releasePointerCapture = vi.fn();
+    await pointer(line3, 'pointerdown', { id: 2, x: 10, y: 10 });
+    await pointer(line3, 'pointerup', { id: 2, x: 10, y: 10 });
+    expect(session.selectedLine).toEqual({ pageIndex: 0, blockIndex: 0, lineIndex: 3 });
+    expect(
+      line3.querySelectorAll('[data-line-handle]').length +
+        block.querySelectorAll('[data-line-handle]').length
+    ).toBeGreaterThan(0);
+
+    await fireEvent.dblClick(block);
+    await tick();
+    let editable = block.querySelectorAll<HTMLElement>('[contenteditable]');
+    await fireEvent.keyDown(editable[1], { key: 'Enter' });
+    await tick();
+    editable = block.querySelectorAll<HTMLElement>('[contenteditable]');
+    expect(editable).toHaveLength(14);
+    expect(session.pageFor(0).blocks[0].lines).toHaveLength(14);
+    expect(session.pageFor(0).blocks[0].lines_coords).toHaveLength(14);
+    await fireEvent.keyDown(editable[2], { key: 'Backspace' });
+    await tick();
+    expect(session.pageFor(0).blocks[0].lines).toHaveLength(13);
+    expect(session.pageFor(0).blocks[0].lines_coords).toHaveLength(13);
+  });
+});

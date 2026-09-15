@@ -9,10 +9,15 @@ import { EditHistory } from './edit-history';
 import {
   addBlock,
   flipBlock,
+  insertLine,
   mergeBlocks,
   moveBlock,
+  moveLine,
+  placeLines,
   removeBlocks,
+  removeLine,
   resizeBlock,
+  resizeLine,
   setBlockLines,
   splitBlock
 } from './edit-ops';
@@ -21,6 +26,10 @@ import { loadOriginalPage, persistPageEdit } from './edit-persist';
 export interface BlockRef {
   pageIndex: number;
   blockIndex: number;
+}
+
+export interface LineRef extends BlockRef {
+  lineIndex: number;
 }
 
 export interface EditSessionOptions {
@@ -39,6 +48,10 @@ export const SAVE_DEBOUNCE_MS = 500;
 export class EditSession {
   readonly volumeUuid: string;
   selection = $state<BlockRef[]>([]);
+  /** The line singled out inside the (single) selected block, if any. */
+  selectedLine = $state<LineRef | null>(null);
+  /** A block the UI should open the line editor on (context-menu entry). */
+  pendingFocus = $state<LineRef | null>(null);
   tool = $state<'select' | 'draw'>('select');
   /** Bumps on every change; components key their render on it. */
   version = $state(0);
@@ -118,6 +131,7 @@ export class EditSession {
   // ---- selection ----
   select(pageIndex: number, blockIndex: number, additive = false): void {
     const ref = { pageIndex, blockIndex };
+    this.selectedLine = null;
     if (!additive || this.selection.some((r) => r.pageIndex !== pageIndex)) {
       this.selection = [ref];
       return;
@@ -130,6 +144,13 @@ export class EditSession {
   }
   clearSelection(): void {
     this.selection = [];
+    this.selectedLine = null;
+  }
+  selectLine(pageIndex: number, blockIndex: number, lineIndex: number): void {
+    if (!this.isSelected(pageIndex, blockIndex) || this.selection.length !== 1) {
+      this.selection = [{ pageIndex, blockIndex }];
+    }
+    this.selectedLine = { pageIndex, blockIndex, lineIndex };
   }
   isSelected(pageIndex: number, blockIndex: number): boolean {
     return this.selection.some((r) => r.pageIndex === pageIndex && r.blockIndex === blockIndex);
@@ -209,6 +230,48 @@ export class EditSession {
     let page = this.pageFor(sel.pageIndex);
     for (const i of sel.indices) page = flipBlock(page, i, swapBox);
     this.commit(sel.pageIndex, page);
+  }
+
+  // ---- line ops ----
+  moveLine(
+    pageIndex: number,
+    blockIndex: number,
+    lineIndex: number,
+    dx: number,
+    dy: number,
+    coalesceKey?: string
+  ): void {
+    const cur = this.pageFor(pageIndex);
+    const next = moveLine(cur, blockIndex, lineIndex, dx, dy);
+    if (next !== cur) this.commit(pageIndex, next, coalesceKey);
+  }
+  resizeLine(
+    pageIndex: number,
+    blockIndex: number,
+    lineIndex: number,
+    quad: number[][],
+    coalesceKey?: string
+  ): void {
+    this.commit(
+      pageIndex,
+      resizeLine(this.pageFor(pageIndex), blockIndex, lineIndex, quad),
+      coalesceKey
+    );
+  }
+  placeLines(pageIndex: number, blockIndex: number): void {
+    const cur = this.pageFor(pageIndex);
+    const next = placeLines(cur, blockIndex);
+    if (next !== cur) this.commit(pageIndex, next);
+  }
+  /** Returns the new line's index. */
+  insertLine(pageIndex: number, blockIndex: number, afterLine: number): number {
+    this.commit(pageIndex, insertLine(this.pageFor(pageIndex), blockIndex, afterLine));
+    return afterLine + 1;
+  }
+  removeLine(pageIndex: number, blockIndex: number, lineIndex: number): void {
+    const cur = this.pageFor(pageIndex);
+    const next = removeLine(cur, blockIndex, lineIndex);
+    if (next !== cur) this.commit(pageIndex, next);
   }
 
   async revertPage(pageIndex: number): Promise<boolean> {

@@ -28,6 +28,9 @@
       : null
   );
   let canSplit = $derived(!!single && single.lines.length >= 2);
+  let canPlaceLines = $derived(
+    !!single && !(single.lines_coords && single.lines_coords.length === single.lines.length)
+  );
   let splitAt = $state(1);
   $effect(() => {
     if (single) splitAt = Math.min(Math.max(1, splitAt), Math.max(1, single.lines.length - 1));
@@ -91,6 +94,15 @@
     onclick={() => session.splitSelected(Number(splitAt))}
   >
     <span class="text-xs font-bold">S</span>
+  </button>
+  <button
+    class={btn}
+    aria-label="Place lines"
+    title="Give this box one positionable line per OCR line"
+    disabled={!canPlaceLines}
+    onclick={() => selected[0] && session.placeLines(selected[0].pageIndex, selected[0].blockIndex)}
+  >
+    <span class="text-xs font-bold">≡</span>
   </button>
   <button
     class={btn}

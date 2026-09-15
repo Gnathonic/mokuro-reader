@@ -57,6 +57,18 @@ describe('EditToolbar', () => {
     expect(btn('Split').disabled).toBe(true);
   });
 
+  it('offers Place lines only for a single selected block without quads', async () => {
+    const { btn, session } = mount(true);
+    expect(btn('Place lines').disabled).toBe(true);
+    session.select(0, 0);
+    await tick();
+    expect(btn('Place lines').disabled).toBe(false);
+    await fireEvent.click(btn('Place lines'));
+    expect(session.pageFor(0).blocks[0].lines_coords).toHaveLength(2);
+    await tick();
+    expect(btn('Place lines').disabled).toBe(true);
+  });
+
   it('drives the session', async () => {
     const { btn, session, onExit, onRevert, getByLabelText } = mount(true);
     await fireEvent.click(btn('Draw new box'));

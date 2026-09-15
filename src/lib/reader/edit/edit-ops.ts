@@ -5,9 +5,14 @@
  */
 import type { Block, Page } from '$lib/types';
 import {
+  boxContainingQuads,
   clampBox,
   estimateFontSize,
+  lineGeometry,
+  medianLineFontSize,
+  quadBounds,
   readingOrder,
+  rectQuad,
   scaleQuads,
   splitBoxAtLine,
   translateQuads,
@@ -166,4 +171,120 @@ export function flipBlock(page: Page, index: number, swapBox = false): Page {
     delete next.lines_coords;
   }
   return replaceBlock(page, index, next);
+}
+
+// ---------------------------------------------------------------------------
+// Line-centric ops. A block's lines are individually positioned objects (its
+// `lines_coords` quads); every op below keeps `lines` and `lines_coords`
+// parallel, grows the box to contain every quad (never shrinks it), and
+// re-derives the block `font_size` from the line median so an oversized OCR
+// value heals on the first edit.
+// ---------------------------------------------------------------------------
+
+function hasParallelQuads(block: Block): block is Block & { lines_coords: number[][][] } {
+  return !!block.lines_coords && block.lines_coords.length === block.lines.length;
+}
+
+/** Re-fit `box` around the quads and heal `font_size` from the line median. */
+function withQuads(page: Page, block: Block, quads: number[][][]): Block {
+  const box = clampBox(boxContainingQuads(block.box, quads), page.img_width, page.img_height);
+  return { ...block, box, lines_coords: quads, font_size: medianLineFontSize(quads) };
+}
+
+export function healBlockFontSize(page: Page, blockIndex: number): Page {
+  const block = page.blocks[blockIndex];
+  if (!hasParallelQuads(block)) return page;
+  const font_size = medianLineFontSize(block.lines_coords);
+  if (font_size === block.font_size) return page;
+  return replaceBlock(page, blockIndex, { ...block, font_size });
+}
+
+export function moveLine(
+  page: Page,
+  blockIndex: number,
+  lineIndex: number,
+  dx: number,
+  dy: number
+): Page {
+  const block = page.blocks[blockIndex];
+  if (!hasParallelQuads(block)) return page;
+  const [x0, y0, x1, y1] = quadBounds(block.lines_coords[lineIndex]);
+  const realDx = Math.min(Math.max(dx, -x0), page.img_width - x1);
+  const realDy = Math.min(Math.max(dy, -y0), page.img_height - y1);
+  if (realDx === 0 && realDy === 0) return page;
+  const quads = block.lines_coords.slice();
+  quads[lineIndex] = quads[lineIndex].map(([x, y]) => [x + realDx, y + realDy]);
+  return replaceBlock(page, blockIndex, withQuads(page, block, quads));
+}
+
+export function resizeLine(
+  page: Page,
+  blockIndex: number,
+  lineIndex: number,
+  quad: number[][]
+): Page {
+  const block = page.blocks[blockIndex];
+  if (!hasParallelQuads(block)) return page;
+  const [x0, y0, x1, y1] = clampBox(quadBounds(quad), page.img_width, page.img_height);
+  const quads = block.lines_coords.slice();
+  quads[lineIndex] = rectQuad(x0, y0, x1 - x0, y1 - y0);
+  return replaceBlock(page, blockIndex, withQuads(page, block, quads));
+}
+
+/**
+ * Give a quad-less block one quad per line by dividing its box evenly along
+ * the writing axis: vertical → columns right-to-left, horizontal → rows
+ * top-to-bottom. Makes the lines positionable.
+ */
+export function placeLines(page: Page, blockIndex: number): Page {
+  const block = page.blocks[blockIndex];
+  if (hasParallelQuads(block) || block.lines.length === 0) return page;
+  const [x0, y0, x1, y1] = block.box;
+  const n = block.lines.length;
+  const quads: number[][][] = [];
+  if (block.vertical) {
+    const w = (x1 - x0) / n;
+    for (let i = 0; i < n; i++) quads.push(rectQuad(x1 - w * (i + 1), y0, w, y1 - y0));
+  } else {
+    const h = (y1 - y0) / n;
+    for (let i = 0; i < n; i++) quads.push(rectQuad(x0, y0 + h * i, x1 - x0, h));
+  }
+  return replaceBlock(page, blockIndex, withQuads(page, block, quads));
+}
+
+/**
+ * Insert an empty line after `afterLine`. With quads, the new line gets a quad
+ * one line advance further along the cross axis (vertical: to the LEFT,
+ * horizontal: BELOW), same size as the line it follows.
+ */
+export function insertLine(page: Page, blockIndex: number, afterLine: number): Page {
+  const block = page.blocks[blockIndex];
+  const lines = block.lines.slice();
+  lines.splice(afterLine + 1, 0, '');
+  if (!hasParallelQuads(block)) {
+    const next: Block = { ...block, lines };
+    delete next.lines_coords;
+    return replaceBlock(page, blockIndex, next);
+  }
+  const g = lineGeometry(block.lines_coords[afterLine]);
+  const quad = g.vertical
+    ? rectQuad(g.left - g.width, g.top, g.width, g.height)
+    : rectQuad(g.left, g.top + g.height, g.width, g.height);
+  const quads = block.lines_coords.slice();
+  quads.splice(afterLine + 1, 0, quad);
+  return replaceBlock(page, blockIndex, withQuads(page, { ...block, lines }, quads));
+}
+
+/** Remove a line and its quad; a block always keeps at least one line. */
+export function removeLine(page: Page, blockIndex: number, lineIndex: number): Page {
+  const block = page.blocks[blockIndex];
+  if (block.lines.length <= 1) return page;
+  const lines = block.lines.filter((_, i) => i !== lineIndex);
+  if (!hasParallelQuads(block)) {
+    const next: Block = { ...block, lines };
+    delete next.lines_coords;
+    return replaceBlock(page, blockIndex, next);
+  }
+  const quads = block.lines_coords.filter((_, i) => i !== lineIndex);
+  return replaceBlock(page, blockIndex, withQuads(page, { ...block, lines }, quads));
 }

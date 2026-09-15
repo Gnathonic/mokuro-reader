@@ -119,3 +119,95 @@ describe('EditSession', () => {
     expect(await s.revertPage(0)).toBe(false);
   });
 });
+
+describe('EditSession — line ops', () => {
+  function quadPage(): Page {
+    return {
+      version: '0.2.1',
+      img_width: 400,
+      img_height: 400,
+      img_path: 'p.png',
+      blocks: [
+        {
+          box: [100, 10, 200, 210],
+          vertical: true,
+          font_size: 40,
+          lines: ['あ', 'い'],
+          lines_coords: [
+            [
+              [160, 10],
+              [200, 10],
+              [200, 210],
+              [160, 210]
+            ],
+            [
+              [100, 10],
+              [140, 10],
+              [140, 210],
+              [100, 210]
+            ]
+          ]
+        },
+        { box: [10, 10, 50, 100], vertical: true, font_size: 20, lines: ['う', 'え'] }
+      ]
+    };
+  }
+
+  it('selects a line, moves it with coalescing, resizes it, and places lines on a bare block', () => {
+    const pages = [quadPage()];
+    const s = new EditSession({
+      volumeUuid: 'v',
+      getPage: (i) => pages[i],
+      persist: async () => {},
+      debounceMs: 1e6
+    });
+    s.select(0, 0);
+    s.selectLine(0, 0, 1);
+    expect(s.selectedLine).toEqual({ pageIndex: 0, blockIndex: 0, lineIndex: 1 });
+    s.moveLine(0, 0, 1, -50, 0, 'line-drag');
+    s.moveLine(0, 0, 1, -10, 0, 'line-drag');
+    expect(s.pageFor(0).blocks[0].lines_coords![1][0][0]).toBe(40);
+    expect(s.pageFor(0).blocks[0].box[0]).toBe(40);
+    s.undo(0);
+    expect(s.pageFor(0).blocks[0].lines_coords![1][0][0]).toBe(100);
+    s.resizeLine(0, 0, 0, [
+      [150, 10],
+      [200, 10],
+      [200, 210],
+      [150, 210]
+    ]);
+    expect(s.pageFor(0).blocks[0].lines_coords![0][0][0]).toBe(150);
+    s.placeLines(0, 1);
+    expect(s.pageFor(0).blocks[1].lines_coords).toHaveLength(2);
+  });
+
+  it('insertLine / removeLine keep lines and quads parallel', () => {
+    const pages = [quadPage()];
+    const s = new EditSession({
+      volumeUuid: 'v',
+      getPage: (i) => pages[i],
+      persist: async () => {},
+      debounceMs: 1e6
+    });
+    expect(s.insertLine(0, 0, 0)).toBe(1);
+    expect(s.pageFor(0).blocks[0].lines).toEqual(['あ', '', 'い']);
+    expect(s.pageFor(0).blocks[0].lines_coords).toHaveLength(3);
+    s.removeLine(0, 0, 1);
+    expect(s.pageFor(0).blocks[0].lines).toEqual(['あ', 'い']);
+    expect(s.pageFor(0).blocks[0].lines_coords).toHaveLength(2);
+  });
+
+  it('a selection change clears the selected line', () => {
+    const pages = [quadPage()];
+    const s = new EditSession({
+      volumeUuid: 'v',
+      getPage: (i) => pages[i],
+      persist: async () => {},
+      debounceMs: 1e6
+    });
+    s.select(0, 0);
+    s.selectLine(0, 0, 0);
+    s.select(0, 1);
+    expect(s.selectedLine).toBeNull();
+  });
+});
