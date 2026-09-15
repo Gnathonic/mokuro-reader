@@ -88,6 +88,26 @@ describe('VolumeCard click', () => {
     expect(message).toMatch(/cloud/i);
   });
 
+  it('draws a card-sized placeholder that wraps the full title above the badge', async () => {
+    // The catalog's 250×350 placeholder centred its label off the bottom-right
+    // edge of this 125×180 box, under "Not on device", so the title read as a
+    // cut-off fragment.
+    const title = 'Magical Girl Site Sept 01 — A Long Title That Needs Wrapping';
+    const { container } = render(VolumeCard, {
+      props: { ...baseProps, volumeTitle: title, volume: undefined }
+    });
+    await tick();
+
+    const placeholder = container.querySelector('.placeholder')!;
+    expect(placeholder).not.toBeNull();
+    expect(placeholder.textContent).toContain(title);
+    const classes = placeholder.className.split(/\s+/);
+    expect(classes).toContain('text-center');
+    expect(classes).toContain('break-words');
+    expect(classes).toContain('pb-7'); // room for the badge strip
+    expect(container.querySelector('img')).toBeNull();
+  });
+
   it('names the volume when its row has no cloud copy to download', async () => {
     const { container } = render(VolumeCard, {
       props: { ...baseProps, volume: volume({ metadata_only: true }) }

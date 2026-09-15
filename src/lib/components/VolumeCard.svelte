@@ -7,7 +7,6 @@
   import type { VolumeMetadata } from '$lib/types';
   import VolumeProgressBar from '$lib/components/VolumeProgressBar.svelte';
   import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
-  import PlaceholderThumbnail from '$lib/components/PlaceholderThumbnail.svelte';
   import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   import { untrack } from 'svelte';
 
@@ -188,11 +187,19 @@
         />
       {:else}
         <!-- No cover on the row and none in the cache yet. A src-less <img>
-             renders the broken-image glyph; the house pattern (VolumeItem.svelte)
-             is PlaceholderThumbnail. Deliberately NOT handed `volume`: this card
-             owns the claim, and a second claim set for the same volume would
-             double the reference. -->
-        <PlaceholderThumbnail message={volumeTitle || 'Volume Cover'} />
+             renders the broken-image glyph. The catalog's PlaceholderThumbnail is
+             sized for the catalog (250×350): inside this 125×180 box its centred
+             label sat on the bottom-right edge, cut off and under the badge. So
+             the card draws its own, sized to the box, with the title wrapped and
+             centred above the badge's strip. No cover claim is made here: this
+             card already owns the one claim for the volume. -->
+        <div
+          class="placeholder flex items-center justify-center bg-gray-200 px-2 pt-2 text-center text-xs leading-snug break-words text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+          class:pb-7={isNotInstalled}
+          class:pb-2={!isNotInstalled}
+        >
+          <span class="line-clamp-6">{volumeTitle || 'Volume Cover'}</span>
+        </div>
       {/if}
     </a>
     <div class="pending bg-gray-950/55" style:--progress={progressPercentString}></div>
@@ -266,6 +273,12 @@
     min-height: 180px;
     object-fit: cover;
     object-position: center;
+  }
+
+  .imagebox a .placeholder {
+    width: var(--box-width);
+    height: var(--box-height);
+    border-radius: var(--border-radius) var(--border-radius) 0 0;
   }
 
   .pending {
