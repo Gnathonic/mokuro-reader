@@ -172,7 +172,8 @@ describe('EditOverlay — line-centric rendering', () => {
           box: [760, 1704, 1561, 2655],
           vertical: false,
           font_size: 295,
-          lines: Array.from({ length: 13 }, (_, i) => `line${i}`),
+          // 8 fullwidth chars per line (heuristic measurer: 1em each)
+          lines: Array.from({ length: 13 }, () => 'あいうえおかきく'),
           lines_coords: quads
         },
         { box: [10, 10, 60, 200], vertical: true, font_size: 20, lines: ['a', 'b', 'c'] }
@@ -196,14 +197,16 @@ describe('EditOverlay — line-centric rendering', () => {
     const block = container.querySelectorAll<HTMLElement>('.editBlock')[0];
     const lines = block.querySelectorAll<HTMLElement>('.line.positioned');
     expect(lines).toHaveLength(13);
-    // horizontal quad 0
+    // horizontal quad 0: 541 long, 8 chars → fitted 68px, not the 99px thickness
     expect(lines[0].style.writingMode).toBe('horizontal-tb');
-    expect(lines[0].style.fontSize).toBe('99px');
+    expect(lines[0].style.fontSize).toBe('68px');
     expect(lines[0].style.left).toBe('40px'); // 800 - box left 760
     expect(lines[0].style.top).toBe('6px');
-    // vertical quad 1
+    // vertical quad 1: 252 long, 8 chars → fitted 32px, not the 44px thickness
     expect(lines[1].style.writingMode).toBe('vertical-rl');
-    expect(lines[1].style.fontSize).toBe('44px');
+    expect(lines[1].style.fontSize).toBe('32px');
+    // a fat mis-detected quad (7: 40×500) never explodes: 500/8 → 63 capped at 40
+    expect(lines[7].style.fontSize).toBe('40px');
     // nothing clips: the container and the block let lines overflow
     expect(getComputedStyle(block).overflow).not.toBe('hidden');
   });

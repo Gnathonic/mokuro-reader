@@ -2,6 +2,12 @@
  * Geometry helpers shared by the OCR edit operations (`edit-ops.ts`). Pure,
  * image-pixel space, no DOM.
  */
+import {
+  fittedLineFontSize,
+  getDefaultMeasurer,
+  type TextMeasurer
+} from '$lib/reader/line-coords-layout';
+
 export type Box = [number, number, number, number];
 
 const MIN_FONT = 8;
@@ -159,28 +165,44 @@ export interface LineGeometry {
   /** Taller than wide → vertical writing. Decided per LINE, not per block:
    * mokuro blocks routinely mix orientations (tables of contents, SFX). */
   vertical: boolean;
-  /** The cross-writing-axis extent of the quad — the glyph size. */
+  /**
+   * The size the line's text renders at: with `text`, the FITTED size (the
+   * text fills the quad's length, capped by its thickness — see
+   * `fittedLineFontSize`); without, the thickness alone.
+   */
   fontSize: number;
 }
 
-export function lineGeometry(quad: number[][]): LineGeometry {
+export function lineGeometry(
+  quad: number[][],
+  text?: string,
+  measure: TextMeasurer = getDefaultMeasurer()
+): LineGeometry {
   const [x0, y0, x1, y1] = quadBounds(quad);
   const width = x1 - x0;
   const height = y1 - y0;
   const vertical = height > width;
+  const fontSize =
+    text === undefined ? (vertical ? width : height) : fittedLineFontSize(quad, text, measure);
   return {
     left: x0,
     top: y0,
     width,
     height,
     vertical,
-    fontSize: Math.max(1, Math.round(vertical ? width : height))
+    fontSize: Math.max(1, Math.round(fontSize))
   };
 }
 
-/** Median per-line font size across a block's quads. */
-export function medianLineFontSize(quads: number[][][]): number {
-  const sizes = quads.map((q) => lineGeometry(q).fontSize).sort((a, b) => a - b);
+/** Median per-line font size across a block's quads (fitted sizes when `lines` are given). */
+export function medianLineFontSize(
+  quads: number[][][],
+  lines?: string[],
+  measure: TextMeasurer = getDefaultMeasurer()
+): number {
+  const sizes = quads
+    .map((q, i) => lineGeometry(q, lines?.[i], measure).fontSize)
+    .sort((a, b) => a - b);
   if (sizes.length === 0) return 0;
   const mid = Math.floor(sizes.length / 2);
   return sizes.length % 2 ? sizes[mid] : Math.round((sizes[mid - 1] + sizes[mid]) / 2);

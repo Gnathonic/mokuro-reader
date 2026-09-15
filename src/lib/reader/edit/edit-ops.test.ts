@@ -195,7 +195,8 @@ function tocPage(): Page {
         box: [760, 1704, 1561, 2655],
         vertical: false,
         font_size: 295,
-        lines: Array.from({ length: 13 }, (_, i) => `line${i}`),
+        // 8 fullwidth chars per line: the heuristic measurer advances 1em each
+        lines: Array.from({ length: 13 }, () => 'あいうえおかきく'),
         lines_coords: quads
       }
     ]
@@ -203,7 +204,7 @@ function tocPage(): Page {
 }
 
 describe('lineGeometry', () => {
-  it('derives orientation from the quad aspect and font size from the cross axis', () => {
+  it('derives orientation from the quad aspect and font size from the cross axis without text', () => {
     expect(lineGeometry(rectQuad(800, 1710, 541, 99))).toEqual({
       left: 800,
       top: 1710,
@@ -216,6 +217,19 @@ describe('lineGeometry', () => {
       vertical: true,
       fontSize: 44
     });
+  });
+  it('with text, the font size is the FITTED size (text fits the quad length), never more than the thickness', () => {
+    const perChar = (t: string) => t.length;
+    // a fat mis-detected quad: 483×697 vertical, 8 chars → ~87, not 483
+    expect(lineGeometry(rectQuad(959, 1885, 483, 697), 'あいうえおかきく', perChar).fontSize).toBe(
+      87
+    );
+    // 541×99 horizontal, 12 chars → 45, not 99
+    expect(
+      lineGeometry(rectQuad(800, 1710, 541, 99), 'あいうえおかきくけこさし', perChar).fontSize
+    ).toBe(45);
+    // a normal quad is unchanged
+    expect(lineGeometry(rectQuad(1500, 1820, 44, 252), 'あい', perChar).fontSize).toBe(44);
   });
 });
 
@@ -241,15 +255,20 @@ describe('resizeLine', () => {
     const out = resizeLine(p, 1, 6, rectQuad(1000, 1720, 60, 1000));
     expect(out.blocks[1].lines_coords![6]).toEqual(rectQuad(1000, 1720, 60, 1000));
     expect(out.blocks[1].box[3]).toBe(2720);
-    // median of the 13 line sizes (44 ×9, 60, 80, 90, 99) → 44
-    expect(out.blocks[1].font_size).toBe(44);
+    // median of the 13 FITTED line sizes (8 chars each): the tall vertical
+    // quads fit at their length / 8 (252/8≈32 … 400/8=50, 908/8≈114,
+    // 1000/8=125), the horizontal ones at 541/8≈68, 500/8≈63, 300/8≈38,
+    // each capped by its thickness → sorted median is 38
+    expect(out.blocks[1].font_size).toBe(38);
   });
 });
 
 describe('healBlockFontSize', () => {
-  it('replaces an oversized block font_size with the median line size', () => {
+  it('replaces an oversized block font_size with the median FITTED line size', () => {
     const out = healBlockFontSize(tocPage(), 1);
-    expect(out.blocks[1].font_size).toBe(44);
+    // same sizes as above with quad 6 at 908/8≈114 (capped 38) and quad 7 at
+    // 500/8≈63 (capped 40) → median 38
+    expect(out.blocks[1].font_size).toBe(38);
   });
   it('is a no-op without quads', () => {
     const p = tocPage();
@@ -307,7 +326,7 @@ describe('insertLine / removeLine', () => {
     const out = removeLine(tocPage(), 1, 0);
     expect(out.blocks[1].lines).toHaveLength(12);
     expect(out.blocks[1].lines_coords).toHaveLength(12);
-    expect(out.blocks[1].lines[0]).toBe('line1');
+    expect(out.blocks[1].lines_coords![0]).toEqual(rectQuad(1500, 1820, 44, 252));
     const p = tocPage();
     expect(removeLine(p, 0, 0)).toBe(p);
   });

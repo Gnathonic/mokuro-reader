@@ -188,6 +188,29 @@ function quadExtents(quad: Quad, vertical: boolean): { main: number; cross: numb
 }
 
 /**
+ * The font size at which `text` fits ONE line quad: the size that fills the
+ * quad's length (`main / advance`), never more than its thickness (`cross`).
+ * Orientation is judged from the quad itself (taller than wide → vertical),
+ * not from the block flag — mokuro mixes orientations inside one block.
+ *
+ * Shared with the OCR editor (`block-geometry.ts`), which sizes every line
+ * from this: a mis-detected 483×697 quad holding 8 characters must render at
+ * ~87 px (its length / 8), not at its 483 px thickness.
+ */
+export function fittedLineFontSize(quad: Quad, text: string, measure: TextMeasurer): number {
+  const xs = quad.map((p) => p[0]);
+  const ys = quad.map((p) => p[1]);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  const vertical = height > width;
+  const extents = quadExtents(quad, vertical);
+  if (!extents) return Math.max(MIN_FONT_SIZE, vertical ? width : height);
+  const advanceEm = measure(text);
+  const fitted = advanceEm > 0 ? extents.main / advanceEm : extents.cross;
+  return Math.max(MIN_FONT_SIZE, Math.min(extents.cross, fitted));
+}
+
+/**
  * Compute per-line positions and font sizes for a block.
  *
  * @param block the OCR block (box, vertical, lines_coords)

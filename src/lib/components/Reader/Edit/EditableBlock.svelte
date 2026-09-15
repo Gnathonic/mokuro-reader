@@ -50,9 +50,11 @@
   let height = $derived(block.box[3] - block.box[1]);
 
   /** Quads parallel to the lines → positioned rendering; otherwise flow. */
+  // Sized by the FITTED size (text fills the quad's length, capped by its
+  // thickness) — a mis-detected fat quad must not explode across the page.
   let geoms = $derived<LineGeometry[] | null>(
     block.lines_coords && block.lines_coords.length === block.lines.length
-      ? block.lines_coords.map(lineGeometry)
+      ? block.lines_coords.map((q, i) => lineGeometry(q, block.lines[i]))
       : null
   );
   /** Flow blocks: a size at which every line fits the box. */

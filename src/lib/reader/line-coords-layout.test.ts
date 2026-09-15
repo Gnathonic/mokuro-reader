@@ -838,3 +838,30 @@ describe('heuristicMeasurer', () => {
     expect(heuristicMeasurer('')).toBe(0);
   });
 });
+
+describe('fittedLineFontSize', () => {
+  const rect = (x: number, y: number, w: number, h: number) => [
+    [x, y],
+    [x + w, y],
+    [x + w, y + h],
+    [x, y + h]
+  ];
+  const perChar = (t: string) => t.length;
+
+  it('is the size at which the text fits the quad LENGTH, capped by the thickness', async () => {
+    const { fittedLineFontSize } = await import('./line-coords-layout');
+    // Chainsaw Man 02 p.9 block 1, quad 7: 483×697, judged vertical, 8 chars
+    expect(fittedLineFontSize(rect(959, 1885, 483, 697), 'あいうえおかきく', perChar)).toBeCloseTo(
+      697 / 8,
+      5
+    );
+    // quad 0: 541×99 horizontal, 12 chars
+    expect(
+      fittedLineFontSize(rect(800, 1710, 541, 99), 'あいうえおかきくけこさし', perChar)
+    ).toBeCloseTo(541 / 12, 5);
+    // a normal quad (thickness smaller than the fitted size) keeps its thickness
+    expect(fittedLineFontSize(rect(1500, 1820, 44, 252), 'あい', perChar)).toBe(44);
+    // empty text → the thickness
+    expect(fittedLineFontSize(rect(0, 0, 40, 200), '', perChar)).toBe(40);
+  });
+});

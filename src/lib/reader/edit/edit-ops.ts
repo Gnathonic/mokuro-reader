@@ -188,13 +188,13 @@ function hasParallelQuads(block: Block): block is Block & { lines_coords: number
 /** Re-fit `box` around the quads and heal `font_size` from the line median. */
 function withQuads(page: Page, block: Block, quads: number[][][]): Block {
   const box = clampBox(boxContainingQuads(block.box, quads), page.img_width, page.img_height);
-  return { ...block, box, lines_coords: quads, font_size: medianLineFontSize(quads) };
+  return { ...block, box, lines_coords: quads, font_size: medianLineFontSize(quads, block.lines) };
 }
 
 export function healBlockFontSize(page: Page, blockIndex: number): Page {
   const block = page.blocks[blockIndex];
   if (!hasParallelQuads(block)) return page;
-  const font_size = medianLineFontSize(block.lines_coords);
+  const font_size = medianLineFontSize(block.lines_coords, block.lines);
   if (font_size === block.font_size) return page;
   return replaceBlock(page, blockIndex, { ...block, font_size });
 }
