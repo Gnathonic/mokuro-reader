@@ -97,6 +97,24 @@ export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
       catalog_index: 'id',
       cloud_covers: '[account_scope+path], cached_at'
     }
+  },
+  // v3: the OCR editor. `volume_ocr_layers` holds alternate page sets per
+  // volume (the pre-edit 'original' snapshot first; later engine/translation
+  // layers). `ocr_edited_at` on `volumes` is a sparse index — only rows that
+  // were edited in the reader carry it — so the sidecar backfill can find
+  // volumes whose cloud `.mokuro` is behind the local row without scanning.
+  {
+    version: 3,
+    stores: {
+      volumes: 'volume_uuid, series_uuid, series_title, ocr_edited_at',
+      volume_ocr: 'volume_uuid',
+      volume_files: 'volume_uuid',
+      series_metadata: 'series_key, folded_key',
+      series_index: 'series_key',
+      catalog_index: 'id',
+      cloud_covers: '[account_scope+path], cached_at',
+      volume_ocr_layers: '[volume_uuid+layer_id], volume_uuid'
+    }
   }
 ];
 

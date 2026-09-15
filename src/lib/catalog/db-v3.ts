@@ -1,4 +1,4 @@
-import type { VolumeMetadata, VolumeOCR, VolumeFiles } from '$lib/types';
+import type { VolumeMetadata, VolumeOCR, VolumeFiles, VolumeOcrLayer } from '$lib/types';
 import type { StoredSeriesMetadata } from '$lib/metadata/types';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import type { CatalogIndexRecord } from '$lib/metadata/catalog-index';
@@ -19,6 +19,7 @@ export class CatalogDexieV3 extends Dexie {
   series_index!: Table<SeriesIndexRecord>;
   catalog_index!: Table<CatalogIndexRecord>;
   cloud_covers!: Table<CloudCover>;
+  volume_ocr_layers!: Table<VolumeOcrLayer>;
 
   constructor(dbName: string = MOKURO_DB_NAME) {
     super(dbName);

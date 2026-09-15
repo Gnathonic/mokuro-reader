@@ -54,6 +54,13 @@ export interface VolumeMetadata {
   indexed?: true;
 
   /**
+   * ISO stamp of the last in-reader OCR edit (`persistPageEdit`). Indexed on
+   * `volumes` (schema v3) so the sidecar backfill can find edited volumes
+   * keys-only and re-upload their `.mokuro`. Absent until the first edit.
+   */
+  ocr_edited_at?: string;
+
+  /**
    * This row is metadata only: the volume's OCR and image rows are not on this
    * device (the user removed them to save space). Everything else — thumbnail,
    * counts, and above all the `volume_uuid` the read history is keyed by —
@@ -142,6 +149,24 @@ export interface VolumeOCR {
 export interface VolumeFiles {
   volume_uuid: string;
   files: Record<string, File>;
+}
+
+// v3 table: volume_ocr_layers — alternate OCR page sets beside the primary
+// `volume_ocr` row. 'original' is the pre-edit snapshot the editor reverts to.
+export type VolumeOcrLayerKind = 'original' | 'edit' | 'ocr' | 'translation';
+
+export interface VolumeOcrLayer {
+  volume_uuid: string;
+  /** slug [a-z0-9-]{1,32}; 'original' is reserved */
+  layer_id: string;
+  name: string;
+  kind: VolumeOcrLayerKind;
+  engine?: string;
+  created_at: string;
+  updated_at: string;
+  /** DB-shaped pages (no cumulativeChars), same shape as `volume_ocr.pages` */
+  pages: Page[];
+  cloud?: { provider: string; size?: number; modified?: number };
 }
 
 // Combined view for API compatibility (assembled from volume_ocr + volume_files)

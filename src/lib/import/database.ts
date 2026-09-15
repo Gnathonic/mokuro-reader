@@ -219,6 +219,7 @@ export async function saveVolume(
  * @param volumeUuid - The volume UUID whose files to remove
  */
 export async function removeVolumeFiles(volumeUuid: string): Promise<void> {
+  // `volume_ocr_layers` rows stay — see deleteVolumeCompletely.
   await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
     await db.volume_ocr.delete(volumeUuid);
     await db.volume_files.delete(volumeUuid);
@@ -238,9 +239,16 @@ export async function removeVolumeFiles(volumeUuid: string): Promise<void> {
  * @param volumeUuid - The volume UUID to delete
  */
 export async function deleteVolumeCompletely(volumeUuid: string): Promise<void> {
-  await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
-    await db.volumes.delete(volumeUuid);
-    await db.volume_ocr.delete(volumeUuid);
-    await db.volume_files.delete(volumeUuid);
-  });
+  await db.transaction(
+    'rw',
+    [db.volumes, db.volume_ocr, db.volume_files, db.volume_ocr_layers],
+    async () => {
+      await db.volumes.delete(volumeUuid);
+      await db.volume_ocr.delete(volumeUuid);
+      await db.volume_files.delete(volumeUuid);
+      // Layers are OCR, not pages: they go only when the volume itself goes
+      // (`removeVolumeFiles` keeps them, like the row and its history).
+      await db.volume_ocr_layers.where('volume_uuid').equals(volumeUuid).delete();
+    }
+  );
 }
