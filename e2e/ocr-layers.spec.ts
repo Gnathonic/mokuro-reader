@@ -189,6 +189,34 @@ test.describe('OCR layers', () => {
     expect(json.pages[0].blocks[0].lines).toEqual(['かきく']);
   });
 
+  test('the L key cycles Primary → each layer → Primary', async ({ page }) => {
+    await seedVolume(page);
+    await page.evaluate(async (uuid) => {
+      const { db } = await import('/src/lib/catalog/db.ts');
+      const ocr = await db.volume_ocr.get(uuid);
+      const now = new Date().toISOString();
+      await db.volume_ocr_layers.put({
+        volume_uuid: uuid,
+        layer_id: 'fix',
+        name: 'Fix',
+        kind: 'edit',
+        created_at: now,
+        updated_at: now,
+        pages: ocr!.pages
+      });
+    }, VOLUME_UUID);
+    await openReader(page);
+    expect((await readState(page)).setting).toBeNull();
+
+    await page.keyboard.press('l');
+    await expect(page.getByText('OCR layer: Fix')).toBeVisible();
+    await expect.poll(async () => (await readState(page)).setting).toBe('fix');
+
+    await page.keyboard.press('l');
+    await expect(page.getByText('OCR layer: Primary')).toBeVisible();
+    await expect.poll(async () => (await readState(page)).setting).toBeNull();
+  });
+
   test('the original layer is read-only; a layer can be deleted', async ({ page }) => {
     await seedVolume(page);
     await page.evaluate(async (uuid) => {

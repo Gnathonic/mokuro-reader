@@ -61,7 +61,7 @@
   import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
   import { ORIGINAL_LAYER_ID, hasOriginalLayer } from '$lib/reader/edit/edit-persist';
   import type { Page } from '$lib/types';
-  import { layerSummaries, type LayerSummary } from '$lib/reader/edit/layer-list';
+  import { layerSummaries, nextLayerId, type LayerSummary } from '$lib/reader/edit/layer-list';
   import { loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
   import { runLayerAction, type LayerAction } from './Layers/layer-actions';
   import LayerNameModal from './Layers/LayerNameModal.svelte';
@@ -424,6 +424,9 @@
       case 'KeyE':
         toggleEditMode();
         return;
+      case 'KeyL':
+        cycleLayer();
+        return;
       case 'Escape':
         navigateBack();
         return;
@@ -684,6 +687,20 @@
     if (!volume) return;
     if (editSession) await exitEditMode();
     updateVolumeSetting(volume.volume_uuid, 'ocrLayer', layerId ?? undefined);
+  }
+
+  /** `L`: step to the next OCR layer (Primary → layers in order → Primary). */
+  function cycleLayer() {
+    if (!volume) return;
+    if (layers.length === 0) {
+      showSnackbar('No OCR layers for this volume');
+      return;
+    }
+    const next = nextLayerId(activeLayerId, layers);
+    void selectLayer(next);
+    const name =
+      next === null ? 'Primary' : (layers.find((l) => l.layer_id === next)?.name ?? next);
+    showSnackbar(`OCR layer: ${name}`);
   }
 
   function runLayerActionFromReader(action: LayerAction, layerId: string | null) {

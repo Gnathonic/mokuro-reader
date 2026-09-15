@@ -237,6 +237,7 @@
       <div class="flex flex-col gap-2">
         <Label>
           OCR layer
+          <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(L cycles)</span>
           <!-- Native select: its value must follow the volume setting exactly,
                and flowbite's Select re-selects its own placeholder on mount. -->
           <select
