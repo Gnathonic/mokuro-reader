@@ -6,7 +6,7 @@
     UserSettingsSolid,
     RefreshOutline,
     ChartLineUpOutline,
-    RectangleListOutline
+    CalendarMonthOutline
   } from 'flowbite-svelte-icons';
   import { nav, isOnReader } from '$lib/util/hash-router';
   import Settings from './Settings/Settings.svelte';
@@ -162,7 +162,7 @@
         class="flex h-6 w-6 items-center justify-center"
         title="Progress Tracker"
       >
-        <RectangleListOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
+        <CalendarMonthOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
       <button onclick={openSettings} class="flex h-6 w-6 items-center justify-center">
         <UserSettingsSolid class="h-6 w-6 cursor-pointer hover:text-primary-700" />
