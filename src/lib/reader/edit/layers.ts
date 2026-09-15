@@ -232,3 +232,42 @@ export async function buildLayerExportFile(volumeUuid: string, layerId: string):
     type: 'application/json'
   });
 }
+
+export interface UpsertLayerPagesOptions {
+  name: string;
+  kind: VolumeOcrLayerKind;
+  engine: string;
+  /** The pages whose image facts a NEW layer's untouched pages keep. */
+  sourcePages: Page[];
+  /** pageIndex → the page to write. */
+  pages: Map<number, Page>;
+}
+
+/** Engine results: create the layer on first use, overwrite only the pages that ran. */
+export async function upsertLayerPages(
+  volumeUuid: string,
+  layerId: string,
+  opts: UpsertLayerPagesOptions
+): Promise<VolumeOcrLayer> {
+  assertEditable(layerId);
+  const now = new Date().toISOString();
+  return db.transaction('rw', db.volume_ocr_layers, async () => {
+    const existing = await db.volume_ocr_layers.get([volumeUuid, layerId]);
+    const base: Page[] = existing
+      ? existing.pages.slice()
+      : opts.sourcePages.map((p) => ({ ...p, blocks: [] }));
+    for (const [i, page] of opts.pages) base[i] = page;
+    const layer: VolumeOcrLayer = {
+      volume_uuid: volumeUuid,
+      layer_id: layerId,
+      name: existing?.name ?? opts.name,
+      kind: existing?.kind ?? opts.kind,
+      engine: opts.engine,
+      created_at: existing?.created_at ?? now,
+      updated_at: now,
+      pages: base
+    };
+    await db.volume_ocr_layers.put(layer);
+    return layer;
+  });
+}

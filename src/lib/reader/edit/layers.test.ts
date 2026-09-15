@@ -194,3 +194,45 @@ describe('buildLayerExportFile', () => {
     ]);
   });
 });
+
+describe('upsertLayerPages', () => {
+  it('creates the layer with empty pages on first use, then overwrites only the pages given', async () => {
+    const { upsertLayerPages } = await import('./layers');
+    const ran = pg('OCR結果');
+    const layer = await upsertLayerPages('v-up', 'gcv', {
+      name: 'Cloud Vision',
+      kind: 'ocr',
+      engine: 'gcv',
+      sourcePages: PAGES,
+      pages: new Map([[1, ran]])
+    });
+    expect(layer.layer_id).toBe('gcv');
+    expect(layer.pages[0].blocks).toEqual([]);
+    expect(layer.pages[0].img_path).toBe('p.png');
+    expect(layer.pages[1].blocks[0].lines).toEqual(['OCR結果']);
+
+    const again = await upsertLayerPages('v-up', 'gcv', {
+      name: 'Cloud Vision',
+      kind: 'ocr',
+      engine: 'gcv',
+      sourcePages: PAGES,
+      pages: new Map([[0, pg('二回目')]])
+    });
+    expect(again.pages[0].blocks[0].lines).toEqual(['二回目']);
+    expect(again.pages[1].blocks[0].lines).toEqual(['OCR結果']);
+    expect(again.updated_at >= layer.updated_at).toBe(true);
+  });
+
+  it('refuses the original layer', async () => {
+    const { upsertLayerPages } = await import('./layers');
+    await expect(
+      upsertLayerPages('v-up', 'original', {
+        name: 'x',
+        kind: 'ocr',
+        engine: 'gcv',
+        sourcePages: PAGES,
+        pages: new Map()
+      })
+    ).rejects.toThrow(/read-only/);
+  });
+});
