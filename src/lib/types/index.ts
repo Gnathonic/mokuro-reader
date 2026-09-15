@@ -54,9 +54,10 @@ export interface VolumeMetadata {
   indexed?: true;
 
   /**
-   * ISO stamp of the last in-reader OCR edit (`persistPageEdit`). Indexed on
-   * `volumes` (schema v3) so the sidecar backfill can find edited volumes
-   * keys-only and re-upload their `.mokuro`. Absent until the first edit.
+   * ISO stamp of the last in-reader OCR edit (`persistPageEdit`). The sidecar
+   * backfill re-uploads the `.mokuro` when the listed one is older than this
+   * (`sidecar-backfill.ts`, TRIGGER 3). Indexed on `volumes` (schema v3, a
+   * sparse index). Absent until the first edit.
    */
   ocr_edited_at?: string;
 

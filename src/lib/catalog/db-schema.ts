@@ -100,9 +100,9 @@ export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
   },
   // v3: the OCR editor. `volume_ocr_layers` holds alternate page sets per
   // volume (the pre-edit 'original' snapshot first; later engine/translation
-  // layers). `ocr_edited_at` on `volumes` is a sparse index — only rows that
-  // were edited in the reader carry it — so the sidecar backfill can find
-  // volumes whose cloud `.mokuro` is behind the local row without scanning.
+  // layers). `ocr_edited_at` on `volumes` is the edit stamp the sidecar
+  // backfill compares against the listed `.mokuro`'s mtime; indexed (sparse —
+  // only edited rows carry it) so edited rows can always be found keys-only.
   {
     version: 3,
     stores: {

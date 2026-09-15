@@ -230,6 +230,7 @@ import { db } from '$lib/catalog/db';
 import {
   _drainForTests,
   _resetSidecarBackfillForTests,
+  noteOcrEdited,
   queueSidecarBackfillForVolume,
   queueSidecarBackfillFromImport,
   sweepInstalledVolumesForSidecarBackfill
@@ -1634,5 +1635,105 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
       'Legacy Series/Volume 02.mokuro',
       'Legacy Series/Volume 02.webp'
     ]);
+  });
+});
+
+describe('sidecar backfill — OCR edits re-upload the .mokuro (TRIGGER 3)', () => {
+  function listedWithSidecars() {
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+    cloud.state.files.push(listed('Legacy Series/Volume 01.mokuro')); // modified 2026-08-01
+    cloud.state.files.push(listed('Legacy Series/Volume 01.webp'));
+  }
+
+  it('an edited volume whose listed .mokuro predates the edit re-uploads ONLY the .mokuro', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }));
+    listedWithSidecars();
+
+    noteOcrEdited('uuid-1');
+    await settle();
+
+    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+  });
+
+  it('a listed .mokuro newer than the edit is left alone', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-07-01T00:00:00Z' }));
+    listedWithSidecars();
+
+    noteOcrEdited('uuid-1');
+    await settle();
+    expect(uploadedPaths()).toEqual([]);
+  });
+
+  it('a second edit in the same session re-uploads again (the attempted-mark is cleared)', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }));
+    listedWithSidecars();
+    noteOcrEdited('uuid-1');
+    await settle();
+    expect(uploadedPaths()).toHaveLength(1);
+
+    // The upload landed in the cache with a "now" mtime; a LATER edit is newer.
+    await db.volumes.update('uuid-1', {
+      ocr_edited_at: new Date(Date.now() + 5000).toISOString()
+    });
+    noteOcrEdited('uuid-1');
+    await settle();
+    expect(uploadedPaths()).toHaveLength(2);
+  });
+
+  it('an edit made while the provider was not ready is remembered for a later sweep', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }));
+    listedWithSidecars();
+
+    // Edited while the cache was still loading (or read-only): nothing can
+    // upload now, but the marker survives — even a page reload (simulated by
+    // clearing every in-memory set while leaving localStorage alone).
+    cacheState.loaded = false;
+    noteOcrEdited('uuid-1');
+    await settle();
+    expect(uploadedPaths()).toEqual([]);
+    cacheState.loaded = true;
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+    expect(localStorage.getItem('sidecar-backfill:edited-volumes')).toBeNull();
+  });
+
+  it('a converged edit leaves the marker, and the steady state stays transaction-free', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-07-01T00:00:00Z' }));
+    listedWithSidecars(); // .mokuro modified 2026-08-01 — newer than the edit
+    cacheState.loaded = false;
+    noteOcrEdited('uuid-1');
+    cacheState.loaded = true;
+    expect(localStorage.getItem('sidecar-backfill:edited-volumes')).toContain('uuid-1');
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(uploadedPaths()).toEqual([]);
+    expect(localStorage.getItem('sidecar-backfill:edited-volumes')).toBeNull();
+
+    const counts = await countIdbOps(async () => {
+      await sweepInstalledVolumesForSidecarBackfill();
+      await settle();
+    });
+    expect(counts['transactions'] ?? 0).toBe(0);
+  });
+
+  it('the worker path re-uploads too: wantMokuro is set and wantCover is not', async () => {
+    cloud.provider.supportsWorkerUpload = true;
+    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }));
+    listedWithSidecars();
+
+    noteOcrEdited('uuid-1');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const task = workerPool.open()[0];
+    expect(task?.data).toMatchObject({
+      mode: 'upload-sidecars',
+      wantMokuro: true,
+      wantCover: false
+    });
+    workerPool.complete(task, { type: 'complete', sidecarResults: [] });
+    await settle();
   });
 });
