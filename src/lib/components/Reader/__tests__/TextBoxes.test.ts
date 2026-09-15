@@ -14,7 +14,6 @@ vi.mock('$lib/settings', async () => {
       displayOCR: true,
       alwaysShowOCR: true,
       textBoxBorders: false,
-      textEditable: false,
       ankiConnectSettings: { triggerMethod: 'doubleTap', tags: [], cardMode: 'single' }
     }),
     volumes: writable({})
@@ -78,6 +77,16 @@ function makePage(blocks: unknown[]): Page {
     blocks: blocks as Page['blocks']
   };
 }
+
+describe('TextBoxes never renders contenteditable', () => {
+  it('edit mode is the overlay, not a setting — no contenteditable attribute', () => {
+    const { container } = render(TextBoxes, {
+      page: makePage([blockWithCoords]),
+      volumeUuid: 'test-uuid'
+    });
+    expect(container.querySelector('.textBox')!.getAttribute('contenteditable')).toBeNull();
+  });
+});
 
 describe('TextBoxes auto mode with lines_coords', () => {
   it('renders each line as a positioned span sized from its quad', () => {

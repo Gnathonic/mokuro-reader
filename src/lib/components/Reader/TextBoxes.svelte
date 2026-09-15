@@ -145,7 +145,6 @@
   let display = $derived($settings.displayOCR ? 'block' : 'none');
   let alwaysShowOCR = $derived($settings.alwaysShowOCR);
   let border = $derived($settings.textBoxBorders ? '1px solid red' : 'none');
-  let contenteditable = $derived($settings.textEditable);
 
   // Double-tap trigger: enabled if triggerMethod is 'doubleTap' or 'both' (legacy)
   let doubleTapEnabled = $derived(
@@ -634,7 +633,6 @@
     oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex)}
     ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
     oncopy={onCopy}
-    {contenteditable}
   >
     <p>
       {#if usePerLine && lineLayouts}

@@ -145,7 +145,6 @@ export type CatalogSettings = {
 
 export type Settings = {
   defaultFullscreen: boolean;
-  textEditable: boolean;
   textBoxBorders: boolean;
   displayOCR: boolean;
   alwaysShowOCR: boolean;
@@ -273,7 +272,6 @@ const defaultSettings: Settings = {
   defaultFullscreen: false,
   displayOCR: true,
   alwaysShowOCR: false,
-  textEditable: false,
   textBoxBorders: false,
   boldFont: false,
   pageNum: true,
