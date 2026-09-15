@@ -9,10 +9,22 @@
     onCopyRaw: () => void;
     onAddToAnki: (selection: string) => void;
     onClose: () => void;
+    /** Enter OCR edit mode on this box (paged reader only — omitted elsewhere). */
+    onEditText?: () => void;
   }
 
-  let { x, y, lines, ankiEnabled, textBoxElement, onCopy, onCopyRaw, onAddToAnki, onClose }: Props =
-    $props();
+  let {
+    x,
+    y,
+    lines,
+    ankiEnabled,
+    textBoxElement,
+    onCopy,
+    onCopyRaw,
+    onAddToAnki,
+    onClose,
+    onEditText
+  }: Props = $props();
 
   // Snapshot selection at menu open time — don't reactively track changes.
   // Reactive tracking causes a race with Yomitan: clicking our menu dismisses
@@ -155,6 +167,13 @@
     onClose();
   }
 
+  function handleEditText(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+    onEditText?.();
+    onClose();
+  }
+
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {
       onClose();
@@ -214,6 +233,16 @@
     </svg>
     <span>Copy all with line breaks</span>
   </button>
+  {#if onEditText}
+    <div class="divider"></div>
+    <button type="button" class="menu-item" onpointerup={handleEditText}>
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 20h9"></path>
+        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+      </svg>
+      <span>Edit this text</span>
+    </button>
+  {/if}
   {#if ankiEnabled}
     <div class="divider"></div>
     <button type="button" class="menu-item" onpointerup={handleAddToAnki}>

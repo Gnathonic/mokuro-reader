@@ -9,6 +9,7 @@
   } from '$lib/settings';
   import { Toggle, Range, Label } from 'flowbite-svelte';
   import ScheduledFilterCard from './ScheduledFilterCard.svelte';
+  import { editModeActive, requestEditMode } from '$lib/reader/edit/edit-mode';
 
   let isContinuous = $derived($settings.continuousScroll);
 
@@ -59,7 +60,7 @@
   );
 </script>
 
-{#each toggles as { key, text, value, shortcut, description }}
+{#each toggles as { key, text, value, shortcut, description } (key)}
   <div>
     <Toggle size="small" checked={value} onchange={() => updateSetting(key, !value)}>
       {text}
@@ -71,6 +72,25 @@
       <p class="mt-0.5 ml-11 text-xs text-gray-500 dark:text-gray-400">{description}</p>
     {/if}
   </div>
+  {#if key === 'defaultFullscreen'}
+    <!-- OCR edit mode: reader state, not a setting — where "Editable text" used to be. -->
+    <div>
+      <Toggle
+        size="small"
+        checked={$editModeActive}
+        disabled={isContinuous}
+        onchange={() => requestEditMode(!$editModeActive)}
+      >
+        Edit OCR text
+        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(E)</span>
+      </Toggle>
+      <p class="mt-0.5 ml-11 text-xs text-gray-500 dark:text-gray-400">
+        {isContinuous
+          ? 'Paged mode only — switch off continuous scroll to edit'
+          : 'Move, resize and retype the OCR boxes in the reader'}
+      </p>
+    </div>
+  {/if}
 {/each}
 
 <!-- Display filters (Manual or Scheduled) — shared control -->

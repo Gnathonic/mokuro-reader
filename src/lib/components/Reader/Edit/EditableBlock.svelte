@@ -297,7 +297,8 @@
       <div
         class="line positioned"
         class:lineSelected={selectedLineIndex === i && !editing}
-        role={editing ? 'textbox' : 'none'}
+        role="textbox"
+        aria-readonly={!editing}
         contenteditable={editing ? 'true' : undefined}
         tabindex={editing ? 0 : undefined}
         style:left={`${g.left - left}px`}
@@ -349,7 +350,8 @@
       {#each block.lines as line, i (lineIds[i] ?? `k${i}`)}
         <div
           class="line"
-          role={editing ? 'textbox' : 'none'}
+          role="textbox"
+          aria-readonly={!editing}
           contenteditable={editing ? 'true' : undefined}
           tabindex={editing ? 0 : undefined}
           use:initText={line}

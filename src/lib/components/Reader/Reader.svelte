@@ -58,8 +58,9 @@
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
   import EditToolbar from './Edit/EditToolbar.svelte';
-  import { EditSession } from '$lib/reader/edit/edit-session.svelte';
+  import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
   import { hasOriginalLayer } from '$lib/reader/edit/edit-persist';
+  import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
@@ -415,6 +416,9 @@
       case 'KeyV':
         toggleContinuousScroll();
         return;
+      case 'KeyE':
+        toggleEditMode();
+        return;
       case 'Escape':
         navigateBack();
         return;
@@ -522,8 +526,15 @@
   let editSession = $state<EditSession | null>(null);
   let editHasOriginal = $state(false);
 
-  function enterEditMode() {
-    if (!volume || !volumeData || $settings.continuousScroll || editSession) return;
+  function enterEditMode(focus?: LineRef) {
+    if (!volume || !volumeData || $settings.continuousScroll) return;
+    if (editSession) {
+      if (focus) {
+        editSession.select(focus.pageIndex, focus.blockIndex);
+        editSession.pendingFocus = focus;
+      }
+      return;
+    }
     const uuid = volume.volume_uuid;
     const data = volumeData;
     editSession = new EditSession({
@@ -537,11 +548,29 @@
         editHasOriginal = true;
       }
     });
+    if (focus) {
+      editSession.select(focus.pageIndex, focus.blockIndex);
+      editSession.pendingFocus = focus;
+    }
     hasOriginalLayer(uuid)
       .then((v) => (editHasOriginal = v))
       .catch(() => (editHasOriginal = false));
     overlaysVisible = true;
   }
+
+  // Publish the state for the settings toggle; honour outside requests
+  // (settings toggle, context menu) through the app-level store.
+  $effect(() => {
+    setEditModeActive(!!editSession);
+  });
+  let lastEditRequestSeq = $state(get(editModeRequest).seq);
+  $effect(() => {
+    const req = $editModeRequest;
+    if (req.seq === lastEditRequestSeq) return;
+    lastEditRequestSeq = req.seq;
+    if (req.on) enterEditMode(req.focus);
+    else void exitEditMode();
+  });
 
   async function exitEditMode() {
     const s = editSession;
@@ -868,6 +897,7 @@
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
     imageUrl?: string; // Captured at right-click time for reliability
     pageIndex?: number; // Which page the context menu was opened on
+    blockIndex?: number; // Which block — for "Edit this text"
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
@@ -904,6 +934,12 @@
       pageIndex
     };
     showContextMenu = true;
+  }
+
+  function handleContextMenuEditText() {
+    if (!contextMenuData || contextMenuData.blockIndex === undefined) return;
+    const pageIndex = contextMenuData.pageIndex ?? index;
+    enterEditMode({ pageIndex, blockIndex: contextMenuData.blockIndex, lineIndex: 0 });
   }
 
   async function handleContextMenuAddToAnki(selection: string) {
@@ -1452,6 +1488,9 @@
       onCopyRaw={() => {}}
       onAddToAnki={handleContextMenuAddToAnki}
       onClose={() => (showContextMenu = false)}
+      onEditText={!$settings.continuousScroll && contextMenuData.blockIndex !== undefined
+        ? handleContextMenuEditText
+        : undefined}
     />
   {/if}
 {:else if volume === null}

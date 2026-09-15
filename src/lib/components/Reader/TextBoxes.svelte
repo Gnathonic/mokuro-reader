@@ -26,6 +26,8 @@
     imgElement: HTMLElement | null;
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
     pageIndex?: number;
+    /** Index into page.blocks — lets the reader open the editor on this box. */
+    blockIndex?: number;
   }
 
   interface Props {
@@ -586,7 +588,8 @@
       lines,
       imgElement: event.target as HTMLElement,
       textBox,
-      pageIndex
+      pageIndex,
+      blockIndex
     });
   }
 
