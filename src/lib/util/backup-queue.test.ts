@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 
 /**
  * The end of a backup run has to be strictly write-then-read: the listing
@@ -110,6 +110,7 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
 
 import type { VolumeMetadata } from '$lib/types';
+import { downloadFileBlob } from './volume-sidecars';
 import {
   backupQueue,
   finishBackupRun,
@@ -397,5 +398,81 @@ describe('live per-completion series.json scheduling', () => {
 
     expect(scheduleSeriesFileWrite).toHaveBeenCalledWith('Berserk', { duringBackupRun: true });
     expect(calls).toContain('write:Berserk');
+  });
+});
+
+/*
+ * Export-for-download with "embed sidecars in archive" ON used to download the
+ * .mokuro and cover as separate files as well — the archive already carried
+ * them, so the user got three downloads for one volume. The worker still
+ * generates the sidecars (the same branch serves the Local Folder provider's
+ * main-thread upload, which wants them beside the archive); the export branch
+ * of `onComplete` is where they must not be downloaded.
+ */
+describe('export-for-download sidecars', () => {
+  function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+    return {
+      volume_uuid: 'export-uuid-1',
+      series_uuid: 'series-1',
+      series_title: 'One Piece',
+      volume_title: 'Volume 1',
+      mokuro_version: '0.4.11',
+      page_count: 200,
+      character_count: 5000,
+      page_char_counts: [],
+      ...overrides
+    };
+  }
+
+  const originalCreate = globalThis.URL.createObjectURL;
+  const originalRevoke = globalThis.URL.revokeObjectURL;
+
+  beforeEach(() => {
+    capturedTasks.length = 0;
+    vi.clearAllMocks();
+    getActiveProvider.mockReturnValue(null);
+    globalThis.URL.createObjectURL = vi.fn(() => 'blob:archive');
+    globalThis.URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    globalThis.URL.createObjectURL = originalCreate;
+    globalThis.URL.revokeObjectURL = originalRevoke;
+    vi.restoreAllMocks();
+  });
+
+  const sidecars = {
+    mokuro: { filename: 'One Piece - Volume 1.mokuro', blob: new Blob(['{}']) },
+    thumbnail: { filename: 'One Piece - Volume 1.webp', blob: new Blob(['img']) }
+  };
+
+  async function completeExport(uuid: string, embedSidecarsInArchive: boolean) {
+    queueVolumeForExport(volume({ volume_uuid: uuid }), 'One Piece - Volume 1.cbz', 'cbz', {
+      includeSidecars: true,
+      embedSidecarsInArchive
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete(
+      {
+        type: 'complete',
+        data: new Uint8Array([1, 2, 3]),
+        filename: 'One Piece - Volume 1.cbz',
+        sidecars
+      },
+      vi.fn()
+    );
+  }
+
+  it('downloads no separate sidecars when they are embedded in the archive', async () => {
+    await completeExport('export-uuid-embed', true);
+    expect(downloadFileBlob).not.toHaveBeenCalled();
+  });
+
+  it('downloads both sidecars, named after the archive, when they are not embedded', async () => {
+    await completeExport('export-uuid-separate', false);
+    expect(downloadFileBlob).toHaveBeenCalledTimes(2);
+    const names = vi.mocked(downloadFileBlob).mock.calls.map(([file]) => (file as File).name);
+    expect(names).toEqual(['One Piece - Volume 1.mokuro', 'One Piece - Volume 1.webp']);
   });
 });

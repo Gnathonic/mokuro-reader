@@ -845,15 +845,34 @@ ctx.addEventListener('message', async (event) => {
               thumbnail?: { filename: string; blob: Blob };
             }
           | undefined;
+        // Generated regardless of the embed flag: this branch also serves the
+        // main-thread cloud upload (Local Folder), which wants the sidecars
+        // beside the archive like every other provider. Whether an EXPORT
+        // downloads them separately is the queue's decision, at the download.
         if (message.includeSidecars === true) {
           const generated = await generateVolumeSidecarsFromDb(volumeUuid);
           if (generated.mokuro || generated.thumbnail) {
+            // Sidecars take the archive's base name, so an export named with
+            // the series title ("Series - Vol 1.cbz") gets "Series - Vol 1.mokuro"
+            // next to it and a re-import pairs them. A cloud upload's
+            // downloadFilename is always "<volume title>.cbz", so its sidecar
+            // names are unchanged.
+            const baseName = downloadFilename
+              ? downloadFilename.replace(/\.[^.]+$/, '')
+              : volumeTitle;
             sidecars = {};
             if (generated.mokuro) {
-              sidecars.mokuro = generated.mokuro;
+              sidecars.mokuro = {
+                ...generated.mokuro,
+                filename: `${baseName}.mokuro`
+              };
             }
             if (generated.thumbnail) {
-              sidecars.thumbnail = generated.thumbnail;
+              const ext = generated.thumbnail.filename.split('.').pop() || 'webp';
+              sidecars.thumbnail = {
+                ...generated.thumbnail,
+                filename: `${baseName}.${ext}`
+              };
             }
           }
         }
