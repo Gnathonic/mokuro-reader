@@ -58,8 +58,13 @@
    * do is open: the reader has no pages to show. Clicking one used to navigate
    * into a dead end. It queues the download instead, the same thing clicking a
    * not-installed volume does everywhere else in the app.
+   *
+   * NO ROW AT ALL is the same state, not the installed one: the tracker lists
+   * reading history, and history whose series never resolved on this device
+   * (read elsewhere, gone from the cloud since) has nothing to open either.
+   * Treating it as installed sent the reader to "Volume not found".
    */
-  let isNotInstalled = $derived(volume ? needsDownload(volume) : false);
+  let isNotInstalled = $derived(volume ? needsDownload(volume) : true);
 
   /** Can this not-installed volume actually be fetched from somewhere? */
   let downloadable = $derived(!!volume && !!getCloudFileId(volume) && !!getCloudProvider(volume));
@@ -81,7 +86,9 @@
      * actually going on instead.
      */
     if (!downloadable) {
-      showSnackbar('This volume is not on this device, and no cloud copy is available yet.');
+      showSnackbar(
+        `${volumeTitle || 'This volume'} is not on this device, and the connected cloud storage has no copy of it.`
+      );
       return;
     }
 

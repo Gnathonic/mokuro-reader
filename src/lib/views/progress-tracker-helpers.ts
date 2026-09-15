@@ -102,14 +102,32 @@ export function sortByCompletionDate(
   });
 }
 
+/**
+ * THE ONE SERIES IDENTITY this view uses.
+ *
+ * `normalizeSeriesKey(series_title)` is the key the rest of the app groups
+ * series by (`series_metadata`, `series.json`, the catalog join). Keying on
+ * `series_uuid` split one series into several whenever its volumes were
+ * imported in separate batches — each import mints its own uuid — so the
+ * Completed-by-series view disagreed with every other series surface, and
+ * Future Reads offered a SECOND card (volume 7, say) for a series whose volume
+ * 1 was already on offer. A record with no usable title falls back to its uuid;
+ * one with neither is its own bucket, because the stats views' sentinel title
+ * for unknown series would otherwise claim every such record is one series.
+ */
+function seriesIdentity(volumeId: string, volumeData: VolumeData): string {
+  const title = volumeData.series_title?.trim();
+  if (title && title !== '[Missing Series Info]') return `title:${normalizeSeriesKey(title)}`;
+  if (volumeData.series_uuid) return `uuid:${volumeData.series_uuid}`;
+  return `volume:${volumeId}`;
+}
+
 /** The series a completed entry belongs to, or its own bucket when it has none. */
 function seriesGroupKey(entry: TrackerEntryWithSortData): string {
-  const title = entry.volumeData.series_title?.trim();
-  // The stats views use this sentinel for records whose series is unknown.
-  // Grouping every one of them together would claim they are one series.
-  if (!title || title === '[Missing Series Info]') return `volume:${entry.volumeId}`;
-  return normalizeSeriesKey(title);
+  return seriesIdentity(entry.volumeId, entry.volumeData);
 }
+
+const volumeTitleOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
 export function groupCompletedEntriesBySeries(
   entriesWithSortData: TrackerEntryWithSortData[],
@@ -118,11 +136,6 @@ export function groupCompletedEntriesBySeries(
   const groups = new Map<string, TrackerEntryWithSortData[]>();
 
   for (const entry of entriesWithSortData) {
-    // `normalizeSeriesKey(series_title)` is the key the rest of the app groups
-    // series by (`series_metadata`, `series.json`, the catalog join). Grouping
-    // on `series_uuid` here split one series into several whenever its volumes
-    // were imported separately — each import mints its own uuid — so the
-    // Completed-by-series view disagreed with every other series surface.
     const groupKey = seriesGroupKey(entry);
     const groupEntries = groups.get(groupKey);
 
@@ -135,14 +148,26 @@ export function groupCompletedEntriesBySeries(
 
   return [...groups.entries()]
     .map(([key, groupEntries]) => {
-      const representativeEntry = groupEntries.reduce((currentLatest, entry) => {
-        const currentTimestamp = getCompletionTimestamp(currentLatest, completedAtMap);
-        const entryTimestamp = getCompletionTimestamp(entry, completedAtMap);
-
-        return entryTimestamp > currentTimestamp ? entry : currentLatest;
+      // The card is "how far into this series you are": the FURTHEST volume in
+      // series order. Picking the most recently completed one instead showed
+      // volume 1 for a finished series the moment it was re-read. Ties (two
+      // records of the same title) go to the later completion.
+      const representativeEntry = groupEntries.reduce((furthest, entry) => {
+        const byTitle = volumeTitleOrder.compare(
+          entry.volumeData.volume_title ?? '',
+          furthest.volumeData.volume_title ?? ''
+        );
+        if (byTitle !== 0) return byTitle > 0 ? entry : furthest;
+        return getCompletionTimestamp(entry, completedAtMap) >
+          getCompletionTimestamp(furthest, completedAtMap)
+          ? entry
+          : furthest;
       });
 
-      const latestCompletedTimestamp = getCompletionTimestamp(representativeEntry, completedAtMap);
+      // The group's place in the list is still its most recent completion.
+      const latestCompletedTimestamp = Math.max(
+        ...groupEntries.map((entry) => getCompletionTimestamp(entry, completedAtMap))
+      );
 
       return {
         key,
@@ -412,32 +437,29 @@ export function pickNextPerSeries(
   currentlyReading: [string, VolumeData][],
   stats?: Record<string, TrackerVolumeStats>
 ): [string, VolumeData][] {
+  // Series are told apart by `seriesIdentity`, never by raw `series_uuid`: a
+  // series imported in two batches carries two uuids, and keying on them
+  // offered its volume 7 beside its volume 1.
   const readingSeries = new Set<string>();
-  for (const [, volumeData] of currentlyReading) {
-    if (volumeData.series_uuid) readingSeries.add(volumeData.series_uuid);
+  for (const [volumeId, volumeData] of currentlyReading) {
+    readingSeries.add(seriesIdentity(volumeId, volumeData));
   }
 
   const sorted = [...futureReads].sort(([, a], [, b]) =>
-    (a.volume_title || '').localeCompare(b.volume_title || '', undefined, {
-      numeric: true,
-      sensitivity: 'base'
-    })
+    volumeTitleOrder.compare(a.volume_title || '', b.volume_title || '')
   );
 
   const picked: [string, VolumeData][] = [];
   const seen = new Set<string>();
 
   for (const [volumeId, volumeData] of sorted) {
-    const seriesUuid = volumeData.series_uuid;
-    if (!seriesUuid) {
-      picked.push([volumeId, volumeData]);
-      continue;
-    }
-    if (readingSeries.has(seriesUuid) || seen.has(seriesUuid)) continue;
+    const series = seriesIdentity(volumeId, volumeData);
+    if (readingSeries.has(series) || seen.has(series)) continue;
     // Claimed even when the winner is then withheld below: the next volume of
     // this series IS this one, and letting the runner-up through would offer a
-    // volume the reader should not start yet.
-    seen.add(seriesUuid);
+    // volume the reader should not start yet. A second record of the SAME
+    // title (a re-import) is dropped here too.
+    seen.add(series);
     picked.push([volumeId, volumeData]);
   }
 

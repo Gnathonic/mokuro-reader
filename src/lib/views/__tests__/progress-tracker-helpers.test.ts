@@ -411,3 +411,129 @@ describe('groupCompletedEntriesBySeries', () => {
     expect(groups.every((g) => g.completedCount === 1)).toBe(true);
   });
 });
+
+describe('pickNextPerSeries — series identity', () => {
+  it('keys a series by its title, so batches imported under different uuids offer ONE card', () => {
+    // Every other series surface groups on `normalizeSeriesKey(series_title)`.
+    // Keying on `series_uuid` here showed a second card — volume 7 of a series
+    // whose volume 1 was already on offer — whenever a series had been
+    // imported in more than one batch.
+    const future: [string, VolumeData][] = [
+      [
+        't7',
+        vol({
+          series_uuid: 'uuid-b',
+          series_title: 'Trigun Maximum',
+          volume_title: 'Trigun Maximum 07'
+        })
+      ],
+      [
+        't1',
+        vol({
+          series_uuid: 'uuid-a',
+          series_title: 'Trigun Maximum',
+          volume_title: 'Trigun Maximum 01'
+        })
+      ],
+      [
+        't4',
+        vol({
+          series_uuid: 'uuid-b',
+          series_title: 'Trigun Maximum',
+          volume_title: 'Trigun Maximum 04'
+        })
+      ]
+    ];
+    expect(pickNextPerSeries(future, []).map(([id]) => id)).toEqual(['t1']);
+  });
+
+  it('excludes a series being read even when the reading record carries another uuid', () => {
+    const future: [string, VolumeData][] = [
+      ['a2', vol({ series_uuid: 'uuid-b', series_title: 'Aria', volume_title: 'Vol02' })]
+    ];
+    const reading: [string, VolumeData][] = [
+      ['a1', vol({ series_uuid: 'uuid-a', series_title: 'Aria', volume_title: 'Vol01' })]
+    ];
+    expect(pickNextPerSeries(future, reading)).toEqual([]);
+  });
+
+  it('offers one card when the same volume title was recorded twice', () => {
+    const future: [string, VolumeData][] = [
+      [
+        'dup-a',
+        vol({
+          series_uuid: 'uuid-a',
+          series_title: 'Trigun Maximum',
+          volume_title: 'Trigun Maximum 01'
+        })
+      ],
+      [
+        'dup-b',
+        vol({
+          series_uuid: 'uuid-b',
+          series_title: 'Trigun Maximum',
+          volume_title: 'Trigun Maximum 01'
+        })
+      ]
+    ];
+    expect(pickNextPerSeries(future, [])).toHaveLength(1);
+  });
+
+  it('falls back to the uuid when a record has no series title', () => {
+    const future: [string, VolumeData][] = [
+      ['u2', vol({ series_uuid: 'uuid-x', volume_title: 'Vol 2' })],
+      ['u1', vol({ series_uuid: 'uuid-x', volume_title: 'Vol 1' })],
+      ['w1', vol({ series_uuid: 'uuid-y', volume_title: 'Vol 1' })]
+    ];
+    expect(
+      pickNextPerSeries(future, [])
+        .map(([id]) => id)
+        .sort()
+    ).toEqual(['u1', 'w1']);
+  });
+});
+
+describe('groupCompletedEntriesBySeries — representative volume', () => {
+  it('shows the furthest volume in series order, not the most recently completed one', () => {
+    // Re-reading volume 1 of a finished series marked it completed AFTER volume
+    // 12, so the series card showed volume 1. The card is "where you are in
+    // the series", which is the highest volume finished.
+    const entries = createEntriesWithSortData(
+      [
+        ['v1', vol({ series_title: 'Dr. STONE', volume_title: 'Dr. STONE 01' })],
+        ['v12', vol({ series_title: 'Dr. STONE', volume_title: 'Dr. STONE 12' })],
+        ['v3', vol({ series_title: 'Dr. STONE', volume_title: 'Dr. STONE 03' })]
+      ],
+      {},
+      {},
+      'daily',
+      0
+    );
+
+    const groups = groupCompletedEntriesBySeries(entries, {
+      v12: '2026-01-01T00:00:00.000Z',
+      v3: '2026-02-01T00:00:00.000Z',
+      v1: '2026-08-01T00:00:00.000Z'
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].representativeEntry.volumeId).toBe('v12');
+    // The group still sorts by its latest completion.
+    expect(groups[0].latestCompletedTimestamp).toBe(Date.parse('2026-08-01T00:00:00.000Z'));
+  });
+
+  it('sorts volume titles naturally, so 10 comes after 9', () => {
+    const entries = createEntriesWithSortData(
+      [
+        ['v9', vol({ series_title: 'Helck', volume_title: 'Helck 9' })],
+        ['v10', vol({ series_title: 'Helck', volume_title: 'Helck 10' })]
+      ],
+      {},
+      {},
+      'daily',
+      0
+    );
+    const groups = groupCompletedEntriesBySeries(entries, {});
+    expect(groups[0].representativeEntry.volumeId).toBe('v10');
+  });
+});
