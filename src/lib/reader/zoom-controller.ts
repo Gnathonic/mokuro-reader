@@ -22,7 +22,9 @@ import {
   lerp2,
   nearestZoomLevel,
   nextZoomLevel,
-  normalizeWheelDelta,
+  normalizeWheel,
+  wheelTickDelta,
+  type WheelDeltaSource,
   pinchDistance,
   pinchMidpoint,
   WheelAccumulator,
@@ -78,9 +80,7 @@ export interface ZoomAnchorTarget {
  */
 export type SettleReason = 'gesture' | 'interrupt' | 'nav' | 'reset';
 
-export interface ZoomWheelEventLike {
-  deltaY: number;
-  deltaMode: number;
+export interface ZoomWheelEventLike extends WheelDeltaSource {
   clientX: number;
   clientY: number;
   timeStamp: number;
@@ -157,7 +157,8 @@ export class ContinuousZoomController {
   private staticLevels: readonly number[];
   private surface: ZoomSurface;
   private animator: Animator;
-  private wheelAcc = new WheelAccumulator();
+  // Steps in detents, so one notch is one rung in every browser (#272).
+  private wheelAcc = new WheelAccumulator(1, 250);
 
   private target = 1;
   private startZoom = 1;
@@ -222,12 +223,13 @@ export class ContinuousZoomController {
    * one notch is one deliberate step.
    */
   wheelZoom(e: ZoomWheelEventLike, fine = false): void {
-    const deltaPx = normalizeWheelDelta(e.deltaY, e.deltaMode);
+    const n = normalizeWheel(e);
     if (fine) {
-      this.continuousWheelZoom(deltaPx, { x: e.clientX, y: e.clientY });
+      this.continuousWheelZoom(n.px, { x: e.clientX, y: e.clientY });
       return;
     }
-    const steps = this.wheelAcc.add(deltaPx, e.timeStamp);
+    // Detents, not pixels: one notch is one rung in every browser.
+    const steps = this.wheelAcc.add(wheelTickDelta(n), e.timeStamp);
     if (steps === 0) return;
     const direction = steps > 0 ? 1 : -1;
     let next = this.target;

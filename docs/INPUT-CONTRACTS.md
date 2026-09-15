@@ -105,19 +105,40 @@ the zoom so the stateful classifier is never asked twice.
   notches, while a mouse never reports the small ones. Erring toward fine
   costs a precision-wheel owner a smooth zoom, which is what they wanted;
   erring the other way is the bug.
-- The evidence is **sub-notch travel**, never a fractional delta (#272).
-  Firefox builds its pixel deltas from the line height and the display
-  scale, so one detent of an ordinary notched wheel arrives as `-102.4`, or
-  `-204.8` at 200% scaling, where Chromium sends a round `-100`. Reading
-  "not a whole number" as trackpad evidence put every Firefox mouse wheel on
-  the continuous path, where a single notch covered most of the 1x–3x range.
-  Firefox on Linux never reaches this rule at all — it reports
-  `deltaMode: DOM_DELTA_LINE` (measured: `-0.75` per fragment on a
-  high-resolution wheel, `-6` per detent on a low-resolution one).
+- The evidence is **sub-detent travel**, measured in ticks, never pixels
+  (#272). The pixels attached to one detent are the engine's _scroll-policy_
+  answer, not a measurement of the device — measured for the identical
+  physical click: Chromium 120 (Linux) / 100 (Windows) / 4.0002 (macOS), and
+  Gecko 132, rising to 258 purely because the user's default-font preference
+  is larger. Judging a mouse by them classified every Gecko wheel as a
+  trackpad. A free-spinning wheel's eight 0.125-tick fragments sit above the
+  line on purpose: they accumulate to exactly the rung one ratcheted detent
+  reaches.
+- A **pinch is judged by pixels, not ticks** — Blink stamps
+  `wheel_ticks_y = ±1` on a synthetic pinch whatever its magnitude, so the
+  tick rule would read every pinch as a notched wheel.
 
 Wheel zoom has no release event, so a fine stream settles on an idle
 timeout (`WHEEL_ZOOM_SETTLE_MS`) — that settle is what clamps the paged
 camera into bounds and reports reading progress.
+
+### Wheel deltas are read exactly once, in a fixed order
+
+`normalizeWheel` is the only place wheel deltas are read, and it memoizes per
+event. This is not tidiness: Gecko decides an event's **units** from whichever
+delta property is touched first and latches that for every listener
+(`mDeltaModeCheckingState`, bug 1392460). Measured, same detent —
+`deltaMode` first gives `{mode: 1, deltaY: 6}`; `deltaY` first gives
+`{mode: 0, deltaY: 132}`. A stray `console.log(e.deltaMode)` anywhere in the
+listener chain silently changes the numbers every other handler sees, on one
+engine only. Reading `wheelDeltaX/Y` is neutral — it never touches the latch —
+so ticks and pixels both come from the same event.
+
+Ticks come from `wheelDelta*`: deprecated and non-standard, but Gecko's
+`kNativeTicksToWheelDelta`, Blink's `kTickMultiplier` and WebKit's
+`TickMultiplier` are all **120**, making it the only device-derived quantity
+the wheel API exposes. Where it is absent (Gecko on macOS) the pixel path
+runs as a live fallback at `FALLBACK_PX_PER_TICK`.
 
 ### Swipe-to-flip is edge-gated (#186)
 

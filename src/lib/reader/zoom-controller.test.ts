@@ -285,11 +285,53 @@ describe('ContinuousZoomController — wheel', () => {
     expect(settled).toHaveBeenCalledTimes(1);
   });
 
+  it('gives every engine the same rung for the same physical detent (#272)', () => {
+    // Measured detents: the pixels differ by up to 2.6x for the identical
+    // wheel click, so pixels cannot be the currency. Ticks are 1 in all.
+    const engines = [
+      { name: 'chromium-linux', deltaY: 120 },
+      { name: 'chromium-windows', deltaY: 100 },
+      { name: 'gecko-16px-default-font', deltaY: 132 },
+      { name: 'gecko-32px-default-font', deltaY: 258 },
+      { name: 'chromium-macos', deltaY: 4.0002 }
+    ];
+    for (const engine of engines) {
+      const c = makeController(tallPageWorld());
+      c.wheelZoom({
+        deltaY: -engine.deltaY,
+        deltaMode: 0,
+        wheelDeltaY: 120,
+        clientX: 500,
+        clientY: 400,
+        timeStamp: 1000
+      });
+      expect(c.zoomTarget, engine.name).toBe(1.5);
+    }
+  });
+
+  it('lands a free-spinning wheel on the same rung as one ratcheted detent', () => {
+    // The G604 fragments a detent into eight 15-unit hi-res reports.
+    const c = makeController(tallPageWorld());
+    for (let i = 0; i < 8; i++) {
+      c.wheelZoom({
+        deltaY: -16.5,
+        deltaMode: 0,
+        wheelDeltaY: 15,
+        clientX: 500,
+        clientY: 400,
+        timeStamp: 1000 + i * 12
+      });
+    }
+    expect(c.zoomTarget).toBe(1.5);
+  });
+
   it('accumulates trackpad deltas into a single step', () => {
     const world = tallPageWorld();
     const c = makeController(world);
 
-    for (let i = 0; i < 4; i++) {
+    // These synthetic events carry no wheelDeltaY, so travel falls back to
+    // pixels at FALLBACK_PX_PER_TICK (120) per detent.
+    for (let i = 0; i < 5; i++) {
       c.wheelZoom({
         deltaY: -20,
         deltaMode: 0,
@@ -299,7 +341,7 @@ describe('ContinuousZoomController — wheel', () => {
       });
     }
     expect(c.zoomTarget).toBe(1);
-    c.wheelZoom({ deltaY: -20, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 1064 });
+    c.wheelZoom({ deltaY: -20, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 1080 });
     expect(c.zoomTarget).toBe(1.5);
   });
 
@@ -775,7 +817,11 @@ describe('ZoomController — surface abstraction (additive)', () => {
     pump();
     expect(c.currentZoom).toBe(4);
 
-    c.wheelZoom({ deltaY: 240, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 3000 });
+    // One notch, one rung (#272) — walk back down a step at a time.
+    c.wheelZoom({ deltaY: 120, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 3000 });
+    pump();
+    expect(c.currentZoom).toBe(2);
+    c.wheelZoom({ deltaY: 120, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 3400 });
     pump();
     expect(c.currentZoom).toBe(1);
   });

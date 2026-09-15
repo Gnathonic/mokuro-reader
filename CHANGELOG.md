@@ -4,7 +4,10 @@
 
 ### Fixed
 
-- Firefox mouse-wheel zoom stepped far too far per notch (#272) — a 1.9.1 regression
+- Wheel zoom stepped far too far per notch in Firefox (#272). Zoom now counts
+  physical wheel detents instead of the pixel figure each browser invents for
+  them, so one notch is one step in every browser, and a free-spinning wheel
+  lands on the same step as a ratcheted one.
 
 ## [1.9.1] - 2026-08-30
 

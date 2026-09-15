@@ -16,7 +16,7 @@
     WheelAccumulator,
     WheelStreamClassifier,
     gapWheelSteps,
-    normalizeWheelDelta,
+    normalizeWheel,
     wheelIntentIsGapAdjust,
     wheelIntentIsZoom
   } from '$lib/reader/zoom-math';
@@ -374,13 +374,13 @@
 
   function handleWheel(e: WheelEvent) {
     if (!scrollContainer) return;
-    const fine = wheelStream.classify(e);
+    const modifier = e.ctrlKey || e.metaKey;
+    const fine = wheelStream.classify(e, modifier);
     if (wheelIntentIsGapAdjust(e)) {
       e.preventDefault();
       adjustGap(gapWheelSteps(e, gapAccumulator));
       return;
     }
-    const modifier = e.ctrlKey || e.metaKey;
 
     if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior, fine)) {
       e.preventDefault();
@@ -394,7 +394,7 @@
       // letting it fall through would trigger browser page zoom instead.
       e.preventDefault();
       motion.beforeAnimatedScroll();
-      scrollContainer.scrollTop += normalizeWheelDelta(e.deltaY, e.deltaMode);
+      scrollContainer.scrollTop += normalizeWheel(e).pxY;
       return;
     }
 
