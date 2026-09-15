@@ -53,6 +53,12 @@ export class EditSession {
   /** A block the UI should open the line editor on (context-menu entry). */
   pendingFocus = $state<LineRef | null>(null);
   tool = $state<'select' | 'draw'>('select');
+  /** The page the user last selected on or edited — what undo/redo/revert and
+   * the toolbar act on. A spread shows two pages with two histories; the
+   * reader's own `index` is only the LEFT one, so acting on it silently
+   * missed every edit made on the right-hand page. Null until the first
+   * interaction (the reader falls back to its current page). */
+  activePageIndex = $state<number | null>(null);
   /** Bumps on every change; components key their render on it. */
   version = $state(0);
   dirty = $state(false);
@@ -87,6 +93,7 @@ export class EditSession {
 
   private commit(pageIndex: number, next: Page, coalesceKey?: string): void {
     this.history(pageIndex).push(next, coalesceKey);
+    this.activePageIndex = pageIndex;
     this.touched(pageIndex);
   }
 
@@ -132,6 +139,7 @@ export class EditSession {
   select(pageIndex: number, blockIndex: number, additive = false): void {
     const ref = { pageIndex, blockIndex };
     this.selectedLine = null;
+    this.activePageIndex = pageIndex;
     if (!additive || this.selection.some((r) => r.pageIndex !== pageIndex)) {
       this.selection = [ref];
       return;
@@ -147,6 +155,7 @@ export class EditSession {
     this.selectedLine = null;
   }
   selectLine(pageIndex: number, blockIndex: number, lineIndex: number): void {
+    this.activePageIndex = pageIndex;
     if (!this.isSelected(pageIndex, blockIndex) || this.selection.length !== 1) {
       this.selection = [{ pageIndex, blockIndex }];
     }

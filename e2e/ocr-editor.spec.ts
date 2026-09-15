@@ -12,11 +12,13 @@ const SERIES_UUID = 'e2e-editor-series';
 const VOLUME_UUID = 'e2e-editor-volume';
 const ORIGINAL_BLOCK = { box: [250, 50, 310, 250], vertical: true, font_size: 30, lines: ['あい'] };
 
-async function seedVolume(page: Page) {
+async function seedVolume(page: Page, opts: { pages?: number; view?: 'single' | 'dual' } = {}) {
+  const pageCount = opts.pages ?? 1;
+  const view = opts.view ?? 'single';
   await page.goto('/');
   await page.waitForTimeout(800);
   await page.evaluate(
-    async ({ SERIES, SERIES_UUID, VOLUME_UUID, ORIGINAL_BLOCK }) => {
+    async ({ SERIES, SERIES_UUID, VOLUME_UUID, ORIGINAL_BLOCK, pageCount, view }) => {
       const { db } = await import('/src/lib/catalog/db.ts');
       await db.open();
       await Promise.all([
@@ -34,37 +36,40 @@ async function seedVolume(page: Page) {
       ctx.fillStyle = '#ccc';
       ctx.fillRect(250, 50, 60, 200);
       const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), 'image/png'));
-      const file = new File([blob], '001.png', { type: 'image/png' });
+      const names = Array.from({ length: pageCount }, (_, i) => `00${i + 1}.png`);
+      const files: Record<string, File> = {};
+      for (const name of names) files[name] = new File([blob], name, { type: 'image/png' });
       await db.volumes.put({
         volume_uuid: VOLUME_UUID,
         series_uuid: SERIES_UUID,
         series_title: SERIES,
         volume_title: 'Vol 1',
         mokuro_version: '0.2.1',
-        page_count: 1,
-        character_count: 2,
-        page_char_counts: [2]
+        page_count: pageCount,
+        character_count: 2 * pageCount,
+        page_char_counts: names.map((_, i) => 2 * (i + 1))
       });
       await db.volume_ocr.put({
         volume_uuid: VOLUME_UUID,
-        pages: [
-          {
-            version: '0.2.1',
-            img_width: 400,
-            img_height: 600,
-            img_path: '001.png',
-            blocks: [ORIGINAL_BLOCK]
-          }
-        ]
+        // Every page carries the same block, so a test can tell WHICH page an
+        // action touched only by the page it reads back.
+        pages: names.map((name) => ({
+          version: '0.2.1',
+          img_width: 400,
+          img_height: 600,
+          img_path: name,
+          blocks: [structuredClone(ORIGINAL_BLOCK)]
+        }))
       });
-      await db.volume_files.put({ volume_uuid: VOLUME_UUID, files: { '001.png': file } });
+      await db.volume_files.put({ volume_uuid: VOLUME_UUID, files });
       // Paged mode with the quick actions visible; no continuous scroll.
       const { updateSetting } = await import('/src/lib/settings/index.ts');
       updateSetting('continuousScroll', false);
       updateSetting('quickActions', true);
+      updateSetting('singlePageView', view);
       window.localStorage.removeItem('sidecar-backfill:edited-volumes');
     },
-    { SERIES, SERIES_UUID, VOLUME_UUID, ORIGINAL_BLOCK }
+    { SERIES, SERIES_UUID, VOLUME_UUID, ORIGINAL_BLOCK, pageCount, view }
   );
 }
 
@@ -85,19 +90,22 @@ async function enterEditMode(page: Page) {
   await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
 }
 
-async function readOcr(page: Page) {
-  return page.evaluate(async (uuid) => {
-    const { db } = await import('/src/lib/catalog/db.ts');
-    const ocr = await db.volume_ocr.get(uuid);
-    const row = await db.volumes.get(uuid);
-    const original = await db.volume_ocr_layers.get([uuid, 'original']);
-    return {
-      block: ocr?.pages[0].blocks[0],
-      chars: row?.character_count,
-      edited: row?.ocr_edited_at,
-      original: original?.pages[0].blocks[0]
-    };
-  }, VOLUME_UUID);
+async function readOcr(page: Page, pageIndex = 0) {
+  return page.evaluate(
+    async ({ uuid, pageIndex }) => {
+      const { db } = await import('/src/lib/catalog/db.ts');
+      const ocr = await db.volume_ocr.get(uuid);
+      const row = await db.volumes.get(uuid);
+      const original = await db.volume_ocr_layers.get([uuid, 'original']);
+      return {
+        block: ocr?.pages[pageIndex].blocks[0],
+        chars: row?.character_count,
+        edited: row?.ocr_edited_at,
+        original: original?.pages[pageIndex].blocks[0]
+      };
+    },
+    { uuid: VOLUME_UUID, pageIndex }
+  );
 }
 
 test.describe('OCR editor', () => {
@@ -174,6 +182,57 @@ test.describe('OCR editor', () => {
     await page.waitForTimeout(1200);
     const reverted = await readOcr(page);
     expect(reverted.block).toEqual(ORIGINAL_BLOCK);
+  });
+
+  test('on a two-page spread, undo and revert act on the page that was edited', async ({
+    page
+  }) => {
+    await seedVolume(page, { pages: 2, view: 'dual' });
+    // Let the catalog settle on the new rows before the route changes.
+    await page.waitForTimeout(1000);
+    await openReader(page);
+    // A fresh volume defaults to "has cover", which shows page 0 alone; the
+    // spread needs it off so pages 0 and 1 render together.
+    await page.evaluate(async (uuid) => {
+      const { updateVolumeSetting } = await import('/src/lib/settings/index.ts');
+      updateVolumeSetting(uuid, 'hasCover', false);
+    }, VOLUME_UUID);
+    await expect(page.locator('[data-page-index="1"]')).toBeVisible({ timeout: 20000 });
+    await enterEditMode(page);
+
+    // Edit the RIGHT-hand page's block (page index 1). The reader's own page
+    // index is the left one — the regression was every history/revert call
+    // going there, so the right page's edits could never be undone or reverted.
+    const rightBlock = page.locator('[data-page-index="1"] .editBlock').first();
+    await expect(rightBlock).toBeVisible();
+    await rightBlock.dblclick();
+    const line = rightBlock.locator('[contenteditable]').first();
+    await expect(line).toBeVisible();
+    await line.click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('さしす');
+    await page.keyboard.press('Escape');
+    await expect(rightBlock.locator('.line').first()).toHaveText('さしす');
+
+    // Undo reaches the right page: the text comes back on screen and the left
+    // page is untouched throughout.
+    await page.getByLabel('Undo').click();
+    await expect(rightBlock.locator('.line').first()).toHaveText(ORIGINAL_BLOCK.lines[0]);
+    await page.getByLabel('Redo').click();
+    await expect(rightBlock.locator('.line').first()).toHaveText('さしす');
+
+    // Persist, then revert: the right page returns to its original, and the
+    // left page's row was never written.
+    await page.waitForTimeout(1200);
+    expect((await readOcr(page, 1)).block!.lines).toEqual(['さしす']);
+    expect((await readOcr(page, 0)).block).toEqual(ORIGINAL_BLOCK);
+    await page.getByLabel('Revert page').click();
+    await expect(rightBlock.locator('.line').first()).toHaveText(ORIGINAL_BLOCK.lines[0]);
+    await page.waitForTimeout(1200);
+    expect((await readOcr(page, 1)).block).toEqual(ORIGINAL_BLOCK);
+    expect(page.locator('[data-page-index="0"] .editBlock .line').first()).toHaveText(
+      ORIGINAL_BLOCK.lines[0]
+    );
   });
 
   test('the Edit entry is disabled in continuous scroll mode', async ({ page }) => {

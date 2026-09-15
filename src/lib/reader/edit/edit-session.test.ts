@@ -211,3 +211,32 @@ describe('EditSession — line ops', () => {
     expect(s.selectedLine).toBeNull();
   });
 });
+
+describe('EditSession — active page', () => {
+  it('tracks the page of the last selection or commit, so a spread edits the right page', () => {
+    const p0 = page();
+    const p1 = page();
+    const pages = [p0, p1];
+    const s = new EditSession({
+      volumeUuid: 'v1',
+      getPage: (i) => pages[i],
+      persist: async () => {},
+      debounceMs: 100000
+    });
+    expect(s.activePageIndex).toBeNull();
+
+    s.select(1, 0);
+    expect(s.activePageIndex).toBe(1);
+
+    s.move(1, 0, 5, 5, 'drag');
+    expect(s.activePageIndex).toBe(1);
+    expect(s.canUndo(1)).toBe(true);
+    expect(s.canUndo(0)).toBe(false);
+
+    s.selectLine(0, 0, 1);
+    expect(s.activePageIndex).toBe(0);
+
+    s.setLines(1, 1, ['え']);
+    expect(s.activePageIndex).toBe(1);
+  });
+});

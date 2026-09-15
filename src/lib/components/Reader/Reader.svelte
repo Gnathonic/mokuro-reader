@@ -266,13 +266,13 @@
       const ctrl = event.ctrlKey || event.metaKey;
       if (ctrl && event.code === 'KeyZ') {
         event.preventDefault();
-        if (event.shiftKey) s.redo(index);
-        else s.undo(index);
+        if (event.shiftKey) s.redo(editActivePage);
+        else s.undo(editActivePage);
         return;
       }
       if (ctrl && event.code === 'KeyY') {
         event.preventDefault();
-        s.redo(index);
+        s.redo(editActivePage);
         return;
       }
       if ((event.code === 'Delete' || event.code === 'Backspace') && s.selection.length > 0) {
@@ -580,9 +580,19 @@
     pagesRevision++;
   }
 
+  // The page undo/redo/revert act on: the one the user last touched, as long
+  // as it is still on screen (a page turn falls back to the current page).
+  let editActivePage = $derived.by(() => {
+    const active = editSession?.activePageIndex ?? null;
+    if (active === null) return index;
+    if (active === index) return index;
+    if (showSecondPage() && active === index + 1) return active;
+    return index;
+  });
+
   async function revertCurrentPage() {
     if (!editSession) return;
-    const ok = await editSession.revertPage(index);
+    const ok = await editSession.revertPage(editActivePage);
     if (!ok) showSnackbar('No original to revert to');
   }
 
@@ -1276,7 +1286,7 @@
   {#if editSession}
     <EditToolbar
       session={editSession}
-      pageIndex={index}
+      pageIndex={editActivePage}
       hasOriginal={editHasOriginal}
       onExit={exitEditMode}
       onRevert={revertCurrentPage}

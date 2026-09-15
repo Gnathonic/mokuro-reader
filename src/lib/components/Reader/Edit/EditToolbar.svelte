@@ -135,7 +135,7 @@
   <button
     class={btn}
     aria-label="Revert page"
-    title="Restore this page's original OCR"
+    title={`Restore page ${pageIndex + 1}'s original OCR`}
     disabled={!hasOriginal}
     onclick={onRevert}
   >
