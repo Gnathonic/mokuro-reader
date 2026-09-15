@@ -90,3 +90,31 @@ export function isSyncableFile(path: string): boolean {
 export function isBestEffortMetadataPath(path: string): boolean {
   return isSeriesFilePath(path) || isCatalogFilePath(path);
 }
+
+/**
+ * Alternate OCR layers ride beside a volume as `<Volume Title>.layer.<id>.mokuro`
+ * (optionally `.gz`). The `.layer.` token is reserved: `layerId` is a slug of
+ * `[a-z0-9-]`, so the pattern can never be confused with a volume whose title
+ * happens to contain a dot. Listings do NOT route these yet — the cloud half
+ * of the layers work does that; today this only names export files.
+ */
+export const LAYER_ID_RE = /^[a-z0-9-]{1,32}$/;
+const LAYER_SIDECAR_RE = /^(.+)\.layer\.([a-z0-9-]{1,32})\.mokuro(\.gz)?$/i;
+
+export function parseLayerSidecarName(
+  basename: string
+): { volumeTitle: string; layerId: string; gz: boolean } | null {
+  const m = LAYER_SIDECAR_RE.exec(basename);
+  if (!m) return null;
+  const layerId = m[2].toLowerCase();
+  if (!LAYER_ID_RE.test(layerId)) return null;
+  return { volumeTitle: m[1], layerId, gz: m[3] !== undefined };
+}
+
+export function isLayerSidecar(basename: string): boolean {
+  return parseLayerSidecarName(basename) !== null;
+}
+
+export function layerSidecarName(volumeTitle: string, layerId: string): string {
+  return `${volumeTitle}.layer.${layerId}.mokuro`;
+}

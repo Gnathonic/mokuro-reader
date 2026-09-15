@@ -4,7 +4,10 @@ import {
   isSyncableFile,
   isCbzFile,
   isSidecarFile,
-  isRootConfigFile
+  isRootConfigFile,
+  isLayerSidecar,
+  parseLayerSidecarName,
+  layerSidecarName
 } from './syncable-file';
 
 describe('syncable-file', () => {
@@ -163,5 +166,42 @@ describe('series-metadata.json stays retired', () => {
       .filter(({ text }) => text.includes(symbol))
       .map(({ path }) => path);
     expect(offenders).toEqual([]);
+  });
+
+  describe('layer sidecars', () => {
+    it('parses <title>.layer.<id>.mokuro and the .gz form', () => {
+      expect(parseLayerSidecarName('Vol 1.layer.translation.mokuro')).toEqual({
+        volumeTitle: 'Vol 1',
+        layerId: 'translation',
+        gz: false
+      });
+      expect(parseLayerSidecarName('Vol 1.layer.gcv-2.mokuro.gz')).toEqual({
+        volumeTitle: 'Vol 1',
+        layerId: 'gcv-2',
+        gz: true
+      });
+      expect(isLayerSidecar('Vol 1.layer.translation.mokuro')).toBe(true);
+    });
+
+    it('never mistakes a plain sidecar or an invalid id for a layer file', () => {
+      expect(parseLayerSidecarName('Vol 1.mokuro')).toBeNull();
+      expect(parseLayerSidecarName('Vol 1.layer.Bad_Id.mokuro')).toBeNull();
+      expect(parseLayerSidecarName('Vol 1.layer..mokuro')).toBeNull();
+      expect(isLayerSidecar('Vol 1.mokuro')).toBe(false);
+    });
+
+    it('builds the name the parser accepts (round trip)', () => {
+      const name = layerSidecarName('Vol 1', 'gcv');
+      expect(name).toBe('Vol 1.layer.gcv.mokuro');
+      expect(parseLayerSidecarName(name)).toEqual({
+        volumeTitle: 'Vol 1',
+        layerId: 'gcv',
+        gz: false
+      });
+    });
+
+    it('a layer file is still a syncable sidecar (listings will route it later)', () => {
+      expect(isSidecarFile('Vol 1.layer.gcv.mokuro')).toBe(true);
+    });
   });
 });
