@@ -108,9 +108,13 @@ export interface PointerTrackerConfig {
   pinchSurvivorPans?: boolean;
 
   /**
-   * Safari desktop trackpad pinch (proprietary gesturestart/change/end —
-   * Safari never synthesizes ctrl+wheel). Wired by the tracker so the
-   * listener trio isn't copied per surface.
+   * Safari desktop trackpad pinch (proprietary gesturestart/change/end).
+   *
+   * Safari 15+ DOES also synthesize ctrl+wheel (WebKit r277772), but only
+   * when the preceding gesturechange was not preventDefault'ed — and this
+   * tracker does prevent it, so exactly one of the two arrives. Removing
+   * that preventDefault without also removing these handlers would double
+   * every Safari pinch.
    */
   safariGestures?: {
     start(x: number, y: number): void;

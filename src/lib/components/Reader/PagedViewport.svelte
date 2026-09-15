@@ -17,7 +17,7 @@
     WheelAccumulator,
     WheelStreamClassifier,
     gapWheelSteps,
-    normalizeWheelDelta,
+    normalizeWheel,
     wheelIntentIsGapAdjust,
     wheelIntentIsZoom
   } from '$lib/reader/zoom-math';
@@ -159,13 +159,13 @@
   }
 
   function handleWheel(e: WheelEvent) {
-    const fine = wheelStream.classify(e);
+    const modifier = e.ctrlKey || e.metaKey;
+    const fine = wheelStream.classify(e, modifier);
     if (wheelIntentIsGapAdjust(e)) {
       e.preventDefault();
       adjustGap(gapWheelSteps(e, gapAccumulator));
       return;
     }
-    const modifier = e.ctrlKey || e.metaKey;
     if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior, fine)) {
       e.preventDefault();
       motion.beforeZoom();
@@ -174,10 +174,8 @@
     }
     e.preventDefault();
     motion.beforeAnimatedScroll();
-    camera.panBy(
-      -normalizeWheelDelta(e.deltaX, e.deltaMode),
-      -normalizeWheelDelta(e.deltaY, e.deltaMode)
-    );
+    const n = normalizeWheel(e);
+    camera.panBy(-n.pxX, -n.pxY);
   }
 
   function doubleTap(x: number, y: number) {

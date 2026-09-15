@@ -16,7 +16,7 @@
     WheelAccumulator,
     WheelStreamClassifier,
     gapWheelSteps,
-    normalizeWheelDelta,
+    normalizeWheel,
     wheelIntentIsGapAdjust,
     wheelIntentIsZoom
   } from '$lib/reader/zoom-math';
@@ -377,13 +377,13 @@
 
   function handleWheel(e: WheelEvent) {
     if (!scrollContainer) return;
-    const fine = wheelStream.classify(e);
+    const modifier = e.ctrlKey || e.metaKey;
+    const fine = wheelStream.classify(e, modifier);
     if (wheelIntentIsGapAdjust(e)) {
       e.preventDefault();
       adjustGap(gapWheelSteps(e, gapAccumulator));
       return;
     }
-    const modifier = e.ctrlKey || e.metaKey;
 
     if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior, fine)) {
       e.preventDefault();
@@ -395,7 +395,7 @@
     // Scroll intent: convert vertical wheel to horizontal strip scroll.
     e.preventDefault();
     motion.beforeAnimatedScroll();
-    const delta = normalizeWheelDelta(e.deltaY, e.deltaMode);
+    const delta = normalizeWheel(e).pxY;
     scrollContainer.scrollLeft += rtl ? -delta : delta;
   }
 

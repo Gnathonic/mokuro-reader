@@ -10,7 +10,8 @@ import {
   wheelIntentIsGapAdjust,
   gapWheelSteps,
   GAP_WHEEL_STEP_SIZE,
-  normalizeWheelDelta,
+  normalizeWheel,
+  wheelTickDelta,
   WheelAccumulator,
   pinchDistance,
   pinchMidpoint,
@@ -167,65 +168,104 @@ describe('wheelIntentIsZoom', () => {
   });
 });
 
-describe('normalizeWheelDelta', () => {
-  it('passes pixel deltas through (deltaMode 0)', () => {
-    expect(normalizeWheelDelta(-100, 0)).toBe(-100);
+describe('normalizeWheel', () => {
+  it('reads ticks from the legacy wheelDelta, which is 120 per detent everywhere', () => {
+    // Gecko kNativeTicksToWheelDelta == Blink kTickMultiplier == WebKit
+    // TickMultiplier == 120. Measured identical in Firefox 154 and
+    // Chromium 151 for the same physical detent.
+    expect(normalizeWheel({ deltaX: 0, deltaY: 132, deltaMode: 0, wheelDeltaY: -120 }).ticks).toBe(
+      1
+    );
+    expect(normalizeWheel({ deltaX: 0, deltaY: 120, deltaMode: 0, wheelDeltaY: -120 }).ticks).toBe(
+      1
+    );
+    expect(normalizeWheel({ deltaX: 0, deltaY: -100, deltaMode: 0, wheelDeltaY: 120 }).ticks).toBe(
+      -1
+    );
   });
 
-  it('converts line deltas (deltaMode 1, Firefox)', () => {
-    expect(normalizeWheelDelta(-3, 1)).toBe(-120);
+  it('reads a free-spin fragment as an exact eighth of a detent', () => {
+    const n = normalizeWheel({ deltaX: 0, deltaY: 16.5, deltaMode: 0, wheelDeltaY: -15 });
+    expect(n.ticks).toBeCloseTo(0.125, 10);
   });
 
-  it('converts page deltas (deltaMode 2)', () => {
-    expect(normalizeWheelDelta(1, 2)).toBe(800);
+  it('takes ticks from the X axis when shift moved the notch there', () => {
+    const n = normalizeWheel({ deltaX: -100, deltaY: 0, deltaMode: 0, wheelDeltaX: 120 });
+    expect(n.ticks).toBe(-1);
+  });
+
+  it('reports no ticks when the platform omits them (Gecko on macOS)', () => {
+    expect(normalizeWheel({ deltaX: 0, deltaY: -100, deltaMode: 0 }).ticks).toBeNull();
+  });
+
+  it('falls back to pixels-per-detent when ticks are absent', () => {
+    const n = normalizeWheel({ deltaX: 0, deltaY: -120, deltaMode: 0 });
+    expect(wheelTickDelta(n)).toBe(-1);
+  });
+
+  it('keeps per-axis pixels for panning', () => {
+    const n = normalizeWheel({ deltaX: -30, deltaY: 12, deltaMode: 0 });
+    expect([n.pxX, n.pxY]).toEqual([-30, 12]);
+    expect(n.bothAxes).toBe(true);
+  });
+
+  it('scales synthetic line and page deltas', () => {
+    expect(normalizeWheel({ deltaX: 0, deltaY: -3, deltaMode: 1 }).px).toBe(-66);
+    expect(normalizeWheel({ deltaX: 0, deltaY: 1, deltaMode: 2 }).px).toBe(800);
+  });
+
+  it('memoizes per event, so a second reader cannot re-latch Gecko units', () => {
+    const e = { deltaX: 0, deltaY: 132, deltaMode: 0, wheelDeltaY: -120 };
+    expect(normalizeWheel(e)).toBe(normalizeWheel(e));
   });
 });
 
 describe('WheelAccumulator', () => {
-  it('emits one zoom-in step for a single mouse-wheel notch up', () => {
-    const acc = new WheelAccumulator();
-    expect(acc.add(-120, 1000)).toBe(1);
+  it('emits one zoom-in step for a single detent up', () => {
+    expect(new WheelAccumulator().add(-1, 1000)).toBe(1);
   });
 
-  it('emits one zoom-out step for a notch down', () => {
-    const acc = new WheelAccumulator();
-    expect(acc.add(120, 1000)).toBe(-1);
+  it('emits one zoom-out step for a detent down', () => {
+    expect(new WheelAccumulator().add(1, 1000)).toBe(-1);
   });
 
-  it('emits multiple steps for a large delta', () => {
-    const acc = new WheelAccumulator();
-    expect(acc.add(-240, 1000)).toBe(2);
+  it('emits several steps when the browser coalesced several detents', () => {
+    // Both engines coalesce a backlog by SUMMING ticks, so a multi-detent
+    // event is a real multi-detent gesture and must not be capped.
+    expect(new WheelAccumulator().add(-2, 1000)).toBe(2);
   });
 
-  it('accumulates small trackpad deltas until the step size', () => {
+  it('accumulates a free-spinning wheel into exactly one rung per detent', () => {
     const acc = new WheelAccumulator();
     let steps = 0;
-    let t = 1000;
-    for (let i = 0; i < 12; i++) {
-      steps += acc.add(-10, t);
-      t += 16;
-    }
+    for (let i = 0; i < 8; i++) steps += acc.add(-0.125, 1000 + i * 12);
+    expect(steps).toBe(1);
+  });
+
+  it('accumulates sub-detent trackpad travel until a whole step', () => {
+    const acc = new WheelAccumulator();
+    let steps = 0;
+    for (let i = 0; i < 12; i++) steps += acc.add(-1 / 12, 1000 + i * 16);
     expect(steps).toBe(1);
   });
 
   it('resets after an idle gap', () => {
     const acc = new WheelAccumulator();
-    acc.add(-90, 1000);
-    // 90 accumulated, but 500ms later the remnant is stale
-    expect(acc.add(-30, 1500)).toBe(0);
+    acc.add(-0.9, 1000);
+    expect(acc.add(-0.3, 1500)).toBe(0);
   });
 
   it('resets when the direction flips', () => {
     const acc = new WheelAccumulator();
-    acc.add(-90, 1000);
-    expect(acc.add(60, 1016)).toBe(0);
-    expect(acc.add(60, 1032)).toBe(-1);
+    acc.add(-0.9, 1000);
+    expect(acc.add(0.6, 1016)).toBe(0);
+    expect(acc.add(0.6, 1032)).toBe(-1);
   });
 
   it('keeps the remainder after emitting steps', () => {
     const acc = new WheelAccumulator();
-    expect(acc.add(-150, 1000)).toBe(1);
-    expect(acc.add(-50, 1016)).toBe(1);
+    expect(acc.add(-1.5, 1000)).toBe(1);
+    expect(acc.add(-0.5, 1016)).toBe(1);
   });
 });
 
@@ -259,68 +299,105 @@ describe('wheelIntentIsGapAdjust', () => {
 });
 
 describe('gapWheelSteps', () => {
-  it('one mouse notch widens by 5px when shift swaps the delta to deltaX (Chromium)', () => {
-    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
-    const px = gapWheelSteps({ deltaX: -100, deltaY: 0, deltaMode: 0, timeStamp: 1000 }, acc);
+  const acc = () => new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
+
+  it('one notch widens by 5px when shift swaps the delta to deltaX (Chromium)', () => {
+    const px = gapWheelSteps(
+      { deltaX: -100, deltaY: 0, deltaMode: 0, wheelDeltaX: 120, timeStamp: 1000 },
+      acc()
+    );
     expect(px).toBe(5);
   });
 
   it('prefers deltaY when the browser keeps it there (Firefox)', () => {
-    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
-    const px = gapWheelSteps({ deltaX: 7, deltaY: -100, deltaMode: 0, timeStamp: 1000 }, acc);
+    const px = gapWheelSteps(
+      { deltaX: 7, deltaY: -132, deltaMode: 0, wheelDeltaY: 120, timeStamp: 1000 },
+      acc()
+    );
     expect(px).toBe(5);
   });
 
-  it('scroll down narrows', () => {
-    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
-    const px = gapWheelSteps({ deltaX: 0, deltaY: 100, deltaMode: 0, timeStamp: 1000 }, acc);
-    expect(px).toBe(-5);
+  it('gives a Firefox notch the same 5px as a Chromium one', () => {
+    // The whole point of the detent currency: 132px and 120px are the same
+    // physical action, so they must move the gap by the same amount.
+    const ff = gapWheelSteps(
+      { deltaX: 0, deltaY: 132, deltaMode: 0, wheelDeltaY: -120, timeStamp: 1000 },
+      acc()
+    );
+    const cr = gapWheelSteps(
+      { deltaX: 0, deltaY: 120, deltaMode: 0, wheelDeltaY: -120, timeStamp: 1000 },
+      acc()
+    );
+    expect(ff).toBe(cr);
+    expect(ff).toBe(-5);
   });
 
   it('accumulates a trackpad stream of sub-step deltas into whole px', () => {
-    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
+    const a = acc();
     let total = 0;
     for (let i = 0; i < 4; i++) {
-      total += gapWheelSteps(
-        { deltaX: 0, deltaY: -6, deltaMode: 0, timeStamp: 1000 + i * 16 },
-        acc
-      );
+      total += gapWheelSteps({ deltaX: 0, deltaY: -6, deltaMode: 0, timeStamp: 1000 + i * 16 }, a);
     }
-    expect(total).toBe(1); // 24 wheel px accumulated -> one 20px step
-  });
-
-  it('normalizes line-mode deltas (Firefox wheel)', () => {
-    const acc = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
-    const px = gapWheelSteps({ deltaX: 0, deltaY: -3, deltaMode: 1, timeStamp: 1000 }, acc);
-    expect(px).toBe(6); // 3 lines * 40px = 120 wheel px -> six 20px steps
+    expect(total).toBe(1);
   });
 });
 
 describe('isFineWheelEvent', () => {
   const ev = (deltaY: number, deltaX = 0, deltaMode = 0) => ({ deltaX, deltaY, deltaMode });
-
-  it('rejects classic notches', () => {
-    expect(isFineWheelEvent(ev(-100))).toBe(false);
-    expect(isFineWheelEvent(ev(120))).toBe(false);
+  /** A real detent: whatever pixels the engine chose, plus its tick count. */
+  const detent = (deltaY: number, wheelDeltaY = -120) => ({
+    deltaX: 0,
+    deltaY,
+    deltaMode: 0,
+    wheelDeltaY
   });
 
-  it('rejects line and page deltas — only a notched wheel reports them', () => {
-    expect(isFineWheelEvent(ev(-3, 0, 1))).toBe(false);
-    expect(isFineWheelEvent(ev(-1, 0, 2))).toBe(false);
+  it('rejects a detent whatever pixel value the engine attached to it (#272)', () => {
+    // The identical physical notch, as measured across engines and settings.
+    expect(isFineWheelEvent(detent(120))).toBe(false); // Chromium/Linux
+    expect(isFineWheelEvent(detent(100))).toBe(false); // Chromium/Windows
+    expect(isFineWheelEvent(detent(132))).toBe(false); // Gecko, 16px default font
+    expect(isFineWheelEvent(detent(258))).toBe(false); // Gecko, 32px default font
+    expect(isFineWheelEvent(detent(4.0002))).toBe(false); // Chromium/macOS
   });
 
-  it('accepts fractional deltas', () => {
-    expect(isFineWheelEvent(ev(-4.5))).toBe(true);
-    expect(isFineWheelEvent(ev(-133.75))).toBe(true);
+  it('rejects a free-spin fragment — still a wheel, eight to the detent', () => {
+    expect(isFineWheelEvent(detent(16.5, -15))).toBe(false);
   });
 
-  it('accepts sub-notch magnitudes', () => {
-    expect(isFineWheelEvent(ev(-8))).toBe(true);
-    expect(isFineWheelEvent(ev(2))).toBe(true);
+  it('accepts sub-detent travel', () => {
+    expect(isFineWheelEvent(detent(1, -6))).toBe(true);
+    expect(isFineWheelEvent(detent(2.5, -3))).toBe(true);
   });
 
   it('accepts simultaneous two-axis deltas — no mouse steers both at once', () => {
-    expect(isFineWheelEvent(ev(-110, 3))).toBe(true);
+    expect(isFineWheelEvent({ deltaX: 3, deltaY: -110, deltaMode: 0, wheelDeltaY: 120 })).toBe(
+      true
+    );
+  });
+
+  it('judges a pinch by pixels, because its tick count is a fiction', () => {
+    // Blink stamps wheel_ticks_y = +/-1 on a synthetic pinch whatever its
+    // magnitude, so the tick rule would call every pinch a notched wheel.
+    expect(isFineWheelEvent({ deltaX: 0, deltaY: -3, deltaMode: 0, wheelDeltaY: 120 }, true)).toBe(
+      true
+    );
+    // A real ctrl+wheel keyboard chord carries a full notch of pixels.
+    expect(
+      isFineWheelEvent({ deltaX: 0, deltaY: -120, deltaMode: 0, wheelDeltaY: 120 }, true)
+    ).toBe(false);
+  });
+
+  describe('without ticks (Gecko on macOS, synthetic events)', () => {
+    it('falls back to pixel magnitude', () => {
+      expect(isFineWheelEvent(ev(-100))).toBe(false);
+      expect(isFineWheelEvent(ev(-8))).toBe(true);
+    });
+
+    it('rejects line and page deltas — only a notched wheel reports them', () => {
+      expect(isFineWheelEvent(ev(-3, 0, 1))).toBe(false);
+      expect(isFineWheelEvent(ev(-1, 0, 2))).toBe(false);
+    });
   });
 
   it('reads no evidence from an empty delta', () => {
@@ -329,6 +406,14 @@ describe('isFineWheelEvent', () => {
 });
 
 describe('WheelStreamClassifier', () => {
+  it('stays coarse for a Firefox notched wheel reporting fractional pixels (#272)', () => {
+    const c = new WheelStreamClassifier();
+    // Three detents, Firefox pixel mode on a scaled display.
+    expect(c.classify({ deltaX: 0, deltaY: -204.8, deltaMode: 0, timeStamp: 1000 })).toBe(false);
+    expect(c.classify({ deltaX: 0, deltaY: -204.8, deltaMode: 0, timeStamp: 1120 })).toBe(false);
+    expect(c.classify({ deltaX: 0, deltaY: -204.8, deltaMode: 0, timeStamp: 1240 })).toBe(false);
+  });
+
   it('stays coarse for a notched-wheel stream', () => {
     const c = new WheelStreamClassifier();
     expect(c.classify({ deltaX: 0, deltaY: -100, deltaMode: 0, timeStamp: 1000 })).toBe(false);
