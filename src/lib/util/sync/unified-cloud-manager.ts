@@ -73,6 +73,7 @@ import { resolveSyncedProgress } from '$lib/metadata/hole-patch';
 import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
 import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
+import { syncLayersFromListing } from '$lib/metadata/layer-sync';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -324,6 +325,12 @@ class UnifiedCloudManager {
       // re-fetch the listing that scheduled them (see `sidecar-backfill.ts`).
       void Promise.resolve(sweepInstalledVolumesForSidecarBackfill(files)).catch((error) =>
         console.warn('Volume sidecar backfill failed:', error)
+      );
+      // OCR layers (`<Volume>.<id>.mokuro`, the shape bunko's engines write)
+      // for volumes this device holds rows for: pull the ones the listing
+      // shows as changed, push the ones edited here since their last sync.
+      void Promise.resolve(syncLayersFromListing(listing, provider.type)).catch((error) =>
+        console.warn('Layer sync failed:', error)
       );
     } catch (error) {
       console.warn('Series index refresh could not start:', error);

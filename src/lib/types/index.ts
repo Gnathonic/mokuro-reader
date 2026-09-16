@@ -167,7 +167,12 @@ export interface VolumeOcrLayer {
   updated_at: string;
   /** DB-shaped pages (no cumulativeChars), same shape as `volume_ocr.pages` */
   pages: Page[];
-  cloud?: { provider: string; size?: number; modified?: number };
+  /**
+   * The cloud copy this row was last synced with (`layer-sync.ts`): the
+   * listing's size / mtime (epoch s; absent when the server gave none) and
+   * when the sync happened. `updated_at > cloud.synced_at` = edited since.
+   */
+  cloud?: { provider: string; size?: number; modified?: number; synced_at: string };
 }
 
 // Combined view for API compatibility (assembled from volume_ocr + volume_files)
