@@ -72,3 +72,12 @@ export function nextLayerId(current: string | null, layers: LayerSummary[]): str
   if (i === -1) return layers[0].layer_id;
   return i + 1 < layers.length ? layers[i + 1].layer_id : null;
 }
+
+/** The reverse of {@link nextLayerId}: Primary ← each layer ← Primary. */
+export function prevLayerId(current: string | null, layers: LayerSummary[]): string | null {
+  if (layers.length === 0) return null;
+  if (current === null) return layers[layers.length - 1].layer_id;
+  const i = layers.findIndex((l) => l.layer_id === current);
+  if (i === -1) return layers[layers.length - 1].layer_id;
+  return i > 0 ? layers[i - 1].layer_id : null;
+}

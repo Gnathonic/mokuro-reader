@@ -26,7 +26,11 @@ export type MiscSettings = {
   translationEngine: TranslationEngineId;
   translationModel: string; // '' = the adapter's default model
   translationLanguage: string; // BCP-47-ish target, default 'en'
+  /** Where the OCR edit toolbar docks; a top dock hides the top of the page. */
+  editToolbarDock: EditToolbarDock;
 };
+
+export type EditToolbarDock = 'top' | 'right' | 'bottom' | 'left';
 
 export type TranslationEngineId = 'gemini' | 'anthropic' | 'openai';
 
@@ -59,7 +63,8 @@ const defaultSettings: MiscSettings = {
   gdriveAutoReAuth: true, // Keep users synced during long reading sessions
   translationEngine: 'gemini',
   translationModel: '',
-  translationLanguage: 'en'
+  translationLanguage: 'en',
+  editToolbarDock: 'top'
 };
 
 /**

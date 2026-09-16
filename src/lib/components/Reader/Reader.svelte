@@ -60,6 +60,7 @@
   import EditToolbar from './Edit/EditToolbar.svelte';
   import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
   import { ORIGINAL_LAYER_ID, hasOriginalLayer } from '$lib/reader/edit/edit-persist';
+  import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
   import type { Page } from '$lib/types';
   import {
     layerSummaries,
@@ -709,9 +710,22 @@
    * the setting watcher below, so the settings panel's select gets it too. */
   async function selectLayer(layerId: string | null) {
     if (!volume) return;
+    // A swap from inside the editor (toolbar strip, L key) keeps the user
+    // editing: the session on the old layer is closed (saving what is pending)
+    // and a new one opens on the new layer once its pages are loaded.
+    const wasEditing = !!editSession;
     if (editSession) await exitEditMode();
+    reenterEditOnLayer = wasEditing ? { layer: layerId } : null;
     updateVolumeSetting(volume.volume_uuid, 'ocrLayer', layerId ?? undefined);
   }
+  let reenterEditOnLayer = $state<{ layer: string | null } | null>(null);
+  $effect(() => {
+    const pending = reenterEditOnLayer;
+    if (!pending || editSession || layerLoading) return;
+    if (activeLayerId !== pending.layer) return;
+    reenterEditOnLayer = null;
+    enterEditMode();
+  });
 
   // Announce layer switches the same way the other reader shortcuts (T, N,
   // O…) announce theirs: the in-reader notification, keyed so repeats replace
@@ -1511,6 +1525,12 @@
       onRevert={revertCurrentPage}
       onOcrPage={ocrPageHandler}
       onTranslatePage={translatePageHandler}
+      {layers}
+      currentLayer={activeLayerId}
+      {primaryName}
+      onSelectLayer={selectLayer}
+      dock={$miscSettings.editToolbarDock}
+      onDockChange={(d) => updateMiscSetting('editToolbarDock', d)}
     />
   {/if}
   <EngineRunBanner />

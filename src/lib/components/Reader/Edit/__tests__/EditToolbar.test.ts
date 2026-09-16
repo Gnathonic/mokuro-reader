@@ -20,7 +20,7 @@ function page(): Page {
   };
 }
 
-function mount(hasOriginal = true) {
+function mount(hasOriginal = true, extra: Record<string, unknown> = {}) {
   const p = page();
   const session = new EditSession({
     volumeUuid: 'v',
@@ -31,11 +31,64 @@ function mount(hasOriginal = true) {
   const onExit = vi.fn();
   const onRevert = vi.fn();
   const utils = render(EditToolbar, {
-    props: { session, pageIndex: 0, hasOriginal, onExit, onRevert }
+    props: { session, pageIndex: 0, hasOriginal, onExit, onRevert, ...extra }
   });
   const btn = (label: string) => utils.getByLabelText(label) as HTMLButtonElement;
   return { ...utils, session, onExit, onRevert, btn };
 }
+
+const layers = [
+  { layer_id: 'original', name: 'Original', kind: 'original' as const, updated_at: 'x' },
+  { layer_id: 'fix', name: 'Fix', kind: 'edit' as const, updated_at: 'x' }
+];
+
+describe('EditToolbar — layer strip and dock', () => {
+  it('shows the displayed layer and swaps with previous/next through the L-key cycle', async () => {
+    const onSelectLayer = vi.fn();
+    const { btn, container, rerender } = mount(true, {
+      layers,
+      currentLayer: null,
+      primaryName: 'mokuro 0.2.1',
+      onSelectLayer
+    });
+    expect(container.querySelector('[data-edit-toolbar-layer]')?.textContent).toBe('mokuro 0.2.1');
+    await fireEvent.click(btn('Next layer'));
+    expect(onSelectLayer).toHaveBeenLastCalledWith('original');
+    await fireEvent.click(btn('Previous layer'));
+    expect(onSelectLayer).toHaveBeenLastCalledWith('fix');
+    await rerender({ currentLayer: 'fix' } as never);
+    expect(container.querySelector('[data-edit-toolbar-layer]')?.textContent).toBe('Fix');
+    await fireEvent.click(btn('Next layer'));
+    expect(onSelectLayer).toHaveBeenLastCalledWith(null);
+  });
+
+  it('disables the swap buttons without layers, and hides the strip without a handler', () => {
+    const { btn } = mount(true, { layers: [], currentLayer: null, onSelectLayer: vi.fn() });
+    expect(btn('Previous layer').disabled).toBe(true);
+    expect(btn('Next layer').disabled).toBe(true);
+    cleanup();
+    const { queryByLabelText } = mount(true);
+    expect(queryByLabelText('Next layer')).toBeNull();
+  });
+
+  it('docks to the edge given and its button cycles top → right → bottom → left', async () => {
+    const onDockChange = vi.fn();
+    const { btn, container, rerender } = mount(true, { dock: 'top', onDockChange });
+    const bar = () => container.querySelector('[data-edit-toolbar]') as HTMLElement;
+    expect(bar().dataset.dock).toBe('top');
+    expect(bar().className).toContain('flex-row');
+    await fireEvent.click(btn('Move toolbar'));
+    expect(onDockChange).toHaveBeenLastCalledWith('right');
+    await rerender({ dock: 'right' } as never);
+    expect(bar().className).toContain('flex-col');
+    expect(bar().className).toContain('right-3');
+    await fireEvent.click(btn('Move toolbar'));
+    expect(onDockChange).toHaveBeenLastCalledWith('bottom');
+    await rerender({ dock: 'left' } as never);
+    await fireEvent.click(btn('Move toolbar'));
+    expect(onDockChange).toHaveBeenLastCalledWith('top');
+  });
+});
 
 describe('EditToolbar', () => {
   it('disables ops whose preconditions do not hold', async () => {

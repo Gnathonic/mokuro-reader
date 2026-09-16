@@ -1,13 +1,21 @@
 <script lang="ts">
-  /** The edit-mode toolbar, fixed to the viewport (never scrolls with the page). */
+  /** The edit-mode toolbar, fixed to the viewport (never scrolls with the
+   * page), dockable to any edge so it never sits over what is being edited. */
   import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
+  import { nextLayerId, prevLayerId, type LayerSummary } from '$lib/reader/edit/layer-list';
+  import type { EditToolbarDock } from '$lib/settings/misc';
   import {
+    ChevronDownOutline,
+    ChevronLeftOutline,
+    ChevronRightOutline,
+    ChevronUpOutline,
     CloseOutline,
     GridPlusOutline,
     ObjectsColumnOutline,
     LanguageOutline,
     RedoOutline,
     RefreshOutline,
+    RestoreWindowOutline,
     SearchOutline,
     TextSizeOutline,
     TrashBinOutline,
@@ -23,9 +31,50 @@
     /** Engine entry points — given only when the matching key is configured. */
     onOcrPage?: () => void;
     onTranslatePage?: () => void;
+    /** Quick layer swapping: the volume's layers, the displayed one, and the
+     * primary row's name. Omitted → no layer strip. */
+    layers?: LayerSummary[];
+    currentLayer?: string | null;
+    primaryName?: string;
+    onSelectLayer?: (layerId: string | null) => void;
+    /** Dock edge; the toolbar's own button cycles it through `onDockChange`. */
+    dock?: EditToolbarDock;
+    onDockChange?: (dock: EditToolbarDock) => void;
   }
-  let { session, pageIndex, hasOriginal, onExit, onRevert, onOcrPage, onTranslatePage }: Props =
-    $props();
+  let {
+    session,
+    pageIndex,
+    hasOriginal,
+    onExit,
+    onRevert,
+    onOcrPage,
+    onTranslatePage,
+    layers = [],
+    currentLayer = null,
+    primaryName = 'Primary',
+    onSelectLayer,
+    dock = 'top',
+    onDockChange
+  }: Props = $props();
+
+  const DOCK_ORDER: EditToolbarDock[] = ['top', 'right', 'bottom', 'left'];
+  const nextDock = $derived(DOCK_ORDER[(DOCK_ORDER.indexOf(dock) + 1) % DOCK_ORDER.length]);
+  let vertical = $derived(dock === 'left' || dock === 'right');
+  // Full class strings per edge (Tailwind scans literals, never templates).
+  const DOCK_CLASS: Record<EditToolbarDock, string> = {
+    top: 'top-3 left-1/2 -translate-x-1/2 flex-row rounded-full',
+    bottom: 'bottom-3 left-1/2 -translate-x-1/2 flex-row rounded-full',
+    left: 'left-3 top-1/2 -translate-y-1/2 flex-col rounded-3xl',
+    right: 'right-3 top-1/2 -translate-y-1/2 flex-col rounded-3xl'
+  };
+  let divider = $derived(vertical ? 'my-1 h-px w-6 bg-gray-600' : 'mx-1 h-6 w-px bg-gray-600');
+
+  let hasLayers = $derived(!!onSelectLayer && layers.length > 0);
+  let currentLayerName = $derived(
+    currentLayer === null
+      ? primaryName
+      : (layers.find((l) => l.layer_id === currentLayer)?.name ?? currentLayer)
+  );
 
   let selected = $derived(session.selection);
   let single = $derived(
@@ -55,8 +104,9 @@
 </script>
 
 <div
-  class="fixed top-3 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-gray-900/90 px-3 py-2 shadow-lg"
+  class={`fixed z-50 flex items-center gap-2 bg-gray-900/90 shadow-lg ${vertical ? 'px-2 py-3' : 'px-3 py-2'} ${DOCK_CLASS[dock]}`}
   data-edit-toolbar
+  data-dock={dock}
   role="toolbar"
   aria-label="OCR edit tools"
 >
@@ -116,7 +166,7 @@
   >
     <TextSizeOutline />
   </button>
-  <span class="mx-1 h-6 w-px bg-gray-600"></span>
+  <span class={divider}></span>
   <button
     class={btn}
     aria-label="Undo"
@@ -135,8 +185,35 @@
   >
     <RedoOutline />
   </button>
+  {#if onSelectLayer}
+    <span class={divider}></span>
+    <!-- Quick layer swap: previous / current name / next, same cycle as the L key. -->
+    <button
+      class={btn}
+      aria-label="Previous layer"
+      title="Previous OCR layer"
+      disabled={!hasLayers}
+      onclick={() => onSelectLayer?.(prevLayerId(currentLayer, layers))}
+    >
+      {#if vertical}<ChevronUpOutline />{:else}<ChevronLeftOutline />{/if}
+    </button>
+    <span
+      class={`truncate text-center text-xs text-gray-200 ${vertical ? 'max-w-10' : 'max-w-28'}`}
+      title={`OCR layer: ${currentLayerName}`}
+      data-edit-toolbar-layer>{currentLayerName}</span
+    >
+    <button
+      class={btn}
+      aria-label="Next layer"
+      title="Next OCR layer (L)"
+      disabled={!hasLayers}
+      onclick={() => onSelectLayer?.(nextLayerId(currentLayer, layers))}
+    >
+      {#if vertical}<ChevronDownOutline />{:else}<ChevronRightOutline />{/if}
+    </button>
+  {/if}
   {#if onOcrPage || onTranslatePage}
-    <span class="mx-1 h-6 w-px bg-gray-600"></span>
+    <span class={divider}></span>
     {#if onOcrPage}
       <button
         class={btn}
@@ -167,7 +244,17 @@
   >
     <RefreshOutline />
   </button>
-  <span class="mx-1 h-6 w-px bg-gray-600"></span>
+  <span class={divider}></span>
+  {#if onDockChange}
+    <button
+      class={btn}
+      aria-label="Move toolbar"
+      title={`Dock the toolbar to the ${nextDock} (now: ${dock})`}
+      onclick={() => onDockChange?.(nextDock)}
+    >
+      <RestoreWindowOutline />
+    </button>
+  {/if}
   <button class={btn} aria-label="Exit edit mode" title="Exit edit mode (Esc)" onclick={onExit}>
     <CloseOutline />
   </button>

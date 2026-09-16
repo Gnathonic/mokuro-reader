@@ -152,8 +152,11 @@ test.describe('OCR layers', () => {
     );
     await picker.getByLabel('Close layers').click();
 
-    // Edit the displayed layer's block: the layer row changes, primary does not.
-    await enterEditMode(page);
+    // Creating the layer from inside the editor keeps the user editing: the
+    // session re-opened on the new layer. Edit its block: the layer row
+    // changes, primary does not.
+    await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
+    await expect(page.locator('[data-edit-toolbar-layer]')).toHaveText('Fix');
     const block = page.locator('.editBlock').first();
     await block.dblclick();
     const line = block.locator('[contenteditable]').first();
@@ -214,6 +217,15 @@ test.describe('OCR layers', () => {
 
     await page.keyboard.press('l');
     await expect(page.getByText('OCR Layer: mokuro 0.2.1')).toBeVisible();
+    await expect.poll(async () => (await readState(page)).setting).toBeNull();
+
+    // The edit toolbar's quick-swap buttons walk the same cycle.
+    await enterEditMode(page);
+    await page.getByLabel('Next layer').click();
+    await expect(page.locator('[data-edit-toolbar-layer]')).toHaveText('Fix');
+    await expect.poll(async () => (await readState(page)).setting).toBe('fix');
+    await page.getByLabel('Previous layer').click();
+    await expect(page.locator('[data-edit-toolbar-layer]')).toHaveText('mokuro 0.2.1');
     await expect.poll(async () => (await readState(page)).setting).toBeNull();
   });
 

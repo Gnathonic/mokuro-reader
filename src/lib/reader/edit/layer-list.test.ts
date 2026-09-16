@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 
-import { summarizeLayers, nextLayerId, primaryLayerName } from './layer-list';
+import { summarizeLayers, nextLayerId, prevLayerId, primaryLayerName } from './layer-list';
 import type { VolumeOcrLayer } from '$lib/types';
 
 describe('summarizeLayers', () => {
@@ -62,6 +62,15 @@ describe('nextLayerId', () => {
     expect(nextLayerId('original', layers)).toBe('fix');
     expect(nextLayerId('fix', layers)).toBe('gcv');
     expect(nextLayerId('gcv', layers)).toBe(null);
+  });
+
+  it('prevLayerId walks the same cycle backwards', () => {
+    expect(prevLayerId(null, layers)).toBe('gcv');
+    expect(prevLayerId('gcv', layers)).toBe('fix');
+    expect(prevLayerId('fix', layers)).toBe('original');
+    expect(prevLayerId('original', layers)).toBe(null);
+    expect(prevLayerId('gone', layers)).toBe('gcv');
+    expect(prevLayerId(null, [])).toBe(null);
   });
 
   it('a displayed id no longer in the list restarts from the first layer; no layers → stays Primary', () => {
