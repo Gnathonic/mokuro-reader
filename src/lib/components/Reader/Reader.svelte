@@ -705,13 +705,32 @@
     return layers.find((l) => l.layer_id === layerId)?.name ?? layerId;
   }
 
-  /** Switch the displayed layer (picker, hotkey) and say which one landed. */
+  /** Switch the displayed layer (picker, hotkey). The announcement comes from
+   * the setting watcher below, so the settings panel's select gets it too. */
   async function selectLayer(layerId: string | null) {
     if (!volume) return;
     if (editSession) await exitEditMode();
     updateVolumeSetting(volume.volume_uuid, 'ocrLayer', layerId ?? undefined);
-    showSnackbar(`OCR layer: ${layerDisplayName(layerId)}`);
   }
+
+  // Announce layer switches the same way the other reader shortcuts (T, N,
+  // O…) announce theirs: the in-reader notification, keyed so repeats replace
+  // rather than stack. Watching the SETTING means every switch — picker,
+  // settings-panel select, L hotkey — is announced once, and opening a volume
+  // (first value per volume) is not.
+  let announcedLayerFor: { volume: string; layer: string | null } | null = null;
+  $effect(() => {
+    const uuid = volume?.volume_uuid;
+    const layer = displayedLayerId;
+    if (!uuid) return;
+    if (announcedLayerFor?.volume !== uuid) {
+      announcedLayerFor = { volume: uuid, layer };
+      return;
+    }
+    if (announcedLayerFor.layer === layer) return;
+    announcedLayerFor = { volume: uuid, layer };
+    showNotification(`OCR Layer: ${layerDisplayName(layer)}`, 'ocr-layer');
+  });
 
   /** `L`: step to the next OCR layer (Primary → layers in order → Primary). */
   function cycleLayer() {

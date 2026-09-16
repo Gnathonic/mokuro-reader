@@ -13,7 +13,7 @@
     type PageViewMode,
     type VolumeSettingsKey
   } from '$lib/settings';
-  import { isReader, showSnackbar } from '$lib/util';
+  import { isReader } from '$lib/util';
   import { routeParams } from '$lib/util/hash-router';
   import { MAX_PAGE_GAP } from '$lib/reader/zoom-math';
   import { layerSummaries, primaryLayerName, type LayerSummary } from '$lib/reader/edit/layer-list';
@@ -102,9 +102,8 @@
   function onLayerChange(e: Event) {
     if (!volumeId) return;
     const value = (e.target as HTMLSelectElement).value;
+    // The reader announces the switch itself (it watches the setting).
     updateVolumeSetting(volumeId, 'ocrLayer', value || undefined);
-    const name = value ? (layers.find((l) => l.layer_id === value)?.name ?? value) : primaryName;
-    showSnackbar(`OCR layer: ${name}`);
   }
 
   async function layerAction(action: LayerAction) {

@@ -209,11 +209,11 @@ test.describe('OCR layers', () => {
     expect((await readState(page)).setting).toBeNull();
 
     await page.keyboard.press('l');
-    await expect(page.getByText('OCR layer: Fix')).toBeVisible();
+    await expect(page.getByText('OCR Layer: Fix')).toBeVisible();
     await expect.poll(async () => (await readState(page)).setting).toBe('fix');
 
     await page.keyboard.press('l');
-    await expect(page.getByText('OCR layer: mokuro 0.2.1')).toBeVisible();
+    await expect(page.getByText('OCR Layer: mokuro 0.2.1')).toBeVisible();
     await expect.poll(async () => (await readState(page)).setting).toBeNull();
   });
 
