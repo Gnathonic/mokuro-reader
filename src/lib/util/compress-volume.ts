@@ -10,6 +10,8 @@ import {
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
+import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
+import { layerSidecarName } from './sync/syncable-file';
 
 // Re-exported for existing importers (volume-sidecars, zip, tests).
 export type { MokuroMetadata } from './mokuro-metadata';
@@ -19,9 +21,15 @@ export interface VolumeSidecarBlobData {
   blob: Blob;
 }
 
+export interface VolumeLayerSidecarBlobData extends VolumeSidecarBlobData {
+  layerId: string;
+}
+
 export interface VolumeSidecarBlobResult {
   mokuro?: VolumeSidecarBlobData;
   thumbnail?: VolumeSidecarBlobData;
+  /** One `<title>.<id>.mokuro` per alternate OCR layer (see `layer-sync.ts`). */
+  layers?: VolumeLayerSidecarBlobData[];
 }
 
 function extensionFromMimeType(contentType: string): string {
@@ -211,6 +219,31 @@ export async function generateVolumeSidecarsFromDb(
       filename: `${volumeTitle}.${ext}`,
       blob: volume.thumbnail
     };
+  }
+
+  // Alternate OCR layers ride beside the primary as `<title>.<id>.mokuro`,
+  // each in the same pure upstream format with its own character count.
+  const layers = await db
+    .table('volume_ocr_layers')
+    .where('volume_uuid')
+    .equals(volumeUuid)
+    .toArray();
+  if (layers.length > 0) {
+    sidecars.layers = layers
+      .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
+      .map((layer) => {
+        const { totalChars } = buildPageCharCounts(layer.pages);
+        const metadata = buildMokuroMetadata(
+          { ...volume, character_count: totalChars },
+          layer.pages,
+          { seriesTitle, volumeTitle }
+        );
+        return {
+          layerId: layer.layer_id,
+          filename: layerSidecarName(volumeTitle, layer.layer_id),
+          blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' })
+        };
+      });
   }
 
   return sidecars;

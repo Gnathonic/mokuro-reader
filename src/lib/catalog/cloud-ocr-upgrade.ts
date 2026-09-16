@@ -24,45 +24,14 @@ const pendingTaskIds = new Set<string>();
 const queuedTasks: CloudUpgradeTask[] = [];
 let processing = false;
 
-function countCharsInLines(lines: unknown): number {
-  if (!Array.isArray(lines)) return 0;
-  const japaneseRegex =
-    /[○◯々-〇〻ぁ-ゖゝ-ゞァ-ヺー\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
-  let total = 0;
-  for (const line of lines) {
-    if (typeof line !== 'string') continue;
-    total += Array.from(line).filter((char) => japaneseRegex.test(char)).length;
-  }
-  return total;
-}
-
 /**
- * Exported for `series-backfill.ts`, which needs the same char math to compute
- * a sidecar-derived `series.json` entry's `character_count` — the one
- * definition of "how many characters does this mokuro have", shared rather
- * than re-implemented.
+ * Re-exported from the pure module for its existing importers
+ * (`series-backfill.ts`, `sidecar-pull.ts`, the OCR editor); the definition
+ * lives in `page-char-counts.ts` so a Worker can use it without this file's
+ * cloud-manager graph.
  */
-export function buildPageCharCounts(pages: unknown[]): {
-  totalChars: number;
-  cumulative: number[];
-} {
-  let totalChars = 0;
-  const cumulative: number[] = [];
-
-  for (const page of pages) {
-    let pageChars = 0;
-    const blocks = (page as { blocks?: unknown[] })?.blocks;
-    if (Array.isArray(blocks)) {
-      for (const block of blocks) {
-        pageChars += countCharsInLines((block as { lines?: unknown[] })?.lines);
-      }
-    }
-    totalChars += pageChars;
-    cumulative.push(totalChars);
-  }
-
-  return { totalChars, cumulative };
-}
+import { buildPageCharCounts } from './page-char-counts';
+export { buildPageCharCounts };
 
 /**
  * Exported for `series-backfill.ts`, which pulls the same `.mokuro`/`.mokuro.gz`

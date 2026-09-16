@@ -203,6 +203,7 @@ interface UploadCompleteMessage {
   sidecars?: {
     mokuro?: { filename: string; blob: Blob };
     thumbnail?: { filename: string; blob: Blob };
+    layers?: Array<{ layerId: string; filename: string; blob: Blob }>;
   };
 }
 
@@ -843,6 +844,7 @@ ctx.addEventListener('message', async (event) => {
           | {
               mokuro?: { filename: string; blob: Blob };
               thumbnail?: { filename: string; blob: Blob };
+              layers?: Array<{ layerId: string; filename: string; blob: Blob }>;
             }
           | undefined;
         // Generated regardless of the embed flag: this branch also serves the
@@ -851,7 +853,7 @@ ctx.addEventListener('message', async (event) => {
         // downloads them separately is the queue's decision, at the download.
         if (message.includeSidecars === true) {
           const generated = await generateVolumeSidecarsFromDb(volumeUuid);
-          if (generated.mokuro || generated.thumbnail) {
+          if (generated.mokuro || generated.thumbnail || generated.layers?.length) {
             // Sidecars take the archive's base name, so an export named with
             // the series title ("Series - Vol 1.cbz") gets "Series - Vol 1.mokuro"
             // next to it and a re-import pairs them. A cloud upload's
@@ -873,6 +875,12 @@ ctx.addEventListener('message', async (event) => {
                 ...generated.thumbnail,
                 filename: `${baseName}.${ext}`
               };
+            }
+            if (generated.layers?.length) {
+              sidecars.layers = generated.layers.map((layer) => ({
+                ...layer,
+                filename: `${baseName}.${layer.layerId}.mokuro`
+              }));
             }
           }
         }
@@ -907,6 +915,10 @@ ctx.addEventListener('message', async (event) => {
           const sidecarsToUpload: Array<{ filename: string; blob: Blob }> = [];
           if (generatedSidecars.mokuro) {
             sidecarsToUpload.push(generatedSidecars.mokuro);
+          }
+          // Layers after the primary, before the archive (same idempotent overwrite).
+          for (const layer of generatedSidecars.layers ?? []) {
+            sidecarsToUpload.push(layer);
           }
           if (generatedSidecars.thumbnail) {
             sidecarsToUpload.push(generatedSidecars.thumbnail);

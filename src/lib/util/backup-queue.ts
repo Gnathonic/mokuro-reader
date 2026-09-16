@@ -11,6 +11,7 @@ import {
   decrementPoolUsers
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
+import { stampLayersSynced } from '$lib/metadata/layer-sync';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import {
   cancelScheduledSeriesFileWrite,
@@ -52,6 +53,7 @@ interface SeriesQueueStatus {
 interface WorkerUploadSidecars {
   mokuro?: { filename: string; blob: Blob };
   thumbnail?: { filename: string; blob: Blob };
+  layers?: Array<{ layerId: string; filename: string; blob: Blob }>;
 }
 
 interface WorkerUploadCompleteData {
@@ -546,6 +548,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               getBackupUiBridge().updateProgress(processId, 'Uploading sidecars...', 100);
               const sidecars: Array<{ filename: string; blob: Blob }> = [];
               if (data.sidecars.mokuro) sidecars.push(data.sidecars.mokuro);
+              for (const layer of data.sidecars.layers ?? []) sidecars.push(layer);
               if (data.sidecars.thumbnail) sidecars.push(data.sidecars.thumbnail);
               for (const sidecar of sidecars) {
                 const sidecarPath = `${item.seriesTitle}/${sidecar.filename}`;
@@ -589,6 +592,9 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // fact about it nobody has to guess. Recorded before the index
             // write below, which reads the row to build the `series.json` entry.
             await recordArchiveSize(item.volumeUuid, archiveBlob.size);
+            if (item.sidecarOptions.includeSidecars) {
+              void stampLayersSynced(item.volumeUuid, provider!.type);
+            }
 
             noteSeriesNeedingIndexWrite(item.seriesTitle);
             // Debounced (2s), coalesced per series, and — mid-run —
@@ -639,6 +645,13 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
                   })
                 );
               }
+              for (const layer of data.sidecars.layers ?? []) {
+                downloadFileBlob(
+                  new File([layer.blob], layer.filename, {
+                    type: layer.blob.type || 'application/json'
+                  })
+                );
+              }
             }
 
             getBackupUiBridge().notify(`Exported ${item.volumeTitle} successfully`);
@@ -684,6 +697,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           addToCache(archivePath, uploadedFileId, data.size || 0, data.modifiedTime);
           // Same fact the cache entry above carries: the bytes the worker sent.
           await recordArchiveSize(item.volumeUuid, data.size);
+          // The worker uploaded the layer files with the other sidecars: stamp
+          // the rows as synced so the next listing does not push them again.
+          if (item.sidecarOptions.includeSidecars) {
+            void stampLayersSynced(item.volumeUuid, provider!.type);
+          }
           noteSeriesNeedingIndexWrite(item.seriesTitle);
           // See the matching comment on the main-thread-upload path above.
           scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: isBackupRunActive() });

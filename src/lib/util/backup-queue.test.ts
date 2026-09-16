@@ -108,6 +108,8 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 }));
 
 vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
+const stampLayersSynced = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('$lib/metadata/layer-sync', () => ({ stampLayersSynced }));
 
 import type { VolumeMetadata } from '$lib/types';
 import { downloadFileBlob } from './volume-sidecars';
@@ -444,7 +446,10 @@ describe('export-for-download sidecars', () => {
 
   const sidecars = {
     mokuro: { filename: 'One Piece - Volume 1.mokuro', blob: new Blob(['{}']) },
-    thumbnail: { filename: 'One Piece - Volume 1.webp', blob: new Blob(['img']) }
+    thumbnail: { filename: 'One Piece - Volume 1.webp', blob: new Blob(['img']) },
+    layers: [
+      { layerId: 'gcv', filename: 'One Piece - Volume 1.gcv.mokuro', blob: new Blob(['{}']) }
+    ]
   };
 
   async function completeExport(uuid: string, embedSidecarsInArchive: boolean) {
@@ -469,10 +474,42 @@ describe('export-for-download sidecars', () => {
     expect(downloadFileBlob).not.toHaveBeenCalled();
   });
 
-  it('downloads both sidecars, named after the archive, when they are not embedded', async () => {
+  it('downloads the sidecars AND the layer files, named after the archive, when not embedded', async () => {
     await completeExport('export-uuid-separate', false);
-    expect(downloadFileBlob).toHaveBeenCalledTimes(2);
+    expect(downloadFileBlob).toHaveBeenCalledTimes(3);
     const names = vi.mocked(downloadFileBlob).mock.calls.map(([file]) => (file as File).name);
-    expect(names).toEqual(['One Piece - Volume 1.mokuro', 'One Piece - Volume 1.webp']);
+    expect(names).toEqual([
+      'One Piece - Volume 1.mokuro',
+      'One Piece - Volume 1.webp',
+      'One Piece - Volume 1.gcv.mokuro'
+    ]);
+  });
+
+  it('a main-thread upload writes the layer files beside the archive and stamps the rows', async () => {
+    const uploadFile = vi.fn(async () => 'uploaded-file-id');
+    const provider = {
+      type: 'filesystem',
+      uploadConcurrencyLimit: 1,
+      supportsWorkerUpload: false,
+      uploadFile
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'layers-upload-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete(
+      { type: 'complete', data: new Uint8Array([1, 2, 3]), filename: 'Volume 1.cbz', sidecars },
+      vi.fn()
+    );
+    const paths = uploadFile.mock.calls.map(([path]) => path);
+    expect(paths).toEqual([
+      'One Piece/One Piece - Volume 1.mokuro',
+      'One Piece/One Piece - Volume 1.gcv.mokuro',
+      'One Piece/One Piece - Volume 1.webp',
+      'One Piece/Volume 1.cbz'
+    ]);
+    expect(stampLayersSynced).toHaveBeenCalledWith('layers-upload-uuid', 'filesystem');
   });
 });

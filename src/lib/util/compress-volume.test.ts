@@ -11,7 +11,7 @@ import { BlobReader, TextWriter, ZipReader, configure } from '@zip.js/zip.js';
 // jsdom has no usable Worker for zip.js to farm compression out to.
 configure({ useWebWorkers: false });
 
-import { compressVolumeFromDb } from './compress-volume';
+import { compressVolumeFromDb, generateVolumeSidecarsFromDb } from './compress-volume';
 import { parseSeriesFile } from '$lib/metadata/series-file';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
@@ -66,7 +66,8 @@ beforeEach(async () => {
     db.table('volume_ocr').clear(),
     db.table('volume_files').clear(),
     db.table('series_metadata').clear(),
-    db.table('series_index').clear()
+    db.table('series_index').clear(),
+    db.table('volume_ocr_layers').clear()
   ]);
   await db
     .table('volumes')
@@ -125,5 +126,61 @@ describe('compressVolumeFromDb', () => {
     });
 
     expect(await entryNames(blob)).not.toContain('series.json');
+  });
+});
+
+describe('generateVolumeSidecarsFromDb — layers', () => {
+  it('emits one <title>.<id>.mokuro per layer row, upstream format, with the layer chars', async () => {
+    await db.table('volume_ocr_layers').put({
+      volume_uuid: 'volume-uuid',
+      layer_id: 'gcv',
+      name: 'Cloud Vision',
+      kind: 'ocr',
+      engine: 'gcv',
+      created_at: '2026-09-16T00:00:00.000Z',
+      updated_at: '2026-09-16T00:00:00.000Z',
+      pages: [
+        {
+          version: '0.2.1',
+          img_width: 10,
+          img_height: 10,
+          img_path: '001.jpg',
+          blocks: [{ box: [0, 0, 1, 1], vertical: true, font_size: 1, lines: ['あいう'] }]
+        }
+      ]
+    });
+    const sidecars = await generateVolumeSidecarsFromDb('volume-uuid');
+    expect(sidecars.mokuro?.filename).toBe('Vol 1.mokuro');
+    expect(sidecars.layers?.map((l) => [l.layerId, l.filename])).toEqual([
+      ['gcv', 'Vol 1.gcv.mokuro']
+    ]);
+    const json = JSON.parse(await sidecars.layers![0].blob.text());
+    expect(json.chars).toBe(3);
+    expect(json.volume_uuid).toBe('volume-uuid');
+    expect(json.pages[0].blocks[0].lines).toEqual(['あいう']);
+    expect(Object.keys(json).sort()).toEqual([
+      'chars',
+      'pages',
+      'title',
+      'title_uuid',
+      'version',
+      'volume',
+      'volume_uuid'
+    ]);
+  });
+
+  it('a renamed volume names its layer files after the new title', async () => {
+    await db.table('volume_ocr_layers').put({
+      volume_uuid: 'volume-uuid',
+      layer_id: 'fix',
+      name: 'Fix',
+      kind: 'edit',
+      created_at: '2026-09-16T00:00:00.000Z',
+      updated_at: '2026-09-16T00:00:00.000Z',
+      pages: []
+    });
+    const sidecars = await generateVolumeSidecarsFromDb('volume-uuid', { volumeTitle: 'Vol 01' });
+    expect(sidecars.layers?.[0].filename).toBe('Vol 01.fix.mokuro');
+    expect(JSON.parse(await sidecars.layers![0].blob.text()).volume).toBe('Vol 01');
   });
 });
