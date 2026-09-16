@@ -23,6 +23,8 @@
   interface Props {
     layers: LayerSummary[];
     current: string | null;
+    /** Label of the primary row (`mokuro <version>`); "Primary" stays as its badge. */
+    primaryName?: string;
     onSelect: (layerId: string | null) => void;
     onAction: (action: LayerAction, layerId: string | null) => void;
     onClose: () => void;
@@ -30,8 +32,16 @@
     onOcrVolume?: () => void;
     onTranslateVolume?: () => void;
   }
-  let { layers, current, onSelect, onAction, onClose, onOcrVolume, onTranslateVolume }: Props =
-    $props();
+  let {
+    layers,
+    current,
+    primaryName = 'Primary',
+    onSelect,
+    onAction,
+    onClose,
+    onOcrVolume,
+    onTranslateVolume
+  }: Props = $props();
 
   const row =
     'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-gray-600 aria-checked:bg-gray-600';
@@ -51,7 +61,7 @@
   </div>
   <div class="flex items-center">
     <button role="radio" aria-checked={current === null} class={row} onclick={() => onSelect(null)}>
-      <span class="flex-1 truncate">Primary</span>
+      <span class="flex-1 truncate">{primaryName}</span>
       <span class="rounded bg-gray-800 px-1 text-[10px]">Primary</span>
     </button>
   </div>

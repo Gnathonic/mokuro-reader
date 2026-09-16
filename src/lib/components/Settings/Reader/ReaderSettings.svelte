@@ -13,10 +13,10 @@
     type PageViewMode,
     type VolumeSettingsKey
   } from '$lib/settings';
-  import { isReader } from '$lib/util';
+  import { isReader, showSnackbar } from '$lib/util';
   import { routeParams } from '$lib/util/hash-router';
   import { MAX_PAGE_GAP } from '$lib/reader/zoom-math';
-  import { layerSummaries, type LayerSummary } from '$lib/reader/edit/layer-list';
+  import { layerSummaries, primaryLayerName, type LayerSummary } from '$lib/reader/edit/layer-list';
   import { LAYER_KIND_LABEL, loadLayerPages } from '$lib/reader/edit/layers';
   import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
   import { runLayerAction, type LayerAction } from '$lib/components/Reader/Layers/layer-actions';
@@ -82,11 +82,29 @@
   });
   let currentLayer = $derived((volumeId && $volumes[volumeId]?.settings?.ocrLayer) || '');
   let currentLayerName = $derived(layers.find((l) => l.layer_id === currentLayer)?.name);
+  // The primary row is named after the mokuro version on the volume's DB row.
+  let primaryName = $state('mokuro');
+  $effect(() => {
+    const id = inReader ? volumeId : '';
+    if (!id) return;
+    let cancelled = false;
+    db.volumes
+      .get(id)
+      .then((row) => {
+        if (!cancelled) primaryName = primaryLayerName(row?.mokuro_version);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  });
 
   function onLayerChange(e: Event) {
     if (!volumeId) return;
     const value = (e.target as HTMLSelectElement).value;
     updateVolumeSetting(volumeId, 'ocrLayer', value || undefined);
+    const name = value ? (layers.find((l) => l.layer_id === value)?.name ?? value) : primaryName;
+    showSnackbar(`OCR layer: ${name}`);
   }
 
   async function layerAction(action: LayerAction) {
@@ -247,7 +265,7 @@
             value={currentLayer}
             onchange={onLayerChange}
           >
-            <option value="" selected={currentLayer === ''}>Primary</option>
+            <option value="" selected={currentLayer === ''}>{primaryName}</option>
             {#each layers as layer (layer.layer_id)}
               <option value={layer.layer_id} selected={currentLayer === layer.layer_id}
                 >{layer.name} ({LAYER_KIND_LABEL[layer.kind]})</option

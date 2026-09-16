@@ -50,6 +50,17 @@ export function layerSummaries(volumeUuid: string): Readable<LayerSummary[]> {
 }
 
 /**
+ * What the primary OCR row is called in the layer picker, settings select and
+ * switch toasts: the mokuro name with the version that produced it
+ * (`mokuro 0.2.2`), so it reads as one engine among the layers rather than a
+ * status word. An image-only volume (empty version) is plain `mokuro`.
+ */
+export function primaryLayerName(mokuroVersion: string | undefined | null): string {
+  const v = (mokuroVersion ?? '').trim();
+  return v ? `mokuro ${v}` : 'mokuro';
+}
+
+/**
  * The layer the `L` hotkey moves to: Primary (null) → each layer in list
  * order → Primary again. A displayed id that is no longer listed (deleted
  * under us) restarts the cycle; with no layers at all it stays on Primary.

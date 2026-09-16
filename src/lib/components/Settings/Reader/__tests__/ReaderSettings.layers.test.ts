@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { readable } from 'svelte/store';
+import { tick } from 'svelte';
 
 const updateVolumeSetting = vi.hoisted(() => vi.fn());
 const runLayerAction = vi.hoisted(() => vi.fn(async () => {}));
@@ -26,8 +27,14 @@ vi.mock('$lib/settings', async () => {
 });
 vi.mock('$lib/util', () => ({ isReader: () => true, showSnackbar: vi.fn() }));
 vi.mock('$lib/util/hash-router', () => ({ routeParams: readable({ volume: 'v1' }) }));
-vi.mock('$lib/catalog/db', () => ({ db: { volume_ocr: { get: vi.fn(async () => undefined) } } }));
+vi.mock('$lib/catalog/db', () => ({
+  db: {
+    volume_ocr: { get: vi.fn(async () => undefined) },
+    volumes: { get: vi.fn(async () => ({ mokuro_version: '0.2.2' })) }
+  }
+}));
 vi.mock('$lib/reader/edit/layer-list', () => ({
+  primaryLayerName: (v: string | undefined) => (v ? `mokuro ${v}` : 'mokuro'),
   layerSummaries: () =>
     readable([
       { layer_id: 'original', name: 'Original', kind: 'original', updated_at: 'x' },
@@ -56,8 +63,11 @@ describe('ReaderSettings — OCR layers', () => {
   it('lists layers in a select bound to the volume setting and exposes the actions', async () => {
     const { getByLabelText, queryByLabelText } = render(ReaderSettings);
     const select = getByLabelText('OCR layer') as HTMLSelectElement;
+    // The primary option is named after the mokuro version once the row loads.
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
     expect([...select.options].map((o) => o.textContent?.trim())).toEqual([
-      'Primary',
+      'mokuro 0.2.2',
       'Original (Original)',
       'English (Translation)'
     ]);

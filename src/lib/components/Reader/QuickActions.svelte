@@ -41,6 +41,7 @@
     /** OCR layers of the volume; the picker shows when there are any, or in edit mode. */
     layers?: LayerSummary[];
     currentLayer?: string | null;
+    primaryLayerName?: string;
     onSelectLayer?: (layerId: string | null) => void;
     onLayerAction?: (action: LayerAction, layerId: string | null) => void;
     /** Engine entry points (experimental) — given only when the key is configured. */
@@ -67,6 +68,7 @@
     editing = false,
     layers = [],
     currentLayer = null,
+    primaryLayerName = 'Primary',
     onSelectLayer,
     onLayerAction,
     onOcrPage,
@@ -244,6 +246,7 @@
       <LayerPicker
         {layers}
         current={currentLayer}
+        primaryName={primaryLayerName}
         onSelect={(id) => {
           onSelectLayer?.(id);
           layersOpen = false;

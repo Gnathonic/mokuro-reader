@@ -15,12 +15,21 @@ describe('LayerPicker', () => {
   it('lists Primary and every layer with its kind, marks the current one, and selects', async () => {
     const onSelect = vi.fn();
     const { getByRole, getAllByRole, getByText } = render(LayerPicker, {
-      props: { layers, current: 'english', onSelect, onAction: vi.fn(), onClose: vi.fn() }
+      props: {
+        layers,
+        current: 'english',
+        primaryName: 'mokuro 0.2.2',
+        onSelect,
+        onAction: vi.fn(),
+        onClose: vi.fn()
+      }
     });
     const radios = getAllByRole('radio');
     expect(radios.map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'false', 'true']);
     expect(getByText('Translation')).toBeTruthy();
-    await fireEvent.click(getByRole('radio', { name: /Primary/ }));
+    // The primary row is named after the mokuro version; "Primary" stays its badge.
+    expect(getByText('mokuro 0.2.2')).toBeTruthy();
+    await fireEvent.click(getByRole('radio', { name: /mokuro 0\.2\.2/ }));
     expect(onSelect).toHaveBeenCalledWith(null);
     await fireEvent.click(getByRole('radio', { name: /Original/ }));
     expect(onSelect).toHaveBeenCalledWith('original');

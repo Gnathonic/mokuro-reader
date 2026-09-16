@@ -213,7 +213,7 @@ test.describe('OCR layers', () => {
     await expect.poll(async () => (await readState(page)).setting).toBe('fix');
 
     await page.keyboard.press('l');
-    await expect(page.getByText('OCR layer: Primary')).toBeVisible();
+    await expect(page.getByText('OCR layer: mokuro 0.2.1')).toBeVisible();
     await expect.poll(async () => (await readState(page)).setting).toBeNull();
   });
 
@@ -258,7 +258,7 @@ test.describe('OCR layers', () => {
 
     // Back to Primary: Edit is enabled again.
     await openLayerPicker(page);
-    await page.getByRole('radio', { name: /Primary/ }).click();
+    await page.getByRole('radio', { name: /mokuro 0\.2\.1/ }).click();
     await expect.poll(async () => (await readState(page)).setting).toBeNull();
     await openQuickActions(page);
     await expect(page.getByLabel('Edit OCR', { exact: true })).toBeEnabled();

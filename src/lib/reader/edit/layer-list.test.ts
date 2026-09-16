@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 
-import { summarizeLayers, nextLayerId } from './layer-list';
+import { summarizeLayers, nextLayerId, primaryLayerName } from './layer-list';
 import type { VolumeOcrLayer } from '$lib/types';
 
 describe('summarizeLayers', () => {
@@ -68,5 +68,14 @@ describe('nextLayerId', () => {
     expect(nextLayerId('gone', layers)).toBe('original');
     expect(nextLayerId(null, [])).toBe(null);
     expect(nextLayerId('fix', [])).toBe(null);
+  });
+});
+
+describe('primaryLayerName', () => {
+  it('names the primary row after the mokuro version, plain mokuro when image-only', () => {
+    expect(primaryLayerName('0.2.2')).toBe('mokuro 0.2.2');
+    expect(primaryLayerName(' 0.1.8 ')).toBe('mokuro 0.1.8');
+    expect(primaryLayerName('')).toBe('mokuro');
+    expect(primaryLayerName(undefined)).toBe('mokuro');
   });
 });
