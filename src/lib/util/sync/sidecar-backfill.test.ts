@@ -393,6 +393,35 @@ describe('sidecar backfill — the sweep trigger', () => {
     expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
   });
 
+  it('an OCR layer file beside the archive is not the primary: the .mokuro still uploads', async () => {
+    await withOcr(installedVolume());
+    cloud.state.files.push(
+      listed('Legacy Series/Volume 01.cbz'),
+      listed('Legacy Series/Volume 01.gcv.mokuro'),
+      listed('Legacy Series/Volume 01.webp')
+    );
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+
+    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+  });
+
+  it('with the primary AND a layer file listed, nothing uploads', async () => {
+    await withOcr(installedVolume());
+    cloud.state.files.push(
+      listed('Legacy Series/Volume 01.cbz'),
+      listed('Legacy Series/Volume 01.mokuro'),
+      listed('Legacy Series/Volume 01.gcv.mokuro'),
+      listed('Legacy Series/Volume 01.webp')
+    );
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+
+    expect(cloud.uploadFile).not.toHaveBeenCalled();
+  });
+
   it('uploads only the missing HALF when the other sidecar exists', async () => {
     await withOcr(installedVolume());
     cloud.state.files.push(

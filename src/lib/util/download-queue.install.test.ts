@@ -71,8 +71,15 @@ const { hasWritableNonServerProvider, scheduleSeriesFileWrite } = vi.hoisted(() 
 }));
 vi.mock('$lib/metadata/series-backfill', () => ({ hasWritableNonServerProvider }));
 vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
+const { attachLayerToVolume, readLayerFile, pullLayersForVolume } = vi.hoisted(() => ({
+  attachLayerToVolume: vi.fn(async () => ({})),
+  readLayerFile: vi.fn(async () => ({ pages: [{ img_width: 1 }] })),
+  pullLayersForVolume: vi.fn(async () => 0)
+}));
+vi.mock('$lib/reader/edit/layer-import', () => ({ attachLayerToVolume, readLayerFile }));
+vi.mock('$lib/metadata/layer-sync', () => ({ pullLayersForVolume }));
 
-import { processVolumeData } from './download-queue';
+import { classifyArchiveMokuroEntry, processVolumeData } from './download-queue';
 
 /** The queued placeholder, carrying the size the LISTING claimed. */
 function placeholder(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -262,5 +269,44 @@ describe('the install trigger — a finished install schedules its series.json w
 
     expect(saveVolume).toHaveBeenCalledTimes(1); // the install itself still happened
     expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('OCR layers riding a downloaded archive', () => {
+  it('classifies `<archive stem>.<id>.mokuro` entries as layers, never the primary', () => {
+    expect(classifyArchiveMokuroEntry('Vol 1.gcv.mokuro', 'Vol 1')).toEqual({ layerId: 'gcv' });
+    expect(classifyArchiveMokuroEntry('Vol 1/Vol 1.tr-en.mokuro.gz', 'vol 1')).toEqual({
+      layerId: 'tr-en'
+    });
+    expect(classifyArchiveMokuroEntry('Vol 1.mokuro', 'Vol 1')).toBeNull();
+    // A dotted title's own primary inside `Vol 1.5.cbz`.
+    expect(classifyArchiveMokuroEntry('Vol 1.5.mokuro', 'Vol 1.5')).toBeNull();
+    // A layer of ANOTHER volume is not this archive's layer.
+    expect(classifyArchiveMokuroEntry('Vol 2.gcv.mokuro', 'Vol 1')).toBeNull();
+  });
+
+  it('hands the primary to the import, attaches the embedded layers after the save, then pulls the listed ones', async () => {
+    vi.mocked(processVolume).mockResolvedValue(processed());
+    attachLayerToVolume.mockClear();
+    pullLayersForVolume.mockClear();
+    const data = new TextEncoder().encode('{}');
+    await processVolumeData(
+      [
+        { filename: 'Vol 1.mokuro', data },
+        { filename: 'Vol 1.gcv.mokuro', data },
+        { filename: '001.jpg', data }
+      ] as never,
+      placeholder(),
+      10
+    );
+    const decompressed = vi.mocked(processVolume).mock.lastCall![0] as {
+      mokuroFile: File | null;
+      layerFiles?: Array<{ layerId: string }>;
+    };
+    expect(decompressed.mokuroFile?.name).toBe('Vol 1.mokuro');
+    expect(decompressed.layerFiles?.map((l) => l.layerId)).toEqual(['gcv']);
+    await vi.waitFor(() => expect(attachLayerToVolume).toHaveBeenCalledTimes(1));
+    expect(attachLayerToVolume).toHaveBeenCalledWith('uuid-1', 'gcv', [{ img_width: 1 }]);
+    await vi.waitFor(() => expect(pullLayersForVolume).toHaveBeenCalledWith('uuid-1', 'webdav'));
   });
 });

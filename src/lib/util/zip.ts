@@ -5,7 +5,11 @@ import { compressVolume } from './compress-volume';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 import { backupQueue } from './backup-queue';
 import { progressTrackerStore } from './progress-tracker';
-import { buildSeriesFileForExport, loadVolumeSidecars } from './volume-sidecars';
+import {
+  buildSeriesFileForExport,
+  loadVolumeLayerFiles,
+  loadVolumeSidecars
+} from './volume-sidecars';
 import { SERIES_FILE_NAME, stringifySeriesFile } from '$lib/metadata/series-file';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { showSnackbar } from './snackbar';
@@ -249,6 +253,14 @@ async function addVolumeToArchiveWithProgress(
     const sidecars = await loadVolumeSidecars(volume.volume_uuid);
     if (sidecars.thumbnailFile) {
       await zipWriter.add(sidecars.thumbnailFile.name, new BlobReader(sidecars.thumbnailFile));
+    }
+  }
+
+  // The volume's OCR layers ride beside its `.mokuro` as `<title>.<id>.mokuro`
+  // (the cloud/bunko shape), so a re-import attaches them to the same volume.
+  if (sidecarOptions?.includeSidecars !== false) {
+    for (const layer of await loadVolumeLayerFiles(volume.volume_uuid)) {
+      await zipWriter.add(layer.name, new BlobReader(layer));
     }
   }
 }

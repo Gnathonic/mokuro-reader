@@ -1,6 +1,7 @@
 import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
 import { isArchiveSize, type CloudSidecarStamp } from './series-file';
 import { normalizeVolumeTitleKey } from './series-key';
+import { cbzStemsOf, classifyMokuroSidecar } from '$lib/util/sync/syncable-file';
 
 /**
  * The freshness half of `series-backfill.ts`: turning a cloud folder listing
@@ -75,11 +76,17 @@ export function groupSeriesSidecarFiles(
   files: Iterable<CloudFileMetadata>
 ): Map<string, SeriesSidecarFiles> {
   const groups = new Map<string, SeriesSidecarFiles>();
+  const listed = [...files];
+  const cbzStems = cbzStemsOf(listed.map((file) => basename(file.path)));
 
-  for (const file of files) {
+  for (const file of listed) {
     const name = basename(file.path);
     let stem: string | undefined;
     let kind: 'mokuro' | 'mokuro-gz' | 'cover' | undefined;
+
+    // An OCR layer file (`<title>.<id>.mokuro`) is not the volume's primary
+    // sidecar and must not stamp (or shadow) it — `layer-sync.ts` owns those.
+    if (classifyMokuroSidecar(name, cbzStems).kind === 'layer') continue;
 
     if (/\.mokuro\.gz$/i.test(name)) {
       stem = name.slice(0, -'.mokuro.gz'.length);

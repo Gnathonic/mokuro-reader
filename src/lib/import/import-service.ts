@@ -41,6 +41,13 @@ import {
   decrementPoolUsers
 } from '$lib/util/file-processing-pool';
 import { getImportUiBridge, type MissingFilesInfo } from './import-ui';
+import {
+  applyStashedLayersFor,
+  attachLayerFile,
+  clearStashedLayerEntries,
+  extractLayerEntries,
+  stashLayerEntries
+} from '$lib/reader/edit/layer-import';
 import { extractSeriesName } from '$lib/upload/image-only-fallback';
 import { generateUUID } from '$lib/util/uuid';
 import { requestPersistentStorage } from '$lib/util/upload';
@@ -187,6 +194,9 @@ function noteImportedVolume(processed: ProcessedVolume): void {
     storedTitleSegment(processed.metadata.series),
     processed.metadata.volumeUuid
   );
+  // Layer files that rode beside this volume in the batch attach now that its
+  // row exists. Never throws; a layer that finds no volume simply stays behind.
+  void applyStashedLayersFor(processed.metadata.volumeUuid, processed.metadata.volume);
   if (hasWritableNonServerProvider()) {
     scheduleSeriesFileWrite(storedTitleSegment(processed.metadata.series));
   }
@@ -497,8 +507,13 @@ async function processArchiveContents(
     fileEntries.push({ path: externalMokuroFile.name, file: externalMokuroFile });
   }
 
+  // `<stem>.<id>.mokuro` entries beside a volume are its OCR layers, not
+  // volumes of their own: hold them until the volume is saved.
+  const layerSplit = extractLayerEntries(fileEntries);
+  stashLayerEntries([...layerSplit.layers, ...layerSplit.standalone]);
+
   // Run pairing logic
-  const pairingResult = await pairMokuroWithSources(fileEntries);
+  const pairingResult = await pairMokuroWithSources(layerSplit.entries);
 
   if (pairingResult.warnings.length > 0) {
     pairingResult.warnings.forEach((warning) => {
@@ -1157,13 +1172,34 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
 
   try {
     // Convert to FileEntry format
-    const entries = filesToEntries(files);
+    clearStashedLayerEntries();
+    const picked = filesToEntries(files);
 
     // A picked/dropped `series.json` is not a volume — pairing ignores it, so
     // collect it here and apply it once the batch's volumes are saved.
-    for (const entry of entries) {
+    for (const entry of picked) {
       if (isSeriesFilePath(entry.path)) {
         await collectSeriesFileFromFile(entry.path, entry.file);
+      }
+    }
+
+    // OCR layer files (`<stem>.<id>.mokuro`): beside their volume they wait
+    // for it to be saved; on their own they attach to the installed volume
+    // they name. One that names nothing installed falls through to pairing
+    // (and is reported like any other stray file).
+    const layerSplit = extractLayerEntries(picked);
+    stashLayerEntries(layerSplit.layers);
+    const entries = layerSplit.entries;
+    let attachedLayers = 0;
+    for (const layer of layerSplit.standalone) {
+      const attached = await attachLayerFile(layer.file, { path: layer.path });
+      if (attached.status === 'attached') {
+        attachedLayers++;
+        getImportUiBridge().notify(
+          `Attached OCR layer "${attached.layerId}" to ${attached.volumeTitle}`
+        );
+      } else {
+        entries.push({ path: layer.path, file: layer.file });
       }
     }
 
@@ -1177,7 +1213,7 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
     }
 
     if (pairingResult.pairings.length === 0) {
-      getImportUiBridge().notify('No importable volumes found');
+      if (attachedLayers === 0) getImportUiBridge().notify('No importable volumes found');
       return result;
     }
 

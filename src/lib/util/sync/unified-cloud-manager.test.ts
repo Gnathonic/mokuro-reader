@@ -324,6 +324,86 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(changed).toBe(4);
   });
 
+  it('a volume\u2019s OCR layer files are managed with it, and a dotted sibling volume is not', async () => {
+    const files = [
+      ...oldSeriesFiles(),
+      {
+        provider: 'webdav',
+        fileId: 'layer-1',
+        path: 'Old Series/Volume 1.paddle-manga.mokuro',
+        modifiedTime: 't',
+        size: 9
+      },
+      {
+        provider: 'webdav',
+        fileId: 'cbz-15',
+        path: 'Old Series/Volume 1.5.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      {
+        provider: 'webdav',
+        fileId: 'mokuro-15',
+        path: 'Old Series/Volume 1.5.mokuro',
+        modifiedTime: 't',
+        size: 10
+      }
+    ] as CloudFileMetadata[];
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const managed = unifiedCloudManager
+      .getManagedCloudFilesForVolume('Old Series', 'Volume 1')
+      .map((f) => f.path);
+    expect(managed).toEqual([
+      'Old Series/Volume 1.cbz',
+      'Old Series/Volume 1.mokuro',
+      'Old Series/Volume 1.webp',
+      'Old Series/Volume 1.paddle-manga.mokuro'
+    ]);
+    expect(
+      unifiedCloudManager
+        .getManagedCloudFilesForVolume('Old Series', 'Volume 1.5')
+        .map((f) => f.path)
+    ).toEqual(['Old Series/Volume 1.5.cbz', 'Old Series/Volume 1.5.mokuro']);
+  });
+
+  it('a rename MOVES the layer files to the new name and never deletes them', async () => {
+    const cache = loadedCache();
+    const provider = makeRenameProvider();
+    const layer = {
+      provider: 'webdav',
+      fileId: 'layer-1',
+      path: 'Old Series/Volume 1.paddle-manga.mokuro.gz',
+      modifiedTime: 't',
+      size: 9
+    } as CloudFileMetadata;
+    const files = [...oldSeriesFiles(), layer];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((seriesTitle: string) =>
+      files.filter((file) => file.path.startsWith(`${seriesTitle}/`))
+    );
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
+    });
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const changed = await unifiedCloudManager.renameVolume(
+      'Old Series',
+      'Volume 1',
+      'New Series',
+      'Volume X',
+      'uuid-1'
+    );
+    expect(provider.renameFile).toHaveBeenCalledWith(
+      layer,
+      'New Series/Volume X.paddle-manga.mokuro.gz'
+    );
+    // Only the PRIMARY .mokuro is regenerated + deleted.
+    expect(provider.deleteFile).toHaveBeenCalledTimes(1);
+    expect(provider.deleteFile).toHaveBeenCalledWith(files[1]);
+    expect(changed).toBe(5);
+  });
+
   it('throws on a read-only provider instead of letting the local rename desync', async () => {
     const provider = makeRenameProvider({ getStatus: vi.fn(() => ({ isReadOnly: true })) });
     const files = oldSeriesFiles();
@@ -1138,6 +1218,39 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
     expect(deleted).not.toContain('S/Vol 2.cbz');
     expect(deleted[deleted.length - 1]).toBe('S/Vol 1.cbz');
     expect(cache.removeById).toHaveBeenCalledTimes(3);
+  });
+
+  it('deletes the volume\u2019s OCR layer files with it, before the archive', async () => {
+    const cache = { removeById: vi.fn() };
+    const deleted: string[] = [];
+    const provider = {
+      type: 'mega',
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        deleted.push(file.path);
+      })
+    };
+    const files = [
+      ...baseFiles(),
+      {
+        provider: 'mega',
+        fileId: 'layer-1',
+        path: 'S/Vol 1.gcv.mokuro',
+        modifiedTime: '',
+        size: 3
+      },
+      { provider: 'mega', fileId: 'layer-2', path: 'S/Vol 2.gcv.mokuro', modifiedTime: '', size: 3 }
+    ] as CloudFileMetadata[];
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(cache);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume('S', 'Vol 1');
+
+    expect(deleted).toContain('S/Vol 1.gcv.mokuro');
+    expect(deleted).not.toContain('S/Vol 2.gcv.mokuro');
+    expect(deleted[deleted.length - 1]).toBe('S/Vol 1.cbz');
+    expect(provider.deleteFile).toHaveBeenCalledTimes(4);
   });
 
   it('reports a summary on partial failure but still clears the successes', async () => {

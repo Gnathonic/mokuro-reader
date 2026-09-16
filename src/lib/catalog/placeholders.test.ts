@@ -100,6 +100,22 @@ describe('generatePlaceholders', () => {
     expect(placeholders[0].volume_title).toBe('Volume 1');
   });
 
+  it('never mints a phantom volume from an OCR layer file beside its archive', () => {
+    const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
+      [
+        'One Piece',
+        [
+          cloudFile('One Piece/Volume 1.cbz'),
+          cloudFile('One Piece/Volume 1.mokuro'),
+          cloudFile('One Piece/Volume 1.paddle-manga.mokuro'),
+          cloudFile('One Piece/Volume 1.tr-en.mokuro.gz')
+        ]
+      ]
+    ]);
+    const placeholders = generatePlaceholders(cloudFiles, []);
+    expect(placeholders.map((p) => p.volume_title)).toEqual(['Volume 1']);
+  });
+
   it('produces nothing at all for a series folder holding only the sidecar', () => {
     const cloudFiles = new Map<string, CloudVolumeWithProvider[]>([
       ['One Piece', [cloudFile('One Piece/series.json')]]

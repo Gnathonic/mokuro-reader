@@ -139,6 +139,8 @@ export interface DecompressedVolume {
   sourceType: 'local' | 'cloud';
   /** Archives discovered inside (for recursive processing) */
   nestedArchives: File[];
+  /** OCR layer files (`<stem>.<id>.mokuro`) found beside the volume's own `.mokuro`. */
+  layerFiles?: Array<{ layerId: string; file: File }>;
 }
 
 /**

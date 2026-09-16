@@ -74,11 +74,39 @@ import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
 import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 import { syncLayersFromListing } from '$lib/metadata/layer-sync';
+import { cbzStemsOf, classifyMokuroSidecar } from './syncable-file';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
   const lower = normalizeCloudPath(path).toLowerCase();
   return lower.endsWith('.mokuro') || lower.endsWith('.mokuro.gz');
+}
+
+/**
+ * The OCR LAYER files (`<Volume>.<id>.mokuro[.gz]`) among a folder's listing
+ * that belong to ONE volume, decided by archive presence exactly as every
+ * other site does (`classifyMokuroSidecar`): `Vol 1.5.mokuro` is a layer of
+ * `Vol 1` only when `Vol 1.5.cbz` is not listed. Returned with their ids so a
+ * rename can rebuild the destination name.
+ */
+function layerFilesOfVolume(
+  folderFiles: CloudFileMetadata[],
+  volumeBaseName: string
+): Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> {
+  const stems = cbzStemsOf(folderFiles.map((f) => basenameOfPath(f.path)));
+  const key = normalizeVolumeTitleKey(volumeBaseName);
+  const out: Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> = [];
+  for (const file of folderFiles) {
+    const cls = classifyMokuroSidecar(basenameOfPath(file.path), stems);
+    if (cls.kind !== 'layer') continue;
+    if (cls.stem !== volumeBaseName && normalizeVolumeTitleKey(cls.stem) !== key) continue;
+    out.push({ file, layerId: cls.layerId, gz: cls.gz });
+  }
+  return out;
+}
+
+function basenameOfPath(path: string): string {
+  return normalizeCloudPath(path).split('/').pop() ?? '';
 }
 
 /**
@@ -622,10 +650,18 @@ class UnifiedCloudManager {
     const files = this.getCloudVolumesBySeries(folderTitle);
 
     const basePath = normalizeCloudPath(`${folderTitle}/${volumeTitle}`);
+    const withLayers = (group: CloudFileMetadata[], baseName: string): CloudFileMetadata[] => {
+      // The volume's OCR layer files ride with it: moved on rename, removed
+      // on delete. They are never in `group` — their stripped base is
+      // `<title>.<id>`, not `<title>` — so they are joined here by
+      // classification against the folder's archives.
+      const layers = layerFilesOfVolume(files, baseName).map((l) => l.file);
+      return layers.length > 0 ? [...group, ...layers] : group;
+    };
     const exact = files.filter(
       (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
     );
-    if (exact.length > 0) return exact;
+    if (exact.length > 0) return withLayers(exact, volumeTitle);
 
     const key = normalizeVolumeTitleKey(volumeTitle);
     if (!key) return exact;
@@ -644,7 +680,7 @@ class UnifiedCloudManager {
     // first-seen so it cannot depend on listing order (same rule as
     // `resolveCloudFolderTitle`).
     const base = [...byBase.keys()].sort(naturalSort)[0];
-    return byBase.get(base)!;
+    return withLayers(byBase.get(base)!, base.slice(base.lastIndexOf('/') + 1));
   }
 
   /**
@@ -778,11 +814,29 @@ class UnifiedCloudManager {
       return 0;
     }
 
+    // OCR layer files (`<title>.<id>.mokuro`) are content-agnostic to the
+    // rename (attachment is by filename) and are MOVED like the archive and
+    // cover — never regenerated, never deleted as "the stale .mokuro".
+    const layerDestinations = new Map<CloudFileMetadata, string>();
+    for (const layer of layerFilesOfVolume(
+      this.getCloudVolumesBySeries(oldSeriesTitle),
+      oldVolumeTitle
+    )) {
+      if (!managedFiles.includes(layer.file)) continue;
+      layerDestinations.set(
+        layer.file,
+        `${newBasePath}.${layer.layerId}.mokuro${layer.gz ? '.gz' : ''}`
+      );
+    }
+    const isLayerFile = (file: CloudFileMetadata) => layerDestinations.has(file);
+    const isPrimaryMokuro = (file: CloudFileMetadata) =>
+      isMokuroSidecarPath(file.path) && !isLayerFile(file);
+
     // Regenerate the fresh .mokuro FIRST (no remote mutation yet), built with
     // the new names (overrides — the DB still holds the old ones until this
     // gate clears). Only the .mokuro embeds the title, so it's the one file we
     // regenerate rather than move.
-    const hasCloudMokuro = managedFiles.some((file) => isMokuroSidecarPath(file.path));
+    const hasCloudMokuro = managedFiles.some(isPrimaryMokuro);
     let freshMokuroBlob: Blob | null = null;
     // A metadata-only volume has no OCR here to rebuild the sidecar from, so
     // there is nothing to read and the gate below turns it into a clear error.
@@ -825,6 +879,7 @@ class UnifiedCloudManager {
     const destinationFiles = this.getManagedCloudFilesForVolume(newSeriesTitle, newVolumeTitle);
     const destinationPaths = new Set(destinationFiles.map((f) => normalizeCloudPath(f.path)));
     const collision = managedFiles.some((file) => {
+      if (isLayerFile(file)) return destinationPaths.has(layerDestinations.get(file)!);
       if (isMokuroSidecarPath(file.path)) return false; // regenerated, not moved
       return destinationPaths.has(`${newBasePath}${managedExtensionOf(file.path)}`);
     });
@@ -855,6 +910,11 @@ class UnifiedCloudManager {
     //    moved by a prior attempt is simply absent from the old path after the
     //    fresh fetch, so it never re-enters this loop.
     for (const file of managedFiles) {
+      if (isLayerFile(file)) {
+        await this.moveFile(provider, file, layerDestinations.get(file)!);
+        changed++;
+        continue;
+      }
       if (isMokuroSidecarPath(file.path)) continue;
       await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
       changed++;
@@ -865,7 +925,7 @@ class UnifiedCloudManager {
     //    MOVE it instead so OCR is never lost — the gate above already rejected
     //    the dangerous "had a UUID but couldn't regenerate" case.
     for (const file of managedFiles) {
-      if (!isMokuroSidecarPath(file.path)) continue;
+      if (!isPrimaryMokuro(file)) continue;
       if (freshMokuroBlob) {
         if (await this.deleteFileIdempotent(file)) changed++;
       } else {

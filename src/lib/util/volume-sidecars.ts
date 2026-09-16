@@ -5,6 +5,8 @@ import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
 import { getSeriesMetadataForTitle } from '$lib/metadata/store';
 import { buildMokuroMetadata } from './mokuro-metadata';
+import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
+import { layerSidecarName } from './sync/syncable-file';
 
 export interface VolumeSidecarFiles {
   mokuroFile: File | null;
@@ -109,4 +111,28 @@ export function downloadFileBlob(file: File): void {
   link.download = file.name;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * A volume's OCR layers as `<Volume Title>.<id>.mokuro` Files (upstream
+ * format, the layer's own character count) — the same names the cloud and
+ * mokuro-bunko use, so an exported ZIP re-imports with its layers attached.
+ */
+export async function loadVolumeLayerFiles(volumeUuid: string): Promise<File[]> {
+  const volume = await db.volumes.get(volumeUuid);
+  if (!volume) return [];
+  const layers = await db.volume_ocr_layers.where('volume_uuid').equals(volumeUuid).toArray();
+  return layers
+    .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
+    .map((layer) => {
+      const { totalChars } = buildPageCharCounts(layer.pages);
+      const metadata = buildMokuroMetadata({ ...volume, character_count: totalChars }, layer.pages);
+      return new File(
+        [JSON.stringify(metadata)],
+        layerSidecarName(volume.volume_title, layer.layer_id),
+        {
+          type: 'application/json'
+        }
+      );
+    });
 }

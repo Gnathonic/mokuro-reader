@@ -50,6 +50,18 @@ describe('groupSeriesSidecarFiles', () => {
     expect(only.cover?.path).toBe('One Piece/Volume 01.webp');
   });
 
+  it('leaves OCR layer files out: they never stamp or shadow the primary', () => {
+    const files = [
+      file('One Piece/Volume 01.cbz', 1000, '2026-01-01T00:00:00Z'),
+      file('One Piece/Volume 01.mokuro', 2000, '2026-01-02T00:00:00Z'),
+      file('One Piece/Volume 01.paddle-manga.mokuro', 5000, '2026-01-05T00:00:00Z'),
+      file('One Piece/Volume 01.tr-en.mokuro.gz', 500, '2026-01-06T00:00:00Z')
+    ];
+    const groups = groupSeriesSidecarFiles(files);
+    expect(groups.size).toBe(1);
+    expect([...groups.values()][0].mokuro?.path).toBe('One Piece/Volume 01.mokuro');
+  });
+
   it('prefers .mokuro over .mokuro.gz when both are listed', () => {
     const files = [
       file('S/V.mokuro.gz', 500, '2026-01-01T00:00:00Z'),

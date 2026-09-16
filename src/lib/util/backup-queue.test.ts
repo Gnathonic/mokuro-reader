@@ -486,7 +486,7 @@ describe('export-for-download sidecars', () => {
   });
 
   it('a main-thread upload writes the layer files beside the archive and stamps the rows', async () => {
-    const uploadFile = vi.fn(async () => 'uploaded-file-id');
+    const uploadFile = vi.fn(async (_path: string, _blob: Blob) => 'uploaded-file-id');
     const provider = {
       type: 'filesystem',
       uploadConcurrencyLimit: 1,

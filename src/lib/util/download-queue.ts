@@ -37,6 +37,9 @@ import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
+import { splitLayerSidecarName } from './sync/syncable-file';
+import { attachLayerToVolume, readLayerFile } from '$lib/reader/edit/layer-import';
+import { pullLayersForVolume } from '$lib/metadata/layer-sync';
 import {
   queueSidecarBackfillForVolume,
   queueSidecarBackfillFromImport
@@ -318,6 +321,7 @@ async function entriesToDecompressedVolume(
   let thumbnailSidecar: File | null = null;
   const imageFiles = new Map<string, File>();
   const nestedArchives: File[] = [];
+  const layerFiles: Array<{ layerId: string; file: File }> = [];
 
   for (const entry of entries) {
     // Skip system files (macOS metadata, etc.)
@@ -328,13 +332,20 @@ async function entriesToDecompressedVolume(
     const normalizedFilename = normalizeFilename(entry.filename);
     const extension = normalizedFilename.toLowerCase().split('.').pop() || '';
 
-    if (normalizedFilename.endsWith('.mokuro')) {
-      // Found mokuro file
-      mokuroFile = new File([entry.data], normalizedFilename, { type: 'application/json' });
-    } else if (normalizedFilename.endsWith('.mokuro.gz')) {
-      const decompressedMokuro = await parseMokuroGzEntry(entry, normalizedFilename);
-      if (decompressedMokuro) {
-        mokuroFile = decompressedMokuro;
+    if (normalizedFilename.endsWith('.mokuro') || normalizedFilename.endsWith('.mokuro.gz')) {
+      const decoded = normalizedFilename.endsWith('.gz')
+        ? await parseMokuroGzEntry(entry, normalizedFilename)
+        : new File([entry.data], normalizedFilename, { type: 'application/json' });
+      if (!decoded) continue;
+      // `<archive stem>.<id>.mokuro` inside the archive is an OCR LAYER of this
+      // volume, never its primary — same archive-presence rule as the cloud
+      // listing (`Vol 1.5.mokuro` in `Vol 1.5.cbz` splits to a stem that is
+      // not the archive's, so it stays the primary).
+      const layer = classifyArchiveMokuroEntry(normalizedFilename, getBaseStem(basePath));
+      if (layer) {
+        layerFiles.push({ layerId: layer.layerId, file: decoded });
+      } else {
+        mokuroFile = decoded;
       }
     } else if (isThumbnailSidecar(normalizedFilename, basePath)) {
       const mimeType = getImageMimeType(extension);
@@ -364,8 +375,24 @@ async function entriesToDecompressedVolume(
     imageFiles,
     basePath,
     sourceType: 'cloud',
-    nestedArchives
+    nestedArchives,
+    ...(layerFiles.length > 0 ? { layerFiles } : {})
   };
+}
+
+/**
+ * Is a `.mokuro` entry of an archive an OCR layer of THAT archive's volume?
+ * Only when it splits as `<archive stem>.<id>`; any other `.mokuro` is the
+ * primary (or a stray the pairing already tolerates). Exported for tests.
+ */
+export function classifyArchiveMokuroEntry(
+  entryName: string,
+  archiveStem: string
+): { layerId: string } | null {
+  const name = entryName.split('/').pop() ?? entryName;
+  const split = splitLayerSidecarName(name);
+  if (!split) return null;
+  return split.stem.toLowerCase() === archiveStem.toLowerCase() ? { layerId: split.layerId } : null;
 }
 
 /**
@@ -519,6 +546,16 @@ export async function processVolumeData(
   // handled no-ops here at the attempted-set check — or, across sessions, at
   // the cache the upload itself updated — without touching the database.
   queueSidecarBackfillForVolume(processedVolume.metadata.volumeUuid);
+
+  // OCR layers: the ones that travelled INSIDE the archive attach now, and the
+  // ones listed beside it in the cloud (`<title>.<id>.mokuro`, e.g. a bunko
+  // engine's output) are pulled from the listing already in hand — so a fresh
+  // download shows its layers without waiting for a second listing.
+  void installDownloadedLayers(
+    processedVolume.metadata.volumeUuid,
+    decompressedVolume.layerFiles,
+    cloudProvider ?? undefined
+  );
 
   // The volume is INSTALLED now (freshly saved, or the kept existing install)
   // and its measured page/char counts are in Dexie — publish them. Without
@@ -976,3 +1013,19 @@ export const downloadQueue = {
   isVolumeInQueue,
   getSeriesQueueStatus
 };
+
+async function installDownloadedLayers(
+  volumeUuid: string,
+  layerFiles: Array<{ layerId: string; file: File }> | undefined,
+  cloudProvider: ProviderType | undefined
+): Promise<void> {
+  try {
+    for (const entry of layerFiles ?? []) {
+      const read = await readLayerFile(entry.file);
+      if (read) await attachLayerToVolume(volumeUuid, entry.layerId, read.pages);
+    }
+    if (cloudProvider) await pullLayersForVolume(volumeUuid, cloudProvider);
+  } catch (error) {
+    console.warn('[Download Queue] could not install OCR layers:', error);
+  }
+}
