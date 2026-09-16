@@ -7,7 +7,7 @@
  * PROMOTED into the primary row. `original` is the pre-edit snapshot the
  * editor keeps for "revert page" and is read-only here.
  *
- * Cloud sync of layers (`<Volume Title>.layer.<id>.mokuro` beside the
+ * Cloud sync of layers (`<Volume Title>.<id>.mokuro` beside the
  * archive) lives in a later PR; nothing here touches a provider.
  */
 import { db } from '$lib/catalog/db';
@@ -26,6 +26,32 @@ export const LAYER_KIND_LABEL: Record<VolumeOcrLayerKind, string> = {
 };
 
 const MAX_SLUG = 24;
+
+/** Engine ids whose files are OCR output (bunko engines + the reader's own). */
+export const KNOWN_ENGINE_IDS: ReadonlySet<string> = new Set([
+  'gcv',
+  'hayai',
+  'paddle-manga',
+  'mokuro-fp16',
+  'mokuro'
+]);
+
+/** The kind a layer file with no local row is filed under, from its id alone. */
+export function layerKindForId(layerId: string): VolumeOcrLayerKind {
+  if (layerId === ORIGINAL_LAYER_ID) return 'original';
+  if (/^tr-[a-z0-9-]+$/.test(layerId)) return 'translation';
+  if (KNOWN_ENGINE_IDS.has(layerId)) return 'ocr';
+  return 'edit';
+}
+
+/** `paddle-manga` → "Paddle Manga"; `tr-en` → "Tr En"; `gcv` → "Gcv". */
+export function layerNameForId(layerId: string): string {
+  return layerId
+    .split('-')
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(' ');
+}
 
 /** A display name → a unique `layer_id` slug (never the reserved `original`). */
 export function slugifyLayerId(name: string, taken: Iterable<string>): string {

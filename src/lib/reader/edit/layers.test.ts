@@ -24,7 +24,9 @@ import {
   persistLayerPageEdit,
   promoteLayer,
   renameLayer,
-  slugifyLayerId
+  slugifyLayerId,
+  layerKindForId,
+  layerNameForId
 } from './layers';
 
 function pg(text: string, img_path = 'p.png'): Page {
@@ -170,14 +172,14 @@ describe('promoteLayer', () => {
 });
 
 describe('buildLayerExportFile', () => {
-  it('names the file <title>.layer.<id>.mokuro and writes upstream mokuro JSON with the layer chars', async () => {
+  it('names the file <title>.<id>.mokuro and writes upstream mokuro JSON with the layer chars', async () => {
     await createLayer('v1', {
       name: 'English',
       kind: 'translation',
       pages: [pg('abc'), pg('あ', 'q.png')]
     });
     const file = await buildLayerExportFile('v1', 'english');
-    expect(file.name).toBe('Vol 1.layer.english.mokuro');
+    expect(file.name).toBe('Vol 1.english.mokuro');
     const json = JSON.parse(await file.text());
     expect(json.volume_uuid).toBe('v1');
     expect(json.title).toBe('S');
@@ -234,5 +236,17 @@ describe('upsertLayerPages', () => {
         pages: new Map()
       })
     ).rejects.toThrow(/read-only/);
+  });
+});
+
+describe('layerKindForId / layerNameForId', () => {
+  it('files a pulled layer by its id alone', () => {
+    expect(layerKindForId('original')).toBe('original');
+    expect(layerKindForId('tr-en')).toBe('translation');
+    expect(layerKindForId('paddle-manga')).toBe('ocr');
+    expect(layerKindForId('gcv')).toBe('ocr');
+    expect(layerKindForId('fix')).toBe('edit');
+    expect(layerNameForId('paddle-manga')).toBe('Paddle Manga');
+    expect(layerNameForId('gcv')).toBe('Gcv');
   });
 });

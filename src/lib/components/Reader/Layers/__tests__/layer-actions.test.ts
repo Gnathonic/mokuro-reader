@@ -27,7 +27,7 @@ function deps(over: Record<string, unknown> = {}) {
     renameLayer: vi.fn(async () => {}),
     deleteLayer: vi.fn(async () => {}),
     promoteLayer: vi.fn(async () => ({ replacedLayerId: null })),
-    buildLayerExportFile: vi.fn(async () => new File(['{}'], 'Vol.layer.x.mokuro')),
+    buildLayerExportFile: vi.fn(async () => new File(['{}'], 'Vol.x.mokuro')),
     download: vi.fn(),
     confirm: vi.fn(async () => true),
     notify: vi.fn(),

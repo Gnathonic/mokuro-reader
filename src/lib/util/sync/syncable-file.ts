@@ -92,29 +92,84 @@ export function isBestEffortMetadataPath(path: string): boolean {
 }
 
 /**
- * Alternate OCR layers ride beside a volume as `<Volume Title>.layer.<id>.mokuro`
- * (optionally `.gz`). The `.layer.` token is reserved: `layerId` is a slug of
- * `[a-z0-9-]`, so the pattern can never be confused with a volume whose title
- * happens to contain a dot. Listings do NOT route these yet — the cloud half
- * of the layers work does that; today this only names export files.
+ * Alternate OCR layers ride beside a volume as `<Volume Title>.<layer-id>.mokuro`
+ * (optionally `.gz`) — the SAME shape mokuro-bunko's multi-engine OCR writes
+ * (`Volume 01.paddle-manga.mokuro`), so an engine's output and a reader-made
+ * layer are one thing. `layer-id` is a slug of `[a-z0-9-]` and IS the row's
+ * `layer_id`.
+ *
+ * A bare filename cannot say whether `Vol 1.5.mokuro` is the primary of
+ * `Vol 1.5.cbz` or layer `5` of `Vol 1.cbz`: {@link classifyMokuroSidecar}
+ * decides by ARCHIVE PRESENCE in the same folder listing, and every site that
+ * pairs a `.mokuro` with a volume must go through it. {@link splitLayerSidecarName}
+ * is the listing-free split for a file arriving on its own (an import, an
+ * export name round-trip), where the caller matches the stem itself.
  */
 export const LAYER_ID_RE = /^[a-z0-9-]{1,32}$/;
-const LAYER_SIDECAR_RE = /^(.+)\.layer\.([a-z0-9-]{1,32})\.mokuro(\.gz)?$/i;
 
-export function parseLayerSidecarName(
-  basename: string
-): { volumeTitle: string; layerId: string; gz: boolean } | null {
-  const m = LAYER_SIDECAR_RE.exec(basename);
-  if (!m) return null;
-  const layerId = m[2].toLowerCase();
-  if (!LAYER_ID_RE.test(layerId)) return null;
-  return { volumeTitle: m[1], layerId, gz: m[3] !== undefined };
+export type MokuroSidecarClass =
+  | { kind: 'primary'; stem: string; gz: boolean }
+  | { kind: 'layer'; stem: string; layerId: string; gz: boolean }
+  | { kind: 'orphan' };
+
+function stripMokuroExtension(basename: string): { base: string; gz: boolean } | null {
+  const lower = basename.toLowerCase();
+  if (lower.endsWith('.mokuro.gz')) return { base: basename.slice(0, -10), gz: true };
+  if (lower.endsWith('.mokuro')) return { base: basename.slice(0, -7), gz: false };
+  return null;
 }
 
-export function isLayerSidecar(basename: string): boolean {
-  return parseLayerSidecarName(basename) !== null;
+/** Lowercased archive stems (`Vol 1.cbz` → `vol 1`) of a folder's basenames. */
+export function cbzStemsOf(basenames: Iterable<string>): Set<string> {
+  const stems = new Set<string>();
+  for (const name of basenames) {
+    if (isCbzFile(name)) stems.add(name.slice(0, -4).toLowerCase());
+  }
+  return stems;
+}
+
+/**
+ * Pure split of `<stem>.<id>.mokuro[.gz]` — null when the file has no dot
+ * segment that is a valid layer id (`Vol 1.mokuro`, `Vol 1.Bad_Id.mokuro`).
+ * Says nothing about whether `<stem>` is a real volume: see the classifier.
+ */
+export function splitLayerSidecarName(
+  basename: string
+): { stem: string; layerId: string; gz: boolean } | null {
+  const stripped = stripMokuroExtension(basename);
+  if (!stripped) return null;
+  const dot = stripped.base.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const stem = stripped.base.slice(0, dot);
+  const layerId = stripped.base.slice(dot + 1).toLowerCase();
+  if (!LAYER_ID_RE.test(layerId)) return null;
+  return { stem, layerId, gz: stripped.gz };
+}
+
+/**
+ * What a listed `.mokuro` IS, given the archives listed in the same folder:
+ * 1. `<full base>.cbz` present → that volume's PRIMARY sidecar;
+ * 2. else `<stem>.<id>` with `<stem>.cbz` present and a valid id → LAYER `<id>`
+ *    of `<stem>`;
+ * 3. else an ORPHAN, ignored exactly as an unmatched `.mokuro` always was.
+ * `cbzStems` come from {@link cbzStemsOf} (lowercased).
+ */
+export function classifyMokuroSidecar(
+  basename: string,
+  cbzStems: ReadonlySet<string>
+): MokuroSidecarClass {
+  const stripped = stripMokuroExtension(basename);
+  if (!stripped) return { kind: 'orphan' };
+  if (cbzStems.has(stripped.base.toLowerCase())) {
+    return { kind: 'primary', stem: stripped.base, gz: stripped.gz };
+  }
+  const split = splitLayerSidecarName(basename);
+  if (split && cbzStems.has(split.stem.toLowerCase())) {
+    return { kind: 'layer', stem: split.stem, layerId: split.layerId, gz: split.gz };
+  }
+  return { kind: 'orphan' };
 }
 
 export function layerSidecarName(volumeTitle: string, layerId: string): string {
-  return `${volumeTitle}.layer.${layerId}.mokuro`;
+  return `${volumeTitle}.${layerId}.mokuro`;
 }

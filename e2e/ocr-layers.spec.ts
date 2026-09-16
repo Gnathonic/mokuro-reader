@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
  * OCR layers against the REAL app: a seeded one-page volume is opened in the
  * paged reader; a layer is created from the quick-actions picker, displayed,
  * edited (the primary row untouched), promoted (primary updated, original
- * kept), exported as `<title>.layer.<id>.mokuro`; the original layer is
+ * kept), exported as `<title>.<id>.mokuro`; the original layer is
  * read-only; a layer can be deleted.
  */
 
@@ -178,12 +178,12 @@ test.describe('OCR layers', () => {
     expect(Object.keys(state.layers).sort()).toEqual(['fix', 'original']);
     expect(state.setting).toBeNull();
 
-    // Export downloads `<title>.layer.<id>.mokuro` holding the layer's pages.
+    // Export downloads `<title>.<id>.mokuro` holding the layer's pages.
     await openLayerPicker(page);
     const downloadPromise = page.waitForEvent('download');
     await page.getByLabel('Export layer Fix').click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe('Vol 1.layer.fix.mokuro');
+    expect(download.suggestedFilename()).toBe('Vol 1.fix.mokuro');
     const json = JSON.parse(await readFile(await download.path(), 'utf8'));
     expect(json.volume_uuid).toBe(VOLUME_UUID);
     expect(json.pages[0].blocks[0].lines).toEqual(['かきく']);
