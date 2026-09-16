@@ -13,6 +13,7 @@ vi.mock('$lib/reader/edit/layers', () => ({
 vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
 vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('$lib/metadata/layer-sync', () => ({ deleteCloudLayerFile: vi.fn(async () => {}) }));
 
 import { layerNamePrompt, promptLayerName, runLayerAction } from '../layer-actions';
 
@@ -26,6 +27,7 @@ function deps(over: Record<string, unknown> = {}) {
     })),
     renameLayer: vi.fn(async () => {}),
     deleteLayer: vi.fn(async () => {}),
+    deleteCloudLayerFile: vi.fn(async () => {}),
     promoteLayer: vi.fn(async () => ({ replacedLayerId: null })),
     buildLayerExportFile: vi.fn(async () => new File(['{}'], 'Vol.x.mokuro')),
     download: vi.fn(),
@@ -120,7 +122,16 @@ describe('runLayerAction', () => {
       deps: d
     });
     expect(onSelectLayer).toHaveBeenCalledWith(null);
-    expect((d as { deleteLayer: unknown }).deleteLayer).toHaveBeenCalledWith('v', 'a');
+    // The cloud copy goes first — otherwise the next listing pulls it back.
+    const dd = d as {
+      deleteLayer: ReturnType<typeof vi.fn>;
+      deleteCloudLayerFile: ReturnType<typeof vi.fn>;
+    };
+    expect(dd.deleteCloudLayerFile).toHaveBeenCalledWith('v', 'a');
+    expect(dd.deleteLayer).toHaveBeenCalledWith('v', 'a');
+    expect(dd.deleteCloudLayerFile.mock.invocationCallOrder[0]).toBeLessThan(
+      dd.deleteLayer.mock.invocationCallOrder[0]
+    );
     await runLayerAction('export', {
       volumeUuid: 'v',
       layerId: 'a',

@@ -16,6 +16,7 @@ import {
 import { downloadFileBlob } from '$lib/util/volume-sidecars';
 import { promptConfirmation } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util/snackbar';
+import { deleteCloudLayerFile as realDeleteCloudLayerFile } from '$lib/metadata/layer-sync';
 
 export type LayerAction = 'new' | 'rename' | 'promote' | 'export' | 'delete';
 export type LayerSource = 'copy' | 'empty';
@@ -59,6 +60,8 @@ export interface LayerActionDeps {
   createLayer: typeof realCreateLayer;
   renameLayer: typeof realRenameLayer;
   deleteLayer: typeof realDeleteLayer;
+  /** Removes the layer's cloud copy first — otherwise the next listing pulls it back. */
+  deleteCloudLayerFile: (volumeUuid: string, layerId: string) => Promise<void>;
   promoteLayer: typeof realPromoteLayer;
   buildLayerExportFile: typeof realBuildLayerExportFile;
   download: (file: File) => void;
@@ -70,6 +73,7 @@ const defaultDeps: LayerActionDeps = {
   createLayer: realCreateLayer,
   renameLayer: realRenameLayer,
   deleteLayer: realDeleteLayer,
+  deleteCloudLayerFile: realDeleteCloudLayerFile,
   promoteLayer: realPromoteLayer,
   buildLayerExportFile: realBuildLayerExportFile,
   download: downloadFileBlob,
@@ -145,6 +149,7 @@ export async function runLayerAction(action: LayerAction, ctx: LayerActionContex
         );
         if (!ok) return;
         await ctx.onSelectLayer(null);
+        await d.deleteCloudLayerFile(volumeUuid, layerId);
         await d.deleteLayer(volumeUuid, layerId);
         d.notify('Layer deleted');
         return;
