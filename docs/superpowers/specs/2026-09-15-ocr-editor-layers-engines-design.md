@@ -406,3 +406,57 @@ queue, same progress, translation source = the displayed layer.
   and may be removed.
 - DeepL and other non-LLM MT.
 - OCR through bunko's own OCR pipeline (bunko already owns that for uploads).
+
+---
+
+## Addendum 2026-09-16 — layer file naming follows bunko engine sidecars
+
+**Supersedes** the `<Volume Title>.layer.<layer-id>.mokuro` naming in Sub-project B
+and decision 7. mokuro-bunko's multi-engine OCR already writes one sidecar per engine as
+`<Volume Title>.<engine>.mokuro` (gzip tolerated) beside the archive — e.g.
+`Volume 01.paddle-manga.mokuro` next to `Volume 01.cbz` and `Volume 01.mokuro`, carrying
+the volume's `volume_uuid`. The reader adopts exactly that shape, so bunko's engine output
+and the reader's layers are one thing.
+
+### Convention
+
+- A layer file is `<Volume Title>.<layer-id>.mokuro` or `.mokuro.gz`, in the volume's
+  series folder. `layer-id` matches `[a-z0-9-]{1,32}` and IS the `layer_id`.
+- **Disambiguation is by archive presence in the same listing**, one pure function
+  (`classifyMokuroSidecar` in `syncable-file.ts`) used by every site:
+  1. `<full base>.cbz` listed → the file is that volume's **primary** `.mokuro`;
+  2. else the base splits as `<stem>.<id>` with `<stem>.cbz` listed and `<id>` matching the
+     regex → **layer** `<id>` of `<stem>`;
+  3. else **orphan** — ignored, exactly as an unmatched `.mokuro` is today.
+     So `Vol 1.5.mokuro` is the primary of `Vol 1.5.cbz` when that archive exists, and layer
+     `5` of `Vol 1.cbz` only when it does not.
+- Kind/name inference for a pulled file with no local row: `original` → kind `original`
+  (adopted as the local original only when none exists); `tr-<lang>` → `translation`;
+  a known engine id (`gcv`, `hayai`, `paddle-manga`, `mokuro-fp16`, `mokuro`) → `ocr`
+  with `engine = id`; anything else → `edit`. Name = the id prettified
+  (`paddle-manga` → "Paddle Manga"). Attachment is by filename; a differing
+  `volume_uuid` inside the file is tolerated.
+- Export and manual import use the same name. An imported `<stem>.<id>.mokuro` attaches
+  to the local volume whose `volume_uuid` matches the file's, else whose volume title
+  matches `<stem>` (series from the folder or the file's `title`).
+
+### Sync rules (unchanged in substance)
+
+Pull after every listing for installed and metadata-only volumes when the listed file's
+(size, modified, provider) differs from the row's `cloud` stamp and the row has not been
+edited since its last sync; push (writable providers) when the row is newer than its
+stamp; both moved → newest wins by cloud mtime vs local `updated_at`. Layers ride every
+backup after the `.mokuro`; volume download pulls them; rename moves them; delete removes
+them.
+
+### mokuro-bunko requirements (not implemented here — bunko is a separate repo)
+
+- (a) `database.py`'s path→archive mapping and PUT ownership must map
+  `<stem>.<id>.mokuro[.gz]` to `<stem>.cbz` for ANY `<id>` matching `[a-z0-9-]{1,32}`
+  when `<stem>.<id>.cbz` does not exist — not only registered engines — or reader-uploaded
+  layers (`gcv`, `tr-en`, `fix`, `original`) are rejected or orphaned.
+- (b) the WebDAV delete cascade (`resources.py`, currently `all_sidecar_suffixes()`) must
+  also remove such files.
+- (c) the library index, compiler, watcher and corrupt-sidecar scrub must never treat them
+  as the primary or mint a phantom volume — verify for unknown ids; the current test
+  covers registered engines only.
