@@ -71,22 +71,23 @@ describe('EditToolbar — layer strip and dock', () => {
     expect(queryByLabelText('Next layer')).toBeNull();
   });
 
-  it('docks to the edge given and its button cycles top → right → bottom → left', async () => {
+  it('docks top or left, its button toggles between them, and an unknown stored value reads as top', async () => {
     const onDockChange = vi.fn();
     const { btn, container, rerender } = mount(true, { dock: 'top', onDockChange });
     const bar = () => container.querySelector('[data-edit-toolbar]') as HTMLElement;
     expect(bar().dataset.dock).toBe('top');
     expect(bar().className).toContain('flex-row');
     await fireEvent.click(btn('Move toolbar'));
-    expect(onDockChange).toHaveBeenLastCalledWith('right');
-    await rerender({ dock: 'right' } as never);
-    expect(bar().className).toContain('flex-col');
-    expect(bar().className).toContain('right-3');
-    await fireEvent.click(btn('Move toolbar'));
-    expect(onDockChange).toHaveBeenLastCalledWith('bottom');
+    expect(onDockChange).toHaveBeenLastCalledWith('left');
     await rerender({ dock: 'left' } as never);
+    expect(bar().className).toContain('flex-col');
+    expect(bar().className).toContain('left-3');
     await fireEvent.click(btn('Move toolbar'));
     expect(onDockChange).toHaveBeenLastCalledWith('top');
+    // A value persisted by an earlier build (right/bottom) falls back to top.
+    await rerender({ dock: 'right' as never } as never);
+    expect(bar().dataset.dock).toBe('top');
+    expect(bar().className).toContain('flex-row');
   });
 });
 

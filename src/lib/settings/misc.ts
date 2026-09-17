@@ -26,11 +26,13 @@ export type MiscSettings = {
   translationEngine: TranslationEngineId;
   translationModel: string; // '' = the adapter's default model
   translationLanguage: string; // BCP-47-ish target, default 'en'
-  /** Where the OCR edit toolbar docks; a top dock hides the top of the page. */
+  /** Where the OCR edit toolbar docks; a top dock hides the top of the page.
+   * Top and left only for now (right/bottom collide with the quick actions
+   * and the engine-run banner). */
   editToolbarDock: EditToolbarDock;
 };
 
-export type EditToolbarDock = 'top' | 'right' | 'bottom' | 'left';
+export type EditToolbarDock = 'top' | 'left';
 
 export type TranslationEngineId = 'gemini' | 'anthropic' | 'openai';
 
