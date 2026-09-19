@@ -631,7 +631,7 @@
     // Edit whatever is on screen: an alternate layer's row, or the primary.
     const layerId = activeLayerId;
     const layerPagesAtEntry = layerPages;
-    editSession = new EditSession({
+    const session = new EditSession({
       volumeUuid: uuid,
       layerId,
       getPage: (i) => (layerPagesAtEntry ?? data.pages)[i],
@@ -642,16 +642,31 @@
         if (layerPagesAtEntry) layerPagesAtEntry[i] = page;
         else data.pages[i] = page;
         pagesRevision++;
-        if (!layerId) editHasOriginal = true;
+        // A closing primary session can still be flushing after a layer
+        // session opened; its snapshot is not that layer's to revert to.
+        if (!layerId && !editSession?.layerId) editHasOriginal = true;
       }
     });
+    editSession = session;
     if (focus) {
-      editSession.select(focus.pageIndex, focus.blockIndex);
-      editSession.pendingFocus = focus;
+      session.select(focus.pageIndex, focus.blockIndex);
+      session.pendingFocus = focus;
     }
-    hasOriginalLayer(uuid)
-      .then((v) => (editHasOriginal = v))
-      .catch(() => (editHasOriginal = false));
+    // The only original snapshot is the PRIMARY row's, so Revert is offered on
+    // the primary alone — on an alternate layer it would paste the primary's
+    // page over the layer's. The lookup is async: an answer that lands after
+    // the user swapped layers belongs to a dead session and must not re-enable
+    // the button on the new one.
+    editHasOriginal = false;
+    if (!layerId) {
+      hasOriginalLayer(uuid)
+        .then((v) => {
+          if (editSession === session) editHasOriginal = v;
+        })
+        .catch(() => {
+          if (editSession === session) editHasOriginal = false;
+        });
+    }
     overlaysVisible = true;
   }
 

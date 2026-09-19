@@ -2,6 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Page } from '$lib/types';
 import { EditSession } from './edit-session.svelte';
 
+// The default original loader reads the PRIMARY row's snapshot out of Dexie;
+// stubbed so a test can prove a session never reaches for it.
+const { loadOriginalPageMock } = vi.hoisted(() => ({
+  loadOriginalPageMock: vi.fn(async (): Promise<Page | null> => null)
+}));
+vi.mock('./edit-persist', () => ({
+  loadOriginalPage: loadOriginalPageMock,
+  persistPageEdit: vi.fn(async () => {})
+}));
+
 function page(): Page {
   return {
     version: '0.2.1',
@@ -117,6 +127,32 @@ describe('EditSession', () => {
   it('revertPage is a no-op without an original layer', async () => {
     const { s } = session({ loadOriginal: async () => null });
     expect(await s.revertPage(0)).toBe(false);
+  });
+
+  it('revertPage never restores the primary snapshot onto an alternate layer', async () => {
+    const primaryOriginal = page();
+    primaryOriginal.blocks[0].lines = ['元'];
+    loadOriginalPageMock.mockResolvedValueOnce(primaryOriginal);
+    const { s, persist } = session({ layerId: 'layer-a' });
+    s.setLines(0, 0, ['x']);
+    await s.flush();
+    persist.mockClear();
+
+    expect(await s.revertPage(0)).toBe(false);
+    await s.flush();
+    expect(loadOriginalPageMock).not.toHaveBeenCalled();
+    expect(s.pageFor(0).blocks[0].lines).toEqual(['x']);
+    expect(persist).not.toHaveBeenCalled();
+    loadOriginalPageMock.mockReset();
+  });
+
+  it('revertPage on a layer still honours an explicit loadOriginal', async () => {
+    const layerOriginal = page();
+    layerOriginal.blocks[0].lines = ['層'];
+    const { s } = session({ layerId: 'layer-a', loadOriginal: async () => layerOriginal });
+    s.setLines(0, 0, ['x']);
+    expect(await s.revertPage(0)).toBe(true);
+    expect(s.pageFor(0).blocks[0].lines).toEqual(['層']);
   });
 });
 
