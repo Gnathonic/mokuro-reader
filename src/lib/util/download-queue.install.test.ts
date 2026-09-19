@@ -306,7 +306,10 @@ describe('OCR layers riding a downloaded archive', () => {
     expect(decompressed.mokuroFile?.name).toBe('Vol 1.mokuro');
     expect(decompressed.layerFiles?.map((l) => l.layerId)).toEqual(['gcv']);
     await vi.waitFor(() => expect(attachLayerToVolume).toHaveBeenCalledTimes(1));
-    expect(attachLayerToVolume).toHaveBeenCalledWith('uuid-1', 'gcv', [{ img_width: 1 }]);
+    // Passive: an archive-embedded layer is a snapshot of the cloud, never an edit.
+    expect(attachLayerToVolume).toHaveBeenCalledWith('uuid-1', 'gcv', [{ img_width: 1 }], {
+      passive: true
+    });
     await vi.waitFor(() => expect(pullLayersForVolume).toHaveBeenCalledWith('uuid-1', 'webdav'));
   });
 });

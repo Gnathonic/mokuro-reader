@@ -198,6 +198,34 @@ describe('layerNeedsPull / layerNeedsPush', () => {
     });
     expect(layerNeedsPull(synced, provisional, 'webdav')).toBe(false);
   });
+
+  // A row attached from inside a downloaded archive is a snapshot of the cloud,
+  // not an edit: stamped `now` with no `cloud`, it used to out-rank the real
+  // sidecar and then get pushed over it.
+  const passive: VolumeOcrLayer = {
+    ...synced,
+    cloud: undefined,
+    updated_at: '2026-09-16T12:00:00.000Z',
+    passive_at: '2026-09-16T12:00:00.000Z'
+  };
+
+  it('passively attached row vs an older-mtime real cloud file → pull, never push', () => {
+    expect(layerNeedsPull(passive, file, 'webdav')).toBe(true);
+    expect(layerNeedsPush(passive, file, 'webdav')).toBe(false);
+    const provisional = cloudFile(file.path, { modifiedTimeProvisional: true });
+    expect(layerNeedsPull(passive, provisional, 'webdav')).toBe(true);
+    expect(layerNeedsPush(passive, provisional, 'webdav')).toBe(false);
+  });
+
+  it('passively attached row with no cloud file → push', () => {
+    expect(layerNeedsPush(passive, undefined, 'webdav')).toBe(true);
+  });
+
+  it('a passively attached row edited afterwards is an ordinary edit again', () => {
+    const edited = { ...passive, updated_at: '2026-09-16T12:30:00.000Z' };
+    expect(layerNeedsPull(edited, file, 'webdav')).toBe(false);
+    expect(layerNeedsPush(edited, file, 'webdav')).toBe(true);
+  });
 });
 
 describe('syncLayersFromListing', () => {
@@ -297,6 +325,37 @@ describe('syncLayersFromListing', () => {
     // Stamped now: a second pass with the same listing does nothing.
     await syncLayersFromListing(files, 'webdav');
     expect(uploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('a passively attached row is replaced by the older-mtime cloud sidecar, never pushed over it', async () => {
+    await seedRow();
+    await db.volume_ocr_layers.put({
+      volume_uuid: 'v1',
+      layer_id: 'gcv',
+      name: 'Gcv',
+      kind: 'ocr',
+      engine: 'gcv',
+      created_at: '2026-09-16T12:00:00.000Z',
+      updated_at: '2026-09-16T12:00:00.000Z',
+      passive_at: '2026-09-16T12:00:00.000Z',
+      pages: [pg('ふる')]
+    });
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('しん')]));
+    const files = listing(
+      cloudFile('Series/Vol 1.cbz'),
+      cloudFile('Series/Vol 1.gcv.mokuro', { modifiedTime: '2026-09-16T10:00:00.000Z' })
+    );
+    await syncLayersFromListing(files, 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+    const row = await db.volume_ocr_layers.get(['v1', 'gcv']);
+    expect(row!.pages[0].blocks[0].lines).toEqual(['しん']);
+    expect(row!.cloud).toMatchObject({ provider: 'webdav' });
+    expect(row!.passive_at).toBeUndefined();
+
+    // Pulled and stamped: the same listing is now a no-op in both directions.
+    await syncLayersFromListing(files, 'webdav');
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+    expect(uploadFile).not.toHaveBeenCalled();
   });
 
   it('never pushes a layer of a volume whose archive is not in the cloud', async () => {
