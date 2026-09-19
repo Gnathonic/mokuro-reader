@@ -77,8 +77,21 @@ function ctx(over: Partial<EngineRunContext> = {}): EngineRunContext {
   };
 }
 
+const VOLUME = {
+  volume_uuid: 'v1',
+  series_uuid: 's1',
+  series_title: 'Series',
+  volume_title: 'Vol 1',
+  mokuro_version: '0.2.1',
+  page_count: 2,
+  character_count: 10,
+  page_char_counts: [5, 10]
+};
+
 beforeEach(async () => {
-  await db.volume_ocr_layers.clear();
+  await Promise.all([db.volumes.clear(), db.volume_ocr_layers.clear()]);
+  // Results are only ever written for an installed volume (`upsertLayerPages`).
+  await db.volumes.put(VOLUME);
 });
 
 describe('startEngineRun', () => {
@@ -182,5 +195,95 @@ describe('startEngineRun', () => {
     expect(notify).toHaveBeenCalledWith(expect.stringMatching(/already running/));
     release();
     await first;
+  });
+
+  it('never overwrites a page hand-edited while the run was going, and says so', async () => {
+    const { persistLayerPageEdit, upsertLayerPages } = await import('$lib/reader/edit/layers');
+    // An earlier run's layer; this run redoes both pages.
+    await upsertLayerPages('v1', 'gcv', {
+      name: 'Cloud Vision',
+      kind: 'ocr',
+      engine: 'gcv',
+      sourcePages: PAGES,
+      pages: new Map([
+        [0, pg('旧0', '001.png')],
+        [1, pg('旧1', '002.png')]
+      ])
+    });
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      // While page 1 is out at the API, the user fixes page 2 by hand.
+      if (++calls === 1) await persistLayerPageEdit('v1', 'gcv', 1, pg('手直し', '002.png'));
+      return new Response(JSON.stringify(vertical), { status: 200 });
+    }) as unknown as typeof fetch;
+    const notify = vi.fn();
+    const r = await startEngineRun(
+      'ocr',
+      ctx({ pageIndices: [0, 1], deps: { fetch: fetchImpl, notify, concurrency: 1 } })
+    );
+    expect(r).toMatchObject({ done: 2, failed: 0 });
+    const row = await db.volume_ocr_layers.get(['v1', 'gcv']);
+    expect(row!.pages[0].blocks[0].lines).toEqual(['こんにちは', 'せかい']);
+    expect(row!.pages[1].blocks[0].lines).toEqual(['手直し']);
+    expect(notify).toHaveBeenLastCalledWith(expect.stringMatching(/1 kept .*edit/));
+  });
+
+  it('keeps flushing every ten pages for the whole run, not just the first ten', async () => {
+    const many = Array.from({ length: 26 }, (_, i) => pg('あ', `${i}.png`));
+    let calls = 0;
+    let persistedAt25 = -1;
+    const fetchImpl = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      if (++calls === 25) {
+        const row = await db.volume_ocr_layers.get(['v1', 'gcv']);
+        persistedAt25 = row ? row.pages.filter((p) => p.blocks.length > 0).length : 0;
+      }
+      return new Response(JSON.stringify(vertical), { status: 200 });
+    }) as unknown as typeof fetch;
+    await startEngineRun(
+      'ocr',
+      ctx({
+        sourcePages: many,
+        pageIndices: many.map((_, i) => i),
+        deps: { fetch: fetchImpl, concurrency: 1 }
+      })
+    );
+    // 24 pages are done when the 25th is requested: two flushes' worth is on
+    // disk, so a crash or a closed tab loses at most the last nine.
+    expect(persistedAt25).toBe(20);
+  });
+
+  it('stops early, writing nothing, once the volume was deleted mid-run', async () => {
+    const many = Array.from({ length: 40 }, (_, i) => pg('あ', `${i}.png`));
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      // The user deletes the volume (layers included) while the run is going.
+      if (++calls === 3) {
+        await db.transaction('rw', [db.volumes, db.volume_ocr_layers], async () => {
+          await db.volumes.delete('v1');
+          await db.volume_ocr_layers.where('volume_uuid').equals('v1').delete();
+        });
+      }
+      // A real API call takes a while; an instant mock would finish all 40
+      // pages before the (fire-and-forget) periodic flush even resolves.
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      return new Response(JSON.stringify(vertical), { status: 200 });
+    }) as unknown as typeof fetch;
+    const notify = vi.fn();
+    const r = await startEngineRun(
+      'ocr',
+      ctx({
+        sourcePages: many,
+        pageIndices: many.map((_, i) => i),
+        deps: { fetch: fetchImpl, notify, concurrency: 1 }
+      })
+    );
+    // The first periodic flush finds the volume gone and aborts: the run must
+    // not keep paying for pages nobody can ever see.
+    expect(r!.cancelled).toBe(true);
+    expect(calls).toBeLessThan(many.length);
+    expect(await db.volume_ocr_layers.where('volume_uuid').equals('v1').count()).toBe(0);
+    expect(notify).toHaveBeenLastCalledWith(expect.stringMatching(/no longer on this device/));
+    expect(get(activeEngineRun)).toBeNull();
   });
 });

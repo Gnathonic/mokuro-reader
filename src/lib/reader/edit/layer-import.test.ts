@@ -151,6 +151,58 @@ describe('attachLayerToVolume', () => {
     expect('passive_at' in imported).toBe(false);
     expect('passive_at' in (await db.volume_ocr_layers.get(['v1', 'gcv']))!).toBe(false);
   });
+  describe('a passive attach never replaces local work', () => {
+    const archived = JSON.parse(mokuro('アーカイブ', {})).pages;
+    const linesOf = async () =>
+      (await db.volume_ocr_layers.get(['v1', 'gcv']))!.pages[0].blocks[0].lines;
+
+    it('a row edited since its last sync is left untouched', async () => {
+      await seed();
+      const edited = {
+        ...(await attachLayerToVolume('v1', 'gcv', pages)),
+        updated_at: '2026-09-02T00:00:00.000Z',
+        cloud: { provider: 'webdav', size: 10, synced_at: '2026-09-01T00:00:00.000Z' }
+      };
+      await db.volume_ocr_layers.put(edited);
+
+      const result = await attachLayerToVolume('v1', 'gcv', archived, { passive: true });
+      expect(result).toEqual(edited);
+      expect(await db.volume_ocr_layers.get(['v1', 'gcv'])).toEqual(edited);
+    });
+
+    it('a row that was never synced (an import, an engine run, an edit layer) is left untouched', async () => {
+      await seed();
+      const local = await attachLayerToVolume('v1', 'gcv', pages);
+      await attachLayerToVolume('v1', 'gcv', archived, { passive: true });
+      expect(await db.volume_ocr_layers.get(['v1', 'gcv'])).toEqual(local);
+    });
+
+    it('a clean synced row is replaced, as before', async () => {
+      await seed();
+      await db.volume_ocr_layers.put({
+        ...(await attachLayerToVolume('v1', 'gcv', pages)),
+        updated_at: '2026-09-01T00:00:00.000Z',
+        cloud: { provider: 'webdav', size: 10, synced_at: '2026-09-01T00:00:00.000Z' }
+      });
+      const replaced = await attachLayerToVolume('v1', 'gcv', archived, { passive: true });
+      expect(await linesOf()).toEqual(['アーカイブ']);
+      expect(replaced.passive_at).toBe(replaced.updated_at);
+    });
+
+    it('an earlier passive snapshot is replaced (the same archive, downloaded again)', async () => {
+      await seed();
+      await attachLayerToVolume('v1', 'gcv', pages, { passive: true });
+      await attachLayerToVolume('v1', 'gcv', archived, { passive: true });
+      expect(await linesOf()).toEqual(['アーカイブ']);
+    });
+
+    it('a hand import still overwrites whatever is there', async () => {
+      await seed();
+      await attachLayerToVolume('v1', 'gcv', pages);
+      await attachLayerToVolume('v1', 'gcv', archived);
+      expect(await linesOf()).toEqual(['アーカイブ']);
+    });
+  });
 });
 
 describe('stashed layers', () => {

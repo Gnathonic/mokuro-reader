@@ -1023,7 +1023,8 @@ async function installDownloadedLayers(
     for (const entry of layerFiles ?? []) {
       const read = await readLayerFile(entry.file);
       // Passive: a layer embedded in the archive must lose to the real sidecar
-      // the pull below (or any later listing) finds, never be pushed over it.
+      // the pull below (or any later listing) finds, never be pushed over it —
+      // and to a local row with unpushed edits, which the attach leaves alone.
       if (read) {
         await attachLayerToVolume(volumeUuid, entry.layerId, read.pages, { passive: true });
       }

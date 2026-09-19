@@ -14,7 +14,7 @@ import { miscSettings, type TranslationEngineId } from '$lib/settings/misc';
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { promptConfirmation } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util/snackbar';
-import { upsertLayerPages } from '$lib/reader/edit/layers';
+import { loadLayerPages, upsertLayerPages } from '$lib/reader/edit/layers';
 import { engineCredentials, type EngineCredentials } from './credentials';
 import { annotateImage, prepareImage, type DecodedImage } from './gcv';
 import { gcvToPage } from './gcv-convert';
@@ -178,18 +178,36 @@ export async function startEngineRun(
   const controller = new AbortController();
   const processId = `engine-${kind}-${ctx.volumeUuid}`;
   const results = new Map<number, Page>();
-  let flushedCount = 0;
+  // The run is not tied to the reader's lifecycle, so the volume can be
+  // deleted (or removed from this device) under it. The write then refuses
+  // (`upsertLayerPages` → null); stop here too, rather than keep paying an API
+  // for pages that have nowhere to go.
+  let volumeGone = false;
+  // What the layer held before this run touched it: a page that no longer
+  // matches when its result lands was edited by hand mid-run, and is kept.
+  const baseline = await loadLayerPages(ctx.volumeUuid, layerId);
+  let keptEdits = 0;
   const flush = async () => {
     if (results.size === 0) return;
     const batch = new Map(results);
     results.clear();
-    await upsertLayerPages(ctx.volumeUuid, layerId, {
+    if (volumeGone) return;
+    const written = await upsertLayerPages(ctx.volumeUuid, layerId, {
       name: layerName,
       kind: kind === 'ocr' ? 'ocr' : 'translation',
       engine,
       sourcePages: ctx.sourcePages,
-      pages: batch
+      pages: batch,
+      baseline
     });
+    if (!written) {
+      volumeGone = true;
+      controller.abort();
+      return;
+    }
+    // The returned layer holds the very objects it was given, except where a
+    // hand edit was kept instead.
+    for (const [i, page] of batch) if (written.pages[i] !== page) keptEdits++;
   };
 
   active.set({
@@ -256,8 +274,8 @@ export async function startEngineRun(
           progress: total ? Math.round(((done + failed) / total) * 100) : 100,
           status: `${done + failed} / ${total}${failed ? ` (${failed} failed)` : ''}`
         });
-        if (results.size - flushedCount >= FLUSH_EVERY) {
-          flushedCount = results.size;
+        // `flush` empties `results`, so its size IS the unflushed count.
+        if (results.size >= FLUSH_EVERY) {
           void flush().catch((error) => console.error('[engine-runs] flush failed:', error));
         }
       }
@@ -279,10 +297,15 @@ export async function startEngineRun(
     setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
   }
 
+  if (volumeGone) {
+    d.notify(`${KIND_LABEL[kind]} stopped: "${ctx.volumeTitle}" is no longer on this device`);
+    return result;
+  }
   const parts = [
     `${KIND_LABEL[kind]} ${result.cancelled ? 'cancelled' : 'done'}: ${result.done} page${result.done === 1 ? '' : 's'}`
   ];
   if (result.failed) parts.push(`${result.failed} failed`);
+  if (keptEdits) parts.push(`${keptEdits} kept your manual edit${keptEdits === 1 ? '' : 's'}`);
   d.notify(parts.join(', '));
   return result;
 }
