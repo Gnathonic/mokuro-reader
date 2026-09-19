@@ -169,7 +169,7 @@ export function getDefaultMeasurer(): TextMeasurer {
  * via edge-midpoint vectors — the same construction comic-text-detector uses,
  * so it tolerates rotated quads.
  */
-function quadExtents(quad: Quad, vertical: boolean): { main: number; cross: number } | null {
+export function quadExtents(quad: Quad, vertical: boolean): { main: number; cross: number } | null {
   if (!Array.isArray(quad) || quad.length !== 4) return null;
   for (const p of quad) {
     if (!Array.isArray(p) || p.length < 2 || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) {
