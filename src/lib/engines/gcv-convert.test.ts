@@ -51,4 +51,75 @@ describe('gcvToPage', () => {
   it('an empty response yields a page with no blocks', () => {
     expect(gcvToPage({ responses: [{}] }, page()).blocks).toEqual([]);
   });
+
+  it('drops furigana even with only two lines (main + ruby, no third line to pull the median up)', () => {
+    // A vertical symbol's "extent" is box width. Main glyphs are 20px wide,
+    // the ruby line beside them ~45% that width — with only two lines the
+    // old median-of-extents was their mean, which dragged the threshold low
+    // enough to keep the ruby line.
+    const mainSymbol = (y: number, brk?: string) => ({
+      text: '水',
+      boundingBox: {
+        vertices: [
+          { x: 300, y },
+          { x: 320, y },
+          { x: 320, y: y + 20 },
+          { x: 300, y: y + 20 }
+        ]
+      },
+      ...(brk ? { property: { detectedBreak: { type: brk } } } : {})
+    });
+    const rubySymbol = (y: number, brk?: string) => ({
+      text: 'み',
+      boundingBox: {
+        vertices: [
+          { x: 291, y },
+          { x: 300, y },
+          { x: 300, y: y + 9 },
+          { x: 291, y: y + 9 }
+        ]
+      },
+      ...(brk ? { property: { detectedBreak: { type: brk } } } : {})
+    });
+    const response: GcvAnnotateResponse = {
+      responses: [
+        {
+          fullTextAnnotation: {
+            pages: [
+              {
+                blocks: [
+                  {
+                    boundingBox: {
+                      vertices: [
+                        { x: 291, y: 40 },
+                        { x: 320, y: 40 },
+                        { x: 320, y: 80 },
+                        { x: 291, y: 80 }
+                      ]
+                    },
+                    paragraphs: [
+                      {
+                        words: [
+                          {
+                            symbols: [mainSymbol(40), mainSymbol(60, 'LINE_BREAK')]
+                          },
+                          {
+                            symbols: [rubySymbol(40), rubySymbol(49, 'LINE_BREAK')]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    };
+
+    const out = gcvToPage(response, page());
+    expect(out.blocks).toHaveLength(1);
+    expect(out.blocks[0].lines).toEqual(['水水']);
+  });
 });
