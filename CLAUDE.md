@@ -130,16 +130,29 @@ The application uses Web Workers for parallel cloud downloads:
 
 ### Database Schema (V3)
 
-The application uses a V3 database (`mokuro_v3`) with Dexie, currently at Dexie schema **version 4** (`db-v3.ts`; version 2 added `series_metadata`, version 3 added `series_index`, version 4 added `catalog_index` — all additive, no data migration). Volume data is split across three tables for performance, alongside per-series metadata and index tables:
+The application uses a V3 database (`mokuro_v3`) with Dexie, declared once as
+data in `db-schema.ts` (`MOKURO_DB_SCHEMA`) and applied identically by every
+connection (main thread `db-v3.ts`, the export Worker, test fixtures) — see
+that file for why a hand-written second `.version(n).stores({...})` ladder is
+a data-loss hazard. It is currently at Dexie schema **version 3**: version 1
+is the shipped three-table schema; version 2 added `series_metadata`,
+`series_index`, `catalog_index` and `cloud_covers` in one step (collapsed from
+several dev-only versions that no released build ever wrote); version 3 added
+`volume_ocr_layers` and the `ocr_edited_at` index on `volumes` for the OCR
+editor. All additive, no data migration. Volume data is split across three
+tables for performance, alongside per-series metadata, index and cover-cache
+tables:
 
-| Table             | Primary Key   | Indexed Fields                | Purpose                                                                           |
-| ----------------- | ------------- | ----------------------------- | --------------------------------------------------------------------------------- |
-| `volumes`         | `volume_uuid` | `series_uuid`, `series_title` | Metadata, thumbnails                                                              |
-| `volume_ocr`      | `volume_uuid` | —                             | OCR page data (text blocks)                                                       |
-| `volume_files`    | `volume_uuid` | —                             | Image files (File objects)                                                        |
-| `series_metadata` | `series_key`  | —                             | Per-series AniList link, titles, tag, tracking (key = normalized `series_title`)  |
-| `series_index`    | `series_key`  | —                             | Cached `series.json` sidecar + cloud file stamp (download cache, unauthoritative) |
-| `catalog_index`   | `series_key`  | —                             | Cached root `catalog.json` entry per series (names/facts only, download cache)    |
+| Table               | Primary Key              | Indexed Fields                                 | Purpose                                                                                                                            |
+| ------------------- | ------------------------ | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `volumes`           | `volume_uuid`            | `series_uuid`, `series_title`, `ocr_edited_at` | Metadata, thumbnails. `ocr_edited_at` is sparse — only rows with a local OCR edit carry it — so edited rows can be found keys-only |
+| `volume_ocr`        | `volume_uuid`            | —                                              | Primary OCR page data (text blocks)                                                                                                |
+| `volume_files`      | `volume_uuid`            | —                                              | Image files (File objects)                                                                                                         |
+| `volume_ocr_layers` | `[volume_uuid+layer_id]` | `volume_uuid`                                  | Alternate OCR layers per volume, including the read-only `original` pre-edit snapshot                                              |
+| `series_metadata`   | `series_key`             | —                                              | Per-series AniList link, titles, tag, tracking (key = normalized `series_title`)                                                   |
+| `series_index`      | `series_key`             | —                                              | Cached `series.json` sidecar + cloud file stamp (download cache, unauthoritative)                                                  |
+| `catalog_index`     | `id`                     | —                                              | Cached root `catalog.json` (one row, key `'catalog'`; download cache)                                                              |
+| `cloud_covers`      | `[account_scope+path]`   | `cached_at`                                    | Thumbnail cache for cloud volumes not installed locally                                                                            |
 
 **Key Types:**
 
@@ -244,6 +257,46 @@ Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and O
 
 The app writes `.mokuro` files in this pure upstream format — no reader-specific
 keys. Series-level data lives beside them in `series.json`.
+
+### OCR editor, layers and engines
+
+The primary `volume_ocr` row is what every existing consumer reads — stats,
+exports, backups, the reader by default, OCR upgrades. Alternate layers
+(`volume_ocr_layers`) never overwrite it implicitly; moving a layer's pages
+into the primary row is an explicit **Promote** action. The `original` layer
+is the read-only pre-edit snapshot the first edit to a volume takes
+automatically (`edit-persist.ts`), used by **Revert** — it only exists for the
+primary, since reverting a page swaps in the primary's own pre-edit state.
+
+Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
+scroll). It's entered by the `E` key, the quick actions menu, the settings
+toggle, or "Edit text" in the text-box context menu — all funnel through the
+same `editModeRequest` store. Edits autosave with a short debounce
+(`edit-session.svelte.ts`); `L` cycles the displayed layer and announces the
+switch through the reader's in-overlay notification, the same channel other
+hotkeys use. Pure editing/layer operations (history, geometry, layer CRUD,
+kind inference) live in `src/lib/reader/edit/`; the DOM lives in
+`src/lib/components/Reader/Edit` (the edit overlay/toolbar) and
+`src/lib/components/Reader/Layers` (the layer picker and rename/new-layer
+modal).
+
+Cloud layer sidecars are named `<Volume Title>.<layer-id>.mokuro[.gz]`
+(`layer-id` matching `[a-z0-9-]{1,32}`) beside the volume's archive.
+`classifyMokuroSidecar` (`src/lib/util/sync/syncable-file.ts`) tells a listed
+`.mokuro` apart from a layer file the same way it always disambiguated dotted
+volume titles — by checking which stems have a `.cbz` in the same folder
+listing — and `src/lib/metadata/layer-sync.ts` syncs layers for rows that
+already exist locally (installed or metadata-only), newest-wins, no merge. A
+layer with no local record is filed by inferring its kind from the id alone:
+`original` stays `original`, `tr-<lang>` is a `translation`, a known engine id
+(`gcv`, `hayai`, `paddle-manga`, `mokuro-fp16`, `mokuro`) is `ocr`, anything
+else is a manual `edit`.
+
+The OCR/translation engines (`src/lib/engines/`) are experimental. Their API
+keys live in `localStorage` only (`engines/credentials.ts`) and are never
+written to `profiles.json`, an export, or a log — a key in a synced file would
+ride to every device and every cloud folder. `.mokuro` files themselves stay
+pure upstream format regardless of which layer or engine produced them.
 
 ### Series sidecar `series.json`
 
