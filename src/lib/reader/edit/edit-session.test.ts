@@ -276,3 +276,85 @@ describe('EditSession — active page', () => {
     expect(s.activePageIndex).toBe(1);
   });
 });
+
+describe('EditSession — flush and dispose', () => {
+  /** A persist whose writes stay in flight until the test releases them. */
+  function slowPersist() {
+    const release: (() => void)[] = [];
+    const persist = vi.fn(
+      (_uuid: string, _pageIndex: number, _page: Page) =>
+        new Promise<void>((resolve) => release.push(resolve))
+    );
+    return { persist, release };
+  }
+
+  it('flush waits for an edit committed while its own save was still in flight', async () => {
+    // The caller (promote / new layer) reads the DB the moment flush resolves:
+    // an edit that arrived mid-flush must be on disk by then, not on a timer.
+    const { persist, release } = slowPersist();
+    const { s } = session({ persist, debounceMs: 100000 });
+    s.setLines(0, 0, ['one']);
+    let flushed = false;
+    const flushing = s.flush().then(() => (flushed = true));
+    expect(persist).toHaveBeenCalledTimes(1);
+
+    s.setLines(0, 0, ['two']);
+    release[0]();
+    await vi.waitFor(() => expect(persist).toHaveBeenCalledTimes(2));
+    expect(flushed).toBe(false);
+    expect(persist.mock.calls[1][2].blocks[0].lines).toEqual(['two']);
+
+    release[1]();
+    await flushing;
+    expect(s.dirty).toBe(false);
+  });
+
+  it('a change committed after dispose is saved at once, never left on the debounce', async () => {
+    // Nobody flushes a disposed session again (the reader has dropped it), so
+    // a late commit — a line editor closing as the overlay unmounts — would
+    // otherwise sit on a timer and land long after whatever awaited dispose.
+    const { s, persist } = session({ debounceMs: 100000 });
+    s.setLines(0, 0, ['before']);
+    await s.dispose();
+    expect(persist).toHaveBeenCalledTimes(1);
+
+    s.setLines(0, 0, ['after']);
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist.mock.calls[1][2].blocks[0].lines).toEqual(['after']);
+    await s.flush();
+    expect(s.dirty).toBe(false);
+  });
+
+  it('a save that lands after the session was replaced still writes only its own volume', async () => {
+    // The target is bound at construction: a late flush of session A must not
+    // follow the reader to whatever volume or layer session B is on.
+    const a = slowPersist();
+    const onPersistedA = vi.fn();
+    const { s: sessionA } = session({
+      volumeUuid: 'vol-a',
+      persist: a.persist,
+      onPersisted: onPersistedA,
+      debounceMs: 100000
+    });
+    sessionA.setLines(0, 0, ['a']);
+    const disposing = sessionA.dispose();
+
+    const {
+      s: sessionB,
+      persist: persistB,
+      onPersisted: onPersistedB
+    } = session({
+      volumeUuid: 'vol-b'
+    });
+    sessionB.setLines(0, 0, ['b']);
+    await sessionB.flush();
+
+    a.release[0]();
+    await disposing;
+    expect(a.persist.mock.calls.map((c) => c[0])).toEqual(['vol-a']);
+    expect(persistB.mock.calls.map((c) => c[0])).toEqual(['vol-b']);
+    expect(onPersistedA).toHaveBeenCalledTimes(1);
+    expect(onPersistedA.mock.calls[0][1].blocks[0].lines).toEqual(['a']);
+    expect(onPersistedB).toHaveBeenCalledTimes(1);
+  });
+});

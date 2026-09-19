@@ -71,6 +71,7 @@ export class EditSession {
   private timers = new Map<number, ReturnType<typeof setTimeout>>();
   private pendingSaves = new Set<Promise<void>>();
   private unsaved = new Set<number>();
+  private disposed = false;
 
   constructor(opts: EditSessionOptions) {
     this.opts = opts;
@@ -107,6 +108,14 @@ export class EditSession {
     this.unsaved.add(pageIndex);
     const existing = this.timers.get(pageIndex);
     if (existing) clearTimeout(existing);
+    // Nobody flushes a disposed session again (the reader has let go of it),
+    // so a late commit — a line editor closing as the overlay unmounts — is
+    // written now: on the debounce it would land long after whatever awaited
+    // `dispose()` had moved on, or never if the page is going away.
+    if (this.disposed) {
+      void this.save(pageIndex);
+      return;
+    }
     this.timers.set(
       pageIndex,
       setTimeout(() => void this.save(pageIndex), this.opts.debounceMs ?? SAVE_DEBOUNCE_MS)
@@ -129,14 +138,21 @@ export class EditSession {
     return run;
   }
 
-  /** Save everything pending now and wait for it. */
+  /**
+   * Save everything pending now and wait for it. Loops until the session is
+   * quiet: callers (promote, new layer, an engine run) read or replace the DB
+   * rows the moment this resolves, so an edit committed while an earlier save
+   * was still in flight must be on disk by then too — not back on the timer.
+   */
   async flush(): Promise<void> {
-    for (const [pageIndex, timer] of [...this.timers]) {
-      clearTimeout(timer);
-      this.timers.delete(pageIndex);
-      void this.save(pageIndex);
+    while (this.timers.size > 0 || this.pendingSaves.size > 0) {
+      for (const [pageIndex, timer] of [...this.timers]) {
+        clearTimeout(timer);
+        this.timers.delete(pageIndex);
+        void this.save(pageIndex);
+      }
+      await Promise.all([...this.pendingSaves]);
     }
-    await Promise.all([...this.pendingSaves]);
   }
 
   // ---- selection ----
@@ -302,6 +318,7 @@ export class EditSession {
 
   /** End the session: every pending page is saved now. Never drops work. */
   dispose(): Promise<void> {
+    this.disposed = true;
     return this.flush();
   }
 }
