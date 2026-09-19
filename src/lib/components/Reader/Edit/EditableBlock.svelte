@@ -233,6 +233,10 @@
   }
 
   async function onLineKeyDown(i: number, e: KeyboardEvent) {
+    // Mid-composition Enter/Backspace confirm an IME candidate — let them
+    // through untouched, or Enter inserts a stray line and Backspace eats
+    // the candidate instead of the conversion.
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       e.stopPropagation();
