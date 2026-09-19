@@ -50,6 +50,24 @@ describe('LayerPicker', () => {
   });
 });
 
+describe('LayerPicker — keyboard escape hatch', () => {
+  it('carries data-popover on its root so reader shortcuts ignore it', () => {
+    const { getByRole } = render(LayerPicker, {
+      props: { layers, current: null, onSelect: vi.fn(), onAction: vi.fn(), onClose: vi.fn() }
+    });
+    expect(getByRole('dialog').hasAttribute('data-popover')).toBe(true);
+  });
+
+  it('closes on Escape even when focus never entered the picker', async () => {
+    const onClose = vi.fn();
+    render(LayerPicker, {
+      props: { layers, current: null, onSelect: vi.fn(), onAction: vi.fn(), onClose }
+    });
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
+  });
+});
+
 describe('LayerPicker — whole-volume engine runs', () => {
   it('offers OCR / Translate whole volume only when handlers are given', async () => {
     const onOcrVolume = vi.fn();

@@ -46,11 +46,28 @@
   const row =
     'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-gray-600 aria-checked:bg-gray-600';
   const icon = 'rounded p-1 text-gray-300 hover:bg-gray-500 hover:text-white';
+
+  // keyboardShouldIgnore (gesture-target.ts) only matches [data-popover] via
+  // event.target.closest — which requires focus already inside this div. The
+  // picker opens without stealing focus from its toggle button, so Escape
+  // pressed right after opening would still hit Reader's window keydown
+  // handler underneath (navigateBack / page-turn arrows) unless we also
+  // close on Escape directly, same as TextBoxContextMenu.svelte.
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      onClose();
+    }
+  }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div
   role="dialog"
   aria-label="OCR layers"
+  tabindex="-1"
+  data-popover
+  onkeydown={(e) => e.stopPropagation()}
   class="fixed end-3 bottom-20 z-50 w-72 rounded-lg bg-gray-700 p-2 text-gray-100 shadow-xl"
 >
   <div class="mb-1 flex items-center justify-between px-1">
