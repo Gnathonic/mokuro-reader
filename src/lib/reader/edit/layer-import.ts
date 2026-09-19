@@ -146,11 +146,20 @@ export async function readLayerFile(file: File | Blob, gz = false): Promise<Read
   }
 }
 
-/** Write (or overwrite) one layer of a volume from imported pages. No cloud stamp: the next listing pushes it. */
+/**
+ * Write (or overwrite) one layer of a volume from imported pages. No cloud
+ * stamp: the next listing pushes it.
+ *
+ * `passive` is for pages found inside a downloaded archive, and only that:
+ * they are a copy of what the cloud already held, so the row must not count
+ * as a local edit — stamped `now` and unmarked it would out-rank a newer cloud
+ * sidecar and then be pushed over it. See `VolumeOcrLayer.passive_at`.
+ */
 export async function attachLayerToVolume(
   volumeUuid: string,
   layerId: string,
-  pages: Page[]
+  pages: Page[],
+  options: { passive?: boolean } = {}
 ): Promise<VolumeOcrLayer> {
   const now = new Date().toISOString();
   return db.transaction('rw', db.volume_ocr_layers, async () => {
@@ -168,6 +177,7 @@ export async function attachLayerToVolume(
           : {}),
       created_at: existing?.created_at ?? now,
       updated_at: now,
+      ...(options.passive ? { passive_at: now } : {}),
       pages
     };
     await db.volume_ocr_layers.put(layer);

@@ -12,6 +12,7 @@ import { db } from '$lib/catalog/db';
 import {
   applyStashedLayersFor,
   attachLayerFile,
+  attachLayerToVolume,
   clearStashedLayerEntries,
   extractLayerEntries,
   stashLayerEntries
@@ -132,6 +133,23 @@ describe('attachLayerFile', () => {
     });
     expect(await attachLayerFile(new File(['{}'], 'Vol 1.mokuro'))).toEqual({ status: 'invalid' });
     expect(await db.volumes.count()).toBe(0);
+  });
+});
+
+describe('attachLayerToVolume', () => {
+  const pages = JSON.parse(mokuro('うえ', {})).pages;
+
+  it('a passive attach marks the row at its own updated_at; a plain attach carries no mark', async () => {
+    await seed();
+    const passive = await attachLayerToVolume('v1', 'gcv', pages, { passive: true });
+    expect(passive.passive_at).toBe(passive.updated_at);
+    expect(passive.cloud).toBeUndefined();
+    expect((await db.volume_ocr_layers.get(['v1', 'gcv']))!.passive_at).toBe(passive.updated_at);
+
+    // A genuine import over the same layer is a local edit: the mark is gone.
+    const imported = await attachLayerToVolume('v1', 'gcv', pages);
+    expect('passive_at' in imported).toBe(false);
+    expect('passive_at' in (await db.volume_ocr_layers.get(['v1', 'gcv']))!).toBe(false);
   });
 });
 

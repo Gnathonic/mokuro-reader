@@ -1022,7 +1022,11 @@ async function installDownloadedLayers(
   try {
     for (const entry of layerFiles ?? []) {
       const read = await readLayerFile(entry.file);
-      if (read) await attachLayerToVolume(volumeUuid, entry.layerId, read.pages);
+      // Passive: a layer embedded in the archive must lose to the real sidecar
+      // the pull below (or any later listing) finds, never be pushed over it.
+      if (read) {
+        await attachLayerToVolume(volumeUuid, entry.layerId, read.pages, { passive: true });
+      }
     }
     if (cloudProvider) await pullLayersForVolume(volumeUuid, cloudProvider);
   } catch (error) {

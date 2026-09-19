@@ -249,20 +249,34 @@ async function addVolumeToArchiveWithProgress(
     );
   }
 
+  for (const file of await loadArchiveSidecarFiles(volume.volume_uuid, sidecarOptions)) {
+    await zipWriter.add(file.name, new BlobReader(file));
+  }
+}
+
+/**
+ * The per-volume sidecar files an exported archive carries at its root, beside
+ * the volume's `.mokuro`. One gate for both archive writers (the multi-volume
+ * one above, `compressVolume` for a lone volume), so they cannot drift apart.
+ */
+async function loadArchiveSidecarFiles(
+  volumeUuid: string,
+  sidecarOptions?: ExportSidecarOptions
+): Promise<File[]> {
+  const files: File[] = [];
+
   if (sidecarOptions?.includeSidecars && sidecarOptions.embedSidecarsInArchive) {
-    const sidecars = await loadVolumeSidecars(volume.volume_uuid);
-    if (sidecars.thumbnailFile) {
-      await zipWriter.add(sidecars.thumbnailFile.name, new BlobReader(sidecars.thumbnailFile));
-    }
+    const sidecars = await loadVolumeSidecars(volumeUuid);
+    if (sidecars.thumbnailFile) files.push(sidecars.thumbnailFile);
   }
 
   // The volume's OCR layers ride beside its `.mokuro` as `<title>.<id>.mokuro`
   // (the cloud/bunko shape), so a re-import attaches them to the same volume.
   if (sidecarOptions?.includeSidecars !== false) {
-    for (const layer of await loadVolumeLayerFiles(volume.volume_uuid)) {
-      await zipWriter.add(layer.name, new BlobReader(layer));
-    }
+    files.push(...(await loadVolumeLayerFiles(volumeUuid)));
   }
+
+  return files;
 }
 
 /**
@@ -284,8 +298,13 @@ export async function createArchiveBlob(
     // The archive travels on its own, so it carries the series sidecar too:
     // re-importing it restores the series facts and the volume index.
     const seriesFile = await buildSeriesFileForExport(volumes[0].series_title);
+    // `compressVolume` knows nothing of the database, so the per-volume sidecars
+    // the multi-volume writer adds itself are handed over here, under the same
+    // gates — a lone volume exports exactly what it would inside a series archive.
+    const extraFiles = await loadArchiveSidecarFiles(volumes[0].volume_uuid, sidecarOptions);
     return await compressVolume(volumes[0].volume_title, metadata, filesData, undefined, {
-      seriesFile
+      seriesFile,
+      extraFiles
     });
   }
 

@@ -11,7 +11,11 @@ import { BlobReader, TextWriter, ZipReader, configure } from '@zip.js/zip.js';
 // jsdom has no usable Worker for zip.js to farm compression out to.
 configure({ useWebWorkers: false });
 
-import { compressVolumeFromDb, generateVolumeSidecarsFromDb } from './compress-volume';
+import {
+  compressVolume,
+  compressVolumeFromDb,
+  generateVolumeSidecarsFromDb
+} from './compress-volume';
 import { parseSeriesFile } from '$lib/metadata/series-file';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
@@ -102,6 +106,24 @@ async function entryText(blob: Blob, name: string): Promise<string> {
   await reader.close();
   return text;
 }
+
+describe('compressVolume', () => {
+  const pages = [{ filename: '001.jpg', data: new Uint8Array([1, 2, 3]) }];
+
+  it('writes the extra files at the archive root, beside the .mokuro', async () => {
+    const layer = new File(['{"pages":[]}'], 'Vol 1.gcv.mokuro', { type: 'application/json' });
+    const blob = await compressVolume('Vol 1', null, pages, undefined, { extraFiles: [layer] });
+
+    expect(await entryNames(blob)).toEqual(['Vol 1/', 'Vol 1/001.jpg', 'Vol 1.gcv.mokuro']);
+    expect(await entryText(blob, 'Vol 1.gcv.mokuro')).toBe('{"pages":[]}');
+  });
+
+  it('adds nothing when no extra files are given (the cloud backup shape)', async () => {
+    const blob = await compressVolume('Vol 1', null, pages);
+
+    expect(await entryNames(blob)).toEqual(['Vol 1/', 'Vol 1/001.jpg']);
+  });
+});
 
 describe('compressVolumeFromDb', () => {
   it('embeds series.json when the archive is a self-contained export', async () => {

@@ -288,6 +288,10 @@ export class EditSession {
   }
 
   async revertPage(pageIndex: number): Promise<boolean> {
+    // The default loader reads the PRIMARY row's snapshot — the only original
+    // there is. An alternate layer has none of its own, so falling back to it
+    // would overwrite the layer's page with another layer's text.
+    if (this.layerId && !this.opts.loadOriginal) return false;
     const load = this.opts.loadOriginal ?? loadOriginalPage;
     const original = await load(this.volumeUuid, pageIndex);
     if (!original) return false;

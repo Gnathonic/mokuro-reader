@@ -1,4 +1,4 @@
-import { Uint8ArrayReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
+import { BlobReader, Uint8ArrayReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import Dexie from 'dexie';
 import type { VolumeMetadata } from '$lib/types';
 import {
@@ -57,6 +57,9 @@ function extensionFromMimeType(contentType: string): string {
  * @param options.seriesFile The series' `series.json`, written at the archive
  *   root for self-contained exports. Cloud uploads leave it out: there the file
  *   lives once per series folder, merged with what other devices published.
+ * @param options.extraFiles Named files written at the archive root, beside the
+ *   `.mokuro` — a self-contained export's layer files and thumbnail sidecar.
+ *   Cloud uploads leave it out too: there each sidecar is its own cloud file.
  * @returns Promise resolving to compressed CBZ as Blob
  */
 export async function compressVolume(
@@ -64,7 +67,7 @@ export async function compressVolume(
   metadata: MokuroMetadata | null,
   filesData: { filename: string; data: Uint8Array }[],
   onProgress?: (completed: number, total: number) => void,
-  options: { seriesFile?: SeriesFile | null } = {}
+  options: { seriesFile?: SeriesFile | null; extraFiles?: File[] } = {}
 ): Promise<Blob> {
   // Create zip writer with compatibility options:
   // - bufferedWrite: true - writes sizes in header (not data descriptor after data)
@@ -143,6 +146,10 @@ export async function compressVolume(
   // The series sidecar rides at the archive root, next to the .mokuro.
   if (options.seriesFile) {
     await zipWriter.add(SERIES_FILE_NAME, new TextReader(stringifySeriesFile(options.seriesFile)));
+  }
+
+  for (const file of options.extraFiles ?? []) {
+    await zipWriter.add(file.name, new BlobReader(file));
   }
 
   // Close and get the compressed data as Blob

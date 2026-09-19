@@ -106,6 +106,28 @@ describe('EditOverlay', () => {
     expect(session.pageFor(0).blocks[0].lines).toEqual(['あ', 'いい']);
   });
 
+  it('Enter mid-IME-composition is left alone: no line inserted, default not prevented', async () => {
+    const { container, session } = mount();
+    const block = container.querySelector<HTMLElement>('.editBlock')!;
+    await fireEvent.dblClick(block);
+    await tick();
+    let lines = block.querySelectorAll<HTMLElement>('[contenteditable]');
+    expect(lines).toHaveLength(2);
+    const composingEnter = await fireEvent.keyDown(lines[1], { key: 'Enter', isComposing: true });
+    await tick();
+    expect(composingEnter).toBe(true); // preventDefault was never called
+    lines = block.querySelectorAll<HTMLElement>('[contenteditable]');
+    expect(lines).toHaveLength(2);
+    expect(session.pageFor(0).blocks[0].lines).toEqual(['あ', 'い']);
+
+    // Control case: the same key, not composing, still inserts as before.
+    const plainEnter = await fireEvent.keyDown(lines[1], { key: 'Enter' });
+    await tick();
+    expect(plainEnter).toBe(false); // preventDefault was called
+    lines = block.querySelectorAll<HTMLElement>('[contenteditable]');
+    expect(lines).toHaveLength(3);
+  });
+
   it('a drag on a block body moves it (pointer capture, no bubbling to the page)', async () => {
     const { container, session } = mount();
     const block = container.querySelector<HTMLElement>('.editBlock')!;

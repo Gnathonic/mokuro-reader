@@ -31,7 +31,11 @@
 </script>
 
 {#if $layerNamePrompt}
-  <Modal {open} size="xs" onclose={cancel} dismissable>
+  <!-- data-popover: keyboardShouldIgnore (gesture-target.ts) walks up from
+       event.target, and the native <dialog> traps focus inside it, so this
+       reliably blocks Reader's window keydown handler (arrows/Escape) from
+       acting on the reader underneath while the prompt is open. -->
+  <Modal {open} size="xs" onclose={cancel} dismissable data-popover>
     <form
       class="flex flex-col gap-4 p-2"
       onsubmit={(e) => {

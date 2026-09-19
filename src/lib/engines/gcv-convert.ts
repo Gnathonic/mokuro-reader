@@ -130,10 +130,11 @@ function convertBlock(block: GcvBlock): Block | null {
   const vertical = symbolCount(true) >= symbolCount(false);
 
   const extents = lines.map((l) => median(l.symbols.map((s) => symbolExtent(s, l.vertical))));
-  const blockMedian = median(extents);
-  const kept = lines.filter(
-    (_, i) => lines.length < 2 || extents[i] >= FURIGANA_RATIO * blockMedian
-  );
+  // Max, not median: with exactly two lines (main + its furigana, the common
+  // ruby case) the median is their mean, which drags the threshold down
+  // enough to keep the furigana line.
+  const maxExtent = Math.max(...extents);
+  const kept = lines.filter((_, i) => lines.length < 2 || extents[i] >= FURIGANA_RATIO * maxExtent);
   if (kept.length === 0) return null;
 
   const fontSize = Math.round(

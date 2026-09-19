@@ -184,6 +184,14 @@ export interface VolumeOcrLayer {
    * when the sync happened. `updated_at > cloud.synced_at` = edited since.
    */
   cloud?: { provider: string; size?: number; modified?: number; synced_at: string };
+  /**
+   * Set (equal to `updated_at`) on a row attached from INSIDE a downloaded
+   * archive: a snapshot of what the cloud held, not an edit, so any real cloud
+   * sidecar of the layer outranks it (`layer-sync.ts`). Compared rather than
+   * cleared — the mark dies the moment anything moves `updated_at`, without
+   * every writer of the row having to know about it.
+   */
+  passive_at?: string;
 }
 
 // Combined view for API compatibility (assembled from volume_ocr + volume_files)
