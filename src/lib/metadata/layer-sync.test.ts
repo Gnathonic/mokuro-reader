@@ -29,11 +29,14 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
 
 import { db } from '$lib/catalog/db';
 import {
+  clearPendingLayerDelete,
   collectLayerFiles,
+  deleteCloudLayerFile,
   deleteLayerFileInCloud,
   layerNeedsPull,
   layerNeedsPush,
   pullLayersForVolume,
+  stampLayersSynced,
   syncLayersFromListing
 } from './layer-sync';
 
@@ -119,6 +122,7 @@ beforeEach(async () => {
   cacheRemove.mockReset();
   cachedFiles = [];
   readOnly = false;
+  localStorage.clear();
   getActiveProvider.mockReturnValue(provider());
   uploadFile.mockResolvedValue({
     fileId: 'up',
@@ -413,5 +417,266 @@ describe('pullLayersForVolume / deleteLayerFileInCloud', () => {
     deleteFile.mockClear();
     await deleteLayerFileInCloud(row, { layer_id: 'fix' });
     expect(deleteFile).not.toHaveBeenCalled();
+  });
+});
+
+// Deleting a layer used to drop the local row whether or not the cloud copy
+// went with it; whenever it did not (offline, read-only, a failed request) the
+// next listing found "no row" and pulled the file straight back.
+describe('pending layer deletes (no resurrection)', () => {
+  const layerPath = 'Series/Vol 1.fix.mokuro';
+  const files = () => listing(cloudFile('Series/Vol 1.cbz'), cloudFile(layerPath, { size: 55 }));
+
+  async function seedSyncedLayer(layer_id = 'fix') {
+    await seedRow();
+    await db.volume_ocr_layers.put({
+      volume_uuid: 'v1',
+      layer_id,
+      name: 'Fix',
+      kind: 'edit',
+      created_at: '2026-09-16T09:00:00.000Z',
+      updated_at: '2026-09-16T09:00:00.000Z',
+      pages: [pg('なお')],
+      cloud: {
+        provider: 'webdav',
+        size: 55,
+        modified: 1789552800,
+        synced_at: '2026-09-16T09:00:00.000Z'
+      }
+    });
+  }
+
+  /** What `runLayerAction` does: cloud first, then the row — whatever the outcome. */
+  async function userDeletes(layerId = 'fix') {
+    const outcome = await deleteCloudLayerFile('v1', layerId);
+    await db.volume_ocr_layers.delete(['v1', layerId]);
+    return outcome;
+  }
+
+  it('offline delete → not pulled back → cloud file removed on the next writable listing', async () => {
+    await seedSyncedLayer();
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile(layerPath, { size: 55 })];
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('もど')]));
+
+    getActiveProvider.mockReturnValue(null);
+    expect(await userDeletes()).toBe('unconfirmed');
+    expect(deleteFile).not.toHaveBeenCalled();
+
+    // Back online, but the delete request fails: still no resurrection.
+    getActiveProvider.mockReturnValue(provider());
+    deleteFile.mockRejectedValueOnce(new Error('503'));
+    await syncLayersFromListing(files(), 'webdav');
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(await db.volume_ocr_layers.get(['v1', 'fix'])).toBeUndefined();
+
+    // The following listing gets the delete through.
+    await syncLayersFromListing(files(), 'webdav');
+    expect(deleteFile).toHaveBeenCalledTimes(2);
+    expect(deleteFile).toHaveBeenLastCalledWith(expect.objectContaining({ path: layerPath }));
+    expect(cacheRemove).toHaveBeenCalledWith(layerPath);
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(await db.volume_ocr_layers.get(['v1', 'fix'])).toBeUndefined();
+
+    // Tombstone spent: once the file is gone nothing more is attempted, and a
+    // layer another device publishes under that id later is an arrival again.
+    await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz')), 'webdav');
+    expect(deleteFile).toHaveBeenCalledTimes(2);
+    await syncLayersFromListing(files(), 'webdav');
+    expect(deleteFile).toHaveBeenCalledTimes(2);
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('read-only provider: the row goes locally and is never pulled back', async () => {
+    await seedSyncedLayer();
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile(layerPath, { size: 55 })];
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('もど')]));
+    readOnly = true;
+
+    expect(await userDeletes()).toBe('unconfirmed');
+    await syncLayersFromListing(files(), 'webdav');
+    await syncLayersFromListing(files(), 'webdav');
+    expect(await pullLayersForVolume('v1', 'webdav')).toBe(0);
+    expect(deleteFile).not.toHaveBeenCalled();
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(await db.volume_ocr_layers.get(['v1', 'fix'])).toBeUndefined();
+  });
+
+  it('a confirmed delete, and a layer that never reached a cloud, leave no tombstone', async () => {
+    await seedSyncedLayer();
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile(layerPath, { size: 55 })];
+    expect(await userDeletes()).toBe('gone');
+    expect(deleteFile).toHaveBeenCalledTimes(1);
+
+    await db.volume_ocr_layers.put({
+      volume_uuid: 'v1',
+      layer_id: 'local',
+      name: 'Local',
+      kind: 'edit',
+      created_at: '2026-09-16T09:00:00.000Z',
+      updated_at: '2026-09-16T09:00:00.000Z',
+      pages: [pg('x')]
+    });
+    getActiveProvider.mockReturnValue(null);
+    expect(await userDeletes('local')).toBe('gone');
+    expect(localStorage.length).toBe(0);
+  });
+
+  it('synced, writable, but the cached listing cannot vouch for the file → unconfirmed until a listing says so', async () => {
+    await seedSyncedLayer();
+    cachedFiles = []; // cache not loaded yet: "not listed" proves nothing
+    expect(await userDeletes()).toBe('unconfirmed');
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('もど')]));
+    await syncLayersFromListing(files(), 'webdav');
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(deleteFile).toHaveBeenCalledTimes(1);
+
+    // …whereas a cache that covers the volume and shows no such file is proof.
+    await seedSyncedLayer('gone-already');
+    cachedFiles = [cloudFile('Series/Vol 1.cbz')];
+    expect(await userDeletes('gone-already')).toBe('gone');
+  });
+
+  it('re-creating a layer under the same id clears the tombstone: it is pushed, never deleted', async () => {
+    await seedSyncedLayer();
+    getActiveProvider.mockReturnValue(null);
+    expect(await userDeletes()).toBe('unconfirmed');
+    getActiveProvider.mockReturnValue(provider());
+
+    const recreate = () =>
+      db.volume_ocr_layers.put({
+        volume_uuid: 'v1',
+        layer_id: 'fix',
+        name: 'Fix',
+        kind: 'edit',
+        created_at: '2026-09-16T11:00:00.000Z',
+        updated_at: '2026-09-16T11:00:00.000Z',
+        pages: [pg('あたらしい')]
+      });
+
+    // Explicitly (what the "new layer" action does)…
+    await recreate();
+    clearPendingLayerDelete('v1', 'fix');
+    expect(localStorage.length).toBe(0);
+
+    // …and self-healing for every other way a row can come back (import, promote).
+    await db.volume_ocr_layers.delete(['v1', 'fix']);
+    await seedSyncedLayer();
+    getActiveProvider.mockReturnValue(null);
+    await userDeletes();
+    getActiveProvider.mockReturnValue(provider());
+    await recreate();
+    await syncLayersFromListing(files(), 'webdav');
+    expect(deleteFile).not.toHaveBeenCalled();
+    expect(uploadFile).toHaveBeenCalledTimes(1);
+    expect(localStorage.length).toBe(0);
+  });
+
+  it('a tombstone for another provider neither hides nor deletes this provider’s file', async () => {
+    await seedSyncedLayer();
+    await db.volume_ocr_layers.update(['v1', 'fix'], {
+      cloud: { provider: 'mega', size: 55, synced_at: '2026-09-16T09:00:00.000Z' }
+    });
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile(layerPath, { size: 55 })];
+    expect(await userDeletes()).toBe('unconfirmed');
+    // Never this provider's copy: the row was not synced with it.
+    expect(deleteFile).not.toHaveBeenCalled();
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('べつ')]));
+    await syncLayersFromListing(files(), 'webdav');
+    expect(deleteFile).not.toHaveBeenCalled();
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('tombstones of a volume that no longer exists are dropped', async () => {
+    await seedSyncedLayer();
+    getActiveProvider.mockReturnValue(null);
+    await userDeletes();
+    getActiveProvider.mockReturnValue(provider());
+    await db.volumes.delete('v1');
+    await syncLayersFromListing(files(), 'webdav');
+    expect(localStorage.length).toBe(0);
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
+});
+
+// A backup serializes a layer, then spends seconds to minutes uploading. The
+// stamp used to re-read the row afterwards and call whatever it found synced —
+// so an edit made during the upload read as "in the cloud", and the next
+// listing (cloud file newer than the edit, size now different) pulled the
+// stale upload over it.
+describe('stampLayersSynced', () => {
+  const T0 = '2026-09-16T09:00:00.000Z';
+  const T1 = '2026-09-16T09:00:30.000Z';
+
+  async function seedLayer() {
+    await seedRow();
+    await db.volume_ocr_layers.put({
+      volume_uuid: 'v1',
+      layer_id: 'fix',
+      name: 'Fix',
+      kind: 'edit',
+      created_at: T0,
+      updated_at: T0,
+      pages: [pg('まえ')]
+    });
+  }
+
+  it('an untouched layer is stamped synced with the uploaded size; an unknown id is ignored', async () => {
+    await seedLayer();
+    await stampLayersSynced('v1', 'webdav', [
+      { layerId: 'fix', updatedAt: T0, size: 321 },
+      { layerId: 'deleted-meanwhile', updatedAt: T0, size: 1 }
+    ]);
+    const row = (await db.volume_ocr_layers.get(['v1', 'fix']))!;
+    expect(row.cloud).toMatchObject({ provider: 'webdav', size: 321 });
+    expect(row.cloud!.modified).toBeUndefined();
+    expect(row.updated_at > row.cloud!.synced_at).toBe(false);
+    expect(await db.volume_ocr_layers.count()).toBe(1);
+    const files = listing(
+      cloudFile('Series/Vol 1.cbz'),
+      cloudFile('Series/Vol 1.fix.mokuro', { size: 321, modifiedTime: '2026-09-16T09:01:00.000Z' })
+    );
+    await syncLayersFromListing(files, 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('edited between serialize and stamp → stays "edited since sync" and is pushed, never overwritten', async () => {
+    await seedLayer();
+    // The worker read the row at T0 and is uploading those 321 bytes…
+    const snapshot = [{ layerId: 'fix', updatedAt: T0, size: 321 }];
+    // …the user edits the layer while it does…
+    await db.volume_ocr_layers.update(['v1', 'fix'], {
+      updated_at: T1,
+      pages: [pg('あとのへんしゅう')]
+    });
+    // …and the upload completes.
+    await stampLayersSynced('v1', 'webdav', snapshot);
+
+    const row = (await db.volume_ocr_layers.get(['v1', 'fix']))!;
+    expect(row.updated_at > row.cloud!.synced_at).toBe(true);
+    // Stamped with what IS in the cloud, so the listed file does not read as
+    // somebody else's newer copy.
+    expect(row.cloud).toMatchObject({ provider: 'webdav', size: 321 });
+
+    // The cloud file carries the upload's mtime — LATER than the edit.
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('ふるい')]));
+    const files = listing(
+      cloudFile('Series/Vol 1.cbz'),
+      cloudFile('Series/Vol 1.fix.mokuro', { size: 321, modifiedTime: '2026-09-16T09:01:00.000Z' })
+    );
+    await syncLayersFromListing(files, 'webdav');
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(uploadFile).toHaveBeenCalledTimes(1);
+    const pushed = JSON.parse(await (uploadFile.mock.calls[0][1] as Blob).text());
+    expect(pushed.pages[0].blocks[0].lines).toEqual(['あとのへんしゅう']);
+    expect((await db.volume_ocr_layers.get(['v1', 'fix']))!.pages[0].blocks[0].lines).toEqual([
+      'あとのへんしゅう'
+    ]);
+  });
+
+  it('a layer created after the serialize was never uploaded, so it is not stamped', async () => {
+    await seedLayer();
+    await stampLayersSynced('v1', 'webdav', []);
+    expect((await db.volume_ocr_layers.get(['v1', 'fix']))!.cloud).toBeUndefined();
   });
 });

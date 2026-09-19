@@ -16,7 +16,11 @@ import {
 import { downloadFileBlob } from '$lib/util/volume-sidecars';
 import { promptConfirmation } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util/snackbar';
-import { deleteCloudLayerFile as realDeleteCloudLayerFile } from '$lib/metadata/layer-sync';
+import {
+  clearPendingLayerDelete as realClearPendingLayerDelete,
+  deleteCloudLayerFile as realDeleteCloudLayerFile,
+  type CloudLayerDeleteOutcome
+} from '$lib/metadata/layer-sync';
 
 export type LayerAction = 'new' | 'rename' | 'promote' | 'export' | 'delete';
 export type LayerSource = 'copy' | 'empty';
@@ -60,8 +64,14 @@ export interface LayerActionDeps {
   createLayer: typeof realCreateLayer;
   renameLayer: typeof realRenameLayer;
   deleteLayer: typeof realDeleteLayer;
-  /** Removes the layer's cloud copy first — otherwise the next listing pulls it back. */
-  deleteCloudLayerFile: (volumeUuid: string, layerId: string) => Promise<void>;
+  /**
+   * Removes the layer's cloud copy first — otherwise the next listing pulls it
+   * back. `'unconfirmed'` = a copy may survive; layer-sync has left a
+   * pending-delete tombstone that hides it and retries on later listings.
+   */
+  deleteCloudLayerFile: (volumeUuid: string, layerId: string) => Promise<CloudLayerDeleteOutcome>;
+  /** A layer created under a previously deleted id must not inherit its tombstone. */
+  clearPendingLayerDelete: (volumeUuid: string, layerId: string) => void;
   promoteLayer: typeof realPromoteLayer;
   buildLayerExportFile: typeof realBuildLayerExportFile;
   download: (file: File) => void;
@@ -74,6 +84,7 @@ const defaultDeps: LayerActionDeps = {
   renameLayer: realRenameLayer,
   deleteLayer: realDeleteLayer,
   deleteCloudLayerFile: realDeleteCloudLayerFile,
+  clearPendingLayerDelete: realClearPendingLayerDelete,
   promoteLayer: realPromoteLayer,
   buildLayerExportFile: realBuildLayerExportFile,
   download: downloadFileBlob,
@@ -96,6 +107,14 @@ export interface LayerActionContext {
   /** What is on screen now — the source for "copy" / "empty". */
   displayedPages: Page[];
   onSelectLayer: (layerId: string | null) => Promise<void> | void;
+  /**
+   * Awaited once the user has committed to a promote, a new layer or a delete,
+   * BEFORE any layer row is read or written — the reader passes its edit
+   * session's flush. Unsaved edits written late would otherwise land on a row
+   * the action already swapped, copied without them, or deleted. A rejection
+   * aborts the action (reported like any other failure).
+   */
+  onBeforeMutate?: () => Promise<void>;
   deps?: Partial<LayerActionDeps>;
 }
 
@@ -107,11 +126,13 @@ export async function runLayerAction(action: LayerAction, ctx: LayerActionContex
       case 'new': {
         const r = await promptLayerName({ title: 'New layer', askSource: true });
         if (!r) return;
+        await ctx.onBeforeMutate?.();
         const layer = await d.createLayer(volumeUuid, {
           name: r.name,
           pages: r.source === 'empty' ? 'empty' : ctx.displayedPages,
           sourcePages: ctx.displayedPages
         });
+        d.clearPendingLayerDelete(volumeUuid, layer.layer_id);
         await ctx.onSelectLayer(layer.layer_id);
         d.notify(`Layer "${layer.name}" created`);
         return;
@@ -132,6 +153,7 @@ export async function runLayerAction(action: LayerAction, ctx: LayerActionContex
           `Replace this volume's primary OCR with "${ctx.layerName ?? layerId}"? The current primary is kept as a layer.`
         );
         if (!ok) return;
+        await ctx.onBeforeMutate?.();
         await d.promoteLayer(volumeUuid, layerId);
         await ctx.onSelectLayer(null);
         d.notify('Layer promoted to primary');
@@ -148,10 +170,20 @@ export async function runLayerAction(action: LayerAction, ctx: LayerActionContex
           `Delete layer "${ctx.layerName ?? layerId}"? This cannot be undone.`
         );
         if (!ok) return;
+        // Before the switch to primary too: selecting another layer must not
+        // be what decides where the session's pending edits end up.
+        await ctx.onBeforeMutate?.();
         await ctx.onSelectLayer(null);
-        await d.deleteCloudLayerFile(volumeUuid, layerId);
+        const cloud = await d.deleteCloudLayerFile(volumeUuid, layerId);
+        // The row goes either way — being offline must not block a delete. An
+        // unconfirmed cloud removal is covered by layer-sync's tombstone (the
+        // file is never pulled back, and is removed once a listing allows it).
         await d.deleteLayer(volumeUuid, layerId);
-        d.notify('Layer deleted');
+        d.notify(
+          cloud === 'unconfirmed'
+            ? 'Layer deleted on this device. Its cloud copy will be removed when the cloud allows it.'
+            : 'Layer deleted'
+        );
         return;
       }
     }

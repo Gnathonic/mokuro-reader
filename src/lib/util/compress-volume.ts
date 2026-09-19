@@ -23,6 +23,13 @@ export interface VolumeSidecarBlobData {
 
 export interface VolumeLayerSidecarBlobData extends VolumeSidecarBlobData {
   layerId: string;
+  /**
+   * The row's `updated_at` as read together with the pages in `blob`. An
+   * upload takes long enough for the layer to be edited meanwhile; whoever
+   * stamps the row as synced afterwards compares against this, never against
+   * a fresh read (`stampLayersSynced`).
+   */
+  updatedAt: string;
 }
 
 export interface VolumeSidecarBlobResult {
@@ -248,7 +255,8 @@ export async function generateVolumeSidecarsFromDb(
         return {
           layerId: layer.layer_id,
           filename: layerSidecarName(volumeTitle, layer.layer_id),
-          blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' })
+          blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' }),
+          updatedAt: layer.updated_at
         };
       });
   }

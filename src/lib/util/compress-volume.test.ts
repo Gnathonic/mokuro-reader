@@ -176,6 +176,9 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
     expect(sidecars.layers?.map((l) => [l.layerId, l.filename])).toEqual([
       ['gcv', 'Vol 1.gcv.mokuro']
     ]);
+    // The row's `updated_at` as read WITH these pages: what a backup compares
+    // against after the upload to tell whether the layer was edited meanwhile.
+    expect(sidecars.layers![0].updatedAt).toBe('2026-09-16T00:00:00.000Z');
     const json = JSON.parse(await sidecars.layers![0].blob.text());
     expect(json.chars).toBe(3);
     expect(json.volume_uuid).toBe('volume-uuid');

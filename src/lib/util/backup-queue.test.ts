@@ -448,7 +448,12 @@ describe('export-for-download sidecars', () => {
     mokuro: { filename: 'One Piece - Volume 1.mokuro', blob: new Blob(['{}']) },
     thumbnail: { filename: 'One Piece - Volume 1.webp', blob: new Blob(['img']) },
     layers: [
-      { layerId: 'gcv', filename: 'One Piece - Volume 1.gcv.mokuro', blob: new Blob(['{}']) }
+      {
+        layerId: 'gcv',
+        filename: 'One Piece - Volume 1.gcv.mokuro',
+        blob: new Blob(['{}']),
+        updatedAt: '2026-09-16T09:00:00.000Z'
+      }
     ]
   };
 
@@ -510,6 +515,31 @@ describe('export-for-download sidecars', () => {
       'One Piece/One Piece - Volume 1.webp',
       'One Piece/Volume 1.cbz'
     ]);
-    expect(stampLayersSynced).toHaveBeenCalledWith('layers-upload-uuid', 'filesystem');
+    // The stamp is handed what was SERIALIZED (id, the row's updated_at at
+    // that moment, the uploaded byte count) — never left to re-read the row,
+    // which may have been edited while the upload ran.
+    expect(stampLayersSynced).toHaveBeenCalledWith('layers-upload-uuid', 'filesystem', [
+      { layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }
+    ]);
+  });
+
+  it('a worker-driven upload stamps from the snapshot the worker sends back', async () => {
+    const provider = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'layers-worker-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    const layerSnapshots = [{ layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 41 }];
+    await capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'remote-file-id', size: 123, layerSnapshots },
+      vi.fn()
+    );
+    expect(stampLayersSynced).toHaveBeenCalledWith('layers-worker-uuid', 'webdav', layerSnapshots);
   });
 });
