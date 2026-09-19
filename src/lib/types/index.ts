@@ -9,6 +9,14 @@ export type Block = {
    * standard .mokuro output and stored verbatim, but optional because
    * image-only volumes and older imports may lack it. */
   lines_coords?: number[][][];
+  /** Per-character placement, parallel to `lines`: entry i is `null` (no
+   * placement — that line renders fitted, as before) or `code points + 1`
+   * cumulative integer px along the line's reading axis, measured from its
+   * quad's start edge (top for vertical, left for horizontal). Character k
+   * occupies `[offsets[k], offsets[k + 1])`. Offsets index the RAW line, not
+   * the ellipsis-substituted one. Untrusted file data: read it through
+   * `$lib/reader/char-offsets`, which validates every entry. */
+  char_offsets?: (number[] | null)[];
 };
 
 export type Page = {
@@ -17,6 +25,9 @@ export type Page = {
   img_height: number;
   blocks: Block[];
   img_path: string;
+  /** How the producer made this page's `char_offsets` (`attn-cells`, `cells`,
+   * `gcv-symbols`, …). Diagnostic only — rendering must never depend on it. */
+  char_offsets_method?: string;
 };
 
 export interface VolumeMetadata {
