@@ -122,6 +122,12 @@ interface CompressFromDbMessage {
   embedMokuroInArchive?: boolean;
   /** Write the series' `series.json` into the archive (self-contained exports). */
   embedSeriesFile?: boolean;
+  /**
+   * Write the volume's OCR layer files into the archive. Set by the queue for
+   * an export that embeds its sidecars (nothing is downloaded beside that
+   * archive, so a layer left out of it is lost); never for a cloud upload.
+   */
+  embedLayerFiles?: boolean;
   includeSidecars?: boolean;
 }
 
@@ -203,8 +209,16 @@ interface UploadCompleteMessage {
   sidecars?: {
     mokuro?: { filename: string; blob: Blob };
     thumbnail?: { filename: string; blob: Blob };
-    layers?: Array<{ layerId: string; filename: string; blob: Blob }>;
+    layers?: Array<{ layerId: string; filename: string; blob: Blob; updatedAt: string }>;
   };
+  /**
+   * Cloud uploads: what was serialized and uploaded per layer — the row's
+   * `updated_at` at the read, and the byte count sent. Rides back like
+   * `size`/`modifiedTime` so the main thread stamps the rows against the
+   * uploaded snapshot rather than rows that may have been edited meanwhile.
+   * (A local/main-thread upload carries the same facts on `sidecars.layers`.)
+   */
+  layerSnapshots?: Array<{ layerId: string; updatedAt: string; size: number }>;
 }
 
 /** One sidecar the `upload-sidecars` mode successfully uploaded. */
@@ -828,7 +842,14 @@ ctx.addEventListener('message', async (event) => {
         {
           embedThumbnailSidecar: message.embedThumbnailSidecar === true,
           embedMokuroInArchive: message.embedMokuroInArchive !== false,
-          embedSeriesFile: message.embedSeriesFile === true
+          embedSeriesFile: message.embedSeriesFile === true,
+          // The queue sets this for exports alone. Guarded here as well so a
+          // worker-driven cloud upload can never embed layers whatever it is
+          // sent: in the cloud they are separate files, never archive entries.
+          embedLayerFiles:
+            provider === null &&
+            message.includeSidecars === true &&
+            message.embedLayerFiles === true
         }
       );
 
@@ -844,7 +865,7 @@ ctx.addEventListener('message', async (event) => {
           | {
               mokuro?: { filename: string; blob: Blob };
               thumbnail?: { filename: string; blob: Blob };
-              layers?: Array<{ layerId: string; filename: string; blob: Blob }>;
+              layers?: Array<{ layerId: string; filename: string; blob: Blob; updatedAt: string }>;
             }
           | undefined;
         // Generated regardless of the embed flag: this branch also serves the
@@ -900,6 +921,7 @@ ctx.addEventListener('message', async (event) => {
         const cloudProvider = getWorkerCloudProvider(provider);
         const filename = `${volumeTitle}.cbz`;
 
+        let layerSnapshots: UploadCompleteMessage['layerSnapshots'];
         const uploadSidecar = async (sidecarFilename: string, sidecarBlob: Blob): Promise<void> => {
           await cloudProvider.uploadFile({
             seriesTitle,
@@ -920,6 +942,11 @@ ctx.addEventListener('message', async (event) => {
           for (const layer of generatedSidecars.layers ?? []) {
             sidecarsToUpload.push(layer);
           }
+          layerSnapshots = generatedSidecars.layers?.map((layer) => ({
+            layerId: layer.layerId,
+            updatedAt: layer.updatedAt,
+            size: layer.blob.size
+          }));
           if (generatedSidecars.thumbnail) {
             sidecarsToUpload.push(generatedSidecars.thumbnail);
           }
@@ -966,7 +993,8 @@ ctx.addEventListener('message', async (event) => {
           type: 'complete',
           fileId: uploaded.fileId,
           modifiedTime: uploaded.modifiedTime,
-          size: cbzBlob.size
+          size: cbzBlob.size,
+          ...(layerSnapshots?.length ? { layerSnapshots } : {})
         };
         ctx.postMessage(completeMessage);
         console.log(`Worker: Backup complete for ${volumeTitle}`);

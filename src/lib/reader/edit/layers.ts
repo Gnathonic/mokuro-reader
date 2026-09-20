@@ -12,6 +12,7 @@
  */
 import { db } from '$lib/catalog/db';
 import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { noteOcrEdited } from '$lib/util/sync/sidecar-backfill';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
@@ -267,22 +268,58 @@ export interface UpsertLayerPagesOptions {
   sourcePages: Page[];
   /** pageIndex → the page to write. */
   pages: Map<number, Page>;
+  /**
+   * The layer's pages as they stood when the run STARTED (`null`: it had no
+   * layer yet). Given, a page is written only while the stored page still
+   * equals its run-start self; anything else got there after the run began —
+   * a hand edit made mid-run — and is kept instead. Layer rows carry no
+   * per-page stamp, and the run's own flushes move the row's `updated_at`, so
+   * page content is the only per-page signal there is. Omitted: no guard.
+   */
+  baseline?: Page[] | null;
 }
 
-/** Engine results: create the layer on first use, overwrite only the pages that ran. */
+function samePage(a: Page, b: Page): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Engine results: create the layer on first use, overwrite only the pages that
+ * ran — minus any page hand-edited since the run started (`opts.baseline`),
+ * which the returned layer still holds as stored, not as given.
+ *
+ * Resolves `null`, having written nothing, when the volume is no longer
+ * installed. A whole-volume run outlives the reader that started it, so its
+ * flushes can land after the volume was deleted (`deleteVolumeCompletely`
+ * takes the layer rows with it) — an unconditional put would mint an orphan
+ * layer row for a volume that no longer exists. The `volumes` read shares the
+ * transaction with the put, so a delete cannot slip between the two. The
+ * caller treats `null` as "stop the run".
+ */
 export async function upsertLayerPages(
   volumeUuid: string,
   layerId: string,
   opts: UpsertLayerPagesOptions
-): Promise<VolumeOcrLayer> {
+): Promise<VolumeOcrLayer | null> {
   assertEditable(layerId);
   const now = new Date().toISOString();
-  return db.transaction('rw', db.volume_ocr_layers, async () => {
+  return db.transaction('rw', [db.volumes, db.volume_ocr_layers], async () => {
+    const volume = await db.volumes.get(volumeUuid);
+    if (!volume || !isVolumeInstalled(volume)) return null;
     const existing = await db.volume_ocr_layers.get([volumeUuid, layerId]);
     const base: Page[] = existing
       ? existing.pages.slice()
       : opts.sourcePages.map((p) => ({ ...p, blocks: [] }));
-    for (const [i, page] of opts.pages) base[i] = page;
+    // A run writes each page once, so until then the stored page is whatever
+    // the run started from — or the blank a layer it created begins with.
+    const blank = (i: number): Page => ({ ...opts.sourcePages[i], blocks: [] });
+    for (const [i, page] of opts.pages) {
+      if (opts.baseline !== undefined) {
+        const atStart = opts.baseline?.[i] ?? blank(i);
+        if (!samePage(base[i] ?? blank(i), atStart)) continue;
+      }
+      base[i] = page;
+    }
     const layer: VolumeOcrLayer = {
       volume_uuid: volumeUuid,
       layer_id: layerId,

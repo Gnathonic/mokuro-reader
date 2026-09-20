@@ -11,7 +11,7 @@ import {
   decrementPoolUsers
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
-import { stampLayersSynced } from '$lib/metadata/layer-sync';
+import { stampLayersSynced, type LayerUploadSnapshot } from '$lib/metadata/layer-sync';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import {
   cancelScheduledSeriesFileWrite,
@@ -53,7 +53,7 @@ interface SeriesQueueStatus {
 interface WorkerUploadSidecars {
   mokuro?: { filename: string; blob: Blob };
   thumbnail?: { filename: string; blob: Blob };
-  layers?: Array<{ layerId: string; filename: string; blob: Blob }>;
+  layers?: Array<{ layerId: string; filename: string; blob: Blob; updatedAt: string }>;
 }
 
 interface WorkerUploadCompleteData {
@@ -65,6 +65,8 @@ interface WorkerUploadCompleteData {
   data?: Uint8Array;
   filename?: string;
   sidecars?: WorkerUploadSidecars;
+  /** Worker-driven uploads: the layers as serialized and uploaded (see the worker). */
+  layerSnapshots?: LayerUploadSnapshot[];
 }
 
 // Internal queue state
@@ -486,6 +488,15 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // `series.json` so a re-import restores the series facts, while a
             // cloud upload gets the managed `<Series>/series.json` instead.
             embedSeriesFile: isExport,
+            // An export that embeds its sidecars downloads nothing beside the
+            // archive (see `onComplete`), so the OCR layer files have to be IN
+            // it or they are dropped from the export. Never for the main-thread
+            // cloud upload sharing this branch: cloud layers stay separate
+            // files, stamped one by one.
+            embedLayerFiles:
+              isExport &&
+              item.sidecarOptions.includeSidecars &&
+              item.sidecarOptions.embedSidecarsInArchive,
             includeSidecars: item.sidecarOptions.includeSidecars
           };
         }
@@ -593,7 +604,18 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // write below, which reads the row to build the `series.json` entry.
             await recordArchiveSize(item.volumeUuid, archiveBlob.size);
             if (item.sidecarOptions.includeSidecars) {
-              void stampLayersSynced(item.volumeUuid, provider!.type);
+              // Stamped against what the worker SERIALIZED, not the rows as
+              // they are now: a layer edited during the upload must keep
+              // reading as edited.
+              void stampLayersSynced(
+                item.volumeUuid,
+                provider!.type,
+                (data.sidecars?.layers ?? []).map((layer) => ({
+                  layerId: layer.layerId,
+                  updatedAt: layer.updatedAt,
+                  size: layer.blob.size
+                }))
+              );
             }
 
             noteSeriesNeedingIndexWrite(item.seriesTitle);
@@ -698,9 +720,10 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // Same fact the cache entry above carries: the bytes the worker sent.
           await recordArchiveSize(item.volumeUuid, data.size);
           // The worker uploaded the layer files with the other sidecars: stamp
-          // the rows as synced so the next listing does not push them again.
+          // the rows as synced so the next listing does not push them again —
+          // against the snapshot it uploaded, so an edit made meanwhile survives.
           if (item.sidecarOptions.includeSidecars) {
-            void stampLayersSynced(item.volumeUuid, provider!.type);
+            void stampLayersSynced(item.volumeUuid, provider!.type, data.layerSnapshots ?? []);
           }
           noteSeriesNeedingIndexWrite(item.seriesTitle);
           // See the matching comment on the main-thread-upload path above.

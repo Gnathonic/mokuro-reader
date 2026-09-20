@@ -69,10 +69,23 @@
     type LayerSummary
   } from '$lib/reader/edit/layer-list';
   import { loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
-  import { runLayerAction, type LayerAction } from './Layers/layer-actions';
+  import { layerNamePrompt, runLayerAction, type LayerAction } from './Layers/layer-actions';
   import LayerNameModal from './Layers/LayerNameModal.svelte';
   import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
-  import { engineVolumeRunner, startEngineRun, type EngineKind } from '$lib/engines/engine-runs';
+  import {
+    engineRunEditBlock,
+    engineRunTouchesLayer,
+    flushOnPageHide,
+    layerUiKeyAction,
+    registerBeforeLayerMutation,
+    resolveEngineRunPages
+  } from '$lib/reader/edit/reader-edit-rules';
+  import {
+    activeEngineRun,
+    engineVolumeRunner,
+    startEngineRun,
+    type EngineKind
+  } from '$lib/engines/engine-runs';
   import { hasGoogleKey, hasTranslationKey } from '$lib/engines/credentials';
   import EngineRunBanner from './Engines/EngineRunBanner.svelte';
   import VerticalScrollReader from './VerticalScrollReader.svelte';
@@ -102,6 +115,8 @@
   // $lib/metadata/reread.shouldOfferReread). `rereadCheckedFor` guards this to
   // run once per reader mount for the opened volume, not on every $volumes tick.
   let rereadPromptOpen = $state(false);
+  /** The quick-actions OCR layer picker is up (bound from QuickActions). */
+  let layerPickerOpen = $state(false);
   let rereadCheckedFor = $state<string | null>(null);
   let rereadDisplayTitle = $state('');
   let localSeriesVolumes = $derived(($currentSeries || []).filter((v) => !v.isPlaceholder));
@@ -268,6 +283,19 @@
     // modal AND fire navigateBack() below, and arrow keys / Space would page
     // the reader underneath it.
     if (rereadPromptOpen) {
+      return;
+    }
+    // Same for the OCR layer UI. The picker opens without taking focus from
+    // its toggle button, so `keyboardShouldIgnore` below (which only sees the
+    // event target) does not cover it, and this listener runs BEFORE the
+    // picker's own: Escape would leave the reader instead of closing the
+    // picker, and the arrows would page underneath it.
+    const layerUiKey = layerUiKeyAction(event.code, {
+      pickerOpen: layerPickerOpen,
+      namePromptOpen: $layerNamePrompt !== null
+    });
+    if (layerUiKey !== 'pass') {
+      if (layerUiKey === 'close-picker') layerPickerOpen = false;
       return;
     }
     // Ignore shortcuts when the user is typing or inside reader UI overlays
@@ -465,7 +493,13 @@
     const onOffsetSpreads = () => offsetSpreads();
     window.addEventListener('offset-spreads', onOffsetSpreads);
 
+    // The debounced save would lose the last edits when the tab is hidden
+    // (mobile browsers may kill it without another event) or unloaded; the
+    // onDestroy flush below never runs for either.
+    const stopFlushOnPageHide = flushOnPageHide(() => void editSession?.flush());
+
     return () => {
+      stopFlushOnPageHide();
       // Stop activity tracker when component unmounts
       activityTracker.stop();
       // Restore overflow when leaving reader
@@ -584,6 +618,10 @@
   let activeLayerId = $derived(layerPages ? displayedLayerId : null);
   /** The pre-edit snapshot is read-only: the user copies it to edit. */
   let editingBlocked = $derived(activeLayerId === ORIGINAL_LAYER_ID);
+  /** Why the engine run in flight forbids editing the displayed layer, if it does. */
+  let engineRunBlock = $derived(
+    engineRunEditBlock($activeEngineRun, volume?.volume_uuid, activeLayerId)
+  );
 
   let pages = $derived.by(() => {
     void pagesRevision;
@@ -626,6 +664,15 @@
       }
       return;
     }
+    // An engine run overwrites its layer's pages as they complete: edits made
+    // there meanwhile would be silently replaced. Every entry path (E, quick
+    // actions, the settings toggle, "Edit this text", the re-entry after a
+    // layer switch) funnels through here, so this is the one gate.
+    const runBlock = engineRunEditBlock(get(activeEngineRun), volume.volume_uuid, activeLayerId);
+    if (runBlock) {
+      showNotification(runBlock, 'edit-blocked-engine-run');
+      return;
+    }
     const uuid = volume.volume_uuid;
     const data = volumeData;
     // Edit whatever is on screen: an alternate layer's row, or the primary.
@@ -640,7 +687,16 @@
         // Keep the in-memory page set (charDisplay, the next open of this
         // page) in step with what was written; `pages` re-derives.
         if (layerPagesAtEntry) layerPagesAtEntry[i] = page;
-        else data.pages[i] = page;
+        else {
+          data.pages[i] = page;
+          // Every primary save bumps the `volumes` row, which reloads
+          // `volumeData` — so `data` is soon not the object on screen. Patch
+          // the live one too: a "new layer → copy" started from the reader
+          // copies that array, and must see the edits its flush just wrote
+          // even when the reload has not landed yet.
+          const live = volumeData;
+          if (live && live !== data && live.volume_uuid === uuid) live.pages[i] = page;
+        }
         pagesRevision++;
         // A closing primary session can still be flushing after a layer
         // session opened; its snapshot is not that layer's to revert to.
@@ -771,6 +827,27 @@
     void selectLayer(nextLayerId(activeLayerId, layers));
   }
 
+  /**
+   * Settle the open edit session before a layer action reads or replaces DB
+   * rows: the debounced save may not have run yet, so a promote would copy a
+   * layer without its last edits (and the late save would then land on top of
+   * the promoted primary), and a copy would miss them.
+   *
+   * A promote CLOSES the session rather than just flushing it. It swaps the
+   * content under the primary row, so a primary session's working copies are
+   * the old primary from then on — any further save from it would paste an old
+   * page over the new one — and re-entering straight away (as a layer switch
+   * from inside the editor does) would seed the new session from `volumeData`
+   * that has not reloaded yet. The user re-enters with E once it has.
+   */
+  function settleEditsBeforeLayerMutation(action: LayerAction): Promise<void> {
+    if (action === 'promote') return exitEditMode();
+    return editSession?.flush() ?? Promise.resolve();
+  }
+  // The settings panel runs the same layer actions without being a child of
+  // the reader; it reaches the session through this registration.
+  onMount(() => registerBeforeLayerMutation(settleEditsBeforeLayerMutation));
+
   function runLayerActionFromReader(action: LayerAction, layerId: string | null) {
     if (!volume) return;
     const target = layerId ?? activeLayerId;
@@ -779,7 +856,8 @@
       layerId: target,
       layerName: layers.find((l) => l.layer_id === target)?.name,
       displayedPages: pages,
-      onSelectLayer: selectLayer
+      onSelectLayer: selectLayer,
+      onBeforeMutate: () => settleEditsBeforeLayerMutation(action)
     });
   }
 
@@ -789,11 +867,17 @@
     const uuid = volume.volume_uuid;
     const src = pages;
     // A session open on the layer the run writes to would race it: close it
-    // (saving what is pending) before the run starts.
-    const target = kind === 'ocr' ? 'gcv' : null;
-    if (editSession && (target === null || editSession.layerId === target)) {
-      await exitEditMode();
-    }
+    // (saving what is pending) before the run starts. Closing the session
+    // drops `editActivePage` back to the LEFT page of a spread, so the target
+    // page is resolved before the close (see resolveEngineRunPages).
+    const pageIndices = await resolveEngineRunPages({
+      scope,
+      pageCount: src.length,
+      activePage: () => editActivePage,
+      closeSession: async () => {
+        if (editSession && engineRunTouchesLayer(kind, editSession.layerId)) await exitEditMode();
+      }
+    });
     const result = await startEngineRun(kind, {
       volumeUuid: uuid,
       volumeTitle: volume.volume_title,
@@ -806,7 +890,7 @@
         const files = (await db.volume_files.get(uuid))?.files;
         return files?.[src[i]?.img_path] ?? null;
       },
-      pageIndices: scope === 'page' ? [editActivePage] : src.map((_, i) => i)
+      pageIndices
     });
     if (!result || result.done === 0) return;
     if (displayedLayerId === result.layerId) refreshLayerPages();
@@ -1517,14 +1601,21 @@
     page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
     onEdit={toggleEditMode}
-    editEnabled={!$settings.continuousScroll && !editingBlocked && !layerLoading}
-    editBlockedReason={editingBlocked ? 'The original layer is read-only' : undefined}
+    editEnabled={!$settings.continuousScroll &&
+      !editingBlocked &&
+      !layerLoading &&
+      // An open session must stay closable whatever is running.
+      (!!editSession || !engineRunBlock)}
+    editBlockedReason={editingBlocked
+      ? 'The original layer is read-only'
+      : (engineRunBlock ?? undefined)}
     editing={!!editSession}
     {layers}
     currentLayer={activeLayerId}
     primaryLayerName={primaryName}
     onSelectLayer={selectLayer}
     onLayerAction={runLayerActionFromReader}
+    bind:layersOpen={layerPickerOpen}
     onOcrPage={ocrPageHandler}
     onTranslatePage={translatePageHandler}
     onOcrVolume={ocrVolumeHandler}

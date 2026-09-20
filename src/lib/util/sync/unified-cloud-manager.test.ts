@@ -39,8 +39,28 @@ vi.mock('$lib/util/compress-volume', () => ({
 }));
 
 const localVolumes = vi.fn(async (): Promise<unknown[]> => []);
+/**
+ * The `volume_ocr_layers` rows on this device. A layer FILE in a listing is
+ * only swept (deleted/moved) with its volume when one of these rows carries a
+ * `cloud` stamp for that very file — see `stampedLayer`.
+ */
+const layerRows = vi.fn(async (): Promise<unknown[]> => []);
+/** A layer row whose `cloud` stamp says this device pushed/pulled `file`. */
+function stampedLayer(volumeUuid: string, layerId: string, file: CloudFileMetadata) {
+  return {
+    volume_uuid: volumeUuid,
+    layer_id: layerId,
+    cloud: { provider: file.provider, size: file.size, synced_at: '2026-01-01T00:00:00.000Z' }
+  };
+}
 vi.mock('$lib/catalog/db', () => ({
   db: {
+    volume_ocr_layers: {
+      get: async ([uuid, layerId]: [string, string]) =>
+        ((await layerRows()) as { volume_uuid: string; layer_id: string }[]).find(
+          (l) => l.volume_uuid === uuid && l.layer_id === layerId
+        )
+    },
     volumes: {
       toArray: () => localVolumes(),
       // The rename path reads the row to tell a metadata-only volume (no OCR
@@ -240,6 +260,7 @@ function oldSeriesFiles(): CloudFileMetadata[] {
 describe('UnifiedCloudManager rename operations', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    layerRows.mockResolvedValue([]);
   });
 
   it('a cross-series rename schedules series.json rewrites for BOTH folders and a catalog write', async () => {
@@ -378,6 +399,7 @@ describe('UnifiedCloudManager rename operations', () => {
       size: 9
     } as CloudFileMetadata;
     const files = [...oldSeriesFiles(), layer];
+    layerRows.mockResolvedValue([stampedLayer('uuid-1', 'paddle-manga', layer)]);
     getActiveProvider.mockReturnValue(provider);
     getBySeries.mockImplementation((seriesTitle: string) =>
       files.filter((file) => file.path.startsWith(`${seriesTitle}/`))
@@ -402,6 +424,108 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(files[1]);
     expect(changed).toBe(5);
+  });
+
+  /** "Foo" with a real (synced) layer and a file that merely LOOKS like one. */
+  function fooListing() {
+    const file = (fileId: string, path: string, size: number): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId,
+      path,
+      modifiedTime: 't',
+      size
+    });
+    const gcv = file('foo-gcv', 'S/Foo.gcv.mokuro', 9);
+    // No `Foo.5.cbz` beside it, so by filename shape alone this classifies as
+    // layer "5" of Foo — but it is the leftover primary sidecar of a removed
+    // volume "Foo.5" (or a manual copy), which this device never synced.
+    const lookAlike = file('foo-5', 'S/Foo.5.mokuro', 11);
+    return {
+      gcv,
+      lookAlike,
+      files: [
+        file('foo-cbz', 'S/Foo.cbz', 100),
+        file('foo-mokuro', 'S/Foo.mokuro', 10),
+        gcv,
+        lookAlike
+      ]
+    };
+  }
+
+  it('a rename moves only the layer files this device synced — a look-alike stays put', async () => {
+    const provider = makeRenameProvider();
+    const { gcv, lookAlike, files } = fooListing();
+    layerRows.mockResolvedValue([stampedLayer('uuid-foo', 'gcv', gcv)]);
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume('S', 'Foo', 'S', 'Bar', 'uuid-foo');
+
+    expect(provider.renameFile).toHaveBeenCalledWith(gcv, 'S/Bar.gcv.mokuro');
+    expect(provider.renameFile).not.toHaveBeenCalledWith(lookAlike, expect.anything());
+    expect(provider.deleteFile).not.toHaveBeenCalledWith(lookAlike);
+    // cbz + the one corroborated layer; nothing else moved.
+    expect(provider.renameFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('a layer row that never synced (no cloud stamp) does not corroborate a rename', async () => {
+    const provider = makeRenameProvider();
+    const { gcv, lookAlike, files } = fooListing();
+    layerRows.mockResolvedValue([
+      stampedLayer('uuid-foo', 'gcv', gcv),
+      // A local layer that happens to be called "5": it never reached this
+      // cloud, so the listed `Foo.5.mokuro` cannot be ITS file.
+      { volume_uuid: 'uuid-foo', layer_id: '5' }
+    ]);
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume('S', 'Foo', 'S', 'Bar', 'uuid-foo');
+
+    expect(provider.renameFile).toHaveBeenCalledWith(gcv, 'S/Bar.gcv.mokuro');
+    expect(provider.renameFile).not.toHaveBeenCalledWith(lookAlike, expect.anything());
+  });
+
+  it('refuses — even with overwrite — when a layer would land on a file it may not clear', async () => {
+    const provider = makeRenameProvider();
+    const { gcv, files } = fooListing();
+    // Occupies the moved layer's destination, and nothing on this device says
+    // it is a layer of "Bar": it can be neither overwritten nor swept away.
+    const occupant: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'bar-gcv',
+      path: 'S/Bar.gcv.mokuro',
+      modifiedTime: 't',
+      size: 7
+    };
+    const listing = [...files, occupant];
+    layerRows.mockResolvedValue([stampedLayer('uuid-foo', 'gcv', gcv)]);
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) =>
+      listing.filter((f) => f.path.startsWith(`${s}/`))
+    );
+    getCache.mockReturnValue(loadedCache());
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameVolume('S', 'Foo', 'S', 'Bar', 'uuid-foo', { overwrite: true })
+    ).rejects.toMatchObject({ name: 'ProviderError', code: 'TARGET_EXISTS' });
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
   });
 
   it('throws on a read-only provider instead of letting the local rename desync', async () => {
@@ -1187,6 +1311,8 @@ describe('metadata maintenance on delete', () => {
 describe('UnifiedCloudManager.deleteManagedVolume', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localVolumes.mockResolvedValue([]);
+    layerRows.mockResolvedValue([]);
   });
 
   const baseFiles = (): CloudFileMetadata[] => [
@@ -1240,6 +1366,14 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
       },
       { provider: 'mega', fileId: 'layer-2', path: 'S/Vol 2.gcv.mokuro', modifiedTime: '', size: 3 }
     ] as CloudFileMetadata[];
+    localVolumes.mockResolvedValue([
+      { volume_uuid: 'v1', series_title: 'S', volume_title: 'Vol 1' },
+      { volume_uuid: 'v2', series_title: 'S', volume_title: 'Vol 2' }
+    ]);
+    layerRows.mockResolvedValue([
+      stampedLayer('v1', 'gcv', files[4]),
+      stampedLayer('v2', 'gcv', files[5])
+    ]);
     getActiveProvider.mockReturnValue(provider);
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(cache);
@@ -1251,6 +1385,83 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
     expect(deleted).not.toContain('S/Vol 2.gcv.mokuro');
     expect(deleted[deleted.length - 1]).toBe('S/Vol 1.cbz');
     expect(provider.deleteFile).toHaveBeenCalledTimes(4);
+  });
+
+  describe('files that only LOOK like a layer of the volume', () => {
+    const file = (fileId: string, path: string, size: number): CloudFileMetadata => ({
+      provider: 'mega',
+      fileId,
+      path,
+      modifiedTime: '',
+      size
+    });
+    const gcv = file('foo-gcv', 'S/Foo.gcv.mokuro', 9);
+    // No `Foo.5.cbz` in the listing, so filename shape alone calls this layer
+    // "5" of Foo. It is really the leftover primary sidecar of a removed
+    // volume "Foo.5" (or a manual copy) — develop never touched such a file.
+    const lookAlike = file('foo-5', 'S/Foo.5.mokuro', 11);
+    const listing = [
+      file('foo-cbz', 'S/Foo.cbz', 100),
+      file('foo-mokuro', 'S/Foo.mokuro', 10),
+      gcv,
+      lookAlike
+    ];
+
+    async function deleteFoo(rows: unknown[]): Promise<string[]> {
+      const deleted: string[] = [];
+      const provider = {
+        type: 'mega',
+        deleteFile: vi.fn(async (f: CloudFileMetadata) => {
+          deleted.push(f.path);
+        })
+      };
+      localVolumes.mockResolvedValue([
+        { volume_uuid: 'uuid-foo', series_title: 'S', volume_title: 'Foo' }
+      ]);
+      layerRows.mockResolvedValue(rows);
+      getActiveProvider.mockReturnValue(provider);
+      getBySeries.mockImplementation((s: string) =>
+        listing.filter((f) => f.path.startsWith(`${s}/`))
+      );
+      getCache.mockReturnValue({ removeById: vi.fn() });
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      await unifiedCloudManager.deleteManagedVolume('S', 'Foo');
+      return deleted;
+    }
+
+    it('deletes the layer this device synced and leaves the look-alike exactly where it is', async () => {
+      const deleted = await deleteFoo([stampedLayer('uuid-foo', 'gcv', gcv)]);
+      expect(deleted).toEqual(['S/Foo.mokuro', 'S/Foo.gcv.mokuro', 'S/Foo.cbz']);
+      expect(deleted).not.toContain('S/Foo.5.mokuro');
+    });
+
+    it('a row that never synced (no cloud stamp) does not corroborate the file', async () => {
+      const deleted = await deleteFoo([
+        stampedLayer('uuid-foo', 'gcv', gcv),
+        { volume_uuid: 'uuid-foo', layer_id: '5' }
+      ]);
+      expect(deleted).not.toContain('S/Foo.5.mokuro');
+      expect(deleted).toContain('S/Foo.gcv.mokuro');
+    });
+
+    it('a stamp from another provider, or for a file of another size, does not corroborate', async () => {
+      const deleted = await deleteFoo([
+        {
+          ...stampedLayer('uuid-foo', 'gcv', gcv),
+          cloud: { provider: 'webdav', size: 9, synced_at: 't' }
+        },
+        {
+          ...stampedLayer('uuid-foo', '5', lookAlike),
+          cloud: { provider: 'mega', size: 999, synced_at: 't' }
+        }
+      ]);
+      expect(deleted).toEqual(['S/Foo.mokuro', 'S/Foo.cbz']);
+    });
+
+    it('another volume’s stamped row does not corroborate it either', async () => {
+      const deleted = await deleteFoo([stampedLayer('uuid-other', '5', lookAlike)]);
+      expect(deleted).not.toContain('S/Foo.5.mokuro');
+    });
   });
 
   it('reports a summary on partial failure but still clears the successes', async () => {

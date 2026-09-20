@@ -1,3 +1,24 @@
+<script module lang="ts">
+  // "Pinch always wins" (docs/INPUT-CONTRACTS.md): editor presses bubble to the
+  // surface's PointerGestureTracker, and the editor's own drag yields the
+  // moment a second pointer lands. The press that made a drag yield is that
+  // pinch's second finger — it must never begin a drag (or a drawn box) of its
+  // own, wherever it landed; shared here so every block and the overlay's draw
+  // tool agree on it.
+  const yieldedPresses = new WeakSet<Event>();
+
+  /** Record the press an in-flight editor drag / draw just yielded to. */
+  export function markPinchPress(e: Event): void {
+    yieldedPresses.add(e);
+  }
+
+  /** A press that belongs to a pinch: one a drag yielded to, or a non-primary
+   * pointer (a second touch finger while the first is on the page itself). */
+  export function isPinchPress(e: PointerEvent): boolean {
+    return e.isPrimary === false || yieldedPresses.has(e);
+  }
+</script>
+
 <script lang="ts">
   /**
    * One OCR block in edit mode. Class `editBlock` (never `.textBox`) — the
@@ -30,14 +51,14 @@
    * no sane home between inline-blocks), and the cells show the PROCESSED text
    * (`…`) while the model stores the raw one (`...`).
    */
-  import type { Block } from '$lib/types';
+  import type { Block, Page } from '$lib/types';
   import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
   import { lineGeometry, rectQuad, type LineGeometry } from '$lib/reader/edit/block-geometry';
   import { parallelOffsets } from '$lib/reader/char-offsets';
   import { lineCells, processLine, type LineCells } from '$lib/reader/char-offsets-layout';
   import { quadExtents } from '$lib/reader/line-coords-layout';
   import { settings } from '$lib/settings';
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
 
   interface Props {
     block: Block;
@@ -144,11 +165,23 @@
     box: number[];
     moved: boolean;
     key: string;
+    /** The element holding the pointer capture. */
+    el: HTMLElement;
+    /** Pre-drag state, for yielding to a pinch without leaving an edit. */
+    before: Page;
+    selection: EditSession['selection'];
+    selectedLine: EditSession['selectedLine'];
   }
   let drag: Drag | null = null;
 
+  // The press is NOT stopped: the surface's tracker must see every pointer, or
+  // a pinch whose first finger landed on a block never zooms ("pinch always
+  // wins"). Role 'editor' already keeps the surface from panning or tapping.
   function beginDrag(e: PointerEvent, kind: Kind, box: number[]) {
-    e.stopPropagation();
+    // `drag`: a press on a line or handle bubbles on to the block's own
+    // pointerdown — the innermost drag wins, the block must not start a second
+    // one. A pinch's second finger never drags at all.
+    if (drag || isPinchPress(e)) return;
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture?.(e.pointerId);
     const keyKind = typeof kind === 'string' ? kind : `line${kind.line}:${kind.part}`;
@@ -159,9 +192,67 @@
       startY: e.clientY,
       box,
       moved: false,
-      key: `${keyKind}:${pageIndex}:${index}:${e.pointerId}`
+      key: `${keyKind}:${pageIndex}:${index}:${e.pointerId}`,
+      el,
+      before: session.pageFor(pageIndex),
+      selection: session.selection,
+      selectedLine: session.selectedLine
     };
+    watchWindow(true);
   }
+
+  // While a drag is in flight the WINDOW is watched (capture phase, so it runs
+  // before any block's own handler): a second press anywhere makes the drag
+  // yield to the pinch, and a release that never reaches the capturing element
+  // still ends it — a stale drag would be "yielded" (rolled back) by the next
+  // unrelated press.
+  function watchWindow(on: boolean) {
+    if (on) {
+      window.addEventListener('pointerdown', onWindowDown, true);
+      window.addEventListener('pointerup', onWindowUp);
+      window.addEventListener('pointercancel', onWindowUp);
+    } else {
+      window.removeEventListener('pointerdown', onWindowDown, true);
+      window.removeEventListener('pointerup', onWindowUp);
+      window.removeEventListener('pointercancel', onWindowUp);
+    }
+  }
+  function onWindowDown(e: PointerEvent) {
+    if (!drag || e.pointerId === drag.id) return;
+    markPinchPress(e);
+    yieldDrag();
+  }
+  function onWindowUp(e: PointerEvent) {
+    // The element's own handler ran first when the release reached it.
+    if (drag && e.pointerId === drag.id) endDrag();
+  }
+  function endDrag(): Drag | null {
+    const d = drag;
+    if (!d) return null;
+    drag = null;
+    watchWindow(false);
+    try {
+      d.el.releasePointerCapture?.(d.id);
+    } catch {
+      /* already released */
+    }
+    return d;
+  }
+
+  /** Two fingers zoom; they never drag. Whatever the drag already moved is
+   * rolled back through the session's undo (a drag is one coalesced step, more
+   * if the finger paused — hence the loop, which stops AT the pre-drag page),
+   * and the selection undo cleared is put back. */
+  function yieldDrag() {
+    const d = endDrag();
+    if (!d?.moved) return;
+    while (session.pageFor(pageIndex) !== d.before && session.canUndo(pageIndex)) {
+      session.undo(pageIndex);
+    }
+    session.selection = d.selection;
+    session.selectedLine = d.selectedLine;
+  }
+  onDestroy(() => void endDrag());
 
   function onPointerDown(e: PointerEvent, kind: 'move' | Handle) {
     if (e.button !== 0 || editing) return;
@@ -226,16 +317,16 @@
     session.resize(pageIndex, index, [nx0, ny0, nx1, ny1], drag.key);
   }
 
+  // Not stopped either: the tracker's map must lose the pointer it gained on
+  // the press, or the phantom entry turns the next press into a "pinch".
   function onPointerUp(e: PointerEvent) {
     if (!drag || e.pointerId !== drag.id) return;
-    e.stopPropagation();
-    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    if (!drag.moved) {
-      const k = drag.kind;
+    const d = endDrag()!;
+    if (!d.moved) {
+      const k = d.kind;
       if (typeof k !== 'string') session.selectLine(pageIndex, index, k.line);
       else session.select(pageIndex, index, e.shiftKey);
     }
-    drag = null;
   }
 
   // ---- text editing ----
@@ -261,6 +352,172 @@
     if (!editing) return;
     commitTexts();
     editing = false;
+    composing = null;
+    commitAfterComposition = false;
+  }
+
+  // ---- the open draft must survive a hidden tab and an unmount ----
+  // Typed text lives only in `draft` until the editor closes, and neither a
+  // tab going away nor the overlay unmounting fires focusout — the session's
+  // own flush would save a page that never heard about the text. So the draft
+  // is committed in place: the editor stays open, and because the model then
+  // equals what each line already holds, `initText` leaves the DOM (and the
+  // caret) alone.
+  //
+  // Never mid-IME-composition: the candidate is not text yet, and committing
+  // under it would rewrite the line the IME is composing in. A hide that lands
+  // mid-composition commits on compositionend instead.
+  let composing: { i: number; before: string } | null = null;
+  let commitAfterComposition = false;
+
+  function saveOpenDraft() {
+    // Lines are inserted/removed through the session as they happen, so the
+    // counts only differ if the model changed under the open editor — then
+    // `index` may not even be this block any more; never write over it.
+    const cur = session.pageFor(pageIndex).blocks[index];
+    if (!cur || cur.lines.length !== draft.length) return;
+    commitTexts();
+  }
+
+  function onPageHidden() {
+    if (!editing) return;
+    if (composing) {
+      commitAfterComposition = true;
+      return;
+    }
+    saveOpenDraft();
+    // The reader flushes the session on the same event, but its listener was
+    // registered first: without this the commit above waits on the debounce
+    // of a tab that may never run again.
+    void session.flush();
+  }
+
+  $effect(() => {
+    if (!editing) return;
+    const onVisibility = () => {
+      if (document.hidden) onPageHidden();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHidden);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHidden);
+    };
+  });
+
+  onDestroy(() => {
+    if (!editing) return;
+    // No compositionend is coming for a line that is going away: keep the
+    // confirmed text, drop the candidate.
+    if (composing) draft[composing.i] = composing.before;
+    saveOpenDraft();
+  });
+
+  function onCompositionStart(e: CompositionEvent) {
+    const line = editableLine(e.target);
+    // Fires before the candidate reaches the DOM: this is the confirmed text.
+    if (line) composing = { i: line.i, before: line.el.textContent ?? '' };
+  }
+
+  function onCompositionEnd(e: CompositionEvent) {
+    composing = null;
+    if (!commitAfterComposition) return;
+    commitAfterComposition = false;
+    // Browsers disagree on whether the final `input` precedes this event.
+    const line = editableLine(e.target);
+    if (line) draft[line.i] = line.el.textContent ?? '';
+    onPageHidden();
+  }
+
+  // ---- paste / drop: a line is ONE line of plain text ----
+  // Handled on the block root (both events bubble), so the positioned and the
+  // flow line variants share one path and neither's markup carries it.
+  function editableLine(target: EventTarget | null): { el: HTMLElement; i: number } | null {
+    if (!editing || !root || !(target instanceof Node)) return null;
+    const from = target instanceof Element ? target : target.parentElement;
+    const el = from?.closest<HTMLElement>('[contenteditable]');
+    if (!el || !root.contains(el)) return null;
+    const i = [...root.querySelectorAll('[contenteditable]')].indexOf(el);
+    return i < 0 ? null : { el, i };
+  }
+
+  /** The default paste/drop inserts the clipboard's RICH flavour (nested
+   * nodes the line renderer never expects) and collapses line breaks into
+   * nothing. Take the plain flavour; a run of breaks/tabs between two pieces
+   * of text becomes one space, at the ends it is dropped. */
+  function insertPlain(line: { el: HTMLElement; i: number }, raw: string) {
+    const text = raw.replace(/^[\r\n\t]+|[\r\n\t]+$/g, '').replace(/[\r\n\t]+/g, ' ');
+    if (text) {
+      // execCommand keeps the browser's own undo stack (Ctrl+Z inside the
+      // line); the Range path covers engines where it is missing or refuses.
+      let done = false;
+      try {
+        done = document.execCommand?.('insertText', false, text) ?? false;
+      } catch {
+        done = false;
+      }
+      if (!done) insertAtCaret(line.el, text);
+    }
+    // Same as oninput — the Range path fires no input event of its own.
+    draft[line.i] = line.el.textContent ?? '';
+  }
+
+  function insertAtCaret(el: HTMLElement, text: string) {
+    const sel = window.getSelection();
+    let range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+    if (!range || !el.contains(range.commonAncestorContainer)) {
+      range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+    }
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
+
+  function onPaste(e: ClipboardEvent) {
+    const line = editableLine(e.target);
+    if (!line) return;
+    e.preventDefault();
+    insertPlain(line, e.clipboardData?.getData('text/plain') ?? '');
+  }
+
+  function caretFromPoint(x: number, y: number): Range | null {
+    const doc = document as Document & {
+      caretPositionFromPoint?(x: number, y: number): { offsetNode: Node; offset: number } | null;
+      caretRangeFromPoint?(x: number, y: number): Range | null;
+    };
+    const pos = doc.caretPositionFromPoint?.(x, y);
+    if (!pos) return doc.caretRangeFromPoint?.(x, y) ?? null;
+    const range = document.createRange();
+    range.setStart(pos.offsetNode, pos.offset);
+    range.collapse(true);
+    return range;
+  }
+
+  function onDrop(e: DragEvent) {
+    const line = editableLine(e.target);
+    if (!line) return;
+    e.preventDefault();
+    line.el.focus();
+    const at = caretFromPoint(e.clientX, e.clientY);
+    if (at && line.el.contains(at.startContainer)) {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(at);
+    }
+    insertPlain(line, e.dataTransfer?.getData('text/plain') ?? '');
+  }
+
+  // With the drop handled by hand, a drag of the line's OWN selection would
+  // copy instead of move (the default that removes the source is prevented).
+  // Dragging text around inside a one-line editor is not worth that.
+  function onDragStart(e: DragEvent) {
+    if (editableLine(e.target)) e.preventDefault();
   }
 
   /** Own the line's DOM imperatively — cells or plain text: written at mount
@@ -374,6 +631,11 @@
   onpointercancel={onPointerUp}
   ondblclick={(e) => openEditor(e)}
   onfocusout={onFocusOut}
+  onpaste={onPaste}
+  ondrop={onDrop}
+  ondragstart={onDragStart}
+  oncompositionstart={onCompositionStart}
+  oncompositionend={onCompositionEnd}
 >
   {#if geoms}
     {#each block.lines as line, i (lineIds[i] ?? `k${i}`)}

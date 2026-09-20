@@ -20,6 +20,7 @@
   import type { VolumeMetadata } from '$lib/anki-connect';
   import { showTextBoxPicker } from './text-box-picker';
   import type { Page } from '$lib/types';
+  import { onDestroy } from 'svelte';
 
   interface Props {
     left: (_e: any, ingoreTimeOut?: boolean) => void;
@@ -44,6 +45,12 @@
     primaryLayerName?: string;
     onSelectLayer?: (layerId: string | null) => void;
     onLayerAction?: (action: LayerAction, layerId: string | null) => void;
+    /**
+     * Whether the layer picker is up. Bindable so the reader — whose window
+     * keydown handler runs before the picker's and cannot see it through the
+     * event target — can stand its shortcuts down and close it on Escape.
+     */
+    layersOpen?: boolean;
     /** Engine entry points (experimental) — given only when the key is configured. */
     onOcrPage?: () => void;
     onTranslatePage?: () => void;
@@ -71,13 +78,23 @@
     primaryLayerName = 'Primary',
     onSelectLayer,
     onLayerAction,
+    layersOpen = $bindable(false),
     onOcrPage,
     onTranslatePage,
     onOcrVolume,
     onTranslateVolume
   }: Props = $props();
 
-  let layersOpen = $state(false);
+  // The bound state must mean "a picker is on screen": once this component
+  // stops rendering it (overlays hidden, quick actions switched off, the
+  // reader swapping volumes) the reader would otherwise keep swallowing its
+  // shortcuts for a picker nobody can see.
+  $effect(() => {
+    if (!($settings.quickActions && visible)) layersOpen = false;
+  });
+  onDestroy(() => {
+    layersOpen = false;
+  });
 
   let ankiTags = $derived($settings.ankiConnectSettings.tags);
   let volumeMetadata = $derived<VolumeMetadata>({

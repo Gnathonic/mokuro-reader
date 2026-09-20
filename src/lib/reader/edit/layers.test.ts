@@ -198,28 +198,24 @@ describe('buildLayerExportFile', () => {
 });
 
 describe('upsertLayerPages', () => {
+  const opts = (pages: Map<number, Page>) => ({
+    name: 'Cloud Vision',
+    kind: 'ocr' as const,
+    engine: 'gcv',
+    sourcePages: PAGES,
+    pages
+  });
+
   it('creates the layer with empty pages on first use, then overwrites only the pages given', async () => {
     const { upsertLayerPages } = await import('./layers');
     const ran = pg('OCR結果');
-    const layer = await upsertLayerPages('v-up', 'gcv', {
-      name: 'Cloud Vision',
-      kind: 'ocr',
-      engine: 'gcv',
-      sourcePages: PAGES,
-      pages: new Map([[1, ran]])
-    });
+    const layer = (await upsertLayerPages('v1', 'gcv', opts(new Map([[1, ran]]))))!;
     expect(layer.layer_id).toBe('gcv');
     expect(layer.pages[0].blocks).toEqual([]);
     expect(layer.pages[0].img_path).toBe('p.png');
     expect(layer.pages[1].blocks[0].lines).toEqual(['OCR結果']);
 
-    const again = await upsertLayerPages('v-up', 'gcv', {
-      name: 'Cloud Vision',
-      kind: 'ocr',
-      engine: 'gcv',
-      sourcePages: PAGES,
-      pages: new Map([[0, pg('二回目')]])
-    });
+    const again = (await upsertLayerPages('v1', 'gcv', opts(new Map([[0, pg('二回目')]]))))!;
     expect(again.pages[0].blocks[0].lines).toEqual(['二回目']);
     expect(again.pages[1].blocks[0].lines).toEqual(['OCR結果']);
     expect(again.updated_at >= layer.updated_at).toBe(true);
@@ -227,15 +223,85 @@ describe('upsertLayerPages', () => {
 
   it('refuses the original layer', async () => {
     const { upsertLayerPages } = await import('./layers');
-    await expect(
-      upsertLayerPages('v-up', 'original', {
-        name: 'x',
-        kind: 'ocr',
-        engine: 'gcv',
-        sourcePages: PAGES,
-        pages: new Map()
-      })
-    ).rejects.toThrow(/read-only/);
+    await expect(upsertLayerPages('v1', 'original', opts(new Map()))).rejects.toThrow(/read-only/);
+  });
+
+  it('writes nothing for a volume that was deleted — a late flush must not resurrect its layer', async () => {
+    const { upsertLayerPages } = await import('./layers');
+    const { deleteVolumeCompletely } = await import('$lib/import/database');
+    // The run created the layer, then the user deleted the volume mid-run.
+    await upsertLayerPages('v1', 'gcv', opts(new Map([[0, pg('一')]])));
+    await deleteVolumeCompletely('v1');
+    expect(await db.volume_ocr_layers.where('volume_uuid').equals('v1').count()).toBe(0);
+
+    expect(await upsertLayerPages('v1', 'gcv', opts(new Map([[1, pg('二')]])))).toBeNull();
+    expect(await db.volume_ocr_layers.where('volume_uuid').equals('v1').count()).toBe(0);
+  });
+
+  it('writes nothing once the volume was removed from this device, and leaves the kept layer alone', async () => {
+    const { upsertLayerPages } = await import('./layers');
+    const { removeVolumeFiles } = await import('$lib/import/database');
+    const before = (await upsertLayerPages('v1', 'gcv', opts(new Map([[0, pg('一')]]))))!;
+    await removeVolumeFiles('v1');
+
+    expect(await upsertLayerPages('v1', 'gcv', opts(new Map([[1, pg('二')]])))).toBeNull();
+    expect(await db.volume_ocr_layers.get(['v1', 'gcv'])).toEqual(before);
+  });
+  describe('with the run-start `baseline` (a hand edit made mid-run is never overwritten)', () => {
+    it('keeps a page that was edited after the run started; still writes the others', async () => {
+      const { upsertLayerPages } = await import('./layers');
+      // An earlier run's output is what the new run starts from.
+      await upsertLayerPages(
+        'v1',
+        'gcv',
+        opts(
+          new Map([
+            [0, pg('旧0')],
+            [1, pg('旧1', 'q.png')]
+          ])
+        )
+      );
+      const baseline = await loadLayerPages('v1', 'gcv');
+      await persistLayerPageEdit('v1', 'gcv', 1, pg('手直し', 'q.png'));
+
+      const layer = (await upsertLayerPages('v1', 'gcv', {
+        ...opts(
+          new Map([
+            [0, pg('新0')],
+            [1, pg('新1', 'q.png')]
+          ])
+        ),
+        baseline
+      }))!;
+      expect(layer.pages[0].blocks[0].lines).toEqual(['新0']);
+      expect(layer.pages[1].blocks[0].lines).toEqual(['手直し']);
+      const stored = await loadLayerPages('v1', 'gcv');
+      expect(stored![1].blocks[0].lines).toEqual(['手直し']);
+    });
+
+    it('re-runs over a page nobody touched since the run started', async () => {
+      const { upsertLayerPages } = await import('./layers');
+      await upsertLayerPages('v1', 'gcv', opts(new Map([[0, pg('旧0')]])));
+      const baseline = await loadLayerPages('v1', 'gcv');
+      const layer = (await upsertLayerPages('v1', 'gcv', {
+        ...opts(new Map([[0, pg('新0')]])),
+        baseline
+      }))!;
+      expect(layer.pages[0].blocks[0].lines).toEqual(['新0']);
+    });
+
+    it('a layer the run itself created: a page typed into before the run reached it is kept', async () => {
+      const { upsertLayerPages } = await import('./layers');
+      // No layer at run start → baseline null; the first flush creates it.
+      await upsertLayerPages('v1', 'gcv', { ...opts(new Map([[0, pg('新0')]])), baseline: null });
+      await persistLayerPageEdit('v1', 'gcv', 1, pg('手書き', 'q.png'));
+      const layer = (await upsertLayerPages('v1', 'gcv', {
+        ...opts(new Map([[1, pg('新1', 'q.png')]])),
+        baseline: null
+      }))!;
+      expect(layer.pages[0].blocks[0].lines).toEqual(['新0']);
+      expect(layer.pages[1].blocks[0].lines).toEqual(['手書き']);
+    });
   });
 });
 

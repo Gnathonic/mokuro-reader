@@ -4,7 +4,10 @@ import { readable } from 'svelte/store';
 import { tick } from 'svelte';
 
 const updateVolumeSetting = vi.hoisted(() => vi.fn());
-const runLayerAction = vi.hoisted(() => vi.fn(async () => {}));
+const runLayerAction = vi.hoisted(() =>
+  vi.fn(async (_action: string, _ctx: { onBeforeMutate?: () => Promise<void> }) => {})
+);
+const loadLayerPages = vi.hoisted(() => vi.fn(async () => null));
 
 vi.mock('$lib/settings', async () => {
   const { writable, readable } = await import('svelte/store');
@@ -43,7 +46,7 @@ vi.mock('$lib/reader/edit/layer-list', () => ({
 }));
 vi.mock('$lib/reader/edit/layers', () => ({
   LAYER_KIND_LABEL: { original: 'Original', edit: 'Edit', ocr: 'OCR', translation: 'Translation' },
-  loadLayerPages: vi.fn(async () => null)
+  loadLayerPages
 }));
 vi.mock('$lib/components/Reader/Layers/layer-actions', () => ({ runLayerAction }));
 vi.mock('../ReaderSelects.svelte', async () => {
@@ -56,8 +59,19 @@ vi.mock('../ReaderToggles.svelte', async () => {
 });
 
 import ReaderSettings from '../ReaderSettings.svelte';
+// The REAL registry: the settings panel reaches the reader's edit session
+// through it, so the test registers a hook the way `Reader.svelte` does.
+import { registerBeforeLayerMutation } from '$lib/reader/edit/reader-edit-rules';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+const flushTasks = async () => {
+  await new Promise((r) => setTimeout(r, 0));
+  await tick();
+};
 
 describe('ReaderSettings — OCR layers', () => {
   it('lists layers in a select bound to the volume setting and exposes the actions', async () => {
@@ -81,5 +95,51 @@ describe('ReaderSettings — OCR layers', () => {
     );
     expect(queryByLabelText('New layer')).toBeTruthy();
     expect(queryByLabelText('Rename layer')).toBeTruthy();
+  });
+
+  it("'new' settles the reader's unsaved edits BEFORE reading the pages it copies", async () => {
+    let settled!: () => void;
+    const hook = vi.fn(() => new Promise<void>((r) => (settled = r)));
+    const unregister = registerBeforeLayerMutation(hook);
+    try {
+      const { getByLabelText } = render(ReaderSettings);
+      await fireEvent.click(getByLabelText('New layer'));
+      await flushTasks();
+      expect(hook).toHaveBeenCalledWith('new');
+      // Still saving: the copy source must not have been read yet, or it
+      // misses whatever the debounced autosave had not written.
+      expect(loadLayerPages).not.toHaveBeenCalled();
+      expect(runLayerAction).not.toHaveBeenCalled();
+      settled();
+      await flushTasks();
+      expect(loadLayerPages).toHaveBeenCalledWith('v1', 'english');
+      expect(runLayerAction).toHaveBeenCalledWith(
+        'new',
+        expect.objectContaining({ volumeUuid: 'v1', layerId: 'english' })
+      );
+      expect(hook.mock.invocationCallOrder[0]).toBeLessThan(
+        loadLayerPages.mock.invocationCallOrder[0]
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  it("hands runLayerAction the reader's settle hook as onBeforeMutate, per action", async () => {
+    const hook = vi.fn(async () => {});
+    const unregister = registerBeforeLayerMutation(hook);
+    try {
+      const { getByLabelText } = render(ReaderSettings);
+      await fireEvent.click(getByLabelText('Promote layer'));
+      await flushTasks();
+      const ctx = runLayerAction.mock.calls[0][1];
+      expect(ctx.onBeforeMutate).toBeTypeOf('function');
+      // A promote settles nothing until the user has confirmed it.
+      expect(hook).not.toHaveBeenCalled();
+      await ctx.onBeforeMutate!();
+      expect(hook).toHaveBeenCalledWith('promote');
+    } finally {
+      unregister();
+    }
   });
 });

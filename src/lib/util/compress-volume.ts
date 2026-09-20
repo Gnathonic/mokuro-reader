@@ -23,6 +23,13 @@ export interface VolumeSidecarBlobData {
 
 export interface VolumeLayerSidecarBlobData extends VolumeSidecarBlobData {
   layerId: string;
+  /**
+   * The row's `updated_at` as read together with the pages in `blob`. An
+   * upload takes long enough for the layer to be edited meanwhile; whoever
+   * stamps the row as synced afterwards compares against this, never against
+   * a fresh read (`stampLayersSynced`).
+   */
+  updatedAt: string;
 }
 
 export interface VolumeSidecarBlobResult {
@@ -228,32 +235,45 @@ export async function generateVolumeSidecarsFromDb(
     };
   }
 
-  // Alternate OCR layers ride beside the primary as `<title>.<id>.mokuro`,
-  // each in the same pure upstream format with its own character count.
+  const layers = await buildLayerSidecarsFromDb(db, volume, { seriesTitle, volumeTitle });
+  if (layers.length > 0) sidecars.layers = layers;
+
+  return sidecars;
+}
+
+/**
+ * Alternate OCR layers ride beside the primary as `<title>.<id>.mokuro`, each
+ * in the same pure upstream format with its own character count.
+ *
+ * One serializer for both consumers — the separate cloud/download sidecars and
+ * the copies an export embeds in its archive — so the two cannot drift apart.
+ */
+async function buildLayerSidecarsFromDb(
+  db: Dexie,
+  volume: VolumeMetadata,
+  titles: { seriesTitle: string; volumeTitle: string }
+): Promise<VolumeLayerSidecarBlobData[]> {
   const layers = await db
     .table('volume_ocr_layers')
     .where('volume_uuid')
-    .equals(volumeUuid)
+    .equals(volume.volume_uuid)
     .toArray();
-  if (layers.length > 0) {
-    sidecars.layers = layers
-      .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
-      .map((layer) => {
-        const { totalChars } = buildPageCharCounts(layer.pages);
-        const metadata = buildMokuroMetadata(
-          { ...volume, character_count: totalChars },
-          layer.pages,
-          { seriesTitle, volumeTitle }
-        );
-        return {
-          layerId: layer.layer_id,
-          filename: layerSidecarName(volumeTitle, layer.layer_id),
-          blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' })
-        };
-      });
-  }
-
-  return sidecars;
+  return layers
+    .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
+    .map((layer) => {
+      const { totalChars } = buildPageCharCounts(layer.pages);
+      const metadata = buildMokuroMetadata(
+        { ...volume, character_count: totalChars },
+        layer.pages,
+        titles
+      );
+      return {
+        layerId: layer.layer_id,
+        filename: layerSidecarName(titles.volumeTitle, layer.layer_id),
+        blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' }),
+        updatedAt: layer.updated_at
+      };
+    });
 }
 
 /**
@@ -300,6 +320,13 @@ export async function compressVolumeFromDb(
     embedThumbnailSidecar?: boolean;
     embedMokuroInArchive?: boolean;
     embedSeriesFile?: boolean;
+    /**
+     * Write the volume's OCR layer files at the archive root, beside the
+     * `.mokuro` (`<Volume Title>.<layer-id>.mokuro`, the shape `zip.ts` exports
+     * and the importer pairs). Self-contained exports only: a cloud backup keeps
+     * each layer as its own cloud file, stamped and refreshed independently.
+     */
+    embedLayerFiles?: boolean;
   } = {}
 ): Promise<Blob> {
   const db = getDatabase();
@@ -401,6 +428,19 @@ export async function compressVolumeFromDb(
     await zipWriter.add(`${volumeTitle}.mokuro`, new TextReader(JSON.stringify(metadata)));
     completedItems++;
     if (onProgress) onProgress(completedItems, totalItems);
+  }
+
+  // Layer files sit at the root next to the primary they are alternates of.
+  // Named after the volume title like the embedded `.mokuro` above — not after
+  // the download filename, which only names files that sit BESIDE the archive.
+  if (options.embedLayerFiles) {
+    const layerFiles = await buildLayerSidecarsFromDb(db, volume, {
+      seriesTitle: volume.series_title,
+      volumeTitle
+    });
+    for (const layer of layerFiles) {
+      await zipWriter.add(layer.filename, new BlobReader(layer.blob));
+    }
   }
 
   // The series sidecar: only for self-contained exports. A cloud upload gets

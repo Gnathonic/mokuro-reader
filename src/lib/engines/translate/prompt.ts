@@ -43,16 +43,41 @@ export function buildUserPrompt(input: TranslationInput): string {
   ].join('\n');
 }
 
-export function parseTranslation(raw: string, expectedIndices: number[]): TranslationResult[] {
-  let text = raw.trim();
-  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (fence) text = fence[1];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new MalformedTranslationError('translation reply was not JSON');
+/**
+ * Where the JSON of a reply may sit, most literal reading first. Not every
+ * provider has a JSON mode (Anthropic does not), and a model asked for "JSON
+ * only" still likes a sentence before or after it — a reply that is 95% right
+ * must not cost the page its translation. The whole reply goes first so plain
+ * JSON is never second-guessed (a translated string may itself hold a fence or
+ * brackets); then the first fenced block anywhere; then the outermost
+ * `{…}` / `[…]` span.
+ */
+function jsonCandidates(raw: string): string[] {
+  const text = raw.trim();
+  const candidates = [text];
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fence) candidates.push(fence[1]);
+  const open = text.search(/[[{]/);
+  if (open !== -1) {
+    const close = text.lastIndexOf(text[open] === '[' ? ']' : '}');
+    if (close > open) candidates.push(text.slice(open, close + 1));
   }
+  return candidates;
+}
+
+export function parseTranslation(raw: string, expectedIndices: number[]): TranslationResult[] {
+  let parsed: unknown;
+  let found = false;
+  for (const candidate of jsonCandidates(raw)) {
+    try {
+      parsed = JSON.parse(candidate);
+      found = true;
+      break;
+    } catch {
+      // not this one — try the next place the JSON could be
+    }
+  }
+  if (!found) throw new MalformedTranslationError('translation reply was not JSON');
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'translations' in parsed) {
     parsed = (parsed as { translations: unknown }).translations;
   }

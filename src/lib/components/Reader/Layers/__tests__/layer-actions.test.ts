@@ -13,7 +13,10 @@ vi.mock('$lib/reader/edit/layers', () => ({
 vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
 vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
-vi.mock('$lib/metadata/layer-sync', () => ({ deleteCloudLayerFile: vi.fn(async () => {}) }));
+vi.mock('$lib/metadata/layer-sync', () => ({
+  deleteCloudLayerFile: vi.fn(async () => 'gone'),
+  clearPendingLayerDelete: vi.fn()
+}));
 
 import { layerNamePrompt, promptLayerName, runLayerAction } from '../layer-actions';
 
@@ -27,7 +30,8 @@ function deps(over: Record<string, unknown> = {}) {
     })),
     renameLayer: vi.fn(async () => {}),
     deleteLayer: vi.fn(async () => {}),
-    deleteCloudLayerFile: vi.fn(async () => {}),
+    deleteCloudLayerFile: vi.fn(async () => 'gone'),
+    clearPendingLayerDelete: vi.fn(),
     promoteLayer: vi.fn(async () => ({ replacedLayerId: null })),
     buildLayerExportFile: vi.fn(async () => new File(['{}'], 'Vol.x.mokuro')),
     download: vi.fn(),
@@ -155,6 +159,122 @@ describe('runLayerAction', () => {
     get(layerNamePrompt)!.resolve({ name: 'N', source: 'copy' });
     await run;
     expect((d3 as { notify: unknown }).notify).toHaveBeenCalledWith('boom');
+  });
+
+  // An open edit session holds unsaved boxes: a promote/copy/delete that read or
+  // wrote the layer rows first would act on the pre-edit pages, and the late
+  // flush would then land on a row that was swapped or deleted under it.
+  it('awaits onBeforeMutate before promote / create / delete touch a layer row', async () => {
+    for (const [action, method] of [
+      ['promote', 'promoteLayer'],
+      ['new', 'createLayer'],
+      ['delete', 'deleteLayer']
+    ] as const) {
+      const order: string[] = [];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const onBeforeMutate = vi.fn(async () => {
+        order.push('flush:start');
+        await gate;
+        order.push('flush:done');
+      });
+      const base = deps() as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+      const d = deps({
+        [method]: vi.fn(async (...args: unknown[]) => {
+          order.push(method);
+          return base[method](...args);
+        }),
+        deleteCloudLayerFile: vi.fn(async () => {
+          order.push('deleteCloudLayerFile');
+        })
+      });
+      const run = runLayerAction(action, {
+        volumeUuid: 'v',
+        layerId: 'a',
+        displayedPages: [page],
+        onSelectLayer: vi.fn(() => {
+          order.push('select');
+        }),
+        onBeforeMutate,
+        deps: d
+      });
+      if (action === 'new') get(layerNamePrompt)!.resolve({ name: 'Fix', source: 'copy' });
+      // Let the action run as far as it can while the flush is still pending.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(order, action).toEqual(['flush:start']);
+      release();
+      await run;
+      expect(onBeforeMutate, action).toHaveBeenCalledTimes(1);
+      expect(order.slice(0, 2), action).toEqual(['flush:start', 'flush:done']);
+      expect(order, action).toContain(method);
+    }
+  });
+
+  it('a failing onBeforeMutate aborts the action and notifies', async () => {
+    const d = deps();
+    await runLayerAction('delete', {
+      volumeUuid: 'v',
+      layerId: 'a',
+      displayedPages: [],
+      onSelectLayer: vi.fn(),
+      onBeforeMutate: async () => {
+        throw new Error('flush failed');
+      },
+      deps: d
+    });
+    const m = d as Record<string, ReturnType<typeof vi.fn>>;
+    expect(m.deleteCloudLayerFile).not.toHaveBeenCalled();
+    expect(m.deleteLayer).not.toHaveBeenCalled();
+    expect(m.notify).toHaveBeenCalledWith('flush failed');
+  });
+
+  // The cloud copy could not be removed (offline, read-only…): layer-sync has
+  // left a tombstone, so the row still goes now — but the user is told the
+  // cloud half is outstanding instead of a plain "deleted".
+  it('delete with an unconfirmed cloud removal still deletes the row, and says so', async () => {
+    const d = deps({ deleteCloudLayerFile: vi.fn(async () => 'unconfirmed') });
+    await runLayerAction('delete', {
+      volumeUuid: 'v',
+      layerId: 'a',
+      displayedPages: [],
+      onSelectLayer: vi.fn(),
+      deps: d
+    });
+    const m = d as Record<string, ReturnType<typeof vi.fn>>;
+    expect(m.deleteLayer).toHaveBeenCalledWith('v', 'a');
+    expect(m.notify).toHaveBeenCalledTimes(1);
+    expect(m.notify.mock.calls[0][0]).toMatch(/cloud copy/i);
+    expect(m.notify.mock.calls[0][0]).not.toBe('Layer deleted');
+
+    const ok = deps();
+    await runLayerAction('delete', {
+      volumeUuid: 'v',
+      layerId: 'a',
+      displayedPages: [],
+      onSelectLayer: vi.fn(),
+      deps: ok
+    });
+    expect((ok as Record<string, ReturnType<typeof vi.fn>>).notify).toHaveBeenCalledWith(
+      'Layer deleted'
+    );
+  });
+
+  // Ids are slugs of the name, so "delete Fix, create Fix" reuses the id: a
+  // tombstone left by the delete must not take the new layer's file with it.
+  it('new: clears any pending cloud delete for the id the new layer took', async () => {
+    const d = deps();
+    const run = runLayerAction('new', {
+      volumeUuid: 'v',
+      layerId: null,
+      displayedPages: [page],
+      onSelectLayer: vi.fn(),
+      deps: d
+    });
+    get(layerNamePrompt)!.resolve({ name: 'Fix', source: 'copy' });
+    await run;
+    expect(
+      (d as Record<string, ReturnType<typeof vi.fn>>).clearPendingLayerDelete
+    ).toHaveBeenCalledWith('v', 'copy-1');
   });
 
   it('rename/promote/export/delete without a layer id are no-ops', async () => {

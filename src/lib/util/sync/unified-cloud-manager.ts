@@ -15,7 +15,7 @@ import { isMetadataOnly } from '$lib/catalog/volume-state';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { naturalSort } from '$lib/util/natural-sort';
 import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import {
   FACTLESS_UPDATED_AT,
   SERIES_FILE_NAME,
@@ -107,6 +107,30 @@ function layerFilesOfVolume(
 
 function basenameOfPath(path: string): string {
   return normalizeCloudPath(path).split('/').pop() ?? '';
+}
+
+/**
+ * Does this device's own sync state say `file` IS that layer row's cloud copy?
+ *
+ * `layerFilesOfVolume` classifies by filename shape alone, which is fine for
+ * deciding what to LOOK at (pull planning) and not nearly enough for deciding
+ * what to delete or move: `Foo.5.mokuro` with no `Foo.5.cbz` beside it reads as
+ * layer "5" of `Foo`, yet may be the leftover primary sidecar of a removed
+ * volume `Foo.5`, or a manual copy. Only a `cloud` stamp — written when this
+ * device pushed or pulled that very file (`layer-sync.ts`) — ties the two
+ * together: same provider, and the same size whenever both sides know one (the
+ * same size clause `cloudCopyMoved` uses). A row that never synced proves
+ * nothing about a file that happens to share its id.
+ */
+function layerFileIsCorroborated(
+  row: Pick<VolumeOcrLayer, 'cloud'> | undefined,
+  file: CloudFileMetadata,
+  providerType: string
+): boolean {
+  const stamp = row?.cloud;
+  if (!stamp || stamp.provider !== providerType) return false;
+  if (stamp.size !== undefined && file.size !== undefined && stamp.size !== file.size) return false;
+  return true;
 }
 
 /**
@@ -523,7 +547,7 @@ class UnifiedCloudManager {
       throw new Error('No cloud provider authenticated');
     }
 
-    const files = this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle);
+    const files = await this.getSweepableCloudFilesForVolume(seriesTitle, volumeTitle);
     if (files.length === 0) return;
 
     const ordered = [...files].sort(
@@ -637,6 +661,11 @@ class UnifiedCloudManager {
    * `<Series>/series.json` never matches — it is the series folder's own
    * sidecar, not any volume's (its basename is not a volume title, and `.json`
    * is not a managed volume extension).
+   *
+   * A VIEW, not a work list: its layer files are picked by filename shape
+   * alone, so it answers "is anything backed up?" and "is that path taken?".
+   * Anything that deletes or moves must go through
+   * `getSweepableCloudFilesForVolume` instead.
    */
   getManagedCloudFilesForVolume(seriesTitle: string, volumeTitle: string): CloudFileMetadata[] {
     // Both halves resolve the same way the folder does: byte-exact first, and a
@@ -681,6 +710,63 @@ class UnifiedCloudManager {
     // `resolveCloudFolderTitle`).
     const base = [...byBase.keys()].sort(naturalSort)[0];
     return withLayers(byBase.get(base)!, base.slice(base.lastIndexOf('/') + 1));
+  }
+
+  /**
+   * The files a delete or rename of ONE volume may touch: its archive, primary
+   * sidecar and cover, plus only those layer files this device's own sync state
+   * corroborates (`layerFileIsCorroborated`). A file that merely looks like a
+   * layer stays exactly where it is — as it did before layers existed.
+   *
+   * `volumeUuid` names the volume when the caller knows it; otherwise the rows
+   * are found the way layer sync finds them, by folded series + volume title.
+   */
+  async getSweepableCloudFilesForVolume(
+    seriesTitle: string,
+    volumeTitle: string,
+    volumeUuid?: string
+  ): Promise<CloudFileMetadata[]> {
+    const managed = this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle);
+    const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+    // The same classification `getManagedCloudFilesForVolume` joined them by
+    // (it folds the title, so the caller's spelling finds the cloud's), kept
+    // to the files that view actually returned.
+    const layers = layerFilesOfVolume(
+      this.getCloudVolumesBySeries(folderTitle),
+      volumeTitle
+    ).filter((l) => managed.includes(l.file));
+    if (layers.length === 0) return managed;
+    const swept = managed.filter((file) => !layers.some((l) => l.file === file));
+
+    const providerType = this.getActiveProvider()?.type;
+    let uuids: string[] = [];
+    if (volumeUuid) {
+      uuids = [volumeUuid];
+    } else {
+      const key = normalizeVolumeTitleKey(volumeTitle);
+      uuids = (await volumesForFoldedSeriesTitle(folderTitle, normalizeSeriesKey))
+        .filter((row) => !row.isPlaceholder && normalizeVolumeTitleKey(row.volume_title) === key)
+        .map((row) => row.volume_uuid);
+    }
+
+    for (const layer of layers) {
+      let corroborated = false;
+      for (const uuid of providerType ? uuids : []) {
+        const row = await db.volume_ocr_layers.get([uuid, layer.layerId]);
+        if (layerFileIsCorroborated(row, layer.file, providerType!)) {
+          corroborated = true;
+          break;
+        }
+      }
+      if (corroborated) swept.push(layer.file);
+      else {
+        console.debug(
+          `[cloud] leaving '${layer.file.path}' alone: no synced layer '${layer.layerId}' of ` +
+            `'${volumeTitle}' on this device vouches for it`
+        );
+      }
+    }
+    return swept;
   }
 
   /**
@@ -809,7 +895,13 @@ class UnifiedCloudManager {
       return 0;
     }
 
-    const managedFiles = this.getManagedCloudFilesForVolume(oldSeriesTitle, oldVolumeTitle);
+    // Sweepable, not merely managed: a file that only LOOKS like one of this
+    // volume's layers is neither moved nor mistaken for the stale `.mokuro`.
+    const managedFiles = await this.getSweepableCloudFilesForVolume(
+      oldSeriesTitle,
+      oldVolumeTitle,
+      volumeUuid
+    );
     if (managedFiles.length === 0) {
       return 0;
     }
@@ -876,8 +968,32 @@ class UnifiedCloudManager {
     // before the cbz move could fail with TARGET_EXISTS. A retry of a partial
     // rename does not trip this: its already-moved sources are gone from the
     // old path, so they no longer pair with the destination files.
-    const destinationFiles = this.getManagedCloudFilesForVolume(newSeriesTitle, newVolumeTitle);
+    //
+    // Two views of the destination, on purpose. What an overwrite may CLEAR
+    // is only the sweepable set. OCCUPANCY of a moved layer's destination is
+    // read from the folder listing itself — a path is taken no matter whose
+    // file sits on it, or whether any archive there gives it a meaning. So a
+    // layer destination held by a file nothing here vouches for can be neither
+    // overwritten nor deleted, and the rename refuses while nothing has
+    // changed, overwrite or not.
+    const destinationFiles = await this.getSweepableCloudFilesForVolume(
+      newSeriesTitle,
+      newVolumeTitle
+    );
     const destinationPaths = new Set(destinationFiles.map((f) => normalizeCloudPath(f.path)));
+    const listedPaths = new Set(
+      this.getCloudVolumesBySeries(newFolderTitle).map((f) => normalizeCloudPath(f.path))
+    );
+    const blockedLayer = [...layerDestinations.values()].find(
+      (path) => listedPaths.has(path) && !destinationPaths.has(path)
+    );
+    if (blockedLayer) {
+      throw new ProviderError(
+        `A file already exists at '${blockedLayer}' in the cloud`,
+        provider.type,
+        'TARGET_EXISTS'
+      );
+    }
     const collision = managedFiles.some((file) => {
       if (isLayerFile(file)) return destinationPaths.has(layerDestinations.get(file)!);
       if (isMokuroSidecarPath(file.path)) return false; // regenerated, not moved

@@ -20,6 +20,7 @@
   import { LAYER_KIND_LABEL, loadLayerPages } from '$lib/reader/edit/layers';
   import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
   import { runLayerAction, type LayerAction } from '$lib/components/Reader/Layers/layer-actions';
+  import { beforeLayerMutation } from '$lib/reader/edit/reader-edit-rules';
   import { engineVolumeRunner } from '$lib/engines/engine-runs';
   import { db } from '$lib/catalog/db';
   import type { Page } from '$lib/types';
@@ -112,6 +113,10 @@
     const layerId = currentLayer || null;
     let displayedPages: Page[] = [];
     if (action === 'new') {
+      // This panel has no live pages, so the copy source comes from the DB —
+      // which lags the editor by its debounced autosave. Settle the reader's
+      // session first, or the new layer is copied without the last edits.
+      await beforeLayerMutation('new');
       displayedPages =
         (layerId ? await loadLayerPages(uuid, layerId) : (await db.volume_ocr.get(uuid))?.pages) ??
         [];
@@ -121,7 +126,10 @@
       layerId,
       layerName: currentLayerName,
       displayedPages,
-      onSelectLayer: (id) => updateVolumeSetting(uuid, 'ocrLayer', id ?? undefined)
+      onSelectLayer: (id) => updateVolumeSetting(uuid, 'ocrLayer', id ?? undefined),
+      // Same settle the reader's own layer menu passes: without it a promote or
+      // delete from here races the editor's pending autosave.
+      onBeforeMutate: () => beforeLayerMutation(action)
     });
   }
 

@@ -166,6 +166,18 @@ export async function readLayerFile(file: File | Blob, gz = false): Promise<Read
 }
 
 /**
+ * Does this row hold work the cloud has never seen? The same two one-line
+ * rules `layer-sync.ts` judges a row by (`editedSinceSync`, `isPassiveSnapshot`
+ * — private there, and importing that module would drag the provider stack
+ * into the import path): never synced, or touched after its last sync — unless
+ * it is itself an untouched snapshot out of an archive, which is nobody's work.
+ */
+function holdsUnsyncedWork(row: VolumeOcrLayer): boolean {
+  if (!row.cloud) return !(row.passive_at !== undefined && row.passive_at === row.updated_at);
+  return row.updated_at > row.cloud.synced_at;
+}
+
+/**
  * Write (or overwrite) one layer of a volume from imported pages. No cloud
  * stamp: the next listing pushes it.
  *
@@ -173,6 +185,10 @@ export async function readLayerFile(file: File | Blob, gz = false): Promise<Read
  * they are a copy of what the cloud already held, so the row must not count
  * as a local edit — stamped `now` and unmarked it would out-rank a newer cloud
  * sidecar and then be pushed over it. See `VolumeOcrLayer.passive_at`.
+ * For the same reason a passive attach only ever fills a gap or refreshes a
+ * copy: an existing row holding edits the cloud never received (a volume whose
+ * files were removed keeps its layers, then gets downloaded again) is returned
+ * untouched — the archive's stale copy must not erase it.
  */
 export async function attachLayerToVolume(
   volumeUuid: string,
@@ -183,6 +199,7 @@ export async function attachLayerToVolume(
   const now = new Date().toISOString();
   return db.transaction('rw', db.volume_ocr_layers, async () => {
     const existing = await db.volume_ocr_layers.get([volumeUuid, layerId]);
+    if (options.passive && existing && holdsUnsyncedWork(existing)) return existing;
     const kind = existing?.kind ?? layerKindForId(layerId);
     const layer: VolumeOcrLayer = {
       volume_uuid: volumeUuid,
