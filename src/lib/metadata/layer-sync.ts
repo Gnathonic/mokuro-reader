@@ -10,7 +10,9 @@ import {
 } from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
-import { layerKindForId, layerNameForId } from '$lib/reader/edit/layers';
+import { layerKindForId, layerNameForId, titleCasedLayerId } from '$lib/reader/edit/layers';
+import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
+import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { cacheManager } from '$lib/util/sync/cache-manager';
@@ -244,7 +246,7 @@ async function dropPendingDeletesOfMissingVolumes(): Promise<void> {
 
 /**
  * A listed file that was downloaded and turned out NOT to be a layer of the
- * volume its name points at: its page count is not the volume's. Layer files
+ * volume its name points at: its pages are not the volume's (`fitToVolume`). Layer files
  * are recognised by filename shape alone (`classifyMokuroSidecar`), so
  * `Vol 1.5.mokuro` with no `Vol 1.5.cbz` beside it reads as layer "5" of
  * `Vol 1` while really being the leftover primary sidecar of a removed volume,
@@ -266,7 +268,25 @@ interface RejectedLayerFile {
   page_count: number;
   size?: number;
   modified?: number;
+  /**
+   * The rule set that reached the verdict ({@link REJECTION_RULE}). A verdict
+   * is only as good as its rule: entries written before short files were
+   * aligned by image path (no `rule`) refused every engine file with a failed
+   * page, and would keep refusing it — unchanged file, unchanged page count —
+   * for as long as the browser profile lives.
+   */
+  rule?: number;
+  /**
+   * Refused on the page count ALONE, because the volume's pages were not on
+   * this device to align a short file against (a metadata-only row). Stands
+   * while that is still so; once the volume is installed the file is owed the
+   * full look.
+   */
+  count_only?: true;
 }
+
+/** Bump when the acceptance rule changes in a way that could turn a refusal into a row. */
+const REJECTION_RULE = 2;
 
 const REJECTED_FILES_KEY = 'layer-sync:rejected-files';
 
@@ -312,15 +332,23 @@ function rejectionOf(
     layer_id: listed.layerId,
     provider: providerType,
     page_count: row.page_count,
-    ...stampOf(listed.file)
+    ...stampOf(listed.file),
+    rule: REJECTION_RULE,
+    ...(isVolumeInstalled(row) ? {} : { count_only: true as const })
   };
 }
 
-/** Already weighed against this page count and found wanting, and unchanged since? */
+/**
+ * Already weighed against this page count and found wanting, and unchanged
+ * since — by the rule in force, with at least as much in hand as now?
+ */
 function isKnownMismatch(candidate: RejectedLayerFile): boolean {
   return readRejectedFiles().some(
     (e) =>
       sameRejectedSlot(e, candidate) &&
+      e.rule === REJECTION_RULE &&
+      // A count-only verdict says nothing once there are pages to align against.
+      !(e.count_only && !candidate.count_only) &&
       e.page_count === candidate.page_count &&
       // The same leniency as `cloudCopyMoved`: a side that knows no size/mtime
       // cannot say the file moved.
@@ -484,6 +512,22 @@ async function readLayerFile(
   }
 }
 
+/**
+ * The pulled pages as one page per page of the volume, or null when they
+ * cannot be a layer of it. The same count is taken as it is; a SHORT file — an
+ * engine run that dropped the pages it failed on — is put back in step by image
+ * path (`alignLayerPages`), which needs the volume's own pages: only an
+ * installed volume has them, so a metadata-only row can take nothing but an
+ * exact count.
+ */
+async function fitToVolume(row: VolumeMetadata, pages: Page[]): Promise<Page[] | null> {
+  if (pages.length === row.page_count) return pages;
+  if (pages.length > row.page_count || !isVolumeInstalled(row)) return null;
+  const primary = await db.volume_ocr.get(row.volume_uuid);
+  if (!primary || primary.pages.length !== row.page_count) return null;
+  return alignLayerPages(pages, primary.pages);
+}
+
 async function pullOne(
   provider: SyncProvider,
   listed: ListedLayerFile,
@@ -492,7 +536,8 @@ async function pullOne(
 ): Promise<boolean> {
   // The one gate every pulled file passes on its way to becoming a row: it
   // must plausibly be a layer OF THIS VOLUME, i.e. have the volume's page
-  // count. (Not its `volume_uuid` — an engine's sidecar may carry another.)
+  // count — or fewer pages that each name one of the volume's images, see
+  // `fitToVolume`. (Not its `volume_uuid` — an engine's sidecar may carry another.)
   // A row that does not know its page count yet (a 0/0 index entry) cannot
   // vouch for anything; its layers arrive with the volume
   // (`pullLayersForVolume` after the download), when the count is real.
@@ -504,15 +549,28 @@ async function pullOne(
   }
   const rejection = rejectionOf(row, listed, provider.type);
   if (isKnownMismatch(rejection)) return false;
-  const pages = await readLayerFile(provider, listed);
-  if (!pages) return false;
-  if (pages.length !== row.page_count) {
-    console.debug(
+  const read = await readLayerFile(provider, listed);
+  if (!read) return false;
+  const pages = await fitToVolume(row, read);
+  if (!pages) {
+    // Once per file version (the verdict is remembered), and the only trace a
+    // refused layer leaves anywhere — so a final verdict is not logged at debug
+    // level, where nobody wondering why a layer never arrived would see it. A
+    // count-only one is a deferral (the download takes another look), not news.
+    const log = rejection.count_only ? console.debug : console.warn;
+    log(
       `[layer-sync] '${listed.file.path}' is not a layer of '${row.volume_title}': ` +
-        `${pages.length} page(s), the volume has ${row.page_count}`
+        `${read.length} page(s), the volume has ${row.page_count}` +
+        (rejection.count_only ? ' (not on this device, so a short file cannot be aligned yet)' : '')
     );
     noteRejectedFile(rejection);
     return false;
+  }
+  if (pages !== read) {
+    console.log(
+      `[layer-sync] '${listed.file.path}' has ${read.length} of ${row.page_count} page(s): ` +
+        `the missing ${row.page_count - read.length} are blank in this layer`
+    );
   }
   clearRejectedFile(rejection);
   const now = new Date().toISOString();
@@ -591,6 +649,30 @@ async function pushOne(
   // push's own verdict.
   await removeGzSiblings(provider, gzSiblings);
   return true;
+}
+
+/**
+ * A row that arrived from a cloud while its id was not yet a known engine id
+ * was filed as a manual `edit` under the title-cased slug ("Ppocr Manga"). Now
+ * that the id is known, file it as what every other device will: that engine's
+ * OCR, under the engine's name — unless the user renamed it. Metadata only and
+ * `updated_at` untouched, so this is never an edit to push. Only rows a cloud
+ * vouches for (`cloud`): a layer made here by hand is the user's own, whatever
+ * its slug happens to be.
+ */
+async function refileKnownEngineRows(local: VolumeOcrLayer[]): Promise<void> {
+  for (const layer of local) {
+    if (layer.kind !== 'edit' || layer.engine || !layer.cloud) continue;
+    if (layerKindForId(layer.layer_id) !== 'ocr') continue;
+    const renamed = layer.name !== titleCasedLayerId(layer.layer_id);
+    const changes = {
+      kind: 'ocr' as const,
+      engine: layer.layer_id,
+      ...(renamed ? {} : { name: layerNameForId(layer.layer_id) })
+    };
+    await updateLayerMeta(db, layer.volume_uuid, layer.layer_id, changes);
+    Object.assign(layer, changes);
+  }
 }
 
 async function runPool<T>(items: T[], limit: number, run: (item: T) => Promise<void>) {
@@ -675,6 +757,7 @@ async function planFolder(
   for (const row of rows.values()) {
     const archiveStem = archives.get(rowKey(row.volume_title));
     const local = localByVolume.get(row.volume_uuid) ?? [];
+    await refileKnownEngineRows(local);
     const localById = new Map(local.map((l) => [l.layer_id, l]));
     const listed = listedByRow.get(row.volume_uuid) ?? new Map<string, ListedLayerFile>();
     const tombstoned = new Set<string>();

@@ -52,9 +52,18 @@ export const KNOWN_ENGINE_IDS: ReadonlySet<string> = new Set([
   'gcv',
   'hayai',
   'paddle-manga',
+  'ppocr-manga',
   'mokuro-fp16',
   'mokuro'
 ]);
+
+/**
+ * Engines whose name is not their slug title-cased: `ppocr-manga` would read
+ * "Ppocr Manga", and the engine is PP-OCR (PaddlePaddle OCR).
+ */
+const ENGINE_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  'ppocr-manga': 'PP-OCR Manga'
+};
 
 /** The kind a layer file with no local row is filed under, from its id alone. */
 export function layerKindForId(layerId: string): VolumeOcrLayerKind {
@@ -64,8 +73,17 @@ export function layerKindForId(layerId: string): VolumeOcrLayerKind {
   return 'edit';
 }
 
-/** `paddle-manga` → "Paddle Manga"; `tr-en` → "Tr En"; `gcv` → "Gcv". */
+/** `paddle-manga` → "Paddle Manga"; `tr-en` → "Tr En"; `gcv` → "Gcv"; `ppocr-manga` → "PP-OCR Manga". */
 export function layerNameForId(layerId: string): string {
+  return ENGINE_DISPLAY_NAMES[layerId] ?? titleCasedLayerId(layerId);
+}
+
+/**
+ * The slug title-cased and nothing more — what `layerNameForId` called every
+ * layer before an engine had a name of its own, and so how a row that was never
+ * renamed by hand is recognised (`layer-sync.ts` re-files those).
+ */
+export function titleCasedLayerId(layerId: string): string {
   return layerId
     .split('-')
     .filter(Boolean)

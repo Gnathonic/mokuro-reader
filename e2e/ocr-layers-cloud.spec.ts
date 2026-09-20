@@ -39,6 +39,25 @@ function mokuroJson(text: string, volume = 'Vol 1', uuid = VOLUME_UUID): string 
   });
 }
 
+/** A volume (or an engine's layer of it) with one page per `[img_path, text]`. */
+function pagedMokuroJson(pages: Array<[string, string]>, extra: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    version: '0.2.1',
+    title: SERIES,
+    title_uuid: SERIES_UUID,
+    volume: 'Vol 1',
+    volume_uuid: VOLUME_UUID,
+    ...extra,
+    pages: pages.map(([img_path, text]) => ({
+      version: '0.2.1',
+      img_width: 400,
+      img_height: 600,
+      img_path,
+      blocks: [{ box: [250, 50, 310, 250], vertical: true, font_size: 30, lines: [text] }]
+    }))
+  });
+}
+
 interface StubEntry {
   dir: boolean;
   body: string;
@@ -160,7 +179,7 @@ class WebDavStub {
   };
 }
 
-async function seedInstalledVolume(page: Page) {
+async function seedInstalledVolume(page: Page, mokuro = mokuroJson('あい')) {
   await page.goto('/');
   await page.waitForTimeout(800);
   await page.evaluate(
@@ -179,24 +198,28 @@ async function seedInstalledVolume(page: Page) {
       canvas.getContext('2d')!.fillRect(0, 0, 400, 600);
       const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), 'image/png'));
       const parsed = JSON.parse(mokuro);
+      const paths: string[] = parsed.pages.map((p: { img_path: string }) => p.img_path);
       await db.volumes.put({
         volume_uuid: VOLUME_UUID,
         series_uuid: SERIES_UUID,
         series_title: SERIES,
         volume_title: 'Vol 1',
         mokuro_version: '0.2.1',
-        page_count: 1,
-        character_count: 2,
-        page_char_counts: [2]
+        page_count: paths.length,
+        character_count: 2 * paths.length,
+        page_char_counts: paths.map((_, i) => 2 * (i + 1))
       });
       await db.volume_ocr.put({ volume_uuid: VOLUME_UUID, pages: parsed.pages });
       await db.volume_files.put({
         volume_uuid: VOLUME_UUID,
-        files: { '001.png': new File([blob], '001.png', { type: 'image/png' }) }
+        files: Object.fromEntries(
+          paths.map((path) => [path, new File([blob], path, { type: 'image/png' })])
+        )
       });
       window.localStorage.removeItem('sidecar-backfill:edited-volumes');
+      window.localStorage.removeItem('layer-sync:rejected-files');
     },
-    { SERIES, SERIES_UUID, VOLUME_UUID, mokuro: mokuroJson('あい') }
+    { SERIES, SERIES_UUID, VOLUME_UUID, mokuro }
   );
 }
 
@@ -229,6 +252,8 @@ async function layerRows(page: Page) {
       engine: r.engine,
       name: r.name,
       text: r.pages[0]?.blocks[0]?.lines ?? null,
+      pageTexts: r.pages.map((p) => p.blocks.map((b) => b.lines.join('')).join('')),
+      pagePaths: r.pages.map((p) => p.img_path),
       cloud: r.cloud ? { provider: r.cloud.provider, size: r.cloud.size } : null
     }));
   }, VOLUME_UUID);
@@ -356,5 +381,76 @@ test.describe('OCR layers in the cloud (stubbed WebDAV)', () => {
     );
     // The dotted sibling was never touched.
     expect(stub.files.has(`${ROOT}/${SERIES}/Vol 1.5.mokuro`)).toBe(true);
+  });
+
+  // The shape a bunko engine run leaves when the engine crashed on a page: the
+  // runner keeps going and writes the sidecar WITHOUT that page. Refused for
+  // its page count, no layer of a real volume ever arrived (every volume of a
+  // 20-volume series had a few failed pages) and nothing on screen said why.
+  test('an engine layer that omits the pages it failed on still arrives, in step with the volume', async ({
+    page
+  }) => {
+    const stub = new WebDavStub();
+    const volume = pagedMokuroJson([
+      ['001.png', 'いち'],
+      ['002.png', 'にい'],
+      ['003.png', 'さん']
+    ]);
+    stub.file(`${ROOT}/${SERIES}/Vol 1.cbz`, 'PK-not-really');
+    stub.file(`${ROOT}/${SERIES}/Vol 1.mokuro`, volume);
+    stub.file(
+      `${ROOT}/${SERIES}/Vol 1.ppocr-manga.mokuro`,
+      pagedMokuroJson(
+        [
+          ['001.png', 'イチ'],
+          ['003.png', 'サン']
+        ],
+        // As an engine run stamps it: its own uuid, and who produced it.
+        { volume_uuid: 'engine-run-uuid', ocr_engine: { id: 'ppocr-manga' } }
+      )
+    );
+    await page.route(`${STUB}/**`, stub.handle);
+
+    await seedInstalledVolume(page, volume);
+    // A build that refused the file left its verdict behind: same file, same
+    // page count. It must not outlive the rule that reached it.
+    await page.evaluate(
+      ({ uuid, size }) => {
+        window.localStorage.setItem(
+          'layer-sync:rejected-files',
+          JSON.stringify([
+            {
+              volume_uuid: uuid,
+              layer_id: 'ppocr-manga',
+              provider: 'webdav',
+              page_count: 3,
+              size,
+              modified: Date.parse('Wed, 16 Sep 2026 10:00:00 GMT') / 1000
+            }
+          ])
+        );
+      },
+      {
+        uuid: VOLUME_UUID,
+        size: Buffer.byteLength(stub.files.get(`${ROOT}/${SERIES}/Vol 1.ppocr-manga.mokuro`)!.body)
+      }
+    );
+    await connectStub(page);
+
+    await expect
+      .poll(async () => (await layerRows(page)).map((r) => r.id), { timeout: 20000 })
+      .toEqual(['ppocr-manga']);
+    const [pulled] = await layerRows(page);
+    expect(pulled).toMatchObject({
+      kind: 'ocr',
+      engine: 'ppocr-manga',
+      name: 'PP-OCR Manga',
+      // Page 2 is blank, and page 3's text sits on page 3 — not shifted onto 2.
+      pageTexts: ['イチ', '', 'サン'],
+      pagePaths: ['001.png', '002.png', '003.png'],
+      cloud: { provider: 'webdav' }
+    });
+    // Nothing was written to the server for it, and the primary is untouched.
+    expect(stub.log.filter((l) => l.path.includes('ppocr-manga'))).toEqual([]);
   });
 });

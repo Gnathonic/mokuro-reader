@@ -360,4 +360,10 @@ describe('layerKindForId / layerNameForId', () => {
     expect(layerNameForId('paddle-manga')).toBe('Paddle Manga');
     expect(layerNameForId('gcv')).toBe('Gcv');
   });
+
+  it('knows bunko’s PP-OCR manga engine: OCR output, named as the engine spells itself', () => {
+    expect(layerKindForId('ppocr-manga')).toBe('ocr');
+    // Title-casing the slug would read "Ppocr Manga".
+    expect(layerNameForId('ppocr-manga')).toBe('PP-OCR Manga');
+  });
 });

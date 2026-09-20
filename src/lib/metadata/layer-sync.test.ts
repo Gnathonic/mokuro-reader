@@ -589,6 +589,153 @@ describe('a pulled file must plausibly be a layer OF THAT VOLUME (page count)', 
   });
 });
 
+describe('an engine file that OMITS the pages it failed on', () => {
+  // bunko's runner keeps going past a page its engine crashed on and writes
+  // the volume without it: 2 pages of a 3-page volume, each naming its image.
+  const engineFile = (...paths: string[]) =>
+    new Blob([
+      JSON.stringify({ volume_uuid: 'engine-run', pages: paths.map((p) => pg('えん', p)) })
+    ]);
+  const sparseListing = (overrides: Partial<CloudFileMetadata> = {}) =>
+    listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.ppocr-manga.mokuro', overrides));
+
+  async function seedThreePages(installed = true) {
+    await seedRow();
+    await db.volumes.update('v1', {
+      page_count: 3,
+      ...(installed ? {} : { metadata_only: true as const })
+    });
+    if (installed) {
+      await db.volume_ocr.put({
+        volume_uuid: 'v1',
+        pages: [pg('あ', 'v/001.jpg'), pg('い', 'v/002.jpg'), pg('う', 'v/003.jpg')]
+      });
+    } else {
+      await db.volume_ocr.delete('v1');
+    }
+  }
+
+  it('is aligned to the volume by image path: a blank page where one was dropped', async () => {
+    await seedThreePages();
+    downloadFile.mockImplementation(async () => engineFile('v/001.jpg', 'v/003.jpg'));
+
+    await syncLayersFromListing(sparseListing(), 'webdav');
+
+    const row = (await getLayerWithPages(db, 'v1', 'ppocr-manga'))!;
+    expect(row).toMatchObject({ kind: 'ocr', engine: 'ppocr-manga' });
+    expect(row.pages.map((p) => p.img_path)).toEqual(['v/001.jpg', 'v/002.jpg', 'v/003.jpg']);
+    expect(row.pages.map((p) => p.blocks.length)).toEqual([1, 0, 1]);
+    expect(localStorage.getItem('layer-sync:rejected-files')).toBeNull();
+  });
+
+  it('pages of some OTHER volume are still rejected, and remembered', async () => {
+    await seedThreePages();
+    downloadFile.mockImplementation(async () => engineFile('w/001.jpg', 'w/777.jpg'));
+
+    await syncLayersFromListing(sparseListing(), 'webdav');
+    await syncLayersFromListing(sparseListing(), 'webdav');
+
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+    expect(await db.volume_ocr_layers.count()).toBe(0);
+  });
+
+  it('a row without its pages cannot align: refused without re-downloading, then looked at again once installed', async () => {
+    await seedThreePages(false);
+    downloadFile.mockImplementation(async () => engineFile('v/001.jpg', 'v/003.jpg'));
+
+    await syncLayersFromListing(sparseListing(), 'webdav');
+    await syncLayersFromListing(sparseListing(), 'webdav');
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+    expect(await db.volume_ocr_layers.count()).toBe(0);
+
+    // The volume is downloaded: same file, same page count — but now there are
+    // pages to align against, which the earlier verdict never had.
+    await seedThreePages(true);
+    await db.volumes.update('v1', { metadata_only: undefined });
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.ppocr-manga.mokuro')];
+    expect(await pullLayersForVolume('v1', 'webdav')).toBe(1);
+    expect((await getLayerWithPages(db, 'v1', 'ppocr-manga'))!.pages).toHaveLength(3);
+  });
+
+  it('a verdict reached under the old count-only rule is re-examined once', async () => {
+    await seedThreePages();
+    // Exactly what a build before the alignment left behind for this file.
+    localStorage.setItem(
+      'layer-sync:rejected-files',
+      JSON.stringify([
+        {
+          volume_uuid: 'v1',
+          layer_id: 'ppocr-manga',
+          provider: 'webdav',
+          page_count: 3,
+          size: 100,
+          modified: Date.parse('2026-09-16T10:00:00.000Z') / 1000
+        }
+      ])
+    );
+    downloadFile.mockImplementation(async () => engineFile('v/001.jpg', 'v/003.jpg'));
+
+    await syncLayersFromListing(sparseListing(), 'webdav');
+
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+    expect((await getLayerWithPages(db, 'v1', 'ppocr-manga'))!.pages).toHaveLength(3);
+    expect(localStorage.getItem('layer-sync:rejected-files')).toBeNull();
+  });
+});
+
+describe('a row filed before its engine id was known here', () => {
+  const STAMP = '2026-09-16T10:00:00.000Z';
+  async function seedFiledAsEdit(overrides: Partial<VolumeOcrLayer> = {}) {
+    await seedRow();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'ppocr-manga',
+      name: 'Ppocr Manga',
+      kind: 'edit',
+      created_at: STAMP,
+      updated_at: STAMP,
+      cloud: {
+        provider: 'webdav',
+        size: 100,
+        modified: Date.parse(STAMP) / 1000,
+        synced_at: STAMP
+      },
+      pages: [pg('えん')],
+      ...overrides
+    });
+  }
+  const inSync = () =>
+    listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.ppocr-manga.mokuro'));
+
+  it('is re-filed as that engine’s OCR — no transfer, and never an "edit" to push', async () => {
+    await seedFiledAsEdit();
+    await syncLayersFromListing(inSync(), 'webdav');
+
+    expect(await getLayerWithPages(db, 'v1', 'ppocr-manga')).toMatchObject({
+      kind: 'ocr',
+      engine: 'ppocr-manga',
+      name: 'PP-OCR Manga',
+      updated_at: STAMP
+    });
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps a name the user gave it; leaves a layer that never came from a cloud alone', async () => {
+    await seedFiledAsEdit({ name: 'My pick' });
+    await syncLayersFromListing(inSync(), 'webdav');
+    expect(await getLayerWithPages(db, 'v1', 'ppocr-manga')).toMatchObject({
+      kind: 'ocr',
+      name: 'My pick'
+    });
+
+    readOnly = true; // (so the never-synced row below is not pushed either)
+    await seedFiledAsEdit({ cloud: undefined });
+    await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz')), 'webdav');
+    expect((await getLayerWithPages(db, 'v1', 'ppocr-manga'))!.kind).toBe('edit');
+  });
+});
+
 describe('pullLayersForVolume / deleteLayerFileInCloud', () => {
   it('pulls one volume’s layers from the cached listing', async () => {
     await seedRow();

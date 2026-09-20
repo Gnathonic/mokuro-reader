@@ -104,7 +104,7 @@ export function updateLayerMeta(
   db: Dexie,
   volumeUuid: string,
   layerId: string,
-  changes: Partial<Pick<VolumeOcrLayer, 'name' | 'cloud'>>
+  changes: Partial<Pick<VolumeOcrLayer, 'name' | 'cloud' | 'kind' | 'engine'>>
 ): Promise<number> {
   return metaTable(db).update([volumeUuid, layerId], changes);
 }
@@ -119,7 +119,9 @@ export function patchLayerMeta(
   db: Dexie,
   volumeUuid: string,
   layerId: string,
-  decide: (meta: VolumeOcrLayer) => Partial<Pick<VolumeOcrLayer, 'name' | 'cloud'>> | undefined
+  decide: (
+    meta: VolumeOcrLayer
+  ) => Partial<Pick<VolumeOcrLayer, 'name' | 'cloud' | 'kind' | 'engine'>> | undefined
 ): Promise<void> {
   return db.transaction('rw', metaTable(db), async () => {
     const meta = await metaTable(db).get([volumeUuid, layerId]);

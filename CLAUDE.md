@@ -331,8 +331,19 @@ listing — and `src/lib/metadata/layer-sync.ts` syncs layers for rows that
 already exist locally (installed or metadata-only), newest-wins, no merge. A
 layer with no local record is filed by inferring its kind from the id alone:
 `original` stays `original`, `tr-<lang>` is a `translation`, a known engine id
-(`gcv`, `hayai`, `paddle-manga`, `mokuro-fp16`, `mokuro`) is `ocr`, anything
-else is a manual `edit`.
+(`gcv`, `hayai`, `paddle-manga`, `ppocr-manga`, `mokuro-fp16`, `mokuro`) is
+`ocr`, anything else is a manual `edit`.
+
+A pulled file must plausibly be a layer OF THAT VOLUME: the volume's page
+count, or FEWER pages that each name one of the volume's images in order — a
+bunko engine run omits the pages its engine crashed on, and
+`alignLayerPages` (`reader/edit/layer-page-align.ts`) puts such a file back in
+step by `img_path`, blank pages in the gaps. That needs the volume's own pages,
+so a metadata-only row takes an exact count only and the download takes the
+second look. A refusal is remembered per file stamp in localStorage
+(`layer-sync:rejected-files`) together with the RULE that reached it
+(`REJECTION_RULE`) — bump it whenever the acceptance rule widens, or browsers
+keep refusing files the new rule would take.
 
 A layer can be listed as BOTH `.mokuro` and `.mokuro.gz` (an engine wrote the
 `.gz`, a client pushed the plain name over it). The plain file wins every read;
