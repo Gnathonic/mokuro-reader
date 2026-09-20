@@ -8,7 +8,8 @@
   import type { Page } from '$lib/types';
   import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
   import { pageScaleOf } from '$lib/reader/edit/edit-context';
-  import EditableBlock from './EditableBlock.svelte';
+  import EditableBlock, { isPinchPress, markPinchPress } from './EditableBlock.svelte';
+  import { onDestroy } from 'svelte';
 
   interface Props {
     page: Page;
@@ -44,11 +45,56 @@
       session.clearSelection();
       return;
     }
-    e.stopPropagation();
+    // One draft at a time, and never from a pinch's second finger: a second
+    // pointer CANCELS the draw (onWindowDown), it never restarts it.
+    if (draw || isPinchPress(e)) return;
+    // Not stopped — "pinch always wins": the surface's tracker must see every
+    // pointer. While the tool is armed the root classifies as role 'editor'
+    // (data-edit-handle below), so the surface neither pans under the draw nor
+    // takes the pointer capture away from it.
     root!.setPointerCapture?.(e.pointerId);
     const [x, y] = toImage(e);
     draw = { id: e.pointerId, x0: x, y0: y, x1: x, y1: y };
+    watchWindow(true);
   }
+
+  // Same rules as a block drag (EditableBlock): watched on the WINDOW while a
+  // draw is in flight — a second press anywhere drops the draft so the two
+  // fingers zoom, and a release that never reaches the overlay still ends it.
+  function watchWindow(on: boolean) {
+    if (on) {
+      window.addEventListener('pointerdown', onWindowDown, true);
+      window.addEventListener('pointerup', onWindowUp);
+      window.addEventListener('pointercancel', onWindowUp);
+    } else {
+      window.removeEventListener('pointerdown', onWindowDown, true);
+      window.removeEventListener('pointerup', onWindowUp);
+      window.removeEventListener('pointercancel', onWindowUp);
+    }
+  }
+  function onWindowDown(e: PointerEvent) {
+    if (!draw || e.pointerId === draw.id) return;
+    markPinchPress(e);
+    endDraw();
+  }
+  function onWindowUp(e: PointerEvent) {
+    // The overlay's own handler ran first when the release reached it; a box
+    // is only ever committed from there.
+    if (draw && e.pointerId === draw.id) endDraw();
+  }
+  function endDraw(): Draft | null {
+    const d = draw;
+    if (!d) return null;
+    draw = null;
+    watchWindow(false);
+    try {
+      root?.releasePointerCapture?.(d.id);
+    } catch {
+      /* already released */
+    }
+    return d;
+  }
+  onDestroy(() => void endDraw());
   function onBackgroundMove(e: PointerEvent) {
     if (!draw || e.pointerId !== draw.id) return;
     const [x, y] = toImage(e);
@@ -56,10 +102,7 @@
   }
   function onBackgroundUp(e: PointerEvent) {
     if (!draw || e.pointerId !== draw.id) return;
-    e.stopPropagation();
-    root!.releasePointerCapture?.(e.pointerId);
-    const { x0, y0, x1, y1 } = draw;
-    draw = null;
+    const { x0, y0, x1, y1 } = endDraw()!;
     if (Math.abs(x1 - x0) >= 8 && Math.abs(y1 - y0) >= 8) {
       session.add(pageIndex, [
         Math.min(x0, x1),
@@ -77,6 +120,7 @@
   class="editOverlay"
   class:drawing={session.tool === 'draw'}
   data-edit-overlay
+  data-edit-handle={session.tool === 'draw' ? 'draw' : undefined}
   role="none"
   onpointerdown={onBackgroundDown}
   onpointermove={onBackgroundMove}
