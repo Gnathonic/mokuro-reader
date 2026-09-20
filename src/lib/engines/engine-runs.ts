@@ -127,16 +127,39 @@ const KIND_LABEL: Record<EngineKind, string> = { ocr: 'OCR', translate: 'Transla
 /** Pages written every this-many completions, so a cancel keeps its progress. */
 const FLUSH_EVERY = 10;
 
+/**
+ * The one run slot, taken synchronously by `startEngineRun`. `active` cannot
+ * be that guard on its own: it is only set once the cost confirm and the
+ * baseline read have been awaited, so two starts in the same moment (a
+ * double-click, or the settings panel and the toolbar) both saw it empty and
+ * both ran — and billed — the whole volume.
+ */
+let slotClaimed = false;
+
 export async function startEngineRun(
   kind: EngineKind,
   ctx: EngineRunContext
 ): Promise<EngineRunResult | null> {
   const d: EngineRunDeps = { ...defaultDeps(), ...ctx.deps };
-  if (get(active)) {
+  if (slotClaimed || get(active)) {
     d.notify(`An engine run is already running — wait for it to finish or cancel it`);
     return null;
   }
+  // No await between the check above and this line.
+  slotClaimed = true;
+  try {
+    return await runInClaimedSlot(kind, ctx, d);
+  } finally {
+    // Declined, missing key, thrown or finished: the slot is free again.
+    slotClaimed = false;
+  }
+}
 
+async function runInClaimedSlot(
+  kind: EngineKind,
+  ctx: EngineRunContext,
+  d: EngineRunDeps
+): Promise<EngineRunResult | null> {
   // ---- engine + key ----
   let layerId: string;
   let layerName: string;

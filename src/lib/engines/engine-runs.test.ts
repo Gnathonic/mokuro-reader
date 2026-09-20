@@ -197,6 +197,57 @@ describe('startEngineRun', () => {
     await first;
   });
 
+  it('two whole-volume runs started together: only the first runs, the second never asks', async () => {
+    // The cost confirm is awaited BEFORE the run shows in `activeEngineRun`, so
+    // a double-click (or settings + toolbar) used to get two runs past the check.
+    let answer!: (ok: boolean) => void;
+    const confirm1 = vi.fn(() => new Promise<boolean>((r) => (answer = r)));
+    const confirm2 = vi.fn(async () => true);
+    const notify2 = vi.fn();
+    const fetchImpl = fetchFor({ [VISION]: () => vertical });
+    const first = startEngineRun(
+      'ocr',
+      ctx({ pageIndices: [0, 1], deps: { confirm: confirm1, fetch: fetchImpl } })
+    );
+    const second = startEngineRun(
+      'ocr',
+      ctx({ pageIndices: [0, 1], deps: { confirm: confirm2, notify: notify2, fetch: fetchImpl } })
+    );
+    expect(await second).toBeNull();
+    expect(confirm2).not.toHaveBeenCalled();
+    expect(notify2).toHaveBeenCalledWith(expect.stringMatching(/already running/));
+    answer(true);
+    expect(await first).toMatchObject({ done: 2, failed: 0 });
+    // One run's worth of pages, not two.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(get(activeEngineRun)).toBeNull();
+  });
+
+  it('two one-page runs started together: the second is refused too', async () => {
+    // No confirm here, but the baseline read is awaited before the store is set.
+    const fetchImpl = fetchFor({ [VISION]: () => vertical });
+    const first = startEngineRun('ocr', ctx({ deps: { fetch: fetchImpl } }));
+    const second = startEngineRun('ocr', ctx({ deps: { fetch: fetchImpl } }));
+    expect(await second).toBeNull();
+    expect(await first).toMatchObject({ done: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives the slot back when the user declines, and when starting throws', async () => {
+    const declined = ctx({ pageIndices: [0, 1], deps: { confirm: vi.fn(async () => false) } });
+    expect(await startEngineRun('ocr', declined)).toBeNull();
+    const threw = ctx({
+      pageIndices: [0, 1],
+      deps: {
+        confirm: vi.fn(async () => {
+          throw new Error('modal torn down');
+        })
+      }
+    });
+    await expect(startEngineRun('ocr', threw)).rejects.toThrow('modal torn down');
+    expect(await startEngineRun('ocr', ctx())).toMatchObject({ done: 1 });
+  });
+
   it('never overwrites a page hand-edited while the run was going, and says so', async () => {
     const { persistLayerPageEdit, upsertLayerPages } = await import('$lib/reader/edit/layers');
     // An earlier run's layer; this run redoes both pages.
