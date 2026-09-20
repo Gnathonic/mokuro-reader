@@ -25,6 +25,9 @@ import editableBlockSource from '../EditableBlock.svelte?raw';
 // The fixture is a real page (see char-offsets-layout.test.ts): block 0 has a
 // zero-width と (line 0) and a ．．． run (line 2), block 1 has a null line
 // (line 1), block 3 has no char_offsets at all. Everything is vertical.
+// Block 0 line 0 is also SQUEEZED (地 in 94px, な ポ ン in 22–26px): auto mode
+// declines its cells and renders it as plain fitted text, like the viewer;
+// original mode draws them as filed.
 const fontMode = settings as unknown as Writable<{ fontSize: string; boldFont: boolean }>;
 
 function fixturePage(): Page {
@@ -61,8 +64,27 @@ function cellSizes(line: HTMLElement): string[] {
 function expectedSizes(block: Block, i: number, repair: boolean): string[] {
   const main = quadExtents(block.lines_coords![i], true)!.main;
   const cells = lineCells(block.lines[i], block.char_offsets?.[i], main, { repair });
-  return cells!.cells.map((c) => `${c.size}px`);
+  // no usable placement (the squeezed line, under repair): plain text, no cells
+  return cells?.cells.map((c) => `${c.size}px`) ?? [];
 }
+
+/** え has no cell and お has two: a zero cell alone, on a line whose other cells
+ * are plausible — what auto mode's repair is for. */
+const zeroCellBlock = {
+  box: [100, 0, 150, 240],
+  vertical: true,
+  font_size: 40,
+  lines: ['あいうえおか'],
+  lines_coords: [
+    [
+      [100, 0],
+      [150, 0],
+      [150, 240],
+      [100, 240]
+    ]
+  ],
+  char_offsets: [[0, 40, 80, 120, 120, 200, 240]]
+} as Block;
 
 /** jsdom has no PointerEvent ctor (same helper as EditOverlay.test.ts). */
 async function pointer(
@@ -106,8 +128,14 @@ describe('EditableBlock — char_offsets cells', () => {
     expect(sizes).toHaveLength([...raw].length - 2);
     expect(sizes[sizes.length - 1]).toBe('41px');
 
+    // the squeezed line keeps its text and takes no cells
+    expect(expectedSizes(block, 0, true)).toEqual([]);
+    expect(lines[0].textContent).toBe('地道なポイント稼ぎと、');
+    expect(lines[0].children).toHaveLength(0);
+
     for (let i = 0; i < lines.length; i++) {
       expect(cellSizes(lines[i])).toEqual(expectedSizes(block, i, true));
+      if (i === 0) continue;
       // The invariant selection and copy rely on: nothing but the cells, no
       // whitespace text nodes between them, and never out of flow (#254).
       for (const node of lines[i].childNodes) {
@@ -177,7 +205,12 @@ describe('EditableBlock — char_offsets cells', () => {
     // its neighbours, so these are the sizes `layoutLines` fitted).
     const viewer = layoutLines(block, block.lines.map(processLine), measure)!;
     for (let i = 0; i < lines.length; i++) {
-      expect(viewer[i].cells).toBeDefined();
+      // Line 0 is the squeezed one: no cells in the viewer either. A plain
+      // line is sized the way the editor always sized plain lines (on its own
+      // quad, without the viewer's uniform vote), so only the CELLED lines
+      // have the viewer as their oracle.
+      expect(viewer[i].cells === undefined).toBe(i === 0);
+      if (i === 0) continue;
       expect(lines[i].style.fontSize).toBe(`${Math.round(viewer[i].fontSize)}px`);
     }
     // the … line is two characters shorter than its raw text, so it fits larger
@@ -317,30 +350,53 @@ describe('EditableBlock — char_offsets cells', () => {
     page.blocks[0].char_offsets![1] = [0, 51, 94]; // wrong length
     const { root } = mount(0, page);
     const lines = lineEls(root);
-    expect(lines[0].querySelectorAll('.ocr-char').length).toBeGreaterThan(0);
+    expect(lines[2].querySelectorAll('.ocr-char').length).toBeGreaterThan(0);
     expect(lines[1].querySelectorAll('.ocr-char')).toHaveLength(0);
     expect(lines[1].textContent).toBe('継続的な活動が');
   });
 
-  it('original font mode renders the file as-is (zero-width と at 0px); auto repairs it; the switch is live', async () => {
-    const { root, page } = mount(0);
-    const block = page.blocks[0];
+  it('original font mode renders the file as-is (a zero-width cell at 0px); auto repairs it; the switch is live', async () => {
+    const page = fixturePage();
+    page.blocks[3] = structuredClone(zeroCellBlock);
+    const { root } = mount(3, page);
     const line = lineEls(root)[0];
-    expect(line.textContent).toBe('地道なポイント稼ぎと、');
-    let sizes = cellSizes(line);
-    expect(sizes.slice(-2)).toEqual(['43px', '43px']);
+    expect(line.textContent).toBe('あいうえおか');
+    expect(cellSizes(line)).toEqual(new Array(6).fill('40px'));
 
     fontMode.set({ fontSize: 'original', boldFont: false });
     await tick();
-    sizes = cellSizes(lineEls(root)[0]);
-    expect(sizes).toEqual(expectedSizes(block, 0, false));
-    expect(sizes.slice(-2)).toEqual(['0px', '86px']);
-    expect(lineEls(root)[0].textContent).toBe('地道なポイント稼ぎと、');
+    expect(cellSizes(lineEls(root)[0])).toEqual(['40px', '40px', '40px', '0px', '80px', '40px']);
+    expect(lineEls(root)[0].textContent).toBe('あいうえおか');
 
     // a manual point size is not `original`: the editor still repairs
     fontMode.set({ fontSize: '12', boldFont: false });
     await tick();
-    expect(cellSizes(lineEls(root)[0]).slice(-2)).toEqual(['43px', '43px']);
+    expect(cellSizes(lineEls(root)[0])).toEqual(new Array(6).fill('40px'));
+  });
+
+  it('the real squeezed line: plain fitted text in auto, its cells as filed in original; the switch is live', async () => {
+    const { root, page } = mount(0);
+    const block = page.blocks[0];
+    const plain = () => {
+      const line = lineEls(root)[0];
+      expect(line.textContent).toBe('地道なポイント稼ぎと、');
+      expect(cellSizes(line)).toEqual([]);
+      expect(line.children).toHaveLength(0);
+    };
+    plain();
+
+    fontMode.set({ fontSize: 'original', boldFont: false });
+    await tick();
+    const sizes = cellSizes(lineEls(root)[0]);
+    expect(sizes).toEqual(expectedSizes(block, 0, false));
+    expect(sizes.slice(0, 4)).toEqual(['94px', '45px', '26px', '25px']);
+    expect(sizes.slice(-2)).toEqual(['0px', '86px']);
+    expect(lineEls(root)[0].textContent).toBe('地道なポイント稼ぎと、');
+
+    // a manual point size is not `original`: the editor's best rendering again
+    fontMode.set({ fontSize: '12', boldFont: false });
+    await tick();
+    plain();
   });
 });
 

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   CRUSHED_RATIO,
+  SQUEEZED_MAX,
+  SQUEEZED_RATIO,
   UNPLACED_MAX,
   blockHasPlacement,
   codePoints,
@@ -16,9 +18,14 @@ import {
 
 // One-Punch Man 20 p64 b0 l0 (mokuro-fork, attn-cells) — the real zero-width
 // cell on a real character: ぎ[322,363) と[363,363) 、[363,449). The producer
-// merged と into 、's ink cell and handed the whole cell to 、.
+// merged と into 、's ink cell and handed the whole cell to 、. The same line is
+// also the real SQUEEZED case: 地 sits in 94px while な ポ ン print in 22–26px
+// cells, so auto mode gives the whole line to the fitted path.
 const opmText = '地道なポイント稼ぎと、';
 const opmOffsets = [0, 94, 139, 165, 190, 235, 271, 300, 322, 363, 363, 449];
+// The same tail (と merged into 、) behind even print: the zero cell alone, on a
+// line whose other cells are plausible — what the repair is FOR.
+const opmTailOffsets = [0, 41, 82, 123, 164, 205, 246, 281, 322, 363, 363, 449];
 
 const widths = (offsets: number[]) => offsets.slice(1).map((o, i) => o - offsets[i]);
 const isMonotone = (offsets: number[]) => offsets.every((o, i) => i === 0 || o >= offsets[i - 1]);
@@ -223,11 +230,14 @@ describe('dropUnplacedMethod', () => {
 });
 
 describe('repairZeroCells', () => {
-  it('repairs the real case: と borrows the larger neighbour 、 and they share its 86px', () => {
-    const before = [...opmOffsets];
-    const repaired = repairZeroCells(codePoints(opmText), opmOffsets);
-    expect(repaired).toEqual([0, 94, 139, 165, 190, 235, 271, 300, 322, 363, 406, 449]);
-    expect(opmOffsets).toEqual(before); // never mutates
+  it('repairs the real shape: a glyph merged into the following cell shares its 86px', () => {
+    // ぎ[322,363) と[363,363) 、[363,449), with the rest of the line in even
+    // print. The real line around that tail is squeezed as well and is refused
+    // whole (see "squeezed cells" below), so the repair is shown on even cells.
+    const before = [...opmTailOffsets];
+    const repaired = repairZeroCells(codePoints(opmText), opmTailOffsets);
+    expect(repaired).toEqual([0, 41, 82, 123, 164, 205, 246, 281, 322, 363, 406, 449]);
+    expect(opmTailOffsets).toEqual(before); // never mutates
   });
 
   it('returns the input array when there is nothing to repair', () => {
@@ -293,7 +303,7 @@ describe('repairZeroCells', () => {
 
   it('preserves the total extent and stays monotone, integer and valid', () => {
     const cases: [string, number[]][] = [
-      [opmText, opmOffsets],
+      [opmText, opmTailOffsets],
       ['ABCDEF', [0, 0, 80, 80, 120, 160, 200]], // two runs around one neighbour
       ['ABCDEFGHIJK', [3, 40, 40, 40, 41, 90, 90, 140, 180, 220, 260, 300]], // a 1px neighbour on one side
       ['ABCDEFGH', [0, 1, 1, 1, 50, 99, 148, 197, 246]], // run of 2 borrowing 49 → 16, 16, 17
@@ -319,8 +329,10 @@ describe('repairZeroCells', () => {
     // 47px between a 180px and an 81px cell — 刊 and 、 sit between 1px cells
     const crushed = [0, 180, 181, 182, 182, 182, 183, 188, 192, 210, 210, 217, 221, 227, 308];
     expect(repairZeroCells(codePoints('分は週刊、この2巻目からは隔'), crushed)).toBeNull();
-    // exactly one pixel each is still a repair
-    expect(repairZeroCells([...'あいうえお'], [0, 2, 2, 2, 5, 15])).toEqual([0, 2, 3, 4, 5, 15]);
+    // exactly one pixel each is still a repair (Latin, so that this rule is
+    // the only one judging it: as kana those 1px cells are squeezed print)
+    expect(repairZeroCells([...'ABCDE'], [0, 2, 2, 2, 5, 15])).toEqual([0, 2, 3, 4, 5, 15]);
+    expect(repairZeroCells([...'あいうえお'], [0, 2, 2, 2, 5, 15])).toBeNull();
   });
 
   it('never zeroes a cell the file had placed', () => {
@@ -365,10 +377,10 @@ describe('repairZeroCells', () => {
     });
 
     it('keeps the half cells of 、 and 。 placed', () => {
-      // Counted as crushed, 、 and 。 would make 3 of 5 unplaced and cost the
+      // Counted as crushed, 、 and 。 would make 3 of 6 unplaced and cost the
       // line its cells. Half a cell is the print, not a producer failure.
-      expect(repairZeroCells([...'あ、い。う'], [0, 40, 60, 100, 120, 120])).toEqual([
-        0, 40, 60, 100, 110, 120
+      expect(repairZeroCells([...'あ、い。うえ'], [0, 40, 60, 100, 120, 120, 200])).toEqual([
+        0, 40, 60, 100, 120, 160, 200
       ]);
     });
 
@@ -457,6 +469,107 @@ describe('repairZeroCells', () => {
     });
   });
 
+  describe('squeezed cells: placed, plausible one by one, overlapping as a line', () => {
+    const fromWidths = (cellWidths: number[]) =>
+      cellWidths.reduce((acc, width) => [...acc, acc[acc.length - 1] + width], [0]);
+
+    it('pins the constants', () => {
+      expect(SQUEEZED_RATIO).toBe(0.7);
+      expect(SQUEEZED_MAX).toBe(0.25);
+    });
+
+    it('gives up on the real line: 地 in 94px squeezes な ポ ン into 22–26px cells', () => {
+      // reference 449 / 11 = 40.8px, the glyphs print at about 41. After the と
+      // repair the cells are 94 45 26 25 45 36 29 22 41 43 43: three of the ten
+      // full-cell glyphs sit under 0.7 × 40.8 = 28.6px and would overlap. No
+      // zero- or crushed-cell rule sees it — every cell is well over a quarter.
+      const before = [...opmOffsets];
+      expect(repairZeroCells(codePoints(opmText), opmOffsets)).toBeNull();
+      expect(opmOffsets).toEqual(before);
+      // the FILE is valid: only the reader's best rendering declines it
+      expect(validLineOffsets(opmText, opmOffsets, 457)).toBe(opmOffsets);
+    });
+
+    it('keeps an evenly spaced line placed (the same array back)', () => {
+      const offsets = fromWidths([40, 40, 40, 40, 40, 40, 40, 40]);
+      expect(repairZeroCells([...'あいうえおかきく'], offsets)).toBe(offsets);
+    });
+
+    it('keeps tight but plausible tracking: cells at 0.8 of the reference', () => {
+      // reference 400 / 10 = 40; half the line in 32px cells is tight print
+      // beside generous print, not an overlap
+      const offsets = fromWidths([32, 48, 32, 48, 32, 48, 32, 48, 32, 48]);
+      expect(repairZeroCells([...'継続的な活動が強みだ'], offsets)).toBe(offsets);
+    });
+
+    it('never counts 、 。 っ ー: less than a cell is what they print in', () => {
+      // reference 240 / 8 = 30, so the 20px cells are under 0.7 of it. Counted,
+      // they would be 4 of 8; they are not glyphs that fill a cell, and the four
+      // that do (あ い う え) all have their 40px.
+      const offsets = fromWidths([40, 20, 40, 20, 40, 20, 40, 20]);
+      expect(repairZeroCells([...'あ、いっうーえ。'], offsets)).toBe(offsets);
+      // the same for small katakana, brackets and fullwidth marks
+      const marks = fromWidths([20, 40, 20, 40, 20, 40, 20, 40, 20]);
+      expect(repairZeroCells([...'「アッイャウ！エ」'], marks)).toBe(marks);
+    });
+
+    it('never trips on fewer than three full-cell glyphs', () => {
+      // い at 20px of a 60px reference is squeezed, but one of two glyphs is no
+      // pattern — a short line has too few cells to tell print from failure
+      const two = fromWidths([100, 20]);
+      expect(repairZeroCells([...'あい'], two)).toBe(two);
+      const withMarks = fromWidths([100, 20, 30, 30]);
+      expect(repairZeroCells([...'あい、。'], withMarks)).toBe(withMarks);
+      // the third full-cell glyph makes it a line that can be judged
+      expect(repairZeroCells([...'あいう'], fromWidths([20, 50, 50]))).toBeNull();
+    });
+
+    it('never judges Latin or halfwidth text: its advances are proportional', () => {
+      // GCV layers place horizontal text per symbol; an l beside a W is print
+      const latin = fromWidths([30, 30, 10, 40, 28, 28, 8, 8]);
+      expect(repairZeroCells([...'NO WAY!!'], latin)).toBe(latin);
+      const halfwidth = fromWidths([22, 8, 22, 22, 8, 22]);
+      expect(repairZeroCells([...'ｶﾞﾝﾊﾞﾚ'], halfwidth)).toBe(halfwidth);
+      // narrow Latin beside kanji: the 12px letters are under 0.7 × 21.3 and
+      // are simply not part of the count
+      const mixed = fromWidths([40, 40, 40, 12, 12, 12, 12, 12, 12]);
+      expect(repairZeroCells([...'東京都ABCDEF'], mixed)).toBe(mixed);
+    });
+
+    it('is strict on the ratio: a cell of exactly 0.7 of the reference is not squeezed', () => {
+      // reference 400 / 10 = 40 → the bar is 28px. Three cells AT the bar: none
+      // squeezed. Three cells one pixel under: 3 of 10, over a quarter.
+      const at = fromWidths([28, 45, 28, 45, 28, 45, 45, 45, 45, 46]);
+      expect(repairZeroCells([...'あいうえおかきくけこ'], at)).toBe(at);
+      const under = fromWidths([27, 45, 27, 45, 27, 45, 46, 46, 46, 46]);
+      expect(repairZeroCells([...'あいうえおかきくけこ'], under)).toBeNull();
+    });
+
+    it('is strict on the share: exactly a quarter squeezed is still placed', () => {
+      // 1 of 4 and 2 of 8 are a quarter; 3 of 8 is over it
+      const quarter = fromWidths([20, 60, 60, 60]);
+      expect(repairZeroCells([...'あいうえ'], quarter)).toBe(quarter);
+      const two = fromWidths([20, 60, 20, 60, 40, 40, 40, 40]);
+      expect(repairZeroCells([...'あいうえおかきく'], two)).toBe(two);
+      const three = fromWidths([20, 60, 20, 60, 20, 60, 40, 40]);
+      expect(repairZeroCells([...'あいうえおかきく'], three)).toBeNull();
+    });
+
+    it('judges the REPAIRED cells, not the ones in the file', () => {
+      // As filed, あ (0px) is one squeezed glyph of three. Repaired it shares
+      // い's 80px and the line is even print.
+      expect(repairZeroCells([...'あいう'], [0, 0, 80, 120])).toEqual([0, 40, 80, 120]);
+      // The other way round: う takes half of 。's 20px and lands in a 10px
+      // sliver. One zero cell of five passes every other rule.
+      expect(repairZeroCells([...'あ、い。う'], [0, 40, 60, 100, 120, 120])).toBeNull();
+    });
+
+    it('counts every ideograph, the supplementary planes included', () => {
+      // 𠮷 (U+20BB7) is a surrogate pair and one full-cell glyph
+      expect(repairZeroCells([...'𠮷野家'], fromWidths([20, 50, 50]))).toBeNull();
+    });
+  });
+
   it('treats marks and variation selectors like whitespace: they sit on their base', () => {
     // a decomposed が: the dakuten takes no room in print, so its zero cell is
     // placement, not a gap to repair
@@ -482,7 +595,9 @@ describe('repairZeroCells', () => {
     const alphabet = [...'あい、𠮷.　 '];
     const cellWidths = [0, 0, 0, 1, 2, 3, 16, 40, 88];
     let repairedLines = 0;
-    for (let round = 0; round < 800; round++) {
+    // Kana at these widths are mostly squeezed lines, which come back null, so
+    // it takes this many rounds to see enough repaired ones.
+    for (let round = 0; round < 1600; round++) {
       const chars = Array.from({ length: 1 + next(12) }, () => alphabet[next(alphabet.length)]);
       const offsets = [next(20)];
       for (let k = 0; k < chars.length; k++) {
@@ -507,6 +622,12 @@ describe('repairZeroCells', () => {
         if (before[k] > 0) expect(after[k], label).toBeGreaterThan(0);
         if (blank && before[k] === 0) expect(after[k], label).toBe(0);
       });
+      // a line that keeps its cells is never a squeezed one (あ い 𠮷 are the
+      // alphabet's full-cell glyphs)
+      const wide = after.filter((_, k) => /^[あい𠮷]$/u.test(chars[k]));
+      const reference = (offsets[chars.length] - offsets[0]) / chars.length;
+      const squeezed = wide.filter((width) => width / reference < SQUEEZED_RATIO).length;
+      if (wide.length >= 3) expect(squeezed, label).toBeLessThanOrEqual(SQUEEZED_MAX * wide.length);
       // an untouched line comes back as the same array; a changed one differs
       if (repaired === offsets) expect(after).toEqual(before);
       else expect(after, label).not.toEqual(before);

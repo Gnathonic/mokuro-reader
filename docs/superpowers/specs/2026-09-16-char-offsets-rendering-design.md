@@ -278,3 +278,54 @@ Cumulative contiguous offsets mean normal flow reproduces exact positions with n
 per-character measurement; `null` or malformed offsets fall back to today's path.
 
 Design doc: `docs/superpowers/specs/2026-09-16-char-offsets-rendering-design.md`.
+
+## Addendum 2026-09-19 — what the reader built, and findings for the producers
+
+Implemented on `feat/char-offsets` (plan: `docs/superpowers/plans/2026-09-19-char-offsets.md`). Where this
+addendum and the text above differ, the addendum is what shipped.
+
+### Reader decisions that differ from the proposal
+
+- **Two modes, not one.** Auto mode repairs or rejects bad placement; **original mode renders the file as-is**
+  (zero-width cells included), so a producer regression is visible by switching the font size setting to
+  "original". Manual point sizes never use cells.
+- **Cells are `inline-flex; justify-content: center`**, not `inline-block; text-align: center`. `text-align`
+  start-aligns content wider than its box, which put every glyph in a tight cell 7–12 px late in Chromium.
+  Flex centring overflows both sides equally: measured 0.01 px from the cell centre in both writing modes.
+  `inline-flex` is as continuity-safe for Yomitan as `inline-block` (its scanner truncates the display value at
+  the first `-`). Space cells stay `inline-block; white-space: pre`, because a flex container drops a
+  whitespace-only run and `NO WAY` would select as `NOWAY`.
+- **Edits reflow locally**; the editor shows cells until a block's editor opens, then plain RAW text.
+- **GCV layers emit `char_offsets`** from symbol boxes with `char_offsets_method: "gcv-symbols"`; they can have a
+  non-zero `offsets[0]` and zero-width whitespace cells.
+- **Axis.** Offsets are validated along the BLOCK's `vertical` flag (what `engine_runner._apply_lines` uses),
+  including for a line whose own quad lies across its block.
+- **DOM weight (open question 4), measured:** a dense synthetic page (40 boxes, 3,200 cells) is 7.6× the nodes
+  and reaches its first positioned line in ~61 ms vs ~14 ms uncelled (4.3×). Real pages carry a fraction of
+  that. Building cells only for displayed boxes remains an available mitigation; not implemented.
+
+### Findings for the producers (measured on 46 sidecars, 82,808 placed lines)
+
+The contract holds structurally: 0 malformed entries, `offsets[0]` always 0, placed extent ≤ 1.013 × the quad.
+The placement quality does not always:
+
+1. **Zero-width cells on real characters.** The contract reserves zero width for whitespace, but 0.65% of
+   characters in mokuro-fork primaries and **8.6% in `paddle-manga` layers** have it, in runs up to 8+
+   (`ぎ[322,363) と[363,363) 、[363,449)`). The corpus contains no whitespace at all, so every zero cell is a
+   real glyph the mapper could not place.
+2. **Bloated-and-squeezed lines.** One character takes a cell of 2× the glyph and its neighbours are squeezed
+   below the glyph size (`地道なポイント稼ぎと、` → `地` 94 px, `なポイント稼ぎ` 22–45 px at a ~41 px glyph).
+   More than a quarter of the full-width glyphs sit in cells under 0.7× the mean cell in **8.7% of mokuro-fork
+   lines and 19.4% of `paddle-manga` lines**. Rendered literally these overlap and read worse than the fitted
+   path, so auto mode falls back to it for such lines.
+3. **Crushed lines.** Lines with 200–400 px end cells and 5–20 px interior cells (`に集英社で` →
+   `416,23,17,18,305`): the line quad spans far more than the text, and the mapper hands the slack to the ends.
+
+Measured through the shipped rules, auto mode falls back to fitted rendering for **7.5% of mokuro-fork lines and
+15.3% of `paddle-manga` lines** (2,960 / 39,620 and 6,625 / 43,188); the squeezed rule alone accounts for 7.2% and
+10.5%. A further 4.9% / 2.3% of lines keep their cells with a single wide glyph under half a cell (often `一`, `い`,
+`す` beside a 1.3× neighbour) — left as filed; a local rebalance is a possible follow-up.
+Each fallback is a line where better offsets would immediately show. A producer-side self-check equivalent to
+the reader's (`repairZeroCells` in `src/lib/reader/char-offsets.ts`: unplaced > 40%, crushed < 0.25×, squeezed
+< 0.7× on > 25% of wide glyphs) that writes `null` instead of implausible offsets would keep files honest and
+smaller.

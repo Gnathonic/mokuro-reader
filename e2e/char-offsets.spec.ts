@@ -27,7 +27,12 @@ const SERIES = 'Char Offsets Series';
 const SERIES_UUID = 'e2e-char-offsets-series';
 const VOLUME_UUID = 'e2e-char-offsets-volume';
 
-/** Block 0, line 0: `地道なポイント稼ぎと、` — the と cell is [363, 363). */
+/**
+ * Block 0, line 0: `地道なポイント稼ぎと、` — the と cell is [363, 363). Real data,
+ * and SQUEEZED as well: 地 sits in 94px while な ポ ン get 22–26px at a ~41px
+ * pitch. Original mode draws it as filed; auto mode declines the cells (glyphs
+ * on top of each other are worse than today's fitted line) and fits the line.
+ */
 const ZERO_BLOCK = 0;
 const ZERO_LINE = 0;
 const ZERO_CHAR = 9;
@@ -107,10 +112,33 @@ const SPACED: FixtureBlock = {
     [0, 55, 130, 130, 200, 260]
   ]
 };
+/**
+ * What auto mode's repair is FOR, on its own: え has no cell and お has two, on
+ * a line whose other cells are plausible. Synthetic, because the fixture's one
+ * zero-width cell sits on a line auto mode gives up on for another reason.
+ */
+const REPAIRED_BLOCK = SPACED_BLOCK + 1;
+const REPAIRED_CHAR = 3;
+const REPAIRED: FixtureBlock = {
+  box: [500, 1900, 550, 2140],
+  vertical: true,
+  font_size: 40,
+  lines: ['あいうえおか'],
+  lines_coords: [
+    [
+      [500, 1900],
+      [550, 1900],
+      [550, 2140],
+      [500, 2140]
+    ]
+  ],
+  char_offsets: [[0, 40, 80, 120, 120, 200, 240]]
+};
 const BLOCKS: FixtureBlock[] = [
   ...FIXTURE.blocks,
   quarterTurn(FIXTURE.blocks[0], 500, 1300),
-  SPACED
+  SPACED,
+  REPAIRED
 ];
 const PAGE: FixturePage = { ...FIXTURE, blocks: BLOCKS };
 
@@ -517,10 +545,21 @@ test.describe('char_offsets — viewer', () => {
     const measured = await measure(page, 'viewer');
 
     // The fixture's shape survived the trip: a null line, a block without
-    // offsets and the repaired と line are all where the cases expect them.
+    // offsets, the squeezed と line (and its quarter-turned twin) on the fitted
+    // path and the repaired line are all where the cases expect them.
     expect(expected[1][1].cells).toBeNull();
     expect(expected[3][0].cells).toBeNull();
-    expect(expected[ZERO_BLOCK][ZERO_LINE].cells).not.toBeNull();
+    expect(expected[ZERO_BLOCK][ZERO_LINE].cells).toBeNull();
+    expect(expected[HORIZONTAL_BLOCK][ZERO_LINE].cells).toBeNull();
+    expect(expected[REPAIRED_BLOCK][0].cells).toHaveLength(6);
+    // A squeezed line costs only ITSELF its cells, and none of its text.
+    for (const b of [ZERO_BLOCK, HORIZONTAL_BLOCK]) {
+      const lines = findBlock(measured, BLOCKS[b]).lines;
+      expect(lines[ZERO_LINE].chars).toHaveLength(0);
+      expect(lines[ZERO_LINE].text).toBe(BLOCKS[b].lines[ZERO_LINE]);
+      expect(lines[1].chars.length).toBeGreaterThan(0);
+      expect(lines[ELLIPSIS_LINE].chars.length).toBeGreaterThan(0);
+    }
     // Lines the file places cleanly render the file's own advances, untouched:
     // for them the prediction is the fixture's numbers, not the module's opinion.
     BLOCKS.forEach((block, b) =>
@@ -537,7 +576,7 @@ test.describe('char_offsets — viewer', () => {
     // (a) the glyph, not the span box, sits on the cell centre.
     const deviations = centreDeviations(measured, expected);
     summarize('auto', deviations);
-    expect(deviations.filter((d) => BLOCKS[d.block].vertical).length).toBeGreaterThan(50);
+    expect(deviations.filter((d) => BLOCKS[d.block].vertical).length).toBeGreaterThan(40);
     expect(deviations.filter((d) => !BLOCKS[d.block].vertical).length).toBeGreaterThan(25);
     expectCentred(deviations);
 
@@ -556,11 +595,11 @@ test.describe('char_offsets — viewer', () => {
       })
     );
 
-    // (d) auto repairs the zero-width と: it has a cell, and no glyph in any
-    // placed line sits more than half way over its neighbour.
-    const zero = findBlock(measured, BLOCKS[ZERO_BLOCK]).lines[ZERO_LINE].chars[ZERO_CHAR];
-    expect(zero.text).toBe('と');
-    expect(parseFloat(zero.inlineSize)).toBeGreaterThan(0);
+    // (d) auto repairs a zero-width cell: え shares お's 80px, and no glyph in
+    // any placed line sits more than half way over its neighbour.
+    const repaired = findBlock(measured, BLOCKS[REPAIRED_BLOCK]).lines[0].chars;
+    expect(repaired[REPAIRED_CHAR].text).toBe('え');
+    expect(repaired.map((c) => parseFloat(c.inlineSize))).toEqual([40, 40, 40, 40, 40, 40]);
     let hits = 0;
     let glyphs = 0;
     BLOCKS.forEach((block) =>

@@ -9,7 +9,9 @@ import fixture from './__fixtures__/char-offsets-page.json';
 // second line ("しばらく活動停止に") had its offsets set to null, and block 3
 // had its char_offsets key removed. Everything else is verbatim: variable
 // advances, a zero-width と (b0 l0), a ．．． run with unequal cells (b0 l2) and
-// two rotated quads (b2).
+// two rotated quads (b2). b0 l0 is also a SQUEEZED line (地 in 94px, な ポ ン in
+// 22–26px): auto mode fits it instead of drawing its cells, original mode
+// renders them as filed.
 
 const sizes = (result: LineCells | null) => result?.cells.map((c) => c.size);
 const text = (result: LineCells | null) => result?.cells.map((c) => c.text).join('');
@@ -149,10 +151,22 @@ describe('lineCells', () => {
     const raw = '地道なポイント稼ぎと、';
     const offsets = [0, 94, 139, 165, 190, 235, 271, 300, 322, 363, 363, 449];
 
-    it('repair: true (auto mode) shares the neighbour: と and 、 get 43px each', () => {
-      const result = lineCells(raw, offsets, 457, { repair: true });
-      expect(sizes(result)).toEqual([94, 45, 26, 25, 45, 36, 29, 22, 41, 43, 43]);
-      expect(result!.extent).toBe(449);
+    it('repair: true (auto mode) shares the neighbour: う and え split the 80px', () => {
+      // the zero cell alone, on a line whose other cells are plausible
+      const result = lineCells('あいうえおか', [0, 40, 80, 120, 120, 200, 240], 240, {
+        repair: true
+      });
+      expect(sizes(result)).toEqual([40, 40, 40, 40, 40, 40]);
+      expect(result!.extent).toBe(240);
+      // the real tail — ぎ[322,363) と[363,363) 、[363,449) — behind even print
+      const tail = [0, 41, 82, 123, 164, 205, 246, 281, 322, 363, 363, 449];
+      expect(sizes(lineCells(raw, tail, 457, { repair: true }))?.slice(-3)).toEqual([41, 43, 43]);
+    });
+
+    it('repair: true gives the REAL line to the fitted path: repaired, it is still squeezed', () => {
+      // と and 、 would get their 43px each, and な ポ ン would still be drawn in
+      // 22–26px cells at a ~41px pitch, on top of their neighbours
+      expect(lineCells(raw, offsets, 457, { repair: true })).toBeNull();
     });
 
     it('repair: false (original mode) renders the file as-is', () => {
@@ -196,9 +210,11 @@ describe('lineCells', () => {
     });
 
     it('a repaired line never has a zero cell on a real character', () => {
-      const result = lineCells('あいうえお', [0, 2, 2, 2, 5, 15], 15, { repair: true });
+      // Latin, which has no pitch to be squeezed under: as kana these 1px
+      // cells would cost the line its placement on that count instead
+      const result = lineCells('ABCDE', [0, 2, 2, 2, 5, 15], 15, { repair: true });
       expect(sizes(result)).toEqual([2, 1, 1, 1, 10]);
-      expect(lineCells('あいうえお', [0, 10, 11, 11, 12, 22], 22, { repair: true })).toBeNull();
+      expect(lineCells('ABCDE', [0, 10, 11, 11, 12, 22], 22, { repair: true })).toBeNull();
     });
 
     it('a mark or variation selector keeps its zero cell and costs the line nothing', () => {
@@ -310,7 +326,9 @@ describe('lineCells', () => {
         '.....',
         '......',
         '．．．．',
-        'あ...い．．．う..',
+        // Latin between the runs: at 7px a raw character, kana beside 21px
+        // ellipses would be a squeezed line and null under repair
+        'a...b．．．c..',
         '.．.',
         '…...'
       ];
@@ -351,7 +369,7 @@ describe('lineCells', () => {
       expect('char_offsets' in fixture.blocks[3]).toBe(false);
     });
 
-    it('every non-null line yields cells under both repair modes', () => {
+    it('every non-null line yields cells as-is, and all but the squeezed b0 l0 under repair', () => {
       let placed = 0;
       for (const block of fixture.blocks) {
         block.lines.forEach((raw, i) => {
@@ -359,7 +377,9 @@ describe('lineCells', () => {
           const main = mainExtent(block.lines_coords[i], block.vertical);
           for (const repair of [true, false]) {
             const result = lineCells(raw, offsets, main, { repair });
-            if (offsets === null) {
+            // b0 l0 is the real squeezed line: fitted in auto, as filed in original
+            const squeezed = repair && block === fixture.blocks[0] && i === 0;
+            if (offsets === null || squeezed) {
               expect(result, raw).toBeNull();
               continue;
             }
@@ -374,7 +394,7 @@ describe('lineCells', () => {
           }
         });
       }
-      expect(placed).toBe(7 * 2);
+      expect(placed).toBe(7 * 2 - 1);
     });
   });
 });

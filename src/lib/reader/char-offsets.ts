@@ -45,6 +45,36 @@ export const UNPLACED_MAX = 0.4;
  */
 export const CRUSHED_RATIO = 0.25;
 
+/**
+ * A full-cell glyph is squeezed when its cell is narrower than this share of
+ * the line's reference cell (extent / code points). Producers sometimes hand
+ * one character a bloated cell and press its neighbours together to pay for it
+ * — 地道なポイント稼ぎと、 filed as 94 45 26 25 45 36 29 22 41 0 86, where the
+ * glyphs print at about 41px. Every cell passes the zero and crushed rules, and
+ * drawn there な ポ ン overlap their neighbours: worse than the fitted path,
+ * which at least spaces the line evenly. Tight print is not the target — cells
+ * at 0.8 of the reference are ordinary tracking — so the bar sits below that,
+ * and only glyphs that fill a cell are measured (`isWideGlyph`).
+ */
+export const SQUEEZED_RATIO = 0.7;
+
+/**
+ * A line loses its placement when more than this share of its full-cell glyphs
+ * are squeezed (and it has at least SQUEEZED_MIN_WIDE of them to judge by).
+ * Over the real library (82.8k placed lines) that is 7.2% of mokuro-fork lines
+ * and 10.5% of paddle-manga lines, every one of which passed the zero and
+ * crushed rules; with them gone, no line that keeps its cells has more than a
+ * quarter of its full-cell glyphs squeezed. One tight glyph in a long line is
+ * print (一 in vertical text has almost no ink along the axis); a quarter of
+ * them is a producer that lost track of the line, its glyphs would overlap,
+ * and the fitted path is the honest rendering of it.
+ */
+export const SQUEEZED_MAX = 0.25;
+
+/** Below this many full-cell glyphs a line has too few cells to tell a
+ * producer's failure from the print: one narrow glyph of two is no pattern. */
+const SQUEEZED_MIN_WIDE = 3;
+
 /** Producers clamp to the quad, so a placed extent beyond this many times the
  * quad's main extent is corruption, not slack. Same tolerance `layoutLines`
  * allows a fitted line (OVERFLOW_TOL). */
@@ -69,6 +99,24 @@ export function codePoints(text: string): string[] {
  */
 function takesNoRoom(char: string): boolean {
   return /^[\s\u200b-\u200d\u2060\p{Mn}\p{Me}]$/u.test(char);
+}
+
+/**
+ * Does this character print a full cell — kana, an ideograph, a fullwidth
+ * letter or digit? Only these can be called squeezed: their advance is the
+ * line's pitch, so a cell well under it means overlap. Everything else has an
+ * advance of its own and is left alone — Latin and halfwidth forms are
+ * proportional, and within the Japanese ranges the small kana, the prolonged
+ * sound mark and all punctuation, brackets and symbols (`\p{P}`, `\p{S}`: 、。
+ * 「」！？〜…, the fullwidth signs) legitimately sit in less than a cell.
+ * Ideographs are matched by script so Extension A, the compatibility block and
+ * the supplementary planes all count.
+ */
+function isWideGlyph(char: string): boolean {
+  if (!/^[\u3041-\u3096\u30a1-\u30fa\uff01-\uff60\uffe0-\uffe6\p{Script=Han}]$/u.test(char)) {
+    return false;
+  }
+  return !/^[ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶ\u30fc\p{P}\p{S}]$/u.test(char);
 }
 
 /**
@@ -237,6 +285,12 @@ function median(values: number[]): number {
  * a cell the file HAD placed. Real lines that hit it (0.08%) are glyphs crushed between 1–2px
  * cells, where there is no placement worth keeping. So a non-null result never
  * has a zero cell on a real character and never takes a placed cell away.
+ *
+ * One more way to null, judged last and on the cells that would be drawn: the
+ * line is SQUEEZED — more than SQUEEZED_MAX of its full-cell glyphs sit in
+ * cells under SQUEEZED_RATIO of the line's pitch. Nothing is widened for it
+ * either: the pixels went to some bloated cell, and which glyph should get
+ * them back is a guess the fitted path does not have to make.
  * `offsets` must already be valid for `chars`. Never mutates.
  */
 export function repairZeroCells(chars: string[], offsets: number[]): number[] | null {
@@ -261,7 +315,21 @@ export function repairZeroCells(chars: string[], offsets: number[]): number[] | 
     (isReal, k) => isReal && widths[k] > 0 && widths[k] < crushedBelow
   ).length;
   if (zero + crushed > UNPLACED_MAX * realCount) return null;
-  if (zero === 0) return offsets;
+
+  // Squeezed is judged against extent / ALL code points, not the crushed
+  // rule's `typical`: the question here is whether a glyph has room at the
+  // line's own pitch, and a space or a mark is part of that pitch in print
+  // even when the file gives it no pixels. Strict, like the crushed bar: a
+  // cell of exactly SQUEEZED_RATIO is placed.
+  const reference = (offsets[n] - offsets[0]) / n;
+  const wide = chars.map(isWideGlyph);
+  const wideCount = wide.filter(Boolean).length;
+  const isSqueezed = () =>
+    wideCount >= SQUEEZED_MIN_WIDE &&
+    wide.filter((isWide, k) => isWide && widths[k] / reference < SQUEEZED_RATIO).length >
+      SQUEEZED_MAX * wideCount;
+
+  if (zero === 0) return isSqueezed() ? null : offsets;
 
   for (let i = 0; i < n; i++) {
     if (widths[i] !== 0) continue;
@@ -291,6 +359,9 @@ export function repairZeroCells(chars: string[], offsets: number[]): number[] | 
   // to refuse. A repair must not manufacture it.
   const slivers = real.filter((isReal, k) => isReal && widths[k] < crushedBelow).length;
   if (slivers > UNPLACED_MAX * realCount) return null;
+  // Squeezed, too, is a verdict on what would be drawn: a zero cell is not a
+  // squeezed one once it has its share, and a share of a narrow donor is.
+  if (isSqueezed()) return null;
 
   const repaired = [offsets[0]];
   for (let k = 0; k < n; k++) repaired.push(repaired[k] + widths[k]);

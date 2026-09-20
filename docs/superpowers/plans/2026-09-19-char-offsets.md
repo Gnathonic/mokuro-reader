@@ -78,6 +78,13 @@ export function parallelOffsets(block: {
  * characters were zero-width. Input must already be valid. Never mutates.
  */
 export function repairZeroCells(chars: string[], offsets: number[]): number[] | null;
+// Added after real-data and real-browser verification (2026-09-19). repairZeroCells also gives up (null →
+// fitted line) when, on the FINAL widths:
+//  - CRUSHED: a real cell < CRUSHED_RATIO (0.25) × max(median non-zero cell, extent / real chars) counts as
+//    unplaced, before and after repair;
+//  - SQUEEZED: the line has >= 3 wide glyphs (kana, Han, fullwidth forms; not small kana, ー, punctuation) and
+//    more than SQUEEZED_MAX (0.25) of them sit in cells < SQUEEZED_RATIO (0.7) × (extent / code points):
+//    a bloated neighbour squeezed them and the glyphs would overlap.
 
 /** Scale by a main-axis factor: rounded integers, offsets[0] scaled too, monotone. */
 export function scaleOffsets(offsets: number[], factor: number): number[];

@@ -280,7 +280,19 @@ describe('TextBoxes with char_offsets', () => {
   const inlineSize = (char: HTMLElement) =>
     /(?:^|;)\s*inline-size:\s*([^;]+)/.exec(char.getAttribute('style') ?? '')?.[1].trim();
 
-  it('renders one .ocr-line per line, holding one .ocr-char per code point of the rendered text', () => {
+  // b0 l0 is real data and a squeezed line (地 in 94px, な ポ ン in 22–26px):
+  // auto mode renders it on the fitted path, original mode on its cells.
+  const isSqueezedLine = (block: unknown, i: number) => block === fixtureBlocks[0] && i === 0;
+
+  it.each([
+    ['auto', 6],
+    ['original', 7]
+  ] as const)(
+    'renders one .ocr-line per line, holding one .ocr-char per code point of the rendered text (%s)',
+    (mode, expectedCelled) => withFontSize(mode, () => celledLinesInvariant(mode, expectedCelled))
+  );
+
+  function celledLinesInvariant(mode: 'auto' | 'original', expectedCelled: number) {
     let celledLines = 0;
     for (const block of fixtureBlocks) {
       const container = renderBlock(block);
@@ -291,7 +303,7 @@ describe('TextBoxes with char_offsets', () => {
         // THE invariant: selection, copy and Yomitan read the line span
         expect(spans[i].textContent, raw).toBe(processed);
         const chars = charSpans(spans[i]);
-        if (block.char_offsets?.[i]) {
+        if (block.char_offsets?.[i] && !(mode === 'auto' && isSqueezedLine(block, i))) {
           celledLines++;
           expect(chars, raw).toHaveLength(codePoints(processed).length);
           expect(chars.map((char) => char.textContent)).toEqual(codePoints(processed));
@@ -312,8 +324,8 @@ describe('TextBoxes with char_offsets', () => {
       expect(container.querySelector('p')!.textContent).toBe(block.lines.map(processLine).join(''));
       cleanup();
     }
-    expect(celledLines).toBe(7);
-  });
+    expect(celledLines).toBe(expectedCelled);
+  }
 
   it('gives every cell its advance as inline-size, the collapsed ellipsis run as ONE cell', () => {
     // b0 l2 ends ．．． at [544, 558, 572, 585]: one … cell of 41px
@@ -339,7 +351,8 @@ describe('TextBoxes with char_offsets', () => {
   // #254, per glyph: an out-of-flow character is a paragraph break to a DOM
   // text scanner, so one between every glyph would leave no word to scan.
   it('never takes a character out of flow', () => {
-    const container = renderBlock(fixtureBlocks[0]);
+    // original mode: every line of the block on its cells, the squeezed one too
+    const container = withFontSize('original', () => renderBlock(fixtureBlocks[0]));
     const chars = [...container.querySelectorAll<HTMLElement>('.ocr-char')];
     expect(chars.length).toBeGreaterThan(30);
     for (const char of chars) {
@@ -439,18 +452,58 @@ describe('TextBoxes with char_offsets', () => {
     expect(line.classList.contains('wrappedLine')).toBe(false);
   });
 
-  describe('the zero-width と of b0 l0: ぎ[322,363) と[363,363) 、[363,449)', () => {
-    const lastThree = (container: HTMLElement) =>
-      charSpans(lineSpans(container)[0]).slice(-3).map(inlineSize);
+  describe('a zero-width cell on a real character', () => {
+    // え has no cell and お has two: the zero cell alone, on a line whose other
+    // cells are plausible
+    const block = {
+      box: [100, 0, 150, 240],
+      vertical: true,
+      font_size: 40,
+      lines: ['あいうえおか'],
+      lines_coords: [
+        [
+          [100, 0],
+          [150, 0],
+          [150, 240],
+          [100, 240]
+        ]
+      ],
+      char_offsets: [[0, 40, 80, 120, 120, 200, 240]]
+    };
+    const cellSizes = (container: HTMLElement) =>
+      charSpans(lineSpans(container)[0]).map(inlineSize);
 
-    it('auto mode repairs it: と and 、 share the 86px', () => {
-      expect(lastThree(renderBlock(fixtureBlocks[0]))).toEqual(['41px', '43px', '43px']);
+    it('auto mode repairs it: え and お share the 80px', () => {
+      expect(cellSizes(renderBlock(block))).toEqual(new Array(6).fill('40px'));
     });
 
     it('original mode renders the file as-is: a 0px cell, the character still in the DOM', () => {
       withFontSize('original', () => {
+        const container = renderBlock(block);
+        expect(cellSizes(container)).toEqual(['40px', '40px', '40px', '0px', '80px', '40px']);
+        expect(lineSpans(container)[0].textContent).toBe('あいうえおか');
+      });
+    });
+  });
+
+  describe('the squeezed b0 l0: 地 in 94px, な ポ ン in 22–26px, と[363,363) 、[363,449)', () => {
+    it('auto mode fits the LINE instead of drawing overlapping cells; the block keeps the rest', () => {
+      const spans = lineSpans(renderBlock(fixtureBlocks[0]));
+      expect(charSpans(spans[0])).toHaveLength(0);
+      expect(spans[0].children).toHaveLength(0);
+      expect(spans[0].textContent).toBe('地道なポイント稼ぎと、');
+      // still the per-line path, like the null line of a mixed block
+      expect(spans[0].classList.contains('positionedLine')).toBe(true);
+      expect(charSpans(spans[1])).toHaveLength(7);
+      expect(charSpans(spans[2])).toHaveLength(13);
+    });
+
+    it('original mode renders the file as-is: every cell, the 0px one included', () => {
+      withFontSize('original', () => {
         const container = renderBlock(fixtureBlocks[0]);
-        expect(lastThree(container)).toEqual(['41px', '0px', '86px']);
+        expect(charSpans(lineSpans(container)[0]).map(inlineSize)).toEqual(
+          [94, 45, 26, 25, 45, 36, 29, 22, 41, 0, 86].map((size) => `${size}px`)
+        );
         expect(lineSpans(container)[0].textContent).toBe('地道なポイント稼ぎと、');
       });
     });

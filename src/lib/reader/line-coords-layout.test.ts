@@ -1004,16 +1004,42 @@ describe('layoutLines with char_offsets', () => {
   });
 
   it("'repaired' shares a zero-width cell out, 'as-is' renders the file", () => {
-    // fixture b0 l0: ぎ[322,363) と[363,363) 、[363,449)
-    const block = fixturePage.blocks[0] as unknown as LayoutBlock;
+    // え has no cell and お has two: the zero cell alone, on a line whose other
+    // cells are plausible
+    const block: LayoutBlock = {
+      box: [100, 0, 150, 240],
+      vertical: true,
+      font_size: 40,
+      lines: ['あいうえおか'],
+      lines_coords: [column(100, 150, 0, 240)],
+      char_offsets: [[0, 40, 80, 120, 120, 200, 240]]
+    };
     const repaired = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
     const asIs = layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'as-is' })!;
-    expect(sizes(repaired[0])!.slice(-3)).toEqual([41, 43, 43]);
-    expect(sizes(asIs[0])!.slice(-3)).toEqual([41, 0, 86]);
+    expect(sizes(repaired[0])).toEqual([40, 40, 40, 40, 40, 40]);
+    expect(sizes(asIs[0])).toEqual([40, 40, 40, 0, 80, 40]);
     // geometry does not depend on the mode: same extent, same origin and size
     const { cells: _a, ...repairedBox } = repaired[0];
     const { cells: _b, ...asIsBox } = asIs[0];
     expect(repairedBox).toStrictEqual(asIsBox);
+  });
+
+  it("'repaired' fits a squeezed line instead of drawing its cells, 'as-is' renders the file", () => {
+    // fixture b0 l0, real data: 地 in 94px, な ポ ン in 22–26px at a ~41px pitch
+    // (and ぎ[322,363) と[363,363) 、[363,449) at the tail). Drawn on those cells
+    // the glyphs overlap, so auto mode gives the LINE to the fitted path — the
+    // block's other lines keep their cells.
+    const block = fixturePage.blocks[0] as unknown as LayoutBlock;
+    const processed = block.lines.map((line) => line.replace(/．．．/g, '…'));
+    const repaired = layoutLinesImpl(block, processed, heuristicMeasurer)!;
+    const asIs = layoutLinesImpl(block, processed, heuristicMeasurer, { cells: 'as-is' })!;
+    expect(repaired[0].cells).toBeUndefined();
+    expect('cells' in repaired[0]).toBe(false);
+    expect(sizes(asIs[0])).toEqual([94, 45, 26, 25, 45, 36, 29, 22, 41, 0, 86]);
+    for (const i of [1, 2]) {
+      expect(sizes(repaired[i])).toBeDefined();
+      expect(sizes(repaired[i])).toEqual(sizes(asIs[i]));
+    }
   });
 
   it('takes the cells only when the rendered text is the processed raw line', () => {
@@ -1028,7 +1054,7 @@ describe('layoutLines with char_offsets', () => {
     // cells parallel to the processed text would not be its characters
     const raw = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
     expect(raw[2].cells).toBeUndefined();
-    expect(raw[0].cells).toBeDefined();
+    expect(raw[1].cells).toBeDefined();
   });
 
   it('degrades a malformed entry to the fitted path, line by line', () => {
