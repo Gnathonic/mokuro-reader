@@ -1,0 +1,383 @@
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
+import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import type { Writable } from 'svelte/store';
+import type { Block, Page } from '$lib/types';
+
+vi.mock('$lib/settings', async () => {
+  const { writable } = await import('svelte/store');
+  return { settings: writable({ fontSize: 'auto', boldFont: false }) };
+});
+
+import EditableBlock from '../EditableBlock.svelte';
+import { settings } from '$lib/settings';
+import { EditSession } from '$lib/reader/edit/edit-session.svelte';
+import { lineCells, processLine } from '$lib/reader/char-offsets-layout';
+import {
+  fittedLineFontSize,
+  getDefaultMeasurer,
+  quadExtents
+} from '$lib/reader/line-coords-layout';
+import fixture from '$lib/reader/__fixtures__/char-offsets-page.json';
+
+// The fixture is a real page (see char-offsets-layout.test.ts): block 0 has a
+// zero-width と (line 0) and a ．．． run (line 2), block 1 has a null line
+// (line 1), block 3 has no char_offsets at all. Everything is vertical.
+const fontMode = settings as unknown as Writable<{ fontSize: string; boldFont: boolean }>;
+
+function fixturePage(): Page {
+  return structuredClone(fixture) as unknown as Page;
+}
+
+function mount(blockIndex = 0, page: Page = fixturePage()) {
+  const session = new EditSession({
+    volumeUuid: 'v1',
+    getPage: () => page,
+    persist: async () => {},
+    debounceMs: 100000
+  });
+  const utils = render(EditableBlock, {
+    props: {
+      block: page.blocks[blockIndex],
+      index: blockIndex,
+      pageIndex: 0,
+      selected: false,
+      session,
+      scale: () => 1
+    }
+  });
+  const root = utils.container.querySelector<HTMLElement>('.editBlock')!;
+  return { ...utils, session, page, root };
+}
+
+function lineEls(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>('.line')];
+}
+function cellSizes(line: HTMLElement): string[] {
+  return [...line.querySelectorAll<HTMLElement>('.ocr-char')].map((c) => c.style.inlineSize);
+}
+function expectedSizes(block: Block, i: number, repair: boolean): string[] {
+  const main = quadExtents(block.lines_coords![i], true)!.main;
+  const cells = lineCells(block.lines[i], block.char_offsets?.[i], main, { repair });
+  return cells!.cells.map((c) => `${c.size}px`);
+}
+
+/** jsdom has no PointerEvent ctor (same helper as EditOverlay.test.ts). */
+async function pointer(
+  el: Element,
+  type: 'pointerdown' | 'pointermove' | 'pointerup',
+  props: { id?: number; x?: number; y?: number } = {}
+) {
+  const e = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(e, {
+    pointerId: { value: props.id ?? 1 },
+    clientX: { value: props.x ?? 0 },
+    clientY: { value: props.y ?? 0 },
+    pointerType: { value: 'mouse' },
+    button: { value: 0 },
+    shiftKey: { value: false }
+  });
+  el.dispatchEvent(e);
+  await tick();
+}
+
+beforeEach(() => fontMode.set({ fontSize: 'auto', boldFont: false }));
+afterEach(cleanup);
+
+describe('EditableBlock — char_offsets cells', () => {
+  it('a celled line renders one .ocr-char per processed code point, sized by its cell, and reads as the processed text', () => {
+    const { root, page } = mount(0);
+    const block = page.blocks[0];
+    const lines = lineEls(root);
+    expect(lines).toHaveLength(3);
+
+    // plain line: 7 characters, 7 cells, the producer's advances verbatim
+    expect(cellSizes(lines[1])).toEqual(['51px', '43px', '45px', '44px', '43px', '48px', '37px']);
+    expect(lines[1].textContent).toBe('継続的な活動が');
+
+    // ．．． collapses to ONE … cell spanning all three raw cells (544 → 585)
+    const raw = block.lines[2];
+    expect(raw.endsWith('．．．')).toBe(true);
+    expect(lines[2].textContent).toBe(processLine(raw));
+    expect(lines[2].textContent!.endsWith('…')).toBe(true);
+    const sizes = cellSizes(lines[2]);
+    expect(sizes).toHaveLength([...raw].length - 2);
+    expect(sizes[sizes.length - 1]).toBe('41px');
+
+    for (let i = 0; i < lines.length; i++) {
+      expect(cellSizes(lines[i])).toEqual(expectedSizes(block, i, true));
+      // The invariant selection and copy rely on: nothing but the cells, no
+      // whitespace text nodes between them, and never out of flow (#254).
+      for (const node of lines[i].childNodes) {
+        expect((node as HTMLElement).className).toBe('ocr-char');
+        expect((node as HTMLElement).style.position).toBe('');
+      }
+    }
+  });
+
+  it('offsets[0] becomes inline-start padding; a line without cells has none', () => {
+    const page = fixturePage();
+    page.blocks[1].char_offsets![0] = [6, 54, 113, 160, 218, 269, 319];
+    const { root } = mount(1, page);
+    const lines = lineEls(root);
+    expect(lines[0].style.getPropertyValue('padding-inline-start')).toBe('6px');
+    expect(cellSizes(lines[0])[0]).toBe('48px');
+    expect(lines[1].style.getPropertyValue('padding-inline-start')).toBe('');
+    expect(lines[2].style.getPropertyValue('padding-inline-start')).toBe('0px');
+  });
+
+  it("a celled line takes the viewer's size: fitted on the PROCESSED text, capped by the quad's thickness", () => {
+    const { root, page } = mount(0);
+    const block = page.blocks[0];
+    const measure = getDefaultMeasurer();
+    const lines = lineEls(root);
+    for (let i = 0; i < lines.length; i++) {
+      const size = fittedLineFontSize(block.lines_coords![i], processLine(block.lines[i]), measure);
+      expect(lines[i].style.fontSize).toBe(`${Math.round(size)}px`);
+    }
+    // the … line is two characters shorter than its raw text, so it fits larger
+    const rawSize = fittedLineFontSize(block.lines_coords![2], block.lines[2], measure);
+    expect(parseFloat(lines[2].style.fontSize)).toBeGreaterThan(rawSize);
+  });
+
+  it('a null line and a block without char_offsets render as plain text, exactly as before', () => {
+    const mixed = mount(1);
+    const lines = lineEls(mixed.root);
+    expect(lines[0].querySelectorAll('.ocr-char')).toHaveLength(6);
+    expect(lines[1].querySelectorAll('.ocr-char')).toHaveLength(0);
+    expect(lines[1].childNodes).toHaveLength(1);
+    expect(lines[1].firstChild!.nodeType).toBe(Node.TEXT_NODE);
+    expect(lines[1].textContent).toBe('しばらく活動停止に');
+    expect(lines[2].querySelectorAll('.ocr-char')).toHaveLength(7);
+    cleanup();
+
+    const bare = mount(3);
+    expect(bare.root.querySelectorAll('.ocr-char')).toHaveLength(0);
+    const only = lineEls(bare.root)[0];
+    expect(only.textContent).toBe(bare.page.blocks[3].lines[0]);
+    expect(only.style.fontSize).toBe(
+      `${Math.round(
+        fittedLineFontSize(
+          bare.page.blocks[3].lines_coords![0],
+          bare.page.blocks[3].lines[0],
+          getDefaultMeasurer()
+        )
+      )}px`
+    );
+  });
+
+  it('malformed offsets degrade that LINE to plain text, not the block', () => {
+    const page = fixturePage();
+    page.blocks[0].char_offsets![1] = [0, 51, 94]; // wrong length
+    const { root } = mount(0, page);
+    const lines = lineEls(root);
+    expect(lines[0].querySelectorAll('.ocr-char').length).toBeGreaterThan(0);
+    expect(lines[1].querySelectorAll('.ocr-char')).toHaveLength(0);
+    expect(lines[1].textContent).toBe('継続的な活動が');
+  });
+
+  it('original font mode renders the file as-is (zero-width と at 0px); auto repairs it; the switch is live', async () => {
+    const { root, page } = mount(0);
+    const block = page.blocks[0];
+    const line = lineEls(root)[0];
+    expect(line.textContent).toBe('地道なポイント稼ぎと、');
+    let sizes = cellSizes(line);
+    expect(sizes.slice(-2)).toEqual(['43px', '43px']);
+
+    fontMode.set({ fontSize: 'original', boldFont: false });
+    await tick();
+    sizes = cellSizes(lineEls(root)[0]);
+    expect(sizes).toEqual(expectedSizes(block, 0, false));
+    expect(sizes.slice(-2)).toEqual(['0px', '86px']);
+    expect(lineEls(root)[0].textContent).toBe('地道なポイント稼ぎと、');
+
+    // a manual point size is not `original`: the editor still repairs
+    fontMode.set({ fontSize: '12', boldFont: false });
+    await tick();
+    expect(cellSizes(lineEls(root)[0]).slice(-2)).toEqual(['43px', '43px']);
+  });
+});
+
+describe('EditableBlock — cells never live inside a contenteditable', () => {
+  it('opening the editor turns EVERY line of the block into plain RAW text; closing re-cells', async () => {
+    const { root, page } = mount(0);
+    const block = page.blocks[0];
+    await fireEvent.dblClick(root);
+    await tick();
+    const editable = [...root.querySelectorAll<HTMLElement>('[contenteditable]')];
+    expect(editable).toHaveLength(3);
+    expect(root.querySelectorAll('.ocr-char')).toHaveLength(0);
+    editable.forEach((el, i) => {
+      expect(el.textContent).toBe(block.lines[i]); // RAW: ．．． not …
+      expect(el.childNodes).toHaveLength(1);
+      expect(el.firstChild!.nodeType).toBe(Node.TEXT_NODE);
+      expect(el.style.getPropertyValue('padding-inline-start')).toBe('');
+    });
+
+    await fireEvent.keyDown(editable[0], { key: 'Escape' });
+    await tick();
+    expect(root.querySelectorAll('[contenteditable]')).toHaveLength(0);
+    const lines = lineEls(root);
+    for (let i = 0; i < lines.length; i++) {
+      expect(cellSizes(lines[i])).toEqual(expectedSizes(block, i, true));
+    }
+    expect(lines[2].textContent).toBe(processLine(block.lines[2]));
+  });
+
+  it("a line containing '...' survives open → close without the model changing", async () => {
+    const page = fixturePage();
+    // ASCII periods this time: 3 code points sharing one 41px cell
+    const raw = page.blocks[0].lines[2].replace('．．．', '...');
+    page.blocks[0].lines[2] = raw;
+    const { root, session } = mount(0, page);
+    const setLines = vi.spyOn(session, 'setLines');
+    const before = session.pageFor(0);
+    expect(lineEls(root)[2].textContent).toBe(raw.replace('...', '…'));
+
+    await fireEvent.dblClick(root);
+    await tick();
+    const editable = root.querySelectorAll<HTMLElement>('[contenteditable]');
+    expect(editable[2].textContent).toBe(raw);
+    // an input event that changes nothing still reads the RAW text back
+    await fireEvent.input(editable[2]);
+    await fireEvent.keyDown(editable[2], { key: 'Escape' });
+    await tick();
+
+    expect(setLines).not.toHaveBeenCalled();
+    expect(session.pageFor(0)).toBe(before);
+    expect(session.canUndo(0)).toBe(false);
+    expect(session.pageFor(0).blocks[0].lines[2]).toBe(raw);
+    expect(lineEls(root)[2].textContent).toBe(raw.replace('...', '…'));
+  });
+
+  it('committing a one-character fix writes RAW lines, then re-cells from whatever offsets the model holds; undo swaps the old cells back', async () => {
+    const { root, page, session, rerender } = mount(0);
+    const block = page.blocks[0];
+    // The reflow is the session's job (another module): pin it out, and hand
+    // the component the model a commit would produce.
+    const setLines = vi.spyOn(session, 'setLines').mockImplementation(() => {});
+    const elements = lineEls(root);
+
+    await fireEvent.dblClick(root);
+    await tick();
+    const editable = root.querySelectorAll<HTMLElement>('[contenteditable]');
+    editable[1].textContent = '継続的な活動は';
+    await fireEvent.input(editable[1]);
+    await fireEvent.keyDown(editable[1], { key: 'Escape' });
+    await tick();
+    expect(setLines).toHaveBeenCalledWith(0, 0, [
+      block.lines[0],
+      '継続的な活動は',
+      block.lines[2] // still ．．． — the processed … never reaches the model
+    ]);
+
+    const fixed: Block = {
+      ...block,
+      lines: [block.lines[0], '継続的な活動は', block.lines[2]],
+      char_offsets: [
+        block.char_offsets![0],
+        [0, 51, 94, 139, 183, 226, 270, 311],
+        block.char_offsets![2]
+      ]
+    };
+    await rerender({ block: fixed });
+    await tick();
+    let lines = lineEls(root);
+    expect(lines[1].textContent).toBe('継続的な活動は');
+    expect(cellSizes(lines[1])).toEqual(['51px', '43px', '45px', '44px', '43px', '44px', '41px']);
+    // same line count → same elements, neighbours untouched
+    expect(lines[0]).toBe(elements[0]);
+    expect(lines[1]).toBe(elements[1]);
+    expect(cellSizes(lines[0])).toEqual(expectedSizes(block, 0, true));
+
+    await rerender({ block });
+    await tick();
+    lines = lineEls(root);
+    expect(lines[1].textContent).toBe('継続的な活動が');
+    expect(cellSizes(lines[1])).toEqual(['51px', '43px', '45px', '44px', '43px', '48px', '37px']);
+  });
+
+  it('offsets vanishing or appearing under a stable element swap plain text ↔ cells', async () => {
+    const { root, page, rerender } = mount(0);
+    const block = page.blocks[0];
+    const el = lineEls(root)[1];
+    expect(el.querySelectorAll('.ocr-char')).toHaveLength(7);
+
+    const stripped: Block = { ...block };
+    delete stripped.char_offsets;
+    await rerender({ block: stripped });
+    await tick();
+    expect(lineEls(root)[1]).toBe(el);
+    expect(el.querySelectorAll('.ocr-char')).toHaveLength(0);
+    expect(el.textContent).toBe('継続的な活動が');
+    // plain lines show the RAW text, as they always have
+    expect(lineEls(root)[2].textContent).toBe(block.lines[2]);
+
+    await rerender({ block });
+    await tick();
+    expect(el.querySelectorAll('.ocr-char')).toHaveLength(7);
+  });
+
+  it('while editing, a model change that leaves a line’s text alone never rewrites that line (caret safety)', async () => {
+    const { root, page, rerender } = mount(0);
+    const block = page.blocks[0];
+    await fireEvent.dblClick(root);
+    await tick();
+    const editable = root.querySelectorAll<HTMLElement>('[contenteditable]');
+    const textNode = editable[0].firstChild;
+    expect(textNode!.nodeType).toBe(Node.TEXT_NODE);
+
+    await rerender({
+      block: {
+        ...block,
+        lines: [block.lines[0], 'かきく', block.lines[2]],
+        char_offsets: undefined
+      }
+    });
+    await tick();
+    expect(editable[0].firstChild).toBe(textNode);
+    expect(editable[1].textContent).toBe('かきく');
+    expect(root.querySelectorAll('.ocr-char')).toHaveLength(0);
+  });
+
+  it('a press that lands on a cell still belongs to the line: click selects it, drag moves its quad', async () => {
+    const page = fixturePage();
+    const session = new EditSession({
+      volumeUuid: 'v1',
+      getPage: () => page,
+      persist: async () => {},
+      debounceMs: 100000
+    });
+    session.select(0, 0);
+    const moveLine = vi.spyOn(session, 'moveLine').mockImplementation(() => {});
+    const { container } = render(EditableBlock, {
+      props: {
+        block: page.blocks[0],
+        index: 0,
+        pageIndex: 0,
+        selected: true,
+        session,
+        scale: () => 1
+      }
+    });
+    const root = container.querySelector<HTMLElement>('.editBlock')!;
+    const line = lineEls(root)[1];
+    line.setPointerCapture = vi.fn();
+    line.releasePointerCapture = vi.fn();
+    const cell = line.querySelectorAll<HTMLElement>('.ocr-char')[3];
+
+    await pointer(cell, 'pointerdown', { id: 5, x: 10, y: 10 });
+    expect(line.setPointerCapture).toHaveBeenCalledWith(5);
+    await pointer(cell, 'pointerup', { id: 5, x: 10, y: 10 });
+    expect(session.selectedLine).toEqual({ pageIndex: 0, blockIndex: 0, lineIndex: 1 });
+
+    const again = lineEls(root)[1].querySelectorAll<HTMLElement>('.ocr-char')[3];
+    await pointer(again, 'pointerdown', { id: 6, x: 10, y: 10 });
+    await pointer(again, 'pointermove', { id: 6, x: 40, y: 25 });
+    await pointer(again, 'pointerup', { id: 6, x: 40, y: 25 });
+    // The move bubbles line → block and both forward it (as for a plain
+    // line); the op is absolute from the drag start, so that is idempotent.
+    expect(moveLine).toHaveBeenCalled();
+    for (const call of moveLine.mock.calls) expect(call.slice(0, 5)).toEqual([0, 0, 1, 30, 15]);
+  });
+});
