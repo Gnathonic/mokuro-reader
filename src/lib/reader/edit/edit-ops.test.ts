@@ -191,6 +191,49 @@ describe('mergeBlocks', () => {
     expect(out.blocks[0].lines_coords).toHaveLength(3);
     expect(out.blocks[0].char_offsets).toBeUndefined();
   });
+  describe('sources that read along different axes', () => {
+    // Offsets are distances along the axis the SOURCE's `vertical` flag picks
+    // on its quad. The merged block reads every line by ONE flag, so a source
+    // that disagrees with it would have its offsets read along the other edge
+    // of the same quad.
+    function mixed(rowOffsets?: (number[] | null)[]): Page {
+      const p = page();
+      // short enough to pass validation on EITHER axis of the 20×100 quad, so
+      // nothing downstream would catch it: 18 <= 1.15 * 20
+      p.blocks[0].char_offsets = [[0, 8, 18], null];
+      p.blocks.push({
+        box: [10, 200, 190, 260], // larger than block 0 → the merge is horizontal
+        vertical: false,
+        font_size: 60,
+        lines: ['かきく'],
+        lines_coords: [quad(10, 200, 190, 260)],
+        ...(rowOffsets ? { char_offsets: rowOffsets } : {})
+      });
+      return p;
+    }
+
+    it("nulls a source's entries when its axis is not the merged block's, keeping the rest", () => {
+      const p = mixed([[0, 60, 120, 180]]);
+      const { page: out } = mergeBlocks(p, [0, 2]);
+      const merged = out.blocks[0];
+      expect(merged.vertical).toBe(false);
+      // horizontal reading order: top to bottom → block 0's two lines first
+      expect(merged.lines).toEqual(['あい', 'うえ', 'かきく']);
+      expect(merged.lines_coords).toHaveLength(3);
+      expect(merged.char_offsets).toEqual([null, null, [0, 60, 120, 180]]);
+      // the surviving entry is the source's own array
+      expect(merged.char_offsets![2]).toBe(p.blocks[2].char_offsets![0]);
+      assertParallelCharOffsets(out);
+    });
+
+    it('leaves the key absent when only cross-axis sources had offsets', () => {
+      const { page: out } = mergeBlocks(mixed(), [0, 2]);
+      expect(out.blocks[0].vertical).toBe(false);
+      expect(out.blocks[0].lines_coords).toHaveLength(3);
+      expect(out.blocks[0].char_offsets).toBeUndefined();
+    });
+  });
+
   it('drops quads if any source lacks them', () => {
     const { page: out } = mergeBlocks(page(), [0, 1]);
     expect(out.blocks[0].lines_coords).toBeUndefined();

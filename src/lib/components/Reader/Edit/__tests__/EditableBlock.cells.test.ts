@@ -16,9 +16,11 @@ import { lineCells, processLine } from '$lib/reader/char-offsets-layout';
 import {
   fittedLineFontSize,
   getDefaultMeasurer,
+  layoutLines,
   quadExtents
 } from '$lib/reader/line-coords-layout';
 import fixture from '$lib/reader/__fixtures__/char-offsets-page.json';
+import editableBlockSource from '../EditableBlock.svelte?raw';
 
 // The fixture is a real page (see char-offsets-layout.test.ts): block 0 has a
 // zero-width と (line 0) and a ．．． run (line 2), block 1 has a null line
@@ -126,18 +128,96 @@ describe('EditableBlock — char_offsets cells', () => {
     expect(lines[2].style.getPropertyValue('padding-inline-start')).toBe('0px');
   });
 
+  // The viewer's cell, rule for rule (TextBoxes.test.ts says why): flex
+  // centring because `text-align: center` start-aligns a glyph wider than its
+  // cell, a display value a text scanner still reads as inline, and a space
+  // kept out of the flex cell so it survives selection.
+  it('centres glyphs like the viewer, and keeps a space in a cell that renders it', () => {
+    const rules = [
+      ...editableBlockSource.matchAll(/([^{}]*\.ocr-(?:char|space)\)[^{}]*)\{([^}]*)\}/g)
+    ];
+    const declared = (body: string, property: string) =>
+      new RegExp(`(?:^|;|\\s)${property}\\s*:\\s*([^;]+);`).exec(body)?.[1].trim();
+    const rule = (suffix: string) =>
+      rules.find(([, selector]) => selector.trim().endsWith(suffix))![2];
+    expect(declared(rule(':global(.ocr-char)'), 'display')).toBe('inline-flex');
+    expect(declared(rule(':global(.ocr-char)'), 'justify-content')).toBe('center');
+    expect(declared(rule(':global(.ocr-space)'), 'display')).toBe('inline-block');
+    expect(declared(rule(':global(.ocr-space)'), 'white-space')).toBe('pre');
+
+    const page = fixturePage();
+    page.blocks[3] = {
+      box: [0, 0, 300, 50],
+      vertical: false,
+      font_size: 50,
+      lines: ['NO WAY'],
+      lines_coords: [
+        [
+          [0, 0],
+          [300, 0],
+          [300, 50],
+          [0, 50]
+        ]
+      ],
+      char_offsets: [[0, 50, 120, 120, 190, 245, 300]]
+    } as Block;
+    const [line] = lineEls(mount(3, page).root);
+    expect(line.textContent).toBe('NO WAY');
+    expect(
+      [...line.querySelectorAll('.ocr-char')].map((c) => c.classList.contains('ocr-space'))
+    ).toEqual([false, false, true, false, false, false]);
+  });
+
   it("a celled line takes the viewer's size: fitted on the PROCESSED text, capped by the quad's thickness", () => {
     const { root, page } = mount(0);
     const block = page.blocks[0];
     const measure = getDefaultMeasurer();
     const lines = lineEls(root);
+    // The oracle is the viewer itself (nothing in this block gets clipped by
+    // its neighbours, so these are the sizes `layoutLines` fitted).
+    const viewer = layoutLines(block, block.lines.map(processLine), measure)!;
     for (let i = 0; i < lines.length; i++) {
-      const size = fittedLineFontSize(block.lines_coords![i], processLine(block.lines[i]), measure);
-      expect(lines[i].style.fontSize).toBe(`${Math.round(size)}px`);
+      expect(viewer[i].cells).toBeDefined();
+      expect(lines[i].style.fontSize).toBe(`${Math.round(viewer[i].fontSize)}px`);
     }
     // the … line is two characters shorter than its raw text, so it fits larger
     const rawSize = fittedLineFontSize(block.lines_coords![2], block.lines[2], measure);
     expect(parseFloat(lines[2].style.fontSize)).toBeGreaterThan(rawSize);
+  });
+
+  it("a celled line shorter than its quad is fitted to its CELLS' extent, like the viewer — not to the quad's", () => {
+    // Real data: the placed extent runs down to 83% of the quad's length. The
+    // glyphs are drawn in the cells, so the cells are what they have to fit.
+    const page = fixturePage();
+    page.blocks[3] = {
+      box: [0, 0, 300, 60],
+      vertical: false,
+      font_size: 60,
+      lines: ['あいうえおか'],
+      lines_coords: [
+        [
+          [0, 0],
+          [300, 0],
+          [300, 60],
+          [0, 60]
+        ]
+      ],
+      char_offsets: [[10, 50, 90, 130, 170, 210, 260]]
+    } as Block;
+    const block = page.blocks[3];
+    const measure = getDefaultMeasurer();
+    const [viewer] = layoutLines(block, block.lines, measure)!;
+    expect(viewer.cells).toHaveLength(6);
+    const quadFitted = Math.round(
+      fittedLineFontSize(block.lines_coords![0], block.lines[0], measure)
+    );
+    // the case under test: the two fits really differ, and neither is the cap
+    expect(Math.round(viewer.fontSize)).toBeLessThan(quadFitted);
+    expect(quadFitted).toBeLessThan(60);
+
+    const [line] = lineEls(mount(3, page).root);
+    expect(cellSizes(line)).toHaveLength(6);
+    expect(line.style.fontSize).toBe(`${Math.round(viewer.fontSize)}px`);
   });
 
   it('a null line and a block without char_offsets render as plain text, exactly as before', () => {
@@ -164,6 +244,72 @@ describe('EditableBlock — char_offsets cells', () => {
         )
       )}px`
     );
+  });
+
+  describe('a block that mixes orientations', () => {
+    // Offsets run along the BLOCK's reading axis: the producer warps every line
+    // crop by the block's `vertical` flag and clamps to quad_extents(quad,
+    // block vertical) — never the line's own shape. The editor writes each line
+    // along its OWN orientation, so it may only draw cells on a line whose
+    // element runs along the axis the offsets were measured on.
+    const rect = (x0: number, y0: number, x1: number, y1: number) => [
+      [x0, y0],
+      [x1, y0],
+      [x1, y1],
+      [x0, y1]
+    ];
+    function mixedPage(sideways: number[]): Page {
+      return {
+        version: '0.2.1',
+        img_width: 800,
+        img_height: 800,
+        img_path: 'p.png',
+        blocks: [
+          {
+            box: [100, 100, 400, 340],
+            vertical: true,
+            font_size: 40,
+            lines: ['あいうえお', 'かきくけこ'],
+            // line 0 is a column like its block; line 1 is a 200×40 row
+            lines_coords: [rect(360, 100, 400, 300), rect(100, 300, 300, 340)],
+            char_offsets: [[0, 40, 80, 120, 160, 200], sideways]
+          }
+        ]
+      } as Page;
+    }
+    const viewerCells = (page: Page) =>
+      layoutLines(page.blocks[0], page.blocks[0].lines, getDefaultMeasurer())!.map(
+        (line) => line.cells?.map((c) => `${c.size}px`) ?? null
+      );
+
+    it("validates along the block axis like the viewer, not along the line's own", () => {
+      // 200px of offsets fit the row's own length (200) but not the 40px it
+      // has along the block's vertical axis: no placement, in either renderer
+      const page = mixedPage([0, 40, 80, 120, 160, 200]);
+      const viewer = viewerCells(page);
+      expect(viewer[0]).toHaveLength(5);
+      expect(viewer[1]).toBeNull();
+
+      const lines = lineEls(mount(0, page).root);
+      expect(cellSizes(lines[0])).toEqual(viewer[0]);
+      expect(cellSizes(lines[1])).toEqual([]);
+      expect(lines[1].textContent).toBe('かきくけこ');
+    });
+
+    it('never draws cells across the axis they were measured on', () => {
+      // valid along the block axis (40px), so the viewer — which writes the
+      // whole block vertically — places it. The editor writes this line as a
+      // row: 8px cells there would be measurements of the wrong axis.
+      const page = mixedPage([0, 8, 16, 24, 32, 40]);
+      expect(viewerCells(page)[1]).toEqual(['8px', '8px', '8px', '8px', '8px']);
+
+      const lines = lineEls(mount(0, page).root);
+      expect(lines[1].style.writingMode).toBe('horizontal-tb');
+      expect(cellSizes(lines[1])).toEqual([]);
+      expect(lines[1].textContent).toBe('かきくけこ');
+      // the column beside it keeps its cells
+      expect(cellSizes(lines[0])).toHaveLength(5);
+    });
   });
 
   it('malformed offsets degrade that LINE to plain text, not the block', () => {

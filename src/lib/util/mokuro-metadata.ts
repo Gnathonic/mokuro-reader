@@ -1,4 +1,5 @@
 import type { VolumeMetadata } from '$lib/types';
+import { pageHasPlacement } from '$lib/reader/char-offsets';
 
 /**
  * The .mokuro JSON the app writes (sidecars, CBZ-embedded, exports).
@@ -24,21 +25,15 @@ export interface BuildMokuroMetadataOptions {
   volumeTitle?: string;
 }
 
-/** A block carrying at least one placed (non-null) `char_offsets` entry. */
-function hasPlacement(page: unknown): boolean {
-  const blocks = (page as { blocks?: unknown })?.blocks;
-  if (!Array.isArray(blocks)) return false;
-  return blocks.some((block) => {
-    const offsets = (block as { char_offsets?: unknown })?.char_offsets;
-    return Array.isArray(offsets) && offsets.some((entry) => entry != null);
-  });
-}
-
-/** The first page-level `char_offsets_method` found among the volume's pages. */
+/**
+ * The method of the first PLACED page that names one. A page without placement
+ * is skipped even when it carries the key: whatever it says describes text that
+ * is not there, and must not label the volume ahead of a page that placed.
+ */
 function firstCharOffsetsMethod(pages: unknown[]): string | undefined {
   for (const page of pages) {
     const method = (page as { char_offsets_method?: unknown })?.char_offsets_method;
-    if (typeof method === 'string') return method;
+    if (typeof method === 'string' && pageHasPlacement(page)) return method;
   }
   return undefined;
 }
@@ -61,10 +56,8 @@ export function buildMokuroMetadata(
   // Only emit the top-level method when some block actually has placement —
   // a stray page-level key with nothing placed anywhere shouldn't claim the
   // whole volume was processed by that method.
-  if (pages.some(hasPlacement)) {
-    const method = firstCharOffsetsMethod(pages);
-    if (method != null) meta.char_offsets_method = method;
-  }
+  const method = firstCharOffsetsMethod(pages);
+  if (method != null) meta.char_offsets_method = method;
   if (volume.spine_width != null) meta.spine_width = volume.spine_width;
   return meta;
 }

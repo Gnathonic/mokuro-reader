@@ -79,6 +79,20 @@ describe('buildMokuroMetadata', () => {
     expect(meta.char_offsets_method).toBe('attn-cells');
   });
 
+  it('reads the method from a page that placed something, never from a stale key ahead of it', () => {
+    // page 1 inherited 'attn-cells' from the page it was derived from and
+    // places nothing; page 2 is the one whose cells the label describes
+    const mixedPages = [
+      { img_path: '1.jpg', char_offsets_method: 'attn-cells', blocks: [] },
+      {
+        img_path: '2.jpg',
+        char_offsets_method: 'gcv-symbols',
+        blocks: [{ lines: ['あ'], char_offsets: [[0, 10]] }]
+      }
+    ];
+    expect(buildMokuroMetadata(volume, mixedPages).char_offsets_method).toBe('gcv-symbols');
+  });
+
   it('omits char_offsets_method when a page carries the key but no block has placement', () => {
     const unplacedPages = [
       { img_path: '1.jpg', char_offsets_method: 'attn-cells', blocks: [{ lines: ['あ'] }] }

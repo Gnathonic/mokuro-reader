@@ -27,6 +27,7 @@ import {
 } from '$lib/util/series-extraction';
 import { generateUUID } from '$lib/util/uuid';
 import { naturalSort } from '$lib/util/natural-sort';
+import { stampCharOffsetsMethod } from '$lib/reader/char-offsets';
 
 // ============================================
 // TYPES
@@ -422,18 +423,6 @@ function generatePlaceholderImage(filename: string, width = 800, height = 1200):
 // ============================================
 
 /**
- * Whether a page has at least one block with a placed (non-null) `char_offsets`
- * entry — the gate for stamping a file-level `char_offsets_method` onto it.
- */
-function pageHasPlacement(page: MokuroPage): boolean {
-  if (!Array.isArray(page.blocks)) return false;
-  return page.blocks.some((block) => {
-    const offsets = (block as { char_offsets?: unknown }).char_offsets;
-    return Array.isArray(offsets) && offsets.some((entry) => entry != null);
-  });
-}
-
-/**
  * Count characters in a mokuro block
  */
 function countBlockChars(block: MokuroBlock): number {
@@ -521,13 +510,12 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     const cumulativeCounts = calculateCumulativeChars(mokuroData.pages);
 
     // Create processed pages (preserve all mokuro page fields)
-    pages = mokuroData.pages.map((page, index) => {
-      // Own page-level value wins; otherwise the file-level value is stamped
-      // on, but only onto pages that actually carry placement — a page with
-      // no placed block shouldn't claim a method it never used.
-      const char_offsets_method =
-        page.char_offsets_method ??
-        (pageHasPlacement(page) ? mokuroData!.charOffsetsMethod : undefined);
+    // Own page-level value wins; otherwise the file-level value is stamped
+    // on, but only onto pages that actually carry placement — a page with
+    // no placed block shouldn't claim a method it never used.
+    const stamped = stampCharOffsetsMethod(mokuroData.pages, mokuroData.charOffsetsMethod);
+    pages = stamped.map((page, index) => {
+      const { char_offsets_method } = page;
       return {
         version: page.version,
         img_width: page.img_width,

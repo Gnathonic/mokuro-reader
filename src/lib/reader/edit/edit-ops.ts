@@ -144,7 +144,8 @@ export function removeBlocks(page: Page, indices: number[]): Page {
 /**
  * One block at the union box; lines concatenated in reading order (vertical:
  * right-to-left by xmax, horizontal: top-to-bottom by ymin); writing mode and
- * font size from the largest source; quads kept only if every source has them.
+ * font size from the largest source; quads kept only if every source has them,
+ * and `char_offsets` only from the sources that share the merged writing mode.
  * The merged block takes the lowest source index.
  */
 export function mergeBlocks(page: Page, indices: number[]): { page: Page; index: number } {
@@ -165,11 +166,13 @@ export function mergeBlocks(page: Page, indices: number[]): { page: Page; index:
     merged.lines_coords = order.flatMap((i) => sources[i].lines_coords!);
     // A source without offsets still has a quad, so it contributes nulls
     // rather than dropping the key for the whole merge — same line-not-block
-    // rule as everywhere else, one level up.
-    if (sources.some((b) => parallelOffsets(b) !== null)) {
-      merged.char_offsets = order.flatMap(
-        (i) => parallelOffsets(sources[i]) ?? sources[i].lines.map(() => null)
-      );
+    // rule as everywhere else, one level up. So does a source that reads
+    // along the OTHER axis: its offsets are distances along the edge its own
+    // `vertical` flag picks, and the merged block would read them along the
+    // quad's other edge — where a short line still passes validation.
+    const carried = sources.map((b) => (b.vertical === vertical ? parallelOffsets(b) : null));
+    if (carried.some((offsets) => offsets !== null)) {
+      merged.char_offsets = order.flatMap((i) => carried[i] ?? sources[i].lines.map(() => null));
     }
   }
   const blocks = page.blocks.filter((_, i) => !sorted.includes(i));

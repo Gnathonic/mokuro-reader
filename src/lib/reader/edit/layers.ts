@@ -17,6 +17,7 @@ import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { noteOcrEdited } from '$lib/util/sync/sidecar-backfill';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
 import type { Page, VolumeOcrLayer, VolumeOcrLayerKind } from '$lib/types';
+import { dropUnplacedMethod } from '../char-offsets';
 import { ORIGINAL_LAYER_ID } from './edit-persist';
 
 export const LAYER_KIND_LABEL: Record<VolumeOcrLayerKind, string> = {
@@ -107,6 +108,15 @@ export interface CreateLayerOptions {
   sourcePages?: Page[];
 }
 
+/**
+ * A source page with its image facts and no text. The spread would also carry
+ * the source's `char_offsets_method`, a claim about cells a blank page does not
+ * have — and the first thing the layer's export would read its label from.
+ */
+function blankPage(source: Page): Page {
+  return dropUnplacedMethod({ ...source, blocks: [] });
+}
+
 export async function createLayer(
   volumeUuid: string,
   opts: CreateLayerOptions
@@ -115,8 +125,7 @@ export async function createLayer(
   return db.transaction('rw', db.volume_ocr_layers, async () => {
     const taken = await takenIds(volumeUuid);
     const source = opts.pages === 'empty' ? (opts.sourcePages ?? []) : opts.pages;
-    const pages: Page[] =
-      opts.pages === 'empty' ? source.map((p) => ({ ...p, blocks: [] })) : structuredClone(source);
+    const pages: Page[] = opts.pages === 'empty' ? source.map(blankPage) : structuredClone(source);
     const layer: VolumeOcrLayer = {
       volume_uuid: volumeUuid,
       layer_id: slugifyLayerId(opts.name, taken),
@@ -307,12 +316,10 @@ export async function upsertLayerPages(
     const volume = await db.volumes.get(volumeUuid);
     if (!volume || !isVolumeInstalled(volume)) return null;
     const existing = await db.volume_ocr_layers.get([volumeUuid, layerId]);
-    const base: Page[] = existing
-      ? existing.pages.slice()
-      : opts.sourcePages.map((p) => ({ ...p, blocks: [] }));
+    const base: Page[] = existing ? existing.pages.slice() : opts.sourcePages.map(blankPage);
     // A run writes each page once, so until then the stored page is whatever
     // the run started from — or the blank a layer it created begins with.
-    const blank = (i: number): Page => ({ ...opts.sourcePages[i], blocks: [] });
+    const blank = (i: number): Page => blankPage(opts.sourcePages[i]);
     for (const [i, page] of opts.pages) {
       if (opts.baseline !== undefined) {
         const atStart = opts.baseline?.[i] ?? blank(i);

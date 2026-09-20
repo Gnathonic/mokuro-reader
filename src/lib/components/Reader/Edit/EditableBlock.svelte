@@ -43,10 +43,11 @@
    * A block without quads renders its lines in flow at a size that fits them
    * all; the toolbar's "Place lines" gives it quads.
    *
-   * A positioned line whose `char_offsets` entry is usable shows the same
-   * per-character cells as the viewer (`lineCells`), so what is being corrected
-   * sits where the reader will paint it — until the block's editor opens: from
-   * then on EVERY line of the block is plain RAW text. Cell spans never live
+   * A positioned line whose `char_offsets` entry is usable (and which runs the
+   * way its block does — see `placed`) shows the same per-character cells as
+   * the viewer (`lineCells`), so what is being corrected sits where the reader
+   * will paint it — until the block's editor opens: from then on EVERY line of
+   * the block is plain RAW text. Cell spans never live
    * inside a contenteditable (an IME composes into a text node, and a caret has
    * no sane home between inline-blocks), and the cells show the PROCESSED text
    * (`…`) while the model stores the raw one (`...`).
@@ -55,8 +56,13 @@
   import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
   import { lineGeometry, rectQuad, type LineGeometry } from '$lib/reader/edit/block-geometry';
   import { parallelOffsets } from '$lib/reader/char-offsets';
-  import { lineCells, processLine, type LineCells } from '$lib/reader/char-offsets-layout';
-  import { quadExtents } from '$lib/reader/line-coords-layout';
+  import {
+    isBlankCell,
+    lineCells,
+    processLine,
+    type LineCells
+  } from '$lib/reader/char-offsets-layout';
+  import { getDefaultMeasurer, quadExtents } from '$lib/reader/line-coords-layout';
   import { settings } from '$lib/settings';
   import { onDestroy, tick } from 'svelte';
 
@@ -102,9 +108,16 @@
   /**
    * Per-line cells (null = that line renders as plain text, as it always has).
    * Same call as the viewer: `original` renders the file as-is, every other
-   * font mode repairs zero-width cells on real characters. The main extent is
-   * taken along the LINE's own orientation, the axis its element is written on.
-   * Nothing is celled while the editor is open.
+   * font mode repairs zero-width cells on real characters. Nothing is celled
+   * while the editor is open.
+   *
+   * Offsets run along the BLOCK's reading axis — the producer warps every line
+   * crop by the block's `vertical` flag and clamps to the quad's extent along
+   * it, whatever the line's own shape — so that is the extent a line validates
+   * against, here as in `layoutLines`. This component writes each line along
+   * its OWN orientation, though, so a line lying across its block (a row in a
+   * vertical block) stays plain text: its cells measure the axis its element
+   * is not written on.
    */
   let repairCells = $derived($settings.fontSize !== 'original');
   let placed = $derived.by<(PlacedLine | null)[] | null>(() => {
@@ -112,18 +125,22 @@
     const offsets = parallelOffsets(block);
     const quads = block.lines_coords;
     if (!offsets || !quads) return null;
+    const measure = getDefaultMeasurer();
     return geoms.map((g, i) => {
-      const main = quadExtents(quads[i], g.vertical)?.main;
-      const cells = main
-        ? lineCells(block.lines[i], offsets[i], main, { repair: repairCells })
+      if (g.vertical !== block.vertical) return null;
+      const extents = quadExtents(quads[i], block.vertical);
+      const cells = extents?.main
+        ? lineCells(block.lines[i], offsets[i], extents.main, { repair: repairCells })
         : null;
-      if (!cells) return null;
-      // The viewer sizes a celled line min(cross, fitted) on the text it
-      // renders — the processed one, which `...` → `…` makes shorter.
-      const shown = processLine(block.lines[i]);
-      const fontSize =
-        shown === block.lines[i] ? g.fontSize : lineGeometry(quads[i], shown).fontSize;
-      return { cells, fontSize };
+      if (!extents || !cells) return null;
+      // The viewer sizes a celled line min(cross, fitted), and fits it to the
+      // CELLS' extent, not the quad's (real offsets stop as short as 83% of
+      // the quad): the glyphs are drawn in the cells, so a quad-fitted size
+      // would paint them larger here than the reader will. Measured on the
+      // text it renders — the processed one, which `...` → `…` makes shorter.
+      const advanceEm = measure(processLine(block.lines[i]));
+      const fitted = advanceEm > 0 ? cells.extent / advanceEm : extents.cross;
+      return { cells, fontSize: Math.max(1, Math.round(Math.min(extents.cross, fitted))) };
     });
   });
 
@@ -543,7 +560,7 @@
       el.replaceChildren(
         ...cells.cells.map((cell) => {
           const span = document.createElement('span');
-          span.className = 'ocr-char';
+          span.className = isBlankCell(cell.text) ? 'ocr-char ocr-space' : 'ocr-char';
           span.style.inlineSize = `${cell.size}px`;
           span.textContent = cell.text;
           return span;
@@ -772,15 +789,23 @@
   }
   /* The viewer's cell (TextBoxes.svelte): in flow — never absolute, issue #254
      per glyph — sized to the character's advance, glyph centred and free to
-     overflow a tight cell. :global because the spans are built by `initText`. */
+     overflow a tight cell. Centred by flex, because `text-align: center`
+     start-aligns a glyph wider than its cell. :global because the spans are
+     built by `initText`. */
   .line :global(.ocr-char) {
-    display: inline-block;
-    text-align: center;
+    display: inline-flex;
+    justify-content: center;
     overflow: visible;
     line-height: 1;
     letter-spacing: 0;
     /* A press on a glyph is a press on its line, as it is for plain text. */
     pointer-events: none;
+  }
+  /* A flex cell does not render a lone space at all; a space keeps a plain
+     inline-block, `pre` so it is not collapsed away there either. */
+  .line :global(.ocr-space) {
+    display: inline-block;
+    white-space: pre;
   }
   .line.lineSelected {
     outline: 2px solid rgb(234, 88, 12);

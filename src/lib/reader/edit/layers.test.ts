@@ -221,6 +221,20 @@ describe('upsertLayerPages', () => {
     expect(again.updated_at >= layer.updated_at).toBe(true);
   });
 
+  it('blank pages keep the image facts but never the char_offsets_method of their source', async () => {
+    // A blank page places nothing; a method inherited from the source would
+    // label the layer's export with a producer that never touched it.
+    const { upsertLayerPages } = await import('./layers');
+    const sourcePages = PAGES.map((p) => ({ ...p, char_offsets_method: 'attn-cells' }));
+    const layer = (await upsertLayerPages('v1', 'gcv', {
+      ...opts(new Map([[1, pg('OCR結果')]])),
+      sourcePages
+    }))!;
+    expect(layer.pages[0]).toEqual({ ...PAGES[0], blocks: [] });
+    const empty = await createLayer('v1', { name: 'English', pages: 'empty', sourcePages });
+    expect(empty.pages.map((p) => 'char_offsets_method' in p)).toEqual([false, false]);
+  });
+
   it('refuses the original layer', async () => {
     const { upsertLayerPages } = await import('./layers');
     await expect(upsertLayerPages('v1', 'original', opts(new Map()))).rejects.toThrow(/read-only/);

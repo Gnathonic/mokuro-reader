@@ -354,6 +354,67 @@ describe('TextBoxes with char_offsets', () => {
     for (const [, body] of rules) expect(body).not.toMatch(/position\s*:/);
   });
 
+  // Real layout is the e2e's job (e2e/char-offsets.spec.ts measures the glyph
+  // against its cell); what can be held here is the rule that makes it true.
+  // `text-align: center` START-aligns content wider than its inline-block, so
+  // every glyph in a tight or zero-width cell sat half its overflow late.
+  // Flex centring overflows both sides equally. The display value has to stay
+  // one a DOM text scanner reads as inline: Yomitan cuts it at the first '-',
+  // so inline-flex and inline-block pass, flex / block / grid are a line break.
+  const cellRules = () =>
+    [...textBoxesSource.matchAll(/([^{}]*\.ocr-char[^{}]*)\{([^}]*)\}/g)].map(
+      ([, selector, body]) => ({ selector: selector.replace(/\/\*[\s\S]*?\*\//g, '').trim(), body })
+    );
+  const declared = (body: string, property: string) =>
+    new RegExp(`(?:^|;|\\s)${property}\\s*:\\s*([^;]+);`).exec(body)?.[1].trim();
+
+  it('centres a glyph on its cell even when the glyph is the wider one', () => {
+    const cell = cellRules().find(({ selector }) => selector.endsWith('.ocr-char'))!;
+    expect(declared(cell.body, 'display')).toBe('inline-flex');
+    expect(declared(cell.body, 'justify-content')).toBe('center');
+    for (const { body } of cellRules()) {
+      const display = declared(body, 'display');
+      if (display) expect(['inline-flex', 'inline-block']).toContain(display);
+    }
+  });
+
+  // A flex container does not render a text run that is only white space, so
+  // a space in a flex cell drops out of selection and copy ("NO WAY" →
+  // "NOWAY"). A space has nothing to centre: it keeps the inline-block cell,
+  // with `pre` so it is not collapsed away there either.
+  it('a space keeps a cell that renders it', () => {
+    const block = {
+      box: [0, 0, 300, 50],
+      vertical: false,
+      font_size: 50,
+      lines: ['NO WAY'],
+      lines_coords: [
+        [
+          [0, 0],
+          [300, 0],
+          [300, 50],
+          [0, 50]
+        ]
+      ],
+      char_offsets: [[0, 50, 120, 120, 190, 245, 300]]
+    };
+    const [line] = lineSpans(renderBlock(block));
+    expect(line.textContent).toBe('NO WAY');
+    const cells = charSpans(line);
+    expect(cells.map((cell) => cell.classList.contains('ocr-space'))).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]);
+    expect(inlineSize(cells[2])).toBe('0px');
+    const space = cellRules().find(({ selector }) => selector.endsWith('.ocr-space'))!;
+    expect(declared(space.body, 'display')).toBe('inline-block');
+    expect(declared(space.body, 'white-space')).toBe('pre');
+  });
+
   it('carries the start shift on the line target, not on the cells', () => {
     const block = {
       box: [100, 0, 150, 400],

@@ -27,13 +27,21 @@ export type LineOffsets = number[] | null;
 export const UNPLACED_MAX = 0.4;
 
 /**
- * A real character whose cell is narrower than this share of the line's median
- * non-zero cell is crushed: the file placed it, in 1–3px, and drawn there it is
+ * A real character whose cell is narrower than this share of the line's
+ * typical cell is crushed: the file placed it, in 1–3px, and drawn there it is
  * a smear on its neighbour. Whole lines come out that way — most of their
  * glyphs squeezed between two wide cells — while passing the zero-width rule
  * (351 lines of paddle-manga output, 26 of mokuro-fork). A crushed cell counts
  * as unplaced, exactly like a zero one. The half cells of 、 and 。 sit near
  * 0.5 and small kana above that, so a quarter leaves real print alone.
+ *
+ * "Typical" is the LARGER of the median non-zero cell and the mean cell
+ * (extent / real characters). The median alone has a blind spot: once crushed
+ * cells are the majority it is one of them (widths 180 1 1 0 0 1 5 4 18 0 7 4
+ * 6 81 → median 5, bar 1.25px) and nothing is flagged. The mean survives that,
+ * because the pixels the crushed glyphs lost are still in the extent; the
+ * median covers the opposite case, a line of even print where one glyph sits
+ * in a sliver. Taking the larger only ever raises the bar.
  */
 export const CRUSHED_RATIO = 0.25;
 
@@ -130,6 +138,61 @@ export function parallelOffsets(block: {
 }
 
 /**
+ * Does this block carry placement — at least one line with an offsets array,
+ * in a `char_offsets` parallel to its lines? THE predicate behind every
+ * `char_offsets_method` decision (import, layer import, OCR upgrade, engine
+ * runs, the .mokuro writer), so a page never claims a method it did not use.
+ * Entries are not validated against their text: this asks whether the producer
+ * placed something, not whether the reader will accept it.
+ */
+export function blockHasPlacement(block: unknown): boolean {
+  if (!block || typeof block !== 'object') return false;
+  const offsets = parallelOffsets(block as { lines: string[]; char_offsets?: unknown });
+  return offsets !== null && offsets.some(Array.isArray);
+}
+
+/** Whether any block of the page carries placement (`blockHasPlacement`). */
+export function pageHasPlacement(page: unknown): boolean {
+  const blocks = (page as { blocks?: unknown } | null | undefined)?.blocks;
+  return Array.isArray(blocks) && blocks.some(blockHasPlacement);
+}
+
+/**
+ * The import-side stamp rule, in one place. `char_offsets_method` lives on the
+ * page, but engine sidecars write it only at the file's top level: a page's own
+ * value wins, else the file-level value is stamped on — only onto pages that
+ * carry placement. Stamped pages are copies; everything else comes back by
+ * reference, and so does the array when there is nothing to stamp.
+ */
+export function stampCharOffsetsMethod<P extends object>(
+  pages: P[],
+  fileLevelMethod: unknown
+): P[] {
+  if (!Array.isArray(pages) || typeof fileLevelMethod !== 'string' || !fileLevelMethod) {
+    return pages;
+  }
+  return pages.map((page) =>
+    (page as { char_offsets_method?: unknown })?.char_offsets_method == null &&
+    pageHasPlacement(page)
+      ? { ...page, char_offsets_method: fileLevelMethod }
+      : page
+  );
+}
+
+/**
+ * The other direction: a page DERIVED from a placed one (`{ ...source, blocks }`
+ * — a translation, a blank layer page) inherits the source's method along with
+ * its image facts. When the blocks it ended up with place nothing, the method
+ * is a claim about text that is no longer there; this drops it. Same page back
+ * when there is nothing to drop.
+ */
+export function dropUnplacedMethod<P extends object>(page: P): P {
+  if (!page || !('char_offsets_method' in page) || pageHasPlacement(page)) return page;
+  const { char_offsets_method: _stale, ...rest } = page as P & { char_offsets_method?: unknown };
+  return rest as unknown as P;
+}
+
+/**
  * `count` integer widths filling `span`: equal shares, remainder to the last.
  */
 function evenWidths(span: number, count: number): number[] {
@@ -164,12 +227,14 @@ function median(values: number[]): number {
  * Returns the input array when nothing needed repair, and null when the line
  * cannot be repaired: every cell is zero, more than UNPLACED_MAX of its
  * non-whitespace characters were unplaced — zero-width, or crushed below
- * CRUSHED_RATIO of the line's median non-zero cell — or a run's neighbour has
+ * CRUSHED_RATIO of the line's typical cell — or a run's neighbour has
  * fewer pixels than it has sharers. Crushed cells only count toward that
  * decision; they are never widened, because unlike a zero cell there is no
- * merged neighbour to say where their pixels went. That last split would leave zero cells behind —
- * and, with the neighbour in front, zero the neighbour itself, a cell the file
- * HAD placed. Real lines that hit it (0.08%) are glyphs crushed between 1–2px
+ * merged neighbour to say where their pixels went. The crushed count is taken
+ * again on the repaired cells, since sharing a narrow donor makes slivers of
+ * the whole run. That last split (fewer pixels than sharers) would leave zero
+ * cells behind — and, with the neighbour in front, zero the neighbour itself,
+ * a cell the file HAD placed. Real lines that hit it (0.08%) are glyphs crushed between 1–2px
  * cells, where there is no placement worth keeping. So a non-null result never
  * has a zero cell on a real character and never takes a placed cell away.
  * `offsets` must already be valid for `chars`. Never mutates.
@@ -184,8 +249,13 @@ export function repairZeroCells(chars: string[], offsets: number[]): number[] | 
   const realCount = real.filter(Boolean).length;
   // The extent is non-zero, so there is a non-zero cell to take a median of.
   // Zero cells stay out of it: they would drag the bar down on exactly the
-  // lines that have the most missing.
-  const crushedBelow = CRUSHED_RATIO * median(widths.filter((width) => width > 0));
+  // lines that have the most missing. The mean is over REAL characters only,
+  // for the same reason: whitespace owns no pixels and would only dilute it.
+  const typical = Math.max(
+    median(widths.filter((width) => width > 0)),
+    (offsets[n] - offsets[0]) / Math.max(1, realCount)
+  );
+  const crushedBelow = CRUSHED_RATIO * typical;
   const zero = real.filter((isReal, k) => isReal && widths[k] === 0).length;
   const crushed = real.filter(
     (isReal, k) => isReal && widths[k] > 0 && widths[k] < crushedBelow
@@ -214,6 +284,13 @@ export function repairZeroCells(chars: string[], offsets: number[]): number[] | 
     // skip the run AND the cell that ended it (non-zero by construction)
     i = end;
   }
+
+  // The same bar, once more, on what the repair produced. A run whose donor was
+  // itself narrow splits into slivers (まるで巣の: 60 19 0 10 180 → 60 9 10 10
+  // 180): each count passed, and the result is the line the crushed rule exists
+  // to refuse. A repair must not manufacture it.
+  const slivers = real.filter((isReal, k) => isReal && widths[k] < crushedBelow).length;
+  if (slivers > UNPLACED_MAX * realCount) return null;
 
   const repaired = [offsets[0]];
   for (let k = 0; k < n; k++) repaired.push(repaired[k] + widths[k]);

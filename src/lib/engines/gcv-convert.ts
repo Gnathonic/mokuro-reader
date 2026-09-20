@@ -7,7 +7,12 @@
  * character sits along its line, which goes out as `char_offsets`.
  */
 import type { Block, Page } from '$lib/types';
-import { codePoints, scaleOffsets, validLineOffsets } from '$lib/reader/char-offsets';
+import {
+  codePoints,
+  pageHasPlacement,
+  scaleOffsets,
+  validLineOffsets
+} from '$lib/reader/char-offsets';
 import { quadExtents } from '$lib/reader/line-coords-layout';
 
 export interface GcvVertex {
@@ -308,6 +313,6 @@ export function gcvToPage(response: GcvAnnotateResponse, page: Page, scale = 1):
     img_path: page.img_path,
     blocks,
     // Judged on what was emitted (after scaling), never carried over from `page`.
-    ...(blocks.some((b) => b.char_offsets) ? { char_offsets_method: GCV_OFFSETS_METHOD } : {})
+    ...(pageHasPlacement({ blocks }) ? { char_offsets_method: GCV_OFFSETS_METHOD } : {})
   };
 }

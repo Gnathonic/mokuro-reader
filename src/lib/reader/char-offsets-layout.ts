@@ -42,6 +42,19 @@ export function processLine(raw: string): string {
 }
 
 /**
+ * A cell holding nothing but CSS document white space (space, tab, line feed).
+ * The renderers centre a glyph with a flex cell, and a flex container does not
+ * render a white-space-only text run at all — `white-space: pre` cannot save
+ * it — so the space would drop out of selection and copy ("NO WAY" → "NOWAY")
+ * and leave an empty box that aligns to nothing. Such a cell has no glyph to
+ * centre, so it renders as the plain inline-block it needs instead. The
+ * ideographic space is not document white space and always renders.
+ */
+export function isBlankCell(text: string): boolean {
+  return /^[ \t\n\r\f]+$/.test(text);
+}
+
+/**
  * Cells for one line, parallel to `processLine(raw)`, or null when the line has
  * no usable placement — that LINE then takes the fitted path; its block keeps
  * every other line's cells. Never throws.

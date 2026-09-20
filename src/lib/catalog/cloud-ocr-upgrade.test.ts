@@ -69,4 +69,31 @@ describe('cloud OCR upgrade', () => {
     const ocr = await (db as any).table('volume_ocr').get('vol-1');
     expect(ocr.pages).toHaveLength(1);
   });
+
+  it("stamps an engine sidecar's file-level char_offsets_method onto the pages that placed", async () => {
+    // Engine sidecars name the method only at the top level, and this path
+    // stores the parsed pages without processVolume's page mapping.
+    parseMokuroFile.mockResolvedValue({
+      version: '0.2.0',
+      seriesUuid: 'series-1',
+      charOffsetsMethod: 'cells',
+      pages: [
+        { blocks: [{ lines: ['あ'], char_offsets: [[0, 40]] }] },
+        { blocks: [{ lines: ['い'] }] },
+        { char_offsets_method: 'attn-cells', blocks: [{ lines: ['う'], char_offsets: [[0, 40]] }] }
+      ]
+    });
+    enqueueCloudOcrUpgrade(imageOnlyVolume, sidecar);
+
+    await vi.waitFor(async () => {
+      const ocr = await (db as any).table('volume_ocr').get('vol-1');
+      expect(ocr.pages).toHaveLength(3);
+    });
+    const ocr = await (db as any).table('volume_ocr').get('vol-1');
+    expect(ocr.pages[0].char_offsets_method).toBe('cells');
+    // nothing placed: no method claimed
+    expect('char_offsets_method' in ocr.pages[1]).toBe(false);
+    // the page's own value wins
+    expect(ocr.pages[2].char_offsets_method).toBe('attn-cells');
+  });
 });

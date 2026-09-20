@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { lineCells, processLine, type LineCells } from './char-offsets-layout';
+import { isBlankCell, lineCells, processLine, type LineCells } from './char-offsets-layout';
 import { codePoints } from './char-offsets';
 import fixture from './__fixtures__/char-offsets-page.json';
 
@@ -40,6 +40,22 @@ describe('processLine', () => {
     for (const line of ['', '.', '...', '.......', '．...．．', '...．．．...', 'a.b..c...d....']) {
       expect(processLine(line)).toBe(legacy(line));
     }
+  });
+});
+
+describe('isBlankCell', () => {
+  it('is true only for CSS document white space, the kind a flex container drops', () => {
+    expect(isBlankCell(' ')).toBe(true);
+    expect(isBlankCell('\t')).toBe(true);
+    expect(isBlankCell('\n')).toBe(true);
+  });
+
+  it('is false for the ideographic space, which always renders, and for real text', () => {
+    expect(isBlankCell('\u3000')).toBe(false);
+    expect(isBlankCell('\u00a0')).toBe(false);
+    expect(isBlankCell('あ')).toBe(false);
+    expect(isBlankCell('\u2026')).toBe(false);
+    expect(isBlankCell('')).toBe(false);
   });
 });
 

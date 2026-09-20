@@ -2,11 +2,15 @@ import { describe, it, expect } from 'vitest';
 import {
   CRUSHED_RATIO,
   UNPLACED_MAX,
+  blockHasPlacement,
   codePoints,
+  dropUnplacedMethod,
+  pageHasPlacement,
   parallelOffsets,
   reflowOffsets,
   repairZeroCells,
   scaleOffsets,
+  stampCharOffsetsMethod,
   validLineOffsets
 } from './char-offsets';
 
@@ -141,6 +145,80 @@ describe('parallelOffsets', () => {
     const block = { lines: ['あい', 'う'], char_offsets: [[0, 40, 80], 'junk'] };
     expect(parallelOffsets(block)).toEqual([[0, 40, 80], null]);
     expect(block.char_offsets[1]).toBe('junk'); // input untouched
+  });
+});
+
+describe('blockHasPlacement / pageHasPlacement', () => {
+  it('is true for a block with at least one placed line', () => {
+    expect(blockHasPlacement({ lines: ['あい', 'う'], char_offsets: [null, [0, 40]] })).toBe(true);
+    expect(
+      pageHasPlacement({ blocks: [{ lines: ['う'] }, { lines: ['あ'], char_offsets: [[0, 9]] }] })
+    ).toBe(true);
+  });
+
+  it('is false when every entry is null, the key is absent, or nothing is parallel', () => {
+    expect(blockHasPlacement({ lines: ['あ'], char_offsets: [null] })).toBe(false);
+    expect(blockHasPlacement({ lines: ['あ'] })).toBe(false);
+    // not parallel to lines: no line could ever render from it
+    expect(blockHasPlacement({ lines: ['あ', 'い'], char_offsets: [[0, 9]] })).toBe(false);
+    // a junk entry is no placement (parallelOffsets degrades it to null)
+    expect(blockHasPlacement({ lines: ['あ'], char_offsets: ['junk'] })).toBe(false);
+    expect(pageHasPlacement({ blocks: [] })).toBe(false);
+    expect(pageHasPlacement({ blocks: [{ lines: ['あ'], char_offsets: [null] }] })).toBe(false);
+  });
+
+  it('never throws on file data', () => {
+    for (const junk of [null, undefined, 3, 'page', {}, { blocks: 'no' }, { blocks: [null, 7] }]) {
+      expect(pageHasPlacement(junk)).toBe(false);
+      expect(blockHasPlacement(junk)).toBe(false);
+    }
+  });
+});
+
+describe('stampCharOffsetsMethod', () => {
+  const placed = { blocks: [{ lines: ['あ'], char_offsets: [[0, 9]] }] };
+  const bare = { blocks: [{ lines: ['あ'] }] };
+
+  it('stamps the file-level method onto pages that carry placement, and only those', () => {
+    const pages = [placed, bare];
+    const stamped = stampCharOffsetsMethod(pages, 'cells');
+    expect(stamped[0]).toEqual({ ...placed, char_offsets_method: 'cells' });
+    // a page that placed nothing must not claim a method it never used
+    expect(stamped[1]).toBe(bare);
+    expect('char_offsets_method' in placed).toBe(false); // never mutates
+  });
+
+  it("lets a page's own value win", () => {
+    const own = { ...placed, char_offsets_method: 'attn-cells' };
+    expect(stampCharOffsetsMethod([own], 'cells')[0]).toBe(own);
+    // even on a page with no placement: the page said so itself
+    const ownBare = { ...bare, char_offsets_method: 'attn-cells' };
+    expect(stampCharOffsetsMethod([ownBare], 'cells')[0]).toBe(ownBare);
+  });
+
+  it('changes nothing without a usable file-level method', () => {
+    const pages = [placed];
+    for (const method of [undefined, null, '', 7, {}]) {
+      expect(stampCharOffsetsMethod(pages, method)).toBe(pages);
+    }
+  });
+});
+
+describe('dropUnplacedMethod', () => {
+  it('drops the method from a page with no placement', () => {
+    const page = { img_path: '1.jpg', char_offsets_method: 'cells', blocks: [{ lines: ['Hi'] }] };
+    expect(dropUnplacedMethod(page)).toEqual({ img_path: '1.jpg', blocks: [{ lines: ['Hi'] }] });
+    expect(page.char_offsets_method).toBe('cells'); // never mutates
+  });
+
+  it('returns the same page when it has placement, or no method to drop', () => {
+    const placed = {
+      char_offsets_method: 'cells',
+      blocks: [{ lines: ['あ'], char_offsets: [[0, 9]] }]
+    };
+    expect(dropUnplacedMethod(placed)).toBe(placed);
+    const bare = { blocks: [] };
+    expect(dropUnplacedMethod(bare)).toBe(bare);
   });
 });
 
@@ -295,9 +373,10 @@ describe('repairZeroCells', () => {
     });
 
     it('is strict: a cell of exactly the ratio is placed', () => {
-      // median 40 → crushed below 10
-      expect(repairZeroCells([...'ABCD'], [0, 40, 80, 90, 90])).not.toBeNull();
-      expect(repairZeroCells([...'ABCD'], [0, 40, 80, 89, 89])).toBeNull();
+      // median 40 → crushed below 10. C is zero either way and shares D's
+      // 40px; A at 9px makes it two unplaced of four, at 10px only one.
+      expect(repairZeroCells([...'ABCD'], [0, 10, 50, 50, 90])).toEqual([0, 10, 50, 70, 90]);
+      expect(repairZeroCells([...'ABCD'], [0, 9, 49, 49, 89])).toBeNull();
     });
 
     it('measures against the NON-ZERO median, so zero cells never lower the bar', () => {
@@ -308,6 +387,67 @@ describe('repairZeroCells', () => {
       expect(
         repairZeroCells([...'ABCDEFGHIJ'], [0, 40, 40, 80, 80, 120, 120, 160, 162, 164, 166])
       ).toBeNull();
+    });
+
+    describe('when crushed cells are the majority', () => {
+      // The median of such a line IS a crushed cell, so a bar taken from it
+      // alone flags nothing. The mean cell (extent / real characters) cannot be
+      // dragged down that way: the pixels the crushed glyphs lost are still in
+      // the extent, inside the one or two cells that swallowed them.
+      const widthsOf = (offsets: number[]) => offsets.slice(1).map((v, k) => v - offsets[k]);
+      const fromWidths = (widths: number[]) =>
+        widths.reduce((acc, width) => [...acc, acc[acc.length - 1] + width], [0]);
+
+      it('gives up on real lines whose median cell is itself crushed', () => {
+        // Chained Soldier 01 (paddle-manga) p16 b6 l0: no zero cell at all,
+        // median 5.5 → the old bar was 1.4px and every glyph passed
+        const gate = fromWidths([116, 7, 3, 2, 4, 4, 4, 7, 3, 5, 7, 4, 8, 8, 6, 107]);
+        expect(widthsOf(gate)).toHaveLength(16);
+        expect(repairZeroCells(codePoints('日本各地に謎の門が突如として出現'), gate)).toBeNull();
+        // Chained Soldier 02 (mokuro-fork) p45 b5 l0
+        expect(repairZeroCells(codePoints('それでは、'), fromWidths([68, 5, 1, 1, 39]))).toBeNull();
+      });
+
+      it('never manufactures a crushed line: the bar applies to the repaired cells too', () => {
+        // Chained Soldier 01 (paddle-manga) p189 b5 l0, widths 60 19 0 10 180.
+        // One zero and one crushed cell of five pass the count — and then で
+        // takes half of る's 19px, leaving three 10px slivers between a 60px
+        // and a 180px cell: the very line the rule exists to refuse.
+        expect(repairZeroCells(codePoints('まるで巣の'), [0, 60, 79, 79, 89, 269])).toBeNull();
+        // Chained Soldier 02 (paddle-manga) p92 b1 l0: 0 11 11 100 → 5 6 11 100
+        expect(repairZeroCells(codePoints('羅俱美偉'), [0, 0, 11, 22, 122])).toBeNull();
+        // a donor with room to spare still repairs: 0 60 60 100 → 30 30 60 100
+        expect(repairZeroCells([...'ABCD'], [0, 0, 60, 120, 220])).toEqual([0, 30, 60, 120, 220]);
+      });
+
+      it('takes the larger of the two references, so it only ever raises the bar', () => {
+        // even print: the mean equals the median and nothing changes
+        const even = fromWidths([40, 40, 40, 40, 40]);
+        expect(repairZeroCells([...'ABCDE'], even)).toBe(even);
+        // one glyph in 2px beside 40px print: mean 32, median 40 — still the
+        // median's bar (10), still one crushed cell of five, still placed
+        const one = fromWidths([40, 2, 40, 40, 40]);
+        expect(repairZeroCells([...'ABCDE'], one)).toBe(one);
+      });
+
+      it('counts only real characters in the mean: whitespace does not lower it', () => {
+        // widths 100 0 0 0 0 6 6 6 100: over all nine cells the mean would be
+        // 24 (bar 6, nothing crushed); over the five glyphs it is 43.6 and the
+        // three 6px ones are unplaced
+        expect(
+          repairZeroCells(
+            [...'A\u3000\u3000\u3000\u3000BCDE'],
+            fromWidths([100, 0, 0, 0, 0, 6, 6, 6, 100])
+          )
+        ).toBeNull();
+      });
+
+      it('still keeps the half cells of 、 and 。 on a line with a wide cell', () => {
+        // a 90px opening cell lifts the mean to 42: 、 and 。 at 20px stay
+        // well above a quarter of it
+        const offsets = fromWidths([90, 20, 40, 20, 40]);
+        expect(repairZeroCells([...'あ、い。う'], offsets)).toBe(offsets);
+      });
     });
 
     it('never counts a narrow whitespace or mark cell', () => {
@@ -342,7 +482,7 @@ describe('repairZeroCells', () => {
     const alphabet = [...'あい、𠮷.　 '];
     const cellWidths = [0, 0, 0, 1, 2, 3, 16, 40, 88];
     let repairedLines = 0;
-    for (let round = 0; round < 500; round++) {
+    for (let round = 0; round < 800; round++) {
       const chars = Array.from({ length: 1 + next(12) }, () => alphabet[next(alphabet.length)]);
       const offsets = [next(20)];
       for (let k = 0; k < chars.length; k++) {

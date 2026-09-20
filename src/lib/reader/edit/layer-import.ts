@@ -3,6 +3,7 @@ import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import { splitLayerSidecarName } from '$lib/util/sync/syncable-file';
+import { stampCharOffsetsMethod } from '../char-offsets';
 import { layerKindForId, layerNameForId } from './layers';
 
 /**
@@ -122,18 +123,6 @@ function isPageArray(value: unknown): value is Page[] {
   );
 }
 
-/**
- * Whether a page has at least one block with a placed (non-null) `char_offsets`
- * entry — the gate for stamping a file-level `char_offsets_method` onto it.
- */
-function pageHasPlacement(page: Page): boolean {
-  if (!Array.isArray(page.blocks)) return false;
-  return page.blocks.some((block) => {
-    const offsets = block.char_offsets;
-    return Array.isArray(offsets) && offsets.some((entry) => entry != null);
-  });
-}
-
 /** Parse a layer file (gz tolerated) into DB-shaped pages plus the ids it names. */
 export async function readLayerFile(file: File | Blob, gz = false): Promise<ReadLayerFile | null> {
   try {
@@ -146,16 +135,12 @@ export async function readLayerFile(file: File | Blob, gz = false): Promise<Read
     if (!isPageArray(json.pages)) return null;
     // Engine sidecars carry char_offsets_method only at the top level; lift it
     // onto pages that actually placed something and don't already have their own.
-    const fileMethod =
-      typeof json.char_offsets_method === 'string' ? json.char_offsets_method : undefined;
+    const pages = json.pages.map((p) => {
+      const { cumulativeChars: _c, ...page } = p as Page & { cumulativeChars?: number };
+      return page;
+    });
     return {
-      pages: json.pages.map((p) => {
-        const { cumulativeChars: _c, ...page } = p as Page & { cumulativeChars?: number };
-        if (page.char_offsets_method == null && fileMethod != null && pageHasPlacement(page)) {
-          return { ...page, char_offsets_method: fileMethod };
-        }
-        return page;
-      }),
+      pages: stampCharOffsetsMethod(pages, json.char_offsets_method),
       ...(typeof json.volume_uuid === 'string' ? { volumeUuid: json.volume_uuid } : {}),
       ...(typeof json.title === 'string' ? { seriesTitle: json.title } : {}),
       ...(typeof json.volume === 'string' ? { volumeTitle: json.volume } : {})

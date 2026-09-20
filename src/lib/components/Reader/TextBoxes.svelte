@@ -17,7 +17,7 @@
   } from '$lib/anki-connect';
   import { db } from '$lib/catalog/db';
   import { layoutLines, getDefaultMeasurer, type LineLayout } from '$lib/reader/line-coords-layout';
-  import { processLine } from '$lib/reader/char-offsets-layout';
+  import { isBlankCell, processLine } from '$lib/reader/char-offsets-layout';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
 
   interface ContextMenuData {
@@ -686,6 +686,7 @@
               style:font-size={`${lineLayouts[lineIndex].fontSize}px`}
               >{#if lineLayouts[lineIndex].cells}{#each lineLayouts[lineIndex].cells as cell}<span
                     class="ocr-char"
+                    class:ocr-space={isBlankCell(cell.text)}
                     style:inline-size={`${cell.size}px`}>{cell.text}</span
                   >{/each}{:else}{line}{/if}</span
             >{/if}{/each}
@@ -784,17 +785,33 @@
      per character, its inline size the character's advance, so normal flow
      puts every glyph where the print has it — no per-glyph measurement, and
      above all no position:absolute, which would be #254 between every glyph.
-     inline-size and text-align are logical, so the one rule serves both
-     writing modes. Cells never clip: tight tracking makes a cell narrower
+     inline-size and the flex main axis are logical, so the one rule serves
+     both writing modes. Cells never clip: tight tracking makes a cell narrower
      than its glyph, and original mode renders zero-width cells as the file
-     has them. There must be NO whitespace between the cells in the template:
-     the line span's textContent is the line. */
+     has them.
+     Centring is flex, not `text-align: center`: text-align START-aligns
+     content wider than its box, so every glyph in a tight or zero-width cell
+     sat half its overflow late (up to 10px on real pages, 20px on a zero
+     cell); `justify-content: center` overflows both sides equally. inline-flex
+     is as continuity-safe as inline-block — a DOM text scanner cuts the
+     display value at the first '-' and reads both as inline.
+     There must be NO whitespace between the cells in the template: the line
+     span's textContent is the line. */
   .textBox.perLine .ocr-line.positionedLine .ocr-char {
-    display: inline-block;
-    text-align: center;
+    display: inline-flex;
+    justify-content: center;
     overflow: visible;
     line-height: 1;
     letter-spacing: 0;
+  }
+
+  /* A flex container does not render a text run that is only white space, so
+     a space in the cell above would drop out of selection and copy. It has no
+     glyph to centre: it keeps a plain inline-block, `pre` so the space is not
+     collapsed away there either. */
+  .textBox.perLine .ocr-line.positionedLine .ocr-char.ocr-space {
+    display: inline-block;
+    white-space: pre;
   }
 
   /* A quad that captured multiple print columns (base text + furigana):
