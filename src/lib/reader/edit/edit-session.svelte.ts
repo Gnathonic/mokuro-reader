@@ -311,11 +311,10 @@ export class EditSession {
     quad: number[][],
     coalesceKey?: string
   ): void {
-    this.commit(
-      pageIndex,
-      resizeLine(this.pageFor(pageIndex), blockIndex, lineIndex, quad),
-      coalesceKey
-    );
+    const cur = this.pageFor(pageIndex);
+    const next = resizeLine(cur, blockIndex, lineIndex, quad);
+    // a refused resize (a tilted quad leaving the image) is not an edit
+    if (next !== cur) this.commit(pageIndex, next, coalesceKey);
   }
   placeLines(pageIndex: number, blockIndex: number): void {
     const cur = this.pageFor(pageIndex);

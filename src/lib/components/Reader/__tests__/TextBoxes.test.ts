@@ -222,7 +222,10 @@ describe('TextBoxes auto mode with lines_coords', () => {
 const fixtureBlocks = fixturePage.blocks as unknown as Page['blocks'];
 
 // Written by the component as it stood before char_offsets was wired in: a
-// block without placement must keep rendering exactly this.
+// block without placement must keep rendering exactly this — plus, in auto
+// mode, what the uniform grid adds to a line whose text does not already fill
+// its quad: a `letter-spacing` style and a `data-inset` (line-grid.ts). The
+// targets, sizes and text are untouched.
 describe('TextBoxes without char_offsets renders as it always has', () => {
   it('auto mode', () => {
     const { container } = render(TextBoxes, {
@@ -261,6 +264,9 @@ describe('TextBoxes without char_offsets renders as it always has', () => {
   });
 });
 
+// char_offsets render in ORIGINAL mode only — the diagnostic view of what the
+// producer wrote. Auto mode ignores the field and places every line on the
+// uniform grid of its quad (see 'TextBoxes auto mode: the uniform grid' below).
 describe('TextBoxes with char_offsets', () => {
   const renderBlock = (block: unknown) =>
     render(TextBoxes, { page: makePage([block]), volumeUuid: 'test-uuid' }).container;
@@ -280,12 +286,8 @@ describe('TextBoxes with char_offsets', () => {
   const inlineSize = (char: HTMLElement) =>
     /(?:^|;)\s*inline-size:\s*([^;]+)/.exec(char.getAttribute('style') ?? '')?.[1].trim();
 
-  // b0 l0 is real data and a squeezed line (地 in 94px, な ポ ン in 22–26px):
-  // auto mode renders it on the fitted path, original mode on its cells.
-  const isSqueezedLine = (block: unknown, i: number) => block === fixtureBlocks[0] && i === 0;
-
   it.each([
-    ['auto', 6],
+    ['auto', 0],
     ['original', 7]
   ] as const)(
     'renders one .ocr-line per line, holding one .ocr-char per code point of the rendered text (%s)',
@@ -303,7 +305,7 @@ describe('TextBoxes with char_offsets', () => {
         // THE invariant: selection, copy and Yomitan read the line span
         expect(spans[i].textContent, raw).toBe(processed);
         const chars = charSpans(spans[i]);
-        if (block.char_offsets?.[i] && !(mode === 'auto' && isSqueezedLine(block, i))) {
+        if (mode === 'original' && block.char_offsets?.[i]) {
           celledLines++;
           expect(chars, raw).toHaveLength(codePoints(processed).length);
           expect(chars.map((char) => char.textContent)).toEqual(codePoints(processed));
@@ -329,7 +331,7 @@ describe('TextBoxes with char_offsets', () => {
 
   it('gives every cell its advance as inline-size, the collapsed ellipsis run as ONE cell', () => {
     // b0 l2 ends ．．． at [544, 558, 572, 585]: one … cell of 41px
-    const spans = lineSpans(renderBlock(fixtureBlocks[0]));
+    const spans = lineSpans(withFontSize('original', () => renderBlock(fixtureBlocks[0])));
     const chars = charSpans(spans[2]);
     expect(spans[2].textContent).toBe('フブキ組の強みだったのに…');
     expect(chars).toHaveLength(13);
@@ -339,7 +341,7 @@ describe('TextBoxes with char_offsets', () => {
   });
 
   it('renders the null line of a mixed block as bare text on the same per-line path', () => {
-    const spans = lineSpans(renderBlock(fixtureBlocks[1]));
+    const spans = lineSpans(withFontSize('original', () => renderBlock(fixtureBlocks[1])));
     expect(fixtureBlocks[1].char_offsets?.[1]).toBeNull();
     expect(spans[1].classList.contains('positionedLine')).toBe(true);
     expect(contentNodes(spans[1])).toHaveLength(1);
@@ -411,7 +413,7 @@ describe('TextBoxes with char_offsets', () => {
       ],
       char_offsets: [[0, 50, 120, 120, 190, 245, 300]]
     };
-    const [line] = lineSpans(renderBlock(block));
+    const [line] = lineSpans(withFontSize('original', () => renderBlock(block)));
     expect(line.textContent).toBe('NO WAY');
     const cells = charSpans(line);
     expect(cells.map((cell) => cell.classList.contains('ocr-space'))).toEqual([
@@ -444,7 +446,7 @@ describe('TextBoxes with char_offsets', () => {
       ],
       char_offsets: [[12, 60, 110, 160, 210, 260, 310, 360, 396]]
     };
-    const [line] = lineSpans(renderBlock(block));
+    const [line] = lineSpans(withFontSize('original', () => renderBlock(block)));
     expect(line.dataset.targetTop).toBe('12');
     expect(line.style.fontSize).toBe('48px');
     expect(line.style.width).toBe('');
@@ -473,8 +475,11 @@ describe('TextBoxes with char_offsets', () => {
     const cellSizes = (container: HTMLElement) =>
       charSpans(lineSpans(container)[0]).map(inlineSize);
 
-    it('auto mode repairs it: え and お share the 80px', () => {
-      expect(cellSizes(renderBlock(block))).toEqual(new Array(6).fill('40px'));
+    it('auto mode never sees it: no cells, the line on the uniform grid of its quad', () => {
+      const container = renderBlock(block);
+      expect(cellSizes(container)).toEqual([]);
+      expect(lineSpans(container)[0].textContent).toBe('あいうえおか');
+      expect(lineSpans(container)[0].children).toHaveLength(0);
     });
 
     it('original mode renders the file as-is: a 0px cell, the character still in the DOM', () => {
@@ -487,15 +492,15 @@ describe('TextBoxes with char_offsets', () => {
   });
 
   describe('the squeezed b0 l0: 地 in 94px, な ポ ン in 22–26px, と[363,363) 、[363,449)', () => {
-    it('auto mode fits the LINE instead of drawing overlapping cells; the block keeps the rest', () => {
+    it('auto mode draws no cells at all: every line of the block is one text node on its quad', () => {
       const spans = lineSpans(renderBlock(fixtureBlocks[0]));
-      expect(charSpans(spans[0])).toHaveLength(0);
-      expect(spans[0].children).toHaveLength(0);
       expect(spans[0].textContent).toBe('地道なポイント稼ぎと、');
-      // still the per-line path, like the null line of a mixed block
-      expect(spans[0].classList.contains('positionedLine')).toBe(true);
-      expect(charSpans(spans[1])).toHaveLength(7);
-      expect(charSpans(spans[2])).toHaveLength(13);
+      for (const span of spans) {
+        expect(charSpans(span)).toHaveLength(0);
+        expect(span.children).toHaveLength(0);
+        expect(contentNodes(span)).toHaveLength(1);
+        expect(span.classList.contains('positionedLine')).toBe(true);
+      }
     });
 
     it('original mode renders the file as-is: every cell, the 0px one included', () => {
@@ -550,5 +555,147 @@ describe('TextBoxes with char_offsets', () => {
       expect(container.querySelectorAll('.ocr-char')).toHaveLength(0);
       expect(container.querySelectorAll('.positionedLine')).toHaveLength(0);
     });
+  });
+});
+
+describe('TextBoxes auto mode: the uniform grid and rotation', () => {
+  const renderBlocks = (blocks: unknown[]) =>
+    render(TextBoxes, { page: makePage(blocks), volumeUuid: 'test-uuid' }).container;
+  const lineSpans = (container: HTMLElement) => [
+    ...container.querySelectorAll<HTMLElement>('.ocr-line')
+  ];
+  /** w × h upright rectangle about (cx, cy), turned like CSS rotate(deg). */
+  const tilted = (cx: number, cy: number, w: number, h: number, deg: number) => {
+    const t = (deg * Math.PI) / 180;
+    return [
+      [-w / 2, -h / 2],
+      [w / 2, -h / 2],
+      [w / 2, h / 2],
+      [-w / 2, h / 2]
+    ].map(([dx, dy]) => [
+      cx + dx * Math.cos(t) - dy * Math.sin(t),
+      cy + dx * Math.sin(t) + dy * Math.cos(t)
+    ]);
+  };
+  const sfxQuad = tilted(500, 400, 50, 360, 20);
+  const sfx = {
+    box: [409, 222, 591, 578],
+    vertical: true,
+    font_size: 50,
+    lines: ['ドドドドドド'],
+    lines_coords: [sfxQuad]
+  };
+  // 4 glyphs in a quad 40px longer than they are at the block's size
+  const loose = {
+    box: [100, 0, 190, 320],
+    vertical: true,
+    font_size: 40,
+    lines: ['あいうえおかきく', 'さしすせ'],
+    lines_coords: [
+      [
+        [150, 0],
+        [190, 0],
+        [190, 320],
+        [150, 320]
+      ],
+      [
+        [100, 0],
+        [140, 0],
+        [140, 200],
+        [100, 200]
+      ]
+    ]
+  };
+
+  it('renders NO .ocr-char for a block with char_offsets; original mode still does', () => {
+    const container = renderBlocks(fixtureBlocks);
+    expect(fixtureBlocks.some((block) => block.char_offsets)).toBe(true);
+    expect(container.querySelectorAll('.ocr-char')).toHaveLength(0);
+    // every line is its processed text, in ONE text node
+    const expected = [...fixtureBlocks].flatMap((block) => block.lines.map(processLine)).sort();
+    expect(
+      lineSpans(container)
+        .map((span) => span.textContent)
+        .sort()
+    ).toEqual(expected);
+    for (const span of lineSpans(container)) expect(span.children).toHaveLength(0);
+    cleanup();
+    const original = withFontSize('original', () => renderBlocks(fixtureBlocks));
+    expect(original.querySelectorAll('.ocr-char').length).toBeGreaterThan(50);
+    expect(
+      lineSpans(original)
+        .map((span) => span.textContent)
+        .sort()
+    ).toEqual(expected);
+  });
+
+  it('carries the grid as letter-spacing on the line and the half-step inset as data', () => {
+    const [full, short] = lineSpans(renderBlocks([loose]));
+    // text that fills its quad: nothing added, the markup it has always had
+    expect(full.style.letterSpacing).toBe('');
+    expect(full.dataset.inset).toBeUndefined();
+    expect(full.dataset.rotation).toBeUndefined();
+    // (200 - 4 × 40) / 4
+    expect(short.style.letterSpacing).toBe('10px');
+    expect(short.dataset.inset).toBe('5');
+    // the target stays the quad's start: the inset is applied by the action
+    expect(short.dataset.targetTop).toBe('0');
+    expect(short.textContent).toBe('さしすせ');
+  });
+
+  it('carries a tilted quad as its own-frame box and angle', () => {
+    const [line] = lineSpans(renderBlocks([sfx]));
+    expect(Number(line.dataset.rotation)).toBeCloseTo(20, 6);
+    expect(Number(line.dataset.boxWidth)).toBeCloseTo(50, 6);
+    expect(Number(line.dataset.boxHeight)).toBeCloseTo(360, 6);
+    // box centre = quad centre, relative to the block box
+    expect(Number(line.dataset.targetLeft) + 25).toBeCloseTo(500 - sfx.box[0], 6);
+    expect(Number(line.dataset.targetTop) + 180).toBeCloseTo(400 - sfx.box[1], 6);
+    expect(parseFloat(line.style.letterSpacing)).toBeCloseTo(10, 6);
+    // still one in-flow text node: no position, no wrap container
+    expect(line.style.position).toBe('');
+    expect(line.style.width).toBe('');
+    expect(line.children).toHaveLength(0);
+    expect(line.textContent).toBe('ドドドドドド');
+  });
+
+  // jsdom lays nothing out (offsetParent is null, so the action no-ops). Give
+  // it just enough of a layout to run: every span naturally at (0,0), 0×0. The
+  // real geometry is measured in Chromium (e2e/line-grid.spec.ts).
+  it('positionPerLine writes translate + rotate about the own-frame box centre', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetParent');
+    Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.parentElement;
+      }
+    });
+    try {
+      const container = renderBlocks([sfx, loose]);
+      const [tiltedLine] = lineSpans(container.querySelectorAll<HTMLElement>('.textBox')[0]);
+      const [full, short] = lineSpans(container.querySelectorAll<HTMLElement>('.textBox')[1]);
+      await vi.waitFor(() => expect(short.style.transform).not.toBe(''));
+
+      // upright: the plain translate, the inset added along the reading axis
+      expect(full.style.transform).toBe('translate(50px, 0px)');
+      expect(short.style.transform).toBe('translate(0px, 5px)');
+      expect(short.style.transformOrigin).toBe('');
+
+      const match = /^translate\((-?[\d.]+)px, (-?[\d.]+)px\) rotate\(([\d.]+)deg\)$/.exec(
+        tiltedLine.style.transform
+      );
+      expect(match, tiltedLine.style.transform).not.toBeNull();
+      const [x, y, deg] = match!.slice(1).map(Number);
+      expect(deg).toBeCloseTo(20, 6);
+      // a 0×0 span: centred across the box (left + 25), 5px in along it
+      expect(x).toBeCloseTo(500 - sfx.box[0], 6);
+      expect(y).toBeCloseTo(400 - sfx.box[1] - 180 + 5, 6);
+      // the origin is the box centre seen from the span: (0, 180 - 5)
+      const [ox, oy] = tiltedLine.style.transformOrigin.split(' ').map(parseFloat);
+      expect(ox).toBeCloseTo(0, 6);
+      expect(oy).toBeCloseTo(175, 6);
+    } finally {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, 'offsetParent', descriptor);
+    }
   });
 });

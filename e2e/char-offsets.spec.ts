@@ -4,7 +4,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * char_offsets in a REAL layout engine. The unit and component suites run in
+ * char_offsets in a REAL layout engine — ORIGINAL mode, viewer and editor.
+ * (Every other mode ignores the field since the uniform grid: a line is one
+ * text node on its quad in both, see e2e/line-grid.spec.ts. What this spec
+ * used to measure in auto mode is measured in original mode here.)
+ *
+ * The unit and component suites run in
  * jsdom, which lays nothing out: they prove the DOM shape, never that a glyph
  * lands on its cell, that a line of cells stays one line, or that a selection
  * across the cells reads as one string. This spec measures all three in
@@ -30,8 +35,8 @@ const VOLUME_UUID = 'e2e-char-offsets-volume';
 /**
  * Block 0, line 0: `地道なポイント稼ぎと、` — the と cell is [363, 363). Real data,
  * and SQUEEZED as well: 地 sits in 94px while な ポ ン get 22–26px at a ~41px
- * pitch. Original mode draws it as filed; auto mode declines the cells (glyphs
- * on top of each other are worse than today's fitted line) and fits the line.
+ * pitch. Original mode — viewer and editor — draws it as filed; every other
+ * mode ignores the offsets and puts the line on the uniform grid.
  */
 const ZERO_BLOCK = 0;
 const ZERO_LINE = 0;
@@ -113,9 +118,10 @@ const SPACED: FixtureBlock = {
   ]
 };
 /**
- * What auto mode's repair is FOR, on its own: え has no cell and お has two, on
- * a line whose other cells are plausible. Synthetic, because the fixture's one
- * zero-width cell sits on a line auto mode gives up on for another reason.
+ * A zero-width cell on its own: え has no cell and お has two, on a line whose
+ * other cells are plausible. Synthetic, because the fixture's one zero-width
+ * cell sits on a line that is squeezed as well. (No renderer repairs it any
+ * more: `lineCells`' repair is covered by its unit tests.)
  */
 const REPAIRED_BLOCK = SPACED_BLOCK + 1;
 const REPAIRED_CHAR = 3;
@@ -364,38 +370,63 @@ async function measure(
 
 interface ExpectedLine {
   text: string;
+  /**
+   * Unit vector of the line's reading axis in page space. Upright: straight
+   * down (vertical) or right (horizontal). The VIEWER turns a line whose quad
+   * is tilted (fixture block 2, 力で！, leans -4.2°), and then so does its axis;
+   * `start`/`end` below are positions ALONG this axis (a point's dot product
+   * with it), which for an upright line is simply its y or x.
+   */
+  axis: [number, number];
   /** null = the line renders fitted (no offsets, or they failed validation) */
   cells: { text: string; start: number; end: number }[] | null;
 }
 
 /**
  * Where the production layout module says each cell is, in page image px along
- * the block's reading axis — from the fixture's offsets, the quad's start edge
- * and (auto mode) the zero-cell repair.
+ * the line's reading axis — from the fixture's offsets and the quad's start
+ * edge. Viewer and editor both turn a tilted line about its quad's centre.
  */
 async function expectedCells(page: Page, repair: boolean): Promise<ExpectedLine[][]> {
   return page.evaluate(
     async ({ blocks, repair }) => {
       const { lineCells, processLine } = await import('/src/lib/reader/char-offsets-layout.ts');
-      const { quadExtents } = await import('/src/lib/reader/line-coords-layout.ts');
-      return blocks.map((block) =>
-        block.lines.map((raw, i) => {
+      const { quadExtents, layoutLines, getDefaultMeasurer } = await import(
+        '/src/lib/reader/line-coords-layout.ts'
+      );
+      const { lineFrame } = await import('/src/lib/reader/line-grid.ts');
+      return blocks.map((block) => {
+        const processed = block.lines.map(processLine);
+        const layouts = layoutLines(block, processed, getDefaultMeasurer(), {
+          cells: repair ? 'repaired' : 'as-is'
+        });
+        return block.lines.map((raw, i) => {
           const quad = block.lines_coords[i];
           const main = quadExtents(quad, block.vertical)!.main;
           const placed = lineCells(raw, block.char_offsets?.[i] ?? null, main, { repair });
-          if (!placed) return { text: processLine(raw), cells: null };
-          const edge = Math.min(...quad.map((q) => q[block.vertical ? 1 : 0]));
+          const turn = ((layouts?.[i].rotation ?? 0) * Math.PI) / 180;
+          const axis: [number, number] = block.vertical
+            ? [-Math.sin(turn), Math.cos(turn)]
+            : [Math.cos(turn), Math.sin(turn)];
+          if (!placed) return { text: processed[i], axis, cells: null };
+          // Upright: the bbox start edge. Turned: half the main extent back
+          // from the quad's centre, along the turned axis.
+          const frame = lineFrame(quad, block.vertical)!;
+          const edge = turn
+            ? frame.cx * axis[0] + frame.cy * axis[1] - frame.main / 2
+            : Math.min(...quad.map((q) => q[block.vertical ? 1 : 0]));
           let at = edge + placed.start;
           return {
-            text: processLine(raw),
+            text: processed[i],
+            axis,
             cells: placed.cells.map((cell) => {
               const start = at;
               at += cell.size;
               return { text: cell.text, start, end: at };
             })
           };
-        })
-      );
+        });
+      });
     },
     { blocks: BLOCKS, repair }
   );
@@ -413,7 +444,10 @@ function findBlock(measured: MeasuredBlock[], block: FixtureBlock): MeasuredBloc
 /** Main-axis [start, end] of a rect for a block's writing direction. */
 const mainSpan = (r: Rect, vertical: boolean): [number, number] =>
   vertical ? [r.y, r.y + r.h] : [r.x, r.x + r.w];
-const crossCentre = (r: Rect, vertical: boolean) => (vertical ? r.x + r.w / 2 : r.y + r.h / 2);
+/** A rect's centre along a line's reading axis / across it. A turned line's
+ * rects are bboxes of turned boxes: their centres are still the true centres. */
+const along = (r: Rect, [ux, uy]: [number, number]) => (r.x + r.w / 2) * ux + (r.y + r.h / 2) * uy;
+const across = (r: Rect, [ux, uy]: [number, number]) => (r.x + r.w / 2) * uy - (r.y + r.h / 2) * ux;
 
 interface Deviation {
   block: number;
@@ -443,7 +477,7 @@ function centreDeviations(measured: MeasuredBlock[], expected: ExpectedLine[][])
           char: cell.text,
           cell: cell.end - cell.start,
           glyph: g1 - g0,
-          off: (g0 + g1) / 2 - (cell.start + cell.end) / 2
+          off: along(got[k].glyph, line.axis) - (cell.start + cell.end) / 2
         });
       });
     });
@@ -490,7 +524,7 @@ function expectOneFlowLine(measured: MeasuredBlock[], expected: ExpectedLine[][]
         return;
       }
       expect(line.text).toBe(expected[b][l].text);
-      const centres = line.chars.map((c) => crossCentre(c.cell, block.vertical));
+      const centres = line.chars.map((c) => across(c.cell, expected[b][l].axis));
       for (const [k, c] of line.chars.entries()) {
         expect(['static', 'relative']).toContain(c.position);
         // Yomitan's scanner cuts the display value at the first '-': these two
@@ -535,104 +569,57 @@ test.describe('char_offsets — viewer', () => {
   // fit-to-screen page is ~0.4x and its glyphs are unreadable in a 1x capture.
   test.use({ deviceScaleFactor: 3 });
 
-  test('auto: every glyph is centred on its cell, in one unwrapped flow line per OCR line', async ({
+  test('auto: char_offsets are ignored — no cells, every line one text node on its quad', async ({
     page
   }) => {
     await seedVolume(page, [PAGE, stripOffsets(PAGE)], 'auto');
     await openReader(page);
 
-    const expected = await expectedCells(page, true);
     const measured = await measure(page, 'viewer');
+    const shape = (pageIndex: number) =>
+      page.evaluate((pageIndex) => {
+        const pageEl = document.querySelector<HTMLElement>(`[data-page-index="${pageIndex}"]`)!;
+        return [...pageEl.querySelectorAll<HTMLElement>('.textBox .ocr-line')].map((line) => ({
+          text: line.textContent,
+          elements: line.querySelectorAll('*').length,
+          textNodes: [...line.childNodes].filter(
+            (n) => n.nodeType === Node.TEXT_NODE && n.nodeValue !== ''
+          ).length,
+          fontSize: line.style.fontSize,
+          letterSpacing: line.style.letterSpacing,
+          transform: line.style.transform
+        }));
+      }, pageIndex);
 
-    // The fixture's shape survived the trip: a null line, a block without
-    // offsets, the squeezed と line (and its quarter-turned twin) on the fitted
-    // path and the repaired line are all where the cases expect them.
-    expect(expected[1][1].cells).toBeNull();
-    expect(expected[3][0].cells).toBeNull();
-    expect(expected[ZERO_BLOCK][ZERO_LINE].cells).toBeNull();
-    expect(expected[HORIZONTAL_BLOCK][ZERO_LINE].cells).toBeNull();
-    expect(expected[REPAIRED_BLOCK][0].cells).toHaveLength(6);
-    // A squeezed line costs only ITSELF its cells, and none of its text.
-    for (const b of [ZERO_BLOCK, HORIZONTAL_BLOCK]) {
-      const lines = findBlock(measured, BLOCKS[b]).lines;
-      expect(lines[ZERO_LINE].chars).toHaveLength(0);
-      expect(lines[ZERO_LINE].text).toBe(BLOCKS[b].lines[ZERO_LINE]);
-      expect(lines[1].chars.length).toBeGreaterThan(0);
-      expect(lines[ELLIPSIS_LINE].chars.length).toBeGreaterThan(0);
+    await expect(page.locator('.ocr-char')).toHaveCount(0);
+    BLOCKS.forEach((block) => {
+      const shown = findBlock(measured, block);
+      expect(shown.lines.map((line) => line.text)).toEqual(
+        block.lines.map((raw) => raw.replace('．．．', '…'))
+      );
+      for (const line of shown.lines) expect(line.chars).toHaveLength(0);
+    });
+    const withOffsets = await shape(0);
+    for (const line of withOffsets) {
+      expect(line.elements).toBe(0);
+      expect(line.textNodes).toBe(1);
     }
-    // Lines the file places cleanly render the file's own advances, untouched:
-    // for them the prediction is the fixture's numbers, not the module's opinion.
-    BLOCKS.forEach((block, b) =>
-      block.lines.forEach((raw, l) => {
-        const offsets = block.char_offsets?.[l];
-        if (!offsets || raw.includes('．') || offsets.some((o, k) => o === offsets[k - 1])) return;
-        const edge = Math.min(...block.lines_coords[l].map((q) => q[block.vertical ? 1 : 0]));
-        expect(expected[b][l].cells!.map((c) => c.end)).toEqual(
-          offsets.slice(1).map((o) => edge + o)
-        );
-      })
-    );
-
-    // (a) the glyph, not the span box, sits on the cell centre.
-    const deviations = centreDeviations(measured, expected);
-    summarize('auto', deviations);
-    expect(deviations.filter((d) => BLOCKS[d.block].vertical).length).toBeGreaterThan(40);
-    expect(deviations.filter((d) => !BLOCKS[d.block].vertical).length).toBeGreaterThan(25);
-    expectCentred(deviations);
-
-    // (c)
-    expectOneFlowLine(measured, expected);
-    // Across the line the glyph rides the line span's own centre — a baseline
-    // shift from the cell's display type would show up here.
-    BLOCKS.forEach((block) =>
-      findBlock(measured, block).lines.forEach((line) => {
-        for (const c of line.chars) {
-          if (c.text.trim() === '') continue;
-          expect(
-            Math.abs(crossCentre(c.glyph, block.vertical) - crossCentre(line.box, block.vertical))
-          ).toBeLessThanOrEqual(2);
-        }
-      })
-    );
-
-    // (d) auto repairs a zero-width cell: え shares お's 80px, and no glyph in
-    // any placed line sits more than half way over its neighbour.
-    const repaired = findBlock(measured, BLOCKS[REPAIRED_BLOCK]).lines[0].chars;
-    expect(repaired[REPAIRED_CHAR].text).toBe('え');
-    expect(repaired.map((c) => parseFloat(c.inlineSize))).toEqual([40, 40, 40, 40, 40, 40]);
-    let hits = 0;
-    let glyphs = 0;
-    BLOCKS.forEach((block) =>
-      findBlock(measured, block).lines.forEach((line) => {
-        line.chars.forEach((c, k) => {
-          if (c.text.trim() === '') return;
-          glyphs++;
-          if (c.hit) hits++;
-          if (k === 0 || line.chars[k - 1].text.trim() === '') return;
-          const [a0, a1] = mainSpan(line.chars[k - 1].glyph, block.vertical);
-          const [b0, b1] = mainSpan(c.glyph, block.vertical);
-          expect(
-            Math.min(a1, b1) - Math.max(a0, b0),
-            `"${line.chars[k - 1].text}${c.text}" overlap`
-          ).toBeLessThanOrEqual(Math.min(a1 - a0, b1 - b0) / 2);
-        });
-      })
-    );
-    // What Yomitan does under the pointer: the caret at a glyph's centre is in
-    // that glyph's cell, overflowing glyphs included.
-    console.log(`[char-offsets] auto: caret hit-test at the glyph centre ${hits}/${glyphs}`);
-    expect(hits).toBe(glyphs);
 
     await shot(page, 'viewer-auto-block0', BLOCKS[0]);
     await shot(page, 'viewer-auto-horizontal', BLOCKS[HORIZONTAL_BLOCK]);
     await page.keyboard.press('PageDown');
     await expect(page.locator('[data-page-index="1"]')).toBeVisible();
     await waitForPositioned(page, 1);
+    // The same page with every char_offsets stripped renders the SAME markup:
+    // size, spacing and transform, line for line. The field changes nothing.
+    expect(await shape(1)).toEqual(withOffsets);
     await shot(page, 'viewer-auto-block0-without-offsets', BLOCKS[0], 1);
   });
 
-  test('selection across cells reads exactly like a block without offsets', async ({ page }) => {
-    await seedVolume(page, [PAGE, stripOffsets(PAGE)], 'auto');
+  test('original: selection across cells reads exactly like a block without offsets', async ({
+    page
+  }) => {
+    await seedVolume(page, [PAGE, stripOffsets(PAGE)], 'original');
     await openReader(page);
 
     const select = (pageIndex: number) =>
@@ -674,13 +661,16 @@ test.describe('char_offsets — viewer', () => {
       )!;
       window.getSelection()!.selectAllChildren(box);
     }, BLOCKS[0].box);
-    await shot(page, 'viewer-auto-selection', BLOCKS[0]);
+    await shot(page, 'viewer-original-selection', BLOCKS[0]);
     await page.keyboard.press('PageDown');
     await expect(page.locator('[data-page-index="1"]')).toBeVisible();
-    await waitForPositioned(page, 1);
+    // Without offsets original mode is the whole-block rendering: nothing is
+    // positioned per line, so there is no transform to wait for.
+    await expect(page.locator('[data-page-index="1"] .textBox')).toHaveCount(BLOCKS.length);
+    await page.waitForTimeout(250);
     const plain = await select(1);
 
-    const expected = await expectedCells(page, true);
+    const expected = await expectedCells(page, false);
     expect(plain.every((b) => b.cells === 0)).toBe(true);
     const at = (block: FixtureBlock) => (x: { left: number; top: number }) =>
       x.left === block.box[0] && x.top === block.box[1];
@@ -699,7 +689,7 @@ test.describe('char_offsets — viewer', () => {
     // the line, and a copy that loses it glues the words together.
     expect(celled.find(at(SPACED))!.perLine).toEqual(BLOCKS[SPACED_BLOCK].lines);
     console.log(
-      `[char-offsets] selection across block 0: ${JSON.stringify(celled.find(at(BLOCKS[0]))!.whole)}; ` +
+      `[char-offsets] original: selection across block 0: ${JSON.stringify(celled.find(at(BLOCKS[0]))!.whole)}; ` +
         `across the spaced block: ${JSON.stringify(celled.find(at(SPACED))!.whole)}`
     );
   });
@@ -730,17 +720,89 @@ test.describe('char_offsets — viewer', () => {
       expect(Math.max(...overlaps)).toBeGreaterThan(0);
     }
 
+    // The fixture's shape survived the trip: a null line and a block without
+    // offsets render fitted; every other line is on its cells, the squeezed
+    // と line (and its quarter-turned twin) included.
+    expect(expected[1][1].cells).toBeNull();
+    expect(expected[3][0].cells).toBeNull();
+    expect(expected[ZERO_BLOCK][ZERO_LINE].cells).toHaveLength(11);
+    expect(expected[HORIZONTAL_BLOCK][ZERO_LINE].cells).toHaveLength(11);
+    expect(expected[REPAIRED_BLOCK][0].cells).toHaveLength(6);
+    // The one tilted quad of the page (力で！, -4.2°) is drawn turned, cells and all.
+    expect(expected[2][1].axis[0]).not.toBe(0);
+    expect(expected.flat().filter((line) => line.axis[0] !== 0 && line.axis[1] !== 0)).toHaveLength(
+      1
+    );
+    // Upright lines render the file's own advances, untouched: for them the
+    // prediction is the fixture's numbers, not the module's opinion.
+    BLOCKS.forEach((block, b) =>
+      block.lines.forEach((raw, l) => {
+        const offsets = block.char_offsets?.[l];
+        const { axis } = expected[b][l];
+        if (!offsets || raw.includes('．') || (axis[0] !== 0 && axis[1] !== 0)) return;
+        const edge = Math.min(...block.lines_coords[l].map((q) => q[block.vertical ? 1 : 0]));
+        expect(expected[b][l].cells!.map((c) => c.end)).toEqual(
+          offsets.slice(1).map((o) => edge + o)
+        );
+      })
+    );
+
     // As-is still means ON the cell: every glyph is centred on the boundaries
     // the file gives, the zero-width one included.
     const deviations = centreDeviations(measured, expected);
     summarize('original', deviations);
+    expect(deviations.filter((d) => BLOCKS[d.block].vertical).length).toBeGreaterThan(40);
+    expect(deviations.filter((d) => !BLOCKS[d.block].vertical).length).toBeGreaterThan(25);
     expectCentred(deviations);
     expectOneFlowLine(measured, expected);
+    // Across the line the glyph rides the line span's own centre — a baseline
+    // shift from the cell's display type would show up here.
+    BLOCKS.forEach((block, b) =>
+      findBlock(measured, block).lines.forEach((line, l) => {
+        for (const c of line.chars) {
+          if (c.text.trim() === '') continue;
+          expect(
+            Math.abs(across(c.glyph, expected[b][l].axis) - across(line.box, expected[b][l].axis))
+          ).toBeLessThanOrEqual(2);
+        }
+      })
+    );
+    // What Yomitan does under the pointer: the caret at a glyph's centre is in
+    // that glyph's cell, overflowing glyphs included. (A zero-width cell's
+    // glyph sits ON its neighbour by the file's own account; the topmost of
+    // the two wins the hit-test, so those are counted apart.)
+    let hits = 0;
+    let glyphs = 0;
+    let zeroCells = 0;
+    BLOCKS.forEach((block) =>
+      findBlock(measured, block).lines.forEach((line) => {
+        const crowded = line.chars.some((c) => parseFloat(c.inlineSize) === 0 && c.text.trim());
+        line.chars.forEach((c) => {
+          if (c.text.trim() === '') return;
+          if (crowded) {
+            zeroCells++;
+            return;
+          }
+          glyphs++;
+          if (c.hit) hits++;
+        });
+      })
+    );
+    console.log(
+      `[char-offsets] original: caret hit-test at the glyph centre ${hits}/${glyphs} ` +
+        `(${zeroCells} glyphs on lines with a zero-width cell not counted)`
+    );
+    expect(glyphs).toBeGreaterThan(50);
+    expect(hits).toBe(glyphs);
 
     await shot(page, 'viewer-original-block0', BLOCKS[0]);
+    await shot(page, 'viewer-original-horizontal', BLOCKS[HORIZONTAL_BLOCK]);
+    await shot(page, 'viewer-original-tilted', BLOCKS[2]);
   });
 
-  test('a manual font size renders no cells at all', async ({ page }) => {
+  test('a manual font size renders no cells at all, nor does auto; original does', async ({
+    page
+  }) => {
     await seedVolume(page, [PAGE], '24');
     await page.waitForTimeout(800);
     await page.evaluate(
@@ -751,8 +813,12 @@ test.describe('char_offsets — viewer', () => {
     );
     await expect(page.locator('.textBox')).toHaveCount(BLOCKS.length, { timeout: 20000 });
     await expect(page.locator('.ocr-char')).toHaveCount(0);
-    // …and flipping back to auto brings them in without a reload.
+    // …auto has none either (the uniform grid needs no cells)…
     await setFontSize(page, 'auto');
+    await expect(page.locator('.positionedLine').first()).toBeVisible();
+    await expect(page.locator('.ocr-char')).toHaveCount(0);
+    // …and flipping to original brings them in without a reload.
+    await setFontSize(page, 'original');
     await expect(page.locator('.ocr-char').first()).toBeVisible();
   });
 });
@@ -809,22 +875,26 @@ test.describe('char_offsets — editor', () => {
     await page.mouse.click(at.x, at.y);
   }
 
-  test('cells until the editor opens, RAW plain text while typing, reflowed cells after; persisted and undoable', async ({
+  test('original mode: cells until the editor opens, RAW plain text while typing, reflowed cells after; persisted and undoable', async ({
     page
   }) => {
     const RAW = BLOCKS[0].lines[ELLIPSIS_LINE];
     const ORIGINAL_OFFSETS = BLOCKS[0].char_offsets!;
     expect(RAW.endsWith('．．．')).toBe(true);
 
-    await seedVolume(page, [PAGE], 'auto');
+    // Cells are the ORIGINAL font mode's, in the editor as in the viewer (any
+    // other mode: e2e/line-grid.spec.ts), so that is the mode this runs in.
+    await seedVolume(page, [PAGE], 'original');
     await openReader(page);
-    const viewed = await measure(page, 'viewer');
+    const viewCells = () => measure(page, 'viewer');
+    const viewed = await viewCells();
     await enterEditMode(page);
     const block = page.locator('.editBlock').first();
     await expect(block.locator('.ocr-char').first()).toBeVisible();
 
-    // Cells in the editor sit where the viewer's do.
-    const expected = await expectedCells(page, true);
+    // Cells in the editor sit where the file puts them, as filed — on the
+    // turned quad for the page's one tilted line, exactly like the viewer.
+    const expected = await expectedCells(page, false);
     const before = await measure(page, 'editor');
 
     // ...and their glyphs are the viewer's size: a celled line is fitted to its
@@ -849,6 +919,28 @@ test.describe('char_offsets — editor', () => {
     summarize('edit mode', deviations);
     expectCentred(deviations);
     expectOneFlowLine(before, expected);
+    // As filed: the squeezed と line keeps its cells, え keeps its 0px cell.
+    expect(expected[ZERO_BLOCK][ZERO_LINE].cells).toHaveLength(11);
+    const squeezed = findBlock(before, BLOCKS[ZERO_BLOCK]).lines[ZERO_LINE].chars;
+    expect(squeezed).toHaveLength(11);
+    expect(parseFloat(squeezed[ZERO_CHAR].inlineSize)).toBe(0);
+    const zeroCell = findBlock(before, BLOCKS[REPAIRED_BLOCK]).lines[0].chars;
+    expect(zeroCell[REPAIRED_CHAR].text).toBe('え');
+    expect(zeroCell.map((c) => parseFloat(c.inlineSize))).toEqual([40, 40, 40, 0, 80, 40]);
+    // The tilted line's cells sit where the VIEWER's do, glyph for glyph.
+    const TILTED = [2, 1] as const;
+    expect(expected[TILTED[0]][TILTED[1]].axis[0]).not.toBe(0);
+    const turnedInViewer = findBlock(viewed, BLOCKS[TILTED[0]]).lines[TILTED[1]].chars;
+    const turnedInEditor = findBlock(before, BLOCKS[TILTED[0]]).lines[TILTED[1]].chars;
+    expect(turnedInEditor).toHaveLength(turnedInViewer.length);
+    turnedInEditor.forEach((c, k) => {
+      const v = turnedInViewer[k].glyph;
+      const off = Math.hypot(
+        c.glyph.x + c.glyph.w / 2 - (v.x + v.w / 2),
+        c.glyph.y + c.glyph.h / 2 - (v.y + v.h / 2)
+      );
+      expect(off, `tilted glyph ${k}, editor vs viewer`).toBeLessThanOrEqual(1);
+    });
     await shot(page, 'editor-cells-block0', BLOCKS[0]);
 
     // Opening the editor: the whole block goes plain, and plain means RAW —
@@ -912,7 +1004,7 @@ test.describe('char_offsets — editor', () => {
     saved = await readBlock(page, 0);
     expect(saved.lines[ELLIPSIS_LINE]).toBe(FIXED);
     expect(saved.char_offsets).toEqual(ORIGINAL_OFFSETS);
-    const viewer = findBlock(await measure(page, 'viewer'), BLOCKS[0]).lines[ELLIPSIS_LINE];
+    const viewer = findBlock(await viewCells(), BLOCKS[0]).lines[ELLIPSIS_LINE];
     expect(viewer.chars[FIX_AT].text).toBe('祖');
     expect(viewer.chars).toHaveLength(was.length);
 
@@ -944,6 +1036,10 @@ test.describe('char_offsets — editor', () => {
   });
 });
 
+// Auto mode answered the question by dropping the cells: a page whose file
+// carries char_offsets now weighs exactly what one without them does. The
+// celled weight is still measured — in original mode, the one place cells
+// render — so the number stays on record.
 test.describe('char_offsets — DOM weight (spec open question 4)', () => {
   const KANA =
     'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん';
@@ -1009,7 +1105,7 @@ test.describe('char_offsets — DOM weight (spec open question 4)', () => {
 
   const median = (values: number[]) => values.slice().sort((a, b) => a - b)[values.length >> 1];
 
-  test('a dense page with and without cells: node count and time to the first positioned line', async ({
+  test('a dense page with and without char_offsets: auto weighs the same, original carries the cells', async ({
     page
   }) => {
     test.setTimeout(120000);
@@ -1101,8 +1197,11 @@ test.describe('char_offsets — DOM weight (spec open question 4)', () => {
 
     expect(weight!.celled.boxes).toBe(40);
     expect(weight!.plain.boxes).toBe(40);
-    expect(weight!.celled.cells).toBe(40 * 4 * 20);
+    // auto: no cells, and not one node more than the page without offsets
+    expect(weight!.celled.cells).toBe(0);
     expect(weight!.plain.cells).toBe(0);
+    expect(weight!.celled.nodes).toBe(weight!.plain.nodes);
+    expect(weight!.celled.elements).toBe(weight!.plain.elements);
 
     const report = (kind: 'celled' | 'plain') => ({
       ...weight![kind],
@@ -1112,14 +1211,28 @@ test.describe('char_offsets — DOM weight (spec open question 4)', () => {
     });
     const celled = report('celled');
     const plain = report('plain');
-    console.log(`[char-offsets] DOM weight, celled page: ${JSON.stringify(celled)}`);
-    console.log(`[char-offsets] DOM weight, plain page:  ${JSON.stringify(plain)}`);
     console.log(
-      `[char-offsets] DOM weight ratio celled/plain: nodes ${(celled.nodes / plain.nodes).toFixed(1)}x, ` +
+      `[char-offsets] DOM weight (auto), page WITH char_offsets: ${JSON.stringify(celled)}`
+    );
+    console.log(
+      `[char-offsets] DOM weight (auto), page without:          ${JSON.stringify(plain)}`
+    );
+    console.log(
+      `[char-offsets] DOM weight ratio with/without (auto): nodes ${(celled.nodes / plain.nodes).toFixed(1)}x, ` +
         `time to first positioned line ${(celled.positionedMs / plain.positionedMs).toFixed(2)}x, ` +
         `time to painted ${(celled.paintedMs / plain.paintedMs).toFixed(2)}x`
     );
-    // Deliberately no threshold: this is a measurement for a follow-up
-    // decision (cells only for displayed boxes), not a gate.
+    // No threshold on the timings: they are a measurement, not a gate.
+
+    // Original mode is where the cells still render: one per character.
+    await setFontSize(page, 'original');
+    await turn(1, 'PageDown');
+    await waitForPositioned(page, 1);
+    const original = await weigh(1);
+    console.log(
+      `[char-offsets] DOM weight, celled page in ORIGINAL mode: ${JSON.stringify(original)}`
+    );
+    expect(original.cells).toBe(40 * 4 * 20);
+    expect(original.nodes).toBeGreaterThan(weight!.plain.nodes * 5);
   });
 });

@@ -1138,3 +1138,373 @@ describe('layoutLines with char_offsets', () => {
     expect(clear).toBe(true);
   });
 });
+
+// The uniform grid and rotation (line-grid.ts). These call layoutLinesImpl with
+// cells 'off' — what the viewer's auto mode passes — so they stay out of the
+// "before char_offsets" replay above and carry a golden of their own.
+describe('layoutLines on the uniform grid', () => {
+  const column = (x0: number, x1: number, y0: number, y1: number) => [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1]
+  ];
+  const auto = (block: LayoutBlock, lines = block.lines) =>
+    layoutLinesImpl(block, lines, heuristicMeasurer, { cells: 'off' })!;
+  /** Centre of glyph k along the reading axis, all-fullwidth text. */
+  const glyphCentre = (l: { inset: number; letterSpacing: number; fontSize: number }, k: number) =>
+    l.inset + k * (l.fontSize + l.letterSpacing) + l.fontSize / 2;
+
+  // A = 8 glyphs filling a 40×320 column; B = 4 glyphs in a 40×200 one. Print
+  // keeps one size per balloon (40), so B's quad is 40px longer than its text.
+  const loose: LayoutBlock = {
+    box: [100, 0, 190, 320],
+    vertical: true,
+    font_size: 40,
+    lines: ['あいうえおかきく', 'さしすせ'],
+    lines_coords: [column(150, 190, 0, 320), column(100, 140, 0, 200)]
+  };
+
+  it('a loose quad: positive spacing spreads the run over the whole quad, glyphs on cell centres', () => {
+    const [a, b] = auto(loose);
+    expect(a).toMatchObject({ fontSize: 40, letterSpacing: 0, inset: 0, rotation: 0 });
+    expect(b).toMatchObject({ fontSize: 40, letterSpacing: 10, inset: 5, rotation: 0 });
+    // left/top are still where today's renderer anchors the line
+    expect(b.left).toBe(0);
+    expect(b.top).toBe(0);
+    for (let k = 0; k < 4; k++) expect(glyphCentre(b, k)).toBeCloseTo((k + 0.5) * (200 / 4), 9);
+  });
+
+  it('a tight quad: negative spacing within the clamp closes the run up to fit', () => {
+    // C = 5 glyphs in a 40×180 column: the block size (40) needs 200px
+    const tight: LayoutBlock = {
+      ...loose,
+      lines: ['あいうえおかきく', 'たちつてと'],
+      lines_coords: [column(150, 190, 0, 320), column(100, 140, 0, 180)]
+    };
+    const [, c] = auto(tight);
+    expect(c.fontSize).toBe(40);
+    expect(c.letterSpacing).toBe(-4);
+    expect(c.inset).toBe(-2);
+    for (let k = 0; k < 5; k++) expect(glyphCentre(c, k)).toBeCloseTo((k + 0.5) * (180 / 5), 9);
+  });
+
+  it('a half-width mixed line keeps its narrow advances and shares the slack per character', () => {
+    const mixed: LayoutBlock = {
+      box: [100, 0, 140, 240],
+      vertical: true,
+      font_size: 40,
+      lines: ['第12話です'],
+      lines_coords: [column(100, 140, 0, 240)]
+    };
+    const [l] = auto(mixed);
+    expect(l.fontSize).toBe(40); // capped by the quad's thickness
+    // 4 fullwidth + 2 digits at 0.55em = 5.1em = 204px of text in 240px
+    expect(l.letterSpacing).toBeCloseTo(36 / 6, 9);
+    expect(l.inset).toBeCloseTo(3, 9);
+    // the run ends exactly half a spacing short of the quad's end
+    expect(l.inset + 204 + 5 * l.letterSpacing).toBeCloseTo(240 - l.inset, 9);
+  });
+
+  it('gives up outside the clamps: two characters in a quad drawn around a whole column', () => {
+    const block: LayoutBlock = {
+      box: [100, 0, 140, 300],
+      vertical: true,
+      font_size: 40,
+      lines: ['あい'],
+      lines_coords: [column(100, 140, 0, 300)]
+    };
+    const [l] = auto(block);
+    // (300 - 80) / 2 = 110px = 2.75em: the line renders as it did before
+    expect(l).toStrictEqual({
+      left: 0,
+      top: 0,
+      fontSize: 40,
+      wrap: false,
+      width: 40,
+      height: 300,
+      rotation: 0,
+      letterSpacing: 0,
+      inset: 0
+    });
+  });
+
+  it('never spreads a run into a neighbour the unspaced text was clear of', () => {
+    // two quads in one column whose ends overlap by 80px: A's text (200px at
+    // the block size) stops short of B, its quad does not
+    const stacked: LayoutBlock = {
+      box: [100, 0, 140, 420],
+      vertical: true,
+      font_size: 40,
+      lines: ['あいうえお', 'かきくけこ'],
+      lines_coords: [column(100, 140, 0, 300), column(100, 140, 220, 420)]
+    };
+    const [a, b] = auto(stacked);
+    expect(a).toMatchObject({ fontSize: 40, top: 0, letterSpacing: 0, inset: 0 });
+    expect(b).toMatchObject({ fontSize: 40, top: 220, letterSpacing: 0, inset: 0 });
+    // …and alone, the same line does take the grid
+    const alone = {
+      ...stacked,
+      lines: [stacked.lines[0]],
+      lines_coords: [column(100, 140, 0, 300)]
+    };
+    expect(auto(alone)[0].letterSpacing).toBe(20);
+  });
+
+  it('wrapped, banded and hidden lines carry no spacing and no rotation', () => {
+    for (const block of [jjkFurigana, pokemonRotated, fmaHallucination]) {
+      for (const l of auto(block)) {
+        if (!l.wrap && !l.hidden) continue;
+        expect(l).toMatchObject({ rotation: 0, letterSpacing: 0, inset: 0 });
+      }
+    }
+    // Pokemon Adventures 03 p24: the 7.6° quad is a merged base+ruby capture.
+    // It wraps inside its bbox, and a wrap container does not turn.
+    const [slanted] = auto(pokemonRotated);
+    expect(slanted.wrap).toBe(true);
+    expect(slanted.rotation).toBe(0);
+  });
+
+  it('leaves text with collapsible white space alone: the measurer and the browser disagree on it', () => {
+    const spaced: LayoutBlock = {
+      box: [0, 0, 400, 40],
+      vertical: false,
+      font_size: 40,
+      lines: ['NO  WAY '],
+      lines_coords: [column(0, 400, 0, 40)]
+    };
+    expect(auto(spaced)[0]).toMatchObject({ letterSpacing: 0, inset: 0 });
+    expect(auto({ ...spaced, lines: ['NO WAY'] })[0].letterSpacing).toBeGreaterThan(0);
+  });
+});
+
+describe('layoutLines with tilted quads', () => {
+  /** w × h upright rectangle about (cx, cy), turned like CSS rotate(deg). */
+  const tilted = (cx: number, cy: number, w: number, h: number, deg: number) => {
+    const t = (deg * Math.PI) / 180;
+    return [
+      [-w / 2, -h / 2],
+      [w / 2, -h / 2],
+      [w / 2, h / 2],
+      [-w / 2, h / 2]
+    ].map(([dx, dy]) => [
+      cx + dx * Math.cos(t) - dy * Math.sin(t),
+      cy + dx * Math.sin(t) + dy * Math.cos(t)
+    ]);
+  };
+  const boxOf = (quads: number[][][]) => {
+    const xs = quads.flat().map((p) => p[0]);
+    const ys = quads.flat().map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  };
+  const auto = (block: LayoutBlock) =>
+    layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'off' })!;
+
+  const sfx = (deg: number, vertical = true): LayoutBlock => {
+    const quad = vertical ? tilted(500, 400, 50, 360, deg) : tilted(500, 400, 360, 50, deg);
+    return {
+      box: boxOf([quad]),
+      vertical,
+      font_size: 50,
+      lines: ['ドドドドドド'],
+      lines_coords: [quad]
+    };
+  };
+
+  it.each([20, -35])(
+    'a vertical line tilted %d° lies in its own frame, centred on the quad',
+    (deg) => {
+      const block = sfx(deg);
+      const [l] = auto(block);
+      expect(l.rotation).toBeCloseTo(deg, 9);
+      // the own-frame box: cross × main, centred on the quad centre
+      expect(l.width).toBeCloseTo(50, 9);
+      expect(l.height).toBeCloseTo(360, 9);
+      expect(l.left + l.width / 2).toBeCloseTo(500 - block.box[0], 9);
+      expect(l.top + l.height / 2).toBeCloseTo(400 - block.box[1], 9);
+      expect(l.wrap).toBe(false);
+      // sized from the quad's OWN extents, not its inflated bbox: 6 glyphs at
+      // 50px in 360px → 10px of spacing
+      expect(l.fontSize).toBeCloseTo(50, 9);
+      expect(l.letterSpacing).toBeCloseTo(10, 9);
+      expect(l.inset).toBeCloseTo(5, 9);
+    }
+  );
+
+  it('a horizontal line tilted -10°', () => {
+    const block = sfx(-10, false);
+    const [l] = auto(block);
+    expect(l.rotation).toBeCloseTo(-10, 9);
+    expect(l.width).toBeCloseTo(360, 9);
+    expect(l.height).toBeCloseTo(50, 9);
+    expect(l.left + l.width / 2).toBeCloseTo(500 - block.box[0], 9);
+    expect(l.top + l.height / 2).toBeCloseTo(400 - block.box[1], 9);
+  });
+
+  it('a tilt inside the dead band changes nothing at all', () => {
+    const upright = auto(sfx(0))[0];
+    const wobbly = sfx(1.5);
+    const [l] = auto(wobbly);
+    expect(l.rotation).toBe(0);
+    // today's anchoring: the bbox start, centred across the bbox
+    const xs = wobbly.lines_coords![0].map((p) => p[0]);
+    expect(l.top).toBe(0);
+    expect(l.left).toBeCloseTo((Math.max(...xs) - Math.min(...xs)) / 2 - l.fontSize / 2, 9);
+    expect(upright.rotation).toBe(0);
+  });
+
+  it('parallel slanted columns are neither re-captures of each other nor banded, and all turn', () => {
+    // three 50×300 columns at 35°, one 60px pitch apart across the lean. Their
+    // bboxes share ~75% of the smaller one: by the bbox test, a garbage cluster.
+    const t = (35 * Math.PI) / 180;
+    const quads = [0, 1, 2].map((k) =>
+      tilted(600 - k * 60 * Math.cos(t), 400 - k * 60 * Math.sin(t), 50, 300, 35)
+    );
+    const block: LayoutBlock = {
+      box: boxOf(quads),
+      vertical: true,
+      font_size: 50,
+      lines: ['あいうえおか', 'きくけこさし', 'すせそたちつ'],
+      lines_coords: quads
+    };
+    const layouts = auto(block);
+    for (const l of layouts) {
+      expect(l.hidden).toBeFalsy();
+      expect(l.wrap).toBe(false);
+      expect(l.rotation).toBeCloseTo(35, 9);
+      expect(l.fontSize).toBeCloseTo(50, 9);
+    }
+  });
+
+  it('a turned line that would cross a clean neighbour falls back to the upright layout, both clear', () => {
+    // a 45° line lying right across an upright column
+    const column = [
+      [480, 200],
+      [520, 200],
+      [520, 600],
+      [480, 600]
+    ];
+    const crossing = tilted(500, 400, 40, 400, 45);
+    const block: LayoutBlock = {
+      box: boxOf([column, crossing]),
+      vertical: true,
+      font_size: 40,
+      lines: ['あいうえおかきくけこ', 'さしすせそたちつてと'],
+      lines_coords: [column, crossing]
+    };
+    const layouts = auto(block);
+    expect(layouts[0].rotation).toBe(0);
+    expect(layouts[1].rotation).toBe(0);
+    // the upright layout is the bbox-anchored one the overlap rules know
+    expect(layouts[1].top).toBe(Math.min(...crossing.map((p) => p[1])) - block.box[1]);
+  });
+
+  it('a wrap container yields to a turned line: clipped around it, never the other way', () => {
+    // a merged-columns quad (wraps) whose right part a 20° line leans through
+    const merged = [
+      [300, 200],
+      [460, 200],
+      [460, 500],
+      [300, 500]
+    ];
+    const leaning = tilted(450, 350, 40, 300, 20);
+    const clean = [
+      [600, 200],
+      [640, 200],
+      [640, 520],
+      [600, 520]
+    ];
+    const block: LayoutBlock = {
+      box: boxOf([merged, leaning, clean]),
+      vertical: true,
+      font_size: 40,
+      lines: ['あいうえおかきくけこさしすせそたちつてと', 'なにぬねのは', 'まみむめもやゆよ'],
+      lines_coords: [merged, leaning, clean]
+    };
+    const [wrapped, turned] = auto(block);
+    expect(wrapped.wrap).toBe(true);
+    expect(wrapped.rotation).toBe(0);
+    expect(turned.rotation).toBeCloseTo(20, 9);
+    expect(turned.wrap).toBe(false);
+    // the container ends left of everything the turned line covers
+    const reach = (300 * Math.sin((20 * Math.PI) / 180) + 40 * Math.cos((20 * Math.PI) / 180)) / 2;
+    expect(wrapped.left + wrapped.width).toBeLessThanOrEqual(450 - block.box[0] - reach + 0.5);
+  });
+
+  it("a rotated line with cells ('as-is') turns too: own-frame box, the start shift as its inset", () => {
+    const quad = tilted(500, 400, 50, 400, 20);
+    const block: LayoutBlock = {
+      box: boxOf([quad]),
+      vertical: true,
+      font_size: 50,
+      lines: ['あいうえおかきく'],
+      lines_coords: [quad],
+      char_offsets: [[12, 60, 110, 160, 210, 260, 310, 360, 396]]
+    };
+    const [l] = layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'as-is' })!;
+    expect(l.cells).toHaveLength(8);
+    expect(l.rotation).toBeCloseTo(20, 9);
+    expect(l.inset).toBe(12);
+    expect(l.letterSpacing).toBe(0);
+    expect(l.height).toBeCloseTo(400, 9);
+    expect(l.top + l.height / 2).toBeCloseTo(400 - block.box[1], 9);
+    // and with the offsets ignored (auto mode), the same line rides the grid
+    const [gridded] = auto(block);
+    expect(gridded.cells).toBeUndefined();
+    expect(gridded.rotation).toBeCloseTo(20, 9);
+  });
+
+  it('golden: tilted and letter-spaced layouts', () => {
+    const t = (35 * Math.PI) / 180;
+    const slanted = [0, 1].map((k) =>
+      tilted(600 - k * 60 * Math.cos(t), 400 - k * 60 * Math.sin(t), 50, 300, 35)
+    );
+    const blocks: LayoutBlock[] = [
+      sfx(20),
+      sfx(-35),
+      sfx(-10, false),
+      {
+        box: boxOf(slanted),
+        vertical: true,
+        font_size: 50,
+        lines: ['あいうえお', 'きくけこさし'],
+        lines_coords: slanted
+      },
+      {
+        box: [100, 0, 190, 320],
+        vertical: true,
+        font_size: 40,
+        lines: ['あいうえおかきく', 'さしすせ'],
+        lines_coords: [
+          [
+            [150, 0],
+            [190, 0],
+            [190, 320],
+            [150, 320]
+          ],
+          [
+            [100, 0],
+            [140, 0],
+            [140, 200],
+            [100, 200]
+          ]
+        ]
+      },
+      {
+        box: [0, 0, 300, 40],
+        vertical: false,
+        font_size: 40,
+        lines: ['第12話です'],
+        lines_coords: [
+          [
+            [0, 0],
+            [300, 0],
+            [300, 40],
+            [0, 40]
+          ]
+        ]
+      }
+    ];
+    expect(blocks.map(auto)).toMatchSnapshot();
+  });
+});

@@ -1,7 +1,8 @@
 # OCR engines and text placement: what Chimahon and Manatan do, and what we should take
 
 **Date:** 2026-09-19
-**Status:** findings + recommendation. Nothing here is implemented. The producer-side items are for the
+**Status:** findings + recommendation. Nothing here was implemented when it was written; see the update under
+recommendation 5 for the reader-side part that since was. The producer-side items are for the
 mokuro-bunko session (worktree `feat-ocr-engines`), which this work only READ.
 **Evidence:** reports, scripts and raw results are kept outside the repo in
 `~/Projects/mokuro-ocr-research-2026-09-19/` (`reports/` = the eight investigation reports and the fact-check,
@@ -117,6 +118,11 @@ character placement has never been benchmarked (its tests assert length, monoton
    engine output and expected placement, including the zero-width, bloated and crushed failures. **[V]**
 5. **Reader:** celled lines take the block's shared font size again; rotate a line by its quad's angle (both
    apps do; continuity-safe as a CSS transform); then a keyless in-browser `ppocr-manga` engine beside GCV.
+   _Update, same day (owner's decision): the viewer's auto mode drops per-character cells altogether — every
+   line sits on the uniform grid of its quad (CSS letter-spacing on one text node) and tilted quads render
+   rotated. `src/lib/reader/line-grid.ts`, `e2e/line-grid.spec.ts`; `char_offsets` remain original mode's
+   diagnostic view. The OCR editor draws lines the same way (grid, rotation, cells only in original) and its
+   line move / resize / insert keep a quad's tilt._
 6. **Spikes:** PaddleOCR-VL `Spotting:` on vertical manga; CTC centres as an independent guard (≈1 s/page for
    the 8-shift ensemble, gain ~0.01 pitch — only after 1 and 3); user-fetched Chrome Screen AI as a symbol-box
    source, feeding the reader's existing `gcv-symbols` path.

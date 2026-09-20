@@ -18,6 +18,7 @@
   import { db } from '$lib/catalog/db';
   import { layoutLines, getDefaultMeasurer, type LineLayout } from '$lib/reader/line-coords-layout';
   import { isBlankCell, processLine } from '$lib/reader/char-offsets-layout';
+  import { lineTransform } from '$lib/reader/line-grid';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
 
   interface ContextMenuData {
@@ -87,15 +88,18 @@
         // the quad width, furigana included), so rendering it as-is overflows
         // the box; the quads themselves are accurate. Null (no lines_coords,
         // e.g. pre-lines_coords imports) → legacy hover-fit auto below.
-        // Lines the file places character by character (char_offsets) come
-        // back with cells; auto repairs the zero-width cells producers leave
-        // on real characters.
+        // Auto IGNORES the file's char_offsets ('off'): Japanese print is
+        // fixed-pitch, so every line sits on the uniform grid of its quad —
+        // one plain text node, the grid as letter-spacing, a tilted quad as a
+        // rotation (line-grid.ts). No span per character: the lightest DOM,
+        // and the one Yomitan/Migaku are safest with.
         let lineLayouts = isAutoMode
-          ? layoutLines(block, processedLines, getDefaultMeasurer(), { cells: 'repaired' })
+          ? layoutLines(block, processedLines, getDefaultMeasurer(), { cells: 'off' })
           : null;
 
-        // Original mode is "what the file says": a block whose file places its
-        // characters renders them exactly there, zero-width cells and all, and
+        // Original mode is "what the file says" — the diagnostic view of the
+        // producer's char_offsets: a block whose file places its characters
+        // renders them exactly there, zero-width cells and all, and
         // its unplaced lines ride the same per-line layout so the block stays
         // coherent. A block with no usable placement keeps the whole-block
         // rendering it has always had. (The key check keeps blocks without the
@@ -153,14 +157,18 @@
           useMinDimensions: $settings.fontSize !== 'auto' && !isOriginalMode,
           isOriginalMode,
           lineLayouts,
-          // Everything a span's natural origin or its target depends on. The
-          // cells' own sizes are left out: they sum to the line's extent.
+          // Everything a span's natural origin, its size or its target depends
+          // on — letter-spacing changes the span's extent, and a rotated line
+          // is centred in its own-frame box. The cells' own sizes are left
+          // out: they sum to the line's extent.
           layoutSignature: lineLayouts
             ? lineLayouts
                 .map((l, i) =>
                   l.hidden
                     ? ''
-                    : `${l.left},${l.top},${l.fontSize},${l.cells ? l.cells.length : '-'},${processedLines[i].length}`
+                    : `${l.left},${l.top},${l.fontSize},${l.cells ? l.cells.length : '-'},${processedLines[i].length}` +
+                      (l.letterSpacing || l.inset ? `,s${l.letterSpacing},${l.inset}` : '') +
+                      (l.rotation ? `,r${l.rotation},${l.width},${l.height}` : '')
                 )
                 .join('|')
             : '',
@@ -386,6 +394,15 @@
   // zoom is applied as an ancestor transform, so this coordinate space is
   // zoom-invariant. Both offsetLeft and the target `left` reference the box's
   // padding edge, so `target - offsetLeft` is the exact translate.
+  //
+  // The uniform grid and rotation ride the same transform (lineTransform):
+  // the grid's half-step inset is added to the translate, and a tilted line
+  // is laid into its own-frame box and turned about that box's centre. A
+  // transform never takes the span out of flow (#254 holds), and the browser
+  // hit-tests the TURNED glyphs — elementFromPoint / caretRangeFromPoint, what
+  // Yomitan scans with — so the touch zones follow the slant of the print.
+  // offsetLeft/Top/Width/Height are layout values: a transform already on the
+  // span does not move them, so a re-measure is idempotent.
   function positionPerLine(container: HTMLDivElement, _signature: string) {
     let raf = 0;
 
@@ -396,16 +413,32 @@
       // 0. Skip and re-run on reveal (mouseenter/touchstart) or update.
       if (spans[0].offsetParent === null) return;
 
-      // Read every natural origin first (one layout), then write every
+      // Read every natural box first (one layout), then write every
       // transform (compositor-only, no reflow) — avoids layout thrash.
-      const naturals: Array<[number, number]> = [];
-      for (const span of spans) naturals.push([span.offsetLeft, span.offsetTop]);
+      const naturals = [...spans].map((span) => ({
+        left: span.offsetLeft,
+        top: span.offsetTop,
+        width: span.offsetWidth,
+        height: span.offsetHeight
+      }));
+      const vertical = container.style.writingMode === 'vertical-rl';
 
       spans.forEach((span, i) => {
-        const targetLeft = Number(span.dataset.targetLeft);
-        const targetTop = Number(span.dataset.targetTop);
-        if (!Number.isFinite(targetLeft) || !Number.isFinite(targetTop)) return;
-        span.style.transform = `translate(${targetLeft - naturals[i][0]}px, ${targetTop - naturals[i][1]}px)`;
+        const { targetLeft, targetTop, inset, rotation, boxWidth, boxHeight } = span.dataset;
+        const target = { left: Number(targetLeft), top: Number(targetTop) };
+        if (!Number.isFinite(target.left) || !Number.isFinite(target.top)) return;
+        const { transform, origin } = lineTransform({
+          natural: naturals[i],
+          target,
+          box: rotation ? { width: Number(boxWidth), height: Number(boxHeight) } : undefined,
+          inset: Number(inset) || 0,
+          rotation: Number(rotation) || 0,
+          vertical
+        });
+        span.style.transform = transform;
+        // '' puts an un-rotated line back on the default (it may have been
+        // rotated before an OCR edit straightened its quad)
+        span.style.transformOrigin = origin;
       });
     };
 
@@ -424,7 +457,8 @@
     return {
       // _signature changes on displayOCR toggle, font-size setting change, or
       // a change to the box's line layout (an OCR edit, a line gaining or
-      // losing its character cells) — anything that moves a natural origin.
+      // losing its character cells, its grid spacing or its rotation) —
+      // anything that moves a natural origin or a target.
       update: schedule,
       destroy() {
         cancelAnimationFrame(raf);
@@ -677,6 +711,14 @@
               class:wrappedLine={lineLayouts[lineIndex].wrap}
               data-target-left={lineLayouts[lineIndex].left}
               data-target-top={lineLayouts[lineIndex].top}
+              data-inset={lineLayouts[lineIndex].inset || undefined}
+              data-rotation={lineLayouts[lineIndex].rotation || undefined}
+              data-box-width={lineLayouts[lineIndex].rotation
+                ? lineLayouts[lineIndex].width
+                : undefined}
+              data-box-height={lineLayouts[lineIndex].rotation
+                ? lineLayouts[lineIndex].height
+                : undefined}
               style:width={lineLayouts[lineIndex].wrap
                 ? `${lineLayouts[lineIndex].width}px`
                 : undefined}
@@ -684,6 +726,9 @@
                 ? `${lineLayouts[lineIndex].height}px`
                 : undefined}
               style:font-size={`${lineLayouts[lineIndex].fontSize}px`}
+              style:letter-spacing={lineLayouts[lineIndex].letterSpacing
+                ? `${lineLayouts[lineIndex].letterSpacing}px`
+                : undefined}
               >{#if lineLayouts[lineIndex].cells}{#each lineLayouts[lineIndex].cells as cell}<span
                     class="ocr-char"
                     class:ocr-space={isBlankCell(cell.text)}
@@ -770,18 +815,23 @@
      a geometry-derived font size. The line stays inline-block IN NORMAL FLOW
      (not position:absolute) so DOM text scanners read the block as one
      continuous run (#254); a measurement action then translates it onto the
-     quad. line-height 1 keeps the column/row no thicker than the font size;
-     letter-spacing 0 because the print's tracking is already baked into the
-     quad length the size was fitted to. */
+     quad. line-height 1 keeps the column/row no thicker than the font size.
+     letter-spacing 0 is the default only: a line on the uniform grid carries
+     its own as an inline style — (quad length − text advance) / characters —
+     which spreads the ONE text node over the quad with no per-character
+     element; positionPerLine adds the half-step inset and, for a tilted quad,
+     the rotation. */
   .textBox.perLine .ocr-line.positionedLine {
     display: inline-block;
     line-height: 1;
     letter-spacing: 0;
     white-space: nowrap;
-    /* transform (translate onto the quad) is set by positionPerLine */
+    /* transform (translate onto the quad, rotate with it) and its origin are
+       set by positionPerLine */
   }
 
-  /* A line the file places character by character (char_offsets): one cell
+  /* ORIGINAL mode only — auto ignores char_offsets and uses the grid above.
+     A line the file places character by character (char_offsets): one cell
      per character, its inline size the character's advance, so normal flow
      puts every glyph where the print has it — no per-glyph measurement, and
      above all no position:absolute, which would be #254 between every glyph.

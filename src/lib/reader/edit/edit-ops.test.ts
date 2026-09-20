@@ -304,7 +304,43 @@ import {
   resizeLine,
   healBlockFontSize
 } from './edit-ops';
-import { lineGeometry, rectQuad } from './block-geometry';
+import { lineGeometry, quadBounds, rectQuad } from './block-geometry';
+import { lineFrame } from '../line-grid';
+
+/** An upright w × h rectangle centred on (cx, cy), turned clockwise by `deg`. */
+function tilted(cx: number, cy: number, w: number, h: number, deg: number): number[][] {
+  const t = (deg * Math.PI) / 180;
+  const corner = (dx: number, dy: number) => [
+    cx + dx * Math.cos(t) - dy * Math.sin(t),
+    cy + dx * Math.sin(t) + dy * Math.cos(t)
+  ];
+  return [
+    corner(-w / 2, -h / 2),
+    corner(w / 2, -h / 2),
+    corner(w / 2, h / 2),
+    corner(-w / 2, h / 2)
+  ];
+}
+
+/** A vertical block whose line 0 is an SFX column leaning 20° and line 1 upright. */
+function tiltedPage(): Page {
+  return {
+    version: '0.2.1',
+    img_width: 1000,
+    img_height: 1000,
+    img_path: 't.png',
+    blocks: [
+      {
+        box: [300, 300, 600, 700],
+        vertical: true,
+        font_size: 40,
+        lines: ['あいうえおか', 'かきくけこさ'],
+        lines_coords: [tilted(500, 500, 40, 240, 20), rectQuad(320, 380, 40, 240)],
+        char_offsets: [[0, 40, 80, 120, 160, 200, 240], null]
+      }
+    ]
+  };
+}
 
 function tocPage(): Page {
   const quads = [
@@ -349,7 +385,10 @@ describe('lineGeometry', () => {
       width: 541,
       height: 99,
       vertical: false,
-      fontSize: 99
+      fontSize: 99,
+      rotation: 0,
+      main: 541,
+      box: { left: 800, top: 1710, width: 541, height: 99 }
     });
     expect(lineGeometry(rectQuad(1500, 1820, 44, 252))).toMatchObject({
       vertical: true,
@@ -385,6 +424,25 @@ describe('moveLine', () => {
     const out = moveLine(tocPage(), 1, 1, 10000, 0);
     expect(out.blocks[1].lines_coords![1][1][0]).toBe(1746);
   });
+  it('a tilted line keeps its tilt: a move is a translation of the four corners', () => {
+    const p = tiltedPage();
+    const before = p.blocks[0].lines_coords![0];
+    const out = moveLine(p, 0, 0, 37, -52);
+    const after = out.blocks[0].lines_coords![0];
+    after.forEach(([x, y], k) => {
+      expect(x).toBeCloseTo(before[k][0] + 37, 9);
+      expect(y).toBeCloseTo(before[k][1] - 52, 9);
+    });
+    const frame = lineFrame(after, true)!;
+    expect(frame.angle).toBeCloseTo(20, 6);
+    expect(frame.main).toBeCloseTo(240, 6);
+    // ...also when the image edge shortens the move (the BBOX stops at the edge)
+    const edge = moveLine(p, 0, 0, 10000, 0).blocks[0].lines_coords![0];
+    expect(lineFrame(edge, true)!.angle).toBeCloseTo(20, 6);
+    expect(quadBounds(edge)[2]).toBeCloseTo(1000, 9);
+    // the placement is along the line, which did not change
+    expect(out.blocks[0].char_offsets![0]).toEqual([0, 40, 80, 120, 160, 200, 240]);
+  });
 });
 
 describe('resizeLine', () => {
@@ -404,6 +462,36 @@ describe('resizeLine', () => {
     const out = resizeLine(p, 0, 0, quad(120, 10, 140, 210)); // height 100 → 200
     expect(out.blocks[0].char_offsets![0]).toEqual([0, 80, 200]);
     expect(out.blocks[0].char_offsets![1]).toBeNull(); // other lines untouched
+  });
+  it('an upright quad is still squared up to its bounds, as it always was', () => {
+    const p = tiltedPage();
+    const wobbly = [
+      [320, 380],
+      [361, 381],
+      [360, 640],
+      [319, 639]
+    ];
+    const out = resizeLine(p, 0, 1, wobbly);
+    expect(out.blocks[0].lines_coords![1]).toEqual(rectQuad(319, 380, 42, 260));
+  });
+  it('a TILTED quad is kept as it is — squaring it up would silently straighten the line', () => {
+    const p = tiltedPage();
+    const longer = tilted(500, 500, 40, 480, 20);
+    const out = resizeLine(p, 0, 0, longer);
+    expect(out.blocks[0].lines_coords![0]).toEqual(longer);
+    expect(lineFrame(out.blocks[0].lines_coords![0], true)!.angle).toBeCloseTo(20, 6);
+    // main extent 240 → 480: the placement scales with it
+    out.blocks[0].char_offsets![0]!.forEach((o, k) => expect(o).toBeCloseTo(80 * k, 6));
+    // the box grew around the turned quad's bounds
+    const [x0, y0, x1, y1] = quadBounds(longer);
+    expect(out.blocks[0].box[0]).toBeLessThanOrEqual(x0);
+    expect(out.blocks[0].box[1]).toBeLessThanOrEqual(y0);
+    expect(out.blocks[0].box[2]).toBeGreaterThanOrEqual(x1);
+    expect(out.blocks[0].box[3]).toBeGreaterThanOrEqual(y1);
+  });
+  it('a tilted quad that would leave the image is refused: clamping corners would bend it', () => {
+    const p = tiltedPage();
+    expect(resizeLine(p, 0, 0, tilted(500, 500, 40, 1200, 20))).toBe(p);
   });
 });
 
@@ -469,6 +557,19 @@ describe('insertLine / removeLine', () => {
     const out2 = insertLine(p, 1, 12);
     expect(out2.blocks[1].lines_coords![13]).toEqual(rectQuad(800, 2640, 300, 80));
     expect(out2.blocks[1].box[3]).toBe(2720);
+  });
+  it('after a TILTED line the new quad is its neighbour in the line’s own frame, same tilt', () => {
+    const p = tiltedPage();
+    const out = insertLine(p, 0, 0);
+    const added = lineFrame(out.blocks[0].lines_coords![1], true)!;
+    const t = (20 * Math.PI) / 180;
+    expect(added.angle).toBeCloseTo(20, 6);
+    expect(added.main).toBeCloseTo(240, 6);
+    expect(added.cross).toBeCloseTo(40, 6);
+    // one thickness to the line's own LEFT
+    expect(added.cx).toBeCloseTo(500 - 40 * Math.cos(t), 6);
+    expect(added.cy).toBeCloseTo(500 - 40 * Math.sin(t), 6);
+    expect(out.blocks[0].lines_coords).toHaveLength(3);
   });
   it('inserting into a block without quads just inserts the line', () => {
     const out = insertLine(tocPage(), 0, 0);

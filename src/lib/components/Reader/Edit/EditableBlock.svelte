@@ -33,6 +33,17 @@
    * positioned line, grows along its writing axis as text is typed and is
    * never clipped; typing in one line never moves another.
    *
+   * A line is drawn the way the viewer draws it (`line-grid.ts`): centred
+   * ACROSS its quad (one line box as thick as the quad — the text is usually
+   * thinner than the quad the detector drew), its text
+   * ONE text node on the quad's uniform grid — letter-spacing stretches the
+   * run over the quad's length, a text-indent of half a spacing centres each
+   * glyph in its step — and a TILTED quad shows the line turned: the element
+   * is the quad's own-frame box with `rotate(θ)` about its centre, also while
+   * its editor is open (a caret and an IME work inside a transformed
+   * contenteditable like anywhere else; hit-testing follows the turn, so a
+   * press on the turned text is a press on the line).
+   *
    * Body drag = move block, corner/edge handle drag = resize block, click =
    * select block (shift adds). Inside the selected block a click on a line
    * selects THAT line, a drag on it moves its quad, and its two handles resize
@@ -43,18 +54,25 @@
    * A block without quads renders its lines in flow at a size that fits them
    * all; the toolbar's "Place lines" gives it quads.
    *
-   * A positioned line whose `char_offsets` entry is usable (and which runs the
-   * way its block does — see `placed`) shows the same per-character cells as
-   * the viewer (`lineCells`), so what is being corrected sits where the reader
-   * will paint it — until the block's editor opens: from then on EVERY line of
-   * the block is plain RAW text. Cell spans never live
+   * Only the `original` font mode — the viewer's diagnostic view of the file —
+   * draws `char_offsets`: there a positioned line whose entry is usable (and
+   * which runs the way its block does — see `placed`) shows the file's
+   * per-character cells exactly as the viewer does (`lineCells`), until the
+   * block's editor opens: from then on EVERY line of the block is plain RAW
+   * text. Cell spans never live
    * inside a contenteditable (an IME composes into a text node, and a caret has
    * no sane home between inline-blocks), and the cells show the PROCESSED text
    * (`…`) while the model stores the raw one (`...`).
    */
   import type { Block } from '$lib/types';
   import type { EditSession, GestureMark } from '$lib/reader/edit/edit-session.svelte';
-  import { lineGeometry, rectQuad, type LineGeometry } from '$lib/reader/edit/block-geometry';
+  import {
+    lineGeometry,
+    lineGrid,
+    lineHandlePoints,
+    resizeQuadEdge,
+    type LineGeometry
+  } from '$lib/reader/edit/block-geometry';
   import { parallelOffsets } from '$lib/reader/char-offsets';
   import {
     isBlankCell,
@@ -106,10 +124,9 @@
       : null
   );
   /**
-   * Per-line cells (null = that line renders as plain text, as it always has).
-   * Same call as the viewer: `original` renders the file as-is, every other
-   * font mode repairs zero-width cells on real characters. Nothing is celled
-   * while the editor is open.
+   * Per-line cells (null = that line renders as plain text on the grid). Same
+   * rule as the viewer: `original` renders the file as-is, every other font
+   * mode ignores the field. Nothing is celled while the editor is open.
    *
    * Offsets run along the BLOCK's reading axis — the producer warps every line
    * crop by the block's `vertical` flag and clamps to the quad's extent along
@@ -119,9 +136,9 @@
    * vertical block) stays plain text: its cells measure the axis its element
    * is not written on.
    */
-  let repairCells = $derived($settings.fontSize !== 'original');
+  let showCells = $derived($settings.fontSize === 'original');
   let placed = $derived.by<(PlacedLine | null)[] | null>(() => {
-    if (!geoms || editing) return null;
+    if (!geoms || editing || !showCells) return null;
     const offsets = parallelOffsets(block);
     const quads = block.lines_coords;
     if (!offsets || !quads) return null;
@@ -130,7 +147,7 @@
       if (g.vertical !== block.vertical) return null;
       const extents = quadExtents(quads[i], block.vertical);
       const cells = extents?.main
-        ? lineCells(block.lines[i], offsets[i], extents.main, { repair: repairCells })
+        ? lineCells(block.lines[i], offsets[i], extents.main, { repair: false })
         : null;
       if (!extents || !cells) return null;
       // The viewer sizes a celled line min(cross, fitted), and fits it to the
@@ -143,6 +160,15 @@
       return { cells, fontSize: Math.max(1, Math.round(Math.min(extents.cross, fitted))) };
     });
   });
+
+  /**
+   * The uniform grid per line, for the text the line SHOWS: the RAW one (a
+   * plain line has always shown the raw text, at a size fitted to it). While
+   * the editor is open it stays what the committed text gave — opening the
+   * editor must not make the text jump, and the draft is not reactive; the
+   * commit re-spaces the line.
+   */
+  let grids = $derived(geoms?.map((g, i) => lineGrid(g, block.lines[i])) ?? null);
 
   /** Flow blocks: a size at which every line fits the box. */
   let flowFontSize = $derived.by(() => {
@@ -180,6 +206,8 @@
     startX: number;
     startY: number;
     box: number[];
+    /** The line's quad when the drag began (line drags only). */
+    quad?: number[][];
     moved: boolean;
     key: string;
     /** The element holding the pointer capture. */
@@ -194,7 +222,7 @@
   // The press is NOT stopped: the surface's tracker must see every pointer, or
   // a pinch whose first finger landed on a block never zooms ("pinch always
   // wins"). Role 'editor' already keeps the surface from panning or tapping.
-  function beginDrag(e: PointerEvent, kind: Kind, box: number[]) {
+  function beginDrag(e: PointerEvent, kind: Kind, box: number[], quad?: number[][]) {
     // `drag`: a press on a line or handle bubbles on to the block's own
     // pointerdown — the innermost drag wins, the block must not start a second
     // one. A pinch's second finger never drags at all.
@@ -208,6 +236,7 @@
       startX: e.clientX,
       startY: e.clientY,
       box,
+      quad,
       moved: false,
       key: `${keyKind}:${pageIndex}:${index}:${e.pointerId}`,
       el,
@@ -279,7 +308,12 @@
     // press belongs to the block (select / move) and bubbles up to it.
     if (!selected || session.selection.length !== 1) return;
     const g = geoms[lineIndex];
-    beginDrag(e, { line: lineIndex, part }, [g.left, g.top, g.left + g.width, g.top + g.height]);
+    beginDrag(
+      e,
+      { line: lineIndex, part },
+      [g.left, g.top, g.left + g.width, g.top + g.height],
+      block.lines_coords?.[lineIndex]
+    );
   }
 
   function onPointerMove(e: PointerEvent) {
@@ -299,21 +333,18 @@
         session.moveLine(pageIndex, index, k.line, x0 + dx - g.left, y0 + dy - g.top, drag.key);
         return;
       }
-      // end = length along the writing axis; side = thickness (→ font size)
-      let nx0 = x0,
-        ny0 = y0,
-        nx1 = x1,
-        ny1 = y1;
-      if (g.vertical) {
-        if (k.part === 'end') ny1 = y1 + dy;
-        else nx0 = x0 + dx;
-      } else if (k.part === 'end') nx1 = x1 + dx;
-      else ny1 = y1 + dy;
+      // end = length along the writing axis; side = thickness (→ font size).
+      // Absolute from the quad the drag began on, in that quad's own frame —
+      // a tilted line keeps its tilt (the op squares an upright one up).
+      // The orientation is the START quad's too: a line dragged through
+      // square must not swap which edge the handle holds mid-drag.
+      if (!drag.quad) return;
+      const { vertical } = lineGeometry(drag.quad);
       session.resizeLine(
         pageIndex,
         index,
         k.line,
-        rectQuad(nx0, ny0, nx1 - nx0, ny1 - ny0),
+        resizeQuadEdge(drag.quad, vertical, k.part, dx, dy),
         drag.key
       );
       return;
@@ -341,6 +372,13 @@
       if (typeof k !== 'string') session.selectLine(pageIndex, index, k.line);
       else session.select(pageIndex, index, e.shiftKey);
     }
+  }
+
+  /** The resize cursor nearest to a handle's drag axis, which turns with the
+   * line: degrees clockwise from the x axis. */
+  function axisCursor(degrees: number): string {
+    const folded = ((degrees % 180) + 180) % 180;
+    return ['ew-resize', 'nwse-resize', 'ns-resize', 'nesw-resize'][Math.round(folded / 45) % 4];
   }
 
   // ---- text editing ----
@@ -655,6 +693,7 @@
     {#each block.lines as line, i (lineIds[i] ?? `k${i}`)}
       {@const g = geoms[i]}
       {@const cells = placed?.[i] ?? null}
+      {@const grid = cells ? null : grids?.[i]}
       <div
         class="line positioned"
         class:lineSelected={selectedLineIndex === i && !editing}
@@ -662,15 +701,22 @@
         aria-readonly={!editing}
         contenteditable={editing ? 'true' : undefined}
         tabindex={editing ? 0 : undefined}
-        style:left={`${g.left - left}px`}
-        style:top={`${g.top - top}px`}
-        style:width={g.vertical ? `${g.width}px` : undefined}
-        style:min-width={g.vertical ? undefined : `${g.width}px`}
-        style:height={g.vertical ? undefined : `${g.height}px`}
-        style:min-height={g.vertical ? `${g.height}px` : undefined}
+        style:left={`${g.box.left - left}px`}
+        style:top={`${g.box.top - top}px`}
+        style:width={g.vertical ? `${g.box.width}px` : undefined}
+        style:min-width={g.vertical ? undefined : `${g.box.width}px`}
+        style:height={g.vertical ? undefined : `${g.box.height}px`}
+        style:min-height={g.vertical ? `${g.box.height}px` : undefined}
         style:writing-mode={g.vertical ? 'vertical-rl' : 'horizontal-tb'}
         style:font-size={`${cells ? cells.fontSize : g.fontSize}px`}
+        style:line-height={`${g.vertical ? g.box.width : g.box.height}px`}
         style:padding-inline-start={cells ? `${cells.cells.start}px` : undefined}
+        style:letter-spacing={grid?.letterSpacing ? `${grid.letterSpacing}px` : undefined}
+        style:text-indent={grid?.inset ? `${grid.inset}px` : undefined}
+        style:transform={g.rotation ? `rotate(${g.rotation}deg)` : undefined}
+        style:transform-origin={g.rotation
+          ? `${g.box.width / 2}px ${g.box.height / 2}px`
+          : undefined}
         use:initText={{ text: line, cells: cells?.cells ?? null }}
         onpointerdown={(e) => onLinePointerDown(e, i, 'move')}
         onpointermove={onPointerMove}
@@ -680,14 +726,16 @@
         onkeydown={(e) => onLineKeyDown(i, e)}
       ></div>
       {#if selectedLineIndex === i && !editing}
-        <!-- end = length along the writing axis, side = thickness (font size) -->
+        <!-- end = length along the writing axis, side = thickness (font size);
+             each in the middle of its edge of the (turned) quad -->
+        {@const at = lineHandlePoints(g)}
         <span
           data-line-handle="end"
           class="lineHandle"
           role="none"
-          style:left={`${g.left - left + (g.vertical ? g.width / 2 : g.width) - 5}px`}
-          style:top={`${g.top - top + (g.vertical ? g.height : g.height / 2) - 5}px`}
-          style:cursor={g.vertical ? 'ns-resize' : 'ew-resize'}
+          style:left={`${at.end.x - left - 5}px`}
+          style:top={`${at.end.y - top - 5}px`}
+          style:cursor={axisCursor(g.rotation + (g.vertical ? 90 : 0))}
           onpointerdown={(e) => onLinePointerDown(e, i, 'end')}
           onpointermove={onPointerMove}
           onpointerup={onPointerUp}
@@ -697,9 +745,9 @@
           data-line-handle="side"
           class="lineHandle"
           role="none"
-          style:left={`${g.left - left + (g.vertical ? 0 : g.width / 2) - 5}px`}
-          style:top={`${g.top - top + (g.vertical ? g.height / 2 : g.height) - 5}px`}
-          style:cursor={g.vertical ? 'ew-resize' : 'ns-resize'}
+          style:left={`${at.side.x - left - 5}px`}
+          style:top={`${at.side.y - top - 5}px`}
+          style:cursor={axisCursor(g.rotation + (g.vertical ? 0 : 90))}
           onpointerdown={(e) => onLinePointerDown(e, i, 'side')}
           onpointermove={onPointerMove}
           onpointerup={onPointerUp}
@@ -742,7 +790,11 @@
   .editBlock {
     position: absolute;
     box-sizing: border-box;
-    border: 1px dashed rgba(220, 38, 38, 0.8);
+    /* An outline drawn INSIDE the edge, not a border: lines are positioned
+       from the padding box, and a border pushed every line 1px off its quad —
+       2px once the block was selected. */
+    outline: 1px dashed rgba(220, 38, 38, 0.8);
+    outline-offset: -1px;
     background: rgba(255, 255, 255, 0.6);
     color: black;
     font-family: 'Noto Sans JP', sans-serif;
@@ -754,7 +806,8 @@
     overflow: visible;
   }
   .editBlock.selected {
-    border: 2px solid rgb(37, 99, 235);
+    outline: 2px solid rgb(37, 99, 235);
+    outline-offset: -2px;
     z-index: 13;
   }
   .editBlock.editing {
@@ -833,43 +886,45 @@
     background: rgb(234, 88, 12);
     z-index: 15;
   }
+  /* 4px out from the block's edge — where they sat when the selected block
+     still had a 2px border inside them */
   .handle-nw {
-    left: -6px;
-    top: -6px;
+    left: -4px;
+    top: -4px;
     cursor: nwse-resize;
   }
   .handle-n {
     left: calc(50% - 5px);
-    top: -6px;
+    top: -4px;
     cursor: ns-resize;
   }
   .handle-ne {
-    right: -6px;
-    top: -6px;
+    right: -4px;
+    top: -4px;
     cursor: nesw-resize;
   }
   .handle-e {
-    right: -6px;
+    right: -4px;
     top: calc(50% - 5px);
     cursor: ew-resize;
   }
   .handle-se {
-    right: -6px;
-    bottom: -6px;
+    right: -4px;
+    bottom: -4px;
     cursor: nwse-resize;
   }
   .handle-s {
     left: calc(50% - 5px);
-    bottom: -6px;
+    bottom: -4px;
     cursor: ns-resize;
   }
   .handle-sw {
-    left: -6px;
-    bottom: -6px;
+    left: -4px;
+    bottom: -4px;
     cursor: nesw-resize;
   }
   .handle-w {
-    left: -6px;
+    left: -4px;
     top: calc(50% - 5px);
     cursor: ew-resize;
   }

@@ -12,6 +12,7 @@ import {
   estimateFontSize,
   lineGeometry,
   medianLineFontSize,
+  nextLineQuad,
   quadBounds,
   readingOrder,
   rectQuad,
@@ -283,6 +284,14 @@ export function moveLine(
   return replaceBlock(page, blockIndex, withQuads(page, block, quads));
 }
 
+/**
+ * Replace one line's quad. An UPRIGHT quad is squared up to its bounds and
+ * clamped to the image, as it always was. A TILTED one (`lineGeometry` says
+ * which — the viewer's dead band) is kept corner for corner: squaring it up
+ * would silently straighten the line. Clamping its corners one by one would
+ * bend it instead, so a tilted quad that leaves the image is refused and the
+ * drag simply stops there.
+ */
 export function resizeLine(
   page: Page,
   blockIndex: number,
@@ -291,10 +300,17 @@ export function resizeLine(
 ): Page {
   const block = page.blocks[blockIndex];
   if (!hasParallelQuads(block)) return page;
-  const [x0, y0, x1, y1] = clampBox(quadBounds(quad), page.img_width, page.img_height);
+  const bounds = quadBounds(quad);
   const quads = block.lines_coords.slice();
   const oldQuad = quads[lineIndex];
-  quads[lineIndex] = rectQuad(x0, y0, x1 - x0, y1 - y0);
+  if (lineGeometry(quad).rotation) {
+    const [bx0, by0, bx1, by1] = bounds;
+    if (bx0 < 0 || by0 < 0 || bx1 > page.img_width || by1 > page.img_height) return page;
+    quads[lineIndex] = quad.map(([x, y]) => [x, y]);
+  } else {
+    const [x0, y0, x1, y1] = clampBox(bounds, page.img_width, page.img_height);
+    quads[lineIndex] = rectQuad(x0, y0, x1 - x0, y1 - y0);
+  }
   const offsets = parallelOffsets(block);
   const withOffsets: Block = { ...block };
   if (offsets) {
@@ -338,7 +354,7 @@ export function placeLines(page: Page, blockIndex: number): Page {
 /**
  * Insert an empty line after `afterLine`. With quads, the new line gets a quad
  * one line advance further along the cross axis (vertical: to the LEFT,
- * horizontal: BELOW), same size as the line it follows.
+ * horizontal: BELOW), same size — and same tilt — as the line it follows.
  */
 export function insertLine(page: Page, blockIndex: number, afterLine: number): Page {
   const block = page.blocks[blockIndex];
@@ -358,12 +374,8 @@ export function insertLine(page: Page, blockIndex: number, afterLine: number): P
     delete next.lines_coords;
     return replaceBlock(page, blockIndex, next);
   }
-  const g = lineGeometry(block.lines_coords[afterLine]);
-  const quad = g.vertical
-    ? rectQuad(g.left - g.width, g.top, g.width, g.height)
-    : rectQuad(g.left, g.top + g.height, g.width, g.height);
   const quads = block.lines_coords.slice();
-  quads.splice(afterLine + 1, 0, quad);
+  quads.splice(afterLine + 1, 0, nextLineQuad(block.lines_coords[afterLine]));
   return replaceBlock(page, blockIndex, withQuads(page, withLines, quads));
 }
 

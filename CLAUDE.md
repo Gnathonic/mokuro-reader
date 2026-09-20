@@ -636,6 +636,37 @@ must not break. Highlights:
 - Each surface owns its gestures via `PointerGestureTracker` config; Reader owns only keyboard + intent callbacks
 - Before starting any motion, handlers call their surface's `MotionGate` intent method instead of ad-hoc `finishNow()`/`stop()` combinations
 
+### OCR text placement (auto font size)
+
+`layoutLines` (`src/lib/reader/line-coords-layout.ts`) places every OCR line from its
+`lines_coords` quad; `TextBoxes.svelte` renders ONE in-flow inline-block span per line and the
+`positionPerLine` action snaps it onto its target with a measured transform (never
+`position: absolute` — issue #254, Yomitan's cross-line scan).
+
+- **Uniform grid, no per-character spans.** Japanese print is fixed-pitch, so auto mode
+  ignores producer `char_offsets` and spreads the line's single text node over the quad with
+  `letter-spacing = (main extent − natural advance) / characters`, the run inset by half a
+  spacing so each glyph is centred in its step (`gridSpacing` in `line-grid.ts`). Outside
+  −0.35…1.5 em the quad or the text is wrong and the line renders unspaced, as before.
+  Wrapped/banded/hidden lines are never spaced.
+- **Rotation.** A clean line whose quad is tilted ≥ 2° renders in the quad's own frame:
+  `translate(…) rotate(θ)` about the centre of a main × cross box (`lineFrame`,
+  `lineTransform`). θ is CSS-clockwise, in (−90°, 90°]. The browser hit-tests the turned
+  glyphs, so pop-up dictionaries scan along the slant. A rotated line is never clipped or
+  wrapped; one that would cross another clean line falls back to the upright layout.
+- **Original mode** is the diagnostic view of the file's `char_offsets`: `.ocr-char` cells,
+  as-is (rotated too). Manual sizes use neither.
+- **The OCR editor agrees** (`EditableBlock.svelte`, geometry in
+  `src/lib/reader/edit/block-geometry.ts`): a positioned line is one text node on the same
+  grid (letter-spacing + a half-spacing `text-indent`), centred across its quad, and a tilted
+  quad is the own-frame box with `rotate(θ)` — also while its contenteditable is open. Cells
+  only in `original`. It sizes each line on its OWN quad and RAW text (whole px), not by the
+  viewer's block-wide vote. Line ops keep the tilt: move translates, resize drags one edge
+  in the quad's frame (`resizeQuadEdge`), an inserted line is its neighbour in that frame;
+  `resizeLine` squares up only UPRIGHT quads.
+- Real-browser coverage: `e2e/line-grid.spec.ts` (grid, rotation, hit-testing, editing a
+  tilted line), `e2e/char-offsets.spec.ts` (original mode, viewer and editor).
+
 ### Cloud covers
 
 `requestCover(vol)` (`src/lib/catalog/cover-service.ts`) is the only way anything obtains a
