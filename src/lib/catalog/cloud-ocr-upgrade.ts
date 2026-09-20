@@ -62,6 +62,27 @@ export async function decodeMokuroSidecar(sidecarPath: string, blob: Blob): Prom
   return new File([decompressedBlob], filename, { type: 'application/json' });
 }
 
+/**
+ * Why this volume must NOT take the cloud sidecar's OCR, or null when it may.
+ *
+ * `mokuro_version === ''` alone does not mean "has no OCR worth keeping". An
+ * image-only volume is imported with a real `volume_ocr` row of empty pages, so
+ * the OCR editor and layer promotion both work on it — and both leave
+ * `mokuro_version` at '' while stamping `ocr_edited_at`. That stamp is the only
+ * record that a person wrote what is in the primary row; the upgrade is a
+ * wholesale `put` with no merge, so it yields to it unconditionally.
+ */
+function upgradeSkipReason(volume: VolumeMetadata): string | null {
+  // Nothing to upgrade unless the pages are actually here: writing OCR onto a
+  // placeholder is meaningless, and writing it onto a metadata-only row would
+  // leave OCR without images and a row that still claims to be metadata only.
+  if (!isVolumeInstalled(volume)) return 'volume not installed';
+  const version = typeof volume.mokuro_version === 'string' ? volume.mokuro_version.trim() : '';
+  if (version !== '') return `already has OCR (${version})`;
+  if (volume.ocr_edited_at) return `OCR hand-edited at ${volume.ocr_edited_at}`;
+  return null;
+}
+
 async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
   console.log(
     '[Cloud OCR Upgrade] Starting task:',
@@ -99,36 +120,36 @@ async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
     'pages=',
     Array.isArray(parsed.pages) ? parsed.pages.length : 0
   );
-  const existingVolume = await db.volumes.get(task.volumeUuid);
-  const existingMokuroVersion =
-    typeof existingVolume?.mokuro_version === 'string' ? existingVolume.mokuro_version.trim() : '';
-  if (!existingVolume || existingMokuroVersion !== '') {
-    console.log(
-      '[Cloud OCR Upgrade] Skipping task, volume missing or already OCR:',
-      task.volumeUuid,
-      'existingVersion=',
-      existingMokuroVersion
-    );
-    return;
-  }
-
   const pages = Array.isArray(parsed.pages) ? parsed.pages : [];
   const { totalChars, cumulative } = buildPageCharCounts(pages);
 
-  await db.transaction('rw', [db.volumes, db.volume_ocr], async () => {
+  // The row is re-read INSIDE the write transaction: the snapshot this task was
+  // enqueued with predates a download and a parse, and an edit that commits
+  // between a check out here and the put below would be overwritten just the
+  // same as one that was never checked for.
+  const existingVolume = await db.transaction('rw', [db.volumes, db.volume_ocr], async () => {
+    const current = await db.volumes.get(task.volumeUuid);
+    const skip = current ? upgradeSkipReason(current) : 'volume missing';
+    if (!current || skip) {
+      console.log('[Cloud OCR Upgrade] Skipping task:', task.volumeUuid, skip);
+      return null;
+    }
+
     await db.volume_ocr.put({
-      volume_uuid: existingVolume.volume_uuid,
+      volume_uuid: current.volume_uuid,
       pages: pages as any
     });
 
-    await db.volumes.update(existingVolume.volume_uuid, {
+    await db.volumes.update(current.volume_uuid, {
       mokuro_version: parsed.version || '0.0.0',
-      series_uuid: parsed.seriesUuid || existingVolume.series_uuid,
+      series_uuid: parsed.seriesUuid || current.series_uuid,
       page_count: pages.length,
       character_count: totalChars,
       page_char_counts: cumulative
     });
+    return current;
   });
+  if (!existingVolume) return;
 
   console.log(
     '[Cloud OCR Upgrade] Upgraded image-only volume:',
@@ -165,21 +186,9 @@ export function enqueueCloudOcrUpgrade(
   volume: VolumeMetadata,
   sidecar: CloudVolumeWithProvider
 ): void {
-  // Nothing to upgrade unless the pages are actually here: writing OCR onto a
-  // placeholder is meaningless, and writing it onto a metadata-only row would
-  // leave OCR without images and a row that still claims to be metadata only.
-  if (!isVolumeInstalled(volume)) {
-    console.log('[Cloud OCR Upgrade] Skip enqueue, volume not installed:', volume.volume_uuid);
-    return;
-  }
-  const currentMokuroVersion =
-    typeof volume.mokuro_version === 'string' ? volume.mokuro_version.trim() : '';
-  if (currentMokuroVersion !== '') {
-    console.log(
-      '[Cloud OCR Upgrade] Skip enqueue, volume already has OCR:',
-      volume.volume_uuid,
-      currentMokuroVersion
-    );
+  const skip = upgradeSkipReason(volume);
+  if (skip) {
+    console.log('[Cloud OCR Upgrade] Skip enqueue:', volume.volume_uuid, skip);
     return;
   }
 
