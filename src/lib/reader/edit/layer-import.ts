@@ -1,4 +1,5 @@
 import { db } from '$lib/catalog/db';
+import { getLayerMeta, layerTables, putLayerWithPages } from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
@@ -164,7 +165,7 @@ function holdsUnsyncedWork(row: VolumeOcrLayer): boolean {
 
 /**
  * Write (or overwrite) one layer of a volume from imported pages. No cloud
- * stamp: the next listing pushes it.
+ * stamp: the next listing pushes it. Resolves the layer's metadata row.
  *
  * `passive` is for pages found inside a downloaded archive, and only that:
  * they are a copy of what the cloud already held, so the row must not count
@@ -182,8 +183,9 @@ export async function attachLayerToVolume(
   options: { passive?: boolean } = {}
 ): Promise<VolumeOcrLayer> {
   const now = new Date().toISOString();
-  return db.transaction('rw', db.volume_ocr_layers, async () => {
-    const existing = await db.volume_ocr_layers.get([volumeUuid, layerId]);
+  return db.transaction('rw', layerTables(db), async () => {
+    // Metadata decides everything here; the stored pages are never needed.
+    const existing = await getLayerMeta(db, volumeUuid, layerId);
     if (options.passive && existing && holdsUnsyncedWork(existing)) return existing;
     const kind = existing?.kind ?? layerKindForId(layerId);
     const layer: VolumeOcrLayer = {
@@ -198,10 +200,9 @@ export async function attachLayerToVolume(
           : {}),
       created_at: existing?.created_at ?? now,
       updated_at: now,
-      ...(options.passive ? { passive_at: now } : {}),
-      pages
+      ...(options.passive ? { passive_at: now } : {})
     };
-    await db.volume_ocr_layers.put(layer);
+    await putLayerWithPages(db, { ...layer, pages });
     return layer;
   });
 }

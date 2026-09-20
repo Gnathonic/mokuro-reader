@@ -6,7 +6,7 @@ import { summarizeLayers, nextLayerId, prevLayerId, primaryLayerName } from './l
 import type { VolumeOcrLayer } from '$lib/types';
 
 describe('summarizeLayers', () => {
-  it('drops pages, puts original first, then by created_at', () => {
+  it('keeps only what the picker shows, puts original first, then by created_at', () => {
     const rows: VolumeOcrLayer[] = [
       {
         volume_uuid: 'v',
@@ -14,8 +14,7 @@ describe('summarizeLayers', () => {
         name: 'B',
         kind: 'edit',
         created_at: '2026-02-01',
-        updated_at: 'x',
-        pages: []
+        updated_at: 'x'
       },
       {
         volume_uuid: 'v',
@@ -23,8 +22,7 @@ describe('summarizeLayers', () => {
         name: 'Original',
         kind: 'original',
         created_at: '2026-03-01',
-        updated_at: 'x',
-        pages: []
+        updated_at: 'x'
       },
       {
         volume_uuid: 'v',
@@ -33,8 +31,7 @@ describe('summarizeLayers', () => {
         kind: 'ocr',
         engine: 'gcv',
         created_at: '2026-01-01',
-        updated_at: 'x',
-        pages: []
+        updated_at: 'x'
       }
     ];
     const out = summarizeLayers(rows);
@@ -46,7 +43,7 @@ describe('summarizeLayers', () => {
       engine: 'gcv',
       updated_at: 'x'
     });
-    expect('pages' in out[0]).toBe(false);
+    expect(Object.keys(out[0]).sort()).toEqual(['kind', 'layer_id', 'name', 'updated_at']);
   });
 });
 

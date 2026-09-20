@@ -66,12 +66,25 @@ OCR text boxes own their gestures (see `gesture-target.ts`):
 
 In OCR edit mode (`EditOverlay.svelte`) every block renders as an
 `.editBlock` with `[data-edit-handle]` resize handles. The overlay
-`setPointerCapture`s its own presses and stops propagation; surfaces
-classify the role first and **never pan, tap-toggle, or zoom from it — for
-any pointer type** (unlike `.textBox`, where touch still pans). The page
-background keeps its read-mode gestures, so the user can pan and pinch while
-editing; with the "draw box" tool armed, the overlay owns the next background
-drag instead. Pinch still wins everywhere.
+`setPointerCapture`s its own presses and lets them **bubble** — it never
+stops propagation. The surface's tracker therefore adds an editor press to
+its pointer map like any other, but classifies the role first and **never
+pans, tap-toggles, or zooms from role 'editor' — for any pointer type**
+(unlike `.textBox`, where touch still pans). The release bubbles too, so the
+map drains (a swallowed `pointerup` would leave a phantom pointer behind).
+
+The page background keeps its read-mode gestures, so the user can pan and
+pinch while editing; with the "draw box" tool armed the overlay marks its
+root `[data-edit-draw]`, which classifies as 'editor', and owns the next
+background drag instead.
+
+Pinch still wins everywhere, and bubbling is why: a second pointer makes two
+in the surface's map, so the surface pinches — and the editor **yields**. A
+block/line drag or a draw in flight watches the window for a second
+`pointerdown`, cancels itself, releases its capture, and rolls back whatever
+it had moved (`EditSession.cancelGesture` — a cancel, not an undo, so the
+aborted drag is never left on the redo stack). The press that caused the
+yield never starts a drag or a draw of its own.
 
 ### Pinch always wins
 

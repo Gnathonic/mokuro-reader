@@ -39,7 +39,7 @@ beforeEach(() => {
   ] as const)
     setEngineCredential(k, '');
   updateMiscSetting('translationEngine', 'gemini');
-  updateMiscSetting('translationModel', '');
+  updateMiscSetting('translationModels', {});
   updateMiscSetting('translationLanguage', 'en');
 });
 afterEach(cleanup);
@@ -93,10 +93,44 @@ describe('EngineSettings', () => {
     expect(model.placeholder).toBe('claude-haiku-4-5');
     await fireEvent.input(model, { target: { value: 'claude-sonnet-5' } });
     await fireEvent.change(model);
-    expect(get(miscSettings).translationModel).toBe('claude-sonnet-5');
+    expect(get(miscSettings).translationModels).toEqual({ anthropic: 'claude-sonnet-5' });
     const lang = getByLabelText('Target language') as HTMLInputElement;
     await fireEvent.input(lang, { target: { value: 'de' } });
     await fireEvent.change(lang);
     await waitFor(() => expect(get(miscSettings).translationLanguage).toBe('de'));
+  });
+
+  it('keeps a model override with the engine it was typed for', async () => {
+    const { getByLabelText } = await mount();
+    const engine = getByLabelText('Translation engine');
+    const model = getByLabelText('Translation model') as HTMLInputElement;
+    await fireEvent.change(engine, { target: { value: 'anthropic' } });
+    await fireEvent.input(model, { target: { value: 'claude-sonnet-5' } });
+    await fireEvent.change(model);
+
+    // Switching engines must not carry the Claude id over to Gemini…
+    await fireEvent.change(engine, { target: { value: 'gemini' } });
+    await waitFor(() => expect(model.value).toBe(''));
+    expect(model.placeholder).toBe('gemini-2.5-flash');
+
+    // …nor lose it: coming back finds it where it was left.
+    await fireEvent.change(engine, { target: { value: 'anthropic' } });
+    await waitFor(() => expect(model.value).toBe('claude-sonnet-5'));
+
+    // Clearing the field removes the override rather than storing ''.
+    await fireEvent.input(model, { target: { value: '  ' } });
+    await fireEvent.change(model);
+    expect(get(miscSettings).translationModels).toEqual({});
+  });
+
+  it("tests the Anthropic key with Anthropic's own override, whatever engine is selected", async () => {
+    setEngineCredential('anthropicKey', 'a');
+    updateMiscSetting('translationModels', {
+      gemini: 'gemini-2.5-pro',
+      anthropic: 'claude-sonnet-5'
+    });
+    const { getByLabelText } = await mount();
+    await fireEvent.click(getByLabelText('Test Anthropic API key'));
+    expect(h.testAnthropic).toHaveBeenCalledWith('a', 'claude-sonnet-5');
   });
 });

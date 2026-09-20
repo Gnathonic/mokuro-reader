@@ -3,10 +3,17 @@
  * settings panel only need names and kinds, and a layer's pages can be
  * megabytes. Backed by a Dexie liveQuery so a create/rename/delete anywhere
  * re-renders every picker.
+ *
+ * The query reads the layer METADATA table and nothing else, on purpose. A
+ * liveQuery re-runs whenever something it read is written, and the editor
+ * autosaves a displayed layer every 500 ms: those saves still re-run this
+ * (they move `updated_at`), but over a handful of tiny rows rather than every
+ * page of every layer. `layer-summaries.test.ts` holds it to that.
  */
 import { liveQuery } from 'dexie';
 import { readable, type Readable } from 'svelte/store';
 import { db } from '$lib/catalog/db';
+import { listLayerMetas } from '$lib/catalog/layer-store';
 import type { VolumeOcrLayer, VolumeOcrLayerKind } from '$lib/types';
 import { ORIGINAL_LAYER_ID } from './edit-persist';
 
@@ -36,9 +43,7 @@ export function summarizeLayers(rows: VolumeOcrLayer[]): LayerSummary[] {
 
 export function layerSummaries(volumeUuid: string): Readable<LayerSummary[]> {
   return readable<LayerSummary[]>([], (set) => {
-    const sub = liveQuery(() =>
-      db.volume_ocr_layers.where('volume_uuid').equals(volumeUuid).toArray()
-    ).subscribe({
+    const sub = liveQuery(() => listLayerMetas(db, volumeUuid)).subscribe({
       next: (rows) => set(summarizeLayers(rows)),
       error: (error) => {
         console.debug('[layer-list] liveQuery failed:', error);

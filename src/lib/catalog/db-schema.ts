@@ -1,4 +1,5 @@
 import type Dexie from 'dexie';
+import type { Transaction } from 'dexie';
 
 /**
  * THE schema for the `mokuro_v3` database — declared once, as data, because
@@ -35,6 +36,34 @@ export const MOKURO_DB_NAME = 'mokuro_v3';
 export interface MokuroSchemaVersion {
   version: number;
   stores: Record<string, string>;
+  /**
+   * The data migration INTO this version, when it has one. Part of the shared
+   * declaration for the same reason the store sets are: whichever connection
+   * opens an older database first — main thread or Worker — runs the upgrade,
+   * so both must carry the same one.
+   */
+  upgrade?: (tx: Transaction) => Promise<void>;
+}
+
+/**
+ * v3 → v4: move `pages` out of every `volume_ocr_layers` row into a
+ * `volume_ocr_layer_pages` row under the same key.
+ *
+ * Keys first (a keys-only read deserializes nothing), then ONE row at a time:
+ * a layer row holds a whole volume's OCR, and this table can hold one per
+ * volume of the library — read as an array it would not fit in memory. A row
+ * that somehow has no pages array is left as it is: there is nothing to move.
+ */
+async function moveLayerPagesToOwnTable(tx: Transaction): Promise<void> {
+  const layers = tx.table('volume_ocr_layers');
+  const layerPages = tx.table('volume_ocr_layer_pages');
+  for (const key of await layers.toCollection().primaryKeys()) {
+    const row = await layers.get(key);
+    if (!row || !Array.isArray(row.pages)) continue;
+    const { pages, ...meta } = row;
+    await layerPages.put({ volume_uuid: row.volume_uuid, layer_id: row.layer_id, pages });
+    await layers.put(meta);
+  }
 }
 
 export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
@@ -115,6 +144,32 @@ export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
       cloud_covers: '[account_scope+path], cached_at',
       volume_ocr_layers: '[volume_uuid+layer_id], volume_uuid'
     }
+  },
+  // v4: a layer's pages move to their own table, `volume_ocr_layer_pages`,
+  // under the same `[volume_uuid+layer_id]` key; `volume_ocr_layers` keeps
+  // everything else. IndexedDB only ever reads whole rows, so with the pages
+  // inline every question ABOUT layers — the picker's list, the cloud
+  // listing's "which of these changed?" — deserialized megabytes of OCR per
+  // layer to look at a name or a stamp. All access goes through
+  // `layer-store.ts`, which writes the two rows in one transaction.
+  //
+  // A NEW version rather than an edit of v3, unlike the v2 collapse above:
+  // v3 databases with real layer rows already exist, and only a version bump
+  // runs the upgrade that moves their pages.
+  {
+    version: 4,
+    stores: {
+      volumes: 'volume_uuid, series_uuid, series_title, ocr_edited_at',
+      volume_ocr: 'volume_uuid',
+      volume_files: 'volume_uuid',
+      series_metadata: 'series_key, folded_key',
+      series_index: 'series_key',
+      catalog_index: 'id',
+      cloud_covers: '[account_scope+path], cached_at',
+      volume_ocr_layers: '[volume_uuid+layer_id], volume_uuid',
+      volume_ocr_layer_pages: '[volume_uuid+layer_id], volume_uuid'
+    },
+    upgrade: moveLayerPagesToOwnTable
   }
 ];
 
@@ -129,5 +184,8 @@ export const MOKURO_DB_SCHEMA: readonly MokuroSchemaVersion[] = [
  * changed a key path.
  */
 export function declareMokuroSchema(db: Dexie): void {
-  for (const { version, stores } of MOKURO_DB_SCHEMA) db.version(version).stores(stores);
+  for (const { version, stores, upgrade } of MOKURO_DB_SCHEMA) {
+    const declared = db.version(version).stores(stores);
+    if (upgrade) declared.upgrade(upgrade);
+  }
 }

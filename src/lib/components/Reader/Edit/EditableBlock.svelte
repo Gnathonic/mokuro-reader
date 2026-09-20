@@ -52,8 +52,8 @@
    * no sane home between inline-blocks), and the cells show the PROCESSED text
    * (`…`) while the model stores the raw one (`...`).
    */
-  import type { Block, Page } from '$lib/types';
-  import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
+  import type { Block } from '$lib/types';
+  import type { EditSession, GestureMark } from '$lib/reader/edit/edit-session.svelte';
   import { lineGeometry, rectQuad, type LineGeometry } from '$lib/reader/edit/block-geometry';
   import { parallelOffsets } from '$lib/reader/char-offsets';
   import {
@@ -185,7 +185,7 @@
     /** The element holding the pointer capture. */
     el: HTMLElement;
     /** Pre-drag state, for yielding to a pinch without leaving an edit. */
-    before: Page;
+    mark: GestureMark;
     selection: EditSession['selection'];
     selectedLine: EditSession['selectedLine'];
   }
@@ -211,7 +211,7 @@
       moved: false,
       key: `${keyKind}:${pageIndex}:${index}:${e.pointerId}`,
       el,
-      before: session.pageFor(pageIndex),
+      mark: session.beginGesture(pageIndex),
       selection: session.selection,
       selectedLine: session.selectedLine
     };
@@ -257,15 +257,12 @@
   }
 
   /** Two fingers zoom; they never drag. Whatever the drag already moved is
-   * rolled back through the session's undo (a drag is one coalesced step, more
-   * if the finger paused — hence the loop, which stops AT the pre-drag page),
-   * and the selection undo cleared is put back. */
+   * CANCELLED, not undone — an undo would leave the aborted drag on the redo
+   * stack for Ctrl+Y to replay — and the pre-drag selection is put back. */
   function yieldDrag() {
     const d = endDrag();
     if (!d?.moved) return;
-    while (session.pageFor(pageIndex) !== d.before && session.canUndo(pageIndex)) {
-      session.undo(pageIndex);
-    }
+    session.cancelGesture(d.mark);
     session.selection = d.selection;
     session.selectedLine = d.selectedLine;
   }

@@ -24,7 +24,8 @@ vi.mock('$lib/settings', async () => {
     effectiveVolumeSettings: readable({ v1: { rightToLeft: true, hasCover: true } }),
     updateProgress: vi.fn(),
     updateVolumeSetting,
-    volumes: readable({ v1: { progress: 1, settings: { ocrLayer: 'english' } } }),
+    // Writable so a test can display another layer (the fixture has one of each kind).
+    volumes: writable({ v1: { progress: 1, settings: { ocrLayer: 'fix' } } }),
     nightModeActive: readable(false)
   };
 });
@@ -41,7 +42,8 @@ vi.mock('$lib/reader/edit/layer-list', () => ({
   layerSummaries: () =>
     readable([
       { layer_id: 'original', name: 'Original', kind: 'original', updated_at: 'x' },
-      { layer_id: 'english', name: 'English', kind: 'translation', updated_at: 'x' }
+      { layer_id: 'english', name: 'English', kind: 'translation', updated_at: 'x' },
+      { layer_id: 'fix', name: 'Fix', kind: 'edit', updated_at: 'x' }
     ])
 }));
 vi.mock('$lib/reader/edit/layers', () => ({
@@ -83,18 +85,44 @@ describe('ReaderSettings — OCR layers', () => {
     expect([...select.options].map((o) => o.textContent?.trim())).toEqual([
       'mokuro 0.2.2',
       'Original (Original)',
-      'English (Translation)'
+      'English (Translation)',
+      'Fix (Edit)'
     ]);
-    expect(select.value).toBe('english');
+    expect(select.value).toBe('fix');
     await fireEvent.change(select, { target: { value: '' } });
     expect(updateVolumeSetting).toHaveBeenCalledWith('v1', 'ocrLayer', undefined);
     await fireEvent.click(getByLabelText('Promote layer'));
     expect(runLayerAction).toHaveBeenCalledWith(
       'promote',
-      expect.objectContaining({ volumeUuid: 'v1', layerId: 'english', layerName: 'English' })
+      expect.objectContaining({
+        volumeUuid: 'v1',
+        layerId: 'fix',
+        layerName: 'Fix',
+        layerKind: 'edit'
+      })
     );
     expect(queryByLabelText('New layer')).toBeTruthy();
     expect(queryByLabelText('Rename layer')).toBeTruthy();
+  });
+
+  it('a displayed TRANSLATION layer cannot be promoted: the button is disabled and says why', async () => {
+    const { volumes } = (await import('$lib/settings')) as unknown as {
+      volumes: { set: (v: unknown) => void };
+    };
+    volumes.set({ v1: { progress: 1, settings: { ocrLayer: 'english' } } });
+    try {
+      const { getByLabelText } = render(ReaderSettings);
+      await flushTasks();
+      const promote = getByLabelText('Promote layer') as HTMLButtonElement;
+      expect(promote.disabled).toBe(true);
+      expect(promote.title).toMatch(/translation/i);
+      await fireEvent.click(promote);
+      expect(runLayerAction).not.toHaveBeenCalled();
+      // Everything else about the layer stays available.
+      expect((getByLabelText('Rename layer') as HTMLButtonElement).disabled).toBe(false);
+    } finally {
+      volumes.set({ v1: { progress: 1, settings: { ocrLayer: 'fix' } } });
+    }
   });
 
   it("'new' settles the reader's unsaved edits BEFORE reading the pages it copies", async () => {
@@ -112,10 +140,10 @@ describe('ReaderSettings — OCR layers', () => {
       expect(runLayerAction).not.toHaveBeenCalled();
       settled();
       await flushTasks();
-      expect(loadLayerPages).toHaveBeenCalledWith('v1', 'english');
+      expect(loadLayerPages).toHaveBeenCalledWith('v1', 'fix');
       expect(runLayerAction).toHaveBeenCalledWith(
         'new',
-        expect.objectContaining({ volumeUuid: 'v1', layerId: 'english' })
+        expect.objectContaining({ volumeUuid: 'v1', layerId: 'fix' })
       );
       expect(hook.mock.invocationCallOrder[0]).toBeLessThan(
         loadLayerPages.mock.invocationCallOrder[0]

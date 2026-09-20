@@ -9,6 +9,7 @@ import {
 } from '$lib/metadata/series-file';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
+import { listLayersWithPages } from '$lib/catalog/layer-store';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerSidecarName } from './sync/syncable-file';
@@ -253,11 +254,9 @@ async function buildLayerSidecarsFromDb(
   volume: VolumeMetadata,
   titles: { seriesTitle: string; volumeTitle: string }
 ): Promise<VolumeLayerSidecarBlobData[]> {
-  const layers = await db
-    .table('volume_ocr_layers')
-    .where('volume_uuid')
-    .equals(volume.volume_uuid)
-    .toArray();
+  // Metadata and pages in one read transaction: `updatedAt` below must be the
+  // stamp of exactly the pages serialized (`stampLayersSynced` compares it).
+  const layers = await listLayersWithPages(db, volume.volume_uuid);
   return layers
     .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
     .map((layer) => {

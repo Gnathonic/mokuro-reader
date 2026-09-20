@@ -25,7 +25,7 @@ async function seedVolume(page: Page, opts: { pages?: number; view?: 'single' | 
         db.volumes.clear(),
         db.volume_ocr.clear(),
         db.volume_files.clear(),
-        db.volume_ocr_layers.clear()
+        (await import('/src/lib/catalog/layer-store.ts')).clearAllLayers(db)
       ]);
       const canvas = document.createElement('canvas');
       canvas.width = 400;
@@ -99,7 +99,8 @@ async function readOcr(page: Page, pageIndex = 0) {
       const { db } = await import('/src/lib/catalog/db.ts');
       const ocr = await db.volume_ocr.get(uuid);
       const row = await db.volumes.get(uuid);
-      const original = await db.volume_ocr_layers.get([uuid, 'original']);
+      const { getLayerWithPages } = await import('/src/lib/catalog/layer-store.ts');
+      const original = await getLayerWithPages(db, uuid, 'original');
       return {
         block: ocr?.pages[pageIndex].blocks[0],
         chars: row?.character_count,

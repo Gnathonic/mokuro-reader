@@ -163,10 +163,19 @@ export interface VolumeFiles {
   files: Record<string, File>;
 }
 
-// v3 table: volume_ocr_layers — alternate OCR page sets beside the primary
-// `volume_ocr` row. 'original' is the pre-edit snapshot the editor reverts to.
+// v3 tables: volume_ocr_layers + volume_ocr_layer_pages — alternate OCR page
+// sets beside the primary `volume_ocr` row. 'original' is the pre-edit
+// snapshot the editor reverts to.
+//
+// One layer is TWO rows under the same `[volume_uuid+layer_id]` key, because
+// IndexedDB can only hand back whole rows: everything that lists, compares or
+// stamps layers (the picker's liveQuery, the cloud listing's pull/push plan)
+// would otherwise deserialize every page of every layer — megabytes each — to
+// read a name or a timestamp. All access goes through
+// `$lib/catalog/layer-store.ts`, which keeps the two rows in step.
 export type VolumeOcrLayerKind = 'original' | 'edit' | 'ocr' | 'translation';
 
+/** The `volume_ocr_layers` row: everything about a layer EXCEPT its pages. */
 export interface VolumeOcrLayer {
   volume_uuid: string;
   /** slug [a-z0-9-]{1,32}; 'original' is reserved */
@@ -175,9 +184,8 @@ export interface VolumeOcrLayer {
   kind: VolumeOcrLayerKind;
   engine?: string;
   created_at: string;
+  /** Moves on every write of the layer's pages (the pages row carries no stamp). */
   updated_at: string;
-  /** DB-shaped pages (no cumulativeChars), same shape as `volume_ocr.pages` */
-  pages: Page[];
   /**
    * The cloud copy this row was last synced with (`layer-sync.ts`): the
    * listing's size / mtime (epoch s; absent when the server gave none) and
@@ -193,6 +201,17 @@ export interface VolumeOcrLayer {
    */
   passive_at?: string;
 }
+
+/** The `volume_ocr_layer_pages` row: a layer's pages and nothing else. */
+export interface VolumeOcrLayerPages {
+  volume_uuid: string;
+  layer_id: string;
+  /** DB-shaped pages (no cumulativeChars), same shape as `volume_ocr.pages` */
+  pages: Page[];
+}
+
+/** Both rows joined — for the callers that render, serialize or rewrite a layer. */
+export type VolumeOcrLayerWithPages = VolumeOcrLayer & Pick<VolumeOcrLayerPages, 'pages'>;
 
 // Combined view for API compatibility (assembled from volume_ocr + volume_files)
 export interface VolumeData {

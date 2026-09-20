@@ -17,9 +17,18 @@
  * panzoom touch path always did).
  *
  * **`.editBlock` (role 'editor')** is the OCR edit overlay
- * (`EditOverlay.svelte`): the overlay captures its own pointers and stops
- * propagation; surfaces must never pan, tap-toggle, or zoom from a press on
- * one, for ANY pointer type (unlike text boxes, where touch still pans).
+ * (`EditOverlay.svelte`). The overlay `setPointerCapture`s its own pointers
+ * and lets the events BUBBLE: the surface's tracker adds them to its pointer
+ * map like any other press, but must never pan, tap-toggle, or zoom from role
+ * 'editor', for ANY pointer type (unlike text boxes, where touch still pans).
+ * Bubbling is what keeps "pinch always wins" true here: a second pointer
+ * makes two in the map, the surface pinches, and the editor's drag or draw
+ * YIELDS — it cancels and rolls back whatever it had moved.
+ *
+ * The overlay's own background is 'page' (pan / tap / pinch while editing)
+ * except while the draw-box tool is armed, when the overlay marks its root
+ * `[data-edit-draw]`: the next background drag is the editor's, so the
+ * surface must not pan under it or take the pointer capture from it.
  *
  * **'interactive'** is reader chrome (buttons, links): taps belong to the
  * control, not to overlay toggling or zoom.
@@ -36,9 +45,10 @@ export type GestureTargetRole = 'editor' | 'textbox' | 'interactive' | 'page';
 export function gestureTargetRole(target: EventTarget | null): GestureTargetRole {
   if (!(target instanceof Element)) return 'page';
   // The OCR edit overlay owns every press on its blocks and handles (move,
-  // resize, text editing) — checked first so an editor never pans, taps, or
-  // triggers the Anki double-tap. See docs/INPUT-CONTRACTS.md "Edit overlay".
-  if (target.closest('.editBlock, [data-edit-handle]')) return 'editor';
+  // resize, text editing), and on its background while the draw tool is armed
+  // — checked first so an editor never pans, taps, or triggers the Anki
+  // double-tap. See docs/INPUT-CONTRACTS.md "Edit overlay".
+  if (target.closest('.editBlock, [data-edit-handle], [data-edit-draw]')) return 'editor';
   // textbox wins over interactive: controls inside a box belong to the box's
   // domain (Anki capture UI), not to reader chrome.
   if (target.closest('.textBox')) return 'textbox';

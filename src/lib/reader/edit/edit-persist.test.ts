@@ -14,7 +14,9 @@ vi.mock('$lib/catalog/db', async () => {
 const noteOcrEdited = vi.hoisted(() => vi.fn());
 vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited }));
 
+import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
 import { db } from '$lib/catalog/db';
+import { clearAllLayers, getLayerWithPages } from '$lib/catalog/layer-store';
 import {
   ORIGINAL_LAYER_ID,
   hasOriginalLayer,
@@ -34,7 +36,7 @@ function pg(text: string, img_path = 'p.png'): Page {
 
 beforeEach(async () => {
   noteOcrEdited.mockClear();
-  await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), db.volume_ocr_layers.clear()]);
+  await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), clearAllLayers(db)]);
   await db.volumes.put({
     volume_uuid: 'v1',
     series_uuid: 's1',
@@ -65,7 +67,7 @@ describe('persistPageEdit', () => {
     expect(await hasOriginalLayer('v1')).toBe(false);
     await persistPageEdit('v1', 0, pg('X'));
     await persistPageEdit('v1', 0, pg('Y'));
-    const original = await db.volume_ocr_layers.get(['v1', ORIGINAL_LAYER_ID]);
+    const original = await getLayerWithPages(db, 'v1', ORIGINAL_LAYER_ID);
     expect(original?.kind).toBe('original');
     expect(original?.pages[0].blocks[0].lines).toEqual(['あい']);
     expect(await hasOriginalLayer('v1')).toBe(true);
@@ -73,10 +75,23 @@ describe('persistPageEdit', () => {
     expect(await loadOriginalPage('v1', 5)).toBeNull();
   });
 
+  // Every autosave asks "is there an original yet?". That snapshot is a whole
+  // volume of OCR, so the question must be answered from its metadata row.
+  it('a save after the first never reads or rewrites the original’s pages', async () => {
+    await persistPageEdit('v1', 0, pg('X'));
+    const counts = await countIdbOps(async () => {
+      await persistPageEdit('v1', 0, pg('Y'));
+      expect(await hasOriginalLayer('v1')).toBe(true);
+    });
+    expect(Object.keys(counts).filter((k) => k.startsWith('volume_ocr_layer_pages.'))).toEqual([]);
+    expect(counts['volume_ocr_layers.get']).toBe(2);
+  });
+
   it('rejects when the volume has no OCR row, writing nothing', async () => {
     await db.volume_ocr.delete('v1');
     await expect(persistPageEdit('v1', 0, pg('X'))).rejects.toThrow(/no OCR row/);
     expect(await db.volume_ocr_layers.count()).toBe(0);
+    expect(await db.volume_ocr_layer_pages.count()).toBe(0);
     expect((await db.volumes.get('v1'))?.ocr_edited_at).toBeUndefined();
     expect(noteOcrEdited).not.toHaveBeenCalled();
   });

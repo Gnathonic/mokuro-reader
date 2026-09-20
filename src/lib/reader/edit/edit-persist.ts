@@ -11,9 +11,15 @@
  * re-uploaded (see `sidecar-backfill.ts`).
  */
 import { db } from '$lib/catalog/db';
+import {
+  getLayerMeta,
+  getLayerPages,
+  layerTables,
+  putLayerWithPages
+} from '$lib/catalog/layer-store';
 import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
 import { noteOcrEdited } from '$lib/util/sync/sidecar-backfill';
-import type { Page, VolumeOcrLayer } from '$lib/types';
+import type { Page } from '$lib/types';
 
 export const ORIGINAL_LAYER_ID = 'original';
 
@@ -23,13 +29,14 @@ export async function persistPageEdit(
   page: Page
 ): Promise<void> {
   const editedAt = new Date().toISOString();
-  await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_ocr_layers], async () => {
+  await db.transaction('rw', [db.volumes, db.volume_ocr, ...layerTables(db)], async () => {
     const ocr = await db.volume_ocr.get(volumeUuid);
     if (!ocr) throw new Error(`Volume ${volumeUuid} has no OCR row to edit`);
 
-    const existing = await db.volume_ocr_layers.get([volumeUuid, ORIGINAL_LAYER_ID]);
-    if (!existing) {
-      const layer: VolumeOcrLayer = {
+    // Every save asks this, so it must stay a metadata read: the snapshot's
+    // pages are a whole volume of OCR.
+    if (!(await getLayerMeta(db, volumeUuid, ORIGINAL_LAYER_ID))) {
+      await putLayerWithPages(db, {
         volume_uuid: volumeUuid,
         layer_id: ORIGINAL_LAYER_ID,
         name: 'Original',
@@ -37,8 +44,7 @@ export async function persistPageEdit(
         created_at: editedAt,
         updated_at: editedAt,
         pages: ocr.pages
-      };
-      await db.volume_ocr_layers.add(layer);
+      });
     }
 
     const pages = ocr.pages.slice();
@@ -59,13 +65,13 @@ export async function persistPageEdit(
 }
 
 export async function hasOriginalLayer(volumeUuid: string): Promise<boolean> {
-  return (await db.volume_ocr_layers.get([volumeUuid, ORIGINAL_LAYER_ID])) !== undefined;
+  return (await getLayerMeta(db, volumeUuid, ORIGINAL_LAYER_ID)) !== undefined;
 }
 
 export async function loadOriginalPage(
   volumeUuid: string,
   pageIndex: number
 ): Promise<Page | null> {
-  const layer = await db.volume_ocr_layers.get([volumeUuid, ORIGINAL_LAYER_ID]);
-  return layer?.pages[pageIndex] ?? null;
+  const pages = await getLayerPages(db, volumeUuid, ORIGINAL_LAYER_ID);
+  return pages?.[pageIndex] ?? null;
 }

@@ -5,7 +5,8 @@
  * `LayerNameModal` (mounted once by the reader) renders.
  */
 import { readonly, writable } from 'svelte/store';
-import type { Page } from '$lib/types';
+import type { Page, VolumeOcrLayerKind } from '$lib/types';
+import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '$lib/reader/edit/layer-kind';
 import {
   buildLayerExportFile as realBuildLayerExportFile,
   createLayer as realCreateLayer,
@@ -104,6 +105,8 @@ export interface LayerActionContext {
   /** The layer the action targets (the displayed one); null = primary. */
   layerId: string | null;
   layerName?: string;
+  /** The target layer's kind, when the caller knows it (the id is weighed either way). */
+  layerKind?: VolumeOcrLayerKind;
   /** What is on screen now — the source for "copy" / "empty". */
   displayedPages: Page[];
   onSelectLayer: (layerId: string | null) => Promise<void> | void;
@@ -149,6 +152,13 @@ export async function runLayerAction(action: LayerAction, ctx: LayerActionContex
       }
       case 'promote': {
         if (!layerId) return;
+        // Both UIs disable the button; this covers whatever reaches here
+        // anyway (a stale picker, a future caller) before anything is asked
+        // of the user or settled in the editor.
+        if (isTranslationLayer({ layer_id: layerId, kind: ctx.layerKind })) {
+          d.notify(TRANSLATION_PROMOTE_BLOCKED);
+          return;
+        }
         const ok = await d.confirm(
           `Replace this volume's primary OCR with "${ctx.layerName ?? layerId}"? The current primary is kept as a layer.`
         );

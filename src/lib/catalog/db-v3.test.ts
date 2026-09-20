@@ -13,6 +13,7 @@ vi.mock('$lib/util/progress-tracker', () => ({
 }));
 
 import { CatalogDexieV3 } from './db-v3';
+import { MOKURO_DB_SCHEMA } from './db-schema';
 
 const DB_NAME = 'mokuro_v3_thumbnails_test';
 let db: CatalogDexieV3 | null = null;
@@ -64,5 +65,33 @@ describe('processThumbnails', () => {
     await db.processThumbnails();
 
     expect(generateThumbnail).not.toHaveBeenCalled();
+  });
+});
+
+// A tab still running the previous build holds an open connection at the old
+// version. IndexedDB parks the new tab's upgrade until that connection closes,
+// and nothing but the OLD connection's own `versionchange` handler can close
+// it. Dexie installs one in its constructor (close, keep auto-open), which is
+// the behaviour pinned here: a handler registered on top that returned false,
+// or a connection opened with raw `indexedDB.open`, would leave every upgrade
+// hanging behind a forgotten tab.
+describe('a schema upgrade while an older connection is still open', () => {
+  it('is yielded to by the old connection instead of blocking forever', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const latest = MOKURO_DB_SCHEMA[MOKURO_DB_SCHEMA.length - 1].version;
+    const oldTab = new Dexie(DB_NAME);
+    for (const { version, stores } of MOKURO_DB_SCHEMA) {
+      if (version < latest) oldTab.version(version).stores(stores);
+    }
+    await oldTab.open();
+    expect(oldTab.verno).toBe(latest - 1);
+
+    db = new CatalogDexieV3(DB_NAME);
+    await db.open();
+
+    expect(db.verno).toBe(latest);
+    expect(oldTab.isOpen()).toBe(false);
+    oldTab.close();
+    warn.mockRestore();
   });
 });

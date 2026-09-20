@@ -19,6 +19,7 @@
   import { layerSummaries, primaryLayerName, type LayerSummary } from '$lib/reader/edit/layer-list';
   import { LAYER_KIND_LABEL, loadLayerPages } from '$lib/reader/edit/layers';
   import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
+  import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '$lib/reader/edit/layer-kind';
   import { runLayerAction, type LayerAction } from '$lib/components/Reader/Layers/layer-actions';
   import { beforeLayerMutation } from '$lib/reader/edit/reader-edit-rules';
   import { engineVolumeRunner } from '$lib/engines/engine-runs';
@@ -82,7 +83,14 @@
     return s.subscribe((v) => (layers = v));
   });
   let currentLayer = $derived((volumeId && $volumes[volumeId]?.settings?.ocrLayer) || '');
-  let currentLayerName = $derived(layers.find((l) => l.layer_id === currentLayer)?.name);
+  let currentLayerSummary = $derived(layers.find((l) => l.layer_id === currentLayer));
+  let currentLayerName = $derived(currentLayerSummary?.name);
+  // A translation can never become the primary (it would zero the volume's
+  // character stats); weighed by id too, since a kind does not travel.
+  let promoteBlocked = $derived(
+    !!currentLayer &&
+      isTranslationLayer({ layer_id: currentLayer, kind: currentLayerSummary?.kind })
+  );
   // The primary row is named after the mokuro version on the volume's DB row.
   let primaryName = $state('mokuro');
   $effect(() => {
@@ -109,6 +117,8 @@
 
   async function layerAction(action: LayerAction) {
     if (!volumeId) return;
+    // `disabled` alone is the browser's promise, not ours.
+    if (action === 'promote' && promoteBlocked) return;
     const uuid = volumeId;
     const layerId = currentLayer || null;
     let displayedPages: Page[] = [];
@@ -125,6 +135,7 @@
       volumeUuid: uuid,
       layerId,
       layerName: currentLayerName,
+      layerKind: currentLayerSummary?.kind,
       displayedPages,
       onSelectLayer: (id) => updateVolumeSetting(uuid, 'ocrLayer', id ?? undefined),
       // Same settle the reader's own layer menu passes: without it a promote or
@@ -299,6 +310,8 @@
                 size="xs"
                 color="alternative"
                 aria-label="Promote layer"
+                disabled={promoteBlocked}
+                title={promoteBlocked ? TRANSLATION_PROMOTE_BLOCKED : undefined}
                 onclick={() => layerAction('promote')}>Promote to primary</Button
               >
             {/if}

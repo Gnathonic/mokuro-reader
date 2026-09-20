@@ -134,25 +134,31 @@ The application uses a V3 database (`mokuro_v3`) with Dexie, declared once as
 data in `db-schema.ts` (`MOKURO_DB_SCHEMA`) and applied identically by every
 connection (main thread `db-v3.ts`, the export Worker, test fixtures) — see
 that file for why a hand-written second `.version(n).stores({...})` ladder is
-a data-loss hazard. It is currently at Dexie schema **version 3**: version 1
+a data-loss hazard. It is currently at Dexie schema **version 4**: version 1
 is the shipped three-table schema; version 2 added `series_metadata`,
 `series_index`, `catalog_index` and `cloud_covers` in one step (collapsed from
 several dev-only versions that no released build ever wrote); version 3 added
 `volume_ocr_layers` and the `ocr_edited_at` index on `volumes` for the OCR
-editor. All additive, no data migration. Volume data is split across three
-tables for performance, alongside per-series metadata, index and cover-cache
+editor; version 4 added `volume_ocr_layer_pages` and is the ladder's only DATA
+migration — its `upgrade()` (declared in `MOKURO_DB_SCHEMA` beside the stores,
+so the Worker carries it too) moves `pages` out of every existing
+`volume_ocr_layers` row, one row at a time. Versions 1–3 are additive. A schema
+change to a version that real databases already sit at is a NEW version, never
+an in-place edit. Volume data is split across three tables for performance,
+alongside the two layer tables and per-series metadata, index and cover-cache
 tables:
 
-| Table               | Primary Key              | Indexed Fields                                 | Purpose                                                                                                                            |
-| ------------------- | ------------------------ | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `volumes`           | `volume_uuid`            | `series_uuid`, `series_title`, `ocr_edited_at` | Metadata, thumbnails. `ocr_edited_at` is sparse — only rows with a local OCR edit carry it — so edited rows can be found keys-only |
-| `volume_ocr`        | `volume_uuid`            | —                                              | Primary OCR page data (text blocks)                                                                                                |
-| `volume_files`      | `volume_uuid`            | —                                              | Image files (File objects)                                                                                                         |
-| `volume_ocr_layers` | `[volume_uuid+layer_id]` | `volume_uuid`                                  | Alternate OCR layers per volume, including the read-only `original` pre-edit snapshot                                              |
-| `series_metadata`   | `series_key`             | —                                              | Per-series AniList link, titles, tag, tracking (key = normalized `series_title`)                                                   |
-| `series_index`      | `series_key`             | —                                              | Cached `series.json` sidecar + cloud file stamp (download cache, unauthoritative)                                                  |
-| `catalog_index`     | `id`                     | —                                              | Cached root `catalog.json` (one row, key `'catalog'`; download cache)                                                              |
-| `cloud_covers`      | `[account_scope+path]`   | `cached_at`                                    | Thumbnail cache for cloud volumes not installed locally                                                                            |
+| Table                    | Primary Key              | Indexed Fields                                 | Purpose                                                                                                                            |
+| ------------------------ | ------------------------ | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `volumes`                | `volume_uuid`            | `series_uuid`, `series_title`, `ocr_edited_at` | Metadata, thumbnails. `ocr_edited_at` is sparse — only rows with a local OCR edit carry it — so edited rows can be found keys-only |
+| `volume_ocr`             | `volume_uuid`            | —                                              | Primary OCR page data (text blocks)                                                                                                |
+| `volume_files`           | `volume_uuid`            | —                                              | Image files (File objects)                                                                                                         |
+| `volume_ocr_layers`      | `[volume_uuid+layer_id]` | `volume_uuid`                                  | Alternate OCR layers per volume — METADATA only (name, kind, stamps, cloud sync state), incl. the read-only `original` snapshot    |
+| `volume_ocr_layer_pages` | `[volume_uuid+layer_id]` | `volume_uuid`                                  | A layer's `pages`, and nothing else — same key as its metadata row                                                                 |
+| `series_metadata`        | `series_key`             | —                                              | Per-series AniList link, titles, tag, tracking (key = normalized `series_title`)                                                   |
+| `series_index`           | `series_key`             | —                                              | Cached `series.json` sidecar + cloud file stamp (download cache, unauthoritative)                                                  |
+| `catalog_index`          | `id`                     | —                                              | Cached root `catalog.json` (one row, key `'catalog'`; download cache)                                                              |
+| `cloud_covers`           | `[account_scope+path]`   | `cached_at`                                    | Thumbnail cache for cloud volumes not installed locally                                                                            |
 
 **Key Types:**
 
@@ -196,6 +202,38 @@ const metadata = await db.volumes.get(volume_uuid);
 const ocr = await db.volume_ocr.get(volume_uuid);
 const files = await db.volume_files.get(volume_uuid);
 ```
+
+**Layers are two rows, reached through one module.** IndexedDB only ever reads
+whole rows, and a layer's pages are a whole volume of OCR, so a layer is a small
+`volume_ocr_layers` row plus a `volume_ocr_layer_pages` row under the same key.
+`src/lib/catalog/layer-store.ts` is the ONLY code that touches either table
+(it takes the connection as an argument, so the export Worker uses it too;
+`src/lib/reader/edit/layers.ts` is the main-thread layer API on top of it):
+
+```typescript
+import {
+  getLayerMeta,
+  listLayerMetas,
+  getLayerPages,
+  putLayerWithPages
+} from '$lib/catalog/layer-store';
+
+const layers = await listLayerMetas(db, volume_uuid); // metadata only — never reads pages
+const pages = await getLayerPages(db, volume_uuid, layer_id); // one layer's pages
+await putLayerWithPages(db, { ...meta, updated_at: now, pages }); // both rows, one transaction
+```
+
+Two rules keep the split worth having: anything that lists, compares or stamps
+layers (the layer picker's liveQuery, `layer-sync.ts`'s per-listing plan, the
+"is there an original yet?" check on every autosave) reads METADATA only —
+op-count tests (`layer-store.test.ts`, `layer-summaries.test.ts`,
+`layer-sync.test.ts`, `edit-persist.test.ts`) fail if one of them opens the
+pages table; and every write of pages goes through `putLayerWithPages`, so
+`updated_at` on the metadata row always moves with the pages it describes
+(`passive_at === updated_at` and `updated_at > cloud.synced_at` depend on it).
+A caller's own transaction over layers must list both tables (`layerTables(db)`).
+Both rows go when the volume is deleted (`deleteVolumeCompletely`) and both stay
+on "remove from device".
 
 Thumbnails are generated automatically on app load via `startThumbnailProcessing()`.
 
@@ -262,8 +300,12 @@ keys. Series-level data lives beside them in `series.json`.
 
 The primary `volume_ocr` row is what every existing consumer reads — stats,
 exports, backups, the reader by default, OCR upgrades. Alternate layers
-(`volume_ocr_layers`) never overwrite it implicitly; moving a layer's pages
-into the primary row is an explicit **Promote** action. The `original` layer
+(`volume_ocr_layers` + `volume_ocr_layer_pages`, see Database Schema) never
+overwrite it implicitly; moving a layer's pages
+into the primary row is an explicit **Promote** action. A `translation` layer
+(by kind, or by a `tr-<lang>` id alone — `layer-kind.ts`) can never be
+promoted: the primary is what character stats are counted from, and the count
+only knows Japanese, so an English primary would zero them. The `original` layer
 is the read-only pre-edit snapshot the first edit to a volume takes
 automatically (`edit-persist.ts`), used by **Revert** — it only exists for the
 primary, since reverting a page swaps in the primary's own pre-edit state.
@@ -291,6 +333,14 @@ layer with no local record is filed by inferring its kind from the id alone:
 `original` stays `original`, `tr-<lang>` is a `translation`, a known engine id
 (`gcv`, `hayai`, `paddle-manga`, `mokuro-fp16`, `mokuro`) is `ocr`, anything
 else is a manual `edit`.
+
+A layer can be listed as BOTH `.mokuro` and `.mokuro.gz` (an engine wrote the
+`.gz`, a client pushed the plain name over it). The plain file wins every read;
+everything that removes or moves a layer works from all listed copies
+(`ListedLayerFile.copies`): a delete reports `'gone'` only when every copy went
+(else the tombstone stays), a push removes the `.gz` it superseded
+(best-effort, retried by later listings), and the volume delete/rename sweeps
+corroborate per layer id so both copies ride together.
 
 The OCR/translation engines (`src/lib/engines/`) are experimental. Their API
 keys live in `localStorage` only (`engines/credentials.ts`) and are never

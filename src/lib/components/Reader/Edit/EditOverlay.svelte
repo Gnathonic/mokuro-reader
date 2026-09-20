@@ -50,7 +50,7 @@
     if (draw || isPinchPress(e)) return;
     // Not stopped — "pinch always wins": the surface's tracker must see every
     // pointer. While the tool is armed the root classifies as role 'editor'
-    // (data-edit-handle below), so the surface neither pans under the draw nor
+    // (data-edit-draw below), so the surface neither pans under the draw nor
     // takes the pointer capture away from it.
     root!.setPointerCapture?.(e.pointerId);
     const [x, y] = toImage(e);
@@ -120,7 +120,7 @@
   class="editOverlay"
   class:drawing={session.tool === 'draw'}
   data-edit-overlay
-  data-edit-handle={session.tool === 'draw' ? 'draw' : undefined}
+  data-edit-draw={session.tool === 'draw' ? '' : undefined}
   role="none"
   onpointerdown={onBackgroundDown}
   onpointermove={onBackgroundMove}

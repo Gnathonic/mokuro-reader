@@ -5,7 +5,7 @@
  * `EditOverlay.svelte`; this class is the seam between them.
  */
 import type { Page } from '$lib/types';
-import { EditHistory } from './edit-history';
+import { EditHistory, type HistoryMark } from './edit-history';
 import {
   addBlock,
   flipBlock,
@@ -43,6 +43,12 @@ export interface EditSessionOptions {
   persist?: typeof persistPageEdit;
   loadOriginal?: typeof loadOriginalPage;
   debounceMs?: number;
+}
+
+/** A page's history as it stood when a cancellable gesture began (`beginGesture`). */
+export interface GestureMark {
+  readonly pageIndex: number;
+  readonly history: HistoryMark<Page>;
 }
 
 export const SAVE_DEBOUNCE_MS = 500;
@@ -207,6 +213,30 @@ export class EditSession {
       this.selection = [];
       this.touched(pageIndex);
     }
+  }
+
+  /**
+   * Call where a pointer gesture (a drag) starts; hand the mark to
+   * `cancelGesture` if the gesture is abandoned. A gesture that ends normally
+   * just drops it.
+   */
+  beginGesture(pageIndex: number): GestureMark {
+    return { pageIndex, history: this.history(pageIndex).mark() };
+  }
+
+  /**
+   * Abandon a gesture: the page is what it was at `beginGesture`, the steps the
+   * gesture committed are gone from undo AND redo, and the redo entries that
+   * existed before it are back (see `EditHistory.cancelTo`). Selection is the
+   * caller's — it knows what it was.
+   */
+  cancelGesture(mark: GestureMark): void {
+    const h = this.history(mark.pageIndex);
+    const changed = h.current !== mark.history.present;
+    h.cancelTo(mark.history);
+    // A drag that paused may already have been autosaved: the restored page
+    // has to be written back over it. Nothing moved → nothing to save.
+    if (changed) this.touched(mark.pageIndex);
   }
 
   // ---- ops ----

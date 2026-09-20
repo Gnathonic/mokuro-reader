@@ -10,7 +10,11 @@
  */
 import { get, readonly, writable } from 'svelte/store';
 import type { Block, Page } from '$lib/types';
-import { miscSettings, type TranslationEngineId } from '$lib/settings/misc';
+import {
+  miscSettings,
+  type TranslationEngineId,
+  type TranslationModelOverrides
+} from '$lib/settings/misc';
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { promptConfirmation } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util/snackbar';
@@ -46,7 +50,7 @@ export interface EngineRunDeps {
   credentials: EngineCredentials;
   prefs: {
     translationEngine: TranslationEngineId;
-    translationModel: string;
+    translationModels: TranslationModelOverrides;
     translationLanguage: string;
   };
   fetch: typeof fetch;
@@ -106,7 +110,7 @@ function defaultDeps(): EngineRunDeps {
     credentials: get(engineCredentials),
     prefs: {
       translationEngine: m.translationEngine,
-      translationModel: m.translationModel,
+      translationModels: m.translationModels,
       translationLanguage: m.translationLanguage || 'en'
     },
     fetch: (input, init) => globalThis.fetch(input, init),

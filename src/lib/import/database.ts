@@ -9,6 +9,7 @@
  */
 
 import { db } from '$lib/catalog/db';
+import { deleteLayersOfVolume, layerTables } from '$lib/catalog/layer-store';
 import { requestPersistentStorage } from '$lib/util/upload';
 import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 import type { ProcessedVolume } from './types';
@@ -219,7 +220,7 @@ export async function saveVolume(
  * @param volumeUuid - The volume UUID whose files to remove
  */
 export async function removeVolumeFiles(volumeUuid: string): Promise<void> {
-  // `volume_ocr_layers` rows stay — see deleteVolumeCompletely.
+  // The volume's layers (both layer tables) stay — see deleteVolumeCompletely.
   await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
     await db.volume_ocr.delete(volumeUuid);
     await db.volume_files.delete(volumeUuid);
@@ -230,8 +231,8 @@ export async function removeVolumeFiles(volumeUuid: string): Promise<void> {
 /**
  * Delete a volume from the database entirely
  *
- * Removes all data for a volume from all three tables atomically — the row
- * included, so nothing is left to attach history to. Used by the delete
+ * Removes all data for a volume from every table that holds any (the three
+ * volume tables and both layer tables) atomically — the row included, so nothing is left to attach history to. Used by the delete
  * confirmations when the user also asked to forget the stats, and by the
  * download queue's replace-before-resave (which writes a fresh row straight
  * afterwards).
@@ -241,14 +242,16 @@ export async function removeVolumeFiles(volumeUuid: string): Promise<void> {
 export async function deleteVolumeCompletely(volumeUuid: string): Promise<void> {
   await db.transaction(
     'rw',
-    [db.volumes, db.volume_ocr, db.volume_files, db.volume_ocr_layers],
+    [db.volumes, db.volume_ocr, db.volume_files, ...layerTables(db)],
     async () => {
       await db.volumes.delete(volumeUuid);
       await db.volume_ocr.delete(volumeUuid);
       await db.volume_files.delete(volumeUuid);
       // Layers are OCR, not pages: they go only when the volume itself goes
       // (`removeVolumeFiles` keeps them, like the row and its history).
-      await db.volume_ocr_layers.where('volume_uuid').equals(volumeUuid).delete();
+      // Metadata AND pages rows: an orphaned pages row is a volume of OCR that
+      // nothing would ever list or delete again.
+      await deleteLayersOfVolume(db, volumeUuid);
     }
   );
 }

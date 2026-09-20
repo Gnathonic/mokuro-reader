@@ -15,6 +15,7 @@ const noteOcrEdited = vi.hoisted(() => vi.fn());
 vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited }));
 
 import { db } from '$lib/catalog/db';
+import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
 import {
   buildLayerExportFile,
   createLayer,
@@ -42,7 +43,7 @@ const PAGES = [pg('あい'), pg('うえ', 'q.png')];
 
 beforeEach(async () => {
   noteOcrEdited.mockClear();
-  await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), db.volume_ocr_layers.clear()]);
+  await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), clearAllLayers(db)]);
   await db.volumes.put({
     volume_uuid: 'v1',
     series_uuid: 's1',
@@ -68,7 +69,7 @@ describe('slugifyLayerId', () => {
 
 describe('layers store', () => {
   it('creates a copy layer and an empty layer, lists original first, loads pages', async () => {
-    await db.volume_ocr_layers.add({
+    await putLayerWithPages(db, {
       volume_uuid: 'v1',
       layer_id: 'original',
       name: 'Original',
@@ -95,7 +96,7 @@ describe('layers store', () => {
 
   it('renames and deletes, but never the original', async () => {
     await createLayer('v1', { name: 'A', pages: PAGES });
-    await db.volume_ocr_layers.add({
+    await putLayerWithPages(db, {
       volume_uuid: 'v1',
       layer_id: 'original',
       name: 'Original',
@@ -105,18 +106,19 @@ describe('layers store', () => {
       pages: PAGES
     });
     await renameLayer('v1', 'a', 'B');
-    expect((await db.volume_ocr_layers.get(['v1', 'a']))?.name).toBe('B');
+    expect((await getLayerWithPages(db, 'v1', 'a'))?.name).toBe('B');
     await expect(renameLayer('v1', 'original', 'X')).rejects.toThrow();
     await expect(deleteLayer('v1', 'original')).rejects.toThrow();
     await deleteLayer('v1', 'a');
     expect(await db.volume_ocr_layers.get(['v1', 'a'])).toBeUndefined();
+    expect(await db.volume_ocr_layer_pages.get(['v1', 'a'])).toBeUndefined();
   });
 
   it('persistLayerPageEdit replaces one page and bumps updated_at; original is read-only', async () => {
     const l = await createLayer('v1', { name: 'A', pages: PAGES });
     await new Promise((r) => setTimeout(r, 2));
     await persistLayerPageEdit('v1', 'a', 1, pg('かきく', 'q.png'));
-    const row = await db.volume_ocr_layers.get(['v1', 'a']);
+    const row = await getLayerWithPages(db, 'v1', 'a');
     expect(row?.pages[1].blocks[0].lines).toEqual(['かきく']);
     expect(row?.pages[0].blocks[0].lines).toEqual(['あい']);
     expect(row!.updated_at > l.updated_at).toBe(true);
@@ -137,7 +139,7 @@ describe('promoteLayer', () => {
     expect(typeof row?.ocr_edited_at).toBe('string');
     // No original existed: the pre-promote primary became it, and no
     // replaced-… duplicate was made.
-    expect((await db.volume_ocr_layers.get(['v1', 'original']))?.pages[0].blocks[0].lines).toEqual([
+    expect((await getLayerWithPages(db, 'v1', 'original'))?.pages[0].blocks[0].lines).toEqual([
       'あい'
     ]);
     expect(replacedLayerId).toBeNull();
@@ -145,7 +147,7 @@ describe('promoteLayer', () => {
   });
 
   it('keeps a replaced-… snapshot when the previous primary differs from the original', async () => {
-    await db.volume_ocr_layers.add({
+    await putLayerWithPages(db, {
       volume_uuid: 'v1',
       layer_id: 'original',
       name: 'Original',
@@ -157,12 +159,39 @@ describe('promoteLayer', () => {
     await createLayer('v1', { name: 'A', pages: [pg('new'), pg('new2', 'q.png')] });
     const { replacedLayerId } = await promoteLayer('v1', 'a');
     expect(replacedLayerId).toMatch(/^replaced-\d{8}-\d{4}$/);
-    expect(
-      (await db.volume_ocr_layers.get(['v1', replacedLayerId!]))?.pages[0].blocks[0].lines
-    ).toEqual(['あい']);
-    expect((await db.volume_ocr_layers.get(['v1', 'original']))?.pages[0].blocks[0].lines).toEqual([
+    expect((await getLayerWithPages(db, 'v1', replacedLayerId!))?.pages[0].blocks[0].lines).toEqual(
+      ['あい']
+    );
+    expect((await getLayerWithPages(db, 'v1', 'original'))?.pages[0].blocks[0].lines).toEqual([
       'ORIG'
     ]);
+  });
+
+  // The primary row is what every stat is counted from, and the count only
+  // knows Japanese (`countCharsInLines`): an English layer recounts to ~0,
+  // which would flow into the catalog, reading speed, the `.mokuro` sidecar
+  // and `series.json`.
+  it('refuses a translation layer — by kind, or by its tr-<lang> id alone — and changes nothing', async () => {
+    await createLayer('v1', {
+      name: 'English',
+      kind: 'translation',
+      pages: [pg('Hello there'), pg('General', 'q.png')]
+    });
+    // A row whose kind says "edit" but whose id files it as a translation
+    // everywhere a kind is inferred (cloud pull, import).
+    await createLayer('v1', { name: 'tr en', pages: [pg('Hi'), pg('Yo', 'q.png')] });
+    expect((await getLayerWithPages(db, 'v1', 'tr-en'))?.kind).toBe('edit');
+
+    for (const id of ['english', 'tr-en']) {
+      await expect(promoteLayer('v1', id)).rejects.toThrow(/translation/i);
+    }
+    expect((await db.volume_ocr.get('v1'))?.pages[0].blocks[0].lines).toEqual(['あい']);
+    const row = await db.volumes.get('v1');
+    expect(row?.character_count).toBe(4);
+    expect(row?.page_char_counts).toEqual([2, 4]);
+    expect(row?.ocr_edited_at).toBeUndefined();
+    expect(await getLayerWithPages(db, 'v1', 'original')).toBeUndefined();
+    expect(noteOcrEdited).not.toHaveBeenCalled();
   });
 
   it('refuses a missing layer and leaves primary untouched', async () => {
@@ -247,9 +276,11 @@ describe('upsertLayerPages', () => {
     await upsertLayerPages('v1', 'gcv', opts(new Map([[0, pg('一')]])));
     await deleteVolumeCompletely('v1');
     expect(await db.volume_ocr_layers.where('volume_uuid').equals('v1').count()).toBe(0);
+    expect(await db.volume_ocr_layer_pages.where('volume_uuid').equals('v1').count()).toBe(0);
 
     expect(await upsertLayerPages('v1', 'gcv', opts(new Map([[1, pg('二')]])))).toBeNull();
     expect(await db.volume_ocr_layers.where('volume_uuid').equals('v1').count()).toBe(0);
+    expect(await db.volume_ocr_layer_pages.where('volume_uuid').equals('v1').count()).toBe(0);
   });
 
   it('writes nothing once the volume was removed from this device, and leaves the kept layer alone', async () => {
@@ -259,7 +290,7 @@ describe('upsertLayerPages', () => {
     await removeVolumeFiles('v1');
 
     expect(await upsertLayerPages('v1', 'gcv', opts(new Map([[1, pg('二')]])))).toBeNull();
-    expect(await db.volume_ocr_layers.get(['v1', 'gcv'])).toEqual(before);
+    expect(await getLayerWithPages(db, 'v1', 'gcv')).toEqual(before);
   });
   describe('with the run-start `baseline` (a hand edit made mid-run is never overwritten)', () => {
     it('keeps a page that was edited after the run started; still writes the others', async () => {

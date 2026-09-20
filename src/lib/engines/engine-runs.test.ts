@@ -12,6 +12,12 @@ vi.mock('$lib/catalog/db', async () => {
 vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited: vi.fn() }));
 
 import { db } from '$lib/catalog/db';
+import {
+  clearAllLayers,
+  deleteLayersOfVolume,
+  getLayerWithPages,
+  layerTables
+} from '$lib/catalog/layer-store';
 import { activeEngineRun, startEngineRun, type EngineRunContext } from './engine-runs';
 
 function pg(text: string, img_path: string): Page {
@@ -50,7 +56,7 @@ const creds = {
 };
 const prefs = {
   translationEngine: 'gemini' as const,
-  translationModel: '',
+  translationModels: {},
   translationLanguage: 'en'
 };
 
@@ -89,7 +95,7 @@ const VOLUME = {
 };
 
 beforeEach(async () => {
-  await Promise.all([db.volumes.clear(), db.volume_ocr_layers.clear()]);
+  await Promise.all([db.volumes.clear(), clearAllLayers(db)]);
   // Results are only ever written for an installed volume (`upsertLayerPages`).
   await db.volumes.put(VOLUME);
 });
@@ -100,7 +106,7 @@ describe('startEngineRun', () => {
     const r = await startEngineRun('ocr', ctx({ deps: { confirm } }));
     expect(confirm).not.toHaveBeenCalled();
     expect(r).toMatchObject({ layerId: 'gcv', done: 1, failed: 0, cancelled: false });
-    const row = await db.volume_ocr_layers.get(['v1', 'gcv']);
+    const row = await getLayerWithPages(db, 'v1', 'gcv');
     expect(row!.kind).toBe('ocr');
     expect(row!.engine).toBe('gcv');
     expect(row!.pages[0].blocks[0].lines).toEqual(['こんにちは', 'せかい']);
@@ -114,7 +120,7 @@ describe('startEngineRun', () => {
     expect(confirm.mock.calls[0][0]).toMatch(/2 pages/);
     expect(confirm.mock.calls[0][0]).toMatch(/\$1\.50 per 1000 pages/);
     expect(confirm.mock.calls[0][0]).toMatch(/experimental/i);
-    expect(await db.volume_ocr_layers.get(['v1', 'gcv'])).toBeUndefined();
+    expect(await getLayerWithPages(db, 'v1', 'gcv')).toBeUndefined();
   });
 
   it('translate one page → tr-en layer with horizontal wrapped blocks, engine gemini:<model>', async () => {
@@ -125,7 +131,7 @@ describe('startEngineRun', () => {
     });
     const r = await startEngineRun('translate', ctx({ deps: { fetch } }));
     expect(r).toMatchObject({ layerId: 'tr-en', done: 1, failed: 0 });
-    const row = await db.volume_ocr_layers.get(['v1', 'tr-en']);
+    const row = await getLayerWithPages(db, 'v1', 'tr-en');
     expect(row!.kind).toBe('translation');
     expect(row!.engine).toBe('gemini:gemini-2.5-flash');
     const b = row!.pages[0].blocks[0];
@@ -168,7 +174,7 @@ describe('startEngineRun', () => {
     });
     const sourcePages = [placed('こんにちは', '001.png'), placed('さようなら', '002.png')];
     await startEngineRun('translate', ctx({ sourcePages, deps: { fetch } }));
-    const row = await db.volume_ocr_layers.get(['v1', 'tr-en']);
+    const row = await getLayerWithPages(db, 'v1', 'tr-en');
     expect(row!.pages[0].blocks[0].char_offsets).toBeUndefined();
     expect('char_offsets_method' in row!.pages[0]).toBe(false);
     expect('char_offsets_method' in row!.pages[1]).toBe(false);
@@ -213,7 +219,7 @@ describe('startEngineRun', () => {
       ctx({ pageIndices: [0, 1], deps: { fetch, notify, concurrency: 1 } })
     );
     expect(r).toMatchObject({ done: 1, failed: 1 });
-    const row = await db.volume_ocr_layers.get(['v1', 'gcv']);
+    const row = await getLayerWithPages(db, 'v1', 'gcv');
     expect(row!.pages[1].blocks[0].lines).toEqual(['こんにちは', 'せかい']);
     expect(notify).toHaveBeenLastCalledWith(expect.stringMatching(/1 failed/));
   });
@@ -311,7 +317,7 @@ describe('startEngineRun', () => {
       ctx({ pageIndices: [0, 1], deps: { fetch: fetchImpl, notify, concurrency: 1 } })
     );
     expect(r).toMatchObject({ done: 2, failed: 0 });
-    const row = await db.volume_ocr_layers.get(['v1', 'gcv']);
+    const row = await getLayerWithPages(db, 'v1', 'gcv');
     expect(row!.pages[0].blocks[0].lines).toEqual(['こんにちは', 'せかい']);
     expect(row!.pages[1].blocks[0].lines).toEqual(['手直し']);
     expect(notify).toHaveBeenLastCalledWith(expect.stringMatching(/1 kept .*edit/));
@@ -324,7 +330,7 @@ describe('startEngineRun', () => {
     const fetchImpl = vi.fn(async () => {
       await new Promise((resolve) => setTimeout(resolve, 2));
       if (++calls === 25) {
-        const row = await db.volume_ocr_layers.get(['v1', 'gcv']);
+        const row = await getLayerWithPages(db, 'v1', 'gcv');
         persistedAt25 = row ? row.pages.filter((p) => p.blocks.length > 0).length : 0;
       }
       return new Response(JSON.stringify(vertical), { status: 200 });
@@ -348,9 +354,9 @@ describe('startEngineRun', () => {
     const fetchImpl = vi.fn(async () => {
       // The user deletes the volume (layers included) while the run is going.
       if (++calls === 3) {
-        await db.transaction('rw', [db.volumes, db.volume_ocr_layers], async () => {
+        await db.transaction('rw', [db.volumes, ...layerTables(db)], async () => {
           await db.volumes.delete('v1');
-          await db.volume_ocr_layers.where('volume_uuid').equals('v1').delete();
+          await deleteLayersOfVolume(db, 'v1');
         });
       }
       // A real API call takes a while; an instant mock would finish all 40
@@ -372,6 +378,7 @@ describe('startEngineRun', () => {
     expect(r!.cancelled).toBe(true);
     expect(calls).toBeLessThan(many.length);
     expect(await db.volume_ocr_layers.where('volume_uuid').equals('v1').count()).toBe(0);
+    expect(await db.volume_ocr_layer_pages.where('volume_uuid').equals('v1').count()).toBe(0);
     expect(notify).toHaveBeenLastCalledWith(expect.stringMatching(/no longer on this device/));
     expect(get(activeEngineRun)).toBeNull();
   });

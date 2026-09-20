@@ -9,6 +9,7 @@ vi.mock('$lib/catalog/db', async () => {
 vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited: vi.fn() }));
 
 import { db } from '$lib/catalog/db';
+import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
 import {
   applyStashedLayersFor,
   attachLayerFile,
@@ -62,7 +63,7 @@ async function seed(volume_uuid = 'v1', volume_title = 'Vol 1', series_title = '
 }
 
 beforeEach(async () => {
-  await Promise.all([db.volumes.clear(), db.volume_ocr_layers.clear()]);
+  await Promise.all([db.volumes.clear(), clearAllLayers(db)]);
   clearStashedLayerEntries();
 });
 
@@ -194,7 +195,7 @@ describe('attachLayerFile', () => {
     const file = new File([mokuro('うえ', {})], 'Whatever.gcv.mokuro');
     const result = await attachLayerFile(file);
     expect(result).toMatchObject({ status: 'attached', volumeUuid: 'v1', layerId: 'gcv' });
-    const row = await db.volume_ocr_layers.get(['v1', 'gcv']);
+    const row = await getLayerWithPages(db, 'v1', 'gcv');
     expect(row).toMatchObject({ kind: 'ocr', engine: 'gcv', name: 'Gcv' });
     expect(row!.pages[0].blocks[0].lines).toEqual(['うえ']);
     expect('cumulativeChars' in row!.pages[0]).toBe(false);
@@ -238,17 +239,17 @@ describe('attachLayerToVolume', () => {
     const passive = await attachLayerToVolume('v1', 'gcv', pages, { passive: true });
     expect(passive.passive_at).toBe(passive.updated_at);
     expect(passive.cloud).toBeUndefined();
-    expect((await db.volume_ocr_layers.get(['v1', 'gcv']))!.passive_at).toBe(passive.updated_at);
+    expect((await getLayerWithPages(db, 'v1', 'gcv'))!.passive_at).toBe(passive.updated_at);
 
     // A genuine import over the same layer is a local edit: the mark is gone.
     const imported = await attachLayerToVolume('v1', 'gcv', pages);
     expect('passive_at' in imported).toBe(false);
-    expect('passive_at' in (await db.volume_ocr_layers.get(['v1', 'gcv']))!).toBe(false);
+    expect('passive_at' in (await getLayerWithPages(db, 'v1', 'gcv'))!).toBe(false);
   });
   describe('a passive attach never replaces local work', () => {
     const archived = JSON.parse(mokuro('アーカイブ', {})).pages;
     const linesOf = async () =>
-      (await db.volume_ocr_layers.get(['v1', 'gcv']))!.pages[0].blocks[0].lines;
+      (await getLayerWithPages(db, 'v1', 'gcv'))!.pages[0].blocks[0].lines;
 
     it('a row edited since its last sync is left untouched', async () => {
       await seed();
@@ -257,26 +258,27 @@ describe('attachLayerToVolume', () => {
         updated_at: '2026-09-02T00:00:00.000Z',
         cloud: { provider: 'webdav', size: 10, synced_at: '2026-09-01T00:00:00.000Z' }
       };
-      await db.volume_ocr_layers.put(edited);
+      await putLayerWithPages(db, { ...edited, pages });
 
       const result = await attachLayerToVolume('v1', 'gcv', archived, { passive: true });
       expect(result).toEqual(edited);
-      expect(await db.volume_ocr_layers.get(['v1', 'gcv'])).toEqual(edited);
+      expect(await getLayerWithPages(db, 'v1', 'gcv')).toEqual({ ...edited, pages });
     });
 
     it('a row that was never synced (an import, an engine run, an edit layer) is left untouched', async () => {
       await seed();
       const local = await attachLayerToVolume('v1', 'gcv', pages);
       await attachLayerToVolume('v1', 'gcv', archived, { passive: true });
-      expect(await db.volume_ocr_layers.get(['v1', 'gcv'])).toEqual(local);
+      expect(await getLayerWithPages(db, 'v1', 'gcv')).toEqual({ ...local, pages });
     });
 
     it('a clean synced row is replaced, as before', async () => {
       await seed();
-      await db.volume_ocr_layers.put({
+      await putLayerWithPages(db, {
         ...(await attachLayerToVolume('v1', 'gcv', pages)),
         updated_at: '2026-09-01T00:00:00.000Z',
-        cloud: { provider: 'webdav', size: 10, synced_at: '2026-09-01T00:00:00.000Z' }
+        cloud: { provider: 'webdav', size: 10, synced_at: '2026-09-01T00:00:00.000Z' },
+        pages
       });
       const replaced = await attachLayerToVolume('v1', 'gcv', archived, { passive: true });
       expect(await linesOf()).toEqual(['アーカイブ']);
@@ -312,7 +314,7 @@ describe('stashed layers', () => {
       ]).layers
     );
     expect(await applyStashedLayersFor('v9', 'vol 3')).toBe(1);
-    expect((await db.volume_ocr_layers.get(['v9', 'tr-en']))!.kind).toBe('translation');
+    expect((await getLayerWithPages(db, 'v9', 'tr-en'))!.kind).toBe('translation');
     expect(await applyStashedLayersFor('v9', 'Vol 3')).toBe(0);
   });
 });

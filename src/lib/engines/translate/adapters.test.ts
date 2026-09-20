@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createGeminiAdapter, testGemini } from './gemini';
 import { createAnthropicAdapter, testAnthropic } from './anthropic';
 import { createOpenAIAdapter, testOpenAI } from './openai';
-import { getTranslationAdapter, translateBlocks } from './index';
+import { ENGINE_DEFAULT_MODEL, getTranslationAdapter, translateBlocks } from './index';
 import { MalformedTranslationError } from './prompt';
 import { RetryableError } from '../run-queue';
 import type { TranslationAdapter } from './types';
@@ -128,25 +128,42 @@ describe('getTranslationAdapter', () => {
   };
   it('returns null without the chosen engine key, the adapter with it, honouring the model override', () => {
     expect(
-      getTranslationAdapter(creds, { translationEngine: 'gemini', translationModel: '' })
+      getTranslationAdapter(creds, { translationEngine: 'gemini', translationModels: {} })
     ).toBeNull();
     const g = getTranslationAdapter(
       { ...creds, googleKey: 'g' },
-      { translationEngine: 'gemini', translationModel: 'gemini-2.5-pro' }
+      { translationEngine: 'gemini', translationModels: { gemini: 'gemini-2.5-pro' } }
     );
     expect(g?.id).toBe('gemini');
     expect(g?.model).toBe('gemini-2.5-pro');
     const o = getTranslationAdapter(
       { ...creds, openaiKey: 'o', openaiModel: 'deepseek-chat' },
-      { translationEngine: 'openai', translationModel: '' }
+      { translationEngine: 'openai', translationModels: {} }
     );
     expect(o?.model).toBe('deepseek-chat');
     expect(
       getTranslationAdapter(
         { ...creds, anthropicKey: 'a' },
-        { translationEngine: 'anthropic', translationModel: '' }
+        { translationEngine: 'anthropic', translationModels: {} }
       )?.id
     ).toBe('anthropic');
+  });
+
+  // One flat override string used to ride along to whichever engine was
+  // selected, so a Claude model id typed for Anthropic went to Gemini's endpoint
+  // the moment the dropdown changed — a model-not-found with no hint why.
+  it('never sends one engine an override that was typed for another', () => {
+    const all = { ...creds, googleKey: 'g', anthropicKey: 'a', openaiKey: 'o' };
+    const translationModels = { anthropic: 'claude-sonnet-5', openai: 'deepseek-reasoner' };
+    expect(
+      getTranslationAdapter(all, { translationEngine: 'gemini', translationModels })?.model
+    ).toBe(ENGINE_DEFAULT_MODEL.gemini);
+    expect(
+      getTranslationAdapter(all, { translationEngine: 'anthropic', translationModels })?.model
+    ).toBe('claude-sonnet-5');
+    expect(
+      getTranslationAdapter(all, { translationEngine: 'openai', translationModels })?.model
+    ).toBe('deepseek-reasoner');
   });
 });
 

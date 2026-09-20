@@ -171,7 +171,7 @@ async function seedInstalledVolume(page: Page) {
         db.volumes.clear(),
         db.volume_ocr.clear(),
         db.volume_files.clear(),
-        db.volume_ocr_layers.clear()
+        (await import('/src/lib/catalog/layer-store.ts')).clearAllLayers(db)
       ]);
       const canvas = document.createElement('canvas');
       canvas.width = 400;
@@ -221,7 +221,8 @@ async function relist(page: Page) {
 async function layerRows(page: Page) {
   return page.evaluate(async (uuid) => {
     const { db } = await import('/src/lib/catalog/db.ts');
-    const rows = await db.volume_ocr_layers.where('volume_uuid').equals(uuid).toArray();
+    const { listLayersWithPages } = await import('/src/lib/catalog/layer-store.ts');
+    const rows = await listLayersWithPages(db, uuid);
     return rows.map((r) => ({
       id: r.layer_id,
       kind: r.kind,
@@ -281,7 +282,8 @@ test.describe('OCR layers in the cloud (stubbed WebDAV)', () => {
     await page.evaluate(async (uuid) => {
       const { persistLayerPageEdit } = await import('/src/lib/reader/edit/layers.ts');
       const { db } = await import('/src/lib/catalog/db.ts');
-      const row = (await db.volume_ocr_layers.get([uuid, 'paddle-manga']))!;
+      const { getLayerWithPages } = await import('/src/lib/catalog/layer-store.ts');
+      const row = (await getLayerWithPages(db, uuid, 'paddle-manga'))!;
       const page0 = structuredClone(row.pages[0]);
       page0.blocks[0].lines = ['なおした'];
       await persistLayerPageEdit(uuid, 'paddle-manga', 0, page0);
@@ -338,11 +340,13 @@ test.describe('OCR layers in the cloud (stubbed WebDAV)', () => {
     // DELETE: the layer file goes with the volume, before the archive.
     stub.log.length = 0;
     await page.evaluate(
-      async ({ SERIES }) => {
+      async ({ SERIES, uuid }) => {
         const { unifiedCloudManager } = await import('/src/lib/util/sync/unified-cloud-manager.ts');
-        await unifiedCloudManager.deleteManagedVolume(SERIES, 'Vol 9');
+        // The uuid, as the app passes it: this spec renamed only the cloud side,
+        // so no local row is titled 'Vol 9' to vouch for the layer file by name.
+        await unifiedCloudManager.deleteManagedVolume(SERIES, 'Vol 9', uuid);
       },
-      { SERIES }
+      { SERIES, uuid: VOLUME_UUID }
     );
     const deletes = stub.log.filter((l) => l.method === 'DELETE').map((l) => l.path);
     expect(deletes).toContain(`${ROOT}/${SERIES}/Vol 9.paddle-manga.mokuro`);

@@ -24,7 +24,13 @@ export type MiscSettings = {
   /** Experimental translation engine preferences. Keys live in
    * `$lib/engines/credentials` (localStorage only) — never here. */
   translationEngine: TranslationEngineId;
-  translationModel: string; // '' = the adapter's default model
+  /**
+   * Model override PER ENGINE; an absent engine uses its adapter's default.
+   * Keyed rather than one string because a model id only means something to
+   * the provider it names: one shared field handed a Claude id to Gemini's
+   * endpoint the moment the engine dropdown changed.
+   */
+  translationModels: TranslationModelOverrides;
   translationLanguage: string; // BCP-47-ish target, default 'en'
   /** Where the OCR edit toolbar docks; a top dock hides the top of the page.
    * Top and left only for now (right/bottom collide with the quick actions
@@ -35,6 +41,8 @@ export type MiscSettings = {
 export type EditToolbarDock = 'top' | 'left';
 
 export type TranslationEngineId = 'gemini' | 'anthropic' | 'openai';
+
+export type TranslationModelOverrides = Partial<Record<TranslationEngineId, string>>;
 
 export type MiscSettingsKey = keyof MiscSettings;
 
@@ -64,7 +72,7 @@ const defaultSettings: MiscSettings = {
   turboMode: false, // Default to single-operation mode (patient users)
   gdriveAutoReAuth: true, // Keep users synced during long reading sessions
   translationEngine: 'gemini',
-  translationModel: '',
+  translationModels: {},
   translationLanguage: 'en',
   editToolbarDock: 'top'
 };
@@ -99,6 +107,16 @@ function loadMiscSettings(): MiscSettings {
     // Invalid Date period rather than a wrong-but-usable one.
     merged.progressResetHour = clampInt(merged.progressResetHour, 0, 23, 0);
     merged.progressResetDay = clampInt(merged.progressResetDay, 0, 6, 1);
+
+    // Read as a map by key everywhere, so anything that is not one (a hand
+    // edit) must not get as far as an `in`/index on a string.
+    if (
+      !merged.translationModels ||
+      typeof merged.translationModels !== 'object' ||
+      Array.isArray(merged.translationModels)
+    ) {
+      merged.translationModels = {};
+    }
 
     return merged;
   } catch {

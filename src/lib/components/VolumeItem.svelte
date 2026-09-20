@@ -506,6 +506,23 @@
         ? `Forget ${volName}? Its stats, progress and cover will be deleted.`
         : `Remove ${volName} from this device? Stats, progress and cover are kept.`,
       async (forget = false, deleteCloud = false) => {
+        // Delete from cloud if checkbox checked (archive + sidecars). Before the
+        // local rows go: the cloud delete only takes the OCR layer files this
+        // device's layer rows vouch for, and the local removal drops those rows.
+        if (deleteCloud && hasCloudBackup && cloudFile) {
+          try {
+            await unifiedCloudManager.deleteManagedVolume(
+              volume.series_title,
+              volume.volume_title,
+              volume.volume_uuid
+            );
+            showSnackbar(`Deleted from ${providerDisplayName}`);
+          } catch (error) {
+            console.error('Failed to delete from cloud:', error);
+            showSnackbar(`Failed to delete from ${providerDisplayName}`);
+          }
+        }
+
         // Default: strip the pages, keep the volume. The row carries the read
         // history and the cover, and re-downloading fills it back in.
         if (forget || alreadyRemoved) {
@@ -513,17 +530,6 @@
           deleteVolumeStats(volume.volume_uuid);
         } else {
           await removeVolumeFiles(volume.volume_uuid);
-        }
-
-        // Delete from cloud if checkbox checked (archive + sidecars)
-        if (deleteCloud && hasCloudBackup && cloudFile) {
-          try {
-            await unifiedCloudManager.deleteManagedVolume(volume.series_title, volume.volume_title);
-            showSnackbar(`Deleted from ${providerDisplayName}`);
-          } catch (error) {
-            console.error('Failed to delete from cloud:', error);
-            showSnackbar(`Failed to delete from ${providerDisplayName}`);
-          }
         }
 
         // Check if this was the last volume for this title
@@ -685,7 +691,11 @@
       // undefined once the delete refreshes the cache.
       const providerType = cloudFile.provider;
       try {
-        await unifiedCloudManager.deleteManagedVolume(volume.series_title, volume.volume_title);
+        await unifiedCloudManager.deleteManagedVolume(
+          volume.series_title,
+          volume.volume_title,
+          volume.volume_uuid
+        );
         const providerName = PROVIDER_SHORT_LABELS[providerType];
         showSnackbar(`Deleted from ${providerName}`);
       } catch (error) {

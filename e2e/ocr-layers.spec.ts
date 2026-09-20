@@ -25,7 +25,7 @@ async function seedVolume(page: Page) {
         db.volumes.clear(),
         db.volume_ocr.clear(),
         db.volume_files.clear(),
-        db.volume_ocr_layers.clear()
+        (await import('/src/lib/catalog/layer-store.ts')).clearAllLayers(db)
       ]);
       const canvas = document.createElement('canvas');
       canvas.width = 400;
@@ -105,7 +105,8 @@ async function readState(page: Page) {
   return page.evaluate(async (uuid) => {
     const { db } = await import('/src/lib/catalog/db.ts');
     const ocr = await db.volume_ocr.get(uuid);
-    const layers = await db.volume_ocr_layers.where('volume_uuid').equals(uuid).toArray();
+    const { listLayersWithPages } = await import('/src/lib/catalog/layer-store.ts');
+    const layers = await listLayersWithPages(db, uuid);
     const volumes = JSON.parse(window.localStorage.getItem('volumes') || '{}');
     return {
       primaryLines: ocr?.pages[0].blocks[0]?.lines ?? null,
@@ -198,7 +199,8 @@ test.describe('OCR layers', () => {
       const { db } = await import('/src/lib/catalog/db.ts');
       const ocr = await db.volume_ocr.get(uuid);
       const now = new Date().toISOString();
-      await db.volume_ocr_layers.put({
+      const { putLayerWithPages } = await import('/src/lib/catalog/layer-store.ts');
+      await putLayerWithPages(db, {
         volume_uuid: uuid,
         layer_id: 'fix',
         name: 'Fix',
@@ -235,7 +237,8 @@ test.describe('OCR layers', () => {
       const { db } = await import('/src/lib/catalog/db.ts');
       const ocr = await db.volume_ocr.get(uuid);
       const now = new Date().toISOString();
-      await db.volume_ocr_layers.bulkAdd([
+      const { putLayerWithPages } = await import('/src/lib/catalog/layer-store.ts');
+      for (const layer of [
         {
           volume_uuid: uuid,
           layer_id: 'original',
@@ -254,7 +257,9 @@ test.describe('OCR layers', () => {
           updated_at: now,
           pages: ocr!.pages
         }
-      ]);
+      ] as const) {
+        await putLayerWithPages(db, layer);
+      }
     }, VOLUME_UUID);
     await openReader(page);
 

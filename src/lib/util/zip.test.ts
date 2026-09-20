@@ -18,12 +18,12 @@ vi.mock('$lib/catalog/db', () => ({
     },
     volume_files: {
       get: vi.fn()
-    },
-    volume_ocr_layers: {
-      where: () => ({ equals: () => ({ toArray: layersToArray }) })
     }
   }
 }));
+
+// Layers are read through the layer store (metadata + pages joined).
+vi.mock('$lib/catalog/layer-store', () => ({ listLayersWithPages: layersToArray }));
 
 vi.mock('$lib/metadata/store', () => ({
   getSeriesMetadataForTitle: vi.fn().mockResolvedValue(undefined)
