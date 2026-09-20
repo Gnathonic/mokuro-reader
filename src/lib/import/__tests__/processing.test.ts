@@ -167,6 +167,22 @@ describe('parseMokuroFile', () => {
     expect(parsed.series).toBe('One Piece');
     expect(Object.keys(parsed)).not.toContain('seriesMetadata');
   });
+
+  it('captures the top-level char_offsets_method when present', async () => {
+    const mokuroFile = createMokuroFile({
+      char_offsets_method: 'attn-cells'
+    } as any);
+
+    const result = await parseMokuroFile(mokuroFile);
+
+    expect(result.charOffsetsMethod).toBe('attn-cells');
+  });
+
+  it('leaves char_offsets_method undefined when absent', async () => {
+    const result = await parseMokuroFile(createMokuroFile());
+
+    expect(result.charOffsetsMethod).toBeUndefined();
+  });
 });
 
 describe('matchImagesToPages', () => {
@@ -474,6 +490,59 @@ describe('processVolume', () => {
 
     expect(result.nestedSources).toHaveLength(1);
     expect(result.nestedSources[0].source.type).toBe('archive');
+  });
+
+  it('stamps the file-level char_offsets_method onto a page with placement but no page-level value', async () => {
+    const mokuroFile = createMokuroFile({
+      char_offsets_method: 'attn-cells',
+      pages: [
+        {
+          img_path: 'page001.jpg',
+          blocks: [{ lines: ['あ'], char_offsets: [[0, 10]] }]
+        },
+        // No placed block: must NOT get the stamp.
+        { img_path: 'page002.jpg', blocks: [{ lines: ['あ'] }] }
+      ]
+    } as any);
+    const input = createDecompressedVolume({ mokuroFile });
+
+    const result = await processVolume(input);
+
+    expect(result.ocrData.pages[0].char_offsets_method).toBe('attn-cells');
+    expect(result.ocrData.pages[1].char_offsets_method).toBeUndefined();
+  });
+
+  it('keeps a page-level char_offsets_method over the file-level value', async () => {
+    const mokuroFile = createMokuroFile({
+      char_offsets_method: 'attn-cells',
+      pages: [
+        {
+          img_path: 'page001.jpg',
+          char_offsets_method: 'gcv-symbols',
+          blocks: [{ lines: ['あ'], char_offsets: [[0, 10]] }]
+        } as any
+      ]
+    } as any);
+    const input = createDecompressedVolume({ mokuroFile });
+
+    const result = await processVolume(input);
+
+    expect(result.ocrData.pages[0].char_offsets_method).toBe('gcv-symbols');
+  });
+
+  it('round-trips char_offsets through parse -> process -> the object handed to saveVolume, with blocks verbatim', async () => {
+    const block = { lines: ['あい'], char_offsets: [[0, 10, 20]], vertical: true, font_size: 5 };
+    const mokuroFile = createMokuroFile({
+      char_offsets_method: 'attn-cells',
+      pages: [{ img_path: 'page001.jpg', blocks: [block] }]
+    } as any);
+    const input = createDecompressedVolume({ mokuroFile });
+
+    const result = await processVolume(input);
+
+    // What ends up on result.ocrData is exactly what saveVolume is handed.
+    expect(result.ocrData.pages[0].blocks).toEqual([block]);
+    expect(result.ocrData.pages[0].char_offsets_method).toBe('attn-cells');
   });
 
   it('preserves source type in metadata', async () => {

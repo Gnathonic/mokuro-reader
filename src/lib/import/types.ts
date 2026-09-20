@@ -202,6 +202,9 @@ export interface ProcessedPage {
   img_path: string;
   blocks: unknown[]; // OCR blocks from mokuro (Block[])
   cumulativeChars: number;
+  /** Copied from the page, else stamped from the file's top-level value —
+   * only onto pages where a block actually has a placed `char_offsets` entry. */
+  char_offsets_method?: string;
 }
 
 // ============================================

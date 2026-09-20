@@ -122,6 +122,18 @@ function isPageArray(value: unknown): value is Page[] {
   );
 }
 
+/**
+ * Whether a page has at least one block with a placed (non-null) `char_offsets`
+ * entry — the gate for stamping a file-level `char_offsets_method` onto it.
+ */
+function pageHasPlacement(page: Page): boolean {
+  if (!Array.isArray(page.blocks)) return false;
+  return page.blocks.some((block) => {
+    const offsets = block.char_offsets;
+    return Array.isArray(offsets) && offsets.some((entry) => entry != null);
+  });
+}
+
 /** Parse a layer file (gz tolerated) into DB-shaped pages plus the ids it names. */
 export async function readLayerFile(file: File | Blob, gz = false): Promise<ReadLayerFile | null> {
   try {
@@ -132,9 +144,16 @@ export async function readLayerFile(file: File | Blob, gz = false): Promise<Read
     }
     const json = JSON.parse(await blob.text()) as Record<string, unknown>;
     if (!isPageArray(json.pages)) return null;
+    // Engine sidecars carry char_offsets_method only at the top level; lift it
+    // onto pages that actually placed something and don't already have their own.
+    const fileMethod =
+      typeof json.char_offsets_method === 'string' ? json.char_offsets_method : undefined;
     return {
       pages: json.pages.map((p) => {
         const { cumulativeChars: _c, ...page } = p as Page & { cumulativeChars?: number };
+        if (page.char_offsets_method == null && fileMethod != null && pageHasPlacement(page)) {
+          return { ...page, char_offsets_method: fileMethod };
+        }
         return page;
       }),
       ...(typeof json.volume_uuid === 'string' ? { volumeUuid: json.volume_uuid } : {}),
