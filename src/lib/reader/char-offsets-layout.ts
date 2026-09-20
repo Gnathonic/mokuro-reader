@@ -56,7 +56,8 @@ export function processLine(raw: string): string {
  *    file renders as-is. Repair runs on the COLLAPSED cells because those are
  *    what paints: a 2px `…` split 0, 1, 1 is not an unplaced character, and a
  *    wholly zero-width `...` is one unplaced character, not three. A line
- *    repair gives up on is null, so cells that come back under `repair` never
+ *    repair gives up on — too many characters zero-width or crushed into a
+ *    pixel or two — is null, so cells that come back under `repair` never
  *    leave a real character at zero width (marks and whitespace keep theirs).
  *
  * A line with no extent at all is null in both modes: every glyph would paint

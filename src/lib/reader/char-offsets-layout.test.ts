@@ -164,6 +164,21 @@ describe('lineCells', () => {
       ]);
     });
 
+    it('a crushed line is null under repair even with no zero cell, as-is without', () => {
+      // three of six glyphs sit in 1–3px cells: placed in the file, a smear on
+      // the page. Auto mode fits the line instead; original mode stays literal.
+      const crushed = [0, 40, 80, 120, 122, 123, 126];
+      expect(lineCells('あいうえおか', crushed, 126, { repair: true })).toBeNull();
+      expect(sizes(lineCells('あいうえおか', crushed, 126, { repair: false }))).toEqual([
+        40, 40, 40, 2, 1, 3
+      ]);
+    });
+
+    it('the half cells of 、 and 。 are print, not crushed', () => {
+      const result = lineCells('あ、い。う', [0, 40, 60, 100, 120, 160], 160, { repair: true });
+      expect(sizes(result)).toEqual([40, 20, 40, 20, 40]);
+    });
+
     it('a repaired line never has a zero cell on a real character', () => {
       const result = lineCells('あいうえお', [0, 2, 2, 2, 5, 15], 15, { repair: true });
       expect(sizes(result)).toEqual([2, 1, 1, 1, 10]);
@@ -252,10 +267,12 @@ describe('lineCells', () => {
 
     it('repairs the rendered cell, not the raw dots: an even split that rounds to zero is not unplaced', () => {
       // a 2px ellipsis cell split three ways is 0, 1, 1 — the first dot is
-      // zero-width in the file, but the '…' that renders is not
-      const result = lineCells('あ...', [0, 40, 40, 41, 42], 42, { repair: true });
+      // zero-width in the file, but the '…' that renders is not. (Small numbers
+      // throughout: beside a 40px あ a 2px cell would be crushed, a different
+      // rule from the one under test.)
+      const result = lineCells('あ...', [0, 6, 6, 7, 8], 8, { repair: true });
       expect(result!.cells).toEqual([
-        { text: 'あ', size: 40 },
+        { text: 'あ', size: 6 },
         { text: '…', size: 2 }
       ]);
     });

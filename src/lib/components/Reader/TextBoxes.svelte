@@ -17,6 +17,7 @@
   } from '$lib/anki-connect';
   import { db } from '$lib/catalog/db';
   import { layoutLines, getDefaultMeasurer, type LineLayout } from '$lib/reader/line-coords-layout';
+  import { processLine } from '$lib/reader/char-offsets-layout';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
 
   interface ContextMenuData {
@@ -55,9 +56,12 @@
     area: number;
     useMinDimensions: boolean;
     isOriginalMode: boolean;
-    /** Per-line positions/sizes from lines_coords (auto mode only);
-     * null falls back to legacy hover-fit auto rendering */
+    /** Per-line positions/sizes from lines_coords — auto mode, and original
+     * mode for a block whose file places its characters (char_offsets);
+     * null falls back to legacy hover-fit auto / whole-block original */
     lineLayouts: LineLayout[] | null;
+    /** Changes whenever a line's flow size or target can have: re-measure */
+    layoutSignature: string;
     blockIndex: number; // Original index in page.blocks
   }
 
@@ -70,10 +74,10 @@
         let [_xmin, _ymin, _xmax, _ymax] = box;
 
         // Replace manual ellipsis with proper ellipsis character (…)
-        // Handle both ASCII periods (...) and full-width periods (．．．)
-        const processedLines = lines.map((line) =>
-          line.replace(/\.\.\./g, '…').replace(/．．．/g, '…')
-        );
+        // Handle both ASCII periods (...) and full-width periods (．．．).
+        // processLine is shared with the char_offsets cells, which index the
+        // RAW line and have to collapse exactly the same runs.
+        const processedLines = lines.map(processLine);
 
         const isOriginalMode = $settings.fontSize === 'original';
         const isAutoMode = $settings.fontSize === 'auto';
@@ -83,9 +87,25 @@
         // the quad width, furigana included), so rendering it as-is overflows
         // the box; the quads themselves are accurate. Null (no lines_coords,
         // e.g. pre-lines_coords imports) → legacy hover-fit auto below.
-        const lineLayouts = isAutoMode
-          ? layoutLines(block, processedLines, getDefaultMeasurer())
+        // Lines the file places character by character (char_offsets) come
+        // back with cells; auto repairs the zero-width cells producers leave
+        // on real characters.
+        let lineLayouts = isAutoMode
+          ? layoutLines(block, processedLines, getDefaultMeasurer(), { cells: 'repaired' })
           : null;
+
+        // Original mode is "what the file says": a block whose file places its
+        // characters renders them exactly there, zero-width cells and all, and
+        // its unplaced lines ride the same per-line layout so the block stays
+        // coherent. A block with no usable placement keeps the whole-block
+        // rendering it has always had. (The key check keeps blocks without the
+        // field — the whole existing library — from paying for a layout.)
+        if (isOriginalMode && block.char_offsets) {
+          const placed = layoutLines(block, processedLines, getDefaultMeasurer(), {
+            cells: 'as-is'
+          });
+          if (placed?.some((line) => line.cells)) lineLayouts = placed;
+        }
 
         // Only expand bounding boxes for legacy hover-fit auto sizing;
         // per-line layout and manual font sizes use exact OCR bounding boxes
@@ -133,6 +153,17 @@
           useMinDimensions: $settings.fontSize !== 'auto' && !isOriginalMode,
           isOriginalMode,
           lineLayouts,
+          // Everything a span's natural origin or its target depends on. The
+          // cells' own sizes are left out: they sum to the line's extent.
+          layoutSignature: lineLayouts
+            ? lineLayouts
+                .map((l, i) =>
+                  l.hidden
+                    ? ''
+                    : `${l.left},${l.top},${l.fontSize},${l.cells ? l.cells.length : '-'},${processedLines[i].length}`
+                )
+                .join('|')
+            : '',
           blockIndex
         };
 
@@ -391,7 +422,9 @@
     container.addEventListener('touchstart', schedule, { passive: true });
 
     return {
-      // _signature changes on displayOCR toggle or font-size setting change.
+      // _signature changes on displayOCR toggle, font-size setting change, or
+      // a change to the box's line layout (an OCR edit, a line gaining or
+      // losing its character cells) — anything that moves a natural origin.
       update: schedule,
       destroy() {
         cancelAnimationFrame(raf);
@@ -611,11 +644,11 @@
   }
 </script>
 
-{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, blockIndex }, index (`${volumeUuid}-textBox-${index}`)}
+{#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, layoutSignature, blockIndex }, index (`${volumeUuid}-textBox-${index}`)}
   {@const usePerLine = lineLayouts !== null}
   <div
     use:handleTextBoxHover={[index, fontSize]}
-    use:positionPerLine={`${display}|${$settings.fontSize}`}
+    use:positionPerLine={`${display}|${$settings.fontSize}|${layoutSignature}`}
     class="textBox"
     class:originalMode={isOriginalMode}
     class:perLine={usePerLine}
@@ -650,7 +683,11 @@
               style:height={lineLayouts[lineIndex].wrap
                 ? `${lineLayouts[lineIndex].height}px`
                 : undefined}
-              style:font-size={`${lineLayouts[lineIndex].fontSize}px`}>{line}</span
+              style:font-size={`${lineLayouts[lineIndex].fontSize}px`}
+              >{#if lineLayouts[lineIndex].cells}{#each lineLayouts[lineIndex].cells as cell}<span
+                    class="ocr-char"
+                    style:inline-size={`${cell.size}px`}>{cell.text}</span
+                  >{/each}{:else}{line}{/if}</span
             >{/if}{/each}
       {:else}
         {#each lines as line}<span class="ocr-line">{line}</span>{/each}
@@ -741,6 +778,23 @@
     letter-spacing: 0;
     white-space: nowrap;
     /* transform (translate onto the quad) is set by positionPerLine */
+  }
+
+  /* A line the file places character by character (char_offsets): one cell
+     per character, its inline size the character's advance, so normal flow
+     puts every glyph where the print has it — no per-glyph measurement, and
+     above all no position:absolute, which would be #254 between every glyph.
+     inline-size and text-align are logical, so the one rule serves both
+     writing modes. Cells never clip: tight tracking makes a cell narrower
+     than its glyph, and original mode renders zero-width cells as the file
+     has them. There must be NO whitespace between the cells in the template:
+     the line span's textContent is the line. */
+  .textBox.perLine .ocr-line.positionedLine .ocr-char {
+    display: inline-block;
+    text-align: center;
+    overflow: visible;
+    line-height: 1;
+    letter-spacing: 0;
   }
 
   /* A quad that captured multiple print columns (base text + furigana):

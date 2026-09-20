@@ -26,6 +26,17 @@ export type LineOffsets = number[] | null;
  */
 export const UNPLACED_MAX = 0.4;
 
+/**
+ * A real character whose cell is narrower than this share of the line's median
+ * non-zero cell is crushed: the file placed it, in 1–3px, and drawn there it is
+ * a smear on its neighbour. Whole lines come out that way — most of their
+ * glyphs squeezed between two wide cells — while passing the zero-width rule
+ * (351 lines of paddle-manga output, 26 of mokuro-fork). A crushed cell counts
+ * as unplaced, exactly like a zero one. The half cells of 、 and 。 sit near
+ * 0.5 and small kana above that, so a quarter leaves real print alone.
+ */
+export const CRUSHED_RATIO = 0.25;
+
 /** Producers clamp to the quad, so a placed extent beyond this many times the
  * quad's main extent is corruption, not slack. Same tolerance `layoutLines`
  * allows a fitted line (OVERFLOW_TOL). */
@@ -128,6 +139,13 @@ function evenWidths(span: number, count: number): number[] {
   return widths;
 }
 
+/** Middle value; the mean of the middle two for an even count. */
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 /**
  * Auto-mode repair for zero-width cells on real characters. The contract
  * reserves zero width for whitespace, but producers emit it on glyphs too —
@@ -145,8 +163,11 @@ function evenWidths(span: number, count: number): number[] {
  *
  * Returns the input array when nothing needed repair, and null when the line
  * cannot be repaired: every cell is zero, more than UNPLACED_MAX of its
- * non-whitespace characters were zero-width, or a run's neighbour has fewer
- * pixels than it has sharers. That last split would leave zero cells behind —
+ * non-whitespace characters were unplaced — zero-width, or crushed below
+ * CRUSHED_RATIO of the line's median non-zero cell — or a run's neighbour has
+ * fewer pixels than it has sharers. Crushed cells only count toward that
+ * decision; they are never widened, because unlike a zero cell there is no
+ * merged neighbour to say where their pixels went. That last split would leave zero cells behind —
  * and, with the neighbour in front, zero the neighbour itself, a cell the file
  * HAD placed. Real lines that hit it (0.08%) are glyphs crushed between 1–2px
  * cells, where there is no placement worth keeping. So a non-null result never
@@ -161,9 +182,16 @@ export function repairZeroCells(chars: string[], offsets: number[]): number[] | 
   const widths = chars.map((_, k) => offsets[k + 1] - offsets[k]);
   const real = chars.map((char) => !takesNoRoom(char));
   const realCount = real.filter(Boolean).length;
-  const unplaced = real.filter((isReal, k) => isReal && widths[k] === 0).length;
-  if (unplaced === 0) return offsets;
-  if (unplaced > UNPLACED_MAX * realCount) return null;
+  // The extent is non-zero, so there is a non-zero cell to take a median of.
+  // Zero cells stay out of it: they would drag the bar down on exactly the
+  // lines that have the most missing.
+  const crushedBelow = CRUSHED_RATIO * median(widths.filter((width) => width > 0));
+  const zero = real.filter((isReal, k) => isReal && widths[k] === 0).length;
+  const crushed = real.filter(
+    (isReal, k) => isReal && widths[k] > 0 && widths[k] < crushedBelow
+  ).length;
+  if (zero + crushed > UNPLACED_MAX * realCount) return null;
+  if (zero === 0) return offsets;
 
   for (let i = 0; i < n; i++) {
     if (widths[i] !== 0) continue;

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  CRUSHED_RATIO,
   UNPLACED_MAX,
   codePoints,
   parallelOffsets,
@@ -216,8 +217,8 @@ describe('repairZeroCells', () => {
     const cases: [string, number[]][] = [
       [opmText, opmOffsets],
       ['ABCDEF', [0, 0, 80, 80, 120, 160, 200]], // two runs around one neighbour
-      ['ABCDEFGH', [3, 40, 40, 40, 41, 90, 90, 140, 180]], // a 1px neighbour on one side
-      ['ABCDE', [0, 1, 1, 1, 50, 99]], // run of 2 borrowing 49 → 16, 16, 17
+      ['ABCDEFGHIJK', [3, 40, 40, 40, 41, 90, 90, 140, 180, 220, 260, 300]], // a 1px neighbour on one side
+      ['ABCDEFGH', [0, 1, 1, 1, 50, 99, 148, 197, 246]], // run of 2 borrowing 49 → 16, 16, 17
       ['ABCDEFGH', [0, 0, 0, 3, 40, 80, 120, 160, 200]] // 3px neighbour, 3 ways: 1, 1, 1
     ];
     for (const [text, offsets] of cases) {
@@ -253,10 +254,67 @@ describe('repairZeroCells', () => {
     ).toBeNull();
     expect(repairZeroCells([...'ABCDEFG'], [0, 40, 80, 120, 160, 162, 162, 162])).toBeNull();
     expect(repairZeroCells([...'ABCDE'], [0, 40, 80, 120, 121, 121])).toBeNull();
-    // a preceding donor with pixels to spare keeps its share
-    expect(repairZeroCells([...'ABCDEFG'], [0, 40, 80, 120, 160, 163, 163, 163])).toEqual([
-      0, 40, 80, 120, 160, 161, 162, 163
-    ]);
+    // a preceding donor with pixels to spare keeps its share (the line is long
+    // enough that its crushed 3px donor and the run stay under UNPLACED_MAX)
+    expect(
+      repairZeroCells([...'ABCDEFGHI'], [0, 40, 80, 120, 160, 200, 240, 243, 243, 243])
+    ).toEqual([0, 40, 80, 120, 160, 200, 240, 241, 242, 243]);
+  });
+
+  describe('crushed cells: placed in the file, unreadable on the page', () => {
+    it(`counts a cell under ${CRUSHED_RATIO * 100}% of the median non-zero cell as unplaced`, () => {
+      expect(CRUSHED_RATIO).toBe(0.25);
+      // One zero cell in ten passes the zero-only rule easily, but four more
+      // glyphs sit in 1–3px cells: half the line has no placement worth drawing.
+      expect(
+        repairZeroCells([...'ABCDEFGHIJ'], [0, 40, 80, 120, 160, 200, 202, 205, 206, 208, 208])
+      ).toBeNull();
+    });
+
+    it('gives up on a crushed line even when no cell is zero', () => {
+      expect(repairZeroCells([...'ABCDEF'], [0, 40, 80, 120, 122, 123, 126])).toBeNull();
+    });
+
+    it('never repairs a crushed cell: it only counts toward giving up', () => {
+      // B is crushed (2px) and I is zero: 2 of 10, so the line keeps its
+      // placement. I shares J's cell; B stays exactly as the file had it.
+      expect(
+        repairZeroCells([...'ABCDEFGHIJ'], [0, 40, 42, 82, 122, 162, 202, 242, 282, 282, 322])
+      ).toEqual([0, 40, 42, 82, 122, 162, 202, 242, 282, 302, 322]);
+      // nothing zero, one crushed cell: nothing to repair, the same array back
+      const offsets = [0, 40, 42, 82, 122, 162];
+      expect(repairZeroCells([...'ABCDE'], offsets)).toBe(offsets);
+    });
+
+    it('keeps the half cells of 、 and 。 placed', () => {
+      // Counted as crushed, 、 and 。 would make 3 of 5 unplaced and cost the
+      // line its cells. Half a cell is the print, not a producer failure.
+      expect(repairZeroCells([...'あ、い。う'], [0, 40, 60, 100, 120, 120])).toEqual([
+        0, 40, 60, 100, 110, 120
+      ]);
+    });
+
+    it('is strict: a cell of exactly the ratio is placed', () => {
+      // median 40 → crushed below 10
+      expect(repairZeroCells([...'ABCD'], [0, 40, 80, 90, 90])).not.toBeNull();
+      expect(repairZeroCells([...'ABCD'], [0, 40, 80, 89, 89])).toBeNull();
+    });
+
+    it('measures against the NON-ZERO median, so zero cells never lower the bar', () => {
+      // widths 40 0 40 0 40 0 40 2 2 2. Over every cell the median would be 2
+      // and nothing would count as crushed; three zeros alone pass the 40% rule
+      // and each has a 40px neighbour to share. Against the non-zero median
+      // (40) six of ten characters are unplaced.
+      expect(
+        repairZeroCells([...'ABCDEFGHIJ'], [0, 40, 40, 80, 80, 120, 120, 160, 162, 164, 166])
+      ).toBeNull();
+    });
+
+    it('never counts a narrow whitespace or mark cell', () => {
+      // the 2px space is no crushed glyph: 1 of 3 real characters is unplaced
+      expect(repairZeroCells([...'あ いう'], [0, 40, 42, 82, 82])).not.toBeNull();
+      expect(repairZeroCells([...'か\u3099きく'], [0, 40, 41, 81, 81])).not.toBeNull();
+    });
   });
 
   it('treats marks and variation selectors like whitespace: they sit on their base', () => {
