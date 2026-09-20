@@ -387,6 +387,90 @@ describe('syncLayersFromListing', () => {
   });
 });
 
+describe('a pulled file must plausibly be a layer OF THAT VOLUME (page count)', () => {
+  /** Another volume's primary sidecar: its own uuid/title, and three pages. */
+  function otherVolumesSidecar(): Blob {
+    return new Blob([
+      JSON.stringify({
+        version: '0.2.1',
+        title: 'Series',
+        title_uuid: 's1',
+        volume: 'Vol 1.5',
+        volume_uuid: 'v15',
+        pages: [pg('a'), pg('b'), pg('c')],
+        chars: 3
+      })
+    ]);
+  }
+  // No `Vol 1.5.cbz` listed, so by filename shape this is layer "5" of Vol 1.
+  const lookAlike = (overrides: Partial<CloudFileMetadata> = {}) =>
+    listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.5.mokuro', overrides));
+
+  it('a look-alike with another page count makes no row, and is not downloaded again until it changes', async () => {
+    await seedRow(); // page_count 1
+    downloadFile.mockImplementation(async () => otherVolumesSidecar());
+
+    await syncLayersFromListing(lookAlike(), 'webdav');
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+    expect(await db.volume_ocr_layers.count()).toBe(0);
+
+    // Same listing again: the verdict is remembered, nothing is fetched.
+    await syncLayersFromListing(lookAlike(), 'webdav');
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+
+    // The file changed in the cloud → worth one more look.
+    await syncLayersFromListing(lookAlike({ size: 321 }), 'webdav');
+    expect(downloadFile).toHaveBeenCalledTimes(2);
+    expect(await db.volume_ocr_layers.count()).toBe(0);
+  });
+
+  it('the verdict is about THIS page count: a row whose count changed is looked at again', async () => {
+    await seedRow();
+    downloadFile.mockImplementation(async () => otherVolumesSidecar());
+    await syncLayersFromListing(lookAlike(), 'webdav');
+    expect(await db.volume_ocr_layers.count()).toBe(0);
+
+    await db.volumes.update('v1', { page_count: 3 });
+    await syncLayersFromListing(lookAlike(), 'webdav');
+    expect(downloadFile).toHaveBeenCalledTimes(2);
+    expect((await db.volume_ocr_layers.get(['v1', '5']))!.pages).toHaveLength(3);
+  });
+
+  it('a differing volume_uuid alone is tolerated (engine sidecars)', async () => {
+    await seedRow();
+    downloadFile.mockResolvedValue(
+      new Blob([JSON.stringify({ volume_uuid: 'someone-else', pages: [pg('えん')] })])
+    );
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.gcv.mokuro')),
+      'webdav'
+    );
+    expect(await db.volume_ocr_layers.get(['v1', 'gcv'])).toBeDefined();
+  });
+
+  it('a row with no known page count receives nothing, and nothing is downloaded for it', async () => {
+    await seedRow();
+    await db.volumes.update('v1', { page_count: 0 });
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('えん')]));
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.gcv.mokuro')),
+      'webdav'
+    );
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(await db.volume_ocr_layers.count()).toBe(0);
+  });
+
+  it('pullLayersForVolume applies the same check', async () => {
+    await seedRow();
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.5.mokuro')];
+    downloadFile.mockImplementation(async () => otherVolumesSidecar());
+    expect(await pullLayersForVolume('v1', 'webdav')).toBe(0);
+    expect(await db.volume_ocr_layers.count()).toBe(0);
+    expect(await pullLayersForVolume('v1', 'webdav')).toBe(0);
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('pullLayersForVolume / deleteLayerFileInCloud', () => {
   it('pulls one volume’s layers from the cached listing', async () => {
     await seedRow();

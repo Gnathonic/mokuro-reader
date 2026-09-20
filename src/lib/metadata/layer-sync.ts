@@ -217,6 +217,117 @@ async function dropPendingDeletesOfMissingVolumes(): Promise<void> {
   writePendingDeletes(readPendingDeletes().filter((e) => !missing.has(e.volume_uuid)));
 }
 
+/**
+ * A listed file that was downloaded and turned out NOT to be a layer of the
+ * volume its name points at: its page count is not the volume's. Layer files
+ * are recognised by filename shape alone (`classifyMokuroSidecar`), so
+ * `Vol 1.5.mokuro` with no `Vol 1.5.cbz` beside it reads as layer "5" of
+ * `Vol 1` while really being the leftover primary sidecar of a removed volume,
+ * or a manual copy. Making a row of it would be worse than showing garbage:
+ * the row's `cloud` stamp is what lets a volume delete or rename sweep the
+ * file along (`getSweepableCloudFilesForVolume`).
+ *
+ * With no row to carry a stamp, "no row → pull" would download the file again
+ * on every listing, so the verdict is remembered here — for that exact file
+ * (provider + listing stamp) against that exact page count. Either one moving
+ * earns the file another look. Persisted like the pending deletes above; an
+ * entry leaves with its volume.
+ */
+interface RejectedLayerFile {
+  volume_uuid: string;
+  layer_id: string;
+  provider: string;
+  /** The volume's `page_count` the file was weighed against. */
+  page_count: number;
+  size?: number;
+  modified?: number;
+}
+
+const REJECTED_FILES_KEY = 'layer-sync:rejected-files';
+
+function readRejectedFiles(): RejectedLayerFile[] {
+  try {
+    const raw = globalThis.localStorage?.getItem(REJECTED_FILES_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e): e is RejectedLayerFile =>
+        !!e &&
+        typeof e === 'object' &&
+        typeof (e as RejectedLayerFile).volume_uuid === 'string' &&
+        typeof (e as RejectedLayerFile).layer_id === 'string' &&
+        typeof (e as RejectedLayerFile).provider === 'string' &&
+        typeof (e as RejectedLayerFile).page_count === 'number'
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeRejectedFiles(entries: RejectedLayerFile[]): void {
+  try {
+    if (entries.length === 0) globalThis.localStorage?.removeItem(REJECTED_FILES_KEY);
+    else globalThis.localStorage?.setItem(REJECTED_FILES_KEY, JSON.stringify(entries));
+  } catch {
+    // Storage unavailable: the file is still rejected, just re-read next time.
+  }
+}
+
+function sameRejectedSlot(a: RejectedLayerFile, b: RejectedLayerFile): boolean {
+  return a.volume_uuid === b.volume_uuid && a.layer_id === b.layer_id && a.provider === b.provider;
+}
+
+function rejectionOf(
+  row: VolumeMetadata,
+  listed: ListedLayerFile,
+  providerType: string
+): RejectedLayerFile {
+  return {
+    volume_uuid: row.volume_uuid,
+    layer_id: listed.layerId,
+    provider: providerType,
+    page_count: row.page_count,
+    ...stampOf(listed.file)
+  };
+}
+
+/** Already weighed against this page count and found wanting, and unchanged since? */
+function isKnownMismatch(candidate: RejectedLayerFile): boolean {
+  return readRejectedFiles().some(
+    (e) =>
+      sameRejectedSlot(e, candidate) &&
+      e.page_count === candidate.page_count &&
+      // The same leniency as `cloudCopyMoved`: a side that knows no size/mtime
+      // cannot say the file moved.
+      !(e.size !== undefined && candidate.size !== undefined && e.size !== candidate.size) &&
+      !(
+        e.modified !== undefined &&
+        candidate.modified !== undefined &&
+        e.modified !== candidate.modified
+      )
+  );
+}
+
+function noteRejectedFile(entry: RejectedLayerFile): void {
+  writeRejectedFiles([...readRejectedFiles().filter((e) => !sameRejectedSlot(e, entry)), entry]);
+}
+
+function clearRejectedFile(entry: RejectedLayerFile): void {
+  const all = readRejectedFiles();
+  const rest = all.filter((e) => !sameRejectedSlot(e, entry));
+  if (rest.length !== all.length) writeRejectedFiles(rest);
+}
+
+async function dropRejectedFilesOfMissingVolumes(): Promise<void> {
+  const all = readRejectedFiles();
+  if (all.length === 0) return;
+  const uuids = [...new Set(all.map((e) => e.volume_uuid))];
+  const rows = await db.volumes.bulkGet(uuids);
+  const missing = new Set(uuids.filter((_, i) => !rows[i]));
+  if (missing.size === 0) return;
+  writeRejectedFiles(readRejectedFiles().filter((e) => !missing.has(e.volume_uuid)));
+}
+
 function cloudCopyMoved(row: VolumeOcrLayer, file: CloudFileMetadata): boolean {
   const listed = stampOf(file);
   const own = row.cloud;
@@ -354,8 +465,31 @@ async function pullOne(
   row: VolumeMetadata,
   existing: VolumeOcrLayer | undefined
 ): Promise<boolean> {
+  // The one gate every pulled file passes on its way to becoming a row: it
+  // must plausibly be a layer OF THIS VOLUME, i.e. have the volume's page
+  // count. (Not its `volume_uuid` — an engine's sidecar may carry another.)
+  // A row that does not know its page count yet (a 0/0 index entry) cannot
+  // vouch for anything; its layers arrive with the volume
+  // (`pullLayersForVolume` after the download), when the count is real.
+  if (!(row.page_count > 0)) {
+    console.debug(
+      `[layer-sync] not pulling '${listed.file.path}': page count of '${row.volume_title}' unknown`
+    );
+    return false;
+  }
+  const rejection = rejectionOf(row, listed, provider.type);
+  if (isKnownMismatch(rejection)) return false;
   const pages = await readLayerFile(provider, listed);
   if (!pages) return false;
+  if (pages.length !== row.page_count) {
+    console.debug(
+      `[layer-sync] '${listed.file.path}' is not a layer of '${row.volume_title}': ` +
+        `${pages.length} page(s), the volume has ${row.page_count}`
+    );
+    noteRejectedFile(rejection);
+    return false;
+  }
+  clearRejectedFile(rejection);
   const now = new Date().toISOString();
   const kind = existing?.kind ?? layerKindForId(listed.layerId);
   const layer: VolumeOcrLayer = {
@@ -495,6 +629,7 @@ async function runSync(
   const writable = providerIsWritable(provider);
 
   await dropPendingDeletesOfMissingVolumes().catch(() => {});
+  await dropRejectedFilesOfMissingVolumes().catch(() => {});
   const pendingDeletes = pendingDeletesFor(providerType);
 
   const layerFiles = collectLayerFiles(cloudFilesMap);
