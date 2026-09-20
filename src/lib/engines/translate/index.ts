@@ -4,7 +4,7 @@
  * (a model that ignored "JSON only") is retried exactly once in one place.
  */
 import type { EngineCredentials } from '../credentials';
-import type { TranslationEngineId } from '$lib/settings/misc';
+import type { TranslationEngineId, TranslationModelOverrides } from '$lib/settings/misc';
 import { MalformedTranslationError, parseTranslation } from './prompt';
 import type { TranslationAdapter, TranslationInput, TranslationResult } from './types';
 import { createGeminiAdapter, GEMINI_DEFAULT_MODEL } from './gemini';
@@ -19,10 +19,11 @@ export const ENGINE_DEFAULT_MODEL: Record<TranslationEngineId, string> = {
 
 export function getTranslationAdapter(
   creds: EngineCredentials,
-  prefs: { translationEngine: TranslationEngineId; translationModel: string },
+  prefs: { translationEngine: TranslationEngineId; translationModels: TranslationModelOverrides },
   fetchImpl?: typeof fetch
 ): TranslationAdapter | null {
-  const model = prefs.translationModel || undefined;
+  // Only the selected engine's own override: see `MiscSettings.translationModels`.
+  const model = prefs.translationModels[prefs.translationEngine]?.trim() || undefined;
   switch (prefs.translationEngine) {
     case 'anthropic':
       return creds.anthropicKey

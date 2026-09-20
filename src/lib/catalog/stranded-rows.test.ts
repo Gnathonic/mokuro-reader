@@ -8,7 +8,8 @@ vi.mock('$lib/catalog/db', async () => {
     volumes: 'volume_uuid, series_uuid, series_title',
     volume_ocr: 'volume_uuid',
     volume_files: 'volume_uuid',
-    volume_ocr_layers: '[volume_uuid+layer_id], volume_uuid'
+    volume_ocr_layers: '[volume_uuid+layer_id], volume_uuid',
+    volume_ocr_layer_pages: '[volume_uuid+layer_id], volume_uuid'
   });
   return { db };
 });

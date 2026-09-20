@@ -1,4 +1,13 @@
 import { db } from '$lib/catalog/db';
+import {
+  getLayerMeta,
+  getLayerWithPages,
+  listLayerMetasForVolumes,
+  listVolumeUuidsWithLayers,
+  patchLayerMeta,
+  putLayerWithPages,
+  updateLayerMeta
+} from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import { layerKindForId, layerNameForId } from '$lib/reader/edit/layers';
@@ -40,6 +49,9 @@ import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
  * - The `.mokuro` a push writes is pure upstream format (`buildMokuroMetadata`);
  *   the layer's kind/name are inferred from the id on the other side, never
  *   embedded.
+ * - A layer may be listed twice, as `.mokuro` AND `.mokuro.gz`. The plain file
+ *   wins every read; a push (always the plain name) removes the `.gz` it
+ *   supersedes, and a delete removes both — see `ListedLayerFile.copies`.
  * - A layer deleted here whose cloud copy could not be removed at the time
  *   leaves a pending-delete tombstone (see `PendingLayerDelete`): its file is
  *   never pulled back, and is deleted by the first listing that can.
@@ -63,6 +75,13 @@ export interface ListedLayerFile {
   layerId: string;
   gz: boolean;
   file: CloudFileMetadata;
+  /**
+   * EVERY listed file of this layer, `file` included — a layer can sit in the
+   * folder as both `.mokuro` and `.mokuro.gz` (an engine wrote the `.gz`, a
+   * client pushed the plain one). Reading takes the one winner above; removing
+   * must take them all, or the survivor is the layer again on the next listing.
+   */
+  copies: Array<{ file: CloudFileMetadata; gz: boolean }>;
 }
 
 /** The archive stems of a folder, keyed lowercased → spelled as listed. */
@@ -82,7 +101,8 @@ function archiveStemsOf(files: CloudFileMetadata[]): Map<string, string> {
  * Every layer file in a listing, classified per folder by archive presence
  * (see `classifyMokuroSidecar`). Files nested deeper than `<Series>/<file>`
  * are not a volume's sidecars. When both `.mokuro` and `.mokuro.gz` exist for
- * one layer the plain file wins.
+ * one layer the plain file wins the READ; the entry still carries both as
+ * `copies`, which is what every delete works from.
  */
 export function collectLayerFiles(
   cloudFilesMap: Map<string, CloudFileMetadata[]>
@@ -100,13 +120,18 @@ export function collectLayerFiles(
       if (cls.kind !== 'layer') continue;
       const key = `${cls.stem.toLowerCase()}\u0000${cls.layerId}`;
       const existing = seen.get(key);
-      if (existing && !existing.gz) continue; // plain beats gz
+      const copies = [...(existing?.copies ?? []), { file, gz: cls.gz }];
+      if (existing && !existing.gz) {
+        existing.copies = copies; // plain beats gz
+        continue;
+      }
       seen.set(key, {
         folderTitle,
         stem: stems.get(cls.stem.toLowerCase()) ?? cls.stem,
         layerId: cls.layerId,
         gz: cls.gz,
-        file
+        file,
+        copies
       });
     }
     out.push(...seen.values());
@@ -504,11 +529,25 @@ async function pullOne(
         : {}),
     created_at: existing?.created_at ?? now,
     updated_at: now,
-    pages,
     cloud: { provider: provider.type, ...stampOf(listed.file), synced_at: now }
   };
-  await db.volume_ocr_layers.put(layer);
+  await putLayerWithPages(db, { ...layer, pages });
   return true;
+}
+
+/** The `.mokuro.gz` copies of a listed layer — what a plain push leaves shadowed. */
+function gzCopiesOf(listed: ListedLayerFile | undefined): CloudFileMetadata[] {
+  return (listed?.copies ?? []).filter((c) => c.gz).map((c) => c.file);
+}
+
+/**
+ * Remove the `.mokuro.gz` sibling(s) of a layer whose plain file is this
+ * device's own. Best-effort by design: a failure changes nothing (the plain
+ * file already wins every read), and because the sibling is then still listed,
+ * the next push or listing comes back for it.
+ */
+async function removeGzSiblings(provider: SyncProvider, siblings: CloudFileMetadata[]) {
+  for (const file of siblings) await deleteOneCopy(provider, file);
 }
 
 async function pushOne(
@@ -516,9 +555,15 @@ async function pushOne(
   folderTitle: string,
   stem: string,
   row: VolumeMetadata,
-  layer: VolumeOcrLayer
+  planned: VolumeOcrLayer,
+  gzSiblings: CloudFileMetadata[] = []
 ): Promise<boolean> {
   try {
+    // The plan carries metadata only — it is drawn up for a whole listing, and
+    // holding every pushable layer's pages until its turn in the pool would be
+    // the library's OCR in memory. The pages are read here, one layer at a time.
+    const layer = await getLayerWithPages(db, planned.volume_uuid, planned.layer_id);
+    if (!layer) return false; // deleted since the plan
     const { totalChars } = buildPageCharCounts(layer.pages);
     const meta = buildMokuroMetadata({ ...row, character_count: totalChars }, layer.pages);
     const blob = new Blob([JSON.stringify(meta)], { type: 'application/json' });
@@ -528,7 +573,7 @@ async function pushOne(
       .getCache(provider.type)
       ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
     const now = new Date().toISOString();
-    await db.volume_ocr_layers.update([layer.volume_uuid, layer.layer_id], {
+    await updateLayerMeta(db, layer.volume_uuid, layer.layer_id, {
       cloud: {
         provider: provider.type,
         size: uploaded.size ?? blob.size,
@@ -536,11 +581,16 @@ async function pushOne(
         synced_at: now
       }
     });
-    return true;
   } catch (error) {
-    console.warn(`[layer-sync] could not upload layer '${layer.layer_id}' of '${stem}':`, error);
+    console.warn(`[layer-sync] could not upload layer '${planned.layer_id}' of '${stem}':`, error);
     return false;
   }
+  // A push always writes the PLAIN name, so a layer that arrived as an
+  // engine's `.mokuro.gz` would otherwise keep that file beside its successor
+  // forever. Only once the plain copy is safely up, and never part of the
+  // push's own verdict.
+  await removeGzSiblings(provider, gzSiblings);
+  return true;
 }
 
 async function runPool<T>(items: T[], limit: number, run: (item: T) => Promise<void>) {
@@ -553,20 +603,65 @@ async function runPool<T>(items: T[], limit: number, run: (item: T) => Promise<v
 
 type Transfer =
   | { kind: 'pull'; listed: ListedLayerFile; row: VolumeMetadata; existing?: VolumeOcrLayer }
-  | { kind: 'push'; folderTitle: string; stem: string; row: VolumeMetadata; layer: VolumeOcrLayer }
+  | {
+      kind: 'push';
+      folderTitle: string;
+      stem: string;
+      row: VolumeMetadata;
+      layer: VolumeOcrLayer;
+      gzSiblings: CloudFileMetadata[];
+    }
+  /** A `.gz` left beside this device's own plain file (an earlier push could not remove it). */
+  | { kind: 'tidy'; gzSiblings: CloudFileMetadata[] }
   /** A pending delete's retry: the file of a layer the user already deleted here. */
   | { kind: 'delete'; listed: ListedLayerFile; volumeUuid: string };
 
+/**
+ * What one folder of the listing needs transferred.
+ *
+ * Runs for every folder of every listing, so it must cost nothing where there
+ * is nothing to do, and must never read a layer's PAGES: the decisions below
+ * are all made on stamps, and a server that writes an engine sidecar per volume
+ * lists a layer for every volume of the library. `volumesWithLayers` (one
+ * keys-only read per listing, `runSync`) lets a folder with no listed layer
+ * files skip even its `volumes` query unless one of those volumes could be
+ * in it.
+ */
 async function planFolder(
   folderTitle: string,
   files: CloudFileMetadata[],
   layerFiles: ListedLayerFile[],
   providerType: ProviderType,
   writable: boolean,
-  pendingDeletes: Map<string, Set<string>>
+  pendingDeletes: Map<string, Set<string>>,
+  volumesWithLayers: Set<string>
 ): Promise<Transfer[]> {
+  // Nothing listed, nothing local anywhere, no tombstone to retire: done.
+  if (layerFiles.length === 0 && volumesWithLayers.size === 0 && pendingDeletes.size === 0) {
+    return [];
+  }
   const rows = await rowsInFolder(folderTitle);
   if (rows.size === 0) return [];
+  // ONE indexed query for the whole folder, over metadata rows only.
+  const withLayers = [...rows.values()]
+    .map((row) => row.volume_uuid)
+    .filter((uuid) => volumesWithLayers.has(uuid));
+  const localByVolume = new Map<string, VolumeOcrLayer[]>();
+  for (const meta of await listLayerMetasForVolumes(db, withLayers)) {
+    const group = localByVolume.get(meta.volume_uuid);
+    if (group) group.push(meta);
+    else localByVolume.set(meta.volume_uuid, [meta]);
+  }
+  if (layerFiles.length === 0 && localByVolume.size === 0) {
+    // Nothing to pull or push. A tombstone here is spent all the same — the
+    // listing no longer shows its file (the rule the loop below applies).
+    for (const row of rows.values()) {
+      for (const layerId of pendingDeletes.get(row.volume_uuid) ?? []) {
+        clearPendingLayerDelete(row.volume_uuid, layerId);
+      }
+    }
+    return [];
+  }
   const archives = archiveStemsOf(files);
   const transfers: Transfer[] = [];
   const listedByRow = new Map<string, Map<string, ListedLayerFile>>();
@@ -579,7 +674,7 @@ async function planFolder(
   }
   for (const row of rows.values()) {
     const archiveStem = archives.get(rowKey(row.volume_title));
-    const local = await db.volume_ocr_layers.where('volume_uuid').equals(row.volume_uuid).toArray();
+    const local = localByVolume.get(row.volume_uuid) ?? [];
     const localById = new Map(local.map((l) => [l.layer_id, l]));
     const listed = listedByRow.get(row.volume_uuid) ?? new Map<string, ListedLayerFile>();
     const tombstoned = new Set<string>();
@@ -606,8 +701,22 @@ async function planFolder(
     }
     if (!writable || archiveStem === undefined) continue;
     for (const layer of local) {
-      if (layerNeedsPush(layer, listed.get(layer.layer_id)?.file, providerType)) {
-        transfers.push({ kind: 'push', folderTitle, stem: archiveStem, row, layer });
+      const listedLayer = listed.get(layer.layer_id);
+      const gzSiblings = gzCopiesOf(listedLayer);
+      if (layerNeedsPush(layer, listedLayer?.file, providerType)) {
+        transfers.push({ kind: 'push', folderTitle, stem: archiveStem, row, layer, gzSiblings });
+      } else if (
+        // The retry of a sibling delete that failed (here or on another
+        // device): the plain file is listed and is the copy this row is in
+        // sync with, so the `.gz` behind it is shadowed for good. A row that
+        // never synced with this provider vouches for nothing.
+        gzSiblings.length > 0 &&
+        listedLayer &&
+        !listedLayer.gz &&
+        layer.cloud?.provider === providerType &&
+        !layerNeedsPull(layer, listedLayer.file, providerType)
+      ) {
+        transfers.push({ kind: 'tidy', gzSiblings });
       }
     }
   }
@@ -631,6 +740,7 @@ async function runSync(
   await dropPendingDeletesOfMissingVolumes().catch(() => {});
   await dropRejectedFilesOfMissingVolumes().catch(() => {});
   const pendingDeletes = pendingDeletesFor(providerType);
+  const volumesWithLayers = await listVolumeUuidsWithLayers(db);
 
   const layerFiles = collectLayerFiles(cloudFilesMap);
   const byFolder = new Map<string, ListedLayerFile[]>();
@@ -653,7 +763,8 @@ async function runSync(
           byFolder.get(folderTitle) ?? [],
           providerType,
           writable,
-          pendingDeletes
+          pendingDeletes,
+          volumesWithLayers
         ))
       );
     } catch (error) {
@@ -669,9 +780,11 @@ async function runSync(
       if (await deleteListedLayerFile(provider, t.listed)) {
         clearPendingLayerDelete(t.volumeUuid, t.listed.layerId);
       }
+    } else if (t.kind === 'tidy') {
+      await removeGzSiblings(provider, t.gzSiblings);
     } else if (t.kind === 'pull') {
       if (await pullOne(provider, t.listed, t.row, t.existing)) result.pulled++;
-    } else if (await pushOne(provider, t.folderTitle, t.stem, t.row, t.layer)) {
+    } else if (await pushOne(provider, t.folderTitle, t.stem, t.row, t.layer, t.gzSiblings)) {
       result.pushed++;
     }
   });
@@ -750,7 +863,7 @@ export async function pullLayersForVolume(
     const tombstoned = pendingDeletesFor(providerType).get(volumeUuid);
     let pulled = 0;
     await runPool(mine, MAX_CONCURRENT_LAYER_TRANSFERS, async (listed) => {
-      const existing = await db.volume_ocr_layers.get([volumeUuid, listed.layerId]);
+      const existing = await getLayerMeta(db, volumeUuid, listed.layerId);
       // Deleted here and not re-created: a fresh download must not bring it back.
       if (!existing && tombstoned?.has(listed.layerId)) return;
       if (!layerNeedsPull(existing, listed.file, providerType)) return;
@@ -772,22 +885,37 @@ export async function pullLayersForVolume(
  */
 export type CloudLayerDeleteOutcome = 'gone' | 'unconfirmed';
 
-async function deleteListedLayerFile(
-  provider: SyncProvider,
-  listed: ListedLayerFile
-): Promise<boolean> {
+async function deleteOneCopy(provider: SyncProvider, file: CloudFileMetadata): Promise<boolean> {
   try {
-    await provider.deleteFile(listed.file);
-    cacheManager.getCache(provider.type)?.removeById?.(listed.file.fileId);
+    await provider.deleteFile(file);
+    cacheManager.getCache(provider.type)?.removeById?.(file.fileId);
     return true;
   } catch (error) {
-    console.warn(`[layer-sync] could not delete '${listed.file.path}':`, error);
+    console.warn(`[layer-sync] could not delete '${file.path}':`, error);
     return false;
   }
 }
 
 /**
- * Remove one layer's cloud file ahead of deleting its row. Only ever the copy
+ * Delete EVERY listed copy of a layer (`.mokuro` and `.mokuro.gz`). True only
+ * when all of them went: one survivor is enough for the next listing to read
+ * the layer back, so the caller must keep its tombstone. A failed copy never
+ * spares the others — each one removed is one less to retry.
+ */
+async function deleteListedLayerFile(
+  provider: SyncProvider,
+  listed: ListedLayerFile
+): Promise<boolean> {
+  let allGone = true;
+  for (const copy of listed.copies) {
+    if (!(await deleteOneCopy(provider, copy.file))) allGone = false;
+  }
+  return allGone;
+}
+
+/**
+ * Remove one layer's cloud file(s) ahead of deleting its row — every listed
+ * copy of it, `.mokuro` and `.mokuro.gz` alike. Only ever the copies
  * on the provider the row was synced with (a same-id file on a provider this
  * row never reconciled with is somebody else's layer, not ours to delete).
  * Never rejects; reports whether the copy is known to be gone.
@@ -867,18 +995,13 @@ export async function stampLayersSynced(
     const now = new Date().toISOString();
     for (const snapshot of uploaded) {
       // Read-compare-write in one transaction: an edit cannot slip in between.
-      await db.transaction('rw', db.volume_ocr_layers, async () => {
-        const row = await db.volume_ocr_layers.get([volumeUuid, snapshot.layerId]);
-        if (!row) return;
-        const untouched = row.updated_at === snapshot.updatedAt;
-        await db.volume_ocr_layers.update([volumeUuid, snapshot.layerId], {
-          cloud: {
-            provider: providerType,
-            size: snapshot.size,
-            synced_at: untouched ? now : snapshot.updatedAt
-          }
-        });
-      });
+      await patchLayerMeta(db, volumeUuid, snapshot.layerId, (row) => ({
+        cloud: {
+          provider: providerType,
+          size: snapshot.size,
+          synced_at: row.updated_at === snapshot.updatedAt ? now : snapshot.updatedAt
+        }
+      }));
     }
   } catch (error) {
     console.warn('[layer-sync] could not stamp layers after backup:', error);
@@ -899,7 +1022,7 @@ export async function deleteCloudLayerFile(
   try {
     const [row, layer] = await Promise.all([
       db.volumes.get(volumeUuid),
-      db.volume_ocr_layers.get([volumeUuid, layerId])
+      getLayerMeta(db, volumeUuid, layerId)
     ]);
     if (!row || !layer) return 'gone';
     provider = layer.cloud?.provider ?? providerManager.getActiveProvider()?.type;

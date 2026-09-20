@@ -156,6 +156,59 @@ describe('EditSession', () => {
   });
 });
 
+describe('EditSession — cancelling a gesture', () => {
+  it('restores the pre-gesture page, leaves nothing to redo, and keeps the redo that was there', () => {
+    const { s } = session();
+    s.move(0, 0, 5, 5);
+    s.undo(0); // one step available to redo
+    const before = s.pageFor(0);
+    const mark = s.beginGesture(0);
+    s.move(0, 1, 7, 7, 'drag');
+    s.move(0, 1, 9, 9, 'drag');
+    s.cancelGesture(mark);
+    expect(s.pageFor(0)).toBe(before);
+    expect(s.canUndo(0)).toBe(false);
+    // Ctrl+Y must replay the step the user undid — never the cancelled drag.
+    expect(s.canRedo(0)).toBe(true);
+    s.redo(0);
+    expect(s.pageFor(0).blocks[0].box).toEqual([15, 15, 55, 105]);
+    expect(s.pageFor(0).blocks[1].box).toEqual([100, 10, 140, 100]);
+    expect(s.canRedo(0)).toBe(false);
+  });
+
+  it('a cancelled gesture with no earlier redo leaves canRedo false', () => {
+    const { s } = session();
+    const mark = s.beginGesture(0);
+    s.move(0, 0, 5, 5, 'drag');
+    s.cancelGesture(mark);
+    expect(s.canRedo(0)).toBe(false);
+    expect(s.canUndo(0)).toBe(false);
+  });
+
+  it('saves the restored page (the dragged one may already be on disk); a gesture that changed nothing saves nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      const { s, persist } = session({ debounceMs: 10 });
+      const idle = s.beginGesture(0);
+      s.cancelGesture(idle);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(persist).not.toHaveBeenCalled();
+
+      const before = s.pageFor(0);
+      const mark = s.beginGesture(0);
+      s.move(0, 0, 5, 5, 'drag');
+      await vi.advanceTimersByTimeAsync(50); // the finger paused: autosaved mid-drag
+      expect(persist).toHaveBeenCalledTimes(1);
+      s.cancelGesture(mark);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(persist).toHaveBeenCalledTimes(2);
+      expect(persist.mock.calls[1][2]).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('EditSession — line ops', () => {
   function quadPage(): Page {
     return {

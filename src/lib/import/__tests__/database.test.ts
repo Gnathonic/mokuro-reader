@@ -32,12 +32,22 @@ vi.mock('$lib/catalog/db', () => ({
       get: vi.fn(),
       delete: vi.fn()
     },
-    volume_ocr_layers: {
-      where: vi.fn(() => ({ equals: vi.fn(() => ({ delete: vi.fn() })) }))
-    },
+    volume_ocr_layers: {},
+    volume_ocr_layer_pages: {},
     transaction: vi.fn(),
     processThumbnails: vi.fn().mockResolvedValue(undefined)
   }
+}));
+
+// Layer rows are reached only through the layer store (two tables, one key);
+// with a hand-mocked `db` that module is the seam to stub.
+const deleteLayersOfVolume = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('$lib/catalog/layer-store', () => ({
+  deleteLayersOfVolume,
+  layerTables: (mockDb: { volume_ocr_layers: unknown; volume_ocr_layer_pages: unknown }) => [
+    mockDb.volume_ocr_layers,
+    mockDb.volume_ocr_layer_pages
+  ]
 }));
 
 // Import the mocked db
@@ -419,12 +429,13 @@ describe('deleteVolumeCompletely', () => {
     );
   });
 
-  it('deletes from all four tables', async () => {
+  it('deletes from the three volume tables and both layer tables', async () => {
     await deleteVolumeCompletely('test-uuid');
 
     expect(db.volumes.delete).toHaveBeenCalledWith('test-uuid');
     expect(db.volume_ocr.delete).toHaveBeenCalledWith('test-uuid');
     expect(db.volume_files.delete).toHaveBeenCalledWith('test-uuid');
+    expect(deleteLayersOfVolume).toHaveBeenCalledWith(db, 'test-uuid');
   });
 
   it('uses transaction for atomicity', async () => {
@@ -432,7 +443,13 @@ describe('deleteVolumeCompletely', () => {
 
     expect(db.transaction).toHaveBeenCalledWith(
       'rw',
-      expect.arrayContaining([db.volumes, db.volume_ocr, db.volume_files, db.volume_ocr_layers]),
+      expect.arrayContaining([
+        db.volumes,
+        db.volume_ocr,
+        db.volume_files,
+        db.volume_ocr_layers,
+        db.volume_ocr_layer_pages
+      ]),
       expect.any(Function)
     );
   });

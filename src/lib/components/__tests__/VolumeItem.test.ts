@@ -68,12 +68,23 @@ vi.mock('$lib/util/hash-router', () => ({
   nav: { toReader: vi.fn(), toSeries: vi.fn(), toCatalog: vi.fn(), toVolumeText: vi.fn() },
   routeParams
 }));
+// Nothing listed and nobody signed in unless a test says otherwise; read at
+// subscribe time, so a test sets these before it renders.
+const cloudState = vi.hoisted(() => ({
+  files: new Map<string, unknown[]>(),
+  authenticated: false
+}));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     // Nothing connected: a VolumeItem list row asks `activeAccountScope()` before it
     // claims a cover, and with no provider the claim is skipped entirely.
     getActiveProvider: () => null,
-    cloudFiles: emptyStore(new Map()),
+    cloudFiles: {
+      subscribe(fn: (v: Map<string, unknown[]>) => void) {
+        fn(cloudState.files);
+        return () => {};
+      }
+    },
     isFetching: emptyStore(false),
     getDefaultProvider: () => null,
     deleteManagedVolume: vi.fn(),
@@ -82,7 +93,16 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 }));
 vi.mock('$lib/util/sync', () => ({
   providerManager: {
-    status: emptyStore({ hasAnyAuthenticated: false, currentProviderType: null, providers: {} })
+    status: {
+      subscribe(fn: (v: unknown) => void) {
+        fn({
+          hasAnyAuthenticated: cloudState.authenticated,
+          currentProviderType: null,
+          providers: {}
+        });
+        return () => {};
+      }
+    }
   }
 }));
 vi.mock('$lib/util/backup-queue', () => ({ backupQueue: { queueVolumeForBackup: vi.fn() } }));
@@ -123,6 +143,7 @@ vi.mock('$lib/catalog/cover-service', () => ({
 
 import VolumeItem from '../VolumeItem.svelte';
 import { promptConfirmation, showSnackbar } from '$lib/util';
+import { removeVolumeFiles } from '$lib/import';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -260,6 +281,47 @@ describe('VolumeItem hover + Delete', () => {
     render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
     await fireEvent.keyDown(window, { key: 'Delete' });
     expect(promptConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('deletes the cloud copy BEFORE the local rows, and names the volume by uuid', async () => {
+    // The cloud delete only takes the OCR layer files this device's layer rows
+    // vouch for, and removing the volume locally drops those rows — the other
+    // order orphans every layer file on the cloud.
+    const v = volume();
+    cloudState.authenticated = true;
+    cloudState.files = new Map([
+      [v.series_title, [{ path: `${v.series_title}/${v.volume_title}.cbz`, provider: 'webdav' }]]
+    ]);
+    const order: string[] = [];
+    vi.mocked(unifiedCloudManager.deleteManagedVolume).mockImplementation(async () => {
+      order.push('cloud');
+    });
+    vi.mocked(removeVolumeFiles).mockImplementation(async () => {
+      order.push('local');
+    });
+    try {
+      await hover();
+      await fireEvent.keyDown(window, { key: 'Delete' });
+      const confirm = vi.mocked(promptConfirmation).mock.calls[0][1] as (
+        forget?: boolean,
+        deleteCloud?: boolean
+      ) => Promise<void>;
+      // The callback goes on to count the series' remaining volumes, which this
+      // file's stub db cannot answer; both deletes have run by then.
+      await confirm(false, true).catch(() => undefined);
+
+      expect(order).toEqual(['cloud', 'local']);
+      expect(unifiedCloudManager.deleteManagedVolume).toHaveBeenCalledWith(
+        v.series_title,
+        v.volume_title,
+        v.volume_uuid
+      );
+    } finally {
+      cloudState.authenticated = false;
+      cloudState.files = new Map();
+      vi.mocked(unifiedCloudManager.deleteManagedVolume).mockReset();
+      vi.mocked(removeVolumeFiles).mockReset();
+    }
   });
 
   it('keeps shift+Delete on the cloud copy, never the device copy', async () => {

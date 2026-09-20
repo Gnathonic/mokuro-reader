@@ -49,6 +49,17 @@
   }
 
   let engine = $derived($miscSettings.translationEngine);
+  // The one model field edits the SELECTED engine's override only, so changing
+  // the dropdown swaps what the field shows instead of re-aiming its text at a
+  // provider that has never heard of that model.
+  let modelOverride = $derived($miscSettings.translationModels[engine] ?? '');
+
+  function setModelOverride(value: string) {
+    const { [engine]: _previous, ...others } = $miscSettings.translationModels;
+    // An emptied field removes the key: '' and absent both mean "the default",
+    // and only one of them should ever be stored.
+    updateMiscSetting('translationModels', value ? { ...others, [engine]: value } : others);
+  }
   let modelPlaceholder = $derived(
     engine === 'openai'
       ? $engineCredentials.openaiModel || ENGINE_DEFAULT_MODEL.openai
@@ -148,7 +159,7 @@
               () =>
                 testAnthropic(
                   $engineCredentials.anthropicKey,
-                  $miscSettings.translationModel || undefined
+                  $miscSettings.translationModels.anthropic || undefined
                 ),
               'Anthropic OK'
             )}>Test</Button
@@ -247,12 +258,8 @@
           type="text"
           placeholder={modelPlaceholder}
           autocomplete="off"
-          value={$miscSettings.translationModel}
-          onchange={(e) =>
-            updateMiscSetting(
-              'translationModel',
-              (e.currentTarget as HTMLInputElement).value.trim()
-            )}
+          value={modelOverride}
+          onchange={(e) => setModelOverride((e.currentTarget as HTMLInputElement).value.trim())}
           class="flex-1"
         />
         <Input

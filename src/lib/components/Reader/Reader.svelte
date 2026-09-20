@@ -855,6 +855,7 @@
       volumeUuid: volume.volume_uuid,
       layerId: target,
       layerName: layers.find((l) => l.layer_id === target)?.name,
+      layerKind: layers.find((l) => l.layer_id === target)?.kind,
       displayedPages: pages,
       onSelectLayer: selectLayer,
       onBeforeMutate: () => settleEditsBeforeLayerMutation(action)

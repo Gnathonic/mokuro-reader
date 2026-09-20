@@ -1,4 +1,5 @@
 import { db } from '$lib/catalog/db';
+import { listLayersWithPages } from '$lib/catalog/layer-store';
 import type { VolumeMetadata } from '$lib/types';
 import { getSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
@@ -121,7 +122,7 @@ export function downloadFileBlob(file: File): void {
 export async function loadVolumeLayerFiles(volumeUuid: string): Promise<File[]> {
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) return [];
-  const layers = await db.volume_ocr_layers.where('volume_uuid').equals(volumeUuid).toArray();
+  const layers = await listLayersWithPages(db, volumeUuid);
   return layers
     .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
     .map((layer) => {

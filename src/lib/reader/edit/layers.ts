@@ -1,6 +1,9 @@
 /**
- * Every read and write of `volume_ocr_layers` — the alternate page sets that
- * sit beside a volume's PRIMARY OCR row. The primary row (`volume_ocr`) stays
+ * The main-thread API over a volume's OCR LAYERS — the alternate page sets that
+ * sit beside a volume's PRIMARY OCR row. A layer is stored as a small metadata
+ * row plus a pages row (`$lib/catalog/layer-store.ts` — the only code that
+ * touches the two tables, and the reason a metadata question never costs a
+ * page read). The primary row (`volume_ocr`) stays
  * what every existing consumer reads (stats, exports, backups, bunko); a
  * layer is only ever shown by the reader (when the volume's `ocrLayer`
  * setting names it), edited in place, exported as its own `.mokuro`, or
@@ -11,13 +14,28 @@
  * archive) lives in a later PR; nothing here touches a provider.
  */
 import { db } from '$lib/catalog/db';
+import {
+  deleteLayerRows,
+  getLayerPages,
+  getLayerWithPages,
+  layerTables,
+  listLayerIds,
+  listLayerMetas,
+  putLayerWithPages,
+  updateLayerMeta
+} from '$lib/catalog/layer-store';
 import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { noteOcrEdited } from '$lib/util/sync/sidecar-backfill';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
-import type { Page, VolumeOcrLayer, VolumeOcrLayerKind } from '$lib/types';
+import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
 import { ORIGINAL_LAYER_ID } from './edit-persist';
+import {
+  TRANSLATION_PROMOTE_BLOCKED,
+  isTranslationLayer,
+  isTranslationLayerId
+} from './layer-kind';
 
 export const LAYER_KIND_LABEL: Record<VolumeOcrLayerKind, string> = {
   original: 'Original',
@@ -40,7 +58,7 @@ export const KNOWN_ENGINE_IDS: ReadonlySet<string> = new Set([
 /** The kind a layer file with no local row is filed under, from its id alone. */
 export function layerKindForId(layerId: string): VolumeOcrLayerKind {
   if (layerId === ORIGINAL_LAYER_ID) return 'original';
-  if (/^tr-[a-z0-9-]+$/.test(layerId)) return 'translation';
+  if (isTranslationLayerId(layerId)) return 'translation';
   if (KNOWN_ENGINE_IDS.has(layerId)) return 'ocr';
   return 'edit';
 }
@@ -82,19 +100,13 @@ function byOriginalThenCreated(a: VolumeOcrLayer, b: VolumeOcrLayer): number {
   return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0;
 }
 
-async function takenIds(volumeUuid: string): Promise<string[]> {
-  const keys = await db.volume_ocr_layers.where('volume_uuid').equals(volumeUuid).primaryKeys();
-  return keys.map((k) => (k as unknown as [string, string])[1]);
-}
-
+/** A volume's layers, Original first then oldest first — metadata only, no pages. */
 export async function listLayers(volumeUuid: string): Promise<VolumeOcrLayer[]> {
-  const rows = await db.volume_ocr_layers.where('volume_uuid').equals(volumeUuid).toArray();
-  return rows.sort(byOriginalThenCreated);
+  return (await listLayerMetas(db, volumeUuid)).sort(byOriginalThenCreated);
 }
 
-export async function loadLayerPages(volumeUuid: string, layerId: string): Promise<Page[] | null> {
-  const row = await db.volume_ocr_layers.get([volumeUuid, layerId]);
-  return row?.pages ?? null;
+export function loadLayerPages(volumeUuid: string, layerId: string): Promise<Page[] | null> {
+  return getLayerPages(db, volumeUuid, layerId);
 }
 
 export interface CreateLayerOptions {
@@ -110,14 +122,14 @@ export interface CreateLayerOptions {
 export async function createLayer(
   volumeUuid: string,
   opts: CreateLayerOptions
-): Promise<VolumeOcrLayer> {
+): Promise<VolumeOcrLayerWithPages> {
   const now = new Date().toISOString();
-  return db.transaction('rw', db.volume_ocr_layers, async () => {
-    const taken = await takenIds(volumeUuid);
+  return db.transaction('rw', layerTables(db), async () => {
+    const taken = await listLayerIds(db, volumeUuid);
     const source = opts.pages === 'empty' ? (opts.sourcePages ?? []) : opts.pages;
     const pages: Page[] =
       opts.pages === 'empty' ? source.map((p) => ({ ...p, blocks: [] })) : structuredClone(source);
-    const layer: VolumeOcrLayer = {
+    const layer: VolumeOcrLayerWithPages = {
       volume_uuid: volumeUuid,
       layer_id: slugifyLayerId(opts.name, taken),
       name: opts.name.trim() || 'Layer',
@@ -127,7 +139,7 @@ export async function createLayer(
       updated_at: now,
       pages
     };
-    await db.volume_ocr_layers.add(layer);
+    await putLayerWithPages(db, layer);
     return layer;
   });
 }
@@ -138,15 +150,13 @@ export async function renameLayer(
   name: string
 ): Promise<void> {
   assertEditable(layerId);
-  const n = await db.volume_ocr_layers.update([volumeUuid, layerId], {
-    name: name.trim() || 'Layer'
-  });
+  const n = await updateLayerMeta(db, volumeUuid, layerId, { name: name.trim() || 'Layer' });
   if (!n) throw new Error(`Layer ${layerId} not found`);
 }
 
 export async function deleteLayer(volumeUuid: string, layerId: string): Promise<void> {
   assertEditable(layerId);
-  await db.volume_ocr_layers.delete([volumeUuid, layerId]);
+  await deleteLayerRows(db, volumeUuid, layerId);
 }
 
 /** The editor's write path when an alternate layer is displayed. */
@@ -157,12 +167,12 @@ export async function persistLayerPageEdit(
   page: Page
 ): Promise<void> {
   assertEditable(layerId);
-  await db.transaction('rw', db.volume_ocr_layers, async () => {
-    const row = await db.volume_ocr_layers.get([volumeUuid, layerId]);
+  await db.transaction('rw', layerTables(db), async () => {
+    const row = await getLayerWithPages(db, volumeUuid, layerId);
     if (!row) throw new Error(`Layer ${layerId} not found`);
     const pages = row.pages.slice();
     pages[pageIndex] = page;
-    await db.volume_ocr_layers.put({ ...row, pages, updated_at: new Date().toISOString() });
+    await putLayerWithPages(db, { ...row, pages, updated_at: new Date().toISOString() });
   });
 }
 
@@ -185,6 +195,10 @@ function samePages(a: Page[], b: Page[]): boolean {
  * it had drifted from the original (byte-equal → nothing to keep). The
  * primary write goes through the same recount + `ocr_edited_at` stamp +
  * `noteOcrEdited` as an in-place edit, so the cloud `.mokuro` re-uploads.
+ *
+ * A TRANSLATION layer is refused (see `TRANSLATION_PROMOTE_BLOCKED`): that
+ * very recount would zero the volume's character stats. The UI never offers
+ * it; this is the backstop for every caller that is not the UI.
  */
 export async function promoteLayer(
   volumeUuid: string,
@@ -194,17 +208,19 @@ export async function promoteLayer(
   const editedAt = now.toISOString();
   const result = await db.transaction(
     'rw',
-    [db.volumes, db.volume_ocr, db.volume_ocr_layers],
+    [db.volumes, db.volume_ocr, ...layerTables(db)],
     async () => {
-      const layer = await db.volume_ocr_layers.get([volumeUuid, layerId]);
+      const layer = await getLayerWithPages(db, volumeUuid, layerId);
       if (!layer) throw new Error(`Layer ${layerId} not found`);
+      if (isTranslationLayer(layer)) throw new Error(TRANSLATION_PROMOTE_BLOCKED);
       const ocr = await db.volume_ocr.get(volumeUuid);
       if (!ocr) throw new Error(`Volume ${volumeUuid} has no OCR row to promote into`);
 
-      const original = await db.volume_ocr_layers.get([volumeUuid, ORIGINAL_LAYER_ID]);
+      // Pages only: whether an original exists is all its metadata could add.
+      const originalPages = await getLayerPages(db, volumeUuid, ORIGINAL_LAYER_ID);
       let replaced: string | null = null;
-      if (!original) {
-        await db.volume_ocr_layers.add({
+      if (!originalPages) {
+        await putLayerWithPages(db, {
           volume_uuid: volumeUuid,
           layer_id: ORIGINAL_LAYER_ID,
           name: 'Original',
@@ -213,9 +229,9 @@ export async function promoteLayer(
           updated_at: editedAt,
           pages: ocr.pages
         });
-      } else if (!samePages(ocr.pages, original.pages)) {
-        replaced = replacedLayerId(now, await takenIds(volumeUuid));
-        await db.volume_ocr_layers.add({
+      } else if (!samePages(ocr.pages, originalPages)) {
+        replaced = replacedLayerId(now, await listLayerIds(db, volumeUuid));
+        await putLayerWithPages(db, {
           volume_uuid: volumeUuid,
           layer_id: replaced,
           name: `Previous primary (${editedAt.slice(0, 16).replace('T', ' ')})`,
@@ -249,7 +265,7 @@ export async function promoteLayer(
 export async function buildLayerExportFile(volumeUuid: string, layerId: string): Promise<File> {
   const [volume, layer] = await Promise.all([
     db.volumes.get(volumeUuid),
-    db.volume_ocr_layers.get([volumeUuid, layerId])
+    getLayerWithPages(db, volumeUuid, layerId)
   ]);
   if (!volume) throw new Error(`Volume ${volumeUuid} not found`);
   if (!layer) throw new Error(`Layer ${layerId} not found`);
@@ -300,13 +316,13 @@ export async function upsertLayerPages(
   volumeUuid: string,
   layerId: string,
   opts: UpsertLayerPagesOptions
-): Promise<VolumeOcrLayer | null> {
+): Promise<VolumeOcrLayerWithPages | null> {
   assertEditable(layerId);
   const now = new Date().toISOString();
-  return db.transaction('rw', [db.volumes, db.volume_ocr_layers], async () => {
+  return db.transaction('rw', [db.volumes, ...layerTables(db)], async () => {
     const volume = await db.volumes.get(volumeUuid);
     if (!volume || !isVolumeInstalled(volume)) return null;
-    const existing = await db.volume_ocr_layers.get([volumeUuid, layerId]);
+    const existing = await getLayerWithPages(db, volumeUuid, layerId);
     const base: Page[] = existing
       ? existing.pages.slice()
       : opts.sourcePages.map((p) => ({ ...p, blocks: [] }));
@@ -320,7 +336,7 @@ export async function upsertLayerPages(
       }
       base[i] = page;
     }
-    const layer: VolumeOcrLayer = {
+    const layer: VolumeOcrLayerWithPages = {
       volume_uuid: volumeUuid,
       layer_id: layerId,
       name: existing?.name ?? opts.name,
@@ -330,7 +346,7 @@ export async function upsertLayerPages(
       updated_at: now,
       pages: base
     };
-    await db.volume_ocr_layers.put(layer);
+    await putLayerWithPages(db, layer);
     return layer;
   });
 }

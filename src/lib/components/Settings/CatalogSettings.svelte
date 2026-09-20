@@ -1,6 +1,7 @@
 <script lang="ts">
   import { AccordionItem, Button, Label, Range, Select, Toggle } from 'flowbite-svelte';
   import { db } from '$lib/catalog/db';
+  import { clearAllLayers } from '$lib/catalog/layer-store';
   import { promptConfirmation } from '$lib/util';
   import { clearVolumes } from '$lib/settings';
   import {
@@ -98,7 +99,7 @@
     db.volumes.clear();
     db.volume_ocr.clear();
     db.volume_files.clear();
-    db.volume_ocr_layers.clear();
+    clearAllLayers(db);
   }
 
   function onClear() {

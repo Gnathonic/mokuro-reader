@@ -8,6 +8,7 @@
   import type { LayerSummary } from '$lib/reader/edit/layer-list';
   import { LAYER_KIND_LABEL } from '$lib/reader/edit/layers';
   import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
+  import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '$lib/reader/edit/layer-kind';
   import type { LayerAction } from './layer-actions';
   import {
     ArrowUpOutline,
@@ -45,7 +46,8 @@
 
   const row =
     'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-gray-600 aria-checked:bg-gray-600';
-  const icon = 'rounded p-1 text-gray-300 hover:bg-gray-500 hover:text-white';
+  const icon =
+    'rounded p-1 text-gray-300 hover:bg-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-300';
 
   // keyboardShouldIgnore (gesture-target.ts) only matches [data-popover] via
   // event.target.closest — which requires focus already inside this div. The
@@ -101,11 +103,15 @@
             title="Rename"
             onclick={() => onAction('rename', layer.layer_id)}><EditOutline size="sm" /></button
           >
+          <!-- Shown but disabled for a translation, so the tooltip can say why
+               the action every other layer has is missing here. -->
           <button
             class={icon}
             aria-label={`Promote layer ${layer.name}`}
-            title="Promote to primary"
-            onclick={() => onAction('promote', layer.layer_id)}><ArrowUpOutline size="sm" /></button
+            disabled={isTranslationLayer(layer)}
+            title={isTranslationLayer(layer) ? TRANSLATION_PROMOTE_BLOCKED : 'Promote to primary'}
+            onclick={() => !isTranslationLayer(layer) && onAction('promote', layer.layer_id)}
+            ><ArrowUpOutline size="sm" /></button
           >
         {/if}
         <button

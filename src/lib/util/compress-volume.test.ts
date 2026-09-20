@@ -19,6 +19,7 @@ import {
 import { parseSeriesFile } from '$lib/metadata/series-file';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
+import { clearAllLayers, putLayerWithPages } from '$lib/catalog/layer-store';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.
 if (typeof Blob !== 'undefined' && !Blob.prototype.stream) {
@@ -71,7 +72,7 @@ beforeEach(async () => {
     db.table('volume_files').clear(),
     db.table('series_metadata').clear(),
     db.table('series_index').clear(),
-    db.table('volume_ocr_layers').clear()
+    clearAllLayers(db)
   ]);
   await db
     .table('volumes')
@@ -154,7 +155,7 @@ describe('compressVolumeFromDb', () => {
     volume_uuid: 'volume-uuid',
     layer_id: 'gcv',
     name: 'Cloud Vision',
-    kind: 'ocr',
+    kind: 'ocr' as const,
     engine: 'gcv',
     created_at: '2026-09-16T00:00:00.000Z',
     updated_at: '2026-09-16T00:00:00.000Z',
@@ -173,7 +174,7 @@ describe('compressVolumeFromDb', () => {
   // nothing beside the archive then, so a layer that is not IN the archive is
   // simply lost from the export.
   it('embeds the layer files at the archive root, beside the .mokuro, when asked', async () => {
-    await db.table('volume_ocr_layers').put(gcvLayer);
+    await putLayerWithPages(db, gcvLayer);
 
     const blob = await compressVolumeFromDb('volume-uuid', undefined, {
       embedMokuroInArchive: true,
@@ -196,7 +197,7 @@ describe('compressVolumeFromDb', () => {
   });
 
   it('never embeds layer files unless asked (a cloud backup keeps them as separate files)', async () => {
-    await db.table('volume_ocr_layers').put(gcvLayer);
+    await putLayerWithPages(db, gcvLayer);
 
     const blob = await compressVolumeFromDb('volume-uuid', undefined, {
       embedThumbnailSidecar: true,
@@ -210,7 +211,7 @@ describe('compressVolumeFromDb', () => {
 
 describe('generateVolumeSidecarsFromDb — layers', () => {
   it('emits one <title>.<id>.mokuro per layer row, upstream format, with the layer chars', async () => {
-    await db.table('volume_ocr_layers').put({
+    await putLayerWithPages(db, {
       volume_uuid: 'volume-uuid',
       layer_id: 'gcv',
       name: 'Cloud Vision',
@@ -252,7 +253,7 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
   });
 
   it('a renamed volume names its layer files after the new title', async () => {
-    await db.table('volume_ocr_layers').put({
+    await putLayerWithPages(db, {
       volume_uuid: 'volume-uuid',
       layer_id: 'fix',
       name: 'Fix',

@@ -29,7 +29,7 @@ async function seedVolume(page: Page, opts: { pages?: number; googleKey?: string
         db.volumes.clear(),
         db.volume_ocr.clear(),
         db.volume_files.clear(),
-        db.volume_ocr_layers.clear()
+        (await import('/src/lib/catalog/layer-store.ts')).clearAllLayers(db)
       ]);
       const canvas = document.createElement('canvas');
       canvas.width = 400;
@@ -106,7 +106,8 @@ async function openQuickActions(page: Page) {
 async function readLayers(page: Page) {
   return page.evaluate(async (uuid) => {
     const { db } = await import('/src/lib/catalog/db.ts');
-    const layers = await db.volume_ocr_layers.where('volume_uuid').equals(uuid).toArray();
+    const { listLayersWithPages } = await import('/src/lib/catalog/layer-store.ts');
+    const layers = await listLayersWithPages(db, uuid);
     const volumes = JSON.parse(window.localStorage.getItem('volumes') || '{}');
     return {
       layers: Object.fromEntries(

@@ -115,6 +115,31 @@ describe('runLayerAction', () => {
     expect((d2 as { promoteLayer: unknown }).promoteLayer).not.toHaveBeenCalled();
   });
 
+  it('promote refuses a translation layer before asking anything (kind, or a tr-<lang> id)', async () => {
+    for (const target of [
+      { layerId: 'english', layerKind: 'translation' as const },
+      { layerId: 'tr-en' }
+    ]) {
+      const d = deps();
+      const onSelectLayer = vi.fn();
+      const onBeforeMutate = vi.fn(async () => {});
+      await runLayerAction('promote', {
+        volumeUuid: 'v',
+        ...target,
+        displayedPages: [],
+        onSelectLayer,
+        onBeforeMutate,
+        deps: d
+      });
+      const m = d as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      expect(m.confirm).not.toHaveBeenCalled();
+      expect(onBeforeMutate).not.toHaveBeenCalled();
+      expect(m.promoteLayer).not.toHaveBeenCalled();
+      expect(onSelectLayer).not.toHaveBeenCalled();
+      expect(m.notify).toHaveBeenCalledWith(expect.stringMatching(/translation/i));
+    }
+  });
+
   it('delete of the displayed layer switches to primary first; export downloads; errors notify', async () => {
     const d = deps();
     const onSelectLayer = vi.fn();

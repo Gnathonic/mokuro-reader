@@ -42,6 +42,13 @@ describe('gestureTargetRole', () => {
     ).toBe('editor');
   });
 
+  it('the overlay background is the page’s — until the draw tool is armed on it', () => {
+    expect(gestureTargetRole(el('<div data-edit-overlay data-probe></div>'))).toBe('page');
+    expect(gestureTargetRole(el('<div data-edit-overlay data-edit-draw data-probe></div>'))).toBe(
+      'editor'
+    );
+  });
+
   it('defaults to page', () => {
     expect(gestureTargetRole(el('<div data-probe></div>'))).toBe('page');
     expect(gestureTargetRole(null)).toBe('page');

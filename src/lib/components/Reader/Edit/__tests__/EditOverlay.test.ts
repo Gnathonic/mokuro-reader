@@ -454,6 +454,27 @@ describe('EditOverlay — pinch always wins (INPUT-CONTRACTS)', () => {
     expect(seen).toEqual(['pointerdown:1', 'pointerdown:2', 'pointerup:1']);
   });
 
+  it('a drag cancelled by a second pointer is not left on the redo stack, and spares the redo that was there', async () => {
+    const { container, session } = mount();
+    const block = container.querySelector<HTMLElement>('.editBlock')!;
+    session.move(0, 1, 3, 3);
+    session.undo(0);
+    await tick();
+    expect(session.canRedo(0)).toBe(true);
+    const before = session.pageFor(0);
+
+    await pointer(block, 'pointerdown', { id: 1, x: 100, y: 100 });
+    await pointer(block, 'pointermove', { id: 1, x: 130, y: 110 });
+    await pointer(document.body, 'pointerdown', { id: 2, x: 300, y: 300, primary: false });
+    expect(session.pageFor(0)).toBe(before);
+
+    // Ctrl+Y replays the step the user undid — not the drag they cancelled.
+    session.redo(0);
+    expect(session.pageFor(0).blocks[0].box).toEqual(before.blocks[0].box);
+    expect(session.pageFor(0).blocks[1].box).not.toEqual(before.blocks[1].box);
+    expect(session.canRedo(0)).toBe(false);
+  });
+
   it('a cancelled resize restores the pre-drag box and the selection', async () => {
     const { container, session } = mountMixed();
     const block = container.querySelector<HTMLElement>('.editBlock')!;
@@ -578,6 +599,9 @@ describe('EditOverlay — pinch always wins (INPUT-CONTRACTS)', () => {
     await tick();
     // draw tool: the surface must not pan (and steal capture) under the draw
     expect(gestureTargetRole(overlay)).toBe('editor');
+    // …said in the classifier's own terms, not by posing as a resize handle
+    expect(overlay.hasAttribute('data-edit-draw')).toBe(true);
+    expect(overlay.hasAttribute('data-edit-handle')).toBe(false);
     await pointer(overlay, 'pointerdown', { id: 4, x: 200, y: 200 });
     await pointer(overlay, 'pointermove', { id: 4, x: 260, y: 300 });
     await pointer(overlay, 'pointerup', { id: 4, x: 260, y: 300 });

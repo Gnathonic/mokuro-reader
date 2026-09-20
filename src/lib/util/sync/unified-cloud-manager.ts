@@ -15,6 +15,7 @@ import { isMetadataOnly } from '$lib/catalog/volume-state';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { naturalSort } from '$lib/util/natural-sort';
 import { db } from '$lib/catalog/db';
+import { getLayerMeta } from '$lib/catalog/layer-store';
 import type { VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import {
   FACTLESS_UPDATED_AT,
@@ -541,13 +542,19 @@ class UnifiedCloudManager {
    * sidecar failure leaves the volume still marked backed-up (and retryable) rather
    * than half-deleted.
    */
-  async deleteManagedVolume(seriesTitle: string, volumeTitle: string): Promise<void> {
+  async deleteManagedVolume(
+    seriesTitle: string,
+    volumeTitle: string,
+    volumeUuid?: string
+  ): Promise<void> {
     const provider = this.getActiveProvider();
     if (!provider) {
       throw new Error('No cloud provider authenticated');
     }
 
-    const files = await this.getSweepableCloudFilesForVolume(seriesTitle, volumeTitle);
+    // Layer files are swept only when this device's layer rows vouch for them,
+    // so callers removing the volume locally too must call this FIRST.
+    const files = await this.getSweepableCloudFilesForVolume(seriesTitle, volumeTitle, volumeUuid);
     if (files.length === 0) return;
 
     const ordered = [...files].sort(
@@ -749,16 +756,26 @@ class UnifiedCloudManager {
         .map((row) => row.volume_uuid);
     }
 
+    // Corroboration is per LAYER, not per file: a layer can be listed as both
+    // `.mokuro` and `.mokuro.gz` (the engine's original beside the plain file a
+    // client pushed over it), and the stamp's size can only ever match one of
+    // them. Sweeping just that one would strand its sibling — orphaned by a
+    // delete, left behind under the old title by a rename. So one vouched-for
+    // copy carries every copy of the same layer id along.
+    const corroboratedIds = new Set<string>();
     for (const layer of layers) {
-      let corroborated = false;
+      if (corroboratedIds.has(layer.layerId)) continue;
       for (const uuid of providerType ? uuids : []) {
-        const row = await db.volume_ocr_layers.get([uuid, layer.layerId]);
+        const row = await getLayerMeta(db, uuid, layer.layerId);
         if (layerFileIsCorroborated(row, layer.file, providerType!)) {
-          corroborated = true;
+          corroboratedIds.add(layer.layerId);
           break;
         }
       }
-      if (corroborated) swept.push(layer.file);
+    }
+
+    for (const layer of layers) {
+      if (corroboratedIds.has(layer.layerId)) swept.push(layer.file);
       else {
         console.debug(
           `[cloud] leaving '${layer.file.path}' alone: no synced layer '${layer.layerId}' of ` +
