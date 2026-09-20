@@ -388,6 +388,8 @@ describe('lineGeometry', () => {
       fontSize: 99,
       rotation: 0,
       main: 541,
+      cross: 99,
+      pitch: null,
       box: { left: 800, top: 1710, width: 541, height: 99 }
     });
     expect(lineGeometry(rectQuad(1500, 1820, 44, 252))).toMatchObject({
@@ -395,16 +397,17 @@ describe('lineGeometry', () => {
       fontSize: 44
     });
   });
-  it('with text, the font size is the FITTED size (text fits the quad length), never more than the thickness', () => {
+  it('with text, the font size is the line’s PITCH (its length over the cells its ink spans), never more than the thickness', () => {
     const perChar = (t: string) => t.length;
-    // a fat mis-detected quad: 483×697 vertical, 8 chars → ~87, not 483
+    // a fat mis-detected quad: 483×697 vertical, 8 hiragana = 7.79 cells of
+    // ink → 89, not 483
     expect(lineGeometry(rectQuad(959, 1885, 483, 697), 'あいうえおかきく', perChar).fontSize).toBe(
-      87
+      89
     );
-    // 541×99 horizontal, 12 chars → 45, not 99
+    // 541×99 horizontal, 12 chars → 46, not 99
     expect(
       lineGeometry(rectQuad(800, 1710, 541, 99), 'あいうえおかきくけこさし', perChar).fontSize
-    ).toBe(45);
+    ).toBe(46);
     // a normal quad is unchanged
     expect(lineGeometry(rectQuad(1500, 1820, 44, 252), 'あい', perChar).fontSize).toBe(44);
   });
@@ -451,11 +454,11 @@ describe('resizeLine', () => {
     const out = resizeLine(p, 1, 6, rectQuad(1000, 1720, 60, 1000));
     expect(out.blocks[1].lines_coords![6]).toEqual(rectQuad(1000, 1720, 60, 1000));
     expect(out.blocks[1].box[3]).toBe(2720);
-    // median of the 13 FITTED line sizes (8 chars each): the tall vertical
-    // quads fit at their length / 8 (252/8≈32 … 400/8=50, 908/8≈114,
-    // 1000/8=125), the horizontal ones at 541/8≈68, 500/8≈63, 300/8≈38,
-    // each capped by its thickness → sorted median is 38
-    expect(out.blocks[1].font_size).toBe(38);
+    // median of the 13 line sizes (8 hiragana each: 7.79 cells of ink): the
+    // tall vertical quads come out at their length / 7.79 (252 → 32 … 400 →
+    // 51, 908 → 117, 1000 → 128), the horizontal ones at 541 → 69, 500 → 64,
+    // 300 → 39, each capped by its thickness → sorted median is 39
+    expect(out.blocks[1].font_size).toBe(39);
   });
   it('scales char_offsets by the new/old main-axis ratio (×2 → doubled)', () => {
     const p = page();
@@ -498,9 +501,9 @@ describe('resizeLine', () => {
 describe('healBlockFontSize', () => {
   it('replaces an oversized block font_size with the median FITTED line size', () => {
     const out = healBlockFontSize(tocPage(), 1);
-    // same sizes as above with quad 6 at 908/8≈114 (capped 38) and quad 7 at
-    // 500/8≈63 (capped 40) → median 38
-    expect(out.blocks[1].font_size).toBe(38);
+    // same sizes as above with quad 6 at 908 → 117 (capped 38) and quad 7 at
+    // 500 → 64 (capped 40) → median 39
+    expect(out.blocks[1].font_size).toBe(39);
   });
   it('is a no-op without quads', () => {
     const p = tocPage();

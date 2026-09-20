@@ -130,11 +130,11 @@ describe('TextBoxes auto mode with lines_coords', () => {
     // data-target-* (not style.left/top) and applied as a transform by
     // positionPerLine after layout — see the continuity guard test below.
     expect(spans[0].classList.contains('wrappedLine')).toBe(true);
-    expect(parseFloat(spans[0].dataset.targetLeft!)).toBeCloseTo(82.6, 0);
+    expect(parseFloat(spans[0].dataset.targetLeft!)).toBeCloseTo(83, 0);
     expect(spans[0].dataset.targetTop).toBe('0');
-    expect(parseFloat(spans[0].style.width)).toBeCloseTo(57.4, 0);
+    expect(parseFloat(spans[0].style.width)).toBeCloseTo(57, 0);
     expect(spans[0].style.height).toBe('175px');
-    expect(parseFloat(spans[0].style.fontSize)).toBeCloseTo(28.7, 1);
+    expect(parseFloat(spans[0].style.fontSize)).toBeCloseTo(28.5, 1);
 
     // remaining lines: clean columns, no wrapping container
     expect(spans[1].classList.contains('wrappedLine')).toBe(false);
@@ -266,7 +266,7 @@ describe('TextBoxes without char_offsets renders as it always has', () => {
 
 // char_offsets render in ORIGINAL mode only — the diagnostic view of what the
 // producer wrote. Auto mode ignores the field and places every line on the
-// uniform grid of its quad (see 'TextBoxes auto mode: the uniform grid' below).
+// fixed-pitch grid (see 'TextBoxes auto mode: the fixed-pitch grid' below).
 describe('TextBoxes with char_offsets', () => {
   const renderBlock = (block: unknown) =>
     render(TextBoxes, { page: makePage([block]), volumeUuid: 'test-uuid' }).container;
@@ -558,7 +558,7 @@ describe('TextBoxes with char_offsets', () => {
   });
 });
 
-describe('TextBoxes auto mode: the uniform grid and rotation', () => {
+describe('TextBoxes auto mode: the fixed-pitch grid and rotation', () => {
   const renderBlocks = (blocks: unknown[]) =>
     render(TextBoxes, { page: makePage(blocks), volumeUuid: 'test-uuid' }).container;
   const lineSpans = (container: HTMLElement) => [
@@ -585,7 +585,10 @@ describe('TextBoxes auto mode: the uniform grid and rotation', () => {
     lines: ['ドドドドドド'],
     lines_coords: [sfxQuad]
   };
-  // 4 glyphs in a quad 40px longer than they are at the block's size
+  // Quads hug the INK (hiragana leave 0.11 / 0.10 of their end cells empty).
+  // Line 0: 8 glyphs set solid at 40px, cells from y = 0 — ink from 4.4 to 316.
+  // Line 1: 4 glyphs of the same size tracked out to a 56px step — ink from
+  // 4.4 to 3 × 56 + 36 = 204.
   const loose = {
     box: [100, 0, 190, 320],
     vertical: true,
@@ -593,16 +596,16 @@ describe('TextBoxes auto mode: the uniform grid and rotation', () => {
     lines: ['あいうえおかきく', 'さしすせ'],
     lines_coords: [
       [
-        [150, 0],
-        [190, 0],
-        [190, 320],
-        [150, 320]
+        [150, 4.4],
+        [190, 4.4],
+        [190, 316],
+        [150, 316]
       ],
       [
-        [100, 0],
-        [140, 0],
-        [140, 200],
-        [100, 200]
+        [100, 4.4],
+        [140, 4.4],
+        [140, 204],
+        [100, 204]
       ]
     ]
   };
@@ -629,17 +632,18 @@ describe('TextBoxes auto mode: the uniform grid and rotation', () => {
     ).toEqual(expected);
   });
 
-  it('carries the grid as letter-spacing on the line and the half-step inset as data', () => {
+  it('carries the grid as letter-spacing on the line and the start inset as data', () => {
     const [full, short] = lineSpans(renderBlocks([loose]));
-    // text that fills its quad: nothing added, the markup it has always had
+    // text set solid at its own size: no spacing — only the inset that puts
+    // the first CELL, not the first ink, 0.11em before the quad's start
     expect(full.style.letterSpacing).toBe('');
-    expect(full.dataset.inset).toBeUndefined();
+    expect(Number(full.dataset.inset)).toBeCloseTo(-4.4, 6);
     expect(full.dataset.rotation).toBeUndefined();
-    // (200 - 4 × 40) / 4
-    expect(short.style.letterSpacing).toBe('10px');
-    expect(short.dataset.inset).toBe('5');
+    // a 56px step at 40px glyphs
+    expect(parseFloat(short.style.letterSpacing)).toBeCloseTo(16, 6);
+    expect(Number(short.dataset.inset)).toBeCloseTo(-4.4, 6);
     // the target stays the quad's start: the inset is applied by the action
-    expect(short.dataset.targetTop).toBe('0');
+    expect(short.dataset.targetTop).toBe('4.4');
     expect(short.textContent).toBe('さしすせ');
   });
 
@@ -651,7 +655,9 @@ describe('TextBoxes auto mode: the uniform grid and rotation', () => {
     // box centre = quad centre, relative to the block box
     expect(Number(line.dataset.targetLeft) + 25).toBeCloseTo(500 - sfx.box[0], 6);
     expect(Number(line.dataset.targetTop) + 180).toBeCloseTo(400 - sfx.box[1], 6);
-    expect(parseFloat(line.style.letterSpacing)).toBeCloseTo(10, 6);
+    // six katakana 50px thick in 360px of ink: flush with both ends
+    expect(parseFloat(line.style.letterSpacing)).toBeCloseTo((360 - 50 * 0.78) / 5 - 50, 6);
+    expect(Number(line.dataset.inset)).toBeCloseTo(-0.12 * 50, 6);
     // still one in-flow text node: no position, no wrap container
     expect(line.style.position).toBe('');
     expect(line.style.width).toBe('');
@@ -677,8 +683,16 @@ describe('TextBoxes auto mode: the uniform grid and rotation', () => {
       await vi.waitFor(() => expect(short.style.transform).not.toBe(''));
 
       // upright: the plain translate, the inset added along the reading axis
-      expect(full.style.transform).toBe('translate(50px, 0px)');
-      expect(short.style.transform).toBe('translate(0px, 5px)');
+      // (quad start 4.4, first cell 4.4 before it)
+      const translate = (el: HTMLElement) =>
+        /^translate\((-?[\d.e-]+)px, (-?[\d.e-]+)px\)$/
+          .exec(el.style.transform)!
+          .slice(1)
+          .map(Number);
+      expect(translate(full)[0]).toBe(50);
+      expect(translate(full)[1]).toBeCloseTo(0, 6);
+      expect(translate(short)[0]).toBe(0);
+      expect(translate(short)[1]).toBeCloseTo(0, 6);
       expect(short.style.transformOrigin).toBe('');
 
       const match = /^translate\((-?[\d.]+)px, (-?[\d.]+)px\) rotate\(([\d.]+)deg\)$/.exec(
@@ -687,13 +701,14 @@ describe('TextBoxes auto mode: the uniform grid and rotation', () => {
       expect(match, tiltedLine.style.transform).not.toBeNull();
       const [x, y, deg] = match!.slice(1).map(Number);
       expect(deg).toBeCloseTo(20, 6);
-      // a 0×0 span: centred across the box (left + 25), 5px in along it
+      // a 0×0 span: centred across the box (left + 25), its first cell 6px
+      // (0.12 × 50) before the box's start edge
       expect(x).toBeCloseTo(500 - sfx.box[0], 6);
-      expect(y).toBeCloseTo(400 - sfx.box[1] - 180 + 5, 6);
-      // the origin is the box centre seen from the span: (0, 180 - 5)
+      expect(y).toBeCloseTo(400 - sfx.box[1] - 180 - 6, 6);
+      // the origin is the box centre seen from the span: (0, 180 + 6)
       const [ox, oy] = tiltedLine.style.transformOrigin.split(' ').map(parseFloat);
       expect(ox).toBeCloseTo(0, 6);
-      expect(oy).toBeCloseTo(175, 6);
+      expect(oy).toBeCloseTo(186, 6);
     } finally {
       if (descriptor) Object.defineProperty(HTMLElement.prototype, 'offsetParent', descriptor);
     }

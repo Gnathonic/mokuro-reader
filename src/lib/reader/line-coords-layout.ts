@@ -10,10 +10,12 @@
  * per-line font size. See docs/superpowers/specs/
  * 2026-07-04-original-mode-line-coords-design.md.
  *
- * Characters sit on a UNIFORM GRID along the line (`line-grid.ts`): the fitted
- * size plus a letter-spacing that stretches the run over the quad's whole main
- * extent, and a line whose quad is tilted renders rotated, in its own frame.
- * See docs/superpowers/specs/2026-09-19-ocr-engine-options-findings.md.
+ * Characters sit on a FIXED-PITCH GRID along the line (`line-grid.ts`): the
+ * pitch comes from the quad corrected for the ink the first and last glyphs do
+ * not have (`glyph-insets.ts`) and is shared by the lines of a block; the run
+ * is letter-spaced to that pitch from the line's start, and a line whose quad
+ * is tilted renders rotated, in its own frame. See docs/superpowers/specs/
+ * 2026-09-19-ocr-engine-options-findings.md.
  *
  * Lines that also carry `char_offsets` skip the fitting: their characters are
  * placed by the file (`char-offsets-layout.ts`), and this module only has to
@@ -24,17 +26,23 @@
 
 import { parallelOffsets } from './char-offsets';
 import { lineCells, processLine, type CharCell, type LineCells } from './char-offsets-layout';
+import { inkInsets } from './glyph-insets';
 import {
   griddable,
   gridSpacing,
+  inkLength,
   lineFrame,
+  linePitches,
+  ownPitch,
   quadAxes,
   rectBounds,
   rectOverlapArea,
   rectsCollide,
   spacingUnits,
   type LineFrame,
-  type OrientedRect
+  type LinePitch,
+  type OrientedRect,
+  type PitchInput
 } from './line-grid';
 
 /** One OCR line quad: 4 corner points, [x, y] each, in page pixels. */
@@ -92,16 +100,17 @@ export interface LineLayout {
    */
   rotation: number;
   /**
-   * px of CSS letter-spacing that puts the run on its quad's uniform grid
+   * px of CSS letter-spacing that puts the run on its line's fixed-pitch grid
    * (`gridSpacing`); 0 for wrapped/hidden lines, lines drawn on `cells`, and
    * lines the grid gives up on.
    */
   letterSpacing: number;
   /**
    * px along the reading axis from `left`/`top` (or the own-frame box's start
-   * edge) to where the run starts: half a letter-spacing, which centres each
-   * glyph in its grid step — or, for a ROTATED line drawn on `cells`, the
-   * placement's start shift (an upright one has it in `left`/`top` already).
+   * edge) to where the run starts. Usually NEGATIVE: the quad starts at the
+   * first glyph's INK, its cell a little earlier (`gridSpacing`). For a
+   * ROTATED line drawn on `cells` it is the placement's start shift (an
+   * upright one has that in `left`/`top` already).
    */
   inset: number;
   /**
@@ -140,6 +149,11 @@ const CONSENSUS_SPREAD = 1.25;
 /** A quad ≥ this many times its own fitted size is merged-columns suspect
  * and excluded from the block reference computation. */
 const SUSPECT_RATIO = 1.6;
+/** Is a quad this thick, around text this size, more than one print column?
+ * The viewer's and the OCR editor's one answer. */
+export function isMergedColumns(cross: number, fitted: number): boolean {
+  return cross >= SUSPECT_RATIO * fitted;
+}
 /** A line fitting below this fraction of the reference is deliberately small
  * print (standalone furigana, asides): it keeps its own size. */
 const SMALL_OUTLIER = 0.7;
@@ -210,7 +224,14 @@ export function createCanvasMeasurer(fontFamily = "'Noto Sans JP', sans-serif"):
   let ctx: CanvasRenderingContext2D | null = null;
   try {
     ctx = document.createElement('canvas').getContext('2d');
-    if (ctx) ctx.font = `100px ${fontFamily}`;
+    if (ctx) {
+      ctx.font = `100px ${fontFamily}`;
+      // Fixed-pitch text is measured as such: with kerning on, the canvas
+      // closes up pairs like 」「 and reports 38.91em for 39 fullwidth glyphs,
+      // which sizes the font 0.2% too large. The line spans render with
+      // `font-kerning: none` to match. (Absent in older engines: harmless.)
+      if ('fontKerning' in ctx) ctx.fontKerning = 'none';
+    }
   } catch {
     ctx = null;
   }
@@ -248,14 +269,35 @@ export function quadExtents(quad: Quad, vertical: boolean): { main: number; cros
 }
 
 /**
- * The font size at which `text` fits ONE line quad: the size that fills the
- * quad's length (`main / advance`), never more than its thickness (`cross`).
- * Orientation is judged from the quad itself (taller than wide → vertical),
- * not from the block flag — mokuro mixes orientations inside one block.
+ * What the pitch model (`line-grid.ts`) needs to know about one line: its
+ * quad's extents, its text's natural advance, and the ink insets of its first
+ * and last glyph. One place, so the viewer and the OCR editor cannot disagree.
+ */
+export function pitchInput(
+  extents: { main: number; cross: number },
+  text: string,
+  vertical: boolean,
+  measure: TextMeasurer
+): PitchInput {
+  return {
+    main: extents.main,
+    cross: extents.cross,
+    advanceEm: measure(text),
+    count: spacingUnits(text),
+    ...inkInsets(text, vertical)
+  };
+}
+
+/**
+ * The font size at which `text` fits ONE line quad: the line's own pitch
+ * (`ownPitch` — the quad's length over the cells its ink spans), never more
+ * than its thickness (`cross`). Orientation is judged from the quad itself
+ * (taller than wide → vertical), not from the block flag — mokuro mixes
+ * orientations inside one block.
  *
- * Shared with the OCR editor (`block-geometry.ts`), which sizes every line
- * from this: a mis-detected 483×697 quad holding 8 characters must render at
- * ~87 px (its length / 8), not at its 483 px thickness.
+ * Shared with the OCR editor (`block-geometry.ts`): a mis-detected 483×697
+ * quad holding 8 characters must render at ~88 px (its length over 8 cells),
+ * not at its 483 px thickness.
  */
 export function fittedLineFontSize(quad: Quad, text: string, measure: TextMeasurer): number {
   const xs = quad.map((p) => p[0]);
@@ -265,9 +307,8 @@ export function fittedLineFontSize(quad: Quad, text: string, measure: TextMeasur
   const vertical = height > width;
   const extents = quadExtents(quad, vertical);
   if (!extents) return Math.max(MIN_FONT_SIZE, vertical ? width : height);
-  const advanceEm = measure(text);
-  const fitted = advanceEm > 0 ? extents.main / advanceEm : extents.cross;
-  return Math.max(MIN_FONT_SIZE, Math.min(extents.cross, fitted));
+  const own = ownPitch(pitchInput(extents, text, vertical, measure));
+  return Math.max(MIN_FONT_SIZE, Math.min(extents.cross, own?.pitch ?? extents.cross));
 }
 
 /**
@@ -299,6 +340,13 @@ export function layoutLines(
     frame: LineFrame;
     extents: { main: number; cross: number };
     advanceEm: number;
+    /** The line as the pitch model sees it */
+    input: PitchInput;
+    /** The line's place on the fixed-pitch grid: its own until the block's
+     * vote, then possibly the block's. Null for a line with no advance. */
+    pitch: LinePitch | null;
+    /** The size at which the text is as long as the line: its pitch, or for a
+     * placed line its cells' extent over its advance. */
     fitted: number;
     candidate: number;
     suspect: boolean;
@@ -323,23 +371,34 @@ export function layoutLines(
       (offsets && processedLines[i] === processLine(raw)
         ? lineCells(raw, offsets[i], extents.main, { repair: cellMode === 'repaired' })
         : null) ?? undefined;
+    const input = pitchInput(extents, processedLines[i], block.vertical, measure);
+    const pitch = ownPitch(input);
     // A placed line's length is measured, not the quad's: the glyphs have to
-    // fit the cells they are drawn in.
-    const main = placed ? placed.extent : extents.main;
-    const fitted = advanceEm > 0 ? main / advanceEm : extents.cross;
+    // fit the cells they are drawn in. Every other line is as big as its
+    // pitch — NOT `main / advance`, which takes the ink-free ends of the
+    // first and last cells for part of the quad and renders 「嫌だ」 at two
+    // thirds of the body text beside it.
+    const fitted =
+      advanceEm > 0
+        ? placed
+          ? placed.extent / advanceEm
+          : (pitch?.pitch ?? extents.cross)
+        : extents.cross;
     const xs = coords[i].map((p) => p[0]);
     const ys = coords[i].map((p) => p[1]);
     measured.push({
       frame,
       extents,
       advanceEm,
+      input,
+      pitch,
       fitted,
       candidate: Math.min(extents.cross, fitted),
       // quad wide enough for 1.6+ columns of its own fitted size: likely
       // multiple print columns captured as one OCR "line". Never a placed
       // line: the producer found every character along ONE column, which is
       // the question the ratio was guessing at.
-      suspect: !placed && advanceEm > 0 && extents.cross >= SUSPECT_RATIO * fitted,
+      suspect: !placed && advanceEm > 0 && isMergedColumns(extents.cross, fitted),
       bbox: {
         minX: Math.min(...xs),
         minY: Math.min(...ys),
@@ -469,6 +528,24 @@ export function layoutLines(
       }
     }
   }
+
+  // Block pitch: the columns of a block are typeset at ONE pitch, and a long
+  // column knows it far better than a short line does (`linePitches`). Only
+  // lines whose quad is one clean column vote or take the result; their size
+  // follows their pitch, so a short line is sized like the body around it.
+  const pitches = linePitches(
+    measured.map((m, i) => ({
+      ...m.input,
+      votes: !m.hidden && !m.slice && !m.suspect && !m.placed && griddable(processedLines[i])
+    }))
+  );
+  measured.forEach((m, i) => {
+    const pitch = pitches[i];
+    if (!pitch || m.placed || pitch.pitch === m.pitch?.pitch) return;
+    m.pitch = pitch;
+    m.fitted = pitch.pitch;
+    m.candidate = Math.min(m.extents.cross, m.fitted);
+  });
 
   // Block reference size: print keeps one size per balloon, so all lines
   // render uniformly at the size the trustworthy lines agree on. Exclude
@@ -606,7 +683,7 @@ export function layoutLines(
     // (deliberately-small print such as furigana lines, or quads far too
     // tight for the block consensus).
     const fitsUniform =
-      uniformSize * advanceEm <= extents.main * OVERFLOW_TOL &&
+      uniformSize <= measured[i].fitted * OVERFLOW_TOL &&
       uniformSize <= extents.cross * 1.2 &&
       candidate >= SMALL_OUTLIER * refBase;
     const fontSize = Math.max(MIN_FONT_SIZE, fitsUniform ? uniformSize : candidate);
@@ -674,14 +751,15 @@ export function layoutLines(
 
   enforceNoOverlap(layouts, model);
 
-  // The uniform grid, last: it needs the sizes the clipping above settled on.
-  // Wrapped (so also banded) and hidden lines have no single run to space, and
-  // a line drawn on cells has its characters placed already.
+  // The fixed-pitch grid, last: it needs the sizes the clipping above settled
+  // on. Wrapped (so also banded) and hidden lines have no single run to space,
+  // and a line drawn on cells has its characters placed already.
   for (let i = 0; i < layouts.length; i++) {
     const l = layouts[i];
-    if (l.hidden || l.wrap || l.cells || !griddable(processedLines[i])) continue;
+    const pitch = measured[i].pitch;
+    if (l.hidden || l.wrap || l.cells || !pitch || !griddable(processedLines[i])) continue;
     const grid = gridSpacing({
-      main: measured[i].extents.main,
+      pitch,
       advanceEm: measured[i].advanceEm,
       fontSize: l.fontSize,
       count: spacingUnits(processedLines[i])
@@ -758,8 +836,10 @@ function collisionModel(
   block: LayoutBlock,
   layouts: LineLayout[],
   measured: {
-    extents: { main: number };
+    extents: { main: number; cross: number };
     advanceEm: number;
+    input: PitchInput;
+    pitch: LinePitch | null;
     suspect: boolean;
     bbox: { minX: number; minY: number; maxX: number; maxY: number };
     hidden: boolean;
@@ -818,9 +898,18 @@ function collisionModel(
     }
     if (l.wrap) return vertical ? [l.top, l.top + l.height] : [l.left, l.left + l.width];
     const start = vertical ? l.top : l.left;
-    // On the grid the ink runs from half a step in to half a step short of
-    // the quad's far end.
-    if (l.letterSpacing > 0) return [start + l.inset, start + measured[i].extents.main - l.inset];
+    // On the grid the INK runs from the line's start edge for as long as the
+    // text is at its pitch — the quad's own length unless the block's pitch
+    // moved the end. (The run's box starts earlier and ends later by the
+    // ink-free parts of its end cells, which collide with nothing.)
+    const m = measured[i];
+    if (l.letterSpacing > 0 && m.pitch) {
+      const length = inkLength(
+        { ...m.input, lead: m.pitch.lead, trail: m.pitch.trail },
+        m.pitch.pitch
+      );
+      return [start, start + length];
+    }
     return [start, start + advance(i)];
   };
   const rectsHit = (i: number, j: number) => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  blockLineGeometries,
   clampBox,
   estimateFontSize,
   lineGeometry,
@@ -215,24 +216,84 @@ describe('lineGeometry — tilted quads', () => {
   });
 });
 
+describe('blockLineGeometries', () => {
+  // two body columns of 64px text and the short closing line 「嫌だ」, whose
+  // quad the detector drew 20px too long; all quads hug the ink
+  const lines = [
+    'あいうえおかきくけこさしすせそたちつてと',
+    'なにぬねのはひふへほまみむめもやゆよらり',
+    '「嫌だ」'
+  ];
+  const quads = [
+    rectQuad(200, 100 + 0.11 * 64, 72, 64 * (20 - 0.21)),
+    rectQuad(100, 100 + 0.11 * 64, 72, 64 * (20 - 0.21)),
+    rectQuad(0, 100 + 0.65 * 64, 72, 64 * (4 - 0.65 - 0.63) + 20)
+  ];
+
+  it('the lines of a block share one pitch, as in the viewer: a short line is sized like the body', () => {
+    const geoms = blockLineGeometries(quads, lines, perChar);
+    expect(geoms.map((g) => g.fontSize)).toEqual([64, 64, 64]);
+    for (const g of geoms) expect(g.pitch!.pitch).toBeCloseTo(64, 9);
+    // on its own quad alone it comes out 12% too large
+    expect(lineGeometry(quads[2], lines[2], perChar).fontSize).toBe(71);
+    // …and it starts a 「-inset before its quad: glyph k on the print's cell k
+    const grid = lineGrid(geoms[2], lines[2], perChar);
+    expect(grid.letterSpacing).toBe(0);
+    expect(grid.inset).toBeCloseTo(-0.65 * 64, 9);
+  });
+
+  it('is lineGeometry for a block of one line, and keeps every other field of it', () => {
+    const [only] = blockLineGeometries([quads[2]], [lines[2]], perChar);
+    expect(only).toEqual(lineGeometry(quads[2], lines[2], perChar));
+    const geoms = blockLineGeometries(quads, lines, perChar);
+    const alone = lineGeometry(quads[2], lines[2], perChar);
+    expect({ ...geoms[2], fontSize: 0, pitch: null }).toEqual({
+      ...alone,
+      fontSize: 0,
+      pitch: null
+    });
+  });
+
+  it('tolerates a block with fewer lines than quads, and empty lines', () => {
+    const geoms = blockLineGeometries(quads, ['あいうえお', ''], perChar);
+    expect(geoms).toHaveLength(3);
+    expect(geoms[1].pitch).toBeNull();
+    expect(geoms[1].fontSize).toBe(72);
+  });
+});
+
 describe('lineGrid', () => {
-  it('spreads a loose line over its quad: spacing after every glyph, half of one before the first', () => {
+  // six hiragana: the quad spans 6 − 0.11 − 0.10 cells of ink
+  it('a tracked line is flush with its quad: spacing after every glyph, the first cell a lead-inset early', () => {
     const g = lineGeometry(rectQuad(0, 0, 40, 300), 'あいうえおか', perChar);
     expect(g.fontSize).toBe(40);
-    expect(lineGrid(g, 'あいうえおか', perChar)).toEqual({ letterSpacing: 10, inset: 5 });
+    const grid = lineGrid(g, 'あいうえおか', perChar);
+    // 40px glyphs (the quad's thickness) on the step the rest of the length
+    // divides into; the last glyph's ink ends where the quad does
+    expect(grid.letterSpacing).toBeCloseTo((300 - 40 * (1 - 0.21)) / 5 - 40, 9);
+    expect(grid.inset).toBeCloseTo(-0.11 * 40, 9);
+    expect(grid.inset + 5 * (40 + grid.letterSpacing) + 40 * (1 - 0.1)).toBeCloseTo(300, 9);
   });
   it('absorbs the whole-px rounding of the font size', () => {
-    // 250 / 6 = 41.67 → 42px glyphs, 252px of advance in 250px of quad
+    // 250 / 5.79 cells = 43.18 → 43px glyphs on a 43.18px pitch
     const g = lineGeometry(rectQuad(0, 0, 60, 250), 'あいうえおか', perChar);
-    expect(g.fontSize).toBe(42);
+    expect(g.fontSize).toBe(43);
     const grid = lineGrid(g, 'あいうえおか', perChar);
-    expect(grid.letterSpacing).toBeCloseTo(-2 / 6, 9);
-    expect(grid.inset).toBeCloseTo(-1 / 6, 9);
+    expect(grid.letterSpacing).toBeCloseTo(250 / 5.79 - 43, 9);
+    // glyph k is centred in cell k of the print's grid, which starts a
+    // lead-inset before the quad
+    const pitch = 250 / 5.79;
+    for (let k = 0; k < 6; k++) {
+      expect(grid.inset + k * (43 + grid.letterSpacing) + 21.5).toBeCloseTo(
+        -0.11 * pitch + (k + 0.5) * pitch,
+        9
+      );
+    }
   });
   it('uses the tilted quad’s own main extent', () => {
     const g = lineGeometry(tilted(300, 300, 40, 300, 30), 'あいうえおか', perChar);
     const grid = lineGrid(g, 'あいうえおか', perChar);
-    expect(grid.letterSpacing).toBeCloseTo(10, 6);
+    expect(grid.letterSpacing).toBeCloseTo((300 - 40 * (1 - 0.21)) / 5 - 40, 6);
   });
   it('gives up (no spacing) on an empty line, a pathological one, and collapsible white space', () => {
     const g = lineGeometry(rectQuad(0, 0, 40, 300), 'あ', perChar);
@@ -290,7 +351,12 @@ describe('resizeQuadEdge', () => {
     const out = resizeQuadEdge(tilted(300, 300, 40, 240, 25), true, 'end', 300, -900);
     const frame = lineFrame(out, true)!;
     expect(frame.main).toBeCloseTo(1, 6);
-    expect(frame.angle).toBeCloseTo(25, 4);
+    // a 1px line renders upright — 25° of a 1px line is no evidence — but the
+    // quad is still the tilted one, and drags back out along the same axes
+    expect(frame.angle).toBe(0);
+    expect(frame.tilt).toBeCloseTo(25, 4);
+    const back = resizeQuadEdge(out, true, 'end', -300, 900);
+    expect(lineFrame(back, true)!.angle).toBeCloseTo(25, 4);
   });
 });
 

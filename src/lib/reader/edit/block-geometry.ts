@@ -3,17 +3,22 @@
  * image-pixel space, no DOM.
  */
 import {
-  fittedLineFontSize,
   getDefaultMeasurer,
+  isMergedColumns,
+  pitchInput,
   type TextMeasurer
 } from '$lib/reader/line-coords-layout';
 import {
+  ANGLE_DEAD_BAND,
   griddable,
   gridSpacing,
   lineFrame,
+  linePitches,
+  ownPitch,
   quadAxes,
   spacingUnits,
-  type GridSpacing
+  type GridSpacing,
+  type LinePitch
 } from '$lib/reader/line-grid';
 
 export type Box = [number, number, number, number];
@@ -178,16 +183,22 @@ export interface LineGeometry {
    * and, past 45°, call a column a row. */
   vertical: boolean;
   /**
-   * The size the line's text renders at: with `text`, the FITTED size (the
-   * text fills the quad's length, capped by its thickness — see
-   * `fittedLineFontSize`); without, the thickness alone.
+   * The size the line's text renders at: with `text`, its PITCH (the quad's
+   * length over the cells its ink spans — its block's pitch when the line was
+   * laid out with its block, see `blockLineGeometries`), capped by the quad's
+   * thickness; without, the thickness alone.
    */
   fontSize: number;
+  /** The line's place on the fixed-pitch grid (`line-grid.ts`); null without
+   * `text`, and for text with no advance. */
+  pitch: LinePitch | null;
   /** Degrees clockwise (CSS `rotate()`), as the viewer turns the line
    * (`lineFrame`): 0 for an upright quad and inside the dead band. */
   rotation: number;
-  /** Extent along the line's own writing axis — what the uniform grid spans. */
+  /** Extents along the line's own writing axis — what the grid spans — and
+   * across it, in the quad's own frame. */
   main: number;
+  cross: number;
   /**
    * Where the line ELEMENT goes, page px. Upright: the bounds above. Tilted:
    * the quad's own-frame box (cross × main, or main × cross) centred on the
@@ -197,10 +208,15 @@ export interface LineGeometry {
   box: { left: number; top: number; width: number; height: number };
 }
 
+/**
+ * @param pitch the line's pitch as its BLOCK decided it (`blockLineGeometries`);
+ *   absent, the line is on its own and its quad alone says.
+ */
 export function lineGeometry(
   quad: number[][],
   text?: string,
-  measure: TextMeasurer = getDefaultMeasurer()
+  measure: TextMeasurer = getDefaultMeasurer(),
+  pitch?: LinePitch | null
 ): LineGeometry {
   const [x0, y0, x1, y1] = quadBounds(quad);
   const width = x1 - x0;
@@ -208,31 +224,39 @@ export function lineGeometry(
   const bounds = { left: x0, top: y0, width, height };
   const upright = height > width;
   let frame = lineFrame(quad, upright);
-  if (!frame || frame.angle === 0) {
-    const fontSize =
-      text === undefined ? (upright ? width : height) : fittedLineFontSize(quad, text, measure);
-    return {
-      ...bounds,
-      vertical: upright,
-      fontSize: Math.max(1, Math.round(fontSize)),
-      rotation: 0,
-      main: frame?.main ?? (upright ? height : width),
-      box: bounds
-    };
+  let vertical = upright;
+  // A quad turned past 45° has a bbox that calls a column a row. Whether a
+  // tilt counts depends on the line's length (`lineFrame`), so the question is
+  // put to the quad's OWN orientation — asked of the wrong one, a long column
+  // is a short fat row whose 30° are "noise".
+  const axes = quadAxes(quad);
+  if (axes && axes.v > axes.h !== upright) {
+    const own = lineFrame(quad, !upright);
+    if (own && own.angle !== 0) {
+      frame = own;
+      vertical = !upright;
+    }
   }
-  const axes = quadAxes(quad)!;
-  const vertical = axes.v > axes.h;
-  if (vertical !== upright) frame = lineFrame(quad, vertical)!;
-  const advanceEm = text === undefined ? 0 : measure(text);
-  const fontSize = advanceEm > 0 ? Math.min(frame.cross, frame.main / advanceEm) : frame.cross;
+  const main = frame?.main ?? (upright ? height : width);
+  const cross = frame?.cross ?? (upright ? width : height);
+  const placed =
+    text === undefined
+      ? null
+      : (pitch ?? ownPitch(pitchInput({ main, cross }, text, vertical, measure)));
+  const fontSize = Math.max(1, Math.round(placed ? Math.min(cross, placed.pitch) : cross));
+  if (!frame || frame.angle === 0) {
+    return { ...bounds, vertical, fontSize, rotation: 0, main, cross, pitch: placed, box: bounds };
+  }
   const boxWidth = vertical ? frame.cross : frame.main;
   const boxHeight = vertical ? frame.main : frame.cross;
   return {
     ...bounds,
     vertical,
-    fontSize: Math.max(1, Math.round(fontSize)),
+    fontSize,
     rotation: frame.angle,
-    main: frame.main,
+    main,
+    cross,
+    pitch: placed,
     box: {
       left: frame.cx - boxWidth / 2,
       top: frame.cy - boxHeight / 2,
@@ -242,23 +266,53 @@ export function lineGeometry(
   };
 }
 
+/**
+ * The geometry of every line of a block, on the pitch the BLOCK's lines agree
+ * on — the viewer's rule (`linePitches`), from the same code: the columns of a
+ * block are typeset at one pitch, so a short line is drawn at the size and
+ * step of the body text beside it, anchored at its own start. Each line still
+ * reads its orientation off its own quad, and shows its RAW text.
+ */
+export function blockLineGeometries(
+  quads: number[][][],
+  lines: string[],
+  measure: TextMeasurer = getDefaultMeasurer()
+): LineGeometry[] {
+  const alone = quads.map((q, i) => lineGeometry(q, lines[i] ?? '', measure));
+  const pitches = linePitches(
+    alone.map((g, i) => {
+      const text = lines[i] ?? '';
+      return {
+        ...pitchInput(g, text, g.vertical, measure),
+        votes: griddable(text) && !!g.pitch && !isMergedColumns(g.cross, g.pitch.pitch)
+      };
+    })
+  );
+  return alone.map((g, i) =>
+    pitches[i] && pitches[i]!.pitch !== g.pitch?.pitch
+      ? lineGeometry(quads[i], lines[i] ?? '', measure, pitches[i])
+      : g
+  );
+}
+
 const NO_GRID: GridSpacing = { letterSpacing: 0, inset: 0 };
 
 /**
- * The viewer's uniform grid (`gridSpacing`) for a line as the EDITOR draws it:
- * its own fitted, whole-px size and the text it shows. Spacing after every
- * glyph stretches the run over the quad's length, and the run starts half a
- * spacing in. No grid (zeros) where the viewer has none either.
+ * The viewer's fixed-pitch grid (`gridSpacing`) for a line as the EDITOR draws
+ * it: its whole-px size and the text it shows, on the pitch its geometry
+ * carries. Spacing after every glyph steps the run at that pitch, and the run
+ * starts where the first glyph's ink meets the quad's start edge — before it,
+ * usually. No grid (zeros) where the viewer has none either.
  */
 export function lineGrid(
   g: LineGeometry,
   text: string,
   measure: TextMeasurer = getDefaultMeasurer()
 ): GridSpacing {
-  if (!griddable(text)) return NO_GRID;
+  if (!griddable(text) || !g.pitch) return NO_GRID;
   return (
     gridSpacing({
-      main: g.main,
+      pitch: g.pitch,
       advanceEm: measure(text),
       fontSize: g.fontSize,
       count: spacingUnits(text)
@@ -293,7 +347,11 @@ export function resizeQuadEdge(
 ): number[][] {
   const frame = lineFrame(quad, vertical);
   if (!frame) return quad;
-  const { right, down, along } = frameAxes(vertical, frame.angle);
+  // The MEASURED tilt, not the rendered one: a tilted quad dragged short stops
+  // rendering turned (its angle is no longer evidence), but it is still that
+  // quad, and must come back out along the same axes.
+  const tilt = Math.abs(frame.tilt) < ANGLE_DEAD_BAND ? 0 : frame.tilt;
+  const { right, down, along } = frameAxes(vertical, tilt);
   // outward normal of the dragged edge
   const axis: [number, number] = part === 'end' ? along : vertical ? [-right[0], -right[1]] : down;
   const extent = part === 'end' ? frame.main : frame.cross;

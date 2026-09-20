@@ -373,9 +373,12 @@ interface ExpectedLine {
   /**
    * Unit vector of the line's reading axis in page space. Upright: straight
    * down (vertical) or right (horizontal). The VIEWER turns a line whose quad
-   * is tilted (fixture block 2, 力で！, leans -4.2°), and then so does its axis;
-   * `start`/`end` below are positions ALONG this axis (a point's dot product
-   * with it), which for an upright line is simply its y or x.
+   * is tilted, and then so does its axis; `start`/`end` below are positions
+   * ALONG this axis (a point's dot product with it), which for an upright line
+   * is simply its y or x. (No line of this page turns: its one leaning quad —
+   * block 2, 力で！, -4.2° — is three glyphs long, and over that length 4° is
+   * within what corner noise does. Turned cells are measured in
+   * e2e/line-grid.spec.ts.)
    */
   axis: [number, number];
   /** null = the line renders fitted (no offsets, or they failed validation) */
@@ -728,10 +731,12 @@ test.describe('char_offsets — viewer', () => {
     expect(expected[ZERO_BLOCK][ZERO_LINE].cells).toHaveLength(11);
     expect(expected[HORIZONTAL_BLOCK][ZERO_LINE].cells).toHaveLength(11);
     expect(expected[REPAIRED_BLOCK][0].cells).toHaveLength(6);
-    // The one tilted quad of the page (力で！, -4.2°) is drawn turned, cells and all.
-    expect(expected[2][1].axis[0]).not.toBe(0);
+    // The one leaning quad of the page (力で！, -4.2°) stays upright: it is 140
+    // × 332, so the lean moves its end by 25px — a sixth of its thickness, the
+    // size of the detector's corner noise on a three-glyph line.
+    expect(Math.abs(expected[2][1].axis[0])).toBe(0);
     expect(expected.flat().filter((line) => line.axis[0] !== 0 && line.axis[1] !== 0)).toHaveLength(
-      1
+      0
     );
     // Upright lines render the file's own advances, untouched: for them the
     // prediction is the fixture's numbers, not the module's opinion.
@@ -892,8 +897,8 @@ test.describe('char_offsets — editor', () => {
     const block = page.locator('.editBlock').first();
     await expect(block.locator('.ocr-char').first()).toBeVisible();
 
-    // Cells in the editor sit where the file puts them, as filed — on the
-    // turned quad for the page's one tilted line, exactly like the viewer.
+    // Cells in the editor sit where the file puts them, as filed — the page's
+    // one leaning quad upright, exactly like the viewer.
     const expected = await expectedCells(page, false);
     const before = await measure(page, 'editor');
 
@@ -927,9 +932,9 @@ test.describe('char_offsets — editor', () => {
     const zeroCell = findBlock(before, BLOCKS[REPAIRED_BLOCK]).lines[0].chars;
     expect(zeroCell[REPAIRED_CHAR].text).toBe('え');
     expect(zeroCell.map((c) => parseFloat(c.inlineSize))).toEqual([40, 40, 40, 0, 80, 40]);
-    // The tilted line's cells sit where the VIEWER's do, glyph for glyph.
+    // The leaning quad's cells sit where the VIEWER's do, glyph for glyph.
     const TILTED = [2, 1] as const;
-    expect(expected[TILTED[0]][TILTED[1]].axis[0]).not.toBe(0);
+    expect(Math.abs(expected[TILTED[0]][TILTED[1]].axis[0])).toBe(0);
     const turnedInViewer = findBlock(viewed, BLOCKS[TILTED[0]]).lines[TILTED[1]].chars;
     const turnedInEditor = findBlock(before, BLOCKS[TILTED[0]]).lines[TILTED[1]].chars;
     expect(turnedInEditor).toHaveLength(turnedInViewer.length);
@@ -939,7 +944,7 @@ test.describe('char_offsets — editor', () => {
         c.glyph.x + c.glyph.w / 2 - (v.x + v.w / 2),
         c.glyph.y + c.glyph.h / 2 - (v.y + v.h / 2)
       );
-      expect(off, `tilted glyph ${k}, editor vs viewer`).toBeLessThanOrEqual(1);
+      expect(off, `leaning quad, glyph ${k}, editor vs viewer`).toBeLessThanOrEqual(1);
     });
     await shot(page, 'editor-cells-block0', BLOCKS[0]);
 

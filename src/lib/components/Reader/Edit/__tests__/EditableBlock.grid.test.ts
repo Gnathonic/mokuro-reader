@@ -12,11 +12,16 @@ vi.mock('$lib/settings', async () => {
 import EditableBlock from '../EditableBlock.svelte';
 import { settings } from '$lib/settings';
 import { EditSession } from '$lib/reader/edit/edit-session.svelte';
-import { lineGeometry, lineGrid, lineHandlePoints } from '$lib/reader/edit/block-geometry';
+import {
+  blockLineGeometries,
+  lineGeometry,
+  lineGrid,
+  lineHandlePoints
+} from '$lib/reader/edit/block-geometry';
 import { lineFrame } from '$lib/reader/line-grid';
 
 // The editor draws a line the way the viewer does (line-grid.ts): ONE text
-// node on the quad's uniform grid, turned when the quad is tilted. Cells are
+// node on the block's fixed-pitch grid, turned when the quad is tilted. Cells are
 // the original font mode's alone (EditableBlock.cells.test.ts).
 const fontMode = settings as unknown as Writable<{ fontSize: string; boldFont: boolean }>;
 
@@ -37,8 +42,17 @@ function tilted(cx: number, cy: number, w: number, h: number, deg: number): numb
 const rect = (x: number, y: number, w: number, h: number) => tilted(x + w / 2, y + h / 2, w, h, 0);
 
 // jsdom has no canvas, so the measurer is the heuristic one: 1em per fullwidth
-// character. Line 0 fits its quad exactly (6 × 40 = 240), line 1 is LOOSE
-// (6 × 40 in 300), line 2 leans 20°, line 3 is a loose row leaning -15°.
+// character, 0.55 per ASCII one. Quads hug the INK (glyph-insets.ts): line 0
+// is six hiragana set solid at 40px (ink 0.11em into the first cell to 0.10em
+// short of the last); lines 1–3 are 40px glyphs TRACKED to a 50px step — an
+// upright column, a column leaning 20°, a row leaning -15° — each as long as
+// its ink at that step.
+const SOLID = 40 * (6 - 0.11 - 0.1);
+const LOOSE = 5 * 50 + 40 * (1 - 0.11 - 0.1);
+const LOOSE_KATAKANA = 5 * 50 + 40 * (1 - 0.12 - 0.1);
+// ざわざわ... — 5.65em of glyphs, six 10px gaps between its seven characters,
+// ends ざ (0.11) and an ASCII period (0.04)
+const LOOSE_ROW = 5.65 * 40 + 6 * 10 - (0.11 + 0.04) * 40;
 function gridPage(): Page {
   return {
     version: '0.2.1',
@@ -52,10 +66,10 @@ function gridPage(): Page {
         font_size: 40,
         lines: ['あいうえおか', 'かきくけこさ', 'ゴゴゴゴゴゴ', 'ざわざわ...'],
         lines_coords: [
-          rect(600, 120, 40, 240),
-          rect(540, 120, 40, 300),
-          tilted(400, 400, 40, 300, 20),
-          tilted(300, 620, 300, 40, -15)
+          rect(600, 124.4, 40, SOLID),
+          rect(540, 124.4, 40, LOOSE),
+          tilted(400, 400, 40, LOOSE_KATAKANA, 20),
+          tilted(300, 620, LOOSE_ROW, 40, -15)
         ],
         // present and valid: auto mode must not draw it
         char_offsets: [
@@ -107,7 +121,7 @@ async function pointer(
 beforeEach(() => fontMode.set({ fontSize: 'auto', boldFont: false }));
 afterEach(cleanup);
 
-describe('EditableBlock — the uniform grid', () => {
+describe('EditableBlock — the fixed-pitch grid', () => {
   it('auto mode draws no cells, whatever char_offsets the file carries: every line is one RAW text node', () => {
     const { root, page } = mount();
     expect(root.querySelectorAll('.ocr-char')).toHaveLength(0);
@@ -119,28 +133,28 @@ describe('EditableBlock — the uniform grid', () => {
     });
   });
 
-  it('a line that fills its quad has no spacing: the markup it always had', () => {
+  it('a line set solid at its own size has no spacing — only its first cell starts before its ink', () => {
     const [exact] = lineEls(mount().root);
     expect(exact.style.fontSize).toBe('40px');
     expect(exact.style.letterSpacing).toBe('');
-    expect(exact.style.textIndent).toBe('');
+    expect(px(exact.style.textIndent)).toBeCloseTo(-4.4, 6);
     expect(exact.style.transform).toBe('');
     expect(exact.style.left).toBe('500px');
-    expect(exact.style.top).toBe('20px');
+    expect(px(exact.style.top)).toBeCloseTo(24.4, 6);
   });
 
-  it('a loose line is spread over its quad: spacing after each glyph, half of one before the first', () => {
+  it('a tracked line steps at the block’s pitch: spacing after each glyph, the first cell a lead-inset early', () => {
     const { root, page } = mount();
     const loose = lineEls(root)[1];
-    // 300px of quad, 6 glyphs at 40px: 10px after each, the run starts 5px in
+    // 40px glyphs on the 50px step lines 1–3 agree on
     expect(loose.style.fontSize).toBe('40px');
-    expect(loose.style.letterSpacing).toBe('10px');
-    expect(loose.style.textIndent).toBe('5px');
+    expect(px(loose.style.letterSpacing)).toBeCloseTo(10, 6);
+    expect(px(loose.style.textIndent)).toBeCloseTo(-4.4, 6);
     // ...which is the shared helper's answer, for every line
     const block = page.blocks[0];
+    const geoms = blockLineGeometries(block.lines_coords!, block.lines);
     lineEls(root).forEach((line, i) => {
-      const g = lineGeometry(block.lines_coords![i], block.lines[i]);
-      const grid = lineGrid(g, block.lines[i]);
+      const grid = lineGrid(geoms[i], block.lines[i]);
       expect(px(line.style.letterSpacing || '0')).toBeCloseTo(grid.letterSpacing, 6);
       expect(px(line.style.textIndent || '0')).toBeCloseTo(grid.inset, 6);
     });
@@ -165,7 +179,7 @@ describe('EditableBlock — the uniform grid', () => {
     fontMode.set({ fontSize: '12', boldFont: false });
     await tick();
     expect(root.querySelectorAll('.ocr-char')).toHaveLength(0);
-    expect(lineEls(root)[1].style.letterSpacing).toBe('10px');
+    expect(px(lineEls(root)[1].style.letterSpacing)).toBeCloseTo(10, 6);
   });
 
   it('original mode draws the file’s cells instead — no spacing on a celled line', async () => {
@@ -186,11 +200,11 @@ describe('EditableBlock — a tilted quad shows the line turned', () => {
     const { root, page } = mount();
     const block = page.blocks[0];
     const column = lineEls(root)[2];
-    // 40 × 300 centred on (400, 400), block origin (100, 100)
+    // 40 × LOOSE_KATAKANA centred on (400, 400), block origin (100, 100)
     expect(px(column.style.left)).toBeCloseTo(400 - 20 - 100, 6);
-    expect(px(column.style.top)).toBeCloseTo(400 - 150 - 100, 6);
+    expect(px(column.style.top)).toBeCloseTo(400 - LOOSE_KATAKANA / 2 - 100, 6);
     expect(px(column.style.width)).toBeCloseTo(40, 6);
-    expect(px(column.style.minHeight)).toBeCloseTo(300, 6);
+    expect(px(column.style.minHeight)).toBeCloseTo(LOOSE_KATAKANA, 6);
     expect(column.style.writingMode).toBe('vertical-rl');
     const turn = /^rotate\((-?[\d.]+)deg\)$/.exec(column.style.transform);
     expect(turn).not.toBeNull();
@@ -199,15 +213,15 @@ describe('EditableBlock — a tilted quad shows the line turned', () => {
     // percentage origin would wander with it
     const [ox, oy] = column.style.transformOrigin.split(' ').map(px);
     expect(ox).toBeCloseTo(20, 6);
-    expect(oy).toBeCloseTo(150, 6);
-    // fitted along the quad's own length, on the grid of that length
+    expect(oy).toBeCloseTo(LOOSE_KATAKANA / 2, 6);
+    // sized by the quad's own thickness, on the step its own length gives
     expect(column.style.fontSize).toBe('40px');
     expect(px(column.style.letterSpacing)).toBeCloseTo(10, 6);
 
     const row = lineEls(root)[3];
     expect(row.style.writingMode).toBe('horizontal-tb');
     expect(parseFloat(/rotate\((-?[\d.]+)deg\)/.exec(row.style.transform)![1])).toBeCloseTo(-15, 6);
-    expect(px(row.style.minWidth)).toBeCloseTo(300, 6);
+    expect(px(row.style.minWidth)).toBeCloseTo(LOOSE_ROW, 6);
     expect(px(row.style.height)).toBeCloseTo(40, 6);
     expect(lineFrame(block.lines_coords![3], false)!.angle).toBeCloseTo(-15, 6);
 
@@ -231,7 +245,7 @@ describe('EditableBlock — a tilted quad shows the line turned', () => {
       expect(el.firstChild!.nodeType).toBe(Node.TEXT_NODE);
     });
     // opening the editor must not make the text jump: the grid stays
-    expect(editable[1].style.letterSpacing).toBe('10px');
+    expect(px(editable[1].style.letterSpacing)).toBeCloseTo(10, 6);
     expect(root.querySelectorAll('.ocr-char')).toHaveLength(0);
   });
 
@@ -295,7 +309,7 @@ describe('EditableBlock — a tilted quad shows the line turned', () => {
     const resized = session.pageFor(0).blocks[0];
     const frame = lineFrame(resized.lines_coords![2], true)!;
     expect(frame.angle).toBeCloseTo(20, 6);
-    expect(frame.main).toBeCloseTo(300 + 60 * Math.cos((20 * Math.PI) / 180), 6);
+    expect(frame.main).toBeCloseTo(LOOSE_KATAKANA + 60 * Math.cos((20 * Math.PI) / 180), 6);
     expect(frame.cross).toBeCloseTo(40, 6);
 
     await rerender({ block: resized });

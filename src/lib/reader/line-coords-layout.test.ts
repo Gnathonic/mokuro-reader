@@ -5,6 +5,7 @@ import {
   type LayoutBlock,
   type TextMeasurer
 } from './line-coords-layout';
+import { inkInsets } from './glyph-insets';
 import fixturePage from './__fixtures__/char-offsets-page.json';
 
 // Every block the tests below lay out is recorded, so the golden test at the
@@ -212,11 +213,12 @@ describe('layoutLines', () => {
           [0, 100]
         ]
       ],
-      lines: ['ドン'] // 2 chars: single-line fit 50px, 2-col wrap also 50px
+      lines: ['ドン'] // 2 chars: wrapping to 2 columns buys nothing
     };
     const layouts = layoutLines(block, block.lines, heuristicMeasurer)!;
     expect(layouts[0].wrap).toBe(false);
-    expect(layouts[0].fontSize).toBeCloseTo(50, 1);
+    // the quad hugs the ink of two katakana: 100px is 1.78 cells, not 2
+    expect(layouts[0].fontSize).toBeCloseTo(100 / (2 - 0.12 - 0.1), 9);
   });
 
   it('centers each clean line on its quad cross axis, anchored at the reading start', () => {
@@ -411,9 +413,10 @@ describe('layoutLines', () => {
     // base line renders at its true large size
     expect(layouts[1].wrap).toBe(false);
     expect(layouts[1].fontSize).toBeGreaterThan(70);
-    // ruby fragments keep their own small sizes
+    // ruby fragments keep their own small size — ONE size: they are one line
+    // of ruby split around the base text, so they share its pitch
     expect(layouts[0].fontSize).toBeLessThan(35);
-    expect(layouts[2].fontSize).toBeLessThan(30);
+    expect(layouts[2].fontSize).toBe(layouts[0].fontSize);
   });
 
   it('hides a line re-captured inside a bigger line quad (Saki 02 p129 あれは)', () => {
@@ -855,6 +858,44 @@ describe('heuristicMeasurer', () => {
   });
 });
 
+describe('createCanvasMeasurer', () => {
+  const withContext = async (ctx: object | null, run: () => Promise<void>) => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = (() => ctx) as never;
+    try {
+      await run();
+    } finally {
+      HTMLCanvasElement.prototype.getContext = original;
+    }
+  };
+
+  // Fixed-pitch print is measured as fixed-pitch: with kerning on, Chromium's
+  // canvas reports 38.91em for 39 fullwidth glyphs and every size comes out
+  // 0.2% large.
+  it('measures with kerning off', async () => {
+    const ctx = {
+      font: '',
+      fontKerning: 'auto',
+      measureText: (t: string) => ({ width: t.length * 100 })
+    };
+    await withContext(ctx, async () => {
+      const { createCanvasMeasurer } = await import('./line-coords-layout');
+      const measure = createCanvasMeasurer();
+      expect(ctx.fontKerning).toBe('none');
+      expect(measure('あいう')).toBe(3);
+    });
+  });
+
+  it('leaves an engine without fontKerning alone', async () => {
+    const ctx = { font: '', measureText: (t: string) => ({ width: t.length * 50 }) };
+    await withContext(ctx, async () => {
+      const { createCanvasMeasurer } = await import('./line-coords-layout');
+      expect(createCanvasMeasurer()('あい')).toBe(1);
+      expect('fontKerning' in ctx).toBe(false);
+    });
+  });
+});
+
 describe('fittedLineFontSize', () => {
   const rect = (x: number, y: number, w: number, h: number) => [
     [x, y],
@@ -866,15 +907,17 @@ describe('fittedLineFontSize', () => {
 
   it('is the size at which the text fits the quad LENGTH, capped by the thickness', async () => {
     const { fittedLineFontSize } = await import('./line-coords-layout');
-    // Chainsaw Man 02 p.9 block 1, quad 7: 483×697, judged vertical, 8 chars
+    // Chainsaw Man 02 p.9 block 1, quad 7: 483×697, judged vertical, 8 chars —
+    // whose ink spans 8 cells less the two hiragana end insets
+    const cells = (n: number) => n - 0.11 - 0.1;
     expect(fittedLineFontSize(rect(959, 1885, 483, 697), 'あいうえおかきく', perChar)).toBeCloseTo(
-      697 / 8,
+      697 / cells(8),
       5
     );
     // quad 0: 541×99 horizontal, 12 chars
     expect(
       fittedLineFontSize(rect(800, 1710, 541, 99), 'あいうえおかきくけこさし', perChar)
-    ).toBeCloseTo(541 / 12, 5);
+    ).toBeCloseTo(541 / cells(12), 5);
     // a normal quad (thickness smaller than the fitted size) keeps its thickness
     expect(fittedLineFontSize(rect(1500, 1820, 44, 252), 'あい', perChar)).toBe(44);
     // empty text → the thickness
@@ -1142,54 +1185,144 @@ describe('layoutLines with char_offsets', () => {
 // The uniform grid and rotation (line-grid.ts). These call layoutLinesImpl with
 // cells 'off' — what the viewer's auto mode passes — so they stay out of the
 // "before char_offsets" replay above and carry a golden of their own.
-describe('layoutLines on the uniform grid', () => {
+describe('layoutLines on the fixed-pitch grid', () => {
   const column = (x0: number, x1: number, y0: number, y1: number) => [
     [x0, y0],
     [x1, y0],
     [x1, y1],
     [x0, y1]
   ];
+  /** The quad a detector draws around `text` set solid at `pitch` with its
+   * first CELL starting at `cellTop`: it hugs the ink, not the cells. */
+  const inkColumn = (x0: number, x1: number, cellTop: number, text: string, pitch: number) => {
+    const { lead, trail } = inkInsets(text, true);
+    return column(
+      x0,
+      x1,
+      cellTop + lead * pitch,
+      cellTop + (Array.from(text).length - trail) * pitch
+    );
+  };
   const auto = (block: LayoutBlock, lines = block.lines) =>
     layoutLinesImpl(block, lines, heuristicMeasurer, { cells: 'off' })!;
-  /** Centre of glyph k along the reading axis, all-fullwidth text. */
-  const glyphCentre = (l: { inset: number; letterSpacing: number; fontSize: number }, k: number) =>
-    l.inset + k * (l.fontSize + l.letterSpacing) + l.fontSize / 2;
+  /** Centre of glyph k along the reading axis (block px), all-fullwidth text. */
+  const glyphCentre = (
+    l: { top: number; inset: number; letterSpacing: number; fontSize: number },
+    k: number
+  ) => l.top + l.inset + k * (l.fontSize + l.letterSpacing) + l.fontSize / 2;
 
-  // A = 8 glyphs filling a 40×320 column; B = 4 glyphs in a 40×200 one. Print
-  // keeps one size per balloon (40), so B's quad is 40px longer than its text.
-  const loose: LayoutBlock = {
-    box: [100, 0, 190, 320],
-    vertical: true,
-    font_size: 40,
-    lines: ['あいうえおかきく', 'さしすせ'],
-    lines_coords: [column(150, 190, 0, 320), column(100, 140, 0, 200)]
-  };
-
-  it('a loose quad: positive spacing spreads the run over the whole quad, glyphs on cell centres', () => {
-    const [a, b] = auto(loose);
-    expect(a).toMatchObject({ fontSize: 40, letterSpacing: 0, inset: 0, rotation: 0 });
-    expect(b).toMatchObject({ fontSize: 40, letterSpacing: 10, inset: 5, rotation: 0 });
-    // left/top are still where today's renderer anchors the line
-    expect(b.left).toBe(0);
-    expect(b.top).toBe(0);
-    for (let k = 0; k < 4; k++) expect(glyphCentre(b, k)).toBeCloseTo((k + 0.5) * (200 / 4), 9);
-  });
-
-  it('a tight quad: negative spacing within the clamp closes the run up to fit', () => {
-    // C = 5 glyphs in a 40×180 column: the block size (40) needs 200px
-    const tight: LayoutBlock = {
-      ...loose,
-      lines: ['あいうえおかきく', 'たちつてと'],
-      lines_coords: [column(150, 190, 0, 320), column(100, 140, 0, 180)]
+  it('a line ending in 。 is not squeezed: every glyph sits on the print’s cell', () => {
+    // ten 64px cells from y = 100, in a quad 72 thick
+    const text = '「あいうえおかき」。';
+    const block: LayoutBlock = {
+      box: [0, 0, 72, 900],
+      vertical: true,
+      font_size: 64,
+      lines: [text],
+      lines_coords: [inkColumn(0, 72, 100, text, 64)]
     };
-    const [, c] = auto(tight);
-    expect(c.fontSize).toBe(40);
-    expect(c.letterSpacing).toBe(-4);
-    expect(c.inset).toBe(-2);
-    for (let k = 0; k < 5; k++) expect(glyphCentre(c, k)).toBeCloseTo((k + 0.5) * (180 / 5), 9);
+    const [l] = auto(block);
+    expect(l.fontSize).toBeCloseTo(64, 9);
+    expect(l.letterSpacing).toBe(0);
+    // `top` is still the quad's start; the run starts a 「-inset before it
+    expect(l.top).toBeCloseTo(100 + 0.65 * 64, 9);
+    expect(l.inset).toBeCloseTo(-0.65 * 64, 9);
+    for (let k = 0; k < 10; k++) expect(glyphCentre(l, k)).toBeCloseTo(100 + (k + 0.5) * 64, 9);
+    // the model this replaces: main / count
+    const main = 64 * (10 - 0.65 - 0.68);
+    expect(main / 10).toBeLessThan(0.87 * 64);
   });
 
-  it('a half-width mixed line keeps its narrow advances and shares the slack per character', () => {
+  it('the lines of a block share ONE pitch, anchored at each line’s own start', () => {
+    // two body columns and a short closing line; the detector ended the first
+    // column 14px late and drew the short line's quad 20px too long
+    const lines = [
+      'あいうえおかきくけこさしすせそたちつてと',
+      'なにぬねのはひふへほまみむめもやゆよらり',
+      '「嫌だ」'
+    ];
+    const quads = [
+      inkColumn(200, 272, 100, lines[0], 64),
+      inkColumn(100, 172, 100, lines[1], 64),
+      inkColumn(0, 72, 100, lines[2], 64)
+    ];
+    quads[0][2][1] += 14;
+    quads[0][3][1] += 14;
+    quads[2][2][1] += 20;
+    quads[2][3][1] += 20;
+    const block: LayoutBlock = {
+      box: [0, 0, 272, 1500],
+      vertical: true,
+      font_size: 64,
+      lines,
+      lines_coords: quads
+    };
+    const layouts = auto(block);
+    for (const l of layouts) {
+      expect(l.fontSize).toBeCloseTo(64, 9);
+      expect(l.letterSpacing).toBe(0);
+    }
+    lines.forEach((text, i) => {
+      for (let k = 0; k < Array.from(text).length; k++) {
+        expect(glyphCentre(layouts[i], k)).toBeCloseTo(100 + (k + 0.5) * 64, 9);
+      }
+    });
+    // alone, the short line's own quad would have made it 12% too large
+    const [alone] = auto({ ...block, lines: [lines[2]], lines_coords: [quads[2]] });
+    expect(alone.fontSize).toBeGreaterThan(64 * 1.1);
+  });
+
+  it('a short bracketed line is as large as the body text, not two thirds of it', () => {
+    // measured on a real page: 「嫌だ」 in a 77 × 174 quad beside 64px text.
+    // main / count is 43.5px.
+    const block: LayoutBlock = {
+      box: [0, 0, 77, 174],
+      vertical: true,
+      font_size: 70,
+      lines: ['「嫌だ」'],
+      lines_coords: [column(0, 77, 0, 174)]
+    };
+    const [l] = auto(block);
+    expect(l.fontSize).toBeGreaterThan(64 * 0.95);
+    expect(l.fontSize).toBeLessThan(64 * 1.05);
+  });
+
+  it('a line in a smaller size than its block closes up: negative spacing within the clamp', () => {
+    // a 36px aside beside 40px body text: the block renders at one size (40),
+    // the aside on its own pitch
+    const lines = ['あいうえおかきくけこさしすせそ', 'たちつてとなにぬねの'];
+    const block: LayoutBlock = {
+      box: [100, 0, 190, 700],
+      vertical: true,
+      font_size: 40,
+      lines,
+      lines_coords: [inkColumn(150, 190, 0, lines[0], 40), inkColumn(100, 140, 0, lines[1], 36)]
+    };
+    const [, c] = auto(block);
+    expect(c.fontSize).toBeCloseTo(40, 9);
+    expect(c.letterSpacing).toBeCloseTo(-4, 9);
+    for (let k = 0; k < 10; k++) expect(glyphCentre(c, k)).toBeCloseTo((k + 0.5) * 36, 9);
+  });
+
+  it('TRACKED text — glyphs on a step wider than they are — is flush with the quad’s ends', () => {
+    // 四三二一 across a contents page: 77px glyphs on a 145px step
+    const block: LayoutBlock = {
+      box: [0, 0, 504, 77],
+      vertical: false,
+      font_size: 77,
+      lines: ['四三二一'],
+      lines_coords: [column(0, 504, 0, 77)]
+    };
+    const [l] = auto(block);
+    expect(l.fontSize).toBe(77);
+    const step = l.fontSize + l.letterSpacing;
+    expect(step).toBeCloseTo((504 - 77 * 0.9) / 3, 9);
+    // first ink at the quad's start, last ink at its end
+    expect(l.left + l.inset + 0.05 * 77).toBeCloseTo(0, 9);
+    expect(l.left + l.inset + 3 * step + 77 * 0.95).toBeCloseTo(504, 9);
+  });
+
+  it('a half-width mixed line keeps its narrow advances: tracking is per character', () => {
     const mixed: LayoutBlock = {
       box: [100, 0, 140, 240],
       vertical: true,
@@ -1199,11 +1332,13 @@ describe('layoutLines on the uniform grid', () => {
     };
     const [l] = auto(mixed);
     expect(l.fontSize).toBe(40); // capped by the quad's thickness
-    // 4 fullwidth + 2 digits at 0.55em = 5.1em = 204px of text in 240px
-    expect(l.letterSpacing).toBeCloseTo(36 / 6, 9);
-    expect(l.inset).toBeCloseTo(3, 9);
-    // the run ends exactly half a spacing short of the quad's end
-    expect(l.inset + 204 + 5 * l.letterSpacing).toBeCloseTo(240 - l.inset, 9);
+    // 4 fullwidth + 2 digits at 0.55em = 5.1em of 40px glyphs, whose ink
+    // (第 0.05, す 0.10 short of their cells) spans the quad: the rest of the
+    // length is the tracking between the six characters
+    expect(l.letterSpacing).toBeCloseTo((240 - 40 * (5.1 - 0.05 - 0.1)) / 5, 9);
+    expect(l.inset).toBeCloseTo(-0.05 * 40, 9);
+    // the last glyph's ink ends where the quad does
+    expect(l.inset + 5.1 * 40 + 5 * l.letterSpacing - 0.1 * 40).toBeCloseTo(240, 9);
   });
 
   it('gives up outside the clamps: two characters in a quad drawn around a whole column', () => {
@@ -1241,14 +1376,17 @@ describe('layoutLines on the uniform grid', () => {
     };
     const [a, b] = auto(stacked);
     expect(a).toMatchObject({ fontSize: 40, top: 0, letterSpacing: 0, inset: 0 });
-    expect(b).toMatchObject({ fontSize: 40, top: 220, letterSpacing: 0, inset: 0 });
+    // B's grid (2px a glyph) reaches nothing, and stays
+    expect(b).toMatchObject({ fontSize: 40, top: 220 });
+    expect(b.letterSpacing).toBeGreaterThan(0);
+    expect(b.letterSpacing).toBeLessThan(3);
     // …and alone, the same line does take the grid
     const alone = {
       ...stacked,
       lines: [stacked.lines[0]],
       lines_coords: [column(100, 140, 0, 300)]
     };
-    expect(auto(alone)[0].letterSpacing).toBe(20);
+    expect(auto(alone)[0].letterSpacing).toBeCloseTo((300 - 40 * (1 - 0.11 - 0.1)) / 4 - 40, 9);
   });
 
   it('wrapped, banded and hidden lines carry no spacing and no rotation', () => {
@@ -1323,11 +1461,11 @@ describe('layoutLines with tilted quads', () => {
       expect(l.left + l.width / 2).toBeCloseTo(500 - block.box[0], 9);
       expect(l.top + l.height / 2).toBeCloseTo(400 - block.box[1], 9);
       expect(l.wrap).toBe(false);
-      // sized from the quad's OWN extents, not its inflated bbox: 6 glyphs at
-      // 50px in 360px → 10px of spacing
+      // sized from the quad's OWN extents, not its inflated bbox: 6 katakana
+      // 50px thick in 360px of ink — tracked, flush with both ends
       expect(l.fontSize).toBeCloseTo(50, 9);
-      expect(l.letterSpacing).toBeCloseTo(10, 9);
-      expect(l.inset).toBeCloseTo(5, 9);
+      expect(l.letterSpacing).toBeCloseTo((360 - 50 * (1 - 0.12 - 0.1)) / 5 - 50, 9);
+      expect(l.inset).toBeCloseTo(-0.12 * 50, 9);
     }
   );
 
@@ -1339,6 +1477,30 @@ describe('layoutLines with tilted quads', () => {
     expect(l.height).toBeCloseTo(50, 9);
     expect(l.left + l.width / 2).toBeCloseTo(500 - block.box[0], 9);
     expect(l.top + l.height / 2).toBeCloseTo(400 - block.box[1], 9);
+  });
+
+  it('corner noise on a short line is not a rotation: 2.4° over 243px stays upright', () => {
+    // a five-glyph shout, level in print, whose detector quad reads 2.4°
+    const quad = tilted(500, 400, 64, 243, 2.4);
+    const block: LayoutBlock = {
+      box: boxOf([quad]),
+      vertical: true,
+      font_size: 64,
+      lines: ['「だめだ！」'],
+      lines_coords: [quad]
+    };
+    const [l] = auto(block);
+    expect(l.rotation).toBe(0);
+    expect(l.top).toBe(0);
+    // …while a real 5° slant on a long column turns
+    const long = tilted(500, 400, 64, 600, 5);
+    const [turned] = auto({
+      ...block,
+      box: boxOf([long]),
+      lines: ['あいうえおかきくけ'],
+      lines_coords: [long]
+    });
+    expect(turned.rotation).toBeCloseTo(5, 9);
   });
 
   it('a tilt inside the dead band changes nothing at all', () => {

@@ -643,29 +643,51 @@ must not break. Highlights:
 `positionPerLine` action snaps it onto its target with a measured transform (never
 `position: absolute` — issue #254, Yomitan's cross-line scan).
 
-- **Uniform grid, no per-character spans.** Japanese print is fixed-pitch, so auto mode
-  ignores producer `char_offsets` and spreads the line's single text node over the quad with
-  `letter-spacing = (main extent − natural advance) / characters`, the run inset by half a
-  spacing so each glyph is centred in its step (`gridSpacing` in `line-grid.ts`). Outside
-  −0.35…1.5 em the quad or the text is wrong and the line renders unspaced, as before.
-  Wrapped/banded/hidden lines are never spaced.
-- **Rotation.** A clean line whose quad is tilted ≥ 2° renders in the quad's own frame:
+- **Fixed-pitch grid, no per-character spans.** Japanese print is fixed-pitch, so auto mode
+  ignores producer `char_offsets` and steps the line's single text node at a PITCH with
+  `letter-spacing` (`gridSpacing` in `line-grid.ts`). The pitch is NOT `main / count`:
+  - **Ink insets** (`glyph-insets.ts`, `inkInsets(text, vertical)` → `{ lead, trail }`). A
+    detector's quad hugs the INK; a trailing `。、` inks a third of its cell, `」` its first
+    third, `「` its last, a lone `一` in a column the middle. A quad spanning the ink covers
+    `advance − lead − trail` cells, and the first CELL starts `lead` ems BEFORE the quad — so
+    `LineLayout.inset` is usually negative. The table is calibrated on print (evidence in the
+    module's doc comment); tune it there, with measurements.
+  - **Tracked text.** When the solid pitch exceeds the quad's thickness, the glyphs are as
+    big as the quad is thick and the rest of the length is per-character tracking
+    (`ownPitch`): the run is flush with the quad's ends, not centred in n equal shares.
+  - **Block-shared pitch** (`linePitches`). The clean lines of a block vote (glyph-count
+    weighted median, lines of ≥ 4 cells first); a line takes the block's pitch when its ink
+    would then end within `PITCH_TOLERANCE_CELLS` (0.75, absolute — not a percentage) of its
+    quad's end, ANCHORED AT ITS START. Lines that do not fit vote again among themselves
+    (ruby vs base text, a heading). Font size follows the pitch (cross-capped,
+    block-uniform as before), so `「嫌だ」` is as large as the body text beside it.
+- **Where the grid gives up.** Outside −0.35…1.5 em of spacing the quad or the text is wrong
+  and the line renders unspaced, as before. Wrapped/banded/hidden lines are never spaced.
+  The measurer and the line spans both run with kerning off.
+- **Rotation.** A clean line whose quad is tilted renders in the quad's own frame:
   `translate(…) rotate(θ)` about the centre of a main × cross box (`lineFrame`,
-  `lineTransform`). θ is CSS-clockwise, in (−90°, 90°]. The browser hit-tests the turned
-  glyphs, so pop-up dictionaries scan along the slant. A rotated line is never clipped or
-  wrapped; one that would cross another clean line falls back to the upright layout.
+  `lineTransform`). The dead band is length-aware: |θ| ≥ 2° AND the tilt must carry the
+  line's end across more than `TILT_MIN_SHIFT` (0.35) of its thickness
+  (`|sin θ| · main > 0.35 · cross`) — corner noise reads 2–11° on short lines that are level
+  in print. `LineFrame.tilt` keeps the measured angle for the editor's quad operations. θ is
+  CSS-clockwise, in (−90°, 90°]. The browser hit-tests the turned glyphs, so pop-up
+  dictionaries scan along the slant. A rotated line is never clipped or wrapped; one that
+  would cross another clean line falls back to the upright layout.
 - **Original mode** is the diagnostic view of the file's `char_offsets`: `.ocr-char` cells,
   as-is (rotated too). Manual sizes use neither.
 - **The OCR editor agrees** (`EditableBlock.svelte`, geometry in
-  `src/lib/reader/edit/block-geometry.ts`): a positioned line is one text node on the same
-  grid (letter-spacing + a half-spacing `text-indent`), centred across its quad, and a tilted
-  quad is the own-frame box with `rotate(θ)` — also while its contenteditable is open. Cells
-  only in `original`. It sizes each line on its OWN quad and RAW text (whole px), not by the
-  viewer's block-wide vote. Line ops keep the tilt: move translates, resize drags one edge
-  in the quad's frame (`resizeQuadEdge`), an inserted line is its neighbour in that frame;
-  `resizeLine` squares up only UPRIGHT quads.
-- Real-browser coverage: `e2e/line-grid.spec.ts` (grid, rotation, hit-testing, editing a
-  tilted line), `e2e/char-offsets.spec.ts` (original mode, viewer and editor).
+  `src/lib/reader/edit/block-geometry.ts`): `blockLineGeometries` runs the SAME
+  `linePitches` vote over the block's lines, and a positioned line is one text node on that
+  pitch (letter-spacing + the start inset as `text-indent`), centred across its quad; a
+  tilted quad is the own-frame box with `rotate(θ)` — also while its contenteditable is
+  open. Cells only in `original`. It sizes each line from its pitch and RAW text (whole px),
+  not by the viewer's block-uniform size. Line ops keep the tilt: move translates, resize
+  drags one edge in the quad's frame (`resizeQuadEdge`), an inserted line is its neighbour
+  in that frame; `resizeLine` squares up only UPRIGHT quads.
+- Real-browser coverage: `e2e/novel-grid.spec.ts` (a canvas-drawn novel page whose quads are
+  measured off the drawn ink: glyph-on-cell drift, body-sized short lines, pointer-on-print
+  hit-testing), `e2e/line-grid.spec.ts` (grid, rotation, hit-testing, turned cells, editing
+  a tilted line), `e2e/char-offsets.spec.ts` (original mode, viewer and editor).
 
 ### Cloud covers
 

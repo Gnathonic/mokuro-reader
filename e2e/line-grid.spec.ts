@@ -4,16 +4,18 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The uniform grid and rotation (src/lib/reader/line-grid.ts) in a REAL layout
- * engine. jsdom lays nothing out, so only here can it be shown that
- * `letter-spacing` + a half-step inset really centres every glyph in its grid
+ * The fixed-pitch grid and rotation (src/lib/reader/line-grid.ts) in a REAL
+ * layout engine. jsdom lays nothing out, so only here can it be shown that
+ * `letter-spacing` + the start inset really centres every glyph in its grid
  * step, that a tilted line lands on its quad, and — the point of rotating at
  * all — that the browser's own hit-testing (elementFromPoint,
  * caretRangeFromPoint: what Yomitan scans with) follows the turned text.
  *
- * The page image carries the "print": each line's text drawn on the uniform
- * grid of its quad, in the quad's own turned frame, with the quad outlined —
- * so the screenshots show the overlay against what it is supposed to cover.
+ * The page image carries the "print": each line's text drawn one glyph per
+ * step in a box of CELLS, in that box's own turned frame. The file's quad is
+ * what a detector would draw around it: it hugs the INK (`hug`), so it starts
+ * and ends inside the first and last cells. Both are outlined, so the
+ * screenshots show the overlay against what it is supposed to cover.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -34,6 +36,9 @@ interface FixtureBlock {
   lines: string[];
   lines_coords: Quad[];
   char_offsets?: (number[] | null)[];
+  /** NOT file data (stripped before seeding): the boxes of cells the print is
+   * drawn in, one per line — what every expectation below is measured against. */
+  cells: Quad[];
 }
 interface FixturePage {
   version: string;
@@ -69,41 +74,100 @@ function boxOf(quads: Quad[]): [number, number, number, number] {
   const ys = quads.flat().map((p) => p[1]);
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
-function block(vertical: boolean, fontSize: number, lines: string[], quads: Quad[]): FixtureBlock {
-  return { box: boxOf(quads), vertical, font_size: fontSize, lines, lines_coords: quads };
+/** The print's glyphs of a line: a pair of digits in a vertical line is set
+ * tate-chu-yoko — side by side, upright, in ONE step. */
+const printGlyphs = (line: string, vertical: boolean) =>
+  vertical ? line.match(/[0-9]{2}|./gu)! : [...line];
+/** Ink-free share of an em at the start / end of a glyph's cell. The fixture's
+ * own copy (kana and katakana are all it draws at line ends) — what the
+ * detector's quad leaves out must not come from the code under test. */
+const INK: Record<string, [number, number]> = { hiragana: [0.11, 0.1], katakana: [0.12, 0.1] };
+const inkOf = (ch: string) => INK[ch >= '\u30a0' && ch <= '\u30ff' ? 'katakana' : 'hiragana'];
+/**
+ * The quad a detector draws around a line printed in the box `cells`: the
+ * glyphs are `em` big (no bigger than the box is thick), centred in their
+ * steps, and the quad runs from the first glyph's ink to the last one's.
+ */
+function hug(cells: Quad, line: string, vertical: boolean): Quad {
+  const glyphs = printGlyphs(line, vertical);
+  const [p0, p1, p2, p3] = cells;
+  const mid = (a: Point, b: Point): Point => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const [from, to] = vertical ? [mid(p0, p1), mid(p2, p3)] : [mid(p0, p3), mid(p1, p2)];
+  const main = Math.hypot(to[0] - from[0], to[1] - from[1]);
+  const cross = vertical
+    ? Math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+    : Math.hypot(p3[0] - p0[0], p3[1] - p0[1]);
+  const step = main / glyphs.length;
+  const em = Math.min(cross, step);
+  const axis: Point = [(to[0] - from[0]) / main, (to[1] - from[1]) / main];
+  const start = (step - em) / 2 + inkOf(glyphs[0])[0] * em;
+  const end = (step - em) / 2 + inkOf(glyphs[glyphs.length - 1])[1] * em;
+  const shift = (p: Point, d: number): Point => [p[0] + axis[0] * d, p[1] + axis[1] * d];
+  return vertical
+    ? [shift(p0, start), shift(p1, start), shift(p2, -end), shift(p3, -end)]
+    : [shift(p0, start), shift(p1, -end), shift(p2, -end), shift(p3, start)];
+}
+/** @param quads the file's quads, when they are NOT the ink-hugging ones */
+function block(
+  vertical: boolean,
+  fontSize: number,
+  lines: string[],
+  cells: Quad[],
+  quads: Quad[] = cells.map((c, i) => hug(c, lines[i], vertical))
+): FixtureBlock {
+  return { box: boxOf(cells), vertical, font_size: fontSize, lines, lines_coords: quads, cells };
 }
 
 const KANA8 = 'あいうえおかきく';
-// 8 fullwidth glyphs at 40px are 320px; the quad is 25% longer.
+// 8 fullwidth glyphs at 40px are 320px; they are tracked out over 400px.
 const V_LOOSE = block(true, 40, [KANA8], [upright(300, 300, 340, 700)]);
 const H_LOOSE = block(false, 40, [KANA8], [upright(500, 300, 900, 340)]);
-// Two half-width digits among fullwidth characters.
+// Two half-width digits among fullwidth characters. The quad is the box
+// itself: a loose detector, and the text cannot match the print glyph for
+// glyph anyway (the print sets 12 upright in one cell).
 const MIXED = '第12話ですよ';
-const V_MIXED = block(true, 40, [MIXED], [upright(300, 900, 340, 1200)]);
-const H_MIXED = block(false, 40, [MIXED], [upright(500, 900, 800, 940)]);
+const V_MIXED_BOX = [upright(300, 900, 340, 1200)];
+const V_MIXED = block(true, 40, [MIXED], V_MIXED_BOX, V_MIXED_BOX);
+const H_MIXED_BOX = [upright(500, 900, 800, 940)];
+const H_MIXED = block(false, 40, [MIXED], H_MIXED_BOX, H_MIXED_BOX);
 // SFX-like tilted lines: 6 glyphs at 50px in a 50 × 360 quad.
 const SFX = 'ドドドドドド';
-const ROT_20 = block(true, 50, [SFX], [tilted(450, 1700, 50, 360, 20)]);
+// …the first with char_offsets (from the QUAD's start, which is 11px into the
+// first 60px cell): original mode draws its cells, turned with the line.
+const ROT_20: FixtureBlock = {
+  ...block(true, 50, [SFX], [tilted(450, 1700, 50, 360, 20)]),
+  char_offsets: [[0, 49, 109, 169, 229, 289, 339]]
+};
 const ROT_M35 = block(true, 50, [SFX], [tilted(950, 1700, 50, 360, -35)]);
 const H_ROT_M15 = block(false, 50, [SFX], [tilted(1300, 650, 360, 50, -15)]);
-// An ordinary upright balloon. Lines 0 and 1 fill their quads exactly (no
-// spacing at all: the previous build's output, to the pixel); line 2 has 10px
-// of slack. Carries char_offsets, which auto mode must ignore.
+// An ordinary upright balloon, set solid at 40px: every line fills its cells
+// exactly (no spacing at all: the previous build's glyph positions, to the
+// pixel). The detector drew line 2's quad 10px too LONG — the block's pitch,
+// anchored at the line's start, must not stretch the line over it. Carries
+// char_offsets, which auto mode must ignore.
+const BALLOON_LINES = ['あいうえおかきく', 'かきくけこさ', 'さしすせそ'];
+const BALLOON_CELLS = [
+  upright(1300, 1100, 1340, 1420),
+  upright(1250, 1100, 1290, 1340),
+  upright(1200, 1100, 1240, 1300)
+];
+const BALLOON_SLACK = 10;
 const BALLOON: FixtureBlock = {
   ...block(
     true,
     40,
-    ['あいうえおかきく', 'かきくけこさ', 'さしすせそ'],
-    [
-      upright(1300, 1100, 1340, 1420),
-      upright(1250, 1100, 1290, 1340),
-      upright(1200, 1100, 1240, 1310)
-    ]
+    BALLOON_LINES,
+    BALLOON_CELLS,
+    BALLOON_CELLS.map((c, i) => {
+      const quad = hug(c, BALLOON_LINES[i], true);
+      if (i === 2) quad[2][1] = quad[3][1] += BALLOON_SLACK;
+      return quad;
+    })
   ),
   char_offsets: [
     Array.from({ length: 9 }, (_, k) => 40 * k),
     Array.from({ length: 7 }, (_, k) => 40 * k),
-    Array.from({ length: 6 }, (_, k) => 42 * k)
+    Array.from({ length: 6 }, (_, k) => 40 * k)
   ]
 };
 // A quad thicker than its text (56px around 40px glyphs), as detector quads
@@ -141,15 +205,20 @@ async function seedVolume(page: Page, pages: FixturePage[], fontSize: string) {
         ctx.fillStyle = '#fff';
         ctx.fillRect(0, 0, p.img_width, p.img_height);
         for (const b of p.blocks) {
-          b.lines_coords.forEach((quad, i) => {
-            // the quad
-            ctx.strokeStyle = '#38bdf8';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            quad.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-            ctx.closePath();
-            ctx.stroke();
-            // the "print": one glyph per uniform step, in the quad's frame
+          b.cells.forEach((quad, i) => {
+            // the box of cells (pale) and the file's ink-hugging quad
+            for (const [outline, colour] of [
+              [quad, '#bae6fd'],
+              [b.lines_coords[i], '#38bdf8']
+            ] as const) {
+              ctx.strokeStyle = colour;
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              outline.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+              ctx.closePath();
+              ctx.stroke();
+            }
+            // the "print": one glyph per step of the box, in the box's frame
             const mid = (a: number[], c: number[]) => [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2];
             const [p0, p1, p2, p3] = quad;
             const [from, to] = b.vertical ? [mid(p0, p1), mid(p2, p3)] : [mid(p0, p3), mid(p1, p2)];
@@ -193,7 +262,12 @@ async function seedVolume(page: Page, pages: FixturePage[], fontSize: string) {
         character_count: counts.reduce((a, c) => a + c, 0),
         page_char_counts: counts.map((n) => (total += n))
       });
-      await db.volume_ocr.put({ volume_uuid: VOLUME_UUID, pages });
+      // `cells` is the fixture's, not the file's
+      const filePages = pages.map((p) => ({
+        ...p,
+        blocks: p.blocks.map(({ cells: _cells, ...fileBlock }) => fileBlock)
+      }));
+      await db.volume_ocr.put({ volume_uuid: VOLUME_UUID, pages: filePages });
       await db.volume_files.put({ volume_uuid: VOLUME_UUID, files });
       const { updateSetting } = await import('/src/lib/settings/index.ts');
       updateSetting('continuousScroll', false);
@@ -392,7 +466,7 @@ test.describe('line grid — auto mode', () => {
   // fit-to-screen page is ~0.4x and its glyphs are unreadable in a 1x capture.
   test.use({ deviceScaleFactor: 3 });
 
-  test('(1) uniform grid: every glyph centred in its step, vertical and horizontal; mixed widths stay inside', async ({
+  test('(1) fixed-pitch grid: every glyph centred in its step, vertical and horizontal; mixed widths stay inside', async ({
     page
   }) => {
     await seedVolume(page, [PAGE], 'auto');
@@ -404,11 +478,12 @@ test.describe('line grid — auto mode', () => {
       ['horizontal', H_LOOSE]
     ] as const) {
       const line = findBlock(measured, b).lines[0];
-      const { axis, main } = frameOf(b.lines_coords[0], b.vertical);
+      const { axis, main } = frameOf(b.cells[0], b.vertical);
       const n = line.glyphs.length;
       expect(n).toBe(8);
       expect(line.fontSize).toBeCloseTo(40, 3);
-      // (400 - 8 × 40) / 8
+      // 40px glyphs on the print's 50px step, recovered from a quad that
+      // spans only the INK: 400px of cells less the ends of the end cells
       expect(line.letterSpacing).toBeCloseTo(10, 1);
       // The premise of inkCentre(): a character's Range rect is its advance
       // PLUS the trailing spacing.
@@ -417,18 +492,18 @@ test.describe('line grid — auto mode', () => {
 
       const errors = line.glyphs.map((glyph, k) => {
         const ink = inkCentre(glyph, axis, line.letterSpacing);
-        const cell = cellCentre(b.lines_coords[0], b.vertical, k, n);
+        const cell = cellCentre(b.cells[0], b.vertical, k, n);
         return (ink[0] - cell[0]) * axis[0] + (ink[1] - cell[1]) * axis[1];
       });
       console.log(
-        `[line-grid] ${name} loose line (quad ${main}px, natural run ${n * line.fontSize}px): ` +
+        `[line-grid] ${name} loose line (cells ${main}px, natural run ${n * line.fontSize}px): ` +
           `letter-spacing ${line.letterSpacing.toFixed(2)}px; glyph-vs-cell centre error ` +
           `max ${Math.max(...errors.map(Math.abs)).toFixed(2)}px [${errors.map((e) => e.toFixed(2)).join(' ')}]`
       );
       for (const e of errors) expect(Math.abs(e)).toBeLessThanOrEqual(2);
       // and across the line: the glyphs ride the quad's centre line
       const cross = (p: Point) => p[0] * axis[1] - p[1] * axis[0];
-      const quadCentre = frameOf(b.lines_coords[0], b.vertical).centre;
+      const quadCentre = frameOf(b.cells[0], b.vertical).centre;
       for (const glyph of line.glyphs)
         expect(Math.abs(cross(centreOf(glyph)) - cross(quadCentre))).toBeLessThanOrEqual(2);
     }
@@ -446,9 +521,16 @@ test.describe('line grid — auto mode', () => {
         // the INK ends where the rect does, less the trailing spacing
         return [start, start + (b.vertical ? g.h : g.w) - line.letterSpacing];
       });
+      // a glyph's BOX may leave the quad by the ink-free part of its cell
+      // (0.05em before 第, 0.10em after よ) — its ink does not
+      const size = line.fontSize;
       for (const [k, [start, end]] of spans.entries()) {
-        expect(start, `${name} glyph ${k} starts inside the quad`).toBeGreaterThanOrEqual(q0 - 0.5);
-        expect(end, `${name} glyph ${k} ends inside the quad`).toBeLessThanOrEqual(q1 + 0.5);
+        expect(start, `${name} glyph ${k} starts inside the quad`).toBeGreaterThanOrEqual(
+          q0 - 0.05 * size - 0.5
+        );
+        expect(end, `${name} glyph ${k} ends inside the quad`).toBeLessThanOrEqual(
+          q1 + 0.1 * size + 0.5
+        );
         if (k)
           expect(start, `${name} glyph ${k} follows glyph ${k - 1}`).toBeGreaterThan(
             spans[k - 1][0]
@@ -458,13 +540,14 @@ test.describe('line grid — auto mode', () => {
       const advance = (k: number) => spans[k][1] - spans[k][0];
       expect(advance(1)).toBeLessThan(advance(0) * 0.8);
       expect(advance(2)).toBeLessThan(advance(0) * 0.8);
-      // and the slack is shared: the ink ends half a spacing short of the quad
-      expect(q1 - spans[spans.length - 1][1]).toBeCloseTo(line.letterSpacing / 2, 0);
-      expect(spans[0][0] - q0).toBeCloseTo(line.letterSpacing / 2, 0);
+      // and the run is flush with the quad: the first glyph's INK starts where
+      // the quad does, the last one's ends where it ends
+      expect(spans[0][0] + 0.05 * size).toBeCloseTo(q0, 0);
+      expect(spans[spans.length - 1][1] - 0.1 * size).toBeCloseTo(q1, 0);
       console.log(
         `[line-grid] ${name} mixed line "${MIXED}": letter-spacing ${line.letterSpacing.toFixed(2)}px, ` +
           `advances [${spans.map((_, k) => advance(k).toFixed(1)).join(' ')}], ` +
-          `ink ${(spans[0][0] - q0).toFixed(2)}px in from the quad start, ${(q1 - spans[spans.length - 1][1]).toFixed(2)}px short of its end`
+          `first box ${(q0 - spans[0][0]).toFixed(2)}px before the quad start, last box ${(spans[spans.length - 1][1] - q1).toFixed(2)}px past its end`
       );
     }
 
@@ -490,7 +573,8 @@ test.describe('line grid — auto mode', () => {
       ['vertical -35°', ROT_M35, -35],
       ['horizontal -15°', H_ROT_M15, -15]
     ] as const) {
-      const quad = b.lines_coords[0];
+      // the box of cells the print is drawn in; the file's quad hugs its ink
+      const quad = b.cells[0];
       const line = findBlock(measured, b).lines[0];
       const { centre, axis } = frameOf(quad, b.vertical);
       const n = line.glyphs.length;
@@ -501,9 +585,9 @@ test.describe('line grid — auto mode', () => {
       expect(turn, line.transform).not.toBeNull();
       expect(Number(turn![1])).toBeCloseTo(degrees, 4);
 
-      // The span's box runs from half a spacing past the quad's start to half
-      // a spacing past its end (the trailing spacing of the last glyph), so
-      // its centre sits that far along the axis; the INK is centred on the quad.
+      // The span's box runs from half a spacing past the cells' start to half
+      // a spacing past their end (the trailing spacing of the last glyph), so
+      // its centre sits that far along the axis; the INK is centred on them.
       const half = line.letterSpacing / 2;
       const spanCentre = centreOf(line.box);
       const spanError = distance(spanCentre, [
@@ -721,42 +805,71 @@ test.describe('line grid — auto mode', () => {
       }
     // original mode is the diagnostic view of the file's offsets: cells there
     await setFontSize(page, 'original');
-    await expect(page.locator('.ocr-char')).toHaveCount(BALLOON.lines.join('').length);
+    await expect(page.locator('.ocr-char')).toHaveCount(BALLOON.lines.join('').length + SFX.length);
+    // …turned with their line: the +20° SFX carries offsets, and its cells
+    // land on the print's turned steps
+    const turned = await page.evaluate((box) => {
+      const pageEl = document.querySelector<HTMLElement>('[data-page-index="0"]')!;
+      const origin = pageEl.getBoundingClientRect();
+      const scale = origin.width / pageEl.offsetWidth;
+      const textBox = [...pageEl.querySelectorAll<HTMLElement>('.textBox')].find(
+        (el) =>
+          Math.abs(parseFloat(el.style.left) - box[0]) < 0.01 &&
+          Math.abs(parseFloat(el.style.top) - box[1]) < 0.01
+      )!;
+      const line = textBox.querySelector<HTMLElement>('.ocr-line')!;
+      return {
+        transform: line.style.transform,
+        centres: [...line.querySelectorAll<HTMLElement>('.ocr-char')].map((cell) => {
+          const r = cell.getBoundingClientRect();
+          return [
+            (r.left + r.width / 2 - origin.left) / scale,
+            (r.top + r.height / 2 - origin.top) / scale
+          ] as [number, number];
+        })
+      };
+    }, ROT_20.box);
+    expect(turned.transform).toContain('rotate(20deg)');
+    expect(turned.centres).toHaveLength(SFX.length);
+    // the file's first and last cells are cut short by the quad's ends (49 and
+    // 50px of a 60px step), so their glyphs sit up to 5.5px off the print's
+    turned.centres.forEach((centre, k) =>
+      expect(
+        distance(centre, cellCentre(ROT_20.cells[0], true, k, SFX.length))
+      ).toBeLessThanOrEqual(7)
+    );
   });
 
-  test('(5) upright lines stay where the previous build put them', async ({ page }) => {
+  test('(5) upright lines set solid stay where the previous build put them; a quad that ends late does not stretch its line', async ({
+    page
+  }) => {
     await seedVolume(page, [PAGE], 'auto');
     await openReader(page);
     const lines = findBlock(await measure(page), BALLOON).lines;
 
     const report: string[] = [];
-    BALLOON.lines_coords.forEach((quad, i) => {
+    BALLOON.cells.forEach((cells, i) => {
       const line = lines[i];
-      const [x0, y0] = quad[0];
-      const x1 = quad[1][0];
-      // The previous build, from the fixture alone: one size per balloon (the
-      // 40px the full lines fit at), the column centred on its quad, anchored
-      // at the quad's top.
+      const [x0, y0] = cells[0];
+      const x1 = cells[1][0];
+      // The previous build, from the print alone: one size per balloon (the
+      // 40px the lines are set at), the column centred on its quad, every
+      // glyph box on its cell — not a pixel of difference, and no spacing.
       expect(line.fontSize).toBeCloseTo(40, 3);
+      expect(line.letterSpacing).toBeCloseTo(0, 3);
       expect(line.transform).not.toContain('rotate');
       expect(line.transformOrigin).toBe('');
       expect(line.box.x + line.box.w / 2).toBeCloseTo((x0 + x1) / 2, 1);
       expect(line.box.w).toBeCloseTo(40, 1);
-      const slack = quad[2][1] - y0 - line.glyphs.length * 40;
-      if (slack === 0) {
-        // text that fills its quad: not a pixel of difference
-        expect(line.letterSpacing).toBe(0);
-        expect(line.box.y).toBeCloseTo(y0, 1);
-        expect(line.box.h).toBeCloseTo(line.glyphs.length * 40, 1);
-        line.glyphs.forEach((glyph, k) => expect(glyph.y).toBeCloseTo(y0 + 40 * k, 1));
-      } else {
-        // 10px of slack over 5 characters: the grid, and only the grid, moves it
-        expect(line.letterSpacing).toBeCloseTo(slack / line.glyphs.length, 1);
-        expect(line.box.y).toBeCloseTo(y0 + slack / line.glyphs.length / 2, 1);
-      }
+      expect(line.box.h).toBeCloseTo(line.glyphs.length * 40, 1);
+      // Line 2's quad runs 10px past its ink. Stretched over it (the previous
+      // build: 2px more per glyph) its last glyph would sit 8px late; on the
+      // block's pitch, anchored at its start, it is on its cell like the rest.
+      line.glyphs.forEach((glyph, k) => expect(glyph.y).toBeCloseTo(y0 + 40 * k, 1));
       report.push(
-        `line ${i}: x-centre ${(line.box.x + line.box.w / 2).toFixed(2)} (quad ${(x0 + x1) / 2}), ` +
-          `top ${line.box.y.toFixed(2)} (quad ${y0}), letter-spacing ${line.letterSpacing}px`
+        `line ${i}: x-centre ${(line.box.x + line.box.w / 2).toFixed(2)} (cells ${(x0 + x1) / 2}), ` +
+          `top ${line.box.y.toFixed(2)} (cells ${y0}, quad ${BALLOON.lines_coords[i][0][1].toFixed(1)}), ` +
+          `letter-spacing ${line.letterSpacing}px`
       );
     });
     console.log(`[line-grid] upright balloon: ${report.join('; ')}`);
@@ -903,7 +1016,7 @@ test.describe('line grid — editor', () => {
       ['fat quad', V_FAT]
     ] as const) {
       const line = await measureEditorLine(page, b);
-      const quad = b.lines_coords[0];
+      const quad = b.cells[0];
       const n = line.glyphs.length;
       expect(line.childNodes).toBe(1);
       expect(line.cells).toBe(0);
@@ -1035,7 +1148,10 @@ test.describe('line grid — editor', () => {
     saved = await savedBlock(page, INDEX);
     const grown = frameOf(saved.quad, true);
     expect(tiltOf(saved.quad)).toBeCloseTo(20, 3);
-    expect(grown.main).toBeCloseTo(360 + (PULL / scale) * Math.cos((20 * Math.PI) / 180), 1);
+    expect(grown.main).toBeCloseTo(
+      frameOf(quad0, true).main + (PULL / scale) * Math.cos((20 * Math.PI) / 180),
+      1
+    );
     // the head of the line stayed put
     expect(distance(grown.from, end.from)).toBeLessThan(0.01);
     console.log(

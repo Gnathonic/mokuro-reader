@@ -228,14 +228,20 @@ describe('EditOverlay — line-centric rendering', () => {
     const block = container.querySelectorAll<HTMLElement>('.editBlock')[0];
     const lines = block.querySelectorAll<HTMLElement>('.line.positioned');
     expect(lines).toHaveLength(13);
-    // horizontal quad 0: 541 long, 8 chars → fitted 68px, not the 99px thickness
+    // horizontal quad 0: 541 long, 8 chars → sized by its pitch, not the 99px
+    // thickness. On its own that is 69px (541 over 7.79 cells of ink); the
+    // block's other row of the same print size (quad 11, 500 long: 64px) is
+    // within three quarters of a cell of it, so the two share ONE pitch
     expect(lines[0].style.writingMode).toBe('horizontal-tb');
-    expect(lines[0].style.fontSize).toBe('68px');
+    expect(lines[0].style.fontSize).toBe('64px');
+    expect(lines[11].style.fontSize).toBe('64px');
     expect(lines[0].style.left).toBe('40px'); // 800 - box left 760
     expect(lines[0].style.top).toBe('6px');
-    // vertical quad 1: 252 long, 8 chars → fitted 32px, not the 44px thickness
+    // vertical quad 1: 252 long, 8 chars → 32px on its own, 33px on the pitch
+    // it shares with quad 4 (260 long) — not the 44px thickness
     expect(lines[1].style.writingMode).toBe('vertical-rl');
-    expect(lines[1].style.fontSize).toBe('32px');
+    expect(lines[1].style.fontSize).toBe('33px');
+    expect(lines[4].style.fontSize).toBe('33px');
     // a fat mis-detected quad (7: 40×500) never explodes: 500/8 → 63 capped at 40
     expect(lines[7].style.fontSize).toBe('40px');
     // nothing clips: the container and the block let lines overflow

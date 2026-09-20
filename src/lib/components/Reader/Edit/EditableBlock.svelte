@@ -36,9 +36,10 @@
    * A line is drawn the way the viewer draws it (`line-grid.ts`): centred
    * ACROSS its quad (one line box as thick as the quad — the text is usually
    * thinner than the quad the detector drew), its text
-   * ONE text node on the quad's uniform grid — letter-spacing stretches the
-   * run over the quad's length, a text-indent of half a spacing centres each
-   * glyph in its step — and a TILTED quad shows the line turned: the element
+   * ONE text node on the line's fixed-pitch grid — letter-spacing steps the
+   * run at the block's pitch, a (usually negative) text-indent starts it where
+   * the first glyph's ink meets the quad's start edge, the cell a little
+   * before it — and a TILTED quad shows the line turned: the element
    * is the quad's own-frame box with `rotate(θ)` about its centre, also while
    * its editor is open (a caret and an IME work inside a transformed
    * contenteditable like anywhere else; hit-testing follows the turn, so a
@@ -67,6 +68,7 @@
   import type { Block } from '$lib/types';
   import type { EditSession, GestureMark } from '$lib/reader/edit/edit-session.svelte';
   import {
+    blockLineGeometries,
     lineGeometry,
     lineGrid,
     lineHandlePoints,
@@ -116,11 +118,12 @@
   let height = $derived(block.box[3] - block.box[1]);
 
   /** Quads parallel to the lines → positioned rendering; otherwise flow. */
-  // Sized by the FITTED size (text fills the quad's length, capped by its
+  // Sized by the PITCH (the quad's length over the cells its ink spans, shared
+  // by the lines of the block as in the viewer, capped by the quad's
   // thickness) — a mis-detected fat quad must not explode across the page.
   let geoms = $derived<LineGeometry[] | null>(
     block.lines_coords && block.lines_coords.length === block.lines.length
-      ? block.lines_coords.map((q, i) => lineGeometry(q, block.lines[i]))
+      ? blockLineGeometries(block.lines_coords, block.lines)
       : null
   );
   /**
@@ -162,7 +165,7 @@
   });
 
   /**
-   * The uniform grid per line, for the text the line SHOWS: the RAW one (a
+   * The fixed-pitch grid per line, for the text the line SHOWS: the RAW one (a
    * plain line has always shown the raw text, at a size fitted to it). While
    * the editor is open it stays what the committed text gave — opening the
    * editor must not make the text jump, and the draft is not reactive; the
@@ -835,6 +838,8 @@
     box-sizing: border-box;
     line-height: 1;
     letter-spacing: 0;
+    /* as the viewer's line: fixed-pitch text, measured unkerned */
+    font-kerning: none;
     /* grows along its writing axis as text is typed; never clipped */
   }
   /* The viewer's cell (TextBoxes.svelte): in flow — never absolute, issue #254

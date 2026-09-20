@@ -89,7 +89,7 @@
         // the box; the quads themselves are accurate. Null (no lines_coords,
         // e.g. pre-lines_coords imports) → legacy hover-fit auto below.
         // Auto IGNORES the file's char_offsets ('off'): Japanese print is
-        // fixed-pitch, so every line sits on the uniform grid of its quad —
+        // fixed-pitch, so every line sits on the grid of its block's pitch —
         // one plain text node, the grid as letter-spacing, a tilted quad as a
         // rotation (line-grid.ts). No span per character: the lightest DOM,
         // and the one Yomitan/Migaku are safest with.
@@ -395,8 +395,8 @@
   // zoom-invariant. Both offsetLeft and the target `left` reference the box's
   // padding edge, so `target - offsetLeft` is the exact translate.
   //
-  // The uniform grid and rotation ride the same transform (lineTransform):
-  // the grid's half-step inset is added to the translate, and a tilted line
+  // The fixed-pitch grid and rotation ride the same transform (lineTransform):
+  // the grid's start inset is added to the translate, and a tilted line
   // is laid into its own-frame box and turned about that box's centre. A
   // transform never takes the span out of flow (#254 holds), and the browser
   // hit-tests the TURNED glyphs — elementFromPoint / caretRangeFromPoint, what
@@ -816,15 +816,20 @@
      (not position:absolute) so DOM text scanners read the block as one
      continuous run (#254); a measurement action then translates it onto the
      quad. line-height 1 keeps the column/row no thicker than the font size.
-     letter-spacing 0 is the default only: a line on the uniform grid carries
-     its own as an inline style — (quad length − text advance) / characters —
-     which spreads the ONE text node over the quad with no per-character
-     element; positionPerLine adds the half-step inset and, for a tilted quad,
-     the rotation. */
+     letter-spacing 0 is the default only: a line on the fixed-pitch grid
+     carries its own as an inline style — (pitch − font size) per em of
+     advance — which steps the ONE text node along the line with no
+     per-character element; positionPerLine adds the start inset (the first
+     glyph's cell begins before its ink, so usually negative) and, for a tilted
+     quad, the rotation.
+     font-kerning none: print is fixed-pitch and the measurer measures it that
+     way (createCanvasMeasurer) — a kerned 」「 would come up short of its two
+     cells, in a row at least (columns are not kerned to begin with). */
   .textBox.perLine .ocr-line.positionedLine {
     display: inline-block;
     line-height: 1;
     letter-spacing: 0;
+    font-kerning: none;
     white-space: nowrap;
     /* transform (translate onto the quad, rotate with it) and its origin are
        set by positionPerLine */
