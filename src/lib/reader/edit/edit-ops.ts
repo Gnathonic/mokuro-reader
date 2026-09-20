@@ -4,6 +4,8 @@
  * history and persistence on top; nothing here touches the DOM or Dexie.
  */
 import type { Block, Page } from '$lib/types';
+import { parallelOffsets, reflowOffsets, scaleOffsets } from '../char-offsets';
+import { quadExtents } from '../line-coords-layout';
 import {
   boxContainingQuads,
   clampBox,
@@ -24,6 +26,26 @@ function replaceBlock(page: Page, index: number, block: Block): Page {
   const blocks = page.blocks.slice();
   blocks[index] = block;
   return { ...page, blocks };
+}
+
+/**
+ * `char_offsets` scaled for one line whose quad changed size, by the same
+ * main-axis ratio `resizeBlock`/`resizeLine` apply to font_size. A quad that
+ * cannot vouch for a ratio on either side (rotation collapsed to a line, a
+ * zero-length edge) drops that line's placement rather than scale it by
+ * garbage — the fitted path takes over for that one line.
+ */
+function scaleLineOffsets(
+  entry: number[] | null,
+  oldQuad: number[][],
+  newQuad: number[][],
+  vertical: boolean
+): number[] | null {
+  if (!entry) return null;
+  const oldExtent = quadExtents(oldQuad, vertical);
+  const newExtent = quadExtents(newQuad, vertical);
+  if (!oldExtent || !newExtent || oldExtent.main <= 0) return null;
+  return scaleOffsets(entry, newExtent.main / oldExtent.main);
 }
 
 function area(b: Block): number {
@@ -58,21 +80,43 @@ export function resizeBlock(page: Page, index: number, box: number[]): Page {
   const fromCross = block.vertical ? from[2] - from[0] : from[3] - from[1];
   const toCross = block.vertical ? to[2] - to[0] : to[3] - to[1];
   const ratio = fromCross > 0 ? toCross / fromCross : 1;
-  return replaceBlock(page, index, {
+  const quads = scaleQuads(block.lines_coords, from, to);
+  const next: Block = {
     ...block,
     box: to,
     font_size: Math.max(1, Math.round(block.font_size * ratio)),
-    lines_coords: scaleQuads(block.lines_coords, from, to)
-  });
+    lines_coords: quads
+  };
+  const offsets = parallelOffsets(block);
+  if (offsets && block.lines_coords && quads && block.lines_coords.length === quads.length) {
+    next.char_offsets = offsets.map((entry, i) =>
+      scaleLineOffsets(entry, block.lines_coords![i], quads[i], block.vertical)
+    );
+  } else {
+    delete next.char_offsets;
+  }
+  return replaceBlock(page, index, next);
 }
 
-/** Replace the lines; quads survive only while the line count is unchanged. */
+/**
+ * Replace the lines; quads survive only while the line count is unchanged.
+ * `char_offsets` survives the same way, reflowed per line: an untouched line's
+ * cells keep their exact array (`reflowOffsets` returns it by reference), and
+ * a corrected line keeps every boundary except the ones spanning the edit.
+ */
 export function setBlockLines(page: Page, index: number, lines: string[]): Page {
   const block = page.blocks[index];
   const keepQuads = block.lines_coords && block.lines_coords.length === lines.length;
   const next: Block = { ...block, lines: lines.slice() };
   if (keepQuads) next.lines_coords = block.lines_coords;
   else delete next.lines_coords;
+
+  const offsets = parallelOffsets(block);
+  if (offsets && offsets.length === lines.length) {
+    next.char_offsets = offsets.map((entry, i) => reflowOffsets(block.lines[i], lines[i], entry));
+  } else {
+    delete next.char_offsets;
+  }
   return replaceBlock(page, index, next);
 }
 
@@ -117,7 +161,17 @@ export function mergeBlocks(page: Page, indices: number[]): { page: Page; index:
     font_size: largest.font_size,
     lines
   };
-  if (allQuads) merged.lines_coords = order.flatMap((i) => sources[i].lines_coords!);
+  if (allQuads) {
+    merged.lines_coords = order.flatMap((i) => sources[i].lines_coords!);
+    // A source without offsets still has a quad, so it contributes nulls
+    // rather than dropping the key for the whole merge — same line-not-block
+    // rule as everywhere else, one level up.
+    if (sources.some((b) => parallelOffsets(b) !== null)) {
+      merged.char_offsets = order.flatMap(
+        (i) => parallelOffsets(sources[i]) ?? sources[i].lines.map(() => null)
+      );
+    }
+  }
   const blocks = page.blocks.filter((_, i) => !sorted.includes(i));
   blocks.splice(sorted[0], 0, merged);
   return { page: { ...page, blocks }, index: sorted[0] };
@@ -148,6 +202,14 @@ export function splitBlock(
     delete a.lines_coords;
     delete b.lines_coords;
   }
+  const offsets = parallelOffsets(block);
+  if (offsets) {
+    a.char_offsets = offsets.slice(0, atLine);
+    b.char_offsets = offsets.slice(atLine);
+  } else {
+    delete a.char_offsets;
+    delete b.char_offsets;
+  }
   const blocks = page.blocks.slice();
   blocks.splice(index, 1, a, b);
   return { page: { ...page, blocks }, indices: [index, index + 1] };
@@ -169,6 +231,7 @@ export function flipBlock(page: Page, index: number, swapBox = false): Page {
     const hh = (x1 - x0) / 2;
     next.box = clampBox([cx - hw, cy - hh, cx + hw, cy + hh], page.img_width, page.img_height);
     delete next.lines_coords;
+    delete next.char_offsets;
   }
   return replaceBlock(page, index, next);
 }
@@ -227,8 +290,23 @@ export function resizeLine(
   if (!hasParallelQuads(block)) return page;
   const [x0, y0, x1, y1] = clampBox(quadBounds(quad), page.img_width, page.img_height);
   const quads = block.lines_coords.slice();
+  const oldQuad = quads[lineIndex];
   quads[lineIndex] = rectQuad(x0, y0, x1 - x0, y1 - y0);
-  return replaceBlock(page, blockIndex, withQuads(page, block, quads));
+  const offsets = parallelOffsets(block);
+  const withOffsets: Block = { ...block };
+  if (offsets) {
+    const nextOffsets = offsets.slice();
+    nextOffsets[lineIndex] = scaleLineOffsets(
+      offsets[lineIndex],
+      oldQuad,
+      quads[lineIndex],
+      block.vertical
+    );
+    withOffsets.char_offsets = nextOffsets;
+  } else {
+    delete withOffsets.char_offsets;
+  }
+  return replaceBlock(page, blockIndex, withQuads(page, withOffsets, quads));
 }
 
 /**
@@ -249,7 +327,9 @@ export function placeLines(page: Page, blockIndex: number): Page {
     const h = (y1 - y0) / n;
     for (let i = 0; i < n; i++) quads.push(rectQuad(x0, y0 + h * i, x1 - x0, h));
   }
-  return replaceBlock(page, blockIndex, withQuads(page, block, quads));
+  const withoutOffsets: Block = { ...block };
+  delete withoutOffsets.char_offsets;
+  return replaceBlock(page, blockIndex, withQuads(page, withoutOffsets, quads));
 }
 
 /**
@@ -261,8 +341,17 @@ export function insertLine(page: Page, blockIndex: number, afterLine: number): P
   const block = page.blocks[blockIndex];
   const lines = block.lines.slice();
   lines.splice(afterLine + 1, 0, '');
+  const offsets = parallelOffsets(block);
+  const withLines: Block = { ...block, lines };
+  if (offsets) {
+    const nextOffsets = offsets.slice();
+    nextOffsets.splice(afterLine + 1, 0, null);
+    withLines.char_offsets = nextOffsets;
+  } else {
+    delete withLines.char_offsets;
+  }
   if (!hasParallelQuads(block)) {
-    const next: Block = { ...block, lines };
+    const next: Block = { ...withLines };
     delete next.lines_coords;
     return replaceBlock(page, blockIndex, next);
   }
@@ -272,7 +361,7 @@ export function insertLine(page: Page, blockIndex: number, afterLine: number): P
     : rectQuad(g.left, g.top + g.height, g.width, g.height);
   const quads = block.lines_coords.slice();
   quads.splice(afterLine + 1, 0, quad);
-  return replaceBlock(page, blockIndex, withQuads(page, { ...block, lines }, quads));
+  return replaceBlock(page, blockIndex, withQuads(page, withLines, quads));
 }
 
 /** Remove a line and its quad; a block always keeps at least one line. */
@@ -280,11 +369,18 @@ export function removeLine(page: Page, blockIndex: number, lineIndex: number): P
   const block = page.blocks[blockIndex];
   if (block.lines.length <= 1) return page;
   const lines = block.lines.filter((_, i) => i !== lineIndex);
+  const offsets = parallelOffsets(block);
+  const withLines: Block = { ...block, lines };
+  if (offsets) {
+    withLines.char_offsets = offsets.filter((_, i) => i !== lineIndex);
+  } else {
+    delete withLines.char_offsets;
+  }
   if (!hasParallelQuads(block)) {
-    const next: Block = { ...block, lines };
+    const next: Block = { ...withLines };
     delete next.lines_coords;
     return replaceBlock(page, blockIndex, next);
   }
   const quads = block.lines_coords.filter((_, i) => i !== lineIndex);
-  return replaceBlock(page, blockIndex, withQuads(page, { ...block, lines }, quads));
+  return replaceBlock(page, blockIndex, withQuads(page, withLines, quads));
 }
