@@ -1,6 +1,6 @@
 /**
- * A translated string into the SOURCE block's box: horizontal, no quads (the
- * reader's legacy fit path sizes it), wrapped by a width heuristic, the font
+ * A translated string into the SOURCE block's box: horizontal, no quads and no
+ * character offsets (the reader's legacy fit path sizes it), wrapped by a width heuristic, the font
  * shrunk until the lines fit — but never below the size at which three lines
  * fit, so a long translation in a small bubble stays legible rather than tiny.
  */
@@ -45,7 +45,11 @@ export function wrapTranslatedBlock(block: Block, text: string): Block {
     fontSize = Math.max(floor, Math.floor(fontSize * 0.9));
     lines = wrapText(text, Math.floor(width / (fontSize * CHAR_WIDTH_EM)));
   }
-  const { lines_coords: _dropped, ...rest } = block;
-  void _dropped;
+  // The quads and the per-character offsets describe the OCR lines; the
+  // translated lines bear no relation to them, and stale offsets beside new
+  // text would be read as a placement for it.
+  const { lines_coords: _quads, char_offsets: _offsets, ...rest } = block;
+  void _quads;
+  void _offsets;
   return { ...rest, box: [...block.box], vertical: false, font_size: fontSize, lines };
 }
