@@ -488,6 +488,15 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // `series.json` so a re-import restores the series facts, while a
             // cloud upload gets the managed `<Series>/series.json` instead.
             embedSeriesFile: isExport,
+            // An export that embeds its sidecars downloads nothing beside the
+            // archive (see `onComplete`), so the OCR layer files have to be IN
+            // it or they are dropped from the export. Never for the main-thread
+            // cloud upload sharing this branch: cloud layers stay separate
+            // files, stamped one by one.
+            embedLayerFiles:
+              isExport &&
+              item.sidecarOptions.includeSidecars &&
+              item.sidecarOptions.embedSidecarsInArchive,
             includeSidecars: item.sidecarOptions.includeSidecars
           };
         }

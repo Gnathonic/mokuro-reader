@@ -108,6 +108,12 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 }));
 
 vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
+// Only `prepareData` for a worker-driven upload reaches this; the real one
+// talks to the provider.
+vi.mock('$lib/util/upload-worker-credentials', () => ({
+  getUploadWorkerCredentials: vi.fn(async () => ({})),
+  prepareSeriesUploadTarget: vi.fn(async () => {})
+}));
 const stampLayersSynced = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('$lib/metadata/layer-sync', () => ({ stampLayersSynced }));
 
@@ -118,7 +124,8 @@ import {
   finishBackupRun,
   noteSeriesNeedingIndexWrite,
   queueVolumeForBackup,
-  queueVolumeForExport
+  queueVolumeForExport,
+  type SidecarOptions
 } from './backup-queue';
 
 describe('finishBackupRun', () => {
@@ -410,6 +417,10 @@ describe('live per-completion series.json scheduling', () => {
  * generates the sidecars (the same branch serves the Local Folder provider's
  * main-thread upload, which wants them beside the archive); the export branch
  * of `onComplete` is where they must not be downloaded.
+ *
+ * That only holds for the layer files because the export message asks the
+ * worker to embed them too (`embedLayerFiles`, below): skipping their download
+ * while the archive lacked them dropped the layers from the export entirely.
  */
 describe('export-for-download sidecars', () => {
   function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -475,8 +486,81 @@ describe('export-for-download sidecars', () => {
   }
 
   it('downloads no separate sidecars when they are embedded in the archive', async () => {
+    // Right for the layer files as well only because the archive really does
+    // carry them: see the `embedLayerFiles` tests below.
     await completeExport('export-uuid-embed', true);
     expect(downloadFileBlob).not.toHaveBeenCalled();
+  });
+
+  describe('embedLayerFiles on the worker message', () => {
+    async function exportMessage(uuid: string, options: SidecarOptions) {
+      queueVolumeForExport(
+        volume({ volume_uuid: uuid }),
+        'One Piece - Volume 1.cbz',
+        'cbz',
+        options
+      );
+      await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+      return capturedTasks[0].prepareData();
+    }
+
+    async function backupMessage(uuid: string, provider: Record<string, unknown>) {
+      getActiveProvider.mockReturnValue(provider as never);
+      queueVolumeForBackup(volume({ volume_uuid: uuid }), provider as never, {
+        includeSidecars: true,
+        embedSidecarsInArchive: true
+      });
+      await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+      return capturedTasks[0].prepareData();
+    }
+
+    it('asks for embedded layers when an export embeds its sidecars', async () => {
+      const message = await exportMessage('embed-flag-on', {
+        includeSidecars: true,
+        embedSidecarsInArchive: true
+      });
+      expect(message.provider).toBeNull();
+      expect(message.embedLayerFiles).toBe(true);
+    });
+
+    it('does not when the export downloads its sidecars separately', async () => {
+      const message = await exportMessage('embed-flag-separate', {
+        includeSidecars: true,
+        embedSidecarsInArchive: false
+      });
+      expect(message.embedLayerFiles).toBe(false);
+    });
+
+    it('does not when the export carries no sidecars at all', async () => {
+      const message = await exportMessage('embed-flag-none', {
+        includeSidecars: false,
+        embedSidecarsInArchive: true
+      });
+      expect(message.embedLayerFiles).toBe(false);
+    });
+
+    // Cloud layers are separate files, stamped and refreshed one by one; an
+    // archive-local copy would be a second, stale source of truth.
+    it('never for a main-thread cloud upload, which shares the null-provider branch', async () => {
+      const message = await backupMessage('embed-flag-filesystem', {
+        type: 'filesystem',
+        uploadConcurrencyLimit: 1,
+        supportsWorkerUpload: false,
+        uploadFile: vi.fn()
+      });
+      expect(message.provider).toBeNull();
+      expect(message.embedLayerFiles).toBe(false);
+    });
+
+    it('never for a worker-driven cloud upload', async () => {
+      const message = await backupMessage('embed-flag-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true
+      });
+      expect(message.provider).toBe('webdav');
+      expect(message).not.toHaveProperty('embedLayerFiles');
+    });
   });
 
   it('downloads the sidecars AND the layer files, named after the archive, when not embedded', async () => {

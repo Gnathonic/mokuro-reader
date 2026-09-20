@@ -149,6 +149,63 @@ describe('compressVolumeFromDb', () => {
 
     expect(await entryNames(blob)).not.toContain('series.json');
   });
+
+  const gcvLayer = {
+    volume_uuid: 'volume-uuid',
+    layer_id: 'gcv',
+    name: 'Cloud Vision',
+    kind: 'ocr',
+    engine: 'gcv',
+    created_at: '2026-09-16T00:00:00.000Z',
+    updated_at: '2026-09-16T00:00:00.000Z',
+    pages: [
+      {
+        version: '0.2.1',
+        img_width: 10,
+        img_height: 10,
+        img_path: '001.jpg',
+        blocks: [{ box: [0, 0, 1, 1], vertical: true, font_size: 1, lines: ['あいう'] }]
+      }
+    ]
+  };
+
+  // The "Individual volumes" export with sidecars embedded: the queue downloads
+  // nothing beside the archive then, so a layer that is not IN the archive is
+  // simply lost from the export.
+  it('embeds the layer files at the archive root, beside the .mokuro, when asked', async () => {
+    await db.table('volume_ocr_layers').put(gcvLayer);
+
+    const blob = await compressVolumeFromDb('volume-uuid', undefined, {
+      embedMokuroInArchive: true,
+      embedLayerFiles: true
+    });
+
+    // Same root location and `<Volume Title>.<layer-id>.mokuro` name the ZIP
+    // exports in `zip.ts` use, so the importer pairs it with the volume.
+    const names = await entryNames(blob);
+    expect(names).toContain('Vol 1.mokuro');
+    expect(names).toContain('Vol 1.gcv.mokuro');
+
+    // Byte-identical to the sidecar the cloud path would upload for this layer.
+    const sidecars = await generateVolumeSidecarsFromDb('volume-uuid');
+    const embedded = await entryText(blob, 'Vol 1.gcv.mokuro');
+    expect(embedded).toBe(await sidecars.layers![0].blob.text());
+    const json = JSON.parse(embedded);
+    expect(json.chars).toBe(3);
+    expect(json.pages[0].blocks[0].lines).toEqual(['あいう']);
+  });
+
+  it('never embeds layer files unless asked (a cloud backup keeps them as separate files)', async () => {
+    await db.table('volume_ocr_layers').put(gcvLayer);
+
+    const blob = await compressVolumeFromDb('volume-uuid', undefined, {
+      embedThumbnailSidecar: true,
+      embedMokuroInArchive: false,
+      embedSeriesFile: false
+    });
+
+    expect(await entryNames(blob)).toEqual(['Vol 1/', 'Vol 1/001.jpg']);
+  });
 });
 
 describe('generateVolumeSidecarsFromDb — layers', () => {

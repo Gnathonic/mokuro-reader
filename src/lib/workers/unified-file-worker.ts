@@ -122,6 +122,12 @@ interface CompressFromDbMessage {
   embedMokuroInArchive?: boolean;
   /** Write the series' `series.json` into the archive (self-contained exports). */
   embedSeriesFile?: boolean;
+  /**
+   * Write the volume's OCR layer files into the archive. Set by the queue for
+   * an export that embeds its sidecars (nothing is downloaded beside that
+   * archive, so a layer left out of it is lost); never for a cloud upload.
+   */
+  embedLayerFiles?: boolean;
   includeSidecars?: boolean;
 }
 
@@ -836,7 +842,14 @@ ctx.addEventListener('message', async (event) => {
         {
           embedThumbnailSidecar: message.embedThumbnailSidecar === true,
           embedMokuroInArchive: message.embedMokuroInArchive !== false,
-          embedSeriesFile: message.embedSeriesFile === true
+          embedSeriesFile: message.embedSeriesFile === true,
+          // The queue sets this for exports alone. Guarded here as well so a
+          // worker-driven cloud upload can never embed layers whatever it is
+          // sent: in the cloud they are separate files, never archive entries.
+          embedLayerFiles:
+            provider === null &&
+            message.includeSidecars === true &&
+            message.embedLayerFiles === true
         }
       );
 
