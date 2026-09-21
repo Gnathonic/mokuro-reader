@@ -1026,7 +1026,10 @@ async function installDownloadedLayers(
       // the pull below (or any later listing) finds, never be pushed over it —
       // and to a local row with unpushed edits, which the attach leaves alone.
       if (read) {
-        await attachLayerToVolume(volumeUuid, entry.layerId, read.pages, { passive: true });
+        await attachLayerToVolume(volumeUuid, entry.layerId, read.pages, {
+          passive: true,
+          engine: read.engine
+        });
       }
     }
     if (cloudProvider) await pullLayersForVolume(volumeUuid, cloudProvider);

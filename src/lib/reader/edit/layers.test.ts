@@ -27,6 +27,7 @@ import {
   renameLayer,
   slugifyLayerId,
   layerKindForId,
+  servedEngineOf,
   layerNameForId
 } from './layers';
 
@@ -359,6 +360,36 @@ describe('layerKindForId / layerNameForId', () => {
     expect(layerKindForId('fix')).toBe('edit');
     expect(layerNameForId('paddle-manga')).toBe('Paddle Manga');
     expect(layerNameForId('gcv')).toBe('Gcv');
+  });
+
+  it('files a layer a server stamped as OCR, whatever its admin named it', () => {
+    // No closed list can know `my-best-ocr`; the file's own stamp does.
+    expect(layerKindForId('my-best-ocr')).toBe('edit');
+    expect(layerKindForId('my-best-ocr', 'hayai-nova')).toBe('ocr');
+    expect(layerKindForId('hayai-nova')).toBe('ocr');
+    // The reserved ids keep their meaning even if a file claims an engine.
+    expect(layerKindForId('original', 'hayai-nova')).toBe('original');
+    expect(layerKindForId('tr-en', 'hayai-nova')).toBe('translation');
+  });
+
+  it('reads the engine stamp bunko writes, and nothing that merely looks like one', () => {
+    expect(servedEngineOf({ pages: [], ocr_engine: { id: 'paddle-manga', detector: 'ctd' } })).toBe(
+      'paddle-manga'
+    );
+    for (const junk of [
+      null,
+      'text',
+      {},
+      { ocr_engine: null },
+      { ocr_engine: 'hayai-nova' },
+      { ocr_engine: {} },
+      { ocr_engine: { id: 7 } },
+      { ocr_engine: { id: '' } },
+      { ocr_engine: { id: 'Has Spaces' } },
+      { ocr_engine: { id: '../etc' } }
+    ]) {
+      expect(servedEngineOf(junk)).toBeUndefined();
+    }
   });
 
   it('knows bunko’s PP-OCR manga engine: OCR output, named as the engine spells itself', () => {

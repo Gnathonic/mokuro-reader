@@ -246,6 +246,27 @@ describe('attachLayerToVolume', () => {
     expect('passive_at' in imported).toBe(false);
     expect('passive_at' in (await getLayerWithPages(db, 'v1', 'gcv'))!).toBe(false);
   });
+  it('files a server-stamped layer as that engine’s OCR under any name; an unstamped one as an edit', async () => {
+    await seed();
+    const served = await attachLayerToVolume('v1', 'my-best-ocr', pages, { engine: 'hayai-nova' });
+    expect(served).toMatchObject({ kind: 'ocr', engine: 'hayai-nova' });
+    const plain = await attachLayerToVolume('v1', 'my-fixes', pages);
+    expect(plain.kind).toBe('edit');
+    expect(plain.engine).toBeUndefined();
+  });
+
+  it('readLayerFile hands on the engine stamp, and only a real one', async () => {
+    const stamped = JSON.stringify({
+      ...JSON.parse(mokuro('うえ', {})),
+      ocr_engine: { id: 'paddle-manga', generator: 'mokuro-bunko 0.4.0' }
+    });
+    expect((await readLayerFile(new File([stamped], 'Vol 1.p-ctd.mokuro')))!.engine).toBe(
+      'paddle-manga'
+    );
+    const bare = await readLayerFile(new File([mokuro('うえ', {})], 'Vol 1.fix.mokuro'));
+    expect(bare && 'engine' in bare).toBe(false);
+  });
+
   describe('a passive attach never replaces local work', () => {
     const archived = JSON.parse(mokuro('アーカイブ', {})).pages;
     const linesOf = async () =>

@@ -736,6 +736,93 @@ describe('a row filed before its engine id was known here', () => {
   });
 });
 
+describe('a generation the server named itself', () => {
+  /** What bunko writes: the pages plus a stamp naming the engine that read them. */
+  function servedJson(text: string, engineId: string): string {
+    return JSON.stringify({
+      ...JSON.parse(mokuroJson(text)),
+      ocr_engine: { id: engineId, detector: 'ctd', generator: 'mokuro-bunko 0.4.0' }
+    });
+  }
+
+  it('is filed as OCR of the engine the FILE names, whatever the layer is called', async () => {
+    await seedRow();
+    downloadFile.mockResolvedValue(new Blob([servedJson('かな', 'hayai-nova')]));
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.my-best-ocr.mokuro')),
+      'webdav'
+    );
+    expect(await getLayerWithPages(db, 'v1', 'my-best-ocr')).toMatchObject({
+      kind: 'ocr',
+      engine: 'hayai-nova',
+      name: 'My Best Ocr'
+    });
+  });
+
+  it('leaves an unknown id with no stamp a person’s edit, as before', async () => {
+    await seedRow();
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('かな')]));
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.my-fixes.mokuro')),
+      'webdav'
+    );
+    const layer = (await getLayerWithPages(db, 'v1', 'my-fixes'))!;
+    expect(layer.kind).toBe('edit');
+    expect(layer.engine).toBeUndefined();
+  });
+
+  it('ignores a stamp that is not an engine id', async () => {
+    await seedRow();
+    const junk = JSON.stringify({
+      ...JSON.parse(mokuroJson('かな')),
+      ocr_engine: { id: 'Not An Id' }
+    });
+    downloadFile.mockResolvedValue(new Blob([junk]));
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.odd.mokuro')),
+      'webdav'
+    );
+    expect((await getLayerWithPages(db, 'v1', 'odd'))!.kind).toBe('edit');
+  });
+
+  it('re-files a cloud row that was filed as an edit once its file says a server made it', async () => {
+    const STAMP = '2026-09-16T10:00:00.000Z';
+    await seedRow();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'paddle-ctd',
+      name: 'Paddle Ctd',
+      kind: 'edit',
+      created_at: STAMP,
+      updated_at: STAMP,
+      cloud: {
+        provider: 'webdav',
+        size: 100,
+        modified: Date.parse(STAMP) / 1000,
+        synced_at: STAMP
+      },
+      pages: [pg('えん')]
+    });
+    downloadFile.mockResolvedValue(new Blob([servedJson('かな', 'paddle-manga')]));
+    // A newer cloud copy than the one the row was synced from: it is pulled.
+    await syncLayersFromListing(
+      listing(
+        cloudFile('Series/Vol 1.cbz'),
+        cloudFile('Series/Vol 1.paddle-ctd.mokuro', {
+          size: 222,
+          modifiedTime: '2026-09-17T10:00:00.000Z'
+        })
+      ),
+      'webdav'
+    );
+    expect(await getLayerWithPages(db, 'v1', 'paddle-ctd')).toMatchObject({
+      kind: 'ocr',
+      engine: 'paddle-manga'
+    });
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+});
+
 describe('pullLayersForVolume / deleteLayerFileInCloud', () => {
   it('pulls one volume’s layers from the cached listing', async () => {
     await seedRow();

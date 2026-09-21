@@ -10,7 +10,12 @@ import {
 } from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
-import { layerKindForId, layerNameForId, titleCasedLayerId } from '$lib/reader/edit/layers';
+import {
+  layerKindForId,
+  layerNameForId,
+  servedEngineOf,
+  titleCasedLayerId
+} from '$lib/reader/edit/layers';
 import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
@@ -487,11 +492,18 @@ function isPageArray(value: unknown): value is Page[] {
   );
 }
 
+/** What a downloaded layer file held: its pages, and the server engine that says it made them. */
+interface PulledLayerFile {
+  pages: Page[];
+  /** `servedEngineOf` the file: set only for a server's OCR output, never for pushed edits. */
+  engine?: string;
+}
+
 /** Download + decode one layer file into DB-shaped pages; null when unusable. */
 async function readLayerFile(
   provider: SyncProvider,
   listed: ListedLayerFile
-): Promise<Page[] | null> {
+): Promise<PulledLayerFile | null> {
   try {
     let blob = await provider.downloadFile(listed.file);
     if (listed.gz) {
@@ -502,10 +514,12 @@ async function readLayerFile(
     const json = JSON.parse(await blob.text()) as { pages?: unknown };
     if (!isPageArray(json.pages)) return null;
     // DB shape: `cumulativeChars` is derived, never stored.
-    return json.pages.map((p) => {
+    const pages = json.pages.map((p) => {
       const { cumulativeChars: _c, ...page } = p as Page & { cumulativeChars?: number };
       return page;
     });
+    const engine = servedEngineOf(json);
+    return { pages, ...(engine ? { engine } : {}) };
   } catch (error) {
     console.warn(`[layer-sync] could not read '${listed.file.path}':`, error);
     return null;
@@ -549,8 +563,9 @@ async function pullOne(
   }
   const rejection = rejectionOf(row, listed, provider.type);
   if (isKnownMismatch(rejection)) return false;
-  const read = await readLayerFile(provider, listed);
-  if (!read) return false;
+  const pulled = await readLayerFile(provider, listed);
+  if (!pulled) return false;
+  const read = pulled.pages;
   const pages = await fitToVolume(row, read);
   if (!pages) {
     // Once per file version (the verdict is remembered), and the only trace a
@@ -574,16 +589,26 @@ async function pullOne(
   }
   clearRejectedFile(rejection);
   const now = new Date().toISOString();
-  const kind = existing?.kind ?? layerKindForId(listed.layerId);
+  // A row a cloud vouches for that was filed as a person's `edit` before the
+  // stamp was read (or while its id was unknown) and turns out to be a server's
+  // OCR is re-filed as what it is. Never a row made here by hand, and never one
+  // already attributed to an engine.
+  const misfiled =
+    existing?.kind === 'edit' && !existing.engine && !!existing.cloud && !!pulled.engine;
+  const kind = misfiled
+    ? ('ocr' as const)
+    : (existing?.kind ?? layerKindForId(listed.layerId, pulled.engine));
   const layer: VolumeOcrLayer = {
     volume_uuid: row.volume_uuid,
     layer_id: listed.layerId,
     name: existing?.name ?? layerNameForId(listed.layerId),
     kind,
+    // The engine the FILE names, not the layer's id: a server calls its
+    // generations what it likes (`hayai-nova-ctd` is still hayai-nova).
     ...(existing?.engine
       ? { engine: existing.engine }
       : kind === 'ocr'
-        ? { engine: listed.layerId }
+        ? { engine: pulled.engine ?? listed.layerId }
         : {}),
     created_at: existing?.created_at ?? now,
     updated_at: now,

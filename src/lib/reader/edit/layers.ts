@@ -47,15 +47,40 @@ export const LAYER_KIND_LABEL: Record<VolumeOcrLayerKind, string> = {
 
 const MAX_SLUG = 24;
 
-/** Engine ids whose files are OCR output (bunko engines + the reader's own). */
+/**
+ * Engine ids whose files are OCR output (bunko engines + the reader's own).
+ * A FALLBACK only: a server names its generations itself (`hayai-nova-ctd`,
+ * `my-best`), so what a layer file IS gets read from the file (`servedEngineOf`).
+ * This list files the ones that carry no stamp — stock mokuro output, and rows
+ * that arrived before the stamp was read.
+ */
 export const KNOWN_ENGINE_IDS: ReadonlySet<string> = new Set([
   'gcv',
   'hayai',
+  'hayai-nova',
   'paddle-manga',
   'ppocr-manga',
   'mokuro-fp16',
   'mokuro'
 ]);
+
+const SERVED_ENGINE_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * The engine that produced a layer file, when a SERVER produced it. bunko
+ * stamps every layer sidecar it generates with a top-level
+ * `ocr_engine: { id, … }`, and nothing this app writes carries one — a pushed
+ * edit layer is pure mokuro format. So the stamp, not the file's name, tells a
+ * server's OCR from a person's edits: the name is whatever the server's admin
+ * called that generation, and no closed list of ids can know it.
+ */
+export function servedEngineOf(json: unknown): string | undefined {
+  if (!json || typeof json !== 'object') return undefined;
+  const meta = (json as { ocr_engine?: unknown }).ocr_engine;
+  if (!meta || typeof meta !== 'object') return undefined;
+  const id = (meta as { id?: unknown }).id;
+  return typeof id === 'string' && SERVED_ENGINE_ID_RE.test(id) ? id : undefined;
+}
 
 /**
  * Engines whose name is not their slug title-cased: `ppocr-manga` would read
@@ -65,11 +90,14 @@ const ENGINE_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   'ppocr-manga': 'PP-OCR Manga'
 };
 
-/** The kind a layer file with no local row is filed under, from its id alone. */
-export function layerKindForId(layerId: string): VolumeOcrLayerKind {
+/**
+ * The kind a layer file with no local row is filed under: from the engine
+ * stamp it carried (`servedEngineOf`) when it had one, else from its id alone.
+ */
+export function layerKindForId(layerId: string, servedEngine?: string): VolumeOcrLayerKind {
   if (layerId === ORIGINAL_LAYER_ID) return 'original';
   if (isTranslationLayerId(layerId)) return 'translation';
-  if (KNOWN_ENGINE_IDS.has(layerId)) return 'ocr';
+  if (servedEngine || KNOWN_ENGINE_IDS.has(layerId)) return 'ocr';
   return 'edit';
 }
 
