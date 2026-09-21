@@ -335,17 +335,39 @@ async function waitForPositioned(page: Page, pageIndex = 0) {
 }
 
 async function openReader(page: Page, positioned = true) {
-  // Let the catalog settle on the freshly seeded rows before the route
-  // changes — a hash set mid-reaction bounces back to the catalog.
-  await page.waitForTimeout(800);
-  await page.evaluate(
-    ({ SERIES_UUID, VOLUME_UUID }) => {
-      window.location.hash = `#/reader/${SERIES_UUID}/${VOLUME_UUID}`;
-    },
-    { SERIES_UUID, VOLUME_UUID }
-  );
+  // The catalog may still be reacting to the freshly seeded rows, and a hash
+  // set mid-reaction bounces straight back to the catalog. Setting the route
+  // once after a fixed sleep loses that race on a loaded machine, and every
+  // later `[data-page-index="0"]` lookup then dereferences null — so set the
+  // route, and set it again whenever it has bounced, until it sticks.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ SERIES_UUID, VOLUME_UUID }) => {
+            const target = `#/reader/${SERIES_UUID}/${VOLUME_UUID}`;
+            if (window.location.hash !== target) {
+              window.location.hash = target;
+              return false;
+            }
+            return !!document.querySelector('[data-page-index="0"]');
+          },
+          { SERIES_UUID, VOLUME_UUID }
+        ),
+      { timeout: 30000, intervals: [100, 200, 400, 800] }
+    )
+    .toBe(true);
   await expect(page.locator('[data-page-index="0"]')).toBeVisible({ timeout: 20000 });
   if (positioned) await waitForPositioned(page);
+}
+
+/**
+ * Re-assert the reader page before measuring it. The route can bounce back to
+ * the catalog after `openReader` returns, and a `querySelector(...)!` on a
+ * unmounted page throws an opaque null-dereference instead of waiting.
+ */
+async function requireReaderPage(page: Page, pageIndex = 0) {
+  await expect(page.locator(`[data-page-index="${pageIndex}"]`)).toBeVisible({ timeout: 20000 });
 }
 
 async function setFontSize(page: Page, fontSize: string) {
@@ -384,6 +406,7 @@ interface MeasuredBlock {
 /** Every block of the page in IMAGE px relative to the page element — zoom is
  * an ancestor transform, so screen rects divide by the page's rendered scale. */
 async function measure(page: Page): Promise<MeasuredBlock[]> {
+  await requireReaderPage(page);
   return page.evaluate(() => {
     const pageEl = document.querySelector<HTMLElement>('[data-page-index="0"]')!;
     const origin = pageEl.getBoundingClientRect();
@@ -477,6 +500,7 @@ function inkCentre(glyph: Rect, axis: Point, letterSpacing: number): Point {
 }
 
 async function shot(page: Page, name: string, box: number[], pad = 40) {
+  await requireReaderPage(page);
   mkdirSync(SHOTS, { recursive: true });
   // See the print through the overlay: no white ground, translucent text.
   const style = await page.addStyleTag({
@@ -517,6 +541,7 @@ async function probeTurnedLine(
   b: FixtureBlock,
   degrees: number
 ) {
+  await requireReaderPage(page);
   // the box of cells the print is drawn in; the file's quad hugs its ink
   const quad = b.cells[0];
   const line = findBlock(measured, b).lines[0];
@@ -1138,6 +1163,7 @@ test.describe('line grid — editor', () => {
 
   /** Image px → screen px (zoom is an ancestor transform of the page). */
   async function toScreen(page: Page, p: Point): Promise<{ x: number; y: number }> {
+    await requireReaderPage(page);
     return page.evaluate(([x, y]) => {
       const el = document.querySelector<HTMLElement>('[data-page-index="0"]')!;
       const origin = el.getBoundingClientRect();
@@ -1166,6 +1192,7 @@ test.describe('line grid — editor', () => {
     carets: (number | null)[];
   }
   async function measureEditorLine(page: Page, b: FixtureBlock): Promise<EditorLine> {
+    await requireReaderPage(page);
     return page.evaluate(
       ([left, top]) => {
         const pageEl = document.querySelector<HTMLElement>('[data-page-index="0"]')!;

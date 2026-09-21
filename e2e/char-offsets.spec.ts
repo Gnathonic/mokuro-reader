@@ -238,17 +238,39 @@ async function seedVolume(page: Page, pages: FixturePage[], fontSize: string) {
 }
 
 async function openReader(page: Page) {
-  // Let the catalog settle on the freshly seeded rows before the route
-  // changes — a hash set mid-reaction bounces back to the catalog.
-  await page.waitForTimeout(800);
-  await page.evaluate(
-    ({ SERIES_UUID, VOLUME_UUID }) => {
-      window.location.hash = `#/reader/${SERIES_UUID}/${VOLUME_UUID}`;
-    },
-    { SERIES_UUID, VOLUME_UUID }
-  );
+  // The catalog may still be reacting to the freshly seeded rows, and a hash
+  // set mid-reaction bounces straight back to the catalog. Setting the route
+  // once after a fixed sleep loses that race on a loaded machine, and every
+  // later `[data-page-index="0"]` lookup then dereferences null — so set the
+  // route, and set it again whenever it has bounced, until it sticks.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ SERIES_UUID, VOLUME_UUID }) => {
+            const target = `#/reader/${SERIES_UUID}/${VOLUME_UUID}`;
+            if (window.location.hash !== target) {
+              window.location.hash = target;
+              return false;
+            }
+            return !!document.querySelector('[data-page-index="0"]');
+          },
+          { SERIES_UUID, VOLUME_UUID }
+        ),
+      { timeout: 30000, intervals: [100, 200, 400, 800] }
+    )
+    .toBe(true);
   await expect(page.locator('[data-page-index="0"]')).toBeVisible({ timeout: 20000 });
   await waitForPositioned(page, 0);
+}
+
+/**
+ * Re-assert the reader page before measuring it. The route can bounce back to
+ * the catalog after `openReader` returns, and a `querySelector(...)!` on an
+ * unmounted page throws an opaque null-dereference instead of waiting.
+ */
+async function requireReaderPage(page: Page, pageIndex = 0) {
+  await expect(page.locator(`[data-page-index="${pageIndex}"]`)).toBeVisible({ timeout: 20000 });
 }
 
 /** Every per-line span on the page has been snapped onto its quad. */
@@ -324,6 +346,7 @@ async function measure(
   surface: keyof typeof SURFACES,
   pageIndex = 0
 ): Promise<MeasuredBlock[]> {
+  await requireReaderPage(page, pageIndex);
   return page.evaluate(
     ({ pageIndex, selectors }) => {
       const pageEl = document.querySelector<HTMLElement>(`[data-page-index="${pageIndex}"]`)!;
@@ -542,6 +565,7 @@ function expectOneFlowLine(measured: MeasuredBlock[], expected: ExpectedLine[][]
 }
 
 async function shot(page: Page, name: string, block: FixtureBlock, pageIndex = 0) {
+  await requireReaderPage(page, pageIndex);
   mkdirSync(SHOTS, { recursive: true });
   // The boxes' white ground hides the cell ticks ruled on the page image.
   const style = await page.addStyleTag({
