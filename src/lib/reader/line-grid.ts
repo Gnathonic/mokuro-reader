@@ -276,7 +276,7 @@ export const PITCH_TOLERANCE_SHARE = 0.02;
 /** Lines with at least this many effective cells estimate the pitch to a few
  * percent and vote for the block's; shorter ones vote only when no such line
  * exists (a manga balloon of three-glyph lines). */
-const VOTER_MIN_CELLS = 4;
+export const VOTER_MIN_CELLS = 4;
 
 export function sharesPitch(line: PitchInput, pitch: number): boolean {
   if (!(pitch > 0)) return false;
@@ -387,6 +387,29 @@ export function gridSpacing(args: {
   const centring = letterSpacing === 0 && pitch.em === pitch.pitch ? 0 : (pitch.em - fontSize) / 2;
   const inset = centring - pitch.lead * pitch.em;
   return { letterSpacing, inset: inset === 0 ? 0 : inset };
+}
+
+/**
+ * The largest font size at which `gridSpacing` still comes out at
+ * `minSpacingEm` (≤ 0) or more: the inverse of its letter-spacing, solved for
+ * the size. Set solid and fullwidth that is `pitch / (1 + minSpacingEm)`; text
+ * tracked out wider than its quad is thick has the tracking to give as well.
+ * Infinity when no size closes the run up that far (a run of almost nothing
+ * but marks), so that it never binds.
+ */
+export function maxSizeAtSpacing(args: {
+  pitch: LinePitch;
+  advanceEm: number;
+  count: number;
+  minSpacingEm: number;
+}): number {
+  const { pitch, advanceEm, count, minSpacingEm } = args;
+  if (!pitch || !(pitch.pitch > 0) || !(pitch.em > 0)) return Number.POSITIVE_INFINITY;
+  if (!(advanceEm > 0) || !(count >= 1)) return Number.POSITIVE_INFINITY;
+  // letterSpacing(f) = pitch − em + (advance / count) · (em − f) ≥ minSpacingEm · f
+  const share = advanceEm / count;
+  if (!(share + minSpacingEm > 0)) return Number.POSITIVE_INFINITY;
+  return (pitch.pitch - pitch.em + share * pitch.em) / (share + minSpacingEm);
 }
 
 /** A rectangle turned about its centre; `angle` as in `LineFrame`. */

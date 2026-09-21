@@ -667,11 +667,47 @@ test.describe('char_offsets — viewer', () => {
     await shot(page, 'viewer-original-selection', BLOCKS[0]);
     await page.keyboard.press('PageDown');
     await expect(page.locator('[data-page-index="1"]')).toBeVisible();
-    // Without offsets original mode is the whole-block rendering: nothing is
-    // positioned per line, so there is no transform to wait for.
+    // Without offsets original mode still places every line on its quad (at
+    // the file's font size), so this page is positioned per line as well.
     await expect(page.locator('[data-page-index="1"] .textBox')).toHaveCount(BLOCKS.length);
-    await page.waitForTimeout(250);
+    await waitForPositioned(page, 1);
     const plain = await select(1);
+
+    // The stock page (no offsets) is where mokuro's font_size contradicts its
+    // own quads: block 2 says 155px on a 111px step, and drew 〝 on 新 and 〟
+    // on 齟. Original mode caps the file's size by the file's geometry: no
+    // line is closed up by more than 0.05em, and a bubble keeps ONE size.
+    await page.evaluate(() => window.getSelection()!.removeAllRanges());
+    const stock = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>('[data-page-index="1"] .textBox')].map((box) => ({
+        left: parseFloat(box.style.left),
+        top: parseFloat(box.style.top),
+        lines: [...box.querySelectorAll<HTMLElement>('.ocr-line.positionedLine')].map((line) => {
+          const style = getComputedStyle(line);
+          return {
+            size: parseFloat(style.fontSize),
+            spacing: parseFloat(style.letterSpacing) || 0
+          };
+        })
+      }))
+    );
+    await shot(page, 'viewer-original-stock-block2', BLOCKS[2], 1);
+    for (const block of BLOCKS) {
+      const found = stock.find((x) => x.left === block.box[0] && x.top === block.box[1])!;
+      expect(found.lines.length).toBe(block.lines.length);
+      for (const line of found.lines) {
+        expect(line.size).toBeLessThanOrEqual(block.font_size + 0.01);
+        expect(line.spacing / line.size).toBeGreaterThanOrEqual(-0.05 - 1e-3);
+      }
+    }
+    const collided = stock.find((x) => x.left === BLOCKS[2].box[0] && x.top === BLOCKS[2].box[1])!;
+    expect(BLOCKS[2].font_size).toBe(155);
+    expect(new Set(collided.lines.map((l) => l.size)).size).toBe(1);
+    expect(collided.lines[0].size).toBeLessThan(125);
+    console.log(
+      `[char-offsets] original, stock block 2 (font_size 155): rendered at ${collided.lines[0].size.toFixed(2)}px, ` +
+        `letter-spacing ${collided.lines[0].spacing.toFixed(2)}px (${(collided.lines[0].spacing / collided.lines[0].size).toFixed(3)}em)`
+    );
 
     const expected = await expectedCells(page, false);
     expect(plain.every((b) => b.cells === 0)).toBe(true);

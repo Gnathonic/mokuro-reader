@@ -1,14 +1,18 @@
 /**
- * Per-line layout for original-mode text rendering, derived from the
- * `lines_coords` quadrilaterals that mokuro emits for every OCR line.
+ * Per-line layout of a text block, derived from the `lines_coords`
+ * quadrilaterals that mokuro emits for every OCR line. It places the lines of
+ * the reader's `auto` font mode (sizes fitted to the quads) and of its
+ * `original` one (`size: 'file'` — the file's own `font_size`, capped by the
+ * same quads).
  *
  * mokuro's block-level `font_size` is the mean detected line-quad width, which
  * for vertical Japanese includes furigana and mask slack — median 1.2x (p95 2x)
  * larger than the true character size — so rendering `font_size`px overflows
  * the block box. The quads themselves are reliable: each line's quad gives its
- * exact position and extent, and `extent / text advance` recovers the true
+ * exact position and extent, and its pitch (`line-grid.ts`) recovers the true
  * per-line font size. See docs/superpowers/specs/
- * 2026-07-04-original-mode-line-coords-design.md.
+ * 2026-07-04-original-mode-line-coords-design.md (written when only the mode
+ * now called `auto` existed, under the name "original").
  *
  * Characters sit on a FIXED-PITCH GRID along the line (`line-grid.ts`): the
  * pitch comes from the quad corrected for the ink the first and last glyphs do
@@ -28,11 +32,13 @@ import { parallelOffsets } from './char-offsets';
 import { lineCells, processLine, type CharCell, type LineCells } from './char-offsets-layout';
 import { inkInsets } from './glyph-insets';
 import {
+  VOTER_MIN_CELLS,
   griddable,
   gridSpacing,
   inkLength,
   lineFrame,
   linePitches,
+  maxSizeAtSpacing,
   ownPitch,
   quadAxes,
   rectBounds,
@@ -69,6 +75,34 @@ export interface LayoutOptions {
    * field — the layout from before it existed.
    */
   cells?: 'repaired' | 'as-is' | 'off';
+  /**
+   * Where a fitted line's font size comes from. `'fitted'` (auto mode, the
+   * default) reads it off the quads: the line's pitch, made uniform across
+   * the block. `'file'` (original mode) renders the block's own `font_size`
+   * — as far as the file's own line geometry can carry it (`fileLineSizes`):
+   * mokuro's is known to overstate the print, and where the two contradict
+   * each other the GEOMETRY wins, or the glyphs draw on top of each other.
+   *
+   * The PLACEMENT is the same either way — the quad's frame, the block's
+   * pitch grid anchored at each line's start, the ink insets, the rotation —
+   * so the letter-spacing comes out as what is left of the pitch once the
+   * file's size is taken: never below `FILE_MIN_SPACING_EM`, and wide open
+   * when the file's size is smaller than the print's.
+   *
+   * What `'file'` drops is everything that second-guesses the file to make
+   * the result fit: no line is wrapped into its quad, no overlap cluster is
+   * re-flowed into bands, nothing is nudged, clipped or shrunk, and a tilted
+   * quad is never refused its turn. One heuristic stays, because without it
+   * the view is unreadable rather than faithful: a line re-captured inside
+   * another (`RECAPTURE_OVERLAP`, its text contained in the bigger one's)
+   * stays hidden — the same glyphs twice on one spot, and nothing the file
+   * says is lost with it.
+   *
+   * A file with no usable `font_size` keeps the fitted sizes. Lines drawn on
+   * the file's cells (`cells: 'as-is'`) are sized by those either way; an
+   * unplaced line beside them takes the file's size like any other.
+   */
+  size?: 'fitted' | 'file';
 }
 
 export interface LineLayout {
@@ -160,6 +194,68 @@ const SMALL_OUTLIER = 0.7;
 /** Lines may run this much past their own quad's length at the uniform size —
  * quad slack varies line to line while print size is constant. */
 const OVERFLOW_TOL = 1.15;
+/** …and a quad can carry glyphs this much bigger than it is thick: the quads
+ * of one balloon's columns differ by about that (54–66px around 56px print on
+ * the fixture page), while print size is constant. Auto's uniform size and
+ * original mode's file size are held to the same limit. */
+const CROSS_SLACK = 1.2;
+/**
+ * Original mode (`size: 'file'`): the file's font size may close a line's
+ * glyphs up by no more than this (em). Read off the data: a CONSISTENT mokuro
+ * block says about 5% more than its pitch (fixture block 1: 59px on a 56.2px
+ * step, −0.047em) and must keep its size exactly; full-bodied kanji leave
+ * about that much of their cell free, so up to here no ink touches; overlap
+ * shows from about −0.12em, and the contradictory blocks are far beyond it
+ * (fixture block 2: 155px on a 111px step, −0.28em).
+ */
+export const FILE_MIN_SPACING_EM = -0.05;
+
+/**
+ * The sizes original mode renders a block's lines at: the file's `font_size`,
+ * capped by the file's own line geometry.
+ *
+ * A line can carry a size up to where its glyphs would close up by
+ * `FILE_MIN_SPACING_EM` on its pitch (`maxSizeAtSpacing`), and up to
+ * `CROSS_SLACK` × its quad's thickness (columns must not run into each other
+ * sideways, which no letter-spacing can fix): its `cap`.
+ *
+ * The file has ONE size per block, and print one per balloon — so the cap is
+ * not taken line by line, which would set the columns of a bubble in slightly
+ * different sizes (a quad that ends early, an `…` the print spreads over three
+ * cells). The BLOCK is capped, by its TIGHTEST FULL line: full as in long
+ * enough to say anything about the pitch (`VOTER_MIN_CELLS`; a balloon of
+ * short lines only has those) and one clean column (`body`). Deliberately
+ * small print — ruby split off its base text, an aside: a cap under
+ * `SMALL_OUTLIER` of the block's area-weighted median, as for auto's reference
+ * size — does not pull the block down to its size. Every line then renders at
+ * the block's size, and only one that cannot carry even that (the ruby; a thin
+ * quad around two glyphs) goes lower, alone.
+ *
+ * A `cap` is null for a line that takes no file size (hidden, or drawn on the
+ * file's cells).
+ */
+function fileLineSizes(
+  fileSize: number,
+  lines: { cap: number | null; cells: number; area: number; body: boolean }[]
+): (number | null)[] {
+  // No clean column at all (a hallucination cluster, one quad around a whole
+  // balloon): nothing speaks for the block, and every line has its own cap.
+  const body = lines.filter((line) => line.cap !== null && line.body);
+  const full = body.filter((line) => line.cells >= VOTER_MIN_CELLS);
+  const deciding = full.length ? full : body;
+  let blockSize = fileSize;
+  if (deciding.length) {
+    const reference = weightedMedian(
+      deciding.map((line) => line.cap!),
+      deciding.map((line) => line.area)
+    );
+    for (const line of deciding) {
+      if (line.cap! >= SMALL_OUTLIER * reference) blockSize = Math.min(blockSize, line.cap!);
+    }
+  }
+  return lines.map((line) => (line.cap === null ? null : Math.min(blockSize, line.cap)));
+}
+
 /** Two lines whose bboxes overlap by this fraction of the smaller one are
  * re-captures of the same ink region — one of them is suppressed. */
 const RECAPTURE_OVERLAP = 0.7;
@@ -333,6 +429,11 @@ export function layoutLines(
 
   const cellMode = opts?.cells ?? 'repaired';
   const offsets = cellMode === 'off' ? null : parallelOffsets(block);
+  // Original mode: the file's size (as far as the quads can carry it), and
+  // none of the fit-making below.
+  const asFiled = opts?.size === 'file';
+  const fileSize =
+    asFiled && Number.isFinite(block.font_size) && block.font_size > 0 ? block.font_size : null;
 
   // First pass: per-line geometry and single-line fitted sizes.
   interface MeasuredLine {
@@ -465,10 +566,12 @@ export function layoutLines(
     }
   }
   // Pass 2: cluster the remaining diverged overlaps (connected components)
-  // and partition each cluster's union bbox into reading-order bands.
+  // and partition each cluster's union bbox into reading-order bands. Not as
+  // filed: lines with different text on overlapping quads are what the file
+  // says, and each renders on its own quad.
   const clusterOf = measured.map(() => -1);
   let clusterCount = 0;
-  for (let i = 0; i < measured.length; i++) {
+  for (let i = 0; i < measured.length && !asFiled; i++) {
     if (measured[i].hidden) continue;
     for (let j = i + 1; j < measured.length; j++) {
       if (measured[j].hidden) continue;
@@ -547,6 +650,33 @@ export function layoutLines(
     m.candidate = Math.min(m.extents.cross, m.fitted);
   });
 
+  // Original mode's sizes, from the pitches just settled.
+  const fileSizes =
+    fileSize === null
+      ? null
+      : fileLineSizes(
+          fileSize,
+          measured.map((m) => ({
+            cap:
+              m.hidden || m.placed
+                ? null
+                : Math.min(
+                    m.extents.cross * CROSS_SLACK,
+                    m.pitch
+                      ? maxSizeAtSpacing({
+                          pitch: m.pitch,
+                          advanceEm: m.advanceEm,
+                          count: m.input.count,
+                          minSpacingEm: FILE_MIN_SPACING_EM
+                        })
+                      : Number.POSITIVE_INFINITY
+                  ),
+            cells: m.pitch ? m.advanceEm - m.pitch.lead - m.pitch.trail : 0,
+            area: m.extents.main * m.extents.cross,
+            body: !m.suspect
+          }))
+        );
+
   // Block reference size: print keeps one size per balloon, so all lines
   // render uniformly at the size the trustworthy lines agree on. Exclude
   // merged-columns suspects (their fitted size is artificially small), then
@@ -574,6 +704,8 @@ export function layoutLines(
   const wrapStart = hasCleanLines ? referenceSize : Number.POSITIVE_INFINITY;
   const wraps = measured.map(
     (m) =>
+      // as filed, a merged-columns suspect is one long run on its quad
+      !asFiled &&
       !m.hidden &&
       !m.slice &&
       m.suspect &&
@@ -684,9 +816,12 @@ export function layoutLines(
     // tight for the block consensus).
     const fitsUniform =
       uniformSize <= measured[i].fitted * OVERFLOW_TOL &&
-      uniformSize <= extents.cross * 1.2 &&
+      uniformSize <= extents.cross * CROSS_SLACK &&
       candidate >= SMALL_OUTLIER * refBase;
-    const fontSize = Math.max(MIN_FONT_SIZE, fitsUniform ? uniformSize : candidate);
+    const fontSize = Math.max(
+      MIN_FONT_SIZE,
+      fileSizes?.[i] ?? (fitsUniform ? uniformSize : candidate)
+    );
 
     // Reading axis: anchor at the quad start (top for vertical, left for
     // horizontal). Cross axis: center the rendered column/row in the quad —
@@ -718,10 +853,13 @@ export function layoutLines(
   // now (both of them, if both are turned) and takes part in the nudging and
   // clipping like before. Every fallback is a line that stops being rotated,
   // so this settles in at most one pass per line.
+  //
+  // As filed there are no guessed containers and nothing arbitrates overlaps,
+  // so every visible line turns with its quad, whatever it then touches.
   const upright = layouts.slice();
   for (let i = 0; i < layouts.length; i++) {
     const { frame, placed } = measured[i];
-    if (frame.angle === 0 || model.trust[i] !== 2) continue;
+    if (frame.angle === 0 || (asFiled ? layouts[i].hidden : model.trust[i] !== 2)) continue;
     const width = block.vertical ? frame.cross : frame.main;
     const height = block.vertical ? frame.main : frame.cross;
     layouts[i] = {
@@ -735,21 +873,22 @@ export function layoutLines(
       inset: placed ? placed.start : 0
     };
   }
-  for (let settled = false; !settled; ) {
-    settled = true;
-    for (let i = 0; i < layouts.length; i++) {
-      if (!layouts[i].rotation) continue;
-      for (let j = 0; j < layouts.length; j++) {
-        if (j === i || model.trust[j] !== 2 || !model.rectsHit(i, j)) continue;
-        layouts[i] = upright[i];
-        if (layouts[j].rotation) layouts[j] = upright[j];
-        settled = false;
-        break;
+  if (!asFiled) {
+    for (let settled = false; !settled; ) {
+      settled = true;
+      for (let i = 0; i < layouts.length; i++) {
+        if (!layouts[i].rotation) continue;
+        for (let j = 0; j < layouts.length; j++) {
+          if (j === i || model.trust[j] !== 2 || !model.rectsHit(i, j)) continue;
+          layouts[i] = upright[i];
+          if (layouts[j].rotation) layouts[j] = upright[j];
+          settled = false;
+          break;
+        }
       }
     }
+    enforceNoOverlap(layouts, model);
   }
-
-  enforceNoOverlap(layouts, model);
 
   // The fixed-pitch grid, last: it needs the sizes the clipping above settled
   // on. Wrapped (so also banded) and hidden lines have no single run to space,
@@ -770,8 +909,9 @@ export function layoutLines(
     // Spreading a run out makes it longer than the text the overlap pass just
     // cleared. If that reaches a neighbour (quads overlapping end to end), the
     // line keeps the unspaced run it had. A rotated line was admitted at its
-    // full length, and closing a run up only ever shortens it.
-    if (grid.letterSpacing > 0 && !l.rotation) {
+    // full length, and closing a run up only ever shortens it. (As filed no
+    // overlap pass ran, and none is made up for here.)
+    if (grid.letterSpacing > 0 && !l.rotation && !asFiled) {
       for (let j = 0; j < layouts.length; j++) {
         if (j === i || model.collision(i, j) <= OVERLAP_EPS) continue;
         l.letterSpacing = 0;

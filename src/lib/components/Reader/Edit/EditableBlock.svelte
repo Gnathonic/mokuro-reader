@@ -55,6 +55,15 @@
    * A block without quads renders its lines in flow at a size that fits them
    * all; the toolbar's "Place lines" gives it quads.
    *
+   * The reader's font mode changes ONE thing here, the cells below. Placement
+   * never depends on it: the viewer puts a line on its quad, grid and tilt, in
+   * `auto` and in `original` alike, and so does this. The SIZE deliberately
+   * does not follow `original` (where the viewer renders the file's block
+   * `font_size`): in the editor the quad is the size — the side handle resizes
+   * the text by resizing the quad, and `font_size` is an OUTPUT, re-derived
+   * from the quads after every quad edit (`edit-ops.ts`) — so a line drawn at
+   * the stored `font_size` would not answer its own handle.
+   *
    * Only the `original` font mode — the viewer's diagnostic view of the file —
    * draws `char_offsets`: there a positioned line whose entry is usable (and
    * which runs the way its block does — see `placed`) shows the file's

@@ -193,6 +193,39 @@ describe('EditableBlock — the fixed-pitch grid', () => {
     // a line the file does not place is on the grid in original mode too
     expect(lines[2].querySelectorAll('.ocr-char')).toHaveLength(0);
   });
+
+  // The viewer's original mode now places lines on their quads too (grid and
+  // tilt, at the FILE's font_size). The editor already did, and keeps the
+  // quad's size in every mode: there the quad IS the size (the side handle),
+  // and font_size is re-derived from the quads on every quad edit.
+  it('original mode changes nothing about a line the file does not place: same box, turn, size and grid as auto', async () => {
+    const page = gridPage();
+    // a file size unlike the print's: the editor must not pick it up
+    (page.blocks[0] as Block).font_size = 64;
+    const { root } = mount(page);
+    const shape = () =>
+      lineEls(root)
+        .slice(2)
+        .map((el) => ({
+          text: el.textContent,
+          cells: el.querySelectorAll('.ocr-char').length,
+          style: el.getAttribute('style')
+        }));
+    const auto = shape();
+    expect(auto).toHaveLength(2);
+    const column = lineEls(root)[2];
+    expect(parseFloat(/rotate\((-?[\d.]+)deg\)/.exec(column.style.transform)![1])).toBeCloseTo(
+      20,
+      6
+    );
+    expect(column.style.fontSize).toBe('40px');
+    expect(px(column.style.letterSpacing)).toBeCloseTo(10, 6);
+    fontMode.set({ fontSize: 'original', boldFont: false });
+    await tick();
+    // lines 0–1 switched to cells, so the mode really is in effect
+    expect(lineEls(root)[1].querySelectorAll('.ocr-char')).toHaveLength(6);
+    expect(shape()).toEqual(auto);
+  });
 });
 
 describe('EditableBlock — a tilted quad shows the line turned', () => {

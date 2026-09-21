@@ -84,6 +84,12 @@ function makePage(blocks: unknown[]): Page {
 
 afterEach(cleanup);
 
+/** The block as a volume from before mokuro wrote line quads has it. */
+function withoutQuads<T extends object>(block: T): Omit<T, 'lines_coords'> {
+  const { lines_coords: _dropped, ...legacy } = block as T & { lines_coords?: unknown };
+  return legacy as Omit<T, 'lines_coords'>;
+}
+
 /** Render under another font-size setting, restoring auto afterwards. */
 function withFontSize<T>(fontSize: string | number, run: () => T): T {
   settingsStore.update((s) => ({ ...s, fontSize }));
@@ -196,23 +202,42 @@ describe('TextBoxes auto mode with lines_coords', () => {
     expect(parseFloat(box!.style.width)).toBeCloseTo(148 * 1.1, 1);
   });
 
-  it('original mode renders the raw block font_size without per-line layout', () => {
-    settingsStore.update((s) => ({ ...s, fontSize: 'original' }));
-    try {
+  // Was: 'original mode renders the raw block font_size without per-line
+  // layout'. Ignoring the line quads was a bug — a file with rotated quads
+  // rendered as one upright paragraph — and so was the raw font_size where the
+  // file's own quads contradict it: this block says 46px around ~34px print,
+  // and at 46px on its real pitch the glyphs draw on top of each other. The
+  // block's size is the file's, capped by what its lines can carry.
+  it('original mode places each line on its quad, at the block font_size its quads can carry', () => {
+    withFontSize('original', () => {
       const { container } = render(TextBoxes, {
         page: makePage([blockWithCoords]),
         volumeUuid: 'test-uuid'
       });
-      expect(container.querySelectorAll('.ocr-line.positionedLine')).toHaveLength(0);
-      expect(container.querySelectorAll('.ocr-line')).toHaveLength(3);
-      const box = container.querySelector<HTMLElement>('.textBox');
-      expect(box?.style.fontSize).toBe('46px');
-      // faithful original mode: unsized, overflow-visible box
-      expect(box?.style.width).toBe('');
-    } finally {
-      settingsStore.update((s) => ({ ...s, fontSize: 'auto' }));
-      expect(get(settingsStore)).toBeTruthy();
-    }
+      const spans = container.querySelectorAll<HTMLElement>('.ocr-line.positionedLine');
+      expect(spans).toHaveLength(3);
+      for (const span of spans) {
+        const size = parseFloat(span.style.fontSize);
+        expect(size).toBeLessThan(46);
+        expect(size).toBeGreaterThan(20);
+        // closed up by 5% of a glyph at the very most
+        expect(parseFloat(span.style.letterSpacing) / size).toBeGreaterThanOrEqual(-0.05 - 1e-9);
+        // the file is not second-guessed beyond that: auto wraps line 0 into
+        // its quad, original never does
+        expect(span.classList.contains('wrappedLine')).toBe(false);
+        expect(span.style.width).toBe('');
+      }
+      // the two clean columns in ONE size; the merged-columns line 0 (twice
+      // the glyphs its length holds at that size) alone goes lower
+      expect(spans[1].style.fontSize).toBe(spans[2].style.fontSize);
+      expect(parseFloat(spans[0].style.fontSize)).toBeLessThan(parseFloat(spans[1].style.fontSize));
+      const box = container.querySelector<HTMLElement>('.textBox')!;
+      expect(box.style.fontSize).toBe('46px');
+      expect(box.classList.contains('originalMode')).toBe(true);
+      // per-line boxes keep the OCR dimensions as the hover/tap target
+      expect(box.style.width).toBe('148px');
+      expect(box.style.height).toBe('235px');
+    });
   });
 });
 
@@ -243,12 +268,19 @@ describe('TextBoxes without char_offsets renders as it always has', () => {
     expect(markup(container)).toMatchSnapshot();
   });
 
-  it('original mode', () => {
+  // The recorded markup is the one from before original mode read the line
+  // quads, byte for byte: a block WITHOUT lines_coords (every volume imported
+  // before mokuro wrote them) has nothing to be placed on and keeps the
+  // whole-block paragraph at the file's size. The two blocks are the ones the
+  // snapshot was recorded with, minus their quads — the legacy markup never
+  // read them.
+  it('original mode, blocks without lines_coords', () => {
     withFontSize('original', () => {
       const { container } = render(TextBoxes, {
-        page: makePage([fixtureBlocks[3], blockWithCoords]),
+        page: makePage([fixtureBlocks[3], blockWithCoords].map(withoutQuads)),
         volumeUuid: 'test-uuid'
       });
+      expect(container.querySelectorAll('.positionedLine')).toHaveLength(0);
       expect(markup(container)).toMatchSnapshot();
     });
   });
@@ -530,7 +562,34 @@ describe('TextBoxes with char_offsets', () => {
       });
     });
 
-    it('keeps the whole-block rendering when no line yields cells', () => {
+    it('sizes a null line by the original-mode rule — the file’s size, capped — not by auto’s fit', () => {
+      // Block 1 says 59px; auto fits its lines at the block's 56.2px step.
+      const fitted = parseFloat(lineSpans(renderBlock(fixtureBlocks[1]))[1].style.fontSize);
+      expect(fitted).toBeCloseTo(56.22, 1);
+      cleanup();
+      withFontSize('original', () => {
+        const line = lineSpans(renderBlock(fixtureBlocks[1]))[1];
+        const size = parseFloat(line.style.fontSize);
+        // The unplaced line 1 is alone in saying anything about the pitch
+        // here (placed lines do not vote): its own 55.1px step. The file's
+        // 59px as far as that step carries it — closed up by 0.05em.
+        expect(size).toBeCloseTo(55.06 / 0.95, 1);
+        expect(size).toBeGreaterThan(fitted);
+        expect(size).toBeLessThanOrEqual(59);
+        expect(parseFloat(line.style.letterSpacing) / size).toBeCloseTo(-0.05, 6);
+        cleanup();
+        // a file that says LESS than the step is simply rendered
+        const small = lineSpans(renderBlock({ ...fixtureBlocks[1], font_size: 50 }))[1];
+        expect(small.style.fontSize).toBe('50px');
+        expect(parseFloat(small.style.letterSpacing)).toBeGreaterThan(0);
+      });
+    });
+
+    // Was: 'keeps the whole-block rendering when no line yields cells'. What
+    // holds is that unusable offsets change NOTHING — the block renders as if
+    // the field were absent. That rendering used to be the whole-block
+    // paragraph; with line quads in the file it is now the per-line one.
+    it('renders a block whose offsets are all unusable exactly like one without the field', () => {
       withFontSize('original', () => {
         // parallel, but every entry fails validation (wrong length)
         const junk = { ...fixtureBlocks[0], char_offsets: [[0, 10], null, [0, 10]] };
@@ -540,7 +599,11 @@ describe('TextBoxes with char_offsets', () => {
         const expected = markup(container);
         cleanup();
         expect(expected).toBe(markup(renderBlock(bare)));
-        expect(expected).not.toContain('positionedLine');
+        expect(expected).not.toContain('ocr-char');
+        expect(expected).toContain('positionedLine');
+        cleanup();
+        // …and with no quads either, the whole-block paragraph it always was
+        expect(markup(renderBlock(withoutQuads(junk)))).not.toContain('positionedLine');
       });
     });
   });
@@ -558,7 +621,7 @@ describe('TextBoxes with char_offsets', () => {
   });
 });
 
-describe('TextBoxes auto mode: the fixed-pitch grid and rotation', () => {
+describe('TextBoxes: the fixed-pitch grid and rotation', () => {
   const renderBlocks = (blocks: unknown[]) =>
     render(TextBoxes, { page: makePage(blocks), volumeUuid: 'test-uuid' }).container;
   const lineSpans = (container: HTMLElement) => [
@@ -712,5 +775,128 @@ describe('TextBoxes auto mode: the fixed-pitch grid and rotation', () => {
     } finally {
       if (descriptor) Object.defineProperty(HTMLElement.prototype, 'offsetParent', descriptor);
     }
+  });
+
+  // ORIGINAL mode is the file as it is: the placement the file gives (line
+  // quads → frame, pitch grid, ink insets, rotation — all of the above) at the
+  // size the file gives (the block's font_size), where auto fits one. A block
+  // the file places character by character draws those cells instead
+  // ('TextBoxes with char_offsets'); a block with no quads has nothing to be
+  // placed on ('…renders as it always has').
+  describe("original mode: the same placement, at the file's font size", () => {
+    // the file says 44px around 50px print, and 42px around 40px print — 5%
+    // over the step, as a consistent mokuro file does
+    const sfx44 = { ...sfx, font_size: 44 };
+    const loose42 = { ...loose, font_size: 42 };
+    /** jsdom lays nothing out: give the action a layout to run on, every span
+     * naturally at (0,0) and 0×0. Real geometry: e2e/line-grid.spec.ts. */
+    async function withOffsetParent(run: () => Promise<void>) {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetParent');
+      Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
+        configurable: true,
+        get(this: HTMLElement) {
+          return this.parentElement;
+        }
+      });
+      try {
+        await run();
+      } finally {
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, 'offsetParent', descriptor);
+        settingsStore.update((s) => ({ ...s, fontSize: 'auto' }));
+      }
+    }
+
+    it('a tilted quad without char_offsets: one in-flow text node, turned, at font_size', () => {
+      const [line] = lineSpans(withFontSize('original', () => renderBlocks([sfx44])));
+      expect(line.classList.contains('positionedLine')).toBe(true);
+      expect(line.style.fontSize).toBe('44px');
+      // the very box and angle auto gives the line
+      expect(Number(line.dataset.rotation)).toBeCloseTo(20, 6);
+      expect(Number(line.dataset.boxWidth)).toBeCloseTo(50, 6);
+      expect(Number(line.dataset.boxHeight)).toBeCloseTo(360, 6);
+      expect(Number(line.dataset.targetLeft) + 25).toBeCloseTo(500 - sfx.box[0], 6);
+      expect(Number(line.dataset.targetTop) + 180).toBeCloseTo(400 - sfx.box[1], 6);
+      // the print's 64.2px step less the file's 44px; the first glyph centred
+      // on the print's 50px one: 3px later than its cell, which starts 6px early
+      const step = 50 + (360 - 50 * (6 - 0.12 - 0.1)) / 5;
+      expect(parseFloat(line.style.letterSpacing)).toBeCloseTo(step - 44, 6);
+      expect(Number(line.dataset.inset)).toBeCloseTo(3 - 6, 6);
+      expect(line.style.position).toBe('');
+      expect(line.style.width).toBe('');
+      expect(line.children).toHaveLength(0);
+      expect(line.textContent).toBe('ドドドドドド');
+      const box = line.closest<HTMLElement>('.textBox')!;
+      expect(box.classList.contains('perLine')).toBe(true);
+      expect(box.classList.contains('originalMode')).toBe(true);
+    });
+
+    it('upright lines: letter-spacing is the pitch less the file size, closing up when the file overstates', () => {
+      const [full, short] = lineSpans(withFontSize('original', () => renderBlocks([loose42])));
+      expect(full.style.fontSize).toBe('42px');
+      expect(short.style.fontSize).toBe('42px');
+      expect(parseFloat(full.style.letterSpacing)).toBeCloseTo(40 - 42, 6);
+      expect(parseFloat(short.style.letterSpacing)).toBeCloseTo(56 - 42, 6);
+      expect(Number(full.dataset.inset)).toBeCloseTo(-1 - 4.4, 6);
+      expect(short.dataset.targetTop).toBe('4.4');
+      expect(full.dataset.rotation).toBeUndefined();
+    });
+
+    it('a font_size the quads contradict is capped: glyphs never close up by more than 0.05em, one size per block', () => {
+      // mokuro's p95: twice the print. 80px glyphs on a 40px step used to
+      // fall off the grid (an unspaced 640px run down a 320px column, 80px
+      // wide on 40px columns 50px apart).
+      const [full, short] = lineSpans(
+        withFontSize('original', () => renderBlocks([{ ...loose, font_size: 80 }]))
+      );
+      expect(parseFloat(full.style.fontSize)).toBeCloseTo(40 / 0.95, 6);
+      expect(short.style.fontSize).toBe(full.style.fontSize);
+      expect(parseFloat(full.style.letterSpacing)).toBeCloseTo(40 - 40 / 0.95, 6);
+      expect(parseFloat(short.style.letterSpacing)).toBeCloseTo(56 - 40 / 0.95, 6);
+      // the block's own font-size stays the file's: only the lines are capped
+      expect(full.closest<HTMLElement>('.textBox')!.style.fontSize).toBe('80px');
+    });
+
+    it('a manual size is untouched by any of it: no per-line spans, no rotation', () => {
+      const container = withFontSize(24, () => renderBlocks([sfx44, loose42]));
+      expect(container.querySelectorAll('.positionedLine')).toHaveLength(0);
+      expect(container.querySelectorAll('[data-rotation]')).toHaveLength(0);
+      for (const box of container.querySelectorAll<HTMLElement>('.textBox')) {
+        expect(box.style.fontSize).toBe('24pt');
+        expect(box.classList.contains('perLine')).toBe(false);
+      }
+    });
+
+    it('positionPerLine turns the line in original mode, and re-measures on auto → original → auto', async () => {
+      await withOffsetParent(async () => {
+        const container = renderBlocks([sfx44]);
+        const line = () => lineSpans(container)[0];
+        const placed = () => {
+          const match = /^translate\((-?[\d.]+)px, (-?[\d.]+)px\) rotate\(([\d.]+)deg\)$/.exec(
+            line().style.transform
+          );
+          expect(match, line().style.transform).not.toBeNull();
+          const [x, y, deg] = match!.slice(1).map(Number);
+          return { x, y, deg, origin: line().style.transformOrigin.split(' ').map(parseFloat) };
+        };
+        // a 0×0 span: centred across the box, the run starting `inset` before
+        // the box's start edge — 6px in auto (50px glyphs), 3px at the file's 44
+        const startEdge = 400 - sfx.box[1] - 180;
+        const expectPlaced = async (fontSize: number, inset: number) => {
+          await vi.waitFor(() => {
+            expect(parseFloat(line().style.fontSize)).toBeCloseTo(fontSize, 6);
+            expect(placed().y).toBeCloseTo(startEdge + inset, 6);
+          });
+          expect(placed().x).toBeCloseTo(500 - sfx.box[0], 6);
+          expect(placed().deg).toBeCloseTo(20, 6);
+          expect(placed().origin[0]).toBeCloseTo(0, 6);
+          expect(placed().origin[1]).toBeCloseTo(180 - inset, 6);
+        };
+        await expectPlaced(50, -6);
+        settingsStore.update((s) => ({ ...s, fontSize: 'original' }));
+        await expectPlaced(44, -3);
+        settingsStore.update((s) => ({ ...s, fontSize: 'auto' }));
+        await expectPlaced(50, -6);
+      });
+    });
   });
 });

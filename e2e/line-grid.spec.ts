@@ -39,6 +39,9 @@ interface FixtureBlock {
   /** NOT file data (stripped before seeding): the boxes of cells the print is
    * drawn in, one per line — what every expectation below is measured against. */
   cells: Quad[];
+  /** NOT file data: seed the block WITHOUT its lines_coords — a volume from
+   * before mokuro wrote them. */
+  noQuads?: true;
 }
 interface FixturePage {
   version: string;
@@ -182,6 +185,40 @@ const PAGE: FixturePage = {
   blocks: BLOCKS
 };
 
+// ORIGINAL mode: the file's placement at the file's SIZE — capped where the
+// file's own quads contradict it. The print is 50px SFX on a 60px step and
+// 40px kana set solid; the file's font_size says otherwise, the way mokuro's
+// does (it is the quad's thickness, ruby and mask slack included — and
+// sometimes short). None carries char_offsets.
+const FILE_UNDER = block(true, 44, [SFX], [tilted(450, 2350, 50, 360, 25)]);
+const FILE_OVER = block(false, 70, [SFX], [tilted(1100, 2350, 360, 50, -12)]);
+const FILE_SOLID_OVER = block(true, 46, [KANA8], [upright(300, 300, 340, 620)]);
+// mokuro's usual contradiction: a balloon of 40px print set solid — three
+// columns 50px apart — whose font_size says 56 (1.4× its own pitch). Rendered
+// as filed the glyphs draw on top of each other (−0.29em) and the columns run
+// into their neighbours sideways (56px glyphs every 50px).
+const FILE_BUBBLE_OVER = block(true, 56, BALLOON_LINES, BALLOON_CELLS);
+// No quads at all: nothing to place the lines on, in any mode.
+const FILE_LEGACY: FixtureBlock = {
+  ...block(
+    true,
+    40,
+    ['たちつてとな', 'にぬねの'],
+    [upright(1560, 300, 1600, 540), upright(1510, 300, 1550, 460)]
+  ),
+  noQuads: true
+};
+const ORIGINAL_BLOCKS = [
+  ROT_M35,
+  H_ROT_M15,
+  FILE_UNDER,
+  FILE_OVER,
+  FILE_SOLID_OVER,
+  FILE_BUBBLE_OVER,
+  FILE_LEGACY
+];
+const ORIGINAL_PAGE: FixturePage = { ...PAGE, blocks: ORIGINAL_BLOCKS };
+
 async function seedVolume(page: Page, pages: FixturePage[], fontSize: string) {
   await page.goto('/');
   await page.waitForTimeout(800);
@@ -265,7 +302,11 @@ async function seedVolume(page: Page, pages: FixturePage[], fontSize: string) {
       // `cells` is the fixture's, not the file's
       const filePages = pages.map((p) => ({
         ...p,
-        blocks: p.blocks.map(({ cells: _cells, ...fileBlock }) => fileBlock)
+        blocks: p.blocks.map(({ cells: _cells, noQuads, ...fileBlock }) => {
+          if (!noQuads) return fileBlock;
+          const { lines_coords: _quads, ...legacy } = fileBlock;
+          return legacy;
+        })
       }));
       await db.volume_ocr.put({ volume_uuid: VOLUME_UUID, pages: filePages });
       await db.volume_files.put({ volume_uuid: VOLUME_UUID, files });
@@ -461,7 +502,141 @@ async function shot(page: Page, name: string, box: number[], pad = 40) {
   await style.evaluate((el) => el.remove());
 }
 
-test.describe('line grid — auto mode', () => {
+/**
+ * A line on a TILTED quad, measured against the print: the turn, the span and
+ * its ink centred on the box of cells, every glyph on its step of the turned
+ * grid, and the browser's own hit-testing following the turn. One body for
+ * auto and original mode — the font mode changes the glyph SIZE, not one
+ * tolerance of where the glyphs have to be.
+ */
+async function probeTurnedLine(
+  page: Page,
+  measured: MeasuredBlock[],
+  mode: string,
+  name: string,
+  b: FixtureBlock,
+  degrees: number
+) {
+  // the box of cells the print is drawn in; the file's quad hugs its ink
+  const quad = b.cells[0];
+  const line = findBlock(measured, b).lines[0];
+  let caretHits = 0;
+  let caretExact = 0;
+  let caretProbes = 0;
+  let quarterHits = 0;
+  let quarterProbes = 0;
+  const { centre, axis } = frameOf(quad, b.vertical);
+  const n = line.glyphs.length;
+  expect(line.text).toBe(SFX);
+  expect(line.children).toBe(0);
+  expect(line.textNodes).toBe(1);
+  const turn = /rotate\((-?[\d.]+)deg\)/.exec(line.transform);
+  expect(turn, line.transform).not.toBeNull();
+  expect(Number(turn![1])).toBeCloseTo(degrees, 4);
+
+  // The span's box runs from half a spacing past the cells' start to half
+  // a spacing past their end (the trailing spacing of the last glyph), so
+  // its centre sits that far along the axis; the INK is centred on them.
+  const half = line.letterSpacing / 2;
+  const spanCentre = centreOf(line.box);
+  const spanError = distance(spanCentre, [centre[0] + axis[0] * half, centre[1] + axis[1] * half]);
+  const first = inkCentre(line.glyphs[0], axis, line.letterSpacing);
+  const last = inkCentre(line.glyphs[n - 1], axis, line.letterSpacing);
+  const inkError = distance([(first[0] + last[0]) / 2, (first[1] + last[1]) / 2], centre);
+  expect(spanError).toBeLessThanOrEqual(2);
+  expect(inkError).toBeLessThanOrEqual(2);
+
+  const gridErrors = line.glyphs.map((glyph, k) =>
+    distance(inkCentre(glyph, axis, line.letterSpacing), cellCentre(quad, b.vertical, k, n))
+  );
+  for (const e of gridErrors) expect(e).toBeLessThanOrEqual(3);
+
+  // Hit-testing, in SCREEN px: what a pointer (and Yomitan under it) sees.
+  const probes = await page.evaluate(
+    ({ box, cells, quarters, outside }) => {
+      const pageEl = document.querySelector<HTMLElement>('[data-page-index="0"]')!;
+      const origin = pageEl.getBoundingClientRect();
+      const scale = origin.width / pageEl.offsetWidth;
+      const screen = ([x, y]: number[]) => [origin.left + x * scale, origin.top + y * scale];
+      const textBox = [...pageEl.querySelectorAll<HTMLElement>('.textBox')].find(
+        (el) =>
+          Math.abs(parseFloat(el.style.left) - box[0]) < 0.01 &&
+          Math.abs(parseFloat(el.style.top) - box[1]) < 0.01
+      )!;
+      const span = textBox.querySelector<HTMLElement>('.ocr-line')!;
+      const caretAt = (p: number[]) => {
+        const [x, y] = screen(p);
+        const caret = document.caretRangeFromPoint(x, y);
+        return caret && span.contains(caret.startContainer) ? caret.startOffset : -1;
+      };
+      const elementAt = (p: number[]) => {
+        const [x, y] = screen(p);
+        const el = document.elementFromPoint(x, y);
+        return { isSpan: el === span, inTextBox: !!el && textBox.contains(el) };
+      };
+      return {
+        cells: cells.map((p) => ({ ...elementAt(p), caret: caretAt(p) })),
+        quarters: quarters.map(([before, after]) => [caretAt(before), caretAt(after)]),
+        outside: outside.map(elementAt)
+      };
+    },
+    {
+      box: b.box,
+      cells: line.glyphs.map((_, k) => cellCentre(quad, b.vertical, k, n)),
+      // a quarter and three quarters of the way through each step
+      quarters: line.glyphs.map((_, k) => [
+        cellCentre(quad, b.vertical, k - 0.25, n),
+        cellCentre(quad, b.vertical, k + 0.25, n)
+      ]),
+      // the bbox's corners, 6px in: inside the quad's axis-aligned bbox
+      // (and the .textBox). A shallow tilt puts the quad's own corners in
+      // two of them; the rest are empty paper, 10px or more clear of it.
+      outside: (
+        [
+          [b.box[0] + 6, b.box[1] + 6],
+          [b.box[2] - 6, b.box[1] + 6],
+          [b.box[2] - 6, b.box[3] - 6],
+          [b.box[0] + 6, b.box[3] - 6]
+        ] as Point[]
+      ).filter((p) => clearOfQuad(p, quad, b.vertical, 10))
+    }
+  );
+
+  // every rotated cell centre is ON the span…
+  for (const [k, probe] of probes.cells.entries())
+    expect(probe.isSpan, `${name}: elementFromPoint at cell ${k}`).toBe(true);
+  // …and the empty corners of its bbox are not (they hit the box behind it)
+  expect(probes.outside.length).toBeGreaterThanOrEqual(2);
+  for (const [k, probe] of probes.outside.entries()) {
+    expect(probe.isSpan, `${name}: bbox corner ${k} is outside the turned line`).toBe(false);
+    expect(probe.inTextBox).toBe(true);
+  }
+  // the caret at cell k's centre is at character k (before or after it)
+  probes.cells.forEach((probe, k) => {
+    caretProbes++;
+    if (probe.caret === k || probe.caret === k + 1) caretHits++;
+    if (probe.caret === k) caretExact++;
+    expect([k - 1, k, k + 1, k + 2], `${name}: caret at cell ${k} → ${probe.caret}`).toContain(
+      probe.caret
+    );
+  });
+  // a quarter into the step the caret is before k; three quarters, after
+  probes.quarters.forEach(([before, after], k) => {
+    quarterProbes += 2;
+    if (before === k) quarterHits++;
+    if (after === k + 1) quarterHits++;
+  });
+
+  console.log(
+    `[line-grid] ${mode} ${name}: rotate(${turn![1]}deg); span centre ${spanError.toFixed(2)}px, ink centre ${inkError.toFixed(2)}px ` +
+      `off the quad centre; glyph-vs-rotated-grid max ${Math.max(...gridErrors).toFixed(2)}px ` +
+      `[${gridErrors.map((e) => e.toFixed(2)).join(' ')}]; elementFromPoint ${probes.cells.filter((p) => p.isSpan).length}/${n} cells, ` +
+      `${probes.outside.filter((p) => !p.isSpan).length}/${probes.outside.length} empty bbox corners miss; caret offsets at cell centres [${probes.cells.map((p) => p.caret).join(' ')}]`
+  );
+  return { line, gridErrors, caretHits, caretExact, caretProbes, quarterHits, quarterProbes };
+}
+
+test.describe('line grid — viewer', () => {
   // Denser raster only: CSS px (and so every measurement) are unchanged, but a
   // fit-to-screen page is ~0.4x and its glyphs are unreadable in a 1x capture.
   test.use({ deviceScaleFactor: 3 });
@@ -573,120 +748,12 @@ test.describe('line grid — auto mode', () => {
       ['vertical -35°', ROT_M35, -35],
       ['horizontal -15°', H_ROT_M15, -15]
     ] as const) {
-      // the box of cells the print is drawn in; the file's quad hugs its ink
-      const quad = b.cells[0];
-      const line = findBlock(measured, b).lines[0];
-      const { centre, axis } = frameOf(quad, b.vertical);
-      const n = line.glyphs.length;
-      expect(line.text).toBe(SFX);
-      expect(line.children).toBe(0);
-      expect(line.textNodes).toBe(1);
-      const turn = /rotate\((-?[\d.]+)deg\)/.exec(line.transform);
-      expect(turn, line.transform).not.toBeNull();
-      expect(Number(turn![1])).toBeCloseTo(degrees, 4);
-
-      // The span's box runs from half a spacing past the cells' start to half
-      // a spacing past their end (the trailing spacing of the last glyph), so
-      // its centre sits that far along the axis; the INK is centred on them.
-      const half = line.letterSpacing / 2;
-      const spanCentre = centreOf(line.box);
-      const spanError = distance(spanCentre, [
-        centre[0] + axis[0] * half,
-        centre[1] + axis[1] * half
-      ]);
-      const first = inkCentre(line.glyphs[0], axis, line.letterSpacing);
-      const last = inkCentre(line.glyphs[n - 1], axis, line.letterSpacing);
-      const inkError = distance([(first[0] + last[0]) / 2, (first[1] + last[1]) / 2], centre);
-      expect(spanError).toBeLessThanOrEqual(2);
-      expect(inkError).toBeLessThanOrEqual(2);
-
-      const gridErrors = line.glyphs.map((glyph, k) =>
-        distance(inkCentre(glyph, axis, line.letterSpacing), cellCentre(quad, b.vertical, k, n))
-      );
-      for (const e of gridErrors) expect(e).toBeLessThanOrEqual(3);
-
-      // Hit-testing, in SCREEN px: what a pointer (and Yomitan under it) sees.
-      const probes = await page.evaluate(
-        ({ box, cells, quarters, outside }) => {
-          const pageEl = document.querySelector<HTMLElement>('[data-page-index="0"]')!;
-          const origin = pageEl.getBoundingClientRect();
-          const scale = origin.width / pageEl.offsetWidth;
-          const screen = ([x, y]: number[]) => [origin.left + x * scale, origin.top + y * scale];
-          const textBox = [...pageEl.querySelectorAll<HTMLElement>('.textBox')].find(
-            (el) =>
-              Math.abs(parseFloat(el.style.left) - box[0]) < 0.01 &&
-              Math.abs(parseFloat(el.style.top) - box[1]) < 0.01
-          )!;
-          const span = textBox.querySelector<HTMLElement>('.ocr-line')!;
-          const caretAt = (p: number[]) => {
-            const [x, y] = screen(p);
-            const caret = document.caretRangeFromPoint(x, y);
-            return caret && span.contains(caret.startContainer) ? caret.startOffset : -1;
-          };
-          const elementAt = (p: number[]) => {
-            const [x, y] = screen(p);
-            const el = document.elementFromPoint(x, y);
-            return { isSpan: el === span, inTextBox: !!el && textBox.contains(el) };
-          };
-          return {
-            cells: cells.map((p) => ({ ...elementAt(p), caret: caretAt(p) })),
-            quarters: quarters.map(([before, after]) => [caretAt(before), caretAt(after)]),
-            outside: outside.map(elementAt)
-          };
-        },
-        {
-          box: b.box,
-          cells: line.glyphs.map((_, k) => cellCentre(quad, b.vertical, k, n)),
-          // a quarter and three quarters of the way through each step
-          quarters: line.glyphs.map((_, k) => [
-            cellCentre(quad, b.vertical, k - 0.25, n),
-            cellCentre(quad, b.vertical, k + 0.25, n)
-          ]),
-          // the bbox's corners, 6px in: inside the quad's axis-aligned bbox
-          // (and the .textBox). A shallow tilt puts the quad's own corners in
-          // two of them; the rest are empty paper, 10px or more clear of it.
-          outside: (
-            [
-              [b.box[0] + 6, b.box[1] + 6],
-              [b.box[2] - 6, b.box[1] + 6],
-              [b.box[2] - 6, b.box[3] - 6],
-              [b.box[0] + 6, b.box[3] - 6]
-            ] as Point[]
-          ).filter((p) => clearOfQuad(p, quad, b.vertical, 10))
-        }
-      );
-
-      // every rotated cell centre is ON the span…
-      for (const [k, probe] of probes.cells.entries())
-        expect(probe.isSpan, `${name}: elementFromPoint at cell ${k}`).toBe(true);
-      // …and the empty corners of its bbox are not (they hit the box behind it)
-      expect(probes.outside.length).toBeGreaterThanOrEqual(2);
-      for (const [k, probe] of probes.outside.entries()) {
-        expect(probe.isSpan, `${name}: bbox corner ${k} is outside the turned line`).toBe(false);
-        expect(probe.inTextBox).toBe(true);
-      }
-      // the caret at cell k's centre is at character k (before or after it)
-      probes.cells.forEach((probe, k) => {
-        caretProbes++;
-        if (probe.caret === k || probe.caret === k + 1) caretHits++;
-        if (probe.caret === k) caretExact++;
-        expect([k - 1, k, k + 1, k + 2], `${name}: caret at cell ${k} → ${probe.caret}`).toContain(
-          probe.caret
-        );
-      });
-      // a quarter into the step the caret is before k; three quarters, after
-      probes.quarters.forEach(([before, after], k) => {
-        quarterProbes += 2;
-        if (before === k) quarterHits++;
-        if (after === k + 1) quarterHits++;
-      });
-
-      console.log(
-        `[line-grid] ${name}: rotate(${turn![1]}deg); span centre ${spanError.toFixed(2)}px, ink centre ${inkError.toFixed(2)}px ` +
-          `off the quad centre; glyph-vs-rotated-grid max ${Math.max(...gridErrors).toFixed(2)}px ` +
-          `[${gridErrors.map((e) => e.toFixed(2)).join(' ')}]; elementFromPoint ${probes.cells.filter((p) => p.isSpan).length}/${n} cells, ` +
-          `${probes.outside.filter((p) => !p.isSpan).length}/${probes.outside.length} empty bbox corners miss; caret offsets at cell centres [${probes.cells.map((p) => p.caret).join(' ')}]`
-      );
+      const probed = await probeTurnedLine(page, measured, 'auto', name, b, degrees);
+      caretHits += probed.caretHits;
+      caretExact += probed.caretExact;
+      caretProbes += probed.caretProbes;
+      quarterHits += probed.quarterHits;
+      quarterProbes += probed.quarterProbes;
     }
     console.log(
       `[line-grid] touch zones: caret at a rotated cell centre is on character k (offset k or k+1) ${caretHits}/${caretProbes} ` +
@@ -874,6 +941,186 @@ test.describe('line grid — auto mode', () => {
     });
     console.log(`[line-grid] upright balloon: ${report.join('; ')}`);
     await shot(page, 'upright-balloon', BALLOON.box);
+  });
+
+  test('(6) original mode: the same placement at the FILE’s font size (capped by the file’s own geometry: no colliding glyphs or columns) — turned, on the grid, hit-tested; auto → original → auto re-renders live', async ({
+    page
+  }) => {
+    await seedVolume(page, [ORIGINAL_PAGE], 'auto');
+    await openReader(page);
+    /** Both frames of a re-measure: the action schedules one rAF per update. */
+    const switchTo = async (fontSize: string) => {
+      await setFontSize(page, fontSize);
+      await page.evaluate(
+        () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+      );
+    };
+    const placed = ORIGINAL_BLOCKS.filter((b) => !b.noQuads);
+    const shape = (measured: MeasuredBlock[]) =>
+      placed.map((b) =>
+        findBlock(measured, b).lines.map((l) => ({
+          fontSize: l.fontSize,
+          letterSpacing: l.letterSpacing,
+          transform: l.transform,
+          transformOrigin: l.transformOrigin,
+          glyphs: l.glyphs.map((g) => [g.x, g.y, g.w, g.h].map((v) => Math.round(v * 100) / 100))
+        }))
+      );
+
+    const auto = await measure(page);
+    // auto FITS: the print's 50px and 40px, whatever the file says
+    expect(findBlock(auto, FILE_UNDER).lines[0].fontSize).toBeCloseTo(50, 1);
+    expect(findBlock(auto, FILE_OVER).lines[0].fontSize).toBeCloseTo(50, 1);
+    expect(findBlock(auto, FILE_SOLID_OVER).lines[0].fontSize).toBeCloseTo(40, 1);
+
+    await switchTo('original');
+    const original = await measure(page);
+    await expect(page.locator('.ocr-char')).toHaveCount(0);
+
+    // Tilted lines: turned, at the file's size, on the turned grid — the very
+    // probes and tolerances auto mode is held to in (2).
+    const step = 360 / SFX.length; // the print's: six cells in the 360px box
+    let caretHits = 0;
+    let caretProbes = 0;
+    let quarterHits = 0;
+    let quarterProbes = 0;
+    const worst: number[] = [];
+    // The file's size is CAPPED where the file's own quads contradict it:
+    // 70px on a 50px-thick quad renders at 1.2 × the thickness.
+    for (const [name, b, degrees, size] of [
+      ['vertical -35°, file 50px = print', ROT_M35, -35, 50],
+      ['horizontal -15°, file 50px = print', H_ROT_M15, -15, 50],
+      ['vertical +25°, file 44px < print', FILE_UNDER, 25, 44],
+      ['horizontal -12°, file 70px > print (capped: 60px)', FILE_OVER, -12, 60]
+    ] as const) {
+      const probed = await probeTurnedLine(page, original, 'original', name, b, degrees);
+      expect(probed.line.fontSize).toBeCloseTo(size, 3);
+      // what is left of the print's step once that size is taken
+      expect(probed.line.letterSpacing).toBeCloseTo(step - size, 1);
+      caretHits += probed.caretHits;
+      caretProbes += probed.caretProbes;
+      quarterHits += probed.quarterHits;
+      quarterProbes += probed.quarterProbes;
+      worst.push(Math.max(...probed.gridErrors));
+    }
+    expect(caretHits).toBe(caretProbes);
+    expect(quarterHits / quarterProbes).toBeGreaterThanOrEqual(0.9);
+
+    // Upright, overstated: the file's 46px on the print's 40px step would
+    // close the glyphs up by 0.13em. Capped at −0.05em (42.1px), each glyph
+    // centred on its cell; the column centred across its quad.
+    const solid = findBlock(original, FILE_SOLID_OVER).lines[0];
+    const capped = 40 / 0.95;
+    expect(solid.fontSize).toBeCloseTo(capped, 2);
+    expect(solid.letterSpacing).toBeCloseTo(40 - capped, 1);
+    expect(solid.transform).not.toContain('rotate');
+    const solidErrors = solid.glyphs.map((glyph, k) =>
+      distance(
+        inkCentre(glyph, [0, 1], solid.letterSpacing),
+        cellCentre(FILE_SOLID_OVER.cells[0], true, k, solid.glyphs.length)
+      )
+    );
+    for (const e of solidErrors) expect(e).toBeLessThanOrEqual(3);
+
+    // LEGIBILITY: a balloon whose font_size is 1.4× its own pitch. One size
+    // for the bubble; no two adjacent glyphs of a line overlap by more than 5%
+    // of a glyph; no column reaches into its neighbour.
+    const bubble = findBlock(original, FILE_BUBBLE_OVER).lines;
+    expect(bubble).toHaveLength(BALLOON_LINES.length);
+    expect(FILE_BUBBLE_OVER.font_size / 40).toBeCloseTo(1.4, 6);
+    let worstEmOverlap = -Infinity;
+    let worstInkOverlap = -Infinity;
+    bubble.forEach((line, i) => {
+      expect(line.fontSize).toBeCloseTo(capped, 2);
+      expect(line.transform).not.toContain('rotate');
+      const size = line.fontSize;
+      const [lead, trail] = inkOf(line.text[0]);
+      line.glyphs.slice(0, -1).forEach((glyph, k) => {
+        const next = line.glyphs[k + 1];
+        // A Range over one character starts at its glyph's em box (the
+        // spacing comes AFTER the glyph): the box is `size` long from there,
+        // the ink what the fixture's own inset table leaves of it.
+        const emOverlap = glyph.y + size - next.y;
+        const inkOverlap = glyph.y + size * (1 - trail) - (next.y + size * lead);
+        worstEmOverlap = Math.max(worstEmOverlap, emOverlap / size);
+        worstInkOverlap = Math.max(worstInkOverlap, inkOverlap / size);
+        expect(inkOverlap, `line ${i}: ink of glyphs ${k}/${k + 1}`).toBeLessThanOrEqual(
+          0.05 * size
+        );
+        expect(emOverlap, `line ${i}: em boxes of glyphs ${k}/${k + 1}`).toBeLessThanOrEqual(
+          0.05 * size + 0.1
+        );
+      });
+      // each glyph still centred on its print cell
+      line.glyphs.forEach((glyph, k) => {
+        const error = distance(
+          inkCentre(glyph, [0, 1], line.letterSpacing),
+          cellCentre(FILE_BUBBLE_OVER.cells[i], true, k, line.glyphs.length)
+        );
+        expect(error, `line ${i} glyph ${k} on its cell`).toBeLessThanOrEqual(3);
+      });
+    });
+    // Columns run right → left: no column's glyphs reach into the next one.
+    // ACROSS the line a Range's rect is the font's whole content area (ascent
+    // + descent, ~1.45em — overlapping rects mean nothing); the glyphs' em
+    // boxes are `size` wide about its centre, which sits on the print column.
+    const columns = bubble.map((line, i) => {
+      const centre = line.glyphs.reduce((sum, g) => sum + g.x + g.w / 2, 0) / line.glyphs.length;
+      const cell = FILE_BUBBLE_OVER.cells[i];
+      expect(Math.abs(centre - (cell[0][0] + cell[1][0]) / 2)).toBeLessThanOrEqual(1);
+      return { min: centre - line.fontSize / 2, max: centre + line.fontSize / 2 };
+    });
+    let worstSideways = -Infinity;
+    for (let i = 0; i + 1 < columns.length; i++) {
+      const sideways = columns[i + 1].max - columns[i].min;
+      worstSideways = Math.max(worstSideways, sideways);
+      expect(sideways, `columns ${i}/${i + 1} overlap sideways`).toBeLessThanOrEqual(0.5);
+    }
+    console.log(
+      `[line-grid] original, font_size 1.4× the pitch: rendered at ${bubble[0].fontSize.toFixed(2)}px, ` +
+        `letter-spacing ${bubble[0].letterSpacing.toFixed(2)}px; worst adjacent em-box overlap ${(worstEmOverlap * 100).toFixed(1)}% of a glyph, ` +
+        `ink ${(worstInkOverlap * 100).toFixed(1)}%; columns closest ${(-worstSideways).toFixed(2)}px apart`
+    );
+    await shot(page, 'original-bubble-over', FILE_BUBBLE_OVER.box);
+
+    // No quads: the whole-block paragraph at the file's size, as ever.
+    const legacy = await page.evaluate((box) => {
+      const textBox = [...document.querySelectorAll<HTMLElement>('.textBox')].find(
+        (el) => parseFloat(el.style.left) === box[0] && parseFloat(el.style.top) === box[1]
+      )!;
+      return {
+        classes: [...textBox.classList],
+        fontSize: getComputedStyle(textBox.querySelector('.ocr-line')!).fontSize,
+        positioned: textBox.querySelectorAll('.positionedLine').length,
+        transforms: [...textBox.querySelectorAll<HTMLElement>('.ocr-line')].map(
+          (l) => l.style.transform
+        )
+      };
+    }, FILE_LEGACY.box);
+    expect(legacy.classes).toContain('originalMode');
+    expect(legacy.classes).not.toContain('perLine');
+    expect(legacy.positioned).toBe(0);
+    expect(legacy.fontSize).toBe('40px');
+    expect(legacy.transforms).toEqual(['', '']);
+
+    console.log(
+      `[line-grid] original: glyph-vs-rotated-grid worst per line [${worst.map((e) => e.toFixed(2)).join(' ')}]px (limit 3, as auto); ` +
+        `upright 46px-file-on-40px-step (capped ${capped.toFixed(1)}px) max ${Math.max(...solidErrors).toFixed(2)}px; caret on character ${caretHits}/${caretProbes}, ` +
+        `quarter-step probes ${quarterHits}/${quarterProbes}`
+    );
+    await shot(page, 'original-tilted-under', FILE_UNDER.box);
+    await shot(page, 'original-tilted-over', FILE_OVER.box);
+    await shot(page, 'original-upright-over', FILE_SOLID_OVER.box);
+
+    // Live: the same spans are re-sized and RE-MEASURED on every switch (the
+    // action's signature carries the mode and every line's size, spacing and
+    // turn). Original really differs from auto, and auto comes back exactly.
+    expect(shape(original)).not.toEqual(shape(auto));
+    await switchTo('auto');
+    const back = await measure(page);
+    expect(shape(back)).toEqual(shape(auto));
+    await switchTo('original');
+    expect(shape(await measure(page))).toEqual(shape(original));
   });
 });
 

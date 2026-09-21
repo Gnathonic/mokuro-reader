@@ -57,9 +57,10 @@
     area: number;
     useMinDimensions: boolean;
     isOriginalMode: boolean;
-    /** Per-line positions/sizes from lines_coords — auto mode, and original
-     * mode for a block whose file places its characters (char_offsets);
-     * null falls back to legacy hover-fit auto / whole-block original */
+    /** Per-line positions/sizes from lines_coords — auto mode (fitted sizes)
+     * and original mode (the file's size, or the file's char_offsets cells);
+     * null (no usable quads) falls back to legacy hover-fit auto / whole-block
+     * original */
     lineLayouts: LineLayout[] | null;
     /** Changes whenever a line's flow size or target can have: re-measure */
     layoutSignature: string;
@@ -97,18 +98,35 @@
           ? layoutLines(block, processedLines, getDefaultMeasurer(), { cells: 'off' })
           : null;
 
-        // Original mode is "what the file says" — the diagnostic view of the
-        // producer's char_offsets: a block whose file places its characters
-        // renders them exactly there, zero-width cells and all, and
-        // its unplaced lines ride the same per-line layout so the block stays
-        // coherent. A block with no usable placement keeps the whole-block
-        // rendering it has always had. (The key check keeps blocks without the
-        // field — the whole existing library — from paying for a layout.)
-        if (isOriginalMode && block.char_offsets) {
-          const placed = layoutLines(block, processedLines, getDefaultMeasurer(), {
-            cells: 'as-is'
+        // Original mode is "what the file says": the file's PLACEMENT at the
+        // file's SIZE. The placement is the line quads — so every line goes on
+        // its quad exactly as in auto (frame, the block's pitch grid, ink
+        // insets, a tilted quad turned) — and the size is the block's
+        // font_size instead of a fitted one, with nothing wrapped, clipped or
+        // moved to make that size fit (`size: 'file'`). It used to ignore the
+        // quads and flow the block as one upright paragraph, which left a
+        // file whose lines are rotated looking nothing like what it says.
+        //
+        // Where the file contradicts ITSELF the quads win: mokuro's font_size
+        // is the quad's thickness, ruby and mask slack included (median +20%,
+        // p95 2×), and at that size on the file's real pitch the glyphs draw
+        // on top of each other. So the block's size is its font_size capped by
+        // what its lines can carry (spacing never under −0.05em, never much
+        // thicker than the quad — `fileLineSizes`), still ONE size per block.
+        //
+        // A block whose file also places its CHARACTERS (char_offsets) is the
+        // diagnostic view of those: the cells exactly where the producer put
+        // them, zero-width ones and all. A line of it the file does NOT place
+        // (a null entry) follows the same original-mode rule as every other
+        // unplaced line — the file's size, capped — not auto's fitted one.
+        // Only a block without usable quads (volumes from before mokuro wrote
+        // lines_coords) keeps the whole-block paragraph: there is nothing to
+        // place its lines on.
+        if (isOriginalMode) {
+          lineLayouts = layoutLines(block, processedLines, getDefaultMeasurer(), {
+            cells: block.char_offsets ? 'as-is' : 'off',
+            size: 'file'
           });
-          if (placed?.some((line) => line.cells)) lineLayouts = placed;
         }
 
         // Only expand bounding boxes for legacy hover-fit auto sizing;
@@ -382,7 +400,8 @@
     };
   }
 
-  // Auto (per-line) mode: each line renders as an inline-block kept in normal
+  // Per-line layout (auto mode, and original mode for a block with line
+  // quads): each line renders as an inline-block kept in normal
   // flow, so DOM text scanners (Yomitan/Migaku) read the whole block as one
   // continuous run — a per-line `position: absolute` would inject a hard break
   // at every line and split words/sentences across lines (issue #254). We then
@@ -801,7 +820,9 @@
     visibility: visible;
   }
 
-  /* Original mode: no size constraints, allow overflow */
+  /* Original mode: the file's font size is not made to fit, so text may run
+     past the box — never clipped. (A per-line box keeps its OCR dimensions as
+     the hover target; a whole-block one is unsized.) */
   .textBox.originalMode {
     overflow: visible;
     white-space: nowrap;
@@ -811,8 +832,9 @@
     white-space: nowrap;
   }
 
-  /* Auto mode with lines_coords: each line is placed at its detected quad with
-     a geometry-derived font size. The line stays inline-block IN NORMAL FLOW
+  /* Auto and original mode with lines_coords: each line is placed at its
+     detected quad — with a geometry-derived font size in auto, the file's
+     block font_size in original. The line stays inline-block IN NORMAL FLOW
      (not position:absolute) so DOM text scanners read the block as one
      continuous run (#254); a measurement action then translates it onto the
      quad. line-height 1 keeps the column/row no thicker than the font size.

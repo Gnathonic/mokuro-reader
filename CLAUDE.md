@@ -684,15 +684,35 @@ must not break. Highlights:
   CSS-clockwise, in (−90°, 90°]. The browser hit-tests the turned glyphs, so pop-up
   dictionaries scan along the slant. A rotated line is never clipped or wrapped; one that
   would cross another clean line falls back to the upright layout.
-- **Original mode** is the diagnostic view of the file's `char_offsets`: `.ocr-char` cells,
-  as-is (rotated too). Manual sizes use neither.
+- **Original mode** is the file as it is: the file's PLACEMENT at the file's SIZE — and where
+  the two contradict each other, the GEOMETRY wins. A block with usable `lines_coords` takes
+  the same per-line path as auto — frame, block pitch, ink insets, letter-spacing, rotation —
+  via `layoutLines(…, { size: 'file' })`. The size rule (`fileLineSizes`): a line can carry a
+  size up to where its glyphs would close up by `FILE_MIN_SPACING_EM` (−0.05em) on its pitch
+  (`maxSizeAtSpacing`; solid fullwidth text: `pitch / 0.95`) and up to `CROSS_SLACK` (1.2) ×
+  its quad's thickness; the BLOCK renders at `min(font_size, its tightest full line's cap)` —
+  one size per block, as the file has (full = ≥ 4 cells and not merged-columns; ruby-sized
+  lines, under 0.7 of the block's median cap, don't pull the block down), and only a line
+  that cannot carry even that goes lower, alone. So a consistent file (font_size ≤ ~5% over
+  its pitch) keeps its size exactly, a smaller one gets positive spacing, and mokuro's usual
+  overstatement (quad width incl. furigana: median +20%, p95 2×) no longer draws glyphs on
+  top of each other or overflows the box. Still NOT auto: no fitted/uniform vote, no wrap
+  containers, no overlap bands, no nudging/clipping, and a tilt is never refused; the ONE
+  heuristic kept is hiding a re-captured duplicate line (same glyphs twice on one spot; its
+  text is inside the line that hides it). A block whose file carries usable `char_offsets`
+  is the diagnostic view of those instead: `.ocr-char` cells, as-is (rotated too); a line
+  of it with a `null` entry follows the same size rule, not auto's fit. A block WITHOUT
+  usable `lines_coords` keeps the legacy whole-block paragraph at the raw `font_size`.
+  Manual sizes use none of it.
 - **The OCR editor agrees** (`EditableBlock.svelte`, geometry in
   `src/lib/reader/edit/block-geometry.ts`): `blockLineGeometries` runs the SAME
   `linePitches` vote over the block's lines, and a positioned line is one text node on that
   pitch (letter-spacing + the start inset as `text-indent`), centred across its quad; a
   tilted quad is the own-frame box with `rotate(θ)` — also while its contenteditable is
-  open. Cells only in `original`. It sizes each line from its pitch and RAW text (whole px),
-  not by the viewer's block-uniform size. Line ops keep the tilt: move translates, resize
+  open. Cells only in `original` — the ONLY thing the font mode changes there: the editor
+  sizes each line from its pitch and RAW text (whole px) in every mode, not by the viewer's
+  block-uniform size nor (in `original`) the file's `font_size`, which it re-derives from
+  the quads on every quad edit. Line ops keep the tilt: move translates, resize
   drags one edge in the quad's frame (`resizeQuadEdge`), an inserted line is its neighbour
   in that frame; `resizeLine` squares up only UPRIGHT quads.
 - Real-browser coverage: `e2e/novel-grid.spec.ts` (a canvas-drawn novel page whose quads are
