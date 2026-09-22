@@ -74,6 +74,14 @@ export default [
   },
   prettier,
   {
-    ignores: ['build/', '.svelte-kit/', 'dist/', 'node_modules/', '**/*.cjs', '.eslintrc.cjs']
+    ignores: [
+      'build/',
+      '.svelte-kit/',
+      'dist/',
+      'node_modules/',
+      '**/*.cjs',
+      '.eslintrc.cjs',
+      'src/lib/reader/vendor/budoux-ja-model.js'
+    ]
   }
 ];

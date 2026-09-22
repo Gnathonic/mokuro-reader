@@ -17,6 +17,7 @@
   } from '$lib/anki-connect';
   import { db } from '$lib/catalog/db';
   import { layoutLines, getDefaultMeasurer, type LineLayout } from '$lib/reader/line-coords-layout';
+  import { stripWrapHints } from '$lib/reader/wrap-hints';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
 
   interface ContextMenuData {
@@ -603,7 +604,7 @@
   function onCopy(event: ClipboardEvent) {
     // Strip line breaks from copied text (Ctrl+C default behavior)
     const selection = window.getSelection()?.toString() || '';
-    const stripped = selection.replace(/[\n\r\t]/g, '');
+    const stripped = stripWrapHints(selection.replace(/[\n\r\t]/g, ''));
     event.clipboardData?.setData('text/plain', stripped);
     event.preventDefault();
   }
@@ -649,7 +650,8 @@
               style:height={lineLayouts[lineIndex].wrap
                 ? `${lineLayouts[lineIndex].height}px`
                 : undefined}
-              style:font-size={`${lineLayouts[lineIndex].fontSize}px`}>{line}</span
+              style:font-size={`${lineLayouts[lineIndex].fontSize}px`}
+              >{lineLayouts[lineIndex].hinted ?? line}</span
             >{/if}{/each}
       {:else}
         {#each lines as line}<span class="ocr-line">{line}</span>{/each}
@@ -742,12 +744,14 @@
     /* transform (translate onto the quad) is set by positionPerLine */
   }
 
-  /* A quad that captured multiple print columns (base text + furigana):
-     the text flows inside the full quad bbox at the block's reference size,
-     wrapping into columns/rows instead of shrinking onto one line. */
+  /* A quad that captured multiple print columns: the text flows inside the
+     quad. U+200B hints (see wrap-hints.ts) are the break points, same as
+     spaces in English. line-break: strict keeps punctuation and small kana
+     from starting a column. */
   .textBox.perLine .ocr-line.positionedLine.wrappedLine {
     white-space: normal;
-    line-break: anywhere;
+    word-break: keep-all;
+    line-break: strict;
   }
 
   /* Legacy/manual modes: use a CSS-generated newline instead of <br/> so DOM

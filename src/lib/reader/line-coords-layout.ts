@@ -11,6 +11,8 @@
  * 2026-07-04-original-mode-line-coords-design.md.
  */
 
+import { fitWrappedFontSize, hintWrappedText } from './wrap-hints';
+
 /** One OCR line quad: 4 corner points, [x, y] each, in page pixels. */
 export type Quad = number[][];
 
@@ -40,6 +42,11 @@ export interface LineLayout {
   /** Quad bbox dims, px — the wrapping container for wrap lines */
   width: number;
   height: number;
+  /**
+   * `text` with U+200B at the wrap points `wrap` will honor
+   * (`word-break: keep-all`). Absent when the line does not wrap.
+   */
+  hinted?: string;
   /**
    * True for lines suppressed by intra-block overlap dedupe: the detector
    * re-captured the same ink region as multiple overlapping "lines", which
@@ -384,7 +391,13 @@ export function layoutLines(
         const m = measured[i];
         uniformSize = Math.min(
           uniformSize,
-          wrapFitSize(referenceSize, m.advanceEm, m.extents.main, m.extents.cross)
+          fitWrappedFontSize(
+            wrapFitSize(referenceSize, m.advanceEm, m.extents.main, m.extents.cross),
+            processedLines[i],
+            measure,
+            m.extents.main,
+            m.extents.cross
+          )
         );
       }
     }
@@ -422,7 +435,13 @@ export function layoutLines(
       const cross = block.vertical ? sliceW : sliceH;
       const fontSize = Math.max(
         MIN_FONT_SIZE,
-        wrapFitSize(Number.POSITIVE_INFINITY, advanceEm, main, cross)
+        fitWrappedFontSize(
+          wrapFitSize(Number.POSITIVE_INFINITY, advanceEm, main, cross),
+          processedLines[i],
+          measure,
+          main,
+          cross
+        )
       );
       layouts.push({
         left: slice.minX - block.box[0],
@@ -438,7 +457,18 @@ export function layoutLines(
     if (wraps[i]) {
       const fontSize = Math.max(
         MIN_FONT_SIZE,
-        wrapFitSize(hasCleanLines ? uniformSize : wrapStart, advanceEm, extents.main, extents.cross)
+        fitWrappedFontSize(
+          wrapFitSize(
+            hasCleanLines ? uniformSize : wrapStart,
+            advanceEm,
+            extents.main,
+            extents.cross
+          ),
+          processedLines[i],
+          measure,
+          extents.main,
+          extents.cross
+        )
       );
       layouts.push({ left: minX, top: minY, fontSize, wrap: true, width, height });
       continue;
@@ -469,7 +499,14 @@ export function layoutLines(
     });
   }
 
-  enforceNoOverlap(block, layouts, measured, wraps);
+  enforceNoOverlap(block, layouts, measured, wraps, processedLines, measure);
+  for (let i = 0; i < layouts.length; i++) {
+    const layout = layouts[i];
+    if (!layout.wrap || layout.hidden) continue;
+    const main = block.vertical ? layout.height : layout.width;
+    const cross = block.vertical ? layout.width : layout.height;
+    layout.hinted = hintWrappedText(processedLines[i], measure, main, cross, layout.fontSize);
+  }
   return layouts;
 }
 
@@ -501,7 +538,9 @@ function enforceNoOverlap(
     hidden: boolean;
     slice?: unknown;
   }[],
-  wraps: boolean[]
+  wraps: boolean[],
+  texts: string[],
+  measure: TextMeasurer
 ): void {
   const vertical = block.vertical;
   type Span = [number, number];
@@ -535,7 +574,7 @@ function enforceNoOverlap(
       const main = vertical ? l.height : l.width;
       l.fontSize = Math.max(
         MIN_FONT_SIZE,
-        wrapFitSize(l.fontSize, measured[i].advanceEm, main, size)
+        fitWrappedFontSize(l.fontSize, texts[i], measure, main, size)
       );
       if (vertical) {
         l.left = span[0];
