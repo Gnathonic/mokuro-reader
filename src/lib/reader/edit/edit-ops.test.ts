@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import type { Page } from '$lib/types';
-import { validLineOffsets } from '../char-offsets';
-import fixture from '../__fixtures__/char-offsets-page.json';
 import {
   addBlock,
   flipBlock,
@@ -33,26 +31,11 @@ function page(): Page {
         vertical: true,
         font_size: 20,
         lines: ['あい', 'うえ'],
-        lines_coords: [quad(120, 10, 140, 110), quad(100, 10, 120, 110)],
-        // line 0 placed (extent 100 == the quad's main/height), line 1 unplaced
-        char_offsets: [[0, 40, 100], null]
+        lines_coords: [quad(120, 10, 140, 110), quad(100, 10, 120, 110)]
       },
       { box: [10, 200, 90, 240], vertical: false, font_size: 18, lines: ['ok'] }
     ]
   };
-}
-
-/** Every block's char_offsets, when present, is length-parallel to lines and
- * every non-null entry is a structurally valid line-offsets array. */
-function assertParallelCharOffsets(p: Page) {
-  for (const block of p.blocks) {
-    if (block.char_offsets === undefined) continue;
-    expect(block.char_offsets).toHaveLength(block.lines.length);
-    block.char_offsets.forEach((entry, i) => {
-      if (entry === null) return;
-      expect(validLineOffsets(block.lines[i], entry)).not.toBeNull();
-    });
-  }
 }
 
 describe('moveBlock', () => {
@@ -65,11 +48,6 @@ describe('moveBlock', () => {
     expect(out.blocks[0].lines_coords![0][0]).toEqual([180, 0]);
     expect(p.blocks[0].box).toEqual([100, 10, 140, 110]);
   });
-  it('leaves char_offsets untouched (a move never changes a quad size)', () => {
-    const p = page();
-    const out = moveBlock(p, 0, 70, -20);
-    expect(out.blocks[0].char_offsets).toBe(p.blocks[0].char_offsets);
-  });
 });
 
 describe('resizeBlock', () => {
@@ -79,23 +57,6 @@ describe('resizeBlock', () => {
     // width doubled → vertical font doubles
     expect(out.blocks[0].font_size).toBe(40);
     expect(out.blocks[0].lines_coords![0]).toEqual(quad(140, 10, 180, 110));
-  });
-  it('scales each line char_offsets by its own main-axis (height, for a vertical block) ratio', () => {
-    // main axis (height) unchanged here (only width grows) → factor 1, values preserved
-    const out = resizeBlock(page(), 0, [100, 10, 180, 110]);
-    expect(out.blocks[0].char_offsets![0]).toEqual([0, 40, 100]);
-    expect(out.blocks[0].char_offsets![1]).toBeNull();
-  });
-  it('doubling the main axis doubles a placed line’s offsets', () => {
-    // height 100 → 200 doubles the vertical main axis
-    const out = resizeBlock(page(), 0, [100, 10, 180, 210]);
-    expect(out.blocks[0].char_offsets![0]).toEqual([0, 80, 200]);
-  });
-  it('deletes char_offsets when the block has no quads to scale by', () => {
-    const p = page();
-    delete p.blocks[0].lines_coords;
-    const out = resizeBlock(p, 0, [100, 10, 180, 110]);
-    expect(out.blocks[0].char_offsets).toBeUndefined();
   });
 });
 
@@ -108,23 +69,6 @@ describe('setBlockLines', () => {
   it('drops quads when the line count changes', () => {
     const out = setBlockLines(page(), 0, ['かきくけ']);
     expect(out.blocks[0].lines_coords).toBeUndefined();
-  });
-  it('reflows char_offsets per line on an unchanged line count, and drops it entirely when the count changes', () => {
-    const out = setBlockLines(page(), 0, ['かき', 'くけ']);
-    // full replacement of a placed line still yields a valid, reflowed entry
-    expect(out.blocks[0].char_offsets![0]).toEqual([0, 50, 100]);
-    // the unplaced line has nothing to reflow from and stays null
-    expect(out.blocks[0].char_offsets![1]).toBeNull();
-    expect(setBlockLines(page(), 0, ['かきくけ']).blocks[0].char_offsets).toBeUndefined();
-  });
-  it('a one-character text fix keeps every other boundary (same array values, reflowed in place)', () => {
-    const p = page();
-    p.blocks[0].char_offsets = [[0, 50, 100, 150], null];
-    p.blocks[0].lines = ['あいう', 'うえ'];
-    const out = setBlockLines(p, 0, ['あんう', 'うえ']);
-    expect(out.blocks[0].char_offsets![0]).toEqual([0, 50, 100, 150]);
-    // the untouched line keeps its exact array by reference
-    expect(out.blocks[0].char_offsets![1]).toBe(p.blocks[0].char_offsets![1]);
   });
 });
 
@@ -165,80 +109,32 @@ describe('mergeBlocks', () => {
     expect(out.blocks[0].lines_coords).toHaveLength(3);
     expect(out.blocks[0].font_size).toBe(20);
   });
-  it('concats char_offsets in reading order, filling nulls for a source with none', () => {
-    const p = page();
-    p.blocks.push({
-      box: [60, 10, 95, 110],
-      vertical: true,
-      font_size: 22,
-      lines: ['おか'],
-      lines_coords: [quad(60, 10, 95, 110)]
-    });
-    const { page: out } = mergeBlocks(p, [2, 0]);
-    expect(out.blocks[0].char_offsets).toEqual([[0, 40, 100], null, null]);
-  });
-  it('leaves char_offsets absent when no source has any (even though both have quads)', () => {
-    const p = page();
-    delete p.blocks[0].char_offsets;
-    p.blocks.push({
-      box: [60, 10, 95, 110],
-      vertical: true,
-      font_size: 22,
-      lines: ['おか'],
-      lines_coords: [quad(60, 10, 95, 110)]
-    });
-    const { page: out } = mergeBlocks(p, [2, 0]);
-    expect(out.blocks[0].lines_coords).toHaveLength(3);
-    expect(out.blocks[0].char_offsets).toBeUndefined();
-  });
   describe('sources that read along different axes', () => {
-    // Offsets are distances along the axis the SOURCE's `vertical` flag picks
-    // on its quad. The merged block reads every line by ONE flag, so a source
-    // that disagrees with it would have its offsets read along the other edge
-    // of the same quad.
-    function mixed(rowOffsets?: (number[] | null)[]): Page {
+    function mixed(): Page {
       const p = page();
-      // short enough to pass validation on EITHER axis of the 20×100 quad, so
-      // nothing downstream would catch it: 18 <= 1.15 * 20
-      p.blocks[0].char_offsets = [[0, 8, 18], null];
       p.blocks.push({
         box: [10, 200, 190, 260], // larger than block 0 → the merge is horizontal
         vertical: false,
         font_size: 60,
         lines: ['かきく'],
-        lines_coords: [quad(10, 200, 190, 260)],
-        ...(rowOffsets ? { char_offsets: rowOffsets } : {})
+        lines_coords: [quad(10, 200, 190, 260)]
       });
       return p;
     }
 
-    it("nulls a source's entries when its axis is not the merged block's, keeping the rest", () => {
-      const p = mixed([[0, 60, 120, 180]]);
-      const { page: out } = mergeBlocks(p, [0, 2]);
+    it("takes the larger source's mode and orders every line by it", () => {
+      const { page: out } = mergeBlocks(mixed(), [0, 2]);
       const merged = out.blocks[0];
       expect(merged.vertical).toBe(false);
       // horizontal reading order: top to bottom → block 0's two lines first
       expect(merged.lines).toEqual(['あい', 'うえ', 'かきく']);
       expect(merged.lines_coords).toHaveLength(3);
-      expect(merged.char_offsets).toEqual([null, null, [0, 60, 120, 180]]);
-      // the surviving entry is the source's own array
-      expect(merged.char_offsets![2]).toBe(p.blocks[2].char_offsets![0]);
-      assertParallelCharOffsets(out);
-    });
-
-    it('leaves the key absent when only cross-axis sources had offsets', () => {
-      const { page: out } = mergeBlocks(mixed(), [0, 2]);
-      expect(out.blocks[0].vertical).toBe(false);
-      expect(out.blocks[0].lines_coords).toHaveLength(3);
-      expect(out.blocks[0].char_offsets).toBeUndefined();
     });
   });
 
   it('drops quads if any source lacks them', () => {
     const { page: out } = mergeBlocks(page(), [0, 1]);
     expect(out.blocks[0].lines_coords).toBeUndefined();
-    // quads dropped → char_offsets is dropped too, even though block 0 had one
-    expect(out.blocks[0].char_offsets).toBeUndefined();
   });
 });
 
@@ -258,12 +154,6 @@ describe('splitBlock', () => {
     expect(splitBlock(p, 0, 0).page).toBe(p);
     expect(splitBlock(p, 0, 2).page).toBe(p);
   });
-  it('slices char_offsets across the cut, and omits it on a source that had none', () => {
-    const { page: out } = splitBlock(page(), 0, 1);
-    expect(out.blocks[0].char_offsets).toEqual([[0, 40, 100]]);
-    expect(out.blocks[1].char_offsets).toEqual([null]);
-    expect(out.blocks[2].char_offsets).toBeUndefined();
-  });
 });
 
 describe('flipBlock', () => {
@@ -275,11 +165,6 @@ describe('flipBlock', () => {
   it('swaps the box aspect about its centre when asked', () => {
     const out = flipBlock(page(), 0, true);
     expect(out.blocks[0].box).toEqual([70, 40, 170, 80]);
-  });
-  it('leaves char_offsets alone by default, and drops it with the quads on swapBox', () => {
-    const p = page();
-    expect(flipBlock(p, 0).blocks[0].char_offsets).toBe(p.blocks[0].char_offsets);
-    expect(flipBlock(p, 0, true).blocks[0].char_offsets).toBeUndefined();
   });
 });
 
@@ -335,8 +220,7 @@ function tiltedPage(): Page {
         vertical: true,
         font_size: 40,
         lines: ['あいうえおか', 'かきくけこさ'],
-        lines_coords: [tilted(500, 500, 40, 240, 20), rectQuad(320, 380, 40, 240)],
-        char_offsets: [[0, 40, 80, 120, 160, 200, 240], null]
+        lines_coords: [tilted(500, 500, 40, 240, 20), rectQuad(320, 380, 40, 240)]
       }
     ]
   };
@@ -443,8 +327,6 @@ describe('moveLine', () => {
     const edge = moveLine(p, 0, 0, 10000, 0).blocks[0].lines_coords![0];
     expect(lineFrame(edge, true)!.angle).toBeCloseTo(20, 6);
     expect(quadBounds(edge)[2]).toBeCloseTo(1000, 9);
-    // the placement is along the line, which did not change
-    expect(out.blocks[0].char_offsets![0]).toEqual([0, 40, 80, 120, 160, 200, 240]);
   });
 });
 
@@ -459,12 +341,6 @@ describe('resizeLine', () => {
     // 51, 908 → 117, 1000 → 128), the horizontal ones at 541 → 69, 500 → 64,
     // 300 → 39, each capped by its thickness → sorted median is 39
     expect(out.blocks[1].font_size).toBe(39);
-  });
-  it('scales char_offsets by the new/old main-axis ratio (×2 → doubled)', () => {
-    const p = page();
-    const out = resizeLine(p, 0, 0, quad(120, 10, 140, 210)); // height 100 → 200
-    expect(out.blocks[0].char_offsets![0]).toEqual([0, 80, 200]);
-    expect(out.blocks[0].char_offsets![1]).toBeNull(); // other lines untouched
   });
   it('an upright quad is still squared up to its bounds, as it always was', () => {
     const p = tiltedPage();
@@ -483,8 +359,6 @@ describe('resizeLine', () => {
     const out = resizeLine(p, 0, 0, longer);
     expect(out.blocks[0].lines_coords![0]).toEqual(longer);
     expect(lineFrame(out.blocks[0].lines_coords![0], true)!.angle).toBeCloseTo(20, 6);
-    // main extent 240 → 480: the placement scales with it
-    out.blocks[0].char_offsets![0]!.forEach((o, k) => expect(o).toBeCloseTo(80 * k, 6));
     // the box grew around the turned quad's bounds
     const [x0, y0, x1, y1] = quadBounds(longer);
     expect(out.blocks[0].box[0]).toBeLessThanOrEqual(x0);
@@ -537,15 +411,6 @@ describe('placeLines', () => {
     const p = tocPage();
     expect(placeLines(p, 1)).toBe(p);
   });
-  it('deletes char_offsets: a freshly divided grid has no relation to any old placement', () => {
-    const p = tocPage();
-    p.blocks[0].lines = ['a', 'b'];
-    p.blocks[0].char_offsets = [
-      [0, 5],
-      [0, 5]
-    ];
-    expect(placeLines(p, 0).blocks[0].char_offsets).toBeUndefined();
-  });
 });
 
 describe('insertLine / removeLine', () => {
@@ -586,76 +451,5 @@ describe('insertLine / removeLine', () => {
     expect(out.blocks[1].lines_coords![0]).toEqual(rectQuad(1500, 1820, 44, 252));
     const p = tocPage();
     expect(removeLine(p, 0, 0)).toBe(p);
-  });
-  it('splices a null into char_offsets on insert, and filters it out on remove', () => {
-    const p = tocPage();
-    p.blocks[1].char_offsets = p.blocks[1].lines.map((_, i) =>
-      i === 1 ? [0, 10, 20, 30, 40, 50, 60, 70, 80] : null
-    );
-    const out = insertLine(p, 1, 1);
-    expect(out.blocks[1].char_offsets).toHaveLength(14);
-    expect(out.blocks[1].char_offsets![1]).toEqual([0, 10, 20, 30, 40, 50, 60, 70, 80]);
-    expect(out.blocks[1].char_offsets![2]).toBeNull(); // the newly spliced entry
-
-    const removed = removeLine(out, 1, 2);
-    expect(removed.blocks[1].char_offsets).toHaveLength(13);
-    expect(removed.blocks[1].char_offsets![1]).toEqual([0, 10, 20, 30, 40, 50, 60, 70, 80]);
-  });
-  it('deletes an out-of-parallel char_offsets rather than propagate it', () => {
-    const p = tocPage();
-    p.blocks[1].char_offsets = [[0, 1]]; // wrong length for 13 lines
-    expect(insertLine(p, 1, 0).blocks[1].char_offsets).toBeUndefined();
-    expect(removeLine(p, 1, 0).blocks[1].char_offsets).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Property test on the real fixture: char_offsets must stay parallel to lines
-// — absent, or an array of the right length whose non-null entries are
-// structurally valid — after EVERY op in a mixed, realistic sequence.
-// ---------------------------------------------------------------------------
-
-describe('char_offsets stays parallel through a mixed sequence of ops', () => {
-  it('holds after every step on the real fixture page', () => {
-    let p: Page = JSON.parse(JSON.stringify(fixture));
-    assertParallelCharOffsets(p);
-
-    p = moveBlock(p, 0, 10, -5);
-    assertParallelCharOffsets(p);
-
-    // grows the vertical block's main axis (height) → its offsets scale, not just its font
-    const b1 = p.blocks[1].box;
-    p = resizeBlock(p, 1, [b1[0], b1[1], b1[2] + 40, b1[3] + 120]);
-    assertParallelCharOffsets(p);
-
-    p = resizeLine(p, 2, 0, rectQuad(1400, 1690, 90, 500));
-    assertParallelCharOffsets(p);
-
-    // a one-character fix on a placed line, text unchanged elsewhere
-    const [line0, line1, line2] = p.blocks[0].lines;
-    p = setBlockLines(p, 0, [line0.replace('ぎ', 'き'), line1, line2]);
-    assertParallelCharOffsets(p);
-
-    p = insertLine(p, 1, 0);
-    assertParallelCharOffsets(p);
-    p = removeLine(p, 1, 1); // remove the line just inserted
-    assertParallelCharOffsets(p);
-
-    const split = splitBlock(p, 2, 1);
-    p = split.page;
-    assertParallelCharOffsets(p);
-
-    const merged = mergeBlocks(p, split.indices);
-    p = merged.page;
-    assertParallelCharOffsets(p);
-    // block 3 (no char_offsets in the fixture) is back at its original index
-    expect(p.blocks[3].char_offsets).toBeUndefined();
-
-    p = flipBlock(p, 3, true); // drops quads + char_offsets
-    assertParallelCharOffsets(p);
-
-    p = placeLines(p, 3); // gives the now quad-less block a fresh grid
-    assertParallelCharOffsets(p);
-    expect(p.blocks[3].char_offsets).toBeUndefined();
   });
 });

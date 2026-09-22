@@ -1,6 +1,5 @@
 import { db } from '$lib/catalog/db';
 import { parseMokuroFile } from '$lib/import/processing';
-import { stampCharOffsetsMethod } from '$lib/reader/char-offsets';
 import type { VolumeMetadata } from '$lib/types';
 import {
   unifiedCloudManager,
@@ -121,12 +120,7 @@ async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
     'pages=',
     Array.isArray(parsed.pages) ? parsed.pages.length : 0
   );
-  // This path skips processVolume's page mapping, so it applies the same stamp
-  // rule itself: engine sidecars name their method only at the file's top level.
-  const pages = stampCharOffsetsMethod(
-    Array.isArray(parsed.pages) ? parsed.pages : [],
-    parsed.charOffsetsMethod
-  );
+  const pages = Array.isArray(parsed.pages) ? parsed.pages : [];
   const { totalChars, cumulative } = buildPageCharCounts(pages);
 
   // The row is re-read INSIDE the write transaction: the snapshot this task was

@@ -145,44 +145,6 @@ describe('startEngineRun', () => {
     expect(row!.pages[1].blocks).toEqual([]);
   });
 
-  it('a translation page drops the char_offsets_method it inherited from its source', async () => {
-    // Both source pages are placed and say how; the translated blocks carry no
-    // offsets (wrap drops them), and the page the run never touched is blank.
-    const placed = (text: string, img_path: string): Page => {
-      const page = pg(text, img_path);
-      return {
-        ...page,
-        char_offsets_method: 'attn-cells',
-        blocks: page.blocks.map((b) => ({
-          ...b,
-          lines_coords: [
-            [
-              [250, 50],
-              [310, 50],
-              [310, 250],
-              [250, 250]
-            ]
-          ],
-          char_offsets: [[0, 40, 80, 120, 160, 200]]
-        }))
-      };
-    };
-    const fetch = fetchFor({
-      [GEMINI]: () => ({
-        candidates: [{ content: { parts: [{ text: geminiReply(['Hello there']) }] } }]
-      })
-    });
-    const sourcePages = [placed('こんにちは', '001.png'), placed('さようなら', '002.png')];
-    await startEngineRun('translate', ctx({ sourcePages, deps: { fetch } }));
-    const row = await getLayerWithPages(db, 'v1', 'tr-en');
-    expect(row!.pages[0].blocks[0].char_offsets).toBeUndefined();
-    expect('char_offsets_method' in row!.pages[0]).toBe(false);
-    expect('char_offsets_method' in row!.pages[1]).toBe(false);
-    // the image facts still come from the source
-    expect(row!.pages[0]).toMatchObject({ img_path: '001.png', img_width: 400, img_height: 600 });
-    expect(sourcePages[0].char_offsets_method).toBe('attn-cells'); // source untouched
-  });
-
   it('a page with no blocks is skipped as done without calling the translator', async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const r = await startEngineRun(

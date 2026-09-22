@@ -4,7 +4,6 @@ import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import { splitLayerSidecarName } from '$lib/util/sync/syncable-file';
-import { stampCharOffsetsMethod } from '../char-offsets';
 import { layerKindForId, layerNameForId, servedEngineOf } from './layers';
 
 /**
@@ -136,14 +135,12 @@ export async function readLayerFile(file: File | Blob, gz = false): Promise<Read
     }
     const json = JSON.parse(await blob.text()) as Record<string, unknown>;
     if (!isPageArray(json.pages)) return null;
-    // Engine sidecars carry char_offsets_method only at the top level; lift it
-    // onto pages that actually placed something and don't already have their own.
     const pages = json.pages.map((p) => {
       const { cumulativeChars: _c, ...page } = p as Page & { cumulativeChars?: number };
       return page;
     });
     return {
-      pages: stampCharOffsetsMethod(pages, json.char_offsets_method),
+      pages,
       ...(servedEngineOf(json) ? { engine: servedEngineOf(json) } : {}),
       ...(typeof json.volume_uuid === 'string' ? { volumeUuid: json.volume_uuid } : {}),
       ...(typeof json.title === 'string' ? { seriesTitle: json.title } : {}),

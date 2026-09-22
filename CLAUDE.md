@@ -654,8 +654,8 @@ must not break. Highlights:
 `positionPerLine` action snaps it onto its target with a measured transform (never
 `position: absolute` — issue #254, Yomitan's cross-line scan).
 
-- **Fixed-pitch grid, no per-character spans.** Japanese print is fixed-pitch, so auto mode
-  ignores producer `char_offsets` and steps the line's single text node at a PITCH with
+- **Fixed-pitch grid, no per-character spans.** Japanese print is fixed-pitch, so every line
+  is ONE text node stepped at a PITCH with
   `letter-spacing` (`gridSpacing` in `line-grid.ts`). The pitch is NOT `main / count`:
   - **Ink insets** (`glyph-insets.ts`, `inkInsets(text, vertical)` → `{ lead, trail }`). A
     detector's quad hugs the INK; a trailing `。、` inks a third of its cell, `」` its first
@@ -699,9 +699,7 @@ must not break. Highlights:
   top of each other or overflows the box. Still NOT auto: no fitted/uniform vote, no wrap
   containers, no overlap bands, no nudging/clipping, and a tilt is never refused; the ONE
   heuristic kept is hiding a re-captured duplicate line (same glyphs twice on one spot; its
-  text is inside the line that hides it). A block whose file carries usable `char_offsets`
-  is the diagnostic view of those instead: `.ocr-char` cells, as-is (rotated too); a line
-  of it with a `null` entry follows the same size rule, not auto's fit. A block WITHOUT
+  text is inside the line that hides it). A block WITHOUT
   usable `lines_coords` keeps the legacy whole-block paragraph at the raw `font_size`.
   Manual sizes use none of it.
 - **The OCR editor agrees** (`EditableBlock.svelte`, geometry in
@@ -709,7 +707,7 @@ must not break. Highlights:
   `linePitches` vote over the block's lines, and a positioned line is one text node on that
   pitch (letter-spacing + the start inset as `text-indent`), centred across its quad; a
   tilted quad is the own-frame box with `rotate(θ)` — also while its contenteditable is
-  open. Cells only in `original` — the ONLY thing the font mode changes there: the editor
+  open. The reader's font mode changes nothing there: the editor
   sizes each line from its pitch and RAW text (whole px) in every mode, not by the viewer's
   block-uniform size nor (in `original`) the file's `font_size`, which it re-derives from
   the quads on every quad edit. Line ops keep the tilt: move translates, resize

@@ -55,24 +55,14 @@
    * A block without quads renders its lines in flow at a size that fits them
    * all; the toolbar's "Place lines" gives it quads.
    *
-   * The reader's font mode changes ONE thing here, the cells below. Placement
-   * never depends on it: the viewer puts a line on its quad, grid and tilt, in
-   * `auto` and in `original` alike, and so does this. The SIZE deliberately
+   * The reader's font mode changes nothing here. Placement never depends on
+   * it: the viewer puts a line on its quad, grid and tilt, in `auto` and in
+   * `original` alike, and so does this. The SIZE deliberately
    * does not follow `original` (where the viewer renders the file's block
    * `font_size`): in the editor the quad is the size — the side handle resizes
    * the text by resizing the quad, and `font_size` is an OUTPUT, re-derived
    * from the quads after every quad edit (`edit-ops.ts`) — so a line drawn at
    * the stored `font_size` would not answer its own handle.
-   *
-   * Only the `original` font mode — the viewer's diagnostic view of the file —
-   * draws `char_offsets`: there a positioned line whose entry is usable (and
-   * which runs the way its block does — see `placed`) shows the file's
-   * per-character cells exactly as the viewer does (`lineCells`), until the
-   * block's editor opens: from then on EVERY line of the block is plain RAW
-   * text. Cell spans never live
-   * inside a contenteditable (an IME composes into a text node, and a caret has
-   * no sane home between inline-blocks), and the cells show the PROCESSED text
-   * (`…`) while the model stores the raw one (`...`).
    */
   import type { Block } from '$lib/types';
   import type { EditSession, GestureMark } from '$lib/reader/edit/edit-session.svelte';
@@ -84,15 +74,6 @@
     resizeQuadEdge,
     type LineGeometry
   } from '$lib/reader/edit/block-geometry';
-  import { parallelOffsets } from '$lib/reader/char-offsets';
-  import {
-    isBlankCell,
-    lineCells,
-    processLine,
-    type LineCells
-  } from '$lib/reader/char-offsets-layout';
-  import { getDefaultMeasurer, quadExtents } from '$lib/reader/line-coords-layout';
-  import { settings } from '$lib/settings';
   import { onDestroy, tick } from 'svelte';
 
   interface Props {
@@ -108,15 +89,6 @@
 
   const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const;
   type Handle = (typeof HANDLES)[number];
-  interface PlacedLine {
-    cells: LineCells;
-    fontSize: number;
-  }
-  /** What a line element shows: its RAW text, or cells when it has them. */
-  interface LineContent {
-    text: string;
-    cells: LineCells | null;
-  }
 
   let editing = $state(false);
   let root: HTMLDivElement | undefined = $state();
@@ -135,44 +107,6 @@
       ? blockLineGeometries(block.lines_coords, block.lines)
       : null
   );
-  /**
-   * Per-line cells (null = that line renders as plain text on the grid). Same
-   * rule as the viewer: `original` renders the file as-is, every other font
-   * mode ignores the field. Nothing is celled while the editor is open.
-   *
-   * Offsets run along the BLOCK's reading axis — the producer warps every line
-   * crop by the block's `vertical` flag and clamps to the quad's extent along
-   * it, whatever the line's own shape — so that is the extent a line validates
-   * against, here as in `layoutLines`. This component writes each line along
-   * its OWN orientation, though, so a line lying across its block (a row in a
-   * vertical block) stays plain text: its cells measure the axis its element
-   * is not written on.
-   */
-  let showCells = $derived($settings.fontSize === 'original');
-  let placed = $derived.by<(PlacedLine | null)[] | null>(() => {
-    if (!geoms || editing || !showCells) return null;
-    const offsets = parallelOffsets(block);
-    const quads = block.lines_coords;
-    if (!offsets || !quads) return null;
-    const measure = getDefaultMeasurer();
-    return geoms.map((g, i) => {
-      if (g.vertical !== block.vertical) return null;
-      const extents = quadExtents(quads[i], block.vertical);
-      const cells = extents?.main
-        ? lineCells(block.lines[i], offsets[i], extents.main, { repair: false })
-        : null;
-      if (!extents || !cells) return null;
-      // The viewer sizes a celled line min(cross, fitted), and fits it to the
-      // CELLS' extent, not the quad's (real offsets stop as short as 83% of
-      // the quad): the glyphs are drawn in the cells, so a quad-fitted size
-      // would paint them larger here than the reader will. Measured on the
-      // text it renders — the processed one, which `...` → `…` makes shorter.
-      const advanceEm = measure(processLine(block.lines[i]));
-      const fitted = advanceEm > 0 ? cells.extent / advanceEm : extents.cross;
-      return { cells, fontSize: Math.max(1, Math.round(Math.min(extents.cross, fitted))) };
-    });
-  });
-
   /**
    * The fixed-pitch grid per line, for the text the line SHOWS: the RAW one (a
    * plain line has always shown the raw text, at a size fitted to it). While
@@ -584,38 +518,16 @@
     if (editableLine(e.target)) e.preventDefault();
   }
 
-  /** Own the line's DOM imperatively — cells or plain text: written at mount
-   * and again whenever the MODEL changes under a stable element (undo, redo,
-   * revert, a merge that rewrites a neighbour, a reflow after a commit), the
-   * font mode flips the repair, or the editor opens/closes (cells ↔ plain).
-   * While the user types the line is always plain, and the model only changes
-   * when the draft is committed — to exactly what the element already holds —
-   * so the equality guard keeps the caret from ever being fought mid-edit. */
-  function initText(el: HTMLElement, content: LineContent) {
-    // What the cells last written looked like; null while the line is plain.
-    let celled: string | null = null;
-    function write({ text, cells }: LineContent) {
-      if (!cells) {
-        if (celled !== null || el.textContent !== text) el.textContent = text;
-        celled = null;
-        return;
-      }
-      const signature = cells.cells.map((c) => `${c.text}\u0000${c.size}`).join('\u0001');
-      if (signature === celled) return;
-      // One span per character and nothing between them, so the line's
-      // textContent is exactly the processed text (the viewer's invariant).
-      el.replaceChildren(
-        ...cells.cells.map((cell) => {
-          const span = document.createElement('span');
-          span.className = isBlankCell(cell.text) ? 'ocr-char ocr-space' : 'ocr-char';
-          span.style.inlineSize = `${cell.size}px`;
-          span.textContent = cell.text;
-          return span;
-        })
-      );
-      celled = signature;
+  /** Own the line's DOM imperatively: written at mount and again whenever the
+   * MODEL changes under a stable element (undo, redo, revert, a merge that
+   * rewrites a neighbour). While the user types the model only changes when
+   * the draft is committed — to exactly what the element already holds — so
+   * the equality guard keeps the caret from ever being fought mid-edit. */
+  function initText(el: HTMLElement, text: string) {
+    function write(next: string) {
+      if (el.textContent !== next) el.textContent = next;
     }
-    write(content);
+    write(text);
     return { update: write };
   }
 
@@ -704,8 +616,7 @@
   {#if geoms}
     {#each block.lines as line, i (lineIds[i] ?? `k${i}`)}
       {@const g = geoms[i]}
-      {@const cells = placed?.[i] ?? null}
-      {@const grid = cells ? null : grids?.[i]}
+      {@const grid = grids?.[i]}
       <div
         class="line positioned"
         class:lineSelected={selectedLineIndex === i && !editing}
@@ -720,16 +631,15 @@
         style:height={g.vertical ? undefined : `${g.box.height}px`}
         style:min-height={g.vertical ? `${g.box.height}px` : undefined}
         style:writing-mode={g.vertical ? 'vertical-rl' : 'horizontal-tb'}
-        style:font-size={`${cells ? cells.fontSize : g.fontSize}px`}
+        style:font-size={`${g.fontSize}px`}
         style:line-height={`${g.vertical ? g.box.width : g.box.height}px`}
-        style:padding-inline-start={cells ? `${cells.cells.start}px` : undefined}
         style:letter-spacing={grid?.letterSpacing ? `${grid.letterSpacing}px` : undefined}
         style:text-indent={grid?.inset ? `${grid.inset}px` : undefined}
         style:transform={g.rotation ? `rotate(${g.rotation}deg)` : undefined}
         style:transform-origin={g.rotation
           ? `${g.box.width / 2}px ${g.box.height / 2}px`
           : undefined}
-        use:initText={{ text: line, cells: cells?.cells ?? null }}
+        use:initText={line}
         onpointerdown={(e) => onLinePointerDown(e, i, 'move')}
         onpointermove={onPointerMove}
         onpointerup={onPointerUp}
@@ -776,7 +686,7 @@
           aria-readonly={!editing}
           contenteditable={editing ? 'true' : undefined}
           tabindex={editing ? 0 : undefined}
-          use:initText={{ text: line, cells: null }}
+          use:initText={line}
           oninput={(e) => onLineInput(i, e)}
           onkeydown={(e) => onLineKeyDown(i, e)}
         ></div>
@@ -850,26 +760,6 @@
     /* as the viewer's line: fixed-pitch text, measured unkerned */
     font-kerning: none;
     /* grows along its writing axis as text is typed; never clipped */
-  }
-  /* The viewer's cell (TextBoxes.svelte): in flow — never absolute, issue #254
-     per glyph — sized to the character's advance, glyph centred and free to
-     overflow a tight cell. Centred by flex, because `text-align: center`
-     start-aligns a glyph wider than its cell. :global because the spans are
-     built by `initText`. */
-  .line :global(.ocr-char) {
-    display: inline-flex;
-    justify-content: center;
-    overflow: visible;
-    line-height: 1;
-    letter-spacing: 0;
-    /* A press on a glyph is a press on its line, as it is for plain text. */
-    pointer-events: none;
-  }
-  /* A flex cell does not render a lone space at all; a space keeps a plain
-     inline-block, `pre` so it is not collapsed away there either. */
-  .line :global(.ocr-space) {
-    display: inline-block;
-    white-space: pre;
   }
   .line.lineSelected {
     outline: 2px solid rgb(234, 88, 12);

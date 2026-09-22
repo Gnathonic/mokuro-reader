@@ -18,7 +18,6 @@ import {
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { promptConfirmation } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util/snackbar';
-import { dropUnplacedMethod } from '$lib/reader/char-offsets';
 import { loadLayerPages, upsertLayerPages } from '$lib/reader/edit/layers';
 import { engineCredentials, type EngineCredentials } from './credentials';
 import { annotateImage, prepareImage, type DecodedImage } from './gcv';
@@ -265,7 +264,7 @@ async function runInClaimedSlot(
       results.set(pageIndex, gcvToPage(response, source, scale));
     } else {
       if (source.blocks.length === 0) {
-        results.set(pageIndex, dropUnplacedMethod({ ...source, blocks: [] }));
+        results.set(pageIndex, { ...source, blocks: [] });
         return;
       }
       const order = readingOrder(source.blocks, ctx.rtl);
@@ -286,9 +285,8 @@ async function runInClaimedSlot(
       const blocks: Block[] = source.blocks.map((b, i) =>
         wrapTranslatedBlock(b, byIndex.get(i) ?? '')
       );
-      // The spread carries the source's image facts — and its
-      // char_offsets_method, which describes cells the translation dropped.
-      results.set(pageIndex, dropUnplacedMethod({ ...source, blocks }));
+      // The spread carries the source's image facts.
+      results.set(pageIndex, { ...source, blocks });
     }
   };
 

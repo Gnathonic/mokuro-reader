@@ -25,18 +25,16 @@ describe('wrapTranslatedBlock', () => {
     expect(out.font_size).toBe(20);
     expect(out.lines).toEqual(['hello', 'brave new', 'world']);
   });
-  it('drops char_offsets with the quads: they place the OCR lines, not the translated ones', () => {
-    const out = wrapTranslatedBlock({ ...block, char_offsets: [[0, 20]] }, 'hello brave new world');
+  it('drops the quads: they place the OCR lines, not the translated ones', () => {
+    const out = wrapTranslatedBlock(block, 'hello brave new world');
     expect(out.lines).toHaveLength(3);
-    expect('char_offsets' in out).toBe(false);
     expect('lines_coords' in out).toBe(false);
   });
-  it('a block without offsets or quads wraps the same', () => {
+  it('a block without quads wraps the same', () => {
     const { lines_coords: _quads, ...bare } = block;
     void _quads;
     const out = wrapTranslatedBlock(bare, 'hello brave new world');
     expect(out.lines).toEqual(['hello', 'brave new', 'world']);
-    expect('char_offsets' in out).toBe(false);
   });
   it('shrinks the font until the lines fit the height, stopping where 3 lines fit', () => {
     // box 100×48: at fs 20 → 9 chars/line, 4 lines × 24 = 96 > 48 → shrink

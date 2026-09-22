@@ -35,7 +35,6 @@ interface FixtureBlock {
   font_size: number;
   lines: string[];
   lines_coords: Quad[];
-  char_offsets?: (number[] | null)[];
   /** NOT file data (stripped before seeding): the boxes of cells the print is
    * drawn in, one per line — what every expectation below is measured against. */
   cells: Quad[];
@@ -135,19 +134,13 @@ const H_MIXED_BOX = [upright(500, 900, 800, 940)];
 const H_MIXED = block(false, 40, [MIXED], H_MIXED_BOX, H_MIXED_BOX);
 // SFX-like tilted lines: 6 glyphs at 50px in a 50 × 360 quad.
 const SFX = 'ドドドドドド';
-// …the first with char_offsets (from the QUAD's start, which is 11px into the
-// first 60px cell): original mode draws its cells, turned with the line.
-const ROT_20: FixtureBlock = {
-  ...block(true, 50, [SFX], [tilted(450, 1700, 50, 360, 20)]),
-  char_offsets: [[0, 49, 109, 169, 229, 289, 339]]
-};
+const ROT_20 = block(true, 50, [SFX], [tilted(450, 1700, 50, 360, 20)]);
 const ROT_M35 = block(true, 50, [SFX], [tilted(950, 1700, 50, 360, -35)]);
 const H_ROT_M15 = block(false, 50, [SFX], [tilted(1300, 650, 360, 50, -15)]);
 // An ordinary upright balloon, set solid at 40px: every line fills its cells
 // exactly (no spacing at all: the previous build's glyph positions, to the
 // pixel). The detector drew line 2's quad 10px too LONG — the block's pitch,
-// anchored at the line's start, must not stretch the line over it. Carries
-// char_offsets, which auto mode must ignore.
+// anchored at the line's start, must not stretch the line over it.
 const BALLOON_LINES = ['あいうえおかきく', 'かきくけこさ', 'さしすせそ'];
 const BALLOON_CELLS = [
   upright(1300, 1100, 1340, 1420),
@@ -155,24 +148,17 @@ const BALLOON_CELLS = [
   upright(1200, 1100, 1240, 1300)
 ];
 const BALLOON_SLACK = 10;
-const BALLOON: FixtureBlock = {
-  ...block(
-    true,
-    40,
-    BALLOON_LINES,
-    BALLOON_CELLS,
-    BALLOON_CELLS.map((c, i) => {
-      const quad = hug(c, BALLOON_LINES[i], true);
-      if (i === 2) quad[2][1] = quad[3][1] += BALLOON_SLACK;
-      return quad;
-    })
-  ),
-  char_offsets: [
-    Array.from({ length: 9 }, (_, k) => 40 * k),
-    Array.from({ length: 7 }, (_, k) => 40 * k),
-    Array.from({ length: 6 }, (_, k) => 40 * k)
-  ]
-};
+const BALLOON = block(
+  true,
+  40,
+  BALLOON_LINES,
+  BALLOON_CELLS,
+  BALLOON_CELLS.map((c, i) => {
+    const quad = hug(c, BALLOON_LINES[i], true);
+    if (i === 2) quad[2][1] = quad[3][1] += BALLOON_SLACK;
+    return quad;
+  })
+);
 // A quad thicker than its text (56px around 40px glyphs), as detector quads
 // usually are: viewer and editor must both centre the column ACROSS it.
 const V_FAT = block(true, 40, ['たちつてとな'], [upright(1500, 1500, 1556, 1740)]);
@@ -189,7 +175,7 @@ const PAGE: FixturePage = {
 // file's own quads contradict it. The print is 50px SFX on a 60px step and
 // 40px kana set solid; the file's font_size says otherwise, the way mokuro's
 // does (it is the quad's thickness, ruby and mask slack included — and
-// sometimes short). None carries char_offsets.
+// sometimes short).
 const FILE_UNDER = block(true, 44, [SFX], [tilted(450, 2350, 50, 360, 25)]);
 const FILE_OVER = block(false, 70, [SFX], [tilted(1100, 2350, 360, 50, -12)]);
 const FILE_SOLID_OVER = block(true, 46, [KANA8], [upright(300, 300, 340, 620)]);
@@ -884,52 +870,18 @@ test.describe('line grid — viewer', () => {
     );
   });
 
-  test('(4) no per-character elements, char_offsets or not', async ({ page }) => {
+  test('(4) no per-character elements, in either font mode', async ({ page }) => {
     await seedVolume(page, [PAGE], 'auto');
     await openReader(page);
-    const measured = await measure(page);
-    await expect(page.locator('.ocr-char')).toHaveCount(0);
-    expect(BALLOON.char_offsets).toBeDefined();
-    for (const b of BLOCKS)
-      for (const line of findBlock(measured, b).lines) {
-        expect(line.children).toBe(0);
-        expect(line.textNodes).toBe(1);
-      }
-    // original mode is the diagnostic view of the file's offsets: cells there
-    await setFontSize(page, 'original');
-    await expect(page.locator('.ocr-char')).toHaveCount(BALLOON.lines.join('').length + SFX.length);
-    // …turned with their line: the +20° SFX carries offsets, and its cells
-    // land on the print's turned steps
-    const turned = await page.evaluate((box) => {
-      const pageEl = document.querySelector<HTMLElement>('[data-page-index="0"]')!;
-      const origin = pageEl.getBoundingClientRect();
-      const scale = origin.width / pageEl.offsetWidth;
-      const textBox = [...pageEl.querySelectorAll<HTMLElement>('.textBox')].find(
-        (el) =>
-          Math.abs(parseFloat(el.style.left) - box[0]) < 0.01 &&
-          Math.abs(parseFloat(el.style.top) - box[1]) < 0.01
-      )!;
-      const line = textBox.querySelector<HTMLElement>('.ocr-line')!;
-      return {
-        transform: line.style.transform,
-        centres: [...line.querySelectorAll<HTMLElement>('.ocr-char')].map((cell) => {
-          const r = cell.getBoundingClientRect();
-          return [
-            (r.left + r.width / 2 - origin.left) / scale,
-            (r.top + r.height / 2 - origin.top) / scale
-          ] as [number, number];
-        })
-      };
-    }, ROT_20.box);
-    expect(turned.transform).toContain('rotate(20deg)');
-    expect(turned.centres).toHaveLength(SFX.length);
-    // the file's first and last cells are cut short by the quad's ends (49 and
-    // 50px of a 60px step), so their glyphs sit up to 5.5px off the print's
-    turned.centres.forEach((centre, k) =>
-      expect(
-        distance(centre, cellCentre(ROT_20.cells[0], true, k, SFX.length))
-      ).toBeLessThanOrEqual(7)
-    );
+    for (const mode of ['auto', 'original'] as const) {
+      if (mode !== 'auto') await setFontSize(page, mode);
+      const measured = await measure(page);
+      for (const b of BLOCKS)
+        for (const line of findBlock(measured, b).lines) {
+          expect(line.children, mode).toBe(0);
+          expect(line.textNodes, mode).toBe(1);
+        }
+    }
   });
 
   test('(5) upright lines set solid stay where the previous build put them; a quad that ends late does not stretch its line', async ({
@@ -1000,7 +952,6 @@ test.describe('line grid — viewer', () => {
 
     await switchTo('original');
     const original = await measure(page);
-    await expect(page.locator('.ocr-char')).toHaveCount(0);
 
     // Tilted lines: turned, at the file's size, on the turned grid — the very
     // probes and tolerances auto mode is held to in (2).
@@ -1184,7 +1135,6 @@ test.describe('line grid — editor', () => {
     transform: string;
     editable: boolean;
     childNodes: number;
-    cells: number;
     glyphs: Rect[];
     /** elementFromPoint at each glyph's centre is this line */
     hits: boolean[];
@@ -1229,7 +1179,6 @@ test.describe('line grid — editor', () => {
           transform: line.style.transform,
           editable: line.isContentEditable,
           childNodes: line.childNodes.length,
-          cells: line.querySelectorAll('.ocr-char').length,
           glyphs: rects.map((r) => ({
             x: (r.left - origin.left) / scale,
             y: (r.top - origin.top) / scale,
@@ -1276,8 +1225,6 @@ test.describe('line grid — editor', () => {
     await expect(page.locator('.editBlock')).toHaveCount(BLOCKS.length);
     await page.evaluate(() => document.fonts.ready);
     await page.waitForTimeout(300);
-    // auto mode: no cells anywhere, even on the block whose file carries offsets
-    await expect(page.locator('.editBlock .ocr-char')).toHaveCount(0);
 
     // ---- display: every line on its quad's grid, the tilted ones turned ----
     const report: string[] = [];
@@ -1293,7 +1240,6 @@ test.describe('line grid — editor', () => {
       const quad = b.cells[0];
       const n = line.glyphs.length;
       expect(line.childNodes).toBe(1);
-      expect(line.cells).toBe(0);
       expect(line.text).toBe(b.lines[0]);
       const tiltedLine = b === ROT_20 || b === ROT_M35 || b === H_ROT_M15;
       expect(line.transform.includes('rotate(')).toBe(tiltedLine);
@@ -1363,7 +1309,6 @@ test.describe('line grid — editor', () => {
     const open = await measureEditorLine(page, { ...ROT_20, box: await boxOfBlock(page, INDEX) });
     expect(open.editable).toBe(true);
     expect(open.childNodes).toBe(1); // one RAW text node: nothing for an IME to trip on
-    expect(open.cells).toBe(0);
     expect(open.text).toBe(SFX);
     expect(open.transform).toContain('rotate(');
     // the caret lands on the character under the pointer, turned or not

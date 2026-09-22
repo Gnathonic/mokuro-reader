@@ -30,7 +30,6 @@ import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { noteOcrEdited } from '$lib/util/sync/sidecar-backfill';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
 import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
-import { dropUnplacedMethod } from '../char-offsets';
 import { ORIGINAL_LAYER_ID } from './edit-persist';
 import {
   TRANSLATION_PROMOTE_BLOCKED,
@@ -166,13 +165,9 @@ export interface CreateLayerOptions {
   sourcePages?: Page[];
 }
 
-/**
- * A source page with its image facts and no text. The spread would also carry
- * the source's `char_offsets_method`, a claim about cells a blank page does not
- * have — and the first thing the layer's export would read its label from.
- */
+/** A source page with its image facts and no text. */
 function blankPage(source: Page): Page {
-  return dropUnplacedMethod({ ...source, blocks: [] });
+  return { ...source, blocks: [] };
 }
 
 export async function createLayer(

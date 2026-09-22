@@ -20,16 +20,8 @@
  * is letter-spaced to that pitch from the line's start, and a line whose quad
  * is tilted renders rotated, in its own frame. See docs/superpowers/specs/
  * 2026-09-19-ocr-engine-options-findings.md.
- *
- * Lines that also carry `char_offsets` skip the fitting: their characters are
- * placed by the file (`char-offsets-layout.ts`), and this module only has to
- * keep them coherent with the fitted lines around them. See docs/superpowers/
- * specs/2026-09-16-char-offsets-rendering-design.md, "Interaction with
- * layoutLines".
  */
 
-import { parallelOffsets } from './char-offsets';
-import { lineCells, processLine, type CharCell, type LineCells } from './char-offsets-layout';
 import { inkInsets } from './glyph-insets';
 import {
   VOTER_MIN_CELLS,
@@ -54,6 +46,18 @@ import {
 /** One OCR line quad: 4 corner points, [x, y] each, in page pixels. */
 export type Quad = number[][];
 
+const ELLIPSIS = '…';
+
+/**
+ * The reader's ellipsis substitution, in ONE place: a run of three ASCII or
+ * three fullwidth periods renders as `…`. Matching is left to right and
+ * non-overlapping (`....` → `….`).
+ */
+export function processLine(raw: string): string {
+  if (typeof raw !== 'string') return '';
+  return raw.replace(/\.\.\./g, ELLIPSIS).replace(/．．．/g, ELLIPSIS);
+}
+
 /** Advance of a text string in em units (width at font-size 1). */
 export type TextMeasurer = (text: string) => number;
 
@@ -63,18 +67,9 @@ export interface LayoutBlock {
   font_size: number;
   lines: string[];
   lines_coords?: Quad[];
-  /** Per-line character placement, parallel to `lines`. File data: unvalidated. */
-  char_offsets?: unknown;
 }
 
 export interface LayoutOptions {
-  /**
-   * What to do with the block's `char_offsets`: `'repaired'` (auto mode) gives
-   * zero-width cells on real characters a share of a neighbour, `'as-is'`
-   * (original mode) places exactly what the file says, `'off'` ignores the
-   * field — the layout from before it existed.
-   */
-  cells?: 'repaired' | 'as-is' | 'off';
   /**
    * Where a fitted line's font size comes from. `'fitted'` (auto mode, the
    * default) reads it off the quads: the line's pitch, made uniform across
@@ -98,9 +93,7 @@ export interface LayoutOptions {
    * stays hidden — the same glyphs twice on one spot, and nothing the file
    * says is lost with it.
    *
-   * A file with no usable `font_size` keeps the fitted sizes. Lines drawn on
-   * the file's cells (`cells: 'as-is'`) are sized by those either way; an
-   * unplaced line beside them takes the file's size like any other.
+   * A file with no usable `font_size` keeps the fitted sizes.
    */
   size?: 'fitted' | 'file';
 }
@@ -135,16 +128,13 @@ export interface LineLayout {
   rotation: number;
   /**
    * px of CSS letter-spacing that puts the run on its line's fixed-pitch grid
-   * (`gridSpacing`); 0 for wrapped/hidden lines, lines drawn on `cells`, and
-   * lines the grid gives up on.
+   * (`gridSpacing`); 0 for wrapped/hidden lines and lines the grid gives up on.
    */
   letterSpacing: number;
   /**
    * px along the reading axis from `left`/`top` (or the own-frame box's start
    * edge) to where the run starts. Usually NEGATIVE: the quad starts at the
-   * first glyph's INK, its cell a little earlier (`gridSpacing`). For a
-   * ROTATED line drawn on `cells` it is the placement's start shift (an
-   * upright one has that in `left`/`top` already).
+   * first glyph's INK, its cell a little earlier (`gridSpacing`).
    */
   inset: number;
   /**
@@ -153,14 +143,6 @@ export interface LineLayout {
    * would render stacked on top of each other.
    */
   hidden?: boolean;
-  /**
-   * One cell per code point of the rendered line, when the file places its
-   * characters: the line renders each in an inline-block of that advance
-   * instead of as fitted text. `left`/`top` already include the placement's
-   * start shift, `fontSize` is the glyph size inside the cells, and such a
-   * line never wraps.
-   */
-  cells?: CharCell[];
 }
 
 /**
@@ -231,8 +213,7 @@ export const FILE_MIN_SPACING_EM = -0.05;
  * the block's size, and only one that cannot carry even that (the ruby; a thin
  * quad around two glyphs) goes lower, alone.
  *
- * A `cap` is null for a line that takes no file size (hidden, or drawn on the
- * file's cells).
+ * A `cap` is null for a hidden line, which takes no file size.
  */
 function fileLineSizes(
   fileSize: number,
@@ -414,7 +395,6 @@ export function fittedLineFontSize(quad: Quad, text: string, measure: TextMeasur
  * @param processedLines the text actually rendered (post ellipsis substitution);
  *   must be parallel to block.lines_coords
  * @param measure text advance measurer in em units
- * @param opts `cells` — how to treat `block.char_offsets` (default `'repaired'`)
  * @returns one layout per line, or null when the block has no usable
  *   lines_coords — callers fall back to legacy block-level rendering
  */
@@ -427,8 +407,6 @@ export function layoutLines(
   const coords = block.lines_coords;
   if (!coords || coords.length !== processedLines.length || coords.length === 0) return null;
 
-  const cellMode = opts?.cells ?? 'repaired';
-  const offsets = cellMode === 'off' ? null : parallelOffsets(block);
   // Original mode: the file's size (as far as the quads can carry it), and
   // none of the fit-making below.
   const asFiled = opts?.size === 'file';
@@ -446,8 +424,7 @@ export function layoutLines(
     /** The line's place on the fixed-pitch grid: its own until the block's
      * vote, then possibly the block's. Null for a line with no advance. */
     pitch: LinePitch | null;
-    /** The size at which the text is as long as the line: its pitch, or for a
-     * placed line its cells' extent over its advance. */
+    /** The size at which the text is as long as the line: its pitch. */
     fitted: number;
     candidate: number;
     suspect: boolean;
@@ -455,8 +432,6 @@ export function layoutLines(
     hidden: boolean;
     /** Band of an overlap cluster's union bbox this line renders in */
     slice?: { minX: number; minY: number; maxX: number; maxY: number };
-    /** The file's character placement for this line (never on a hidden one) */
-    placed?: LineCells;
   }
   const measured: MeasuredLine[] = [];
   for (let i = 0; i < coords.length; i++) {
@@ -464,27 +439,12 @@ export function layoutLines(
     if (!frame) return null;
     const extents = { main: frame.main, cross: frame.cross };
     const advanceEm = measure(processedLines[i]);
-    // Offsets index the RAW line and the cells come back parallel to its
-    // processed form, so they are only this line's cells when the caller is
-    // rendering exactly that form. Anything else renders fitted, as before.
-    const raw = block.lines[i];
-    const placed =
-      (offsets && processedLines[i] === processLine(raw)
-        ? lineCells(raw, offsets[i], extents.main, { repair: cellMode === 'repaired' })
-        : null) ?? undefined;
     const input = pitchInput(extents, processedLines[i], block.vertical, measure);
     const pitch = ownPitch(input);
-    // A placed line's length is measured, not the quad's: the glyphs have to
-    // fit the cells they are drawn in. Every other line is as big as its
-    // pitch — NOT `main / advance`, which takes the ink-free ends of the
-    // first and last cells for part of the quad and renders 「嫌だ」 at two
-    // thirds of the body text beside it.
-    const fitted =
-      advanceEm > 0
-        ? placed
-          ? placed.extent / advanceEm
-          : (pitch?.pitch ?? extents.cross)
-        : extents.cross;
+    // A line is as big as its pitch — NOT `main / advance`, which takes the
+    // ink-free ends of the first and last cells for part of the quad and
+    // renders 「嫌だ」 at two thirds of the body text beside it.
+    const fitted = advanceEm > 0 ? (pitch?.pitch ?? extents.cross) : extents.cross;
     const xs = coords[i].map((p) => p[0]);
     const ys = coords[i].map((p) => p[1]);
     measured.push({
@@ -496,18 +456,15 @@ export function layoutLines(
       fitted,
       candidate: Math.min(extents.cross, fitted),
       // quad wide enough for 1.6+ columns of its own fitted size: likely
-      // multiple print columns captured as one OCR "line". Never a placed
-      // line: the producer found every character along ONE column, which is
-      // the question the ratio was guessing at.
-      suspect: !placed && advanceEm > 0 && isMergedColumns(extents.cross, fitted),
+      // multiple print columns captured as one OCR "line".
+      suspect: advanceEm > 0 && isMergedColumns(extents.cross, fitted),
       bbox: {
         minX: Math.min(...xs),
         minY: Math.min(...ys),
         maxX: Math.max(...xs),
         maxY: Math.max(...ys)
       },
-      hidden: false,
-      placed
+      hidden: false
     });
   }
 
@@ -558,10 +515,7 @@ export function layoutLines(
       const bigger = smaller === i ? j : i;
       const smallText = processedLines[smaller].trim();
       if (smallText.length > 0 && processedLines[bigger].includes(smallText)) {
-        // Dedupe never looked at the offsets, and a suppressed re-capture
-        // stays suppressed with or without them.
         measured[smaller].hidden = true;
-        measured[smaller].placed = undefined;
       }
     }
   }
@@ -599,17 +553,13 @@ export function layoutLines(
       maxX: Math.max(...cluster.map((i) => measured[i].bbox.maxX)),
       maxY: Math.max(...cluster.map((i) => measured[i].bbox.maxY))
     };
-    // A placed member is not garbage to be re-flowed: it keeps its cells on
-    // its own quad, and the bands are shared out among the rest, which then
-    // clip around it like around any clean line (enforceNoOverlap).
-    const members = cluster.filter((i) => !measured[i].placed);
-    const weights = members.map((i) => Math.max(measured[i].advanceEm, 0.5));
+    const weights = cluster.map((i) => Math.max(measured[i].advanceEm, 0.5));
     const totalWeight = weights.reduce((a, b) => a + b, 0);
     // vertical text: bands right→left along x; horizontal: top→bottom along y
     let offset = 0;
-    for (let k = 0; k < members.length; k++) {
+    for (let k = 0; k < cluster.length; k++) {
       const frac = weights[k] / totalWeight;
-      const m = measured[members[k]];
+      const m = measured[cluster[k]];
       if (block.vertical) {
         const bandW = (union.maxX - union.minX) * frac;
         m.slice = {
@@ -639,12 +589,12 @@ export function layoutLines(
   const pitches = linePitches(
     measured.map((m, i) => ({
       ...m.input,
-      votes: !m.hidden && !m.slice && !m.suspect && !m.placed && griddable(processedLines[i])
+      votes: !m.hidden && !m.slice && !m.suspect && griddable(processedLines[i])
     }))
   );
   measured.forEach((m, i) => {
     const pitch = pitches[i];
-    if (!pitch || m.placed || pitch.pitch === m.pitch?.pitch) return;
+    if (!pitch || pitch.pitch === m.pitch?.pitch) return;
     m.pitch = pitch;
     m.fitted = pitch.pitch;
     m.candidate = Math.min(m.extents.cross, m.fitted);
@@ -657,20 +607,19 @@ export function layoutLines(
       : fileLineSizes(
           fileSize,
           measured.map((m) => ({
-            cap:
-              m.hidden || m.placed
-                ? null
-                : Math.min(
-                    m.extents.cross * CROSS_SLACK,
-                    m.pitch
-                      ? maxSizeAtSpacing({
-                          pitch: m.pitch,
-                          advanceEm: m.advanceEm,
-                          count: m.input.count,
-                          minSpacingEm: FILE_MIN_SPACING_EM
-                        })
-                      : Number.POSITIVE_INFINITY
-                  ),
+            cap: m.hidden
+              ? null
+              : Math.min(
+                  m.extents.cross * CROSS_SLACK,
+                  m.pitch
+                    ? maxSizeAtSpacing({
+                        pitch: m.pitch,
+                        advanceEm: m.advanceEm,
+                        count: m.input.count,
+                        minSpacingEm: FILE_MIN_SPACING_EM
+                      })
+                    : Number.POSITIVE_INFINITY
+                ),
             cells: m.pitch ? m.advanceEm - m.pitch.lead - m.pitch.trail : 0,
             area: m.extents.main * m.extents.cross,
             body: !m.suspect
@@ -757,27 +706,6 @@ export function layoutLines(
       continue;
     }
 
-    const placed = measured[i].placed;
-    if (placed) {
-      // The file places every character, so nothing here is fitted: the line
-      // keeps its own size (the print size is already in its cells) instead
-      // of the block's uniform one, never wraps, and starts where its first
-      // cell does — `start` is measured from the quad's start edge. Cross
-      // axis: centred in the quad, like any clean line.
-      const fontSize = Math.max(MIN_FONT_SIZE, candidate);
-      layouts.push({
-        left: block.vertical ? (minX + maxX) / 2 - fontSize / 2 : minX + placed.start,
-        top: block.vertical ? minY + placed.start : (minY + maxY) / 2 - fontSize / 2,
-        fontSize,
-        wrap: false,
-        width,
-        height,
-        ...UPRIGHT,
-        cells: placed.cells
-      });
-      continue;
-    }
-
     const slice = measured[i].slice;
     if (slice) {
       // overlap-cluster member: wrap the text inside its band of the union
@@ -858,7 +786,7 @@ export function layoutLines(
   // so every visible line turns with its quad, whatever it then touches.
   const upright = layouts.slice();
   for (let i = 0; i < layouts.length; i++) {
-    const { frame, placed } = measured[i];
+    const { frame } = measured[i];
     if (frame.angle === 0 || (asFiled ? layouts[i].hidden : model.trust[i] !== 2)) continue;
     const width = block.vertical ? frame.cross : frame.main;
     const height = block.vertical ? frame.main : frame.cross;
@@ -869,8 +797,7 @@ export function layoutLines(
       width,
       height,
       rotation: frame.angle,
-      // the cells start `start` px into the quad; upright, `left`/`top` say so
-      inset: placed ? placed.start : 0
+      inset: 0
     };
   }
   if (!asFiled) {
@@ -891,12 +818,11 @@ export function layoutLines(
   }
 
   // The fixed-pitch grid, last: it needs the sizes the clipping above settled
-  // on. Wrapped (so also banded) and hidden lines have no single run to space,
-  // and a line drawn on cells has its characters placed already.
+  // on. Wrapped (so also banded) and hidden lines have no single run to space.
   for (let i = 0; i < layouts.length; i++) {
     const l = layouts[i];
     const pitch = measured[i].pitch;
-    if (l.hidden || l.wrap || l.cells || !pitch || !griddable(processedLines[i])) continue;
+    if (l.hidden || l.wrap || !pitch || !griddable(processedLines[i])) continue;
     const grid = gridSpacing({
       pitch,
       advanceEm: measured[i].advanceEm,
@@ -946,9 +872,8 @@ type Span = [number, number];
 interface CollisionModel {
   vertical: boolean;
   /** 2 = clean, correctly-placed column; 1 = suspect/wrapped/banded (its
-   * placement already involved guessing); -1 = hidden. A line placed by
-   * char_offsets is never suspect, wrapped or banded, so it is always a 2 —
-   * and only a 2 is ever rotated. */
+   * placement already involved guessing); -1 = hidden. Only a 2 is ever
+   * rotated. */
   trust: number[];
   quadSpan(i: number): Span;
   crossSpan(i: number): Span;
@@ -984,17 +909,13 @@ function collisionModel(
     bbox: { minX: number; minY: number; maxX: number; maxY: number };
     hidden: boolean;
     slice?: unknown;
-    placed?: { extent: number };
   }[],
   wraps: boolean[]
 ): CollisionModel {
   const vertical = block.vertical;
   const trust = measured.map((m, i) => (m.hidden ? -1 : m.suspect || wraps[i] || m.slice ? 1 : 2));
 
-  // A placed line is as long as its cells, whatever its font size — and a
-  // clip may lower the size, which must not shorten the span.
-  const advance = (i: number) =>
-    measured[i].placed?.extent ?? measured[i].advanceEm * layouts[i].fontSize;
+  const advance = (i: number) => measured[i].advanceEm * layouts[i].fontSize;
 
   const rendered = (i: number): OrientedRect => {
     const l = layouts[i];
@@ -1117,9 +1038,6 @@ function enforceNoOverlap(layouts: LineLayout[], model: CollisionModel): void {
         l.height = size;
       }
     } else {
-      // Also the only thing a clip does to a line placed by char_offsets
-      // (trust 2, never wrapped): smaller glyphs, re-centred. Its cells keep
-      // their px advances and no container is imposed that could reflow them.
       l.fontSize = Math.min(l.fontSize, size);
       const center = (span[0] + span[1]) / 2;
       if (vertical) l.left = center - l.fontSize / 2;

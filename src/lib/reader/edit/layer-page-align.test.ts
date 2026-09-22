@@ -30,12 +30,6 @@ describe('alignLayerPages — a layer file that omits pages', () => {
     expect(aligned[1]).toMatchObject({ img_width: 100, img_height: 200, blocks: [] });
   });
 
-  it('a blank never inherits a char-offsets method it has no cells for', () => {
-    const withMethod = volume.map((p) => ({ ...p, char_offsets_method: 'attn-cells' }) as Page);
-    const aligned = alignLayerPages([pg('v/001.jpg', 'A')], withMethod)!;
-    expect('char_offsets_method' in aligned[1]).toBe(false);
-  });
-
   it('matches across an extension remap and path case (the import renames .jpg → .webp)', () => {
     const local = [pg('V/001.webp'), pg('V/002.webp')];
     const aligned = alignLayerPages([pg('v/002.jpg', 'B')], local)!;

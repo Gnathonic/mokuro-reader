@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`golden: layouts from before char_offsets > lays out every block of this file, and the fixture page, as it always has 1`] = `
+exports[`golden: replayed layouts > lays out every block of this file, and the fixture page, as it always has 1`] = `
 [
   [
     {

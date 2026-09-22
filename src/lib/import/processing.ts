@@ -27,7 +27,6 @@ import {
 } from '$lib/util/series-extraction';
 import { generateUUID } from '$lib/util/uuid';
 import { naturalSort } from '$lib/util/natural-sort';
-import { stampCharOffsetsMethod } from '$lib/reader/char-offsets';
 
 // ============================================
 // TYPES
@@ -45,8 +44,6 @@ export interface ParsedMokuro {
   pages: MokuroPage[];
   chars: number;
   spineWidth?: number;
-  /** File top-level `char_offsets_method`, when present. */
-  charOffsetsMethod?: string;
 }
 
 /**
@@ -58,8 +55,6 @@ interface MokuroPage {
   img_height?: number;
   img_path: string;
   blocks: MokuroBlock[];
-  /** Producer's own per-page value; mokuro-fork writes this on every page. */
-  char_offsets_method?: string;
 }
 
 /**
@@ -185,10 +180,7 @@ export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
     volumeUuid: obj.volume_uuid as string,
     pages: obj.pages as MokuroPage[],
     chars: (obj.chars as number) ?? 0,
-    ...(obj.spine_width != null && { spineWidth: obj.spine_width as number }),
-    ...(typeof obj.char_offsets_method === 'string' && {
-      charOffsetsMethod: obj.char_offsets_method
-    })
+    ...(obj.spine_width != null && { spineWidth: obj.spine_width as number })
   };
 }
 
@@ -510,22 +502,14 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     const cumulativeCounts = calculateCumulativeChars(mokuroData.pages);
 
     // Create processed pages (preserve all mokuro page fields)
-    // Own page-level value wins; otherwise the file-level value is stamped
-    // on, but only onto pages that actually carry placement — a page with
-    // no placed block shouldn't claim a method it never used.
-    const stamped = stampCharOffsetsMethod(mokuroData.pages, mokuroData.charOffsetsMethod);
-    pages = stamped.map((page, index) => {
-      const { char_offsets_method } = page;
-      return {
-        version: page.version,
-        img_width: page.img_width,
-        img_height: page.img_height,
-        img_path: matchResult.remapped.get(page.img_path) || page.img_path,
-        blocks: page.blocks,
-        cumulativeChars: cumulativeCounts[index],
-        ...(char_offsets_method != null && { char_offsets_method })
-      };
-    });
+    pages = mokuroData.pages.map((page, index) => ({
+      version: page.version,
+      img_width: page.img_width,
+      img_height: page.img_height,
+      img_path: matchResult.remapped.get(page.img_path) || page.img_path,
+      blocks: page.blocks,
+      cumulativeChars: cumulativeCounts[index]
+    }));
 
     pageCount = mokuroData.pages.length;
     totalChars = mokuroData.chars || cumulativeCounts[cumulativeCounts.length - 1] || 0;

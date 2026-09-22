@@ -16,7 +16,6 @@
  * Pure: no database, no provider.
  */
 import type { Page } from '$lib/types';
-import { dropUnplacedMethod } from '../char-offsets';
 
 /** `Vol 01\\Page_005.JPG` → `vol 01/page_005`: the import may re-spell the extension. */
 function imageKey(imgPath: string): string {
@@ -64,7 +63,7 @@ function slotsFor(
 
 /** A volume page's image facts with no text — the same shape an empty layer is made of. */
 function blankFrom(source: Page): Page {
-  return dropUnplacedMethod({ ...source, blocks: [] });
+  return { ...source, blocks: [] };
 }
 
 /**

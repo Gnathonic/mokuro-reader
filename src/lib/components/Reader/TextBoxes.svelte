@@ -16,8 +16,12 @@
     type VolumeMetadata
   } from '$lib/anki-connect';
   import { db } from '$lib/catalog/db';
-  import { layoutLines, getDefaultMeasurer, type LineLayout } from '$lib/reader/line-coords-layout';
-  import { isBlankCell, processLine } from '$lib/reader/char-offsets-layout';
+  import {
+    layoutLines,
+    getDefaultMeasurer,
+    processLine,
+    type LineLayout
+  } from '$lib/reader/line-coords-layout';
   import { lineTransform } from '$lib/reader/line-grid';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
 
@@ -58,9 +62,8 @@
     useMinDimensions: boolean;
     isOriginalMode: boolean;
     /** Per-line positions/sizes from lines_coords — auto mode (fitted sizes)
-     * and original mode (the file's size, or the file's char_offsets cells);
-     * null (no usable quads) falls back to legacy hover-fit auto / whole-block
-     * original */
+     * and original mode (the file's size); null (no usable quads) falls back
+     * to legacy hover-fit auto / whole-block original */
     lineLayouts: LineLayout[] | null;
     /** Changes whenever a line's flow size or target can have: re-measure */
     layoutSignature: string;
@@ -77,8 +80,6 @@
 
         // Replace manual ellipsis with proper ellipsis character (…)
         // Handle both ASCII periods (...) and full-width periods (．．．).
-        // processLine is shared with the char_offsets cells, which index the
-        // RAW line and have to collapse exactly the same runs.
         const processedLines = lines.map(processLine);
 
         const isOriginalMode = $settings.fontSize === 'original';
@@ -89,13 +90,12 @@
         // the quad width, furigana included), so rendering it as-is overflows
         // the box; the quads themselves are accurate. Null (no lines_coords,
         // e.g. pre-lines_coords imports) → legacy hover-fit auto below.
-        // Auto IGNORES the file's char_offsets ('off'): Japanese print is
-        // fixed-pitch, so every line sits on the grid of its block's pitch —
-        // one plain text node, the grid as letter-spacing, a tilted quad as a
-        // rotation (line-grid.ts). No span per character: the lightest DOM,
-        // and the one Yomitan/Migaku are safest with.
+        // Japanese print is fixed-pitch, so every line sits on the grid of its
+        // block's pitch — one plain text node, the grid as letter-spacing, a
+        // tilted quad as a rotation (line-grid.ts). No span per character: the
+        // lightest DOM, and the one Yomitan/Migaku are safest with.
         let lineLayouts = isAutoMode
-          ? layoutLines(block, processedLines, getDefaultMeasurer(), { cells: 'off' })
+          ? layoutLines(block, processedLines, getDefaultMeasurer())
           : null;
 
         // Original mode is "what the file says": the file's PLACEMENT at the
@@ -113,20 +113,11 @@
         // on top of each other. So the block's size is its font_size capped by
         // what its lines can carry (spacing never under −0.05em, never much
         // thicker than the quad — `fileLineSizes`), still ONE size per block.
-        //
-        // A block whose file also places its CHARACTERS (char_offsets) is the
-        // diagnostic view of those: the cells exactly where the producer put
-        // them, zero-width ones and all. A line of it the file does NOT place
-        // (a null entry) follows the same original-mode rule as every other
-        // unplaced line — the file's size, capped — not auto's fitted one.
         // Only a block without usable quads (volumes from before mokuro wrote
         // lines_coords) keeps the whole-block paragraph: there is nothing to
         // place its lines on.
         if (isOriginalMode) {
-          lineLayouts = layoutLines(block, processedLines, getDefaultMeasurer(), {
-            cells: block.char_offsets ? 'as-is' : 'off',
-            size: 'file'
-          });
+          lineLayouts = layoutLines(block, processedLines, getDefaultMeasurer(), { size: 'file' });
         }
 
         // Only expand bounding boxes for legacy hover-fit auto sizing;
@@ -177,14 +168,13 @@
           lineLayouts,
           // Everything a span's natural origin, its size or its target depends
           // on — letter-spacing changes the span's extent, and a rotated line
-          // is centred in its own-frame box. The cells' own sizes are left
-          // out: they sum to the line's extent.
+          // is centred in its own-frame box.
           layoutSignature: lineLayouts
             ? lineLayouts
                 .map((l, i) =>
                   l.hidden
                     ? ''
-                    : `${l.left},${l.top},${l.fontSize},${l.cells ? l.cells.length : '-'},${processedLines[i].length}` +
+                    : `${l.left},${l.top},${l.fontSize},${processedLines[i].length}` +
                       (l.letterSpacing || l.inset ? `,s${l.letterSpacing},${l.inset}` : '') +
                       (l.rotation ? `,r${l.rotation},${l.width},${l.height}` : '')
                 )
@@ -747,12 +737,7 @@
               style:font-size={`${lineLayouts[lineIndex].fontSize}px`}
               style:letter-spacing={lineLayouts[lineIndex].letterSpacing
                 ? `${lineLayouts[lineIndex].letterSpacing}px`
-                : undefined}
-              >{#if lineLayouts[lineIndex].cells}{#each lineLayouts[lineIndex].cells as cell}<span
-                    class="ocr-char"
-                    class:ocr-space={isBlankCell(cell.text)}
-                    style:inline-size={`${cell.size}px`}>{cell.text}</span
-                  >{/each}{:else}{line}{/if}</span
+                : undefined}>{line}</span
             >{/if}{/each}
       {:else}
         {#each lines as line}<span class="ocr-line">{line}</span>{/each}
@@ -855,40 +840,6 @@
     white-space: nowrap;
     /* transform (translate onto the quad, rotate with it) and its origin are
        set by positionPerLine */
-  }
-
-  /* ORIGINAL mode only — auto ignores char_offsets and uses the grid above.
-     A line the file places character by character (char_offsets): one cell
-     per character, its inline size the character's advance, so normal flow
-     puts every glyph where the print has it — no per-glyph measurement, and
-     above all no position:absolute, which would be #254 between every glyph.
-     inline-size and the flex main axis are logical, so the one rule serves
-     both writing modes. Cells never clip: tight tracking makes a cell narrower
-     than its glyph, and original mode renders zero-width cells as the file
-     has them.
-     Centring is flex, not `text-align: center`: text-align START-aligns
-     content wider than its box, so every glyph in a tight or zero-width cell
-     sat half its overflow late (up to 10px on real pages, 20px on a zero
-     cell); `justify-content: center` overflows both sides equally. inline-flex
-     is as continuity-safe as inline-block — a DOM text scanner cuts the
-     display value at the first '-' and reads both as inline.
-     There must be NO whitespace between the cells in the template: the line
-     span's textContent is the line. */
-  .textBox.perLine .ocr-line.positionedLine .ocr-char {
-    display: inline-flex;
-    justify-content: center;
-    overflow: visible;
-    line-height: 1;
-    letter-spacing: 0;
-  }
-
-  /* A flex container does not render a text run that is only white space, so
-     a space in the cell above would drop out of selection and copy. It has no
-     glyph to centre: it keeps a plain inline-block, `pre` so the space is not
-     collapsed away there either. */
-  .textBox.perLine .ocr-line.positionedLine .ocr-char.ocr-space {
-    display: inline-block;
-    white-space: pre;
   }
 
   /* A quad that captured multiple print columns (base text + furigana):

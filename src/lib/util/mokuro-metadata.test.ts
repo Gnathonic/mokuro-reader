@@ -49,9 +49,8 @@ describe('buildMokuroMetadata', () => {
     expect(meta.volume_uuid).toBe('vol-uuid');
   });
 
-  it('with no offsets anywhere, the output is byte-identical to today (no char_offsets_method key)', () => {
+  it('the output is byte-identical to today', () => {
     const meta = buildMokuroMetadata(volume, pages);
-    expect('char_offsets_method' in meta).toBe(false);
     expect(JSON.stringify(meta)).toBe(
       JSON.stringify({
         version: '0.2.1',
@@ -64,62 +63,5 @@ describe('buildMokuroMetadata', () => {
         spine_width: 17
       })
     );
-  });
-
-  it('emits the top-level char_offsets_method from the first page that has one, only when a block is placed', () => {
-    const placedPages = [
-      {
-        img_path: '1.jpg',
-        char_offsets_method: 'attn-cells',
-        blocks: [{ lines: ['あ'], char_offsets: [[0, 10]] }]
-      },
-      { img_path: '2.jpg', char_offsets_method: 'gcv-symbols', blocks: [] }
-    ];
-    const meta = buildMokuroMetadata(volume, placedPages);
-    expect(meta.char_offsets_method).toBe('attn-cells');
-  });
-
-  it('reads the method from a page that placed something, never from a stale key ahead of it', () => {
-    // page 1 inherited 'attn-cells' from the page it was derived from and
-    // places nothing; page 2 is the one whose cells the label describes
-    const mixedPages = [
-      { img_path: '1.jpg', char_offsets_method: 'attn-cells', blocks: [] },
-      {
-        img_path: '2.jpg',
-        char_offsets_method: 'gcv-symbols',
-        blocks: [{ lines: ['あ'], char_offsets: [[0, 10]] }]
-      }
-    ];
-    expect(buildMokuroMetadata(volume, mixedPages).char_offsets_method).toBe('gcv-symbols');
-  });
-
-  it('omits char_offsets_method when a page carries the key but no block has placement', () => {
-    const unplacedPages = [
-      { img_path: '1.jpg', char_offsets_method: 'attn-cells', blocks: [{ lines: ['あ'] }] }
-    ];
-    const meta = buildMokuroMetadata(volume, unplacedPages);
-    expect('char_offsets_method' in meta).toBe(false);
-  });
-
-  it('keeps char_offsets_method after chars and before spine_width in key order', () => {
-    const placedPages = [
-      {
-        img_path: '1.jpg',
-        char_offsets_method: 'attn-cells',
-        blocks: [{ lines: ['あ'], char_offsets: [[0, 10]] }]
-      }
-    ];
-    const meta = buildMokuroMetadata(volume, placedPages);
-    expect(Object.keys(meta)).toEqual([
-      'version',
-      'title',
-      'title_uuid',
-      'volume',
-      'volume_uuid',
-      'pages',
-      'chars',
-      'char_offsets_method',
-      'spine_width'
-    ]);
   });
 });

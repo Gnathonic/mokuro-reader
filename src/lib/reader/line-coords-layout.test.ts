@@ -6,12 +6,10 @@ import {
   type TextMeasurer
 } from './line-coords-layout';
 import { inkInsets } from './glyph-insets';
-import fixturePage from './__fixtures__/char-offsets-page.json';
+import fixturePage from './__fixtures__/ocr-page.json';
 
 // Every block the tests below lay out is recorded, so the golden test at the
-// end of the file can replay all of them: character placement switched off —
-// or simply absent from the block — must leave each layout exactly as it was
-// before `char_offsets` existed.
+// end of the file can replay all of them and pin their layouts.
 const replayed: { block: LayoutBlock; lines: string[] }[] = [];
 function layoutLines(block: LayoutBlock, lines: string[], measure: TextMeasurer) {
   replayed.push({ block, lines });
@@ -931,10 +929,8 @@ describe('fittedLineFontSize', () => {
 });
 
 // Keep this AFTER every test that goes through the recording `layoutLines`
-// above, and keep the char_offsets tests below it (they call layoutLinesImpl):
-// the snapshot is the replay list in order, written by the code as it stood
-// before placement was wired in.
-describe('golden: layouts from before char_offsets', () => {
+// above: the snapshot is the replay list, in order.
+describe('golden: replayed layouts', () => {
   const fixtureBlocks = fixturePage.blocks as unknown as LayoutBlock[];
   const allBlocks = () => [
     ...replayed,
@@ -944,252 +940,15 @@ describe('golden: layouts from before char_offsets', () => {
   it('lays out every block of this file, and the fixture page, as it always has', () => {
     expect(replayed.length).toBeGreaterThan(20);
     const layouts = allBlocks().map(({ block, lines }) =>
-      layoutLinesImpl(block, lines, heuristicMeasurer, { cells: 'off' })
+      layoutLinesImpl(block, lines, heuristicMeasurer)
     );
     expect(layouts).toMatchSnapshot();
   });
-
-  it('a block without char_offsets lays out the same in every mode', () => {
-    for (const { block, lines } of replayed) {
-      expect('char_offsets' in block).toBe(false);
-      const off = layoutLinesImpl(block, lines, heuristicMeasurer, { cells: 'off' });
-      // strict: not even a `cells: undefined` key may appear
-      expect(layoutLinesImpl(block, lines, heuristicMeasurer)).toStrictEqual(off);
-      for (const cells of ['repaired', 'as-is'] as const) {
-        expect(layoutLinesImpl(block, lines, heuristicMeasurer, { cells })).toStrictEqual(off);
-      }
-    }
-  });
-
-  it("'off' lays a block out as if its char_offsets were not there", () => {
-    for (const block of fixtureBlocks) {
-      const { char_offsets: _dropped, ...bare } = block;
-      expect(
-        layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'off' })
-      ).toStrictEqual(layoutLinesImpl(bare, bare.lines, heuristicMeasurer));
-    }
-  });
 });
 
-describe('layoutLines with char_offsets', () => {
-  const column = (x0: number, x1: number, y0: number, y1: number) => [
-    [x0, y0],
-    [x1, y0],
-    [x1, y1],
-    [x0, y1]
-  ];
-  const even = (count: number, step: number, start = 0) =>
-    Array.from({ length: count + 1 }, (_, k) => start + k * step);
-  const sizes = (l: { cells?: { size: number }[] }) => l.cells?.map((cell) => cell.size);
-
-  // A = 8 glyphs down a 50×400 column, B = 5 glyphs down a 50×220 one.
-  const pair = (char_offsets: unknown): LayoutBlock => ({
-    box: [100, 0, 260, 400],
-    vertical: true,
-    font_size: 60,
-    lines: ['あいうえおかきく', 'さしすせそ'],
-    lines_coords: [column(200, 250, 0, 400), column(100, 150, 0, 220)],
-    char_offsets
-  });
-
-  it('places a vertical line on its cells: start shifts the top, the column stays centred', () => {
-    const block = pair([[12, 60, 110, 160, 210, 260, 310, 360, 396], null]);
-    const [a, b] = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
-    expect(sizes(a)).toEqual([48, 50, 50, 50, 50, 50, 50, 36]);
-    expect(a.cells!.map((cell) => cell.text).join('')).toBe(block.lines[0]);
-    // fitted from the PLACED extent: 384px / 8em, under the 50px cross
-    expect(a.fontSize).toBe(48);
-    expect(a.top).toBe(12);
-    expect(a.left).toBe(100 + 25 - 24);
-    expect(a.wrap).toBe(false);
-    expect(a.hidden).toBeFalsy();
-    // the null line takes the fitted path and carries no cells
-    expect(b.cells).toBeUndefined();
-    expect('cells' in b).toBe(false);
-  });
-
-  it('places a horizontal line: start shifts the left, the row stays centred', () => {
-    const block: LayoutBlock = {
-      box: [10, 20, 310, 60],
-      vertical: false,
-      font_size: 40,
-      lines: ['あいうえお'],
-      lines_coords: [column(10, 310, 20, 60)],
-      char_offsets: [[20, 70, 120, 170, 220, 270]]
-    };
-    const [l] = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
-    expect(sizes(l)).toEqual([50, 50, 50, 50, 50]);
-    expect(l.fontSize).toBe(40); // min(cross 40, 250 / 5)
-    expect(l.left).toBe(20);
-    expect(l.top).toBe(0);
-  });
-
-  it('keeps its own size instead of the uniform one, but still votes on it', () => {
-    // A (the bigger quad) is placed: B follows A's 50px because A still votes.
-    const aPlaced = pair([even(8, 50), null]);
-    const [a, b] = layoutLinesImpl(aPlaced, aPlaced.lines, heuristicMeasurer)!;
-    expect(a.fontSize).toBe(50);
-    expect(b.fontSize).toBe(50);
-    // B is placed: on the fitted path it would be pulled up to 50 (as 'off'
-    // shows); its cells already hold the print size, so it keeps 44.
-    const bPlaced = pair([null, even(5, 44)]);
-    const placed = layoutLinesImpl(bPlaced, bPlaced.lines, heuristicMeasurer)!;
-    const off = layoutLinesImpl(bPlaced, bPlaced.lines, heuristicMeasurer, { cells: 'off' })!;
-    expect(off[1].fontSize).toBe(50);
-    expect(placed[1].fontSize).toBe(44);
-    expect(placed[0]).toStrictEqual(off[0]);
-  });
-
-  it('is never a merged-columns suspect and never wraps', () => {
-    // jjkFurigana line 0 wraps on the fitted path: a 60px quad for ~19px glyphs
-    const off = layoutLinesImpl(jjkFurigana, jjkFurigana.lines, heuristicMeasurer)!;
-    expect(off[0].wrap).toBe(true);
-    const block = { ...jjkFurigana, char_offsets: [even(9, 19), null, null] };
-    const [first] = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
-    expect(first.wrap).toBe(false);
-    expect(first.cells).toHaveLength(9);
-    expect(first.fontSize).toBe(19);
-  });
-
-  it("'repaired' shares a zero-width cell out, 'as-is' renders the file", () => {
-    // え has no cell and お has two: the zero cell alone, on a line whose other
-    // cells are plausible
-    const block: LayoutBlock = {
-      box: [100, 0, 150, 240],
-      vertical: true,
-      font_size: 40,
-      lines: ['あいうえおか'],
-      lines_coords: [column(100, 150, 0, 240)],
-      char_offsets: [[0, 40, 80, 120, 120, 200, 240]]
-    };
-    const repaired = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
-    const asIs = layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'as-is' })!;
-    expect(sizes(repaired[0])).toEqual([40, 40, 40, 40, 40, 40]);
-    expect(sizes(asIs[0])).toEqual([40, 40, 40, 0, 80, 40]);
-    // geometry does not depend on the mode: same extent, same origin and size
-    const { cells: _a, ...repairedBox } = repaired[0];
-    const { cells: _b, ...asIsBox } = asIs[0];
-    expect(repairedBox).toStrictEqual(asIsBox);
-  });
-
-  it("'repaired' fits a squeezed line instead of drawing its cells, 'as-is' renders the file", () => {
-    // fixture b0 l0, real data: 地 in 94px, な ポ ン in 22–26px at a ~41px pitch
-    // (and ぎ[322,363) と[363,363) 、[363,449) at the tail). Drawn on those cells
-    // the glyphs overlap, so auto mode gives the LINE to the fitted path — the
-    // block's other lines keep their cells.
-    const block = fixturePage.blocks[0] as unknown as LayoutBlock;
-    const processed = block.lines.map((line) => line.replace(/．．．/g, '…'));
-    const repaired = layoutLinesImpl(block, processed, heuristicMeasurer)!;
-    const asIs = layoutLinesImpl(block, processed, heuristicMeasurer, { cells: 'as-is' })!;
-    expect(repaired[0].cells).toBeUndefined();
-    expect('cells' in repaired[0]).toBe(false);
-    expect(sizes(asIs[0])).toEqual([94, 45, 26, 25, 45, 36, 29, 22, 41, 0, 86]);
-    for (const i of [1, 2]) {
-      expect(sizes(repaired[i])).toBeDefined();
-      expect(sizes(repaired[i])).toEqual(sizes(asIs[i]));
-    }
-  });
-
-  it('takes the cells only when the rendered text is the processed raw line', () => {
-    const block = fixturePage.blocks[0] as unknown as LayoutBlock;
-    expect(block.lines[2]).toContain('．．．');
-    const processed = block.lines.map((line) => line.replace(/．．．/g, '…'));
-    const good = layoutLinesImpl(block, processed, heuristicMeasurer)!;
-    expect(good[2].cells!.map((cell) => cell.text).join('')).toBe(processed[2]);
-    // one cell for the collapsed run: 544 → 585
-    expect(good[2].cells!.at(-1)).toEqual({ text: '…', size: 41 });
-    // the caller renders something else (here: the raw, uncollapsed line) —
-    // cells parallel to the processed text would not be its characters
-    const raw = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
-    expect(raw[2].cells).toBeUndefined();
-    expect(raw[1].cells).toBeDefined();
-  });
-
-  it('degrades a malformed entry to the fitted path, line by line', () => {
-    const junk = pair([[0, 50, 40, 150, 200, 250, 300, 350, 400], 'nope']);
-    expect(layoutLinesImpl(junk, junk.lines, heuristicMeasurer)).toStrictEqual(
-      layoutLinesImpl(junk, junk.lines, heuristicMeasurer, { cells: 'off' })
-    );
-    // not parallel to lines: the whole field is ignored
-    const short = pair([even(8, 50)]);
-    expect(layoutLinesImpl(short, short.lines, heuristicMeasurer)).toStrictEqual(
-      layoutLinesImpl(short, short.lines, heuristicMeasurer, { cells: 'off' })
-    );
-  });
-
-  it('a hidden re-capture stays hidden and carries no cells', () => {
-    const block: LayoutBlock = {
-      box: [100, 0, 200, 400],
-      vertical: true,
-      font_size: 50,
-      lines: ['あれはなんだろう', 'あれは'],
-      lines_coords: [column(100, 160, 0, 400), column(105, 155, 0, 150)],
-      char_offsets: [even(8, 50), even(3, 50)]
-    };
-    const layouts = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
-    const off = layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'off' })!;
-    expect(off[1].hidden).toBe(true);
-    expect(layouts[1]).toStrictEqual(off[1]);
-    expect(layouts[0].cells).toHaveLength(8);
-  });
-
-  it('holds its ground against a wrapped neighbour, which clips around it', () => {
-    // jjkFurigana line 0 wraps and is clipped off line 1's rendered column;
-    // placing line 1 must not cost it that trust.
-    const block = { ...jjkFurigana, char_offsets: [null, even(7, 33), null] };
-    const layouts = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
-    expect(layouts[0].wrap).toBe(true);
-    expect(layouts[1].cells).toHaveLength(7);
-    expect(layouts[1].wrap).toBe(false);
-    expect(layouts[0].left).toBeGreaterThanOrEqual(layouts[1].left + layouts[1].fontSize - 0.5);
-  });
-
-  it('keeps its cells through an equal-trust clip: smaller glyphs, never a wrap container', () => {
-    const block: LayoutBlock = {
-      box: [100, 0, 180, 400],
-      vertical: true,
-      font_size: 50,
-      lines: ['あいうえおかきく', 'さしすせそたちつ'],
-      lines_coords: [column(130, 180, 0, 400), column(100, 150, 0, 400)],
-      char_offsets: [even(8, 50), even(8, 50)]
-    };
-    const [right, left] = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
-    for (const l of [right, left]) {
-      expect(sizes(l)).toEqual(new Array(8).fill(50));
-      expect(l.wrap).toBe(false);
-      expect(l.fontSize).toBe(40); // the contested 20px split at its midpoint
-      expect(l.top).toBe(0);
-    }
-    expect(left.left + left.fontSize).toBeLessThanOrEqual(right.left + 0.5);
-  });
-
-  it('keeps its cells inside an overlap cluster; only the unplaced members are banded', () => {
-    const block: LayoutBlock = {
-      box: [100, 0, 180, 400],
-      vertical: true,
-      font_size: 50,
-      lines: ['あいうえおかきく', 'さしすせそたちつ'],
-      lines_coords: [column(100, 180, 0, 400), column(100, 170, 0, 400)],
-      char_offsets: [even(8, 50), null]
-    };
-    const alone = { ...block, lines: [block.lines[0]], lines_coords: [block.lines_coords![0]] };
-    alone.char_offsets = [even(8, 50)];
-    const [placedAlone] = layoutLinesImpl(alone, alone.lines, heuristicMeasurer)!;
-    const [placed, banded] = layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
-    expect(placed).toStrictEqual(placedAlone);
-    expect(banded.wrap).toBe(true);
-    expect(banded.cells).toBeUndefined();
-    // the band was clipped to the space beside the placed column
-    const clear =
-      banded.left + banded.width <= placed.left + 0.5 ||
-      banded.left >= placed.left + placed.fontSize - 0.5;
-    expect(clear).toBe(true);
-  });
-});
-
-// The uniform grid and rotation (line-grid.ts). These call layoutLinesImpl with
-// cells 'off' — what the viewer's auto mode passes — so they stay out of the
-// "before char_offsets" replay above and carry a golden of their own.
+// The uniform grid and rotation (line-grid.ts). These call layoutLinesImpl
+// directly, so they stay out of the replay above and carry a golden of their
+// own.
 describe('layoutLines on the fixed-pitch grid', () => {
   const column = (x0: number, x1: number, y0: number, y1: number) => [
     [x0, y0],
@@ -1209,7 +968,7 @@ describe('layoutLines on the fixed-pitch grid', () => {
     );
   };
   const auto = (block: LayoutBlock, lines = block.lines) =>
-    layoutLinesImpl(block, lines, heuristicMeasurer, { cells: 'off' })!;
+    layoutLinesImpl(block, lines, heuristicMeasurer)!;
   /** Centre of glyph k along the reading axis (block px), all-fullwidth text. */
   const glyphCentre = (
     l: { top: number; inset: number; letterSpacing: number; fontSize: number },
@@ -1440,8 +1199,7 @@ describe('layoutLines with tilted quads', () => {
     const ys = quads.flat().map((p) => p[1]);
     return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
   };
-  const auto = (block: LayoutBlock) =>
-    layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'off' })!;
+  const auto = (block: LayoutBlock) => layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
 
   const sfx = (deg: number, vertical = true): LayoutBlock => {
     const quad = vertical ? tilted(500, 400, 50, 360, deg) : tilted(500, 400, 360, 50, deg);
@@ -1598,29 +1356,6 @@ describe('layoutLines with tilted quads', () => {
     expect(wrapped.left + wrapped.width).toBeLessThanOrEqual(450 - block.box[0] - reach + 0.5);
   });
 
-  it("a rotated line with cells ('as-is') turns too: own-frame box, the start shift as its inset", () => {
-    const quad = tilted(500, 400, 50, 400, 20);
-    const block: LayoutBlock = {
-      box: boxOf([quad]),
-      vertical: true,
-      font_size: 50,
-      lines: ['あいうえおかきく'],
-      lines_coords: [quad],
-      char_offsets: [[12, 60, 110, 160, 210, 260, 310, 360, 396]]
-    };
-    const [l] = layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'as-is' })!;
-    expect(l.cells).toHaveLength(8);
-    expect(l.rotation).toBeCloseTo(20, 9);
-    expect(l.inset).toBe(12);
-    expect(l.letterSpacing).toBe(0);
-    expect(l.height).toBeCloseTo(400, 9);
-    expect(l.top + l.height / 2).toBeCloseTo(400 - block.box[1], 9);
-    // and with the offsets ignored (auto mode), the same line rides the grid
-    const [gridded] = auto(block);
-    expect(gridded.cells).toBeUndefined();
-    expect(gridded.rotation).toBeCloseTo(20, 9);
-  });
-
   it('golden: tilted and letter-spaced layouts', () => {
     const t = (35 * Math.PI) / 180;
     const slanted = [0, 1].map((k) =>
@@ -1705,10 +1440,9 @@ describe("layoutLines at the file's font size (original mode)", () => {
     const ys = quads.flat().map((p) => p[1]);
     return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
   };
-  const auto = (block: LayoutBlock) =>
-    layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'off' })!;
+  const auto = (block: LayoutBlock) => layoutLinesImpl(block, block.lines, heuristicMeasurer)!;
   const original = (block: LayoutBlock) =>
-    layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'off', size: 'file' })!;
+    layoutLinesImpl(block, block.lines, heuristicMeasurer, { size: 'file' })!;
 
   // Quads hug the ink (hiragana: 0.11 / 0.10 of the end cells empty). Line 0:
   // 8 glyphs set solid on a 40px step from y = 0. Line 1: 4 glyphs of the same
@@ -1767,10 +1501,7 @@ describe("layoutLines at the file's font size (original mode)", () => {
   // closes its glyphs up by FILE_MIN_SPACING_EM (−0.05em) on its pitch, nor
   // bigger than CROSS_SLACK × its quad's thickness.
   describe('the file’s size yields to the file’s geometry', () => {
-    const stock = (fixturePage.blocks as unknown as LayoutBlock[]).map((b) => {
-      const { char_offsets: _stripped, ...bare } = b;
-      return bare as LayoutBlock;
-    });
+    const stock = fixturePage.blocks as unknown as LayoutBlock[];
     const spacingEm = (l: { letterSpacing: number; fontSize: number }) =>
       l.letterSpacing / l.fontSize;
 
@@ -1951,9 +1682,7 @@ describe("layoutLines at the file's font size (original mode)", () => {
   it('an inflated file size yields to the quads — and still nothing is wrapped, moved or clipped', () => {
     // Jujutsukaisen 24 p57: font_size 46 around ~24–34px print. Auto wraps
     // line 0 (its quad took in a neighbour's ruby) and fits the rest.
-    const fitted = layoutLinesImpl(jjkFurigana, jjkFurigana.lines, heuristicMeasurer, {
-      cells: 'off'
-    })!;
+    const fitted = layoutLinesImpl(jjkFurigana, jjkFurigana.lines, heuristicMeasurer)!;
     expect(fitted.some((l) => l.wrap)).toBe(true);
     const layouts = original(jjkFurigana);
     layouts.forEach((l, i) => {
@@ -2037,9 +1766,9 @@ describe("layoutLines at the file's font size (original mode)", () => {
 
   it("without the option nothing changes: 'fitted' is the default", () => {
     for (const block of [loose, jjkFurigana, sakiAreha, sakiGarbage]) {
-      expect(
-        layoutLinesImpl(block, block.lines, heuristicMeasurer, { cells: 'off', size: 'fitted' })
-      ).toEqual(auto(block));
+      expect(layoutLinesImpl(block, block.lines, heuristicMeasurer, { size: 'fitted' })).toEqual(
+        auto(block)
+      );
     }
   });
 

@@ -58,7 +58,7 @@ demo library; ground truth for character positions = ink-run centres on clean al
 | Line boxes vs comic-text-detector                       | tighter and more symmetric (start slack 0.05 vs 0.15 pitch; 10.8% vs 14.0% ink-free across the line); true min-area rectangles, tilted for slanted SFX; unclip 1.40 clips an end glyph on ~3% of lines → use 1.5–1.6 or pad the axis 0.1 pitch |
 | Furigana                                                | boxed as its own lines: 137 of 170 extra boxes on OPM were ruby, read correctly                                                                                                                                                                |
 | **paddle-manga layer line quads**                       | **start/end spread 2.2 / 2.8 pitch (vs 0.2–0.7 for both detectors); ~9% of blocks re-wrap the print (two independent counts); single-character errors of 1.13 and 2.27 pitch; always axis-aligned**                                            |
-| Character centres, mean error in pitch                  | producer `char_offsets` 0.037–0.040 · uniform grid 0.047 · CTC single pass 0.066 · CTC 8-shift ensemble, bias-corrected, out of sample 0.026 (max 0.18 vs producer 0.41)                                                                       |
+| Character centres, mean error in pitch                  | producer per-character offsets 0.037–0.040 · uniform grid 0.047 · CTC single pass 0.066 · CTC 8-shift ensemble, bias-corrected, out of sample 0.026 (max 0.18 vs producer 0.41)                                                                |
 | Fixed-pitch grid with glyph-class ink insets (no model) | 95.0% clean boundaries on wide lines / 84.5% on punctuation+small-kana lines, vs charmap 95.1% / 86.9% — and zero zero-width or squeezed cells by construction                                                                                 |
 | Print pitch variation                                   | ~1.5% (the lettering is monospaced); producer cells vary ~5%                                                                                                                                                                                   |
 
@@ -120,9 +120,9 @@ character placement has never been benchmarked (its tests assert length, monoton
    apps do; continuity-safe as a CSS transform); then a keyless in-browser `ppocr-manga` engine beside GCV.
    _Update, same day (owner's decision): the viewer's auto mode drops per-character cells altogether — every
    line sits on the uniform grid of its quad (CSS letter-spacing on one text node) and tilted quads render
-   rotated. `src/lib/reader/line-grid.ts`, `e2e/line-grid.spec.ts`; `char_offsets` remain original mode's
-   diagnostic view. The OCR editor draws lines the same way (grid, rotation, cells only in original) and its
-   line move / resize / insert keep a quad's tilt._
+   rotated. `src/lib/reader/line-grid.ts`, `e2e/line-grid.spec.ts`. The OCR editor draws lines the same way
+   (grid, rotation) and its line move / resize / insert keep a quad's tilt. Per-character placement was
+   removed outright on 2026-09-21 — reader consumer, GCV producer and all plumbing._
 6. **Spikes:** PaddleOCR-VL `Spotting:` on vertical manga; CTC centres as an independent guard (≈1 s/page for
    the 8-shift ensemble, gain ~0.01 pitch — only after 1 and 3); user-fetched Chrome Screen AI as a symbol-box
    source, feeding the reader's existing `gcv-symbols` path.

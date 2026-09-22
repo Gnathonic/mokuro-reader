@@ -4,9 +4,8 @@ import { get, writable, type Writable } from 'svelte/store';
 import TextBoxes from '../TextBoxes.svelte';
 import { settings } from '$lib/settings';
 import type { Page } from '$lib/types';
-import fixturePage from '$lib/reader/__fixtures__/char-offsets-page.json';
-import { codePoints } from '$lib/reader/char-offsets';
-import { processLine } from '$lib/reader/char-offsets-layout';
+import fixturePage from '$lib/reader/__fixtures__/ocr-page.json';
+import { processLine } from '$lib/reader/line-coords-layout';
 import textBoxesSource from '../TextBoxes.svelte?raw';
 
 vi.mock('$lib/settings', async () => {
@@ -241,17 +240,14 @@ describe('TextBoxes auto mode with lines_coords', () => {
   });
 });
 
-// One-Punch Man 20 p64 (see the README line in char-offsets-layout.test.ts):
-// blocks 0–2 carry char_offsets — a zero-width と in b0 l0, a ．．． run in
-// b0 l2, a null line in b1 — and block 3 has none.
+// One-Punch Man 20 p64, a real mokuro page: three vertical balloons and an SFX.
 const fixtureBlocks = fixturePage.blocks as unknown as Page['blocks'];
 
-// Written by the component as it stood before char_offsets was wired in: a
-// block without placement must keep rendering exactly this — plus, in auto
-// mode, what the uniform grid adds to a line whose text does not already fill
-// its quad: a `letter-spacing` style and a `data-inset` (line-grid.ts). The
-// targets, sizes and text are untouched.
-describe('TextBoxes without char_offsets renders as it always has', () => {
+// The markup the component has always written — plus, in auto mode, what the
+// uniform grid adds to a line whose text does not already fill its quad: a
+// `letter-spacing` style and a `data-inset` (line-grid.ts). The targets, sizes
+// and text are untouched.
+describe('TextBoxes renders as it always has', () => {
   it('auto mode', () => {
     const { container } = render(TextBoxes, {
       page: makePage([fixtureBlocks[3]]),
@@ -285,338 +281,13 @@ describe('TextBoxes without char_offsets renders as it always has', () => {
     });
   });
 
-  it('a manual size ignores OCR geometry, char_offsets included', () => {
+  it('a manual size ignores OCR geometry', () => {
     withFontSize(24, () => {
       const { container } = render(TextBoxes, {
         page: makePage(fixtureBlocks),
         volumeUuid: 'test-uuid'
       });
       expect(markup(container)).toMatchSnapshot();
-    });
-  });
-});
-
-// char_offsets render in ORIGINAL mode only — the diagnostic view of what the
-// producer wrote. Auto mode ignores the field and places every line on the
-// fixed-pitch grid (see 'TextBoxes auto mode: the fixed-pitch grid' below).
-describe('TextBoxes with char_offsets', () => {
-  const renderBlock = (block: unknown) =>
-    render(TextBoxes, { page: makePage([block]), volumeUuid: 'test-uuid' }).container;
-  const lineSpans = (container: HTMLElement) => [
-    ...container.querySelectorAll<HTMLElement>('.ocr-line')
-  ];
-  const charSpans = (line: HTMLElement) => [...line.querySelectorAll<HTMLElement>('.ocr-char')];
-  /** Child nodes a text scanner sees. Svelte's block anchors — comments and
-   * EMPTY text nodes — are no text; a whitespace text node would be. */
-  const contentNodes = (el: HTMLElement) =>
-    [...el.childNodes].filter(
-      (node) =>
-        node.nodeType !== Node.COMMENT_NODE &&
-        !(node.nodeType === Node.TEXT_NODE && node.nodeValue === '')
-    );
-  /** The advance a cell was given. jsdom keeps it on the style attribute. */
-  const inlineSize = (char: HTMLElement) =>
-    /(?:^|;)\s*inline-size:\s*([^;]+)/.exec(char.getAttribute('style') ?? '')?.[1].trim();
-
-  it.each([
-    ['auto', 0],
-    ['original', 7]
-  ] as const)(
-    'renders one .ocr-line per line, holding one .ocr-char per code point of the rendered text (%s)',
-    (mode, expectedCelled) => withFontSize(mode, () => celledLinesInvariant(mode, expectedCelled))
-  );
-
-  function celledLinesInvariant(mode: 'auto' | 'original', expectedCelled: number) {
-    let celledLines = 0;
-    for (const block of fixtureBlocks) {
-      const container = renderBlock(block);
-      const spans = lineSpans(container);
-      expect(spans).toHaveLength(block.lines.length);
-      block.lines.forEach((raw, i) => {
-        const processed = processLine(raw);
-        // THE invariant: selection, copy and Yomitan read the line span
-        expect(spans[i].textContent, raw).toBe(processed);
-        const chars = charSpans(spans[i]);
-        if (mode === 'original' && block.char_offsets?.[i]) {
-          celledLines++;
-          expect(chars, raw).toHaveLength(codePoints(processed).length);
-          expect(chars.map((char) => char.textContent)).toEqual(codePoints(processed));
-          // nothing but the cells: a whitespace text node between two of them
-          // would be a character the file never had
-          expect(contentNodes(spans[i])).toEqual(chars);
-          // …and nothing but the character inside each
-          for (const char of chars) {
-            expect(contentNodes(char)).toHaveLength(1);
-            expect(char.children).toHaveLength(0);
-          }
-        } else {
-          expect(chars, raw).toHaveLength(0);
-          expect(spans[i].children).toHaveLength(0);
-        }
-      });
-      // the block still reads as one continuous run, line after line
-      expect(container.querySelector('p')!.textContent).toBe(block.lines.map(processLine).join(''));
-      cleanup();
-    }
-    expect(celledLines).toBe(expectedCelled);
-  }
-
-  it('gives every cell its advance as inline-size, the collapsed ellipsis run as ONE cell', () => {
-    // b0 l2 ends ．．． at [544, 558, 572, 585]: one … cell of 41px
-    const spans = lineSpans(withFontSize('original', () => renderBlock(fixtureBlocks[0])));
-    const chars = charSpans(spans[2]);
-    expect(spans[2].textContent).toBe('フブキ組の強みだったのに…');
-    expect(chars).toHaveLength(13);
-    expect(chars.map(inlineSize)).toEqual(
-      [53, 40, 45, 48, 40, 49, 42, 52, 33, 53, 43, 46, 41].map((size) => `${size}px`)
-    );
-  });
-
-  it('renders the null line of a mixed block as bare text on the same per-line path', () => {
-    const spans = lineSpans(withFontSize('original', () => renderBlock(fixtureBlocks[1])));
-    expect(fixtureBlocks[1].char_offsets?.[1]).toBeNull();
-    expect(spans[1].classList.contains('positionedLine')).toBe(true);
-    expect(contentNodes(spans[1])).toHaveLength(1);
-    expect(contentNodes(spans[1])[0].nodeType).toBe(Node.TEXT_NODE);
-    expect(charSpans(spans[0])).toHaveLength(6);
-    expect(charSpans(spans[2])).toHaveLength(7);
-  });
-
-  // #254, per glyph: an out-of-flow character is a paragraph break to a DOM
-  // text scanner, so one between every glyph would leave no word to scan.
-  it('never takes a character out of flow', () => {
-    // original mode: every line of the block on its cells, the squeezed one too
-    const container = withFontSize('original', () => renderBlock(fixtureBlocks[0]));
-    const chars = [...container.querySelectorAll<HTMLElement>('.ocr-char')];
-    expect(chars.length).toBeGreaterThan(30);
-    for (const char of chars) {
-      expect(char.style.position).toBe('');
-      expect(char.style.left).toBe('');
-      expect(char.style.top).toBe('');
-      expect(['absolute', 'fixed', 'sticky']).not.toContain(getComputedStyle(char).position);
-    }
-    // jsdom may not apply the scoped stylesheet, so read the rules themselves
-    const rules = [...textBoxesSource.matchAll(/[^{}]*\.ocr-char[^{}]*\{([^}]*)\}/g)];
-    expect(rules.length).toBeGreaterThan(0);
-    for (const [, body] of rules) expect(body).not.toMatch(/position\s*:/);
-  });
-
-  // Real layout is the e2e's job (e2e/char-offsets.spec.ts measures the glyph
-  // against its cell); what can be held here is the rule that makes it true.
-  // `text-align: center` START-aligns content wider than its inline-block, so
-  // every glyph in a tight or zero-width cell sat half its overflow late.
-  // Flex centring overflows both sides equally. The display value has to stay
-  // one a DOM text scanner reads as inline: Yomitan cuts it at the first '-',
-  // so inline-flex and inline-block pass, flex / block / grid are a line break.
-  const cellRules = () =>
-    [...textBoxesSource.matchAll(/([^{}]*\.ocr-char[^{}]*)\{([^}]*)\}/g)].map(
-      ([, selector, body]) => ({ selector: selector.replace(/\/\*[\s\S]*?\*\//g, '').trim(), body })
-    );
-  const declared = (body: string, property: string) =>
-    new RegExp(`(?:^|;|\\s)${property}\\s*:\\s*([^;]+);`).exec(body)?.[1].trim();
-
-  it('centres a glyph on its cell even when the glyph is the wider one', () => {
-    const cell = cellRules().find(({ selector }) => selector.endsWith('.ocr-char'))!;
-    expect(declared(cell.body, 'display')).toBe('inline-flex');
-    expect(declared(cell.body, 'justify-content')).toBe('center');
-    for (const { body } of cellRules()) {
-      const display = declared(body, 'display');
-      if (display) expect(['inline-flex', 'inline-block']).toContain(display);
-    }
-  });
-
-  // A flex container does not render a text run that is only white space, so
-  // a space in a flex cell drops out of selection and copy ("NO WAY" →
-  // "NOWAY"). A space has nothing to centre: it keeps the inline-block cell,
-  // with `pre` so it is not collapsed away there either.
-  it('a space keeps a cell that renders it', () => {
-    const block = {
-      box: [0, 0, 300, 50],
-      vertical: false,
-      font_size: 50,
-      lines: ['NO WAY'],
-      lines_coords: [
-        [
-          [0, 0],
-          [300, 0],
-          [300, 50],
-          [0, 50]
-        ]
-      ],
-      char_offsets: [[0, 50, 120, 120, 190, 245, 300]]
-    };
-    const [line] = lineSpans(withFontSize('original', () => renderBlock(block)));
-    expect(line.textContent).toBe('NO WAY');
-    const cells = charSpans(line);
-    expect(cells.map((cell) => cell.classList.contains('ocr-space'))).toEqual([
-      false,
-      false,
-      true,
-      false,
-      false,
-      false
-    ]);
-    expect(inlineSize(cells[2])).toBe('0px');
-    const space = cellRules().find(({ selector }) => selector.endsWith('.ocr-space'))!;
-    expect(declared(space.body, 'display')).toBe('inline-block');
-    expect(declared(space.body, 'white-space')).toBe('pre');
-  });
-
-  it('carries the start shift on the line target, not on the cells', () => {
-    const block = {
-      box: [100, 0, 150, 400],
-      vertical: true,
-      font_size: 50,
-      lines: ['あいうえおかきく'],
-      lines_coords: [
-        [
-          [100, 0],
-          [150, 0],
-          [150, 400],
-          [100, 400]
-        ]
-      ],
-      char_offsets: [[12, 60, 110, 160, 210, 260, 310, 360, 396]]
-    };
-    const [line] = lineSpans(withFontSize('original', () => renderBlock(block)));
-    expect(line.dataset.targetTop).toBe('12');
-    expect(line.style.fontSize).toBe('48px');
-    expect(line.style.width).toBe('');
-    expect(line.style.height).toBe('');
-    expect(line.classList.contains('wrappedLine')).toBe(false);
-  });
-
-  describe('a zero-width cell on a real character', () => {
-    // え has no cell and お has two: the zero cell alone, on a line whose other
-    // cells are plausible
-    const block = {
-      box: [100, 0, 150, 240],
-      vertical: true,
-      font_size: 40,
-      lines: ['あいうえおか'],
-      lines_coords: [
-        [
-          [100, 0],
-          [150, 0],
-          [150, 240],
-          [100, 240]
-        ]
-      ],
-      char_offsets: [[0, 40, 80, 120, 120, 200, 240]]
-    };
-    const cellSizes = (container: HTMLElement) =>
-      charSpans(lineSpans(container)[0]).map(inlineSize);
-
-    it('auto mode never sees it: no cells, the line on the uniform grid of its quad', () => {
-      const container = renderBlock(block);
-      expect(cellSizes(container)).toEqual([]);
-      expect(lineSpans(container)[0].textContent).toBe('あいうえおか');
-      expect(lineSpans(container)[0].children).toHaveLength(0);
-    });
-
-    it('original mode renders the file as-is: a 0px cell, the character still in the DOM', () => {
-      withFontSize('original', () => {
-        const container = renderBlock(block);
-        expect(cellSizes(container)).toEqual(['40px', '40px', '40px', '0px', '80px', '40px']);
-        expect(lineSpans(container)[0].textContent).toBe('あいうえおか');
-      });
-    });
-  });
-
-  describe('the squeezed b0 l0: 地 in 94px, な ポ ン in 22–26px, と[363,363) 、[363,449)', () => {
-    it('auto mode draws no cells at all: every line of the block is one text node on its quad', () => {
-      const spans = lineSpans(renderBlock(fixtureBlocks[0]));
-      expect(spans[0].textContent).toBe('地道なポイント稼ぎと、');
-      for (const span of spans) {
-        expect(charSpans(span)).toHaveLength(0);
-        expect(span.children).toHaveLength(0);
-        expect(contentNodes(span)).toHaveLength(1);
-        expect(span.classList.contains('positionedLine')).toBe(true);
-      }
-    });
-
-    it('original mode renders the file as-is: every cell, the 0px one included', () => {
-      withFontSize('original', () => {
-        const container = renderBlock(fixtureBlocks[0]);
-        expect(charSpans(lineSpans(container)[0]).map(inlineSize)).toEqual(
-          [94, 45, 26, 25, 45, 36, 29, 22, 41, 0, 86].map((size) => `${size}px`)
-        );
-        expect(lineSpans(container)[0].textContent).toBe('地道なポイント稼ぎと、');
-      });
-    });
-  });
-
-  describe('original mode', () => {
-    it('takes the per-line path for a block with placement, its null lines included', () => {
-      withFontSize('original', () => {
-        const container = renderBlock(fixtureBlocks[1]);
-        const box = container.querySelector<HTMLElement>('.textBox')!;
-        expect(box.classList.contains('perLine')).toBe(true);
-        const spans = lineSpans(container);
-        expect(spans.every((span) => span.classList.contains('positionedLine'))).toBe(true);
-        expect(charSpans(spans[0])).toHaveLength(6);
-        expect(charSpans(spans[1])).toHaveLength(0);
-        fixtureBlocks[1].lines.forEach((raw, i) =>
-          expect(spans[i].textContent).toBe(processLine(raw))
-        );
-      });
-    });
-
-    it('sizes a null line by the original-mode rule — the file’s size, capped — not by auto’s fit', () => {
-      // Block 1 says 59px; auto fits its lines at the block's 56.2px step.
-      const fitted = parseFloat(lineSpans(renderBlock(fixtureBlocks[1]))[1].style.fontSize);
-      expect(fitted).toBeCloseTo(56.22, 1);
-      cleanup();
-      withFontSize('original', () => {
-        const line = lineSpans(renderBlock(fixtureBlocks[1]))[1];
-        const size = parseFloat(line.style.fontSize);
-        // The unplaced line 1 is alone in saying anything about the pitch
-        // here (placed lines do not vote): its own 55.1px step. The file's
-        // 59px as far as that step carries it — closed up by 0.05em.
-        expect(size).toBeCloseTo(55.06 / 0.95, 1);
-        expect(size).toBeGreaterThan(fitted);
-        expect(size).toBeLessThanOrEqual(59);
-        expect(parseFloat(line.style.letterSpacing) / size).toBeCloseTo(-0.05, 6);
-        cleanup();
-        // a file that says LESS than the step is simply rendered
-        const small = lineSpans(renderBlock({ ...fixtureBlocks[1], font_size: 50 }))[1];
-        expect(small.style.fontSize).toBe('50px');
-        expect(parseFloat(small.style.letterSpacing)).toBeGreaterThan(0);
-      });
-    });
-
-    // Was: 'keeps the whole-block rendering when no line yields cells'. What
-    // holds is that unusable offsets change NOTHING — the block renders as if
-    // the field were absent. That rendering used to be the whole-block
-    // paragraph; with line quads in the file it is now the per-line one.
-    it('renders a block whose offsets are all unusable exactly like one without the field', () => {
-      withFontSize('original', () => {
-        // parallel, but every entry fails validation (wrong length)
-        const junk = { ...fixtureBlocks[0], char_offsets: [[0, 10], null, [0, 10]] };
-        const container = renderBlock(junk);
-        const bare = { ...fixtureBlocks[0] } as Record<string, unknown>;
-        delete bare.char_offsets;
-        const expected = markup(container);
-        cleanup();
-        expect(expected).toBe(markup(renderBlock(bare)));
-        expect(expected).not.toContain('ocr-char');
-        expect(expected).toContain('positionedLine');
-        cleanup();
-        // …and with no quads either, the whole-block paragraph it always was
-        expect(markup(renderBlock(withoutQuads(junk)))).not.toContain('positionedLine');
-      });
-    });
-  });
-
-  it('a manual font size renders no cells at all', () => {
-    withFontSize(24, () => {
-      const { container } = render(TextBoxes, {
-        page: makePage(fixtureBlocks),
-        volumeUuid: 'test-uuid'
-      });
-      expect(container.querySelectorAll('.ocr-line')).toHaveLength(9);
-      expect(container.querySelectorAll('.ocr-char')).toHaveLength(0);
-      expect(container.querySelectorAll('.positionedLine')).toHaveLength(0);
     });
   });
 });
@@ -673,26 +344,19 @@ describe('TextBoxes: the fixed-pitch grid and rotation', () => {
     ]
   };
 
-  it('renders NO .ocr-char for a block with char_offsets; original mode still does', () => {
-    const container = renderBlocks(fixtureBlocks);
-    expect(fixtureBlocks.some((block) => block.char_offsets)).toBe(true);
-    expect(container.querySelectorAll('.ocr-char')).toHaveLength(0);
-    // every line is its processed text, in ONE text node
+  it('renders every line as ONE text node, in auto and in original mode', () => {
     const expected = [...fixtureBlocks].flatMap((block) => block.lines.map(processLine)).sort();
-    expect(
-      lineSpans(container)
-        .map((span) => span.textContent)
-        .sort()
-    ).toEqual(expected);
-    for (const span of lineSpans(container)) expect(span.children).toHaveLength(0);
-    cleanup();
-    const original = withFontSize('original', () => renderBlocks(fixtureBlocks));
-    expect(original.querySelectorAll('.ocr-char').length).toBeGreaterThan(50);
-    expect(
-      lineSpans(original)
-        .map((span) => span.textContent)
-        .sort()
-    ).toEqual(expected);
+    for (const mode of ['auto', 'original'] as const) {
+      const container = withFontSize(mode, () => renderBlocks(fixtureBlocks));
+      expect(
+        lineSpans(container)
+          .map((span) => span.textContent)
+          .sort()
+      ).toEqual(expected);
+      // no element inside a line: no per-character span, #254 per glyph
+      for (const span of lineSpans(container)) expect(span.children).toHaveLength(0);
+      cleanup();
+    }
   });
 
   it('carries the grid as letter-spacing on the line and the start inset as data', () => {
@@ -780,9 +444,7 @@ describe('TextBoxes: the fixed-pitch grid and rotation', () => {
   // ORIGINAL mode is the file as it is: the placement the file gives (line
   // quads → frame, pitch grid, ink insets, rotation — all of the above) at the
   // size the file gives (the block's font_size), where auto fits one. A block
-  // the file places character by character draws those cells instead
-  // ('TextBoxes with char_offsets'); a block with no quads has nothing to be
-  // placed on ('…renders as it always has').
+  // with no quads has nothing to be placed on ('…renders as it always has').
   describe("original mode: the same placement, at the file's font size", () => {
     // the file says 44px around 50px print, and 42px around 40px print — 5%
     // over the step, as a consistent mokuro file does
@@ -806,7 +468,7 @@ describe('TextBoxes: the fixed-pitch grid and rotation', () => {
       }
     }
 
-    it('a tilted quad without char_offsets: one in-flow text node, turned, at font_size', () => {
+    it('a tilted quad: one in-flow text node, turned, at font_size', () => {
       const [line] = lineSpans(withFontSize('original', () => renderBlocks([sfx44])));
       expect(line.classList.contains('positionedLine')).toBe(true);
       expect(line.style.fontSize).toBe('44px');

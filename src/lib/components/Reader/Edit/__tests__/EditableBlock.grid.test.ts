@@ -70,13 +70,6 @@ function gridPage(): Page {
           rect(540, 124.4, 40, LOOSE),
           tilted(400, 400, 40, LOOSE_KATAKANA, 20),
           tilted(300, 620, LOOSE_ROW, 40, -15)
-        ],
-        // present and valid: auto mode must not draw it
-        char_offsets: [
-          [0, 40, 80, 120, 160, 200, 240],
-          [0, 50, 100, 150, 200, 250, 300],
-          null,
-          null
         ]
       }
     ]
@@ -122,14 +115,12 @@ beforeEach(() => fontMode.set({ fontSize: 'auto', boldFont: false }));
 afterEach(cleanup);
 
 describe('EditableBlock — the fixed-pitch grid', () => {
-  it('auto mode draws no cells, whatever char_offsets the file carries: every line is one RAW text node', () => {
+  it('every line is one RAW text node', () => {
     const { root, page } = mount();
-    expect(root.querySelectorAll('.ocr-char')).toHaveLength(0);
     lineEls(root).forEach((line, i) => {
       expect(line.childNodes).toHaveLength(1);
       expect(line.firstChild!.nodeType).toBe(Node.TEXT_NODE);
       expect(line.textContent).toBe(page.blocks[0].lines[i]); // RAW: ... not …
-      expect(line.style.getPropertyValue('padding-inline-start')).toBe('');
     });
   });
 
@@ -174,24 +165,15 @@ describe('EditableBlock — the fixed-pitch grid', () => {
     expect(px(row.style.letterSpacing || '0')).not.toBeCloseTo(before, 3);
   });
 
-  it('a manual font size is not `original`: still the grid, still no cells', async () => {
+  it('the reader’s font mode changes nothing: still the grid', async () => {
     const { root } = mount();
-    fontMode.set({ fontSize: '12', boldFont: false });
-    await tick();
-    expect(root.querySelectorAll('.ocr-char')).toHaveLength(0);
-    expect(px(lineEls(root)[1].style.letterSpacing)).toBeCloseTo(10, 6);
-  });
-
-  it('original mode draws the file’s cells instead — no spacing on a celled line', async () => {
-    const { root } = mount();
-    fontMode.set({ fontSize: 'original', boldFont: false });
-    await tick();
-    const lines = lineEls(root);
-    expect(lines[1].querySelectorAll('.ocr-char')).toHaveLength(6);
-    expect(lines[1].style.letterSpacing).toBe('');
-    expect(lines[1].style.textIndent).toBe('');
-    // a line the file does not place is on the grid in original mode too
-    expect(lines[2].querySelectorAll('.ocr-char')).toHaveLength(0);
+    const spacing = () => px(lineEls(root)[1].style.letterSpacing);
+    expect(spacing()).toBeCloseTo(10, 6);
+    for (const fontSize of ['12', 'original'] as const) {
+      fontMode.set({ fontSize, boldFont: false });
+      await tick();
+      expect(spacing()).toBeCloseTo(10, 6);
+    }
   });
 
   // The viewer's original mode now places lines on their quads too (grid and
@@ -206,11 +188,7 @@ describe('EditableBlock — the fixed-pitch grid', () => {
     const shape = () =>
       lineEls(root)
         .slice(2)
-        .map((el) => ({
-          text: el.textContent,
-          cells: el.querySelectorAll('.ocr-char').length,
-          style: el.getAttribute('style')
-        }));
+        .map((el) => ({ text: el.textContent, style: el.getAttribute('style') }));
     const auto = shape();
     expect(auto).toHaveLength(2);
     const column = lineEls(root)[2];
@@ -222,8 +200,6 @@ describe('EditableBlock — the fixed-pitch grid', () => {
     expect(px(column.style.letterSpacing)).toBeCloseTo(10, 6);
     fontMode.set({ fontSize: 'original', boldFont: false });
     await tick();
-    // lines 0–1 switched to cells, so the mode really is in effect
-    expect(lineEls(root)[1].querySelectorAll('.ocr-char')).toHaveLength(6);
     expect(shape()).toEqual(auto);
   });
 });
@@ -279,7 +255,6 @@ describe('EditableBlock — a tilted quad shows the line turned', () => {
     });
     // opening the editor must not make the text jump: the grid stays
     expect(px(editable[1].style.letterSpacing)).toBeCloseTo(10, 6);
-    expect(root.querySelectorAll('.ocr-char')).toHaveLength(0);
   });
 
   it('typing in a turned line commits RAW text and leaves its quad — so its tilt — alone', async () => {
@@ -349,17 +324,5 @@ describe('EditableBlock — a tilted quad shows the line turned', () => {
     await tick();
     const shown = /^rotate\((-?[\d.]+)deg\)$/.exec(lineEls(root)[2].style.transform);
     expect(parseFloat(shown![1])).toBeCloseTo(20, 6);
-  });
-
-  it('original mode turns a CELLED tilted line too, its cells starting where the file says', async () => {
-    const page = gridPage();
-    (page.blocks[0] as Block).char_offsets = [null, null, [6, 50, 100, 150, 200, 250, 300], null];
-    fontMode.set({ fontSize: 'original', boldFont: false });
-    const { root } = mount(page);
-    const column = lineEls(root)[2];
-    expect(column.querySelectorAll('.ocr-char')).toHaveLength(6);
-    expect(column.style.getPropertyValue('padding-inline-start')).toBe('6px');
-    expect(column.style.transform).toContain('rotate(');
-    expect(column.style.letterSpacing).toBe('');
   });
 });
