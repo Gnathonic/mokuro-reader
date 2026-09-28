@@ -20,6 +20,37 @@ export interface WebdavPutResult {
    * into place only once verified, so a failed PUT never harms the live file.
    */
   putVerified?: true;
+  /**
+   * The server checked the body against our `Content-Digest` (the algorithm it
+   * names, `sha-256`): the bytes it stored are the bytes we sent, end to end.
+   */
+  digestVerified?: string;
+}
+
+function base64OfBytes(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+/**
+ * `Content-Digest` (RFC 9530) of an upload body: `sha-256=:<base64>:`. Lets a
+ * server that verifies archives tell damage in transit (digest mismatch) from
+ * damage already in our copy (digest matches, CRCs fail). Null where there is
+ * no SubtleCrypto (an insecure origin): the upload then goes without one.
+ */
+export async function contentDigestOf(blob: Blob): Promise<string | null> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle || typeof subtle.digest !== 'function') return null;
+  try {
+    const hash = await subtle.digest('SHA-256', await blob.arrayBuffer());
+    return `sha-256=:${base64OfBytes(new Uint8Array(hash))}:`;
+  } catch (error) {
+    console.warn('[WebDAV] Could not compute the upload digest; sending without one:', error);
+    return null;
+  }
 }
 
 /** Does this `X-Mokuro-Put` value promise staged, verified PUTs? */
@@ -210,7 +241,11 @@ export async function uploadFileWithClient(
   client: WebDAVClient,
   path: string,
   blob: Blob,
-  onProgress?: (loaded: number, total: number) => void
+  onProgress?: (loaded: number, total: number) => void,
+  options: {
+    /** `Content-Digest` of `blob` (`contentDigestOf`), computed once per upload. */
+    contentDigest?: string;
+  } = {}
 ): Promise<WebdavPutResult> {
   const uploadUrl = client.getFileUploadLink(path);
   const clientHeaders = client.getHeaders();
@@ -225,6 +260,7 @@ export async function uploadFileWithClient(
       xhr.setRequestHeader(key, value);
     }
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    if (options.contentDigest) xhr.setRequestHeader('Content-Digest', options.contentDigest);
 
     // Long timeout for large files (30 minutes)
     xhr.timeout = 30 * 60 * 1000;
@@ -252,8 +288,10 @@ export async function uploadFileWithClient(
           return;
         }
         const serverOcr = readServerOcrHeaders(header, uploadUrl);
+        const digestVerified = header('X-Mokuro-Digest-Verified')?.trim().toLowerCase();
         resolve({
           path,
+          ...(digestVerified ? { digestVerified } : {}),
           ...(serverOcr ? { serverOcr } : {}),
           ...(isVerifiedPutHeader(header('X-Mokuro-Put')) ? { putVerified: true as const } : {})
         });

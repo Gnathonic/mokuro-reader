@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WebDAVClient } from 'webdav';
 import {
+  contentDigestOf,
   UPLOAD_RETRY_DELAYS_MS,
   WebdavUploadError,
   uploadFileWithClient,
@@ -286,5 +287,66 @@ describe('X-Mokuro-Put on a PUT response', () => {
     answers = [{ status: 201 }];
     const result = await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['x']));
     expect(result.putVerified).toBeUndefined();
+  });
+});
+
+describe('Content-Digest (RFC 9530)', () => {
+  it('is the SHA-256 of the exact body, in the structured-field form', async () => {
+    expect(await contentDigestOf(new Blob(['hello']))).toBe(
+      'sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:'
+    );
+  });
+
+  it('is null where the browser offers no SubtleCrypto (an insecure origin)', async () => {
+    vi.stubGlobal('crypto', {});
+    expect(await contentDigestOf(new Blob(['hello']))).toBeNull();
+  });
+
+  it('is sent when given, and only then', async () => {
+    answers = [{ status: 201 }, { status: 201 }];
+    await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['hello']), undefined, {
+      contentDigest: 'sha-256=:abc=:'
+    });
+    await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['hello']));
+    expect(sent[0].headers['Content-Digest']).toBe('sha-256=:abc=:');
+    expect(sent[1].headers['Content-Digest']).toBeUndefined();
+  });
+
+  it('records a server that checked the digest end to end', async () => {
+    answers = [
+      {
+        status: 201,
+        headers: {
+          'X-Mokuro-Upload': 'verified',
+          'X-Mokuro-Size': '5',
+          'X-Mokuro-Digest-Verified': 'sha-256'
+        }
+      }
+    ];
+    const result = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/S/V.cbz',
+      new Blob(['hello'])
+    );
+    expect(result.digestVerified).toBe('sha-256');
+  });
+
+  it('still refuses a size mismatch even when the digest was verified', async () => {
+    answers = [
+      {
+        status: 201,
+        headers: {
+          'X-Mokuro-Upload': 'verified',
+          'X-Mokuro-Size': '4',
+          'X-Mokuro-Digest-Verified': 'sha-256'
+        }
+      }
+    ];
+    const error = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/S/V.cbz',
+      new Blob(['hello'])
+    ).catch((e) => e);
+    expect(error.reason).toBe('size-mismatch');
   });
 });

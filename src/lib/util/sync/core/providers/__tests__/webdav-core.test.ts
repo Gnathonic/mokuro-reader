@@ -143,3 +143,76 @@ describe('webdavCore.uploadFile delete-before-PUT', () => {
     ).resolves.toEqual({ fileId: '/mokuro-reader/S/V.cbz', serverPutVerified: true });
   });
 });
+
+describe('webdavCore.uploadFile Content-Digest', () => {
+  beforeEach(() => {
+    uploadFileWithClient.mockReset();
+  });
+
+  it('computes the digest once and sends the same one on every attempt', async () => {
+    const digest = vi.spyOn(globalThis.crypto.subtle, 'digest');
+    uploadFileWithClient
+      .mockRejectedValueOnce(transient())
+      .mockResolvedValueOnce({ path: '/mokuro-reader/S/V.cbz' });
+    const done = webdavCore.uploadFile({
+      seriesTitle: 'S',
+      filename: 'V.cbz',
+      blob: new Blob(['hello']),
+      credentials: { ...credentials, webdavPutVerified: true }
+    });
+    // Step the clock until the retry has run (the digest resolves first, off the clock).
+    for (let i = 0; i < 10 && uploadFileWithClient.mock.calls.length < 2; i++) {
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await done;
+    expect(digest).toHaveBeenCalledTimes(1);
+    const options = uploadFileWithClient.mock.calls.map((c) => c[4]);
+    expect(options).toEqual([
+      { contentDigest: 'sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:' },
+      { contentDigest: 'sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:' }
+    ]);
+  });
+
+  it('digests small non-archive bodies too', async () => {
+    uploadFileWithClient.mockResolvedValueOnce({ path: '/mokuro-reader/S/V.mokuro' });
+    await webdavCore.uploadFile({
+      seriesTitle: 'S',
+      filename: 'V.mokuro',
+      blob: new Blob(['hello']),
+      credentials: { ...credentials, webdavPutVerified: true }
+    });
+    expect(uploadFileWithClient.mock.calls[0][4]).toEqual({
+      contentDigest: 'sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:'
+    });
+  });
+
+  it('sends no digest to a server that has not advertised verified PUTs', async () => {
+    // A cross-origin PUT's preflight must allow every request header: a plain
+    // WebDAV server with a fixed Access-Control-Allow-Headers list would refuse it.
+    const digest = vi.spyOn(globalThis.crypto.subtle, 'digest');
+    uploadFileWithClient.mockResolvedValueOnce({ path: '/mokuro-reader/S/V.cbz' });
+    await webdavCore.uploadFile({
+      seriesTitle: 'S',
+      filename: 'V.cbz',
+      blob: new Blob(['hello']),
+      credentials
+    });
+    expect(digest).not.toHaveBeenCalled();
+    expect(uploadFileWithClient.mock.calls[0][4]).toBeUndefined();
+  });
+
+  it('reports a digest the server verified end to end', async () => {
+    uploadFileWithClient.mockResolvedValueOnce({
+      path: '/mokuro-reader/S/V.cbz',
+      digestVerified: 'sha-256'
+    });
+    await expect(
+      webdavCore.uploadFile({
+        seriesTitle: 'S',
+        filename: 'V.cbz',
+        blob: new Blob(['hello']),
+        credentials: { ...credentials, webdavPutVerified: true }
+      })
+    ).resolves.toEqual({ fileId: '/mokuro-reader/S/V.cbz', serverDigestVerified: 'sha-256' });
+  });
+});

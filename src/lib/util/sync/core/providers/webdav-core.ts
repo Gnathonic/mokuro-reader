@@ -1,5 +1,6 @@
 import { createClient } from 'webdav';
 import {
+  contentDigestOf,
   ensureFoldersExist,
   uploadFileWithClient,
   uploadWithRetry
@@ -249,16 +250,24 @@ export const webdavCore: CloudProviderCore = {
     // timeout, 5xx, a server `retry: true`, a size mismatch); a small sidecar
     // or progress file gets one attempt — its callers have their own recovery.
     const isArchive = /\.cbz$/i.test(filename);
-    const put = isArchive
-      ? await uploadWithRetry(() => uploadFileWithClient(client, filePath, blob, onProgress), {
-          onRetry
-        })
-      : await uploadFileWithClient(client, filePath, blob, onProgress);
+    // A whole-body digest, computed ONCE (the body does not change between
+    // attempts), only for a server that advertised verified PUTs: a cross-origin
+    // PUT's preflight must allow every request header, and a plain WebDAV server
+    // with a fixed Access-Control-Allow-Headers list would refuse the upload.
+    const contentDigest =
+      credentials.webdavPutVerified === true ? await contentDigestOf(blob) : null;
+    const putOptions = contentDigest ? { contentDigest } : undefined;
+    const attempt = () => uploadFileWithClient(client, filePath, blob, onProgress, putOptions);
+    const put = isArchive ? await uploadWithRetry(attempt, { onRetry }) : await attempt();
+    if (put.digestVerified) {
+      console.log(`[WebDAV] ${filename}: verified end to end (${put.digestVerified})`);
+    }
     // Only an archive enters a server's OCR queue; a header on anything else is noise.
     return {
       fileId: put.path,
       ...(put.serverOcr && isArchive ? { serverOcr: put.serverOcr } : {}),
-      ...(put.putVerified ? { serverPutVerified: true } : {})
+      ...(put.putVerified ? { serverPutVerified: true } : {}),
+      ...(put.digestVerified ? { serverDigestVerified: put.digestVerified } : {})
     };
   }
 };

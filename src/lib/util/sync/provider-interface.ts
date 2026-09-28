@@ -209,6 +209,8 @@ export interface UploadFileResult {
   serverOcr?: ServerOcrQueued;
   /** The response said the server stages and verifies PUTs (`X-Mokuro-Put: verified`). */
   serverPutVerified?: boolean;
+  /** The server checked the body against our `Content-Digest` (`sha-256`): verified end to end. */
+  serverDigestVerified?: string;
   /** Server-reported modification time (ISO 8601), when the upload response carried one. */
   modifiedTime?: string;
   /** Server-reported size in bytes, when the upload response carried one. */
