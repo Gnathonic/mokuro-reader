@@ -58,7 +58,11 @@
   import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
   import { formatArchiveSize } from '$lib/util/format-size';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
-  import { describePendingJobs, serverOcrPending } from '$lib/catalog/server-ocr-pending';
+  import {
+    describePendingOcr,
+    pendingOcrClock,
+    serverOcrPending
+  } from '$lib/catalog/server-ocr-pending';
   import { uploadFailures } from '$lib/util/upload-failures';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
@@ -126,8 +130,9 @@
   // `liveVolume` is the raw stored row.
   let isNotInstalled = $derived(needsDownload(liveVolume));
   // OCR the server is still making for this volume (a WebDAV upload it queued,
-  // or a deep link whose manifest listed pending jobs): a quiet ETA chip.
-  let serverOcrChip = $derived(describePendingJobs($serverOcrPending[volume_uuid]));
+  // or a deep link whose manifest listed pending jobs), one line per job. The
+  // shared clock re-derives only this text, about twice a minute.
+  let serverOcr = $derived(describePendingOcr($serverOcrPending[volume_uuid], $pendingOcrClock));
   // The last cloud upload of this volume failed for good (persisted until one succeeds).
   let uploadFailure = $derived($uploadFailures[volume_uuid]);
   // A cloud-only volume drawn as a full row (see `isIndexedPlaceholder`): it has
@@ -779,7 +784,7 @@
           class:text-green-400={isComplete}
           class="flex w-full flex-row items-center justify-between gap-5"
         >
-          <div>
+          <div class="min-w-0">
             <div class="mb-1 flex items-center gap-2">
               <p
                 class="font-semibold"
@@ -803,17 +808,6 @@
               {#if isNotInstalled}
                 <Badge color="gray" class="text-xs">Not on this device</Badge>
               {/if}
-              {#if serverOcrChip}
-                <!-- In the badge row it can only widen, never add a line. Keyed:
-                     a clock is the kind of text extensions rewrite and hold stale. -->
-                <span
-                  data-testid="server-ocr-chip"
-                  title={serverOcrChip.tooltip}
-                  class="rounded bg-gray-100 px-1.5 py-0.5 text-xs whitespace-nowrap text-gray-500 dark:bg-gray-700 dark:text-gray-400"
-                >
-                  {#key serverOcrChip.label}<span>{serverOcrChip.label}</span>{/key}
-                </span>
-              {/if}
             </div>
             <div class="flex flex-wrap items-center gap-x-3">
               <p>{progressDisplay}</p>
@@ -824,6 +818,20 @@
                 <p data-testid="archive-size" class="text-sm opacity-80">{archiveSizeDisplay}</p>
               {/if}
             </div>
+            {#if serverOcr}
+              <!-- Wraps inside its cell (the row never widens for it) and stops at
+                   two lines on narrow screens; the tooltip and label keep every job.
+                   Keyed: clock text is what extensions rewrite and then hold stale. -->
+              <p
+                data-testid="server-ocr"
+                role="note"
+                aria-label={serverOcr.label}
+                title={serverOcr.label}
+                class="mt-0.5 line-clamp-2 text-xs break-words text-gray-500 dark:text-gray-400"
+              >
+                {#key serverOcr.inline}<span>{serverOcr.inline}</span>{/key}
+              </p>
+            {/if}
           </div>
           <div class="flex items-center gap-2">
             {#if isNotInstalled}
@@ -1037,16 +1045,34 @@
           {#if isNotInstalled}
             <DownloadBadge class="right-1 bottom-1" />
           {/if}
-          {#if serverOcrChip}
-            <!-- On the cover, not in the badge column: showing or dropping it
-                 must never resize the card. -->
-            <span
-              data-testid="server-ocr-chip"
-              title={serverOcrChip.tooltip}
-              class="absolute top-1 left-1 rounded bg-gray-900/70 px-1.5 py-0.5 text-xs whitespace-nowrap text-gray-100"
+          {#if serverOcr}
+            <!-- Over the cover, never beside it: showing, updating or dropping it
+                 cannot resize the card. Dark glass reads on light and dark covers. -->
+            <div
+              data-testid="server-ocr"
+              role="note"
+              aria-label={serverOcr.label}
+              title={serverOcr.label}
+              class="absolute inset-x-1 bottom-1 rounded bg-black/75 px-1.5 py-1 text-[11px] leading-snug text-white shadow"
+              class:bottom-8={isNotInstalled}
             >
-              {#key serverOcrChip.label}<span>{serverOcrChip.label}</span>{/key}
-            </span>
+              <div class="text-[10px] font-semibold tracking-wide text-gray-300 uppercase">
+                {serverOcr.title}
+              </div>
+              {#each serverOcr.shown as line (line.key)}
+                <div class="flex items-baseline justify-between gap-2">
+                  <span class="min-w-0 truncate">{line.name}</span>
+                  {#key `${line.when}|${line.clock}`}
+                    <span class="shrink-0 whitespace-nowrap text-gray-300">
+                      {line.clock ? `${line.when} · ${line.clock}` : line.when}
+                    </span>
+                  {/key}
+                </div>
+              {/each}
+              {#if serverOcr.more > 0}
+                <div class="text-gray-400">+{serverOcr.more} more</div>
+              {/if}
+            </div>
           {/if}
           {#if uploadFailure && !isNotInstalled}
             <!-- Persistent until the volume uploads; the menu holds the Retry.
@@ -1054,7 +1080,7 @@
             <span
               data-testid="upload-failed"
               title={`Upload failed: ${uploadFailure.reason}`}
-              class="absolute bottom-1 left-1 rounded bg-red-600/85 px-1.5 py-0.5 text-xs whitespace-nowrap text-white"
+              class="absolute top-1 left-1 rounded bg-red-600/85 px-1.5 py-0.5 text-xs whitespace-nowrap text-white"
             >
               Upload failed
             </span>

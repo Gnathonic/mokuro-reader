@@ -579,65 +579,105 @@ describe('VolumeItem cover object-URL identity (mirrors CatalogListItem.svelte)'
   });
 });
 
-describe('VolumeItem server OCR chip', () => {
+describe('VolumeItem server OCR status', () => {
+  const NOW = Date.parse('2026-09-28T15:00:00Z');
+  const at = (min: number) => new Date(NOW + min * 60_000).toISOString();
+  const hhmm = (iso: string) => {
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  const jobs = [
+    { kind: 'ocr' as const, id: 'mokuro-fp16', eta: at(3) },
+    { kind: 'layer' as const, id: 'hayai-nova', eta: at(8) },
+    { kind: 'layer' as const, id: 'paddle-manga', eta: at(14) },
+    { kind: 'layer' as const, id: 'gcv', eta: null }
+  ];
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW, toFake: ['Date', 'setInterval', 'clearInterval'] });
+  });
+
   afterEach(async () => {
     cleanup();
+    vi.useRealTimers();
     const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
     pendingStore.set({});
   });
 
-  function hhmm(iso: string) {
-    const d = new Date(iso);
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  async function pending(value: unknown) {
+    const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
+    pendingStore.set({ 'uuid-1': value as never });
   }
 
+  const status = (c: HTMLElement) => c.querySelector('[data-testid="server-ocr"]') as HTMLElement;
+
+  it('grid: a titled overlay at the bottom of the cover, three lines at most', async () => {
+    await pending(jobs);
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    const el = status(container);
+    expect(el.className).toContain('absolute');
+    expect(el.className).toContain('bottom-1');
+    const text = el.innerText ?? el.textContent!;
+    expect(el.textContent).toContain('Server OCR');
+    expect(el.textContent).toContain(`Text`);
+    expect(el.textContent).toContain(`in ~3 min · ${hhmm(at(3))}`);
+    expect(el.textContent).toContain(`Hayai Nova`);
+    expect(el.textContent).toContain('+2 more');
+    expect(text).not.toContain('Gcv');
+    // The full list, with exact clock times, is in the tooltip and the label.
+    expect(el.getAttribute('aria-label')).toContain(`Gcv: queued, no estimate yet`);
+    expect(el.getAttribute('title')).toBe(el.getAttribute('aria-label'));
+  });
+
+  it('grid: the overlay is inside the cover box, so the card never changes size for it', async () => {
+    await pending(jobs);
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    const el = status(container);
+    expect(el.parentElement!.className).toContain('relative');
+    expect(el.parentElement!.querySelector('img, [data-testid]')).not.toBeNull();
+  });
+
+  it('list: one wrapping line after the metadata, every job named', async () => {
+    await pending(jobs);
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
+    const el = status(container);
+    expect(el.textContent!.trim()).toBe(
+      'Server OCR: Text in ~3 min · Hayai Nova in ~8 min · Paddle Manga in ~14 min · Gcv queued'
+    );
+    expect(el.className).not.toContain('whitespace-nowrap');
+    expect(el.className).toContain('line-clamp-2');
+    expect(el.getAttribute('aria-label')).toContain(`Text: in ~3 min, at ${hhmm(at(3))}`);
+  });
+
   for (const variant of ['list', 'grid'] as const) {
-    describe(`${variant} variant`, () => {
-      it('shows the earliest ETA, with every job in the tooltip', async () => {
-        const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
-        pendingStore.set({
-          'uuid-1': [
-            { kind: 'ocr', id: 'mokuro-fp16', eta: '2026-09-27T21:14:00Z' },
-            { kind: 'layer', id: 'hayai-nova-ppocr', eta: null }
-          ]
-        });
-        const { container } = render(VolumeItem, {
-          props: { volume: volume({ mokuro_version: '' }), variant }
-        });
-        const chip = container.querySelector('[data-testid="server-ocr-chip"]')!;
-        expect(chip.textContent?.trim()).toBe(`OCR ~${hhmm('2026-09-27T21:14:00Z')}`);
-        expect(chip.getAttribute('title')).toBe(
-          `mokuro-fp16 OCR ~${hhmm('2026-09-27T21:14:00Z')}\nhayai-nova-ppocr layer queued`
-        );
-      });
+    it(`${variant}: a landed job leaves, and the whole thing goes when nothing is pending`, async () => {
+      await pending(jobs);
+      const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
+      expect(status(container).textContent).toContain('Text');
+      await pending(jobs.slice(1));
+      await tick();
+      expect(status(container).textContent).not.toContain('Text ');
+      await pending([]);
+      await tick();
+      expect(status(container)).toBeNull();
+    });
 
-      it('disappears when the jobs land', async () => {
-        const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
-        pendingStore.set({ 'uuid-1': [{ kind: 'ocr', id: 'm', eta: null }] });
-        const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
-        expect(
-          container.querySelector('[data-testid="server-ocr-chip"]')?.textContent?.trim()
-        ).toBe('OCR queued');
-        pendingStore.set({});
-        await tick();
-        expect(container.querySelector('[data-testid="server-ocr-chip"]')).toBeNull();
-      });
-
-      it('shows nothing for a volume with no server jobs', () => {
-        const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
-        expect(container.querySelector('[data-testid="server-ocr-chip"]')).toBeNull();
-      });
+    it(`${variant}: relative times move with the clock`, async () => {
+      await pending(jobs.slice(0, 1));
+      const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
+      expect(status(container).textContent).toContain('in ~3 min');
+      vi.advanceTimersByTime(2 * 60_000);
+      await tick();
+      expect(status(container).textContent).toContain('in ~1 min');
+      vi.advanceTimersByTime(2 * 60_000);
+      await tick();
+      expect(status(container).textContent).toContain('any moment');
     });
   }
 
-  it('overlays the grid cover instead of adding a row (no card resizing)', async () => {
-    const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
-    pendingStore.set({ 'uuid-1': [{ kind: 'ocr', id: 'm', eta: null }] });
+  it('shows nothing for a volume with no server jobs', () => {
     const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
-    const chip = container.querySelector('[data-testid="server-ocr-chip"]') as HTMLElement;
-    // Absolutely placed on the cover: the card's box never changes for it.
-    expect(chip.className).toContain('absolute');
-    expect(chip.closest('a')).not.toBeNull();
+    expect(status(container)).toBeNull();
   });
 });
 

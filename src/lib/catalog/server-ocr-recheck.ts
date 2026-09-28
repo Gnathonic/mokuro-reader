@@ -11,7 +11,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { basicAuthHeader } from '$lib/util/base64';
 import { pendingStore } from './server-ocr-pending';
 
-export { describePendingJobs, serverOcrPending } from './server-ocr-pending';
+export { describePendingOcr, serverOcrPending } from './server-ocr-pending';
 
 /**
  * Targeted rechecks of a server's OCR queue for one volume.

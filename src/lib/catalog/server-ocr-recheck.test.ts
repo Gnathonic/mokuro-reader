@@ -25,7 +25,6 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
 import { db } from '$lib/catalog/db';
 import { clearAllLayers, putLayerWithPages } from '$lib/catalog/layer-store';
 import {
-  describePendingJobs,
   peekPending,
   registerServerOcrRecheck,
   resetServerOcrRechecksForTest,
@@ -367,37 +366,5 @@ describe('an upload-registered recheck', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     const [entry] = JSON.parse(localStorage.getItem('server-ocr-rechecks:v1')!);
     expect(entry.recheck_at).toBe(T0 + 95_000 + 300_000);
-  });
-});
-
-describe('describePendingJobs', () => {
-  const at = (iso: string) => new Date(iso);
-  const hhmm = (d: Date) =>
-    `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-
-  it('names the earliest priced job, and lists every job in the tooltip', () => {
-    const d = describePendingJobs([
-      { kind: 'layer', id: 'hayai-nova-ppocr', eta: '2026-09-27T21:19:30Z' },
-      { kind: 'ocr', id: 'mokuro-fp16', eta: '2026-09-27T21:14:00Z' },
-      { kind: 'layer', id: 'paddle', eta: null }
-    ])!;
-    expect(d.label).toBe(`OCR ~${hhmm(at('2026-09-27T21:14:00Z'))}`);
-    expect(d.tooltip).toBe(
-      [
-        `hayai-nova-ppocr layer ~${hhmm(at('2026-09-27T21:19:30Z'))}`,
-        `mokuro-fp16 OCR ~${hhmm(at('2026-09-27T21:14:00Z'))}`,
-        'paddle layer queued'
-      ].join('\n')
-    );
-  });
-
-  it('says "OCR queued" when nothing is priced or the jobs are not known yet', () => {
-    expect(describePendingJobs([{ kind: 'ocr', id: 'm', eta: null }])!.label).toBe('OCR queued');
-    expect(describePendingJobs(null)!.label).toBe('OCR queued');
-  });
-
-  it('is nothing when nothing is pending', () => {
-    expect(describePendingJobs([])).toBeNull();
-    expect(describePendingJobs(undefined)).toBeNull();
   });
 });
