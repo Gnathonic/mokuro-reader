@@ -1,25 +1,95 @@
 import { readable, writable, type Readable } from 'svelte/store';
-import type { ManifestPendingJob } from '$lib/import/deep-link-manifest';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import { layerNameForId } from '$lib/reader/edit/layer-names';
 
 /**
- * What the volume views show of a server's OCR queue: the jobs still pending
- * per volume, as `server-ocr-recheck.ts` last read them. Kept apart from that
- * module so a volume card does not import the recheck machinery.
+ * What the volume views show of a server's OCR queue — the light half of
+ * `server-ocr-queue.ts`, which polls `<dav root>/.mokuro-queue.json` and writes
+ * the stores below. Kept apart so a volume card imports no polling machinery.
  */
 
-/** Written only by `server-ocr-recheck.ts`. */
-export const pendingStore = writable<Record<string, ManifestPendingJob[] | null>>({});
+/** One job of a volume in the queue file. */
+export interface QueueJob {
+  kind: 'ocr' | 'layer';
+  /** The generation name; the layer id for a layer. */
+  id: string;
+  state: 'running' | 'queued' | 'held';
+  /** ISO finishing time the server predicts, or null when it cannot price it. */
+  eta: string | null;
+  /** 0–1 while running, else null. */
+  progress: number | null;
+}
 
-/** volume_uuid → the server jobs still pending for it (null = queued, not read yet). */
-export const serverOcrPending: Readable<Record<string, ManifestPendingJob[] | null>> = {
-  subscribe: pendingStore.subscribe
+/** Why the whole queue is held (plain codes only). */
+export interface QueueHeld {
+  reason: string;
+}
+
+/** What one volume is waiting for. */
+export interface VolumeQueueStatus {
+  jobs: QueueJob[];
+  held: QueueHeld | null;
+}
+
+/** The matching key between a queue entry and a local row: folded series + volume title. */
+export function volumeQueueKey(series: string, volume: string): string {
+  return `${normalizeSeriesKey(series)}\u0000${normalizeVolumeTitleKey(volume)}`;
+}
+
+/** Written only by `server-ocr-queue.ts`: volume key → its jobs, across every polled server. */
+export const queueStatusStore = writable<Record<string, VolumeQueueStatus>>({});
+
+/** volume key → what the server's queue says about it. */
+export const serverOcrQueueStatus: Readable<Record<string, VolumeQueueStatus>> = {
+  subscribe: queueStatusStore.subscribe
 };
 
 /**
- * The clock the relative times are read against: one shared interval for
- * every card (started by the first subscriber, stopped with the last), so a
- * minute passing re-derives the chip text only — never the whole card.
+ * volume_uuid → the queue key a watched volume goes by on its server, for rows
+ * whose own titles differ from the server's folder/file names (a deep-linked
+ * volume keeps the titles inside its `.mokuro`). Written by `server-ocr-queue.ts`.
+ */
+export const watchedKeyStore = writable<Record<string, string>>({});
+
+/** The key a card looks its volume up by. */
+export function queueKeyForVolume(
+  volume: { volume_uuid: string; series_title: string; volume_title: string },
+  watched: Record<string, string>
+): string {
+  return watched[volume.volume_uuid] ?? volumeQueueKey(volume.series_title, volume.volume_title);
+}
+
+// ---- volumes the catalog is showing: a reason to keep polling ----
+
+const shown = new Map<string, number>();
+let shownListener: (() => void) | null = null;
+
+/** Set by `server-ocr-queue.ts` once it runs: told whenever a card starts showing a volume. */
+export function setShownListener(listener: (() => void) | null): void {
+  shownListener = listener;
+}
+
+/** A card showing this volume registers it; the returned function unregisters it. */
+export function markVolumeShown(key: string): () => void {
+  shown.set(key, (shown.get(key) ?? 0) + 1);
+  shownListener?.();
+  return () => {
+    const n = (shown.get(key) ?? 1) - 1;
+    if (n <= 0) shown.delete(key);
+    else shown.set(key, n);
+  };
+}
+
+export function isVolumeShown(key: string): boolean {
+  return shown.has(key);
+}
+
+// ---- rendering ----
+
+/**
+ * The clock relative times are read against: one shared interval for every
+ * card (started by the first subscriber, stopped with the last), so a minute
+ * passing re-derives the status text only — never the whole card.
  */
 export const pendingOcrClock: Readable<number> = readable(Date.now(), (set) => {
   // Fresh on every (re)start: the initial value above dates from module load.
@@ -52,6 +122,17 @@ export function relativeEta(
   return { when: m === 0 ? `in ~${h} h` : `in ~${h} h ${m} min`, clock };
 }
 
+const HELD_TEXT: Readonly<Record<string, string>> = {
+  'no-processor': 'held: no processor connected',
+  paused: 'held: queue paused',
+  benchmarking: 'held: benchmarking'
+};
+
+/** A held code in plain words; an unknown (newer) code is just "held". */
+export function heldText(held: QueueHeld | null): string {
+  return (held && HELD_TEXT[held.reason]) ?? 'held';
+}
+
 /** Longest name a line shows before an ellipsis (the label keeps it whole). */
 const MAX_NAME = 16;
 
@@ -65,9 +146,12 @@ export interface PendingOcrLine {
   /** "Text" for the primary, else the layer's display name, shortened. */
   name: string;
   fullName: string;
-  when: string;
-  /** Local HH:MM, or null when the server gave no estimate. */
-  clock: string | null;
+  /** Beside the name on a cover: "42% · ~08:17", "in ~3 min · 08:17", "queued", "held: …". */
+  detail: string;
+  /** In the one-line list form: the same without a queued job's clock. */
+  short: string;
+  /** For the tooltip / label, the exact clock time spelled out. */
+  spoken: string;
 }
 
 export interface PendingOcrView {
@@ -77,7 +161,7 @@ export interface PendingOcrView {
   /** What a compact surface shows (at most `maxLines`, counting a "+N more" line). */
   shown: PendingOcrLine[];
   more: number;
-  /** The list view's single line: "Server OCR: Text in ~3 min · Hayai Nova in ~8 min · …". */
+  /** The list view's single line: "Server OCR: Text 42% · ~08:17 · Hayai Nova in ~8 min · …". */
   inline: string;
   /** Tooltip / aria-label: every job, its full name and exact clock time. */
   label: string;
@@ -85,56 +169,58 @@ export interface PendingOcrView {
 
 const TITLE = 'Server OCR';
 
+function lineFor(job: QueueJob, held: QueueHeld | null, now: number): PendingOcrLine {
+  const fullName = job.kind === 'ocr' ? 'Text' : layerNameForId(job.id);
+  const base = { key: `${job.kind}:${job.id}`, name: shorten(fullName), fullName };
+  const { when, clock } = relativeEta(job.eta, now);
+  if (job.state === 'held') {
+    const text = heldText(held);
+    return { ...base, detail: text, short: text, spoken: text };
+  }
+  if (job.state === 'running') {
+    const pct =
+      typeof job.progress === 'number' && Number.isFinite(job.progress)
+        ? `${Math.round(Math.min(Math.max(job.progress, 0), 1) * 100)}%`
+        : null;
+    const parts = [pct, clock ? `~${clock}` : null].filter(Boolean);
+    const detail = parts.length ? parts.join(' · ') : 'running';
+    const spoken =
+      'running' +
+      (pct ? `, ${pct} done` : '') +
+      (clock ? `, finishing about ${clock}` : ', no estimate yet');
+    return { ...base, detail, short: detail, spoken };
+  }
+  const priced = clock !== null && when !== 'queued';
+  return {
+    ...base,
+    detail: priced ? `${when} · ${clock}` : when,
+    short: when,
+    spoken: priced ? `${when}, at ${clock}` : `${when}, no estimate yet`
+  };
+}
+
 /**
- * What the volume views say about OCR the server is still making for a volume.
- * `jobs` null = the server queued it but the jobs are not known yet; undefined
- * or empty = nothing pending (null result). `now` is the refreshing clock.
+ * What the volume views say about OCR the server is still making for a volume,
+ * from its entry in the queue file. Null when nothing is pending.
  */
 export function describePendingOcr(
-  jobs: ManifestPendingJob[] | null | undefined,
+  status: VolumeQueueStatus | undefined,
   now: number,
   maxLines = 3
 ): PendingOcrView | null {
-  if (jobs === undefined || (jobs !== null && jobs.length === 0)) return null;
-  if (jobs === null) {
-    const line = { key: 'queued', name: 'OCR', fullName: 'OCR', when: 'queued', clock: null };
-    return {
-      title: TITLE,
-      lines: [line],
-      shown: [line],
-      more: 0,
-      inline: `${TITLE}: queued`,
-      label: `${TITLE} — queued, no estimate yet`
-    };
-  }
-  const etaOf = (j: ManifestPendingJob) => (j.eta === null ? Infinity : Date.parse(j.eta));
-  const ordered = [...jobs].sort(
+  if (!status || status.jobs.length === 0) return null;
+  const etaOf = (j: QueueJob) => (j.eta === null ? Infinity : Date.parse(j.eta));
+  const ordered = [...status.jobs].sort(
     (a, b) => (a.kind === 'ocr' ? 0 : 1) - (b.kind === 'ocr' ? 0 : 1) || etaOf(a) - etaOf(b)
   );
-  const lines: PendingOcrLine[] = ordered.map((job) => {
-    const fullName = job.kind === 'ocr' ? 'Text' : layerNameForId(job.id);
-    return {
-      key: `${job.kind}:${job.id}`,
-      name: shorten(fullName),
-      fullName,
-      ...relativeEta(job.eta, now)
-    };
-  });
-  const fits = lines.length <= maxLines;
-  const shown = fits ? lines : lines.slice(0, maxLines - 1);
+  const lines = ordered.map((job) => lineFor(job, status.held, now));
+  const shown = lines.length <= maxLines ? lines : lines.slice(0, maxLines - 1);
   return {
     title: TITLE,
     lines,
     shown,
     more: lines.length - shown.length,
-    inline: `${TITLE}: ${lines.map((l) => `${l.name} ${l.when}`).join(' · ')}`,
-    label:
-      `${TITLE} — ` +
-      lines
-        .map(
-          (l) =>
-            `${l.fullName}: ${l.when}${l.clock && l.when !== 'queued' ? `, at ${l.clock}` : ', no estimate yet'}`
-        )
-        .join('; ')
+    inline: `${TITLE}: ${lines.map((l) => `${l.name} ${l.short}`).join(' · ')}`,
+    label: `${TITLE} — ${lines.map((l) => `${l.fullName}: ${l.spoken}`).join('; ')}`
   };
 }

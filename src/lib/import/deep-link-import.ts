@@ -12,9 +12,9 @@ import { recordSeriesFile } from './series-file-import';
 export const DEEP_LINK_LAYER_SOURCE = 'html-download';
 
 /**
- * The server is still making OCR for this volume (`pending`): look again when
- * it says. An `ocr: null` manifest imported the volume image-only; the recheck
- * upgrades it when the primary lands.
+ * The server is still making OCR for this volume (`pending`): watch it on the
+ * server's queue file. An `ocr: null` manifest imported the volume image-only;
+ * the queue poller upgrades it when the primary lands.
  */
 async function rememberPendingOcr(
   downloaded: HtmlDownloadResult,
@@ -23,17 +23,22 @@ async function rememberPendingOcr(
   const manifest = downloaded.manifest;
   if (!target || !manifest || !downloaded.manifestUrl || manifest.pending.length === 0) return;
   try {
-    const { registerServerOcrRecheck } = await import('$lib/catalog/server-ocr-recheck');
-    registerServerOcrRecheck({
+    const { queueUrlForArchive, watchServerOcr } = await import('$lib/catalog/server-ocr-queue');
+    const queueUrl = queueUrlForArchive(manifest.archive.url);
+    if (!queueUrl) return;
+    // The queue file names the volume as the server does (folder / archive
+    // stem), which a deep-linked row need not share: the manifest says it.
+    watchServerOcr({
       volumeUuid: target.volume_uuid,
+      series: manifest.series ?? target.series_title,
+      volume: manifest.volume ?? target.volume_title,
+      queueUrl,
       manifestUrl: downloaded.manifestUrl,
-      recheckAfter: manifest.recheck_after,
       auth: 'none',
-      source: DEEP_LINK_LAYER_SOURCE,
-      pending: manifest.pending
+      source: DEEP_LINK_LAYER_SOURCE
     });
   } catch (error) {
-    console.warn('[HTML Download] Could not remember the server OCR recheck:', error);
+    console.warn('[HTML Download] Could not watch the server OCR queue:', error);
   }
 }
 

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { ManifestPendingJob } from '$lib/import/deep-link-manifest';
-import { describePendingOcr, relativeEta } from './server-ocr-pending';
+import { queueFixture } from './__fixtures__/mokuro-queue';
+import {
+  describePendingOcr,
+  heldText,
+  relativeEta,
+  volumeQueueKey,
+  type QueueJob
+} from './server-ocr-pending';
 
 const NOW = Date.parse('2026-09-28T15:00:00Z');
 const at = (min: number) => new Date(NOW + min * 60_000).toISOString();
@@ -8,13 +14,8 @@ const hhmm = (iso: string) => {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
-
-const jobs: ManifestPendingJob[] = [
-  { kind: 'layer', id: 'paddle-manga-ppocr-manga', eta: at(14) },
-  { kind: 'layer', id: 'gcv', eta: null },
-  { kind: 'ocr', id: 'mokuro-fp16', eta: at(3) },
-  { kind: 'layer', id: 'hayai-nova', eta: at(8) }
-];
+const file = queueFixture(NOW);
+const jobsOf = (i: number) => file.volumes[i].jobs as QueueJob[];
 
 describe('relativeEta', () => {
   it('says how long, and at what local clock time', () => {
@@ -22,81 +23,114 @@ describe('relativeEta', () => {
     expect(relativeEta(at(0.5), NOW)).toEqual({ when: 'in <1 min', clock: hhmm(at(0.5)) });
     expect(relativeEta(at(60), NOW).when).toBe('in ~1 h');
     expect(relativeEta(at(95), NOW).when).toBe('in ~1 h 35 min');
-  });
-
-  it('is "queued" with no clock when the server could not price it', () => {
     expect(relativeEta(null, NOW)).toEqual({ when: 'queued', clock: null });
-  });
-
-  it('is "any moment" once the eta has passed but nothing landed', () => {
     expect(relativeEta(at(-2), NOW)).toEqual({ when: 'any moment', clock: hhmm(at(-2)) });
   });
 });
 
-describe('describePendingOcr', () => {
-  it('titles it, puts the primary first as "Text", then layers by ETA, unpriced last', () => {
-    const view = describePendingOcr(jobs, NOW)!;
+describe('volumeQueueKey', () => {
+  it('matches the queue file’s names to local titles however they are spelled', () => {
+    expect(volumeQueueKey('Dr Stone', 'Dr Stone 01')).toBe(
+      volumeQueueKey('  dr  stone ', 'DR STONE 01')
+    );
+    expect(volumeQueueKey('Dr Stone', 'Dr Stone 01')).not.toBe(
+      volumeQueueKey('Dr Stone', 'Dr Stone 02')
+    );
+  });
+});
+
+describe('heldText', () => {
+  it('says each held code in plain words', () => {
+    expect(heldText({ reason: 'no-processor' })).toBe('held: no processor connected');
+    expect(heldText({ reason: 'paused' })).toBe('held: queue paused');
+    expect(heldText({ reason: 'benchmarking' })).toBe('held: benchmarking');
+    expect(heldText({ reason: 'something-new' })).toBe('held');
+    expect(heldText(null)).toBe('held');
+  });
+});
+
+describe('describePendingOcr (from the queue file)', () => {
+  it('shows a running job’s progress and ETA, queued ones their ETA', () => {
+    const view = describePendingOcr({ jobs: jobsOf(0), held: null }, NOW)!;
     expect(view.title).toBe('Server OCR');
-    expect(view.lines.map((l) => [l.name, l.when, l.clock])).toEqual([
-      ['Text', 'in ~3 min', hhmm(at(3))],
-      ['Hayai Nova', 'in ~8 min', hhmm(at(8))],
-      ['Paddle Manga Pp…', 'in ~14 min', hhmm(at(14))],
-      ['Gcv', 'queued', null]
+    expect(view.lines.map((l) => [l.name, l.detail])).toEqual([
+      ['Text', `42% · ~${hhmm(at(3))}`],
+      ['Hayai Nova', `in ~8 min · ${hhmm(at(8))}`],
+      ['Paddle Manga', 'queued']
     ]);
   });
 
-  it('names a layer the way the reader names layers elsewhere', () => {
-    const view = describePendingOcr([{ kind: 'layer', id: 'ppocr-manga', eta: null }], NOW)!;
-    expect(view.lines[0].name).toBe('PP-OCR Manga');
+  it('shows a held job with the queue’s reason in plain words', () => {
+    const view = describePendingOcr({ jobs: jobsOf(1), held: { reason: 'no-processor' } }, NOW)!;
+    expect(view.lines.map((l) => [l.name, l.detail])).toEqual([
+      ['Text', 'held: no processor connected']
+    ]);
+    expect(view.label).toBe('Server OCR — Text: held: no processor connected');
   });
 
-  it('keeps the full name and every exact clock time in the accessible label', () => {
-    const view = describePendingOcr(jobs, NOW)!;
+  it('running with no progress or ETA still says it is running', () => {
+    const view = describePendingOcr(
+      { jobs: [{ kind: 'ocr', id: 'm', state: 'running', eta: null, progress: null }], held: null },
+      NOW
+    )!;
+    expect(view.lines[0].detail).toBe('running');
+  });
+
+  it('keeps full names and exact clock times in the accessible label', () => {
+    const view = describePendingOcr({ jobs: jobsOf(0), held: null }, NOW)!;
     expect(view.label).toBe(
-      `Server OCR — Text: in ~3 min, at ${hhmm(at(3))}; Hayai Nova: in ~8 min, at ${hhmm(at(8))}; ` +
-        `Paddle Manga Ppocr Manga: in ~14 min, at ${hhmm(at(14))}; Gcv: queued, no estimate yet`
+      `Server OCR — Text: running, 42% done, finishing about ${hhmm(at(3))}; ` +
+        `Hayai Nova: in ~8 min, at ${hhmm(at(8))}; Paddle Manga: queued, no estimate yet`
     );
   });
 
   it('reads as one line for the list view', () => {
-    expect(describePendingOcr(jobs, NOW)!.inline).toBe(
-      'Server OCR: Text in ~3 min · Hayai Nova in ~8 min · Paddle Manga Pp… in ~14 min · Gcv queued'
+    expect(describePendingOcr({ jobs: jobsOf(0), held: null }, NOW)!.inline).toBe(
+      `Server OCR: Text 42% · ~${hhmm(at(3))} · Hayai Nova in ~8 min · Paddle Manga queued`
     );
   });
 
-  it('shows at most three lines, the last one "+N more" when there are more', () => {
-    const view = describePendingOcr(jobs, NOW)!;
-    expect(view.shown.map((l) => l.name)).toEqual(['Text', 'Hayai Nova']);
-    expect(view.more).toBe(2);
-    const three = describePendingOcr(jobs.slice(0, 3), NOW)!;
-    expect(three.shown).toHaveLength(3);
-    expect(three.more).toBe(0);
-  });
-
-  it('keeps each line keyed by its job, so a landed job drops out in place', () => {
-    const before = describePendingOcr(jobs, NOW)!;
-    const after = describePendingOcr(
-      jobs.filter((j) => j.kind !== 'ocr'),
+  it('puts the primary first, then layers by ETA, unpriced last; shortens long names', () => {
+    const view = describePendingOcr(
+      {
+        jobs: [
+          {
+            kind: 'layer',
+            id: 'paddle-manga-ppocr-manga',
+            state: 'queued',
+            eta: at(14),
+            progress: null
+          },
+          { kind: 'layer', id: 'gcv', state: 'queued', eta: null, progress: null },
+          { kind: 'ocr', id: 'mokuro-fp16', state: 'queued', eta: at(3), progress: null },
+          { kind: 'layer', id: 'hayai-nova', state: 'queued', eta: at(8), progress: null }
+        ],
+        held: null
+      },
       NOW
     )!;
-    expect(before.lines.map((l) => l.key)).toContain('ocr:mokuro-fp16');
-    expect(after.lines.map((l) => l.key)).not.toContain('ocr:mokuro-fp16');
-    expect(after.lines[0].key).toBe('layer:hayai-nova');
+    expect(view.lines.map((l) => l.name)).toEqual([
+      'Text',
+      'Hayai Nova',
+      'Paddle Manga Pp…',
+      'Gcv'
+    ]);
+    expect(view.shown.map((l) => l.name)).toEqual(['Text', 'Hayai Nova']);
+    expect(view.more).toBe(2);
   });
 
-  it('refreshes the relative time as the clock moves', () => {
-    expect(describePendingOcr(jobs, NOW + 2 * 60_000)!.lines[0].when).toBe('in ~1 min');
-    expect(describePendingOcr(jobs, NOW + 5 * 60_000)!.lines[0].when).toBe('any moment');
+  it('keys each line by its job so a landed job leaves in place', () => {
+    const view = describePendingOcr({ jobs: jobsOf(0).slice(1), held: null }, NOW)!;
+    expect(view.lines.map((l) => l.key)).toEqual(['layer:hayai-nova', 'layer:paddle-manga']);
   });
 
-  it('says only "queued" while the jobs are not known yet', () => {
-    const view = describePendingOcr(null, NOW)!;
-    expect(view.lines.map((l) => [l.name, l.when])).toEqual([['OCR', 'queued']]);
-    expect(view.label).toBe('Server OCR — queued, no estimate yet');
+  it('moves with the clock', () => {
+    const later = describePendingOcr({ jobs: jobsOf(0), held: null }, NOW + 5 * 60_000)!;
+    expect(later.lines[1].detail).toBe(`in ~3 min · ${hhmm(at(8))}`);
   });
 
   it('is nothing when nothing is pending', () => {
-    expect(describePendingOcr([], NOW)).toBeNull();
+    expect(describePendingOcr({ jobs: [], held: null }, NOW)).toBeNull();
     expect(describePendingOcr(undefined, NOW)).toBeNull();
   });
 });

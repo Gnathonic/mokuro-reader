@@ -586,11 +586,18 @@ describe('VolumeItem server OCR status', () => {
     const d = new Date(iso);
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   };
+  const job = (kind: 'ocr' | 'layer', id: string, eta: string | null) => ({
+    kind,
+    id,
+    state: 'queued' as const,
+    eta,
+    progress: null
+  });
   const jobs = [
-    { kind: 'ocr' as const, id: 'mokuro-fp16', eta: at(3) },
-    { kind: 'layer' as const, id: 'hayai-nova', eta: at(8) },
-    { kind: 'layer' as const, id: 'paddle-manga', eta: at(14) },
-    { kind: 'layer' as const, id: 'gcv', eta: null }
+    job('ocr', 'mokuro-fp16', at(3)),
+    job('layer', 'hayai-nova', at(8)),
+    job('layer', 'paddle-manga', at(14)),
+    job('layer', 'gcv', null)
   ];
 
   beforeEach(() => {
@@ -600,13 +607,18 @@ describe('VolumeItem server OCR status', () => {
   afterEach(async () => {
     cleanup();
     vi.useRealTimers();
-    const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
-    pendingStore.set({});
+    const { queueStatusStore } = await import('$lib/catalog/server-ocr-pending');
+    queueStatusStore.set({});
   });
 
-  async function pending(value: unknown) {
-    const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
-    pendingStore.set({ 'uuid-1': value as never });
+  // The card looks its volume up by (series, volume) — how the queue file names it.
+  async function pending(value: unknown[]) {
+    const { queueStatusStore, volumeQueueKey } = await import('$lib/catalog/server-ocr-pending');
+    queueStatusStore.set(
+      value.length
+        ? { [volumeQueueKey('One Piece', 'Vol 1')]: { jobs: value as never, held: null } }
+        : {}
+    );
   }
 
   const status = (c: HTMLElement) => c.querySelector('[data-testid="server-ocr"]') as HTMLElement;
@@ -674,6 +686,29 @@ describe('VolumeItem server OCR status', () => {
       expect(status(container).textContent).toContain('any moment');
     });
   }
+
+  it('shows a running job’s progress, and a held one in plain words', async () => {
+    await pending([
+      { kind: 'ocr', id: 'mokuro-fp16', state: 'running', eta: at(3), progress: 0.42 },
+      { kind: 'layer', id: 'hayai-nova', state: 'held', eta: null, progress: null }
+    ]);
+    const { queueStatusStore, volumeQueueKey } = await import('$lib/catalog/server-ocr-pending');
+    const key = volumeQueueKey('One Piece', 'Vol 1');
+    queueStatusStore.update((s) => ({ [key]: { ...s[key], held: { reason: 'no-processor' } } }));
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
+    expect(status(container).textContent!.trim()).toBe(
+      `Server OCR: Text 42% · ~${hhmm(at(3))} · Hayai Nova held: no processor connected`
+    );
+  });
+
+  it('registers the volume it shows with the queue poller, and unregisters on unmount', async () => {
+    const { isVolumeShown, volumeQueueKey } = await import('$lib/catalog/server-ocr-pending');
+    const key = volumeQueueKey('One Piece', 'Vol 1');
+    const { unmount } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    expect(isVolumeShown(key)).toBe(true);
+    unmount();
+    expect(isVolumeShown(key)).toBe(false);
+  });
 
   it('shows nothing for a volume with no server jobs', () => {
     const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });

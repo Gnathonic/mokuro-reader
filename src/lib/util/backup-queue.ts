@@ -75,27 +75,24 @@ interface WorkerUploadCompleteData {
 }
 
 /**
- * A server that queued the archive for OCR said when to look again: remember a
- * targeted recheck, and read the manifest once now so the volume shows its ETA.
+ * The server queued the archive for OCR: watch the volume on that server's
+ * queue file (`server-ocr-queue.ts`), which starts polling at once.
  */
 async function rememberServerOcr(
-  volumeUuid: string,
-  providerType: string,
+  item: Pick<BackupQueueItem, 'volumeUuid' | 'seriesTitle' | 'volumeTitle'>,
   serverOcr: ServerOcrQueued | undefined
 ): Promise<void> {
   if (!serverOcr) return;
   try {
-    const { registerServerOcrRecheck } = await import('$lib/catalog/server-ocr-recheck');
-    registerServerOcrRecheck({
-      volumeUuid,
-      manifestUrl: serverOcr.manifestUrl,
-      recheckAfter: serverOcr.recheckAfter,
-      auth: providerType === 'webdav' ? 'webdav' : 'none',
-      source: providerType,
-      peek: true
+    const { watchUploadedVolume } = await import('$lib/catalog/server-ocr-queue');
+    await watchUploadedVolume({
+      volumeUuid: item.volumeUuid,
+      series: item.seriesTitle,
+      volume: item.volumeTitle,
+      manifestUrl: serverOcr.manifestUrl
     });
   } catch (error) {
-    console.warn('[Backup] Could not remember the server OCR recheck:', error);
+    console.warn('[Backup] Could not watch the server OCR queue:', error);
   }
 }
 
@@ -677,7 +674,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // fact about it nobody has to guess. Recorded before the index
             // write below, which reads the row to build the `series.json` entry.
             await recordArchiveSize(item.volumeUuid, archiveBlob.size);
-            await rememberServerOcr(item.volumeUuid, provider!.type, uploaded.serverOcr);
+            await rememberServerOcr(item, uploaded.serverOcr);
             if (item.sidecarOptions.includeSidecars) {
               // Stamped against what the worker SERIALIZED, not the rows as
               // they are now: a layer edited during the upload must keep
@@ -801,7 +798,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           if (item.sidecarOptions.includeSidecars) {
             void stampLayersSynced(item.volumeUuid, provider!.type, data.layerSnapshots ?? []);
           }
-          await rememberServerOcr(item.volumeUuid, provider!.type, data.serverOcr);
+          await rememberServerOcr(item, data.serverOcr);
           // A worker cannot write the provider's state: the main thread records it.
           if (data.serverPutVerified) provider!.notePutVerified?.();
           noteSeriesNeedingIndexWrite(item.seriesTitle);

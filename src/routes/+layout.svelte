@@ -103,12 +103,13 @@
       .catch((error) => {
         console.error('Failed to initialize providers:', error);
       })
-      // Server OCR rechecks that came due while the app was closed. After the
-      // providers, so an upload-registered recheck can authenticate.
+      // Server OCR queues (one poller per bunko server): one look now, then
+      // only while a volume of interest is pending. After the providers, so
+      // the connected server is known and can authenticate.
       .finally(() => {
-        void import('$lib/catalog/server-ocr-recheck')
-          .then((m) => m.startServerOcrRechecks())
-          .catch((error) => console.debug('[OCR recheck] start skipped:', error));
+        void import('$lib/catalog/server-ocr-queue')
+          .then((m) => m.startServerOcrQueue())
+          .catch((error) => console.debug('[OCR queue] start skipped:', error));
       });
 
     // Initialize file handler for PWA file associations

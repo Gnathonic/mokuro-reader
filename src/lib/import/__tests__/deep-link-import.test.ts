@@ -52,8 +52,11 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: { getCache: () => null }
 }));
 vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited: vi.fn() }));
-const registerServerOcrRecheck = vi.hoisted(() => vi.fn());
-vi.mock('$lib/catalog/server-ocr-recheck', () => ({ registerServerOcrRecheck }));
+const watchServerOcr = vi.hoisted(() => vi.fn());
+vi.mock('$lib/catalog/server-ocr-queue', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/catalog/server-ocr-queue')>();
+  return { queueUrlForArchive: actual.queueUrlForArchive, watchServerOcr };
+});
 
 import { db } from '$lib/catalog/db';
 import { clearAllLayers, getLayerWithPages } from '$lib/catalog/layer-store';
@@ -168,7 +171,7 @@ async function downloaded(
 beforeEach(async () => {
   resetImportedSeriesFiles();
   scheduleSeriesFileWrite.mockReset();
-  registerServerOcrRecheck.mockReset();
+  watchServerOcr.mockReset();
   await Promise.all([
     db.volumes.clear(),
     db.volume_ocr.clear(),
@@ -285,6 +288,9 @@ describe('importDeepLinkedArchive', () => {
 
   function pendingManifest(pending: unknown[], recheck_after: number | null) {
     return {
+      // The server's names for it (folder / archive stem), not the .mokuro's.
+      series: 'Dr Stone (Server Folder)',
+      volume: 'Dr Stone 01 (server file)',
       archive: { url: 'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.cbz' },
       ocr: null,
       layers: [],
@@ -295,7 +301,7 @@ describe('importDeepLinkedArchive', () => {
     } as unknown as HtmlDownloadResult['manifest'];
   }
 
-  it('registers a recheck when the manifest shows jobs still pending', async () => {
+  it('watches the volume on its server’s queue when the manifest shows jobs still pending', async () => {
     const archiveFile = await imagesOnlyCbz();
     const pending = [{ kind: 'ocr', id: 'mokuro-fp16', eta: '2026-09-27T21:14:00Z' }];
     await importDeepLinkedArchive(
@@ -311,14 +317,15 @@ describe('importDeepLinkedArchive', () => {
       new Set()
     );
     const [row] = await db.volumes.toArray();
-    expect(registerServerOcrRecheck).toHaveBeenCalledWith({
+    expect(watchServerOcr).toHaveBeenCalledWith({
       volumeUuid: row.volume_uuid,
+      series: 'Dr Stone (Server Folder)',
+      volume: 'Dr Stone 01 (server file)',
+      queueUrl: 'https://bunko.example/mokuro-reader/.mokuro-queue.json',
       manifestUrl:
         'https://bunko.example/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001',
-      recheckAfter: 95,
       auth: 'none',
-      source: 'html-download',
-      pending
+      source: 'html-download'
     });
   });
 
@@ -328,6 +335,6 @@ describe('importDeepLinkedArchive', () => {
       'Dr Stone 01',
       new Set()
     );
-    expect(registerServerOcrRecheck).not.toHaveBeenCalled();
+    expect(watchServerOcr).not.toHaveBeenCalled();
   });
 });

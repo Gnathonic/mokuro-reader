@@ -121,8 +121,8 @@ vi.mock('$lib/util/upload-worker-credentials', () => ({
 }));
 const stampLayersSynced = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('$lib/metadata/layer-sync', () => ({ stampLayersSynced }));
-const registerServerOcrRecheck = vi.hoisted(() => vi.fn());
-vi.mock('$lib/catalog/server-ocr-recheck', () => ({ registerServerOcrRecheck }));
+const watchUploadedVolume = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('$lib/catalog/server-ocr-queue', () => ({ watchUploadedVolume }));
 
 import type { VolumeMetadata } from '$lib/types';
 import { downloadFileBlob } from './volume-sidecars';
@@ -634,7 +634,7 @@ describe('export-for-download sidecars', () => {
     expect(stampLayersSynced).toHaveBeenCalledWith('layers-worker-uuid', 'webdav', layerSnapshots);
   });
 
-  it('remembers a targeted OCR recheck when the server queued the uploaded archive', async () => {
+  it('watches the volume on the server’s OCR queue when the server queued the upload', async () => {
     const provider = {
       type: 'webdav',
       uploadConcurrencyLimit: 2,
@@ -655,13 +655,12 @@ describe('export-for-download sidecars', () => {
       },
       vi.fn()
     );
-    expect(registerServerOcrRecheck).toHaveBeenCalledWith({
+    // Under its SERVER-side names, as the queue file spells them.
+    expect(watchUploadedVolume).toHaveBeenCalledWith({
       volumeUuid: 'ocr-queued-uuid',
-      manifestUrl: 'https://bunko.example/m?v=1',
-      recheckAfter: 95,
-      auth: 'webdav',
-      source: 'webdav',
-      peek: true
+      series: 'One Piece',
+      volume: 'Volume 1',
+      manifestUrl: 'https://bunko.example/m?v=1'
     });
   });
 
@@ -678,7 +677,7 @@ describe('export-for-download sidecars', () => {
     });
     await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
     await capturedTasks[0].onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
-    expect(registerServerOcrRecheck).not.toHaveBeenCalled();
+    expect(watchUploadedVolume).not.toHaveBeenCalled();
   });
 });
 

@@ -60,8 +60,11 @@
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import {
     describePendingOcr,
+    markVolumeShown,
     pendingOcrClock,
-    serverOcrPending
+    queueKeyForVolume,
+    serverOcrQueueStatus,
+    watchedKeyStore
   } from '$lib/catalog/server-ocr-pending';
   import { uploadFailures } from '$lib/util/upload-failures';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
@@ -129,10 +132,15 @@
   // the one `volumesWithPlaceholders` decorated with the current listing, while
   // `liveVolume` is the raw stored row.
   let isNotInstalled = $derived(needsDownload(liveVolume));
-  // OCR the server is still making for this volume (a WebDAV upload it queued,
-  // or a deep link whose manifest listed pending jobs), one line per job. The
-  // shared clock re-derives only this text, about twice a minute.
-  let serverOcr = $derived(describePendingOcr($serverOcrPending[volume_uuid], $pendingOcrClock));
+  // OCR the server is still making for this volume, from its server's queue
+  // file (`server-ocr-queue.ts`), one line per job. The shared clock re-derives
+  // only this text, about twice a minute.
+  let serverOcrKey = $derived(queueKeyForVolume(liveVolume, $watchedKeyStore));
+  let serverOcr = $derived(
+    describePendingOcr($serverOcrQueueStatus[serverOcrKey], $pendingOcrClock)
+  );
+  // A volume the catalog is showing is one the queue poller keeps an eye on.
+  $effect(() => markVolumeShown(serverOcrKey));
   // The last cloud upload of this volume failed for good (persisted until one succeeds).
   let uploadFailure = $derived($uploadFailures[volume_uuid]);
   // A cloud-only volume drawn as a full row (see `isIndexedPlaceholder`): it has
@@ -1062,10 +1070,8 @@
               {#each serverOcr.shown as line (line.key)}
                 <div class="flex items-baseline justify-between gap-2">
                   <span class="min-w-0 truncate">{line.name}</span>
-                  {#key `${line.when}|${line.clock}`}
-                    <span class="shrink-0 whitespace-nowrap text-gray-300">
-                      {line.clock ? `${line.when} · ${line.clock}` : line.when}
-                    </span>
+                  {#key line.detail}
+                    <span class="shrink-0 whitespace-nowrap text-gray-300">{line.detail}</span>
                   {/key}
                 </div>
               {/each}
