@@ -2,7 +2,9 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Snackbar from '../Snackbar.svelte';
+import ProgressTracker from '../ProgressTracker.svelte';
 import { snackbarStore } from '$lib/util/snackbar';
+import { progressTrackerStore } from '$lib/util/progress-tracker';
 
 describe('Snackbar', () => {
   afterEach(() => {
@@ -25,5 +27,23 @@ describe('Snackbar', () => {
     const classes = toast.className.split(/\s+/);
     expect(classes).toContain('fixed');
     expect(classes).not.toContain('absolute');
+  });
+
+  it('stacks above the progress tray, which shares its corner', async () => {
+    // Both are fixed bottom-right. At equal z-index the tray, later in the
+    // layout, covered every toast raised while anything was in progress —
+    // an upload failure's notice included (seen live: elementFromPoint at the
+    // toast's centre hit the tray's progress row).
+    const zOf = (el: Element) => {
+      const z = el.className.split(/\s+/).find((c) => /^z-(\d+|\[\d+\])$/.test(c));
+      return z ? Number(z.replace(/^z-\[?|\]$/g, '')) : 0;
+    };
+    progressTrackerStore.addProcess({ id: 'p', description: 'Backing up Vol 2', progress: 40 });
+    snackbarStore.set({ visible: true, message: 'Upload failed: Vol 2 — bad CRC' });
+    const tray = render(ProgressTracker).container.querySelector('div.fixed')!;
+    const toast = render(Snackbar).container.querySelector('[role="alert"]')!;
+    await tick();
+    expect(zOf(toast)).toBeGreaterThan(zOf(tray));
+    progressTrackerStore.removeProcess('p');
   });
 });
