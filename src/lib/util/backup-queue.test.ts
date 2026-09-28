@@ -739,6 +739,19 @@ describe('a failed upload is never silent (Addendum B)', () => {
     );
   });
 
+  it('says the LOCAL copy is damaged when the server says the bytes arrived intact but bad', async () => {
+    const task = await queued('damaged-uuid');
+    const detail =
+      'The copy of this volume on this device is damaged; re-import the volume, then upload it again. (Server: digest matched; 003.jpg fails its CRC)';
+    await task.onError({
+      type: 'error',
+      error: 'WebDAV upload failed: 422 (archive-damaged: digest matched; 003.jpg fails its CRC)',
+      detail
+    });
+    expect(recordUploadFailure).toHaveBeenCalledWith(expect.objectContaining({ reason: detail }));
+    expect(bridge.notifyError).toHaveBeenCalledWith(`Upload failed: Volume 9 — ${detail}`);
+  });
+
   it('falls back to the error message when the worker gave no detail', async () => {
     const task = await queued('failing-uuid-2');
     await task.onError({ type: 'error', error: 'Network error during WebDAV upload' });

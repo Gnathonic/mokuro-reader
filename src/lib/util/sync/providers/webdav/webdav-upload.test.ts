@@ -162,12 +162,9 @@ describe('the upload verdict (Addendum B)', () => {
       }
     ];
     const error = await put().catch((e) => e);
-    expect(error).toMatchObject({
-      status: 422,
-      reason: 'archive-damaged',
-      detail: 'Member 003.jpg failed its CRC check',
-      retryable: false
-    });
+    expect(error).toMatchObject({ status: 422, reason: 'archive-damaged', retryable: false });
+    // Final damage: the notice leads with what to do, and keeps the server's words.
+    expect(error.detail).toContain('Member 003.jpg failed its CRC check');
     expect(error.message).toContain('422');
     expect(error.message).toContain('Member 003.jpg failed its CRC check');
   });
@@ -348,5 +345,67 @@ describe('Content-Digest (RFC 9530)', () => {
       new Blob(['hello'])
     ).catch((e) => e);
     expect(error.reason).toBe('size-mismatch');
+  });
+
+  it('retries a body the server says was corrupted in transit', async () => {
+    answers = [
+      {
+        status: 422,
+        body: JSON.stringify({ ok: false, reason: 'corrupted-in-transit', retry: true })
+      }
+    ];
+    const error = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/S/V.cbz',
+      new Blob(['hello'])
+    ).catch((e) => e);
+    expect(error).toMatchObject({ reason: 'corrupted-in-transit', retryable: true });
+  });
+
+  it('treats corrupted-in-transit as retryable even without a retry field', async () => {
+    answers = [{ status: 422, body: JSON.stringify({ reason: 'corrupted-in-transit' }) }];
+    const error = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/S/V.cbz',
+      new Blob(['hello'])
+    ).catch((e) => e);
+    expect(error.retryable).toBe(true);
+  });
+
+  it('a final archive-damaged says the LOCAL copy is damaged, with the server detail', async () => {
+    answers = [
+      {
+        status: 422,
+        body: JSON.stringify({
+          ok: false,
+          reason: 'archive-damaged',
+          detail: 'Digest matched; member 003.jpg fails its CRC, so the sender’s copy is damaged',
+          retry: false
+        })
+      }
+    ];
+    const error = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/S/V.cbz',
+      new Blob(['hello'])
+    ).catch((e) => e);
+    expect(error.retryable).toBe(false);
+    expect(error.reason).toBe('archive-damaged');
+    expect(error.detail).toMatch(/copy of this volume on this device is damaged/i);
+    expect(error.detail).toMatch(/re-import/i);
+    expect(error.detail).toContain('member 003.jpg fails its CRC');
+  });
+
+  it('a first archive-damaged without a digest is retried, as the server asks', async () => {
+    answers = [
+      { status: 422, body: JSON.stringify({ reason: 'archive-damaged', retry: true, detail: 'x' }) }
+    ];
+    const error = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/S/V.cbz',
+      new Blob(['hello'])
+    ).catch((e) => e);
+    expect(error.retryable).toBe(true);
+    expect(error.detail).toBe('x');
   });
 });

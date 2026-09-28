@@ -97,17 +97,28 @@ function failureFromResponse(status: number, statusText: string, body: string): 
     // Not a verdict body: any other WebDAV server.
   }
   const reason = typeof verdict.reason === 'string' ? verdict.reason : `http-${status}`;
-  const detail =
-    typeof verdict.detail === 'string' && verdict.detail.trim()
-      ? verdict.detail
-      : `${status} ${statusText}`.trim();
+  const serverDetail =
+    typeof verdict.detail === 'string' && verdict.detail.trim() ? verdict.detail.trim() : '';
   // The server's own word first; otherwise transient statuses only. 507 (disk
-  // full) is a 5xx that retrying cannot fix.
+  // full) is a 5xx that retrying cannot fix. Damage in transit is always worth
+  // another attempt: the body we hold is fine.
   const retryable =
     typeof verdict.retry === 'boolean'
       ? verdict.retry
-      : status === 408 || status === 429 || (status >= 500 && status !== 507);
-  const suffix = typeof verdict.reason === 'string' ? ` (${reason}: ${detail})` : '';
+      : reason === 'corrupted-in-transit' ||
+        status === 408 ||
+        status === 429 ||
+        (status >= 500 && status !== 507);
+  // A FINAL archive-damaged means the bytes arrived as sent (the digest matched,
+  // or the same damage came back twice): it is this device's copy that is bad,
+  // and only a fresh import can fix it.
+  const detail =
+    reason === 'archive-damaged' && !retryable
+      ? `The copy of this volume on this device is damaged; re-import the volume, then upload it again.` +
+        (serverDetail ? ` (Server: ${serverDetail})` : '')
+      : serverDetail || `${status} ${statusText}`.trim();
+  const suffix =
+    typeof verdict.reason === 'string' ? ` (${reason}: ${serverDetail || detail})` : '';
   return new WebdavUploadError(`WebDAV upload failed: ${status} ${statusText}`.trim() + suffix, {
     status,
     reason,
