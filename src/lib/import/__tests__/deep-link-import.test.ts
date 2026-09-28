@@ -52,6 +52,8 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: { getCache: () => null }
 }));
 vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited: vi.fn() }));
+const registerServerOcrRecheck = vi.hoisted(() => vi.fn());
+vi.mock('$lib/catalog/server-ocr-recheck', () => ({ registerServerOcrRecheck }));
 
 import { db } from '$lib/catalog/db';
 import { clearAllLayers, getLayerWithPages } from '$lib/catalog/layer-store';
@@ -158,6 +160,7 @@ async function downloaded(
     layers: [],
     seriesFile: null,
     manifest: null,
+    manifestUrl: null,
     ...overrides
   };
 }
@@ -165,6 +168,7 @@ async function downloaded(
 beforeEach(async () => {
   resetImportedSeriesFiles();
   scheduleSeriesFileWrite.mockReset();
+  registerServerOcrRecheck.mockReset();
   await Promise.all([
     db.volumes.clear(),
     db.volume_ocr.clear(),
@@ -277,5 +281,53 @@ describe('importDeepLinkedArchive', () => {
     );
     expect(await getLayerWithPages(db, 'volume-uuid-01', 'paddle')).toBeUndefined();
     expect(warn.mock.calls.some((c) => c.map(String).join(' ').includes('layer'))).toBe(true);
+  });
+
+  function pendingManifest(pending: unknown[], recheck_after: number | null) {
+    return {
+      archive: { url: 'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.cbz' },
+      ocr: null,
+      layers: [],
+      cover: null,
+      series_file: null,
+      pending,
+      recheck_after
+    } as unknown as HtmlDownloadResult['manifest'];
+  }
+
+  it('registers a recheck when the manifest shows jobs still pending', async () => {
+    const archiveFile = await imagesOnlyCbz();
+    const pending = [{ kind: 'ocr', id: 'mokuro-fp16', eta: '2026-09-27T21:14:00Z' }];
+    await importDeepLinkedArchive(
+      await downloaded({
+        archiveFile,
+        mokuroFile: null,
+        importFiles: [archiveFile],
+        manifest: pendingManifest(pending, 95),
+        manifestUrl:
+          'https://bunko.example/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001'
+      }),
+      'Dr Stone 01',
+      new Set()
+    );
+    const [row] = await db.volumes.toArray();
+    expect(registerServerOcrRecheck).toHaveBeenCalledWith({
+      volumeUuid: row.volume_uuid,
+      manifestUrl:
+        'https://bunko.example/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001',
+      recheckAfter: 95,
+      auth: 'none',
+      source: 'html-download',
+      pending
+    });
+  });
+
+  it('registers nothing when nothing is pending', async () => {
+    await importDeepLinkedArchive(
+      await downloaded({ manifest: pendingManifest([], null), manifestUrl: 'https://b.example/m' }),
+      'Dr Stone 01',
+      new Set()
+    );
+    expect(registerServerOcrRecheck).not.toHaveBeenCalled();
   });
 });

@@ -116,6 +116,8 @@ vi.mock('$lib/util/upload-worker-credentials', () => ({
 }));
 const stampLayersSynced = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('$lib/metadata/layer-sync', () => ({ stampLayersSynced }));
+const registerServerOcrRecheck = vi.hoisted(() => vi.fn());
+vi.mock('$lib/catalog/server-ocr-recheck', () => ({ registerServerOcrRecheck }));
 
 import type { VolumeMetadata } from '$lib/types';
 import { downloadFileBlob } from './volume-sidecars';
@@ -625,5 +627,52 @@ describe('export-for-download sidecars', () => {
       vi.fn()
     );
     expect(stampLayersSynced).toHaveBeenCalledWith('layers-worker-uuid', 'webdav', layerSnapshots);
+  });
+
+  it('remembers a targeted OCR recheck when the server queued the uploaded archive', async () => {
+    const provider = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'ocr-queued-uuid' }), provider, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete(
+      {
+        type: 'complete',
+        fileId: 'remote-file-id',
+        size: 123,
+        serverOcr: { manifestUrl: 'https://bunko.example/m?v=1', recheckAfter: 95 }
+      },
+      vi.fn()
+    );
+    expect(registerServerOcrRecheck).toHaveBeenCalledWith({
+      volumeUuid: 'ocr-queued-uuid',
+      manifestUrl: 'https://bunko.example/m?v=1',
+      recheckAfter: 95,
+      auth: 'webdav',
+      source: 'webdav',
+      peek: true
+    });
+  });
+
+  it('remembers nothing for an upload the server did not queue', async () => {
+    const provider = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'plain-dav-uuid' }), provider, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
+    expect(registerServerOcrRecheck).not.toHaveBeenCalled();
   });
 });

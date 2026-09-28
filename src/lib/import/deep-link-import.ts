@@ -12,6 +12,32 @@ import { recordSeriesFile } from './series-file-import';
 export const DEEP_LINK_LAYER_SOURCE = 'html-download';
 
 /**
+ * The server is still making OCR for this volume (`pending`): look again when
+ * it says. An `ocr: null` manifest imported the volume image-only; the recheck
+ * upgrades it when the primary lands.
+ */
+async function rememberPendingOcr(
+  downloaded: HtmlDownloadResult,
+  target: VolumeMetadata | undefined
+): Promise<void> {
+  const manifest = downloaded.manifest;
+  if (!target || !manifest || !downloaded.manifestUrl || manifest.pending.length === 0) return;
+  try {
+    const { registerServerOcrRecheck } = await import('$lib/catalog/server-ocr-recheck');
+    registerServerOcrRecheck({
+      volumeUuid: target.volume_uuid,
+      manifestUrl: downloaded.manifestUrl,
+      recheckAfter: manifest.recheck_after,
+      auth: 'none',
+      source: DEEP_LINK_LAYER_SOURCE,
+      pending: manifest.pending
+    });
+  } catch (error) {
+    console.warn('[HTML Download] Could not remember the server OCR recheck:', error);
+  }
+}
+
+/**
  * Import a deep-linked `.cbz` with what its manifest brought along:
  *
  * - the `series.json` joins the import batch BEFORE the archive is queued, so
@@ -34,6 +60,7 @@ export async function importDeepLinkedArchive(
   await importArchiveWithOptionalMokuro(downloaded.archiveFile, downloaded.mokuroFile);
 
   const target = pickCoverTarget(await db.volumes.toArray(), installedBefore, requestVolume);
+  await rememberPendingOcr(downloaded, target);
   if (downloaded.layers.length === 0) return target;
   if (!target) {
     console.warn(

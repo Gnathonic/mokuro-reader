@@ -103,13 +103,27 @@ async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
     return;
   }
   const sidecarBlob = await activeProvider.downloadFile(task.sidecar);
-  const sidecarPath = task.sidecar.path;
+  console.log('[Cloud OCR Upgrade] Downloaded sidecar bytes:', sidecarBlob.size, task.sidecar.path);
+  await upgradeOcrFromSidecarBlob(task.volumeUuid, task.sidecar.path, sidecarBlob);
+}
 
-  console.log('[Cloud OCR Upgrade] Downloaded sidecar bytes:', sidecarBlob.size, sidecarPath);
+/**
+ * Upgrade one image-only volume from sidecar bytes already in hand — the write
+ * half of every upgrade, also used for a sidecar fetched outside any provider
+ * (a server's volume manifest). `sidecarPath` only has to END like the file
+ * (`.mokuro` / `.mokuro.gz`): a URL works. True when the OCR was written; false
+ * when the volume may not take it (see `upgradeSkipReason`) or the file is not
+ * a sidecar.
+ */
+export async function upgradeOcrFromSidecarBlob(
+  volumeUuid: string,
+  sidecarPath: string,
+  sidecarBlob: Blob
+): Promise<boolean> {
   const mokuroFile = await decodeMokuroSidecar(sidecarPath, sidecarBlob);
   if (!mokuroFile) {
     console.warn('[Cloud OCR Upgrade] Failed to decode sidecar:', sidecarPath);
-    return;
+    return false;
   }
 
   const parsed = await parseMokuroFile(mokuroFile);
@@ -128,10 +142,10 @@ async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
   // between a check out here and the put below would be overwritten just the
   // same as one that was never checked for.
   const existingVolume = await db.transaction('rw', [db.volumes, db.volume_ocr], async () => {
-    const current = await db.volumes.get(task.volumeUuid);
+    const current = await db.volumes.get(volumeUuid);
     const skip = current ? upgradeSkipReason(current) : 'volume missing';
     if (!current || skip) {
-      console.log('[Cloud OCR Upgrade] Skipping task:', task.volumeUuid, skip);
+      console.log('[Cloud OCR Upgrade] Skipping task:', volumeUuid, skip);
       return null;
     }
 
@@ -149,13 +163,14 @@ async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
     });
     return current;
   });
-  if (!existingVolume) return;
+  if (!existingVolume) return false;
 
   console.log(
     '[Cloud OCR Upgrade] Upgraded image-only volume:',
     existingVolume.series_title,
     existingVolume.volume_title
   );
+  return true;
 }
 
 async function processQueue(): Promise<void> {

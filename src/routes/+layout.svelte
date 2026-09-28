@@ -99,9 +99,17 @@
       .catch((error) => console.debug('[cloud-covers] prune skipped:', error));
 
     // Fire and forget - don't block app initialization
-    initializeProviders().catch((error) => {
-      console.error('Failed to initialize providers:', error);
-    });
+    initializeProviders()
+      .catch((error) => {
+        console.error('Failed to initialize providers:', error);
+      })
+      // Server OCR rechecks that came due while the app was closed. After the
+      // providers, so an upload-registered recheck can authenticate.
+      .finally(() => {
+        void import('$lib/catalog/server-ocr-recheck')
+          .then((m) => m.startServerOcrRechecks())
+          .catch((error) => console.debug('[OCR recheck] start skipped:', error));
+      });
 
     // Initialize file handler for PWA file associations
     initFileHandler();

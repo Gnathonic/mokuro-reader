@@ -197,6 +197,7 @@ describe('downloading a cbz deep link with a manifest', () => {
     expect(result.coverFile?.name).toBe('Dr Stone 01.webp');
     expect(result.bundleType).toBe('triple');
     expect(result.manifest?.archive.url).toBe(CBZ);
+    expect(result.manifestUrl).toBe(MANIFEST);
   });
 
   it('hands the layers over raw, each with its id, gz flag, URL and stamps', async () => {
@@ -325,6 +326,7 @@ describe('falling back to guessing sidecars from the cbz URL', () => {
     expect(result.layers).toEqual([]);
     expect(result.seriesFile).toBeNull();
     expect(result.manifest).toBeNull();
+    expect(result.manifestUrl).toBeNull();
     expect(warn).not.toHaveBeenCalled();
   });
 

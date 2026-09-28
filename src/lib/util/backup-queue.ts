@@ -3,7 +3,7 @@ import type { VolumeMetadata } from '$lib/types';
 import type { WorkerTask } from './worker-pool';
 import { getBackupUiBridge } from './backup-ui';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
-import type { BackupProviderType, SyncProvider } from './sync/provider-interface';
+import type { BackupProviderType, ServerOcrQueued, SyncProvider } from './sync/provider-interface';
 import { isPseudoProvider, exportProvider } from './sync/provider-interface';
 import {
   getFileProcessingPool,
@@ -67,6 +67,33 @@ interface WorkerUploadCompleteData {
   sidecars?: WorkerUploadSidecars;
   /** Worker-driven uploads: the layers as serialized and uploaded (see the worker). */
   layerSnapshots?: LayerUploadSnapshot[];
+  /** The server queued the archive for OCR (WebDAV to mokuro-bunko). */
+  serverOcr?: ServerOcrQueued;
+}
+
+/**
+ * A server that queued the archive for OCR said when to look again: remember a
+ * targeted recheck, and read the manifest once now so the volume shows its ETA.
+ */
+async function rememberServerOcr(
+  volumeUuid: string,
+  providerType: string,
+  serverOcr: ServerOcrQueued | undefined
+): Promise<void> {
+  if (!serverOcr) return;
+  try {
+    const { registerServerOcrRecheck } = await import('$lib/catalog/server-ocr-recheck');
+    registerServerOcrRecheck({
+      volumeUuid,
+      manifestUrl: serverOcr.manifestUrl,
+      recheckAfter: serverOcr.recheckAfter,
+      auth: providerType === 'webdav' ? 'webdav' : 'none',
+      source: providerType,
+      peek: true
+    });
+  } catch (error) {
+    console.warn('[Backup] Could not remember the server OCR recheck:', error);
+  }
 }
 
 // Internal queue state
@@ -603,6 +630,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // fact about it nobody has to guess. Recorded before the index
             // write below, which reads the row to build the `series.json` entry.
             await recordArchiveSize(item.volumeUuid, archiveBlob.size);
+            await rememberServerOcr(item.volumeUuid, provider!.type, uploaded.serverOcr);
             if (item.sidecarOptions.includeSidecars) {
               // Stamped against what the worker SERIALIZED, not the rows as
               // they are now: a layer edited during the upload must keep
@@ -725,6 +753,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           if (item.sidecarOptions.includeSidecars) {
             void stampLayersSynced(item.volumeUuid, provider!.type, data.layerSnapshots ?? []);
           }
+          await rememberServerOcr(item.volumeUuid, provider!.type, data.serverOcr);
           noteSeriesNeedingIndexWrite(item.seriesTitle);
           // See the matching comment on the main-thread-upload path above.
           scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: isBackupRunActive() });

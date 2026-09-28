@@ -191,9 +191,22 @@ export type UploadPayload = Blob | ArrayBuffer | Uint8Array;
  * and the upload-time cache entry is marked `modifiedTimeProvisional` — see
  * `CloudFileMetadata`.
  */
+/**
+ * A server that OCRs what it receives (mokuro-bunko) queued the uploaded
+ * archive: where its volume manifest is, and when it suggests looking again.
+ */
+export interface ServerOcrQueued {
+  /** Absolute URL of the volume's manifest. */
+  manifestUrl: string;
+  /** Seconds until the earliest predicted finish; null when the server gave none usable. */
+  recheckAfter: number | null;
+}
+
 export interface UploadFileResult {
   /** File ID in cloud storage (the value the old string-returning contract carried). */
   fileId: string;
+  /** The server queued this upload for OCR (WebDAV to mokuro-bunko only). */
+  serverOcr?: ServerOcrQueued;
   /** Server-reported modification time (ISO 8601), when the upload response carried one. */
   modifiedTime?: string;
   /** Server-reported size in bytes, when the upload response carried one. */

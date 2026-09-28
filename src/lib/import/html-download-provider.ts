@@ -32,6 +32,8 @@ export interface HtmlDownloadResult {
   seriesFile: PendingSeriesFile | null;
   /** The manifest that drove this download; null on the legacy guessing path. */
   manifest: VolumeManifest | null;
+  /** Where that manifest was fetched from (the link's `manifest` param). */
+  manifestUrl: string | null;
 }
 
 export interface HtmlDownloadProgress {
@@ -526,7 +528,8 @@ async function downloadFromManifest(
     coverFile,
     layers,
     seriesFile,
-    manifest
+    manifest,
+    manifestUrl: null
   };
 }
 
@@ -553,7 +556,10 @@ class HtmlDownloadPseudoProvider {
       onProgress?.({ status: 'Fetching volume manifest...', progress: 2 });
       const manifest = await fetchVolumeManifest(request.manifestUrl);
       if (manifest) {
-        return downloadFromManifest(request, manifest, normalizedVolume, onProgress);
+        return {
+          ...(await downloadFromManifest(request, manifest, normalizedVolume, onProgress)),
+          manifestUrl: request.manifestUrl
+        };
       }
       // Unusable (already warned once): the legacy guesses below, as with no param.
     }
@@ -596,7 +602,8 @@ class HtmlDownloadPseudoProvider {
         coverFile,
         layers: [],
         seriesFile: null,
-        manifest: null
+        manifest: null,
+        manifestUrl: null
       };
     }
 
@@ -666,7 +673,8 @@ class HtmlDownloadPseudoProvider {
       coverFile,
       layers: [],
       seriesFile: null,
-      manifest: null
+      manifest: null,
+      manifestUrl: null
     };
   }
 }

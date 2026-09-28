@@ -58,6 +58,7 @@
   import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
   import { formatArchiveSize } from '$lib/util/format-size';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
+  import { describePendingJobs, serverOcrPending } from '$lib/catalog/server-ocr-pending';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
@@ -123,6 +124,9 @@
   // the one `volumesWithPlaceholders` decorated with the current listing, while
   // `liveVolume` is the raw stored row.
   let isNotInstalled = $derived(needsDownload(liveVolume));
+  // OCR the server is still making for this volume (a WebDAV upload it queued,
+  // or a deep link whose manifest listed pending jobs): a quiet ETA chip.
+  let serverOcrChip = $derived(describePendingJobs($serverOcrPending[volume_uuid]));
   // A cloud-only volume drawn as a full row (see `isIndexedPlaceholder`): it has
   // no `volumes` row at all, so anything that deletes one is off. `dbVolume` is
   // the live answer to "is there a row now" — the moment a download or a
@@ -796,6 +800,17 @@
               {#if isNotInstalled}
                 <Badge color="gray" class="text-xs">Not on this device</Badge>
               {/if}
+              {#if serverOcrChip}
+                <!-- In the badge row it can only widen, never add a line. Keyed:
+                     a clock is the kind of text extensions rewrite and hold stale. -->
+                <span
+                  data-testid="server-ocr-chip"
+                  title={serverOcrChip.tooltip}
+                  class="rounded bg-gray-100 px-1.5 py-0.5 text-xs whitespace-nowrap text-gray-500 dark:bg-gray-700 dark:text-gray-400"
+                >
+                  {#key serverOcrChip.label}<span>{serverOcrChip.label}</span>{/key}
+                </span>
+              {/if}
             </div>
             <div class="flex flex-wrap items-center gap-x-3">
               <p>{progressDisplay}</p>
@@ -1009,6 +1024,17 @@
           {/if}
           {#if isNotInstalled}
             <DownloadBadge class="right-1 bottom-1" />
+          {/if}
+          {#if serverOcrChip}
+            <!-- On the cover, not in the badge column: showing or dropping it
+                 must never resize the card. -->
+            <span
+              data-testid="server-ocr-chip"
+              title={serverOcrChip.tooltip}
+              class="absolute top-1 left-1 rounded bg-gray-900/70 px-1.5 py-0.5 text-xs whitespace-nowrap text-gray-100"
+            >
+              {#key serverOcrChip.label}<span>{serverOcrChip.label}</span>{/key}
+            </span>
           {/if}
         </div>
         <div class="flex flex-col gap-1 sm:w-[250px]">

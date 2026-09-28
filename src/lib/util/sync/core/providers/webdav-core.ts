@@ -238,6 +238,10 @@ export const webdavCore: CloudProviderCore = {
     // (a PROPFIND per upload) is exactly the extra round trip a bulk backup
     // must not pay — so no `modifiedTime` here: the upload-time cache entry
     // stays provisional until the next real listing replaces it.
-    return { fileId: await uploadFileWithClient(client, filePath, blob, onProgress) };
+    const put = await uploadFileWithClient(client, filePath, blob, onProgress);
+    // Only an archive enters a server's OCR queue; a header on anything else is noise.
+    return put.serverOcr && /\.cbz$/i.test(filename)
+      ? { fileId: put.path, serverOcr: put.serverOcr }
+      : { fileId: put.path };
   }
 };

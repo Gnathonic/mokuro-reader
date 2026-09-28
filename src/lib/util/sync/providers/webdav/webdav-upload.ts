@@ -4,6 +4,39 @@
  */
 
 import type { WebDAVClient } from 'webdav';
+import type { ServerOcrQueued } from '$lib/util/sync/provider-interface';
+
+/** What one PUT established. */
+export interface WebdavPutResult {
+  /** The path written (the old string-returning contract's value). */
+  path: string;
+  /**
+   * The server queued this file for OCR (mokuro-bunko's `X-Mokuro-Manifest` /
+   * `X-Mokuro-Recheck-After`); absent for any other server or file.
+   */
+  serverOcr?: ServerOcrQueued;
+}
+
+/** A response header, or null — never throws (CORS-hidden headers read as null). */
+type HeaderReader = (name: string) => string | null;
+
+/** The OCR queue headers of a PUT response, resolved against the upload URL. */
+export function readServerOcrHeaders(
+  header: HeaderReader,
+  uploadUrl: string
+): ServerOcrQueued | undefined {
+  const manifest = header('X-Mokuro-Manifest');
+  if (!manifest) return undefined;
+  let manifestUrl: string;
+  try {
+    manifestUrl = new URL(manifest, uploadUrl).toString();
+  } catch {
+    return undefined;
+  }
+  const raw = header('X-Mokuro-Recheck-After');
+  const seconds = raw !== null && /^\s*\d+\s*$/.test(raw) ? Number(raw) : NaN;
+  return { manifestUrl, recheckAfter: Number.isFinite(seconds) ? seconds : null };
+}
 
 /**
  * Upload a file to WebDAV using the webdav library client
@@ -13,14 +46,14 @@ import type { WebDAVClient } from 'webdav';
  * @param path Full path including filename (e.g., "/mokuro-reader/Series/Volume.cbz")
  * @param blob File data as Blob
  * @param onProgress Optional progress callback
- * @returns Promise resolving to the file path
+ * @returns Promise resolving to the path written, plus what the server said about it
  */
 export async function uploadFileWithClient(
   client: WebDAVClient,
   path: string,
   blob: Blob,
   onProgress?: (loaded: number, total: number) => void
-): Promise<string> {
+): Promise<WebdavPutResult> {
   const uploadUrl = client.getFileUploadLink(path);
   const clientHeaders = client.getHeaders();
 
@@ -48,7 +81,15 @@ export async function uploadFileWithClient(
 
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(path);
+        const header: HeaderReader = (name) => {
+          try {
+            return xhr.getResponseHeader(name);
+          } catch {
+            return null;
+          }
+        };
+        const serverOcr = readServerOcrHeaders(header, uploadUrl);
+        resolve(serverOcr ? { path, serverOcr } : { path });
       } else {
         reject(new Error(`WebDAV upload failed: ${xhr.status} ${xhr.statusText}`));
       }
@@ -125,5 +166,5 @@ export async function uploadToWebDAV(
 
   // Upload file
   const filePath = `/${folderPath}/${filename}`;
-  return uploadFileWithClient(client, filePath, blob, onProgress);
+  return (await uploadFileWithClient(client, filePath, blob, onProgress)).path;
 }

@@ -154,28 +154,42 @@ export function parseVolumeManifest(json: unknown, manifestUrl: string): VolumeM
   };
 }
 
+/** A manifest, or why there is none. */
+export type ManifestLoad = { manifest: VolumeManifest } | { error: string };
+
 /**
- * Fetch and validate a manifest. Null — after exactly one `console.warn` — when
- * it cannot be used, which sends the caller down the legacy guessing path.
- * Credentials: the fetch default, the same as the archive's own fetch.
+ * Fetch (no-store, the fetch default credentials — the same as the archive's
+ * own fetch — plus any `headers` given) and validate a manifest. Never throws.
  */
-export async function fetchVolumeManifest(manifestUrl: string): Promise<VolumeManifest | null> {
-  const unusable = (reason: unknown) => {
-    console.warn(
-      `[HTML Download] Volume manifest ${manifestUrl} is unusable; guessing sidecars from the archive URL instead:`,
-      reason
-    );
-    return null;
-  };
+export async function loadVolumeManifest(
+  manifestUrl: string,
+  headers?: Record<string, string>
+): Promise<ManifestLoad> {
   let json: unknown;
   try {
-    const response = await fetch(manifestUrl, { cache: 'no-store' });
-    if (!response.ok) return unusable(`HTTP ${response.status}`);
+    const response = await fetch(
+      manifestUrl,
+      headers ? { cache: 'no-store', headers } : { cache: 'no-store' }
+    );
+    if (!response.ok) return { error: `HTTP ${response.status}` };
     json = await response.json();
   } catch (error) {
-    return unusable(error);
+    return { error: error instanceof Error ? error.message : String(error) };
   }
-  return (
-    parseVolumeManifest(json, manifestUrl) ?? unusable('not a version 1 manifest with an archive')
+  const manifest = parseVolumeManifest(json, manifestUrl);
+  return manifest ? { manifest } : { error: 'not a version 1 manifest with an archive' };
+}
+
+/**
+ * The deep link's fetch: null — after exactly one `console.warn` — when the
+ * manifest cannot be used, which sends the caller down the legacy guessing path.
+ */
+export async function fetchVolumeManifest(manifestUrl: string): Promise<VolumeManifest | null> {
+  const load = await loadVolumeManifest(manifestUrl);
+  if ('manifest' in load) return load.manifest;
+  console.warn(
+    `[HTML Download] Volume manifest ${manifestUrl} is unusable; guessing sidecars from the archive URL instead:`,
+    load.error
   );
+  return null;
 }

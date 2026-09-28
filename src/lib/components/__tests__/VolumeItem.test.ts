@@ -578,3 +578,65 @@ describe('VolumeItem cover object-URL identity (mirrors CatalogListItem.svelte)'
     expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-2');
   });
 });
+
+describe('VolumeItem server OCR chip', () => {
+  afterEach(async () => {
+    cleanup();
+    const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
+    pendingStore.set({});
+  });
+
+  function hhmm(iso: string) {
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  for (const variant of ['list', 'grid'] as const) {
+    describe(`${variant} variant`, () => {
+      it('shows the earliest ETA, with every job in the tooltip', async () => {
+        const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
+        pendingStore.set({
+          'uuid-1': [
+            { kind: 'ocr', id: 'mokuro-fp16', eta: '2026-09-27T21:14:00Z' },
+            { kind: 'layer', id: 'hayai-nova-ppocr', eta: null }
+          ]
+        });
+        const { container } = render(VolumeItem, {
+          props: { volume: volume({ mokuro_version: '' }), variant }
+        });
+        const chip = container.querySelector('[data-testid="server-ocr-chip"]')!;
+        expect(chip.textContent?.trim()).toBe(`OCR ~${hhmm('2026-09-27T21:14:00Z')}`);
+        expect(chip.getAttribute('title')).toBe(
+          `mokuro-fp16 OCR ~${hhmm('2026-09-27T21:14:00Z')}\nhayai-nova-ppocr layer queued`
+        );
+      });
+
+      it('disappears when the jobs land', async () => {
+        const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
+        pendingStore.set({ 'uuid-1': [{ kind: 'ocr', id: 'm', eta: null }] });
+        const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
+        expect(
+          container.querySelector('[data-testid="server-ocr-chip"]')?.textContent?.trim()
+        ).toBe('OCR queued');
+        pendingStore.set({});
+        await tick();
+        expect(container.querySelector('[data-testid="server-ocr-chip"]')).toBeNull();
+      });
+
+      it('shows nothing for a volume with no server jobs', () => {
+        const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
+        expect(container.querySelector('[data-testid="server-ocr-chip"]')).toBeNull();
+      });
+    });
+  }
+
+  it('overlays the grid cover instead of adding a row (no card resizing)', async () => {
+    const { pendingStore } = await import('$lib/catalog/server-ocr-pending');
+    pendingStore.set({ 'uuid-1': [{ kind: 'ocr', id: 'm', eta: null }] });
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    const chip = container.querySelector('[data-testid="server-ocr-chip"]') as HTMLElement;
+    // Absolutely placed on the cover: the card's box never changes for it.
+    expect(chip.className).toContain('absolute');
+    expect(chip.closest('a')).not.toBeNull();
+  });
+});

@@ -20,7 +20,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 }));
 
 import { db } from '$lib/catalog/db';
-import { enqueueCloudOcrUpgrade } from './cloud-ocr-upgrade';
+import { enqueueCloudOcrUpgrade, upgradeOcrFromSidecarBlob } from './cloud-ocr-upgrade';
 import type { VolumeMetadata } from '$lib/types';
 
 const imageOnlyVolume = {
@@ -123,5 +123,60 @@ describe('cloud OCR upgrade', () => {
       expect((await (db as any).table('volume_ocr').get('vol-1')).pages).toEqual(handTyped);
       expect((await (db as any).table('volumes').get('vol-1')).mokuro_version).toBe('');
     });
+  });
+});
+
+describe('upgradeOcrFromSidecarBlob (a sidecar fetched outside any provider)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await (db as any).table('volumes').clear();
+    await (db as any).table('volume_ocr').clear();
+    await (db as any).table('volumes').put(imageOnlyVolume);
+    parseMokuroFile.mockResolvedValue({
+      version: '0.2.0',
+      seriesUuid: 'series-1',
+      pages: [{ blocks: [{ lines: ['あ'] }] }]
+    });
+  });
+
+  it('upgrades an image-only volume through the same write, with no provider at all', async () => {
+    getActiveProvider.mockReturnValue(null);
+    const ok = await upgradeOcrFromSidecarBlob(
+      'vol-1',
+      'https://bunko.example/One%20Piece/Volume%201.mokuro',
+      new Blob(['{}'])
+    );
+    expect(ok).toBe(true);
+    const row = await (db as any).table('volumes').get('vol-1');
+    expect(row.mokuro_version).toBe('0.2.0');
+    expect(row.character_count).toBe(1);
+    expect((await (db as any).table('volume_ocr').get('vol-1')).pages).toHaveLength(1);
+  });
+
+  it('decompresses a .mokuro.gz by its name', async () => {
+    const gz = await new Response(
+      new Blob(['{"pages":[]}']).stream().pipeThrough(new CompressionStream('gzip'))
+    ).blob();
+    await upgradeOcrFromSidecarBlob('vol-1', 'x/Volume 1.mokuro.gz', gz);
+    const file = parseMokuroFile.mock.calls[0][0] as File;
+    expect(file.name).toBe('Volume 1.mokuro');
+    expect(await file.text()).toBe('{"pages":[]}');
+  });
+
+  it('refuses a hand-edited volume, and one that already has OCR', async () => {
+    await (db as any)
+      .table('volumes')
+      .put({ ...imageOnlyVolume, ocr_edited_at: '2026-09-01T00:00:00.000Z' });
+    expect(await upgradeOcrFromSidecarBlob('vol-1', 'Volume 1.mokuro', new Blob(['{}']))).toBe(
+      false
+    );
+    await (db as any).table('volumes').put({ ...imageOnlyVolume, mokuro_version: '0.2.1' });
+    expect(await upgradeOcrFromSidecarBlob('vol-1', 'Volume 1.mokuro', new Blob(['{}']))).toBe(
+      false
+    );
+    expect(await upgradeOcrFromSidecarBlob('gone', 'Volume 1.mokuro', new Blob(['{}']))).toBe(
+      false
+    );
   });
 });
