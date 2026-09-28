@@ -10,12 +10,13 @@ vi.mock('$lib/util/sync/providers/webdav/webdav-upload', async (importOriginal) 
     uploadFileWithClient
   };
 });
+const davClient = vi.hoisted(() => ({
+  exists: vi.fn(async () => false),
+  deleteFile: vi.fn(async () => {})
+}));
 vi.mock('webdav', () => ({
   AuthType: { Password: 'password', None: 'none' },
-  createClient: () => ({
-    exists: vi.fn(async () => false),
-    deleteFile: vi.fn(async () => {})
-  })
+  createClient: () => davClient
 }));
 
 import { webdavCore } from '../webdav-core';
@@ -95,5 +96,50 @@ describe('webdavCore.uploadFile', () => {
       })
     ).rejects.toThrow('bad CRC');
     expect(uploadFileWithClient).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('webdavCore.uploadFile delete-before-PUT', () => {
+  beforeEach(() => {
+    davClient.exists.mockReset().mockResolvedValue(true);
+    davClient.deleteFile.mockReset().mockResolvedValue(undefined);
+    uploadFileWithClient.mockResolvedValue({ path: '/mokuro-reader/S/V.cbz' });
+  });
+
+  it('issues no exists-check or DELETE for a server whose PUTs are staged and verified', async () => {
+    await webdavCore.uploadFile({
+      seriesTitle: 'S',
+      filename: 'V.cbz',
+      blob: new Blob(['x']),
+      credentials: { ...credentials, webdavPutVerified: true }
+    });
+    expect(davClient.exists).not.toHaveBeenCalled();
+    expect(davClient.deleteFile).not.toHaveBeenCalled();
+    expect(uploadFileWithClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('still deletes an existing file first on any other server', async () => {
+    await webdavCore.uploadFile({
+      seriesTitle: 'S',
+      filename: 'V.cbz',
+      blob: new Blob(['x']),
+      credentials
+    });
+    expect(davClient.deleteFile).toHaveBeenCalledWith('/mokuro-reader/S/V.cbz');
+    const deleteOrder = davClient.deleteFile.mock.invocationCallOrder[0];
+    const putOrder = uploadFileWithClient.mock.invocationCallOrder.at(-1)!;
+    expect(deleteOrder).toBeLessThan(putOrder);
+  });
+
+  it('reports a PUT response that says the server stages and verifies', async () => {
+    uploadFileWithClient.mockResolvedValue({ path: '/mokuro-reader/S/V.cbz', putVerified: true });
+    await expect(
+      webdavCore.uploadFile({
+        seriesTitle: 'S',
+        filename: 'V.cbz',
+        blob: new Blob(['x']),
+        credentials
+      })
+    ).resolves.toEqual({ fileId: '/mokuro-reader/S/V.cbz', serverPutVerified: true });
   });
 });

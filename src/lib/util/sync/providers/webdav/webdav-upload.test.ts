@@ -274,3 +274,17 @@ describe('uploadWithRetry', () => {
     expect(attempt).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('X-Mokuro-Put on a PUT response', () => {
+  it('reports a server that stages and verifies its PUTs', async () => {
+    answers = [{ status: 201, headers: { 'X-Mokuro-Put': 'verified' } }];
+    const result = await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['x']));
+    expect(result.putVerified).toBe(true);
+  });
+
+  it('says nothing for a server that does not send it', async () => {
+    answers = [{ status: 201 }];
+    const result = await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['x']));
+    expect(result.putVerified).toBeUndefined();
+  });
+});

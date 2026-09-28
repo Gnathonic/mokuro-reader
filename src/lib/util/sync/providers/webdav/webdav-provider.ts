@@ -13,6 +13,7 @@ import type { WebDAVClient } from 'webdav';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { webdavAuthOptions } from '../../core/providers/webdav-auth';
 import { basicAuthHeader } from '$lib/util/base64';
+import { isVerifiedPutHeader } from './webdav-upload';
 import { fetchServerIdentity, type ServerPermissions } from './identity';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
 import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
@@ -26,7 +27,9 @@ interface WebDAVCredentials {
 const STORAGE_KEYS = {
   SERVER_URL: 'webdav_server_url',
   USERNAME: 'webdav_username',
-  PASSWORD: 'webdav_password'
+  PASSWORD: 'webdav_password',
+  /** The server URL that answered `X-Mokuro-Put: verified` (staged, verified PUTs). */
+  PUT_VERIFIED: 'webdav_put_verified'
 };
 
 /**
@@ -284,6 +287,10 @@ export class WebDAVProvider implements SyncProvider {
           );
           if (!this._isReadOnly) {
             await this.ensureMokuroFolder();
+            // Not a permissions guess (those came from the server above): only
+            // "does this server stage and verify PUTs?", which decides whether an
+            // upload may replace a file in place.
+            await this.probeVerifiedPut(normalizedUrl, username || '', password || '');
           }
           break;
 
@@ -455,6 +462,7 @@ export class WebDAVProvider implements SyncProvider {
       localStorage.removeItem(STORAGE_KEYS.SERVER_URL);
       localStorage.removeItem(STORAGE_KEYS.USERNAME);
       localStorage.removeItem(STORAGE_KEYS.PASSWORD);
+      localStorage.removeItem(STORAGE_KEYS.PUT_VERIFIED);
     }
   }
 
@@ -643,6 +651,7 @@ export class WebDAVProvider implements SyncProvider {
       });
 
       console.log('[WebDAV] OPTIONS response status:', response.status);
+      this.noteVerifiedPutHeader(response.headers.get('X-Mokuro-Put'), baseUrl);
 
       if (!response.ok) {
         // If OPTIONS fails, assume full access (fail open for usability)
@@ -861,6 +870,7 @@ export class WebDAVProvider implements SyncProvider {
       });
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
+      if (uploaded.serverPutVerified) this.notePutVerified();
       return uploaded;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1412,7 +1422,53 @@ export class WebDAVProvider implements SyncProvider {
     const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
     const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
     const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
-    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
+    return {
+      webdavUrl: serverUrl,
+      webdavUsername: username,
+      webdavPassword: password,
+      // Staged, verified PUTs: the upload core then skips its delete-before-PUT.
+      webdavPutVerified:
+        !!serverUrl && localStorage.getItem(STORAGE_KEYS.PUT_VERIFIED) === serverUrl
+    };
+  }
+
+  /**
+   * Record `X-Mokuro-Put: verified` for a server URL. Keyed by URL, so a
+   * different server never inherits it; a value other than `verified` on the
+   * same server withdraws it.
+   */
+  private noteVerifiedPutHeader(value: string | null, serverUrl: string): void {
+    if (!browser || !serverUrl) return;
+    const url = serverUrl.replace(/\/$/, '');
+    if (isVerifiedPutHeader(value)) {
+      localStorage.setItem(STORAGE_KEYS.PUT_VERIFIED, url);
+    } else if (value !== null && localStorage.getItem(STORAGE_KEYS.PUT_VERIFIED) === url) {
+      localStorage.removeItem(STORAGE_KEYS.PUT_VERIFIED);
+    }
+  }
+
+  /** A PUT response (here or in a worker) said the connected server stages and verifies. */
+  notePutVerified(): void {
+    if (!browser) return;
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    if (serverUrl) this.noteVerifiedPutHeader('verified', serverUrl);
+  }
+
+  /** One OPTIONS on the mokuro folder, read only for `X-Mokuro-Put`. Never throws. */
+  private async probeVerifiedPut(
+    baseUrl: string,
+    username: string,
+    password: string
+  ): Promise<void> {
+    try {
+      const response = await fetch(`${baseUrl}${MOKURO_FOLDER}/`, {
+        method: 'OPTIONS',
+        headers: password ? { Authorization: basicAuthHeader(username, password) } : {}
+      });
+      this.noteVerifiedPutHeader(response.headers.get('X-Mokuro-Put'), baseUrl);
+    } catch (error) {
+      console.debug('[WebDAV] X-Mokuro-Put probe failed:', error);
+    }
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<void> {

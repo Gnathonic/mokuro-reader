@@ -768,4 +768,25 @@ describe('a failed upload is never silent (Addendum B)', () => {
       0
     );
   });
+
+  it('tells the provider when a worker PUT response says the server stages and verifies', async () => {
+    const notePutVerified = vi.fn();
+    const staged = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true,
+      notePutVerified
+    } as never;
+    getActiveProvider.mockReturnValue(staged);
+    queueVolumeForBackup(volume({ volume_uuid: 'staged-uuid' }), staged, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'id', size: 1, serverPutVerified: true },
+      vi.fn()
+    );
+    expect(notePutVerified).toHaveBeenCalledTimes(1);
+  });
 });

@@ -223,6 +223,8 @@ interface UploadCompleteMessage {
   layerSnapshots?: Array<{ layerId: string; updatedAt: string; size: number }>;
   /** The server queued the uploaded archive for OCR (see `UploadFileResult.serverOcr`). */
   serverOcr?: { manifestUrl: string; recheckAfter: number | null };
+  /** The PUT response said the server stages and verifies PUTs (`X-Mokuro-Put`). */
+  serverPutVerified?: boolean;
 }
 
 /** One sidecar the `upload-sidecars` mode successfully uploaded. */
@@ -1009,7 +1011,8 @@ ctx.addEventListener('message', async (event) => {
           modifiedTime: uploaded.modifiedTime,
           size: cbzBlob.size,
           ...(layerSnapshots?.length ? { layerSnapshots } : {}),
-          ...(uploaded.serverOcr ? { serverOcr: uploaded.serverOcr } : {})
+          ...(uploaded.serverOcr ? { serverOcr: uploaded.serverOcr } : {}),
+          ...(uploaded.serverPutVerified ? { serverPutVerified: true } : {})
         };
         ctx.postMessage(completeMessage);
         console.log(`Worker: Backup complete for ${volumeTitle}`);

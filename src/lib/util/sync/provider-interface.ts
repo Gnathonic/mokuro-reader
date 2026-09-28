@@ -207,6 +207,8 @@ export interface UploadFileResult {
   fileId: string;
   /** The server queued this upload for OCR (WebDAV to mokuro-bunko only). */
   serverOcr?: ServerOcrQueued;
+  /** The response said the server stages and verifies PUTs (`X-Mokuro-Put: verified`). */
+  serverPutVerified?: boolean;
   /** Server-reported modification time (ISO 8601), when the upload response carried one. */
   modifiedTime?: string;
   /** Server-reported size in bytes, when the upload response carried one. */
@@ -470,6 +472,13 @@ export interface SyncProvider {
    * Keep credential source/provider details encapsulated in the provider implementation.
    */
   getWorkerUploadCredentials?(): Promise<Record<string, any>>;
+
+  /**
+   * An upload response said the server stages and verifies its PUTs
+   * (`UploadFileResult.serverPutVerified`): remember it, so later uploads can
+   * replace a file in place instead of deleting it first. WebDAV only.
+   */
+  notePutVerified?(): void;
 
   /**
    * Optional: Ensure upload target (e.g., series folder) exists before worker upload starts.

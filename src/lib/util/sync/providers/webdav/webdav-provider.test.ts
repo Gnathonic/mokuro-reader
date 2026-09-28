@@ -86,8 +86,9 @@ describe('WebDAVProvider login()', () => {
     expect(provider.getStatus().needsAttention).toBe(false);
     // The endpoint answered in bunko's shape: bunko compiles the metadata files.
     expect(provider.getStatus().serverCompilesMetadata).toBe(true);
-    // checkWritePermissions would have used global fetch - it must not run
-    expect(fetchMock).not.toHaveBeenCalled();
+    // checkWritePermissions would have used PROPFIND - it must not run. (The one
+    // request allowed is the OPTIONS asking whether PUTs are staged and verified.)
+    expect(fetchMock.mock.calls.every((c) => c[1]?.method === 'OPTIONS')).toBe(true);
     // credentials persisted as plain strings (C6: format unchanged)
     expect(localStorage.getItem('webdav_server_url')).toBe('https://host');
     expect(localStorage.getItem('webdav_username')).toBe('alice');
@@ -571,5 +572,70 @@ describe('WebDAVProvider renameFile idempotency & typed NOT_FOUND', () => {
 
     expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
     expect(result.modifiedTimeProvisional).toBe(true);
+  });
+});
+
+describe('WebDAVProvider staged, verified PUTs (X-Mokuro-Put)', () => {
+  function optionsAnswer(put: string | null) {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'OPTIONS') {
+        return new Response('', {
+          status: 200,
+          headers: {
+            Allow: 'OPTIONS, GET, PUT, DELETE, MKCOL, PROPFIND',
+            ...(put ? { 'X-Mokuro-Put': put } : {})
+          }
+        });
+      }
+      return new Response('', { status: 404 });
+    });
+  }
+
+  it('records the header from the OPTIONS probe of a mokuro-bunko server', async () => {
+    optionsAnswer('verified');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+    await provider.login({ serverUrl: 'https://host/', username: 'alice', password: 'pw' });
+    expect(await provider.getWorkerUploadCredentials()).toMatchObject({
+      webdavPutVerified: true
+    });
+  });
+
+  it('records it from the permissions probe of a generic-path server too', async () => {
+    optionsAnswer('verified');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
+  });
+
+  it('is off for a server that does not send it', async () => {
+    optionsAnswer(null);
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(false);
+  });
+
+  it('records it from a PUT response, and forgets it for another server', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(false);
+
+    mockCore.uploadFile.mockResolvedValue({ fileId: '/x', serverPutVerified: true });
+    await provider.uploadFile('Series/Vol 1.cbz', new Blob(['x']));
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
+
+    await provider.login({ serverUrl: 'https://other', username: 'u', password: 'pw' });
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(false);
+  });
+
+  it('notePutVerified records it for the connected server (worker-driven uploads)', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+    provider.notePutVerified();
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
   });
 });

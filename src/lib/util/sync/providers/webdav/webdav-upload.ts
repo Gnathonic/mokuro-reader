@@ -15,6 +15,16 @@ export interface WebdavPutResult {
    * `X-Mokuro-Recheck-After`); absent for any other server or file.
    */
   serverOcr?: ServerOcrQueued;
+  /**
+   * The server said `X-Mokuro-Put: verified`: it stages every PUT and moves it
+   * into place only once verified, so a failed PUT never harms the live file.
+   */
+  putVerified?: true;
+}
+
+/** Does this `X-Mokuro-Put` value promise staged, verified PUTs? */
+export function isVerifiedPutHeader(value: string | null | undefined): boolean {
+  return typeof value === 'string' && value.trim().toLowerCase() === 'verified';
 }
 
 /** A response header, or null — never throws (CORS-hidden headers read as null). */
@@ -242,7 +252,11 @@ export async function uploadFileWithClient(
           return;
         }
         const serverOcr = readServerOcrHeaders(header, uploadUrl);
-        resolve(serverOcr ? { path, serverOcr } : { path });
+        resolve({
+          path,
+          ...(serverOcr ? { serverOcr } : {}),
+          ...(isVerifiedPutHeader(header('X-Mokuro-Put')) ? { putVerified: true as const } : {})
+        });
       } else {
         let body = '';
         try {

@@ -70,6 +70,8 @@ interface WorkerUploadCompleteData {
   layerSnapshots?: LayerUploadSnapshot[];
   /** The server queued the archive for OCR (WebDAV to mokuro-bunko). */
   serverOcr?: ServerOcrQueued;
+  /** The PUT response said the server stages and verifies PUTs (`X-Mokuro-Put`). */
+  serverPutVerified?: boolean;
 }
 
 /**
@@ -800,6 +802,8 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             void stampLayersSynced(item.volumeUuid, provider!.type, data.layerSnapshots ?? []);
           }
           await rememberServerOcr(item.volumeUuid, provider!.type, data.serverOcr);
+          // A worker cannot write the provider's state: the main thread records it.
+          if (data.serverPutVerified) provider!.notePutVerified?.();
           noteSeriesNeedingIndexWrite(item.seriesTitle);
           // See the matching comment on the main-thread-upload path above.
           scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: isBackupRunActive() });

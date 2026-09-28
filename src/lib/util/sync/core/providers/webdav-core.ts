@@ -226,14 +226,19 @@ export const webdavCore: CloudProviderCore = {
 
     const filePath = `/${folderPath}/${filename}`;
 
-    // Delete-before-upload to avoid duplicate renames on servers that don't overwrite on PUT.
-    try {
-      const exists = await client.exists(filePath);
-      if (exists) {
-        await client.deleteFile(filePath);
+    // Delete-before-upload to avoid duplicate renames on servers that don't
+    // overwrite on PUT. Never on a server that stages and verifies its PUTs
+    // (`X-Mokuro-Put: verified`): there a PUT replaces the file in place only
+    // once it verified, and deleting first would leave NO copy if it failed.
+    if (credentials.webdavPutVerified !== true) {
+      try {
+        const exists = await client.exists(filePath);
+        if (exists) {
+          await client.deleteFile(filePath);
+        }
+      } catch {
+        // ignore existence/delete checks here; upload attempt will report fatal errors
       }
-    } catch {
-      // ignore existence/delete checks here; upload attempt will report fatal errors
     }
 
     // A WebDAV PUT response carries no usable resource mtime, and probing one
@@ -250,8 +255,10 @@ export const webdavCore: CloudProviderCore = {
         })
       : await uploadFileWithClient(client, filePath, blob, onProgress);
     // Only an archive enters a server's OCR queue; a header on anything else is noise.
-    return put.serverOcr && isArchive
-      ? { fileId: put.path, serverOcr: put.serverOcr }
-      : { fileId: put.path };
+    return {
+      fileId: put.path,
+      ...(put.serverOcr && isArchive ? { serverOcr: put.serverOcr } : {}),
+      ...(put.putVerified ? { serverPutVerified: true } : {})
+    };
   }
 };
