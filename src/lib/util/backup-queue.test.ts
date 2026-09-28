@@ -92,14 +92,19 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: { getCache: () => ({ add: vi.fn() }) }
 }));
 
-vi.mock('$lib/util/backup-ui', () => ({
-  getBackupUiBridge: () => ({
-    addProgress: vi.fn(),
-    updateProgress: vi.fn(),
-    removeProgress: vi.fn(),
-    notify: vi.fn()
-  })
+const bridge = vi.hoisted(() => ({
+  addProgress: vi.fn(),
+  updateProgress: vi.fn(),
+  removeProgress: vi.fn(),
+  notify: vi.fn(),
+  notifyError: vi.fn()
 }));
+vi.mock('$lib/util/backup-ui', () => ({ getBackupUiBridge: () => bridge }));
+const { recordUploadFailure, clearUploadFailure } = vi.hoisted(() => ({
+  recordUploadFailure: vi.fn(),
+  clearUploadFailure: vi.fn()
+}));
+vi.mock('$lib/util/upload-failures', () => ({ recordUploadFailure, clearUploadFailure }));
 
 vi.mock('$lib/util/file-processing-pool', () => ({
   getFileProcessingPool: async () => ({ addTask: addTaskMock, maxConcurrentWorkers: 4 }),
@@ -674,5 +679,93 @@ describe('export-for-download sidecars', () => {
     await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
     await capturedTasks[0].onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
     expect(registerServerOcrRecheck).not.toHaveBeenCalled();
+  });
+});
+
+describe('a failed upload is never silent (Addendum B)', () => {
+  function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+    return {
+      volume_uuid: 'failing-uuid',
+      series_uuid: 'series-1',
+      series_title: 'One Piece',
+      volume_title: 'Volume 9',
+      mokuro_version: '0.4.11',
+      page_count: 200,
+      character_count: 5000,
+      page_char_counts: [],
+      ...overrides
+    };
+  }
+  const provider = {
+    type: 'webdav',
+    uploadConcurrencyLimit: 2,
+    supportsWorkerUpload: true
+  } as never;
+
+  beforeEach(() => {
+    capturedTasks.length = 0;
+    vi.clearAllMocks();
+    getActiveProvider.mockReturnValue(provider);
+  });
+
+  async function queued(uuid: string) {
+    queueVolumeForBackup(volume({ volume_uuid: uuid }), provider, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    return capturedTasks[0];
+  }
+
+  it('records a persistent per-volume failure with the server reason, and raises an error notice', async () => {
+    const task = await queued('failing-uuid');
+    await task.onError({
+      type: 'error',
+      error: 'WebDAV upload failed: 422 Unprocessable Entity (archive-damaged: bad CRC)',
+      detail: 'bad CRC'
+    });
+    expect(recordUploadFailure).toHaveBeenCalledWith({
+      volume_uuid: 'failing-uuid',
+      volume_title: 'Volume 9',
+      series_title: 'One Piece',
+      provider: 'webdav',
+      reason: 'bad CRC'
+    });
+    expect(bridge.notifyError).toHaveBeenCalledWith('Upload failed: Volume 9 — bad CRC');
+    expect(bridge.updateProgress).toHaveBeenCalledWith(
+      'backup-failing-uuid',
+      'Upload failed: bad CRC',
+      0
+    );
+  });
+
+  it('falls back to the error message when the worker gave no detail', async () => {
+    const task = await queued('failing-uuid-2');
+    await task.onError({ type: 'error', error: 'Network error during WebDAV upload' });
+    expect(recordUploadFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'Network error during WebDAV upload' })
+    );
+  });
+
+  it('clears the failure once the volume uploads', async () => {
+    const task = await queued('recovered-uuid');
+    await task.onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
+    expect(clearUploadFailure).toHaveBeenCalledWith('recovered-uuid');
+    expect(recordUploadFailure).not.toHaveBeenCalled();
+  });
+
+  it('says it is retrying, and why, while the worker backs off', async () => {
+    const task = await queued('retrying-uuid');
+    task.onProgress({
+      type: 'progress',
+      phase: 'retrying',
+      progress: 0,
+      retry: { attempt: 2, attempts: 4, delayMs: 5_000, reason: 'busy' }
+    });
+    expect(bridge.updateProgress).toHaveBeenCalledWith(
+      'backup-retrying-uuid',
+      'Upload failed (busy) — retrying in 5 s (attempt 2 of 4)...',
+      0
+    );
   });
 });

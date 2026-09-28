@@ -1,4 +1,5 @@
 import type { ProviderType, UploadFileResult } from '$lib/util/sync/provider-interface';
+import type { UploadRetryInfo } from '$lib/util/sync/providers/webdav/webdav-upload';
 
 export type CloudCoreProviderType = ProviderType;
 
@@ -18,6 +19,8 @@ export interface CloudCoreUploadArgs {
   mimeType?: string;
   existingFileId?: string;
   onProgress?: (loaded: number, total: number) => void;
+  /** A transient failure is being retried (providers that retry archive uploads). */
+  onRetry?: (info: UploadRetryInfo) => void;
 }
 
 export interface CloudProviderCore {

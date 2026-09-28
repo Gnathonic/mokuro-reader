@@ -9,6 +9,7 @@
   import { backupQueue, isVolumeInBackupQueue } from '$lib/util/backup-queue';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { Process } from '$lib/util/progress-tracker';
+  import { uploadFailures } from '$lib/util/upload-failures';
 
   interface Props {
     volume: VolumeMetadata;
@@ -92,6 +93,9 @@
   let backupProcess = $derived(processes.find((p) => p.id === `backup-${volume.volume_uuid}`));
   let backupProgress = $derived(backupProcess?.progress || 0);
   let backupStatus = $derived(backupProcess?.status || '');
+
+  // The last upload of this volume failed for good (persisted until one succeeds).
+  let uploadFailure = $derived($uploadFailures[volume.volume_uuid]);
 
   // Count total files in the Map for isFetching check
   let totalFiles = $derived.by(() => {
@@ -178,6 +182,21 @@
     <Spinner size="4" class="me-2" />
     {Math.round(backupProgress)}% - {backupStatus}
   </Button>
+{:else if uploadFailure}
+  <div class="flex items-center gap-2 {className ?? ''}">
+    <!-- Keyed: the reason is text an extension may rewrite and hold stale. -->
+    <span
+      data-testid="upload-failed"
+      class="max-w-[16rem] truncate text-xs text-red-500"
+      title={`Upload to ${uploadFailure.provider} failed: ${uploadFailure.reason}`}
+    >
+      {#key uploadFailure.reason}<span>Upload failed: {uploadFailure.reason}</span>{/key}
+    </span>
+    <Button color="red" outline size="xs" onclick={handleBackup} title="Retry the upload">
+      <CloudArrowUpOutline class="me-2 h-4 w-4" />
+      Retry
+    </Button>
+  </div>
 {:else}
   <Button
     color="light"

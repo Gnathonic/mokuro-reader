@@ -640,3 +640,34 @@ describe('VolumeItem server OCR chip', () => {
     expect(chip.closest('a')).not.toBeNull();
   });
 });
+
+describe('VolumeItem failed upload (grid)', () => {
+  afterEach(async () => {
+    cleanup();
+    const { resetUploadFailuresForTest } = await import('$lib/util/upload-failures');
+    localStorage.clear();
+    resetUploadFailuresForTest();
+    cloudState.authenticated = false;
+  });
+
+  it('marks the cover, without resizing the card, with the reason as its tooltip', async () => {
+    const { recordUploadFailure } = await import('$lib/util/upload-failures');
+    recordUploadFailure({
+      volume_uuid: 'uuid-1',
+      volume_title: 'Vol 1',
+      series_title: 'One Piece',
+      provider: 'webdav',
+      reason: 'The server stored 4 of 5 bytes'
+    });
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    const mark = container.querySelector('[data-testid="upload-failed"]') as HTMLElement;
+    expect(mark.textContent?.trim()).toBe('Upload failed');
+    expect(mark.getAttribute('title')).toBe('Upload failed: The server stored 4 of 5 bytes');
+    expect(mark.className).toContain('absolute');
+  });
+
+  it('shows no mark when nothing failed', () => {
+    const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'grid' } });
+    expect(container.querySelector('[data-testid="upload-failed"]')).toBeNull();
+  });
+});

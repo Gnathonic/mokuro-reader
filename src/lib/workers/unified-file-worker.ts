@@ -178,8 +178,10 @@ interface DownloadProgressMessage {
 
 interface UploadProgressMessage {
   type: 'progress';
-  phase: 'compressing' | 'sidecars' | 'uploading';
+  phase: 'compressing' | 'sidecars' | 'uploading' | 'retrying';
   progress: number; // 0-100
+  /** `retrying`: the archive PUT failed transiently and is about to be tried again. */
+  retry?: { attempt: number; attempts: number; delayMs: number; reason: string };
 }
 
 // Complete messages
@@ -250,6 +252,8 @@ interface ErrorMessage {
   type: 'error';
   fileId?: string;
   error: string;
+  /** The server's one-sentence verdict, when the failure carried one (a WebDAV upload). */
+  detail?: string;
 }
 
 interface DecompressedEntry {
@@ -988,6 +992,14 @@ ctx.addEventListener('message', async (event) => {
               progress: total > 0 ? (loaded / total) * 100 : 0
             };
             ctx.postMessage(progressMessage);
+          },
+          onRetry: (retry) => {
+            ctx.postMessage({
+              type: 'progress',
+              phase: 'retrying',
+              progress: 0,
+              retry
+            } satisfies UploadProgressMessage);
           }
         });
 
@@ -1085,7 +1097,12 @@ ctx.addEventListener('message', async (event) => {
         (message.mode === 'download-and-decompress' || message.mode === 'decompress-only')
           ? message.fileId
           : undefined,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
+      ...(error &&
+      typeof error === 'object' &&
+      typeof (error as { detail?: unknown }).detail === 'string'
+        ? { detail: (error as { detail: string }).detail }
+        : {})
     };
     ctx.postMessage(errorMessage);
   }

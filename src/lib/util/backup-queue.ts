@@ -20,6 +20,7 @@ import {
 } from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
+import { clearUploadFailure, recordUploadFailure } from './upload-failures';
 import { getUploadWorkerCredentials, prepareSeriesUploadTarget } from './upload-worker-credentials';
 
 export interface SidecarOptions {
@@ -317,13 +318,43 @@ export function getSeriesBackupQueueStatus(seriesTitle: string): SeriesQueueStat
 /**
  * Handle backup errors consistently
  */
-function handleBackupError(item: BackupQueueItem, processId: string, errorMessage: string): void {
-  getBackupUiBridge().updateProgress(processId, `Error: ${errorMessage}`, 0);
-  getBackupUiBridge().notify(`Failed to backup ${item.volumeTitle}: ${errorMessage}`);
+/** How long a failed item's tray line stays up: long enough to be read, unlike a success. */
+const FAILED_TRAY_MS = 15_000;
+
+/**
+ * A backup that failed for good (the worker has already spent its retries on
+ * anything transient). Never silent: an error notice that successes cannot
+ * overwrite, a tray line that stays up, and — for a cloud upload — a
+ * persistent per-volume "Upload failed" state with a Retry, which only the
+ * volume's next successful upload clears. Nothing here marks it backed up.
+ */
+function handleBackupError(
+  item: BackupQueueItem,
+  processId: string,
+  errorMessage: string,
+  detail?: string
+): void {
+  const reason = detail?.trim() || errorMessage;
+  const isCloud = !isPseudoProvider(item.provider);
+  const ui = getBackupUiBridge();
+  if (isCloud) {
+    recordUploadFailure({
+      volume_uuid: item.volumeUuid,
+      volume_title: item.volumeTitle,
+      series_title: item.seriesTitle,
+      provider: item.provider,
+      reason
+    });
+    ui.updateProgress(processId, `Upload failed: ${reason}`, 0);
+    (ui.notifyError ?? ui.notify)(`Upload failed: ${item.volumeTitle} — ${reason}`);
+  } else {
+    ui.updateProgress(processId, `Error: ${errorMessage}`, 0);
+    ui.notify(`Failed to backup ${item.volumeTitle}: ${errorMessage}`);
+  }
   queueStore.update((q) =>
     q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
   );
-  setTimeout(() => getBackupUiBridge().removeProgress(processId), 3000);
+  setTimeout(() => ui.removeProgress(processId), isCloud ? FAILED_TRAY_MS : 3000);
 }
 
 /**
@@ -546,6 +577,20 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         };
       },
       onProgress: (data) => {
+        if (data.phase === 'retrying' && data.retry) {
+          const { attempt, attempts, delayMs, reason } = data.retry as {
+            attempt: number;
+            attempts: number;
+            delayMs: number;
+            reason: string;
+          };
+          getBackupUiBridge().updateProgress(
+            processId,
+            `Upload failed (${reason}) — retrying in ${Math.round(delayMs / 1000)} s (attempt ${attempt} of ${attempts})...`,
+            0
+          );
+          return;
+        }
         if (data.phase === 'compressing') {
           getBackupUiBridge().updateProgress(
             processId,
@@ -654,6 +699,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             // the catch-all for whatever this loses a debounce race with.
             scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: isBackupRunActive() });
             getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
+            clearUploadFailure(item.volumeUuid);
             getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
             queueStore.update((q) =>
               q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
@@ -759,6 +805,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           scheduleSeriesFileWrite(item.seriesTitle, { duringBackupRun: isBackupRunActive() });
 
           getBackupUiBridge().updateProgress(processId, 'Backup complete', 100);
+          clearUploadFailure(item.volumeUuid);
           getBackupUiBridge().notify(`Backed up ${item.volumeTitle} successfully`);
           queueStore.update((q) =>
             q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
@@ -787,7 +834,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       },
       onError: async (data) => {
         console.error(`Error backing up ${item.volumeTitle}:`, data.error);
-        handleBackupError(item, processId, data.error);
+        handleBackupError(item, processId, data.error, data.detail);
         await checkAndTerminatePool();
       }
     };

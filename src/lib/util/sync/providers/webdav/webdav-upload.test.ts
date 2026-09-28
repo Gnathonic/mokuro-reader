@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WebDAVClient } from 'webdav';
-import { uploadFileWithClient } from './webdav-upload';
+import {
+  UPLOAD_RETRY_DELAYS_MS,
+  WebdavUploadError,
+  uploadFileWithClient,
+  uploadWithRetry
+} from './webdav-upload';
 
 /** What the fake server answers each PUT with, in order. */
 type Answer =
@@ -101,5 +106,171 @@ describe('a WebDAV PUT that the server queued for OCR (Addendum A)', () => {
       manifestUrl: 'https://bunko.example/m',
       recheckAfter: null
     });
+  });
+});
+
+describe('the upload verdict (Addendum B)', () => {
+  const blob = new Blob(['12345']); // 5 bytes
+  const put = (path = '/mokuro-reader/S/V.cbz') => uploadFileWithClient(client, path, blob);
+
+  it('settles on a 2xx that says verified with the size that was sent', async () => {
+    answers = [{ status: 201, headers: { 'X-Mokuro-Upload': 'verified', 'X-Mokuro-Size': '5' } }];
+    await expect(put()).resolves.toMatchObject({ path: '/mokuro-reader/S/V.cbz' });
+  });
+
+  it('keeps the plain 2xx rule for a server that sends neither header', async () => {
+    answers = [{ status: 204 }];
+    await expect(put()).resolves.toMatchObject({ path: '/mokuro-reader/S/V.cbz' });
+  });
+
+  it('refuses an archive the server stored but did not verify (retryable)', async () => {
+    answers = [{ status: 201, headers: { 'X-Mokuro-Upload': 'stored', 'X-Mokuro-Size': '5' } }];
+    const error = await put().catch((e) => e);
+    expect(error).toBeInstanceOf(WebdavUploadError);
+    expect(error.retryable).toBe(true);
+    expect(error.reason).toBe('unverified');
+  });
+
+  it('accepts "stored" for a file that is not an archive', async () => {
+    answers = [{ status: 201, headers: { 'X-Mokuro-Upload': 'stored', 'X-Mokuro-Size': '5' } }];
+    await expect(put('/mokuro-reader/S/V.mokuro')).resolves.toMatchObject({
+      path: '/mokuro-reader/S/V.mokuro'
+    });
+  });
+
+  it('refuses a 2xx whose stored size differs from what was sent (retryable)', async () => {
+    answers = [{ status: 201, headers: { 'X-Mokuro-Upload': 'verified', 'X-Mokuro-Size': '4' } }];
+    const error = await put().catch((e) => e);
+    expect(error).toBeInstanceOf(WebdavUploadError);
+    expect(error.reason).toBe('size-mismatch');
+    expect(error.retryable).toBe(true);
+    expect(error.message).toContain('4');
+  });
+
+  it('reads the server verdict body of a failure: reason, detail, retry', async () => {
+    answers = [
+      {
+        status: 422,
+        statusText: 'Unprocessable Entity',
+        body: JSON.stringify({
+          ok: false,
+          reason: 'archive-damaged',
+          detail: 'Member 003.jpg failed its CRC check',
+          retry: false
+        })
+      }
+    ];
+    const error = await put().catch((e) => e);
+    expect(error).toMatchObject({
+      status: 422,
+      reason: 'archive-damaged',
+      detail: 'Member 003.jpg failed its CRC check',
+      retryable: false
+    });
+    expect(error.message).toContain('422');
+    expect(error.message).toContain('Member 003.jpg failed its CRC check');
+  });
+
+  it('retries a truncated body the server flags as retryable', async () => {
+    answers = [
+      {
+        status: 422,
+        body: JSON.stringify({ ok: false, reason: 'truncated', detail: 'short', retry: true })
+      }
+    ];
+    expect((await put().catch((e) => e)).retryable).toBe(true);
+  });
+
+  for (const [status, retryable] of [
+    [500, true],
+    [502, true],
+    [503, true],
+    [507, false],
+    [401, false],
+    [403, false],
+    [404, false],
+    [429, true]
+  ] as const) {
+    it(`classifies a bare ${status} as ${retryable ? '' : 'not '}retryable`, async () => {
+      answers = [{ status }];
+      const error = await put().catch((e) => e);
+      expect(error).toBeInstanceOf(WebdavUploadError);
+      expect(error.retryable).toBe(retryable);
+      // The status stays in the message: the provider's write-error classifier reads it.
+      expect(error.message).toContain(String(status));
+    });
+  }
+
+  it('classifies network errors and timeouts as retryable', async () => {
+    answers = ['network-error'];
+    expect((await put().catch((e) => e)).retryable).toBe(true);
+    answers = ['timeout'];
+    expect((await put().catch((e) => e)).retryable).toBe(true);
+  });
+});
+
+describe('uploadWithRetry', () => {
+  const noSleep = vi.fn(async (_ms: number) => {});
+
+  beforeEach(() => noSleep.mockClear());
+
+  it('waits 5 s, 30 s, 2 min between attempts, then gives up with the last error', async () => {
+    const attempt = vi.fn(async () => {
+      throw new WebdavUploadError('WebDAV upload failed: 503', {
+        status: 503,
+        reason: 'server-error',
+        detail: 'busy',
+        retryable: true
+      });
+    });
+    const onRetry = vi.fn();
+    const error = await uploadWithRetry(attempt, { sleep: noSleep, onRetry }).catch((e) => e);
+    expect(UPLOAD_RETRY_DELAYS_MS).toEqual([5_000, 30_000, 120_000]);
+    expect(attempt).toHaveBeenCalledTimes(4);
+    expect(noSleep.mock.calls.map((c) => c[0])).toEqual([5_000, 30_000, 120_000]);
+    expect(onRetry.mock.calls.map((c) => c[0])).toEqual([
+      { attempt: 2, attempts: 4, delayMs: 5_000, reason: 'busy' },
+      { attempt: 3, attempts: 4, delayMs: 30_000, reason: 'busy' },
+      { attempt: 4, attempts: 4, delayMs: 120_000, reason: 'busy' }
+    ]);
+    expect(error.detail).toBe('busy');
+  });
+
+  it('stops at once on an error that is not retryable', async () => {
+    const attempt = vi.fn(async () => {
+      throw new WebdavUploadError('WebDAV upload failed: 507', {
+        status: 507,
+        reason: 'disk-full',
+        detail: 'No space left on the server',
+        retryable: false
+      });
+    });
+    await expect(uploadWithRetry(attempt, { sleep: noSleep })).rejects.toThrow('507');
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(noSleep).not.toHaveBeenCalled();
+  });
+
+  it('never retries an error it cannot classify', async () => {
+    const attempt = vi.fn(async () => {
+      throw new Error('something else');
+    });
+    await expect(uploadWithRetry(attempt, { sleep: noSleep })).rejects.toThrow('something else');
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the first success', async () => {
+    let n = 0;
+    const attempt = vi.fn(async () => {
+      if (n++ === 0) {
+        throw new WebdavUploadError('WebDAV upload failed: network', {
+          reason: 'network',
+          detail: 'Network error during WebDAV upload',
+          retryable: true
+        });
+      }
+      return 'ok';
+    });
+    await expect(uploadWithRetry(attempt, { sleep: noSleep })).resolves.toBe('ok');
+    expect(attempt).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,7 +1,8 @@
 import { createClient } from 'webdav';
 import {
   ensureFoldersExist,
-  uploadFileWithClient
+  uploadFileWithClient,
+  uploadWithRetry
 } from '$lib/util/sync/providers/webdav/webdav-upload';
 import { basicAuthHeader } from '$lib/util/base64';
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
@@ -211,7 +212,8 @@ export const webdavCore: CloudProviderCore = {
     filename,
     blob,
     credentials,
-    onProgress
+    onProgress,
+    onRetry
   }): Promise<UploadFileResult> {
     const serverUrl = requireCredentialString(credentials, 'webdavUrl', 'WebDAV URL');
     const username = optionalCredentialString(credentials, 'webdavUsername');
@@ -238,9 +240,17 @@ export const webdavCore: CloudProviderCore = {
     // (a PROPFIND per upload) is exactly the extra round trip a bulk backup
     // must not pay — so no `modifiedTime` here: the upload-time cache entry
     // stays provisional until the next real listing replaces it.
-    const put = await uploadFileWithClient(client, filePath, blob, onProgress);
+    // An archive PUT is retried with backoff on a transient failure (network,
+    // timeout, 5xx, a server `retry: true`, a size mismatch); a small sidecar
+    // or progress file gets one attempt — its callers have their own recovery.
+    const isArchive = /\.cbz$/i.test(filename);
+    const put = isArchive
+      ? await uploadWithRetry(() => uploadFileWithClient(client, filePath, blob, onProgress), {
+          onRetry
+        })
+      : await uploadFileWithClient(client, filePath, blob, onProgress);
     // Only an archive enters a server's OCR queue; a header on anything else is noise.
-    return put.serverOcr && /\.cbz$/i.test(filename)
+    return put.serverOcr && isArchive
       ? { fileId: put.path, serverOcr: put.serverOcr }
       : { fileId: put.path };
   }

@@ -59,6 +59,7 @@
   import { formatArchiveSize } from '$lib/util/format-size';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { describePendingJobs, serverOcrPending } from '$lib/catalog/server-ocr-pending';
+  import { uploadFailures } from '$lib/util/upload-failures';
   import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
   import { getCharCount } from '$lib/util/count-chars';
   import PlaceholderThumbnail from './PlaceholderThumbnail.svelte';
@@ -127,6 +128,8 @@
   // OCR the server is still making for this volume (a WebDAV upload it queued,
   // or a deep link whose manifest listed pending jobs): a quiet ETA chip.
   let serverOcrChip = $derived(describePendingJobs($serverOcrPending[volume_uuid]));
+  // The last cloud upload of this volume failed for good (persisted until one succeeds).
+  let uploadFailure = $derived($uploadFailures[volume_uuid]);
   // A cloud-only volume drawn as a full row (see `isIndexedPlaceholder`): it has
   // no `volumes` row at all, so anything that deletes one is off. `dbVolume` is
   // the live answer to "is there a row now" — the moment a download or a
@@ -962,6 +965,15 @@
               <TrashBinSolid class="me-2 h-5 w-5 flex-shrink-0 text-red-500" />
               <span class="flex-1 text-left text-red-500">Delete from cloud</span>
             </DropdownItem>
+          {:else if uploadFailure}
+            <DropdownItem
+              onclick={onBackupClicked}
+              class="flex w-full items-center"
+              title={`Upload failed: ${uploadFailure.reason}`}
+            >
+              <CloudArrowUpOutline class="me-2 h-5 w-5 flex-shrink-0 text-red-500" />
+              <span class="flex-1 text-left text-red-500">Retry upload</span>
+            </DropdownItem>
           {:else}
             <DropdownItem onclick={onBackupClicked} class="flex w-full items-center">
               <CloudArrowUpOutline
@@ -1034,6 +1046,17 @@
               class="absolute top-1 left-1 rounded bg-gray-900/70 px-1.5 py-0.5 text-xs whitespace-nowrap text-gray-100"
             >
               {#key serverOcrChip.label}<span>{serverOcrChip.label}</span>{/key}
+            </span>
+          {/if}
+          {#if uploadFailure && !isNotInstalled}
+            <!-- Persistent until the volume uploads; the menu holds the Retry.
+                 On the cover so it never resizes the card. -->
+            <span
+              data-testid="upload-failed"
+              title={`Upload failed: ${uploadFailure.reason}`}
+              class="absolute bottom-1 left-1 rounded bg-red-600/85 px-1.5 py-0.5 text-xs whitespace-nowrap text-white"
+            >
+              Upload failed
             </span>
           {/if}
         </div>

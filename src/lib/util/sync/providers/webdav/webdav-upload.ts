@@ -20,6 +20,154 @@ export interface WebdavPutResult {
 /** A response header, or null — never throws (CORS-hidden headers read as null). */
 type HeaderReader = (name: string) => string | null;
 
+/**
+ * A PUT that did not settle, with the server's verdict when it gave one
+ * (mokuro-bunko answers `{ok: false, reason, detail, retry}`). The message
+ * keeps the HTTP status in it: `classifyWriteError` reads it from there.
+ */
+export class WebdavUploadError extends Error {
+  readonly status?: number;
+  /** Server code (`truncated`, `archive-damaged`, `disk-full`, …) or ours (`network`, `timeout`, `size-mismatch`, `unverified`, `http-<status>`). */
+  readonly reason: string;
+  /** One human sentence: the server's, or ours. */
+  readonly detail: string;
+  readonly retryable: boolean;
+
+  constructor(
+    message: string,
+    info: { status?: number; reason: string; detail: string; retryable: boolean }
+  ) {
+    super(message);
+    this.name = 'WebdavUploadError';
+    this.status = info.status;
+    this.reason = info.reason;
+    this.detail = info.detail;
+    this.retryable = info.retryable;
+  }
+}
+
+/** A failed response: the server's JSON verdict when there is one, else the status decides. */
+function failureFromResponse(status: number, statusText: string, body: string): WebdavUploadError {
+  let verdict: { reason?: unknown; detail?: unknown; retry?: unknown } = {};
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (parsed && typeof parsed === 'object') verdict = parsed as typeof verdict;
+  } catch {
+    // Not a verdict body: any other WebDAV server.
+  }
+  const reason = typeof verdict.reason === 'string' ? verdict.reason : `http-${status}`;
+  const detail =
+    typeof verdict.detail === 'string' && verdict.detail.trim()
+      ? verdict.detail
+      : `${status} ${statusText}`.trim();
+  // The server's own word first; otherwise transient statuses only. 507 (disk
+  // full) is a 5xx that retrying cannot fix.
+  const retryable =
+    typeof verdict.retry === 'boolean'
+      ? verdict.retry
+      : status === 408 || status === 429 || (status >= 500 && status !== 507);
+  const suffix = typeof verdict.reason === 'string' ? ` (${reason}: ${detail})` : '';
+  return new WebdavUploadError(`WebDAV upload failed: ${status} ${statusText}`.trim() + suffix, {
+    status,
+    reason,
+    detail,
+    retryable
+  });
+}
+
+/**
+ * A 2xx is only a success when the server's verdict headers, WHEN PRESENT,
+ * agree: `X-Mokuro-Upload` is `verified` (`stored` also does for a file that
+ * is not an archive — the server does not zip-check those) and `X-Mokuro-Size`
+ * equals the bytes sent. A server that sends neither keeps the plain 2xx rule.
+ */
+function verdictFailure(
+  header: HeaderReader,
+  path: string,
+  sentBytes: number,
+  status: number
+): WebdavUploadError | null {
+  const isArchive = /\.cbz$/i.test(path);
+  const upload = header('X-Mokuro-Upload');
+  if (upload !== null) {
+    const verdict = upload.trim().toLowerCase();
+    const ok = verdict === 'verified' || (!isArchive && verdict === 'stored');
+    if (!ok) {
+      return new WebdavUploadError(
+        `WebDAV upload failed: ${status} but the server reported '${upload}', not verified`,
+        {
+          status,
+          reason: 'unverified',
+          detail: `The server did not verify the upload ('${upload}')`,
+          retryable: true
+        }
+      );
+    }
+  }
+  const size = header('X-Mokuro-Size');
+  if (size !== null) {
+    const stored = Number(size.trim());
+    if (!Number.isFinite(stored) || stored !== sentBytes) {
+      return new WebdavUploadError(
+        `WebDAV upload failed: ${status} but the server stored ${size.trim()} of ${sentBytes} bytes`,
+        {
+          status,
+          reason: 'size-mismatch',
+          detail: `The server stored ${size.trim()} of ${sentBytes} bytes`,
+          retryable: true
+        }
+      );
+    }
+  }
+  return null;
+}
+
+/** Waits before the 2nd, 3rd and 4th attempt of an archive PUT. */
+export const UPLOAD_RETRY_DELAYS_MS: readonly number[] = [5_000, 30_000, 120_000];
+
+export interface UploadRetryInfo {
+  /** The attempt about to be made (2 = the first retry). */
+  attempt: number;
+  attempts: number;
+  delayMs: number;
+  /** Why the previous attempt failed (its `detail`). */
+  reason: string;
+}
+
+/**
+ * Run `attempt` until it settles, retrying only a `WebdavUploadError` that is
+ * `retryable` (network, timeout, 5xx but 507, a server `retry: true`, a size
+ * mismatch), with backoff. Anything else — a refusal the server means, or an
+ * error nobody classified — rejects at once. The last error is the one thrown.
+ */
+export async function uploadWithRetry<T>(
+  attempt: () => Promise<T>,
+  options: {
+    delaysMs?: readonly number[];
+    sleep?: (ms: number) => Promise<void>;
+    onRetry?: (info: UploadRetryInfo) => void;
+  } = {}
+): Promise<T> {
+  const delays = options.delaysMs ?? UPLOAD_RETRY_DELAYS_MS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const attempts = delays.length + 1;
+  for (let i = 0; ; i++) {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (!(error instanceof WebdavUploadError) || !error.retryable || i >= delays.length) {
+        throw error;
+      }
+      const delayMs = delays[i];
+      console.warn(
+        `[WebDAV] Upload attempt ${i + 1}/${attempts} failed (${error.detail}); retrying in ${Math.round(delayMs / 1000)} s`
+      );
+      options.onRetry?.({ attempt: i + 2, attempts, delayMs, reason: error.detail });
+      await sleep(delayMs);
+    }
+  }
+}
+
 /** The OCR queue headers of a PUT response, resolved against the upload URL. */
 export function readServerOcrHeaders(
   header: HeaderReader,
@@ -80,27 +228,50 @@ export async function uploadFileWithClient(
     }
 
     xhr.onload = () => {
+      const header: HeaderReader = (name) => {
+        try {
+          return xhr.getResponseHeader(name);
+        } catch {
+          return null;
+        }
+      };
       if (xhr.status >= 200 && xhr.status < 300) {
-        const header: HeaderReader = (name) => {
-          try {
-            return xhr.getResponseHeader(name);
-          } catch {
-            return null;
-          }
-        };
+        const refused = verdictFailure(header, path, blob.size, xhr.status);
+        if (refused) {
+          reject(refused);
+          return;
+        }
         const serverOcr = readServerOcrHeaders(header, uploadUrl);
         resolve(serverOcr ? { path, serverOcr } : { path });
       } else {
-        reject(new Error(`WebDAV upload failed: ${xhr.status} ${xhr.statusText}`));
+        let body = '';
+        try {
+          body = typeof xhr.responseText === 'string' ? xhr.responseText : '';
+        } catch {
+          body = '';
+        }
+        reject(failureFromResponse(xhr.status, xhr.statusText, body));
       }
     };
 
     xhr.onerror = () => {
-      reject(new Error(`Network error during WebDAV upload`));
+      reject(
+        new WebdavUploadError('Network error during WebDAV upload', {
+          reason: 'network',
+          detail: 'Network error during the upload',
+          retryable: true
+        })
+      );
     };
 
     xhr.ontimeout = () => {
-      reject(new Error(`WebDAV upload timed out`));
+      reject(
+        new WebdavUploadError('WebDAV upload timed out', {
+          reason: 'timeout',
+          detail: 'The upload timed out',
+          retryable: true
+        })
+      );
     };
 
     // Send Blob directly - browser streams without loading into memory
