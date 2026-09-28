@@ -30,12 +30,16 @@ import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { noteOcrEdited } from '$lib/util/sync/sidecar-backfill';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
 import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
+import { layerNameForId, titleCasedLayerId } from './layer-names';
 import { ORIGINAL_LAYER_ID } from './edit-persist';
 import {
   TRANSLATION_PROMOTE_BLOCKED,
   isTranslationLayer,
   isTranslationLayerId
 } from './layer-kind';
+
+// Pure names live apart, so a view can name a layer without this module's graph.
+export { layerNameForId, titleCasedLayerId };
 
 export const LAYER_KIND_LABEL: Record<VolumeOcrLayerKind, string> = {
   original: 'Original',
@@ -82,14 +86,6 @@ export function servedEngineOf(json: unknown): string | undefined {
 }
 
 /**
- * Engines whose name is not their slug title-cased: `ppocr-manga` would read
- * "Ppocr Manga", and the engine is PP-OCR (PaddlePaddle OCR).
- */
-const ENGINE_DISPLAY_NAMES: Readonly<Record<string, string>> = {
-  'ppocr-manga': 'PP-OCR Manga'
-};
-
-/**
  * The kind a layer file with no local row is filed under: from the engine
  * stamp it carried (`servedEngineOf`) when it had one, else from its id alone.
  */
@@ -98,24 +94,6 @@ export function layerKindForId(layerId: string, servedEngine?: string): VolumeOc
   if (isTranslationLayerId(layerId)) return 'translation';
   if (servedEngine || KNOWN_ENGINE_IDS.has(layerId)) return 'ocr';
   return 'edit';
-}
-
-/** `paddle-manga` → "Paddle Manga"; `tr-en` → "Tr En"; `gcv` → "Gcv"; `ppocr-manga` → "PP-OCR Manga". */
-export function layerNameForId(layerId: string): string {
-  return ENGINE_DISPLAY_NAMES[layerId] ?? titleCasedLayerId(layerId);
-}
-
-/**
- * The slug title-cased and nothing more — what `layerNameForId` called every
- * layer before an engine had a name of its own, and so how a row that was never
- * renamed by hand is recognised (`layer-sync.ts` re-files those).
- */
-export function titleCasedLayerId(layerId: string): string {
-  return layerId
-    .split('-')
-    .filter(Boolean)
-    .map((w) => w[0].toUpperCase() + w.slice(1))
-    .join(' ');
 }
 
 /** A display name → a unique `layer_id` slug (never the reserved `original`). */
