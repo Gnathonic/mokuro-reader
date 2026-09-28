@@ -3,6 +3,9 @@ import { IMAGE_EXTENSIONS } from './types';
 import { normalizeFilename } from '$lib/util';
 import { getFileProcessingPool } from '$lib/util/file-processing-pool';
 import { generateUUID } from '$lib/util/uuid';
+import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
+import { fetchVolumeManifest, type VolumeManifest } from './deep-link-manifest';
+import { parseImportedSeriesFile, type PendingSeriesFile } from './series-file-import';
 
 export type HtmlImportType = 'directory' | 'cbz';
 
@@ -13,6 +16,8 @@ export interface HtmlDownloadRequest {
   type: HtmlImportType;
   cover?: string;
   cbzUrl?: string;
+  /** The volume manifest the link carries (`manifest=`), absolute. */
+  manifestUrl?: string;
 }
 
 export interface HtmlDownloadResult {
@@ -21,6 +26,12 @@ export interface HtmlDownloadResult {
   mokuroFile: File | null;
   importFiles: File[];
   coverFile: File | null;
+  /** Engine layers the manifest listed, fetched but not yet decoded (`importFetchedLayers`). */
+  layers: FetchedLayerFile[];
+  /** The series' `series.json`, validated, to apply once the volume is saved. */
+  seriesFile: PendingSeriesFile | null;
+  /** The manifest that drove this download; null on the legacy guessing path. */
+  manifest: VolumeManifest | null;
 }
 
 export interface HtmlDownloadProgress {
@@ -179,12 +190,24 @@ export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadR
       const filename = decodeURIComponent(segments[segments.length - 1] || 'volume.cbz');
       const volume = filename.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
       const manga = decodeURIComponent(segments[segments.length - 2] || volume);
+      const manifest = params.get('manifest');
+      let manifestUrl: string | undefined;
+      if (manifest) {
+        try {
+          manifestUrl = new URL(manifest, window.location.href).toString();
+        } catch {
+          manifestUrl = undefined; // unusable: the legacy path, as with no param
+        }
+      }
+      const cover = params.get('cover');
       return {
         source: cbzUrl.origin,
         manga,
         volume,
         type: 'cbz',
-        cbzUrl: cbzUrl.toString()
+        cbzUrl: cbzUrl.toString(),
+        ...(cover ? { cover } : {}),
+        ...(manifestUrl ? { manifestUrl } : {})
       };
     } catch {
       return null;
@@ -206,6 +229,14 @@ export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadR
     type,
     cover: params.get('cover') || undefined
   };
+}
+
+/** The `cover` param as a URL: absolute as given, else a path on the source's origin. */
+function coverParamUrl(request: HtmlDownloadRequest): string | null {
+  if (!request.cover) return null;
+  return /^https?:\/\//i.test(request.cover)
+    ? request.cover
+    : `${request.source}/${request.cover.replace(/^\/+/, '')}`;
 }
 
 function extensionFromPath(pathOrUrl: string): string {
@@ -300,13 +331,8 @@ async function tryFetchCoverSidecar(
 ): Promise<File | null> {
   const candidateUrls: string[] = [];
 
-  if (request.cover) {
-    candidateUrls.push(
-      /^https?:\/\//i.test(request.cover)
-        ? request.cover
-        : `${request.source}/${request.cover.replace(/^\/+/, '')}`
-    );
-  }
+  const coverParam = coverParamUrl(request);
+  if (coverParam) candidateUrls.push(coverParam);
 
   candidateUrls.push(`${volumeBaseUrl}.webp`);
 
@@ -340,6 +366,170 @@ async function tryFetchCoverSidecar(
   return null;
 }
 
+/** GET one listed file; null — with a warning naming it — on any failure. Never throws. */
+async function fetchListedFile(url: string, what: string): Promise<Response | null> {
+  try {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (response.ok) return response;
+    console.warn(`[HTML Download] Could not fetch ${what} ${url}: HTTP ${response.status}`);
+  } catch (error) {
+    console.warn(`[HTML Download] Could not fetch ${what} ${url}:`, error);
+  }
+  return null;
+}
+
+async function gunzip(blob: Blob): Promise<Blob> {
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('this browser cannot decompress gzip');
+  }
+  return new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).blob();
+}
+
+async function fetchManifestOcr(
+  ocr: NonNullable<VolumeManifest['ocr']>,
+  normalizedVolume: string
+): Promise<File | null> {
+  const response = await fetchListedFile(ocr.url, 'OCR file');
+  if (!response) return null;
+  try {
+    let blob = await response.blob();
+    if (ocr.gz) blob = await gunzip(blob);
+    const file = new File([blob], `${normalizedVolume}.mokuro`, { type: 'application/json' });
+    setRelativePath(file, `/${normalizedVolume}.mokuro`);
+    return file;
+  } catch (error) {
+    console.warn(`[HTML Download] Could not read OCR file ${ocr.url}:`, error);
+    return null;
+  }
+}
+
+async function fetchManifestLayers(layers: VolumeManifest['layers']): Promise<FetchedLayerFile[]> {
+  const fetched = await Promise.all(
+    layers.map(async (layer): Promise<FetchedLayerFile | null> => {
+      const response = await fetchListedFile(layer.url, `OCR layer '${layer.id}'`);
+      if (!response) return null;
+      try {
+        return {
+          layerId: layer.id,
+          gz: layer.gz,
+          blob: await response.blob(),
+          label: layer.url,
+          ...(layer.size !== undefined ? { size: layer.size } : {}),
+          ...(layer.modified !== undefined ? { modifiedTime: layer.modified } : {})
+        };
+      } catch (error) {
+        console.warn(`[HTML Download] Could not read OCR layer ${layer.url}:`, error);
+        return null;
+      }
+    })
+  );
+  return fetched.filter((layer): layer is FetchedLayerFile => layer !== null);
+}
+
+async function fetchCoverFile(url: string, normalizedVolume: string): Promise<File | null> {
+  const response = await fetchListedFile(url, 'cover');
+  if (!response) return null;
+  try {
+    const blob = await response.blob();
+    const extension =
+      extensionFromPath(url) ||
+      extensionFromMimeType(response.headers.get('content-type') || blob.type) ||
+      'webp';
+    const filename = `${normalizedVolume}.${extension}`;
+    const file = new File([blob], filename, { type: blob.type || 'image/webp' });
+    setRelativePath(file, `/${filename}`);
+    return file;
+  } catch (error) {
+    console.warn(`[HTML Download] Could not read cover ${url}:`, error);
+    return null;
+  }
+}
+
+async function fetchSeriesFile(
+  seriesFile: NonNullable<VolumeManifest['series_file']>
+): Promise<PendingSeriesFile | null> {
+  const response = await fetchListedFile(seriesFile.url, 'series.json');
+  if (!response) return null;
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    console.warn(`[HTML Download] Could not read series.json ${seriesFile.url}:`, error);
+    return null;
+  }
+  // The import module's own validation (it warns, naming the URL, on junk).
+  const modified = seriesFile.modified ?? response.headers.get('last-modified') ?? '';
+  return (
+    parseImportedSeriesFile(
+      seriesFile.url,
+      text,
+      seriesFile.size ?? new TextEncoder().encode(text).byteLength,
+      Date.parse(modified)
+    ) ?? null
+  );
+}
+
+/**
+ * The manifest path: the manifest names every file, so nothing is guessed. The
+ * archive is the only file whose failure fails the import; every other listed
+ * file that fails is one warning naming it, and the volume imports without it.
+ */
+async function downloadFromManifest(
+  request: HtmlDownloadRequest,
+  manifest: VolumeManifest,
+  normalizedVolume: string,
+  onProgress?: (state: HtmlDownloadProgress) => void
+): Promise<HtmlDownloadResult> {
+  onProgress?.({ status: 'Downloading via worker...', progress: 5 });
+  const bundle = await downloadCbzBundleViaWorker(
+    manifest.archive.url,
+    normalizedVolume,
+    [],
+    [],
+    onProgress
+  );
+
+  let mokuroFile: File | null = null;
+  if (manifest.ocr) {
+    onProgress?.({ status: 'Fetching OCR...', progress: 72 });
+    mokuroFile = await fetchManifestOcr(manifest.ocr, normalizedVolume);
+  } else {
+    console.log('[HTML Download] The manifest lists no OCR for volume:', normalizedVolume);
+  }
+
+  let layers: FetchedLayerFile[] = [];
+  if (manifest.layers.length > 0) {
+    onProgress?.({ status: `Fetching OCR layers (${manifest.layers.length})...`, progress: 78 });
+    layers = await fetchManifestLayers(manifest.layers);
+  }
+
+  // A `cover` param on the link wins; the manifest's cover is used only without one.
+  const coverUrl = coverParamUrl(request) ?? manifest.cover?.url ?? null;
+  let coverFile: File | null = null;
+  if (coverUrl) {
+    onProgress?.({ status: 'Fetching cover...', progress: 86 });
+    coverFile = await fetchCoverFile(coverUrl, normalizedVolume);
+  }
+
+  let seriesFile: PendingSeriesFile | null = null;
+  if (manifest.series_file) {
+    onProgress?.({ status: 'Fetching series info...', progress: 92 });
+    seriesFile = await fetchSeriesFile(manifest.series_file);
+  }
+
+  onProgress?.({ status: 'Download complete', progress: 98 });
+  return {
+    bundleType: mokuroFile && coverFile ? 'triple' : mokuroFile || coverFile ? 'pair' : 'single',
+    archiveFile: bundle.archiveFile,
+    mokuroFile,
+    importFiles: mokuroFile ? [bundle.archiveFile, mokuroFile] : [bundle.archiveFile],
+    coverFile,
+    layers,
+    seriesFile,
+    manifest
+  };
+}
+
 class HtmlDownloadPseudoProvider {
   readonly type = 'html-download' as const;
   readonly name = 'HTML Download';
@@ -359,17 +549,21 @@ class HtmlDownloadPseudoProvider {
       progress: 0
     });
 
+    if (request.type === 'cbz' && request.manifestUrl) {
+      onProgress?.({ status: 'Fetching volume manifest...', progress: 2 });
+      const manifest = await fetchVolumeManifest(request.manifestUrl);
+      if (manifest) {
+        return downloadFromManifest(request, manifest, normalizedVolume, onProgress);
+      }
+      // Unusable (already warned once): the legacy guesses below, as with no param.
+    }
+
     if (request.type === 'cbz') {
       const cbzTarget = request.cbzUrl || `${volumeBaseUrl}.cbz`;
       const mokuroUrls = volumeBaseUrls.flatMap((base) => [`${base}.mokuro`, `${base}.mokuro.gz`]);
       const coverUrls: string[] = [];
-      if (request.cover) {
-        coverUrls.push(
-          /^https?:\/\//i.test(request.cover)
-            ? request.cover
-            : `${request.source}/${request.cover.replace(/^\/+/, '')}`
-        );
-      }
+      const coverParam = coverParamUrl(request);
+      if (coverParam) coverUrls.push(coverParam);
       coverUrls.push(`${volumeBaseUrl}.webp`);
 
       onProgress?.({ status: 'Downloading via worker...', progress: 5 });
@@ -399,7 +593,10 @@ class HtmlDownloadPseudoProvider {
         archiveFile: bundle.archiveFile,
         mokuroFile: bundle.mokuroFile,
         importFiles,
-        coverFile
+        coverFile,
+        layers: [],
+        seriesFile: null,
+        manifest: null
       };
     }
 
@@ -466,7 +663,10 @@ class HtmlDownloadPseudoProvider {
       archiveFile: null,
       mokuroFile,
       importFiles,
-      coverFile
+      coverFile,
+      layers: [],
+      seriesFile: null,
+      manifest: null
     };
   }
 }

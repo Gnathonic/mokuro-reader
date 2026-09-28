@@ -1,13 +1,13 @@
 <script lang="ts">
   import {
     importFiles,
-    importArchiveWithOptionalMokuro,
     htmlDownloadProvider,
     getUploadParamsFromLocation,
     parseHtmlDownloadRequest
   } from '$lib/import';
   import { db } from '$lib/catalog/db';
   import { installedUuids, pickCoverTarget } from '$lib/import/cover-sidecar';
+  import { importDeepLinkedArchive } from '$lib/import/deep-link-import';
   import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
   import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
   import { requestPersistentStorage } from '$lib/util/upload';
@@ -124,9 +124,10 @@
       const installedBefore = installedUuids(await db.volumes.toArray());
 
       // For CBZ deep links, queue a pre-paired archive item so we don't rely on generic
-      // post-download pairing for archive+sidecar combinations.
+      // post-download pairing for archive+sidecar combinations. A manifest's
+      // series.json and OCR layers ride along (applied once the volume is saved).
       if (downloaded.archiveFile && request.type === 'cbz') {
-        await importArchiveWithOptionalMokuro(downloaded.archiveFile, downloaded.mokuroFile);
+        await importDeepLinkedArchive(downloaded, normalizedVolume, installedBefore);
       } else {
         // Directory mode and fallback paths still use generic import pairing.
         await importFiles(files);
