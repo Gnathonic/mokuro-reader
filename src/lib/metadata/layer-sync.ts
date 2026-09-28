@@ -146,8 +146,18 @@ export function collectLayerFiles(
   return out;
 }
 
+/**
+ * The parts of a listed file every stamp decision reads. A file that did not
+ * come out of a listing (a deep link's manifest entry) is judged by the same
+ * three fields.
+ */
+export type LayerFileStamp = Pick<
+  CloudFileMetadata,
+  'size' | 'modifiedTime' | 'modifiedTimeProvisional'
+>;
+
 /** The listing stamp of a file — size always, mtime only when the server said so. */
-export function stampOf(file: CloudFileMetadata): { size?: number; modified?: number } {
+export function stampOf(file: LayerFileStamp): { size?: number; modified?: number } {
   return {
     size: file.size,
     modified: file.modifiedTimeProvisional ? undefined : isoToEpochSeconds(file.modifiedTime)
@@ -226,7 +236,7 @@ export function clearPendingLayerDelete(volumeUuid: string, layerId: string): vo
 }
 
 /** The layer ids pending delete per volume, as far as `providerType`'s listing is concerned. */
-function pendingDeletesFor(providerType: ProviderType): Map<string, Set<string>> {
+function pendingDeletesFor(providerType: string): Map<string, Set<string>> {
   const byVolume = new Map<string, Set<string>>();
   for (const entry of readPendingDeletes()) {
     if (entry.provider !== undefined && entry.provider !== providerType) continue;
@@ -386,7 +396,7 @@ async function dropRejectedFilesOfMissingVolumes(): Promise<void> {
   writeRejectedFiles(readRejectedFiles().filter((e) => !missing.has(e.volume_uuid)));
 }
 
-function cloudCopyMoved(row: VolumeOcrLayer, file: CloudFileMetadata): boolean {
+function cloudCopyMoved(row: VolumeOcrLayer, file: LayerFileStamp): boolean {
   const listed = stampOf(file);
   const own = row.cloud;
   if (!own) return true;
@@ -425,8 +435,8 @@ function isPassiveSnapshot(
  */
 export function layerNeedsPull(
   row: VolumeOcrLayer | undefined,
-  file: CloudFileMetadata,
-  providerType: ProviderType
+  file: LayerFileStamp,
+  providerType: string
 ): boolean {
   if (!row || isPassiveSnapshot(row)) return true;
   if (row.cloud && row.cloud.provider !== providerType) return !editedSinceSync(row);
@@ -445,8 +455,8 @@ export function layerNeedsPull(
  */
 export function layerNeedsPush(
   row: VolumeOcrLayer,
-  file: CloudFileMetadata | undefined,
-  providerType: ProviderType
+  file: LayerFileStamp | undefined,
+  providerType: string
 ): boolean {
   if (row.cloud && row.cloud.provider === providerType && !editedSinceSync(row)) return false;
   if (!file) return true;
@@ -499,14 +509,14 @@ interface PulledLayerFile {
   engine?: string;
 }
 
-/** Download + decode one layer file into DB-shaped pages; null when unusable. */
-async function readLayerFile(
-  provider: SyncProvider,
-  listed: ListedLayerFile
+/** Decode one layer file's bytes into DB-shaped pages; null when unusable (a warning only when it throws). */
+async function decodeLayerBlob(
+  blob: Blob,
+  gz: boolean,
+  label: string
 ): Promise<PulledLayerFile | null> {
   try {
-    let blob = await provider.downloadFile(listed.file);
-    if (listed.gz) {
+    if (gz) {
       const plain = await gunzipBlob(blob);
       if (!plain) return null;
       blob = plain;
@@ -521,9 +531,24 @@ async function readLayerFile(
     const engine = servedEngineOf(json);
     return { pages, ...(engine ? { engine } : {}) };
   } catch (error) {
+    console.warn(`[layer-sync] could not read '${label}':`, error);
+    return null;
+  }
+}
+
+/** Download + decode one listed layer file; null when unusable. */
+async function readLayerFile(
+  provider: SyncProvider,
+  listed: ListedLayerFile
+): Promise<PulledLayerFile | null> {
+  let blob: Blob;
+  try {
+    blob = await provider.downloadFile(listed.file);
+  } catch (error) {
     console.warn(`[layer-sync] could not read '${listed.file.path}':`, error);
     return null;
   }
+  return decodeLayerBlob(blob, listed.gz, listed.file.path);
 }
 
 /**
@@ -565,6 +590,33 @@ async function pullOne(
   if (isKnownMismatch(rejection)) return false;
   const pulled = await readLayerFile(provider, listed);
   if (!pulled) return false;
+  const stored = await storePulledLayer(row, listed.layerId, pulled, existing, {
+    provider: provider.type,
+    stamp: stampOf(listed.file),
+    label: listed.file.path
+  });
+  if (!stored) {
+    noteRejectedFile(rejection);
+    return false;
+  }
+  clearRejectedFile(rejection);
+  return true;
+}
+
+/**
+ * Turn a decoded layer file into this volume's row: fit it to the volume, file
+ * it (a server's stamp makes it `ocr` of the engine the FILE names), stamp it
+ * with where it came from. False — with the one log line a refused layer
+ * leaves — when the pages cannot be a layer of this volume. Shared by the
+ * listing pull and a deep link's manifest, so both file a layer identically.
+ */
+async function storePulledLayer(
+  row: VolumeMetadata,
+  layerId: string,
+  pulled: PulledLayerFile,
+  existing: VolumeOcrLayer | undefined,
+  source: { provider: string; stamp: { size?: number; modified?: number }; label: string }
+): Promise<boolean> {
   const read = pulled.pages;
   const pages = await fitToVolume(row, read);
   if (!pages) {
@@ -572,22 +624,21 @@ async function pullOne(
     // refused layer leaves anywhere — so a final verdict is not logged at debug
     // level, where nobody wondering why a layer never arrived would see it. A
     // count-only one is a deferral (the download takes another look), not news.
-    const log = rejection.count_only ? console.debug : console.warn;
+    const countOnly = !isVolumeInstalled(row);
+    const log = countOnly ? console.debug : console.warn;
     log(
-      `[layer-sync] '${listed.file.path}' is not a layer of '${row.volume_title}': ` +
+      `[layer-sync] '${source.label}' is not a layer of '${row.volume_title}': ` +
         `${read.length} page(s), the volume has ${row.page_count}` +
-        (rejection.count_only ? ' (not on this device, so a short file cannot be aligned yet)' : '')
+        (countOnly ? ' (not on this device, so a short file cannot be aligned yet)' : '')
     );
-    noteRejectedFile(rejection);
     return false;
   }
   if (pages !== read) {
     console.log(
-      `[layer-sync] '${listed.file.path}' has ${read.length} of ${row.page_count} page(s): ` +
+      `[layer-sync] '${source.label}' has ${read.length} of ${row.page_count} page(s): ` +
         `the missing ${row.page_count - read.length} are blank in this layer`
     );
   }
-  clearRejectedFile(rejection);
   const now = new Date().toISOString();
   // A row a cloud vouches for that was filed as a person's `edit` before the
   // stamp was read (or while its id was unknown) and turns out to be a server's
@@ -597,22 +648,22 @@ async function pullOne(
     existing?.kind === 'edit' && !existing.engine && !!existing.cloud && !!pulled.engine;
   const kind = misfiled
     ? ('ocr' as const)
-    : (existing?.kind ?? layerKindForId(listed.layerId, pulled.engine));
+    : (existing?.kind ?? layerKindForId(layerId, pulled.engine));
   const layer: VolumeOcrLayer = {
     volume_uuid: row.volume_uuid,
-    layer_id: listed.layerId,
-    name: existing?.name ?? layerNameForId(listed.layerId),
+    layer_id: layerId,
+    name: existing?.name ?? layerNameForId(layerId),
     kind,
     // The engine the FILE names, not the layer's id: a server calls its
     // generations what it likes (`hayai-nova-ctd` is still hayai-nova).
     ...(existing?.engine
       ? { engine: existing.engine }
       : kind === 'ocr'
-        ? { engine: pulled.engine ?? listed.layerId }
+        ? { engine: pulled.engine ?? layerId }
         : {}),
     created_at: existing?.created_at ?? now,
     updated_at: now,
-    cloud: { provider: provider.type, ...stampOf(listed.file), synced_at: now }
+    cloud: { provider: source.provider, ...source.stamp, synced_at: now }
   };
   await putLayerWithPages(db, { ...layer, pages });
   return true;
@@ -982,6 +1033,74 @@ export async function pullLayersForVolume(
     console.warn('[layer-sync] pull for volume failed:', error);
     return 0;
   }
+}
+
+/** A layer file already fetched from somewhere that is not a listing — a deep link's manifest. */
+export interface FetchedLayerFile {
+  layerId: string;
+  /** The bytes are gzipped (`<stem>.<id>.mokuro.gz`). */
+  gz: boolean;
+  blob: Blob;
+  /** Where it came from (its URL): names the file in every warning. */
+  label: string;
+  /** The source's own size of the file (the `.gz` size for a gzipped one); else the blob's. */
+  size?: number;
+  /** ISO modification time the source stamped; absent = unknown, and stamped size-only. */
+  modifiedTime?: string;
+}
+
+/**
+ * Import layer files that arrived with a volume from a non-listing source,
+ * exactly as a listing's pull would: same tombstones (as `source` sees them),
+ * same "does it replace the row" rule (`layerNeedsPull` against the source's
+ * stamp), same decoding, fitting and filing (`storePulledLayer`), and the row
+ * is stamped `cloud: { provider: source, … }` so a later listing of the same
+ * file on a real provider takes it over rather than pushing it back. No
+ * rejection memory: that only spares a listing from re-downloading a refused
+ * file every time, and these are already downloaded.
+ *
+ * Returns how many were stored. Never rejects; each file that fails is one
+ * warning naming it, and the rest still import.
+ */
+export async function importFetchedLayers(
+  volumeUuid: string,
+  source: string,
+  files: FetchedLayerFile[]
+): Promise<number> {
+  let stored = 0;
+  try {
+    const row = await db.volumes.get(volumeUuid);
+    if (!row || row.isPlaceholder || !(row.page_count > 0)) return 0;
+    const tombstoned = pendingDeletesFor(source).get(volumeUuid);
+    for (const fetched of files) {
+      try {
+        const stamp: LayerFileStamp = {
+          size: fetched.size ?? fetched.blob.size,
+          modifiedTime: fetched.modifiedTime ?? '',
+          modifiedTimeProvisional: !fetched.modifiedTime
+        };
+        const existing = await getLayerMeta(db, volumeUuid, fetched.layerId);
+        if (!existing && tombstoned?.has(fetched.layerId)) continue;
+        if (!layerNeedsPull(existing, stamp, source)) continue;
+        const pulled = await decodeLayerBlob(fetched.blob, fetched.gz, fetched.label);
+        if (!pulled) {
+          console.warn(`[layer-sync] '${fetched.label}' is not a readable OCR layer; skipped`);
+          continue;
+        }
+        const ok = await storePulledLayer(row, fetched.layerId, pulled, existing, {
+          provider: source,
+          stamp: stampOf(stamp),
+          label: fetched.label
+        });
+        if (ok) stored++;
+      } catch (error) {
+        console.warn(`[layer-sync] could not import '${fetched.label}':`, error);
+      }
+    }
+  } catch (error) {
+    console.warn('[layer-sync] importing fetched layers failed:', error);
+  }
+  return stored;
 }
 
 /**

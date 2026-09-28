@@ -40,6 +40,7 @@ import {
   collectLayerFiles,
   deleteCloudLayerFile,
   deleteLayerFileInCloud,
+  importFetchedLayers,
   layerNeedsPull,
   layerNeedsPush,
   pullLayersForVolume,
@@ -1326,5 +1327,174 @@ describe('planning a listing never reads layer pages', () => {
     getActiveProvider.mockReturnValue(provider());
     await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz')), 'webdav');
     expect(localStorage.length).toBe(0);
+  });
+});
+
+describe("importFetchedLayers (a deep link's manifest)", () => {
+  const URL_BASE = 'https://bunko.example/mokuro-reader/Series/';
+  const MODIFIED = '2026-09-27T01:02:05.000Z';
+
+  function servedJson(text: string, engineId: string): string {
+    return JSON.stringify({
+      ...JSON.parse(mokuroJson(text)),
+      ocr_engine: { id: engineId, detector: 'ctd', generator: 'mokuro-bunko 0.5.0' }
+    });
+  }
+
+  function fetched(layerId: string, body: string | Blob, extra: Record<string, unknown> = {}) {
+    return {
+      layerId,
+      gz: false,
+      blob: typeof body === 'string' ? new Blob([body]) : body,
+      label: `${URL_BASE}Vol%201.${layerId}.mokuro`,
+      size: 67,
+      modifiedTime: MODIFIED,
+      ...extra
+    };
+  }
+
+  async function gzip(text: string): Promise<Blob> {
+    const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+    return new Response(stream).blob();
+  }
+
+  it('files a stamped layer by the engine the file names, stamped with its source', async () => {
+    await seedRow();
+    const n = await importFetchedLayers('v1', 'html-download', [
+      fetched('hayai-nova-ppocr', servedJson('かな', 'hayai-nova'))
+    ]);
+    expect(n).toBe(1);
+    const layer = (await getLayerWithPages(db, 'v1', 'hayai-nova-ppocr'))!;
+    expect(layer).toMatchObject({ kind: 'ocr', engine: 'hayai-nova' });
+    expect(layer.pages[0].blocks[0].lines).toEqual(['かな']);
+    expect('cumulativeChars' in layer.pages[0]).toBe(false);
+    expect(layer.cloud).toMatchObject({
+      provider: 'html-download',
+      size: 67,
+      modified: Date.parse(MODIFIED) / 1000
+    });
+  });
+
+  it("leaves an unstamped unknown id a person's edit, exactly as a cloud pull does", async () => {
+    await seedRow();
+    await importFetchedLayers('v1', 'html-download', [fetched('my-fixes', mokuroJson('かな'))]);
+    const layer = (await getLayerWithPages(db, 'v1', 'my-fixes'))!;
+    expect(layer.kind).toBe('edit');
+    expect(layer.engine).toBeUndefined();
+  });
+
+  it('decodes a .gz layer', async () => {
+    await seedRow();
+    const n = await importFetchedLayers('v1', 'html-download', [
+      fetched('paddle', await gzip(servedJson('ろ', 'paddle')), { gz: true })
+    ]);
+    expect(n).toBe(1);
+    expect((await getLayerWithPages(db, 'v1', 'paddle'))!.pages[0].blocks[0].lines).toEqual(['ろ']);
+  });
+
+  it('skips a file that is not a layer, warning with its name, and imports the rest', async () => {
+    await seedRow();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bad = fetched('broken', '{ not json');
+    const n = await importFetchedLayers('v1', 'html-download', [
+      bad,
+      fetched('paddle', servedJson('ろ', 'paddle'))
+    ]);
+    expect(n).toBe(1);
+    expect(await getLayerWithPages(db, 'v1', 'broken')).toBeUndefined();
+    expect(warn.mock.calls.some((c) => c.join(' ').includes(bad.label))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('refuses a layer of another page count, warning with its name', async () => {
+    await seedRow();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const twoPages = JSON.stringify({
+      ...JSON.parse(mokuroJson('か')),
+      pages: [pg('か', 'a.png'), pg('き', 'b.png')]
+    });
+    const file = fetched('paddle', twoPages);
+    expect(await importFetchedLayers('v1', 'html-download', [file])).toBe(0);
+    expect(await getLayerWithPages(db, 'v1', 'paddle')).toBeUndefined();
+    expect(warn.mock.calls.some((c) => c.join(' ').includes(file.label))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('never overwrites a layer edited here since its last sync', async () => {
+    await seedRow();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'paddle',
+      name: 'Paddle',
+      kind: 'ocr',
+      engine: 'paddle',
+      created_at: '2026-09-27T00:00:00.000Z',
+      updated_at: '2026-09-27T03:00:00.000Z',
+      pages: [pg('mine')],
+      cloud: {
+        provider: 'html-download',
+        size: 67,
+        modified: Date.parse(MODIFIED) / 1000,
+        synced_at: '2026-09-27T02:00:00.000Z'
+      }
+    });
+    expect(
+      await importFetchedLayers('v1', 'html-download', [
+        fetched('paddle', servedJson('ろ', 'paddle'))
+      ])
+    ).toBe(0);
+    expect((await getLayerWithPages(db, 'v1', 'paddle'))!.pages[0].blocks[0].lines).toEqual([
+      'mine'
+    ]);
+  });
+
+  it('replaces a passive snapshot that came out of the archive', async () => {
+    await seedRow();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'paddle',
+      name: 'Paddle',
+      kind: 'ocr',
+      engine: 'paddle',
+      created_at: '2026-09-27T00:00:00.000Z',
+      updated_at: '2026-09-27T00:00:00.000Z',
+      passive_at: '2026-09-27T00:00:00.000Z',
+      pages: [pg('old')]
+    });
+    expect(
+      await importFetchedLayers('v1', 'html-download', [
+        fetched('paddle', servedJson('ろ', 'paddle'))
+      ])
+    ).toBe(1);
+    expect((await getLayerWithPages(db, 'v1', 'paddle'))!.pages[0].blocks[0].lines).toEqual(['ろ']);
+  });
+
+  it('stamps size only when the source gave no modification time', async () => {
+    await seedRow();
+    await importFetchedLayers('v1', 'html-download', [
+      fetched('paddle', servedJson('ろ', 'paddle'), { modifiedTime: undefined, size: undefined })
+    ]);
+    const layer = (await getLayerWithPages(db, 'v1', 'paddle'))!;
+    expect(layer.cloud!.modified).toBeUndefined();
+    expect(layer.cloud!.size).toBeGreaterThan(0);
+  });
+
+  it('does nothing for a volume that is gone or a placeholder', async () => {
+    expect(
+      await importFetchedLayers('nope', 'html-download', [
+        fetched('paddle', servedJson('ろ', 'paddle'))
+      ])
+    ).toBe(0);
+  });
+
+  it('a later WebDAV listing of the same file takes the row over from the deep link', async () => {
+    await seedRow();
+    await importFetchedLayers('v1', 'html-download', [
+      fetched('paddle', servedJson('ろ', 'paddle'))
+    ]);
+    const row = (await getLayerWithPages(db, 'v1', 'paddle'))!;
+    const listed = cloudFile('Series/Vol 1.paddle.mokuro', { size: 67, modifiedTime: MODIFIED });
+    expect(layerNeedsPull(row, listed, 'webdav')).toBe(true);
+    expect(layerNeedsPush(row, listed, 'webdav')).toBe(false);
   });
 });
