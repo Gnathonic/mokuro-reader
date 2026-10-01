@@ -8,12 +8,14 @@ import {
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { CloudFileMetadata, ProviderType } from '$lib/util/sync/provider-interface';
 import {
+  deleteLayerRows,
   getLayerMeta,
   getLayerPages,
   layerTables,
   listLayerIds,
   putLayerWithPages
 } from './layer-store';
+import { notePendingLayerDelete } from '$lib/metadata/layer-sync';
 import {
   isMokuroCloudAttestation,
   isUntouchedUpgradeLayer,
@@ -452,6 +454,7 @@ export async function applyCloudPrimaryOcr(
       isMokuroCloudAttestation(current.mokuro_sha256_cloud) &&
       current.mokuro_sha256_cloud.provider === provider;
     if (!attested) await keepReplacedPrimary(current, local.pages);
+    await dropSnapshotsOfReplacedPrimary(volumeUuid, provider);
 
     const { totalChars, cumulative } = buildPageCharCounts(pages);
     await db.volume_ocr.put({ volume_uuid: volumeUuid, pages });
@@ -464,6 +467,37 @@ export async function applyCloudPrimaryOcr(
     });
     return 'upgraded';
   });
+}
+
+/**
+ * The snapshots a replaced primary leaves stale (inside the caller's
+ * transaction). An unedited row can still hold an `original` layer — the
+ * pre-edit snapshot of the OLD OCR, pulled by layer-sync or attached by a
+ * reinstall — and an untouched `updated-ocr`. After the swap, Revert would
+ * restore the pre-upgrade OCR, the next edit would keep that stale `original`
+ * as its base, and promoting the stale `updated-ocr` would adopt an old hash.
+ * Both go; an `updated-ocr` the user edited is theirs and stays. The
+ * `original`'s cloud copy (if any) is tombstoned so a listing never pulls it
+ * back.
+ */
+async function dropSnapshotsOfReplacedPrimary(
+  volumeUuid: string,
+  provider: string | undefined
+): Promise<void> {
+  const original = await getLayerMeta(db, volumeUuid, ORIGINAL_LAYER);
+  if (original) {
+    await deleteLayerRows(db, volumeUuid, ORIGINAL_LAYER);
+    notePendingLayerDelete({
+      volume_uuid: volumeUuid,
+      layer_id: ORIGINAL_LAYER,
+      provider: original.cloud?.provider ?? provider
+    });
+  }
+  const updated = await getLayerMeta(db, volumeUuid, UPDATED_OCR_LAYER_ID);
+  // Untouched, it is a mirror of a cloud primary: never pushed, so no cloud copy.
+  if (updated && isUntouchedUpgradeLayer(updated)) {
+    await deleteLayerRows(db, volumeUuid, UPDATED_OCR_LAYER_ID);
+  }
 }
 
 /**

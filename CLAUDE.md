@@ -425,6 +425,13 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   `volume-sidecars.ts`), and a later replacement overwrites it in place. Once
   the user edits it, it is theirs: the next keepsake goes under
   `previous-ocr-2`, `-3`, ….
+- **A replacement drops the snapshots it made stale.** An unedited row can
+  still hold an `original` layer (the pre-edit snapshot of the OLD OCR, from
+  layer-sync or a reinstall) and an untouched `updated-ocr`; after the swap,
+  Revert would restore the pre-upgrade OCR and promoting the `updated-ocr`
+  would adopt an old hash. Both are deleted with the replacement (the
+  `original`'s cloud copy tombstoned via `notePendingLayerDelete`, so no
+  listing pulls it back); an `updated-ocr` the user edited stays.
 - **Edited volumes keep their edits.** With `ocr_edited_at` set, a file equal
   to the pre-edit `original` layer only records the hash; otherwise it is
   filed as the `updated-ocr` layer ("Updated OCR", kind `ocr`) carrying

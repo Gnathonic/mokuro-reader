@@ -19,7 +19,7 @@ import {
 } from '$lib/reader/edit/layers';
 import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
+import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { isUntouchedUpgradeLayer } from '$lib/catalog/mokuro-hash';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { cacheManager } from '$lib/util/sync/cache-manager';
@@ -220,7 +220,12 @@ function writePendingDeletes(entries: PendingLayerDelete[]): void {
   }
 }
 
-function notePendingLayerDelete(entry: PendingLayerDelete): void {
+/**
+ * A layer row was deleted here: keep its cloud copy (if any) from being pulled
+ * back, and remove it when the provider allows (the next listing). Also used
+ * by the OCR upgrade, which drops snapshots its new primary made stale.
+ */
+export function notePendingLayerDelete(entry: PendingLayerDelete): void {
   const rest = readPendingDeletes().filter(
     (e) => !(e.volume_uuid === entry.volume_uuid && e.layer_id === entry.layer_id)
   );

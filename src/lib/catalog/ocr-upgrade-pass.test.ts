@@ -740,4 +740,72 @@ describe('the OCR upgrade pass', () => {
       expect(next.map((p) => p.blocks[0].lines[0])).toEqual(['な', 'に']);
     });
   });
+
+  describe('snapshots a replaced primary leaves stale', () => {
+    async function seedLayer(layer_id: string, extra: Record<string, unknown>, text: string) {
+      await putLayerWithPages(db, {
+        volume_uuid: 'vol-1',
+        layer_id,
+        name: layer_id,
+        kind: layer_id === 'original' ? 'original' : 'ocr',
+        created_at: 't0',
+        updated_at: 't1',
+        ...extra,
+        pages: [page('Vol 1/001.jpg', text), page('Vol 1/002.jpg', text)]
+      } as never);
+    }
+
+    it('drops the old original (tombstoning its cloud copy) and an untouched updated-ocr', async () => {
+      await installVolume(['あ', 'い'], {
+        mokuro_sha256: 'f'.repeat(64),
+        mokuro_sha256_cloud: { provider: 'webdav', size: 10 }
+      });
+      await seedLayer(
+        'original',
+        { cloud: { provider: 'webdav', size: 5, synced_at: 't1' } },
+        '古'
+      );
+      await seedLayer(
+        UPDATED_OCR_LAYER_ID,
+        { source_sha256: 'e'.repeat(64), source_at: 't1' },
+        '旧'
+      );
+      const body = mokuro(['か', 'き']);
+      listSidecar('Vol 1', body);
+      await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+      await pass();
+
+      expect(await primaryTexts()).toEqual(['か', 'き']);
+      expect(await getLayerMeta(db, 'vol-1', 'original')).toBeUndefined();
+      expect(await getLayerPages(db, 'vol-1', 'original')).toBeFalsy();
+      expect(await getLayerMeta(db, 'vol-1', UPDATED_OCR_LAYER_ID)).toBeUndefined();
+      const tombstones = JSON.parse(localStorage.getItem('layer-sync:pending-deletes') ?? '[]');
+      expect(tombstones).toContainEqual({
+        volume_uuid: 'vol-1',
+        layer_id: 'original',
+        provider: 'webdav'
+      });
+    });
+
+    it('keeps an updated-ocr layer the user edited', async () => {
+      await installVolume(['あ', 'い'], {
+        mokuro_sha256: 'f'.repeat(64),
+        mokuro_sha256_cloud: { provider: 'webdav', size: 10 }
+      });
+      await seedLayer(
+        UPDATED_OCR_LAYER_ID,
+        { source_sha256: 'e'.repeat(64), source_at: 't0' }, // edited at t1
+        '私の'
+      );
+      const body = mokuro(['か', 'き']);
+      listSidecar('Vol 1', body);
+      await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+      await pass();
+
+      expect(await primaryTexts()).toEqual(['か', 'き']);
+      expect(await getLayerMeta(db, 'vol-1', UPDATED_OCR_LAYER_ID)).toBeDefined();
+    });
+  });
 });
