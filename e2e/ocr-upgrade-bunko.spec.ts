@@ -466,6 +466,15 @@ test.describe('automatic OCR upgrade (real mokuro-bunko)', () => {
           .map((s) => s.scheme)
       );
       expect([...schemes].filter((s) => s !== 'Basic')).toEqual(['Bearer']);
+      // bunko compiles series.json itself: downloading changes no facts, so
+      // nothing is submitted for any series.
+      const writes = (from = 0) =>
+        seen
+          .slice(from)
+          .filter((s) => !['GET', 'HEAD', 'PROPFIND', 'OPTIONS'].includes(s.method))
+          .map((s) => `${s.method} ${s.path} ${s.status}`);
+      console.log('[evidence] (b) writes through the downloads:', JSON.stringify(writes()));
+      expect(writes().filter((w) => /\/series\.json /.test(w))).toEqual([]);
 
       // The manifest names the same hash for the same file.
       for (const [title, hash, file] of [
@@ -523,6 +532,11 @@ test.describe('automatic OCR upgrade (real mokuro-bunko)', () => {
       expect(cNotices).toEqual(['Updated OCR for 1 volume']);
       // Volume 2 untouched.
       expect(rows.get(V2)).toEqual(v2Before);
+      // Volume 1's primary was attested as this cloud's own file: replaced
+      // outright, no "Previous OCR" keepsake.
+      expect(await layer(page, UUID1, 'previous-ocr')).toBeNull();
+      console.log('[evidence] (c) writes since the change:', JSON.stringify(writes(mark)));
+      expect(writes(mark).filter((w) => !/\/(volume-data|profiles)\.json /.test(w))).toEqual([]);
       // Converged: another listing fetches nothing more.
       await page.waitForTimeout(10_000); // past bunko's PROPFIND refresh
       const converged = seen.length;
@@ -644,6 +658,12 @@ test.describe('automatic OCR upgrade (real mokuro-bunko)', () => {
         )
       );
       expect(layerWrites).toEqual([]);
+      // Nothing of the edit reaches a server that compiles its own metadata:
+      // not the pre-edit `original` snapshot, not a series.json.
+      console.log('[evidence] (d) all writes in the run:', JSON.stringify(writes()));
+      expect(writes().filter((w) => /\.original\.mokuro/.test(w))).toEqual([]);
+      expect(writes().filter((w) => /\/series\.json /.test(w))).toEqual([]);
+      expect(lib.files().filter((f) => f.includes('.original.'))).toEqual([]);
       expect(lib.files().filter((f) => f.includes('updated-ocr'))).toEqual([]);
       // The edit survived the sync too.
       expect((await installedRows(page, SERIES)).get(V2)!.lines[0]).toBe('へんしゅう');
@@ -677,7 +697,7 @@ test.describe('automatic OCR upgrade (real mokuro-bunko)', () => {
         .toBe(sha256(v1New));
       await page.waitForTimeout(2000);
       const e1 = (await installedRows(page, SERIES)).get(V1)!;
-      const writes = await page.evaluate(
+      const ocrWrites = await page.evaluate(
         () => (window as unknown as { __ocrWrites: string[] }).__ocrWrites
       );
       const eNotices = (await notices(page)).slice(noticeMark);
@@ -686,13 +706,13 @@ test.describe('automatic OCR upgrade (real mokuro-bunko)', () => {
         JSON.stringify({
           hash: e1.hash,
           lines: e1.lines,
-          volume_ocr_writes: writes,
+          volume_ocr_writes: ocrWrites,
           sidecar_gets: gets(seen, mark, /\/Vol 1\.mokuro$/).map((s) => `${s.method} ${s.status}`),
           notices: eNotices
         })
       );
       expect(e1.lines).toEqual(['あたらしいいち', 'あたらしいに', 'あたらしいさん']);
-      expect(writes).toEqual([]);
+      expect(ocrWrites).toEqual([]);
       expect(eNotices).toEqual([]);
       expect(gets(seen, mark, /\/Vol 1\.mokuro$/).filter((s) => s.method === 'GET')).toHaveLength(
         1
