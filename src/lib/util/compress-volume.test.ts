@@ -288,4 +288,28 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
       (await generateVolumeSidecarsFromDb('volume-uuid')).layers?.map((l) => l.layerId)
     ).toEqual(['updated-ocr']);
   });
+
+  it("never uploads the editor's original snapshot to a server that compiles its metadata", async () => {
+    await putLayerWithPages(db, {
+      volume_uuid: 'volume-uuid',
+      layer_id: 'original',
+      name: 'Original',
+      kind: 'original',
+      created_at: '2026-09-16T00:00:00.000Z',
+      updated_at: '2026-09-16T00:00:00.000Z',
+      pages: []
+    });
+    // Plain storage: this user's own Revert base rides along.
+    expect(
+      (await generateVolumeSidecarsFromDb('volume-uuid')).layers?.map((l) => l.layerId)
+    ).toEqual(['original']);
+    // bunko: primary edits stay local, so the snapshot never goes up.
+    expect(
+      (
+        await generateVolumeSidecarsFromDb('volume-uuid', undefined, {
+          serverCompilesMetadata: true
+        })
+      ).layers
+    ).toBeUndefined();
+  });
 });

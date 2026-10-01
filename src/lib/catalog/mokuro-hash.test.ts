@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isMokuroCloudAttestation,
   isMokuroSha256,
-  isUntouchedUpdatedOcr,
+  isUntouchedUpgradeLayer,
   sha256Hex
 } from './mokuro-hash';
 
@@ -47,12 +47,17 @@ describe('isMokuroCloudAttestation', () => {
   });
 });
 
-describe('isUntouchedUpdatedOcr', () => {
+describe('isUntouchedUpgradeLayer', () => {
   it('holds while source_at equals updated_at, and dies with the first edit', () => {
     const row = { source_sha256: 'a'.repeat(64), source_at: 't1', updated_at: 't1' };
-    expect(isUntouchedUpdatedOcr(row)).toBe(true);
-    expect(isUntouchedUpdatedOcr({ ...row, updated_at: 't2' })).toBe(false);
-    expect(isUntouchedUpdatedOcr({ updated_at: 't1' })).toBe(false);
-    expect(isUntouchedUpdatedOcr(undefined)).toBe(false);
+    expect(isUntouchedUpgradeLayer(row)).toBe(true);
+    expect(isUntouchedUpgradeLayer({ ...row, updated_at: 't2' })).toBe(false);
+    expect(isUntouchedUpgradeLayer({ updated_at: 't1' })).toBe(false);
+    expect(isUntouchedUpgradeLayer(undefined)).toBe(false);
+  });
+
+  it('also holds for a previous-ocr keepsake with no source hash (a legacy primary had none)', () => {
+    expect(isUntouchedUpgradeLayer({ source_at: 't1', updated_at: 't1' })).toBe(true);
+    expect(isUntouchedUpgradeLayer({ source_at: 't1', updated_at: 't2' })).toBe(false);
   });
 });

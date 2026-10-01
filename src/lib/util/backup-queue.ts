@@ -5,6 +5,7 @@ import { getBackupUiBridge } from './backup-ui';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import type { BackupProviderType, ServerOcrQueued, SyncProvider } from './sync/provider-interface';
 import { isPseudoProvider, exportProvider } from './sync/provider-interface';
+import { accountCanAddFiles, CANNOT_ADD_FILES_MESSAGE } from './sync/account-capabilities';
 import {
   getFileProcessingPool,
   incrementPoolUsers,
@@ -176,6 +177,14 @@ export function queueVolumeForBackup(
     return;
   }
 
+  // An account the server lets sync progress but not add files (bunko
+  // `registered`): every upload would be refused per file, every time.
+  if (!accountCanAddFiles(targetProvider.getStatus?.())) {
+    console.info('Skipping backup: this account cannot add files on this server');
+    getBackupUiBridge().notify(CANNOT_ADD_FILES_MESSAGE);
+    return;
+  }
+
   const queue = get(queueStore);
 
   // Check for duplicates by volumeUuid:provider (allows same volume to be queued for different providers)
@@ -266,6 +275,13 @@ export function queueSeriesVolumesForBackup(
 
   if (volumes.length === 0) {
     console.warn('No volumes to queue for backup');
+    return;
+  }
+
+  // One notice for the whole series, not one per volume.
+  if (!accountCanAddFiles(targetProvider.getStatus?.())) {
+    console.info('Skipping backup: this account cannot add files on this server');
+    getBackupUiBridge().notify(CANNOT_ADD_FILES_MESSAGE);
     return;
   }
 
@@ -578,7 +594,9 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // Cloud uploads store OCR metadata as a separate sidecar file.
           embedMokuroInArchive: false,
           downloadFilename: `${item.volumeTitle}.cbz`,
-          includeSidecars: item.sidecarOptions.includeSidecars
+          includeSidecars: item.sidecarOptions.includeSidecars,
+          // bunko: the editor's `original` snapshot stays local (`layerStaysLocal`).
+          serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true
         };
       },
       onProgress: (data) => {

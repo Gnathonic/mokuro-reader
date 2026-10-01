@@ -26,8 +26,13 @@ import {
   tokenEndpointFor,
   tokenNeedsRenewal
 } from './bunko-token';
-import { registerWorkerAuthRefresher } from '$lib/util/worker-auth-refresh';
+import {
+  isTransientAuthRefreshError,
+  registerWorkerAuthRefresher,
+  TransientAuthRefreshError
+} from '$lib/util/worker-auth-refresh';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
+import { CANNOT_RENAME_MESSAGE } from '../../account-capabilities';
 import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
 
 interface WebDAVCredentials {
@@ -91,10 +96,22 @@ type ReissueOutcome =
   | 'basic'
   /** The password was refused: the auth-failed flow ran. */
   | 'refused'
-  /** The login limiter is hot: no retry, no loop (cooldown). */
+  /** The login limiter is hot: no retry, no loop (cooldown). TRANSIENT. */
   | 'rate-limited'
-  /** Nothing to re-issue with, or the server could not be reached. */
+  /** The token endpoint could not be reached (network, timeout, 5xx). TRANSIENT. */
+  | 'unreachable'
+  /** Nothing to re-issue with (no stored password): the 401 stands. */
   | 'unavailable';
+
+/**
+ * What the caller of a request refused with 401 under a token does next:
+ * `retry` under the session's (new) header; `final` — the 401 stands (the
+ * re-issue was REFUSED, or there is nothing to re-issue with); `transient` —
+ * fail with a `TransientAuthRefreshError`, never the 401: a rate-limited or
+ * unreachable re-issue says nothing about the password, and a 401 reaching a
+ * write path would wipe it (`handleWriteFailure` -> `markAuthFailed`).
+ */
+type ReissueVerdict = 'retry' | 'final' | 'transient';
 
 function isUnauthorized(error: unknown): boolean {
   return (error as { status?: number } | null)?.status === 401;
@@ -181,7 +198,9 @@ export class WebDAVProvider implements SyncProvider {
   async refreshedWorkerCredentials(
     staleAuthorization: string
   ): Promise<Record<string, unknown> | null> {
-    if (!(await this.reissueAfterUnauthorized(staleAuthorization))) return null;
+    const verdict = await this.reissueVerdict(staleAuthorization);
+    if (verdict === 'transient') throw new TransientAuthRefreshError();
+    if (verdict !== 'retry') return null;
     return this.getWorkerUploadCredentials();
   }
 
@@ -286,7 +305,13 @@ export class WebDAVProvider implements SyncProvider {
             return await value.apply(target, args);
           } catch (error) {
             if (!isUnauthorized(error) || !bearerOf(sent)) throw error;
-            if (!(await provider.reissueAfterUnauthorized(sent))) throw error;
+            const verdict = await provider.reissueVerdict(sent);
+            if (verdict === 'transient') throw new TransientAuthRefreshError();
+            if (verdict !== 'retry') throw error;
+            // Retry under the session's header as it is NOW: the token may have
+            // been replaced by another tab (localStorage is shared, this
+            // client's headers are not), or the session fell back to Basic.
+            target.setHeaders(webdavAuthHeaders(provider.sessionAuth()));
             return await value.apply(target, args);
           }
         };
@@ -302,17 +327,35 @@ export class WebDAVProvider implements SyncProvider {
    * shares ONE re-issue in flight.
    */
   async reissueAfterUnauthorized(staleAuthorization: string | null | undefined): Promise<boolean> {
+    return (await this.reissueVerdict(staleAuthorization)) === 'retry';
+  }
+
+  /** `reissueAfterUnauthorized`, telling a transient failure apart from a final one. */
+  private async reissueVerdict(
+    staleAuthorization: string | null | undefined
+  ): Promise<ReissueVerdict> {
     const stale = bearerOf(staleAuthorization);
-    if (!stale) return false;
+    if (!stale) return 'final';
     const auth = this.sessionAuth();
-    if (auth.token && auth.token !== stale) return true; // someone already replaced it
+    if (auth.token && auth.token !== stale) {
+      // Someone already replaced it — maybe ANOTHER TAB, whose new token is in
+      // the shared localStorage while this tab's client still sends the dead
+      // one. Point the client at the stored token before the caller retries.
+      this.applyClientAuth();
+      return 'retry';
+    }
     if (!auth.token && auth.password) {
       // The token is gone but the session is on Basic (no endpoint): retry with that.
       const account = this.sessionAccount();
-      if (account && this.tokenUnsupported.has(account.serverUrl)) return true;
+      if (account && this.tokenUnsupported.has(account.serverUrl)) {
+        this.applyClientAuth();
+        return 'retry';
+      }
     }
     const outcome = await this.reissueSingleFlight();
-    return outcome === 'replaced' || outcome === 'basic';
+    if (outcome === 'replaced' || outcome === 'basic') return 'retry';
+    if (outcome === 'rate-limited' || outcome === 'unreachable') return 'transient';
+    return 'final';
   }
 
   private reissueSingleFlight(): Promise<ReissueOutcome> {
@@ -369,7 +412,7 @@ export class WebDAVProvider implements SyncProvider {
         return 'basic';
       case 'unreachable':
       default:
-        return 'unavailable';
+        return 'unreachable';
     }
   }
 
@@ -437,7 +480,10 @@ export class WebDAVProvider implements SyncProvider {
         this.sessionAuth().token !== token ? 'replaced' : await this.reissueSingleFlight();
       if (outcome === 'refused') return identity;
       if (outcome === 'rate-limited') return { kind: 'rate-limited' };
-      if (outcome === 'unavailable') this.dropToken();
+      if (outcome === 'unavailable' || outcome === 'unreachable') this.dropToken();
+      // The client follows whatever the session holds now (a new token, one
+      // another tab stored, or Basic after the drop above).
+      this.applyClientAuth();
       const fresh = this.sessionAuth().token;
       return fetchServerIdentity(serverUrl, username, password, undefined, fresh);
     }
@@ -559,6 +605,7 @@ export class WebDAVProvider implements SyncProvider {
       serverCompilesMetadata: this._serverCompilesMetadata,
       metadataPermissions: this._capabilities?.metadata,
       canModifyDelete: this._capabilities?.canModifyDelete,
+      canAddFiles: this._capabilities?.canAddFiles,
       // username is optional (some servers support password-only or no auth),
       // so it's an extra discriminator on top of the required serverUrl, not
       // a requirement in its own right.
@@ -697,13 +744,6 @@ export class WebDAVProvider implements SyncProvider {
           // Generic WebDAV server (or older mokuro-bunko): keep the existing
           // heuristics byte-for-byte (copyparty/nextcloud/nginx compatibility)
           this._capabilities = null;
-          // `fetchServerIdentity` also resolves 'unsupported' when the endpoint
-          // is unreachable, so a bunko server behind a flaky hop degrades to
-          // client-compiled. Safe in that direction: the resulting PUT is
-          // best-effort (see `isBestEffortMetadataPath`), so at worst bunko
-          // regenerates the file — whereas defaulting the other way would leave
-          // a plain WebDAV share with no catalog at all.
-          this._serverCompilesMetadata = false;
 
           // Ensure mokuro folder exists
           await this.ensureMokuroFolder();
@@ -713,6 +753,18 @@ export class WebDAVProvider implements SyncProvider {
           if (this._isReadOnly) {
             console.log('📖 WebDAV server is read-only (no PUT/DELETE/MKCOL permissions)');
           }
+
+          // `fetchServerIdentity` also resolves 'unsupported' when the endpoint
+          // is unreachable or flaky. A server that has EVER answered
+          // `X-Mokuro-Put: verified` (recorded per server URL, and only
+          // mokuro-bunko sends it) is bunko whatever this probe said, and stays
+          // a non-producer: demoted, this client would compile series.json /
+          // catalog.json itself AND the sidecar backfill would treat it as plain
+          // storage — re-uploading a hand-edited primary `.mokuro` over the
+          // shared server primary, which every other reader then auto-upgrades
+          // to. Any other server is plain storage: this client is its producer
+          // (defaulting the other way would leave a plain share with no catalog).
+          this._serverCompilesMetadata = this.isKnownBunkoServer(normalizedUrl);
           break;
       }
 
@@ -747,6 +799,14 @@ export class WebDAVProvider implements SyncProvider {
       // so the modal type and restore handling keep their legacy behavior.
       if (error instanceof ProviderError && error.code === 'AUTH_FAILED') {
         throw error;
+      }
+
+      // A held token refused while its re-issue was rate limited or could not
+      // reach the server: retryable, and NOT a credential rejection — the
+      // stored password must survive the restore (M-6), so this never goes
+      // through the message classifier below.
+      if (isTransientAuthRefreshError(error)) {
+        throw new ProviderError(error.message, 'webdav', 'LOGIN_FAILED', false, true, 'network');
       }
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1353,7 +1413,11 @@ export class WebDAVProvider implements SyncProvider {
    * - everything else (405, 403 on unknown/low capabilities, 401 on a
    *   credential-less session): legacy behavior - mark read-only
    */
-  private handleWriteFailure(kind: WriteErrorKind, readOnlyMessage: string): never {
+  private handleWriteFailure(
+    kind: WriteErrorKind,
+    readOnlyMessage: string,
+    permissionMessage = 'Your account does not have permission for this operation on this server'
+  ): never {
     if (kind === 'auth' && this._hasPassword) {
       this.markAuthFailed();
       throw new ProviderError(
@@ -1368,7 +1432,7 @@ export class WebDAVProvider implements SyncProvider {
 
     if (kind === 'permission' && this._capabilities?.canWriteProgress === true) {
       throw new ProviderError(
-        'Your account does not have permission for this operation on this server',
+        permissionMessage,
         'webdav',
         'PERMISSION_DENIED',
         false,
@@ -1536,7 +1600,11 @@ export class WebDAVProvider implements SyncProvider {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const kind = classifyWriteError(errorMessage);
       if (kind !== 'other') {
-        this.handleWriteFailure(kind, 'Rename permission denied - server is read-only');
+        this.handleWriteFailure(
+          kind,
+          'Rename permission denied - server is read-only',
+          CANNOT_RENAME_MESSAGE
+        );
       }
 
       throw new ProviderError(
@@ -1606,7 +1674,11 @@ export class WebDAVProvider implements SyncProvider {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const kind = classifyWriteError(errorMessage);
       if (kind !== 'other') {
-        this.handleWriteFailure(kind, 'Rename permission denied - server is read-only');
+        this.handleWriteFailure(
+          kind,
+          'Rename permission denied - server is read-only',
+          CANNOT_RENAME_MESSAGE
+        );
       }
 
       throw new ProviderError(
@@ -1644,11 +1716,27 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      // 401/403 go through the central write-failure policy; 405/409 fall
-      // through to the per-file deletion fallback below (unchanged behavior)
+      // 401 goes through the central write-failure policy; 405/409 fall
+      // through to the per-file deletion fallback below (unchanged behavior).
       const kind = classifyWriteError(errorMessage);
-      if (kind === 'auth' || kind === 'permission') {
+      if (kind === 'auth') {
         this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
+      }
+      // A 403 on the COLLECTION says nothing about the files in it:
+      // mokuro-bunko refuses a top-level folder DELETE for ownership-based
+      // (uploader) accounts while allowing them to delete each file they own.
+      // So no demotion here — the caller deletes file by file (each file's
+      // own 403, if any, goes through the policy as usual) and counts the
+      // volumes that went (`unifiedCloudManager.deleteSeriesFolder`).
+      if (kind === 'permission') {
+        throw new ProviderError(
+          `Series folder delete refused, delete its files one by one: ${errorMessage}`,
+          'webdav',
+          'FOLDER_DELETE_REFUSED',
+          false,
+          false,
+          'permission'
+        );
       }
 
       const needsPerFileFallback =
@@ -1841,6 +1929,15 @@ export class WebDAVProvider implements SyncProvider {
     } else if (value !== null && localStorage.getItem(STORAGE_KEYS.PUT_VERIFIED) === url) {
       localStorage.removeItem(STORAGE_KEYS.PUT_VERIFIED);
     }
+  }
+
+  /**
+   * This server URL has advertised `X-Mokuro-Put: verified` (a header only
+   * mokuro-bunko sends): it is bunko, even when its identity probe failed.
+   */
+  private isKnownBunkoServer(serverUrl: string): boolean {
+    if (!browser || !serverUrl) return false;
+    return localStorage.getItem(STORAGE_KEYS.PUT_VERIFIED) === serverUrl.replace(/\/$/, '');
   }
 
   /** A PUT response (here or in a worker) said the connected server stages and verifies. */

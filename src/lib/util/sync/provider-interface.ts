@@ -137,6 +137,14 @@ export interface ProviderStatus {
    */
   canModifyDelete?: boolean;
   /**
+   * Whether this account may add files to the shared library (upload archives,
+   * sidecars, layer files, create folders), as reported by a provider capable of
+   * restricting it (mokuro-bunko's identity endpoint). A progress-only account
+   * is NOT read-only — its progress still syncs — but must not try to back up.
+   * Absent = no restriction — a server or provider without the concept.
+   */
+  canAddFiles?: boolean;
+  /**
    * Stable, non-secret identifier for the connected account, used to scope the
    * cloud metadata cache so switching accounts cannot cross-contaminate it.
    * Shape: `<provider>:<discriminator>`. NEVER include a password or token —

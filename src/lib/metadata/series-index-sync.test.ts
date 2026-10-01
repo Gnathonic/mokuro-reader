@@ -38,6 +38,19 @@ vi.mock('$lib/metadata/store', () => ({
   upsertFromSeriesFile: (title: string, file: unknown) => upsertFromSeriesFile(title, file)
 }));
 
+// Counts every folder-key fold the refresh performs (the real function runs).
+const keyFolds = vi.hoisted(() => ({ count: 0 }));
+vi.mock('./series-key', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./series-key')>();
+  return {
+    ...actual,
+    normalizeSeriesKey: (title: string) => {
+      keyFolds.count++;
+      return actual.normalizeSeriesKey(title);
+    }
+  };
+});
+
 function cloudFile(path: string, overrides: Partial<CloudVolumeWithProvider> = {}) {
   return {
     provider: 'webdav',
@@ -178,6 +191,31 @@ describe('refreshSeriesIndexes', () => {
       'One Piece/Volume 1.mokuro',
       'One Piece/series.json'
     ]);
+  });
+
+  it('reads a big first listing in ONE pass: linear in files, not series x files', async () => {
+    // Every cached series refreshes at once (a first listing, or a parser bump):
+    // the per-series folder lookup for the OCR pass must not rescan the whole
+    // listing per series — 400 x 4,000 folds would block the main thread.
+    const SERIES = 400;
+    const PER_SERIES = 10;
+    const files: CloudVolumeWithProvider[] = [];
+    for (let s = 0; s < SERIES; s++) {
+      files.push(cloudFile(`Series ${s}/series.json`));
+      for (let v = 1; v < PER_SERIES; v++) files.push(cloudFile(`Series ${s}/Volume ${v}.cbz`));
+    }
+    getActiveProvider.mockReturnValue(makeProvider());
+
+    const { refreshSeriesIndexes } = await load();
+    keyFolds.count = 0;
+    await refreshSeriesIndexes(listing(...files), 'webdav');
+
+    await vi.waitFor(() => expect(requestOcrUpgradePass).toHaveBeenCalledTimes(1));
+    const series = requestOcrUpgradePass.mock.calls[0][1] as Array<{ files: unknown[] }>;
+    expect(series).toHaveLength(SERIES);
+    expect(series.every((s) => s.files.length === PER_SERIES)).toBe(true);
+    // One fold per file for the folder map, plus a constant per series.
+    expect(keyFolds.count).toBeLessThan(SERIES * PER_SERIES * 3);
   });
 
   it('still calls the pass when nothing was refreshed (its retries get their turn)', async () => {

@@ -9,8 +9,12 @@ export type CloudCoreCredentials = Record<string, unknown>;
  * A request carrying a bearer token was answered 401: ask the session for
  * fresh credentials (`staleAuthorization` is the header that was refused, so a
  * token someone else already replaced is not re-issued again). Null = no
- * fresh credentials (re-issue refused, rate-limited, unreachable): the request
- * fails with its 401. Main thread: the provider's single-flight re-issue.
+ * fresh credentials because the re-issue was REFUSED (or nothing to re-issue
+ * with): the request fails with its 401. Rejects with a
+ * `TransientAuthRefreshError` (`worker-auth-refresh.ts`) when the re-issue was
+ * rate-limited or the server unreachable: the request fails with THAT error,
+ * never the 401, so no caller mistakes it for a rejected password.
+ * Main thread: the provider's single-flight re-issue.
  * Worker: a round trip to the main thread (`worker-auth-refresh.ts`).
  */
 export type CloudCoreAuthRefresher = (

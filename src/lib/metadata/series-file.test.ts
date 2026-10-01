@@ -10,6 +10,7 @@ import {
   orderVolumeEntryFields,
   parseSeriesFile,
   parseSeriesFileWithReport,
+  seriesFileCarriesServerRequest,
   seriesFileHealDifference,
   stringifySeriesFile,
   volumeToIndexEntry,
@@ -2424,5 +2425,64 @@ describe('mokuro_sha256 — the primary sidecar hash (OCR upgrades)', () => {
     const arriving = fileWith([entry()]);
     const merged = mergeSeriesFileForCache('One Piece', arriving, cached);
     expect(merged.volumes[0].mokuro_sha256).toBe(H1);
+  });
+});
+
+describe('seriesFileCarriesServerRequest (what a bunko PUT would ask for)', () => {
+  const base: SeriesFile = {
+    version: 2,
+    series_title: 'S',
+    external_ids: { anilist: 1 },
+    titles: { native: 'エス' },
+    synonyms: [],
+    updated_at: '2026-01-01T00:00:00.000Z',
+    volumes: [
+      {
+        volume_uuid: 'u1',
+        volume_title: 'Vol 1',
+        page_count: 2,
+        character_count: 3,
+        mokuro_version: '0.2.1'
+      }
+    ]
+  };
+
+  it('volume fields the server computes itself (counts, stamps, hashes) are no request', () => {
+    const built: SeriesFile = {
+      ...base,
+      volumes: [
+        { ...base.volumes[0], character_count: 99, mokuro_size: 7, mokuro_sha256: 'a'.repeat(64) }
+      ]
+    };
+    expect(seriesFileCarriesServerRequest(base, built)).toBe(false);
+  });
+
+  it('the same facts instant in another spelling is no request', () => {
+    expect(
+      seriesFileCarriesServerRequest(base, { ...base, updated_at: '2026-01-01T00:00:00Z' })
+    ).toBe(false);
+  });
+
+  it('facts, the spine offset and a volume offset each are', () => {
+    expect(seriesFileCarriesServerRequest(base, { ...base, synonyms: ['x'] })).toBe(true);
+    expect(seriesFileCarriesServerRequest(base, { ...base, spine_offset: 5 })).toBe(true);
+    expect(
+      seriesFileCarriesServerRequest(base, {
+        ...base,
+        volumes: [{ ...base.volumes[0], offset: 3 }]
+      })
+    ).toBe(true);
+  });
+
+  it('with no server copy yet: only facts or offsets make it a request', () => {
+    expect(
+      seriesFileCarriesServerRequest(undefined, {
+        ...base,
+        external_ids: {},
+        titles: {},
+        updated_at: FACTLESS_UPDATED_AT
+      })
+    ).toBe(false);
+    expect(seriesFileCarriesServerRequest(undefined, base)).toBe(true);
   });
 });

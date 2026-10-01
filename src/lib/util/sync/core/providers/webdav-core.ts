@@ -14,6 +14,7 @@ import type {
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { webdavAuthOptions } from './webdav-auth';
 import { authFromCredentials, bearerOf, webdavAuthHeaders } from './webdav-authorization';
+import { isTransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
 
 /** Did this failure carry an HTTP 401 (webdav lib errors and `WebdavUploadError` both set `status`)? */
 function isUnauthorized(error: unknown): boolean {
@@ -23,7 +24,9 @@ function isUnauthorized(error: unknown): boolean {
 /**
  * Fresh credentials after a 401, when the refused header was a bearer token
  * and a refresher exists; null otherwise (Basic and anonymous keep today's
- * behavior: the 401 is final).
+ * behavior: the 401 is final). A TRANSIENT refresh failure (rate limited,
+ * unreachable) is rethrown: the caller must fail with it, never with the 401,
+ * or the write path would read a valid password as rejected.
  */
 async function refreshedAfter401(
   sent: Record<string, string>,
@@ -33,7 +36,8 @@ async function refreshedAfter401(
   if (!refreshAuth || !bearerOf(authorization)) return null;
   try {
     return await refreshAuth(authorization);
-  } catch {
+  } catch (error) {
+    if (isTransientAuthRefreshError(error)) throw error;
     return null;
   }
 }
@@ -98,10 +102,18 @@ export const webdavCore: CloudProviderCore = {
       return 1024 * 1024;
     };
 
+    // Every request revalidates with the server (`no-cache`, not `no-store`:
+    // an unchanged file still answers 304 cheaply). mokuro-bunko serves
+    // `.mokuro`/`.mokuro.gz` with Last-Modified and no Cache-Control, so the
+    // default mode gives an older sidecar HEURISTIC freshness, and after a
+    // server re-OCR the browser kept returning the OLD bytes — the OCR upgrade
+    // then hashed stale bytes and never saw the new revision.
+    const cache: RequestCache = 'no-cache';
+
     // Best-effort size probe: helps detect truncation even when GET is chunked
     // without Content-Length. If HEAD fails/is unsupported, we'll continue without it.
     try {
-      const headResponse = await fetch(fullUrl, { method: 'HEAD', headers });
+      const headResponse = await fetch(fullUrl, { method: 'HEAD', headers, cache });
       if (headResponse.ok) {
         const headSize = parseInt(headResponse.headers.get('Content-Length') || '0', 10);
         if (headSize > 0) {
@@ -119,7 +131,7 @@ export const webdavCore: CloudProviderCore = {
       }
 
       try {
-        const response = await fetch(fullUrl, { headers: requestHeaders });
+        const response = await fetch(fullUrl, { headers: requestHeaders, cache });
 
         if (response.status === 401 && !authRefreshed) {
           authRefreshed = true;
@@ -211,6 +223,9 @@ export const webdavCore: CloudProviderCore = {
 
         break;
       } catch (error) {
+        // The token could not be renewed right now: fail with that, at once —
+        // a fetch retry would only meet the same 401 again.
+        if (isTransientAuthRefreshError(error)) throw error;
         const wrapped =
           error instanceof Error ? error : new Error('Unknown error during WebDAV download');
         lastError = wrapped;
