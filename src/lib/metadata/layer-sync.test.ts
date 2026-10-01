@@ -391,6 +391,35 @@ describe('syncLayersFromListing', () => {
     expect(uploadFile).not.toHaveBeenCalled();
   });
 
+  it('a push the server refuses (403) is not asked again until the layer changes', async () => {
+    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const { resetRefusedLayerPushesForTest } = await import('./layer-sync');
+    resetRefusedLayerPushesForTest();
+    await seedRow();
+    const layer = {
+      volume_uuid: 'v1',
+      layer_id: 'hayai-nova',
+      name: 'hayai-nova',
+      kind: 'ocr' as const,
+      created_at: '2026-09-16T09:00:00.000Z',
+      updated_at: '2026-09-16T09:00:00.000Z',
+      pages: [pg('なお')]
+    };
+    await putLayerWithPages(db, layer);
+    const files = listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.mokuro'));
+    uploadFile.mockRejectedValue(
+      new ProviderError('no', 'webdav', 'PERMISSION_DENIED', false, false, 'permission')
+    );
+    await syncLayersFromListing(files, 'webdav');
+    await syncLayersFromListing(files, 'webdav');
+    expect(uploadFile).toHaveBeenCalledTimes(1);
+
+    // A new edit is a new request.
+    await putLayerWithPages(db, { ...layer, updated_at: '2026-09-16T10:00:00.000Z' });
+    await syncLayersFromListing(files, 'webdav');
+    expect(uploadFile).toHaveBeenCalledTimes(2);
+  });
+
   it('pushes a locally edited layer as <title>.<id>.mokuro and stamps it; read-only skips', async () => {
     await seedRow();
     await putLayerWithPages(db, {

@@ -24,10 +24,11 @@ import { layerStaysLocal } from '$lib/catalog/mokuro-hash';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
-import type {
-  CloudFileMetadata,
-  ProviderType,
-  SyncProvider
+import {
+  ProviderError,
+  type CloudFileMetadata,
+  type ProviderType,
+  type SyncProvider
 } from '$lib/util/sync/provider-interface';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import { cbzStemsOf, classifyMokuroSidecar, layerSidecarName } from '$lib/util/sync/syncable-file';
@@ -702,6 +703,30 @@ async function removeGzSiblings(provider: SyncProvider, siblings: CloudFileMetad
   for (const file of siblings) await deleteOneCopy(provider, file);
 }
 
+/**
+ * Pushes the server refused (403: an uploader updating a layer file of a
+ * volume another account owns), by layer and the edit that was refused.
+ * Session-scoped: asking again on every listing would be refused the same way
+ * forever; a new edit of the layer, or the next page load, asks again.
+ */
+const refusedPushes = new Set<string>();
+
+function refusedPushKey(layer: Pick<VolumeOcrLayer, 'volume_uuid' | 'layer_id' | 'updated_at'>) {
+  return `${layer.volume_uuid}\u0000${layer.layer_id}\u0000${layer.updated_at}`;
+}
+
+function isPermissionRefusal(error: unknown): boolean {
+  return (
+    error instanceof ProviderError &&
+    (error.code === 'PERMISSION_DENIED' || error.webdavErrorType === 'permission')
+  );
+}
+
+/** Tests: forget the refusals of earlier runs. */
+export function resetRefusedLayerPushesForTest(): void {
+  refusedPushes.clear();
+}
+
 async function pushOne(
   provider: SyncProvider,
   folderTitle: string,
@@ -734,6 +759,13 @@ async function pushOne(
       }
     });
   } catch (error) {
+    if (isPermissionRefusal(error)) {
+      refusedPushes.add(refusedPushKey(planned));
+      console.debug(
+        `[layer-sync] the server refused layer '${planned.layer_id}' of '${stem}'; not asked again this session`
+      );
+      return false;
+    }
     console.warn(`[layer-sync] could not upload layer '${planned.layer_id}' of '${stem}':`, error);
     return false;
   }
@@ -881,7 +913,10 @@ async function planFolder(
     for (const layer of local) {
       const listedLayer = listed.get(layer.layer_id);
       const gzSiblings = gzCopiesOf(listedLayer);
-      if (layerNeedsPush(layer, listedLayer?.file, providerType, serverCompilesMetadata)) {
+      if (
+        layerNeedsPush(layer, listedLayer?.file, providerType, serverCompilesMetadata) &&
+        !refusedPushes.has(refusedPushKey(layer))
+      ) {
         transfers.push({ kind: 'push', folderTitle, stem: archiveStem, row, layer, gzSiblings });
       } else if (
         // The retry of a sibling delete that failed (here or on another
