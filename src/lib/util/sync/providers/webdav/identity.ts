@@ -2,7 +2,8 @@
  * mokuro-bunko identity-endpoint client.
  *
  * mokuro-bunko >= 0.1.4 exposes `GET /login/api/me`, which reports whether the
- * supplied Basic credentials are valid and which permissions the account has.
+ * supplied credentials (Basic, or a bunko >= 0.5.1 bearer token) are valid and
+ * which permissions the account has.
  * This lets the reader detect bad credentials reliably (a bare PROPFIND
  * "succeeds" anonymously on mokuro-bunko, so a connection test alone cannot).
  *
@@ -12,7 +13,7 @@
  *
  * This module must stay dependency-free (no Svelte / $app imports).
  */
-import { basicAuthHeader } from '$lib/util/base64';
+import { webdavAuthorization } from '../../core/providers/webdav-authorization';
 import type { SeriesMetadataPermissions } from '../../provider-interface';
 
 export interface ServerPermissions {
@@ -27,7 +28,14 @@ export interface ServerPermissions {
 }
 
 export type IdentityResult =
-  | { kind: 'authenticated'; username: string; role: string; permissions: ServerPermissions }
+  | {
+      kind: 'authenticated';
+      username: string;
+      role: string;
+      permissions: ServerPermissions;
+      /** The `/login/api/me` URL that answered (the bunko root's mount, subpath or origin). */
+      endpoint?: string;
+    }
   | { kind: 'invalid-credentials' }
   | { kind: 'rate-limited' } // recognizable 429
   | { kind: 'anonymous' } // 200 authenticated:false when NO creds were sent
@@ -129,16 +137,23 @@ function interpretResponse(
   return null;
 }
 
+/**
+ * `token`, when given, is sent instead of the password (`webdavAuthorization`):
+ * a dead token answers `invalid-credentials`, which the caller turns into a
+ * re-issue from the stored password.
+ */
 export async function fetchServerIdentity(
   serverUrl: string,
   username?: string,
   password?: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  token?: string | null
 ): Promise<IdentityResult> {
-  const credsSent = !!password; // header rule: Authorization iff password non-empty
+  const authorization = webdavAuthorization({ username, password, token });
+  const credsSent = !!authorization;
   const headers: Record<string, string> = { Accept: 'application/json' };
-  if (credsSent) {
-    headers.Authorization = basicAuthHeader(username ?? '', password!);
+  if (authorization) {
+    headers.Authorization = authorization;
   }
 
   for (const url of deriveCandidateUrls(serverUrl)) {
@@ -161,7 +176,7 @@ export async function fetchServerIdentity(
       }
 
       const result = interpretResponse(response.status, body, credsSent, jsonParsed);
-      if (result) return result;
+      if (result) return result.kind === 'authenticated' ? { ...result, endpoint: url } : result;
     } catch {
       // network error / timeout: try the next candidate
     } finally {

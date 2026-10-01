@@ -1,9 +1,16 @@
 import { AuthType, type WebDAVClientOptions } from 'webdav';
-import { basicAuthHeader } from '$lib/util/base64';
+import { webdavAuthorization } from './webdav-authorization';
+
+export {
+  webdavAuthorization,
+  webdavAuthHeaders,
+  bearerOf,
+  authFromCredentials,
+  type WebdavAuthMaterial
+} from './webdav-authorization';
 
 /**
- * Build webdav `createClient` options with a UTF-8-safe Basic Authorization
- * header.
+ * Build webdav `createClient` options with the session's Authorization header.
  *
  * The webdav library's own Basic-auth encoder (the `base-64` package) encodes
  * credentials as Latin-1: it throws on characters above U+00FF and produces
@@ -12,22 +19,24 @@ import { basicAuthHeader } from '$lib/util/base64';
  * `AuthType.None` (Password/Auto would overwrite `headers.Authorization` with
  * the lib's encoder) and pass a pre-built header instead.
  *
- * Header rule: an Authorization header is built iff `password` is non-empty.
- * A username without a password sends NO header (anonymous), so a cleared
- * password yields truly anonymous requests on the main thread and in workers.
- * Password-only auth (e.g. copyparty) still works: `Basic :pw`.
+ * Header rule: `webdavAuthorization` — Bearer when a token is held, else Basic
+ * iff `password` is non-empty, else none. A username without a password sends
+ * NO header (anonymous), so a cleared password yields truly anonymous requests
+ * on the main thread and in workers.
  */
 export function webdavAuthOptions(
   username?: string,
   password?: string,
-  extra: WebDAVClientOptions = {}
+  extra: WebDAVClientOptions = {},
+  token?: string | null
 ): WebDAVClientOptions {
-  if (!password) {
+  const authorization = webdavAuthorization({ username, password, token });
+  if (!authorization) {
     return { ...extra, authType: AuthType.None };
   }
   return {
     ...extra,
     authType: AuthType.None,
-    headers: { ...(extra.headers ?? {}), Authorization: basicAuthHeader(username ?? '', password) }
+    headers: { ...(extra.headers ?? {}), Authorization: authorization }
   };
 }
