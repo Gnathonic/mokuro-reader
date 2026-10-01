@@ -30,6 +30,7 @@ import {
   QUEUE_BACKOFF_MS,
   QueuePoller,
   cleanupLegacyRecheckEntries,
+  fetchWithQueueAuth,
   parseQueueFile,
   pullCompletedVolume,
   queueUrlForArchive,
@@ -607,5 +608,101 @@ describe('startServerOcrQueue (app start)', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     off2();
+  });
+});
+
+describe('the queue under a bunko bearer token', () => {
+  const SERVER = 'http://127.0.0.1:8090';
+  const CONNECTED = `${SERVER}/mokuro-reader/.mokuro-queue.json`;
+  let token: string;
+  let reissue: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW });
+    resetServerOcrQueueForTest();
+    localStorage.clear();
+    token = 'old';
+    reissue = vi.fn(async (stale: string) => {
+      if (stale !== `Bearer ${token}`) return true;
+      token = 'new';
+      return true;
+    });
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      reissueAfterUnauthorized: reissue,
+      getWorkerUploadCredentials: async () => ({
+        webdavUrl: SERVER,
+        webdavUsername: 'reader',
+        webdavToken: token,
+        webdavPutVerified: true
+      })
+    });
+  });
+
+  afterEach(() => {
+    resetServerOcrQueueForTest();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    getActiveProvider.mockReturnValue(null);
+  });
+
+  it('polls with Bearer, and a 401 re-issues once and retries with the fresh token', async () => {
+    const auths: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const auth = (init.headers as Record<string, string>).Authorization;
+      auths.push(auth);
+      if (auth !== 'Bearer new') return new Response('', { status: 401 });
+      return new Response(
+        JSON.stringify({ ...queueFixture(NOW), volumes: [], next_check_after: null }),
+        { status: 200 }
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await startServerOcrQueue();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([CONNECTED, CONNECTED]);
+    expect(auths).toEqual(['Bearer old', 'Bearer new']);
+    expect(reissue).toHaveBeenCalledTimes(1);
+  });
+
+  it('never sends the account header to another origin a manifest names', async () => {
+    const fetchMock = vi.fn(async () => new Response('x', { status: 200 }));
+    await fetchWithQueueAuth(
+      'https://elsewhere.example/file.mokuro',
+      { headers: { Authorization: 'Bearer old', 'X-Other': '1' } },
+      CONNECTED,
+      'webdav',
+      fetchMock
+    );
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(init.headers).toEqual({ 'X-Other': '1' });
+  });
+
+  it('a refused re-issue leaves the 401 standing (no retry)', async () => {
+    reissue.mockResolvedValue(false);
+    const fetchMock = vi.fn(async () => new Response('', { status: 401 }));
+    const res = await fetchWithQueueAuth(
+      `${SERVER}/mokuro-reader/S/V.json`,
+      { headers: { Authorization: 'Bearer old' } },
+      CONNECTED,
+      'webdav',
+      fetchMock
+    );
+    expect(res.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 401 under Basic or on an anonymous queue is not retried', async () => {
+    const fetchMock = vi.fn(async () => new Response('', { status: 401 }));
+    await fetchWithQueueAuth(
+      `${SERVER}/x`,
+      { headers: { Authorization: 'Basic eDp5' } },
+      CONNECTED,
+      'webdav',
+      fetchMock
+    );
+    await fetchWithQueueAuth(`${SERVER}/x`, {}, CONNECTED, 'none', fetchMock);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(reissue).not.toHaveBeenCalled();
   });
 });

@@ -163,11 +163,12 @@ export type ManifestLoad = { manifest: VolumeManifest } | { error: string };
  */
 export async function loadVolumeManifest(
   manifestUrl: string,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  fetchImpl: typeof fetch = fetch
 ): Promise<ManifestLoad> {
   let json: unknown;
   try {
-    const response = await fetch(
+    const response = await fetchImpl(
       manifestUrl,
       headers ? { cache: 'no-store', headers } : { cache: 'no-store' }
     );
