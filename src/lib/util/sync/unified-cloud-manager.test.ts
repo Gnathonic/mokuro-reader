@@ -1725,7 +1725,8 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
         size: 42,
         modifiedTime: '2026-08-17T00:00:00.000Z'
       },
-      fetched_at: '2026-08-17T00:00:00.000Z'
+      fetched_at: '2026-08-17T00:00:00.000Z',
+      parser: 1
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
@@ -1773,7 +1774,8 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
         size: 1,
         modifiedTime: '2026-08-01T00:00:00.000Z'
       },
-      fetched_at: '2026-08-01T00:00:00.000Z'
+      fetched_at: '2026-08-01T00:00:00.000Z',
+      parser: 1
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
@@ -1826,7 +1828,8 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
         size: 1,
         modifiedTime: '2026-08-01T00:00:00.000Z'
       },
-      fetched_at: '2026-08-01T00:00:00.000Z'
+      fetched_at: '2026-08-01T00:00:00.000Z',
+      parser: 1
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
@@ -1876,7 +1879,8 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
         size: 100,
         modifiedTime: '2026-08-17T00:00:00.000Z'
       },
-      fetched_at: '2026-08-17T00:00:00.000Z'
+      fetched_at: '2026-08-17T00:00:00.000Z',
+      parser: 1
     });
     getBySeries.mockReturnValue([
       cloudFile('One Piece/Volume 1.cbz'),
@@ -2168,7 +2172,8 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
         size: 42,
         modifiedTime: '2026-08-17T00:00:00.000Z'
       },
-      fetched_at: '2026-08-17T00:00:00.000Z'
+      fetched_at: '2026-08-17T00:00:00.000Z',
+      parser: 1
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
@@ -2196,7 +2201,8 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
         seriesFileJson([{ uuid: 'uuid-remote', title: 'Volume 7' }], '2026-01-01T00:00:00.000Z')
       ),
       source: { provider: 'webdav', path: 'One Piece/series.json', size: 42, modifiedTime: 't' },
-      fetched_at: '2026-08-17T00:00:00.000Z'
+      fetched_at: '2026-08-17T00:00:00.000Z',
+      parser: 1
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
@@ -3077,7 +3083,8 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
         size: 42,
         modifiedTime: '2026-08-01T00:00:00.000Z'
       },
-      fetched_at: '2026-08-01T00:00:00.000Z'
+      fetched_at: '2026-08-01T00:00:00.000Z',
+      parser: 1
     });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
@@ -3287,7 +3294,8 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
         modifiedTime: '2026-08-22T00:00:00.000Z',
         ...sourceOverrides
       },
-      fetched_at: '2026-08-22T00:00:00.000Z'
+      fetched_at: '2026-08-22T00:00:00.000Z',
+      parser: 1
     };
   }
 
@@ -3611,6 +3619,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
         modifiedTime: '2026-08-17T00:00:00.000Z'
       },
       fetched_at: '2026-08-17T01:00:00.000Z',
+      parser: 1,
       ...overrides
     };
   }

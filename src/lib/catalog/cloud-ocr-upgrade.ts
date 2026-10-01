@@ -1,17 +1,29 @@
 import { db } from '$lib/catalog/db';
 import { parseMokuroFile } from '$lib/import/processing';
-import type { VolumeMetadata } from '$lib/types';
+import type { Page, VolumeMetadata } from '$lib/types';
 import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
 } from '$lib/util/sync/unified-cloud-manager';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import type { ProviderType } from '$lib/util/sync/provider-interface';
+import type { CloudFileMetadata, ProviderType } from '$lib/util/sync/provider-interface';
+import { getLayerMeta, getLayerPages, layerTables, putLayerWithPages } from './layer-store';
+import { isUntouchedUpdatedOcr, sha256Hex, type MokuroCloudAttestation } from './mokuro-hash';
+export { isUntouchedUpdatedOcr };
+import { fitPagesToVolume, sameOcrPages } from './ocr-upgrade-pages';
 
 /**
- * Background queue that upgrades image-only local volumes with OCR data from
- * a cloud provider's .mokuro/.mokuro.gz sidecar. (Extracted from the removed
- * libraries feature — this cloud half is used by cloud placeholders.)
+ * Upgrading an installed volume's OCR from the cloud's `.mokuro`/`.mokuro.gz`
+ * sidecar — the WRITE half. Two callers:
+ *
+ * - the image-only queue below (`enqueueCloudOcrUpgrade`, fed by the catalog's
+ *   placeholder pass): an installed volume with no OCR at all takes the
+ *   sidecar beside its archive (extracted from the removed libraries feature);
+ * - the hash-driven pass (`ocr-upgrade-pass.ts`): a volume WITH OCR whose
+ *   `series.json` entry names a different `mokuro_sha256` than the one its
+ *   primary was installed from takes the new file — or, when the user edited
+ *   that primary, gets it as the `updated-ocr` layer instead
+ *   (`applyCloudPrimaryOcr`).
  */
 
 type CloudUpgradeTask = {
@@ -83,6 +95,22 @@ function upgradeSkipReason(volume: VolumeMetadata): string | null {
   return null;
 }
 
+/** Where a listed sidecar is stored — the attestation its hash may be published under. */
+export function attestationOfListedFile(
+  provider: string,
+  file: Pick<CloudFileMetadata, 'size' | 'modifiedTime' | 'modifiedTimeProvisional'>
+): MokuroCloudAttestation | undefined {
+  if (!(typeof file.size === 'number' && Number.isInteger(file.size) && file.size > 0)) {
+    return undefined;
+  }
+  const ms = file.modifiedTimeProvisional ? NaN : Date.parse(file.modifiedTime ?? '');
+  return {
+    provider,
+    size: file.size,
+    ...(Number.isFinite(ms) ? { modified: Math.trunc(ms / 1000) } : {})
+  };
+}
+
 async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
   console.log(
     '[Cloud OCR Upgrade] Starting task:',
@@ -104,7 +132,12 @@ async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
   }
   const sidecarBlob = await activeProvider.downloadFile(task.sidecar);
   console.log('[Cloud OCR Upgrade] Downloaded sidecar bytes:', sidecarBlob.size, task.sidecar.path);
-  await upgradeOcrFromSidecarBlob(task.volumeUuid, task.sidecar.path, sidecarBlob);
+  await upgradeOcrFromSidecarBlob(
+    task.volumeUuid,
+    task.sidecar.path,
+    sidecarBlob,
+    attestationOfListedFile(task.provider, task.sidecar)
+  );
 }
 
 /**
@@ -118,13 +151,16 @@ async function applyUpgrade(task: CloudUpgradeTask): Promise<void> {
 export async function upgradeOcrFromSidecarBlob(
   volumeUuid: string,
   sidecarPath: string,
-  sidecarBlob: Blob
+  sidecarBlob: Blob,
+  /** The listed file the bytes came from, when they came from a listing. */
+  cloud?: MokuroCloudAttestation
 ): Promise<boolean> {
   const mokuroFile = await decodeMokuroSidecar(sidecarPath, sidecarBlob);
   if (!mokuroFile) {
     console.warn('[Cloud OCR Upgrade] Failed to decode sidecar:', sidecarPath);
     return false;
   }
+  const sha256 = await sha256Hex(mokuroFile);
 
   const parsed = await parseMokuroFile(mokuroFile);
   console.log(
@@ -159,7 +195,10 @@ export async function upgradeOcrFromSidecarBlob(
       series_uuid: parsed.seriesUuid || current.series_uuid,
       page_count: pages.length,
       character_count: totalChars,
-      page_char_counts: cumulative
+      page_char_counts: cumulative,
+      // The primary now IS these bytes (`mokuro_sha256` = its base revision).
+      mokuro_sha256: sha256,
+      mokuro_sha256_cloud: sha256 ? cloud : undefined
     });
     return current;
   });
@@ -228,4 +267,148 @@ export function enqueueCloudOcrUpgrade(
   );
 
   void processQueue();
+}
+
+// ---------------------------------------------------------------------------
+// The hash-driven upgrade: one cloud primary sidecar onto one installed volume
+// ---------------------------------------------------------------------------
+
+/**
+ * The layer an EDITED volume gets the cloud's newer OCR as. One id, so a still
+ * newer file REPLACES it rather than piling up layers; its row carries
+ * `source_sha256`/`source_at` (see `VolumeOcrLayer`), which keeps it out of
+ * every layer push while untouched — the cloud already holds these exact pages
+ * as the volume's primary sidecar.
+ */
+export const UPDATED_OCR_LAYER_ID = 'updated-ocr';
+export const UPDATED_OCR_LAYER_NAME = 'Updated OCR';
+
+/** The read-only pre-edit snapshot (`edit-persist.ts`'s `ORIGINAL_LAYER_ID`; a literal to stay out of its import cycle). */
+const ORIGINAL_LAYER = 'original';
+
+/**
+ * What one cloud primary sidecar did to one volume:
+ *
+ * - `upgraded` — an unedited primary was replaced wholesale;
+ * - `layered` — an edited primary was kept, the file went to the `updated-ocr`
+ *   layer (created, or an untouched one replaced);
+ * - `recorded` — the file is the OCR the volume already has (same pages as the
+ *   primary, or for an edited volume the same as its pre-edit `original`):
+ *   only its hash was recorded, nothing else changed;
+ * - `kept` — edited, and the `updated-ocr` layer is the user's own by now (they
+ *   edited it): left alone, the file remembered so it is not re-fetched;
+ * - `mismatch` — a different page count: not this archive's OCR at all;
+ * - `skipped` — not installed (any more), or already exactly these bytes.
+ */
+export type CloudPrimaryOutcome =
+  | 'upgraded'
+  | 'layered'
+  | 'recorded'
+  | 'kept'
+  | 'mismatch'
+  | 'skipped';
+
+export interface CloudPrimaryOcr {
+  /** The sidecar's pages as parsed (`img_path` as the FILE names them). */
+  pages: Page[];
+  /** The sidecar's mokuro `version`. */
+  version: string;
+  /** `mokuro_sha256` of the decoded bytes the pages were parsed from. */
+  sha256: string;
+  /** The listed file the bytes came from (see `MokuroCloudAttestation`). */
+  cloud?: MokuroCloudAttestation;
+}
+
+/**
+ * Apply one cloud primary sidecar to an INSTALLED volume, by the rules of the
+ * OCR upgrade (see `CloudPrimaryOutcome`). Everything is decided against the
+ * rows as they stand INSIDE one write transaction — the download and parse
+ * before it take long enough for an edit, a delete or another pass to land.
+ *
+ * The volume keeps its `volume_uuid` (read history and progress are keyed by
+ * it) and its page count (a different count is a `mismatch`, never applied).
+ * An upgrade recounts `character_count`/`page_char_counts` from the new pages:
+ * the progress PAGE is untouched, and characters read are re-derived from it
+ * against the new per-page counts wherever they are computed from
+ * `page_char_counts` (series/catalog views at once; the synced
+ * `VolumeData.chars` at the next page turn).
+ */
+export async function applyCloudPrimaryOcr(
+  volumeUuid: string,
+  ocr: CloudPrimaryOcr
+): Promise<CloudPrimaryOutcome> {
+  return db.transaction('rw', [db.volumes, db.volume_ocr, ...layerTables(db)], async () => {
+    const current = await db.volumes.get(volumeUuid);
+    if (!current || !isVolumeInstalled(current)) return 'skipped';
+    if (current.mokuro_sha256 === ocr.sha256) return 'skipped';
+    const local = await db.volume_ocr.get(volumeUuid);
+    if (!local) return 'skipped';
+
+    if (ocr.pages.length !== current.page_count || ocr.pages.length !== local.pages.length) {
+      console.debug(
+        `[Cloud OCR Upgrade] not applying a ${ocr.pages.length}-page sidecar to ` +
+          `'${current.series_title}/${current.volume_title}' (${current.page_count} pages): ` +
+          'a different archive, not an OCR upgrade'
+      );
+      return 'mismatch';
+    }
+
+    const pages = fitPagesToVolume(ocr.pages, local.pages);
+    const base = {
+      mokuro_sha256: ocr.sha256,
+      mokuro_sha256_cloud: ocr.cloud
+    };
+
+    // The OCR this volume already has, arriving as different bytes (a
+    // re-serialization, another producer's key order): learn its hash.
+    if (sameOcrPages(pages, local.pages)) {
+      await db.volumes.update(volumeUuid, base);
+      return 'recorded';
+    }
+
+    if (current.ocr_edited_at) {
+      // The pre-edit snapshot IS what the user's edits sit on: the cloud file
+      // equal to it is nothing new from the server, only its hash is.
+      const original = await getLayerPages(db, volumeUuid, ORIGINAL_LAYER);
+      if (original && sameOcrPages(pages, original)) {
+        await db.volumes.update(volumeUuid, base);
+        return 'recorded';
+      }
+      const existing = await getLayerMeta(db, volumeUuid, UPDATED_OCR_LAYER_ID);
+      if (existing && !isUntouchedUpdatedOcr(existing)) {
+        // The user edited the previous server OCR layer: it is their work now.
+        console.debug(
+          `[Cloud OCR Upgrade] '${current.volume_title}': newer cloud OCR not filed — ` +
+            `the '${UPDATED_OCR_LAYER_ID}' layer has local edits`
+        );
+        await db.volumes.update(volumeUuid, { updated_ocr_sha256: ocr.sha256 });
+        return 'kept';
+      }
+      const now = new Date().toISOString();
+      await putLayerWithPages(db, {
+        volume_uuid: volumeUuid,
+        layer_id: UPDATED_OCR_LAYER_ID,
+        name: existing?.name ?? UPDATED_OCR_LAYER_NAME,
+        kind: 'ocr',
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+        source_sha256: ocr.sha256,
+        source_at: now,
+        pages
+      });
+      await db.volumes.update(volumeUuid, { updated_ocr_sha256: ocr.sha256 });
+      return 'layered';
+    }
+
+    const { totalChars, cumulative } = buildPageCharCounts(pages);
+    await db.volume_ocr.put({ volume_uuid: volumeUuid, pages });
+    await db.volumes.update(volumeUuid, {
+      ...base,
+      mokuro_version: ocr.version || current.mokuro_version || '0.0.0',
+      character_count: totalChars,
+      page_char_counts: cumulative,
+      updated_ocr_sha256: undefined
+    });
+    return 'upgraded';
+  });
 }

@@ -238,12 +238,42 @@ async function runRefresh(
     if (record) refreshed.push(record);
   });
 
-  if (refreshed.length === 0) return;
-  try {
-    await putSeriesIndexes(refreshed);
-  } catch (error) {
-    console.warn('[series-index-sync] could not store the refreshed indexes:', error);
+  if (refreshed.length > 0) {
+    try {
+      await putSeriesIndexes(refreshed);
+    } catch (error) {
+      console.warn('[series-index-sync] could not store the refreshed indexes:', error);
+    }
   }
+
+  // The OCR upgrade rides the refreshed copies: a `series.json` that moved is
+  // where a changed `mokuro_sha256` shows up. Fire-and-forget (it downloads
+  // sidecars and must not hold up whoever awaits this refresh), and called
+  // even with nothing refreshed so a previous pass's retries get their turn.
+  // Loaded on demand: the pass pulls the import/provider graph along, which
+  // would otherwise close an import cycle through `unified-cloud-manager.ts`.
+  const upgrade = refreshed.map((rec) => ({
+    title: rec.series_title,
+    files: folderFiles(cloudFilesMap, rec.series_key)
+  }));
+  void import('$lib/catalog/ocr-upgrade-pass')
+    .then(({ requestOcrUpgradePass }) => requestOcrUpgradePass(providerType, upgrade))
+    .catch((error) => console.debug('[series-index-sync] OCR upgrade pass failed:', error));
+}
+
+/** One folder's own files (exactly one level deep) from a listing. */
+function folderFiles(
+  cloudFilesMap: Map<string, CloudFileMetadata[]>,
+  seriesKey: string
+): CloudFileMetadata[] {
+  const out: CloudFileMetadata[] = [];
+  for (const files of cloudFilesMap.values()) {
+    for (const file of files) {
+      const parts = normalizeCloudPath(file.path).split('/');
+      if (parts.length === 2 && normalizeSeriesKey(parts[0]) === seriesKey) out.push(file);
+    }
+  }
+  return out;
 }
 
 interface RefreshRequest {

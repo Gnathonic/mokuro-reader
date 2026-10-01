@@ -30,6 +30,24 @@ export interface SeriesIndexRecord {
    * the write's own record replaces this one without the flag.
    */
   raw_entry_collapse?: boolean;
+  /**
+   * The {@link SERIES_INDEX_PARSER} that produced `file`. A record parsed by
+   * older code silently lacks every field that code did not know (the parser
+   * drops unknown keys), and its cloud stamp alone would keep it cached
+   * forever — so a record from an older parser is re-fetched once
+   * (`indexNeedsRefresh`). Stamped by the table's own writers below.
+   */
+  parser?: number;
+}
+
+/**
+ * Bump whenever `parseSeriesFile` starts KEEPING a field it used to drop, so
+ * every cached copy is re-read once. 1 = `mokuro_sha256` (OCR upgrades).
+ */
+export const SERIES_INDEX_PARSER = 1;
+
+function stamped(rec: SeriesIndexRecord): SeriesIndexRecord {
+  return rec.parser === SERIES_INDEX_PARSER ? rec : { ...rec, parser: SERIES_INDEX_PARSER };
 }
 
 export async function getSeriesIndex(seriesKey: string): Promise<SeriesIndexRecord | undefined> {
@@ -46,7 +64,7 @@ export async function listSeriesIndexes(): Promise<SeriesIndexRecord[]> {
 }
 
 export async function putSeriesIndex(rec: SeriesIndexRecord): Promise<void> {
-  await db.series_index.put(rec);
+  await db.series_index.put(stamped(rec));
 }
 
 /**
@@ -56,7 +74,7 @@ export async function putSeriesIndex(rec: SeriesIndexRecord): Promise<void> {
  */
 export async function putSeriesIndexes(records: SeriesIndexRecord[]): Promise<void> {
   if (records.length === 0) return;
-  await db.series_index.bulkPut(records);
+  await db.series_index.bulkPut(records.map(stamped));
 }
 
 export async function deleteSeriesIndex(seriesKey: string): Promise<void> {
@@ -131,5 +149,7 @@ export function indexNeedsRefresh(
   cloud: { size: number; modifiedTime: string },
   provider?: string
 ): boolean {
+  // Parsed by older code: fields it did not know are missing from `file`.
+  if (rec && rec.parser !== SERIES_INDEX_PARSER) return true;
   return sourceStampChanged(rec?.source, cloud, provider);
 }

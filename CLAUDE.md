@@ -176,6 +176,10 @@ interface VolumeMetadata {
   thumbnail_width?: number;
   thumbnail_height?: number;
   metadata_only?: true; // pages removed from this device — see below
+  ocr_edited_at?: string; // last in-reader OCR edit (sparse index)
+  mokuro_sha256?: string; // hash of the .mokuro bytes the installed primary came from — see "OCR upgrades"
+  mokuro_sha256_cloud?: { provider: string; size: number; modified?: number }; // where that file is KNOWN to be stored
+  updated_ocr_sha256?: string; // edited volumes: newest cloud OCR filed as the `updated-ocr` layer
 }
 
 interface VolumeOCR {
@@ -360,6 +364,72 @@ deletes like any other layer — `KNOWN_ENGINE_IDS` (`reader/edit/layers.ts`)
 and `isTranslationLayerId` (`layer-kind.ts`) keep classifying those ids
 correctly on purpose, for devices that still have them in IndexedDB.
 
+### OCR upgrades
+
+When the cloud's `.mokuro` for an INSTALLED volume changes, the reader
+re-fetches it and swaps the new OCR in — automatically, in the background
+(`src/lib/catalog/ocr-upgrade-pass.ts`, writes in `cloud-ocr-upgrade.ts`).
+
+- **The local record.** `VolumeMetadata.mokuro_sha256` is the hash of the
+  `.mokuro` bytes the installed primary came from — its BASE revision.
+  `processVolume` hashes whatever bytes it parses, so every install path sets
+  it (local import, cloud download, deep link); the OCR upgrade and the
+  image-only upgrade set it from the file they applied; this device's own
+  uploads of the primary sidecar set it to the hash of exactly the bytes sent
+  (backup — worker and main-thread —, the sidecar backfill incl. edited
+  volumes' re-uploads, a rename's regenerated sidecar; `mokuro-upload-record.ts`).
+  `mokuro_sha256_cloud` records where that file is KNOWN to be stored (a
+  listed sidecar a download installed from, or an upload) — the certainty
+  `buildSeriesFile` needs to publish the hash. A download takes the listed
+  sidecar over a copy embedded in the archive, and `<Volume>.mokuro` over
+  `<Volume>.mokuro.gz`; an archive-embedded primary records its own hash but
+  vouches for no cloud file. A hand edit KEEPS the hash (the primary is still
+  that revision plus local edits — `ocr_edited_at` says so); promoting the
+  `updated-ocr` layer adopts its `source_sha256` (attestation cleared);
+  promoting any other layer leaves it. A reinstall's `put` replaces it.
+  Unindexed fields: no Dexie version.
+- **When.** After a listing refreshed `series.json` copies (`series-index-sync.ts`,
+  for the refreshed series) and on series open (`series-open.ts`, that
+  series). Single-flight (a request mid-run merges into ONE follow-up),
+  ≤ 4 downloads at once, failures logged at debug and retried by the next
+  pass, ONE summary notice per run ("Updated OCR for 3 volumes"), and no work
+  at all — not even a row read beyond the index — when no entry carries a hash.
+- **Decision per installed volume** (`isVolumeInstalled`; metadata-only rows
+  and placeholders are never touched). The index entry is matched by
+  `volume_uuid`, else folded `volume_title` (a server re-OCR can mint a new
+  uuid); the LOCAL uuid is always kept. Entry hash equal → nothing. Different,
+  or ABSENT locally (a one-time baseline for volumes installed before hashes)
+  → download the primary sidecar (never a layer file), hash it, parse it
+  (`decodeMokuroSidecar` + `parseMokuroFile`), then `applyCloudPrimaryOcr`:
+  another page count → skipped (a different archive) and remembered; the same
+  pages under other bytes (`sameOcrPages`: dimensions + blocks, not
+  `img_path`) → only the hash is recorded; unedited → the primary is replaced
+  wholesale on the volume's OWN image names (`fitPagesToVolume`), with
+  `mokuro_version`, `character_count`, `page_char_counts` and the hash.
+- **Edited volumes keep their edits.** With `ocr_edited_at` set, a file equal
+  to the pre-edit `original` layer only records the hash; otherwise it is
+  filed as the `updated-ocr` layer ("Updated OCR", kind `ocr`) carrying
+  `source_sha256` and `source_at` (= `updated_at` while untouched, compared
+  like `passive_at`). While untouched that row is a mirror of the cloud's own
+  primary: never pushed as a layer file (`layerNeedsPush`, the backup's layer
+  sidecars) and REPLACED in place by a newer server OCR. Once the user edits
+  it, it is theirs: left alone. `updated_ocr_sha256` on the row remembers the
+  file filed (or refused) so the next pass needs no download — even after the
+  user deleted the layer.
+- **A volume open in the reader** (or its text view) is deferred, never
+  swapped under the user: `currentVolumeData` re-reads pages whenever the row
+  changes, which would move text and an edit session mid-page. Its series is
+  retried by the next pass.
+- **Read stats.** Progress is keyed by uuid and page and stays put. An upgrade
+  recounts `page_char_counts`, so characters read of a partially read volume
+  are re-derived against the new per-page counts wherever they come from
+  `page_char_counts` (series/catalog views at once); the synced
+  `VolumeData.chars` follows at the next page turn.
+- **mokuro-bunko** computes `mokuro_sha256` itself when it compiles
+  `series.json` (it must hash the primary's JSON after gunzip, emit it after
+  `mokuro_modified`, and move it whenever the sidecar changes). Old servers
+  and plain storage that never published a hash simply get no upgrades.
+
 ### Series sidecar `series.json`
 
 One file per series at `<Series Title>/series.json` (`src/lib/metadata/series-file.ts`,
@@ -385,10 +455,18 @@ series' volumes:
     mokuro_version: string,
     spine_width?: number,
     archive_size?: number,        // bytes of the .cbz; optional, like spine_width
+    mokuro_size?: number,         // listing stamp of the primary .mokuro[.gz] the entry describes
+    mokuro_modified?: number,     // (epoch s, truncated) — never a local clock
+    mokuro_sha256?: string,       // lowercase hex SHA-256 of that primary's JSON bytes (after gunzip)
+    cover_size?: number,
+    cover_modified?: number,
     offset?: number                // px — per-volume shelf alignment, INDEX data
   }[]
 }
 ```
+
+Wire order of a volume entry is a contract with mokuro-bunko's compiler (key
+insertion order, `orderVolumeEntryFields`): the fields above, in that order.
 
 Rules:
 
@@ -416,6 +494,19 @@ Rules:
   correct or reset it. Readers clamp both fields on parse (±50% / ±500px);
   mokuro-bunko stores whatever it is sent verbatim (one side owns the range
   rule).
+- **`mokuro_sha256` is the primary sidecar's identity, INDEX data.** The hash
+  of `<Series>/<Volume>.mokuro` (else `.mokuro.gz`, after gunzip) — never of a
+  layer file. Absent = unknown, no opinion. It describes a FILE, so it travels
+  with that file's `mokuro_size`/`mokuro_modified`: a merge carries it onto an
+  entry only when those stamps match the entry it came from
+  (`createVolumeEntryMerger`), and never moves the facts stamp. A reader
+  publishes its own only when CERTAIN it describes the cloud file:
+  `buildSeriesFile` emits an installed row's `mokuro_sha256` only when the
+  row's `mokuro_sha256_cloud` (this device uploaded those exact bytes, or
+  installed from a download of that listed file) names the listing's provider
+  and the listed size/mtime. A published hash otherwise rides through while the
+  listing still shows its file; a wrong hash is never written. bunko computes
+  its own. Drives the OCR upgrade (see "OCR upgrades").
 - **AniList display data (`format`, `status`, volume/chapter totals,
   `cover_url`) is never stored** — not here, not anywhere. The link picker
   shows it transiently from the search result only; the read-progress push
@@ -447,7 +538,10 @@ Rules:
   `size`/`modifiedTime`. After every cloud listing, `series-index-sync.ts`
   re-downloads only the files whose (`size`, `modifiedTime`, provider) differ
   from the cached stamp (`indexNeedsRefresh`), max 4 concurrent, in the
-  background.
+  background. A record also carries the `parser` that produced it
+  (`SERIES_INDEX_PARSER`): the parser drops unknown keys, so a copy cached by
+  older code lacks fields it did not know, and is re-read once — bump the
+  constant whenever `parseSeriesFile` starts keeping a field it used to drop.
 - **Import/export**: a `series.json` in an imported ZIP (or file selection) is
   applied after the volumes save; series ZIP and single-volume ZIP/CBZ exports
   include one built from the local volumes.
@@ -523,6 +617,7 @@ Rules:
 | Settings profiles                                           | `profiles.json`                           | `lastUpdated` per profile              |
 | Series facts (link, titles, synonyms, tag, unit)            | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp         |
 | Shelf alignment (`spine_offset`, per-volume `offset`)       | `<Series>/series.json` (index fields)     | local wins, else the published value   |
+| Primary OCR identity (`mokuro_sha256`)                      | `<Series>/series.json` (index field)      | rides with its file's `mokuro_*` stamp |
 | Volume completion date (`completedAt`)                      | `volume-data.json` (volume uuid keys)     | rides the whole-entry volume merge     |
 | Reading goals, custom goals, closed-period snapshots        | `goals.json`                              | `lastUpdated` per key; snapshots union |
 | Per-volume reading deadlines                                | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |

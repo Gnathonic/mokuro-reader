@@ -141,6 +141,11 @@ export interface DecompressedVolume {
   nestedArchives: File[];
   /** OCR layer files (`<stem>.<id>.mokuro`) found beside the volume's own `.mokuro`. */
   layerFiles?: Array<{ layerId: string; file: File }>;
+  /**
+   * `mokuroFile` is the cloud's LISTED primary sidecar (not an archive entry):
+   * that file's listing stamp — see `ProcessedMetadata.mokuroCloud`.
+   */
+  mokuroCloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
 }
 
 /**
@@ -188,6 +193,18 @@ export interface ProcessedMetadata {
   sourceType?: 'local' | 'cloud';
   /** Spine width in pixels (from mokuro metadata) */
   spineWidth?: number;
+  /**
+   * SHA-256 (lowercase hex) of the `.mokuro` bytes this volume's OCR was parsed
+   * from — becomes `VolumeMetadata.mokuro_sha256`. Absent for image-only.
+   */
+  mokuroSha256?: string;
+  /**
+   * Set by a cloud download whose primary came from the LISTED sidecar beside
+   * the archive (not one embedded in it): the stored file's listing stamp,
+   * which is what lets `buildSeriesFile` publish the hash. Becomes
+   * `VolumeMetadata.mokuro_sha256_cloud`.
+   */
+  mokuroCloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
 }
 
 /**

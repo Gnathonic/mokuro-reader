@@ -223,6 +223,38 @@ describe('saveVolume', () => {
     expect(written.metadata_only).toBeUndefined();
   });
 
+  it('records the hash of the bytes the OCR came from, and where the cloud stores them', async () => {
+    const hash = 'a'.repeat(64);
+    const cloud = { provider: 'webdav', size: 77, modified: 1_790_000_000 };
+    await saveVolume(
+      createProcessedVolume({
+        metadata: {
+          ...createProcessedVolume().metadata,
+          mokuroSha256: hash,
+          mokuroCloud: cloud
+        }
+      })
+    );
+    const added = (db.volumes.add as any).mock.calls[0][0];
+    expect(added.mokuro_sha256).toBe(hash);
+    expect(added.mokuro_sha256_cloud).toEqual(cloud);
+  });
+
+  it('a reinstall from bytes with no hash (image-only) leaves no stale hash behind', async () => {
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      mokuro_sha256: 'b'.repeat(64),
+      mokuro_sha256_cloud: { provider: 'webdav', size: 5 },
+      updated_ocr_sha256: 'c'.repeat(64)
+    });
+    await saveVolume(createProcessedVolume());
+    const written = (db.volumes.put as any).mock.calls[0][0];
+    expect(written.mokuro_sha256).toBeUndefined();
+    expect(written.mokuro_sha256_cloud).toBeUndefined();
+    expect(written.updated_ocr_sha256).toBeUndefined();
+  });
+
   it('still rejects a genuinely installed duplicate', async () => {
     (db.volumes.get as any).mockResolvedValue({ volume_uuid: 'test-volume-uuid' });
 

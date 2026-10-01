@@ -1,6 +1,8 @@
 import { db } from '$lib/catalog/db';
 import { activeAccountScope } from '$lib/catalog/cloud-cache-key';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { noteUploadedPrimarySidecar } from '$lib/catalog/mokuro-upload-record';
+import { sha256Hex } from '$lib/catalog/mokuro-hash';
 import type { VolumeMetadata } from '$lib/types';
 import {
   groupSeriesSidecarFiles,
@@ -821,6 +823,8 @@ interface WorkerSidecarUploadResult {
   fileId: string;
   modifiedTime?: string;
   size: number;
+  /** `kind: 'mokuro'`: SHA-256 of exactly the bytes the worker uploaded. */
+  sha256?: string;
 }
 
 interface WorkerSidecarsCompleteData {
@@ -949,7 +953,16 @@ function recordWorkerSidecarUploads(
   const data = raw as WorkerSidecarsCompleteData;
   const cache = cacheManager.getCache(providerType);
   for (const result of data?.sidecarResults ?? []) {
-    if (result.kind === 'mokuro') noteEditConverged(volume.volume_uuid);
+    if (result.kind === 'mokuro') {
+      noteEditConverged(volume.volume_uuid);
+      // The bytes the cloud now holds as this volume's primary (batched write).
+      noteUploadedPrimarySidecar(volume.volume_uuid, {
+        sha256: result.sha256,
+        provider: providerType,
+        size: result.size,
+        modifiedTime: result.modifiedTime
+      });
+    }
     const path = `${gap.archiveStem}.${result.extension}`;
     cache?.add?.(
       path,
@@ -1097,8 +1110,23 @@ async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
       // layer adds the file to the provider's listing cache with the upload
       // response's own metadata, so the next check sees the sidecar without
       // any fetch.
+      const isPrimary = upload.file === sidecars.mokuroFile;
+      const uploadedTo = unifiedCloudManager.getActiveProvider()?.type;
+      // Hashed BEFORE the upload, so nothing sits between this upload and the
+      // next one: the record itself is a batched write after the burst.
+      const sha256 = isPrimary ? await sha256Hex(upload.file) : undefined;
       await unifiedCloudManager.blindUploadFile(upload.path, upload.file);
-      if (upload.file === sidecars.mokuroFile) noteEditConverged(volume.volume_uuid);
+      if (isPrimary) {
+        noteEditConverged(volume.volume_uuid);
+        // The exact bytes the cloud now holds as this volume's primary.
+        if (uploadedTo) {
+          noteUploadedPrimarySidecar(volume.volume_uuid, {
+            sha256,
+            provider: uploadedTo,
+            size: upload.file.size
+          });
+        }
+      }
     }
     // Deliberately no `series.json` write here — see the module doc's first
     // defense. The next real listing's reconcile pass stamps this folder's

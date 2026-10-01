@@ -75,6 +75,7 @@ import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
 import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 import { syncLayersFromListing } from '$lib/metadata/layer-sync';
+import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
 import { cbzStemsOf, classifyMokuroSidecar } from './syncable-file';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
@@ -1035,6 +1036,16 @@ class UnifiedCloudManager {
     if (freshMokuroBlob) {
       await this.uploadFile(`${newBasePath}.mokuro`, freshMokuroBlob);
       changed++;
+      // The renamed sidecar embeds the new titles: new bytes, a new hash —
+      // and the exact bytes the cloud now holds as this volume's primary.
+      if (volumeUuid) {
+        await recordUploadedPrimarySidecarBlob(
+          volumeUuid,
+          provider.type,
+          freshMokuroBlob,
+          undefined
+        );
+      }
     }
 
     // 2. Move the non-mokuro files (cbz, cover). Their content is name-agnostic.
@@ -1731,7 +1742,8 @@ class UnifiedCloudManager {
       localVolumes: inputs.localVolumes,
       existing,
       cloudVolumeTitles: inputs.cloudTitles,
-      cloudSidecarStamps: inputs.cloudSidecarStamps
+      cloudSidecarStamps: inputs.cloudSidecarStamps,
+      cloudProvider: provider.type
     });
     return {
       built,
@@ -1824,7 +1836,8 @@ class UnifiedCloudManager {
       existing,
       cloudVolumeTitles: cloudTitles,
       cloudMeasuredVolumes: options?.cloudMeasuredVolumes,
-      cloudSidecarStamps
+      cloudSidecarStamps,
+      cloudProvider: provider.type
     });
     if (!file) return 'skipped';
 

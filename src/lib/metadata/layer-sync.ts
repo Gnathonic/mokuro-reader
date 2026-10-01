@@ -19,6 +19,7 @@ import {
 import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
+import { isUntouchedUpdatedOcr } from '$lib/catalog/mokuro-hash';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
@@ -451,13 +452,17 @@ export function layerNeedsPull(
  * Should the local row be uploaded? Only when it changed since its last sync
  * with THIS provider (or was never synced) and the cloud copy is not newer.
  * A passive snapshot always loses to a listed file (`layerNeedsPull`), so it
- * is pushed only where the cloud has no such layer at all.
+ * is pushed only where the cloud has no such layer at all. An untouched
+ * `updated-ocr` row is never pushed (`isUntouchedUpdatedOcr`).
  */
 export function layerNeedsPush(
   row: VolumeOcrLayer,
   file: LayerFileStamp | undefined,
   providerType: string
 ): boolean {
+  // The cloud's own primary sidecar, mirrored for an edited volume by the OCR
+  // upgrade: pushing it would publish the primary a second time as a layer.
+  if (isUntouchedUpdatedOcr(row)) return false;
   if (row.cloud && row.cloud.provider === providerType && !editedSinceSync(row)) return false;
   if (!file) return true;
   return !layerNeedsPull(row, file, providerType);

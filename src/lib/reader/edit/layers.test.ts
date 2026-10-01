@@ -130,6 +130,37 @@ describe('layers store', () => {
 });
 
 describe('promoteLayer', () => {
+  // `mokuro_sha256` is the primary's BASE revision (the OCR upgrade).
+  it("promoting the upgrade's updated-ocr layer adopts the cloud file it mirrors as the base", async () => {
+    await db.volumes.update('v1', {
+      mokuro_sha256: 'f'.repeat(64),
+      mokuro_sha256_cloud: { provider: 'webdav', size: 9 }
+    });
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'updated-ocr',
+      name: 'Updated OCR',
+      kind: 'ocr',
+      created_at: 't',
+      updated_at: 't',
+      source_sha256: 'a'.repeat(64),
+      source_at: 't',
+      pages: [pg('しん'), pg('き', 'q.png')]
+    });
+    await promoteLayer('v1', 'updated-ocr');
+    const row = (await db.volumes.get('v1'))!;
+    expect(row.mokuro_sha256).toBe('a'.repeat(64));
+    // Where the cloud stores that file is not known here: nothing vouches for it.
+    expect(row.mokuro_sha256_cloud).toBeUndefined();
+  });
+
+  it('promoting any other layer is a local change on top of the same base: the hash stays', async () => {
+    await db.volumes.update('v1', { mokuro_sha256: 'f'.repeat(64) });
+    await createLayer('v1', { name: 'A', pages: [pg('かき'), pg('さ', 'q.png')] });
+    await promoteLayer('v1', 'a');
+    expect((await db.volumes.get('v1'))!.mokuro_sha256).toBe('f'.repeat(64));
+  });
+
   it('copies the layer into primary, recounts, stamps, snapshots the previous primary, nominates', async () => {
     await createLayer('v1', { name: 'A', pages: [pg('かきくけこ'), pg('さ', 'q.png')] });
     const { replacedLayerId } = await promoteLayer('v1', 'a');

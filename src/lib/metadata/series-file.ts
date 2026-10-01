@@ -1,3 +1,4 @@
+import { isMokuroCloudAttestation, isMokuroSha256 } from '$lib/catalog/mokuro-hash';
 import { sortVolumes } from '$lib/catalog/sort-volumes';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { VolumeMetadata } from '$lib/types';
@@ -84,6 +85,22 @@ export interface SeriesFileVolume {
    * pull — never a fresher re-read, and never local wall-clock time.
    */
   mokuro_modified?: number;
+  /**
+   * Lowercase hex SHA-256 of the volume's PRIMARY `.mokuro` sidecar's JSON
+   * bytes as stored in the cloud (after gunzip for a `.mokuro.gz`) — never a
+   * layer file's. Lets a device tell whether the OCR it has installed is the
+   * cloud's current OCR without downloading anything (the OCR upgrade pass,
+   * `cloud-ocr-upgrade.ts`). Absent = unknown, no opinion.
+   *
+   * INDEX data describing the sidecar FILE, like the two stamps above, and it
+   * travels with them: a merge only carries it onto an entry whose
+   * `mokuro_size`/`mokuro_modified` match the entry it came from (see
+   * `createVolumeEntryMerger`'s INHERITANCE rule). Never a fact — it never
+   * moves `updated_at`. A reader publishes one only when it is CERTAIN the hash
+   * describes the cloud file (`buildSeriesFile`); absent is always safe, a
+   * wrong hash is not.
+   */
+  mokuro_sha256?: string;
   /** Bytes of this volume's cover sidecar, per the listing at build time. */
   cover_size?: number;
   /** Epoch SECONDS (truncated) of the cover sidecar's listing `modifiedTime`. */
@@ -194,6 +211,7 @@ export function orderVolumeEntryFields(entry: SeriesFileVolume): SeriesFileVolum
   if (entry.archive_size !== undefined) ordered.archive_size = entry.archive_size;
   if (entry.mokuro_size !== undefined) ordered.mokuro_size = entry.mokuro_size;
   if (entry.mokuro_modified !== undefined) ordered.mokuro_modified = entry.mokuro_modified;
+  if (entry.mokuro_sha256 !== undefined) ordered.mokuro_sha256 = entry.mokuro_sha256;
   if (entry.cover_size !== undefined) ordered.cover_size = entry.cover_size;
   if (entry.cover_modified !== undefined) ordered.cover_modified = entry.cover_modified;
   if (entry.offset !== undefined) ordered.offset = entry.offset;
@@ -450,9 +468,29 @@ export function createVolumeEntryMerger(
   /** The winner enriched with the loser's file facts — the INHERITANCE rule. */
   function inheritFileFacts(winner: SeriesFileVolume, loser: SeriesFileVolume): SeriesFileVolume {
     let enriched: SeriesFileVolume | undefined;
+    // Two DIFFERENT sidecar hashes are two different files: the loser's
+    // `.mokuro` stamps describe the loser's bytes, not the winner's.
+    const otherSidecar =
+      winner.mokuro_sha256 !== undefined &&
+      loser.mokuro_sha256 !== undefined &&
+      winner.mokuro_sha256 !== loser.mokuro_sha256;
     for (const key of INHERITED_FILE_FACTS) {
+      if (otherSidecar && (key === 'mokuro_size' || key === 'mokuro_modified')) continue;
       if (winner[key] === undefined && loser[key] !== undefined) {
         (enriched ??= { ...winner })[key] = loser[key];
+      }
+    }
+    // The sidecar hash rides with the stamps it was published beside, never
+    // alone: carried over only when the winner's `.mokuro` stamps (after the
+    // inheritance above) are the loser's — the same listed file. A winner
+    // whose stamps moved describes a sidecar this hash never saw.
+    if (winner.mokuro_sha256 === undefined && loser.mokuro_sha256 !== undefined) {
+      const base = enriched ?? winner;
+      if (
+        base.mokuro_size === loser.mokuro_size &&
+        base.mokuro_modified === loser.mokuro_modified
+      ) {
+        (enriched ??= { ...winner }).mokuro_sha256 = loser.mokuro_sha256;
       }
     }
     // Rebuild in the pinned wire order: an inherited field would otherwise
@@ -720,6 +758,12 @@ export function buildSeriesFile(args: {
   cloudVolumeTitles?: Set<string>;
   cloudMeasuredVolumes?: SeriesFileVolume[];
   cloudSidecarStamps?: Map<string, CloudSidecarStamp>;
+  /**
+   * The provider whose listing `cloudSidecarStamps` came from. Required for an
+   * installed row to publish its own `mokuro_sha256` (its attestation names
+   * the provider it describes); absent, no row-attested hash is published.
+   */
+  cloudProvider?: string;
 }): SeriesFile | undefined {
   const {
     seriesTitle,
@@ -728,7 +772,8 @@ export function buildSeriesFile(args: {
     existing,
     cloudVolumeTitles,
     cloudMeasuredVolumes,
-    cloudSidecarStamps
+    cloudSidecarStamps,
+    cloudProvider
   } = args;
 
   const local = meta ? localFacts(meta) : undefined;
@@ -828,7 +873,15 @@ export function buildSeriesFile(args: {
     if (stamps?.mokuro_modified !== undefined) entry.mokuro_modified = stamps.mokuro_modified;
     if (stamps?.cover_size !== undefined) entry.cover_size = stamps.cover_size;
     if (stamps?.cover_modified !== undefined) entry.cover_modified = stamps.cover_modified;
-    merger.add(entry, 'replace');
+    // The sidecar hash, under the CERTAINTY rule: only when this device
+    // uploaded those exact bytes or installed from a download of that listed
+    // file (`mokuro_sha256_cloud`), and the listing still shows that same file
+    // (same provider, size, mtime). Anything less publishes no hash of ours —
+    // the published one still rides through the merger while the listing
+    // shows the file it was published for.
+    const hash = attestedSidecarHash(volume, stamps, cloudProvider);
+    if (hash) entry.mokuro_sha256 = hash;
+    merger.add(orderVolumeEntryFields(entry), 'replace');
   }
 
   let volumes = merger.values();
@@ -893,6 +946,32 @@ export function buildSeriesFile(args: {
   // what the reset means. Absent locally, the published value rides through.
   if (spineOffset) file.spine_offset = spineOffset;
   return file;
+}
+
+/**
+ * The installed row's own `mokuro_sha256`, when — and only when — it is known
+ * to describe the sidecar the listing shows right now: the row's attestation
+ * (`VolumeMetadata.mokuro_sha256_cloud`) names this provider and this file's
+ * listed size, and its mtime where both sides know one.
+ */
+function attestedSidecarHash(
+  volume: VolumeMetadata,
+  stamps: CloudSidecarStamp | undefined,
+  cloudProvider: string | undefined
+): string | undefined {
+  const hash = volume.mokuro_sha256;
+  const attested = volume.mokuro_sha256_cloud;
+  if (!cloudProvider || !stamps || !isMokuroSha256(hash)) return undefined;
+  if (!isMokuroCloudAttestation(attested) || attested.provider !== cloudProvider) return undefined;
+  if (stamps.mokuro_size !== attested.size) return undefined;
+  if (
+    attested.modified !== undefined &&
+    stamps.mokuro_modified !== undefined &&
+    attested.modified !== stamps.mokuro_modified
+  ) {
+    return undefined;
+  }
+  return hash;
 }
 
 /**
@@ -993,8 +1072,8 @@ function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
   };
   // Field insertion order here is the WIRE order (`JSON.stringify` walks
   // key-insertion order): volume_uuid..mokuro_version above, then
-  // spine_width?, archive_size?, mokuro_size?, mokuro_modified?, cover_size?,
-  // cover_modified?, and `offset` LAST — the one INDEX field among the
+  // spine_width?, archive_size?, mokuro_size?, mokuro_modified?,
+  // mokuro_sha256?, cover_size?, cover_modified?, and `offset` LAST — the one INDEX field among the
   // per-volume facts. The server compiler emits exactly this order and an
   // entry carried through unchanged from a parsed file must re-serialize
   // byte-for-byte the same way, so this order is a contract, not a style
@@ -1004,6 +1083,10 @@ function parseVolumeEntry(value: unknown): SeriesFileVolume | undefined {
   if (isArchiveSize(value.archive_size)) entry.archive_size = value.archive_size;
   if (isArchiveSize(value.mokuro_size)) entry.mokuro_size = value.mokuro_size;
   if (isEpochSeconds(value.mokuro_modified)) entry.mokuro_modified = value.mokuro_modified;
+  // Foreign hex in either case is the same digest; anything else is dropped.
+  const sha =
+    typeof value.mokuro_sha256 === 'string' ? value.mokuro_sha256.toLowerCase() : undefined;
+  if (isMokuroSha256(sha)) entry.mokuro_sha256 = sha;
   if (isArchiveSize(value.cover_size)) entry.cover_size = value.cover_size;
   if (isEpochSeconds(value.cover_modified)) entry.cover_modified = value.cover_modified;
   const offset = sanitizeVolumeOffset(value.offset);

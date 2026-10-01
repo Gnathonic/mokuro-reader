@@ -67,6 +67,11 @@ export function openSeries(seriesTitle: string): Promise<void> {
       });
       finishMaterialization();
 
+      // The OCR upgrade for THIS series' installed volumes, against the index
+      // just refreshed (whether or not it moved: a volume installed or edited
+      // since the last pass is judged here). Background, like covers.
+      startOcrUpgrade(seriesTitle);
+
       // Covers are installed even when nothing was materialized: rows from an
       // earlier open may still be missing theirs.
       await installCoversForSeries(seriesTitle);
@@ -79,4 +84,22 @@ export function openSeries(seriesTitle: string): Promise<void> {
 
   inFlight.set(key, materialized);
   return materialized;
+}
+
+/**
+ * Fire the OCR upgrade pass for one series (see `ocr-upgrade-pass.ts`). Never
+ * throws: nothing about it may cost the series its covers. Loaded on demand —
+ * the pass drags the import/provider graph along.
+ */
+function startOcrUpgrade(seriesTitle: string): void {
+  try {
+    const provider = unifiedCloudManager.getActiveProvider();
+    if (!provider) return;
+    const title = unifiedCloudManager.resolveCloudFolderTitle(seriesTitle);
+    void import('$lib/catalog/ocr-upgrade-pass')
+      .then(({ requestOcrUpgradePass }) => requestOcrUpgradePass(provider.type, [{ title }]))
+      .catch((error) => console.debug('[series-open] OCR upgrade pass failed:', error));
+  } catch (error) {
+    console.debug('[series-open] could not start the OCR upgrade pass:', error);
+  }
 }

@@ -28,6 +28,7 @@ import {
   isAuthRefreshResult,
   type WorkerAuthRefresher
 } from '$lib/util/worker-auth-refresh';
+import { sha256Hex } from '$lib/catalog/mokuro-hash';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -230,6 +231,13 @@ interface UploadCompleteMessage {
    * (A local/main-thread upload carries the same facts on `sidecars.layers`.)
    */
   layerSnapshots?: Array<{ layerId: string; updatedAt: string; size: number }>;
+  /**
+   * Cloud uploads: the PRIMARY `.mokuro` sidecar as uploaded — the SHA-256 of
+   * exactly the bytes sent, their count, and the server's mtime when the
+   * response carried one. The main thread records it on the volume
+   * (`recordUploadedPrimarySidecar`): the hash this device can now vouch for.
+   */
+  mokuroSidecar?: { sha256: string; size: number; modifiedTime?: string };
   /** The server queued the uploaded archive for OCR (see `UploadFileResult.serverOcr`). */
   serverOcr?: { manifestUrl: string; recheckAfter: number | null };
   /** The PUT response said the server stages and verifies PUTs (`X-Mokuro-Put`). */
@@ -245,6 +253,8 @@ interface SidecarUploadResult {
   /** Server-reported mtime from the upload response, when available. */
   modifiedTime?: string;
   size: number;
+  /** `kind: 'mokuro'` only: SHA-256 of exactly the bytes uploaded. */
+  sha256?: string;
 }
 
 /**
@@ -979,15 +989,15 @@ ctx.addEventListener('message', async (event) => {
         const filename = `${volumeTitle}.cbz`;
 
         let layerSnapshots: UploadCompleteMessage['layerSnapshots'];
-        const uploadSidecar = async (sidecarFilename: string, sidecarBlob: Blob): Promise<void> => {
-          await cloudProvider.uploadFile({
+        let mokuroSidecar: UploadCompleteMessage['mokuroSidecar'];
+        const uploadSidecar = async (sidecarFilename: string, sidecarBlob: Blob) =>
+          cloudProvider.uploadFile({
             seriesTitle,
             filename: sidecarFilename,
             blob: sidecarBlob,
             credentials,
             mimeType: sidecarBlob.type || 'application/octet-stream'
           });
-        };
 
         if (message.includeSidecars === true) {
           const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid);
@@ -1018,7 +1028,19 @@ ctx.addEventListener('message', async (event) => {
             ctx.postMessage(sidecarProgressMessage);
             for (const sidecar of sidecarsToUpload) {
               console.log(`Worker: Uploading sidecar ${sidecar.filename}...`);
-              await uploadSidecar(sidecar.filename, sidecar.blob);
+              const uploadedSidecar = await uploadSidecar(sidecar.filename, sidecar.blob);
+              if (sidecar === generatedSidecars.mokuro) {
+                const sha256 = await sha256Hex(sidecar.blob);
+                if (sha256) {
+                  mokuroSidecar = {
+                    sha256,
+                    size: sidecar.blob.size,
+                    ...(uploadedSidecar?.modifiedTime
+                      ? { modifiedTime: uploadedSidecar.modifiedTime }
+                      : {})
+                  };
+                }
+              }
               ctx.postMessage(sidecarProgressMessage);
             }
           }
@@ -1060,6 +1082,7 @@ ctx.addEventListener('message', async (event) => {
           modifiedTime: uploaded.modifiedTime,
           size: cbzBlob.size,
           ...(layerSnapshots?.length ? { layerSnapshots } : {}),
+          ...(mokuroSidecar ? { mokuroSidecar } : {}),
           ...(uploaded.serverOcr ? { serverOcr: uploaded.serverOcr } : {}),
           ...(uploaded.serverPutVerified ? { serverPutVerified: true } : {})
         };
@@ -1090,12 +1113,14 @@ ctx.addEventListener('message', async (event) => {
             credentials,
             mimeType: 'application/json'
           });
+          const sha256 = await sha256Hex(sidecars.mokuro.blob);
           sidecarResults.push({
             kind: 'mokuro',
             extension: 'mokuro',
             fileId: uploaded.fileId,
             modifiedTime: uploaded.modifiedTime,
-            size: uploaded.size ?? sidecars.mokuro.blob.size
+            size: uploaded.size ?? sidecars.mokuro.blob.size,
+            ...(sha256 ? { sha256 } : {})
           });
         }
         // Same guard as the main-thread core: a thumbnail whose type maps to

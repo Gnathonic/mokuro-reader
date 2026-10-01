@@ -17,6 +17,7 @@ import {
   indexNeedsRefresh,
   sourceStampChanged,
   seriesIndexMap,
+  SERIES_INDEX_PARSER,
   type SeriesIndexRecord
 } from './series-index';
 import type { SeriesFile } from './series-file';
@@ -47,6 +48,7 @@ function record(overrides: Partial<SeriesIndexRecord> = {}): SeriesIndexRecord {
       modifiedTime: '2026-08-17T00:00:00.000Z'
     },
     fetched_at: '2026-08-17T00:00:01.000Z',
+    parser: SERIES_INDEX_PARSER,
     ...overrides
   };
 }
@@ -173,6 +175,24 @@ describe('series index store', () => {
       } finally {
         unsubscribe();
       }
+    });
+  });
+
+  describe('the parser stamp', () => {
+    it('putSeriesIndex stamps a record with the current parser', async () => {
+      const { parser: _omitted, ...unstamped } = record();
+      await putSeriesIndex(unstamped as SeriesIndexRecord);
+      expect((await getSeriesIndex('one piece'))?.parser).toBe(SERIES_INDEX_PARSER);
+    });
+
+    // A copy cached by a build whose parser dropped `mokuro_sha256` must be
+    // re-read once, even though the cloud file's stamp never moved.
+    it('a record from an older parser needs a refresh even with an unchanged stamp', () => {
+      const stamp = { size: 1234, modifiedTime: '2026-08-17T00:00:00.000Z' };
+      const { parser: _omitted, ...legacy } = record();
+      expect(indexNeedsRefresh(legacy as SeriesIndexRecord, stamp, 'google-drive')).toBe(true);
+      expect(indexNeedsRefresh({ ...record(), parser: 0 }, stamp, 'google-drive')).toBe(true);
+      expect(indexNeedsRefresh(record(), stamp, 'google-drive')).toBe(false);
     });
   });
 

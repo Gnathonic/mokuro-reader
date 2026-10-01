@@ -62,6 +62,41 @@ export interface VolumeMetadata {
   ocr_edited_at?: string;
 
   /**
+   * Lowercase hex SHA-256 of the `.mokuro` bytes (after gunzip) the installed
+   * PRIMARY OCR came from — its BASE revision (`$lib/catalog/mokuro-hash`).
+   * Set by every path that installs the primary from sidecar bytes (import,
+   * cloud download, deep link, OCR upgrade) and by this device's own upload of
+   * the primary sidecar (the exact uploaded bytes); absent = unknown (every
+   * volume installed before this field existed), which the OCR upgrade pass
+   * settles with a one-time baseline.
+   *
+   * A hand edit does NOT clear it: the primary is still that revision plus
+   * local edits (`ocr_edited_at`), so a cloud copy with the same hash is
+   * "nothing new from the server", and a different one is filed as a layer
+   * rather than over the edits. Promoting the `updated-ocr` layer moves it to
+   * that layer's source hash. Not indexed (no schema version).
+   */
+  mokuro_sha256?: string;
+
+  /**
+   * Where {@link mokuro_sha256} is KNOWN to describe a cloud file: this device
+   * uploaded exactly those bytes as the primary sidecar, or installed the
+   * primary from a download of that listed file. Only then may
+   * `buildSeriesFile` publish the hash, and only while the listing's sidecar
+   * stamps still match this one. Cleared whenever the hash is set from bytes
+   * that did not come from a listed cloud file.
+   */
+  mokuro_sha256_cloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
+
+  /**
+   * Edited volumes only: the newest cloud primary OCR (by `mokuro_sha256`) the
+   * upgrade pass filed as the `updated-ocr` LAYER instead of installing over
+   * the user's edits. Lets the next pass skip that same file without a
+   * download — even after the user deleted the layer.
+   */
+  updated_ocr_sha256?: string;
+
+  /**
    * This row is metadata only: the volume's OCR and image rows are not on this
    * device (the user removed them to save space). Everything else — thumbnail,
    * counts, and above all the `volume_uuid` the read history is keyed by —
@@ -189,6 +224,21 @@ export interface VolumeOcrLayer {
    * every writer of the row having to know about it.
    */
   passive_at?: string;
+  /**
+   * Set on the `updated-ocr` row the OCR upgrade files for an EDITED volume
+   * (`cloud-ocr-upgrade.ts`): the `mokuro_sha256` of the cloud primary sidecar
+   * these pages are.
+   */
+  source_sha256?: string;
+  /**
+   * Equal to `updated_at` while the row is untouched since the upgrade wrote
+   * it — compared, never cleared, exactly like `passive_at`. While it holds,
+   * the row is a mirror of the cloud's own PRIMARY sidecar: never pushed as a
+   * layer file (`layer-sync.ts`, the backup's layer sidecars) and replaced in
+   * place by a newer upgrade. A user edit moves `updated_at`, the mark dies,
+   * and the row is the user's own layer from then on.
+   */
+  source_at?: string;
 }
 
 /** The `volume_ocr_layer_pages` row: a layer's pages and nothing else. */

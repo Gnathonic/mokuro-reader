@@ -45,6 +45,8 @@ import {
   queueSidecarBackfillFromImport
 } from './sync/sidecar-backfill';
 import type { SavedVolumeData } from '$lib/import/database';
+import type { MokuroCloudAttestation } from '$lib/catalog/mokuro-hash';
+import { isoToEpochSeconds } from '$lib/metadata/cloud-sidecar-stamps';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -66,6 +68,13 @@ interface SeriesQueueStatus {
 interface DecompressedEntry {
   filename: string;
   data: ArrayBuffer;
+  /**
+   * Set on a `.mokuro`/`.mokuro.gz` fetched from the cloud LISTING beside the
+   * archive (`downloadSidecarEntries`), never on an archive entry: where the
+   * file is stored, so the primary installed from it can vouch for the hash
+   * of those bytes (`VolumeMetadata.mokuro_sha256_cloud`).
+   */
+  cloudSidecar?: MokuroCloudAttestation;
 }
 
 function getBaseStem(basePath: string): string {
@@ -318,6 +327,9 @@ async function entriesToDecompressedVolume(
   basePath: string
 ): Promise<DecompressedVolume> {
   let mokuroFile: File | null = null;
+  let mokuroCloud: MokuroCloudAttestation | undefined;
+  /** The primary so far is the cloud's PLAIN `.mokuro` — which beats its `.gz` twin. */
+  let primaryIsPlainSidecar = false;
   let thumbnailSidecar: File | null = null;
   const imageFiles = new Map<string, File>();
   const nestedArchives: File[] = [];
@@ -345,7 +357,15 @@ async function entriesToDecompressedVolume(
       if (layer) {
         layerFiles.push({ layerId: layer.layerId, file: decoded });
       } else {
+        // The listed sidecars come after the archive's entries, so the cloud's
+        // primary beats a copy embedded in the archive — and the contract's
+        // primary is `<Volume>.mokuro`, else `<Volume>.mokuro.gz`, whatever
+        // order the listing returned them in.
+        const gz = normalizedFilename.endsWith('.gz');
+        if (primaryIsPlainSidecar && gz && entry.cloudSidecar) continue;
         mokuroFile = decoded;
+        mokuroCloud = entry.cloudSidecar;
+        primaryIsPlainSidecar = !!entry.cloudSidecar && !gz;
       }
     } else if (isThumbnailSidecar(normalizedFilename, basePath)) {
       const mimeType = getImageMimeType(extension);
@@ -376,7 +396,8 @@ async function entriesToDecompressedVolume(
     basePath,
     sourceType: 'cloud',
     nestedArchives,
-    ...(layerFiles.length > 0 ? { layerFiles } : {})
+    ...(layerFiles.length > 0 ? { layerFiles } : {}),
+    ...(mokuroFile && mokuroCloud ? { mokuroCloud } : {})
   };
 }
 
@@ -421,6 +442,10 @@ export async function processVolumeData(
   // Use unified import system to process the volume
   // This handles missing pages, image-only volumes, placeholder generation, etc.
   const processedVolume = await processVolume(decompressedVolume);
+  // Hash of the bytes installed (`processVolume`) + where the cloud stores them.
+  if (decompressedVolume.mokuroCloud && processedVolume.metadata.mokuroSha256) {
+    processedVolume.metadata.mokuroCloud = decompressedVolume.mokuroCloud;
+  }
 
   // UUID contract with the catalog placeholder (see `generatePlaceholders`):
   // the queued placeholder keeps whatever uuid it was shown with, and the
@@ -663,6 +688,22 @@ function findSidecarFiles(
   return [];
 }
 
+/**
+ * The stored file's identity for a sidecar just downloaded from the listing:
+ * the listing's size when it has one (else the bytes received — the same file),
+ * and its mtime unless the cache entry is a provisional client-clock stamp.
+ */
+function listedSidecarAttestation(
+  provider: string,
+  file: import('./sync/provider-interface').CloudFileMetadata,
+  receivedBytes: number
+): MokuroCloudAttestation | undefined {
+  const size = file.size && file.size > 0 ? file.size : receivedBytes;
+  if (!(size > 0)) return undefined;
+  const modified = file.modifiedTimeProvisional ? undefined : isoToEpochSeconds(file.modifiedTime);
+  return { provider, size, ...(modified !== undefined ? { modified } : {}) };
+}
+
 async function downloadSidecarEntries(placeholder: VolumeMetadata): Promise<DecompressedEntry[]> {
   const provider = unifiedCloudManager.getActiveProvider();
   if (!provider) return [];
@@ -680,10 +721,11 @@ async function downloadSidecarEntries(placeholder: VolumeMetadata): Promise<Deco
   for (const sidecar of selected) {
     const blob = await provider.downloadFile(sidecar);
     const data = await blob.arrayBuffer();
-    sidecarEntries.push({
-      filename: sidecar.path.split('/').pop() || sidecar.path,
-      data
-    });
+    const filename = sidecar.path.split('/').pop() || sidecar.path;
+    const cloudSidecar = /\.mokuro(\.gz)?$/i.test(filename)
+      ? listedSidecarAttestation(provider.type, sidecar, data.byteLength)
+      : undefined;
+    sidecarEntries.push({ filename, data, ...(cloudSidecar ? { cloudSidecar } : {}) });
   }
 
   return sidecarEntries;
