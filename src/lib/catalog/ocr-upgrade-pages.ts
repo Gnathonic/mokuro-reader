@@ -40,6 +40,31 @@ export function sameOcrPages(a: readonly Page[], b: readonly Page[]): boolean {
   return true;
 }
 
+function knownSize(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * The first page (index) whose IMAGE differs in size between the incoming
+ * sidecar and the volume's own pages, or -1. Text boxes are pixel coordinates
+ * in their page's image: a sidecar made for images of another size (another
+ * scan, a re-encode, another release with the same page count) would place
+ * every box wrongly here. Only pages whose size both sides know are compared.
+ */
+export function firstImageSizeMismatch(incoming: readonly Page[], local: readonly Page[]): number {
+  const n = Math.min(incoming.length, local.length);
+  for (let i = 0; i < n; i++) {
+    const a = incoming[i];
+    const b = local[i];
+    if (!a || !b) continue;
+    if (knownSize(a.img_width) && knownSize(b.img_width) && a.img_width !== b.img_width) return i;
+    if (knownSize(a.img_height) && knownSize(b.img_height) && a.img_height !== b.img_height) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 function stemOf(path: string): string {
   const name = (path.split('/').pop() ?? path).toLowerCase();
   const dot = name.lastIndexOf('.');

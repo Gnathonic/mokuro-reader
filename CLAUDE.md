@@ -312,7 +312,12 @@ promoted: the primary is what character stats are counted from, and the count
 only knows Japanese, so an English primary would zero them. The `original` layer
 is the read-only pre-edit snapshot the first edit to a volume takes
 automatically (`edit-persist.ts`), used by **Revert** — it only exists for the
-primary, since reverting a page swaps in the primary's own pre-edit state.
+primary, since reverting a page swaps in the primary's own pre-edit state. On a
+provider that compiles its own metadata (mokuro-bunko, `serverCompilesMetadata`)
+primary edits stay local, so the `original` never goes up there either — not
+pushed by layer-sync, not uploaded beside a backup (`layerStaysLocal`,
+`mokuro-hash.ts`); on a shared library it would publish a reserved, meaningless
+layer to every user. Plain storage keeps syncing it.
 
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings
@@ -392,7 +397,11 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   for the refreshed series) and on series open (`series-open.ts`, that
   series). Single-flight (a request mid-run merges into ONE follow-up),
   ≤ 4 downloads at once, failures logged at debug and retried by the next
-  pass, ONE summary notice per run ("Updated OCR for 3 volumes"), and no work
+  pass (a DOWNLOAD failure; downloaded bytes that cannot be decoded or parsed —
+  `parseMokuroFile` throws on bad JSON or a missing required field — are
+  remembered as unusable for that entry hash, `ocr-upgrade:verdicts`; bytes
+  whose size disagrees with the listing's are never judged — a stale HTTP
+  cache entry, retried next pass), ONE summary notice per run ("Updated OCR for 3 volumes"), and no work
   at all — not even a row read beyond the index — when no entry carries a hash.
 - **Decision per installed volume** (`isVolumeInstalled`; metadata-only rows
   and placeholders are never touched). The index entry is matched by
@@ -401,11 +410,37 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   or ABSENT locally (a one-time baseline for volumes installed before hashes)
   → download the primary sidecar (never a layer file), hash it, parse it
   (`decodeMokuroSidecar` + `parseMokuroFile`), then `applyCloudPrimaryOcr`:
-  another page count → skipped (a different archive) and remembered; the same
-  pages under other bytes (`sameOcrPages`: dimensions + blocks, not
-  `img_path`) → only the hash is recorded; unedited → the primary is replaced
-  wholesale on the volume's OWN image names (`fitPagesToVolume`), with
-  `mokuro_version`, `character_count`, `page_char_counts` and the hash.
+  another page count, or ANY page whose image size (`img_width`/`img_height`)
+  differs from the local primary's own (`firstImageSizeMismatch`; pages whose
+  size either side does not know are not compared) → skipped (OCR made for
+  other images: its boxes would land in the wrong places) and remembered until
+  the cloud hash changes; the same pages under other bytes (`sameOcrPages`:
+  dimensions + blocks, not `img_path`) → only the hash is recorded; unedited →
+  the primary is replaced wholesale on the volume's OWN image names
+  (`fitPagesToVolume`), with `mokuro_version`, `character_count`,
+  `page_char_counts` and the hash.
+- **Provenance of an unedited primary.** Replaced either way (the owner wants
+  pre-existing OCR upgraded), but what is kept depends on where it came from.
+  Attested as THIS cloud's file (`mokuro_sha256` + a `mokuro_sha256_cloud`
+  naming the current provider) → it is only an older revision of the cloud's
+  own file: replaced outright. Anything else — a local re-import after
+  re-running mokuro, an archive's EMBEDDED `.mokuro`, a legacy row with no
+  hash, an attestation for another provider — may be OCR the cloud never had:
+  first kept as the local `previous-ocr` layer ("Previous OCR", kind `ocr`,
+  `source_sha256` = the replaced hash when there was one, `source_at` =
+  `updated_at`). While untouched it follows the same rules as an untouched
+  `updated-ocr` (`isUntouchedUpgradeLayer`, `mokuro-hash.ts`): never pushed
+  (`layerNeedsPush`), never exported or embedded (`compress-volume.ts`,
+  `volume-sidecars.ts`), and a later replacement overwrites it in place. Once
+  the user edits it, it is theirs: the next keepsake goes under
+  `previous-ocr-2`, `-3`, ….
+- **A replacement drops the snapshots it made stale.** An unedited row can
+  still hold an `original` layer (the pre-edit snapshot of the OLD OCR, from
+  layer-sync or a reinstall) and an untouched `updated-ocr`; after the swap,
+  Revert would restore the pre-upgrade OCR and promoting the `updated-ocr`
+  would adopt an old hash. Both are deleted with the replacement (the
+  `original`'s cloud copy tombstoned via `notePendingLayerDelete`, so no
+  listing pulls it back); an `updated-ocr` the user edited stays.
 - **Edited volumes keep their edits.** With `ocr_edited_at` set, a file equal
   to the pre-edit `original` layer only records the hash; otherwise it is
   filed as the `updated-ocr` layer ("Updated OCR", kind `ocr`) carrying
@@ -425,6 +460,11 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   are re-derived against the new per-page counts wherever they come from
   `page_char_counts` (series/catalog views at once); the synced
   `VolumeData.chars` follows at the next page turn.
+- **No HTTP cache in the way.** WebDAV data downloads (`webdav-core.ts`,
+  main thread and workers alike) send `cache: 'no-cache'`: bunko serves
+  sidecars with Last-Modified and no Cache-Control, so the default mode gave
+  an old sidecar heuristic freshness and the browser kept returning the OLD
+  bytes after a server re-OCR.
 - **mokuro-bunko** computes `mokuro_sha256` itself when it compiles
   `series.json` (it must hash the primary's JSON after gunzip, emit it after
   `mokuro_modified`, and move it whenever the sidecar changes). Old servers
@@ -549,7 +589,13 @@ Rules:
   their sole producer (see `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`);
   it must partition metadata files out of progress handling (root `.json` =
   progress/profiles, `<Series>/series.json` and root `catalog.json` = metadata).
-  A scoped user's `series.json` PUT is accepted as an update REQUEST.
+  A scoped user's `series.json` PUT is accepted as an update REQUEST — for the
+  facts and the shelf alignment only (bunko computes counts, stamps and
+  `mokuro_sha256` itself). So on a `serverCompilesMetadata` provider
+  `writeSeriesFile` PUTs only when the built file's facts or offsets differ
+  from the server's copy (`seriesFileCarriesServerRequest`): a placeholder's
+  measurement, a download's recorded hash, a backup's drain or a delete's
+  maintenance never cost a PUT there.
 
 ### Root `catalog.json`
 

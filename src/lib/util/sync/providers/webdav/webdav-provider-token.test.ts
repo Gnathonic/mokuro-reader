@@ -51,7 +51,7 @@ vi.mock('./webdav-cache', () => ({ webdavCache: {} }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: snackbar }));
 
 import { WebDAVProvider } from './webdav-provider';
-import { answerAuthRefresh } from '$lib/util/worker-auth-refresh';
+import { answerAuthRefresh, TransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
 
 const identityMock = vi.mocked(fetchServerIdentity);
 const SERVER = 'https://host';
@@ -371,6 +371,140 @@ describe('a 401 under the token: re-issue once, retry once', () => {
       size: 1
     });
     expect(tokenPosts()).toHaveLength(2);
+  });
+});
+
+describe('another tab replaced the token (localStorage is shared, client headers are not)', () => {
+  /** The client answers 401 to anything but `accepted`. */
+  function serverAccepts(accepted: string) {
+    return async () => {
+      if (clientHeaders.current.Authorization !== accepted) throw unauthorizedError();
+      return undefined;
+    };
+  }
+  const file = {
+    provider: 'webdav' as const,
+    fileId: '/mokuro-reader/S/V.cbz',
+    path: 'S/V.cbz',
+    modifiedTime: '',
+    size: 1
+  };
+
+  it('retries with the token the other tab stored, not the dead one, and keeps the password', async () => {
+    const provider = await connected();
+    expect(clientHeaders.current.Authorization).toBe('Bearer tok-1');
+    // Tab B re-issued: tok-1 is dead on the server, tok-2 is in localStorage.
+    localStorage.setItem('webdav_token', 'tok-other-tab');
+    mockClient.deleteFile.mockImplementation(serverAccepts('Bearer tok-other-tab'));
+
+    await expect(provider.deleteFile(file)).resolves.toBeUndefined();
+
+    expect(mockClient.deleteFile).toHaveBeenCalledTimes(2);
+    expect(clientHeaders.current.Authorization).toBe('Bearer tok-other-tab');
+    expect(tokenPosts()).toHaveLength(1); // connect only: nothing re-issued here
+    expect(provider.getStatus().needsAttention).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+    expect(localStorage.getItem('webdav_token')).toBe('tok-other-tab');
+  });
+
+  it('a straggler under the dead token retries under Basic once the session fell back', async () => {
+    tokenAnswers = [issue(), absent];
+    const provider = await connected();
+    expect(await provider.reissueAfterUnauthorized('Bearer tok-1')).toBe(true);
+    // A request that captured the old header before the fallback.
+    clientHeaders.current = { Authorization: 'Bearer tok-1' };
+    mockClient.deleteFile.mockImplementation(serverAccepts(basicAuthHeader('alice', 'pw')));
+
+    await expect(provider.deleteFile(file)).resolves.toBeUndefined();
+    expect(clientHeaders.current.Authorization).toBe(basicAuthHeader('alice', 'pw'));
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+  });
+
+  it('identity falling back to Basic (token endpoint unreachable) points the client at Basic too', async () => {
+    await connected();
+    identityMock.mockReset();
+    identityMock
+      .mockResolvedValueOnce({ kind: 'invalid-credentials' }) // tok-1 refused
+      .mockResolvedValue(authenticated());
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === ENDPOINT) throw new TypeError('Failed to fetch');
+      return new Response('', { status: 200 });
+    });
+    const provider = await restored();
+    expect(provider.isAuthenticated()).toBe(true);
+    expect(localStorage.getItem('webdav_token')).toBeNull();
+    expect(provider.authorizationHeader()).toBe(basicAuthHeader('alice', 'pw'));
+    expect(clientHeaders.current.Authorization).toBe(basicAuthHeader('alice', 'pw'));
+  });
+});
+
+describe('a TRANSIENT re-issue failure is never read as a rejected password', () => {
+  const file = {
+    provider: 'webdav' as const,
+    fileId: '/mokuro-reader/S/V.cbz',
+    path: 'S/V.cbz',
+    modifiedTime: '',
+    size: 1
+  };
+  const unreachable = () => {
+    throw new TypeError('Failed to fetch');
+  };
+
+  for (const [label, answer] of [
+    ['rate-limited', limit],
+    ['unreachable', unreachable]
+  ] as const) {
+    it(`a write refused under the token while the re-issue is ${label} keeps the password`, async () => {
+      tokenAnswers = [issue(), answer as () => Response];
+      const provider = await connected();
+      mockClient.deleteFile.mockRejectedValue(unauthorizedError());
+
+      const error = await provider.deleteFile(file).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({ code: 'DELETE_FAILED', isNetworkError: true });
+      expect((error as Error).message).not.toMatch(/\b401\b|Unauthorized/);
+      expect(provider.getStatus().needsAttention).toBe(false);
+      expect(provider.isReadOnly).toBe(false);
+      expect(localStorage.getItem('webdav_password')).toBe('pw');
+      expect(localStorage.getItem('webdav_username')).toBe('alice');
+    });
+
+    it(`an upload or worker refresh while the re-issue is ${label} rejects with the transient error`, async () => {
+      tokenAnswers = [issue(), answer as () => Response];
+      const provider = await connected();
+      await expect(provider.refreshedWorkerCredentials('Bearer tok-1')).rejects.toBeInstanceOf(
+        TransientAuthRefreshError
+      );
+      mockCore.uploadFile.mockImplementation(async ({ refreshAuth }) => {
+        const fresh = await refreshAuth('Bearer tok-1'); // the core rethrows a transient refusal
+        return { fileId: String(fresh) };
+      });
+      const error = await provider.uploadFile('S/V.cbz', new Blob(['x'])).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'UPLOAD_FAILED', isNetworkError: true });
+      expect((error as Error).message).not.toMatch(/\b401\b|Unauthorized/);
+      expect(provider.getStatus().needsAttention).toBe(false);
+      expect(localStorage.getItem('webdav_password')).toBe('pw');
+    });
+
+    it(`a restore whose held token is refused while the re-issue is ${label} keeps the password (M-6)`, async () => {
+      await connected();
+      tokenAnswers = [answer as () => Response];
+      // tok-1 was revoked server-side: the login PROPFIND is refused.
+      mockClient.getDirectoryContents.mockRejectedValueOnce(unauthorizedError());
+      const provider = await restored();
+      expect(provider.isAuthenticated()).toBe(false);
+      expect(provider.getStatus().needsAttention).toBe(false);
+      expect(localStorage.getItem('webdav_password')).toBe('pw');
+      expect(localStorage.getItem('webdav_server_url')).toBe(SERVER);
+    });
+  }
+
+  it('a REFUSED re-issue still runs the auth-failed flow (the 401 stands)', async () => {
+    tokenAnswers = [issue(), refuse];
+    const provider = await connected();
+    await expect(provider.refreshedWorkerCredentials('Bearer tok-1')).resolves.toBeNull();
+    expect(provider.getStatus().needsAttention).toBe(true);
+    expect(localStorage.getItem('webdav_password')).toBeNull();
   });
 });
 

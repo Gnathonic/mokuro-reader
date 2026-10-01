@@ -26,6 +26,7 @@ import type {
 import {
   createWorkerAuthRefresher,
   isAuthRefreshResult,
+  refreshInto,
   type WorkerAuthRefresher
 } from '$lib/util/worker-auth-refresh';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
@@ -139,6 +140,11 @@ interface CompressFromDbMessage {
    */
   embedLayerFiles?: boolean;
   includeSidecars?: boolean;
+  /**
+   * The target provider compiles its own metadata (mokuro-bunko): the
+   * editor's `original` snapshot is never uploaded there (`layerStaysLocal`).
+   */
+  serverCompilesMetadata?: boolean;
 }
 
 /**
@@ -523,17 +529,12 @@ function cloudProviderFor(provider: WorkerProviderType): WorkerCloudProviderAdap
     );
     authRefreshers.set(provider, refresher);
   }
-  const refreshInto =
-    (credentials: ProviderCredentials) =>
-    async (staleAuthorization: string): Promise<ProviderCredentials | null> => {
-      const fresh = await refresher!(staleAuthorization);
-      if (fresh) Object.assign(credentials, fresh);
-      return fresh;
-    };
+  const held = refresher;
   return {
     downloadFile: (args) =>
-      core.downloadFile({ ...args, refreshAuth: refreshInto(args.credentials) }),
-    uploadFile: (args) => core.uploadFile({ ...args, refreshAuth: refreshInto(args.credentials) })
+      core.downloadFile({ ...args, refreshAuth: refreshInto(held, args.credentials) }),
+    uploadFile: (args) =>
+      core.uploadFile({ ...args, refreshAuth: refreshInto(held, args.credentials) })
   };
 }
 
@@ -1000,7 +1001,9 @@ ctx.addEventListener('message', async (event) => {
           });
 
         if (message.includeSidecars === true) {
-          const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid);
+          const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
+            serverCompilesMetadata: message.serverCompilesMetadata === true
+          });
           const sidecarsToUpload: Array<{ filename: string; blob: Blob }> = [];
           if (generatedSidecars.mokuro) {
             sidecarsToUpload.push(generatedSidecars.mokuro);

@@ -300,6 +300,32 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(scheduleCatalogFileWrite).toHaveBeenCalled();
   });
 
+  it('an account without modify/delete is refused up front, before anything moves', async () => {
+    const provider = makeRenameProvider({
+      getStatus: vi.fn(() => ({ isReadOnly: false, canModifyDelete: false }))
+    });
+    const files = oldSeriesFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
+    ).rejects.toMatchObject({
+      code: 'NOT_PERMITTED',
+      message: "This account can't rename on this server"
+    });
+    await expect(
+      unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+        { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+      ])
+    ).rejects.toMatchObject({ code: 'NOT_PERMITTED' });
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
   it('regenerates the .mokuro at the new path, moves cbz+cover, and deletes the stale .mokuro', async () => {
     const cache = loadedCache();
     const provider = makeRenameProvider();
@@ -1388,6 +1414,30 @@ describe('series delete counts volumes, not files', () => {
     expect(result).toEqual({ succeeded: 1, failed: 1 });
   });
 
+  it('a REFUSED folder delete (bunko uploader) falls back to deleting the files it owns', async () => {
+    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const provider = makeRenameProvider({
+      deleteSeriesFolder: vi.fn(async () => {
+        throw new ProviderError('403 Forbidden', 'webdav', 'FOLDER_DELETE_REFUSED');
+      }),
+      // This account owns Volume 1 only: the other volume's files are refused.
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        if (file.path.startsWith('S/Volume 2.')) throw new Error('403 Forbidden');
+      })
+    });
+    const files = layeredSeries();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.deleteSeriesFolder('S');
+
+    expect(provider.deleteFile).toHaveBeenCalledTimes(files.length);
+    expect(result).toEqual({ succeeded: 1, failed: 1 });
+    expect(provider.removeDirectoryIfEmpty).toHaveBeenCalledWith('S');
+  });
+
   it('a whole-folder delete reports its volumes', async () => {
     const provider = makeRenameProvider({ deleteSeriesFolder: vi.fn(async () => {}) });
     const files = layeredSeries();
@@ -2424,6 +2474,113 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       Math.floor(Date.parse('2026-08-27T09:00:00.000Z') / 1000)
     );
     expect(file.volumes[0].mokuro_size).toBe(5);
+  });
+
+  describe('on a server that compiles series.json itself (mokuro-bunko)', () => {
+    const PUBLISHED = '2026-01-01T00:00:00.000Z';
+
+    function serverCompiled() {
+      return makeRenameProvider({
+        getStatus: vi.fn(() => ({ isReadOnly: false, serverCompilesMetadata: true }))
+      });
+    }
+
+    /** bunko's own compiled copy: one volume, the facts, no offsets. */
+    function publish(extra: Record<string, unknown> = {}) {
+      getSeriesIndex.mockResolvedValue({
+        series_key: 'one piece',
+        series_title: 'One Piece',
+        file: {
+          version: 2,
+          series_title: 'One Piece',
+          external_ids: { anilist: 21 },
+          titles: { native: 'ワンピース' },
+          synonyms: [],
+          updated_at: PUBLISHED,
+          volumes: [
+            {
+              volume_uuid: 'uuid-Volume 1',
+              volume_title: 'Volume 1',
+              page_count: 2,
+              character_count: 20,
+              mokuro_version: '0.4.11'
+            }
+          ],
+          ...extra
+        },
+        source: { provider: 'webdav', path: 'One Piece/series.json', size: 42, modifiedTime: 't' },
+        fetched_at: '2026-08-17T00:00:00.000Z',
+        parser: 1
+      });
+    }
+
+    it('a download that only recorded a hash (no fact, no offset) PUTs nothing', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([
+        cloudFile('One Piece/Volume 1.cbz'),
+        cloudFile('One Piece/Volume 1.mokuro', { size: 77 })
+      ]);
+      publish();
+      // Freshly downloaded: hash + attestation recorded on the row.
+      localVolumes.mockResolvedValue([
+        volume('One Piece', 'Volume 1', {
+          mokuro_sha256: 'a'.repeat(64),
+          mokuro_sha256_cloud: { provider: 'webdav', size: 77 }
+        })
+      ]);
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
+      expect(provider.uploadFile).not.toHaveBeenCalled();
+    });
+
+    it('a local fact edit IS a request: PUT', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+      publish();
+      localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+      const meta = {
+        series_key: 'one piece',
+        series_title: 'One Piece',
+        external_ids: { anilist: 21 },
+        titles: { native: 'ワンピース' },
+        synonyms: ['OP'],
+        updated_at: '2026-02-01T00:00:00.000Z',
+        facts_updated_at: '2026-02-01T00:00:00.000Z'
+      };
+      getSeriesMetadataForTitle.mockResolvedValue(meta);
+      getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+      expect((await uploadedSeriesFile(provider)).synonyms).toEqual(['OP']);
+    });
+
+    it('a shelf nudge IS a request: PUT', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+      publish();
+      localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+      const meta = {
+        series_key: 'one piece',
+        series_title: 'One Piece',
+        synonyms: [],
+        updated_at: '2026-02-01T00:00:00.000Z',
+        volume_offsets: { 'uuid-Volume 1': 12 }
+      };
+      getSeriesMetadataForTitle.mockResolvedValue(meta);
+      getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+      expect((await uploadedSeriesFile(provider)).volumes[0].offset).toBe(12);
+    });
   });
 });
 

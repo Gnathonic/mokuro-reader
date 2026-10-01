@@ -312,6 +312,27 @@ describe('queueing a volume that is not installed', () => {
     expect(backupQueue.isVolumeInBackupQueue('installed-uuid')).toBe(true);
   });
 
+  it('skips quietly, with ONE notice, for an account that cannot add files (bunko registered)', () => {
+    const progressOnly = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      getStatus: () => ({ isReadOnly: false, canAddFiles: false })
+    } as never;
+    queueVolumeForBackup(volume({ volume_uuid: 'no-add-uuid' }), progressOnly);
+    expect(backupQueue.isVolumeInBackupQueue('no-add-uuid')).toBe(false);
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith("This account can't add files on this server");
+
+    bridge.notify.mockClear();
+    backupQueue.queueSeriesVolumesForBackup(
+      [volume({ volume_uuid: 'a' }), volume({ volume_uuid: 'b', volume_title: 'Volume 2' })],
+      progressOnly
+    );
+    expect(backupQueue.isVolumeInBackupQueue('a')).toBe(false);
+    expect(backupQueue.isVolumeInBackupQueue('b')).toBe(false);
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+  });
+
   it('does not export a metadata-only volume', () => {
     queueVolumeForExport(volume({ metadata_only: true }), 'One Piece - Volume 1.cbz');
 
@@ -572,6 +593,26 @@ describe('export-for-download sidecars', () => {
       });
       expect(message.provider).toBe('webdav');
       expect(message).not.toHaveProperty('embedLayerFiles');
+    });
+
+    it('tells the worker when the server compiles its metadata (the original snapshot stays local)', async () => {
+      const message = await backupMessage('server-compiled-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        getStatus: () => ({ isReadOnly: false, serverCompilesMetadata: true })
+      });
+      expect(message.serverCompilesMetadata).toBe(true);
+    });
+
+    it('…and not for plain storage', async () => {
+      const message = await backupMessage('plain-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        getStatus: () => ({ isReadOnly: false })
+      });
+      expect(message.serverCompilesMetadata).toBe(false);
     });
   });
 

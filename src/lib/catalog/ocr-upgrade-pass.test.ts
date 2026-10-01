@@ -80,7 +80,11 @@ import {
   _resetOcrUpgradePassForTests,
   requestOcrUpgradePass
 } from './ocr-upgrade-pass';
-import { UPDATED_OCR_LAYER_ID, isUntouchedUpdatedOcr } from './cloud-ocr-upgrade';
+import {
+  PREVIOUS_OCR_LAYER_ID,
+  UPDATED_OCR_LAYER_ID,
+  isUntouchedUpgradeLayer
+} from './cloud-ocr-upgrade';
 
 const SERIES = 'Cloud Series';
 
@@ -393,7 +397,7 @@ describe('the OCR upgrade pass', () => {
       expect(await primaryTexts()).toEqual(['なおした', 'い']);
       const layer = await getLayerMeta(db, 'vol-1', UPDATED_OCR_LAYER_ID);
       expect(layer).toMatchObject({ kind: 'ocr', name: 'Updated OCR', source_sha256: hash });
-      expect(isUntouchedUpdatedOcr(layer)).toBe(true);
+      expect(isUntouchedUpgradeLayer(layer)).toBe(true);
       const pages = (await getLayerPages(db, 'vol-1', UPDATED_OCR_LAYER_ID))!;
       expect(pages.map((p) => p.blocks[0].lines[0])).toEqual(['か', 'き']);
       expect(pages.map((p) => p.img_path)).toEqual(['Vol 1/001.jpg', 'Vol 1/002.jpg']);
@@ -601,5 +605,268 @@ describe('the OCR upgrade pass', () => {
     await pass();
 
     expect(cloud.downloadFile).not.toHaveBeenCalled();
+  });
+
+  describe('provenance: where the local OCR came from decides what is kept', () => {
+    const ATTESTED = { provider: 'webdav', size: 10, modified: 1 };
+
+    async function layerIds(): Promise<string[]> {
+      return (await db.volume_ocr_layers.where('volume_uuid').equals('vol-1').toArray())
+        .map((l) => l.layer_id)
+        .sort();
+    }
+
+    it('a sidecar made for images of another size is not applied, and not re-fetched', async () => {
+      await installVolume(['あ', 'い'], { mokuro_sha256: 'f'.repeat(64) });
+      const other = JSON.parse(mokuro(['か', 'き']));
+      for (const p of other.pages) {
+        p.img_width = 800;
+        p.img_height = 1200;
+      }
+      const body = JSON.stringify(other);
+      listSidecar('Vol 1', body);
+      await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+      await pass();
+      await pass();
+
+      expect(cloud.downloadFile).toHaveBeenCalledTimes(1);
+      expect(await primaryTexts()).toEqual(['あ', 'い']);
+      expect(await layerIds()).toEqual([]);
+      expect((await db.volumes.get('vol-1'))!.mokuro_sha256).toBe('f'.repeat(64));
+    });
+
+    it('…nor filed as the updated-ocr layer of an edited volume', async () => {
+      await installVolume(['なおした', 'い'], {
+        mokuro_sha256: 'f'.repeat(64),
+        ocr_edited_at: '2026-09-01T00:00:00.000Z'
+      });
+      const other = JSON.parse(mokuro(['か', 'き']));
+      other.pages[1].img_height = 999;
+      const body = JSON.stringify(other);
+      listSidecar('Vol 1', body);
+      await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+      await pass();
+
+      expect(await layerIds()).toEqual([]);
+    });
+
+    it("a primary attested as THIS cloud's file is replaced outright (no keepsake)", async () => {
+      await installVolume(['あ', 'い'], {
+        mokuro_sha256: 'f'.repeat(64),
+        mokuro_sha256_cloud: ATTESTED
+      });
+      const body = mokuro(['か', 'き']);
+      listSidecar('Vol 1', body);
+      await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+      await pass();
+
+      expect(await primaryTexts()).toEqual(['か', 'き']);
+      expect(await layerIds()).toEqual([]);
+    });
+
+    for (const [label, partial] of [
+      ['a local import (hash, no attestation)', { mokuro_sha256: 'f'.repeat(64) }],
+      ['a legacy row (no hash at all)', {}],
+      [
+        'a primary attested for ANOTHER provider',
+        {
+          mokuro_sha256: 'f'.repeat(64),
+          mokuro_sha256_cloud: { provider: 'google-drive', size: 10 }
+        }
+      ]
+    ] as const) {
+      it(`${label}: upgraded, the replaced OCR kept as the local previous-ocr layer`, async () => {
+        await installVolume(['あ', 'い'], partial as Partial<VolumeMetadata>);
+        const body = mokuro(['か', 'き']);
+        listSidecar('Vol 1', body);
+        await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+        await pass();
+
+        expect(await primaryTexts()).toEqual(['か', 'き']);
+        expect(await layerIds()).toEqual([PREVIOUS_OCR_LAYER_ID]);
+        const meta = (await getLayerMeta(db, 'vol-1', PREVIOUS_OCR_LAYER_ID))!;
+        expect(meta).toMatchObject({ name: 'Previous OCR', kind: 'ocr' });
+        expect(isUntouchedUpgradeLayer(meta)).toBe(true);
+        expect(meta.source_sha256).toBe(
+          (partial as Partial<VolumeMetadata>).mokuro_sha256 ?? undefined
+        );
+        const kept = (await getLayerPages(db, 'vol-1', PREVIOUS_OCR_LAYER_ID))!;
+        expect(kept.map((p) => p.blocks[0].lines[0])).toEqual(['あ', 'い']);
+        expect(kept.map((p) => p.img_path)).toEqual(['Vol 1/001.jpg', 'Vol 1/002.jpg']);
+      });
+    }
+
+    it('a later replacement overwrites an UNTOUCHED keepsake, never one the user edited', async () => {
+      await installVolume(['あ', 'い'], { mokuro_sha256: 'f'.repeat(64) });
+      const first = mokuro(['か', 'き']);
+      listSidecar('Vol 1', first);
+      await cacheIndex([{ mokuro_sha256: await hashOf(first) }]);
+      await pass();
+
+      // The user re-imports their own OCR (no attestation again)…
+      await installVolume(['さ', 'し'], { mokuro_sha256: 'e'.repeat(64) });
+      const second = mokuro(['た', 'ち']);
+      cloud.state.files = [];
+      listSidecar('Vol 1', second);
+      await cacheIndex([{ mokuro_sha256: await hashOf(second) }]);
+      await pass();
+      expect(await layerIds()).toEqual([PREVIOUS_OCR_LAYER_ID]);
+      let kept = (await getLayerPages(db, 'vol-1', PREVIOUS_OCR_LAYER_ID))!;
+      expect(kept.map((p) => p.blocks[0].lines[0])).toEqual(['さ', 'し']);
+
+      // …then edits the keepsake: it is theirs now.
+      const meta = (await getLayerMeta(db, 'vol-1', PREVIOUS_OCR_LAYER_ID))!;
+      await putLayerWithPages(db, {
+        ...meta,
+        updated_at: new Date(Date.parse(meta.updated_at) + 1000).toISOString(),
+        pages: [page('Vol 1/001.jpg', '私の'), page('Vol 1/002.jpg', '編集')]
+      });
+      await installVolume(['な', 'に'], { mokuro_sha256: 'd'.repeat(64) });
+      const third = mokuro(['は', 'ひ']);
+      cloud.state.files = [];
+      listSidecar('Vol 1', third);
+      await cacheIndex([{ mokuro_sha256: await hashOf(third) }]);
+      await pass();
+
+      expect(await primaryTexts()).toEqual(['は', 'ひ']);
+      kept = (await getLayerPages(db, 'vol-1', PREVIOUS_OCR_LAYER_ID))!;
+      expect(kept.map((p) => p.blocks[0].lines[0])).toEqual(['私の', '編集']);
+      expect(await layerIds()).toEqual([PREVIOUS_OCR_LAYER_ID, `${PREVIOUS_OCR_LAYER_ID}-2`]);
+      const next = (await getLayerPages(db, 'vol-1', `${PREVIOUS_OCR_LAYER_ID}-2`))!;
+      expect(next.map((p) => p.blocks[0].lines[0])).toEqual(['な', 'に']);
+    });
+  });
+
+  describe('snapshots a replaced primary leaves stale', () => {
+    async function seedLayer(layer_id: string, extra: Record<string, unknown>, text: string) {
+      await putLayerWithPages(db, {
+        volume_uuid: 'vol-1',
+        layer_id,
+        name: layer_id,
+        kind: layer_id === 'original' ? 'original' : 'ocr',
+        created_at: 't0',
+        updated_at: 't1',
+        ...extra,
+        pages: [page('Vol 1/001.jpg', text), page('Vol 1/002.jpg', text)]
+      } as never);
+    }
+
+    it('drops the old original (tombstoning its cloud copy) and an untouched updated-ocr', async () => {
+      await installVolume(['あ', 'い'], {
+        mokuro_sha256: 'f'.repeat(64),
+        mokuro_sha256_cloud: { provider: 'webdav', size: 10 }
+      });
+      await seedLayer(
+        'original',
+        { cloud: { provider: 'webdav', size: 5, synced_at: 't1' } },
+        '古'
+      );
+      await seedLayer(
+        UPDATED_OCR_LAYER_ID,
+        { source_sha256: 'e'.repeat(64), source_at: 't1' },
+        '旧'
+      );
+      const body = mokuro(['か', 'き']);
+      listSidecar('Vol 1', body);
+      await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+      await pass();
+
+      expect(await primaryTexts()).toEqual(['か', 'き']);
+      expect(await getLayerMeta(db, 'vol-1', 'original')).toBeUndefined();
+      expect(await getLayerPages(db, 'vol-1', 'original')).toBeFalsy();
+      expect(await getLayerMeta(db, 'vol-1', UPDATED_OCR_LAYER_ID)).toBeUndefined();
+      const tombstones = JSON.parse(localStorage.getItem('layer-sync:pending-deletes') ?? '[]');
+      expect(tombstones).toContainEqual({
+        volume_uuid: 'vol-1',
+        layer_id: 'original',
+        provider: 'webdav'
+      });
+    });
+
+    it('keeps an updated-ocr layer the user edited', async () => {
+      await installVolume(['あ', 'い'], {
+        mokuro_sha256: 'f'.repeat(64),
+        mokuro_sha256_cloud: { provider: 'webdav', size: 10 }
+      });
+      await seedLayer(
+        UPDATED_OCR_LAYER_ID,
+        { source_sha256: 'e'.repeat(64), source_at: 't0' }, // edited at t1
+        '私の'
+      );
+      const body = mokuro(['か', 'き']);
+      listSidecar('Vol 1', body);
+      await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+      await pass();
+
+      expect(await primaryTexts()).toEqual(['か', 'き']);
+      expect(await getLayerMeta(db, 'vol-1', UPDATED_OCR_LAYER_ID)).toBeDefined();
+    });
+  });
+
+  describe('a sidecar the reader cannot parse', () => {
+    for (const [label, body] of [
+      ['JSON with NaN', '{"version":"0.2.1","title":"S","pages":[],"chars":NaN}'],
+      [
+        'a file missing title_uuid',
+        JSON.stringify((({ title_uuid: _drop, ...rest }) => rest)(JSON.parse(mokuro(['か', 'き']))))
+      ]
+    ] as const) {
+      it(`${label}: recorded as unusable for this hash, never re-downloaded`, async () => {
+        await installVolume(['あ', 'い'], { mokuro_sha256: 'f'.repeat(64) });
+        listSidecar('Vol 1', body);
+        await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+        await pass();
+        await requestOcrUpgradePass('webdav', []); // the retry list, too
+        await pass();
+
+        expect(cloud.downloadFile).toHaveBeenCalledTimes(1);
+        expect(await primaryTexts()).toEqual(['あ', 'い']);
+        expect(_lastOcrUpgradeResultForTests()).toMatchObject({ failed: 0 });
+      });
+    }
+
+    it('a NEW hash for the volume gets a new look', async () => {
+      await installVolume(['あ', 'い'], { mokuro_sha256: 'f'.repeat(64) });
+      const broken = '{"chars":NaN}';
+      listSidecar('Vol 1', broken);
+      await cacheIndex([{ mokuro_sha256: await hashOf(broken) }]);
+      await pass();
+
+      const fixed = mokuro(['か', 'き']);
+      cloud.state.files = [];
+      listSidecar('Vol 1', fixed);
+      await cacheIndex([{ mokuro_sha256: await hashOf(fixed) }]);
+      await pass();
+
+      expect(cloud.downloadFile).toHaveBeenCalledTimes(2);
+      expect(await primaryTexts()).toEqual(['か', 'き']);
+    });
+  });
+
+  it('bytes of another size than the listing (a stale HTTP cache) are not judged: retried, no verdict', async () => {
+    const old = mokuro(['あ', 'い']);
+    await installVolume(['あ', 'い'], { mokuro_sha256: await hashOf(old) });
+    const fresh = mokuro(['かき', 'くけ']);
+    listSidecar('Vol 1', fresh); // the listing: the NEW file's size
+    await cacheIndex([{ mokuro_sha256: await hashOf(fresh) }]);
+    // The browser's cache still answers with the OLD bytes.
+    cloud.state.bodies.set(`${SERIES}/Vol 1.mokuro`, old);
+
+    await pass();
+    expect(_lastOcrUpgradeResultForTests()).toMatchObject({ failed: 1 });
+    expect(await primaryTexts()).toEqual(['あ', 'い']);
+
+    // Revalidated: the real bytes arrive, and the upgrade happens.
+    cloud.state.bodies.set(`${SERIES}/Vol 1.mokuro`, fresh);
+    await pass();
+    expect(cloud.downloadFile).toHaveBeenCalledTimes(2);
+    expect(await primaryTexts()).toEqual(['かき', 'くけ']);
   });
 });

@@ -182,6 +182,27 @@ describe('WebDAVProvider login()', () => {
     expect(provider.getStatus().serverCompilesMetadata).toBe(false);
   });
 
+  it('a server known to be bunko (verified PUTs recorded) stays a non-producer when identity fails', async () => {
+    // The identity probe hit a flaky hop; this URL answered X-Mokuro-Put: verified before.
+    localStorage.setItem('webdav_put_verified', 'https://host');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host/', username: 'u', password: 'pw' });
+
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it('the bunko record of ANOTHER server URL does not make this one a non-producer', async () => {
+    localStorage.setItem('webdav_put_verified', 'https://bunko.example');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+  });
+
   it('classifies a 401-bearing FOLDER_ERROR on the unsupported path as an auth-typed LOGIN_FAILED', async () => {
     // Anonymous-browse server: root PROPFIND succeeds, but the mokuro folder
     // probe rejects the credentials. Main classified this by message substring
@@ -460,6 +481,55 @@ describe('WebDAVProvider write-failure policy', () => {
     ).rejects.toMatchObject({ code: 'AUTH_FAILED', webdavErrorType: 'auth' });
 
     expect(provider.getStatus().needsAttention).toBe(true);
+  });
+
+  it('a 403 on the series COLLECTION delete asks for per-file deletion, without demotion', async () => {
+    // mokuro-bunko: an uploader may delete its own files, never a top-level folder.
+    const provider = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
+    mockClient.exists.mockResolvedValue(true);
+    mockClient.deleteFile.mockRejectedValue(
+      Object.assign(new Error('Invalid response: 403 Forbidden'), { status: 403 })
+    );
+
+    await expect(provider.deleteSeriesFolder('Series')).rejects.toMatchObject({
+      code: 'FOLDER_DELETE_REFUSED'
+    });
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(false);
+  });
+
+  it('reports canAddFiles from identity, and absent for a generic server', async () => {
+    const registered = await loggedInProvider({
+      capabilities: REGISTERED_PERMS,
+      hasPassword: true
+    });
+    expect(registered.getStatus().canAddFiles).toBe(false);
+    expect(registered.isReadOnly).toBe(false); // progress still syncs
+    const generic = await loggedInProvider({ capabilities: null, hasPassword: true });
+    expect(generic.getStatus().canAddFiles).toBeUndefined();
+  });
+
+  it('a 403 on a rename MOVE says the account cannot rename, without demotion', async () => {
+    const provider = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
+    mockClient.exists.mockImplementation(async (path: string) => !path.includes('New'));
+    mockClient.moveFile.mockRejectedValue(new Error('Invalid response: 403 Forbidden'));
+
+    await expect(
+      provider.renameFile(
+        {
+          provider: 'webdav',
+          fileId: '/mokuro-reader/S/Old.cbz',
+          path: 'S/Old.cbz',
+          modifiedTime: '2026-01-01',
+          size: 1
+        },
+        'S/New.cbz'
+      )
+    ).rejects.toMatchObject({
+      code: 'PERMISSION_DENIED',
+      message: "This account can't rename on this server"
+    });
+    expect(provider.isReadOnly).toBe(false);
   });
 
   it('errors thrown by the policy are ProviderError instances', async () => {

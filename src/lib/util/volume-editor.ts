@@ -3,6 +3,7 @@
  */
 
 import { db } from '$lib/catalog/db';
+import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
 import { isImageExtension } from '$lib/import';
 import { naturalSort } from '$lib/util/natural-sort';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
@@ -95,6 +96,8 @@ async function syncCoverSidecarToCloud(volumeUuid: string, thumbnailFile: File):
   if (!provider || !provider.isAuthenticated()) {
     return;
   }
+  // A progress-only account cannot add the cover file: skip, quietly.
+  if (!accountCanAddFiles(provider.getStatus())) return;
 
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {

@@ -1,3 +1,4 @@
+import { accountCanModifyDelete, CANNOT_RENAME_MESSAGE } from './account-capabilities';
 import { derived, type Readable } from 'svelte/store';
 import {
   ProviderError,
@@ -25,6 +26,7 @@ import {
   isSeriesFilePath,
   parseSeriesFileWithReport,
   seriesFactsStamp,
+  seriesFileCarriesServerRequest,
   type CloudSidecarStamp,
   type SeriesFile,
   type SeriesFileVolume,
@@ -853,12 +855,19 @@ class UnifiedCloudManager {
   }
 
   private assertWritable(provider: SyncProvider): void {
-    if (provider.getStatus().isReadOnly) {
+    const status = provider.getStatus();
+    if (status.isReadOnly) {
       throw new ProviderError(
         'Cannot rename: the cloud provider is read-only',
         provider.type,
         'READ_ONLY'
       );
+    }
+    // A rename is a MOVE, which mokuro-bunko allows only a modify/delete role
+    // (ownership does not count): refuse up front, with the real reason, before
+    // anything moved — never a mid-rename 403 read as a connection problem.
+    if (!accountCanModifyDelete(status)) {
+      throw new ProviderError(CANNOT_RENAME_MESSAGE, provider.type, 'NOT_PERMITTED');
     }
   }
 
@@ -1841,13 +1850,27 @@ class UnifiedCloudManager {
     });
     if (!file) return 'skipped';
 
-    // No content-equality skip here, unlike `writeCatalogFile`. That is
-    // deliberate: on a bunko-backed library a `series.json` PUT is an update
-    // *request* the server folds into its own compilation, so a file identical
-    // to the one already in the cloud still carries information (this device
-    // vouching for it) and re-publishing costs one small upload. The catalog is
-    // the opposite case — one big file every device re-downloads whenever its
-    // stamp moves — which is why the skip lives there and not here.
+    // A server that compiles `series.json` itself (mokuro-bunko) takes a
+    // client PUT only as an update REQUEST for the facts and the shelf
+    // alignment; it computes counts, stamps and `mokuro_sha256` from the files
+    // and ignores the client's. A file that changes neither is no request at
+    // all — every unconditional schedule (a placeholder's measurement, a
+    // download's recorded hash, a backup's drain, a delete's maintenance)
+    // would otherwise PUT one per series, including series this account never
+    // uploaded.
+    if (
+      provider.getStatus().serverCompilesMetadata === true &&
+      !seriesFileCarriesServerRequest(existing, file)
+    ) {
+      console.debug(
+        `[series.json] '${folderTitle}': nothing for the server to take (facts and offsets unchanged)`
+      );
+      return 'skipped';
+    }
+
+    // Plain storage: no content-equality skip here, unlike `writeCatalogFile`
+    // (see `maybeScheduleSeriesHealWrite` for the read-side materiality rules
+    // that keep identical rewrites from being scheduled in the first place).
     const path = normalizeCloudPath(`${folderTitle}/${SERIES_FILE_NAME}`);
     const blob = new Blob([stringifySeriesFile(file)], { type: 'application/json' });
     await this.uploadFile(path, blob);
@@ -2217,6 +2240,17 @@ class UnifiedCloudManager {
         ) {
           console.log(`Series folder not found, falling back to individual file deletion`);
           return deleteFilesIndividually();
+        }
+
+        // The server refused the folder as a whole but may allow its files
+        // (mokuro-bunko: an uploader may delete the files it owns, never a
+        // top-level folder). Each volume is counted by what actually went;
+        // the folder itself goes only if that left it empty.
+        if (error instanceof ProviderError && error.code === 'FOLDER_DELETE_REFUSED') {
+          console.log(`Series folder delete refused, deleting its files one by one`);
+          const result = await deleteFilesIndividually();
+          await this.pruneSeriesDirectoryIfEmpty(provider, seriesTitle);
+          return result;
         }
 
         console.error(`Failed to delete series folder:`, error);

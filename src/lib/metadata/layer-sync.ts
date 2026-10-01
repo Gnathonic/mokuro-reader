@@ -1,4 +1,5 @@
 import { db } from '$lib/catalog/db';
+import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
 import {
   getLayerMeta,
   getLayerWithPages,
@@ -18,8 +19,8 @@ import {
 } from '$lib/reader/edit/layers';
 import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
-import { isUntouchedUpdatedOcr } from '$lib/catalog/mokuro-hash';
+import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
+import { layerStaysLocal } from '$lib/catalog/mokuro-hash';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
@@ -219,7 +220,12 @@ function writePendingDeletes(entries: PendingLayerDelete[]): void {
   }
 }
 
-function notePendingLayerDelete(entry: PendingLayerDelete): void {
+/**
+ * A layer row was deleted here: keep its cloud copy (if any) from being pulled
+ * back, and remove it when the provider allows (the next listing). Also used
+ * by the OCR upgrade, which drops snapshots its new primary made stale.
+ */
+export function notePendingLayerDelete(entry: PendingLayerDelete): void {
   const rest = readPendingDeletes().filter(
     (e) => !(e.volume_uuid === entry.volume_uuid && e.layer_id === entry.layer_id)
   );
@@ -453,23 +459,30 @@ export function layerNeedsPull(
  * with THIS provider (or was never synced) and the cloud copy is not newer.
  * A passive snapshot always loses to a listed file (`layerNeedsPull`), so it
  * is pushed only where the cloud has no such layer at all. An untouched
- * `updated-ocr` row is never pushed (`isUntouchedUpdatedOcr`).
+ * `updated-ocr` row is never pushed (`isUntouchedUpgradeLayer`).
  */
 export function layerNeedsPush(
   row: VolumeOcrLayer,
   file: LayerFileStamp | undefined,
-  providerType: string
+  providerType: string,
+  /** The provider compiles its own metadata (bunko): see `layerStaysLocal`. */
+  serverCompilesMetadata = false
 ): boolean {
   // The cloud's own primary sidecar, mirrored for an edited volume by the OCR
-  // upgrade: pushing it would publish the primary a second time as a layer.
-  if (isUntouchedUpdatedOcr(row)) return false;
+  // upgrade (pushing it would publish the primary a second time as a layer),
+  // the local primary an upgrade replaced (a device-local keepsake), or the
+  // editor's `original` snapshot on a server that keeps primary edits local.
+  if (layerStaysLocal(row, serverCompilesMetadata)) return false;
   if (row.cloud && row.cloud.provider === providerType && !editedSinceSync(row)) return false;
   if (!file) return true;
   return !layerNeedsPull(row, file, providerType);
 }
 
 function providerIsWritable(provider: SyncProvider): boolean {
-  return provider.getStatus().isReadOnly !== true;
+  const status = provider.getStatus();
+  // A progress-only account (bunko `registered`) is not read-only, but every
+  // layer push would be refused per file on every listing: pull only.
+  return status.isReadOnly !== true && accountCanAddFiles(status);
 }
 
 /** Same key every "which row is this cloud file" question uses. */
@@ -797,7 +810,8 @@ async function planFolder(
   providerType: ProviderType,
   writable: boolean,
   pendingDeletes: Map<string, Set<string>>,
-  volumesWithLayers: Set<string>
+  volumesWithLayers: Set<string>,
+  serverCompilesMetadata = false
 ): Promise<Transfer[]> {
   // Nothing listed, nothing local anywhere, no tombstone to retire: done.
   if (layerFiles.length === 0 && volumesWithLayers.size === 0 && pendingDeletes.size === 0) {
@@ -867,7 +881,7 @@ async function planFolder(
     for (const layer of local) {
       const listedLayer = listed.get(layer.layer_id);
       const gzSiblings = gzCopiesOf(listedLayer);
-      if (layerNeedsPush(layer, listedLayer?.file, providerType)) {
+      if (layerNeedsPush(layer, listedLayer?.file, providerType, serverCompilesMetadata)) {
         transfers.push({ kind: 'push', folderTitle, stem: archiveStem, row, layer, gzSiblings });
       } else if (
         // The retry of a sibling delete that failed (here or on another
@@ -900,6 +914,7 @@ async function runSync(
   const provider = providerManager.getActiveProvider();
   if (!provider || provider.type !== providerType) return result;
   const writable = providerIsWritable(provider);
+  const serverCompilesMetadata = provider.getStatus().serverCompilesMetadata === true;
 
   await dropPendingDeletesOfMissingVolumes().catch(() => {});
   await dropRejectedFilesOfMissingVolumes().catch(() => {});
@@ -928,7 +943,8 @@ async function runSync(
           providerType,
           writable,
           pendingDeletes,
-          volumesWithLayers
+          volumesWithLayers,
+          serverCompilesMetadata
         ))
       );
     } catch (error) {
