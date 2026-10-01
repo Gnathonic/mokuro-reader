@@ -2147,22 +2147,37 @@ class UnifiedCloudManager {
       orderedSeriesVolumes.push(...leftovers);
     }
 
+    // The counts are VOLUMES, not files: a volume is its archive, and its
+    // `.mokuro`, layer files (`<stem>.<layer>.mokuro`) and thumbnail belong to
+    // it. Files no archive claims (`series.json`) are not volumes.
+    const archiveBases = archives.map((archive) => stripManagedFileExtension(archive.path));
+    const volumeOf = (file: CloudFileMetadata): string | null => {
+      const base = stripManagedFileExtension(file.path);
+      let owner: string | null = null;
+      for (const archiveBase of archiveBases) {
+        if (base === archiveBase) return archiveBase;
+        if (base.startsWith(`${archiveBase}.`) && archiveBase.length > (owner?.length ?? -1)) {
+          owner = archiveBase;
+        }
+      }
+      return owner;
+    };
+
     // Helper to delete files individually
     const deleteFilesIndividually = async (): Promise<{ succeeded: number; failed: number }> => {
-      let successCount = 0;
-      let failCount = 0;
+      const failedVolumes = new Set<string>();
 
       for (const volume of orderedSeriesVolumes) {
         try {
           await this.deleteFile(volume);
-          successCount++;
         } catch (error) {
           console.error(`Failed to delete ${volume.path}:`, error);
-          failCount++;
+          const owner = volumeOf(volume);
+          if (owner !== null) failedVolumes.add(owner);
         }
       }
 
-      return { succeeded: successCount, failed: failCount };
+      return { succeeded: archiveBases.length - failedVolumes.size, failed: failedVolumes.size };
     };
 
     // Check if provider has a deleteSeriesFolder method
@@ -2178,7 +2193,7 @@ class UnifiedCloudManager {
           }
         }
 
-        return { succeeded: seriesVolumes.length, failed: 0 };
+        return { succeeded: archiveBases.length, failed: 0 };
       } catch (error: unknown) {
         // Check if this is a "folder not found" error - fall back to individual deletion
         if (
@@ -2192,7 +2207,7 @@ class UnifiedCloudManager {
         }
 
         console.error(`Failed to delete series folder:`, error);
-        return { succeeded: 0, failed: seriesVolumes.length };
+        return { succeeded: 0, failed: archiveBases.length };
       }
     } else {
       // Provider doesn't support folder deletion - delete files individually

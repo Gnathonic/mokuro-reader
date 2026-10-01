@@ -1337,6 +1337,71 @@ describe('metadata maintenance on delete', () => {
   });
 });
 
+describe('series delete counts volumes, not files', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Two volumes, each with a primary sidecar and OCR layer files, plus the
+  // series' own series.json: nine files, two volumes.
+  const layeredSeries = (): CloudFileMetadata[] =>
+    [
+      'S/Volume 1.cbz',
+      'S/Volume 1.mokuro',
+      'S/Volume 1.hayai-nova.mokuro',
+      'S/Volume 1.paddle-manga.mokuro.gz',
+      'S/Volume 2.cbz',
+      'S/Volume 2.mokuro',
+      'S/Volume 2.hayai-nova.mokuro',
+      'S/Volume 2.webp',
+      'S/series.json'
+    ].map((path, i) => ({ provider: 'webdav', fileId: `f${i}`, path, modifiedTime: 't', size: 1 }));
+
+  it('file by file: one per volume, whatever its sidecars', async () => {
+    const provider = makeRenameProvider();
+    const files = layeredSeries();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.deleteSeriesFolder('S');
+
+    expect(provider.deleteFile).toHaveBeenCalledTimes(files.length);
+    expect(result).toEqual({ succeeded: 2, failed: 0 });
+  });
+
+  it('a failed layer file fails its volume once, not the series', async () => {
+    const provider = makeRenameProvider({
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        if (file.path.startsWith('S/Volume 2.')) throw new Error('403');
+      })
+    });
+    const files = layeredSeries();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.deleteSeriesFolder('S');
+
+    expect(result).toEqual({ succeeded: 1, failed: 1 });
+  });
+
+  it('a whole-folder delete reports its volumes', async () => {
+    const provider = makeRenameProvider({ deleteSeriesFolder: vi.fn(async () => {}) });
+    const files = layeredSeries();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.deleteSeriesFolder('S');
+
+    expect(result).toEqual({ succeeded: 2, failed: 0 });
+  });
+});
+
 describe('UnifiedCloudManager.deleteManagedVolume', () => {
   beforeEach(() => {
     vi.clearAllMocks();
