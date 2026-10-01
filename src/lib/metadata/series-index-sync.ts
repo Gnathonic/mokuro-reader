@@ -57,6 +57,8 @@ interface FolderListing {
   title: string;
   hasArchive: boolean;
   sidecar?: CloudFileMetadata;
+  /** The folder's own files (exactly one level deep), bucketed in the same pass. */
+  files: CloudFileMetadata[];
 }
 
 /**
@@ -81,9 +83,10 @@ function collectFolders(
 
       let folder = folders.get(key);
       if (!folder) {
-        folder = { title, hasArchive: false };
+        folder = { title, hasArchive: false, files: [] };
         folders.set(key, folder);
       }
+      folder.files.push(file);
 
       if (isSeriesFilePath(file.path)) {
         if (
@@ -252,28 +255,17 @@ async function runRefresh(
   // even with nothing refreshed so a previous pass's retries get their turn.
   // Loaded on demand: the pass pulls the import/provider graph along, which
   // would otherwise close an import cycle through `unified-cloud-manager.ts`.
+  // Each folder's files come from the ONE bucketing pass above
+  // (`collectFolders`): rescanning the listing per refreshed series was
+  // O(series x files) on the main thread — every series refreshes at once on a
+  // first listing (or a `SERIES_INDEX_PARSER` bump).
   const upgrade = refreshed.map((rec) => ({
     title: rec.series_title,
-    files: folderFiles(cloudFilesMap, rec.series_key)
+    files: folders.get(rec.series_key)?.files ?? []
   }));
   void import('$lib/catalog/ocr-upgrade-pass')
     .then(({ requestOcrUpgradePass }) => requestOcrUpgradePass(providerType, upgrade))
     .catch((error) => console.debug('[series-index-sync] OCR upgrade pass failed:', error));
-}
-
-/** One folder's own files (exactly one level deep) from a listing. */
-function folderFiles(
-  cloudFilesMap: Map<string, CloudFileMetadata[]>,
-  seriesKey: string
-): CloudFileMetadata[] {
-  const out: CloudFileMetadata[] = [];
-  for (const files of cloudFilesMap.values()) {
-    for (const file of files) {
-      const parts = normalizeCloudPath(file.path).split('/');
-      if (parts.length === 2 && normalizeSeriesKey(parts[0]) === seriesKey) out.push(file);
-    }
-  }
-  return out;
 }
 
 interface RefreshRequest {
