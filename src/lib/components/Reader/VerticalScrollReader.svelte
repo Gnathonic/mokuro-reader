@@ -25,6 +25,7 @@
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
+  import { PageWindow, seedPageWindow } from '$lib/reader/page-window';
   import { onMount, onDestroy, tick } from 'svelte';
 
   interface Props {
@@ -61,6 +62,31 @@
   let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 768);
   let indexedFiles = $derived.by(() => matchFilesToPages(files, pages));
   let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
+
+  // Only pages near the viewport mount their image and OCR text; every page
+  // keeps its sized wrapper (see page-window.ts). Seeded around the opening
+  // page so it renders before the observer's first report.
+  // svelte-ignore state_referenced_locally
+  let nearPages = $state.raw<ReadonlySet<number>>(seedPageWindow(currentPage - 1, pages.length));
+  // svelte-ignore state_referenced_locally
+  const pageWindow = new PageWindow(
+    { axis: 'y', onChange: (near) => (nearPages = near) },
+    nearPages
+  );
+  // (Re)observe once the wrappers are bound — again if the page count
+  // changes, or a new page would never mount its content. The count, not the
+  // array: an OCR layer swap hands in new pages of the same length.
+  let pageCount = $derived(pages.length);
+  $effect(() => {
+    const count = pageCount;
+    let live = true;
+    tick().then(() => {
+      if (live && scrollContainer) pageWindow.attach(scrollContainer, pageElements.slice(0, count));
+    });
+    return () => {
+      live = false;
+    };
+  });
   let zoomMode = $derived($settings.continuousZoomDefault);
 
   // Base scale for each page based on zoom mode
@@ -494,6 +520,7 @@
   onDestroy(() => {
     scroller?.destroy();
     zoomController.destroy();
+    pageWindow.detach();
     outerDiv?.removeEventListener('wheel', handleWheel);
     tracker.detach();
     taps.cancel();
@@ -546,14 +573,16 @@
               style:width={`${page.img_width}px`}
               style:height={`${page.img_height}px`}
             >
-              <MangaPage
-                {page}
-                src={indexedFiles[i]}
-                volumeUuid={volume.volume_uuid}
-                pageIndex={i}
-                forceVisible={missingPagePaths.has(page.img_path)}
-                {onContextMenu}
-              />
+              {#if nearPages.has(i)}
+                <MangaPage
+                  {page}
+                  src={indexedFiles[i]}
+                  volumeUuid={volume.volume_uuid}
+                  pageIndex={i}
+                  forceVisible={missingPagePaths.has(page.img_path)}
+                  {onContextMenu}
+                />
+              {/if}
             </div>
           </div>
         {/each}
