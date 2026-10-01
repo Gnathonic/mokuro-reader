@@ -10,6 +10,7 @@ import {
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
+import { isUntouchedUpdatedOcr } from '$lib/catalog/mokuro-hash';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerSidecarName } from './sync/syncable-file';
@@ -257,22 +258,28 @@ async function buildLayerSidecarsFromDb(
   // Metadata and pages in one read transaction: `updatedAt` below must be the
   // stamp of exactly the pages serialized (`stampLayersSynced` compares it).
   const layers = await listLayersWithPages(db, volume.volume_uuid);
-  return layers
-    .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
-    .map((layer) => {
-      const { totalChars } = buildPageCharCounts(layer.pages);
-      const metadata = buildMokuroMetadata(
-        { ...volume, character_count: totalChars },
-        layer.pages,
-        titles
-      );
-      return {
-        layerId: layer.layer_id,
-        filename: layerSidecarName(titles.volumeTitle, layer.layer_id),
-        blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' }),
-        updatedAt: layer.updated_at
-      };
-    });
+  return (
+    layers
+      // An untouched `updated-ocr` row is the cloud's own primary sidecar,
+      // mirrored for an edited volume: never written out as a layer file — not
+      // beside a cloud archive, and not into one (this also serves Local Folder).
+      .filter((layer) => !isUntouchedUpdatedOcr(layer))
+      .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
+      .map((layer) => {
+        const { totalChars } = buildPageCharCounts(layer.pages);
+        const metadata = buildMokuroMetadata(
+          { ...volume, character_count: totalChars },
+          layer.pages,
+          titles
+        );
+        return {
+          layerId: layer.layer_id,
+          filename: layerSidecarName(titles.volumeTitle, layer.layer_id),
+          blob: new Blob([JSON.stringify(metadata)], { type: 'application/json' }),
+          updatedAt: layer.updated_at
+        };
+      })
+  );
 }
 
 /**

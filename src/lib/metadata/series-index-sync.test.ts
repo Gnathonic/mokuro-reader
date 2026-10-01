@@ -26,6 +26,13 @@ vi.mock('$lib/metadata/series-index', async () => {
   };
 });
 
+// The OCR upgrade pass the refresh hands its refreshed series to (loaded on demand).
+const requestOcrUpgradePass = vi.fn(async (_provider: string, _series: unknown[]) => {});
+vi.mock('$lib/catalog/ocr-upgrade-pass', () => ({
+  requestOcrUpgradePass: (provider: string, series: unknown[]) =>
+    requestOcrUpgradePass(provider, series)
+}));
+
 const upsertFromSeriesFile = vi.fn(async (_title: string, _file: unknown) => {});
 vi.mock('$lib/metadata/store', () => ({
   upsertFromSeriesFile: (title: string, file: unknown) => upsertFromSeriesFile(title, file)
@@ -95,6 +102,7 @@ function cachedRecord(overrides: Partial<SeriesIndexRecord> = {}): SeriesIndexRe
       modifiedTime: '2026-08-17T00:00:00.000Z'
     },
     fetched_at: '2026-08-17T00:00:00.000Z',
+    parser: 1,
     ...overrides
   } as SeriesIndexRecord;
 }
@@ -141,6 +149,49 @@ describe('refreshSeriesIndexes', () => {
       'One Piece',
       expect.objectContaining({ external_ids: { anilist: 30013 } })
     );
+  });
+
+  it('hands the refreshed series — with their folder files — to the OCR upgrade pass', async () => {
+    const provider = makeProvider();
+    getActiveProvider.mockReturnValue(provider);
+
+    const { refreshSeriesIndexes } = await load();
+    await refreshSeriesIndexes(
+      listing(
+        cloudFile('One Piece/Volume 1.cbz'),
+        cloudFile('One Piece/Volume 1.mokuro'),
+        cloudFile('One Piece/series.json'),
+        cloudFile('Other/Volume 1.cbz')
+      ),
+      'webdav'
+    );
+
+    await vi.waitFor(() => expect(requestOcrUpgradePass).toHaveBeenCalledTimes(1));
+    const [providerType, series] = requestOcrUpgradePass.mock.calls[0] as [
+      string,
+      Array<{ title: string; files: Array<{ path: string }> }>
+    ];
+    expect(providerType).toBe('webdav');
+    expect(series.map((s) => s.title)).toEqual(['One Piece']);
+    expect(series[0].files.map((f) => f.path).sort()).toEqual([
+      'One Piece/Volume 1.cbz',
+      'One Piece/Volume 1.mokuro',
+      'One Piece/series.json'
+    ]);
+  });
+
+  it('still calls the pass when nothing was refreshed (its retries get their turn)', async () => {
+    const provider = makeProvider();
+    getActiveProvider.mockReturnValue(provider);
+    listSeriesIndexes.mockResolvedValue([cachedRecord()]);
+
+    const { refreshSeriesIndexes } = await load();
+    await refreshSeriesIndexes(
+      listing(cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/series.json')),
+      'webdav'
+    );
+
+    await vi.waitFor(() => expect(requestOcrUpgradePass).toHaveBeenCalledWith('webdav', []));
   });
 
   it('stores the folder name even when the file disagrees about the title', async () => {

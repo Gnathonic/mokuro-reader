@@ -242,6 +242,27 @@ describe('layerNeedsPull / layerNeedsPush', () => {
     expect(layerNeedsPull(edited, file, 'webdav')).toBe(false);
     expect(layerNeedsPush(edited, file, 'webdav')).toBe(true);
   });
+  // The OCR upgrade's `updated-ocr` row for an edited volume IS the cloud's
+  // primary sidecar: pushing it would publish that file a second time.
+  const mirror: VolumeOcrLayer = {
+    ...synced,
+    layer_id: 'updated-ocr',
+    kind: 'ocr',
+    cloud: undefined,
+    updated_at: '2026-09-16T12:00:00.000Z',
+    source_sha256: 'a'.repeat(64),
+    source_at: '2026-09-16T12:00:00.000Z'
+  };
+
+  it('an untouched updated-ocr row is never pushed, with or without a listed file', () => {
+    expect(layerNeedsPush(mirror, undefined, 'webdav')).toBe(false);
+    expect(layerNeedsPush(mirror, file, 'webdav')).toBe(false);
+  });
+
+  it('an updated-ocr row the user edited is their layer: pushed like any edit', () => {
+    const edited = { ...mirror, updated_at: '2026-09-16T12:30:00.000Z' };
+    expect(layerNeedsPush(edited, undefined, 'webdav')).toBe(true);
+  });
 });
 
 describe('syncLayersFromListing', () => {

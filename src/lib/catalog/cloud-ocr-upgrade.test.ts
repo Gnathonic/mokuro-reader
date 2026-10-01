@@ -70,6 +70,24 @@ describe('cloud OCR upgrade', () => {
     expect(ocr.pages).toHaveLength(1);
   });
 
+  it('the queue vouches for the listed sidecar it downloaded (provider, size, server mtime)', async () => {
+    enqueueCloudOcrUpgrade(imageOnlyVolume, {
+      ...sidecar,
+      fileId: 'file-stamped',
+      size: 2,
+      modifiedTime: '2026-09-30T10:00:00.000Z'
+    });
+    await vi.waitFor(async () => {
+      const row = await (db as any).table('volumes').get('vol-1');
+      expect(row.mokuro_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(row.mokuro_sha256_cloud).toEqual({
+        provider: 'google-drive',
+        size: 2,
+        modified: Date.parse('2026-09-30T10:00:00.000Z') / 1000
+      });
+    });
+  });
+
   // An image-only volume has a real (empty) `volume_ocr` row, so the OCR editor
   // and layer promotion both work on it — and neither moves `mokuro_version`
   // off ''. `ocr_edited_at` is the only thing that says "a person wrote this".
@@ -152,6 +170,30 @@ describe('upgradeOcrFromSidecarBlob (a sidecar fetched outside any provider)', (
     expect(row.mokuro_version).toBe('0.2.0');
     expect(row.character_count).toBe(1);
     expect((await (db as any).table('volume_ocr').get('vol-1')).pages).toHaveLength(1);
+  });
+
+  it('records the hash of the decoded sidecar bytes, attested only when given a listed file', async () => {
+    const body = '{"version":"0.2.0"}';
+    const { sha256Hex } = await import('./mokuro-hash');
+    const expected = await sha256Hex(new Blob([body]));
+
+    await upgradeOcrFromSidecarBlob('vol-1', 'https://server/Volume 1.mokuro', new Blob([body]));
+    let row = await (db as any).table('volumes').get('vol-1');
+    expect(row.mokuro_sha256).toBe(expected);
+    expect(row.mokuro_sha256_cloud).toBeUndefined();
+
+    await (db as any).table('volumes').put(imageOnlyVolume);
+    // gzipped in the cloud: the hash is of the JSON AFTER gunzip.
+    const gz = await new Response(
+      new Blob([body]).stream().pipeThrough(new CompressionStream('gzip'))
+    ).blob();
+    await upgradeOcrFromSidecarBlob('vol-1', 'S/Volume 1.mokuro.gz', gz, {
+      provider: 'webdav',
+      size: gz.size
+    });
+    row = await (db as any).table('volumes').get('vol-1');
+    expect(row.mokuro_sha256).toBe(expected);
+    expect(row.mokuro_sha256_cloud).toEqual({ provider: 'webdav', size: gz.size });
   });
 
   it('decompresses a .mokuro.gz by its name', async () => {

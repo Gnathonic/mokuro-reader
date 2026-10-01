@@ -266,4 +266,26 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
     expect(sidecars.layers?.[0].filename).toBe('Vol 01.fix.mokuro');
     expect(JSON.parse(await sidecars.layers![0].blob.text()).volume).toBe('Vol 01');
   });
+  // The OCR upgrade's mirror of the cloud's own primary sidecar (an edited
+  // volume's `updated-ocr` layer) must never be written out as a layer file.
+  it('leaves out an untouched updated-ocr layer, and keeps it once the user edited it', async () => {
+    const mirror = {
+      volume_uuid: 'volume-uuid',
+      layer_id: 'updated-ocr',
+      name: 'Updated OCR',
+      kind: 'ocr' as const,
+      created_at: '2026-09-16T00:00:00.000Z',
+      updated_at: '2026-09-16T00:00:00.000Z',
+      source_sha256: 'a'.repeat(64),
+      source_at: '2026-09-16T00:00:00.000Z',
+      pages: []
+    };
+    await putLayerWithPages(db, mirror);
+    expect((await generateVolumeSidecarsFromDb('volume-uuid')).layers).toBeUndefined();
+
+    await putLayerWithPages(db, { ...mirror, updated_at: '2026-09-17T00:00:00.000Z' });
+    expect(
+      (await generateVolumeSidecarsFromDb('volume-uuid')).layers?.map((l) => l.layerId)
+    ).toEqual(['updated-ocr']);
+  });
 });

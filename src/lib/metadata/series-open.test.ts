@@ -5,11 +5,20 @@ const refreshSeriesIndexForSeries = vi.fn(
   async (_title: string): Promise<SeriesFile | undefined> => file
 );
 const cloudVolumeTitlesFor = vi.fn((_title: string) => new Set(['Volume 1']));
+const activeProvider = vi.hoisted(() => ({ current: null as { type: string } | null }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     refreshSeriesIndexForSeries: (t: string) => refreshSeriesIndexForSeries(t),
-    cloudVolumeTitlesFor: (t: string) => cloudVolumeTitlesFor(t)
+    cloudVolumeTitlesFor: (t: string) => cloudVolumeTitlesFor(t),
+    getActiveProvider: () => activeProvider.current,
+    resolveCloudFolderTitle: (t: string) => `${t} (folder)`
   }
+}));
+
+const requestOcrUpgradePass = vi.fn(async (_provider: string, _series: unknown[]) => {});
+vi.mock('$lib/catalog/ocr-upgrade-pass', () => ({
+  requestOcrUpgradePass: (provider: string, series: unknown[]) =>
+    requestOcrUpgradePass(provider, series)
 }));
 
 const materializeSeriesVolumes = vi.fn(async (_args: unknown): Promise<number> => 1);
@@ -170,5 +179,29 @@ describe('openSeries', () => {
   it('never rejects', async () => {
     refreshSeriesIndexForSeries.mockRejectedValueOnce(new Error('offline'));
     await expect(openSeries('Dr Stone')).resolves.toBeUndefined();
+  });
+});
+
+describe('the OCR upgrade on series open', () => {
+  it('asks for ONE pass over the series’ cloud folder, on the active provider', async () => {
+    activeProvider.current = { type: 'webdav' };
+    requestOcrUpgradePass.mockClear();
+    try {
+      await openSeries('Upgrade Me');
+      await vi.waitFor(() =>
+        expect(requestOcrUpgradePass).toHaveBeenCalledWith('webdav', [
+          { title: 'Upgrade Me (folder)' }
+        ])
+      );
+    } finally {
+      activeProvider.current = null;
+    }
+  });
+
+  it('asks for nothing with no provider connected', async () => {
+    requestOcrUpgradePass.mockClear();
+    await openSeries('No Provider');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(requestOcrUpgradePass).not.toHaveBeenCalled();
   });
 });
