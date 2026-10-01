@@ -160,10 +160,13 @@ describe('webdavCore.uploadFile Content-Digest', () => {
       blob: new Blob(['hello']),
       credentials: { ...credentials, webdavPutVerified: true }
     });
-    // Step the clock until the retry has run (the digest resolves first, off the clock).
-    for (let i = 0; i < 10 && uploadFileWithClient.mock.calls.length < 2; i++) {
-      await vi.advanceTimersByTimeAsync(1_000);
-    }
+    // The digest resolves off the fake clock (real SubtleCrypto, slow under a
+    // loaded run): wait in REAL time for the first attempt, then step the
+    // fake clock past the retry delay. A fixed number of clock steps raced it.
+    await vi.waitFor(() => expect(uploadFileWithClient).toHaveBeenCalledTimes(1), {
+      timeout: 4_000
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
     await done;
     expect(digest).toHaveBeenCalledTimes(1);
     const options = uploadFileWithClient.mock.calls.map((c) => c[4]);

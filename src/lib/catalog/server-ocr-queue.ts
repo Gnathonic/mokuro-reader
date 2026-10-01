@@ -10,7 +10,11 @@ import {
 import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { VolumeMetadata } from '$lib/types';
-import { basicAuthHeader } from '$lib/util/base64';
+import {
+  authFromCredentials,
+  bearerOf,
+  webdavAuthorization
+} from '$lib/util/sync/core/providers/webdav-authorization';
 import {
   isVolumeShown,
   queueStatusStore,
@@ -563,11 +567,61 @@ export interface PullTarget {
   queueUrl: string;
   init: RequestInit;
   source: string;
+  /** Whose account `init` carries (a refused token is then replaced once). */
+  auth?: WatchEntry['auth'];
 }
 
-async function fetchBlob(url: string, init: RequestInit, what: string): Promise<Blob | null> {
+function originOf(url: string): string | null {
   try {
-    const response = await fetch(url, init);
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `fetch` for a request on behalf of a queue's account: the WebDAV session's
+ * Authorization goes ONLY to the queue's own origin (a manifest may name files
+ * anywhere), and a 401 under a bearer token replaces the token once — through
+ * the provider's single-flight re-issue — and retries with the fresh header.
+ */
+export async function fetchWithQueueAuth(
+  url: string,
+  init: RequestInit,
+  queueUrl: string,
+  auth: WatchEntry['auth'] = 'none',
+  fetchImpl: typeof fetch = fetch
+): Promise<Response> {
+  const headers: Record<string, string> = {
+    ...((init.headers as Record<string, string> | undefined) ?? {})
+  };
+  if (headers.Authorization && originOf(url) !== originOf(queueUrl)) delete headers.Authorization;
+  const response = await fetchImpl(url, { ...init, headers });
+  const sent = headers.Authorization;
+  if (response.status !== 401 || auth !== 'webdav' || !bearerOf(sent)) return response;
+  const provider = (await activeWebdavProvider()) as {
+    reissueAfterUnauthorized?: (stale: string) => Promise<boolean>;
+  } | null;
+  if (!provider?.reissueAfterUnauthorized || !(await provider.reissueAfterUnauthorized(sent))) {
+    return response;
+  }
+  const fresh = (await requestInitFor(queueUrl, auth))?.headers as
+    | Record<string, string>
+    | undefined;
+  const retryHeaders = { ...headers };
+  if (fresh?.Authorization) retryHeaders.Authorization = fresh.Authorization;
+  else delete retryHeaders.Authorization;
+  return fetchImpl(url, { ...init, headers: retryHeaders });
+}
+
+async function fetchBlob(
+  url: string,
+  init: RequestInit,
+  what: string,
+  target: Pick<PullTarget, 'queueUrl' | 'auth'>
+): Promise<Blob | null> {
+  try {
+    const response = await fetchWithQueueAuth(url, init, target.queueUrl, target.auth);
     if (response.ok) return await response.blob();
     console.warn(`[OCR queue] Could not fetch ${what} ${url}: HTTP ${response.status}`);
   } catch (error) {
@@ -601,11 +655,12 @@ async function localRowFor(
 async function pullManifestFiles(
   row: VolumeMetadata,
   manifest: VolumeManifest,
-  init: RequestInit,
+  target: PullTarget,
   source: string
 ): Promise<void> {
+  const init = target.init;
   if (manifest.ocr && wantsPrimary(row)) {
-    const blob = await fetchBlob(manifest.ocr.url, init, 'OCR file');
+    const blob = await fetchBlob(manifest.ocr.url, init, 'OCR file', target);
     if (blob) {
       const { upgradeOcrFromSidecarBlob } = await import('$lib/catalog/cloud-ocr-upgrade');
       try {
@@ -618,7 +673,7 @@ async function pullManifestFiles(
   const fetched: FetchedLayerFile[] = [];
   for (const layer of manifest.layers) {
     if (await getLayerMeta(db, row.volume_uuid, layer.id)) continue;
-    const blob = await fetchBlob(layer.url, init, `OCR layer '${layer.id}'`);
+    const blob = await fetchBlob(layer.url, init, `OCR layer '${layer.id}'`, target);
     if (!blob) continue;
     fetched.push({
       layerId: layer.id,
@@ -671,7 +726,8 @@ export function pullCompletedVolume(
       if (!manifestUrl) return false;
       const load = await loadVolumeManifest(
         manifestUrl,
-        target.init.headers as Record<string, string> | undefined
+        target.init.headers as Record<string, string> | undefined,
+        (input, init) => fetchWithQueueAuth(String(input), init ?? {}, target.queueUrl, target.auth)
       );
       if ('error' in load) {
         console.warn(`[OCR queue] Manifest ${manifestUrl} unavailable:`, load.error);
@@ -685,7 +741,7 @@ export function pullCompletedVolume(
           recheckAfter: load.manifest.recheck_after
         };
       }
-      await pullManifestFiles(row, load.manifest, target.init, watched?.source ?? target.source);
+      await pullManifestFiles(row, load.manifest, target, watched?.source ?? target.source);
       if (loadWatches().delete(key)) saveWatches();
       return true;
     } catch (error) {
@@ -707,30 +763,34 @@ function isHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
 }
 
-async function requestInitFor(
-  queueUrl: string,
-  auth: WatchEntry['auth']
-): Promise<RequestInit | null> {
-  if (auth === 'none') return { cache: 'no-store' };
+async function activeWebdavProvider(): Promise<{
+  type?: string;
+  getWorkerUploadCredentials?: () => Promise<Record<string, unknown>>;
+} | null> {
   const { providerManager } = await import('$lib/util/sync/provider-manager');
   const provider = providerManager.getActiveProvider() as {
     type?: string;
     getWorkerUploadCredentials?: () => Promise<Record<string, unknown>>;
   } | null;
-  if (provider?.type !== 'webdav' || !provider.getWorkerUploadCredentials) return null;
-  const credentials = await provider.getWorkerUploadCredentials();
+  return provider?.type === 'webdav' && provider.getWorkerUploadCredentials ? provider : null;
+}
+
+async function requestInitFor(
+  queueUrl: string,
+  auth: WatchEntry['auth']
+): Promise<RequestInit | null> {
+  if (auth === 'none') return { cache: 'no-store' };
+  const provider = await activeWebdavProvider();
+  if (!provider) return null;
+  const credentials = await provider.getWorkerUploadCredentials!();
   const url = typeof credentials.webdavUrl === 'string' ? credentials.webdavUrl : '';
-  const username = typeof credentials.webdavUsername === 'string' ? credentials.webdavUsername : '';
-  const password = typeof credentials.webdavPassword === 'string' ? credentials.webdavPassword : '';
-  let sameOrigin = false;
-  try {
-    sameOrigin = new URL(url).origin === new URL(queueUrl).origin;
-  } catch {
-    sameOrigin = false;
+  // The session's header: Bearer when a token is held, else Basic, else none.
+  const authorization = webdavAuthorization(authFromCredentials(credentials));
+  // The account's token or password never leaves for another origin.
+  if (!authorization || originOf(url) === null || originOf(url) !== originOf(queueUrl)) {
+    return { cache: 'no-store' };
   }
-  // The account's password never leaves for another origin.
-  if (!sameOrigin || !password) return { cache: 'no-store' };
-  return { cache: 'no-store', headers: { Authorization: basicAuthHeader(username, password) } };
+  return { cache: 'no-store', headers: { Authorization: authorization } };
 }
 
 function pollerFor(queueUrl: string, auth: WatchEntry['auth'], source: string): QueuePoller {
@@ -747,9 +807,10 @@ function pollerFor(queueUrl: string, auth: WatchEntry['auth'], source: string): 
     onStatus: (file) => publishQueueStatus(queueUrl, file),
     onDone: async (key, entry) => {
       const init = await requestInitFor(queueUrl, auth);
-      return init ? pullCompletedVolume(key, entry, { queueUrl, init, source }) : false;
+      return init ? pullCompletedVolume(key, entry, { queueUrl, init, source, auth }) : false;
     },
-    isHidden
+    isHidden,
+    fetch: (input, init) => fetchWithQueueAuth(String(input), init ?? {}, queueUrl, auth)
   });
   pollers.set(queueUrl, poller);
   return poller;
@@ -778,13 +839,9 @@ export function queueUrlForArchive(archiveUrl: string): string | null {
 /** The connected WebDAV account's queue, when it is a bunko server (`X-Mokuro-Put` recorded). */
 export async function connectedBunkoQueueUrl(): Promise<string | null> {
   try {
-    const { providerManager } = await import('$lib/util/sync/provider-manager');
-    const provider = providerManager.getActiveProvider() as {
-      type?: string;
-      getWorkerUploadCredentials?: () => Promise<Record<string, unknown>>;
-    } | null;
-    if (provider?.type !== 'webdav' || !provider.getWorkerUploadCredentials) return null;
-    const credentials = await provider.getWorkerUploadCredentials();
+    const provider = await activeWebdavProvider();
+    if (!provider) return null;
+    const credentials = await provider.getWorkerUploadCredentials!();
     if (credentials.webdavPutVerified !== true || typeof credentials.webdavUrl !== 'string') {
       return null;
     }

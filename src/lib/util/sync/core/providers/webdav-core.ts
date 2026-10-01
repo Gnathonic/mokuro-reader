@@ -5,17 +5,42 @@ import {
   uploadFileWithClient,
   uploadWithRetry
 } from '$lib/util/sync/providers/webdav/webdav-upload';
-import { basicAuthHeader } from '$lib/util/base64';
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
-import type { CloudProviderCore } from '../cloud-provider-core-types';
-import { optionalCredentialString, requireCredentialString } from '../cloud-provider-core-types';
+import type {
+  CloudCoreAuthRefresher,
+  CloudCoreCredentials,
+  CloudProviderCore
+} from '../cloud-provider-core-types';
+import { requireCredentialString } from '../cloud-provider-core-types';
 import { webdavAuthOptions } from './webdav-auth';
+import { authFromCredentials, bearerOf, webdavAuthHeaders } from './webdav-authorization';
+
+/** Did this failure carry an HTTP 401 (webdav lib errors and `WebdavUploadError` both set `status`)? */
+function isUnauthorized(error: unknown): boolean {
+  return (error as { status?: number } | null)?.status === 401;
+}
+
+/**
+ * Fresh credentials after a 401, when the refused header was a bearer token
+ * and a refresher exists; null otherwise (Basic and anonymous keep today's
+ * behavior: the 401 is final).
+ */
+async function refreshedAfter401(
+  sent: Record<string, string>,
+  refreshAuth: CloudCoreAuthRefresher | undefined
+): Promise<CloudCoreCredentials | null> {
+  const authorization = sent.Authorization;
+  if (!refreshAuth || !bearerOf(authorization)) return null;
+  try {
+    return await refreshAuth(authorization);
+  } catch {
+    return null;
+  }
+}
 
 export const webdavCore: CloudProviderCore = {
-  async downloadFile({ fileId, credentials, onProgress }): Promise<ArrayBuffer> {
+  async downloadFile({ fileId, credentials, onProgress, refreshAuth }): Promise<ArrayBuffer> {
     const url = requireCredentialString(credentials, 'webdavUrl', 'WebDAV URL');
-    const username = optionalCredentialString(credentials, 'webdavUsername');
-    const password = optionalCredentialString(credentials, 'webdavPassword');
 
     const encodedPath = fileId
       .split('/')
@@ -24,11 +49,11 @@ export const webdavCore: CloudProviderCore = {
     const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
     const fullUrl = `${baseUrl}${encodedPath}`;
 
-    const headers: Record<string, string> = {};
-    if (password) {
-      // UTF-8-safe encoding; header only when a password is set (anonymous otherwise)
-      headers.Authorization = basicAuthHeader(username, password);
-    }
+    // Bearer when the session holds a token, else UTF-8-safe Basic iff a
+    // password is set, else anonymous (`webdavAuthorization`).
+    let headers: Record<string, string> = webdavAuthHeaders(authFromCredentials(credentials));
+    // A refused token is replaced at most once per download.
+    let authRefreshed = false;
 
     const MAX_ERROR_RETRIES = 5;
     const MAX_PARTIAL_RESUME_RETRIES = 8;
@@ -95,6 +120,15 @@ export const webdavCore: CloudProviderCore = {
 
       try {
         const response = await fetch(fullUrl, { headers: requestHeaders });
+
+        if (response.status === 401 && !authRefreshed) {
+          authRefreshed = true;
+          const fresh = await refreshedAfter401(headers, refreshAuth);
+          if (fresh) {
+            headers = webdavAuthHeaders(authFromCredentials(fresh));
+            continue;
+          }
+        }
 
         if (!response.ok) {
           // 416 can happen when range start == size (already complete)
@@ -214,60 +248,78 @@ export const webdavCore: CloudProviderCore = {
     blob,
     credentials,
     onProgress,
-    onRetry
+    onRetry,
+    refreshAuth
   }): Promise<UploadFileResult> {
     const serverUrl = requireCredentialString(credentials, 'webdavUrl', 'WebDAV URL');
-    const username = optionalCredentialString(credentials, 'webdavUsername');
-    const password = optionalCredentialString(credentials, 'webdavPassword');
+    const auth = authFromCredentials(credentials);
+    const client = createClient(
+      serverUrl,
+      webdavAuthOptions(auth.username ?? '', auth.password ?? '', {}, auth.token)
+    );
+    try {
+      return await uploadWithClient(client);
+    } catch (error) {
+      // A refused bearer token: replace it once (single-flight on the main
+      // thread) and run the whole upload again — the folder checks before the
+      // PUT were refused too and silently skipped.
+      if (!isUnauthorized(error)) throw error;
+      const fresh = await refreshedAfter401(client.getHeaders(), refreshAuth);
+      if (!fresh) throw error;
+      client.setHeaders(webdavAuthHeaders(authFromCredentials(fresh)));
+      return await uploadWithClient(client);
+    }
 
-    const client = createClient(serverUrl, webdavAuthOptions(username, password));
+    async function uploadWithClient(
+      client: ReturnType<typeof createClient>
+    ): Promise<UploadFileResult> {
+      const folderPath = seriesTitle ? `mokuro-reader/${seriesTitle}` : 'mokuro-reader';
+      await ensureFoldersExist(client, folderPath);
 
-    const folderPath = seriesTitle ? `mokuro-reader/${seriesTitle}` : 'mokuro-reader';
-    await ensureFoldersExist(client, folderPath);
+      const filePath = `/${folderPath}/${filename}`;
 
-    const filePath = `/${folderPath}/${filename}`;
-
-    // Delete-before-upload to avoid duplicate renames on servers that don't
-    // overwrite on PUT. Never on a server that stages and verifies its PUTs
-    // (`X-Mokuro-Put: verified`): there a PUT replaces the file in place only
-    // once it verified, and deleting first would leave NO copy if it failed.
-    if (credentials.webdavPutVerified !== true) {
-      try {
-        const exists = await client.exists(filePath);
-        if (exists) {
-          await client.deleteFile(filePath);
+      // Delete-before-upload to avoid duplicate renames on servers that don't
+      // overwrite on PUT. Never on a server that stages and verifies its PUTs
+      // (`X-Mokuro-Put: verified`): there a PUT replaces the file in place only
+      // once it verified, and deleting first would leave NO copy if it failed.
+      if (credentials.webdavPutVerified !== true) {
+        try {
+          const exists = await client.exists(filePath);
+          if (exists) {
+            await client.deleteFile(filePath);
+          }
+        } catch {
+          // ignore existence/delete checks here; upload attempt will report fatal errors
         }
-      } catch {
-        // ignore existence/delete checks here; upload attempt will report fatal errors
       }
-    }
 
-    // A WebDAV PUT response carries no usable resource mtime, and probing one
-    // (a PROPFIND per upload) is exactly the extra round trip a bulk backup
-    // must not pay — so no `modifiedTime` here: the upload-time cache entry
-    // stays provisional until the next real listing replaces it.
-    // An archive PUT is retried with backoff on a transient failure (network,
-    // timeout, 5xx, a server `retry: true`, a size mismatch); a small sidecar
-    // or progress file gets one attempt — its callers have their own recovery.
-    const isArchive = /\.cbz$/i.test(filename);
-    // A whole-body digest, computed ONCE (the body does not change between
-    // attempts), only for a server that advertised verified PUTs: a cross-origin
-    // PUT's preflight must allow every request header, and a plain WebDAV server
-    // with a fixed Access-Control-Allow-Headers list would refuse the upload.
-    const contentDigest =
-      credentials.webdavPutVerified === true ? await contentDigestOf(blob) : null;
-    const putOptions = contentDigest ? { contentDigest } : undefined;
-    const attempt = () => uploadFileWithClient(client, filePath, blob, onProgress, putOptions);
-    const put = isArchive ? await uploadWithRetry(attempt, { onRetry }) : await attempt();
-    if (put.digestVerified) {
-      console.log(`[WebDAV] ${filename}: verified end to end (${put.digestVerified})`);
+      // A WebDAV PUT response carries no usable resource mtime, and probing one
+      // (a PROPFIND per upload) is exactly the extra round trip a bulk backup
+      // must not pay — so no `modifiedTime` here: the upload-time cache entry
+      // stays provisional until the next real listing replaces it.
+      // An archive PUT is retried with backoff on a transient failure (network,
+      // timeout, 5xx, a server `retry: true`, a size mismatch); a small sidecar
+      // or progress file gets one attempt — its callers have their own recovery.
+      const isArchive = /\.cbz$/i.test(filename);
+      // A whole-body digest, computed ONCE (the body does not change between
+      // attempts), only for a server that advertised verified PUTs: a cross-origin
+      // PUT's preflight must allow every request header, and a plain WebDAV server
+      // with a fixed Access-Control-Allow-Headers list would refuse the upload.
+      const contentDigest =
+        credentials.webdavPutVerified === true ? await contentDigestOf(blob) : null;
+      const putOptions = contentDigest ? { contentDigest } : undefined;
+      const attempt = () => uploadFileWithClient(client, filePath, blob, onProgress, putOptions);
+      const put = isArchive ? await uploadWithRetry(attempt, { onRetry }) : await attempt();
+      if (put.digestVerified) {
+        console.log(`[WebDAV] ${filename}: verified end to end (${put.digestVerified})`);
+      }
+      // Only an archive enters a server's OCR queue; a header on anything else is noise.
+      return {
+        fileId: put.path,
+        ...(put.serverOcr && isArchive ? { serverOcr: put.serverOcr } : {}),
+        ...(put.putVerified ? { serverPutVerified: true } : {}),
+        ...(put.digestVerified ? { serverDigestVerified: put.digestVerified } : {})
+      };
     }
-    // Only an archive enters a server's OCR queue; a header on anything else is noise.
-    return {
-      fileId: put.path,
-      ...(put.serverOcr && isArchive ? { serverOcr: put.serverOcr } : {}),
-      ...(put.putVerified ? { serverPutVerified: true } : {}),
-      ...(put.digestVerified ? { serverDigestVerified: put.digestVerified } : {})
-    };
   }
 };

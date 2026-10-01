@@ -1,6 +1,7 @@
 // Worker pool for managing parallel downloads and decompression
 
 import { sharedMemoryManager } from './shared-memory-manager';
+import { answerAuthRefresh, isAuthRefreshRequest } from './worker-auth-refresh';
 
 export interface VolumeMetadata {
   volumeUuid: string;
@@ -65,6 +66,14 @@ export class WorkerPool {
     const worker = new this.workerConstructor();
 
     worker.onmessage = (event) => {
+      // A worker's request was refused (401) under a bearer token: the main
+      // thread replaces it once for everyone and answers this worker.
+      // Handled before any logging below — the message carries the token.
+      if (isAuthRefreshRequest(event.data)) {
+        void answerAuthRefresh(event.data).then((result) => worker.postMessage(result));
+        return;
+      }
+
       const taskId = this.workerTaskMap.get(worker);
       if (!taskId) {
         console.warn('Worker pool: Received message but no taskId found', event.data);

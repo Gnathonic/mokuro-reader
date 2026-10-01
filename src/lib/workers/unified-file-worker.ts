@@ -18,7 +18,16 @@ import {
 import { matchFileToVolume } from '$lib/import/archive-extraction';
 import { hasCoverSidecarExtension } from '$lib/metadata/cloud-sidecar-stamps';
 import { getWorkerCloudProvider } from './cloud-providers';
-import type { WorkerProviderCredentials, WorkerProviderType } from './cloud-providers/types';
+import type {
+  WorkerCloudProviderAdapter,
+  WorkerProviderCredentials,
+  WorkerProviderType
+} from './cloud-providers/types';
+import {
+  createWorkerAuthRefresher,
+  isAuthRefreshResult,
+  type WorkerAuthRefresher
+} from '$lib/util/worker-auth-refresh';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -482,11 +491,51 @@ async function tryDownloadOptionalUrl(
 }
 
 // ===========================
+// CREDENTIAL REFRESH
+// ===========================
+
+const authRefreshers = new Map<string, WorkerAuthRefresher>();
+
+/**
+ * The provider's cloud core, with a refused bearer token replaced through the
+ * main thread (never re-issued here: see `worker-auth-refresh.ts`). The fresh
+ * credentials are written back into the message's credentials object, so the
+ * next upload of the same message (sidecars, then the archive) starts with them.
+ */
+function cloudProviderFor(provider: WorkerProviderType): WorkerCloudProviderAdapter {
+  const core = getWorkerCloudProvider(provider);
+  let refresher = authRefreshers.get(provider);
+  if (!refresher) {
+    refresher = createWorkerAuthRefresher(
+      provider,
+      (message) => ctx.postMessage(message),
+      (handler) => ctx.addEventListener('message', (event) => handler(event.data))
+    );
+    authRefreshers.set(provider, refresher);
+  }
+  const refreshInto =
+    (credentials: ProviderCredentials) =>
+    async (staleAuthorization: string): Promise<ProviderCredentials | null> => {
+      const fresh = await refresher!(staleAuthorization);
+      if (fresh) Object.assign(credentials, fresh);
+      return fresh;
+    };
+  return {
+    downloadFile: (args) =>
+      core.downloadFile({ ...args, refreshAuth: refreshInto(args.credentials) }),
+    uploadFile: (args) => core.uploadFile({ ...args, refreshAuth: refreshInto(args.credentials) })
+  };
+}
+
+// ===========================
 // MAIN MESSAGE HANDLER
 // ===========================
 
 ctx.addEventListener('message', async (event) => {
   const message = event.data as WorkerMessage;
+
+  // A credential-refresh answer from the main thread: its own listener has it.
+  if (isAuthRefreshResult(message)) return;
 
   // Guard against null/undefined messages (can happen during worker cleanup)
   if (!message || !message.mode) {
@@ -502,7 +551,7 @@ ctx.addEventListener('message', async (event) => {
       const { provider, fileId, fileName, credentials, metadata } = message;
       console.log(`Worker: Starting download for ${fileName} (${fileId})`);
 
-      const cloudProvider = getWorkerCloudProvider(provider);
+      const cloudProvider = cloudProviderFor(provider);
       const arrayBuffer = await cloudProvider.downloadFile({
         fileId,
         credentials,
@@ -750,7 +799,7 @@ ctx.addEventListener('message', async (event) => {
       if (!credentials) {
         throw new Error(`Missing ${provider} worker credentials`);
       }
-      const cloudProvider = getWorkerCloudProvider(provider);
+      const cloudProvider = cloudProviderFor(provider);
       const filename = `${volumeTitle}.cbz`;
       const uploaded = await cloudProvider.uploadFile({
         seriesTitle,
@@ -926,7 +975,7 @@ ctx.addEventListener('message', async (event) => {
         if (!credentials) {
           throw new Error(`Missing ${provider} worker credentials`);
         }
-        const cloudProvider = getWorkerCloudProvider(provider);
+        const cloudProvider = cloudProviderFor(provider);
         const filename = `${volumeTitle}.cbz`;
 
         let layerSnapshots: UploadCompleteMessage['layerSnapshots'];
@@ -1024,7 +1073,7 @@ ctx.addEventListener('message', async (event) => {
       if (!credentials) {
         throw new Error(`Missing ${provider} worker credentials`);
       }
-      const cloudProvider = getWorkerCloudProvider(provider);
+      const cloudProvider = cloudProviderFor(provider);
       const sidecarResults: SidecarUploadResult[] = [];
       let sidecarError: string | undefined;
       try {

@@ -49,7 +49,8 @@ describe('fetchServerIdentity', () => {
       kind: 'authenticated',
       username: 'alice',
       role: 'registered',
-      permissions: PERMS
+      permissions: PERMS,
+      endpoint: 'https://host/login/api/me'
     });
   });
 
@@ -257,11 +258,13 @@ describe('fetchServerIdentity', () => {
     });
 
     const result = await fetchServerIdentity('https://host/sub', 'alice', 'pw', impl);
+    // The origin-root endpoint answered: the token endpoint goes beside it.
     expect(result).toEqual({
       kind: 'authenticated',
       username: 'alice',
       role: 'registered',
-      permissions: PERMS
+      permissions: PERMS,
+      endpoint: 'https://host/login/api/me'
     });
     expect(calls.map((c) => c.url)).toEqual([
       'https://host/sub/login/api/me',
