@@ -239,6 +239,7 @@ import {
 // through the mocked-to-real Dexie above, and the sidecar builders are the
 // production serializers whose byte-identity the tests below pin.
 import { saveVolume } from '$lib/import/database';
+import { _resetUploadRecordsForTests } from '$lib/catalog/mokuro-upload-record';
 import type { ProcessedVolume } from '$lib/import/types';
 import { buildVolumeSidecarsFromData, loadVolumeSidecars } from '$lib/util/volume-sidecars';
 // The WORKER feed's serializer (runs inside `unified-file-worker.ts` in
@@ -297,6 +298,9 @@ function uploadedPaths(): string[] {
 }
 
 beforeEach(async () => {
+  // Hash records the backfill queued in an earlier test must not land (and be
+  // counted) inside a later test's IndexedDB meter.
+  _resetUploadRecordsForTests();
   _resetSidecarBackfillForTests();
   await db.volumes.clear();
   await db.volume_ocr.clear();

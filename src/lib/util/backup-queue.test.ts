@@ -121,6 +121,11 @@ vi.mock('$lib/util/upload-worker-credentials', () => ({
 }));
 const stampLayersSynced = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('$lib/metadata/layer-sync', () => ({ stampLayersSynced }));
+const uploadRecord = vi.hoisted(() => ({
+  recordUploadedPrimarySidecar: vi.fn(async () => {}),
+  recordUploadedPrimarySidecarBlob: vi.fn(async () => {})
+}));
+vi.mock('$lib/catalog/mokuro-upload-record', () => uploadRecord);
 const watchUploadedVolume = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('$lib/catalog/server-ocr-queue', () => ({ watchUploadedVolume }));
 
@@ -600,6 +605,13 @@ describe('export-for-download sidecars', () => {
       vi.fn()
     );
     const paths = uploadFile.mock.calls.map(([path]) => path);
+    // The primary sidecar's exact bytes are what the volume's hash now names.
+    expect(uploadRecord.recordUploadedPrimarySidecarBlob).toHaveBeenCalledWith(
+      'layers-upload-uuid',
+      'filesystem',
+      sidecars.mokuro.blob,
+      'uploaded-file-id'
+    );
     expect(paths).toEqual([
       'One Piece/One Piece - Volume 1.mokuro',
       'One Piece/One Piece - Volume 1.gcv.mokuro',
@@ -632,6 +644,35 @@ describe('export-for-download sidecars', () => {
       vi.fn()
     );
     expect(stampLayersSynced).toHaveBeenCalledWith('layers-worker-uuid', 'webdav', layerSnapshots);
+  });
+
+  // The primary `.mokuro` the worker uploaded: its hash becomes the volume's,
+  // vouched for on this provider (what lets series.json publish it).
+  it('a worker-driven upload records the hash of the primary sidecar it sent', async () => {
+    const provider = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'hash-worker-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    const mokuroSidecar = {
+      sha256: 'a'.repeat(64),
+      size: 321,
+      modifiedTime: '2026-09-30T10:00:00.000Z'
+    };
+    await capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'remote-file-id', size: 123, mokuroSidecar },
+      vi.fn()
+    );
+    expect(uploadRecord.recordUploadedPrimarySidecar).toHaveBeenCalledWith('hash-worker-uuid', {
+      provider: 'webdav',
+      ...mokuroSidecar
+    });
   });
 
   it('watches the volume on the server’s OCR queue when the server queued the upload', async () => {

@@ -347,6 +347,29 @@ describe('processVolume', () => {
     expect(result.metadata.chars).toBe(100);
   });
 
+  it('records the SHA-256 of exactly the mokuro bytes the OCR was parsed from', async () => {
+    const input = createDecompressedVolume();
+    const bytes = new Uint8Array(await input.mokuroFile!.arrayBuffer());
+    const expected = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) =>
+      b.toString(16).padStart(2, '0')
+    ).join('');
+
+    const result = await processVolume(input);
+
+    expect(result.metadata.mokuroSha256).toBe(expected);
+  });
+
+  it('records no hash for an image-only volume', async () => {
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: null,
+        basePath: 'My Manga/Volume 01',
+        imageFiles: createImageFiles(['001.jpg'])
+      })
+    );
+    expect(result.metadata.mokuroSha256).toBeUndefined();
+  });
+
   it('calculates cumulative character counts', async () => {
     const mokuroFile = createMokuroFile({
       pages: [

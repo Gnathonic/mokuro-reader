@@ -121,7 +121,13 @@ export async function saveVolume(
     thumbnail_height: metadata.thumbnailHeight,
     missing_pages: metadata.missingPages,
     missing_page_paths: metadata.missingPagePaths,
-    spine_width: metadata.spineWidth
+    spine_width: metadata.spineWidth,
+    // A `put` below replaces the whole row, so a reinstall from different
+    // bytes can never keep a stale hash: it is set here or absent.
+    ...(metadata.mokuroSha256 ? { mokuro_sha256: metadata.mokuroSha256 } : {}),
+    ...(metadata.mokuroSha256 && metadata.mokuroCloud
+      ? { mokuro_sha256_cloud: metadata.mokuroCloud }
+      : {})
   };
 
   // Strip cumulativeChars (it's stored in page_char_counts) — this is the

@@ -20,6 +20,10 @@ import {
 } from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
+import {
+  recordUploadedPrimarySidecar,
+  recordUploadedPrimarySidecarBlob
+} from '$lib/catalog/mokuro-upload-record';
 import { clearUploadFailure, recordUploadFailure } from './upload-failures';
 import { getUploadWorkerCredentials, prepareSeriesUploadTarget } from './upload-worker-credentials';
 
@@ -68,6 +72,8 @@ interface WorkerUploadCompleteData {
   sidecars?: WorkerUploadSidecars;
   /** Worker-driven uploads: the layers as serialized and uploaded (see the worker). */
   layerSnapshots?: LayerUploadSnapshot[];
+  /** Worker-driven uploads: the primary `.mokuro` as uploaded (hash of the bytes sent). */
+  mokuroSidecar?: { sha256: string; size: number; modifiedTime?: string };
   /** The server queued the archive for OCR (WebDAV to mokuro-bunko). */
   serverOcr?: ServerOcrQueued;
   /** The PUT response said the server stages and verifies PUTs (`X-Mokuro-Put`). */
@@ -634,7 +640,15 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               if (data.sidecars.thumbnail) sidecars.push(data.sidecars.thumbnail);
               for (const sidecar of sidecars) {
                 const sidecarPath = `${item.seriesTitle}/${sidecar.filename}`;
-                await provider!.uploadFile(sidecarPath, sidecar.blob);
+                const sent = await provider!.uploadFile(sidecarPath, sidecar.blob);
+                if (sidecar === data.sidecars.mokuro) {
+                  await recordUploadedPrimarySidecarBlob(
+                    item.volumeUuid,
+                    provider!.type,
+                    sidecar.blob,
+                    sent
+                  );
+                }
               }
             }
 
@@ -797,6 +811,15 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // against the snapshot it uploaded, so an edit made meanwhile survives.
           if (item.sidecarOptions.includeSidecars) {
             void stampLayersSynced(item.volumeUuid, provider!.type, data.layerSnapshots ?? []);
+          }
+          // The primary sidecar the worker sent: its hash is this volume's now,
+          // and one this device can vouch for in `series.json`. Before the
+          // index write below, which reads the row.
+          if (data.mokuroSidecar) {
+            await recordUploadedPrimarySidecar(item.volumeUuid, {
+              provider: provider!.type,
+              ...data.mokuroSidecar
+            });
           }
           await rememberServerOcr(item, data.serverOcr);
           // A worker cannot write the provider's state: the main thread records it.

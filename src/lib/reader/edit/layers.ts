@@ -276,7 +276,16 @@ export async function promoteLayer(
       await db.volumes.update(volumeUuid, {
         page_char_counts: cumulative,
         character_count: totalChars,
-        ocr_edited_at: editedAt
+        ocr_edited_at: editedAt,
+        // The primary's BASE revision (`mokuro_sha256`): promoting the OCR
+        // upgrade's `updated-ocr` layer adopts the cloud file it mirrors, so
+        // that file is no longer "new" to this volume. Any other layer is a
+        // local change on top of the same base — `ocr_edited_at` says so — and
+        // leaves the hash alone. Where the cloud stores the adopted file is not
+        // known here, so nothing may vouch for it until the next upload.
+        ...(layer.source_sha256
+          ? { mokuro_sha256: layer.source_sha256, mokuro_sha256_cloud: undefined }
+          : {})
       });
       return { replacedLayerId: replaced };
     }

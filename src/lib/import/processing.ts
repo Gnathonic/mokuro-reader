@@ -20,6 +20,7 @@ import type {
   ArchiveSource
 } from './types';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
+import { sha256Hex } from '$lib/catalog/mokuro-hash';
 import {
   extractSeriesName,
   extractTitlesFromPath,
@@ -477,8 +478,13 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
   let volumeInfo: VolumeInfo;
   let isImageOnly = false;
 
+  // The identity of the bytes the primary OCR comes from (`mokuro_sha256`):
+  // these exact bytes, whichever path delivered them — an imported file, an
+  // archive entry, a cloud sidecar (already gunzipped), a deep link's fetch.
+  let mokuroSha256: string | undefined;
   if (mokuroFile) {
     mokuroData = await parseMokuroFile(mokuroFile);
+    mokuroSha256 = await sha256Hex(mokuroFile);
     volumeInfo = {
       series: mokuroData.series,
       volume: mokuroData.volume
@@ -686,7 +692,8 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     missingPagePaths: matchResult.missing.length > 0 ? matchResult.missing : undefined,
     imageOnly: isImageOnly,
     sourceType,
-    spineWidth: mokuroData?.spineWidth
+    spineWidth: mokuroData?.spineWidth,
+    ...(mokuroSha256 ? { mokuroSha256 } : {})
   };
 
   return {
