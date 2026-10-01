@@ -3,6 +3,7 @@
   import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
   import TextBoxes from './TextBoxes.svelte';
   import EditOverlay from './Edit/EditOverlay.svelte';
+  import { acquireBlobUrl, releaseBlobUrl } from '$lib/reader/blob-urls';
 
   interface ContextMenuData {
     x: number;
@@ -50,27 +51,24 @@
   let cached = $derived(cachedUrl ?? null);
   let file = $derived(src ?? null);
 
-  // Use cached URL if available, otherwise create blob URL
+  // Use cached URL if available, otherwise the file's shared object URL — the
+  // same URL the preload cache and any earlier mount of this page used, so
+  // the browser paints the image it already decoded (see blob-urls.ts).
   $effect(() => {
-    let currentBlobUrl: string | null = null;
+    const held = cached ? null : file;
 
     if (cached) {
       // Use pre-decoded cached URL (no cleanup needed, managed by cache)
       url = `url(${cached})`;
-    } else if (file) {
-      // Fallback: create new blob URL
-      currentBlobUrl = URL.createObjectURL(file);
-      url = `url(${currentBlobUrl})`;
+    } else if (held) {
+      url = `url(${acquireBlobUrl(held)})`;
     } else {
       url = '';
     }
 
     // Cleanup function runs on effect re-run or component unmount
     return () => {
-      // Only revoke if we created it (not from cache)
-      if (currentBlobUrl) {
-        URL.revokeObjectURL(currentBlobUrl);
-      }
+      if (held) releaseBlobUrl(held);
     };
   });
 </script>

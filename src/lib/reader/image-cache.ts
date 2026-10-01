@@ -8,9 +8,11 @@
 
 import type { Page } from '$lib/types';
 import { getBasename, normalizeFilename, removeExtension } from '$lib/util/misc';
+import { acquireBlobUrl, releaseBlobUrl } from './blob-urls';
 
 export interface CachedImage {
   image: HTMLImageElement; // Image element holds decoded bitmap and blob URL (in img.src)
+  file: File; // holds the shared object URL (blob-urls.ts) until removed
   decoded: boolean;
   loading: Promise<void> | null;
 }
@@ -286,8 +288,9 @@ export class ImageCache {
       return;
     }
 
-    // Create blob URL
-    const url = URL.createObjectURL(file);
+    // The file's shared object URL: a MangaPage showing this page uses the
+    // same one, so it paints the bitmap decoded here (blob-urls.ts)
+    const url = acquireBlobUrl(file);
 
     // Create Image element
     const img = new Image();
@@ -298,6 +301,7 @@ export class ImageCache {
     // Add to cache with Image element (img.src will hold the blob URL)
     this.cache.set(index, {
       image: img,
+      file,
       decoded: false,
       loading
     });
@@ -345,7 +349,7 @@ export class ImageCache {
   private removeFromCache(index: number): void {
     const cached = this.cache.get(index);
     if (cached) {
-      URL.revokeObjectURL(cached.image.src);
+      releaseBlobUrl(cached.file);
       this.cache.delete(index);
     }
   }

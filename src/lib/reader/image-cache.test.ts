@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Page } from '$lib/types';
 import { ImageCache } from './image-cache';
+import { BLOB_URL_GRACE_MS } from './blob-urls';
 
 const page = (img_path: string, text = ''): Page =>
   ({
@@ -18,6 +19,7 @@ describe('ImageCache.updateCache', () => {
   let created = 0;
   let revoked = 0;
   beforeEach(() => {
+    vi.useFakeTimers();
     created = 0;
     revoked = 0;
     vi.stubGlobal('URL', {
@@ -28,7 +30,10 @@ describe('ImageCache.updateCache', () => {
       }
     });
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
   const names = ['1.png', '2.png', '3.png', '4.png'];
 
@@ -67,6 +72,7 @@ describe('ImageCache.updateCache', () => {
       names.map((n) => page(n)),
       0
     );
+    vi.advanceTimersByTime(BLOB_URL_GRACE_MS);
     expect(revoked).toBe(first);
     expect(created).toBe(first * 2);
   });
