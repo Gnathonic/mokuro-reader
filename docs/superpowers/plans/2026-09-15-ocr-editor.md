@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Worktree `/home/nathan/Projects/mokuro-reader-worktrees/feat/ocr-editor`, branch `feat/ocr-editor`. Never touch the main directory or ports 5173/5174.
+- Worktree `../mokuro-reader-worktrees/feat/ocr-editor`, branch `feat/ocr-editor`. Never touch the main directory or ports 5173/5174.
 - Every commit ends with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Local commits only, no push.
 - Edit overlay blocks use class `editBlock`, never `.textBox`. `gestureTargetRole` returns `'editor'` for them, matched before `'textbox'`.
 - The overlay renders ALL raw `page.blocks` — no `dedupeBlocks`.
