@@ -118,6 +118,21 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - If a component appears N times, derived operations run N times
 - Expensive operations or logging in derived causes severe performance issues
 - Remove debug logging once the issue being debugged is resolved
+- Continuous mode keeps a sized wrapper for every page but mounts a page's
+  image and text boxes only near the viewport (`reader/page-window.ts`, 2
+  viewports, 100 ms dwell so an animated jump mounts nothing in between).
+  Mounting every page's text made open / layer swap / rotate one forced
+  layout over the whole volume (7–9 s on a 236-page manga).
+- Never read `document.fonts.ready` per element — the getter forces a layout;
+  use `fontsReady()` (`reader/fonts-ready.ts`, once per frame).
+- Noto Sans JP is registered through the FontFace API (`util/web-fonts.ts`),
+  not a `<link>`: as a stylesheet, Chrome re-decoded its subsets on every
+  media-query flip (each rotation / breakpoint). Faces arrive after an async
+  fetch, so text may first lay out in the fallback — `fontLoadEpoch`
+  (`loadingdone`) re-lays text boxes out and resets the canvas measurer memo.
+- The open volume's data reloads only when its `volumes` row CONTENT changes
+  (`volumeRowSignature`): the store re-emits identical rows on any write and on
+  every catalog→reader resubscribe, and each reload swapped every page image.
 
 ### Worker Pool Pattern
 
