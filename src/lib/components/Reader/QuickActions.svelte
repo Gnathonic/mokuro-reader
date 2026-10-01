@@ -8,9 +8,7 @@
     CompressOutline,
     EditOutline,
     ImageOutline,
-    LanguageOutline,
     LayersOutline,
-    SearchOutline,
     ZoomOutOutline,
     PlusOutline
   } from 'flowbite-svelte-icons';
@@ -51,11 +49,6 @@
      * event target — can stand its shortcuts down and close it on Escape.
      */
     layersOpen?: boolean;
-    /** Engine entry points (experimental) — given only when the key is configured. */
-    onOcrPage?: () => void;
-    onTranslatePage?: () => void;
-    onOcrVolume?: () => void;
-    onTranslateVolume?: () => void;
   }
 
   let {
@@ -78,11 +71,7 @@
     primaryLayerName = 'Primary',
     onSelectLayer,
     onLayerAction,
-    layersOpen = $bindable(false),
-    onOcrPage,
-    onTranslatePage,
-    onOcrVolume,
-    onTranslateVolume
+    layersOpen = $bindable(false)
   }: Props = $props();
 
   // The bound state must mean "a picker is on screen": once this component
@@ -144,33 +133,7 @@
     <!-- Action buttons (shown when open) -->
     {#if open}
       <div class="mb-2 flex flex-col items-center gap-2">
-        {#if !editing && onOcrPage}
-          <button
-            onclick={() => {
-              onOcrPage?.();
-              open = false;
-            }}
-            class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-            aria-label="OCR this page"
-            title="OCR this page with Google Cloud Vision (experimental)"
-          >
-            <SearchOutline size="xl" />
-          </button>
-        {/if}
-        {#if !editing && onTranslatePage}
-          <button
-            onclick={() => {
-              onTranslatePage?.();
-              open = false;
-            }}
-            class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-            aria-label="Translate this page"
-            title="Translate this page (experimental)"
-          >
-            <LanguageOutline size="xl" />
-          </button>
-        {/if}
-        {#if layers.length > 0 || editing || onOcrVolume || onTranslateVolume}
+        {#if layers.length > 0 || editing}
           <button
             onclick={() => {
               layersOpen = !layersOpen;
@@ -273,18 +236,6 @@
           layersOpen = false;
         }}
         onClose={() => (layersOpen = false)}
-        onOcrVolume={onOcrVolume
-          ? () => {
-              onOcrVolume?.();
-              layersOpen = false;
-            }
-          : undefined}
-        onTranslateVolume={onTranslateVolume
-          ? () => {
-              onTranslateVolume?.();
-              layersOpen = false;
-            }
-          : undefined}
       />
     {/if}
 

@@ -1,82 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OCR_LAYER_ID } from '$lib/engines/engine-runs';
 import {
   beforeLayerMutation,
-  engineRunEditBlock,
-  engineRunTouchesLayer,
   flushOnPageHide,
   layerUiKeyAction,
-  registerBeforeLayerMutation,
-  resolveEngineRunPages
+  registerBeforeLayerMutation
 } from './reader-edit-rules';
-
-describe('resolveEngineRunPages', () => {
-  it('targets the page the editor was on BEFORE the session closes (right page of a spread)', async () => {
-    // Mirrors Reader: with a session open the active page is the right-hand
-    // page (5); once the session is gone the reader falls back to its base
-    // index (4) — the left page.
-    let sessionOpen = true;
-    const pages = await resolveEngineRunPages({
-      scope: 'page',
-      pageCount: 10,
-      activePage: () => (sessionOpen ? 5 : 4),
-      closeSession: async () => {
-        sessionOpen = false;
-      }
-    });
-    expect(pages).toEqual([5]);
-    expect(sessionOpen).toBe(false);
-  });
-
-  it('a volume run covers every page and still closes the session first', async () => {
-    const closeSession = vi.fn(async () => {});
-    const pages = await resolveEngineRunPages({
-      scope: 'volume',
-      pageCount: 3,
-      activePage: () => 1,
-      closeSession
-    });
-    expect(pages).toEqual([0, 1, 2]);
-    expect(closeSession).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('engineRunTouchesLayer', () => {
-  it('an OCR run writes only its own layer', () => {
-    expect(engineRunTouchesLayer('ocr', OCR_LAYER_ID)).toBe(true);
-    expect(engineRunTouchesLayer('ocr', null)).toBe(false);
-    expect(engineRunTouchesLayer('ocr', 'my-edit')).toBe(false);
-  });
-
-  it('a translation run counts for every layer (its target id depends on prefs)', () => {
-    expect(engineRunTouchesLayer('translate', null)).toBe(true);
-    expect(engineRunTouchesLayer('translate', 'tr-en')).toBe(true);
-    expect(engineRunTouchesLayer('translate', OCR_LAYER_ID)).toBe(true);
-  });
-});
-
-describe('engineRunEditBlock', () => {
-  it('no run, or a run on another volume, never blocks', () => {
-    expect(engineRunEditBlock(null, 'v1', null)).toBeNull();
-    expect(engineRunEditBlock({ kind: 'translate', volumeUuid: 'v2' }, 'v1', null)).toBeNull();
-    expect(engineRunEditBlock({ kind: 'ocr', volumeUuid: 'v2' }, 'v1', OCR_LAYER_ID)).toBeNull();
-    expect(engineRunEditBlock({ kind: 'ocr', volumeUuid: 'v1' }, undefined, null)).toBeNull();
-  });
-
-  it('a translation run on this volume blocks editing, with a reason naming it', () => {
-    const reason = engineRunEditBlock({ kind: 'translate', volumeUuid: 'v1' }, 'v1', null);
-    expect(reason).toMatch(/translation/i);
-    expect(engineRunEditBlock({ kind: 'translate', volumeUuid: 'v1' }, 'v1', 'tr-en')).toBe(reason);
-  });
-
-  it('an OCR run on this volume blocks the layer it writes, not the others', () => {
-    expect(engineRunEditBlock({ kind: 'ocr', volumeUuid: 'v1' }, 'v1', OCR_LAYER_ID)).toMatch(
-      /OCR/
-    );
-    expect(engineRunEditBlock({ kind: 'ocr', volumeUuid: 'v1' }, 'v1', null)).toBeNull();
-    expect(engineRunEditBlock({ kind: 'ocr', volumeUuid: 'v1' }, 'v1', 'my-edit')).toBeNull();
-  });
-});
 
 describe('flushOnPageHide', () => {
   function setHidden(hidden: boolean) {

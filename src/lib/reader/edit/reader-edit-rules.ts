@@ -1,65 +1,11 @@
 /**
  * Reader-level rules of the OCR editor, kept out of `Reader.svelte` so they
- * can be tested without mounting the reader: which pages an engine run
- * targets, when a run in flight forbids editing, the flush on tab hide, and
- * who owns the keyboard while the layer UI is open. `Reader.svelte` feeds
- * these its own state; the one thing held here is the reader's registration
- * for `beforeLayerMutation`.
+ * can be tested without mounting the reader: the flush on tab hide, and who
+ * owns the keyboard while the layer UI is open. `Reader.svelte` feeds these
+ * its own state; the one thing held here is the reader's registration for
+ * `beforeLayerMutation`.
  */
-import { OCR_LAYER_ID, type ActiveEngineRun, type EngineKind } from '$lib/engines/engine-runs';
 import type { LayerAction } from '$lib/components/Reader/Layers/layer-actions';
-
-/**
- * The pages an engine run covers, resolved around the close of the edit
- * session the run would race.
- *
- * The order is the rule: the active page is read BEFORE the session closes.
- * "The page the editor is on" is the session's own notion (the right-hand page
- * of a spread, say); once the session is gone the reader can only answer with
- * its base index — the LEFT page — so reading it afterwards ran "OCR this
- * page" on the wrong half of the spread.
- */
-export async function resolveEngineRunPages(opts: {
-  scope: 'page' | 'volume';
-  pageCount: number;
-  /** The page the editor acts on right now. */
-  activePage: () => number;
-  /** Closes (saving) the session the run would race; a no-op when none does. */
-  closeSession: () => Promise<void>;
-}): Promise<number[]> {
-  const target = opts.activePage();
-  await opts.closeSession();
-  if (opts.scope === 'page') return [target];
-  return Array.from({ length: opts.pageCount }, (_, i) => i);
-}
-
-/**
- * Whether a run of this kind can write the layer an edit session is (or would
- * be) open on. OCR only ever writes its own layer. A translation's layer id
- * comes from the language preference at run time, which the reader does not
- * resolve — so a translation counts for every layer.
- */
-export function engineRunTouchesLayer(kind: EngineKind, layerId: string | null): boolean {
-  return kind === 'translate' || layerId === OCR_LAYER_ID;
-}
-
-const RUN_LABEL: Record<EngineKind, string> = { ocr: 'OCR', translate: 'Translation' };
-
-/**
- * Why edit mode may not be entered right now because of the engine run in
- * flight, or null when it may. A run overwrites whole pages of its layer as
- * they complete (and a whole-volume run takes minutes), so a manual edit made
- * meanwhile on that layer is silently replaced by the run's result.
- */
-export function engineRunEditBlock(
-  run: Pick<ActiveEngineRun, 'kind' | 'volumeUuid'> | null,
-  volumeUuid: string | undefined,
-  layerId: string | null
-): string | null {
-  if (!run || !volumeUuid || run.volumeUuid !== volumeUuid) return null;
-  if (!engineRunTouchesLayer(run.kind, layerId)) return null;
-  return `${RUN_LABEL[run.kind]} is running on this volume — edit once it finishes`;
-}
 
 /**
  * Save pending edits when the page is about to stop running: the tab is

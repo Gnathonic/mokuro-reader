@@ -12,11 +12,9 @@
     CloseOutline,
     GridPlusOutline,
     ObjectsColumnOutline,
-    LanguageOutline,
     RedoOutline,
     RefreshOutline,
     RestoreWindowOutline,
-    SearchOutline,
     TextSizeOutline,
     TrashBinOutline,
     UndoOutline
@@ -28,9 +26,6 @@
     hasOriginal: boolean;
     onExit: () => void;
     onRevert: () => void;
-    /** Engine entry points — given only when the matching key is configured. */
-    onOcrPage?: () => void;
-    onTranslatePage?: () => void;
     /** Quick layer swapping: the volume's layers, the displayed one, and the
      * primary row's name. Omitted → no layer strip. */
     layers?: LayerSummary[];
@@ -47,8 +42,6 @@
     hasOriginal,
     onExit,
     onRevert,
-    onOcrPage,
-    onTranslatePage,
     layers = [],
     currentLayer = null,
     primaryName = 'Primary',
@@ -210,29 +203,6 @@
     >
       {#if vertical}<ChevronDownOutline />{:else}<ChevronRightOutline />{/if}
     </button>
-  {/if}
-  {#if onOcrPage || onTranslatePage}
-    <span class={divider}></span>
-    {#if onOcrPage}
-      <button
-        class={btn}
-        aria-label="OCR this page"
-        title="Re-OCR this page with Google Cloud Vision (experimental) → 'Cloud Vision' layer"
-        onclick={onOcrPage}
-      >
-        <SearchOutline />
-      </button>
-    {/if}
-    {#if onTranslatePage}
-      <button
-        class={btn}
-        aria-label="Translate this page"
-        title="Translate this page (experimental) → 'Translation' layer"
-        onclick={onTranslatePage}
-      >
-        <LanguageOutline />
-      </button>
-    {/if}
   {/if}
   <button
     class={btn}

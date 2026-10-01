@@ -102,31 +102,3 @@ describe('LayerPicker — keyboard escape hatch', () => {
     expect(onClose).toHaveBeenCalled();
   });
 });
-
-describe('LayerPicker — whole-volume engine runs', () => {
-  it('offers OCR / Translate whole volume only when handlers are given', async () => {
-    const onOcrVolume = vi.fn();
-    const onTranslateVolume = vi.fn();
-    const { getByLabelText } = render(LayerPicker, {
-      props: {
-        layers,
-        current: null,
-        onSelect: vi.fn(),
-        onAction: vi.fn(),
-        onClose: vi.fn(),
-        onOcrVolume,
-        onTranslateVolume
-      }
-    });
-    await fireEvent.click(getByLabelText('OCR whole volume'));
-    expect(onOcrVolume).toHaveBeenCalled();
-    await fireEvent.click(getByLabelText('Translate whole volume'));
-    expect(onTranslateVolume).toHaveBeenCalled();
-    cleanup();
-    const { queryByLabelText } = render(LayerPicker, {
-      props: { layers, current: null, onSelect: vi.fn(), onAction: vi.fn(), onClose: vi.fn() }
-    });
-    expect(queryByLabelText('OCR whole volume')).toBeNull();
-    expect(queryByLabelText('Translate whole volume')).toBeNull();
-  });
-});

@@ -22,7 +22,6 @@
   import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '$lib/reader/edit/layer-kind';
   import { runLayerAction, type LayerAction } from '$lib/components/Reader/Layers/layer-actions';
   import { beforeLayerMutation } from '$lib/reader/edit/reader-edit-rules';
-  import { engineVolumeRunner } from '$lib/engines/engine-runs';
   import { db } from '$lib/catalog/db';
   import type { Page } from '$lib/types';
 
@@ -333,28 +332,6 @@
           {/if}
         </div>
       </div>
-
-      <!-- 8c. Engines (experimental): whole-volume runs the reader registered -->
-      {#if $engineVolumeRunner?.ocr || $engineVolumeRunner?.translate}
-        <div class="flex flex-wrap gap-1">
-          {#if $engineVolumeRunner.ocr}
-            <Button
-              size="xs"
-              color="alternative"
-              aria-label="OCR whole volume"
-              onclick={$engineVolumeRunner.ocr}>OCR whole volume…</Button
-            >
-          {/if}
-          {#if $engineVolumeRunner.translate}
-            <Button
-              size="xs"
-              color="alternative"
-              aria-label="Translate whole volume"
-              onclick={$engineVolumeRunner.translate}>Translate whole volume…</Button
-            >
-          {/if}
-        </div>
-      {/if}
 
       <!-- 9. Offset spreads button -->
       {#if showOffset}
