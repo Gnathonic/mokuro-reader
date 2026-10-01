@@ -13,7 +13,12 @@ vi.mock('$lib/catalog/db', async () => {
 });
 
 import { db } from '$lib/catalog/db';
-import { buildSeriesFileForExport, loadVolumeSidecars } from './volume-sidecars';
+import { clearAllLayers, putLayerWithPages } from '$lib/catalog/layer-store';
+import {
+  buildSeriesFileForExport,
+  loadVolumeLayerFiles,
+  loadVolumeSidecars
+} from './volume-sidecars';
 import { createEmptySeriesMetadata, toStoredSeriesMetadata } from '$lib/metadata/types';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -73,5 +78,46 @@ describe('loadVolumeSidecars', () => {
 
     expect(sidecars.mokuroFile?.name).toBe('Vol 1.mokuro');
     expect(Object.keys(sidecars).sort()).toEqual(['mokuroFile', 'thumbnailFile']);
+  });
+});
+
+describe('loadVolumeLayerFiles', () => {
+  const page = { version: '0.2.1', img_path: '1.jpg', img_width: 100, img_height: 140, blocks: [] };
+  const layer = (layer_id: string, extra: object = {}) => ({
+    volume_uuid: 'volume-uuid',
+    layer_id,
+    name: layer_id,
+    kind: 'ocr' as const,
+    created_at: 't1',
+    updated_at: 't1',
+    pages: [page],
+    ...extra
+  });
+
+  beforeEach(async () => {
+    await clearAllLayers(db);
+  });
+
+  it('leaves out an untouched updated-ocr layer, like every other layer writer', async () => {
+    await putLayerWithPages(db, layer('hayai-nova') as never);
+    await putLayerWithPages(
+      db,
+      layer('updated-ocr', { source_sha256: 'a'.repeat(64), source_at: 't1' }) as never
+    );
+    const names = (await loadVolumeLayerFiles('volume-uuid')).map((f) => f.name);
+    expect(names).toEqual(['Vol 1.hayai-nova.mokuro']);
+  });
+
+  it('keeps an updated-ocr layer the user has edited: it is theirs now', async () => {
+    await putLayerWithPages(
+      db,
+      layer('updated-ocr', {
+        source_sha256: 'a'.repeat(64),
+        source_at: 't1',
+        updated_at: 't2'
+      }) as never
+    );
+    const names = (await loadVolumeLayerFiles('volume-uuid')).map((f) => f.name);
+    expect(names).toEqual(['Vol 1.updated-ocr.mokuro']);
   });
 });

@@ -1,3 +1,4 @@
+import { isUntouchedUpdatedOcr } from '$lib/catalog/mokuro-hash';
 import { db } from '$lib/catalog/db';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
 import type { VolumeMetadata } from '$lib/types';
@@ -123,17 +124,25 @@ export async function loadVolumeLayerFiles(volumeUuid: string): Promise<File[]> 
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) return [];
   const layers = await listLayersWithPages(db, volumeUuid);
-  return layers
-    .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
-    .map((layer) => {
-      const { totalChars } = buildPageCharCounts(layer.pages);
-      const metadata = buildMokuroMetadata({ ...volume, character_count: totalChars }, layer.pages);
-      return new File(
-        [JSON.stringify(metadata)],
-        layerSidecarName(volume.volume_title, layer.layer_id),
-        {
-          type: 'application/json'
-        }
-      );
-    });
+  return (
+    layers
+      // Same rule as `compress-volume`'s layer sidecars: an untouched
+      // `updated-ocr` row mirrors the cloud's own primary, never a layer file.
+      .filter((layer) => !isUntouchedUpdatedOcr(layer))
+      .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
+      .map((layer) => {
+        const { totalChars } = buildPageCharCounts(layer.pages);
+        const metadata = buildMokuroMetadata(
+          { ...volume, character_count: totalChars },
+          layer.pages
+        );
+        return new File(
+          [JSON.stringify(metadata)],
+          layerSidecarName(volume.volume_title, layer.layer_id),
+          {
+            type: 'application/json'
+          }
+        );
+      })
+  );
 }
