@@ -204,7 +204,9 @@ export async function executeRenameSeries(
     console.error('Error renaming series in cloud:', error);
     if (
       error instanceof ProviderError &&
-      (error.code === 'CLOUD_ONLY_VOLUMES' || error.code === 'READ_ONLY')
+      (error.code === 'CLOUD_ONLY_VOLUMES' ||
+        error.code === 'READ_ONLY' ||
+        error.code === 'NOT_PERMITTED')
     ) {
       // Pre-flight gates carry a user-facing explanation already.
       throw new Error(error.message);

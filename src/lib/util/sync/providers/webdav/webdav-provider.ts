@@ -32,6 +32,7 @@ import {
   TransientAuthRefreshError
 } from '$lib/util/worker-auth-refresh';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
+import { CANNOT_RENAME_MESSAGE } from '../../account-capabilities';
 import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
 
 interface WebDAVCredentials {
@@ -604,6 +605,7 @@ export class WebDAVProvider implements SyncProvider {
       serverCompilesMetadata: this._serverCompilesMetadata,
       metadataPermissions: this._capabilities?.metadata,
       canModifyDelete: this._capabilities?.canModifyDelete,
+      canAddFiles: this._capabilities?.canAddFiles,
       // username is optional (some servers support password-only or no auth),
       // so it's an extra discriminator on top of the required serverUrl, not
       // a requirement in its own right.
@@ -1411,7 +1413,11 @@ export class WebDAVProvider implements SyncProvider {
    * - everything else (405, 403 on unknown/low capabilities, 401 on a
    *   credential-less session): legacy behavior - mark read-only
    */
-  private handleWriteFailure(kind: WriteErrorKind, readOnlyMessage: string): never {
+  private handleWriteFailure(
+    kind: WriteErrorKind,
+    readOnlyMessage: string,
+    permissionMessage = 'Your account does not have permission for this operation on this server'
+  ): never {
     if (kind === 'auth' && this._hasPassword) {
       this.markAuthFailed();
       throw new ProviderError(
@@ -1426,7 +1432,7 @@ export class WebDAVProvider implements SyncProvider {
 
     if (kind === 'permission' && this._capabilities?.canWriteProgress === true) {
       throw new ProviderError(
-        'Your account does not have permission for this operation on this server',
+        permissionMessage,
         'webdav',
         'PERMISSION_DENIED',
         false,
@@ -1594,7 +1600,11 @@ export class WebDAVProvider implements SyncProvider {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const kind = classifyWriteError(errorMessage);
       if (kind !== 'other') {
-        this.handleWriteFailure(kind, 'Rename permission denied - server is read-only');
+        this.handleWriteFailure(
+          kind,
+          'Rename permission denied - server is read-only',
+          CANNOT_RENAME_MESSAGE
+        );
       }
 
       throw new ProviderError(
@@ -1664,7 +1674,11 @@ export class WebDAVProvider implements SyncProvider {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const kind = classifyWriteError(errorMessage);
       if (kind !== 'other') {
-        this.handleWriteFailure(kind, 'Rename permission denied - server is read-only');
+        this.handleWriteFailure(
+          kind,
+          'Rename permission denied - server is read-only',
+          CANNOT_RENAME_MESSAGE
+        );
       }
 
       throw new ProviderError(

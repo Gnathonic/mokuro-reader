@@ -96,11 +96,12 @@ const downloadFile = vi.fn();
 const uploadFile = vi.fn();
 const deleteFile = vi.fn();
 let readOnly = false;
+let canAddFiles: boolean | undefined = undefined;
 
 function provider(type = 'webdav') {
   return {
     type,
-    getStatus: () => ({ isReadOnly: readOnly }),
+    getStatus: () => ({ isReadOnly: readOnly, canAddFiles }),
     downloadFile,
     uploadFile,
     deleteFile
@@ -130,6 +131,7 @@ beforeEach(async () => {
   cacheRemove.mockReset();
   cachedFiles = [];
   readOnly = false;
+  canAddFiles = undefined;
   localStorage.clear();
   getActiveProvider.mockReturnValue(provider());
   uploadFile.mockResolvedValue({
@@ -333,6 +335,23 @@ describe('syncLayersFromListing', () => {
     );
     expect(downloadFile).not.toHaveBeenCalled();
     expect((await db.volume_ocr_layers.toArray()).map((l) => l.volume_uuid)).toEqual(['v1']);
+  });
+
+  it('an account that cannot add files (progress-only) never pushes a layer', async () => {
+    await seedRow();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'fix',
+      name: 'Fix',
+      kind: 'edit',
+      created_at: '2026-09-16T09:00:00.000Z',
+      updated_at: '2026-09-16T09:00:00.000Z',
+      pages: [pg('なお')]
+    });
+    const files = listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.mokuro'));
+    canAddFiles = false;
+    await syncLayersFromListing(files, 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
   });
 
   it('pushes a locally edited layer as <title>.<id>.mokuro and stamps it; read-only skips', async () => {

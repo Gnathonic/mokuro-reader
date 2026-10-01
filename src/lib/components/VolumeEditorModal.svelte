@@ -17,6 +17,7 @@
   import { showSnackbar } from '$lib/util';
   import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
   import { ProviderError } from '$lib/util/sync/provider-interface';
+  import { renameRefusalMessage } from '$lib/util/sync/account-capabilities';
   import type { VolumeMetadata } from '$lib/types';
   import { VolumeData } from '$lib/settings/volume-data';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
@@ -270,14 +271,17 @@
             } catch (overwriteErr) {
               console.error('Cloud rename (overwrite) failed; local rename aborted:', overwriteErr);
               showSnackbar(
-                "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
+                renameRefusalMessage(overwriteErr) ??
+                  "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
               );
               return;
             }
           } else {
             console.error('Cloud rename failed; local rename aborted:', renameErr);
+            // A permission refusal says so; only the rest is a connection problem.
             showSnackbar(
-              "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
+              renameRefusalMessage(renameErr) ??
+                "Couldn't rename: the change couldn't be saved to your cloud, so it wasn't applied locally either (kept in sync). Check your connection and try again."
             );
             return;
           }

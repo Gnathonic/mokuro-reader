@@ -1,3 +1,7 @@
+import {
+  accountCanModifyDelete,
+  CANNOT_RENAME_MESSAGE
+} from './account-capabilities';
 import { derived, type Readable } from 'svelte/store';
 import {
   ProviderError,
@@ -853,12 +857,19 @@ class UnifiedCloudManager {
   }
 
   private assertWritable(provider: SyncProvider): void {
-    if (provider.getStatus().isReadOnly) {
+    const status = provider.getStatus();
+    if (status.isReadOnly) {
       throw new ProviderError(
         'Cannot rename: the cloud provider is read-only',
         provider.type,
         'READ_ONLY'
       );
+    }
+    // A rename is a MOVE, which mokuro-bunko allows only a modify/delete role
+    // (ownership does not count): refuse up front, with the real reason, before
+    // anything moved — never a mid-rename 403 read as a connection problem.
+    if (!accountCanModifyDelete(status)) {
+      throw new ProviderError(CANNOT_RENAME_MESSAGE, provider.type, 'NOT_PERMITTED');
     }
   }
 

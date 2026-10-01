@@ -300,6 +300,32 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(scheduleCatalogFileWrite).toHaveBeenCalled();
   });
 
+  it('an account without modify/delete is refused up front, before anything moves', async () => {
+    const provider = makeRenameProvider({
+      getStatus: vi.fn(() => ({ isReadOnly: false, canModifyDelete: false }))
+    });
+    const files = oldSeriesFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
+    ).rejects.toMatchObject({
+      code: 'NOT_PERMITTED',
+      message: "This account can't rename on this server"
+    });
+    await expect(
+      unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+        { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+      ])
+    ).rejects.toMatchObject({ code: 'NOT_PERMITTED' });
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
   it('regenerates the .mokuro at the new path, moves cbz+cover, and deletes the stale .mokuro', async () => {
     const cache = loadedCache();
     const provider = makeRenameProvider();

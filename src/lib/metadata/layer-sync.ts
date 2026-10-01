@@ -1,4 +1,5 @@
 import { db } from '$lib/catalog/db';
+import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
 import {
   getLayerMeta,
   getLayerWithPages,
@@ -469,7 +470,10 @@ export function layerNeedsPush(
 }
 
 function providerIsWritable(provider: SyncProvider): boolean {
-  return provider.getStatus().isReadOnly !== true;
+  const status = provider.getStatus();
+  // A progress-only account (bunko `registered`) is not read-only, but every
+  // layer push would be refused per file on every listing: pull only.
+  return status.isReadOnly !== true && accountCanAddFiles(status);
 }
 
 /** Same key every "which row is this cloud file" question uses. */

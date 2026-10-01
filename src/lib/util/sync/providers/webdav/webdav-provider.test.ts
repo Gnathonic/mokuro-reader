@@ -498,6 +498,37 @@ describe('WebDAVProvider write-failure policy', () => {
     expect(provider.getStatus().needsAttention).toBe(false);
   });
 
+  it('reports canAddFiles from identity, and absent for a generic server', async () => {
+    const registered = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
+    expect(registered.getStatus().canAddFiles).toBe(false);
+    expect(registered.isReadOnly).toBe(false); // progress still syncs
+    const generic = await loggedInProvider({ capabilities: null, hasPassword: true });
+    expect(generic.getStatus().canAddFiles).toBeUndefined();
+  });
+
+  it('a 403 on a rename MOVE says the account cannot rename, without demotion', async () => {
+    const provider = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
+    mockClient.exists.mockImplementation(async (path: string) => !path.includes('New'));
+    mockClient.moveFile.mockRejectedValue(new Error('Invalid response: 403 Forbidden'));
+
+    await expect(
+      provider.renameFile(
+        {
+          provider: 'webdav',
+          fileId: '/mokuro-reader/S/Old.cbz',
+          path: 'S/Old.cbz',
+          modifiedTime: '2026-01-01',
+          size: 1
+        },
+        'S/New.cbz'
+      )
+    ).rejects.toMatchObject({
+      code: 'PERMISSION_DENIED',
+      message: "This account can't rename on this server"
+    });
+    expect(provider.isReadOnly).toBe(false);
+  });
+
   it('errors thrown by the policy are ProviderError instances', async () => {
     const provider = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
     mockCore.uploadFile.mockRejectedValue(new Error('Request failed with status 401'));
