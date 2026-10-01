@@ -499,7 +499,10 @@ describe('WebDAVProvider write-failure policy', () => {
   });
 
   it('reports canAddFiles from identity, and absent for a generic server', async () => {
-    const registered = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
+    const registered = await loggedInProvider({
+      capabilities: REGISTERED_PERMS,
+      hasPassword: true
+    });
     expect(registered.getStatus().canAddFiles).toBe(false);
     expect(registered.isReadOnly).toBe(false); // progress still syncs
     const generic = await loggedInProvider({ capabilities: null, hasPassword: true });

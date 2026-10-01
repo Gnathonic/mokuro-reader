@@ -100,12 +100,16 @@ describe('worker credential refresh', () => {
   });
 
   it('a fresh token replaces the password the message carried, and null changes nothing', async () => {
-    const credentials: Record<string, unknown> = { webdavUrl: 'https://host', webdavPassword: 'pw' };
+    const credentials: Record<string, unknown> = {
+      webdavUrl: 'https://host',
+      webdavPassword: 'pw'
+    };
     await refreshInto(async () => null, credentials)('Bearer x');
     expect(credentials).toEqual({ webdavUrl: 'https://host', webdavPassword: 'pw' });
-    await refreshInto(async () => ({ webdavUrl: 'https://host', webdavToken: 'new' }), credentials)(
-      'Bearer x'
-    );
+    await refreshInto(
+      async () => ({ webdavUrl: 'https://host', webdavToken: 'new' }),
+      credentials
+    )('Bearer x');
     expect(credentials).toEqual({ webdavUrl: 'https://host', webdavToken: 'new' });
   });
 });

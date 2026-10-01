@@ -51,10 +51,7 @@ function knownSize(value: unknown): value is number {
  * scan, a re-encode, another release with the same page count) would place
  * every box wrongly here. Only pages whose size both sides know are compared.
  */
-export function firstImageSizeMismatch(
-  incoming: readonly Page[],
-  local: readonly Page[]
-): number {
+export function firstImageSizeMismatch(incoming: readonly Page[], local: readonly Page[]): number {
   const n = Math.min(incoming.length, local.length);
   for (let i = 0; i < n; i++) {
     const a = incoming[i];

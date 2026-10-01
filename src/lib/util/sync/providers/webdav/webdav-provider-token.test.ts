@@ -479,9 +479,7 @@ describe('a TRANSIENT re-issue failure is never read as a rejected password', ()
         const fresh = await refreshAuth('Bearer tok-1'); // the core rethrows a transient refusal
         return { fileId: String(fresh) };
       });
-      const error = await provider
-        .uploadFile('S/V.cbz', new Blob(['x']))
-        .catch((e: unknown) => e);
+      const error = await provider.uploadFile('S/V.cbz', new Blob(['x'])).catch((e: unknown) => e);
       expect(error).toMatchObject({ code: 'UPLOAD_FAILED', isNetworkError: true });
       expect((error as Error).message).not.toMatch(/\b401\b|Unauthorized/);
       expect(provider.getStatus().needsAttention).toBe(false);
