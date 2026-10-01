@@ -73,21 +73,10 @@
   import LayerNameModal from './Layers/LayerNameModal.svelte';
   import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
   import {
-    engineRunEditBlock,
-    engineRunTouchesLayer,
     flushOnPageHide,
     layerUiKeyAction,
-    registerBeforeLayerMutation,
-    resolveEngineRunPages
+    registerBeforeLayerMutation
   } from '$lib/reader/edit/reader-edit-rules';
-  import {
-    activeEngineRun,
-    engineVolumeRunner,
-    startEngineRun,
-    type EngineKind
-  } from '$lib/engines/engine-runs';
-  import { hasGoogleKey, hasTranslationKey } from '$lib/engines/credentials';
-  import EngineRunBanner from './Engines/EngineRunBanner.svelte';
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
@@ -569,16 +558,9 @@
   // Plain variable on purpose: as $state, the write below would re-run this
   // effect and its cleanup would cancel the load it had just started.
   let loadedLayerKey: string | null = null;
-  /** Bumped to re-read the displayed layer after an engine run wrote into it. */
-  let layerReloadTick = $state(0);
-  function refreshLayerPages() {
-    loadedLayerKey = null;
-    layerReloadTick++;
-  }
   $effect(() => {
     const uuid = volume?.volume_uuid;
     const id = displayedLayerId;
-    void layerReloadTick;
     const key = uuid && id ? `${uuid}:${id}` : null;
     if (key === loadedLayerKey) return;
     loadedLayerKey = key;
@@ -618,10 +600,6 @@
   let activeLayerId = $derived(layerPages ? displayedLayerId : null);
   /** The pre-edit snapshot is read-only: the user copies it to edit. */
   let editingBlocked = $derived(activeLayerId === ORIGINAL_LAYER_ID);
-  /** Why the engine run in flight forbids editing the displayed layer, if it does. */
-  let engineRunBlock = $derived(
-    engineRunEditBlock($activeEngineRun, volume?.volume_uuid, activeLayerId)
-  );
 
   let pages = $derived.by(() => {
     void pagesRevision;
@@ -662,15 +640,6 @@
         editSession.select(focus.pageIndex, focus.blockIndex);
         editSession.pendingFocus = focus;
       }
-      return;
-    }
-    // An engine run overwrites its layer's pages as they complete: edits made
-    // there meanwhile would be silently replaced. Every entry path (E, quick
-    // actions, the settings toggle, "Edit this text", the re-entry after a
-    // layer switch) funnels through here, so this is the one gate.
-    const runBlock = engineRunEditBlock(get(activeEngineRun), volume.volume_uuid, activeLayerId);
-    if (runBlock) {
-      showNotification(runBlock, 'edit-blocked-engine-run');
       return;
     }
     const uuid = volume.volume_uuid;
@@ -861,63 +830,6 @@
       onBeforeMutate: () => settleEditsBeforeLayerMutation(action)
     });
   }
-
-  // ---- engines (experimental): OCR / translate this page or the volume ----
-  async function runEngine(kind: EngineKind, scope: 'page' | 'volume') {
-    if (!volume || !pages.length) return;
-    const uuid = volume.volume_uuid;
-    const src = pages;
-    // A session open on the layer the run writes to would race it: close it
-    // (saving what is pending) before the run starts. Closing the session
-    // drops `editActivePage` back to the LEFT page of a spread, so the target
-    // page is resolved before the close (see resolveEngineRunPages).
-    const pageIndices = await resolveEngineRunPages({
-      scope,
-      pageCount: src.length,
-      activePage: () => editActivePage,
-      closeSession: async () => {
-        if (editSession && engineRunTouchesLayer(kind, editSession.layerId)) await exitEditMode();
-      }
-    });
-    const result = await startEngineRun(kind, {
-      volumeUuid: uuid,
-      volumeTitle: volume.volume_title,
-      seriesTitle: volume.series_title,
-      rtl: !!volumeSettings.rightToLeft,
-      sourcePages: src,
-      getImage: async (i) => {
-        const cached = imageCache.getFile(i);
-        if (cached) return cached;
-        const files = (await db.volume_files.get(uuid))?.files;
-        return files?.[src[i]?.img_path] ?? null;
-      },
-      pageIndices
-    });
-    if (!result || result.done === 0) return;
-    if (displayedLayerId === result.layerId) refreshLayerPages();
-    else await selectLayer(result.layerId);
-  }
-  let ocrPageHandler = $derived(
-    $hasGoogleKey && !$settings.continuousScroll ? () => void runEngine('ocr', 'page') : undefined
-  );
-  let translatePageHandler = $derived(
-    $hasTranslationKey && !$settings.continuousScroll
-      ? () => void runEngine('translate', 'page')
-      : undefined
-  );
-  let ocrVolumeHandler = $derived(
-    $hasGoogleKey ? () => void runEngine('ocr', 'volume') : undefined
-  );
-  let translateVolumeHandler = $derived(
-    $hasTranslationKey ? () => void runEngine('translate', 'volume') : undefined
-  );
-  // The settings panel offers the whole-volume runs through this registration.
-  $effect(() => {
-    const ocr = ocrVolumeHandler;
-    const translate = translateVolumeHandler;
-    engineVolumeRunner.set(volume && (ocr || translate) ? { ocr, translate } : null);
-    return () => engineVolumeRunner.set(null);
-  });
 
   // Leaving the volume or switching to a scroll mode ends the session
   // (saving whatever is pending).
@@ -1602,14 +1514,8 @@
     page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
     onEdit={toggleEditMode}
-    editEnabled={!$settings.continuousScroll &&
-      !editingBlocked &&
-      !layerLoading &&
-      // An open session must stay closable whatever is running.
-      (!!editSession || !engineRunBlock)}
-    editBlockedReason={editingBlocked
-      ? 'The original layer is read-only'
-      : (engineRunBlock ?? undefined)}
+    editEnabled={!$settings.continuousScroll && !editingBlocked && !layerLoading}
+    editBlockedReason={editingBlocked ? 'The original layer is read-only' : undefined}
     editing={!!editSession}
     {layers}
     currentLayer={activeLayerId}
@@ -1617,10 +1523,6 @@
     onSelectLayer={selectLayer}
     onLayerAction={runLayerActionFromReader}
     bind:layersOpen={layerPickerOpen}
-    onOcrPage={ocrPageHandler}
-    onTranslatePage={translatePageHandler}
-    onOcrVolume={ocrVolumeHandler}
-    onTranslateVolume={translateVolumeHandler}
   />
   <SettingsButton visible={overlaysVisible} />
   {#if editSession}
@@ -1630,8 +1532,6 @@
       hasOriginal={editHasOriginal}
       onExit={exitEditMode}
       onRevert={revertCurrentPage}
-      onOcrPage={ocrPageHandler}
-      onTranslatePage={translatePageHandler}
       {layers}
       currentLayer={activeLayerId}
       {primaryName}
@@ -1640,7 +1540,6 @@
       onDockChange={(d) => updateMiscSetting('editToolbarDock', d)}
     />
   {/if}
-  <EngineRunBanner />
   <LayerNameModal />
   <RereadPromptModal
     bind:open={rereadPromptOpen}

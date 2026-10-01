@@ -296,7 +296,7 @@ Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and O
 The app writes `.mokuro` files in this pure upstream format — no reader-specific
 keys. Series-level data lives beside them in `series.json`.
 
-### OCR editor, layers and engines
+### OCR editor and layers
 
 The primary `volume_ocr` row is what every existing consumer reads — stats,
 exports, backups, the reader by default, OCR upgrades. Alternate layers
@@ -353,11 +353,12 @@ everything that removes or moves a layer works from all listed copies
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
 
-The OCR/translation engines (`src/lib/engines/`) are experimental. Their API
-keys live in `localStorage` only (`engines/credentials.ts`) and are never
-written to `profiles.json`, an export, or a log — a key in a synced file would
-ride to every device and every cloud folder. `.mokuro` files themselves stay
-pure upstream format regardless of which layer or engine produced them.
+`.mokuro` files themselves stay pure upstream format regardless of which
+layer produced them. A `gcv` or `tr-<lang>` layer from the removed
+experimental client-side OCR/translation engines still lists, displays and
+deletes like any other layer — `KNOWN_ENGINE_IDS` (`reader/edit/layers.ts`)
+and `isTranslationLayerId` (`layer-kind.ts`) keep classifying those ids
+correctly on purpose, for devices that still have them in IndexedDB.
 
 ### Series sidecar `series.json`
 
