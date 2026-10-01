@@ -2,7 +2,11 @@ import { db } from '$lib/catalog/db';
 import { getLayerMeta } from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { loadVolumeManifest, type VolumeManifest } from '$lib/import/deep-link-manifest';
+import {
+  loadVolumeManifest,
+  type ManifestPendingJob,
+  type VolumeManifest
+} from '$lib/import/deep-link-manifest';
 import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { VolumeMetadata } from '$lib/types';
@@ -34,6 +38,11 @@ import {
  *   pulled once through its manifest — the primary through the cloud OCR
  *   upgrade, layers through the shared layer importer. One pull per volume in
  *   flight at a time.
+ * - The file lists only the running volumes and the next hundred waiting
+ *   (`pending_volumes` counts them all), so absence alone is not completion:
+ *   the volume's manifest decides. One that still has jobs there stays
+ *   watched, shows the manifest's jobs, and is asked again at its
+ *   `recheck_after`.
  *
  * Replaces the per-volume recheck timers of Addendum A (their persisted
  * entries are removed once, `cleanupLegacyRecheckEntries`).
@@ -57,6 +66,11 @@ export interface QueueFile {
   held: QueueHeld | null;
   /** Seconds until the server suggests looking again; null when the queue is empty. */
   next_check_after: number | null;
+  /**
+   * Waiting volumes in the WHOLE queue; `volumes` lists the running ones and
+   * only the next hundred waiting. Null from a server that lists everything.
+   */
+  pending_volumes: number | null;
   volumes: QueueVolume[];
 }
 
@@ -100,13 +114,29 @@ export function parseQueueFile(json: unknown): QueueFile | null {
       ? { reason: json.held.reason }
       : null;
   const next = json.next_check_after;
+  const pending = json.pending_volumes;
   return {
     version: 1,
     generated_at: typeof json.generated_at === 'string' ? json.generated_at : '',
     held,
     next_check_after: typeof next === 'number' && Number.isFinite(next) && next >= 0 ? next : null,
+    pending_volumes:
+      typeof pending === 'number' && Number.isInteger(pending) && pending >= 0 ? pending : null,
     volumes
   };
+}
+
+/** A volume missing from the file is still being OCR'd per its manifest: what to show, when to ask again. */
+export interface PendingOnServer {
+  series: string;
+  volume: string;
+  pending: ManifestPendingJob[];
+  /** Seconds, from the manifest; null when it named none. */
+  recheckAfter: number | null;
+}
+
+function isPendingOnServer(v: unknown): v is PendingOnServer {
+  return isObject(v) && Array.isArray(v.pending) && v.pending.length > 0;
 }
 
 // ---------------------------------------------------------------- the poller
@@ -128,8 +158,14 @@ export interface QueuePollerDeps {
   isShown: (key: string) => boolean;
   /** The file as last read; null when polling stops (nothing to show from it). */
   onStatus: (file: QueueFile | null) => void;
-  /** A volume of interest is no longer in the file: its jobs are done. */
-  onDone: (key: string, entry: QueueVolume | undefined) => void;
+  /**
+   * A volume of interest is no longer in the file. Its manifest decides: the
+   * jobs are done (pulled), or it answers what is still pending there.
+   */
+  onDone: (
+    key: string,
+    entry: QueueVolume | undefined
+  ) => void | Promise<boolean | PendingOnServer | void>;
   isHidden: () => boolean;
   fetch?: typeof fetch;
 }
@@ -139,6 +175,11 @@ export class QueuePoller {
   private lastFile: QueueFile | null = null;
   /** Interesting keys seen in the last file, with their entries (for the pull). */
   private seen = new Map<string, QueueVolume>();
+  /**
+   * Volumes of interest the file does not list but whose manifest still has
+   * jobs: when to ask the manifest again, and the entry shown meanwhile.
+   */
+  private offList = new Map<string, { until: number; volume: QueueVolume }>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private fetching = false;
   private again = false;
@@ -272,22 +313,83 @@ export class QueuePoller {
     for (const [key, v] of inFile) {
       if (watchedSet.has(key) || this.deps.isShown(key)) interesting.set(key, v);
     }
-    // Done: interesting last time and gone now, or watched and not in the file
-    // (a watched volume is queued before its upload is answered, so absence is
-    // completion, even if this device never saw it pending).
+    // Listed again, or no longer of interest: the manifest's word is moot.
+    for (const key of [...this.offList.keys()]) {
+      if (inFile.has(key) || !(watchedSet.has(key) || this.deps.isShown(key))) {
+        this.offList.delete(key);
+      }
+    }
+    // Maybe done: interesting last time and gone now, or watched and not in
+    // the file (a watched volume is queued before its upload is answered, so
+    // it may never have been seen pending). The manifest decides; one it
+    // already called pending is asked again only at its recheck time.
+    const now = Date.now();
     const doneKeys = new Set<string>();
     for (const key of this.seen.keys()) if (!inFile.has(key)) doneKeys.add(key);
     for (const key of watched) if (!inFile.has(key)) doneKeys.add(key);
+    for (const key of this.offList.keys()) doneKeys.add(key);
+    for (const [key, off] of this.offList) if (off.until > now) doneKeys.delete(key);
     const previous = this.seen;
     this.seen = interesting;
 
-    if (interesting.size > 0) {
-      this.deps.onStatus(file);
-      this.schedule(Math.max(MIN_INTERVAL_S, file.next_check_after ?? UNPRICED_INTERVAL_S) * 1000);
-    } else {
-      this.halt();
+    this.publishOrHalt();
+    for (const key of doneKeys) {
+      const entry = previous.get(key) ?? this.offList.get(key)?.volume;
+      const outcome = this.deps.onDone(key, entry);
+      if (outcome instanceof Promise) {
+        void outcome.then(
+          (result) => this.settleDone(key, result),
+          () => {}
+        );
+      }
     }
-    for (const key of doneKeys) this.deps.onDone(key, previous.get(key));
+  }
+
+  /** The manifest's answer for a volume the file stopped listing. */
+  private settleDone(key: string, result: boolean | PendingOnServer | void): void {
+    if (!isPendingOnServer(result)) {
+      if (this.offList.delete(key)) this.publishOrHalt();
+      return;
+    }
+    const wait = Math.max(MIN_INTERVAL_S, result.recheckAfter ?? UNPRICED_INTERVAL_S);
+    this.offList.set(key, {
+      until: Date.now() + wait * 1000,
+      volume: {
+        series: result.series,
+        volume: result.volume,
+        path: '',
+        manifest: '',
+        jobs: result.pending.map((job) => ({
+          kind: job.kind,
+          id: job.id,
+          state: 'queued' as const,
+          eta: job.eta,
+          progress: null
+        }))
+      }
+    });
+    if (!this.fetching) this.publishOrHalt();
+  }
+
+  /** Show the last file (plus the volumes only their manifests still call pending), or stop. */
+  private publishOrHalt(): void {
+    const file = this.lastFile;
+    if (!file || (this.seen.size === 0 && this.offList.size === 0)) {
+      this.halt();
+      return;
+    }
+    const listed = new Set(file.volumes.map((v) => volumeQueueKey(v.series, v.volume)));
+    const extra = [...this.offList.entries()]
+      .filter(([key]) => !listed.has(key))
+      .map(([, off]) => off.volume);
+    this.deps.onStatus(extra.length > 0 ? { ...file, volumes: [...file.volumes, ...extra] } : file);
+    if (!this.timer) {
+      let wait = Math.max(MIN_INTERVAL_S, file.next_check_after ?? UNPRICED_INTERVAL_S) * 1000;
+      for (const off of this.offList.values()) {
+        wait = Math.min(wait, Math.max(MIN_INTERVAL_S * 1000, off.until - Date.now()));
+      }
+      this.schedule(wait);
+    }
   }
 
   /** Nothing of interest: no timer, nothing shown from this file until the next trigger. */
@@ -532,18 +634,21 @@ async function pullManifestFiles(
   await importFetchedLayers(row.volume_uuid, source, fetched);
 }
 
-const pulling = new Map<string, Promise<boolean>>();
+const pulling = new Map<string, Promise<boolean | PendingOnServer>>();
 
 /**
  * Pull a finished volume's new sidecars through its manifest. At most one pull
  * per volume in flight (a second call gets the same promise). True when the
- * manifest was read and applied; the volume's watch then ends. Never rejects.
+ * manifest was read and applied; the volume's watch then ends. When the
+ * manifest still lists jobs the volume is not finished — it is only past the
+ * queue file's hundred — so nothing is pulled, the watch stays, and the jobs
+ * come back to be shown. Never rejects.
  */
 export function pullCompletedVolume(
   key: string,
   entry: Pick<QueueVolume, 'series' | 'volume' | 'manifest'> | undefined,
   target: PullTarget
-): Promise<boolean> {
+): Promise<boolean | PendingOnServer> {
   const inFlight = pulling.get(key);
   if (inFlight) return inFlight;
   const run = (async () => {
@@ -571,6 +676,14 @@ export function pullCompletedVolume(
       if ('error' in load) {
         console.warn(`[OCR queue] Manifest ${manifestUrl} unavailable:`, load.error);
         return false;
+      }
+      if (load.manifest.pending.length > 0) {
+        return {
+          series,
+          volume,
+          pending: load.manifest.pending,
+          recheckAfter: load.manifest.recheck_after
+        };
       }
       await pullManifestFiles(row, load.manifest, target.init, watched?.source ?? target.source);
       if (loadWatches().delete(key)) saveWatches();
@@ -632,11 +745,9 @@ function pollerFor(queueUrl: string, auth: WatchEntry['auth'], source: string): 
         .map((w) => w.key),
     isShown: (key) => isVolumeShown(key),
     onStatus: (file) => publishQueueStatus(queueUrl, file),
-    onDone: (key, entry) => {
-      void (async () => {
-        const init = await requestInitFor(queueUrl, auth);
-        if (init) await pullCompletedVolume(key, entry, { queueUrl, init, source });
-      })();
+    onDone: async (key, entry) => {
+      const init = await requestInitFor(queueUrl, auth);
+      return init ? pullCompletedVolume(key, entry, { queueUrl, init, source }) : false;
     },
     isHidden
   });

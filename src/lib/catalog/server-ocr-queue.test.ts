@@ -32,6 +32,7 @@ import {
   cleanupLegacyRecheckEntries,
   parseQueueFile,
   pullCompletedVolume,
+  type PendingOnServer,
   queueUrlForArchive,
   queueUrlForWebdav,
   resetServerOcrQueueForTest,
@@ -89,6 +90,7 @@ describe('parseQueueFile', () => {
     })!;
     expect(file.held).toEqual({ reason: 'no-processor' });
     expect(file.next_check_after).toBeNull();
+    expect(file.pending_volumes).toBeNull();
     expect(file.volumes).toHaveLength(3);
     expect(file.volumes[2].jobs).toEqual([]);
   });
@@ -102,6 +104,8 @@ describe('QueuePoller', () => {
   let shownKeys: Set<string>;
   let statuses: Array<unknown>;
   let done: string[];
+  /** What `onDone` answers per key (absent = the old fire-and-forget). */
+  let outcomes: Map<string, Promise<boolean | PendingOnServer>>;
   let init: RequestInit | null;
 
   function poller() {
@@ -111,7 +115,10 @@ describe('QueuePoller', () => {
       watchedKeys: () => watched,
       isShown: (k) => shownKeys.has(k),
       onStatus: (file) => statuses.push(file),
-      onDone: (key) => done.push(key),
+      onDone: (key) => {
+        done.push(key);
+        return outcomes.get(key);
+      },
       isHidden: () => hidden,
       fetch: fetchMock as unknown as typeof fetch
     });
@@ -127,6 +134,7 @@ describe('QueuePoller', () => {
     shownKeys = new Set();
     statuses = [];
     done = [];
+    outcomes = new Map();
     init = { cache: 'no-store' };
     fetchMock = vi.fn(async () => {
       const a = answers.shift() ?? { status: 200, body: queueFixture(NOW), etag: '"e1"' };
@@ -313,6 +321,53 @@ describe('QueuePoller', () => {
     expect(p.state).toBe('idle');
   });
 
+  // bunko >= 0.5.1 lists the running volumes and only the next hundred waiting.
+  it("reads the whole queue's waiting count", () => {
+    expect(parseQueueFile({ ...queueFixture(NOW), pending_volumes: 4210 })!.pending_volumes).toBe(
+      4210
+    );
+    expect(parseQueueFile({ ...queueFixture(NOW), pending_volumes: -1 })!.pending_volumes).toBe(
+      null
+    );
+  });
+
+  it('a watched volume past the hundred listed stays pending while its manifest says so', async () => {
+    const far = volumeQueueKey('Other', 'Other 01');
+    watched = [far];
+    const pending: PendingOnServer = {
+      series: 'Other',
+      volume: 'Other 01',
+      pending: [{ kind: 'ocr', id: 'mokuro-fp16', eta: '2026-09-28T19:00:00Z' }],
+      recheckAfter: 600
+    };
+    outcomes.set(far, Promise.resolve(pending));
+    const p = poller();
+    p.trigger('upload');
+    await settle();
+    expect(done).toEqual([far]);
+    // Not done: still polled, and shown from the manifest's jobs.
+    expect(p.state).toBe('waiting');
+    const shown = statuses.at(-1) as { volumes: Array<{ volume: string; jobs: unknown[] }> };
+    expect(shown.volumes.find((v) => v.volume === 'Other 01')?.jobs).toEqual([
+      {
+        kind: 'ocr',
+        id: 'mokuro-fp16',
+        state: 'queued',
+        eta: '2026-09-28T19:00:00Z',
+        progress: null
+      }
+    ]);
+    // The next queue polls (95 s apart) do not ask its manifest again before recheck_after.
+    await vi.advanceTimersByTimeAsync(95_000 * 3);
+    expect(done).toEqual([far]);
+    // At recheck_after it is asked again; now the manifest calls it done.
+    outcomes.set(far, Promise.resolve(true));
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(done).toEqual([far, far]);
+    const after = statuses.at(-1) as { volumes: Array<{ volume: string }> } | null;
+    expect(after?.volumes.some((v) => v.volume === 'Other 01') ?? false).toBe(false);
+  });
+
   it('publishes the file, and withdraws it when it stops', async () => {
     const p = poller();
     p.trigger('upload');
@@ -463,6 +518,41 @@ describe('pulling a volume whose jobs are done', () => {
     expect(warn).toHaveBeenCalled();
     expect(watchedEntries()).toHaveLength(1);
     warn.mockRestore();
+  });
+
+  it('a manifest that still lists jobs is not done: nothing pulled, the watch kept', async () => {
+    const url =
+      'https://bunko.example/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001';
+    const manifest = JSON.parse(routes.get(url) as string);
+    routes.set(
+      url,
+      JSON.stringify({
+        ...manifest,
+        pending: [{ kind: 'layer', id: 'hayai-nova', eta: null }],
+        recheck_after: 300
+      })
+    );
+    watchServerOcr(
+      {
+        volumeUuid: 'v1',
+        series: 'Dr Stone',
+        volume: 'Dr Stone 01',
+        queueUrl: QUEUE,
+        manifestUrl: url,
+        auth: 'none',
+        source: 'webdav'
+      },
+      { start: false }
+    );
+    expect(await pullCompletedVolume(KEY1, entry, target)).toEqual({
+      series: 'Dr Stone',
+      volume: 'Dr Stone 01',
+      pending: [{ kind: 'layer', id: 'hayai-nova', eta: null }],
+      recheckAfter: 300
+    });
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    expect(importFetchedLayers).not.toHaveBeenCalled();
+    expect(watchedEntries()).toHaveLength(1);
   });
 
   it('finds the local row by its titles when nothing was watched', async () => {
