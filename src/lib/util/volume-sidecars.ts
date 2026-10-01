@@ -1,4 +1,4 @@
-import { isUntouchedUpdatedOcr } from '$lib/catalog/mokuro-hash';
+import { isUntouchedUpgradeLayer } from '$lib/catalog/mokuro-hash';
 import { db } from '$lib/catalog/db';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
 import type { VolumeMetadata } from '$lib/types';
@@ -126,9 +126,9 @@ export async function loadVolumeLayerFiles(volumeUuid: string): Promise<File[]> 
   const layers = await listLayersWithPages(db, volumeUuid);
   return (
     layers
-      // Same rule as `compress-volume`'s layer sidecars: an untouched
-      // `updated-ocr` row mirrors the cloud's own primary, never a layer file.
-      .filter((layer) => !isUntouchedUpdatedOcr(layer))
+      // Same rule as `compress-volume`'s layer sidecars: an untouched upgrade
+      // layer (`updated-ocr`, `previous-ocr`) is never a layer file.
+      .filter((layer) => !isUntouchedUpgradeLayer(layer))
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {
         const { totalChars } = buildPageCharCounts(layer.pages);

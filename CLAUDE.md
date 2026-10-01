@@ -401,11 +401,30 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   or ABSENT locally (a one-time baseline for volumes installed before hashes)
   → download the primary sidecar (never a layer file), hash it, parse it
   (`decodeMokuroSidecar` + `parseMokuroFile`), then `applyCloudPrimaryOcr`:
-  another page count → skipped (a different archive) and remembered; the same
-  pages under other bytes (`sameOcrPages`: dimensions + blocks, not
-  `img_path`) → only the hash is recorded; unedited → the primary is replaced
-  wholesale on the volume's OWN image names (`fitPagesToVolume`), with
-  `mokuro_version`, `character_count`, `page_char_counts` and the hash.
+  another page count, or ANY page whose image size (`img_width`/`img_height`)
+  differs from the local primary's own (`firstImageSizeMismatch`; pages whose
+  size either side does not know are not compared) → skipped (OCR made for
+  other images: its boxes would land in the wrong places) and remembered until
+  the cloud hash changes; the same pages under other bytes (`sameOcrPages`:
+  dimensions + blocks, not `img_path`) → only the hash is recorded; unedited →
+  the primary is replaced wholesale on the volume's OWN image names
+  (`fitPagesToVolume`), with `mokuro_version`, `character_count`,
+  `page_char_counts` and the hash.
+- **Provenance of an unedited primary.** Replaced either way (the owner wants
+  pre-existing OCR upgraded), but what is kept depends on where it came from.
+  Attested as THIS cloud's file (`mokuro_sha256` + a `mokuro_sha256_cloud`
+  naming the current provider) → it is only an older revision of the cloud's
+  own file: replaced outright. Anything else — a local re-import after
+  re-running mokuro, an archive's EMBEDDED `.mokuro`, a legacy row with no
+  hash, an attestation for another provider — may be OCR the cloud never had:
+  first kept as the local `previous-ocr` layer ("Previous OCR", kind `ocr`,
+  `source_sha256` = the replaced hash when there was one, `source_at` =
+  `updated_at`). While untouched it follows the same rules as an untouched
+  `updated-ocr` (`isUntouchedUpgradeLayer`, `mokuro-hash.ts`): never pushed
+  (`layerNeedsPush`), never exported or embedded (`compress-volume.ts`,
+  `volume-sidecars.ts`), and a later replacement overwrites it in place. Once
+  the user edits it, it is theirs: the next keepsake goes under
+  `previous-ocr-2`, `-3`, ….
 - **Edited volumes keep their edits.** With `ocr_edited_at` set, a file equal
   to the pre-edit `original` layer only records the hash; otherwise it is
   filed as the `updated-ocr` layer ("Updated OCR", kind `ocr`) carrying

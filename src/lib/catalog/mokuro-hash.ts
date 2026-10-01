@@ -79,13 +79,24 @@ export function isMokuroCloudAttestation(value: unknown): value is MokuroCloudAt
 }
 
 /**
- * A layer the OCR upgrade filed (`updated-ocr`) that nobody has touched since:
- * still a mirror of the cloud's own PRIMARY sidecar, so it is never uploaded
- * as a layer file (the cloud already holds those pages) and a newer upgrade
- * replaces it in place. See `VolumeOcrLayer.source_at`.
+ * A layer the OCR upgrade wrote (`cloud-ocr-upgrade.ts`) that nobody has
+ * touched since — `source_at` still equals `updated_at`. Two such layers:
+ *
+ * - `updated-ocr`: an EDITED volume's copy of the cloud's newer primary. A
+ *   mirror of the cloud's own PRIMARY sidecar, so never uploaded as a layer
+ *   file (the cloud already holds those pages).
+ * - `previous-ocr`: the LOCAL primary an upgrade replaced when that primary
+ *   did not provably come from this cloud (a local re-import, an archive's
+ *   embedded `.mokuro`, a legacy row). A device-local keepsake, never
+ *   published either.
+ *
+ * Either way: never pushed, never exported, never embedded, and a later
+ * upgrade replaces it in place. A user edit moves `updated_at`, the mark
+ * dies, and the row is the user's own layer from then on. See
+ * `VolumeOcrLayer.source_at`.
  */
-export function isUntouchedUpdatedOcr(
-  layer: { source_sha256?: string; source_at?: string; updated_at?: string } | undefined
+export function isUntouchedUpgradeLayer(
+  layer: { source_at?: string; updated_at?: string } | undefined
 ): boolean {
-  return !!layer?.source_sha256 && !!layer.source_at && layer.source_at === layer.updated_at;
+  return !!layer?.source_at && layer.source_at === layer.updated_at;
 }

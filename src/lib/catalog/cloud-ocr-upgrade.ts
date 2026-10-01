@@ -7,10 +7,21 @@ import {
 } from '$lib/util/sync/unified-cloud-manager';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { CloudFileMetadata, ProviderType } from '$lib/util/sync/provider-interface';
-import { getLayerMeta, getLayerPages, layerTables, putLayerWithPages } from './layer-store';
-import { isUntouchedUpdatedOcr, sha256Hex, type MokuroCloudAttestation } from './mokuro-hash';
-export { isUntouchedUpdatedOcr };
-import { fitPagesToVolume, sameOcrPages } from './ocr-upgrade-pages';
+import {
+  getLayerMeta,
+  getLayerPages,
+  layerTables,
+  listLayerIds,
+  putLayerWithPages
+} from './layer-store';
+import {
+  isMokuroCloudAttestation,
+  isUntouchedUpgradeLayer,
+  sha256Hex,
+  type MokuroCloudAttestation
+} from './mokuro-hash';
+export { isUntouchedUpgradeLayer };
+import { firstImageSizeMismatch, fitPagesToVolume, sameOcrPages } from './ocr-upgrade-pages';
 
 /**
  * Upgrading an installed volume's OCR from the cloud's `.mokuro`/`.mokuro.gz`
@@ -283,6 +294,18 @@ export function enqueueCloudOcrUpgrade(
 export const UPDATED_OCR_LAYER_ID = 'updated-ocr';
 export const UPDATED_OCR_LAYER_NAME = 'Updated OCR';
 
+/**
+ * The layer an UNEDITED volume's replaced primary is kept as, when that
+ * primary did not provably come from this cloud (a local re-import after
+ * re-running mokuro, an archive's embedded `.mokuro`, a row from before
+ * hashes). Device-local: never pushed, exported or embedded while untouched
+ * (`isUntouchedUpgradeLayer`), and a later replacement overwrites it only
+ * while it is still untouched — once edited it is the user's, and the next
+ * keepsake goes under a fresh id (`previous-ocr-2`, ...).
+ */
+export const PREVIOUS_OCR_LAYER_ID = 'previous-ocr';
+export const PREVIOUS_OCR_LAYER_NAME = 'Previous OCR';
+
 /** The read-only pre-edit snapshot (`edit-persist.ts`'s `ORIGINAL_LAYER_ID`; a literal to stay out of its import cycle). */
 const ORIGINAL_LAYER = 'original';
 
@@ -297,7 +320,8 @@ const ORIGINAL_LAYER = 'original';
  *   only its hash was recorded, nothing else changed;
  * - `kept` — edited, and the `updated-ocr` layer is the user's own by now (they
  *   edited it): left alone, the file remembered so it is not re-fetched;
- * - `mismatch` — a different page count: not this archive's OCR at all;
+ * - `mismatch` — a different page count, or pages sized for other images:
+ *   not this archive's OCR at all;
  * - `skipped` — not installed (any more), or already exactly these bytes.
  */
 export type CloudPrimaryOutcome =
@@ -309,6 +333,8 @@ export type CloudPrimaryOutcome =
   | 'skipped';
 
 export interface CloudPrimaryOcr {
+  /** The provider the sidecar is listed on (else `cloud.provider`). */
+  provider?: string;
   /** The sidecar's pages as parsed (`img_path` as the FILE names them). */
   pages: Page[];
   /** The sidecar's mokuro `version`. */
@@ -353,6 +379,21 @@ export async function applyCloudPrimaryOcr(
       return 'mismatch';
     }
 
+    // Same count, but made for images of another size: its boxes would land
+    // in the wrong places on every page of this volume's own images.
+    const sizeMismatch = firstImageSizeMismatch(ocr.pages, local.pages);
+    if (sizeMismatch >= 0) {
+      const a = ocr.pages[sizeMismatch];
+      const b = local.pages[sizeMismatch];
+      console.debug(
+        `[Cloud OCR Upgrade] not applying the cloud sidecar to ` +
+          `'${current.series_title}/${current.volume_title}': page ${sizeMismatch + 1} is ` +
+          `${a.img_width}x${a.img_height} there, ${b.img_width}x${b.img_height} here — ` +
+          'OCR made for other images'
+      );
+      return 'mismatch';
+    }
+
     const pages = fitPagesToVolume(ocr.pages, local.pages);
     const base = {
       mokuro_sha256: ocr.sha256,
@@ -375,7 +416,7 @@ export async function applyCloudPrimaryOcr(
         return 'recorded';
       }
       const existing = await getLayerMeta(db, volumeUuid, UPDATED_OCR_LAYER_ID);
-      if (existing && !isUntouchedUpdatedOcr(existing)) {
+      if (existing && !isUntouchedUpgradeLayer(existing)) {
         // The user edited the previous server OCR layer: it is their work now.
         console.debug(
           `[Cloud OCR Upgrade] '${current.volume_title}': newer cloud OCR not filed — ` +
@@ -400,6 +441,18 @@ export async function applyCloudPrimaryOcr(
       return 'layered';
     }
 
+    // Unedited: replaced. When the primary is provably THIS cloud's file (its
+    // hash attested for this provider), it is only an older revision of the
+    // same file. Otherwise it came from somewhere else — a local import, an
+    // archive's embedded `.mokuro`, a row from before hashes — and may be OCR
+    // the cloud never had: kept as the local `previous-ocr` layer first.
+    const provider = ocr.provider ?? ocr.cloud?.provider;
+    const attested =
+      !!current.mokuro_sha256 &&
+      isMokuroCloudAttestation(current.mokuro_sha256_cloud) &&
+      current.mokuro_sha256_cloud.provider === provider;
+    if (!attested) await keepReplacedPrimary(current, local.pages);
+
     const { totalChars, cumulative } = buildPageCharCounts(pages);
     await db.volume_ocr.put({ volume_uuid: volumeUuid, pages });
     await db.volumes.update(volumeUuid, {
@@ -410,5 +463,37 @@ export async function applyCloudPrimaryOcr(
       updated_ocr_sha256: undefined
     });
     return 'upgraded';
+  });
+}
+
+/**
+ * Keep an unedited primary that is about to be replaced and did not come from
+ * this cloud, as the local `previous-ocr` layer (inside the caller's
+ * transaction). Overwrites an untouched `previous-ocr`; one the user edited is
+ * theirs, so the keepsake goes under the next free `previous-ocr-<n>` id.
+ */
+async function keepReplacedPrimary(current: VolumeMetadata, pages: Page[]): Promise<void> {
+  const existing = await getLayerMeta(db, current.volume_uuid, PREVIOUS_OCR_LAYER_ID);
+  let layerId = PREVIOUS_OCR_LAYER_ID;
+  let name = PREVIOUS_OCR_LAYER_NAME;
+  if (existing && !isUntouchedUpgradeLayer(existing)) {
+    const taken = new Set(await listLayerIds(db, current.volume_uuid));
+    let n = 2;
+    while (taken.has(`${PREVIOUS_OCR_LAYER_ID}-${n}`)) n++;
+    layerId = `${PREVIOUS_OCR_LAYER_ID}-${n}`;
+    name = `${PREVIOUS_OCR_LAYER_NAME} (${n})`;
+  }
+  const keep = existing && layerId === PREVIOUS_OCR_LAYER_ID ? existing : undefined;
+  const now = new Date().toISOString();
+  await putLayerWithPages(db, {
+    volume_uuid: current.volume_uuid,
+    layer_id: layerId,
+    name: keep?.name ?? name,
+    kind: 'ocr',
+    created_at: keep?.created_at ?? now,
+    updated_at: now,
+    ...(current.mokuro_sha256 ? { source_sha256: current.mokuro_sha256 } : {}),
+    source_at: now,
+    pages
   });
 }

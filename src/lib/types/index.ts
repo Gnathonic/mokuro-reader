@@ -225,18 +225,20 @@ export interface VolumeOcrLayer {
    */
   passive_at?: string;
   /**
-   * Set on the `updated-ocr` row the OCR upgrade files for an EDITED volume
-   * (`cloud-ocr-upgrade.ts`): the `mokuro_sha256` of the cloud primary sidecar
-   * these pages are.
+   * Set on the layers the OCR upgrade writes (`cloud-ocr-upgrade.ts`): on
+   * `updated-ocr` (an EDITED volume's copy of the cloud's newer primary) the
+   * `mokuro_sha256` of the cloud primary sidecar these pages are; on
+   * `previous-ocr` (the local primary an upgrade replaced) that primary's own
+   * `mokuro_sha256`, when it had one.
    */
   source_sha256?: string;
   /**
    * Equal to `updated_at` while the row is untouched since the upgrade wrote
-   * it — compared, never cleared, exactly like `passive_at`. While it holds,
-   * the row is a mirror of the cloud's own PRIMARY sidecar: never pushed as a
-   * layer file (`layer-sync.ts`, the backup's layer sidecars) and replaced in
-   * place by a newer upgrade. A user edit moves `updated_at`, the mark dies,
-   * and the row is the user's own layer from then on.
+   * it — compared, never cleared, exactly like `passive_at`. While it holds
+   * (`isUntouchedUpgradeLayer`), the row is never pushed as a layer file
+   * (`layer-sync.ts`, the backup's layer sidecars), never exported, and is
+   * replaced in place by a later upgrade. A user edit moves `updated_at`, the
+   * mark dies, and the row is the user's own layer from then on.
    */
   source_at?: string;
 }

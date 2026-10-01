@@ -261,6 +261,19 @@ describe('layerNeedsPull / layerNeedsPush', () => {
     expect(layerNeedsPush(mirror, file, 'webdav')).toBe(false);
   });
 
+  it('an untouched previous-ocr keepsake (the local primary an upgrade replaced) is never pushed', () => {
+    const keepsake = {
+      ...mirror,
+      layer_id: 'previous-ocr',
+      source_sha256: undefined, // a legacy primary had no hash
+      source_at: mirror.updated_at
+    };
+    expect(layerNeedsPush(keepsake, undefined, 'webdav')).toBe(false);
+    expect(
+      layerNeedsPush({ ...keepsake, updated_at: '2026-09-16T12:30:00.000Z' }, undefined, 'webdav')
+    ).toBe(true);
+  });
+
   it('an updated-ocr row the user edited is their layer: pushed like any edit', () => {
     const edited = { ...mirror, updated_at: '2026-09-16T12:30:00.000Z' };
     expect(layerNeedsPush(edited, undefined, 'webdav')).toBe(true);

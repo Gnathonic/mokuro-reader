@@ -258,6 +258,7 @@ async function runTask(
   if (isVolumeOpen(row.volume_uuid)) return 'deferred';
 
   const outcome = await applyCloudPrimaryOcr(row.volume_uuid, {
+    provider: provider.type,
     pages: read.pages,
     version: read.version,
     sha256: read.sha256,
