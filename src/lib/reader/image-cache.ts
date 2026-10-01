@@ -181,6 +181,7 @@ export class ImageCache {
   private cache = new Map<number, CachedImage>(); // Keyed by page index
   private files: File[] = []; // Indexed array aligned with pages
   private pages: Page[] = [];
+  private sourceFiles: Record<string, File> | null = null;
   private currentIndex = 0;
   private windowSize = { prev: 2, next: 3 };
 
@@ -189,15 +190,18 @@ export class ImageCache {
    * Returns immediately - all preloading happens in the background
    */
   updateCache(files: Record<string, File>, pages: Page[], currentIndex: number): void {
-    // Detect if we have new files by checking reference and length
-    const fileCount = Object.keys(files).length;
-    const filesChanged = this.files.length !== fileCount || this.pages !== pages;
-
-    // Clear old cache and build indexed files array if files changed
-    if (filesChanged) {
-      this.cleanup();
-      this.files = matchFilesToPages(files, pages);
+    // Re-match when either input is a new object, but only drop the entries
+    // whose File actually changed: an OCR layer swap hands in new pages with
+    // the same images, and throwing away their decoded bitmaps would make
+    // every visible page load (and flash) again.
+    if (this.sourceFiles !== files || this.pages !== pages) {
+      const next = matchFilesToPages(files, pages);
+      for (const [index] of [...this.cache]) {
+        if (next[index] !== this.files[index]) this.removeFromCache(index);
+      }
+      this.files = next;
       this.pages = pages;
+      this.sourceFiles = files;
     }
 
     this.currentIndex = currentIndex;

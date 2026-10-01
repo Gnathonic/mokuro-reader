@@ -42,16 +42,24 @@
 
   let url = $state('');
 
+  // Read through deriveds: a prop like `src={indexedFiles[i]}` is re-read
+  // whenever the parent rebuilds that array — an OCR layer swap does, with
+  // the very same File objects — while a derived only notifies when the value
+  // itself changes. So the page keeps its blob URL and decoded image instead
+  // of swapping in an identical one (a visible flash to the reader bg).
+  let cached = $derived(cachedUrl ?? null);
+  let file = $derived(src ?? null);
+
   // Use cached URL if available, otherwise create blob URL
   $effect(() => {
     let currentBlobUrl: string | null = null;
 
-    if (cachedUrl) {
+    if (cached) {
       // Use pre-decoded cached URL (no cleanup needed, managed by cache)
-      url = `url(${cachedUrl})`;
-    } else if (src) {
+      url = `url(${cached})`;
+    } else if (file) {
       // Fallback: create new blob URL
-      currentBlobUrl = URL.createObjectURL(src);
+      currentBlobUrl = URL.createObjectURL(file);
       url = `url(${currentBlobUrl})`;
     } else {
       url = '';
