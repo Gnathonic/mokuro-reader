@@ -589,7 +589,13 @@ Rules:
   their sole producer (see `docs/superpowers/plans/2026-08-23-catalog-distribution-bunko.md`);
   it must partition metadata files out of progress handling (root `.json` =
   progress/profiles, `<Series>/series.json` and root `catalog.json` = metadata).
-  A scoped user's `series.json` PUT is accepted as an update REQUEST.
+  A scoped user's `series.json` PUT is accepted as an update REQUEST — for the
+  facts and the shelf alignment only (bunko computes counts, stamps and
+  `mokuro_sha256` itself). So on a `serverCompilesMetadata` provider
+  `writeSeriesFile` PUTs only when the built file's facts or offsets differ
+  from the server's copy (`seriesFileCarriesServerRequest`): a placeholder's
+  measurement, a download's recorded hash, a backup's drain or a delete's
+  maintenance never cost a PUT there.
 
 ### Root `catalog.json`
 

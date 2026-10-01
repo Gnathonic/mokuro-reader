@@ -2475,6 +2475,113 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     );
     expect(file.volumes[0].mokuro_size).toBe(5);
   });
+
+  describe('on a server that compiles series.json itself (mokuro-bunko)', () => {
+    const PUBLISHED = '2026-01-01T00:00:00.000Z';
+
+    function serverCompiled() {
+      return makeRenameProvider({
+        getStatus: vi.fn(() => ({ isReadOnly: false, serverCompilesMetadata: true }))
+      });
+    }
+
+    /** bunko's own compiled copy: one volume, the facts, no offsets. */
+    function publish(extra: Record<string, unknown> = {}) {
+      getSeriesIndex.mockResolvedValue({
+        series_key: 'one piece',
+        series_title: 'One Piece',
+        file: {
+          version: 2,
+          series_title: 'One Piece',
+          external_ids: { anilist: 21 },
+          titles: { native: 'ワンピース' },
+          synonyms: [],
+          updated_at: PUBLISHED,
+          volumes: [
+            {
+              volume_uuid: 'uuid-Volume 1',
+              volume_title: 'Volume 1',
+              page_count: 2,
+              character_count: 20,
+              mokuro_version: '0.4.11'
+            }
+          ],
+          ...extra
+        },
+        source: { provider: 'webdav', path: 'One Piece/series.json', size: 42, modifiedTime: 't' },
+        fetched_at: '2026-08-17T00:00:00.000Z',
+        parser: 1
+      });
+    }
+
+    it('a download that only recorded a hash (no fact, no offset) PUTs nothing', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([
+        cloudFile('One Piece/Volume 1.cbz'),
+        cloudFile('One Piece/Volume 1.mokuro', { size: 77 })
+      ]);
+      publish();
+      // Freshly downloaded: hash + attestation recorded on the row.
+      localVolumes.mockResolvedValue([
+        volume('One Piece', 'Volume 1', {
+          mokuro_sha256: 'a'.repeat(64),
+          mokuro_sha256_cloud: { provider: 'webdav', size: 77 }
+        })
+      ]);
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
+      expect(provider.uploadFile).not.toHaveBeenCalled();
+    });
+
+    it('a local fact edit IS a request: PUT', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+      publish();
+      localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+      const meta = {
+        series_key: 'one piece',
+        series_title: 'One Piece',
+        external_ids: { anilist: 21 },
+        titles: { native: 'ワンピース' },
+        synonyms: ['OP'],
+        updated_at: '2026-02-01T00:00:00.000Z',
+        facts_updated_at: '2026-02-01T00:00:00.000Z'
+      };
+      getSeriesMetadataForTitle.mockResolvedValue(meta);
+      getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+      expect((await uploadedSeriesFile(provider)).synonyms).toEqual(['OP']);
+    });
+
+    it('a shelf nudge IS a request: PUT', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+      publish();
+      localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+      const meta = {
+        series_key: 'one piece',
+        series_title: 'One Piece',
+        synonyms: [],
+        updated_at: '2026-02-01T00:00:00.000Z',
+        volume_offsets: { 'uuid-Volume 1': 12 }
+      };
+      getSeriesMetadataForTitle.mockResolvedValue(meta);
+      getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+      expect((await uploadedSeriesFile(provider)).volumes[0].offset).toBe(12);
+    });
+  });
 });
 
 describe('UnifiedCloudManager series.json on rename and delete', () => {

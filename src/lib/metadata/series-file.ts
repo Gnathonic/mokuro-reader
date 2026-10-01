@@ -640,6 +640,63 @@ export function seriesFileHealDifference(
   return false;
 }
 
+/**
+ * Would a PUT of `built` ask a server that compiles `series.json` itself
+ * (mokuro-bunko, `serverCompilesMetadata`) for anything? Such a server takes a
+ * client's file only as an update REQUEST for what a user owns there — the
+ * series FACTS (merged by their `updated_at` stamp) and the shelf alignment
+ * (`spine_offset`, per-volume `offset`) — and computes every other volume field
+ * (counts, stamps, `mokuro_sha256`) from the files themselves. So a file whose
+ * facts and offsets equal the server's copy says nothing new: recording a
+ * downloaded volume's hash, measuring a placeholder or finishing a backup
+ * must not cost a PUT there.
+ *
+ * No server copy yet: a request iff the file carries facts or offsets at all.
+ */
+export function seriesFileCarriesServerRequest(
+  existing: SeriesFile | undefined,
+  built: SeriesFile
+): boolean {
+  const offsetsOf = (file: SeriesFile | undefined) => {
+    const byUuid = new Map<string, number>();
+    const byTitle = new Map<string, number>();
+    for (const entry of file?.volumes ?? []) {
+      const offset = entry.offset ?? 0;
+      byUuid.set(entry.volume_uuid, offset);
+      const key = normalizeVolumeTitleKey(entry.volume_title);
+      if (key && !byTitle.has(key)) byTitle.set(key, offset);
+    }
+    return { byUuid, byTitle };
+  };
+  if (!existing) {
+    return (
+      hasSeriesFacts(built) || !!built.spine_offset || built.volumes.some((entry) => !!entry.offset)
+    );
+  }
+  const factsOf = (file: SeriesFile) =>
+    JSON.stringify([
+      file.external_ids ?? {},
+      file.titles ?? {},
+      file.synonyms ?? [],
+      file.tag ?? null,
+      file.unit ?? null,
+      // The same instant in another spelling (a server that re-serializes
+      // stamps) is the same facts clock.
+      Number.isFinite(Date.parse(file.updated_at)) ? Date.parse(file.updated_at) : file.updated_at,
+      file.spine_offset ?? 0
+    ]);
+  if (factsOf(existing) !== factsOf(built)) return true;
+  const published = offsetsOf(existing);
+  for (const entry of built.volumes) {
+    const before =
+      published.byUuid.get(entry.volume_uuid) ??
+      published.byTitle.get(normalizeVolumeTitleKey(entry.volume_title)) ??
+      0;
+    if ((entry.offset ?? 0) !== before) return true;
+  }
+  return false;
+}
+
 /** The shareable half of a series record (or of the file already in the cloud). */
 interface SeriesFacts {
   external_ids?: SeriesExternalIds;
