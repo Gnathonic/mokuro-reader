@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.10.0] - 2026-10-01
+
+### Added
+
+- **OCR editor** — press E to fix text, move, resize or redraw lines
+- **OCR layers** — keep alternate OCR per volume; L switches, promote or export any
+- Layers sync with your cloud, and mokuro-bunko's OCR generations arrive as layers
+- **Automatic OCR upgrades** — newer server OCR replaces old in the background; your edits stay
+- mokuro-bunko volume cards show pending server OCR and when it should finish
+- mokuro-bunko sign-in uses a token instead of sending your password every request
+- mokuro-bunko catalog links bring the volume's OCR layers and cover along
+
+### Changed
+
+- Text lines sit on an even character grid; rotated lines follow the page
+- Continuous mode only renders pages near the screen
+- Uploads to mokuro-bunko are checked on arrival and retried if damaged
+- mokuro-bunko accounts without upload or rename rights skip those actions with a clear reason
+
+### Fixed
+
+- No black flash when opening a volume or rotating the device
+- Deleting a series reports how many volumes went, not files
+- Original mode keeps text inside its box
+- Notices no longer hide under the progress tray
+
 ## [1.9.1] - 2026-08-30
 
 ### Fixed
