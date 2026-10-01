@@ -10,7 +10,9 @@ const { mockClient, mockCore, createClientMock } = vi.hoisted(() => {
     deleteFile: vi.fn(),
     moveFile: vi.fn(),
     stat: vi.fn(),
-    getQuota: vi.fn()
+    getQuota: vi.fn(),
+    getHeaders: vi.fn(() => ({})),
+    setHeaders: vi.fn()
   };
   const mockCore = {
     uploadFile: vi.fn(),
@@ -86,9 +88,16 @@ describe('WebDAVProvider login()', () => {
     expect(provider.getStatus().needsAttention).toBe(false);
     // The endpoint answered in bunko's shape: bunko compiles the metadata files.
     expect(provider.getStatus().serverCompilesMetadata).toBe(true);
-    // checkWritePermissions would have used PROPFIND - it must not run. (The one
-    // request allowed is the OPTIONS asking whether PUTs are staged and verified.)
-    expect(fetchMock.mock.calls.every((c) => c[1]?.method === 'OPTIONS')).toBe(true);
+    // checkWritePermissions would have used PROPFIND - it must not run. (The
+    // requests allowed are the token request and the OPTIONS asking whether
+    // PUTs are staged and verified.)
+    expect(
+      fetchMock.mock.calls.every(
+        (c) =>
+          c[1]?.method === 'OPTIONS' ||
+          (c[1]?.method === 'POST' && String(c[0]) === 'https://host/login/api/token')
+      )
+    ).toBe(true);
     // credentials persisted as plain strings (C6: format unchanged)
     expect(localStorage.getItem('webdav_server_url')).toBe('https://host');
     expect(localStorage.getItem('webdav_username')).toBe('alice');

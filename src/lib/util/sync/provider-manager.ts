@@ -206,6 +206,10 @@ class ProviderManager {
       localStorage.removeItem('webdav_server_url');
       localStorage.removeItem('webdav_username');
       localStorage.removeItem('webdav_password');
+      localStorage.removeItem('webdav_token');
+      localStorage.removeItem('webdav_token_expires_at');
+      localStorage.removeItem('webdav_token_endpoint');
+      localStorage.removeItem('webdav_token_account');
       // MEGA
       localStorage.removeItem('mega_session');
       localStorage.removeItem('mega_email');

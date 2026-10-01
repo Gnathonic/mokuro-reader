@@ -12,9 +12,21 @@ import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-det
 import type { WebDAVClient } from 'webdav';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { webdavAuthOptions } from '../../core/providers/webdav-auth';
-import { basicAuthHeader } from '$lib/util/base64';
+import {
+  bearerOf,
+  webdavAuthHeaders,
+  webdavAuthorization,
+  type WebdavAuthMaterial
+} from '../../core/providers/webdav-authorization';
 import { isVerifiedPutHeader } from './webdav-upload';
-import { fetchServerIdentity, type ServerPermissions } from './identity';
+import { fetchServerIdentity, type IdentityResult, type ServerPermissions } from './identity';
+import {
+  requestBunkoToken,
+  revokeBunkoToken,
+  tokenEndpointFor,
+  tokenNeedsRenewal
+} from './bunko-token';
+import { registerWorkerAuthRefresher } from '$lib/util/worker-auth-refresh';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
 import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
 
@@ -29,8 +41,69 @@ const STORAGE_KEYS = {
   USERNAME: 'webdav_username',
   PASSWORD: 'webdav_password',
   /** The server URL that answered `X-Mokuro-Put: verified` (staged, verified PUTs). */
-  PUT_VERIFIED: 'webdav_put_verified'
+  PUT_VERIFIED: 'webdav_put_verified',
+  /**
+   * A mokuro-bunko bearer token (`bunko-token.ts`). Sent instead of the
+   * password while held; the password stays stored so a dead token is
+   * replaced silently. `TOKEN_ACCOUNT` binds it to the server URL + username
+   * it was issued for (`tokenAccountKey`): any other account never sends it.
+   */
+  TOKEN: 'webdav_token',
+  /** Epoch ms the token expires at (absent when the server did not say). */
+  TOKEN_EXPIRES_AT: 'webdav_token_expires_at',
+  /** The token endpoint that issued it: re-issue and revoke go there. */
+  TOKEN_ENDPOINT: 'webdav_token_endpoint',
+  TOKEN_ACCOUNT: 'webdav_token_account'
 };
+
+/** Every localStorage key a WebDAV token occupies (cleared together). */
+export const WEBDAV_TOKEN_STORAGE_KEYS = [
+  STORAGE_KEYS.TOKEN,
+  STORAGE_KEYS.TOKEN_EXPIRES_AT,
+  STORAGE_KEYS.TOKEN_ENDPOINT,
+  STORAGE_KEYS.TOKEN_ACCOUNT
+] as const;
+
+/** Wait this long after a rate-limited re-issue before spending the password again. */
+const REISSUE_RATE_LIMIT_COOLDOWN_MS = 60_000;
+
+/** `webdav` client methods that hit the server: a 401 under a token is retried once. */
+const CLIENT_REQUEST_METHODS = new Set([
+  'copyFile',
+  'createDirectory',
+  'customRequest',
+  'deleteFile',
+  'exists',
+  'getDAVCompliance',
+  'getDirectoryContents',
+  'getFileContents',
+  'getQuota',
+  'moveFile',
+  'putFileContents',
+  'stat'
+]);
+
+/** What a re-issue achieved (`reissueToken`). */
+type ReissueOutcome =
+  /** A fresh token is held: retry. */
+  | 'replaced'
+  /** The server has no token endpoint any more: the session is back on Basic: retry. */
+  | 'basic'
+  /** The password was refused: the auth-failed flow ran. */
+  | 'refused'
+  /** The login limiter is hot: no retry, no loop (cooldown). */
+  | 'rate-limited'
+  /** Nothing to re-issue with, or the server could not be reached. */
+  | 'unavailable';
+
+function isUnauthorized(error: unknown): boolean {
+  return (error as { status?: number } | null)?.status === 401;
+}
+
+/** The account a token belongs to: server URL (userinfo stripped) + username. */
+function tokenAccountKey(serverUrl: string, username: string | null | undefined): string {
+  return `${stripUrlUserinfo(serverUrl.replace(/\/$/, ''))}|${username ?? ''}`;
+}
 
 /**
  * Drop any embedded userinfo (`user:pass@`) from a server URL before it feeds
@@ -59,12 +132,26 @@ const PROFILES_FILE = '/mokuro-reader/profiles.json';
 export class WebDAVProvider implements SyncProvider {
   readonly type = 'webdav' as const;
   readonly name = 'WebDAV';
-  readonly supportsWorkerDownload = true; // Workers can download directly with Basic Auth
+  readonly supportsWorkerDownload = true; // Workers download directly (Bearer or Basic)
   readonly supportsWorkerUpload = true;
   readonly uploadConcurrencyLimit = 8; // WebDAV servers can typically handle more concurrent connections
   readonly downloadConcurrencyLimit = 8;
 
+  /** The session's client, wrapped so a 401 under a token re-issues and retries once. */
   private client: WebDAVClient | null = null;
+  /** The unwrapped client, whose headers follow the session's auth (`applyClientAuth`). */
+  private rawClient: WebDAVClient | null = null;
+  /** The connection `login()` is establishing, before its credentials are persisted. */
+  private connecting: { serverUrl: string; username: string; password: string } | null = null;
+  /** Single-flight re-issue: every refused request waits on the same one. */
+  private reissueInFlight: Promise<ReissueOutcome> | null = null;
+  private reissueBlockedUntil = 0;
+  /**
+   * Server URLs whose token endpoint is absent (older bunko, other servers):
+   * this session stays on Basic there without asking again. Session memory
+   * only — every connect asks afresh.
+   */
+  private tokenUnsupported = new Set<string>();
   private initPromise: Promise<void>;
   private _isReadOnly: boolean = false;
   private _supportsDepthInfinity: boolean | null = null; // null = unknown, will probe on first use
@@ -84,6 +171,284 @@ export class WebDAVProvider implements SyncProvider {
     } else {
       this.initPromise = Promise.resolve();
     }
+  }
+
+  /**
+   * Fresh worker credentials after a 401 under `staleAuthorization`, or null
+   * (the 401 stands). Main-thread uploads/downloads and every worker (through
+   * `worker-auth-refresh.ts`) come here, so they share one re-issue.
+   */
+  async refreshedWorkerCredentials(
+    staleAuthorization: string
+  ): Promise<Record<string, unknown> | null> {
+    if (!(await this.reissueAfterUnauthorized(staleAuthorization))) return null;
+    return this.getWorkerUploadCredentials();
+  }
+
+  // ---------------------------------------------------------------- session auth
+
+  /** The account of the session: the one being connected, else the stored one. */
+  private sessionAccount(): { serverUrl: string; username: string; password: string } | null {
+    if (this.connecting) return this.connecting;
+    if (!browser) return null;
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    if (!serverUrl) return null;
+    return {
+      serverUrl,
+      username: localStorage.getItem(STORAGE_KEYS.USERNAME) ?? '',
+      password: localStorage.getItem(STORAGE_KEYS.PASSWORD) ?? ''
+    };
+  }
+
+  /** The stored token, iff it was issued for this server URL + username. */
+  private heldToken(
+    serverUrl: string,
+    username: string
+  ): { token: string; expiresAt: number | null; endpoint: string } | null {
+    if (!browser) return null;
+    const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
+    const endpoint = localStorage.getItem(STORAGE_KEYS.TOKEN_ENDPOINT);
+    if (!token || !endpoint) return null;
+    if (localStorage.getItem(STORAGE_KEYS.TOKEN_ACCOUNT) !== tokenAccountKey(serverUrl, username)) {
+      return null;
+    }
+    const raw = Number(localStorage.getItem(STORAGE_KEYS.TOKEN_EXPIRES_AT));
+    return { token, endpoint, expiresAt: Number.isFinite(raw) && raw > 0 ? raw : null };
+  }
+
+  private storeToken(
+    serverUrl: string,
+    username: string,
+    token: string,
+    expiresAt: number | null,
+    endpoint: string
+  ): void {
+    if (!browser) return;
+    localStorage.setItem(STORAGE_KEYS.TOKEN, token);
+    localStorage.setItem(STORAGE_KEYS.TOKEN_ENDPOINT, stripUrlUserinfo(endpoint));
+    localStorage.setItem(STORAGE_KEYS.TOKEN_ACCOUNT, tokenAccountKey(serverUrl, username));
+    if (expiresAt !== null) {
+      localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES_AT, String(Math.round(expiresAt)));
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.TOKEN_EXPIRES_AT);
+    }
+  }
+
+  /**
+   * Forget the stored token (whatever account it belongs to). `revoke`: also
+   * sign it out on the server that issued it — best effort, not awaited, and
+   * only ever to its own endpoint.
+   */
+  private dropToken(options: { revoke?: boolean } = {}): void {
+    if (!browser) return;
+    const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
+    const endpoint = localStorage.getItem(STORAGE_KEYS.TOKEN_ENDPOINT);
+    for (const key of WEBDAV_TOKEN_STORAGE_KEYS) localStorage.removeItem(key);
+    if (options.revoke && token && endpoint) void revokeBunkoToken(endpoint, token);
+  }
+
+  /** Username, password and (held) token of the session: the input of every header. */
+  private sessionAuth(): WebdavAuthMaterial {
+    const account = this.sessionAccount();
+    if (!account) return {};
+    const held = this.heldToken(account.serverUrl, account.username);
+    return { username: account.username, password: account.password, token: held?.token };
+  }
+
+  /**
+   * THE Authorization header of this session (Bearer > Basic > none, see
+   * `webdavAuthorization`). Only ever sent to the session's own server.
+   */
+  authorizationHeader(): string | null {
+    return webdavAuthorization(this.sessionAuth());
+  }
+
+  /** Point the client at the session's current header (after a token change). */
+  private applyClientAuth(): void {
+    this.rawClient?.setHeaders(webdavAuthHeaders(this.sessionAuth()));
+  }
+
+  /**
+   * Wrap a `webdav` client so any request refused with 401 while a token was
+   * sent re-issues the token (single-flight) and is retried once.
+   */
+  private wrapClient(raw: WebDAVClient): WebDAVClient {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const provider = this;
+    return new Proxy(raw, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof prop !== 'string' || !CLIENT_REQUEST_METHODS.has(prop)) return value;
+        if (typeof value !== 'function') return value;
+        return async (...args: unknown[]) => {
+          const sent = target.getHeaders().Authorization;
+          try {
+            return await value.apply(target, args);
+          } catch (error) {
+            if (!isUnauthorized(error) || !bearerOf(sent)) throw error;
+            if (!(await provider.reissueAfterUnauthorized(sent))) throw error;
+            return await value.apply(target, args);
+          }
+        };
+      }
+    });
+  }
+
+  /**
+   * A request sent with `staleAuthorization` was answered 401. True when the
+   * caller should retry with the session's (new) header: the token was
+   * replaced — by this call, or already by a concurrent one — or the session
+   * fell back to Basic. Every caller (client, uploads, workers, the OCR queue)
+   * shares ONE re-issue in flight.
+   */
+  async reissueAfterUnauthorized(staleAuthorization: string | null | undefined): Promise<boolean> {
+    const stale = bearerOf(staleAuthorization);
+    if (!stale) return false;
+    const auth = this.sessionAuth();
+    if (auth.token && auth.token !== stale) return true; // someone already replaced it
+    if (!auth.token && auth.password) {
+      // The token is gone but the session is on Basic (no endpoint): retry with that.
+      const account = this.sessionAccount();
+      if (account && this.tokenUnsupported.has(account.serverUrl)) return true;
+    }
+    const outcome = await this.reissueSingleFlight();
+    return outcome === 'replaced' || outcome === 'basic';
+  }
+
+  private reissueSingleFlight(): Promise<ReissueOutcome> {
+    if (!this.reissueInFlight) {
+      this.reissueInFlight = this.reissueToken().finally(() => {
+        this.reissueInFlight = null;
+      });
+    }
+    return this.reissueInFlight;
+  }
+
+  /**
+   * Trade the stored password for a fresh token at the endpoint that issued
+   * the last one. Refused (401) -> the existing auth-failed flow; rate limited
+   * -> a notice and a cooldown, never a loop.
+   */
+  private async reissueToken(): Promise<ReissueOutcome> {
+    const account = this.sessionAccount();
+    if (!account || !account.username || !account.password) return 'unavailable';
+    if (Date.now() < this.reissueBlockedUntil) return 'rate-limited';
+    const held = this.heldToken(account.serverUrl, account.username);
+    const endpoint = held?.endpoint ?? tokenEndpointFor(undefined, account.serverUrl);
+    const result = await requestBunkoToken(endpoint, account.username, account.password);
+    switch (result.kind) {
+      case 'issued':
+        this.storeToken(
+          account.serverUrl,
+          account.username,
+          result.token,
+          result.expiresAt,
+          endpoint
+        );
+        this.applyClientAuth();
+        console.log('[WebDAV] Bearer token re-issued');
+        return 'replaced';
+      case 'invalid-credentials':
+        console.warn('[WebDAV] Token re-issue refused: the stored password was rejected');
+        this.dropToken();
+        this.markAuthFailed();
+        return 'refused';
+      case 'rate-limited':
+        this.reissueBlockedUntil = Date.now() + REISSUE_RATE_LIMIT_COOLDOWN_MS;
+        import('$lib/util/snackbar')
+          .then(({ showSnackbar }) =>
+            showSnackbar('WebDAV: too many failed attempts - try again later')
+          )
+          .catch(() => {});
+        return 'rate-limited';
+      case 'unsupported':
+        // The server no longer issues tokens: Basic still works everywhere.
+        this.tokenUnsupported.add(account.serverUrl);
+        this.dropToken();
+        this.applyClientAuth();
+        return 'basic';
+      case 'unreachable':
+      default:
+        return 'unavailable';
+    }
+  }
+
+  /**
+   * After a successful identity check: hold a token for this bunko account —
+   * issue one when none is held, or replace one with fewer than 7 days left
+   * (`tokenNeedsRenewal`). Never fails the connection: without a token the
+   * session simply stays on Basic (or on the held, still-valid token).
+   */
+  private async ensureToken(
+    serverUrl: string,
+    username: string,
+    password: string,
+    identityEndpoint: string | undefined
+  ): Promise<void> {
+    if (!browser || !username || !password) return;
+    if (this.tokenUnsupported.has(serverUrl)) return;
+    const held = this.heldToken(serverUrl, username);
+    if (held && !tokenNeedsRenewal(held.expiresAt)) return;
+    const endpoint = held?.endpoint ?? tokenEndpointFor(identityEndpoint, serverUrl);
+    const result = await requestBunkoToken(endpoint, username, password);
+    switch (result.kind) {
+      case 'issued':
+        // The old token (if any) is retired: sign it out, then hold the new one.
+        if (held) void revokeBunkoToken(held.endpoint, held.token);
+        this.storeToken(serverUrl, username, result.token, result.expiresAt, endpoint);
+        this.applyClientAuth();
+        console.log(`[WebDAV] Bearer token ${held ? 'renewed' : 'issued'}`);
+        return;
+      case 'unsupported':
+        // Older bunko: Basic, exactly as before, without asking again this session.
+        this.tokenUnsupported.add(serverUrl);
+        if (held) {
+          this.dropToken();
+          this.applyClientAuth();
+        }
+        return;
+      case 'invalid-credentials':
+        // The password just verified (Basic identity) or the held token still
+        // works: nothing to act on now. A real re-issue later decides.
+        if (!held) this.tokenUnsupported.add(serverUrl);
+        console.warn('[WebDAV] Token request refused; keeping the current authentication');
+        return;
+      default:
+        // Rate limited or unreachable: keep what works, ask again at next connect.
+        return;
+    }
+  }
+
+  /**
+   * The identity check, under the session's header. A held token the server
+   * refuses is re-issued from the password once and the check repeated; a
+   * token the server does not understand (endpoint gone) falls back to Basic.
+   */
+  private async identify(
+    serverUrl: string,
+    username: string | undefined,
+    password: string | undefined
+  ): Promise<IdentityResult> {
+    const token = this.sessionAuth().token;
+    if (!token) return fetchServerIdentity(serverUrl, username, password);
+    const identity = await fetchServerIdentity(serverUrl, username, password, undefined, token);
+    if (identity.kind === 'invalid-credentials') {
+      const outcome =
+        this.sessionAuth().token !== token ? 'replaced' : await this.reissueSingleFlight();
+      if (outcome === 'refused') return identity;
+      if (outcome === 'rate-limited') return { kind: 'rate-limited' };
+      if (outcome === 'unavailable') this.dropToken();
+      const fresh = this.sessionAuth().token;
+      return fetchServerIdentity(serverUrl, username, password, undefined, fresh);
+    }
+    if (identity.kind === 'unsupported') {
+      // The token went to a server that no longer speaks bunko's identity
+      // contract: drop it and ask again with Basic, as any other server.
+      this.dropToken();
+      this.applyClientAuth();
+      return fetchServerIdentity(serverUrl, username, password);
+    }
+    return identity;
   }
 
   /**
@@ -115,15 +480,13 @@ export class WebDAVProvider implements SyncProvider {
    */
   async refreshIdentity(): Promise<void> {
     if (!browser || !this.client) return;
-    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
-    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
-    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
-    if (!serverUrl) return;
+    const account = this.sessionAccount();
+    if (!account) return;
     try {
-      const identity = await fetchServerIdentity(
-        serverUrl,
-        username ?? undefined,
-        password ?? undefined
+      const identity = await this.identify(
+        account.serverUrl,
+        account.username || undefined,
+        account.password || undefined
       );
       if (identity.kind === 'authenticated') {
         this._capabilities = identity.permissions;
@@ -157,6 +520,7 @@ export class WebDAVProvider implements SyncProvider {
   private markAuthFailed(): void {
     if (browser) {
       localStorage.removeItem(STORAGE_KEYS.PASSWORD); // keep URL + username
+      this.dropToken(); // a token is only as good as the password that re-issues it
     }
     this.setNeedsAttention();
   }
@@ -230,13 +594,33 @@ export class WebDAVProvider implements SyncProvider {
     // Normalize server URL (remove trailing slash)
     const normalizedUrl = serverUrl.replace(/\/$/, '');
 
+    // A held token carries over only to the same server, username AND
+    // password (a restore, or the same password typed again): a different
+    // password must be verified by the server, never vouched for by a token.
+    if (browser && localStorage.getItem(STORAGE_KEYS.TOKEN)) {
+      const held = this.heldToken(normalizedUrl, username ?? '');
+      const samePassword = !!password && password === localStorage.getItem(STORAGE_KEYS.PASSWORD);
+      if (!held || !samePassword) this.dropToken({ revoke: true });
+    }
+    this.tokenUnsupported.delete(normalizedUrl); // ask the server again at every connect
+    this.connecting = {
+      serverUrl: normalizedUrl,
+      username: username ?? '',
+      password: password ?? ''
+    };
+
     try {
       // Dynamically import webdav to reduce initial bundle size
       const { createClient } = await import('webdav');
 
-      // Create WebDAV client with a UTF-8-safe Authorization header
-      // (the webdav lib's own Basic-auth encoder corrupts non-ASCII credentials)
-      this.client = createClient(normalizedUrl, webdavAuthOptions(username, password));
+      // Create WebDAV client with the session's Authorization header: Bearer
+      // when a token is held, else UTF-8-safe Basic (the webdav lib's own
+      // Basic-auth encoder corrupts non-ASCII credentials).
+      this.rawClient = createClient(
+        normalizedUrl,
+        webdavAuthOptions(username, password, {}, this.sessionAuth().token)
+      );
+      this.client = this.wrapClient(this.rawClient);
 
       // Test connection with timeout (Issue #206 Lesson #3)
       const controller = new AbortController();
@@ -253,7 +637,7 @@ export class WebDAVProvider implements SyncProvider {
       // Runs BEFORE any write and BEFORE credential persistence so invalid
       // credentials throw without side effects. A bare PROPFIND "succeeds"
       // anonymously on mokuro-bunko, so it cannot detect bad credentials.
-      const identity = await fetchServerIdentity(normalizedUrl, username, password);
+      const identity = await this.identify(normalizedUrl, username, password);
 
       switch (identity.kind) {
         case 'invalid-credentials':
@@ -277,6 +661,9 @@ export class WebDAVProvider implements SyncProvider {
           );
 
         case 'authenticated':
+          // bunko >= 0.5.1 trades the password for a bearer token here; older
+          // bunko keeps Basic. Before any write, so those go out under it.
+          await this.ensureToken(normalizedUrl, username ?? '', password ?? '', identity.endpoint);
           // Permissions come straight from the server - skip OPTIONS guessing
           this._capabilities = identity.permissions;
           // The endpoint answered in bunko's contract shape, so bunko compiles
@@ -290,7 +677,7 @@ export class WebDAVProvider implements SyncProvider {
             // Not a permissions guess (those came from the server above): only
             // "does this server stage and verify PUTs?", which decides whether an
             // upload may replace a file in place.
-            await this.probeVerifiedPut(normalizedUrl, username || '', password || '');
+            await this.probeVerifiedPut(normalizedUrl);
           }
           break;
 
@@ -322,11 +709,7 @@ export class WebDAVProvider implements SyncProvider {
           await this.ensureMokuroFolder();
 
           // Check write permissions via OPTIONS request
-          this._isReadOnly = !(await this.checkWritePermissions(
-            normalizedUrl,
-            username || '',
-            password || ''
-          ));
+          this._isReadOnly = !(await this.checkWritePermissions(normalizedUrl));
           if (this._isReadOnly) {
             console.log('📖 WebDAV server is read-only (no PUT/DELETE/MKCOL permissions)');
           }
@@ -355,6 +738,7 @@ export class WebDAVProvider implements SyncProvider {
       console.log('✅ WebDAV login successful');
     } catch (error) {
       this.client = null;
+      this.rawClient = null;
 
       // AUTH_FAILED from the identity check is already fully classified and
       // must not be re-wrapped as generic LOGIN_FAILED. Every other error
@@ -417,11 +801,14 @@ export class WebDAVProvider implements SyncProvider {
         isConnectionError || isOpaqueNetworkError,
         webdavErrorType
       );
+    } finally {
+      this.connecting = null;
     }
   }
 
   async logout(): Promise<void> {
     this.client = null;
+    this.rawClient = null;
     this._supportsDepthInfinity = null; // Reset for next connection (may be different server)
     this._capabilities = null;
     this._serverCompilesMetadata = false;
@@ -432,6 +819,8 @@ export class WebDAVProvider implements SyncProvider {
       // Keep URL and username for convenience (Issue #206 Lesson #10)
       // Only clear the password for security
       localStorage.removeItem(STORAGE_KEYS.PASSWORD);
+      // Sign the token out on its server (best effort), then forget it.
+      this.dropToken({ revoke: true });
     }
 
     // Clear the active provider key
@@ -463,6 +852,7 @@ export class WebDAVProvider implements SyncProvider {
       localStorage.removeItem(STORAGE_KEYS.USERNAME);
       localStorage.removeItem(STORAGE_KEYS.PASSWORD);
       localStorage.removeItem(STORAGE_KEYS.PUT_VERIFIED);
+      this.dropToken({ revoke: true });
     }
   }
 
@@ -517,6 +907,7 @@ export class WebDAVProvider implements SyncProvider {
         // sync has stopped; leave the session logged out and flagged.
         console.error('WebDAV credentials rejected, clearing stored password');
         localStorage.removeItem(STORAGE_KEYS.PASSWORD);
+        this.dropToken();
         this.setNeedsAttention();
       } else {
         // Temporary error - keep credentials for retry later
@@ -558,20 +949,13 @@ export class WebDAVProvider implements SyncProvider {
    * 3. If both are inconclusive → assume write access
    * 4. Actual write operations will mark as read-only if they fail with permission errors
    */
-  private async checkWritePermissions(
-    baseUrl: string,
-    username: string,
-    password: string
-  ): Promise<boolean> {
+  private async checkWritePermissions(baseUrl: string): Promise<boolean> {
     const url = `${baseUrl}${MOKURO_FOLDER}/`;
     const headers: Record<string, string> = {
-      'Content-Type': 'application/xml'
+      'Content-Type': 'application/xml',
+      // The session's header (Bearer > UTF-8-safe Basic > none)
+      ...webdavAuthHeaders(this.sessionAuth())
     };
-
-    if (password) {
-      // UTF-8-safe encoding; header only when a password is set (anonymous otherwise)
-      headers['Authorization'] = basicAuthHeader(username, password);
-    }
 
     // Try PROPFIND with current-user-privilege-set first (RFC 3744 - WebDAV ACL)
     try {
@@ -866,7 +1250,8 @@ export class WebDAVProvider implements SyncProvider {
         filename,
         blob,
         credentials,
-        onProgress
+        onProgress,
+        refreshAuth: (stale) => this.refreshedWorkerCredentials(stale)
       });
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
@@ -1016,7 +1401,8 @@ export class WebDAVProvider implements SyncProvider {
       const arrayBuffer = await this.cloudCore.downloadFile({
         fileId: file.fileId,
         credentials,
-        onProgress: onProgress || (() => {})
+        onProgress: onProgress || (() => {}),
+        refreshAuth: (stale) => this.refreshedWorkerCredentials(stale)
       });
       const blob = new Blob([arrayBuffer], { type: 'application/zip' });
       console.log(`✅ Downloaded ${file.path} from WebDAV`);
@@ -1417,15 +1803,25 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
+  /**
+   * What a worker (or the main-thread core) authenticates with: the token when
+   * one is held — then the password is not handed out at all — else the Basic
+   * credentials. The header itself is built by `webdavAuthorization`.
+   */
+  private workerAuthCredentials(): Record<string, string | null> {
+    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
+    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    const { token } = this.sessionAuth();
+    if (token) return { webdavUrl: serverUrl, webdavUsername: username, webdavToken: token };
+    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
+    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
+  }
+
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {
     if (!browser) return {};
     const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
-    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
-    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
     return {
-      webdavUrl: serverUrl,
-      webdavUsername: username,
-      webdavPassword: password,
+      ...this.workerAuthCredentials(),
       // Staged, verified PUTs: the upload core then skips its delete-before-PUT.
       webdavPutVerified:
         !!serverUrl && localStorage.getItem(STORAGE_KEYS.PUT_VERIFIED) === serverUrl
@@ -1455,15 +1851,11 @@ export class WebDAVProvider implements SyncProvider {
   }
 
   /** One OPTIONS on the mokuro folder, read only for `X-Mokuro-Put`. Never throws. */
-  private async probeVerifiedPut(
-    baseUrl: string,
-    username: string,
-    password: string
-  ): Promise<void> {
+  private async probeVerifiedPut(baseUrl: string): Promise<void> {
     try {
       const response = await fetch(`${baseUrl}${MOKURO_FOLDER}/`, {
         method: 'OPTIONS',
-        headers: password ? { Authorization: basicAuthHeader(username, password) } : {}
+        headers: webdavAuthHeaders(this.sessionAuth())
       });
       this.noteVerifiedPutHeader(response.headers.get('X-Mokuro-Put'), baseUrl);
     } catch (error) {
@@ -1478,14 +1870,14 @@ export class WebDAVProvider implements SyncProvider {
 
   async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
     if (!browser) return {};
-    const serverUrl = localStorage.getItem(STORAGE_KEYS.SERVER_URL);
-    const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
-    const password = localStorage.getItem(STORAGE_KEYS.PASSWORD);
-    return { webdavUrl: serverUrl, webdavUsername: username, webdavPassword: password };
+    return this.workerAuthCredentials();
   }
 }
 
 export const webdavProvider = new WebDAVProvider();
+
+// Workers never re-issue a token themselves: a 401 in any of them comes here.
+registerWorkerAuthRefresher('webdav', (stale) => webdavProvider.refreshedWorkerCredentials(stale));
 
 // Self-register cache when module is loaded (same pattern as MEGA provider)
 import { cacheManager } from '../../cache-manager';
