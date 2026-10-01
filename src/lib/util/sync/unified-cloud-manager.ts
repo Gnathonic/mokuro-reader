@@ -2219,6 +2219,17 @@ class UnifiedCloudManager {
           return deleteFilesIndividually();
         }
 
+        // The server refused the folder as a whole but may allow its files
+        // (mokuro-bunko: an uploader may delete the files it owns, never a
+        // top-level folder). Each volume is counted by what actually went;
+        // the folder itself goes only if that left it empty.
+        if (error instanceof ProviderError && error.code === 'FOLDER_DELETE_REFUSED') {
+          console.log(`Series folder delete refused, deleting its files one by one`);
+          const result = await deleteFilesIndividually();
+          await this.pruneSeriesDirectoryIfEmpty(provider, seriesTitle);
+          return result;
+        }
+
         console.error(`Failed to delete series folder:`, error);
         return { succeeded: 0, failed: archiveBases.length };
       }

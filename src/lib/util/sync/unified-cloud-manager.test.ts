@@ -1388,6 +1388,30 @@ describe('series delete counts volumes, not files', () => {
     expect(result).toEqual({ succeeded: 1, failed: 1 });
   });
 
+  it('a REFUSED folder delete (bunko uploader) falls back to deleting the files it owns', async () => {
+    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const provider = makeRenameProvider({
+      deleteSeriesFolder: vi.fn(async () => {
+        throw new ProviderError('403 Forbidden', 'webdav', 'FOLDER_DELETE_REFUSED');
+      }),
+      // This account owns Volume 1 only: the other volume's files are refused.
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        if (file.path.startsWith('S/Volume 2.')) throw new Error('403 Forbidden');
+      })
+    });
+    const files = layeredSeries();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.deleteSeriesFolder('S');
+
+    expect(provider.deleteFile).toHaveBeenCalledTimes(files.length);
+    expect(result).toEqual({ succeeded: 1, failed: 1 });
+    expect(provider.removeDirectoryIfEmpty).toHaveBeenCalledWith('S');
+  });
+
   it('a whole-folder delete reports its volumes', async () => {
     const provider = makeRenameProvider({ deleteSeriesFolder: vi.fn(async () => {}) });
     const files = layeredSeries();

@@ -462,6 +462,21 @@ describe('WebDAVProvider write-failure policy', () => {
     expect(provider.getStatus().needsAttention).toBe(true);
   });
 
+  it('a 403 on the series COLLECTION delete asks for per-file deletion, without demotion', async () => {
+    // mokuro-bunko: an uploader may delete its own files, never a top-level folder.
+    const provider = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
+    mockClient.exists.mockResolvedValue(true);
+    mockClient.deleteFile.mockRejectedValue(
+      Object.assign(new Error('Invalid response: 403 Forbidden'), { status: 403 })
+    );
+
+    await expect(provider.deleteSeriesFolder('Series')).rejects.toMatchObject({
+      code: 'FOLDER_DELETE_REFUSED'
+    });
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(false);
+  });
+
   it('errors thrown by the policy are ProviderError instances', async () => {
     const provider = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
     mockCore.uploadFile.mockRejectedValue(new Error('Request failed with status 401'));

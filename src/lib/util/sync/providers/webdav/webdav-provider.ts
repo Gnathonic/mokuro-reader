@@ -1697,11 +1697,27 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      // 401/403 go through the central write-failure policy; 405/409 fall
-      // through to the per-file deletion fallback below (unchanged behavior)
+      // 401 goes through the central write-failure policy; 405/409 fall
+      // through to the per-file deletion fallback below (unchanged behavior).
       const kind = classifyWriteError(errorMessage);
-      if (kind === 'auth' || kind === 'permission') {
+      if (kind === 'auth') {
         this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
+      }
+      // A 403 on the COLLECTION says nothing about the files in it:
+      // mokuro-bunko refuses a top-level folder DELETE for ownership-based
+      // (uploader) accounts while allowing them to delete each file they own.
+      // So no demotion here — the caller deletes file by file (each file's
+      // own 403, if any, goes through the policy as usual) and counts the
+      // volumes that went (`unifiedCloudManager.deleteSeriesFolder`).
+      if (kind === 'permission') {
+        throw new ProviderError(
+          `Series folder delete refused, delete its files one by one: ${errorMessage}`,
+          'webdav',
+          'FOLDER_DELETE_REFUSED',
+          false,
+          false,
+          'permission'
+        );
       }
 
       const needsPerFileFallback =
