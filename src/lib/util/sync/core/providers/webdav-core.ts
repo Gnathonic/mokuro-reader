@@ -14,6 +14,7 @@ import type {
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { webdavAuthOptions } from './webdav-auth';
 import { authFromCredentials, bearerOf, webdavAuthHeaders } from './webdav-authorization';
+import { isTransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
 
 /** Did this failure carry an HTTP 401 (webdav lib errors and `WebdavUploadError` both set `status`)? */
 function isUnauthorized(error: unknown): boolean {
@@ -23,7 +24,9 @@ function isUnauthorized(error: unknown): boolean {
 /**
  * Fresh credentials after a 401, when the refused header was a bearer token
  * and a refresher exists; null otherwise (Basic and anonymous keep today's
- * behavior: the 401 is final).
+ * behavior: the 401 is final). A TRANSIENT refresh failure (rate limited,
+ * unreachable) is rethrown: the caller must fail with it, never with the 401,
+ * or the write path would read a valid password as rejected.
  */
 async function refreshedAfter401(
   sent: Record<string, string>,
@@ -33,7 +36,8 @@ async function refreshedAfter401(
   if (!refreshAuth || !bearerOf(authorization)) return null;
   try {
     return await refreshAuth(authorization);
-  } catch {
+  } catch (error) {
+    if (isTransientAuthRefreshError(error)) throw error;
     return null;
   }
 }
@@ -211,6 +215,9 @@ export const webdavCore: CloudProviderCore = {
 
         break;
       } catch (error) {
+        // The token could not be renewed right now: fail with that, at once —
+        // a fetch retry would only meet the same 401 again.
+        if (isTransientAuthRefreshError(error)) throw error;
         const wrapped =
           error instanceof Error ? error : new Error('Unknown error during WebDAV download');
         lastError = wrapped;

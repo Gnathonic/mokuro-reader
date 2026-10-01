@@ -51,7 +51,7 @@ vi.mock('./webdav-cache', () => ({ webdavCache: {} }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: snackbar }));
 
 import { WebDAVProvider } from './webdav-provider';
-import { answerAuthRefresh } from '$lib/util/worker-auth-refresh';
+import { answerAuthRefresh, TransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
 
 const identityMock = vi.mocked(fetchServerIdentity);
 const SERVER = 'https://host';
@@ -435,6 +435,78 @@ describe('another tab replaced the token (localStorage is shared, client headers
     expect(localStorage.getItem('webdav_token')).toBeNull();
     expect(provider.authorizationHeader()).toBe(basicAuthHeader('alice', 'pw'));
     expect(clientHeaders.current.Authorization).toBe(basicAuthHeader('alice', 'pw'));
+  });
+});
+
+describe('a TRANSIENT re-issue failure is never read as a rejected password', () => {
+  const file = {
+    provider: 'webdav' as const,
+    fileId: '/mokuro-reader/S/V.cbz',
+    path: 'S/V.cbz',
+    modifiedTime: '',
+    size: 1
+  };
+  const unreachable = () => {
+    throw new TypeError('Failed to fetch');
+  };
+
+  for (const [label, answer] of [
+    ['rate-limited', limit],
+    ['unreachable', unreachable]
+  ] as const) {
+    it(`a write refused under the token while the re-issue is ${label} keeps the password`, async () => {
+      tokenAnswers = [issue(), answer as () => Response];
+      const provider = await connected();
+      mockClient.deleteFile.mockRejectedValue(unauthorizedError());
+
+      const error = await provider.deleteFile(file).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({ code: 'DELETE_FAILED', isNetworkError: true });
+      expect((error as Error).message).not.toMatch(/\b401\b|Unauthorized/);
+      expect(provider.getStatus().needsAttention).toBe(false);
+      expect(provider.isReadOnly).toBe(false);
+      expect(localStorage.getItem('webdav_password')).toBe('pw');
+      expect(localStorage.getItem('webdav_username')).toBe('alice');
+    });
+
+    it(`an upload or worker refresh while the re-issue is ${label} rejects with the transient error`, async () => {
+      tokenAnswers = [issue(), answer as () => Response];
+      const provider = await connected();
+      await expect(provider.refreshedWorkerCredentials('Bearer tok-1')).rejects.toBeInstanceOf(
+        TransientAuthRefreshError
+      );
+      mockCore.uploadFile.mockImplementation(async ({ refreshAuth }) => {
+        const fresh = await refreshAuth('Bearer tok-1'); // the core rethrows a transient refusal
+        return { fileId: String(fresh) };
+      });
+      const error = await provider
+        .uploadFile('S/V.cbz', new Blob(['x']))
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'UPLOAD_FAILED', isNetworkError: true });
+      expect((error as Error).message).not.toMatch(/\b401\b|Unauthorized/);
+      expect(provider.getStatus().needsAttention).toBe(false);
+      expect(localStorage.getItem('webdav_password')).toBe('pw');
+    });
+
+    it(`a restore whose held token is refused while the re-issue is ${label} keeps the password (M-6)`, async () => {
+      await connected();
+      tokenAnswers = [answer as () => Response];
+      // tok-1 was revoked server-side: the login PROPFIND is refused.
+      mockClient.getDirectoryContents.mockRejectedValueOnce(unauthorizedError());
+      const provider = await restored();
+      expect(provider.isAuthenticated()).toBe(false);
+      expect(provider.getStatus().needsAttention).toBe(false);
+      expect(localStorage.getItem('webdav_password')).toBe('pw');
+      expect(localStorage.getItem('webdav_server_url')).toBe(SERVER);
+    });
+  }
+
+  it('a REFUSED re-issue still runs the auth-failed flow (the 401 stands)', async () => {
+    tokenAnswers = [issue(), refuse];
+    const provider = await connected();
+    await expect(provider.refreshedWorkerCredentials('Bearer tok-1')).resolves.toBeNull();
+    expect(provider.getStatus().needsAttention).toBe(true);
+    expect(localStorage.getItem('webdav_password')).toBeNull();
   });
 });
 

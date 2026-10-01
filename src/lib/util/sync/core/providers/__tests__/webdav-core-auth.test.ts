@@ -29,6 +29,8 @@ vi.mock('webdav', () => ({
 
 import { webdavCore } from '../webdav-core';
 import { WebdavUploadError } from '$lib/util/sync/providers/webdav/webdav-upload';
+import { TransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
+import { classifyWriteError } from '$lib/util/sync/providers/webdav/webdav-errors';
 
 const TOKEN_CREDS = { webdavUrl: 'https://bunko.example', webdavToken: 'old' };
 
@@ -120,6 +122,26 @@ describe('webdavCore.uploadFile under a bearer token', () => {
     expect(refreshAuth).toHaveBeenCalledTimes(1);
   });
 
+  it('a TRANSIENT refresh failure fails the upload with that error, never the 401', async () => {
+    uploadFileWithClient.mockRejectedValue(unauthorized());
+    const refreshAuth = vi.fn(async () => {
+      throw new TransientAuthRefreshError();
+    });
+    const error = await webdavCore
+      .uploadFile({
+        seriesTitle: 'S',
+        filename: 'V.cbz',
+        blob: new Blob(['x']),
+        credentials: TOKEN_CREDS,
+        refreshAuth
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TransientAuthRefreshError);
+    expect(classifyWriteError((error as Error).message)).toBe('other');
+    expect((error as { status?: number }).status).toBeUndefined();
+    expect(uploadFileWithClient).toHaveBeenCalledTimes(1);
+  });
+
   it('a 401 under Basic is final, exactly as before (no refresh)', async () => {
     uploadFileWithClient.mockRejectedValue(unauthorized());
     const refreshAuth = vi.fn();
@@ -176,5 +198,25 @@ describe('webdavCore.downloadFile under a bearer token', () => {
         refreshAuth: async () => null
       })
     ).rejects.toThrow('401');
+  });
+
+  it('a TRANSIENT refresh failure fails the download at once with that error, never the 401', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response('', { status: 401, statusText: 'Unauthorized' })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const error = await webdavCore
+      .downloadFile({
+        fileId: '/mokuro-reader/S/V.cbz',
+        credentials: TOKEN_CREDS,
+        onProgress: () => {},
+        refreshAuth: async () => {
+          throw new TransientAuthRefreshError();
+        }
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TransientAuthRefreshError);
+    expect(classifyWriteError((error as Error).message)).toBe('other');
+    expect(fetchMock).toHaveBeenCalledTimes(2); // HEAD + one GET: no backoff loop
   });
 });

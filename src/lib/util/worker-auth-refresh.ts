@@ -12,6 +12,37 @@
  * providers that register a refresher, and the worker itself.
  */
 
+/**
+ * The session could not renew a refused token RIGHT NOW: the re-issue was
+ * rate limited (login limiter hot, cooldown running) or the token endpoint
+ * could not be reached. Says nothing about the password, so it must never
+ * travel as the original 401: every write path classifies a 401 as "the
+ * credentials were rejected" and wipes the stored password
+ * (`classifyWriteError`, `markAuthFailed`, the login restore). This error is a
+ * retryable, network-class failure instead — its message deliberately matches
+ * neither `/\b401\b|Unauthorized/` nor any permission pattern.
+ *
+ * Only a re-issue the server REFUSED (the token endpoint rejected the
+ * password) lets the 401 stand and reach the auth-failed flow.
+ */
+export class TransientAuthRefreshError extends Error {
+  /** Survives a structured clone / a duck-typed check across realms. */
+  readonly transientAuthRefresh = true;
+  constructor(
+    message = 'WebDAV sign-in renewal is temporarily unavailable (network or rate limit) - will retry later'
+  ) {
+    super(message);
+    this.name = 'TransientAuthRefreshError';
+  }
+}
+
+export function isTransientAuthRefreshError(error: unknown): error is TransientAuthRefreshError {
+  return (
+    error instanceof TransientAuthRefreshError ||
+    (!!error && (error as { transientAuthRefresh?: unknown }).transientAuthRefresh === true)
+  );
+}
+
 /** Worker -> main: the header that was refused, and whose provider holds it. */
 export interface AuthRefreshRequest {
   type: 'auth-refresh';
@@ -20,13 +51,22 @@ export interface AuthRefreshRequest {
   staleAuthorization: string;
 }
 
-/** Main -> worker: fresh worker credentials, or null (no retry: the 401 stands). */
+/**
+ * Main -> worker: fresh worker credentials, or null (no retry: the 401 stands).
+ * `transient`: no credentials NOW, for a reason that is not the password's
+ * fault — the worker fails with a `TransientAuthRefreshError`, not the 401.
+ */
 export interface AuthRefreshResult {
   type: 'auth-refresh-result';
   requestId: number;
   credentials: Record<string, unknown> | null;
+  transient?: true;
 }
 
+/**
+ * Fresh credentials, or null (the 401 stands). Rejects with a
+ * `TransientAuthRefreshError` when the session cannot renew right now.
+ */
 export type WorkerAuthRefresher = (
   staleAuthorization: string
 ) => Promise<Record<string, unknown> | null>;
@@ -61,14 +101,21 @@ export function isAuthRefreshResult(data: unknown): data is AuthRefreshResult {
 export async function answerAuthRefresh(request: AuthRefreshRequest): Promise<AuthRefreshResult> {
   const refresher = refreshers.get(request.provider);
   let credentials: Record<string, unknown> | null = null;
+  let transient = false;
   if (refresher) {
     try {
       credentials = await refresher(request.staleAuthorization);
-    } catch {
+    } catch (error) {
       credentials = null;
+      transient = isTransientAuthRefreshError(error);
     }
   }
-  return { type: 'auth-refresh-result', requestId: request.requestId, credentials };
+  return {
+    type: 'auth-refresh-result',
+    requestId: request.requestId,
+    credentials,
+    ...(transient ? { transient: true as const } : {})
+  };
 }
 
 /**
@@ -81,18 +128,21 @@ export function createWorkerAuthRefresher(
   listen: (handler: (data: unknown) => void) => void
 ): WorkerAuthRefresher {
   let nextId = 1;
-  const pending = new Map<number, (credentials: Record<string, unknown> | null) => void>();
+  const pending = new Map<number, (result: AuthRefreshResult) => void>();
   listen((data) => {
     if (!isAuthRefreshResult(data)) return;
-    const resolve = pending.get(data.requestId);
-    if (!resolve) return;
+    const settle = pending.get(data.requestId);
+    if (!settle) return;
     pending.delete(data.requestId);
-    resolve(data.credentials ?? null);
+    settle(data);
   });
   return (staleAuthorization) =>
-    new Promise((resolve) => {
+    new Promise((resolve, reject) => {
       const requestId = nextId++;
-      pending.set(requestId, resolve);
+      pending.set(requestId, (result) => {
+        if (result.transient) reject(new TransientAuthRefreshError());
+        else resolve(result.credentials ?? null);
+      });
       post({ type: 'auth-refresh', requestId, provider, staleAuthorization });
     });
 }

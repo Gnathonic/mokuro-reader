@@ -26,7 +26,11 @@ import {
   tokenEndpointFor,
   tokenNeedsRenewal
 } from './bunko-token';
-import { registerWorkerAuthRefresher } from '$lib/util/worker-auth-refresh';
+import {
+  isTransientAuthRefreshError,
+  registerWorkerAuthRefresher,
+  TransientAuthRefreshError
+} from '$lib/util/worker-auth-refresh';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
 import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
 
@@ -91,10 +95,22 @@ type ReissueOutcome =
   | 'basic'
   /** The password was refused: the auth-failed flow ran. */
   | 'refused'
-  /** The login limiter is hot: no retry, no loop (cooldown). */
+  /** The login limiter is hot: no retry, no loop (cooldown). TRANSIENT. */
   | 'rate-limited'
-  /** Nothing to re-issue with, or the server could not be reached. */
+  /** The token endpoint could not be reached (network, timeout, 5xx). TRANSIENT. */
+  | 'unreachable'
+  /** Nothing to re-issue with (no stored password): the 401 stands. */
   | 'unavailable';
+
+/**
+ * What the caller of a request refused with 401 under a token does next:
+ * `retry` under the session's (new) header; `final` — the 401 stands (the
+ * re-issue was REFUSED, or there is nothing to re-issue with); `transient` —
+ * fail with a `TransientAuthRefreshError`, never the 401: a rate-limited or
+ * unreachable re-issue says nothing about the password, and a 401 reaching a
+ * write path would wipe it (`handleWriteFailure` -> `markAuthFailed`).
+ */
+type ReissueVerdict = 'retry' | 'final' | 'transient';
 
 function isUnauthorized(error: unknown): boolean {
   return (error as { status?: number } | null)?.status === 401;
@@ -181,7 +197,9 @@ export class WebDAVProvider implements SyncProvider {
   async refreshedWorkerCredentials(
     staleAuthorization: string
   ): Promise<Record<string, unknown> | null> {
-    if (!(await this.reissueAfterUnauthorized(staleAuthorization))) return null;
+    const verdict = await this.reissueVerdict(staleAuthorization);
+    if (verdict === 'transient') throw new TransientAuthRefreshError();
+    if (verdict !== 'retry') return null;
     return this.getWorkerUploadCredentials();
   }
 
@@ -286,7 +304,9 @@ export class WebDAVProvider implements SyncProvider {
             return await value.apply(target, args);
           } catch (error) {
             if (!isUnauthorized(error) || !bearerOf(sent)) throw error;
-            if (!(await provider.reissueAfterUnauthorized(sent))) throw error;
+            const verdict = await provider.reissueVerdict(sent);
+            if (verdict === 'transient') throw new TransientAuthRefreshError();
+            if (verdict !== 'retry') throw error;
             // Retry under the session's header as it is NOW: the token may have
             // been replaced by another tab (localStorage is shared, this
             // client's headers are not), or the session fell back to Basic.
@@ -306,26 +326,35 @@ export class WebDAVProvider implements SyncProvider {
    * shares ONE re-issue in flight.
    */
   async reissueAfterUnauthorized(staleAuthorization: string | null | undefined): Promise<boolean> {
+    return (await this.reissueVerdict(staleAuthorization)) === 'retry';
+  }
+
+  /** `reissueAfterUnauthorized`, telling a transient failure apart from a final one. */
+  private async reissueVerdict(
+    staleAuthorization: string | null | undefined
+  ): Promise<ReissueVerdict> {
     const stale = bearerOf(staleAuthorization);
-    if (!stale) return false;
+    if (!stale) return 'final';
     const auth = this.sessionAuth();
     if (auth.token && auth.token !== stale) {
       // Someone already replaced it — maybe ANOTHER TAB, whose new token is in
       // the shared localStorage while this tab's client still sends the dead
       // one. Point the client at the stored token before the caller retries.
       this.applyClientAuth();
-      return true;
+      return 'retry';
     }
     if (!auth.token && auth.password) {
       // The token is gone but the session is on Basic (no endpoint): retry with that.
       const account = this.sessionAccount();
       if (account && this.tokenUnsupported.has(account.serverUrl)) {
         this.applyClientAuth();
-        return true;
+        return 'retry';
       }
     }
     const outcome = await this.reissueSingleFlight();
-    return outcome === 'replaced' || outcome === 'basic';
+    if (outcome === 'replaced' || outcome === 'basic') return 'retry';
+    if (outcome === 'rate-limited' || outcome === 'unreachable') return 'transient';
+    return 'final';
   }
 
   private reissueSingleFlight(): Promise<ReissueOutcome> {
@@ -382,7 +411,7 @@ export class WebDAVProvider implements SyncProvider {
         return 'basic';
       case 'unreachable':
       default:
-        return 'unavailable';
+        return 'unreachable';
     }
   }
 
@@ -450,7 +479,7 @@ export class WebDAVProvider implements SyncProvider {
         this.sessionAuth().token !== token ? 'replaced' : await this.reissueSingleFlight();
       if (outcome === 'refused') return identity;
       if (outcome === 'rate-limited') return { kind: 'rate-limited' };
-      if (outcome === 'unavailable') this.dropToken();
+      if (outcome === 'unavailable' || outcome === 'unreachable') this.dropToken();
       // The client follows whatever the session holds now (a new token, one
       // another tab stored, or Basic after the drop above).
       this.applyClientAuth();
@@ -763,6 +792,14 @@ export class WebDAVProvider implements SyncProvider {
       // so the modal type and restore handling keep their legacy behavior.
       if (error instanceof ProviderError && error.code === 'AUTH_FAILED') {
         throw error;
+      }
+
+      // A held token refused while its re-issue was rate limited or could not
+      // reach the server: retryable, and NOT a credential rejection — the
+      // stored password must survive the restore (M-6), so this never goes
+      // through the message classifier below.
+      if (isTransientAuthRefreshError(error)) {
+        throw new ProviderError(error.message, 'webdav', 'LOGIN_FAILED', false, true, 'network');
       }
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

@@ -5,6 +5,7 @@ import {
   isAuthRefreshRequest,
   registerWorkerAuthRefresher,
   resetWorkerAuthRefreshersForTest,
+  TransientAuthRefreshError,
   type AuthRefreshRequest
 } from './worker-auth-refresh';
 
@@ -58,5 +59,23 @@ describe('worker credential refresh', () => {
     const [a, b] = await Promise.all([refresh('Bearer a'), refresh('Bearer b')]);
     expect(a).toMatchObject({ stale: 'Bearer a' });
     expect(b).toMatchObject({ stale: 'Bearer b' });
+  });
+
+  it('a TRANSIENT failure on the main thread rejects the worker with it, not null (no 401)', async () => {
+    registerWorkerAuthRefresher('webdav', async () => {
+      throw new TransientAuthRefreshError();
+    });
+    const answer = await answerAuthRefresh({
+      type: 'auth-refresh',
+      requestId: 1,
+      provider: 'webdav',
+      staleAuthorization: 'Bearer old'
+    });
+    expect(answer).toMatchObject({ credentials: null, transient: true });
+    // survives the structured clone a real postMessage applies
+    expect(structuredClone(answer).transient).toBe(true);
+
+    const refresh = wire();
+    await expect(refresh('Bearer old')).rejects.toBeInstanceOf(TransientAuthRefreshError);
   });
 });
