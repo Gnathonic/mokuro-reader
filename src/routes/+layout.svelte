@@ -33,6 +33,9 @@
   import { initGoalsLifecycle } from '$lib/goals';
   import { cleanupLegacyEngineCredentials } from '$lib/settings/engine-credentials-cleanup';
   import { get } from 'svelte/store';
+  import { loadWebFonts } from '$lib/util/web-fonts';
+
+  if (browser) void loadWebFonts();
 
   // Migration state
   let migrationNeeded: 1 | 2 | null = $state(null);

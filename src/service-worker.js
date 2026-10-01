@@ -46,7 +46,7 @@ self.addEventListener('activate', (event) => {
 
 // Cross-origin hosts the service worker may still handle: small, fast
 // requests whose responses are worth keeping in the offline cache (the
-// Noto Sans JP webfont loaded from app.html).
+// Noto Sans JP webfont registered by src/lib/util/web-fonts.ts).
 const CROSS_ORIGIN_CACHE_ALLOWLIST = ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'];
 
 self.addEventListener('fetch', (event) => {

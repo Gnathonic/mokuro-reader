@@ -91,6 +91,9 @@ async function seedVolume(page: Page): Promise<FilePage> {
       const everything = BLOCKS.flat()
         .map((c) => c.text)
         .join('');
+      // The app registers Noto Sans JP by script (web-fonts.ts): until it has,
+      // `fonts.load` finds no face and the reference is drawn in the fallback.
+      await (await import('/src/lib/util/web-fonts.ts')).loadWebFonts();
       await document.fonts.load(`${PITCH}px 'Noto Sans JP'`, everything).catch(() => undefined);
 
       const canvas = document.createElement('canvas');

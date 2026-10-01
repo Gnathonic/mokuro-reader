@@ -23,6 +23,7 @@
     type LineLayout
   } from '$lib/reader/line-coords-layout';
   import { lineTransform } from '$lib/reader/line-grid';
+  import { fontsReady, fontLoadEpoch } from '$lib/reader/fonts-ready';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
 
   interface ContextMenuData {
@@ -70,8 +71,12 @@
     blockIndex: number; // Original index in page.blocks
   }
 
+  // Fonts finishing a load re-lay every line out (a line measured before its
+  // font subset arrived was measured in the fallback font) and re-measure it.
+  let fontEpoch = $derived($fontLoadEpoch);
+
   let textBoxes = $derived(
-    dedupeBlocks(page.blocks)
+    (void fontEpoch, dedupeBlocks(page.blocks))
       .map(({ block, blockIndex }) => {
         const { img_height, img_width } = page;
         const { box, font_size, lines, vertical } = block;
@@ -458,7 +463,8 @@
 
     schedule();
     // Fonts change glyph advance → re-measure once the real font is ready.
-    document.fonts?.ready?.then(schedule);
+    // Shared per frame: the getter forces a layout (see fonts-ready.ts).
+    fontsReady().then(schedule);
     // Box may have been display:none at mount; catch first reveal.
     container.addEventListener('mouseenter', schedule);
     container.addEventListener('touchstart', schedule, { passive: true });
@@ -691,7 +697,7 @@
   {@const usePerLine = lineLayouts !== null}
   <div
     use:handleTextBoxHover={[index, fontSize]}
-    use:positionPerLine={`${display}|${$settings.fontSize}|${layoutSignature}`}
+    use:positionPerLine={`${display}|${$settings.fontSize}|${layoutSignature}|${fontEpoch}`}
     class="textBox"
     class:originalMode={isOriginalMode}
     class:perLine={usePerLine}

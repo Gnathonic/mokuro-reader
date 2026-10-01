@@ -23,6 +23,7 @@
  */
 
 import { inkInsets } from './glyph-insets';
+import { currentFontLoadEpoch } from './fonts-ready';
 import {
   VOTER_MIN_CELLS,
   griddable,
@@ -327,10 +328,19 @@ export function createCanvasMeasurer(fontFamily = "'Noto Sans JP', sans-serif"):
 }
 
 let defaultMeasurer: TextMeasurer | null = null;
+let defaultMeasurerEpoch = -1;
 
-/** Shared memoized canvas measurer (heuristic fallback outside the browser). */
+/**
+ * Shared memoized canvas measurer (heuristic fallback outside the browser).
+ * The memo starts over whenever fonts finish loading: a string measured
+ * before its font subset arrived was measured in the fallback font.
+ */
 export function getDefaultMeasurer(): TextMeasurer {
-  if (!defaultMeasurer) defaultMeasurer = createCanvasMeasurer();
+  const epoch = currentFontLoadEpoch();
+  if (!defaultMeasurer || defaultMeasurerEpoch !== epoch) {
+    defaultMeasurer = createCanvasMeasurer();
+    defaultMeasurerEpoch = epoch;
+  }
   return defaultMeasurer;
 }
 

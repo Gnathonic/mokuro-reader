@@ -218,6 +218,9 @@ async function seedVolume(page: Page, pages: FixturePage[], fontSize: string) {
         db.volume_files.clear(),
         db.volume_ocr_layers.clear()
       ]);
+      // The app registers Noto Sans JP by script (web-fonts.ts): until it has,
+      // `fonts.load` finds no face and the reference is drawn in the fallback.
+      await (await import('/src/lib/util/web-fonts.ts')).loadWebFonts();
       await document.fonts.load("40px 'Noto Sans JP'").catch(() => undefined);
       const files: Record<string, File> = {};
       for (const p of pages) {
