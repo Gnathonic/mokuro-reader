@@ -182,6 +182,27 @@ describe('WebDAVProvider login()', () => {
     expect(provider.getStatus().serverCompilesMetadata).toBe(false);
   });
 
+  it('a server known to be bunko (verified PUTs recorded) stays a non-producer when identity fails', async () => {
+    // The identity probe hit a flaky hop; this URL answered X-Mokuro-Put: verified before.
+    localStorage.setItem('webdav_put_verified', 'https://host');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host/', username: 'u', password: 'pw' });
+
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it('the bunko record of ANOTHER server URL does not make this one a non-producer', async () => {
+    localStorage.setItem('webdav_put_verified', 'https://bunko.example');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+  });
+
   it('classifies a 401-bearing FOLDER_ERROR on the unsupported path as an auth-typed LOGIN_FAILED', async () => {
     // Anonymous-browse server: root PROPFIND succeeds, but the mokuro folder
     // probe rejects the credentials. Main classified this by message substring

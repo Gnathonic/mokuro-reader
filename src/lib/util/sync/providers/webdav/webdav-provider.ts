@@ -742,13 +742,6 @@ export class WebDAVProvider implements SyncProvider {
           // Generic WebDAV server (or older mokuro-bunko): keep the existing
           // heuristics byte-for-byte (copyparty/nextcloud/nginx compatibility)
           this._capabilities = null;
-          // `fetchServerIdentity` also resolves 'unsupported' when the endpoint
-          // is unreachable, so a bunko server behind a flaky hop degrades to
-          // client-compiled. Safe in that direction: the resulting PUT is
-          // best-effort (see `isBestEffortMetadataPath`), so at worst bunko
-          // regenerates the file — whereas defaulting the other way would leave
-          // a plain WebDAV share with no catalog at all.
-          this._serverCompilesMetadata = false;
 
           // Ensure mokuro folder exists
           await this.ensureMokuroFolder();
@@ -758,6 +751,18 @@ export class WebDAVProvider implements SyncProvider {
           if (this._isReadOnly) {
             console.log('📖 WebDAV server is read-only (no PUT/DELETE/MKCOL permissions)');
           }
+
+          // `fetchServerIdentity` also resolves 'unsupported' when the endpoint
+          // is unreachable or flaky. A server that has EVER answered
+          // `X-Mokuro-Put: verified` (recorded per server URL, and only
+          // mokuro-bunko sends it) is bunko whatever this probe said, and stays
+          // a non-producer: demoted, this client would compile series.json /
+          // catalog.json itself AND the sidecar backfill would treat it as plain
+          // storage — re-uploading a hand-edited primary `.mokuro` over the
+          // shared server primary, which every other reader then auto-upgrades
+          // to. Any other server is plain storage: this client is its producer
+          // (defaulting the other way would leave a plain share with no catalog).
+          this._serverCompilesMetadata = this.isKnownBunkoServer(normalizedUrl);
           break;
       }
 
@@ -1910,6 +1915,15 @@ export class WebDAVProvider implements SyncProvider {
     } else if (value !== null && localStorage.getItem(STORAGE_KEYS.PUT_VERIFIED) === url) {
       localStorage.removeItem(STORAGE_KEYS.PUT_VERIFIED);
     }
+  }
+
+  /**
+   * This server URL has advertised `X-Mokuro-Put: verified` (a header only
+   * mokuro-bunko sends): it is bunko, even when its identity probe failed.
+   */
+  private isKnownBunkoServer(serverUrl: string): boolean {
+    if (!browser || !serverUrl) return false;
+    return localStorage.getItem(STORAGE_KEYS.PUT_VERIFIED) === serverUrl.replace(/\/$/, '');
   }
 
   /** A PUT response (here or in a worker) said the connected server stages and verifies. */
