@@ -392,7 +392,10 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   for the refreshed series) and on series open (`series-open.ts`, that
   series). Single-flight (a request mid-run merges into ONE follow-up),
   ≤ 4 downloads at once, failures logged at debug and retried by the next
-  pass, ONE summary notice per run ("Updated OCR for 3 volumes"), and no work
+  pass (a DOWNLOAD failure; downloaded bytes that cannot be decoded or parsed —
+  `parseMokuroFile` throws on bad JSON or a missing required field — are
+  remembered as unusable for that entry hash, `ocr-upgrade:verdicts`), ONE
+  summary notice per run ("Updated OCR for 3 volumes"), and no work
   at all — not even a row read beyond the index — when no entry carries a hash.
 - **Decision per installed volume** (`isVolumeInstalled`; metadata-only rows
   and placeholders are never touched). The index entry is matched by

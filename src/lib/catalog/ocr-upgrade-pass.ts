@@ -223,11 +223,16 @@ async function planSeries(
 
 // ---- execution ----
 
-async function readSidecar(
-  provider: SyncProvider,
-  sidecar: CloudFileMetadata
+/**
+ * Decode, hash and parse downloaded sidecar bytes. Null — or a throw (a
+ * corrupt `.gz`, JSON the reader cannot parse such as a `NaN`, a file missing
+ * `title_uuid` or another field `parseMokuroFile` requires) — means THESE
+ * BYTES are unusable: no later download of the same file will do better.
+ */
+async function readSidecarBytes(
+  sidecar: CloudFileMetadata,
+  blob: Blob
 ): Promise<{ pages: Page[]; version: string; sha256: string } | null> {
-  const blob = await provider.downloadFile(sidecar);
   const file = await decodeMokuroSidecar(sidecar.path, blob);
   if (!file) return null;
   const sha256 = await sha256Hex(file);
@@ -242,12 +247,22 @@ async function runTask(
   task: UpgradeTask
 ): Promise<CloudPrimaryOutcome | 'failed' | 'deferred'> {
   const { row, entryHash, sidecar } = task;
-  let read: Awaited<ReturnType<typeof readSidecar>>;
+  // A failed DOWNLOAD says nothing about the file: retried by the next pass.
+  let blob: Blob;
   try {
-    read = await readSidecar(provider, sidecar);
+    blob = await provider.downloadFile(sidecar);
   } catch (error) {
-    console.debug(`[ocr-upgrade] could not read '${sidecar.path}':`, error);
+    console.debug(`[ocr-upgrade] could not download '${sidecar.path}':`, error);
     return 'failed';
+  }
+  // Bytes in hand that cannot be read are this file's verdict until the index
+  // names another hash — re-downloading them every pass would change nothing.
+  let read: Awaited<ReturnType<typeof readSidecarBytes>>;
+  try {
+    read = await readSidecarBytes(sidecar, blob);
+  } catch (error) {
+    console.debug(`[ocr-upgrade] '${sidecar.path}' could not be parsed:`, error);
+    read = null;
   }
   if (!read) {
     console.debug(`[ocr-upgrade] '${sidecar.path}' is not a readable mokuro file`);

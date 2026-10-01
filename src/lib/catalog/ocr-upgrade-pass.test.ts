@@ -808,4 +808,45 @@ describe('the OCR upgrade pass', () => {
       expect(await getLayerMeta(db, 'vol-1', UPDATED_OCR_LAYER_ID)).toBeDefined();
     });
   });
+
+  describe('a sidecar the reader cannot parse', () => {
+    for (const [label, body] of [
+      ['JSON with NaN', '{"version":"0.2.1","title":"S","pages":[],"chars":NaN}'],
+      [
+        'a file missing title_uuid',
+        JSON.stringify((({ title_uuid: _drop, ...rest }) => rest)(JSON.parse(mokuro(['か', 'き']))))
+      ]
+    ] as const) {
+      it(`${label}: recorded as unusable for this hash, never re-downloaded`, async () => {
+        await installVolume(['あ', 'い'], { mokuro_sha256: 'f'.repeat(64) });
+        listSidecar('Vol 1', body);
+        await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+        await pass();
+        await requestOcrUpgradePass('webdav', []); // the retry list, too
+        await pass();
+
+        expect(cloud.downloadFile).toHaveBeenCalledTimes(1);
+        expect(await primaryTexts()).toEqual(['あ', 'い']);
+        expect(_lastOcrUpgradeResultForTests()).toMatchObject({ failed: 0 });
+      });
+    }
+
+    it('a NEW hash for the volume gets a new look', async () => {
+      await installVolume(['あ', 'い'], { mokuro_sha256: 'f'.repeat(64) });
+      const broken = '{"chars":NaN}';
+      listSidecar('Vol 1', broken);
+      await cacheIndex([{ mokuro_sha256: await hashOf(broken) }]);
+      await pass();
+
+      const fixed = mokuro(['か', 'き']);
+      cloud.state.files = [];
+      listSidecar('Vol 1', fixed);
+      await cacheIndex([{ mokuro_sha256: await hashOf(fixed) }]);
+      await pass();
+
+      expect(cloud.downloadFile).toHaveBeenCalledTimes(2);
+      expect(await primaryTexts()).toEqual(['か', 'き']);
+    });
+  });
 });
