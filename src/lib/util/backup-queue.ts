@@ -594,7 +594,9 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // Cloud uploads store OCR metadata as a separate sidecar file.
           embedMokuroInArchive: false,
           downloadFilename: `${item.volumeTitle}.cbz`,
-          includeSidecars: item.sidecarOptions.includeSidecars
+          includeSidecars: item.sidecarOptions.includeSidecars,
+          // bunko: the editor's `original` snapshot stays local (`layerStaysLocal`).
+          serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true
         };
       },
       onProgress: (data) => {

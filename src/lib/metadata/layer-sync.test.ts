@@ -97,11 +97,12 @@ const uploadFile = vi.fn();
 const deleteFile = vi.fn();
 let readOnly = false;
 let canAddFiles: boolean | undefined = undefined;
+let serverCompilesMetadata = false;
 
 function provider(type = 'webdav') {
   return {
     type,
-    getStatus: () => ({ isReadOnly: readOnly, canAddFiles }),
+    getStatus: () => ({ isReadOnly: readOnly, canAddFiles, serverCompilesMetadata }),
     downloadFile,
     uploadFile,
     deleteFile
@@ -132,6 +133,7 @@ beforeEach(async () => {
   cachedFiles = [];
   readOnly = false;
   canAddFiles = undefined;
+  serverCompilesMetadata = false;
   localStorage.clear();
   getActiveProvider.mockReturnValue(provider());
   uploadFile.mockResolvedValue({
@@ -348,6 +350,28 @@ describe('syncLayersFromListing', () => {
     );
     expect(downloadFile).not.toHaveBeenCalled();
     expect((await db.volume_ocr_layers.toArray()).map((l) => l.volume_uuid)).toEqual(['v1']);
+  });
+
+  it("never pushes the editor's original snapshot to a server that compiles its metadata", async () => {
+    await seedRow();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'original',
+      name: 'Original',
+      kind: 'original',
+      created_at: '2026-09-16T09:00:00.000Z',
+      updated_at: '2026-09-16T09:00:00.000Z',
+      pages: [pg('あい')]
+    });
+    const files = listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.mokuro'));
+    serverCompilesMetadata = true;
+    await syncLayersFromListing(files, 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+
+    // Plain storage: it is this user's Revert base, and it syncs.
+    serverCompilesMetadata = false;
+    await syncLayersFromListing(files, 'webdav');
+    expect(uploadFile.mock.calls.map((c) => c[0])).toEqual(['Series/Vol 1.original.mokuro']);
   });
 
   it('an account that cannot add files (progress-only) never pushes a layer', async () => {

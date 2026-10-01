@@ -312,7 +312,12 @@ promoted: the primary is what character stats are counted from, and the count
 only knows Japanese, so an English primary would zero them. The `original` layer
 is the read-only pre-edit snapshot the first edit to a volume takes
 automatically (`edit-persist.ts`), used by **Revert** — it only exists for the
-primary, since reverting a page swaps in the primary's own pre-edit state.
+primary, since reverting a page swaps in the primary's own pre-edit state. On a
+provider that compiles its own metadata (mokuro-bunko, `serverCompilesMetadata`)
+primary edits stay local, so the `original` never goes up there either — not
+pushed by layer-sync, not uploaded beside a backup (`layerStaysLocal`,
+`mokuro-hash.ts`); on a shared library it would publish a reserved, meaningless
+layer to every user. Plain storage keeps syncing it.
 
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings

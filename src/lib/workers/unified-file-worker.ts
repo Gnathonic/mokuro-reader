@@ -140,6 +140,11 @@ interface CompressFromDbMessage {
    */
   embedLayerFiles?: boolean;
   includeSidecars?: boolean;
+  /**
+   * The target provider compiles its own metadata (mokuro-bunko): the
+   * editor's `original` snapshot is never uploaded there (`layerStaysLocal`).
+   */
+  serverCompilesMetadata?: boolean;
 }
 
 /**
@@ -996,7 +1001,9 @@ ctx.addEventListener('message', async (event) => {
           });
 
         if (message.includeSidecars === true) {
-          const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid);
+          const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
+            serverCompilesMetadata: message.serverCompilesMetadata === true
+          });
           const sidecarsToUpload: Array<{ filename: string; blob: Blob }> = [];
           if (generatedSidecars.mokuro) {
             sidecarsToUpload.push(generatedSidecars.mokuro);

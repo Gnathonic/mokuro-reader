@@ -594,6 +594,26 @@ describe('export-for-download sidecars', () => {
       expect(message.provider).toBe('webdav');
       expect(message).not.toHaveProperty('embedLayerFiles');
     });
+
+    it('tells the worker when the server compiles its metadata (the original snapshot stays local)', async () => {
+      const message = await backupMessage('server-compiled-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        getStatus: () => ({ isReadOnly: false, serverCompilesMetadata: true })
+      });
+      expect(message.serverCompilesMetadata).toBe(true);
+    });
+
+    it('…and not for plain storage', async () => {
+      const message = await backupMessage('plain-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        getStatus: () => ({ isReadOnly: false })
+      });
+      expect(message.serverCompilesMetadata).toBe(false);
+    });
   });
 
   it('downloads the sidecars AND the layer files, named after the archive, when not embedded', async () => {

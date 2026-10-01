@@ -20,7 +20,7 @@ import {
 import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
-import { isUntouchedUpgradeLayer } from '$lib/catalog/mokuro-hash';
+import { layerStaysLocal } from '$lib/catalog/mokuro-hash';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
@@ -464,12 +464,15 @@ export function layerNeedsPull(
 export function layerNeedsPush(
   row: VolumeOcrLayer,
   file: LayerFileStamp | undefined,
-  providerType: string
+  providerType: string,
+  /** The provider compiles its own metadata (bunko): see `layerStaysLocal`. */
+  serverCompilesMetadata = false
 ): boolean {
   // The cloud's own primary sidecar, mirrored for an edited volume by the OCR
   // upgrade (pushing it would publish the primary a second time as a layer),
-  // or the local primary an upgrade replaced (a device-local keepsake).
-  if (isUntouchedUpgradeLayer(row)) return false;
+  // the local primary an upgrade replaced (a device-local keepsake), or the
+  // editor's `original` snapshot on a server that keeps primary edits local.
+  if (layerStaysLocal(row, serverCompilesMetadata)) return false;
   if (row.cloud && row.cloud.provider === providerType && !editedSinceSync(row)) return false;
   if (!file) return true;
   return !layerNeedsPull(row, file, providerType);
@@ -807,7 +810,8 @@ async function planFolder(
   providerType: ProviderType,
   writable: boolean,
   pendingDeletes: Map<string, Set<string>>,
-  volumesWithLayers: Set<string>
+  volumesWithLayers: Set<string>,
+  serverCompilesMetadata = false
 ): Promise<Transfer[]> {
   // Nothing listed, nothing local anywhere, no tombstone to retire: done.
   if (layerFiles.length === 0 && volumesWithLayers.size === 0 && pendingDeletes.size === 0) {
@@ -877,7 +881,7 @@ async function planFolder(
     for (const layer of local) {
       const listedLayer = listed.get(layer.layer_id);
       const gzSiblings = gzCopiesOf(listedLayer);
-      if (layerNeedsPush(layer, listedLayer?.file, providerType)) {
+      if (layerNeedsPush(layer, listedLayer?.file, providerType, serverCompilesMetadata)) {
         transfers.push({ kind: 'push', folderTitle, stem: archiveStem, row, layer, gzSiblings });
       } else if (
         // The retry of a sibling delete that failed (here or on another
@@ -910,6 +914,7 @@ async function runSync(
   const provider = providerManager.getActiveProvider();
   if (!provider || provider.type !== providerType) return result;
   const writable = providerIsWritable(provider);
+  const serverCompilesMetadata = provider.getStatus().serverCompilesMetadata === true;
 
   await dropPendingDeletesOfMissingVolumes().catch(() => {});
   await dropRejectedFilesOfMissingVolumes().catch(() => {});
@@ -938,7 +943,8 @@ async function runSync(
           providerType,
           writable,
           pendingDeletes,
-          volumesWithLayers
+          volumesWithLayers,
+          serverCompilesMetadata
         ))
       );
     } catch (error) {

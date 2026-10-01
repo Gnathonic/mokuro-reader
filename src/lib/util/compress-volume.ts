@@ -10,7 +10,7 @@ import {
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
-import { isUntouchedUpgradeLayer } from '$lib/catalog/mokuro-hash';
+import { layerStaysLocal } from '$lib/catalog/mokuro-hash';
 import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerSidecarName } from './sync/syncable-file';
@@ -196,7 +196,9 @@ function getDatabase(): Dexie {
 
 export async function generateVolumeSidecarsFromDb(
   volumeUuid: string,
-  overrides?: { seriesTitle?: string; volumeTitle?: string }
+  overrides?: { seriesTitle?: string; volumeTitle?: string },
+  /** The target compiles its own metadata (bunko): see `layerStaysLocal`. */
+  target: { serverCompilesMetadata?: boolean } = {}
 ): Promise<VolumeSidecarBlobResult> {
   const db = getDatabase();
 
@@ -237,7 +239,12 @@ export async function generateVolumeSidecarsFromDb(
     };
   }
 
-  const layers = await buildLayerSidecarsFromDb(db, volume, { seriesTitle, volumeTitle });
+  const layers = await buildLayerSidecarsFromDb(
+    db,
+    volume,
+    { seriesTitle, volumeTitle },
+    target.serverCompilesMetadata === true
+  );
   if (layers.length > 0) sidecars.layers = layers;
 
   return sidecars;
@@ -253,7 +260,8 @@ export async function generateVolumeSidecarsFromDb(
 async function buildLayerSidecarsFromDb(
   db: Dexie,
   volume: VolumeMetadata,
-  titles: { seriesTitle: string; volumeTitle: string }
+  titles: { seriesTitle: string; volumeTitle: string },
+  serverCompilesMetadata = false
 ): Promise<VolumeLayerSidecarBlobData[]> {
   // Metadata and pages in one read transaction: `updatedAt` below must be the
   // stamp of exactly the pages serialized (`stampLayersSynced` compares it).
@@ -263,8 +271,10 @@ async function buildLayerSidecarsFromDb(
       // An untouched upgrade layer (`updated-ocr`: the cloud's own primary,
       // mirrored for an edited volume; `previous-ocr`: the local primary an
       // upgrade replaced) is never written out as a layer file — not beside a
-      // cloud archive, and not into one (this also serves Local Folder).
-      .filter((layer) => !isUntouchedUpgradeLayer(layer))
+      // cloud archive, and not into one (this also serves Local Folder). Nor
+      // the editor's `original` snapshot to a server that compiles its own
+      // metadata (`layerStaysLocal`).
+      .filter((layer) => !layerStaysLocal(layer, serverCompilesMetadata))
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {
         const { totalChars } = buildPageCharCounts(layer.pages);

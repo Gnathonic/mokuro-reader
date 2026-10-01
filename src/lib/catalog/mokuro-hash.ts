@@ -100,3 +100,24 @@ export function isUntouchedUpgradeLayer(
 ): boolean {
   return !!layer?.source_at && layer.source_at === layer.updated_at;
 }
+
+/** The OCR editor's read-only pre-edit snapshot (`edit-persist.ts`'s `ORIGINAL_LAYER_ID`). */
+const ORIGINAL_LAYER = 'original';
+
+/**
+ * Must this layer stay OFF this provider (never pushed, never uploaded beside
+ * a backup)? An untouched upgrade layer, everywhere (`isUntouchedUpgradeLayer`).
+ * And the editor's `original` snapshot on a provider that compiles the
+ * metadata itself (mokuro-bunko, `serverCompilesMetadata`): there a primary
+ * edit stays local — the shared primary is never replaced by it — so the
+ * snapshot of what the edit sits on means nothing to the server, and on a
+ * shared library it would be published, as a reserved layer, to every user.
+ * Plain storage keeps it: there it is this user's own Revert base.
+ */
+export function layerStaysLocal(
+  layer: { layer_id: string; source_at?: string; updated_at?: string },
+  serverCompilesMetadata: boolean
+): boolean {
+  if (isUntouchedUpgradeLayer(layer)) return true;
+  return serverCompilesMetadata && layer.layer_id === ORIGINAL_LAYER;
+}
