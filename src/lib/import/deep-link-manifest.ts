@@ -1,4 +1,5 @@
 import { LAYER_ID_RE } from '$lib/util/sync/syncable-file';
+import { resolveBunkoLink } from '$lib/util/bunko-links';
 
 /**
  * The per-volume manifest a deep link can carry (`#/upload?cbz=…&manifest=…`).
@@ -76,7 +77,7 @@ function readFile(value: unknown, base: string): ManifestFile | null {
   if (typeof url !== 'string' || url.trim() === '') return null;
   let resolved: string;
   try {
-    resolved = new URL(url, base).toString();
+    resolved = resolveBunkoLink(url, base);
   } catch {
     return null;
   }

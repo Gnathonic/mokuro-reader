@@ -5,6 +5,7 @@
 
 import type { WebDAVClient } from 'webdav';
 import type { ServerOcrQueued } from '$lib/util/sync/provider-interface';
+import { resolveBunkoLink } from '$lib/util/bunko-links';
 
 /** What one PUT established. */
 export interface WebdavPutResult {
@@ -229,7 +230,7 @@ export function readServerOcrHeaders(
   if (!manifest) return undefined;
   let manifestUrl: string;
   try {
-    manifestUrl = new URL(manifest, uploadUrl).toString();
+    manifestUrl = resolveBunkoLink(manifest, uploadUrl);
   } catch {
     return undefined;
   }

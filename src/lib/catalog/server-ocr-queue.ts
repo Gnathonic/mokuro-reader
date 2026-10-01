@@ -1,4 +1,5 @@
 import { db } from '$lib/catalog/db';
+import { resolveBunkoLink } from '$lib/util/bunko-links';
 import { getLayerMeta } from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
@@ -721,7 +722,7 @@ export function pullCompletedVolume(
         return false;
       }
       const manifestUrl = entry?.manifest
-        ? new URL(entry.manifest, target.queueUrl).toString()
+        ? resolveBunkoLink(entry.manifest, target.queueUrl)
         : watched?.manifest_url;
       if (!manifestUrl) return false;
       const load = await loadVolumeManifest(

@@ -74,6 +74,9 @@ afterEach(() => {
 });
 
 describe('a WebDAV PUT that the server queued for OCR (Addendum A)', () => {
+  // The fixture's server is mounted under `/dav` (its uploads go to
+  // `/dav/mokuro-reader/...`), so bunko's root-absolute manifest link is put
+  // back under that prefix (`resolveBunkoLink`); a root mount resolves as is.
   it('reports the manifest URL, resolved against the upload URL, and the recheck delay', async () => {
     answers = [
       {
@@ -87,7 +90,7 @@ describe('a WebDAV PUT that the server queued for OCR (Addendum A)', () => {
     const result = await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['x']));
     expect(result.path).toBe('/mokuro-reader/S/V.cbz');
     expect(result.serverOcr).toEqual({
-      manifestUrl: 'https://bunko.example/catalog/api/manifest?series=S&volume=V',
+      manifestUrl: 'https://bunko.example/dav/catalog/api/manifest?series=S&volume=V',
       recheckAfter: 95
     });
   });
@@ -104,7 +107,7 @@ describe('a WebDAV PUT that the server queued for OCR (Addendum A)', () => {
     ];
     const result = await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['x']));
     expect(result.serverOcr).toEqual({
-      manifestUrl: 'https://bunko.example/m',
+      manifestUrl: 'https://bunko.example/dav/m',
       recheckAfter: null
     });
   });
@@ -407,5 +410,24 @@ describe('Content-Digest (RFC 9530)', () => {
     ).catch((e) => e);
     expect(error.retryable).toBe(true);
     expect(error.detail).toBe('x');
+  });
+});
+
+describe('readServerOcrHeaders', () => {
+  it('resolves the manifest of a server mounted at the root as is', async () => {
+    const { readServerOcrHeaders } = await import('./webdav-upload');
+    const headers: Record<string, string> = {
+      'X-Mokuro-Manifest': '/catalog/api/manifest?series=S&volume=V',
+      'X-Mokuro-Recheck-After': '30'
+    };
+    expect(
+      readServerOcrHeaders(
+        (name) => headers[name] ?? null,
+        'https://bunko.example/mokuro-reader/S/V.cbz'
+      )
+    ).toEqual({
+      manifestUrl: 'https://bunko.example/catalog/api/manifest?series=S&volume=V',
+      recheckAfter: 30
+    });
   });
 });
