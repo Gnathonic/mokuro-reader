@@ -147,6 +147,42 @@ export function createWorkerAuthRefresher(
     });
 }
 
+/**
+ * Credential keys that carry the SECRET a request authenticates with. Fresh
+ * credentials name exactly one of them (Bearer: the token, never the password;
+ * Basic: the password), so the old secret must go — `webdavAuthorization`
+ * prefers a token, and a dead one left behind after a fallback to Basic would
+ * keep being sent.
+ */
+const AUTH_SECRET_KEYS = ['webdavToken', 'webdavPassword'] as const;
+
+/** Write fresh credentials into `credentials`, replacing the auth secret wholesale. */
+export function replaceCredentials(
+  credentials: Record<string, unknown>,
+  fresh: Record<string, unknown>
+): void {
+  for (const key of AUTH_SECRET_KEYS) {
+    if (!(key in fresh)) delete credentials[key];
+  }
+  Object.assign(credentials, fresh);
+}
+
+/**
+ * Worker side: a `refreshAuth` for one message's credentials object. Fresh
+ * credentials are written back into it (`replaceCredentials`), so the next
+ * upload of the same message (sidecars, then the archive) starts with them.
+ */
+export function refreshInto(
+  refresher: WorkerAuthRefresher,
+  credentials: Record<string, unknown>
+): WorkerAuthRefresher {
+  return async (staleAuthorization) => {
+    const fresh = await refresher(staleAuthorization);
+    if (fresh) replaceCredentials(credentials, fresh);
+    return fresh;
+  };
+}
+
 /** Tests: forget every registered refresher. */
 export function resetWorkerAuthRefreshersForTest(): void {
   refreshers.clear();

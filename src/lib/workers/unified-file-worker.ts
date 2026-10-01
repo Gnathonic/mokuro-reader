@@ -26,6 +26,7 @@ import type {
 import {
   createWorkerAuthRefresher,
   isAuthRefreshResult,
+  refreshInto,
   type WorkerAuthRefresher
 } from '$lib/util/worker-auth-refresh';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
@@ -523,17 +524,12 @@ function cloudProviderFor(provider: WorkerProviderType): WorkerCloudProviderAdap
     );
     authRefreshers.set(provider, refresher);
   }
-  const refreshInto =
-    (credentials: ProviderCredentials) =>
-    async (staleAuthorization: string): Promise<ProviderCredentials | null> => {
-      const fresh = await refresher!(staleAuthorization);
-      if (fresh) Object.assign(credentials, fresh);
-      return fresh;
-    };
+  const held = refresher;
   return {
     downloadFile: (args) =>
-      core.downloadFile({ ...args, refreshAuth: refreshInto(args.credentials) }),
-    uploadFile: (args) => core.uploadFile({ ...args, refreshAuth: refreshInto(args.credentials) })
+      core.downloadFile({ ...args, refreshAuth: refreshInto(held, args.credentials) }),
+    uploadFile: (args) =>
+      core.uploadFile({ ...args, refreshAuth: refreshInto(held, args.credentials) })
   };
 }
 

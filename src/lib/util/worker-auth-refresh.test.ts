@@ -4,6 +4,7 @@ import {
   createWorkerAuthRefresher,
   isAuthRefreshRequest,
   registerWorkerAuthRefresher,
+  refreshInto,
   resetWorkerAuthRefreshersForTest,
   TransientAuthRefreshError,
   type AuthRefreshRequest
@@ -77,5 +78,34 @@ describe('worker credential refresh', () => {
 
     const refresh = wire();
     await expect(refresh('Bearer old')).rejects.toBeInstanceOf(TransientAuthRefreshError);
+  });
+
+  it('writes fresh credentials back WHOLESALE: a fallback to Basic drops the dead token', async () => {
+    const credentials: Record<string, unknown> = {
+      webdavUrl: 'https://host',
+      webdavUsername: 'alice',
+      webdavToken: 'dead'
+    };
+    const refresh = refreshInto(
+      async () => ({ webdavUrl: 'https://host', webdavUsername: 'alice', webdavPassword: 'pw' }),
+      credentials
+    );
+    await refresh('Bearer dead');
+    expect(credentials).toEqual({
+      webdavUrl: 'https://host',
+      webdavUsername: 'alice',
+      webdavPassword: 'pw'
+    });
+    expect(credentials).not.toHaveProperty('webdavToken');
+  });
+
+  it('a fresh token replaces the password the message carried, and null changes nothing', async () => {
+    const credentials: Record<string, unknown> = { webdavUrl: 'https://host', webdavPassword: 'pw' };
+    await refreshInto(async () => null, credentials)('Bearer x');
+    expect(credentials).toEqual({ webdavUrl: 'https://host', webdavPassword: 'pw' });
+    await refreshInto(async () => ({ webdavUrl: 'https://host', webdavToken: 'new' }), credentials)(
+      'Bearer x'
+    );
+    expect(credentials).toEqual({ webdavUrl: 'https://host', webdavToken: 'new' });
   });
 });
