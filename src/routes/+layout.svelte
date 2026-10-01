@@ -31,6 +31,7 @@
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
   import { initGoalsLifecycle } from '$lib/goals';
+  import { cleanupLegacyEngineCredentials } from '$lib/settings/engine-credentials-cleanup';
   import { get } from 'svelte/store';
 
   // Migration state
@@ -89,6 +90,9 @@
         return;
       }
     }
+
+    // One-time sweep of the removed experimental engines' API keys
+    cleanupLegacyEngineCredentials();
 
     // Start background thumbnail generation once startup checks are complete
     startThumbnailProcessing();
