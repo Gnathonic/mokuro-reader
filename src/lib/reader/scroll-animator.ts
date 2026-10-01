@@ -8,6 +8,15 @@
 
 import { Animator } from './animator';
 
+export interface ScrollOptions {
+  /**
+   * Jump instead of animating: placing the view where the reader already is
+   * (opening a volume, a rotation remount) is not navigation, and animating
+   * it flew across every page from the start of the strip.
+   */
+  instant?: boolean;
+}
+
 export class ScrollAnimator {
   private container: HTMLElement;
   private xAnim: Animator;
@@ -49,8 +58,13 @@ export class ScrollAnimator {
     this.yAnim.target = this.container.scrollTop;
   }
 
-  /** Animate to absolute scroll position */
-  private scrollTo(x: number, y: number): void {
+  /** Animate to absolute scroll position — or jump there with `instant`. */
+  private scrollTo(x: number, y: number, instant = false): void {
+    if (instant) {
+      this.xAnim.snapTo(x);
+      this.yAnim.snapTo(y);
+      return;
+    }
     this.xAnim.setTarget(x);
     this.yAnim.setTarget(y);
   }
@@ -90,7 +104,8 @@ export class ScrollAnimator {
   scrollToElement(
     el: HTMLElement,
     inline: 'center' | 'start' = 'center',
-    block: 'center' | 'start' = 'center'
+    block: 'center' | 'start' = 'center',
+    { instant = false }: ScrollOptions = {}
   ): void {
     const containerRect = this.container.getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
@@ -114,11 +129,15 @@ export class ScrollAnimator {
       targetY += elRect.top - containerRect.top;
     }
 
-    this.scrollTo(targetX, targetY);
+    this.scrollTo(targetX, targetY, instant);
   }
 
   /** Animate to center the midpoint between two elements */
-  scrollToPairCenter(el1: HTMLElement, el2: HTMLElement): void {
+  scrollToPairCenter(
+    el1: HTMLElement,
+    el2: HTMLElement,
+    { instant = false }: ScrollOptions = {}
+  ): void {
     const containerRect = this.container.getBoundingClientRect();
     const r1 = el1.getBoundingClientRect();
     const r2 = el2.getBoundingClientRect();
@@ -135,7 +154,8 @@ export class ScrollAnimator {
 
     this.scrollTo(
       this.container.scrollLeft + pairCenterX - viewCenterX,
-      this.container.scrollTop + pairCenterY - viewCenterY
+      this.container.scrollTop + pairCenterY - viewCenterY,
+      instant
     );
   }
 

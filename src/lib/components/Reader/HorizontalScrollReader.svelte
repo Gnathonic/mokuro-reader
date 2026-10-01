@@ -6,7 +6,7 @@
   import { getCharCount } from '$lib/util/count-chars';
   import { activityTracker } from '$lib/util/activity-tracker';
   import MangaPage from './MangaPage.svelte';
-  import { ScrollAnimator } from '$lib/reader/scroll-animator';
+  import { ScrollAnimator, type ScrollOptions } from '$lib/reader/scroll-animator';
   import { ContinuousZoomController, type SettleReason } from '$lib/reader/zoom-controller';
   import { applyHorizontalAlignment, applyHorizontalZoomLayout } from '$lib/reader/zoom-layout';
   import { detectHorizontalPage, horizontalVisibilityRatio } from '$lib/reader/page-detection';
@@ -290,7 +290,7 @@
    * Navigate to a page. If the target is past the boundaries,
    * exit to the series page instead.
    */
-  function navigateToPage(pageIdx: number) {
+  function navigateToPage(pageIdx: number, options: ScrollOptions = {}) {
     if (!scroller || !scrollContainer) return;
 
     if (volumeEdgeNav(pageIdx, pages, onPageChange, onVolumeNav)) return;
@@ -314,13 +314,13 @@
         const elRect = el.getBoundingClientRect();
         const neighborRect = neighborEl.getBoundingClientRect();
         if (elRect.width + neighborRect.width <= scrollContainer.clientWidth + 2) {
-          scroller.scrollToPairCenter(el, neighborEl);
+          scroller.scrollToPairCenter(el, neighborEl, options);
           return;
         }
       }
     }
 
-    scroller.scrollToElement(el, 'center', 'center');
+    scroller.scrollToElement(el, 'center', 'center', options);
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -505,8 +505,8 @@
     tick().then(() => {
       applyAlignment(1);
       if (isLandscape && !wasLandscape) {
-        // Rotated to landscape — center pair if both fit
-        navigateToPage(pageIdx);
+        // Rotated to landscape — center pair if both fit (in place, no flight)
+        navigateToPage(pageIdx, { instant: true });
       } else {
         // Rotated to portrait or just resized — use current page
         const el = pageElements[pageIdx];
@@ -523,9 +523,10 @@
     tracker.attach();
     requestAnimationFrame(() => {
       applyAlignment(1);
-      // Use navigateToPage for pair centering on landscape mount
+      // Use navigateToPage for pair centering on landscape mount — in place:
+      // opening a volume or rotating into this reader is not a page turn
       if (scroller) {
-        navigateToPage(currentPage - 1);
+        navigateToPage(currentPage - 1, { instant: true });
       } else {
         const el = pageElements[currentPage - 1];
         if (el) el.scrollIntoView({ behavior: 'instant', inline: 'center' });
