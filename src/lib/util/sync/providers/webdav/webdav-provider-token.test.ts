@@ -374,6 +374,70 @@ describe('a 401 under the token: re-issue once, retry once', () => {
   });
 });
 
+describe('another tab replaced the token (localStorage is shared, client headers are not)', () => {
+  /** The client answers 401 to anything but `accepted`. */
+  function serverAccepts(accepted: string) {
+    return async () => {
+      if (clientHeaders.current.Authorization !== accepted) throw unauthorizedError();
+      return undefined;
+    };
+  }
+  const file = {
+    provider: 'webdav' as const,
+    fileId: '/mokuro-reader/S/V.cbz',
+    path: 'S/V.cbz',
+    modifiedTime: '',
+    size: 1
+  };
+
+  it('retries with the token the other tab stored, not the dead one, and keeps the password', async () => {
+    const provider = await connected();
+    expect(clientHeaders.current.Authorization).toBe('Bearer tok-1');
+    // Tab B re-issued: tok-1 is dead on the server, tok-2 is in localStorage.
+    localStorage.setItem('webdav_token', 'tok-other-tab');
+    mockClient.deleteFile.mockImplementation(serverAccepts('Bearer tok-other-tab'));
+
+    await expect(provider.deleteFile(file)).resolves.toBeUndefined();
+
+    expect(mockClient.deleteFile).toHaveBeenCalledTimes(2);
+    expect(clientHeaders.current.Authorization).toBe('Bearer tok-other-tab');
+    expect(tokenPosts()).toHaveLength(1); // connect only: nothing re-issued here
+    expect(provider.getStatus().needsAttention).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+    expect(localStorage.getItem('webdav_token')).toBe('tok-other-tab');
+  });
+
+  it('a straggler under the dead token retries under Basic once the session fell back', async () => {
+    tokenAnswers = [issue(), absent];
+    const provider = await connected();
+    expect(await provider.reissueAfterUnauthorized('Bearer tok-1')).toBe(true);
+    // A request that captured the old header before the fallback.
+    clientHeaders.current = { Authorization: 'Bearer tok-1' };
+    mockClient.deleteFile.mockImplementation(serverAccepts(basicAuthHeader('alice', 'pw')));
+
+    await expect(provider.deleteFile(file)).resolves.toBeUndefined();
+    expect(clientHeaders.current.Authorization).toBe(basicAuthHeader('alice', 'pw'));
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+  });
+
+  it('identity falling back to Basic (token endpoint unreachable) points the client at Basic too', async () => {
+    await connected();
+    identityMock.mockReset();
+    identityMock
+      .mockResolvedValueOnce({ kind: 'invalid-credentials' }) // tok-1 refused
+      .mockResolvedValue(authenticated());
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === ENDPOINT) throw new TypeError('Failed to fetch');
+      return new Response('', { status: 200 });
+    });
+    const provider = await restored();
+    expect(provider.isAuthenticated()).toBe(true);
+    expect(localStorage.getItem('webdav_token')).toBeNull();
+    expect(provider.authorizationHeader()).toBe(basicAuthHeader('alice', 'pw'));
+    expect(clientHeaders.current.Authorization).toBe(basicAuthHeader('alice', 'pw'));
+  });
+});
+
 describe('workers', () => {
   it("a worker's refresh request is answered by the provider's single-flight re-issue", async () => {
     tokenAnswers = [issue(), issue()];

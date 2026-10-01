@@ -287,6 +287,10 @@ export class WebDAVProvider implements SyncProvider {
           } catch (error) {
             if (!isUnauthorized(error) || !bearerOf(sent)) throw error;
             if (!(await provider.reissueAfterUnauthorized(sent))) throw error;
+            // Retry under the session's header as it is NOW: the token may have
+            // been replaced by another tab (localStorage is shared, this
+            // client's headers are not), or the session fell back to Basic.
+            target.setHeaders(webdavAuthHeaders(provider.sessionAuth()));
             return await value.apply(target, args);
           }
         };
@@ -305,11 +309,20 @@ export class WebDAVProvider implements SyncProvider {
     const stale = bearerOf(staleAuthorization);
     if (!stale) return false;
     const auth = this.sessionAuth();
-    if (auth.token && auth.token !== stale) return true; // someone already replaced it
+    if (auth.token && auth.token !== stale) {
+      // Someone already replaced it — maybe ANOTHER TAB, whose new token is in
+      // the shared localStorage while this tab's client still sends the dead
+      // one. Point the client at the stored token before the caller retries.
+      this.applyClientAuth();
+      return true;
+    }
     if (!auth.token && auth.password) {
       // The token is gone but the session is on Basic (no endpoint): retry with that.
       const account = this.sessionAccount();
-      if (account && this.tokenUnsupported.has(account.serverUrl)) return true;
+      if (account && this.tokenUnsupported.has(account.serverUrl)) {
+        this.applyClientAuth();
+        return true;
+      }
     }
     const outcome = await this.reissueSingleFlight();
     return outcome === 'replaced' || outcome === 'basic';
@@ -438,6 +451,9 @@ export class WebDAVProvider implements SyncProvider {
       if (outcome === 'refused') return identity;
       if (outcome === 'rate-limited') return { kind: 'rate-limited' };
       if (outcome === 'unavailable') this.dropToken();
+      // The client follows whatever the session holds now (a new token, one
+      // another tab stored, or Basic after the drop above).
+      this.applyClientAuth();
       const fresh = this.sessionAuth().token;
       return fetchServerIdentity(serverUrl, username, password, undefined, fresh);
     }
