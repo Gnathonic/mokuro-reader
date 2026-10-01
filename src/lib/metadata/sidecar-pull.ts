@@ -1,4 +1,5 @@
 import { buildPageCharCounts, decodeMokuroSidecar } from '$lib/catalog/cloud-ocr-upgrade';
+import { sha256Hex } from '$lib/catalog/mokuro-hash';
 import { parseMokuroFile } from '$lib/import/processing';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
@@ -127,12 +128,17 @@ export async function pullMokuroEntry(
   // Base fields only — the caller (`buildEntryForTask`) applies `archive_size`
   // and the stamp fields through `orderVolumeEntryFields` so every entry this
   // module produces re-serializes in the pinned wire order regardless of
-  // which fields end up set.
-  return {
+  // which fields end up set. The one exception is the sidecar hash: these are
+  // exactly the bytes the cloud holds (just downloaded), so the hash is
+  // certain here and nowhere is it cheaper to take.
+  const entry: SeriesFileVolume = {
     volume_uuid: parsed.volumeUuid,
     volume_title: archiveStem,
     page_count: pages.length,
     character_count: totalChars,
     mokuro_version: typeof parsed.version === 'string' ? parsed.version : ''
   };
+  const sha = await sha256Hex(decoded);
+  if (sha) entry.mokuro_sha256 = sha;
+  return entry;
 }
