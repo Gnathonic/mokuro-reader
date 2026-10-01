@@ -255,6 +255,17 @@ async function runTask(
     console.debug(`[ocr-upgrade] could not download '${sidecar.path}':`, error);
     return 'failed';
   }
+  // Bytes of another size than the listing says are not the listed file — a
+  // stale HTTP cache entry, a write landing mid-download. Judging THEM would
+  // file a verdict under the NEW hash for OLD bytes, and that revision would
+  // never be fetched again: transient, the next pass looks again.
+  if (typeof sidecar.size === 'number' && sidecar.size > 0 && blob.size !== sidecar.size) {
+    console.debug(
+      `[ocr-upgrade] '${sidecar.path}': downloaded ${blob.size} bytes, the listing says ` +
+        `${sidecar.size} — not judged, retried next pass`
+    );
+    return 'failed';
+  }
   // Bytes in hand that cannot be read are this file's verdict until the index
   // names another hash — re-downloading them every pass would change nothing.
   let read: Awaited<ReturnType<typeof readSidecarBytes>>;

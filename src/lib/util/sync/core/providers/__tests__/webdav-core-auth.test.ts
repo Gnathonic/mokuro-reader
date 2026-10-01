@@ -219,4 +219,23 @@ describe('webdavCore.downloadFile under a bearer token', () => {
     expect(classifyWriteError((error as Error).message)).toBe('other');
     expect(fetchMock).toHaveBeenCalledTimes(2); // HEAD + one GET: no backoff loop
   });
+
+  it('revalidates every HEAD and GET (cache: no-cache): a stale cached sidecar is never served', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { 'Content-Length': '3' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await webdavCore.downloadFile({
+      fileId: '/mokuro-reader/S/V.mokuro',
+      credentials: TOKEN_CREDS,
+      onProgress: () => {}
+    });
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    for (const [, init] of calls) expect(init.cache).toBe('no-cache');
+  });
 });

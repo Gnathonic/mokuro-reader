@@ -394,8 +394,9 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   ≤ 4 downloads at once, failures logged at debug and retried by the next
   pass (a DOWNLOAD failure; downloaded bytes that cannot be decoded or parsed —
   `parseMokuroFile` throws on bad JSON or a missing required field — are
-  remembered as unusable for that entry hash, `ocr-upgrade:verdicts`), ONE
-  summary notice per run ("Updated OCR for 3 volumes"), and no work
+  remembered as unusable for that entry hash, `ocr-upgrade:verdicts`; bytes
+  whose size disagrees with the listing's are never judged — a stale HTTP
+  cache entry, retried next pass), ONE summary notice per run ("Updated OCR for 3 volumes"), and no work
   at all — not even a row read beyond the index — when no entry carries a hash.
 - **Decision per installed volume** (`isVolumeInstalled`; metadata-only rows
   and placeholders are never touched). The index entry is matched by
@@ -454,6 +455,11 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   are re-derived against the new per-page counts wherever they come from
   `page_char_counts` (series/catalog views at once); the synced
   `VolumeData.chars` follows at the next page turn.
+- **No HTTP cache in the way.** WebDAV data downloads (`webdav-core.ts`,
+  main thread and workers alike) send `cache: 'no-cache'`: bunko serves
+  sidecars with Last-Modified and no Cache-Control, so the default mode gave
+  an old sidecar heuristic freshness and the browser kept returning the OLD
+  bytes after a server re-OCR.
 - **mokuro-bunko** computes `mokuro_sha256` itself when it compiles
   `series.json` (it must hash the primary's JSON after gunzip, emit it after
   `mokuro_modified`, and move it whenever the sidecar changes). Old servers

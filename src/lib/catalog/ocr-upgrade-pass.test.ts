@@ -849,4 +849,24 @@ describe('the OCR upgrade pass', () => {
       expect(await primaryTexts()).toEqual(['か', 'き']);
     });
   });
+
+  it('bytes of another size than the listing (a stale HTTP cache) are not judged: retried, no verdict', async () => {
+    const old = mokuro(['あ', 'い']);
+    await installVolume(['あ', 'い'], { mokuro_sha256: await hashOf(old) });
+    const fresh = mokuro(['かき', 'くけ']);
+    listSidecar('Vol 1', fresh); // the listing: the NEW file's size
+    await cacheIndex([{ mokuro_sha256: await hashOf(fresh) }]);
+    // The browser's cache still answers with the OLD bytes.
+    cloud.state.bodies.set(`${SERIES}/Vol 1.mokuro`, old);
+
+    await pass();
+    expect(_lastOcrUpgradeResultForTests()).toMatchObject({ failed: 1 });
+    expect(await primaryTexts()).toEqual(['あ', 'い']);
+
+    // Revalidated: the real bytes arrive, and the upgrade happens.
+    cloud.state.bodies.set(`${SERIES}/Vol 1.mokuro`, fresh);
+    await pass();
+    expect(cloud.downloadFile).toHaveBeenCalledTimes(2);
+    expect(await primaryTexts()).toEqual(['かき', 'くけ']);
+  });
 });

@@ -102,10 +102,18 @@ export const webdavCore: CloudProviderCore = {
       return 1024 * 1024;
     };
 
+    // Every request revalidates with the server (`no-cache`, not `no-store`:
+    // an unchanged file still answers 304 cheaply). mokuro-bunko serves
+    // `.mokuro`/`.mokuro.gz` with Last-Modified and no Cache-Control, so the
+    // default mode gives an older sidecar HEURISTIC freshness, and after a
+    // server re-OCR the browser kept returning the OLD bytes — the OCR upgrade
+    // then hashed stale bytes and never saw the new revision.
+    const cache: RequestCache = 'no-cache';
+
     // Best-effort size probe: helps detect truncation even when GET is chunked
     // without Content-Length. If HEAD fails/is unsupported, we'll continue without it.
     try {
-      const headResponse = await fetch(fullUrl, { method: 'HEAD', headers });
+      const headResponse = await fetch(fullUrl, { method: 'HEAD', headers, cache });
       if (headResponse.ok) {
         const headSize = parseInt(headResponse.headers.get('Content-Length') || '0', 10);
         if (headSize > 0) {
@@ -123,7 +131,7 @@ export const webdavCore: CloudProviderCore = {
       }
 
       try {
-        const response = await fetch(fullUrl, { headers: requestHeaders });
+        const response = await fetch(fullUrl, { headers: requestHeaders, cache });
 
         if (response.status === 401 && !authRefreshed) {
           authRefreshed = true;
