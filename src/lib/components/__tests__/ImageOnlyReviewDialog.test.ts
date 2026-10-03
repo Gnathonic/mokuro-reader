@@ -79,6 +79,53 @@ describe('ImageOnlyReviewDialog (#285)', () => {
     await waitFor(() => expect(document.activeElement?.textContent?.trim()).toBe('Import'));
   });
 
+  it('each new step takes focus on its Import, not the skip-all close button', async () => {
+    appendReviewGroups([groupOf('Alpha'), groupOf('Beta')], vi.fn());
+    const { getByText } = render(ImageOnlyReviewDialog);
+    await waitFor(() => expect(document.activeElement?.textContent?.trim()).toBe('Import'));
+    await fireEvent.click(getByText('Skip'));
+    await waitFor(() => expect(stepText()).toBe('Series 2 of 2'));
+    await waitFor(() => expect(document.activeElement?.textContent?.trim()).toBe('Import'));
+    expect(dialog().contains(document.activeElement)).toBe(true);
+  });
+
+  it('Escape that ends an IME composition skips nothing', async () => {
+    const onDecision = vi.fn();
+    appendReviewGroups([groupOf('Alpha'), groupOf('Beta')], onDecision);
+    render(ImageOnlyReviewDialog);
+    await waitFor(() => expect(stepText()).toBe('Series 1 of 2'));
+    const field = document.querySelector('[data-testid="review-series"]')!;
+    field.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    const composingCancel = new Event('cancel', { cancelable: true });
+    dialog().dispatchEvent(composingCancel);
+    expect(composingCancel.defaultPrevented).toBe(true);
+    field.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    // The same Escape may reach the dialog right after the composition ends.
+    dialog().dispatchEvent(new Event('cancel', { cancelable: true }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onDecision).not.toHaveBeenCalled();
+    expect(stepText()).toBe('Series 1 of 2');
+    // A later, plain Escape still skips everything.
+    dialog().dispatchEvent(new Event('cancel', { cancelable: true }));
+    await waitFor(() => expect(get(reviewSession).pending).toHaveLength(0));
+    expect(onDecision.mock.calls.map(([, d]) => d.action)).toEqual(['skip', 'skip']);
+  });
+
+  it('an Escape keydown flagged as composing (isComposing / keyCode 229) skips nothing', async () => {
+    const onDecision = vi.fn();
+    appendReviewGroups([groupOf('Alpha')], onDecision);
+    render(ImageOnlyReviewDialog);
+    await waitFor(() => expect(stepText()).toBe('Series 1 of 1'));
+    const name = document.querySelector('[data-testid="review-volume-name"]')!;
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      name.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, ...init }));
+      dialog().dispatchEvent(new Event('cancel', { cancelable: true }));
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(onDecision).not.toHaveBeenCalled();
+    expect(stepText()).toBe('Series 1 of 1');
+  });
+
   it('offers the library series to the series field', async () => {
     appendReviewGroups([groupOf('Alpha')], vi.fn());
     render(ImageOnlyReviewDialog);

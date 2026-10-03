@@ -147,6 +147,70 @@ describe('ImageOnlyReviewStep (#285)', () => {
     await waitFor(() => expect(q<HTMLInputElement>('review-series').value).toBe('Killing Bites'));
   });
 
+  it('Import right after a case-variant series (blur, then click) continues the library series', async () => {
+    existingVolumeCount.mockImplementation(async (series: string) =>
+      series === 'Killing Bites' ? 7 : 0
+    );
+    const { q, getByText, onDecide } = renderStep({
+      library: [{ title: 'Killing Bites', count: 7 }]
+    });
+    await fireEvent.input(q('review-series'), { target: { value: 'killing bites' } });
+    // The debounced lookup for the case variant lands first (exact match: 0 → start 1)…
+    await new Promise((r) => setTimeout(r, 300));
+    // …then a click on Import: its mousedown blurs the field, the click follows at once.
+    await fireEvent.blur(q('review-series'));
+    await fireEvent.click(getByText('Import'));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledTimes(1));
+    expect(onDecide.mock.calls[0][0].naming).toMatchObject({ series: 'Killing Bites', start: 8 });
+  });
+
+  it('Import before any lookup ran canonicalizes and counts the series it imports', async () => {
+    existingVolumeCount.mockImplementation(async (series: string) =>
+      series === 'Killing Bites' ? 7 : 0
+    );
+    const { q, getByText, onDecide } = renderStep({
+      library: [{ title: 'Killing Bites', count: 7 }]
+    });
+    await fireEvent.input(q('review-series'), { target: { value: 'killing bites' } });
+    await fireEvent.click(getByText('Import'));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledTimes(1));
+    expect(onDecide.mock.calls[0][0].naming).toMatchObject({ series: 'Killing Bites', start: 8 });
+  });
+
+  it('a typed start is never replaced by the lookup Import waits on', async () => {
+    existingVolumeCount.mockImplementation(async () => 7);
+    const { q, getByText, onDecide } = renderStep();
+    await fireEvent.input(q('review-start'), { target: { value: '3' } });
+    await fireEvent.input(q('review-series'), { target: { value: 'Killing Bites' } });
+    await fireEvent.click(getByText('Import'));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledTimes(1));
+    expect(onDecide.mock.calls[0][0].naming.start).toBe(3);
+  });
+
+  it('a step torn down while Import waits on its count decides nothing', async () => {
+    let release!: (n: number) => void;
+    existingVolumeCount.mockImplementation(() => new Promise<number>((r) => (release = r)));
+    const { q, getByText, onDecide, unmount } = renderStep();
+    await fireEvent.input(q('review-series'), { target: { value: 'Killing Bites' } });
+    await fireEvent.click(getByText('Import'));
+    unmount();
+    release(7);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it('Import clicked twice while waiting decides once', async () => {
+    existingVolumeCount.mockImplementation(async () => 7);
+    const { q, getByText, onDecide } = renderStep();
+    await fireEvent.input(q('review-series'), { target: { value: 'Killing Bites' } });
+    await fireEvent.click(getByText('Import'));
+    await fireEvent.click(getByText('Import'));
+    await fireEvent.click(getByText('Skip'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(onDecide.mock.calls[0][0].action).toBe('import');
+  });
+
   it('offers the library series as suggestions', () => {
     const { container } = renderStep({ library: [{ title: 'Killing Bites', count: 2 }] });
     const option = container.querySelector('datalist option') as HTMLOptionElement;

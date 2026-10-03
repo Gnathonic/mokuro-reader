@@ -42,19 +42,42 @@
 
   let countRequest = 0;
   let countTimer: ReturnType<typeof setTimeout> | undefined;
+  // The (trimmed) series `start` was last counted for: the group's own count
+  // is its default series'. Import never decides on a count for another name.
+  // svelte-ignore state_referenced_locally
+  let countedFor = group.series.trim();
+  // Import is waiting on that count: every other decision from this step waits.
+  let deciding = $state(false);
+  let destroyed = false;
+  let root: HTMLElement | undefined = $state();
 
   /** A new series name: numbering follows that series' volumes unless the start was typed. */
   function setSeries(value: string) {
     series = value;
     clearTimeout(countTimer);
     const request = ++countRequest;
+    const target = value.trim();
     countTimer = setTimeout(async () => {
-      const count = await existingVolumeCount(value, group.ownUuids);
-      if (request === countRequest && !startEdited) start = count + 1;
+      const count = await existingVolumeCount(target, group.ownUuids);
+      if (request === countRequest && !startEdited) {
+        start = count + 1;
+        countedFor = target;
+      }
     }, 200);
   }
 
-  $effect(() => () => clearTimeout(countTimer));
+  $effect(() => () => {
+    destroyed = true;
+    clearTimeout(countTimer);
+  });
+
+  // A new step takes focus on its Import, as the dialog's first step does:
+  // the previous step's DOM (and its focus) is gone, and the next Tab from
+  // <body> would land on the skip-all close button. (On the first step the
+  // dialog is not shown yet; Flowbite focuses [data-autofocus] itself.)
+  $effect(() => {
+    root?.querySelector<HTMLElement>('[data-autofocus]')?.focus();
+  });
 
   // Once the library has loaded, an untouched series field takes the
   // library's spelling of the series it names ("killing bites").
@@ -84,15 +107,46 @@
     if (!overrides[id]?.trim()) delete overrides[id];
   }
 
-  function importGroup() {
-    if (!canImport) return;
+  async function importGroup() {
+    if (!canImport || deciding) return;
+    deciding = true;
+    // The click's own mousedown may have just blurred the series field, whose
+    // canonical spelling then only SCHEDULED its count; a keyboard Import never
+    // blurred it at all. Settle the name, then count exactly that name.
+    seriesBlur();
+    const final = series.trim();
+    if (!startEdited && countedFor !== final) {
+      clearTimeout(countTimer);
+      const request = ++countRequest;
+      let count: number;
+      try {
+        count = await existingVolumeCount(final, group.ownUuids);
+      } catch (error) {
+        console.error('[Import] Could not count the series volumes:', error);
+        if (!destroyed) deciding = false;
+        return;
+      }
+      // Torn down meanwhile (Escape, close): this group was decided already.
+      if (destroyed) return;
+      if (request === countRequest && !startEdited) {
+        start = count + 1;
+        countedFor = final;
+      }
+    }
+    if (destroyed) return;
     updateMiscSetting('keepFolderNamesAsTitles', mode === 'folder');
     const typed: Record<string, string> = {};
     for (const [id, name] of Object.entries(overrides)) if (name.trim()) typed[id] = name;
     onDecide({
       action: 'import',
-      naming: { series: series.trim(), mode, start, overrides: typed }
+      naming: { series: final, mode, start, overrides: typed }
     });
+  }
+
+  function skipGroup() {
+    if (deciding) return;
+    deciding = true;
+    onDecide({ action: 'skip' });
   }
 
   /**
@@ -111,6 +165,7 @@
 </script>
 
 <div
+  bind:this={root}
   use:fitVisualViewport
   class="flex flex-col gap-3"
   style="max-height: min(80svh, calc(var(--review-vvh, 100svh) - 5rem))"
@@ -247,7 +302,7 @@
     {#if total > step}
       <Button color="alternative" size="sm" onclick={onSkipAll}>Skip all remaining</Button>
     {/if}
-    <Button color="alternative" size="sm" onclick={() => onDecide({ action: 'skip' })}>Skip</Button>
+    <Button color="alternative" size="sm" disabled={deciding} onclick={skipGroup}>Skip</Button>
     <!-- The dialog's first focus: otherwise it lands on the close button, where a
          stray Enter would skip every series still pending. -->
     <Button color="blue" size="sm" disabled={!canImport} onclick={importGroup} data-autofocus

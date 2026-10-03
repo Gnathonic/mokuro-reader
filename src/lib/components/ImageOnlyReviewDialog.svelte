@@ -32,10 +32,32 @@
     };
   });
 
+  // An Escape that cancels an IME composition (Japanese input in the series or
+  // a volume name) belongs to the field. The composition ends, or the
+  // composing keydown is seen, in the same task as any `cancel` that Escape
+  // raises, so both flags hold until the next task.
+  let composing = false;
+  let composingKey = false;
+
+  function compositionStart() {
+    composing = true;
+  }
+
+  function compositionEnd() {
+    setTimeout(() => (composing = false), 0);
+  }
+
+  function keydown(event: KeyboardEvent) {
+    if (!event.isComposing && event.keyCode !== 229) return;
+    composingKey = true;
+    setTimeout(() => (composingKey = false), 0);
+  }
+
   // Escape (the dialog's cancel) = Skip all remaining. Never the dialog's own
   // close on teardown: by then nothing is pending.
   function cancel(event: Event) {
     event.preventDefault();
+    if (composing || composingKey) return;
     if (get(reviewSession).pending.length > 0) skipAllRemaining();
   }
 </script>
@@ -47,6 +69,9 @@
   dismissable={false}
   outsideclose={false}
   oncancel={cancel}
+  onkeydown={keydown}
+  oncompositionstart={compositionStart}
+  oncompositionend={compositionEnd}
   data-testid="image-only-review"
 >
   {#if step}
