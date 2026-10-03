@@ -123,8 +123,10 @@ Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock)
 - A `page` event is written when the user **leaves** a view (turn, close, tab hidden, idle), so dwell is
   known, which fixes problem 5.
 - **One event per view, not per page.** Whatever is on screen together (one page, a double-page spread,
-  several pages of a continuous strip on an ultrawide) is one event. `chars_visible` is everything on
-  screen, and drives the expected dwell. `chars_new` is only what this view showed for the first time in
+  several pages of a continuous strip on an ultrawide) is one event. `chars_visible` is the character count
+  of the **whole pages in the layout**: every page with any part on screen counts in full, never a
+  fraction, and a view is always at least one page (a zoomed-in corner of a page counts that whole page).
+  It drives the idle cutoff. `chars_new` is only what this view showed for the first time in
   this read pass, and drives "characters read", so overlapping views in continuous mode never credit a
   page twice. `layout` is `single` | `double` | `continuous-v` | `continuous-h`.
 - Nothing is ever edited or deleted. `forget` and `restart` are applied when stats are computed, so both
@@ -196,25 +198,29 @@ device.
 
 - **One clock.** Time read = sum of the counted dwell of `page` events plus `adjust` deltas. The
   `setInterval` minute counter is retired; the live timer shows the same derived figure.
-- **Adaptive idle cutoff.** Reading pace (seconds per character) is assumed similar across devices; what
-  differs is how much is on screen per event. So a view's expected dwell is
-  `base[layout] + chars_visible × pace`: **one global pace**, and a per-layout `base` (the per-view overhead:
-  art, turning, scanning a spread) learned from that layout's own events once it has enough of them, the
-  global base until then. Both are robust medians over recent events. A view's cap =
-  `clamp(k × expected, floor, ceiling)`. With no data yet: today's 5 min default.
+- **Adaptive idle cutoff.** Based on the characters in the layout. A view's expected dwell is
+  `chars_visible × pace`, where `pace` (seconds per character) is one global robust median over recent
+  views. Because `chars_visible` already counts every whole page on screen, double-page spreads and long
+  continuous strips scale on their own; there is no per-device or per-layout term. A view's cap =
+  `clamp(k × expected, floor, ceiling)`; the floor covers art-only pages. With no data yet: today's 5 min
+  default. `k` starts at a fixed default and is **widened by the user** (below).
   - **Manual override**: one value in a new `tracking` section of `volume-data.json`, newest-stamp-wins like
     the `series` section (with the same future-stamp clamp). When set, it replaces the adaptive cap
     everywhere. Profiles no longer hold it.
-- **Long pauses: ask the user.** A view over its cap is a _long pause_. The app can't know whether the user
-  was reading, so it asks instead of guessing:
-  - **When:** on the user's next activity in the same reading session (they come back and turn the page or
-    tap), as a small non-blocking prompt: "You were on this page for 47 min. Count it as: all 47 min ·
-    typical (~1 min) · not at all". Never mid-read for a pause still in progress, never a modal.
-  - **Unanswered** (dismissed, ignored, or the app closed during the pause): the pause waits in a "long
-    pauses to review" list on the stats page. Until answered it counts as **typical** time, shown as
-    provisional.
-  - **The answer is a `resolve` event**, so it syncs, every device applies it, and it can be changed later
-    from the review list.
+- **Long pauses: ask at the timeout.** When a view reaches its cap, the timer stops counting and a prompt
+  appears **right then**, and stays up until answered. The app can't know whether the user is reading, so
+  it asks instead of guessing:
+  - **"Still reading"** (the user is there, reading slowly): the whole time so far counts, the timer
+    resumes, and the cutoff is **widened** so it doesn't keep happening: `k` grows to fit this view with
+    some headroom (bounded by the ceiling) and is saved in the `tracking` section, so it syncs. The prompt
+    can say what changed ("Cutoff widened to ~9 min for pages like this").
+  - **If they were away**, the same prompt is waiting when they return, showing how long it has been. They
+    choose: count it all, count typical time (`expected`), or don't count it.
+  - **No answer** (they turn the page without answering, the tab is hidden, or the app closes): the pause
+    goes to a "long pauses to review" list on the stats page and counts as **typical** time, shown as
+    provisional, until answered.
+  - **Every answer is a `resolve` event**, so it syncs, every device applies it, and it can be changed later
+    from the review list. ("Still reading" is a `resolve` with `count: 'full'` plus the `k` change.)
   - **Don't ask again:** offered only after the user has answered a few prompts (e.g. 3), not on the first
     ones. It stores a standing default (`'full'` | `'typical'` | `'none'`) in the `tracking` section; prompts
     stop and new pauses resolve to that default. Changeable in settings.
@@ -237,10 +243,10 @@ device.
   same turns produces the same IDs and the union deduplicates. Dwell comes from the next turn, as today.
   `archivedReads` becomes `restart` events. `timeReadInMinutes` beyond what the turns explain becomes one
   `adjust` event per volume, so totals don't drop.
-- **Mixed fleets.** Old clients keep writing `recentPageTurns` into `volume-data.json`. New clients import
-  them through the same legacy path (idempotent) and write `volume-data.json` without them (decided). An old
-  client keeps syncing progress but loses its local turn display for entries a new client wrote last; the
-  release note says "update all devices". The legacy import stays until old-format turns stop appearing.
+- **Old app versions are not a design concern.** Web-app updates are close to automatic and the app
+  prompts for them, so two versions trading `volume-data.json` is a short window. New versions convert
+  whatever `recentPageTurns` they find (local or in the cloud file) through the legacy path above and write
+  `volume-data.json` without them. No compatibility mode, no dual writing.
 - **mokuro-bunko** must treat `history/` as per-user progress, the same partition as root `.json`. Until a
   bunko release does, the client skips uploading history to bunko (provider capability flag) and keeps it
   local.
@@ -268,10 +274,12 @@ device.
 
 ## Decided (owner, 2026-10-02)
 
-1. Over-cap views: **ask the user** (long-pause prompt + review list + delayed "don't ask again"), typical
-   time while unanswered.
+1. Long pauses: **prompt at the timeout itself**, staying up until answered; "Still reading" counts the
+   time and widens the cutoff (synced) so it stops recurring; away → count all / typical / none on return;
+   unanswered → review list, typical while provisional; "don't ask again" only after a few answers.
 2. Skipped views **don't** count toward characters read; shown as skipped.
-3. Mixed fleets: **import old-format turns, stop writing them.**
-4. Cutoff scope: **one global pace, per-layout base** (not per device class); events are per view, so
-   double-page and ultrawide continuous normalise through `chars_visible`.
+3. Old app versions: **not a concern** (fast web-app updates + update prompt). Convert old-format turns,
+   stop writing them, no compatibility mode.
+4. Idle cutoff: **characters in the layout** (whole pages only, at least one page) × one global pace. No
+   per-device-class or per-layout term.
 5. Device/layout stats: a section of the existing reading-speed page.
