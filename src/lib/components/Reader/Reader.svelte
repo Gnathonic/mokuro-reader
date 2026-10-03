@@ -15,6 +15,7 @@
     effectiveVolumeSettings,
     imageFilter,
     pageFilter,
+    pageInkSetting,
     preferredTitleLanguage,
     progress,
     settings,
@@ -87,7 +88,8 @@
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
-  import { ImageCache } from '$lib/reader/image-cache';
+  import { ImageCache, matchFilesToPages } from '$lib/reader/image-cache';
+  import { cancelInkPrefetch, prefetchPageInk } from '$lib/reader/ink-color';
   import '$lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
@@ -960,6 +962,23 @@
       }
     };
   }
+
+  // Ink color (#256): decide the pages around the one being read AHEAD, so a
+  // page mounts with its verdict settled and is inked in its first frame
+  // (MangaPage hides a page whose verdict is still pending). Both modes:
+  // `index` follows continuous scroll too. Nothing at all while ink is off —
+  // the file matching below is not even computed.
+  let inkFiles = $derived.by(() =>
+    volumeData?.files && pages.length > 0 ? matchFilesToPages(volumeData.files, pages) : null
+  );
+  $effect(() => {
+    if ($pageInkSetting === 'off') return;
+    const files = inkFiles;
+    const current = index;
+    if (!files || current < 0) return;
+    prefetchPageInk(files, current);
+    return cancelInkPrefetch;
+  });
 
   // Image cache for preloading
   let imageCache = new ImageCache();

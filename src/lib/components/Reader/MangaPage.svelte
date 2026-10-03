@@ -6,10 +6,12 @@
   import { acquireBlobUrl, blobForUrl, releaseBlobUrl } from '$lib/reader/blob-urls';
   import { pageInkSetting } from '$lib/settings';
   import {
+    INK_GATE_MAX_MS,
     INK_PALETTE,
     PAPER_TINT_OPACITY,
     inkColorFor,
-    pageNeedsInk
+    pageNeedsInk,
+    peekPageInk
   } from '$lib/reader/ink-color';
 
   interface ContextMenuData {
@@ -80,31 +82,54 @@
   });
 
   // Ink color (#256): is this page black and white? Sampled once per image
-  // (cached in ink-color.ts), never while the setting is off, and never in the
-  // way of the first paint — the ink layer appears when the verdict arrives.
-  // A page in continuous mode is only mounted near the viewport, so only those
-  // pages are ever sampled.
-  let inkVerdict = $state<{ image: Blob; ink: boolean } | null>(null);
-
+  // (cached in ink-color.ts) and never while the setting is off. The reader
+  // samples the pages around the one being read AHEAD (prefetchPageInk), so a
+  // page usually mounts with its verdict already settled and paints inked in
+  // its very first frame. Otherwise (the first page of a volume, a far jump)
+  // the image layer is held hidden until the verdict arrives — the reader
+  // background shows, as it does while any page image decodes — so no frame
+  // ever shows a black-and-white page without its ink.
+  //
   // The image's identity is its Blob: the File when the parent passes one,
   // else the Blob behind the preloaded URL (paged mode renders with
   // `cachedUrl` before the image cache can hand over the File).
   let inkImage = $derived(file ?? (cached ? blobForUrl(cached) : null));
+  let inkOn = $derived($pageInkSetting !== 'off');
+  let inkVerdict = $state<{ image: Blob; ink: boolean } | null>(null);
+  // Safety valve only: a sample that never settles must not blank the page
+  // for good. Never reached in practice (a sample takes tens of ms).
+  let inkGateExpired = $state<Blob | null>(null);
 
   $effect(() => {
     const image = inkImage;
-    if ($pageInkSetting === 'off' || !image) return;
+    if (!inkOn || !image || peekPageInk(image) !== undefined) return;
     let live = true;
     pageNeedsInk(image).then((ink) => {
       if (live) inkVerdict = { image, ink };
     });
+    const valve = setTimeout(() => {
+      if (live) inkGateExpired = image;
+    }, INK_GATE_MAX_MS);
     return () => {
       live = false;
+      clearTimeout(valve);
     };
   });
 
+  // true / false once known, undefined while the sample is running. Settled
+  // verdicts are read synchronously so a prefetched page is inked at mount.
+  let pageIsMono = $derived.by(() => {
+    if (!inkOn || !inkImage) return false;
+    if (inkVerdict?.image === inkImage) return inkVerdict.ink;
+    return peekPageInk(inkImage);
+  });
+
+  let inkPending = $derived(
+    inkOn && !!url && pageIsMono === undefined && inkGateExpired !== inkImage
+  );
+
   let ink = $derived.by(() => {
-    if (!inkImage || inkVerdict?.image !== inkImage || !inkVerdict.ink) return null;
+    if (pageIsMono !== true) return null;
     const name = inkColorFor($pageInkSetting, volumeUuid, pageIndex);
     return name ? { name, ...INK_PALETTE[name] } : null;
   });
@@ -129,6 +154,7 @@
   <div
     class="pageArt"
     class:inked={ink !== null}
+    class:inkPending
     aria-hidden="true"
     style:--ink={ink?.ink}
     style:--ink-paper={ink?.paper}
@@ -168,6 +194,11 @@
      filter: the palette is the userscript's filtered red, pre-measured. */
   .pageArt.inked {
     isolation: isolate;
+  }
+
+  /* Ink on, verdict not in yet: show nothing rather than the page uninked. */
+  .pageArt.inkPending {
+    visibility: hidden;
   }
 
   .pageArt.inked::before,

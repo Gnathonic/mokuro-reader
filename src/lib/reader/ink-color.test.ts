@@ -1,11 +1,14 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   INK_COLOR_NAMES,
   INK_PALETTE,
   autoInkColor,
   inkColorFor,
   isMonochrome,
+  cancelInkPrefetch,
   pageNeedsInk,
+  peekPageInk,
+  prefetchPageInk,
   sanitizeInkColor
 } from './ink-color';
 
@@ -191,8 +194,99 @@ describe('pageNeedsInk', () => {
     expect(createImageBitmap).toHaveBeenCalledTimes(1);
   });
 
+  it('exposes a settled verdict synchronously, and nothing before it settles', async () => {
+    stubDecode([0, 0, 0, 255]);
+    const blob = new Blob(['peek']);
+    expect(peekPageInk(blob)).toBeUndefined();
+    const pending = pageNeedsInk(blob);
+    expect(peekPageInk(blob)).toBeUndefined();
+    await pending;
+    expect(peekPageInk(blob)).toBe(true);
+  });
+
   it('leaves a page it cannot decode uncoloured', async () => {
     stubDecode(new Error('decode failed'));
     await expect(pageNeedsInk(new Blob(['broken']))).resolves.toBe(false);
+  });
+});
+
+describe('prefetchPageInk', () => {
+  let started: Blob[];
+  let finish: Map<Blob, () => void>;
+
+  beforeEach(() => {
+    started = [];
+    finish = new Map();
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(
+        (blob: Blob) =>
+          new Promise((resolve) => {
+            started.push(blob);
+            finish.set(blob, () => resolve({ close: vi.fn() }));
+          })
+      )
+    );
+    class FakeOffscreenCanvas {
+      getContext() {
+        return {
+          drawImage: vi.fn(),
+          getImageData: () => ({ data: new Uint8ClampedArray([9, 9, 9, 255]) })
+        };
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', FakeOffscreenCanvas);
+  });
+
+  afterEach(() => {
+    cancelInkPrefetch();
+    for (const done of finish.values()) done();
+    vi.unstubAllGlobals();
+  });
+
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const pages = (n: number) => Array.from({ length: n }, (_, i) => new Blob([`p${i}`]));
+
+  it('samples the current page first, then nearest pages, two at a time', async () => {
+    const files = pages(20);
+    prefetchPageInk(files, 10, 3, 2);
+    expect(started).toEqual([files[10], files[11]]);
+    finish.get(files[10])!();
+    await flush();
+    expect(started).toEqual([files[10], files[11], files[9]]);
+    for (let k = 0; k < 6; k++) {
+      for (const b of [...started]) finish.get(b)!();
+      await flush();
+    }
+    // 10, then 11, 9, 12, 8, 13 — ahead 3, behind 2
+    expect(started).toEqual([10, 11, 9, 12, 8, 13].map((i) => files[i]));
+    expect(peekPageInk(files[13])).toBe(true);
+  });
+
+  it('a new centre replaces the queue; running samples finish', async () => {
+    const files = pages(40);
+    prefetchPageInk(files, 0, 8, 0);
+    expect(started).toEqual([files[0], files[1]]);
+    prefetchPageInk(files, 30, 1, 0);
+    for (let k = 0; k < 4; k++) {
+      for (const b of [...started]) finish.get(b)!();
+      await flush();
+    }
+    expect(started).toEqual([files[0], files[1], files[30], files[31]]);
+  });
+
+  it('skips pages already sampled or missing, and cancel drops the queue', async () => {
+    const files: (Blob | undefined)[] = pages(6);
+    files[2] = undefined;
+    const done = pageNeedsInk(files[0]!);
+    finish.get(files[0]!)!();
+    await done;
+    started = [];
+    prefetchPageInk(files, 0, 5, 0);
+    expect(started).toEqual([files[1], files[3]]);
+    cancelInkPrefetch();
+    for (const b of [...started]) finish.get(b)!();
+    await flush();
+    expect(started).toEqual([files[1], files[3]]);
   });
 });

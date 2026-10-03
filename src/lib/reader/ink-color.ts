@@ -137,14 +137,92 @@ export function isMonochrome(
  * uncoloured, and is not retried.
  */
 const verdicts = new WeakMap<Blob, Promise<boolean>>();
+/** The same verdicts once settled — readable synchronously, at mount. */
+const settled = new WeakMap<Blob, boolean>();
 
 export function pageNeedsInk(image: Blob): Promise<boolean> {
   let verdict = verdicts.get(image);
   if (!verdict) {
-    verdict = sampleIsMonochrome(image).catch(() => false);
+    verdict = sampleIsMonochrome(image)
+      .catch(() => false)
+      .then((ink) => {
+        settled.set(image, ink);
+        return ink;
+      });
     verdicts.set(image, verdict);
   }
   return verdict;
+}
+
+/**
+ * The verdict for an image if it has already settled, else undefined. A page
+ * whose verdict was computed ahead (see {@link prefetchPageInk}) mounts
+ * already inked — no frame of it is ever painted without its ink.
+ */
+export function peekPageInk(image: Blob): boolean | undefined {
+  return settled.get(image);
+}
+
+/**
+ * Sample ahead: the pages around `center` (the page being read), nearest
+ * first, so a page's verdict has usually settled before it mounts — a page
+ * turn, a spread's second page, continuous scroll into the next pages. Each
+ * call REPLACES the queue (the reader moved on; pages it left behind are not
+ * worth sampling any more); samples already running finish. At most
+ * {@link INK_PREFETCH_CONCURRENCY} run at once, so the prefetch never crowds
+ * out a page that mounts and asks for its own verdict (that request does not
+ * queue). The decode and downscale run off the main thread inside
+ * createImageBitmap; the main thread only reads back 100×100 pixels.
+ */
+export const INK_PREFETCH_AHEAD = 8;
+/**
+ * A mounted page waits at most this long for its verdict before showing
+ * uninked — a safety valve for a sample that never settles, not a budget:
+ * measured samples take 13–47 ms for 1400×2000–2000×3000 JPEGs.
+ */
+export const INK_GATE_MAX_MS = 1500;
+export const INK_PREFETCH_BEHIND = 4;
+export const INK_PREFETCH_CONCURRENCY = 2;
+
+let prefetchQueue: Blob[] = [];
+let prefetchActive = 0;
+
+export function prefetchPageInk(
+  images: readonly (Blob | null | undefined)[],
+  center: number,
+  ahead = INK_PREFETCH_AHEAD,
+  behind = INK_PREFETCH_BEHIND
+): void {
+  const order: Blob[] = [];
+  const add = (i: number) => {
+    const image = images[i];
+    if (image && !verdicts.has(image) && !order.includes(image)) order.push(image);
+  };
+  const c = Math.max(0, Math.floor(Number.isFinite(center) ? center : 0));
+  add(c);
+  for (let k = 1; k <= Math.max(ahead, behind); k++) {
+    if (k <= ahead) add(c + k);
+    if (k <= behind) add(c - k);
+  }
+  prefetchQueue = order;
+  pumpPrefetch();
+}
+
+/** Drop whatever is still queued (ink turned off, the reader closed). */
+export function cancelInkPrefetch(): void {
+  prefetchQueue = [];
+}
+
+function pumpPrefetch() {
+  while (prefetchActive < INK_PREFETCH_CONCURRENCY && prefetchQueue.length > 0) {
+    const image = prefetchQueue.shift()!;
+    if (verdicts.has(image)) continue;
+    prefetchActive++;
+    pageNeedsInk(image).finally(() => {
+      prefetchActive--;
+      pumpPrefetch();
+    });
+  }
 }
 
 async function sampleIsMonochrome(image: Blob): Promise<boolean> {
