@@ -776,6 +776,21 @@ Rules:
   no cached index pulls that series' `series.json` and materializes it
   (`hole-patch.ts`), so stats views never dangle.
 
+### Reading history (`mokuro_history`)
+
+A SEPARATE Dexie database (`src/lib/reading-history/`, spec
+`docs/superpowers/specs/2026-10-02-reading-history-event-log-design.md`), never
+tables in `mokuro_v3`. Every event is permanent and keyed `[device+seq]`:
+`device` is this install's random ID and `seq` is allocated inside the same
+IndexedDB rw transaction as the write (`appendEvent`), so two tabs never
+collide. Kinds: `page` (one per reader VIEW — whole pages on screen, raw
+uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
+tab has no view), `adjust` (volume editor time/chars edits), `restart`
+("restart series"), `forget` (delete stats). Record through `recordEvent`,
+which never throws and loads the DB module lazily (`volume-data.ts` imports
+it; many suites mock `dexie` bare). Phase 1 only writes: nothing reads the
+events yet, and `recentPageTurns`/`timeReadInMinutes` still drive every stat.
+
 ### Settings Architecture
 
 Three-tier settings system:
