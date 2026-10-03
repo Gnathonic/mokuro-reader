@@ -60,7 +60,8 @@ export function storedTitle(title: string): string {
   return sanitizeTitleSegment(title) || 'Untitled';
 }
 
-function locate(pairing: NamingInput) {
+/** Where a volume sits: its parent folder (if any), its own name, its uuid source. */
+export function locateVolume(pairing: Pick<PairedSource, 'basePath' | 'titlePath'>) {
   const { seriesTitle, volumeTitle, hasParent } = extractFolderTitlesFromPath(
     pairing.titlePath ?? pairing.basePath
   );
@@ -89,13 +90,13 @@ function previewOf(names: Iterable<ImportNames>): SeriesNamePreview[] {
 /** The series each pairing lands in under `cleaned`, keyed as stored. */
 export function cleanedSeriesTitles(pairings: NamingInput[]): Set<string> {
   return new Set(
-    pairings.map((p) => storedTitle(locate(p).parent ?? extractSeriesName(p.basePath)))
+    pairings.map((p) => storedTitle(locateVolume(p).parent ?? extractSeriesName(p.basePath)))
   );
 }
 
 /** The uuid-bearing identities of a batch (the same in both modes). */
 export function importIdentities(pairings: NamingInput[]): string[] {
-  return pairings.map((p) => locate(p).identity);
+  return pairings.map((p) => locateVolume(p).identity);
 }
 
 /**
@@ -111,7 +112,7 @@ export function planImageOnlyNames(
   const bySeries = new Map<string, { id: string; own: string; identity: string }[]>();
 
   for (const pairing of pairings) {
-    const { parent, own, identity } = locate(pairing);
+    const { parent, own, identity } = locateVolume(pairing);
     folder.set(pairing.id, { series: parent ?? own, volume: own, identity });
     const series = parent ?? extractSeriesName(pairing.basePath);
     bySeries.set(series, [...(bySeries.get(series) ?? []), { id: pairing.id, own, identity }]);
