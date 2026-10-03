@@ -7,7 +7,7 @@ import {
   imageFilter,
   pageFilter,
   pageInkSetting,
-  pageInkEffect,
+  pageInkLayers,
   preferredTitleLanguage,
   updateCatalogSetting,
   updateSetting,
@@ -220,14 +220,16 @@ describe('print effect controls (#256)', () => {
     expect([out.B.pageInkStrength, out.B.pagePaperTint, out.B.pagePaperAge]).toEqual([100, 8, 0]);
   });
 
-  it('pageInkEffect follows the controls and ignores unrelated writes', () => {
+  it('pageInkLayers follows the controls and ignores unrelated writes', () => {
     const seen: string[] = [];
-    const unsubscribe = pageInkEffect.subscribe((v) => seen.push(`${v.mix}/${v.tint}/${v.age}`));
+    const unsubscribe = pageInkLayers.subscribe((v) =>
+      seen.push(`${v['--ink-layer-blue']}/${v['--paper-layer-blue']}`)
+    );
     updateSetting('pagedGap', 7);
-    updateSetting('pagePaperTint', 30);
+    updateSetting('pagePaperTint', 0);
     updateSetting('pagedGap', 0);
     unsubscribe();
-    expect(seen).toEqual(['0%/8%/#ffffff', '0%/30%/#ffffff']);
+    expect(seen).toEqual(['#466dc4/#f1f3fa', '#466dc4/#ffffff']);
   });
 });
 

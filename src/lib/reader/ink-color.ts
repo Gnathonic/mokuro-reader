@@ -61,9 +61,11 @@ export const INK_PALETTE: Record<InkColorName, InkPaletteEntry> = {
  * The print effect's own controls (#256). They shape the effect only — on
  * black-and-white pages, inside the isolated `.pageArt` group — and never the
  * scan itself: page brightness/contrast stay the scan adjustment, applied to
- * every page before the effect. All three reach the page as reader-wide CSS
- * variables ({@link inkEffectVars}); the per-page colour mixing is CSS
- * `color-mix(in srgb, …)`, which is the same arithmetic as {@link mixHex}.
+ * every page before the effect. They are turned into finished colours here,
+ * one ink and one paper per palette colour ({@link inkLayerVars}), which the
+ * reader sets ONCE as CSS variables; an inked page only picks its palette
+ * colour's pair. No colour maths in CSS, so every browser paints exactly
+ * what these functions compute.
  */
 
 /** Ink strength: −100 (faded, pastel) … 0 (the palette ink) … +100 (deep). */
@@ -72,8 +74,15 @@ export const INK_STRENGTH_MAX = 100;
 export const INK_STRENGTH_DEFAULT = 0;
 /** At −100 the ink is this far toward white: pale, still a visible tint. */
 export const INK_FADE_MAX = 0.65;
-/** At +100 the ink is this far toward black: heavy, but the hue survives. */
-export const INK_DEEPEN_MAX = 0.75;
+/**
+ * At +100 the ink's OKLCH lightness is scaled by this and its chroma by
+ * {@link INK_DEEPEN_CHROMA}: dark and saturated, the palette's own hue — the
+ * navy that brightness 75 + contrast 150 make of the blue ink (L 0.39,
+ * C 0.17 from L 0.55, C 0.14). Mixing toward black instead made a
+ * grey-black: sRGB darkening drains chroma along with lightness.
+ */
+export const INK_DEEPEN_LIGHTNESS = 0.71;
+export const INK_DEEPEN_CHROMA = 1.15;
 
 /** Paper tint: the multiply paper layer's opacity, %. 8 = the userscript's. */
 export const PAPER_TINT_MIN = 0;
@@ -125,18 +134,74 @@ export function mixHex(a: string, b: string, t: number): string {
   return toHex(ca.map((c, i) => c + (cb[i] - c) * t));
 }
 
-/** Where a strength moves the ink: toward white (fade) or black (deepen), and how far. */
-export function inkStrengthMix(strength: unknown): { toward: string; amount: number } {
-  const s = clampInkStrength(strength);
-  return s <= 0
-    ? { toward: '#ffffff', amount: (-s / 100) * INK_FADE_MAX }
-    : { toward: '#000000', amount: (s / 100) * INK_DEEPEN_MAX };
-}
-
 /** The screen layer's colour: what black becomes on an inked page. */
 export function inkLayerColor(inkHex: string, strength: unknown): string {
-  const { toward, amount } = inkStrengthMix(strength);
-  return mixHex(inkHex, toward, amount);
+  const s = clampInkStrength(strength);
+  if (s <= 0) return mixHex(inkHex, '#ffffff', (-s / 100) * INK_FADE_MAX);
+  const t = s / 100;
+  return deepen(inkHex, 1 - (1 - INK_DEEPEN_LIGHTNESS) * t, 1 + (INK_DEEPEN_CHROMA - 1) * t);
+}
+
+/**
+ * The colour with its OKLCH lightness and chroma scaled, hue kept. Out of the
+ * sRGB gamut (raised chroma on a dark yellow or green) the chroma comes back
+ * down until it fits — never a clipped channel, which would shift the hue.
+ */
+function deepen(hex: string, lightness: number, chroma: number): string {
+  const [L, C, h] = toOklch(channels(hex));
+  const l = L * lightness;
+  let lo = 0;
+  let hi = C * chroma;
+  if (inGamut(fromOklch(l, hi, h))) lo = hi;
+  else
+    for (let i = 0; i < 24; i++) {
+      const mid = (lo + hi) / 2;
+      if (inGamut(fromOklch(l, mid, h))) lo = mid;
+      else hi = mid;
+    }
+  return toHex(fromOklch(l, lo, h).map((c) => Math.min(1, Math.max(0, c)) * 255));
+}
+
+function inGamut(rgb: number[]): boolean {
+  return rgb.every((c) => c >= -1e-6 && c <= 1 + 1e-6);
+}
+
+function toLinear(c: number): number {
+  const v = c / 255;
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+}
+
+function fromLinear(c: number): number {
+  const v = Math.min(1, Math.max(0, c));
+  return v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055;
+}
+
+/** sRGB 0–255 → OKLCH [L, C, h radians] (Björn Ottosson's OKLab). */
+export function toOklch(rgb: number[]): [number, number, number] {
+  const [r, g, b] = rgb.map(toLinear);
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  const L = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+  const A = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  const B = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+  return [L, Math.hypot(A, B), Math.atan2(B, A)];
+}
+
+/** OKLCH → sRGB 0–1, NOT clamped (out-of-gamut channels fall outside 0–1). */
+function fromOklch(L: number, C: number, h: number): number[] {
+  const A = C * Math.cos(h);
+  const B = C * Math.sin(h);
+  const l = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3;
+  const m = (L - 0.1055613458 * A - 0.0638541728 * B) ** 3;
+  const s = (L - 0.0894841775 * A - 1.291485548 * B) ** 3;
+  const lin = [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
+  ];
+  // keep out-of-gamut values visible to inGamut: gamma-encode with the sign
+  return lin.map((c) => (c < 0 ? -fromLinear(-c) : c > 1 ? 1 + (c - 1) : fromLinear(c)));
 }
 
 /** The age multiply colour: white (no change) at 0, {@link PAPER_AGE_COLOR} at 100. */
@@ -156,24 +221,28 @@ export function paperLayerColor(paperHex: string, tint: unknown, age: unknown): 
 }
 
 /**
- * The reader-wide CSS variables for the controls, set once on the reader
- * (like `--page-filter`) and read by every inked page's layers:
- * `--ink-mix-to` / `--ink-mix` (color-mix of the page's own ink),
- * `--paper-tint` (the paper's mix toward its tint), `--paper-age`.
+ * The reader-wide CSS variables for the controls: for every palette colour
+ * its finished screen-layer ink (`--ink-layer-<name>`) and paper multiply
+ * (`--paper-layer-<name>`). Set once on the document by the reader; an inked
+ * page reads the pair of its own colour.
  */
-export function inkEffectVars(
+export function inkLayerVars(
   strength: unknown,
   tint: unknown,
   age: unknown
-): { mixTo: string; mix: string; tint: string; age: string } {
-  const { toward, amount } = inkStrengthMix(strength);
-  return {
-    mixTo: toward,
-    mix: `${+(amount * 100).toFixed(4)}%`,
-    tint: `${clampPaperTint(tint)}%`,
-    age: paperAgeColor(age)
-  };
+): Record<string, string> {
+  const vars: Record<string, string> = {};
+  for (const name of INK_COLOR_NAMES) {
+    vars[`--ink-layer-${name}`] = inkLayerColor(INK_PALETTE[name].ink, strength);
+    vars[`--paper-layer-${name}`] = paperLayerColor(INK_PALETTE[name].paper, tint, age);
+  }
+  return vars;
 }
+
+/** Each palette colour's paper layer at the default controls (a page's fallback). */
+export const PAPER_DEFAULT_LAYERS = Object.fromEntries(
+  INK_COLOR_NAMES.map((n) => [n, paperLayerColor(INK_PALETTE[n].paper, PAPER_TINT_DEFAULT, 0)])
+) as Record<InkColorName, string>;
 
 /** Auto mode moves to the next colour every this many pages. */
 export const AUTO_INK_BLOCK_PAGES = 32;

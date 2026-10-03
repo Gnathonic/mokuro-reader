@@ -12,7 +12,7 @@ import {
   clampInkStrength,
   clampPaperAge,
   clampPaperTint,
-  inkEffectVars,
+  inkLayerVars,
   sanitizeInkColor,
   type InkColorSetting
 } from '$lib/reader/ink-color';
@@ -771,9 +771,10 @@ export const pageInkSetting: Readable<InkColorSetting> = derived(settings, ($set
 );
 
 /**
- * The print effect's controls as reader-wide CSS variables (#256), set once
- * on the reader like `--page-filter` and read only by inked pages' layers.
- * Keyed on a primitive first so an unrelated settings write re-emits nothing.
+ * The print effect's controls as reader-wide CSS variables (#256): a finished
+ * ink and paper colour per palette colour (`inkLayerVars`), set once by the
+ * reader and read only by inked pages' layers. Keyed on a primitive first so
+ * an unrelated settings write re-emits nothing.
  */
 const pageInkEffectKey: Readable<string> = derived(settings, ($settings) =>
   [
@@ -783,13 +784,10 @@ const pageInkEffectKey: Readable<string> = derived(settings, ($settings) =>
   ].join('|')
 );
 
-export const pageInkEffect: Readable<ReturnType<typeof inkEffectVars>> = derived(
-  pageInkEffectKey,
-  ($key) => {
-    const [strength, tint, age] = $key.split('|').map(Number);
-    return inkEffectVars(strength, tint, age);
-  }
-);
+export const pageInkLayers: Readable<Record<string, string>> = derived(pageInkEffectKey, ($key) => {
+  const [strength, tint, age] = $key.split('|').map(Number);
+  return inkLayerVars(strength, tint, age);
+});
 
 /**
  * Helper function to update a profile's timestamp

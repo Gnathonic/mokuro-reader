@@ -16,7 +16,7 @@
     imageFilter,
     pageFilter,
     pageInkSetting,
-    pageInkEffect,
+    pageInkLayers,
     preferredTitleLanguage,
     progress,
     settings,
@@ -981,6 +981,19 @@
     return cancelInkPrefetch;
   });
 
+  // The print effect's controls (#256): a finished ink and paper colour per
+  // palette colour, set ONCE on the document while the effect is on; an inked
+  // page's layers pick their colour's pair (MangaPage). Nothing while off.
+  $effect(() => {
+    if ($pageInkSetting === 'off') return;
+    const vars = $pageInkLayers;
+    const root = document.documentElement.style;
+    for (const [name, value] of Object.entries(vars)) root.setProperty(name, value);
+    return () => {
+      for (const name of Object.keys(vars)) root.removeProperty(name);
+    };
+  });
+
   // Image cache for preloading
   let imageCache = new ImageCache();
   let cachedImageUrl1 = $state<string | null>(null);
@@ -1620,10 +1633,6 @@
     {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader
         --page-filter={$pageFilter}
-        --ink-mix-to={$pageInkEffect.mixTo}
-        --ink-mix={$pageInkEffect.mix}
-        --paper-tint={$pageInkEffect.tint}
-        --paper-age={$pageInkEffect.age}
         {pages}
         files={volumeData.files}
         {volume}
@@ -1638,10 +1647,6 @@
     {:else}
       <HorizontalScrollReader
         --page-filter={$pageFilter}
-        --ink-mix-to={$pageInkEffect.mixTo}
-        --ink-mix={$pageInkEffect.mix}
-        --paper-tint={$pageInkEffect.tint}
-        --paper-age={$pageInkEffect.age}
         {pages}
         files={volumeData.files}
         {volume}
@@ -1657,17 +1662,8 @@
     {/if}
   {:else}
     <!-- Page-based mode. `--page-filter` (brightness/contrast, #256) is read by
-         each page's image layer only; the print effect's controls (`--ink-mix*`,
-         `--paper-*`) only by an inked page's layers. Set once here, not per page. -->
-    <div
-      class="flex"
-      style:background-color="var(--reader-bg)"
-      style:--page-filter={$pageFilter}
-      style:--ink-mix-to={$pageInkEffect.mixTo}
-      style:--ink-mix={$pageInkEffect.mix}
-      style:--paper-tint={$pageInkEffect.tint}
-      style:--paper-age={$pageInkEffect.age}
-    >
+         each page's image layer only — set once here, not per page. -->
+    <div class="flex" style:background-color="var(--reader-bg)" style:--page-filter={$pageFilter}>
       <PagedViewport
         contentSize={pagedContentSize}
         pageKey={page}

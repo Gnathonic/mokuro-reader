@@ -1,16 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   INK_COLOR_NAMES,
-  INK_DEEPEN_MAX,
+  INK_DEEPEN_CHROMA,
+  INK_DEEPEN_LIGHTNESS,
   INK_FADE_MAX,
   INK_PALETTE,
   PAPER_AGE_COLOR,
   clampInkStrength,
   clampPaperAge,
   clampPaperTint,
-  inkEffectVars,
+  inkLayerVars,
   inkLayerColor,
-  inkStrengthMix,
+  toOklch,
   mixHex,
   paperAgeColor,
   paperLayerColor,
@@ -337,7 +338,6 @@ describe('print effect controls', () => {
   it('negative strength fades toward white — pale at −100, but not white', () => {
     const ink = INK_PALETTE.blue.ink;
     const pale = hexChannels(inkLayerColor(ink, -100));
-    expect(inkStrengthMix(-100)).toEqual({ toward: '#ffffff', amount: INK_FADE_MAX });
     expect(inkLayerColor(ink, -100)).toBe(mixHex(ink, '#ffffff', INK_FADE_MAX));
     expect(Math.min(...pale)).toBeGreaterThan(170);
     expect(Math.min(...pale)).toBeLessThan(250); // still a visible tint
@@ -345,15 +345,37 @@ describe('print effect controls', () => {
     expect(inkLayerColor(ink, -50)).toBe(mixHex(ink, '#ffffff', INK_FADE_MAX / 2));
   });
 
-  it('positive strength deepens toward black, ~75% at +100, never pure black', () => {
-    const ink = INK_PALETTE.blue.ink;
-    expect(inkStrengthMix(100)).toEqual({ toward: '#000000', amount: INK_DEEPEN_MAX });
-    expect(INK_DEEPEN_MAX).toBeGreaterThanOrEqual(0.75);
-    expect(INK_DEEPEN_MAX).toBeLessThanOrEqual(0.8);
-    const [r, g, b] = hexChannels(inkLayerColor(ink, 100));
-    expect(Math.max(r, g, b)).toBeGreaterThan(30); // the hue survives
-    expect(b).toBeGreaterThan(r); // still blue
-    expect(inkLayerColor(ink, 40)).toBe(mixHex(ink, '#000000', 0.4 * INK_DEEPEN_MAX));
+  it('positive strength deepens in OKLCH: darker, as saturated, the same hue', () => {
+    for (const name of INK_COLOR_NAMES) {
+      const ink = INK_PALETTE[name].ink;
+      const [L0, C0, h0] = toOklch(hexChannels(ink));
+      const half = toOklch(hexChannels(inkLayerColor(ink, 50)));
+      const full = toOklch(hexChannels(inkLayerColor(ink, 100)));
+      // lightness: scaled by the constant at +100, halfway at +50 (8-bit rounding aside)
+      expect(full[0]).toBeCloseTo(L0 * INK_DEEPEN_LIGHTNESS, 2);
+      expect(half[0]).toBeCloseTo(L0 * (1 - (1 - INK_DEEPEN_LIGHTNESS) / 2), 2);
+      expect(full[0]).toBeLessThan(half[0]);
+      // never neutral: chroma raised where sRGB has room (blue, violet, red,
+      // pink); dark yellows, oranges and greens are gamut-bound (a dark yellow
+      // is an ochre) and keep what fits — still far from grey
+      if (['blue', 'violet', 'red', 'pink'].includes(name)) {
+        expect(full[1]).toBeGreaterThan(C0);
+      }
+      expect(full[1]).toBeGreaterThan(C0 * 0.7);
+      expect(full[1]).toBeGreaterThan(0.07);
+      expect(full[1]).toBeLessThanOrEqual(C0 * INK_DEEPEN_CHROMA + 0.005);
+      const dh = Math.abs(Math.atan2(Math.sin(full[2] - h0), Math.cos(full[2] - h0)));
+      expect(dh).toBeLessThan(0.06); // < ~3.5°
+    }
+  });
+
+  it('+100 blue is the deep navy, +100 red a deep crimson — not grey-black', () => {
+    const [r, g, b] = hexChannels(inkLayerColor(INK_PALETTE.blue.ink, 100));
+    expect(b).toBeGreaterThan(110);
+    expect(b - r).toBeGreaterThan(90);
+    const [rr, rg, rb] = hexChannels(inkLayerColor(INK_PALETTE.red.ink, 100));
+    expect(rr).toBeGreaterThan(110);
+    expect(rr - Math.max(rg, rb)).toBeGreaterThan(90);
   });
 
   it('paper age 0 is white (no-op multiply), 100 the aged-paper colour, linear between', () => {
@@ -377,21 +399,17 @@ describe('print effect controls', () => {
     );
   });
 
-  it('inkEffectVars: the reader-wide CSS variables, none of them per page', () => {
-    expect(inkEffectVars(0, 8, 0)).toEqual({
-      mixTo: '#ffffff',
-      mix: '0%',
-      tint: '8%',
-      age: '#ffffff'
-    });
-    expect(inkEffectVars(-50, 30, 100)).toEqual({
-      mixTo: '#ffffff',
-      mix: `${50 * INK_FADE_MAX}%`,
-      tint: '30%',
-      age: PAPER_AGE_COLOR
-    });
-    expect(inkEffectVars(100, 0, 50).mixTo).toBe('#000000');
-    expect(inkEffectVars(100, 0, 50).mix).toBe(`${100 * INK_DEEPEN_MAX}%`);
+  it('inkLayerVars: one finished ink and paper per palette colour', () => {
+    const vars = inkLayerVars(60, 20, 70);
+    expect(Object.keys(vars)).toHaveLength(14);
+    for (const name of INK_COLOR_NAMES) {
+      expect(vars[`--ink-layer-${name}`]).toBe(inkLayerColor(INK_PALETTE[name].ink, 60));
+      expect(vars[`--paper-layer-${name}`]).toBe(paperLayerColor(INK_PALETTE[name].paper, 20, 70));
+    }
+    // the defaults are the userscript's look: palette ink, paper at 8%
+    const d = inkLayerVars(0, 8, 0);
+    expect(d['--ink-layer-blue']).toBe(INK_PALETTE.blue.ink);
+    expect(d['--paper-layer-blue']).toBe(mixHex('#ffffff', INK_PALETTE.blue.paper, 0.08));
   });
 });
 
