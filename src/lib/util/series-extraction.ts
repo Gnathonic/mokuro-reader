@@ -373,10 +373,11 @@ export function extractTitlesFromPath(path: string): { seriesTitle: string; volu
  * not a "Vol 1" series. Filesystem-safety sanitizing still happens at save time
  * (`storedTitleSegment`), like every import.
  *
- *   "My Series (2023) [Digital]/Vol 03 extra" -> { "My Series (2023) [Digital]", "Vol 03 extra" }
+ *   "My Series (2023) [Digital]/Vol 03 extra" -> { "My Series (2023) [Digital]", "My Series (2023) [Digital] Vol 03 extra" }
+ *   "Killing Bites/Killing Bites 01"         -> { "Killing Bites", "Killing Bites 01" }
+ *   "Chained Soldier/01"                     -> { "Chained Soldier", "Chained Soldier 01" }
  *   "Downloads/Gleipnir 01"                  -> { "Downloads", "Gleipnir 01" }
  *   "Vol 03 extra.cbz"                       -> { "Vol 03 extra", "Vol 03 extra" }
- *   "Chained Soldier/01"                     -> { "Chained Soldier", "Chained Soldier 01" }
  */
 export function extractFolderTitlesFromPath(path: string): {
   seriesTitle: string;
@@ -396,12 +397,30 @@ export function extractFolderTitlesFromPath(path: string): {
   }
   const ownName = segments[segments.length - 1];
   const seriesTitle = segments.length > 1 ? segments[segments.length - 2] : ownName;
-  // A folder named only a number ("01", "10.5") carries no title of its own:
-  // "Chained Soldier/01" reads as "Chained Soldier 01", like a library that
-  // names its folders "Killing Bites/Killing Bites 01".
+  // The series folder informs the volume name: "Chained Soldier/01" reads as
+  // "Chained Soldier 01", like a library already named "Killing Bites/Killing
+  // Bites 01". No number parsing — real names are too varied for it; a name
+  // that already carries the series' title is left exactly as written.
   const volumeTitle =
-    segments.length > 1 && /^\d+(\.\d+)?$/.test(ownName) ? `${seriesTitle} ${ownName}` : ownName;
+    segments.length > 1 && !carriesSeriesTitle(ownName, seriesTitle)
+      ? `${seriesTitle} ${ownName}`
+      : ownName;
   return { seriesTitle, volumeTitle };
+}
+
+/** Letters and digits only, lowercased: "Dr. Stone" and "dr stone" compare equal. */
+function titleKey(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+/**
+ * Whether a volume name already names its series: the series folder's title,
+ * bracketed tags like "(Semi-Color)" or "[Digital]" dropped, appears in it,
+ * ignoring case and punctuation. A series that is all tags never matches.
+ */
+function carriesSeriesTitle(volumeName: string, seriesName: string): boolean {
+  const title = titleKey(seriesName.replace(/[([{][^)\]}]*[)\]}]/g, ''));
+  return title.length > 0 && titleKey(volumeName).includes(title);
 }
 
 /**
