@@ -376,6 +376,7 @@ export function extractTitlesFromPath(path: string): { seriesTitle: string; volu
  *   "My Series (2023) [Digital]/Vol 03 extra" -> { "My Series (2023) [Digital]", "Vol 03 extra" }
  *   "Downloads/Gleipnir 01"                  -> { "Downloads", "Gleipnir 01" }
  *   "Vol 03 extra.cbz"                       -> { "Vol 03 extra", "Vol 03 extra" }
+ *   "Chained Soldier/01"                     -> { "Chained Soldier", "Chained Soldier 01" }
  */
 export function extractFolderTitlesFromPath(path: string): {
   seriesTitle: string;
@@ -393,8 +394,13 @@ export function extractFolderTitlesFromPath(path: string): {
   if (segments.length === 0) {
     return { seriesTitle: 'Unknown', volumeTitle: 'Unknown' };
   }
-  const volumeTitle = segments[segments.length - 1];
-  const seriesTitle = segments.length > 1 ? segments[segments.length - 2] : volumeTitle;
+  const ownName = segments[segments.length - 1];
+  const seriesTitle = segments.length > 1 ? segments[segments.length - 2] : ownName;
+  // A folder named only a number ("01", "10.5") carries no title of its own:
+  // "Chained Soldier/01" reads as "Chained Soldier 01", like a library that
+  // names its folders "Killing Bites/Killing Bites 01".
+  const volumeTitle =
+    segments.length > 1 && /^\d+(\.\d+)?$/.test(ownName) ? `${seriesTitle} ${ownName}` : ownName;
   return { seriesTitle, volumeTitle };
 }
 

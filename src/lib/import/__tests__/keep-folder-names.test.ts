@@ -197,6 +197,29 @@ describe('extractFolderTitlesFromPath', () => {
     });
   });
 
+  it('puts the series name in front of a volume folder named only a number', () => {
+    // "Chained Soldier (Semi-Color)/01" should read like "Killing Bites/Killing Bites 01".
+    expect(extractFolderTitlesFromPath('Chained Soldier (Semi-Color)/01')).toEqual({
+      seriesTitle: 'Chained Soldier (Semi-Color)',
+      volumeTitle: 'Chained Soldier (Semi-Color) 01'
+    });
+    expect(extractFolderTitlesFromPath('Chained Soldier (Semi-Color)/10.5')).toEqual({
+      seriesTitle: 'Chained Soldier (Semi-Color)',
+      volumeTitle: 'Chained Soldier (Semi-Color) 10.5'
+    });
+    expect(extractFolderTitlesFromPath('My Series/002.cbz')).toEqual({
+      seriesTitle: 'My Series',
+      volumeTitle: 'My Series 002'
+    });
+    // A name of its own stays as written.
+    expect(extractFolderTitlesFromPath('Killing Bites/Killing Bites 01')).toEqual({
+      seriesTitle: 'Killing Bites',
+      volumeTitle: 'Killing Bites 01'
+    });
+    // No parent to borrow from: the number stands alone.
+    expect(extractFolderTitlesFromPath('01')).toEqual({ seriesTitle: '01', volumeTitle: '01' });
+  });
+
   it('sees through an archive that wraps a folder of its own name', () => {
     expect(extractFolderTitlesFromPath('My Series/Vol 1/Vol 1')).toEqual({
       seriesTitle: 'My Series',
@@ -315,6 +338,18 @@ describe('importing image-only volumes', () => {
       );
       expect(promptedSeries).toEqual([['My Series (2023) [Digital]']]);
     });
+  });
+
+  it('on: numbered volume folders take the series name in front', async () => {
+    setKeepFolderNames(true);
+    const rows = await importAndRead([
+      picked('Chained Soldier (Semi-Color)/01/page_0000.jpg'),
+      picked('Chained Soldier (Semi-Color)/02/page_0000.jpg')
+    ]);
+    expect(titles(rows).sort((a, b) => a.volume.localeCompare(b.volume))).toEqual([
+      { series: 'Chained Soldier (Semi-Color)', volume: 'Chained Soldier (Semi-Color) 01' },
+      { series: 'Chained Soldier (Semi-Color)', volume: 'Chained Soldier (Semi-Color) 02' }
+    ]);
   });
 
   it('on: a volume folder inside "Downloads" goes under a "Downloads" series', async () => {
