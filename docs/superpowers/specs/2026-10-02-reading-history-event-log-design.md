@@ -117,7 +117,7 @@ Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock)
 | `page`    | `volume`, `first_page`, `last_page`, `page_chars` (per page, first..last), `chars_before`, `dwell_ms` (raw, uncapped; `null` = unknown, legacy only), `layout`, `orientation`, `viewport` | `recentPageTurns`                         |
 | `adjust`  | `volume`, `time_delta_ms?`, `chars_delta?`                                                                                                                                                | manual edits in the volume editor         |
 | `restart` | `volume`                                                                                                                                                                                  | `archivedReads` marker                    |
-| `forget`  | `volume`, `before`                                                                                                                                                                        | "delete stats" (`deleteVolumeCompletely`) |
+| `forget`  | `volume`, `before`, `scope?` (`'time'` = time/speed only, "delete speed data")                                                                                                            | "delete stats" (`deleteVolumeCompletely`) |
 | `resolve` | `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                                                                | — (the user's answer about a long pause)  |
 
 - A `page` event is written when the user **leaves** a view (turn, close, tab hidden, idle), so dwell is
