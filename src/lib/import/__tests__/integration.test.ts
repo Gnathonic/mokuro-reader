@@ -38,13 +38,23 @@ vi.mock('$lib/catalog/db', () => ({
       }),
       get: vi.fn(),
       where: vi.fn().mockReturnValue({
-        equals: vi.fn().mockReturnValue({
+        equals: vi.fn().mockImplementation((value: string) => ({
           first: vi.fn().mockImplementation((uuid) => {
             // Check if volume already exists
             const existing = savedVolumes.find((v) => v.metadata.volume_uuid === uuid);
             return Promise.resolve(existing?.metadata);
-          })
-        })
+          }),
+          // `series_title` lookups (image-only numbering, #285)
+          primaryKeys: vi
+            .fn()
+            .mockImplementation(() =>
+              Promise.resolve(
+                savedVolumes
+                  .filter((v) => v.metadata.series_title === value)
+                  .map((v) => v.metadata.volume_uuid)
+              )
+            )
+        }))
       })
     },
     volume_ocr: {

@@ -9,7 +9,7 @@ import { writable, get } from 'svelte/store';
 import { pairMokuroWithSources } from './pairing';
 import { decideImportRouting } from './routing';
 import { processVolume, parseMokuroFile, matchImagesToPages } from './processing';
-import { saveVolume, storedTitleSegment, volumeExists } from './database';
+import { saveVolume, seriesVolumeUuids, storedTitleSegment, volumeExists } from './database';
 import {
   applyImportedSeriesFiles,
   collectSeriesFileFromBytes,
@@ -48,9 +48,10 @@ import {
   extractLayerEntries,
   stashLayerEntries
 } from '$lib/reader/edit/layer-import';
-import { imageOnlyNamingPreview } from './image-only-naming';
+import { cleanedSeriesTitles, importIdentities, planImageOnlyNames } from './image-only-naming';
 import { miscSettings } from '$lib/settings/misc';
 import { generateUUID } from '$lib/util/uuid';
+import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { requestPersistentStorage } from '$lib/util/upload';
 import {
   extractArchiveByVolumes,
@@ -666,6 +667,7 @@ async function processArchiveContents(
         imageFiles: volumeImageFiles,
         basePath: pairing.basePath,
         titlePath: pairing.titlePath,
+        importNames: pairing.importNames,
         sourceType: 'local',
         nestedArchives: []
       };
@@ -773,6 +775,7 @@ function directoryToDecompressed(source: PairedSource): DecompressedVolume {
     imageFiles: source.source.files,
     basePath: source.basePath,
     titlePath: source.titlePath,
+    importNames: source.importNames,
     sourceType: 'local',
     nestedArchives: []
   };
@@ -802,6 +805,7 @@ function tocDirectoryToDecompressed(source: PairedSource): DecompressedVolume {
     imageFiles,
     basePath: source.basePath,
     titlePath: source.titlePath,
+    importNames: source.importNames,
     sourceType: 'local',
     nestedArchives: []
   };
@@ -1353,14 +1357,33 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
  * Groups volumes by series and shows a confirmation modal
  */
 async function promptForImageOnlyImport(pairings: PairedSource[]): Promise<boolean> {
-  // Both naming modes' names, built by the functions `processVolume` names
-  // with; the list shown first is the mode currently set.
-  const naming = imageOnlyNamingPreview(pairings);
-  return getImportUiBridge().promptImageOnly({
-    seriesList: keepFolderNames() ? naming.folder : naming.cleaned,
+  const plan = planImageOnlyNames(pairings, await existingVolumeCounts(pairings));
+  const confirmed = await getImportUiBridge().promptImageOnly({
+    // The list shown first is the mode currently set.
+    seriesList: keepFolderNames() ? plan.preview.folder : plan.preview.cleaned,
     totalVolumeCount: pairings.length,
-    naming
+    naming: plan.preview
   });
+  if (!confirmed) return false;
+  // The prompt saved the mode the user chose; name the batch by it.
+  const names = keepFolderNames() ? plan.folder : plan.cleaned;
+  for (const pairing of pairings) pairing.importNames = names.get(pairing.id);
+  return true;
+}
+
+/**
+ * How many volumes each series a batch would number into already has,
+ * not counting the batch's own volumes (a re-import keeps its numbers' room).
+ * Keys only — never reads a row.
+ */
+async function existingVolumeCounts(pairings: PairedSource[]): Promise<Map<string, number>> {
+  const batch = new Set(importIdentities(pairings).map((id) => generateDeterministicUUID(id)));
+  const counts = new Map<string, number>();
+  for (const series of cleanedSeriesTitles(pairings)) {
+    const uuids = await seriesVolumeUuids(series);
+    counts.set(series, uuids.filter((uuid) => !batch.has(uuid)).length);
+  }
+  return counts;
 }
 
 /**

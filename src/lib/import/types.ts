@@ -1,3 +1,4 @@
+import type { ImportNames } from './image-only-naming';
 /**
  * Types for the unified import system
  *
@@ -59,6 +60,11 @@ export interface PairedSource {
    * `DecompressedVolume.titlePath`.
    */
   titlePath?: string;
+  /**
+   * The names an image-only volume is saved under, decided for the whole batch
+   * when the user confirmed the image-only prompt (`planImageOnlyNames`).
+   */
+  importNames?: ImportNames;
   /** Estimated size in bytes for memory management */
   estimatedSize: number;
   /** Whether this is an image-only source (no mokuro found anywhere) */
@@ -149,6 +155,11 @@ export interface DecompressedVolume {
    * `basePath`. Never read with the setting off.
    */
   titlePath?: string;
+  /**
+   * The names an image-only volume is saved under, decided for the whole batch
+   * when the user confirmed the image-only prompt (`planImageOnlyNames`).
+   */
+  importNames?: ImportNames;
   /** Where this came from */
   sourceType: 'local' | 'cloud';
   /** Archives discovered inside (for recursive processing) */

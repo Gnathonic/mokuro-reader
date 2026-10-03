@@ -84,9 +84,9 @@
         </div>
         <p class="text-center text-xs text-gray-500 dark:text-gray-400">
           {#if keepFolderNames}
-            Names as written, with the series folder in front of each volume.
+            Each volume's own folder or file name, exactly as written.
           {:else}
-            Tidied names, guessed from the folder and file names.
+            The series folder's name, with volumes numbered in folder order.
           {/if}
         </p>
       </div>

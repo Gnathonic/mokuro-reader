@@ -163,95 +163,69 @@ const titles = (rows: { series: string; volume: string }[]) =>
 // ---------------------------------------------------------------- the rule
 
 describe('extractFolderTitlesFromPath', () => {
-  it('takes the parent verbatim as series, and puts it in front of the volume folder', () => {
-    expect(extractFolderTitlesFromPath('My Series (2023) [Digital]/Vol 03 [Digital]')).toEqual({
+  it('takes the volume folder and its parent verbatim', () => {
+    expect(
+      extractFolderTitlesFromPath('My Series (2023) [Digital]/Vol 03 [Digital]')
+    ).toMatchObject({
       seriesTitle: 'My Series (2023) [Digital]',
-      volumeTitle: 'My Series (2023) [Digital] Vol 03 [Digital]'
+      volumeTitle: 'Vol 03 [Digital]'
     });
   });
 
   it('names a root-level archive or folder after itself, series included', () => {
-    expect(extractFolderTitlesFromPath('Vol 03 extra.cbz')).toEqual({
+    expect(extractFolderTitlesFromPath('Vol 03 extra.cbz')).toMatchObject({
       seriesTitle: 'Vol 03 extra',
       volumeTitle: 'Vol 03 extra'
     });
-    expect(extractFolderTitlesFromPath('Gleipnir v01 (2023) (Digital)')).toEqual({
+    expect(extractFolderTitlesFromPath('Gleipnir v01 (2023) (Digital)')).toMatchObject({
       seriesTitle: 'Gleipnir v01 (2023) (Digital)',
       volumeTitle: 'Gleipnir v01 (2023) (Digital)'
     });
     // A deep-link download names its archive "/<Volume>.cbz".
-    expect(extractFolderTitlesFromPath('/Vol 1.zip')).toEqual({
+    expect(extractFolderTitlesFromPath('/Vol 1.zip')).toMatchObject({
       seriesTitle: 'Vol 1',
       volumeTitle: 'Vol 1'
     });
   });
 
   it('uses only the immediate parent of a deeply nested volume', () => {
-    expect(extractFolderTitlesFromPath('Downloads/Manga/My Series/Vol 1')).toEqual({
+    expect(extractFolderTitlesFromPath('Downloads/Manga/My Series/Vol 1')).toMatchObject({
       seriesTitle: 'My Series',
-      volumeTitle: 'My Series Vol 1'
+      volumeTitle: 'Vol 1'
     });
   });
 
   it('takes a "suspect" container parent like Downloads verbatim — that is what was asked for', () => {
-    expect(extractFolderTitlesFromPath('Downloads/Gleipnir 01')).toEqual({
+    expect(extractFolderTitlesFromPath('Downloads/Gleipnir 01')).toMatchObject({
       seriesTitle: 'Downloads',
-      volumeTitle: 'Downloads Gleipnir 01'
+      volumeTitle: 'Gleipnir 01'
     });
     // ...where the extraction (setting off) skips it and rewrites the volume.
-    expect(extractTitlesFromPath('Downloads/Gleipnir 01')).toEqual({
+    expect(extractTitlesFromPath('Downloads/Gleipnir 01')).toMatchObject({
       seriesTitle: 'Gleipnir',
       volumeTitle: 'Volume 01'
     });
   });
 
-  it('puts the series name in front of a volume name that lacks it', () => {
-    // "Chained Soldier (Semi-Color)/01" should read like "Killing Bites/Killing Bites 01".
-    expect(extractFolderTitlesFromPath('Chained Soldier (Semi-Color)/01')).toEqual({
-      seriesTitle: 'Chained Soldier (Semi-Color)',
-      volumeTitle: 'Chained Soldier (Semi-Color) 01'
-    });
-    expect(extractFolderTitlesFromPath('One Piece/Chapter 1001.cbz').volumeTitle).toBe(
-      'One Piece Chapter 1001'
-    );
-    expect(extractFolderTitlesFromPath('Dr. Stone/vol_01').volumeTitle).toBe('Dr. Stone vol_01');
-  });
-
-  it('leaves a volume name that already carries the series title as written', () => {
-    expect(extractFolderTitlesFromPath('Killing Bites/Killing Bites 01').volumeTitle).toBe(
-      'Killing Bites 01'
-    );
-    // Case, bracketed tags on either side and punctuation do not hide the title.
-    expect(
-      extractFolderTitlesFromPath('Chained Soldier (Semi-Color)/Chained Soldier v01').volumeTitle
-    ).toBe('Chained Soldier v01');
-    expect(
-      extractFolderTitlesFromPath('Chainsaw Man/[Group] chainsaw man v01 (2020) (Digital)')
-        .volumeTitle
-    ).toBe('[Group] chainsaw man v01 (2020) (Digital)');
-    expect(extractFolderTitlesFromPath('Dr. Stone/Dr Stone - 01').volumeTitle).toBe(
-      'Dr Stone - 01'
-    );
-  });
-
-  it('never prefixes without a parent, or when the series is all tags', () => {
-    expect(extractFolderTitlesFromPath('01')).toEqual({ seriesTitle: '01', volumeTitle: '01' });
-    expect(extractFolderTitlesFromPath('[Digital]/01').volumeTitle).toBe('[Digital] 01');
-  });
-
   it('sees through an archive that wraps a folder of its own name', () => {
-    expect(extractFolderTitlesFromPath('My Series/Vol 1/Vol 1')).toEqual({
+    expect(extractFolderTitlesFromPath('My Series/Vol 1/Vol 1')).toMatchObject({
       seriesTitle: 'My Series',
-      volumeTitle: 'My Series Vol 1'
+      volumeTitle: 'Vol 1'
     });
+  });
+
+  it('says whether there was a parent folder at all', () => {
+    expect(extractFolderTitlesFromPath('Chained Soldier (Semi-Color)/01').hasParent).toBe(true);
+    expect(extractFolderTitlesFromPath('Vol 1.cbz').hasParent).toBe(false);
+    expect(extractFolderTitlesFromPath('My Series/Vol 1/Vol 1').hasParent).toBe(true);
   });
 
   it('falls back to Unknown when there is no name at all', () => {
-    expect(extractFolderTitlesFromPath('')).toEqual({
+    expect(extractFolderTitlesFromPath('')).toMatchObject({
       seriesTitle: 'Unknown',
       volumeTitle: 'Unknown'
     });
-    expect(extractFolderTitlesFromPath('.')).toEqual({
+    expect(extractFolderTitlesFromPath('.')).toMatchObject({
       seriesTitle: 'Unknown',
       volumeTitle: 'Unknown'
     });
@@ -276,12 +250,10 @@ describe('processVolume with keepFolderNames', () => {
   it('keeps the names and derives both uuids from them, so another device agrees', async () => {
     const { metadata } = await processVolume(input(), { keepFolderNames: true });
     expect(metadata.series).toBe('My Series (2023) [Digital]');
-    expect(metadata.volume).toBe('My Series (2023) [Digital] Vol 03 [Digital]');
+    expect(metadata.volume).toBe('Vol 03 [Digital]');
     expect(metadata.seriesUuid).toBe(generateDeterministicUUID('My Series (2023) [Digital]'));
     expect(metadata.volumeUuid).toBe(
-      generateDeterministicUUID(
-        'My Series (2023) [Digital]/My Series (2023) [Digital] Vol 03 [Digital]'
-      )
+      generateDeterministicUUID('My Series (2023) [Digital]/Vol 03 [Digital]')
     );
   });
 
@@ -291,7 +263,7 @@ describe('processVolume with keepFolderNames', () => {
       { keepFolderNames: true }
     );
     expect(metadata.series).toBe('Outer');
-    expect(metadata.volume).toBe('Outer Vol 03 extra');
+    expect(metadata.volume).toBe('Vol 03 extra');
   });
 
   it('leaves a mokuro-backed volume alone', async () => {
@@ -357,6 +329,30 @@ describe('importing image-only volumes', () => {
     }
   });
 
+  it('cleaned: numbering continues after the volumes the series already has', async () => {
+    await importAndRead([
+      picked('Chained Soldier (Semi-Color)/01/p.jpg'),
+      picked('Chained Soldier (Semi-Color)/02/p.jpg')
+    ]);
+    importQueue.set([]);
+    const rows = await importAndRead([picked('Chained Soldier (Semi-Color)/03/p.jpg')]);
+    expect(titles(rows).map((r) => r.volume)).toEqual([
+      'Chained Soldier (Semi-Color) 01',
+      'Chained Soldier (Semi-Color) 02',
+      'Chained Soldier (Semi-Color) 03'
+    ]);
+  });
+
+  it('a volume keeps its uuid across naming modes, so a re-import never duplicates it', async () => {
+    const files = () => [picked('Chained Soldier (Semi-Color)/01/p.jpg')];
+    const [cleaned] = await importAndRead(files());
+    importQueue.set([]);
+    setKeepFolderNames(true);
+    const rows = await importAndRead(files());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].volume_uuid).toBe(cleaned.volume_uuid);
+  });
+
   it('defaults to off', () => {
     localStorage.removeItem('miscSettings');
     expect(get(miscSettings).keepFolderNamesAsTitles).toBe(false);
@@ -368,9 +364,11 @@ describe('importing image-only volumes', () => {
       picked('My Series (2023) [Digital]/Vol 03 [Digital]/002.jpg')
     ];
 
-    it('off: the extraction cleans the volume name, as before', async () => {
+    it('off: the series folder name, numbered', async () => {
       const rows = await importAndRead(files());
-      expect(titles(rows)).toEqual([{ series: 'My Series (2023) [Digital]', volume: 'Volume 03' }]);
+      expect(titles(rows)).toEqual([
+        { series: 'My Series (2023) [Digital]', volume: 'My Series (2023) [Digital] 01' }
+      ]);
       expect(promptedSeries).toEqual([['My Series (2023) [Digital]']]);
     });
 
@@ -378,36 +376,19 @@ describe('importing image-only volumes', () => {
       setKeepFolderNames(true);
       const rows = await importAndRead(files());
       expect(titles(rows)).toEqual([
-        {
-          series: 'My Series (2023) [Digital]',
-          volume: 'My Series (2023) [Digital] Vol 03 [Digital]'
-        }
+        { series: 'My Series (2023) [Digital]', volume: 'Vol 03 [Digital]' }
       ]);
       expect(rows[0].volume_uuid).toBe(
-        generateDeterministicUUID(
-          'My Series (2023) [Digital]/My Series (2023) [Digital] Vol 03 [Digital]'
-        )
+        generateDeterministicUUID('My Series (2023) [Digital]/Vol 03 [Digital]')
       );
       expect(promptedSeries).toEqual([['My Series (2023) [Digital]']]);
     });
   });
 
-  it('on: numbered volume folders take the series name in front', async () => {
-    setKeepFolderNames(true);
-    const rows = await importAndRead([
-      picked('Chained Soldier (Semi-Color)/01/page_0000.jpg'),
-      picked('Chained Soldier (Semi-Color)/02/page_0000.jpg')
-    ]);
-    expect(titles(rows).sort((a, b) => a.volume.localeCompare(b.volume))).toEqual([
-      { series: 'Chained Soldier (Semi-Color)', volume: 'Chained Soldier (Semi-Color) 01' },
-      { series: 'Chained Soldier (Semi-Color)', volume: 'Chained Soldier (Semi-Color) 02' }
-    ]);
-  });
-
   it('on: a volume folder inside "Downloads" goes under a "Downloads" series', async () => {
     setKeepFolderNames(true);
     const rows = await importAndRead([picked('Downloads/Gleipnir 01/001.jpg')]);
-    expect(titles(rows)).toEqual([{ series: 'Downloads', volume: 'Downloads Gleipnir 01' }]);
+    expect(titles(rows)).toEqual([{ series: 'Downloads', volume: 'Gleipnir 01' }]);
     expect(promptedSeries).toEqual([['Downloads']]);
   });
 
@@ -422,16 +403,16 @@ describe('importing image-only volumes', () => {
   it('sanitizes for filesystem safety only, as every import does', async () => {
     setKeepFolderNames(true);
     const rows = await importAndRead([picked('Re: Zero?/Vol 1./001.jpg')]);
-    expect(titles(rows)).toEqual([{ series: 'Re： Zero？', volume: 'Re： Zero？ Vol 1․' }]);
+    expect(titles(rows)).toEqual([{ series: 'Re： Zero？', volume: 'Vol 1․' }]);
   });
 
   describe('a root-level archive "Gleipnir v01 (2023) (Digital).cbz" with images at its root', () => {
     const archive = async () =>
       picked('Gleipnir v01 (2023) (Digital).cbz', await zipOf(['001.jpg', '002.jpg']));
 
-    it('off: cleaned up, as before', async () => {
+    it('off: no parent folder, so the series is extracted from the name, then numbered', async () => {
       const rows = await importAndRead([await archive()]);
-      expect(titles(rows)).toEqual([{ series: 'Gleipnir', volume: 'Volume 01' }]);
+      expect(titles(rows)).toEqual([{ series: 'Gleipnir', volume: 'Gleipnir 01' }]);
     });
 
     it('on: the archive name is both series and volume', async () => {
@@ -452,8 +433,8 @@ describe('importing image-only volumes', () => {
     ]);
     // The second wraps its pages in a folder of its own name: still "Vol 04 extra".
     expect(titles(rows)).toEqual([
-      { series: 'My Series (2023)', volume: 'My Series (2023) Vol 03 extra' },
-      { series: 'My Series (2023)', volume: 'My Series (2023) Vol 04 extra' }
+      { series: 'My Series (2023)', volume: 'Vol 03 extra' },
+      { series: 'My Series (2023)', volume: 'Vol 04 extra' }
     ]);
     expect(new Set(rows.map((r) => r.series_uuid)).size).toBe(1);
   });
@@ -464,8 +445,8 @@ describe('importing image-only volumes', () => {
       picked('Series Pack [Digital].zip', await zipOf(['v01 extra/001.jpg', 'v02 extra/001.jpg']))
     ]);
     expect(titles(rows)).toEqual([
-      { series: 'Series Pack [Digital]', volume: 'Series Pack [Digital] v01 extra' },
-      { series: 'Series Pack [Digital]', volume: 'Series Pack [Digital] v02 extra' }
+      { series: 'Series Pack [Digital]', volume: 'v01 extra' },
+      { series: 'Series Pack [Digital]', volume: 'v02 extra' }
     ]);
     expect(promptedSeries).toEqual([['Series Pack [Digital]']]);
   });
@@ -478,8 +459,8 @@ describe('importing image-only volumes', () => {
     ]);
     const rows = await importAndRead([picked('Outer Series (Digital).zip', outer)]);
     expect(titles(rows)).toEqual([
-      { series: 'Outer Series (Digital)', volume: 'Outer Series (Digital) Vol 1 (2020)' },
-      { series: 'Outer Series (Digital)', volume: 'Outer Series (Digital) Vol 2 (2020)' }
+      { series: 'Outer Series (Digital)', volume: 'Vol 1 (2020)' },
+      { series: 'Outer Series (Digital)', volume: 'Vol 2 (2020)' }
     ]);
   });
 });

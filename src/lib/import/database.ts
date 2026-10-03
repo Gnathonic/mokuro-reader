@@ -28,6 +28,15 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
  * @param volumeUuid - The volume UUID to check
  * @returns True if the volume exists with its files
  */
+/**
+ * The uuids of every volume row filed under a stored series title — keys only,
+ * through the `series_title` index, never a row read.
+ */
+export async function seriesVolumeUuids(seriesTitle: string): Promise<string[]> {
+  const keys = await db.volumes.where('series_title').equals(seriesTitle).primaryKeys();
+  return keys.map(String);
+}
+
 export async function volumeExists(volumeUuid: string): Promise<boolean> {
   const existing = await db.volumes.get(volumeUuid);
   return existing !== undefined && isVolumeInstalled(existing);

@@ -503,7 +503,9 @@ export async function processVolume(
   } else {
     // Image-only volume
     isImageOnly = true;
-    if (keepFolderNames) {
+    if (input.importNames) {
+      volumeInfo = { series: input.importNames.series, volume: input.importNames.volume };
+    } else if (keepFolderNames) {
       const { seriesTitle, volumeTitle } = extractFolderTitlesFromPath(titlePath);
       volumeInfo = { series: seriesTitle, volume: volumeTitle };
     } else {
@@ -685,14 +687,22 @@ export async function processVolume(
   } else {
     // Image-only: series from the path (verbatim or extracted, see above) and
     // a deterministic UUID from whichever name is used
-    seriesName = keepFolderNames ? volumeInfo.series : extractSeriesName(basePath);
+    seriesName =
+      input.importNames || keepFolderNames ? volumeInfo.series : extractSeriesName(basePath);
     seriesUuid = generateDeterministicUUID(seriesName);
   }
 
   // Generate deterministic volume UUID from series + volume name
   // This ensures the same volume gets the same UUID across devices
+  // A batch named at the image-only prompt keys the uuid to the volume's
+  // literal location, so it survives a change of naming mode (#285).
   const volumeUuid =
-    mokuroData?.volumeUuid || generateDeterministicUUID(`${seriesName}/${volumeInfo.volume}`);
+    mokuroData?.volumeUuid ||
+    generateDeterministicUUID(
+      !mokuroData && input.importNames
+        ? input.importNames.identity
+        : `${seriesName}/${volumeInfo.volume}`
+    );
 
   const metadata: ProcessedMetadata = {
     volumeUuid,

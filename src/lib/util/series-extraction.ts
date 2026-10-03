@@ -360,28 +360,26 @@ export function extractTitlesFromPath(path: string): { seriesTitle: string; volu
 }
 
 /**
- * Titles for an image-only volume when the user keeps folder names
- * (`miscSettings.keepFolderNamesAsTitles`, #285): no cleanup, no guessing.
- *
- * The volume is its own folder or archive name (extension dropped), the series
- * the folder or archive that holds it — the IMMEDIATE parent, whatever it is
- * called ("Downloads" included). A volume with no parent (a root-level folder
- * or archive) names the series after itself.
+ * Where an image-only volume sits, by literal folder names (#285): its own
+ * folder or archive name (extension dropped) and the folder or archive that
+ * holds it — the IMMEDIATE parent, whatever it is called ("Downloads"
+ * included). No cleanup, no guessing. A volume with no parent (a root-level
+ * folder or archive) has `hasParent: false` and names the series after itself.
  *
  * Adjacent identical segments count once: an archive that wraps its pages in a
  * folder of its own name (`Vol 1.cbz` → `Vol 1/001.jpg`) is one volume level,
  * not a "Vol 1" series. Filesystem-safety sanitizing still happens at save time
  * (`storedTitleSegment`), like every import.
  *
- *   "My Series (2023) [Digital]/Vol 03 extra" -> { "My Series (2023) [Digital]", "My Series (2023) [Digital] Vol 03 extra" }
- *   "Killing Bites/Killing Bites 01"         -> { "Killing Bites", "Killing Bites 01" }
- *   "Chained Soldier/01"                     -> { "Chained Soldier", "Chained Soldier 01" }
- *   "Downloads/Gleipnir 01"                  -> { "Downloads", "Gleipnir 01" }
- *   "Vol 03 extra.cbz"                       -> { "Vol 03 extra", "Vol 03 extra" }
+ *   "Chained Soldier (Semi-Color)/01"   -> { "Chained Soldier (Semi-Color)", "01" }
+ *   "Killing Bites/Killing Bites 01"    -> { "Killing Bites", "Killing Bites 01" }
+ *   "Downloads/Gleipnir 01"             -> { "Downloads", "Gleipnir 01" }
+ *   "Vol 03 extra.cbz"                  -> { "Vol 03 extra", "Vol 03 extra" }, no parent
  */
 export function extractFolderTitlesFromPath(path: string): {
   seriesTitle: string;
   volumeTitle: string;
+  hasParent: boolean;
 } {
   const parts = path
     .replace(/\\/g, '/')
@@ -393,34 +391,12 @@ export function extractFolderTitlesFromPath(path: string): {
   const segments = parts.filter((p, i) => p.length > 0 && (i === 0 || p !== parts[i - 1]));
 
   if (segments.length === 0) {
-    return { seriesTitle: 'Unknown', volumeTitle: 'Unknown' };
+    return { seriesTitle: 'Unknown', volumeTitle: 'Unknown', hasParent: false };
   }
-  const ownName = segments[segments.length - 1];
-  const seriesTitle = segments.length > 1 ? segments[segments.length - 2] : ownName;
-  // The series folder informs the volume name: "Chained Soldier/01" reads as
-  // "Chained Soldier 01", like a library already named "Killing Bites/Killing
-  // Bites 01". No number parsing — real names are too varied for it; a name
-  // that already carries the series' title is left exactly as written.
-  const volumeTitle =
-    segments.length > 1 && !carriesSeriesTitle(ownName, seriesTitle)
-      ? `${seriesTitle} ${ownName}`
-      : ownName;
-  return { seriesTitle, volumeTitle };
-}
-
-/** Letters and digits only, lowercased: "Dr. Stone" and "dr stone" compare equal. */
-function titleKey(text: string): string {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-}
-
-/**
- * Whether a volume name already names its series: the series folder's title,
- * bracketed tags like "(Semi-Color)" or "[Digital]" dropped, appears in it,
- * ignoring case and punctuation. A series that is all tags never matches.
- */
-function carriesSeriesTitle(volumeName: string, seriesName: string): boolean {
-  const title = titleKey(seriesName.replace(/[([{][^)\]}]*[)\]}]/g, ''));
-  return title.length > 0 && titleKey(volumeName).includes(title);
+  const volumeTitle = segments[segments.length - 1];
+  const hasParent = segments.length > 1;
+  const seriesTitle = hasParent ? segments[segments.length - 2] : volumeTitle;
+  return { seriesTitle, volumeTitle, hasParent };
 }
 
 /**
