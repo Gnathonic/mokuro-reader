@@ -69,7 +69,9 @@
     {/each}
     <div>
       <div class="flex items-center justify-between gap-2">
-        <Label for="page-ink-color" class="text-gray-900 dark:text-white">Ink color</Label>
+        <Label for="page-ink-color" class="text-gray-900 dark:text-white"
+          >Magazine print effect <span lang="ja">（更紙）</span></Label
+        >
         {#if inkColor !== 'off' && inkColor !== 'auto'}
           <span
             class="h-4 w-4 rounded-full border border-gray-300 dark:border-gray-600"
@@ -88,7 +90,8 @@
           updateSetting('pageInkColor', sanitizeInkColor((e.target as HTMLSelectElement).value))}
       />
       <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-        Black-and-white pages only. Auto: each volume its own color, changing every 32 pages.
+        Colored ink on tinted newsprint, like a weekly manga magazine. Black-and-white pages only.
+        Auto: each volume its own color, changing every 32 pages.
       </p>
     </div>
   </div>

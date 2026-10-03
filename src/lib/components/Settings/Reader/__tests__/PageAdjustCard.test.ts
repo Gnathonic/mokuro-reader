@@ -51,7 +51,7 @@ describe('PageAdjustCard (#256)', () => {
 
   it('offers ink color off/auto/seven colors, showing the stored choice', () => {
     const { getByLabelText } = render(PageAdjustCard);
-    const select = getByLabelText('Ink color') as HTMLSelectElement;
+    const select = getByLabelText(/Magazine print effect/) as HTMLSelectElement;
     expect(select.value).toBe('auto');
     expect(Array.from(select.options).map((o) => o.value)).toEqual([
       'off',
@@ -68,7 +68,7 @@ describe('PageAdjustCard (#256)', () => {
 
   it('writes the chosen ink color', async () => {
     const { getByLabelText } = render(PageAdjustCard);
-    const select = getByLabelText('Ink color') as HTMLSelectElement;
+    const select = getByLabelText(/Magazine print effect/) as HTMLSelectElement;
     select.value = 'green';
     await fireEvent.change(select);
     expect(mocks.updateSetting).toHaveBeenCalledWith('pageInkColor', 'green');
