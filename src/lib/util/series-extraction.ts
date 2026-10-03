@@ -360,6 +360,53 @@ export function extractTitlesFromPath(path: string): { seriesTitle: string; volu
 }
 
 /**
+ * Titles for an image-only volume when the user keeps folder names
+ * (`miscSettings.keepFolderNamesAsTitles`, #285): no cleanup, no guessing.
+ *
+ * The volume is its own folder or archive name (extension dropped), the series
+ * the folder or archive that holds it — the IMMEDIATE parent, whatever it is
+ * called ("Downloads" included). A volume with no parent (a root-level folder
+ * or archive) names the series after itself.
+ *
+ * Adjacent identical segments count once: an archive that wraps its pages in a
+ * folder of its own name (`Vol 1.cbz` → `Vol 1/001.jpg`) is one volume level,
+ * not a "Vol 1" series. Filesystem-safety sanitizing still happens at save time
+ * (`storedTitleSegment`), like every import.
+ *
+ *   "My Series (2023) [Digital]/Vol 03 extra" -> { "My Series (2023) [Digital]", "Vol 03 extra" }
+ *   "Downloads/Gleipnir 01"                  -> { "Downloads", "Gleipnir 01" }
+ *   "Vol 03 extra.cbz"                       -> { "Vol 03 extra", "Vol 03 extra" }
+ */
+export function extractFolderTitlesFromPath(path: string): {
+  seriesTitle: string;
+  volumeTitle: string;
+} {
+  const parts = path
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((p) => p.length > 0 && p !== '.');
+  if (parts.length > 0) {
+    parts[parts.length - 1] = parts[parts.length - 1].replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+  }
+  const segments = parts.filter((p, i) => p.length > 0 && (i === 0 || p !== parts[i - 1]));
+
+  if (segments.length === 0) {
+    return { seriesTitle: 'Unknown', volumeTitle: 'Unknown' };
+  }
+  const volumeTitle = segments[segments.length - 1];
+  const seriesTitle = segments.length > 1 ? segments[segments.length - 2] : volumeTitle;
+  return { seriesTitle, volumeTitle };
+}
+
+/**
+ * The series an image-only volume at `path` is grouped under — the one name
+ * both the confirmation prompt and the saved volume use.
+ */
+export function imageOnlySeriesName(path: string, keepFolderNames: boolean): string {
+  return keepFolderNames ? extractFolderTitlesFromPath(path).seriesTitle : extractSeriesName(path);
+}
+
+/**
  * Extracts just the series name from a path (for grouping purposes)
  * This normalizes the series name for consistent UUID generation
  */

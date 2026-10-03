@@ -25,6 +25,10 @@ export type MiscSettings = {
    * Top and left only for now (right/bottom collide with the quick actions
    * menu). */
   editToolbarDock: EditToolbarDock;
+  /** Image-only imports (no `.mokuro`) take their folder/archive names
+   * verbatim as volume and series titles instead of the cleaned-up guess
+   * (`extractFolderTitlesFromPath`, #285). */
+  keepFolderNamesAsTitles: boolean;
 };
 
 export type EditToolbarDock = 'top' | 'left';
@@ -56,7 +60,8 @@ const defaultSettings: MiscSettings = {
   deviceRamGB: getDefaultRamSetting(),
   turboMode: false, // Default to single-operation mode (patient users)
   gdriveAutoReAuth: true, // Keep users synced during long reading sessions
-  editToolbarDock: 'top'
+  editToolbarDock: 'top',
+  keepFolderNamesAsTitles: false
 };
 
 /**

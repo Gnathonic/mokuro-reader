@@ -1,11 +1,20 @@
 <script lang="ts">
-  import { Accordion, AccordionItem, Button, Dropzone, Modal, Spinner } from 'flowbite-svelte';
+  import {
+    Accordion,
+    AccordionItem,
+    Button,
+    Dropzone,
+    Modal,
+    Spinner,
+    Toggle
+  } from 'flowbite-svelte';
   import { UploadSolid } from 'flowbite-svelte-icons';
   import { importFiles, isImporting } from '$lib/import';
   import { scanFiles } from '$lib/upload';
   import { onMount } from 'svelte';
   import { formatBytes } from '$lib/util/upload';
   import { toClipboard } from '$lib/util';
+  import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
 
   interface Props {
     open?: boolean;
@@ -268,6 +277,20 @@
       {/if}
     </Dropzone>
     <p class="text-center text-sm text-gray-500 dark:text-gray-400">{storageSpace}</p>
+    <div class="flex flex-col gap-1">
+      <Toggle
+        id="keep-folder-names"
+        bind:checked={$miscSettings.keepFolderNamesAsTitles}
+        onchange={() =>
+          updateMiscSetting('keepFolderNamesAsTitles', $miscSettings.keepFolderNamesAsTitles)}
+      >
+        Keep folder names as titles
+      </Toggle>
+      <p class="text-xs text-gray-500 dark:text-gray-400">
+        For comics without a <code>.mokuro</code> file: name each volume after its folder or archive,
+        and its series after the folder that holds it, exactly as written.
+      </p>
+    </div>
     <div class="flex flex-1 flex-col gap-2">
       <Button outline onclick={reset} {disabled} color="dark">Reset</Button>
       <Button outline onclick={onImport} {disabled}>Import</Button>

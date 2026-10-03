@@ -22,6 +22,7 @@ import type {
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
 import {
+  extractFolderTitlesFromPath,
   extractSeriesName,
   extractTitlesFromPath,
   generateDeterministicUUID
@@ -468,10 +469,20 @@ function calculateCumulativeChars(pages: MokuroPage[]): number[] {
  * 5. Creating nested source pairings for discovered archives
  *
  * @param input - Decompressed volume data
+ * @param options.keepFolderNames - Name an image-only volume verbatim after its
+ *   folders (`input.titlePath ?? input.basePath`, see
+ *   `extractFolderTitlesFromPath`) instead of the cleaned-up extraction — the
+ *   `miscSettings.keepFolderNamesAsTitles` import setting (#285). Mokuro-backed
+ *   volumes are named by their `.mokuro` either way.
  * @returns Processed volume ready for database
  */
-export async function processVolume(input: DecompressedVolume): Promise<ProcessedVolume> {
+export async function processVolume(
+  input: DecompressedVolume,
+  options: { keepFolderNames?: boolean } = {}
+): Promise<ProcessedVolume> {
   const { mokuroFile, imageFiles, basePath, sourceType, nestedArchives, thumbnailSidecar } = input;
+  const titlePath = input.titlePath ?? basePath;
+  const keepFolderNames = options.keepFolderNames === true;
 
   // Parse mokuro or extract info from path
   let mokuroData: ParsedMokuro | null = null;
@@ -492,7 +503,12 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
   } else {
     // Image-only volume
     isImageOnly = true;
-    volumeInfo = extractVolumeInfo(basePath);
+    if (keepFolderNames) {
+      const { seriesTitle, volumeTitle } = extractFolderTitlesFromPath(titlePath);
+      volumeInfo = { series: seriesTitle, volume: volumeTitle };
+    } else {
+      volumeInfo = extractVolumeInfo(basePath);
+    }
   }
 
   // Match images to pages
@@ -651,6 +667,7 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
       mokuroFile: null,
       source: archiveSource,
       basePath: archiveStem,
+      titlePath: `${titlePath}/${archiveStem}`,
       estimatedSize: archiveFile.size * 2.5,
       imageOnly: false
     };
@@ -666,8 +683,9 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     seriesUuid = mokuroData.seriesUuid;
     seriesName = volumeInfo.series;
   } else {
-    // Image-only: use sophisticated series extraction and deterministic UUID
-    seriesName = extractSeriesName(basePath);
+    // Image-only: series from the path (verbatim or extracted, see above) and
+    // a deterministic UUID from whichever name is used
+    seriesName = keepFolderNames ? volumeInfo.series : extractSeriesName(basePath);
     seriesUuid = generateDeterministicUUID(seriesName);
   }
 

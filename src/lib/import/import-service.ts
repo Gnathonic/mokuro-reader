@@ -48,7 +48,8 @@ import {
   extractLayerEntries,
   stashLayerEntries
 } from '$lib/reader/edit/layer-import';
-import { extractSeriesName } from '$lib/upload/image-only-fallback';
+import { imageOnlySeriesName } from '$lib/util/series-extraction';
+import { miscSettings } from '$lib/settings/misc';
 import { generateUUID } from '$lib/util/uuid';
 import { requestPersistentStorage } from '$lib/util/upload';
 import {
@@ -425,13 +426,37 @@ async function streamExtractAllVolumes(
 }
 
 /**
+ * The "keep folder names as titles" import setting (#285), read when a volume
+ * is named, so every path — prompt, directory, archive, nested archive — sees
+ * the same value.
+ */
+function keepFolderNames(): boolean {
+  return get(miscSettings).keepFolderNamesAsTitles === true;
+}
+
+/** `path` without an archive extension. */
+function stripArchiveExtension(path: string): string {
+  return path.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '');
+}
+
+/** `parent/child`, where `.`/empty children are the parent itself. */
+function joinTitlePath(parent: string, child: string): string {
+  return child === '' || child === '.' ? parent : `${parent}/${child}`;
+}
+
+/**
  * Process an archive using streaming extraction for memory efficiency.
  * Opens archive once to scan + extract mokuro files, then streams images.
+ *
+ * @param archiveTitlePath - Where the archive itself sits, extension dropped,
+ *   for verbatim titles ("keep folder names"); defaults to the file's own
+ *   picked path. A nested archive passes its outer archive's path + its own.
  */
 async function processArchiveContents(
   archiveFile: File,
   externalMokuroFile: File | null,
-  onProgress?: (status: string, progress: number) => void
+  onProgress?: (status: string, progress: number) => void,
+  archiveTitlePath?: string
 ): Promise<{
   success: boolean;
   error?: string;
@@ -528,8 +553,13 @@ async function processArchiveContents(
   // For image-only pairings at root level, use archive filename as basePath for series extraction
   // But preserve the original path for file extraction
   const archiveStem = archiveFile.name.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '');
+  const archivePath =
+    archiveTitlePath ?? stripArchiveExtension(archiveFile.webkitRelativePath || archiveFile.name);
   const originalBasePaths = new Map<string, string>();
   for (const pairing of imageOnlyPairings) {
+    // Verbatim titles name a volume from where it sits in the archive AND where
+    // the archive sits — `basePath` here is only the inside half.
+    pairing.titlePath = joinTitlePath(archivePath, pairing.basePath);
     if (pairing.basePath === '.' || pairing.basePath === '') {
       originalBasePaths.set(pairing.id, pairing.basePath);
       pairing.basePath = archiveStem;
@@ -635,6 +665,7 @@ async function processArchiveContents(
         thumbnailSidecar: null,
         imageFiles: volumeImageFiles,
         basePath: pairing.basePath,
+        titlePath: pairing.titlePath,
         sourceType: 'local',
         nestedArchives: []
       };
@@ -670,7 +701,7 @@ async function processArchiveContents(
         }
 
         // Process the volume
-        const processed = await processVolume(decompressed);
+        const processed = await processVolume(decompressed, { keepFolderNames: keepFolderNames() });
 
         // Check for duplicates
         if (await volumeExists(processed.metadata.volumeUuid)) {
@@ -712,6 +743,7 @@ async function processArchiveContents(
         mokuroFile: null,
         source: { type: 'archive', file },
         basePath: filename.replace(/\.(zip|cbz|cbr|rar|7z)$/i, ''),
+        titlePath: joinTitlePath(archivePath, stripArchiveExtension(entry.filename)),
         estimatedSize: entry.data.byteLength,
         imageOnly: false
       });
@@ -740,6 +772,7 @@ function directoryToDecompressed(source: PairedSource): DecompressedVolume {
     thumbnailSidecar: null,
     imageFiles: source.source.files,
     basePath: source.basePath,
+    titlePath: source.titlePath,
     sourceType: 'local',
     nestedArchives: []
   };
@@ -768,6 +801,7 @@ function tocDirectoryToDecompressed(source: PairedSource): DecompressedVolume {
     thumbnailSidecar: null,
     imageFiles,
     basePath: source.basePath,
+    titlePath: source.titlePath,
     sourceType: 'local',
     nestedArchives: []
   };
@@ -849,7 +883,7 @@ async function processSingleVolume(
       }
 
       onProgress?.('Processing...', 60);
-      const processed = await processVolume(decompressed);
+      const processed = await processVolume(decompressed, { keepFolderNames: keepFolderNames() });
 
       if (await volumeExists(processed.metadata.volumeUuid)) {
         return {
@@ -871,7 +905,8 @@ async function processSingleVolume(
       const result = await processArchiveContents(
         source.source.file,
         source.mokuroFile,
-        onProgress
+        onProgress,
+        source.titlePath
       );
 
       return {
@@ -917,7 +952,7 @@ async function processSingleVolume(
     onProgress?.('Processing...', 50);
 
     // Process the volume
-    const processed = await processVolume(decompressed);
+    const processed = await processVolume(decompressed, { keepFolderNames: keepFolderNames() });
 
     // Check for duplicates
     if (await volumeExists(processed.metadata.volumeUuid)) {
@@ -1321,8 +1356,13 @@ async function promptForImageOnlyImport(pairings: PairedSource[]): Promise<boole
   // Group by series name
   const seriesGroups = new Map<string, number>();
 
+  const keep = keepFolderNames();
   for (const pairing of pairings) {
-    const seriesName = extractSeriesName(pairing.basePath);
+    // The same name `processVolume` will save the volume under.
+    const seriesName = imageOnlySeriesName(
+      keep ? (pairing.titlePath ?? pairing.basePath) : pairing.basePath,
+      keep
+    );
     seriesGroups.set(seriesName, (seriesGroups.get(seriesName) || 0) + 1);
   }
 

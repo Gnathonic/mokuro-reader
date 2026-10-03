@@ -52,6 +52,13 @@ export interface PairedSource {
   source: SourceDescriptor;
   /** Base path for series/volume name extraction */
   basePath: string;
+  /**
+   * Where the source sat, when `basePath` alone loses it: a nested archive's
+   * outer archive path plus its own (`Series.zip/Vol 1.cbz` → `Series/Vol 1`).
+   * Names the volume only under "keep folder names" — see
+   * `DecompressedVolume.titlePath`.
+   */
+  titlePath?: string;
   /** Estimated size in bytes for memory management */
   estimatedSize: number;
   /** Whether this is an image-only source (no mokuro found anywhere) */
@@ -135,6 +142,13 @@ export interface DecompressedVolume {
   imageFiles: Map<string, File>;
   /** Base path for series/volume name extraction */
   basePath: string;
+  /**
+   * The volume's full path for verbatim titles ("keep folder names", #285),
+   * including the folder or archive it came from — `basePath` of an archive's
+   * image-only volume is relative to the archive's inside. Defaults to
+   * `basePath`. Never read with the setting off.
+   */
+  titlePath?: string;
   /** Where this came from */
   sourceType: 'local' | 'cloud';
   /** Archives discovered inside (for recursive processing) */
