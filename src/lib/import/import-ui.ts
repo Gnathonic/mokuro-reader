@@ -1,12 +1,18 @@
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { showSnackbar } from '$lib/util/snackbar';
 import { promptMissingFiles, promptImageOnlyImport } from '$lib/util/modals';
-import type { MissingFilesInfo, SeriesImportInfo as ModalSeriesImportInfo } from '$lib/util/modals';
+import type {
+  ImageOnlyNaming,
+  MissingFilesInfo,
+  SeriesImportInfo as ModalSeriesImportInfo
+} from '$lib/util/modals';
 export type { MissingFilesInfo } from '$lib/util/modals';
 
 export interface SeriesImportInfo {
   seriesList: ModalSeriesImportInfo[];
   totalVolumeCount: number;
+  /** Both naming modes' names, for the prompt's preview (#285). */
+  naming?: ImageOnlyNaming;
 }
 
 export interface ImportUiBridge {
@@ -37,7 +43,8 @@ let uiBridge: ImportUiBridge = {
         info.seriesList,
         info.totalVolumeCount,
         () => resolve(true),
-        () => resolve(false)
+        () => resolve(false),
+        info.naming
       );
     }),
   promptMissing: (info) =>

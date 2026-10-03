@@ -47,13 +47,21 @@ vi.mock('$lib/util/progress-tracker', () => ({
 
 /** Every series list the image-only confirmation prompt was shown. */
 const promptedSeries = vi.hoisted(() => [] as string[][]);
+type PreviewList = { seriesName: string; volumeNames?: string[] }[];
+/** The naming preview each prompt carried (both modes). */
+const promptedNaming = vi.hoisted(
+  () => [] as ({ cleaned: PreviewList; folder: PreviewList } | undefined)[]
+);
 vi.mock('$lib/util/modals', () => ({
   promptImageOnlyImport: (
     seriesList: { seriesName: string }[],
     _total: unknown,
-    onConfirm: () => void
+    onConfirm: () => void,
+    _onCancel: unknown,
+    naming?: { cleaned: PreviewList; folder: PreviewList }
   ) => {
     promptedSeries.push(seriesList.map((s) => s.seriesName));
+    promptedNaming.push(naming);
     onConfirm();
   },
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
@@ -317,11 +325,37 @@ describe('processVolume with keepFolderNames', () => {
 describe('importing image-only volumes', () => {
   beforeEach(async () => {
     promptedSeries.length = 0;
+    promptedNaming.length = 0;
     importQueue.set([]);
     await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), db.volume_files.clear()]);
   });
 
   afterEach(() => setKeepFolderNames(false));
+
+  describe('the prompt previews exactly the names the import saves', () => {
+    const files = () => [
+      picked('Chained Soldier (Semi-Color)/01/page_0000.jpg'),
+      picked('Chained Soldier (Semi-Color)/02/page_0000.jpg'),
+      picked('Killing Bites/Killing Bites 01/001.webp')
+    ];
+    const flatten = (list: PreviewList) =>
+      list.flatMap((s) =>
+        (s.volumeNames ?? []).map((volume) => ({ series: s.seriesName, volume }))
+      );
+    const sorted = (rows: { series: string; volume: string }[]) =>
+      [...rows].sort((a, b) => a.volume.localeCompare(b.volume));
+
+    for (const keep of [false, true]) {
+      it(keep ? 'folder names' : 'cleaned up', async () => {
+        setKeepFolderNames(keep);
+        const rows = await importAndRead(files());
+        const naming = promptedNaming[0]!;
+        expect(sorted(flatten(keep ? naming.folder : naming.cleaned))).toEqual(
+          sorted(titles(rows))
+        );
+      });
+    }
+  });
 
   it('defaults to off', () => {
     localStorage.removeItem('miscSettings');

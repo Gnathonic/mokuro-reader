@@ -48,7 +48,7 @@ import {
   extractLayerEntries,
   stashLayerEntries
 } from '$lib/reader/edit/layer-import';
-import { imageOnlySeriesName } from '$lib/util/series-extraction';
+import { imageOnlyNamingPreview } from './image-only-naming';
 import { miscSettings } from '$lib/settings/misc';
 import { generateUUID } from '$lib/util/uuid';
 import { requestPersistentStorage } from '$lib/util/upload';
@@ -1353,27 +1353,13 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
  * Groups volumes by series and shows a confirmation modal
  */
 async function promptForImageOnlyImport(pairings: PairedSource[]): Promise<boolean> {
-  // Group by series name
-  const seriesGroups = new Map<string, number>();
-
-  const keep = keepFolderNames();
-  for (const pairing of pairings) {
-    // The same name `processVolume` will save the volume under.
-    const seriesName = imageOnlySeriesName(
-      keep ? (pairing.titlePath ?? pairing.basePath) : pairing.basePath,
-      keep
-    );
-    seriesGroups.set(seriesName, (seriesGroups.get(seriesName) || 0) + 1);
-  }
-
-  // Convert to sorted list
-  const seriesList = [...seriesGroups.entries()]
-    .map(([seriesName, volumeCount]) => ({ seriesName, volumeCount }))
-    .sort((a, b) => a.seriesName.localeCompare(b.seriesName));
-
+  // Both naming modes' names, built by the functions `processVolume` names
+  // with; the list shown first is the mode currently set.
+  const naming = imageOnlyNamingPreview(pairings);
   return getImportUiBridge().promptImageOnly({
-    seriesList,
-    totalVolumeCount: pairings.length
+    seriesList: keepFolderNames() ? naming.folder : naming.cleaned,
+    totalVolumeCount: pairings.length,
+    naming
   });
 }
 
