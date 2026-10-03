@@ -5,6 +5,7 @@ import {
   migrateProfiles,
   grayscaleActive,
   imageFilter,
+  pageFilter,
   preferredTitleLanguage,
   updateCatalogSetting,
   updateSetting,
@@ -117,6 +118,49 @@ describe('imageFilter', () => {
     updateSetting('invertColors', true);
     updateSetting('grayscale', true);
     expect(get(imageFilter)).toBe('invert(1) grayscale(1)');
+  });
+});
+
+describe('page brightness / contrast (#256)', () => {
+  beforeEach(() => {
+    updateSetting('pageBrightness', 100);
+    updateSetting('pageContrast', 100);
+  });
+
+  it('defaults both to 100 on a profile that predates them', () => {
+    const out = migrateProfiles({ Test: {} as any });
+    expect(out.Test.pageBrightness).toBe(100);
+    expect(out.Test.pageContrast).toBe(100);
+  });
+
+  it('keeps stored values and repairs malformed ones on migration', () => {
+    const out = migrateProfiles({
+      A: { pageBrightness: 130, pageContrast: 150 } as any,
+      B: { pageBrightness: 'bright', pageContrast: 5000 } as any
+    });
+    expect(out.A.pageBrightness).toBe(130);
+    expect(out.A.pageContrast).toBe(150);
+    expect(out.B.pageBrightness).toBe(100);
+    expect(out.B.pageContrast).toBe(200);
+  });
+
+  it('pageFilter is none at the defaults', () => {
+    expect(get(pageFilter)).toBe('none');
+  });
+
+  it('pageFilter follows the active profile', () => {
+    updateSetting('pageBrightness', 130);
+    updateSetting('pageContrast', 150);
+    expect(get(pageFilter)).toBe('brightness(130%) contrast(150%)');
+  });
+
+  it('pageFilter does not re-emit for unrelated setting writes', () => {
+    const seen: string[] = [];
+    const unsubscribe = pageFilter.subscribe((v) => seen.push(v));
+    updateSetting('pagedGap', 7);
+    updateSetting('pagedGap', 0);
+    unsubscribe();
+    expect(seen).toEqual(['none']);
   });
 });
 

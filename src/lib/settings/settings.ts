@@ -4,6 +4,7 @@ import { isMobilePlatform } from '$lib/util/platform';
 import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
 import { isDisplayTitleLanguage } from '$lib/metadata/sanitize';
 import type { DisplayTitleLanguage } from '$lib/metadata/types';
+import { clampPageAdjust, pageFilterCss, PAGE_ADJUST_DEFAULT } from '$lib/reader/page-filter';
 
 export type FontSize =
   | 'auto'
@@ -171,6 +172,10 @@ export type Settings = {
   invertColorsSchedule: TimeSchedule;
   grayscale: boolean;
   grayscaleSchedule: TimeSchedule;
+  /** Page image brightness, % (100 = unchanged). Images only, never the OCR text. #256 */
+  pageBrightness: number;
+  /** Page image contrast, % (100 = unchanged). Images only, never the OCR text. #256 */
+  pageContrast: number;
   inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
@@ -318,6 +323,8 @@ const defaultSettings: Settings = {
     startTime: '21:00',
     endTime: '06:00'
   },
+  pageBrightness: PAGE_ADJUST_DEFAULT,
+  pageContrast: PAGE_ADJUST_DEFAULT,
   inactivityTimeoutMinutes: 5,
   swapWheelBehavior: false,
   textBoxContextMenu: true,
@@ -484,6 +491,11 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...defaultSettings.grayscaleSchedule,
       ...(profile.grayscaleSchedule || {})
     };
+
+    // Page brightness/contrast (#256): a synced or hand-edited profile may carry
+    // anything; the slider and the filter both expect a whole in-range percent.
+    migratedProfile.pageBrightness = clampPageAdjust(migratedProfile.pageBrightness);
+    migratedProfile.pageContrast = clampPageAdjust(migratedProfile.pageContrast);
 
     migratedProfile.catalogSettings = {
       ...defaultSettings.catalogSettings,
@@ -710,6 +722,16 @@ export const imageFilter = derived(
   [invertColorsActive, grayscaleActive],
   ([$invertColorsActive, $grayscaleActive]) =>
     `invert(${$invertColorsActive ? 1 : 0}) grayscale(${$grayscaleActive ? 1 : 0})`
+);
+
+/**
+ * CSS filter for the page IMAGES only (brightness/contrast, #256) — `none` at
+ * the defaults. A primitive string, so subscribers rerun only when it changes,
+ * not on every settings write. The reader sets it once as `--page-filter`;
+ * each page's image layer reads the variable, so no per-page work.
+ */
+export const pageFilter: Readable<string> = derived(settings, ($settings) =>
+  pageFilterCss($settings?.pageBrightness, $settings?.pageContrast)
 );
 
 /**

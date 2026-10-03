@@ -78,12 +78,14 @@
   data-page-index={pageIndex}
   style:width={`${page.img_width}px`}
   style:height={`${page.img_height}px`}
-  style:background-image={url}
-  style:background-size="contain"
-  style:background-repeat="no-repeat"
-  style:background-position="center"
   class="relative"
 >
+  <!-- The image is its own layer, not this div's background, so the page
+       brightness/contrast filter (#256, `--page-filter` from the reader) reaches
+       the image and never the text boxes or edit overlay beside it. First child
+       and positioned: it paints under them (both are positioned, later in tree
+       order). Pointer events pass through to this div, as with a background. -->
+  <div class="pageImage" aria-hidden="true" style:background-image={url}></div>
   {#if editSession && pageIndex !== undefined}
     <EditOverlay {page} {pageIndex} session={editSession} />
   {:else}
@@ -97,3 +99,17 @@
     />
   {/if}
 </div>
+
+<style>
+  .pageImage {
+    position: absolute;
+    inset: 0;
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    pointer-events: none;
+    /* `none` unless the reader sets brightness/contrast: no stacking context
+       and no compositing cost at the defaults. */
+    filter: var(--page-filter, none);
+  }
+</style>

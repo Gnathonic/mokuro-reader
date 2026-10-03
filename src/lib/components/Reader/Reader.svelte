@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pageImageUrlFrom } from '$lib/reader/page-image-url';
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
@@ -13,6 +14,7 @@
   import {
     effectiveVolumeSettings,
     imageFilter,
+    pageFilter,
     preferredTitleLanguage,
     progress,
     settings,
@@ -1147,25 +1149,10 @@
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
 
-  // Extract image URL from an element by traversing up to find background-image
-  function extractImageUrlFromElement(element: HTMLElement | null): string | null {
-    if (!element) return null;
-    let current: HTMLElement | null = element;
-    while (current) {
-      const bgImage = getComputedStyle(current).backgroundImage;
-      if (bgImage && bgImage !== 'none') {
-        const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
-        if (match) return match[1];
-      }
-      current = current.parentElement;
-    }
-    return null;
-  }
-
   function handleTextBoxContextMenu(data: ContextMenuData) {
     // Capture the image URL immediately while the DOM is in a known good state
     // This prevents issues when Yomitan or other extensions modify the DOM
-    const imageUrl = extractImageUrlFromElement(data.imgElement) ?? undefined;
+    const imageUrl = pageImageUrlFrom(data.imgElement) ?? undefined;
     // Prefer pageIndex from the data (set by TextBoxes), fall back to progress store
     const pageIndex =
       data.pageIndex ??
@@ -1612,6 +1599,7 @@
   {#if $settings.continuousScroll && volumeData?.files}
     {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader
+        --page-filter={$pageFilter}
         {pages}
         files={volumeData.files}
         {volume}
@@ -1625,6 +1613,7 @@
       />
     {:else}
       <HorizontalScrollReader
+        --page-filter={$pageFilter}
         {pages}
         files={volumeData.files}
         {volume}
@@ -1639,8 +1628,9 @@
       />
     {/if}
   {:else}
-    <!-- Page-based mode -->
-    <div class="flex" style:background-color="var(--reader-bg)">
+    <!-- Page-based mode. `--page-filter` (brightness/contrast, #256) is read by
+         each page's image layer only — set once here, not per page. -->
+    <div class="flex" style:background-color="var(--reader-bg)" style:--page-filter={$pageFilter}>
       <PagedViewport
         contentSize={pagedContentSize}
         pageKey={page}
