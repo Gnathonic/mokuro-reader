@@ -519,31 +519,6 @@ export function clearVolumes() {
   _volumesInternal.set({});
 }
 
-export function clearVolumeSpeedData(volume: string) {
-  let cleared = false;
-  _volumesInternal.update((prev) => {
-    const currentVolume = prev[volume];
-    if (!currentVolume) return prev;
-    cleared = true;
-
-    // Parse the existing timestamp and add 1ms to win sync conflicts
-    const currentTimestamp = new Date(currentVolume.lastProgressUpdate).getTime();
-    const newTimestamp = new Date(currentTimestamp + 1).toISOString();
-
-    return {
-      ...prev,
-      [volume]: new VolumeData({
-        ...currentVolume,
-        timeReadInMinutes: 0,
-        lastProgressUpdate: newTimestamp
-        // Keep: progress, chars, completed, settings, recentPageTurns, sessions
-      })
-    };
-  });
-  // Reading history: time/speed only — characters read stay.
-  if (cleared) void recordEvent({ kind: 'forget', volume, before: Date.now(), scope: 'time' });
-}
-
 export function clearOrphanedVolumeData(volumeIds: string[]) {
   const forgotten: string[] = [];
   _volumesInternal.update((prev) => {

@@ -9,7 +9,6 @@ import { updateVolumeStats } from '$lib/util/volume-editor';
 import {
   archiveAndResetVolumes,
   clearOrphanedVolumeData,
-  clearVolumeSpeedData,
   deleteVolume,
   updateProgress,
   volumesWithTrash
@@ -89,17 +88,5 @@ describe('stat edits record history events', () => {
       ['forget', 'vol-a'],
       ['forget', 'vol-b']
     ]);
-  });
-
-  it('delete speed data: a time-only forget', () => {
-    updateProgress('vol-a', 3, 100);
-    recorded.mockClear();
-    clearVolumeSpeedData('vol-a');
-    expect(recorded).toHaveBeenCalledTimes(1);
-    expect(recorded.mock.calls[0][0]).toMatchObject({
-      kind: 'forget',
-      volume: 'vol-a',
-      scope: 'time'
-    });
   });
 });

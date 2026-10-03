@@ -42,16 +42,11 @@ export interface RestartPayload {
   volume: string;
 }
 
-/**
- * "Forget this volume's stats": ignore its events recorded before `before`.
- * `scope: 'time'` forgets only reading time/speed ("delete speed data"), and
- * keeps characters read; absent = forget everything.
- */
+/** "Forget this volume's stats": ignore its events recorded before `before`. */
 export interface ForgetPayload {
   kind: 'forget';
   volume: string;
   before: number;
-  scope?: 'time';
 }
 
 export type EventPayload = PagePayload | AdjustPayload | RestartPayload | ForgetPayload;
