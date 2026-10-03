@@ -520,9 +520,11 @@ export function clearVolumes() {
 }
 
 export function clearVolumeSpeedData(volume: string) {
+  let cleared = false;
   _volumesInternal.update((prev) => {
     const currentVolume = prev[volume];
     if (!currentVolume) return prev;
+    cleared = true;
 
     // Parse the existing timestamp and add 1ms to win sync conflicts
     const currentTimestamp = new Date(currentVolume.lastProgressUpdate).getTime();
@@ -538,9 +540,12 @@ export function clearVolumeSpeedData(volume: string) {
       })
     };
   });
+  // Reading history: time/speed only — characters read stay.
+  if (cleared) void recordEvent({ kind: 'forget', volume, before: Date.now(), scope: 'time' });
 }
 
 export function clearOrphanedVolumeData(volumeIds: string[]) {
+  const forgotten: string[] = [];
   _volumesInternal.update((prev) => {
     const updated = { ...prev };
     const now = new Date().toISOString();
@@ -548,6 +553,7 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
     volumeIds.forEach((id) => {
       const existing = updated[id];
       if (existing) {
+        forgotten.push(id);
         // Create tombstone instead of deleting
         updated[id] = new VolumeData({
           deletedOn: now,
@@ -561,6 +567,9 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
 
     return updated;
   });
+  // Reading history: the same "forget these stats" as `deleteVolume`.
+  const before = Date.now();
+  for (const id of forgotten) void recordEvent({ kind: 'forget', volume: id, before });
 }
 
 type CompletionListener = (volumeUuid: string) => void;

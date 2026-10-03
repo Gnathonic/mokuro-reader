@@ -87,7 +87,11 @@
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
   import { ViewTracker } from '$lib/reading-history/view-tracker';
-  import { describeView } from '$lib/reading-history/describe-view';
+  import {
+    describeView,
+    rangeScopeKey,
+    type ContinuousRange
+  } from '$lib/reading-history/describe-view';
   import { recordEvent } from '$lib/reading-history/record';
   import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
   import '$lib/styles/page-transitions.css';
@@ -626,7 +630,7 @@
   // Hidden tab = no view, so a backgrounded reader never accrues dwell.
   const viewTracker = new ViewTracker((payload, t) => void recordEvent(payload, t));
   let pageHidden = $state(typeof document !== 'undefined' && document.visibilityState === 'hidden');
-  let continuousRange = $state<[number, number] | null>(null);
+  let continuousRange = $state<ContinuousRange | null>(null);
   let pageCharCumulative = $derived(buildPageCharCounts(pages).cumulative);
 
   // Set of missing page paths for checking if current page is a placeholder
@@ -1141,6 +1145,8 @@
       scrollMode: effectiveScrollMode === 'horizontal' ? 'horizontal' : 'vertical',
       showSecondPage: showSecondPage(),
       continuousRange,
+      // Same condition the template uses to render the pages.
+      showing: !!volumeData && $progress?.[volume?.volume_uuid || 0] !== undefined,
       viewport: { w: windowWidth, h: windowHeight }
     })
   );
@@ -1149,13 +1155,10 @@
     viewTracker.setView(pageHidden ? null : currentView, Date.now());
   });
 
-  // A range from the other scroll mode, or the previous volume, is stale.
-  $effect(() => {
-    void $settings.continuousScroll;
-    void effectiveScrollMode;
-    void volume?.volume_uuid;
-    continuousRange = null;
-  });
+  function handleVisibleRange(first: number, last: number) {
+    const mode = effectiveScrollMode === 'horizontal' ? 'horizontal' : 'vertical';
+    continuousRange = { scope: rangeScopeKey(volume?.volume_uuid, mode), first, last };
+  }
   let totalLineCount = $derived(getCharCount(pages).lineCount);
   run(() => {
     if (volume) {
@@ -1664,7 +1667,7 @@
         {volumeSettings}
         currentPage={page}
         onPageChange={handleContinuousPageChange}
-        onVisibleRangeChange={(first, last) => (continuousRange = [first, last])}
+        onVisibleRangeChange={handleVisibleRange}
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
@@ -1678,7 +1681,7 @@
         {volumeSettings}
         currentPage={page}
         onPageChange={handleContinuousPageChange}
-        onVisibleRangeChange={(first, last) => (continuousRange = [first, last])}
+        onVisibleRangeChange={handleVisibleRange}
         onVolumeNav={handleContinuousVolumeNav}
         onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}

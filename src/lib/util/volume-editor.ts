@@ -207,7 +207,13 @@ export function updateVolumeStats(
     if (updates.timeReadInMinutes !== undefined) {
       timeDeltaMs = (updates.timeReadInMinutes - currentVolume.timeReadInMinutes) * 60000;
     }
-    if (updates.chars !== undefined) {
+    // The modal re-sends `chars` as a linear estimate on every save; only a
+    // real progress edit makes its chars a user edit.
+    if (
+      updates.chars !== undefined &&
+      updates.progress !== undefined &&
+      updates.progress !== currentVolume.progress
+    ) {
       charsDelta = updates.chars - currentVolume.chars;
     }
 

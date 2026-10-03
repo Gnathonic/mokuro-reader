@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeView, type ViewInputs } from './describe-view';
+import { describeView, rangeScopeKey, type ViewInputs } from './describe-view';
 
 // Five pages with 10, 0, 30, 40, 50 characters.
 const cumulative = [10, 10, 40, 80, 130];
@@ -13,6 +13,7 @@ function inputs(extra: Partial<ViewInputs>): ViewInputs {
     scrollMode: 'vertical',
     showSecondPage: false,
     continuousRange: null,
+    showing: true,
     viewport: { w: 400, h: 800 },
     ...extra
   };
@@ -55,7 +56,12 @@ describe('describeView', () => {
 
   it('uses the continuous range when it contains the current page', () => {
     const v = describeView(
-      inputs({ continuous: true, scrollMode: 'horizontal', page: 3, continuousRange: [2, 4] })
+      inputs({
+        continuous: true,
+        scrollMode: 'horizontal',
+        page: 3,
+        continuousRange: { scope: rangeScopeKey('vol-1', 'horizontal'), first: 2, last: 4 }
+      })
     );
     expect(v).toMatchObject({
       first_page: 2,
@@ -68,7 +74,13 @@ describe('describeView', () => {
 
   it('falls back to the current page when the continuous range is stale or missing', () => {
     expect(
-      describeView(inputs({ continuous: true, page: 5, continuousRange: [1, 2] }))
+      describeView(
+        inputs({
+          continuous: true,
+          page: 5,
+          continuousRange: { scope: rangeScopeKey('vol-1', 'vertical'), first: 1, last: 2 }
+        })
+      )
     ).toMatchObject({ first_page: 5, last_page: 5, layout: 'continuous-v' });
     expect(describeView(inputs({ continuous: true, page: 2 }))).toMatchObject({
       first_page: 2,
@@ -81,5 +93,20 @@ describe('describeView', () => {
       orientation: 'landscape',
       viewport: { w: 1280, h: 720 }
     });
+  });
+
+  it('ignores a range reported for another volume or scroll mode', () => {
+    const range = { scope: rangeScopeKey('vol-0', 'vertical'), first: 2, last: 4 };
+    expect(
+      describeView(inputs({ continuous: true, page: 3, continuousRange: range }))
+    ).toMatchObject({ first_page: 3, last_page: 3 });
+    const horizontal = { scope: rangeScopeKey('vol-1', 'horizontal'), first: 2, last: 4 };
+    expect(
+      describeView(inputs({ continuous: true, page: 3, continuousRange: horizontal }))
+    ).toMatchObject({ first_page: 3, last_page: 3 });
+  });
+
+  it('returns null while the reader is not showing pages', () => {
+    expect(describeView(inputs({ showing: false }))).toBeNull();
   });
 });

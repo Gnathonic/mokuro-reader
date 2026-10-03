@@ -1,5 +1,20 @@
 import type { ViewDescriptor } from './view-tracker';
 
+/**
+ * A continuous range is only valid for the volume and scroll mode it was
+ * measured in. Tagging it (instead of nulling it from an effect) keeps it
+ * immune to unrelated store emissions — every cloud sync re-emits `settings`.
+ */
+export function rangeScopeKey(volume: string | undefined, scrollMode: 'vertical' | 'horizontal') {
+  return `${volume ?? ''}|${scrollMode}`;
+}
+
+export interface ContinuousRange {
+  scope: string;
+  first: number;
+  last: number;
+}
+
 export interface ViewInputs {
   volume: string | undefined;
   /** Cumulative chars per page (`buildPageCharCounts(pages).cumulative`). */
@@ -11,7 +26,12 @@ export interface ViewInputs {
   /** Paged mode: a second page is shown beside `page`. */
   showSecondPage: boolean;
   /** Continuous mode: 1-based inclusive range of pages with any part on screen. */
-  continuousRange: [number, number] | null;
+  continuousRange: ContinuousRange | null;
+  /**
+   * The reader is actually showing this volume's pages (not a loading or
+   * "not on this device" screen, and not the previous volume's layer pages).
+   */
+  showing: boolean;
   viewport: { w: number; h: number };
 }
 
@@ -23,7 +43,7 @@ export interface ViewInputs {
 export function describeView(inputs: ViewInputs): ViewDescriptor | null {
   const cum = inputs.pageCharCumulative;
   const count = cum.length;
-  if (!inputs.volume || count === 0) return null;
+  if (!inputs.showing || !inputs.volume || count === 0) return null;
 
   const page = clamp(inputs.page, 1, count);
   let first = page;
@@ -33,7 +53,15 @@ export function describeView(inputs: ViewInputs): ViewDescriptor | null {
   if (inputs.continuous) {
     layout = inputs.scrollMode === 'vertical' ? 'continuous-v' : 'continuous-h';
     const range = inputs.continuousRange;
-    if (range && range[0] <= page && page <= range[1]) [first, last] = range;
+    if (
+      range &&
+      range.scope === rangeScopeKey(inputs.volume, inputs.scrollMode) &&
+      range.first <= page &&
+      page <= range.last
+    ) {
+      first = range.first;
+      last = range.last;
+    }
   } else {
     layout = inputs.showSecondPage ? 'double' : 'single';
     if (inputs.showSecondPage) last = page + 1;
