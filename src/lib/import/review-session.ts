@@ -12,7 +12,13 @@
 import { get, writable } from 'svelte/store';
 import type { GroupNaming, ReviewGroup } from './image-only-review';
 
-export type GroupDecision = { action: 'import'; naming: GroupNaming } | { action: 'skip' };
+/**
+ * `all`: the skip came from "Skip all remaining" (close, Escape, a cancel) —
+ * the import also skips the steps it would only raise later (#285).
+ */
+export type GroupDecision =
+  | { action: 'import'; naming: GroupNaming }
+  | { action: 'skip'; all?: true };
 export type OnGroupDecision = (groupId: string, decision: GroupDecision) => void;
 
 export interface ReviewSessionState {
@@ -66,5 +72,5 @@ export function decideCurrent(decision: GroupDecision): void {
 export function skipAllRemaining(): void {
   const { pending } = get(reviewSession);
   reviewSession.set({ pending: [], decided: 0 });
-  for (const entry of pending) notify(entry, { action: 'skip' });
+  for (const entry of pending) notify(entry, { action: 'skip', all: true });
 }

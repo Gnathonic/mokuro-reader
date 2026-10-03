@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Button } from 'flowbite-svelte';
   import { CloseOutline } from 'flowbite-svelte-icons';
-  import { storedTitle } from '$lib/import/image-only-naming';
+  import { locateVolume, storedTitle } from '$lib/import/image-only-naming';
   import {
     canonicalSeriesTitle,
     nameGroup,
@@ -51,24 +52,57 @@
   let destroyed = false;
   let root: HTMLElement | undefined = $state();
 
+  /** Count `target`'s volumes now; the start follows unless it was typed or the name moved on. */
+  async function countSeries(target: string, request: number) {
+    const count = await existingVolumeCount(target, group.ownUuids);
+    if (request === countRequest && !startEdited && !destroyed) {
+      start = count + 1;
+      countedFor = target;
+    }
+  }
+
   /** A new series name: numbering follows that series' volumes unless the start was typed. */
   function setSeries(value: string) {
     series = value;
     clearTimeout(countTimer);
     const request = ++countRequest;
     const target = value.trim();
-    countTimer = setTimeout(async () => {
-      const count = await existingVolumeCount(target, group.ownUuids);
-      if (request === countRequest && !startEdited) {
-        start = count + 1;
-        countedFor = target;
-      }
+    countTimer = setTimeout(() => {
+      countSeries(target, request).catch((error) =>
+        console.error('[Import] Could not count the series volumes:', error)
+      );
     }, 200);
+  }
+
+  // The count the group was offered with can be stale by the time this step
+  // is on screen: a step decided before it may have approved volumes of the
+  // same series (a second pick appended behind the first). Recount once now.
+  onMount(() => {
+    countSeries(group.series.trim(), ++countRequest).catch((error) =>
+      console.error('[Import] Could not count the series volumes:', error)
+    );
+  });
+
+  // A step that REPLACES a decided one ignores activation for a moment: its
+  // Import takes focus at once, so a double click or a second Enter aimed at
+  // the previous step would otherwise decide this series unseen.
+  const ARM_DELAY_MS = 300;
+  // svelte-ignore state_referenced_locally
+  let armed = $state(step <= 1);
+  let armTimer: ReturnType<typeof setTimeout> | undefined;
+  onMount(() => {
+    if (!armed) armTimer = setTimeout(() => (armed = true), ARM_DELAY_MS);
+  });
+
+  /** A held Enter auto-repeats: never let a repeat activate a button. */
+  function keydown(event: KeyboardEvent) {
+    if (event.repeat && event.key === 'Enter') event.preventDefault();
   }
 
   $effect(() => () => {
     destroyed = true;
     clearTimeout(countTimer);
+    clearTimeout(armTimer);
   });
 
   // A new step takes focus on its Import, as the dialog's first step does:
@@ -108,7 +142,7 @@
   }
 
   async function importGroup() {
-    if (!canImport || deciding) return;
+    if (!canImport || deciding || !armed) return;
     deciding = true;
     // The click's own mousedown may have just blurred the series field, whose
     // canonical spelling then only SCHEDULED its count; a keyboard Import never
@@ -144,7 +178,7 @@
   }
 
   function skipGroup() {
-    if (deciding) return;
+    if (deciding || !armed) return;
     deciding = true;
     onDecide({ action: 'skip' });
   }
@@ -170,6 +204,9 @@
   class="flex flex-col gap-3"
   style="max-height: min(80svh, calc(var(--review-vvh, 100svh) - 5rem))"
   data-testid="review-step-body"
+  data-armed={armed}
+  role="presentation"
+  onkeydown={keydown}
 >
   <div class="flex items-start justify-between gap-2">
     <div class="min-w-0">
@@ -275,19 +312,33 @@
   >
     {#each group.candidates as candidate (candidate.id)}
       {@const saved = storedTitle(names.get(candidate.id)?.volume ?? '')}
+      {@const match = group.matches?.get(candidate.id)}
       <li class="flex flex-col gap-0.5 px-3 py-2">
-        <input
-          type="text"
-          aria-label="Volume name"
-          enterkeyhint="done"
-          data-testid="review-volume-name"
-          class="w-full rounded border border-transparent bg-transparent px-1 py-0.5 text-sm text-gray-900 focus:border-blue-500 dark:text-white"
-          value={overrides[candidate.id] ?? saved}
-          oninput={(e) => (overrides[candidate.id] = e.currentTarget.value)}
-          onblur={() => nameBlur(candidate.id)}
-        />
-        {#if overrides[candidate.id]?.trim() && saved !== overrides[candidate.id]}
-          <span class="px-1 text-xs text-gray-500 dark:text-gray-400">Saved as {saved}</span>
+        {#if match}
+          <span class="px-1 py-0.5 text-sm text-gray-500 dark:text-gray-400"
+            >{locateVolume(candidate).own}</span
+          >
+          <span
+            class="px-1 text-xs text-gray-500 dark:text-gray-400"
+            data-testid="review-volume-match"
+            >{match.installed
+              ? 'Already in your library'
+              : 'Removed from this device — its pages come back'}</span
+          >
+        {:else}
+          <input
+            type="text"
+            aria-label="Volume name"
+            enterkeyhint="done"
+            data-testid="review-volume-name"
+            class="w-full rounded border border-transparent bg-transparent px-1 py-0.5 text-sm text-gray-900 focus:border-blue-500 dark:text-white"
+            value={overrides[candidate.id] ?? saved}
+            oninput={(e) => (overrides[candidate.id] = e.currentTarget.value)}
+            onblur={() => nameBlur(candidate.id)}
+          />
+          {#if overrides[candidate.id]?.trim() && saved !== overrides[candidate.id]}
+            <span class="px-1 text-xs text-gray-500 dark:text-gray-400">Saved as {saved}</span>
+          {/if}
         {/if}
         <span
           class="truncate px-1 text-xs text-gray-400 dark:text-gray-500"

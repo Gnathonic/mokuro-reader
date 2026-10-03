@@ -59,7 +59,12 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 }));
 
 import { db } from '$lib/catalog/db';
-import { importFiles, importQueue, isImporting } from '../import-service';
+import {
+  importArchiveWithOptionalMokuro,
+  importFiles,
+  importQueue,
+  isImporting
+} from '../import-service';
 import { reviewSession } from '../review-session';
 import { installReviewer, type Reviewer } from './helpers/review-bridge';
 
@@ -189,5 +194,79 @@ describe('a direct import in flight', () => {
     await first;
     await waitForQueue();
     expect(await titles()).toEqual(['First', 'Killing Bites 01']);
+  });
+});
+
+describe('approved but not saved yet (final review #3)', () => {
+  it('a second pick of the same series while the first still waits in the queue numbers after it', async () => {
+    reviewer = installReviewer();
+    // The phone flow: v01–02 approved, still waiting behind a running import…
+    const first = importFiles([await volumeArchive('First', ['001.jpg', '002.jpg'])]);
+    await until(() => held.release.length === 1);
+    await importFiles([picked('Killing Bites v01/001.jpg'), picked('Killing Bites v02/001.jpg')]);
+    expect(await titles()).toEqual([]);
+    // …and v03–04 picked meanwhile.
+    await importFiles([picked('Killing Bites v03/001.jpg'), picked('Killing Bites v04/001.jpg')]);
+    expect(reviewer.offered.map((g) => g.existingCount)).toEqual([0, 2]);
+
+    held.release.shift()!();
+    await first;
+    await waitForQueue();
+    expect(await titles()).toEqual([
+      'First',
+      'Killing Bites 01',
+      'Killing Bites 02',
+      'Killing Bites 03',
+      'Killing Bites 04'
+    ]);
+  });
+
+  it('a volume that fails to import stops counting', async () => {
+    reviewer = installReviewer();
+    const first = importFiles([await volumeArchive('First', ['001.jpg', '002.jpg'])]);
+    await until(() => held.release.length === 1);
+    // Approved, then cancelled before it ever ran.
+    await importFiles([picked('Killing Bites v01/001.jpg')]);
+    const { cancelQueuedImports } = await import('../import-service');
+    cancelQueuedImports();
+    await importFiles([picked('Killing Bites v02/001.jpg')]);
+    expect(reviewer.offered.map((g) => g.existingCount)).toEqual([0, 0]);
+    held.release.shift()!();
+    await first;
+    await waitForQueue();
+  });
+});
+
+describe('a deep link (final review #8)', () => {
+  it('waits for a running import before it opens its archive', async () => {
+    const first = importFiles([await volumeArchive('First', ['001.jpg', '002.jpg'])]);
+    await until(() => held.release.length === 1);
+
+    const deep = importArchiveWithOptionalMokuro(await volumeArchive('Deep'), null);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(await titles()).toEqual([]);
+
+    held.release.shift()!();
+    await first;
+    await deep;
+    await waitForQueue();
+    expect(await titles()).toEqual(['Deep', 'First']);
+  });
+
+  it('waits for the queue too, and the queue waits for it in turn', async () => {
+    // A queued pair: the first holds the queue on its missing-files prompt.
+    void importFiles([
+      await volumeArchive('Queued A', ['001.jpg', '002.jpg']),
+      await volumeArchive('Queued B')
+    ]);
+    await until(() => held.release.length === 1);
+    const deep = importArchiveWithOptionalMokuro(await volumeArchive('Deep'), null);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(await titles()).toEqual([]);
+    held.release.shift()!();
+    await deep;
+    await waitForQueue();
+    expect(await titles()).toEqual(['Deep', 'Queued A', 'Queued B']);
+    expect(pool.users).toBe(0);
   });
 });

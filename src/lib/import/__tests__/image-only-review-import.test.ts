@@ -53,7 +53,14 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 }));
 
 import { db } from '$lib/catalog/db';
-import { describeImportOutcome, importFiles, importQueue, isImporting } from '../import-service';
+import {
+  cancelQueuedImports,
+  describeImportOutcome,
+  importFiles,
+  importQueue,
+  isImporting
+} from '../import-service';
+import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { decideCurrent, reviewSession, skipAllRemaining } from '../review-session';
 import { defaultNaming } from '../image-only-review';
 import {
@@ -430,6 +437,175 @@ describe('a decision the import cannot act on', () => {
     expect(get(isImporting)).toBe(false);
     expect(get(importQueue).map((i) => i.status)).toEqual(['error']);
     expect(await rows()).toEqual([]);
+  });
+});
+
+async function until(condition: () => boolean, timeout = 5_000): Promise<void> {
+  const start = Date.now();
+  while (!condition() && Date.now() - start < timeout) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+describe('a volume already in the library keeps its uuid, whatever the pick (final review #1)', () => {
+  // Measured: every pre-branch import of these volumes, whatever was picked.
+  const LEGACY_KB = generateDeterministicUUID('Killing Bites/Volume 01'); // c2329fe8
+  const LEGACY_CS = generateDeterministicUUID('Chained Soldier (Semi-Color)/Volume 01'); // 4a785ce6
+  const kbArchive = async (path: string) => picked(path, await zipOf(['001.jpg']));
+
+  async function seed(uuid: string, installed: boolean, series = 'Killing Bites') {
+    await db.volumes.put({
+      volume_uuid: uuid,
+      series_uuid: 'seed-series',
+      series_title: series,
+      volume_title: 'Volume 01',
+      mokuro_version: '',
+      page_count: 1,
+      character_count: 0,
+      page_char_counts: [0],
+      ...(installed ? {} : { metadata_only: true as const })
+    });
+    if (installed) {
+      await db.volume_ocr.put({ volume_uuid: uuid, pages: [] });
+      await db.volume_files.put({ volume_uuid: uuid, files: {} });
+    }
+  }
+
+  async function only() {
+    const all = await db.volumes.toArray();
+    expect(all).toHaveLength(1);
+    return all[0];
+  }
+
+  for (const shape of [
+    'Killing Bites v01.cbz',
+    'Killing Bites/Killing Bites v01.cbz',
+    'Downloads/Killing Bites v01.cbz'
+  ]) {
+    it(`a removed pre-branch volume picked as "${shape}" is filled in place, history kept`, async () => {
+      await seed(LEGACY_KB, false);
+      reviewer = installReviewer();
+      await importFiles([await kbArchive(shape)]);
+      await waitForQueue();
+      const row = await only();
+      expect(row.volume_uuid).toBe(LEGACY_KB);
+      expect(row.metadata_only).toBeUndefined();
+      expect(row.volume_title).toBe('Volume 01');
+      expect(await db.volume_ocr.get(LEGACY_KB)).toBeDefined();
+    });
+  }
+
+  it('"Chained Soldier (Semi-Color)/01" finds its pre-branch row', async () => {
+    await seed(LEGACY_CS, false, 'Chained Soldier (Semi-Color)');
+    reviewer = installReviewer();
+    await importFiles([picked('Chained Soldier (Semi-Color)/01/001.jpg')]);
+    await waitForQueue();
+    expect((await only()).volume_uuid).toBe(LEGACY_CS);
+  });
+
+  it('a volume first imported loose is found again inside its series folder and inside Downloads', async () => {
+    await seed(generateDeterministicUUID('Killing Bites v01'), false);
+    reviewer = installReviewer();
+    await importFiles([await kbArchive('Killing Bites/Killing Bites v01.cbz')]);
+    await waitForQueue();
+    const row = await only();
+    expect(row.volume_uuid).toBe(generateDeterministicUUID('Killing Bites v01'));
+
+    // Removed from the device again, then picked from Downloads.
+    await db.volume_ocr.delete(row.volume_uuid);
+    await db.volume_files.delete(row.volume_uuid);
+    await db.volumes.update(row.volume_uuid, { metadata_only: true });
+    importQueue.set([]);
+    await importFiles([await kbArchive('Downloads/Killing Bites v01.cbz')]);
+    await waitForQueue();
+    expect((await only()).volume_uuid).toBe(row.volume_uuid);
+  });
+
+  it('a volume first imported in its series folder is found again when picked loose', async () => {
+    const inFolder = generateDeterministicUUID('Killing Bites/Killing Bites v01');
+    await seed(inFolder, false);
+    reviewer = installReviewer();
+    await importFiles([await kbArchive('Killing Bites v01.cbz')]);
+    await waitForQueue();
+    expect((await only()).volume_uuid).toBe(inFolder);
+  });
+
+  it('an installed volume is shown as already in the library, never re-imported, and takes no number', async () => {
+    await seed(LEGACY_KB, true);
+    reviewer = installReviewer();
+    const queued = recordQueue();
+    await importFiles([
+      await kbArchive('Killing Bites v01.cbz'),
+      await kbArchive('Killing Bites v02.cbz')
+    ]);
+    await waitForQueue();
+    queued.stop();
+    const [group] = reviewer.offered;
+    const v01 = group.candidates.find((c) => c.source === 'Killing Bites v01.cbz')!;
+    expect(group.matches.get(v01.id)).toEqual({ uuid: LEGACY_KB, installed: true });
+    expect([...queued.titles]).toEqual(['Killing Bites v02']);
+    expect(await rows()).toEqual([
+      { series: 'Killing Bites', volume: 'Killing Bites 02' },
+      { series: 'Killing Bites', volume: 'Volume 01' }
+    ]);
+    expect(get(importQueue).filter((i) => i.status === 'error')).toEqual([]);
+  });
+});
+
+describe('skip all remaining reaches the reviews the queue raises later (final review #4)', () => {
+  async function seriesPack() {
+    const inner = new Uint8Array(await (await zipOf(['001.jpg'])).arrayBuffer());
+    return picked(
+      'Series Pack.zip',
+      await zipOf([
+        { path: 'Pack v01.cbz', data: inner },
+        { path: 'Pack v02.cbz', data: inner },
+        { path: 'Pack v03.cbz', data: inner },
+        { path: 'A.mokuro', data: mokuro('Mixed', 'A') },
+        'A/001.jpg'
+      ])
+    );
+  }
+
+  function recordSteps() {
+    const ids = new Set<string>();
+    const stop = reviewSession.subscribe((s) => s.pending.forEach((p) => ids.add(p.group.id)));
+    return { ids, stop };
+  }
+
+  it("a pack of image-only .cbz: skip all at step 1 raises no more steps; the pack's .mokuro volume imports", async () => {
+    const steps = recordSteps();
+    await importFiles([await seriesPack()]);
+    await until(() => get(reviewSession).pending.length > 0);
+    skipAllRemaining();
+    await waitForQueue();
+    steps.stop();
+    expect(steps.ids.size).toBe(1);
+    expect(get(reviewSession).pending).toEqual([]);
+    expect(await rows()).toEqual([{ series: 'Mixed', volume: 'A' }]);
+  });
+
+  it('cancelling the queue also skips the step on screen and every later one', async () => {
+    const steps = recordSteps();
+    await importFiles([await seriesPack()]);
+    await until(() => get(reviewSession).pending.length > 0);
+    cancelQueuedImports();
+    expect(get(reviewSession).pending).toEqual([]);
+    await waitForQueue();
+    steps.stop();
+    expect(steps.ids.size).toBe(1);
+    expect(await rows()).toEqual([{ series: 'Mixed', volume: 'A' }]);
+  });
+
+  it('a later batch is still reviewed after an earlier one was skipped', async () => {
+    await importFiles([await seriesPack()]);
+    await until(() => get(reviewSession).pending.length > 0);
+    skipAllRemaining();
+    await waitForQueue();
+    await importFiles([picked('Gleipnir v01.cbz', await zipOf(['001.jpg']))]);
+    await until(() => get(reviewSession).pending.length > 0);
+    expect(get(reviewSession).pending.map((p) => p.group.series)).toEqual(['Gleipnir']);
+    skipAllRemaining();
   });
 });
 

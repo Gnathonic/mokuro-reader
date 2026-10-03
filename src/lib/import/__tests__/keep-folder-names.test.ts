@@ -1,9 +1,10 @@
 /**
- * "Keep folder names as titles" (#285): an image-only import (no `.mokuro`)
- * can be named after its folders verbatim instead of the cleaned-up guess the
- * series extraction makes. The rule itself, then every import path end to end
- * (directory, root-level archive, archive in a folder, series archive, nested
- * archives, the image-only review) with the setting off and on.
+ * Folder names vs cleaned up (#285): the image-only review can name volumes
+ * after their folders verbatim instead of the cleaned-up guess the series
+ * extraction makes, and remembers the mode last used
+ * (`keepFolderNamesAsTitles`). The rule itself, then every import path end to
+ * end (directory, root-level archive, archive in a folder, series archive,
+ * nested archives) in both modes.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -217,7 +218,7 @@ describe('extractFolderTitlesFromPath', () => {
   });
 });
 
-describe('processVolume with keepFolderNames', () => {
+describe('processVolume and the review names', () => {
   const input = () => ({
     mokuroFile: null,
     imageFiles: new Map([['001.jpg', new File([], '001.jpg')]]),
@@ -226,54 +227,32 @@ describe('processVolume with keepFolderNames', () => {
     nestedArchives: []
   });
 
-  it('is unchanged without the option', async () => {
+  it('an image-only volume nobody reviewed (a cloud download) is named by the cleaned-up guess', async () => {
     const { metadata } = await processVolume(input());
     expect(metadata.series).toBe('My Series (2023) [Digital]');
     expect(metadata.volume).toBe('Volume 03');
   });
 
-  it('keeps the names and derives both uuids from them, so another device agrees', async () => {
-    const { metadata } = await processVolume(input(), { keepFolderNames: true });
-    expect(metadata.series).toBe('My Series (2023) [Digital]');
-    expect(metadata.volume).toBe('Vol 03 [Digital]');
-    expect(metadata.seriesUuid).toBe(generateDeterministicUUID('My Series (2023) [Digital]'));
-    expect(metadata.volumeUuid).toBe(
-      generateDeterministicUUID('My Series (2023) [Digital]/Vol 03 [Digital]')
-    );
+  it('a reviewed volume is saved under exactly the names and uuid the review chose', async () => {
+    const { metadata } = await processVolume({
+      ...input(),
+      importNames: { series: 'Mine', volume: 'Mine 07', uuid: 'reviewed-uuid' }
+    });
+    expect(metadata).toMatchObject({
+      series: 'Mine',
+      volume: 'Mine 07',
+      volumeUuid: 'reviewed-uuid',
+      seriesUuid: generateDeterministicUUID('Mine')
+    });
+    expect(metadata.keepStoredTitles).toBeUndefined();
   });
 
-  it('names by titlePath (where the source sat) over basePath when one is given', async () => {
-    const { metadata } = await processVolume(
-      { ...input(), basePath: 'Vol 03 extra', titlePath: 'Outer/Vol 03 extra' },
-      { keepFolderNames: true }
-    );
-    expect(metadata.series).toBe('Outer');
-    expect(metadata.volume).toBe('Vol 03 extra');
-  });
-
-  it('leaves a mokuro-backed volume alone', async () => {
-    const mokuro = new File(
-      [
-        JSON.stringify({
-          version: '0.2.1',
-          title: 'From Mokuro',
-          title_uuid: 'series-uuid-m',
-          volume: 'Mokuro Vol',
-          volume_uuid: 'volume-uuid-m',
-          pages: [
-            { version: '0.2.1', img_width: 1, img_height: 1, img_path: '001.jpg', blocks: [] }
-          ]
-        })
-      ],
-      'x.mokuro'
-    );
-    const { metadata } = await processVolume(
-      { ...input(), mokuroFile: mokuro },
-      { keepFolderNames: true }
-    );
-    expect(metadata.series).toBe('From Mokuro');
-    expect(metadata.volume).toBe('Mokuro Vol');
-    expect(metadata.volumeUuid).toBe('volume-uuid-m');
+  it('a restored volume asks the save to keep its row titles', async () => {
+    const { metadata } = await processVolume({
+      ...input(),
+      importNames: { series: 'Mine', volume: 'x', uuid: 'old-uuid', restore: true }
+    });
+    expect(metadata).toMatchObject({ volumeUuid: 'old-uuid', keepStoredTitles: true });
   });
 });
 
@@ -373,11 +352,13 @@ describe('importing image-only volumes', () => {
     });
   });
 
-  it('on: a volume folder inside "Downloads" goes under a "Downloads" series', async () => {
+  it('on: a volume folder inside "Downloads" keeps its name under its own series, not "Downloads"', async () => {
     setKeepFolderNames(true);
     const rows = await importAndRead([picked('Downloads/Gleipnir 01/001.jpg')]);
-    expect(titles(rows)).toEqual([{ series: 'Downloads', volume: 'Gleipnir 01' }]);
-    expect(reviewer.offered.map((g) => g.series)).toEqual(['Downloads']);
+    expect(titles(rows)).toEqual([{ series: 'Gleipnir', volume: 'Gleipnir 01' }]);
+    expect(reviewer.offered.map((g) => g.series)).toEqual(['Gleipnir']);
+    // The same volume as one picked loose.
+    expect(rows[0].volume_uuid).toBe(generateDeterministicUUID('Gleipnir 01'));
   });
 
   it('on: a picked root-level folder keeps its own name under the extracted series', async () => {

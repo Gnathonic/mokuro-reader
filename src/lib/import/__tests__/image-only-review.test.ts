@@ -70,6 +70,66 @@ describe('groupCandidates (#285)', () => {
     ).toEqual(['Berserk', 'Chained Soldier (Semi-Color)', 'Dorohedoro']);
   });
 
+  describe('a collection folder is no parent (final review #2)', () => {
+    it('Downloads/{Killing Bites v01.cbz, Gleipnir v01.cbz}: one step per series', () => {
+      expect(
+        summary([
+          candidate('k', 'Killing Bites v01', 'Downloads/Killing Bites v01'),
+          candidate('g', 'Gleipnir v01', 'Downloads/Gleipnir v01')
+        ])
+      ).toEqual([
+        { series: 'Gleipnir', ids: ['g'] },
+        { series: 'Killing Bites', ids: ['k'] }
+      ]);
+    });
+
+    it('a lone volume in Downloads is grouped by its own series too', () => {
+      expect(summary([candidate('k', 'Downloads/Killing Bites 01')])).toEqual([
+        { series: 'Killing Bites', ids: ['k'] }
+      ]);
+    });
+
+    it('Manga/{A 01, B 01}: two series', () => {
+      expect(
+        summary([candidate('a', 'Manga/Akira 01'), candidate('b', 'Manga/Berserk 01')])
+      ).toEqual([
+        { series: 'Akira', ids: ['a'] },
+        { series: 'Berserk', ids: ['b'] }
+      ]);
+    });
+
+    it('a folder of any name whose volumes name two series is a collection', () => {
+      expect(
+        summary([
+          candidate('a1', 'My Stuff/Akira 01'),
+          candidate('a2', 'My Stuff/Akira 02'),
+          candidate('b', 'My Stuff/Berserk v01')
+        ])
+      ).toEqual([
+        { series: 'Akira', ids: ['a1', 'a2'] },
+        { series: 'Berserk', ids: ['b'] }
+      ]);
+    });
+
+    it('a real series folder of bare numbers stays one step named after the folder', () => {
+      expect(
+        summary([
+          candidate('c1', 'Chained Soldier (Semi-Color)/01'),
+          candidate('c2', 'Chained Soldier (Semi-Color)/02')
+        ])
+      ).toEqual([{ series: 'Chained Soldier (Semi-Color)', ids: ['c1', 'c2'] }]);
+    });
+
+    it('a series folder whose volumes all name that series stays one step', () => {
+      expect(
+        summary([
+          candidate('k1', 'Killing Bites/Killing Bites 01'),
+          candidate('k2', 'Killing Bites/killing bites 02')
+        ])
+      ).toEqual([{ series: 'Killing Bites', ids: ['k1', 'k2'] }]);
+    });
+  });
+
   it('orders volumes naturally by their literal names', () => {
     const [group] = groupCandidates(['10', '2', '01'].map((v) => candidate(v, `Big/${v}`)));
     expect(group.candidates.map((c) => c.id)).toEqual(['01', '2', '10']);
@@ -175,8 +235,8 @@ describe('nameGroup (#285)', () => {
       start: 7,
       overrides: { c1: 'Renamed' }
     });
-    for (const id of ids) expect(a.get(id)?.identity).toBe(b.get(id)?.identity);
-    expect(a.get('c10')?.identity).toBe('Chained Soldier (Semi-Color)/10');
+    for (const id of ids) expect(a.get(id)?.uuid).toBe(b.get(id)?.uuid);
+    expect(a.get('c10')?.uuid).toBe(generateDeterministicUUID('Chained Soldier (Semi-Color)/10'));
   });
 
   it('a loose volume: identity is its own name, the series is the extracted one in both modes', () => {
@@ -184,12 +244,12 @@ describe('nameGroup (#285)', () => {
     expect(nameGroup(g, defaultNaming(g, 'cleaned')).get('g')).toEqual({
       series: 'Gleipnir',
       volume: 'Gleipnir 01',
-      identity: 'Gleipnir v01 (2023) (Digital)'
+      uuid: generateDeterministicUUID('Gleipnir v01 (2023) (Digital)')
     });
     expect(nameGroup(g, defaultNaming(g, 'folder')).get('g')).toEqual({
       series: 'Gleipnir',
       volume: 'Gleipnir v01 (2023) (Digital)',
-      identity: 'Gleipnir v01 (2023) (Digital)'
+      uuid: generateDeterministicUUID('Gleipnir v01 (2023) (Digital)')
     });
   });
 
@@ -214,6 +274,39 @@ describe('nameGroup (#285)', () => {
     ]);
     expect(storedTitle(nameGroup(g, defaultNaming(g, 'cleaned')).get('r')!.volume)).toBe(
       'Re： Zero？ 01'
+    );
+  });
+});
+
+describe('nameGroup with volumes already in the library (final review #1)', () => {
+  const kb = () =>
+    groupCandidates(['v01', 'v02', 'v03'].map((v) => candidate(v, `Killing Bites ${v}`)))[0];
+
+  it('an installed volume is not imported and takes no number', () => {
+    const group = kb();
+    group.matches = new Map([['v01', { uuid: 'old-1', installed: true }]]);
+    const names = nameGroup(group, { ...defaultNaming(group, 'cleaned'), start: 2 });
+    expect(names.has('v01')).toBe(false);
+    expect([...names.values()].map((n) => n.volume)).toEqual([
+      'Killing Bites 02',
+      'Killing Bites 03'
+    ]);
+  });
+
+  it('a removed (metadata-only) volume is restored onto its own uuid, keeping its titles, and takes no number', () => {
+    const group = kb();
+    group.matches = new Map([['v02', { uuid: 'old-2', installed: false }]]);
+    const names = nameGroup(group, defaultNaming(group, 'cleaned'));
+    expect(names.get('v02')).toMatchObject({ uuid: 'old-2', restore: true });
+    expect(names.get('v01')?.volume).toBe('Killing Bites 01');
+    expect(names.get('v03')?.volume).toBe('Killing Bites 02');
+    expect(names.get('v01')?.restore).toBeUndefined();
+  });
+
+  it('a new volume is saved under the uuid of its literal location', () => {
+    const group = kb();
+    expect(nameGroup(group, defaultNaming(group, 'cleaned')).get('v01')?.uuid).toBe(
+      generateDeterministicUUID('Killing Bites v01')
     );
   });
 });

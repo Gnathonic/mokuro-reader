@@ -24,6 +24,7 @@ const group = (series: string): ReviewGroup => ({
   series,
   candidates: [],
   ownUuids: [],
+  matches: new Map(),
   existingCount: 0
 });
 const importIt: GroupDecision = {
@@ -72,15 +73,15 @@ describe('review session (#285)', () => {
     expect(second).toHaveBeenCalledWith('g-C', importIt);
   });
 
-  it('skip all remaining skips every pending group, in order, and closes', () => {
+  it('skip all remaining skips every pending group, in order, as "all", and closes', () => {
     const onDecision = vi.fn();
     appendReviewGroups([group('A'), group('B'), group('C')], onDecision);
     decideCurrent(importIt);
     skipAllRemaining();
     expect(onDecision.mock.calls).toEqual([
       ['g-A', importIt],
-      ['g-B', { action: 'skip' }],
-      ['g-C', { action: 'skip' }]
+      ['g-B', { action: 'skip', all: true }],
+      ['g-C', { action: 'skip', all: true }]
     ]);
     expect(step()).toBeNull();
   });
@@ -93,7 +94,7 @@ describe('review session (#285)', () => {
     });
     appendReviewGroups([group('B')], later);
     skipAllRemaining();
-    expect(later).toHaveBeenCalledWith('g-B', { action: 'skip' });
+    expect(later).toHaveBeenCalledWith('g-B', { action: 'skip', all: true });
     expect(step()).toBeNull();
     error.mockRestore();
   });

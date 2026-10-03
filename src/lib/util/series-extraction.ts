@@ -2,7 +2,7 @@
  * Shared utilities for extracting series and volume information from paths/filenames.
  *
  * This module consolidates the sophisticated parsing logic that was previously
- * duplicated across image-only-fallback.ts and processing.ts.
+ * duplicated across the import paths.
  */
 
 /**
@@ -94,7 +94,7 @@ const SUSPECT_PARENT_NAMES = new Set([
 /**
  * Checks if a folder name looks like a generic container rather than a series name
  */
-function isSuspectParentFolder(name: string): boolean {
+export function isSuspectParentFolder(name: string): boolean {
   const normalized = name.toLowerCase().trim();
 
   // Check against blocklist
@@ -400,11 +400,20 @@ export function extractFolderTitlesFromPath(path: string): {
 }
 
 /**
- * The series an image-only volume at `path` is grouped under — the one name
- * both the confirmation prompt and the saved volume use.
+ * Is `name` only a volume number ("01", "v1", "Vol 02", "第3巻")? Such a name
+ * says nothing about which series it belongs to.
  */
-export function imageOnlySeriesName(path: string, keepFolderNames: boolean): string {
-  return keepFolderNames ? extractFolderTitlesFromPath(path).seriesTitle : extractSeriesName(path);
+export function isBareVolumeName(name: string): boolean {
+  return extractBareVolumeNumber(name) !== null;
+}
+
+/**
+ * The series a volume's own name carries ("Killing Bites v01" → "Killing
+ * Bites"), or null when the name has no volume number to split it at.
+ */
+export function seriesFromVolumeName(name: string): string | null {
+  const info = extractVolumeInfoFromName(name);
+  return info ? info.seriesName.trim().replace(/\s+/g, ' ') : null;
 }
 
 /**

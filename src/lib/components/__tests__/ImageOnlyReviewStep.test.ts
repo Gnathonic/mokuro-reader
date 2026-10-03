@@ -86,8 +86,77 @@ describe('ImageOnlyReviewStep (#285)', () => {
   });
 
   it('starts numbering after the volumes the series already has', () => {
+    existingVolumeCount.mockImplementation(async () => 4);
     const { names } = renderStep({ group: chainedGroup(4) });
     expect(names()[0]).toBe('Chained Soldier (Semi-Color) 05');
+  });
+
+  it('recounts when it comes on screen: volumes approved since it was offered are counted (final review #3)', async () => {
+    existingVolumeCount.mockImplementation(async () => 5);
+    const { names } = renderStep({ group: chainedGroup(0) });
+    await waitFor(() => expect(names()[0]).toBe('Chained Soldier (Semi-Color) 06'));
+    expect(existingVolumeCount).toHaveBeenCalledWith(
+      'Chained Soldier (Semi-Color)',
+      chainedGroup().ownUuids
+    );
+  });
+
+  it('the recount on screen never replaces a start the user typed', async () => {
+    let release!: (n: number) => void;
+    existingVolumeCount.mockImplementation(() => new Promise<number>((r) => (release = r)));
+    const { names, q } = renderStep();
+    await fireEvent.input(q('review-start'), { target: { value: '3' } });
+    release(5);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(names()[0]).toBe('Chained Soldier (Semi-Color) 03');
+  });
+
+  it('shows volumes already in the library as such: no name field, no number', () => {
+    const group = chainedGroup();
+    group.matches = new Map([
+      ['c1', { uuid: 'old-1', installed: true }],
+      ['c2', { uuid: 'old-2', installed: false }]
+    ]);
+    const { names, container } = renderStep({ group });
+    expect(names()).toEqual(['Chained Soldier (Semi-Color) 01']);
+    expect(
+      [...container.querySelectorAll('[data-testid="review-volume-match"]')].map((m) =>
+        m.textContent?.trim()
+      )
+    ).toEqual(['Already in your library', 'Removed from this device — its pages come back']);
+  });
+
+  describe('a step that replaces a decided one (final review #7)', () => {
+    it('ignores Import and Skip for a moment after it appears', async () => {
+      const { getByText, onDecide, q } = renderStep({ step: 2, total: 3 });
+      await fireEvent.click(getByText('Import'));
+      await fireEvent.click(getByText('Skip'));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(onDecide).not.toHaveBeenCalled();
+      await waitFor(() => expect(q<HTMLElement>('review-step-body').dataset.armed).toBe('true'));
+      await fireEvent.click(getByText('Import'));
+      await waitFor(() => expect(onDecide).toHaveBeenCalledTimes(1));
+    });
+
+    it('a held Enter (auto-repeat) never activates a button; a fresh press does', () => {
+      const { getByText } = renderStep();
+      const held = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        repeat: true,
+        bubbles: true,
+        cancelable: true
+      });
+      getByText('Import').dispatchEvent(held);
+      expect(held.defaultPrevented).toBe(true);
+      const fresh = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+      getByText('Import').dispatchEvent(fresh);
+      expect(fresh.defaultPrevented).toBe(false);
+    });
+
+    it('the first step is ready at once', () => {
+      const { q } = renderStep();
+      expect(q<HTMLElement>('review-step-body').dataset.armed).toBe('true');
+    });
   });
 
   it('folder names: literal names, and no start number', async () => {

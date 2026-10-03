@@ -54,10 +54,35 @@ vi.mock('$lib/catalog/db', () => ({
                   .map((v) => v.metadata.volume_uuid)
               )
             )
+        })),
+        // Primary-key lookups (the review's library match, #285)
+        anyOf: vi.fn().mockImplementation((uuids: string[]) => ({
+          primaryKeys: vi
+            .fn()
+            .mockImplementation(() =>
+              Promise.resolve(
+                savedVolumes
+                  .map((v) => v.metadata.volume_uuid)
+                  .filter((uuid) => uuids.includes(uuid as string))
+              )
+            )
         }))
       })
     },
     volume_ocr: {
+      where: vi.fn().mockReturnValue({
+        anyOf: vi.fn().mockImplementation((uuids: string[]) => ({
+          primaryKeys: vi
+            .fn()
+            .mockImplementation(() =>
+              Promise.resolve(
+                savedVolumes
+                  .map((v) => v.metadata.volume_uuid)
+                  .filter((uuid) => uuids.includes(uuid as string))
+              )
+            )
+        }))
+      }),
       add: vi.fn().mockImplementation((data) => {
         const volume = savedVolumes.find((v) => v.metadata.volume_uuid === data.volume_uuid);
         if (volume) {

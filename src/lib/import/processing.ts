@@ -22,7 +22,6 @@ import type {
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
 import {
-  extractFolderTitlesFromPath,
   extractSeriesName,
   extractTitlesFromPath,
   generateDeterministicUUID
@@ -468,21 +467,16 @@ function calculateCumulativeChars(pages: MokuroPage[]): number[] {
  * 4. Calculating character counts
  * 5. Creating nested source pairings for discovered archives
  *
+ * An image-only volume reviewed at import (#285) is saved under exactly the
+ * names and uuid the review chose (`input.importNames`); any other image-only
+ * volume (a cloud download) is named by the cleaned-up path extraction.
+ *
  * @param input - Decompressed volume data
- * @param options.keepFolderNames - Name an image-only volume verbatim after its
- *   folders (`input.titlePath ?? input.basePath`, see
- *   `extractFolderTitlesFromPath`) instead of the cleaned-up extraction — the
- *   `miscSettings.keepFolderNamesAsTitles` import setting (#285). Mokuro-backed
- *   volumes are named by their `.mokuro` either way.
  * @returns Processed volume ready for database
  */
-export async function processVolume(
-  input: DecompressedVolume,
-  options: { keepFolderNames?: boolean } = {}
-): Promise<ProcessedVolume> {
+export async function processVolume(input: DecompressedVolume): Promise<ProcessedVolume> {
   const { mokuroFile, imageFiles, basePath, sourceType, nestedArchives, thumbnailSidecar } = input;
   const titlePath = input.titlePath ?? basePath;
-  const keepFolderNames = options.keepFolderNames === true;
 
   // Parse mokuro or extract info from path
   let mokuroData: ParsedMokuro | null = null;
@@ -505,9 +499,6 @@ export async function processVolume(
     isImageOnly = true;
     if (input.importNames) {
       volumeInfo = { series: input.importNames.series, volume: input.importNames.volume };
-    } else if (keepFolderNames) {
-      const { seriesTitle, volumeTitle } = extractFolderTitlesFromPath(titlePath);
-      volumeInfo = { series: seriesTitle, volume: volumeTitle };
     } else {
       volumeInfo = extractVolumeInfo(basePath);
     }
@@ -685,24 +676,21 @@ export async function processVolume(
     seriesUuid = mokuroData.seriesUuid;
     seriesName = volumeInfo.series;
   } else {
-    // Image-only: series from the path (verbatim or extracted, see above) and
-    // a deterministic UUID from whichever name is used
-    seriesName =
-      input.importNames || keepFolderNames ? volumeInfo.series : extractSeriesName(basePath);
+    // Image-only: the reviewed series, else the extracted one, and a
+    // deterministic UUID from that name
+    seriesName = input.importNames ? volumeInfo.series : extractSeriesName(basePath);
     seriesUuid = generateDeterministicUUID(seriesName);
   }
 
   // Generate deterministic volume UUID from series + volume name
-  // This ensures the same volume gets the same UUID across devices
-  // A batch named at the image-only prompt keys the uuid to the volume's
-  // literal location, so it survives a change of naming mode (#285).
+  // This ensures the same volume gets the same UUID across devices.
+  // A reviewed image-only volume carries its uuid: its literal location's, or
+  // the row the library already has for it (#285).
   const volumeUuid =
     mokuroData?.volumeUuid ||
-    generateDeterministicUUID(
-      !mokuroData && input.importNames
-        ? input.importNames.identity
-        : `${seriesName}/${volumeInfo.volume}`
-    );
+    (!mokuroData && input.importNames
+      ? input.importNames.uuid
+      : generateDeterministicUUID(`${seriesName}/${volumeInfo.volume}`));
 
   const metadata: ProcessedMetadata = {
     volumeUuid,
@@ -719,6 +707,7 @@ export async function processVolume(
     missingPages: matchResult.missing.length > 0 ? matchResult.missing.length : undefined,
     missingPagePaths: matchResult.missing.length > 0 ? matchResult.missing : undefined,
     imageOnly: isImageOnly,
+    ...(!mokuroData && input.importNames?.restore ? { keepStoredTitles: true } : {}),
     sourceType,
     spineWidth: mokuroData?.spineWidth,
     ...(mokuroSha256 ? { mokuroSha256 } : {})

@@ -63,6 +63,12 @@ const seriesField = (page: Page) => review(page).locator('[data-testid="review-s
 const names = (page: Page) => review(page).locator('[data-testid="review-volume-name"]');
 const reviewButton = (page: Page, text: string) =>
   review(page).locator('button', { hasText: new RegExp(`^\\s*${text}\\s*$`) });
+/** A step that replaces a decided one ignores clicks for a moment (a double click guard). */
+const armed = (page: Page) =>
+  expect(review(page).locator('[data-testid="review-step-body"]')).toHaveAttribute(
+    'data-armed',
+    'true'
+  );
 const nameValues = (page: Page) =>
   names(page).evaluateAll((els) => els.map((el) => (el as HTMLInputElement).value));
 
@@ -219,11 +225,13 @@ test("the owner's layouts: one step per series, and series 1 imports while serie
   await expect(review(page).locator('[data-testid="review-start"]')).toHaveValue('3');
   await expect.poll(() => nameValues(page)).toEqual(['Killing Bites 03', 'Killing Bites 04']);
   await expect(review(page).locator('datalist option[value="Killing Bites"]')).toHaveCount(1);
+  await armed(page);
   await reviewButton(page, 'Import').click();
 
   // Series 3, the loose archives: skipped.
   await expect(stepLabel(page)).toHaveText('Series 3 of 3');
   await expect(seriesField(page)).toHaveValue('Dorohedoro');
+  await armed(page);
   await reviewButton(page, 'Skip').click();
   await expect(review(page)).toBeHidden();
 

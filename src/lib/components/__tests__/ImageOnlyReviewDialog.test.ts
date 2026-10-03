@@ -39,6 +39,14 @@ describe('ImageOnlyReviewDialog (#285)', () => {
     await waitFor(() => expect(stepText()).toBe('Series 1 of 2'));
     await fireEvent.click(getByText('Skip'));
     await waitFor(() => expect(stepText()).toBe('Series 2 of 2'));
+    // A double click on Skip lands on the new step's Import: ignored.
+    await fireEvent.click(getByText('Import'));
+    expect(stepText()).toBe('Series 2 of 2');
+    await waitFor(() =>
+      expect(
+        document.querySelector<HTMLElement>('[data-testid="review-step-body"]')?.dataset.armed
+      ).toBe('true')
+    );
     await fireEvent.click(getByText('Import'));
     await waitFor(() => expect(document.querySelector('[data-testid="review-step"]')).toBeNull());
     await new Promise((r) => setTimeout(r, 50));
