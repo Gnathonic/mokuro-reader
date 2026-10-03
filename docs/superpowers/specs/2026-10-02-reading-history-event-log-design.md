@@ -112,16 +112,21 @@ Where the user labels a device (recommendation; one edit component, three entry 
 
 Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock) and one payload:
 
-| Kind      | Payload                                                                                                          | Replaces                                  |
-| --------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| `page`    | `volume`, `page`, `chars_before`, `chars_on_page`, `dwell_ms` (raw, uncapped), `mode`, `orientation`, `viewport` | `recentPageTurns`                         |
-| `adjust`  | `volume`, `time_delta_ms?`, `chars_delta?`                                                                       | manual edits in the volume editor         |
-| `restart` | `volume`                                                                                                         | `archivedReads` marker                    |
-| `forget`  | `volume`, `before`                                                                                               | "delete stats" (`deleteVolumeCompletely`) |
+| Kind      | Payload                                                                                                                                                | Replaces                                  |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
+| `page`    | `volume`, `pages` (first..last visible), `chars_visible`, `chars_new`, `chars_before`, `dwell_ms` (raw, uncapped), `layout`, `orientation`, `viewport` | `recentPageTurns`                         |
+| `adjust`  | `volume`, `time_delta_ms?`, `chars_delta?`                                                                                                             | manual edits in the volume editor         |
+| `restart` | `volume`                                                                                                                                               | `archivedReads` marker                    |
+| `forget`  | `volume`, `before`                                                                                                                                     | "delete stats" (`deleteVolumeCompletely`) |
+| `resolve` | `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                             | — (the user's answer about a long pause)  |
 
-- A `page` event is written when the user **leaves** a page (turn, close, tab hidden, idle), so dwell is
-  known, which fixes problem 5. Pages shown together in double-page mode share one event; [S] whether to
-  split chars per side is a detail for the plan.
+- A `page` event is written when the user **leaves** a view (turn, close, tab hidden, idle), so dwell is
+  known, which fixes problem 5.
+- **One event per view, not per page.** Whatever is on screen together (one page, a double-page spread,
+  several pages of a continuous strip on an ultrawide) is one event. `chars_visible` is everything on
+  screen, and drives the expected dwell. `chars_new` is only what this view showed for the first time in
+  this read pass, and drives "characters read", so overlapping views in continuous mode never credit a
+  page twice. `layout` is `single` | `double` | `continuous-v` | `continuous-h`.
 - Nothing is ever edited or deleted. `forget` and `restart` are applied when stats are computed, so both
   are reversible in principle.
 - `completed`, `progress`, `chars` (current position) and per-volume settings stay in `volume-data.json`.
@@ -191,22 +196,39 @@ device.
 
 - **One clock.** Time read = sum of the counted dwell of `page` events plus `adjust` deltas. The
   `setInterval` minute counter is retired; the live timer shows the same derived figure.
-- **Adaptive idle cutoff.** For each device class, take the median seconds-per-character over recent page
-  events. A page's expected dwell = `max(chars_on_page × median, base)`. Its cap =
-  `clamp(k × expected, floor, ceiling)`. Dwell above the cap is idle. **[open]** whether an over-cap page
-  counts its expected time or its capped time. With no data yet: today's 5 min default.
+- **Adaptive idle cutoff.** Reading pace (seconds per character) is assumed similar across devices; what
+  differs is how much is on screen per event. So a view's expected dwell is
+  `base[layout] + chars_visible × pace`: **one global pace**, and a per-layout `base` (the per-view overhead:
+  art, turning, scanning a spread) learned from that layout's own events once it has enough of them, the
+  global base until then. Both are robust medians over recent events. A view's cap =
+  `clamp(k × expected, floor, ceiling)`. With no data yet: today's 5 min default.
   - **Manual override**: one value in a new `tracking` section of `volume-data.json`, newest-stamp-wins like
     the `series` section (with the same future-stamp clamp). When set, it replaces the adaptive cap
     everywhere. Profiles no longer hold it.
-- **Skips.** A page read faster than an implausible rate (e.g. 1500 cpm) is a skip: its time and chars are
-  excluded from speed and shown as "skipped" rather than "read". **[open]** whether "characters read"
-  totals also exclude skipped pages (#160, #224).
+- **Long pauses: ask the user.** A view over its cap is a _long pause_. The app can't know whether the user
+  was reading, so it asks instead of guessing:
+  - **When:** on the user's next activity in the same reading session (they come back and turn the page or
+    tap), as a small non-blocking prompt: "You were on this page for 47 min. Count it as: all 47 min ·
+    typical (~1 min) · not at all". Never mid-read for a pause still in progress, never a modal.
+  - **Unanswered** (dismissed, ignored, or the app closed during the pause): the pause waits in a "long
+    pauses to review" list on the stats page. Until answered it counts as **typical** time, shown as
+    provisional.
+  - **The answer is a `resolve` event**, so it syncs, every device applies it, and it can be changed later
+    from the review list.
+  - **Don't ask again:** offered only after the user has answered a few prompts (e.g. 3), not on the first
+    ones. It stores a standing default (`'full'` | `'typical'` | `'none'`) in the `tracking` section; prompts
+    stop and new pauses resolve to that default. Changeable in settings.
+  - Legacy data converted from `recentPageTurns` is never prompted for; it counts as typical.
+- **Skips.** A view read faster than an implausible rate (e.g. 1500 cpm) is a skip: its time and chars are
+  excluded from speed, and its `chars_new` count as **skipped, not read**. "Characters read" totals exclude
+  skips; the stats show a separate skipped figure (#160, #224). Existing totals drop slightly once history is
+  computed this way; the release note should say so.
 - **Recent speed** = the last N active hours across all volumes and devices, by time. No volume-granular
   window, so no cliff.
 - **Time left** uses the series' own speed once it has enough data, else the recent speed.
-- **Devices.** Per-device and per-class totals, speed and share of reading time. Comparisons should prefer
-  like-for-like material (the same series, or volumes read on several devices) and always show the sample
-  size behind them.
+- **Devices and layouts.** Per-device, per-class and per-layout totals, speed and share of reading time,
+  shown as a section of the existing reading-speed page. Comparisons should prefer like-for-like material
+  (the same series, or volumes read on several devices) and always show the sample size behind them.
 
 ## Migration and compatibility
 
@@ -216,9 +238,9 @@ device.
   `archivedReads` becomes `restart` events. `timeReadInMinutes` beyond what the turns explain becomes one
   `adjust` event per volume, so totals don't drop.
 - **Mixed fleets.** Old clients keep writing `recentPageTurns` into `volume-data.json`. New clients import
-  them through the same legacy path (idempotent) for a transition period, and write `volume-data.json`
-  without them. **[open]** An old client then loses its local turn display for entries a new client wrote
-  last; the release note should say "update all devices".
+  them through the same legacy path (idempotent) and write `volume-data.json` without them (decided). An old
+  client keeps syncing progress but loses its local turn display for entries a new client wrote last; the
+  release note says "update all devices". The legacy import stays until old-format turns stop appearing.
 - **mokuro-bunko** must treat `history/` as per-user progress, the same partition as root `.json`. Until a
   bunko release does, the client skips uploading history to bunko (provider capability flag) and keeps it
   local.
@@ -229,8 +251,9 @@ device.
    conversion. Speed still computed the old way, as a parity check.
 2. **Segment sync.** Upload own months, import others, add `history/` to the allowlist, drop page turns
    from `volume-data.json`, batch the writes, stop syncing per page turn.
-3. **Stats on events.** One clock, adaptive cutoff + synced override, skip classification, recent speed by
-   time, per-series time left. Retire `getEffectiveReadingTime` and the minute counter.
+3. **Stats on events.** One clock, adaptive cutoff + synced override, long-pause prompts + review list,
+   skip classification, recent speed by time, per-series time left. Retire `getEffectiveReadingTime` and
+   the minute counter.
 4. **Device views.** Generated labels, the three labelling entry points, class correction, merging devices, per-device stats.
 
 ## Testing
@@ -243,11 +266,12 @@ device.
 - Speed: no cliff when one volume exceeds any window; same result regardless of profile.
 - Encoding round-trip, plus measured size on a real exported history.
 
-## Open questions
+## Decided (owner, 2026-10-02)
 
-1. Over-cap page: count expected time, or capped time?
-2. Do skipped pages count toward "characters read" totals, or only toward position?
-3. Transition length for importing legacy `recentPageTurns`, and whether new clients should keep writing
-   them for old clients' sake.
-4. Should the adaptive cutoff be per device class, or one value?
-5. Where the device views live (the existing reading-speed page vs. a new lens).
+1. Over-cap views: **ask the user** (long-pause prompt + review list + delayed "don't ask again"), typical
+   time while unanswered.
+2. Skipped views **don't** count toward characters read; shown as skipped.
+3. Mixed fleets: **import old-format turns, stop writing them.**
+4. Cutoff scope: **one global pace, per-layout base** (not per device class); events are per view, so
+   double-page and ultrawide continuous normalise through `chars_visible`.
+5. Device/layout stats: a section of the existing reading-speed page.
