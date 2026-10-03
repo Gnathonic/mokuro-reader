@@ -9,6 +9,7 @@
   } from '$lib/settings';
   import { Toggle, Range, Label } from 'flowbite-svelte';
   import ScheduledFilterCard from './ScheduledFilterCard.svelte';
+  import PageAdjustCard from './PageAdjustCard.svelte';
   import { editModeActive, requestEditMode } from '$lib/reader/edit/edit-mode';
 
   let isContinuous = $derived($settings.continuousScroll);
@@ -120,6 +121,9 @@
   scheduleKey="grayscaleSchedule"
   active={$grayscaleActive}
 />
+
+<!-- Page brightness / contrast — the images only, never the OCR text -->
+<PageAdjustCard />
 
 <div class="mt-4">
   <Label class="mb-2 text-gray-900 dark:text-white">

@@ -4,6 +4,18 @@ import { isMobilePlatform } from '$lib/util/platform';
 import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
 import { isDisplayTitleLanguage } from '$lib/metadata/sanitize';
 import type { DisplayTitleLanguage } from '$lib/metadata/types';
+import { clampPageAdjust, pageFilterCss, PAGE_ADJUST_DEFAULT } from '$lib/reader/page-filter';
+import {
+  INK_STRENGTH_DEFAULT,
+  PAPER_AGE_DEFAULT,
+  PAPER_TINT_DEFAULT,
+  clampInkStrength,
+  clampPaperAge,
+  clampPaperTint,
+  inkLayerVars,
+  sanitizeInkColor,
+  type InkColorSetting
+} from '$lib/reader/ink-color';
 
 export type FontSize =
   | 'auto'
@@ -171,6 +183,18 @@ export type Settings = {
   invertColorsSchedule: TimeSchedule;
   grayscale: boolean;
   grayscaleSchedule: TimeSchedule;
+  /** Page image brightness, % (100 = unchanged). Images only, never the OCR text. #256 */
+  pageBrightness: number;
+  /** Page image contrast, % (100 = unchanged). Images only, never the OCR text. #256 */
+  pageContrast: number;
+  /** Ink color for black-and-white pages: off, auto (per volume, every 32 pages) or one colour. #256 */
+  pageInkColor: InkColorSetting;
+  /** Print effect ink: −100 faded … 0 palette … +100 deep. Inked pages only. #256 */
+  pageInkStrength: number;
+  /** Print effect paper tint opacity, % (0–30). Inked pages only. #256 */
+  pagePaperTint: number;
+  /** Print effect paper age, 0 fresh … 100 old newsprint. Inked pages only. #256 */
+  pagePaperAge: number;
   inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
@@ -318,6 +342,12 @@ const defaultSettings: Settings = {
     startTime: '21:00',
     endTime: '06:00'
   },
+  pageBrightness: PAGE_ADJUST_DEFAULT,
+  pageContrast: PAGE_ADJUST_DEFAULT,
+  pageInkColor: 'off',
+  pageInkStrength: INK_STRENGTH_DEFAULT,
+  pagePaperTint: PAPER_TINT_DEFAULT,
+  pagePaperAge: PAPER_AGE_DEFAULT,
   inactivityTimeoutMinutes: 5,
   swapWheelBehavior: false,
   textBoxContextMenu: true,
@@ -484,6 +514,15 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...defaultSettings.grayscaleSchedule,
       ...(profile.grayscaleSchedule || {})
     };
+
+    // Page brightness/contrast (#256): a synced or hand-edited profile may carry
+    // anything; the slider and the filter both expect a whole in-range percent.
+    migratedProfile.pageBrightness = clampPageAdjust(migratedProfile.pageBrightness);
+    migratedProfile.pageContrast = clampPageAdjust(migratedProfile.pageContrast);
+    migratedProfile.pageInkColor = sanitizeInkColor(migratedProfile.pageInkColor);
+    migratedProfile.pageInkStrength = clampInkStrength(migratedProfile.pageInkStrength);
+    migratedProfile.pagePaperTint = clampPaperTint(migratedProfile.pagePaperTint);
+    migratedProfile.pagePaperAge = clampPaperAge(migratedProfile.pagePaperAge);
 
     migratedProfile.catalogSettings = {
       ...defaultSettings.catalogSettings,
@@ -711,6 +750,44 @@ export const imageFilter = derived(
   ([$invertColorsActive, $grayscaleActive]) =>
     `invert(${$invertColorsActive ? 1 : 0}) grayscale(${$grayscaleActive ? 1 : 0})`
 );
+
+/**
+ * CSS filter for the page IMAGES only (brightness/contrast, #256) — `none` at
+ * the defaults. A primitive string, so subscribers rerun only when it changes,
+ * not on every settings write. The reader sets it once as `--page-filter`;
+ * each page's image layer reads the variable, so no per-page work.
+ */
+export const pageFilter: Readable<string> = derived(settings, ($settings) =>
+  pageFilterCss($settings?.pageBrightness, $settings?.pageContrast)
+);
+
+/**
+ * Ink color for black-and-white pages (#256). A primitive, so each mounted
+ * page reruns only when the choice itself changes; at 'off' a page samples
+ * nothing and renders no ink layer.
+ */
+export const pageInkSetting: Readable<InkColorSetting> = derived(settings, ($settings) =>
+  sanitizeInkColor($settings?.pageInkColor)
+);
+
+/**
+ * The print effect's controls as reader-wide CSS variables (#256): a finished
+ * ink and paper colour per palette colour (`inkLayerVars`), set once by the
+ * reader and read only by inked pages' layers. Keyed on a primitive first so
+ * an unrelated settings write re-emits nothing.
+ */
+const pageInkEffectKey: Readable<string> = derived(settings, ($settings) =>
+  [
+    clampInkStrength($settings?.pageInkStrength),
+    clampPaperTint($settings?.pagePaperTint),
+    clampPaperAge($settings?.pagePaperAge)
+  ].join('|')
+);
+
+export const pageInkLayers: Readable<Record<string, string>> = derived(pageInkEffectKey, ($key) => {
+  const [strength, tint, age] = $key.split('|').map(Number);
+  return inkLayerVars(strength, tint, age);
+});
 
 /**
  * Helper function to update a profile's timestamp
