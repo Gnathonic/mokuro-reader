@@ -1,6 +1,12 @@
 <script lang="ts">
   import { settings, updateSetting } from '$lib/settings';
-  import { Button, Label, Range } from 'flowbite-svelte';
+  import { Button, Label, Range, Select } from 'flowbite-svelte';
+  import {
+    INK_COLOR_NAMES,
+    INK_PALETTE,
+    sanitizeInkColor,
+    type InkColorSetting
+  } from '$lib/reader/ink-color';
   import {
     PAGE_ADJUST_DEFAULT,
     PAGE_ADJUST_MAX,
@@ -10,12 +16,21 @@
   } from '$lib/reader/page-filter';
 
   // Page images only (#256): washed-out scans. The OCR text is never filtered.
+  // (Ink color below does recolour the OCR text, to match the ink.)
   type AdjustKey = 'pageBrightness' | 'pageContrast';
 
   const sliders: { key: AdjustKey; label: string }[] = [
     { key: 'pageBrightness', label: 'Brightness' },
     { key: 'pageContrast', label: 'Contrast' }
   ];
+
+  // Ink color for black-and-white pages (#256): colour pages are left alone.
+  const inkOptions: { value: InkColorSetting; name: string }[] = [
+    { value: 'off', name: 'Off' },
+    { value: 'auto', name: 'Auto' },
+    ...INK_COLOR_NAMES.map((c) => ({ value: c, name: c[0].toUpperCase() + c.slice(1) }))
+  ];
+  let inkColor = $derived(sanitizeInkColor($settings.pageInkColor));
 
   // Live while dragging: the page behind the drawer follows the thumb.
   function onInput(key: AdjustKey, e: Event) {
@@ -52,5 +67,29 @@
         />
       </div>
     {/each}
+    <div>
+      <div class="flex items-center justify-between gap-2">
+        <Label for="page-ink-color" class="text-gray-900 dark:text-white">Ink color</Label>
+        {#if inkColor !== 'off' && inkColor !== 'auto'}
+          <span
+            class="h-4 w-4 rounded-full border border-gray-300 dark:border-gray-600"
+            style:background-color={INK_PALETTE[inkColor].ink}
+            aria-hidden="true"
+          ></span>
+        {/if}
+      </div>
+      <Select
+        id="page-ink-color"
+        size="sm"
+        placeholder=""
+        items={inkOptions}
+        value={inkColor}
+        onchange={(e: Event) =>
+          updateSetting('pageInkColor', sanitizeInkColor((e.target as HTMLSelectElement).value))}
+      />
+      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+        Black-and-white pages only. Auto: each volume its own color, changing every 32 pages.
+      </p>
+    </div>
   </div>
 </div>

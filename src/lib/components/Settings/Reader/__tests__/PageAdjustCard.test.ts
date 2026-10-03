@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({ updateSetting: vi.fn() }));
 vi.mock('$lib/settings', async () => {
   const { writable } = await import('svelte/store');
   return {
-    settings: writable({ pageBrightness: 130, pageContrast: 100 }),
+    settings: writable({ pageBrightness: 130, pageContrast: 100, pageInkColor: 'auto' }),
     updateSetting: mocks.updateSetting
   };
 });
@@ -47,5 +47,30 @@ describe('PageAdjustCard (#256)', () => {
     await fireEvent.click(resetBrightness);
     await tick();
     expect(mocks.updateSetting).toHaveBeenCalledWith('pageBrightness', 100);
+  });
+
+  it('offers ink color off/auto/seven colors, showing the stored choice', () => {
+    const { getByLabelText } = render(PageAdjustCard);
+    const select = getByLabelText('Ink color') as HTMLSelectElement;
+    expect(select.value).toBe('auto');
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      'off',
+      'auto',
+      'red',
+      'orange',
+      'yellow',
+      'green',
+      'blue',
+      'violet',
+      'pink'
+    ]);
+  });
+
+  it('writes the chosen ink color', async () => {
+    const { getByLabelText } = render(PageAdjustCard);
+    const select = getByLabelText('Ink color') as HTMLSelectElement;
+    select.value = 'green';
+    await fireEvent.change(select);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageInkColor', 'green');
   });
 });

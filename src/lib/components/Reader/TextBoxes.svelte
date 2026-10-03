@@ -737,7 +737,9 @@
 
 <style>
   .textBox {
-    color: black;
+    /* A page printed in ink color (#256, MangaPage) sets the matching text
+       colour; only the glyphs change — backgrounds, selection, DOM untouched. */
+    color: var(--page-ink-text, black);
     padding: 0;
     position: absolute;
     line-height: 1.1em;

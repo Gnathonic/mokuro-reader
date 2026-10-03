@@ -6,6 +6,7 @@ import {
   grayscaleActive,
   imageFilter,
   pageFilter,
+  pageInkSetting,
   preferredTitleLanguage,
   updateCatalogSetting,
   updateSetting,
@@ -161,6 +162,39 @@ describe('page brightness / contrast (#256)', () => {
     updateSetting('pagedGap', 0);
     unsubscribe();
     expect(seen).toEqual(['none']);
+  });
+});
+
+describe('page ink color (#256)', () => {
+  beforeEach(() => {
+    updateSetting('pageInkColor', 'off');
+  });
+
+  it('defaults to off on a profile that predates it', () => {
+    expect(migrateProfiles({ Test: {} as any }).Test.pageInkColor).toBe('off');
+  });
+
+  it('keeps valid values and turns anything else off on migration', () => {
+    const out = migrateProfiles({
+      A: { pageInkColor: 'auto' } as any,
+      B: { pageInkColor: 'violet' } as any,
+      C: { pageInkColor: 'mauve' } as any,
+      D: { pageInkColor: 3 } as any
+    });
+    expect(out.A.pageInkColor).toBe('auto');
+    expect(out.B.pageInkColor).toBe('violet');
+    expect(out.C.pageInkColor).toBe('off');
+    expect(out.D.pageInkColor).toBe('off');
+  });
+
+  it('pageInkSetting follows the active profile and ignores unrelated writes', () => {
+    const seen: string[] = [];
+    const unsubscribe = pageInkSetting.subscribe((v) => seen.push(v));
+    updateSetting('pagedGap', 7);
+    updateSetting('pageInkColor', 'blue');
+    updateSetting('pagedGap', 0);
+    unsubscribe();
+    expect(seen).toEqual(['off', 'blue']);
   });
 });
 

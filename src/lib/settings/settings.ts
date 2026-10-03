@@ -5,6 +5,7 @@ import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
 import { isDisplayTitleLanguage } from '$lib/metadata/sanitize';
 import type { DisplayTitleLanguage } from '$lib/metadata/types';
 import { clampPageAdjust, pageFilterCss, PAGE_ADJUST_DEFAULT } from '$lib/reader/page-filter';
+import { sanitizeInkColor, type InkColorSetting } from '$lib/reader/ink-color';
 
 export type FontSize =
   | 'auto'
@@ -176,6 +177,8 @@ export type Settings = {
   pageBrightness: number;
   /** Page image contrast, % (100 = unchanged). Images only, never the OCR text. #256 */
   pageContrast: number;
+  /** Ink color for black-and-white pages: off, auto (per volume, every 32 pages) or one colour. #256 */
+  pageInkColor: InkColorSetting;
   inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
@@ -325,6 +328,7 @@ const defaultSettings: Settings = {
   },
   pageBrightness: PAGE_ADJUST_DEFAULT,
   pageContrast: PAGE_ADJUST_DEFAULT,
+  pageInkColor: 'off',
   inactivityTimeoutMinutes: 5,
   swapWheelBehavior: false,
   textBoxContextMenu: true,
@@ -496,6 +500,7 @@ export function migrateProfiles(profiles: Profiles): Profiles {
     // anything; the slider and the filter both expect a whole in-range percent.
     migratedProfile.pageBrightness = clampPageAdjust(migratedProfile.pageBrightness);
     migratedProfile.pageContrast = clampPageAdjust(migratedProfile.pageContrast);
+    migratedProfile.pageInkColor = sanitizeInkColor(migratedProfile.pageInkColor);
 
     migratedProfile.catalogSettings = {
       ...defaultSettings.catalogSettings,
@@ -732,6 +737,15 @@ export const imageFilter = derived(
  */
 export const pageFilter: Readable<string> = derived(settings, ($settings) =>
   pageFilterCss($settings?.pageBrightness, $settings?.pageContrast)
+);
+
+/**
+ * Ink color for black-and-white pages (#256). A primitive, so each mounted
+ * page reruns only when the choice itself changes; at 'off' a page samples
+ * nothing and renders no ink layer.
+ */
+export const pageInkSetting: Readable<InkColorSetting> = derived(settings, ($settings) =>
+  sanitizeInkColor($settings?.pageInkColor)
 );
 
 /**
