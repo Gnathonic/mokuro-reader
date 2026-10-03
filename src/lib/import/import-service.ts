@@ -8,14 +8,18 @@
 import { writable, get } from 'svelte/store';
 import { pairMokuroWithSources } from './pairing';
 import {
+  archiveSourceLabel,
   isThumbnailSidecarPath,
   joinTitlePath,
   planArchiveListing,
-  stripArchiveExtension
+  prescanArchives,
+  stripArchiveExtension,
+  type ArchiveScan,
+  type ListedEntry
 } from './archive-listing';
 import { decideImportRouting } from './routing';
 import { processVolume, parseMokuroFile, matchImagesToPages } from './processing';
-import { saveVolume, seriesVolumeUuids, storedTitleSegment, volumeExists } from './database';
+import { saveVolume, storedTitleSegment, volumeExists } from './database';
 import {
   applyImportedSeriesFiles,
   collectSeriesFileFromBytes,
@@ -28,6 +32,7 @@ import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
 import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { createLocalQueueItem, requiresWorkerDecompression } from './local-provider';
 import type {
+  ArchiveReview,
   FileEntry,
   PairedSource,
   ImportQueueItem,
@@ -48,10 +53,17 @@ import {
   extractLayerEntries,
   stashLayerEntries
 } from '$lib/reader/edit/layer-import';
-import { cleanedSeriesTitles, importIdentities, planImageOnlyNames } from './image-only-naming';
+import type { ImportNames } from './image-only-naming';
+import {
+  groupCandidates,
+  nameGroup,
+  type ReviewCandidate,
+  type ReviewGroup
+} from './image-only-review';
+import type { GroupDecision } from './review-session';
+import { existingVolumeCount } from './library-series';
 import { miscSettings } from '$lib/settings/misc';
 import { generateUUID } from '$lib/util/uuid';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { requestPersistentStorage } from '$lib/util/upload';
 import {
   extractArchiveByVolumes,
@@ -158,7 +170,13 @@ function getThumbnailCandidatePaths(basePath: string): string[] {
 }
 
 /**
- * Is work still outstanding in the queue?
+ * Image-only review groups offered but not decided yet (#285). An approval
+ * still has volumes to save, so they keep a batch's `series.json` waiting.
+ */
+let pendingReviewGroups = 0;
+
+/**
+ * Is work still outstanding — queued, processing, or waiting in review?
  *
  * Deliberately NOT `queue.length === 0`: failed items stay in the store until
  * the user clears them, and a pinned `error` item must not stop later imports
@@ -166,7 +184,10 @@ function getThumbnailCandidatePaths(basePath: string): string[] {
  * batch and risk being keyed to an unrelated import).
  */
 function hasUnfinishedImports(): boolean {
-  return get(importQueue).some((item) => item.status === 'queued' || item.status === 'processing');
+  return (
+    pendingReviewGroups > 0 ||
+    get(importQueue).some((item) => item.status === 'queued' || item.status === 'processing')
+  );
 }
 
 /**
@@ -434,12 +455,16 @@ function keepFolderNames(): boolean {
  * @param archiveTitlePath - Where the archive itself sits, extension dropped,
  *   for verbatim titles ("keep folder names"); defaults to the file's own
  *   picked path. A nested archive passes its outer archive's path + its own.
+ * @param review - Names approved in the pre-import review; without it,
+ *   image-only volumes are reviewed here (nested archives, unlisted archives,
+ *   deep links).
  */
 async function processArchiveContents(
   archiveFile: File,
   externalMokuroFile: File | null,
   onProgress?: (status: string, progress: number) => void,
-  archiveTitlePath?: string
+  archiveTitlePath?: string,
+  review?: ArchiveReview
 ): Promise<{
   success: boolean;
   error?: string;
@@ -474,13 +499,17 @@ async function processArchiveContents(
   stashLayerEntries(plan.layerEntries);
   const { mokuroPairings, imageOnlyPairings, nestedArchivePaths, seriesFilePaths } = plan;
 
-  // If there are image-only pairings, prompt user for confirmation
+  // Image-only volumes: named in the pre-import review when the archive was
+  // listed before it was queued; otherwise reviewed now (#285).
   let confirmedImageOnlyPairings: PairedSource[] = [];
   if (imageOnlyPairings.length > 0) {
-    const confirmed = await promptForImageOnlyImport(imageOnlyPairings);
-    if (confirmed) {
-      confirmedImageOnlyPairings = imageOnlyPairings;
-    }
+    const approved = review
+      ? namesFromReview(imageOnlyPairings, plan.innerPaths, review)
+      : await reviewInQueue(imageOnlyPairings, archiveFile, plan.innerPaths);
+    confirmedImageOnlyPairings = imageOnlyPairings.filter((pairing) => {
+      pairing.importNames = approved.get(pairing.id);
+      return pairing.importNames !== undefined;
+    });
   }
 
   // Combine confirmed pairings
@@ -817,7 +846,8 @@ async function processSingleVolume(
         source.source.file,
         source.mokuroFile,
         onProgress,
-        source.titlePath
+        source.titlePath,
+        source.archiveReview
       );
 
       return {
@@ -977,9 +1007,11 @@ async function processQueue(): Promise<void> {
     isImporting.set(false);
     currentImport.set(null);
     decrementPoolUsers(); // Release pool when queue is empty
-    // The queue is drained: every volume of this batch has a stored title, so
-    // any `series.json` that came with it can finally be keyed to a series.
-    await applyImportedSeriesFiles();
+    // The queue is drained and no review step is still open: every volume of
+    // this batch has a stored title, so any `series.json` that came with it
+    // can finally be keyed to a series. (A series still in review has
+    // volumes to come; its approval runs the queue again.)
+    if (!hasUnfinishedImports()) await applyImportedSeriesFiles();
   }
 }
 
@@ -989,6 +1021,11 @@ async function processQueue(): Promise<void> {
 
 export interface ImportResult {
   success: boolean;
+  /**
+   * Volumes imported or queued by the time `importFiles` resolves. Image-only
+   * volumes are not counted: they are offered for review and queued only once
+   * the user approves their series (#285).
+   */
   imported: number;
   failed: number;
   errors: string[];
@@ -1163,34 +1200,70 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
       return result;
     }
 
-    // Separate image-only pairings from mokuro pairings
-    const mokuroPairings = pairingResult.pairings.filter((p) => !p.imageOnly);
-    const imageOnlyPairings = pairingResult.pairings.filter((p) => p.imageOnly);
+    // Image-only folders are reviewed; archives are LISTED first (entry names
+    // only, one at a time) so their image-only volumes join the same review
+    // instead of stopping the queue archive by archive (#285).
+    const imageOnlyFolders = pairingResult.pairings.filter((p) => p.imageOnly);
+    const others = pairingResult.pairings.filter((p) => !p.imageOnly);
+    incrementPoolUsers();
+    let scans: Map<string, ArchiveScan>;
+    try {
+      scans = await prescanArchives(others, listArchiveNames);
+    } finally {
+      decrementPoolUsers();
+    }
 
-    // If there are image-only pairings, prompt user for confirmation
-    let confirmedImageOnlyPairings: PairedSource[] = [];
-    if (imageOnlyPairings.length > 0) {
-      const confirmed = await promptForImageOnlyImport(imageOnlyPairings);
-      if (confirmed) {
-        confirmedImageOnlyPairings = imageOnlyPairings;
+    const plain: PairedSource[] = [];
+    const candidates: ReviewCandidate[] = [];
+    const targets = new Map<string, ReviewTarget>();
+    for (const pairing of imageOnlyFolders) {
+      candidates.push({
+        id: pairing.id,
+        basePath: pairing.basePath,
+        titlePath: pairing.titlePath,
+        source: pairing.basePath
+      });
+      targets.set(pairing.id, { kind: 'folder', pairing });
+    }
+    for (const pairing of others) {
+      const scan = scans.get(pairing.id);
+      if (scan?.kind !== 'review' || pairing.source.type !== 'archive') {
+        plain.push(pairing);
+        continue;
+      }
+      const held: HeldArchive = {
+        pairing,
+        waiting: new Set(),
+        names: new Map(),
+        importsRegardless: scan.importsRegardless,
+        settled: false
+      };
+      for (const inner of scan.inner) {
+        const id = `${pairing.id}:${inner.innerPath}`;
+        candidates.push({
+          id,
+          basePath: inner.basePath,
+          titlePath: inner.titlePath,
+          source: archiveSourceLabel(pairing.source.file, inner.innerPath)
+        });
+        targets.set(id, { kind: 'archive', held, innerPath: inner.innerPath });
+        held.waiting.add(id);
       }
     }
 
-    // Combine confirmed pairings
-    const allPairings = [...mokuroPairings, ...confirmedImageOnlyPairings];
-
-    if (allPairings.length === 0) {
+    if (plain.length === 0 && candidates.length === 0) {
       getImportUiBridge().notify('No volumes to import');
       return result;
     }
 
     // Notify caller that preparation is complete
-    options?.onPreparing?.(allPairings.length);
+    options?.onPreparing?.(plain.length + candidates.length);
 
-    // Decide routing
-    const routing = decideImportRouting(allPairings);
-
-    if (routing.directProcess) {
+    // `.mokuro` volumes route as before — but a lone one is processed directly
+    // only when nothing else is running or waiting in review: two imports at
+    // once would hold two archives in memory (the queue is strictly sequential).
+    const routing = decideImportRouting(plain);
+    if (routing.directProcess && candidates.length === 0 && !hasUnfinishedImports()) {
       // Single item - process directly
       const queueItem = createLocalQueueItem(routing.directProcess);
       isImporting.set(true);
@@ -1236,18 +1309,16 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
         isImporting.set(false);
         currentImport.set(null);
       }
-    } else {
-      // Multiple items - queue all
-      const queueItems = routing.queuedItems.map(createLocalQueueItem);
-      queueItems.forEach(addToProgressTracker);
-      importQueue.update((q) => [...q, ...queueItems]);
-
-      // Start processing queue
+    } else if (plain.length > 0) {
+      enqueueAtEnd(plain);
       processQueue();
-
-      // Return immediately - queue will process in background
-      result.imported = routing.queuedItems.length;
+      // The queue processes in the background.
+      result.imported = plain.length;
     }
+
+    // Image-only volumes: one review step per series. Each approval is queued
+    // at once, so series 1 imports while series 2 is on screen.
+    if (candidates.length > 0) await offerForReview(candidates, targets);
 
     return result;
   } catch (error) {
@@ -1259,38 +1330,198 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
   }
 }
 
-/**
- * Prompt user to confirm image-only import
- * Groups volumes by series and shows a confirmation modal
- */
-async function promptForImageOnlyImport(pairings: PairedSource[]): Promise<boolean> {
-  const plan = planImageOnlyNames(pairings, await existingVolumeCounts(pairings));
-  const confirmed = await getImportUiBridge().promptImageOnly({
-    // The list shown first is the mode currently set.
-    seriesList: keepFolderNames() ? plan.preview.folder : plan.preview.cleaned,
-    totalVolumeCount: pairings.length,
-    naming: plan.preview
-  });
-  if (!confirmed) return false;
-  // The prompt saved the mode the user chose; name the batch by it.
-  const names = keepFolderNames() ? plan.folder : plan.cleaned;
-  for (const pairing of pairings) pairing.importNames = names.get(pairing.id);
-  return true;
+/** What approving a review candidate queues. */
+type ReviewTarget =
+  | { kind: 'folder'; pairing: PairedSource }
+  | { kind: 'archive'; held: HeldArchive; innerPath: string };
+
+/** A pre-scanned archive waiting for the review of its image-only volumes. */
+interface HeldArchive {
+  pairing: PairedSource;
+  /** Candidate ids not decided yet; the archive is queued once, after the last. */
+  waiting: Set<string>;
+  names: Map<string, ImportNames>;
+  /** It also holds `.mokuro` volumes or archives: queued whatever the review decides. */
+  importsRegardless: boolean;
+  settled: boolean;
 }
 
 /**
- * How many volumes each series a batch would number into already has,
- * not counting the batch's own volumes (a re-import keeps its numbers' room).
- * Keys only — never reads a row.
+ * Entry names of an archive — central directory only, no entry bytes (not
+ * even `.mokuro`): the pre-scan must not raise an import's peak memory.
  */
-async function existingVolumeCounts(pairings: PairedSource[]): Promise<Map<string, number>> {
-  const batch = new Set(importIdentities(pairings).map((id) => generateDeterministicUUID(id)));
-  const counts = new Map<string, number>();
-  for (const series of cleanedSeriesTitles(pairings)) {
-    const uuids = await seriesVolumeUuids(series);
-    counts.set(series, uuids.filter((uuid) => !batch.has(uuid)).length);
+async function listArchiveNames(file: File): Promise<ListedEntry[]> {
+  return (await decompressArchiveRaw(file, undefined, undefined, true)).entries;
+}
+
+/** Queue `sources` behind everything already queued; `tracked` collects each progress row added. */
+function enqueueAtEnd(sources: PairedSource[], tracked: ImportQueueItem[] = []): void {
+  const items = sources.map(createLocalQueueItem);
+  for (const item of items) {
+    addToProgressTracker(item);
+    tracked.push(item);
   }
-  return counts;
+  importQueue.update((q) => [...q, ...items]);
+}
+
+/** Each group's count of volumes its series already has, outside the group (keys only). */
+async function withExistingCounts(groups: ReviewGroup[]): Promise<ReviewGroup[]> {
+  for (const group of groups) {
+    group.existingCount = await existingVolumeCount(group.series, group.ownUuids);
+  }
+  return groups;
+}
+
+/**
+ * A review decision the import could not act on. The review session swallows
+ * a throwing callback with a console line only, so every decision callback
+ * reports its own failures here: to the user, and by dropping any progress
+ * row it added for an item that never reached the queue.
+ */
+function reportDecisionFailure(error: unknown, tracked: ImportQueueItem[] = []): void {
+  console.error('[Import] Could not import a reviewed series:', error);
+  try {
+    const queued = new Set(get(importQueue).map((item) => item.id));
+    for (const item of tracked) if (!queued.has(item.id)) removeFromProgressTracker(item.id);
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    getImportUiBridge().notify(`Import failed: ${message}`);
+  } catch (reportError) {
+    console.error('[Import] Could not report the failure:', reportError);
+  }
+}
+
+/**
+ * Offer `groups` for review and count them as pending until each is decided.
+ * `onDecided` runs exactly once per group (a repeated or unknown id is
+ * ignored), with how many of these groups are still undecided.
+ */
+function offerGroups(
+  groups: ReviewGroup[],
+  onDecided: (group: ReviewGroup, decision: GroupDecision, undecided: number) => void
+): void {
+  const undecided = new Set(groups.map((g) => g.id));
+  pendingReviewGroups += groups.length;
+  try {
+    getImportUiBridge().reviewImageOnly(groups, (groupId, decision) => {
+      const group = groups.find((g) => g.id === groupId);
+      if (!group || !undecided.delete(groupId)) return;
+      pendingReviewGroups--;
+      onDecided(group, decision, undecided.size);
+    });
+  } catch (error) {
+    // Never offered: nothing will ever decide these groups.
+    pendingReviewGroups -= undecided.size;
+    undecided.clear();
+    throw error;
+  }
+}
+
+/** The names a decision gives a group's volumes; a failure to name them is reported and skips them. */
+function approvedNames(group: ReviewGroup, decision: GroupDecision): Map<string, ImportNames> {
+  if (decision.action !== 'import') return new Map();
+  try {
+    return nameGroup(group, decision.naming);
+  } catch (error) {
+    reportDecisionFailure(error);
+    return new Map();
+  }
+}
+
+/**
+ * Offer a batch's image-only volumes for review and queue each approved
+ * group as soon as it is decided. Resolves once the groups are OFFERED — the
+ * user reviews while earlier approvals import.
+ */
+async function offerForReview(
+  candidates: ReviewCandidate[],
+  targets: Map<string, ReviewTarget>
+): Promise<void> {
+  const groups = await withExistingCounts(groupCandidates(candidates));
+  offerGroups(groups, (group, decision) => {
+    const names = approvedNames(group, decision);
+    const ready: PairedSource[] = [];
+    for (const candidate of group.candidates) {
+      const target = targets.get(candidate.id);
+      const approved = names.get(candidate.id);
+      if (!target) continue;
+      if (target.kind === 'folder') {
+        if (approved) {
+          target.pairing.importNames = approved;
+          ready.push(target.pairing);
+        }
+        continue;
+      }
+      const { held } = target;
+      held.waiting.delete(candidate.id);
+      if (approved) held.names.set(target.innerPath, approved);
+      if (held.waiting.size === 0 && !held.settled) {
+        held.settled = true;
+        if (held.names.size > 0 || held.importsRegardless) {
+          held.pairing.archiveReview = { approved: true, names: held.names };
+          ready.push(held.pairing);
+        }
+      }
+    }
+
+    const tracked: ImportQueueItem[] = [];
+    try {
+      if (ready.length > 0) {
+        enqueueAtEnd(ready, tracked);
+        processQueue().catch((error) => reportDecisionFailure(error));
+      } else if (!hasUnfinishedImports()) {
+        // Everything skipped and nothing running: settle the batch's series.json.
+        applyImportedSeriesFiles().catch((error) => reportDecisionFailure(error));
+      }
+    } catch (error) {
+      reportDecisionFailure(error, tracked);
+    }
+  });
+}
+
+/** Approved names of an archive reviewed before it was queued, by pairing id. */
+function namesFromReview(
+  pairings: PairedSource[],
+  innerPaths: Map<string, string>,
+  review: ArchiveReview
+): Map<string, ImportNames> {
+  const names = new Map<string, ImportNames>();
+  for (const pairing of pairings) {
+    const approved = review.names.get(innerPaths.get(pairing.id) ?? pairing.basePath);
+    if (approved) names.set(pairing.id, approved);
+  }
+  return names;
+}
+
+/**
+ * Review an archive's image-only volumes from inside the queue — archives the
+ * pre-scan could not see (nested in another archive, unlisted, deep links).
+ * The queue waits for these groups' decisions, as it always waited here.
+ */
+async function reviewInQueue(
+  pairings: PairedSource[],
+  archiveFile: File,
+  innerPaths: Map<string, string>
+): Promise<Map<string, ImportNames>> {
+  const candidates: ReviewCandidate[] = pairings.map((p) => ({
+    id: p.id,
+    basePath: p.basePath,
+    titlePath: p.titlePath,
+    source: archiveSourceLabel(archiveFile, innerPaths.get(p.id) ?? p.basePath)
+  }));
+  const groups = await withExistingCounts(groupCandidates(candidates));
+  const approved = new Map<string, ImportNames>();
+  await new Promise<void>((resolve, reject) => {
+    try {
+      offerGroups(groups, (group, decision, undecided) => {
+        for (const [id, names] of approvedNames(group, decision)) approved.set(id, names);
+        // The queue resumes after the last decision, whatever became of it.
+        if (undecided === 0) resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+  return approved;
 }
 
 /**

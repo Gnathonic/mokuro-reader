@@ -61,14 +61,30 @@ export interface PairedSource {
    */
   titlePath?: string;
   /**
-   * The names an image-only volume is saved under, decided for the whole batch
-   * when the user confirmed the image-only prompt (`planImageOnlyNames`).
+   * The names an image-only volume is saved under, decided in the image-only
+   * review (`nameGroup`, #285).
    */
   importNames?: ImportNames;
+  /**
+   * An archive whose image-only volumes were reviewed before it was queued
+   * (#285). `processArchiveContents` takes their names from here and never
+   * prompts. Its `.mokuro` volumes import regardless.
+   */
+  archiveReview?: ArchiveReview;
   /** Estimated size in bytes for memory management */
   estimatedSize: number;
   /** Whether this is an image-only source (no mokuro found anywhere) */
   imageOnly: boolean;
+}
+
+export interface ArchiveReview {
+  approved: true;
+  /**
+   * Approved names by the volume's path INSIDE the archive (`.` = its root),
+   * as `planArchiveListing` reports it. An image-only volume not listed here
+   * was skipped.
+   */
+  names: Map<string, ImportNames>;
 }
 
 /**
@@ -156,8 +172,8 @@ export interface DecompressedVolume {
    */
   titlePath?: string;
   /**
-   * The names an image-only volume is saved under, decided for the whole batch
-   * when the user confirmed the image-only prompt (`planImageOnlyNames`).
+   * The names an image-only volume is saved under, decided in the image-only
+   * review (`nameGroup`, #285).
    */
   importNames?: ImportNames;
   /** Where this came from */

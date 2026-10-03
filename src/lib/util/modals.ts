@@ -69,54 +69,6 @@ export function promptExtraction(
   });
 }
 
-// Image-only import confirmation modal
-export type SeriesImportInfo = {
-  seriesName: string;
-  volumeCount: number;
-  /** Volume titles as they will be saved, natural order. */
-  volumeNames?: string[];
-};
-
-/** The names each naming mode would give the batch (#285). */
-export type ImageOnlyNaming = {
-  cleaned: SeriesImportInfo[];
-  folder: SeriesImportInfo[];
-};
-
-type ImageOnlyImportModal = {
-  open: boolean;
-  seriesList: SeriesImportInfo[];
-  totalVolumes: number;
-  naming?: ImageOnlyNaming;
-  onConfirm?: () => void;
-  onCancel?: () => void;
-};
-
-export const imageOnlyImportModalStore = writable<ImageOnlyImportModal | undefined>(undefined);
-
-/**
- * Ask before importing volumes that have no `.mokuro`. With `naming`, the
- * modal previews the names for both naming modes and saves the chosen one as
- * `miscSettings.keepFolderNamesAsTitles` before `onConfirm` — the import reads
- * that setting when it names each volume.
- */
-export function promptImageOnlyImport(
-  seriesList: SeriesImportInfo[],
-  totalVolumes: number,
-  onConfirm?: () => void,
-  onCancel?: () => void,
-  naming?: ImageOnlyNaming
-) {
-  imageOnlyImportModalStore.set({
-    open: true,
-    seriesList,
-    totalVolumes,
-    naming,
-    onConfirm,
-    onCancel
-  });
-}
-
 // Import mismatch modal - shows when mokuro pages don't match downloaded files
 export type ImportMismatchInfo = {
   volumeName: string;

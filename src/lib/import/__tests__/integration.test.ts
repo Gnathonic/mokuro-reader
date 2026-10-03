@@ -110,16 +110,10 @@ vi.mock('$lib/util/progress-tracker', () => ({
   }
 }));
 
-// Mock modals - auto-confirm image-only imports and missing files
+// Mock modals - auto-continue with missing files (image-only volumes are
+// reviewed through the bridge stand-in below)
 vi.mock('$lib/util/modals', () => ({
-  promptImageOnlyImport: vi
-    .fn()
-    .mockImplementation((_seriesList, _totalCount, onConfirm, _onCancel) => {
-      // Auto-confirm image-only imports in tests
-      setTimeout(() => onConfirm(), 0);
-    }),
   promptMissingFiles: vi.fn().mockImplementation((_info, onContinue, _onCancel) => {
-    // Auto-continue with missing files in tests
     setTimeout(() => onContinue(), 0);
   })
 }));
@@ -147,6 +141,14 @@ vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
 // Import after mocks are set up
 import { importFiles, importQueue, isImporting, clearCompletedImports } from '../import-service';
 import { showSnackbar } from '$lib/util/snackbar';
+import { installReviewer, type Reviewer } from './helpers/review-bridge';
+
+// Every image-only review step is approved as the dialog shows it.
+let reviewer: Reviewer;
+beforeEach(() => {
+  reviewer = installReviewer();
+});
+afterEach(() => reviewer.restore());
 
 // ============================================
 // TEST HELPERS
@@ -236,14 +238,16 @@ describe('importFiles integration', () => {
       expect(result.imported).toBe(1);
     });
 
-    it('imports an image-only directory', async () => {
+    it('imports an image-only directory (reviewed, then queued)', async () => {
       const fixture = await loadFixture('image-only', 'directory-no-mokuro');
       const files = fixtureToFiles(fixture);
 
       const result = await importFiles(files);
 
       expect(result.success).toBe(true);
-      expect(result.imported).toBe(1);
+      // Image-only volumes are offered for review and queued once approved.
+      expect(reviewer.offered.flatMap((g) => g.candidates)).toHaveLength(1);
+      await waitForImportsToComplete();
       expect(savedVolumes).toHaveLength(1);
       expect(savedVolumes[0].metadata.mokuro_version).toBe(''); // Image-only marker
     });
@@ -291,9 +295,11 @@ describe('importFiles integration', () => {
       const fixture = await loadFixture('image-only', 'multiple-dirs-no-mokuro');
       const files = fixtureToFiles(fixture);
 
-      const result = await importFiles(files);
+      await importFiles(files);
 
-      expect(result.imported).toBe(2);
+      expect(reviewer.offered.flatMap((g) => g.candidates)).toHaveLength(2);
+      await waitForImportsToComplete();
+      expect(savedVolumes).toHaveLength(2);
     });
   });
 
@@ -533,9 +539,10 @@ describe('importFiles with image-only archives', () => {
 
     const result = await importFiles(files);
 
-    // Should prompt user and import as image-only volume
+    // Offered for review, then imported as an image-only volume
     expect(result.success).toBe(true);
-    expect(result.imported).toBe(1);
+    expect(reviewer.offered.flatMap((g) => g.candidates)).toHaveLength(1);
+    await waitForImportsToComplete();
     expect(savedVolumes).toHaveLength(1);
     // Image-only volumes have empty mokuro_version
     expect(savedVolumes[0].metadata.mokuro_version).toBe('');
@@ -546,9 +553,9 @@ describe('importFiles with image-only archives', () => {
     const fixture = await loadFixture('image-only', 'archive-multiple');
     const files = fixtureToFiles(fixture);
 
-    const result = await importFiles(files);
+    await importFiles(files);
 
-    expect(result.imported).toBe(3);
+    expect(reviewer.offered.flatMap((g) => g.candidates)).toHaveLength(3);
 
     // Wait for processing
     await waitForImportsToComplete();
@@ -562,9 +569,9 @@ describe('importFiles with image-only archives', () => {
     const fixture = await loadFixture('image-only', 'archive-in-folder');
     const files = fixtureToFiles(fixture);
 
-    const result = await importFiles(files);
+    await importFiles(files);
 
-    expect(result.imported).toBe(2);
+    expect(reviewer.offered.flatMap((g) => g.candidates)).toHaveLength(2);
 
     // Wait for processing
     await waitForImportsToComplete();
@@ -618,8 +625,8 @@ describe('importFiles with exported format archives', () => {
     const result = await importFiles(files);
 
     expect(result.success).toBe(true);
-    // Should import exactly 1 volume, not 2
-    expect(result.imported).toBe(1);
+    // Should offer exactly 1 volume, not 2
+    expect(reviewer.offered.flatMap((g) => g.candidates)).toHaveLength(1);
     await waitForImportsToComplete();
     expect(savedVolumes).toHaveLength(1);
     expect(savedVolumes[0].metadata.mokuro_version).toBe('');
@@ -647,7 +654,7 @@ describe('series name extraction consistency', () => {
     const result = await importFiles(files);
 
     expect(result.success).toBe(true);
-    expect(result.imported).toBe(1);
+    expect(reviewer.offered.flatMap((g) => g.candidates)).toHaveLength(1);
     await waitForImportsToComplete();
 
     // The series name should be extracted from the directory name
@@ -659,9 +666,9 @@ describe('series name extraction consistency', () => {
     const fixture = await loadFixture('image-only', 'archive-with-metadata-suffix');
     const files = fixtureToFiles(fixture);
 
-    const result = await importFiles(files);
+    await importFiles(files);
 
-    expect(result.imported).toBeGreaterThan(0);
+    expect(reviewer.offered.flatMap((g) => g.candidates).length).toBeGreaterThan(0);
     await waitForImportsToComplete();
 
     expect(savedVolumes.length).toBeGreaterThan(0);

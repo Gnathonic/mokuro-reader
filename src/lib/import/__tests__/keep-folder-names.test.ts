@@ -3,7 +3,7 @@
  * can be named after its folders verbatim instead of the cleaned-up guess the
  * series extraction makes. The rule itself, then every import path end to end
  * (directory, root-level archive, archive in a folder, series archive, nested
- * archives, the image-only confirmation prompt) with the setting off and on.
+ * archives, the image-only review) with the setting off and on.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -45,25 +45,7 @@ vi.mock('$lib/util/progress-tracker', () => ({
   }
 }));
 
-/** Every series list the image-only confirmation prompt was shown. */
-const promptedSeries = vi.hoisted(() => [] as string[][]);
-type PreviewList = { seriesName: string; volumeNames?: string[] }[];
-/** The naming preview each prompt carried (both modes). */
-const promptedNaming = vi.hoisted(
-  () => [] as ({ cleaned: PreviewList; folder: PreviewList } | undefined)[]
-);
 vi.mock('$lib/util/modals', () => ({
-  promptImageOnlyImport: (
-    seriesList: { seriesName: string }[],
-    _total: unknown,
-    onConfirm: () => void,
-    _onCancel: unknown,
-    naming?: { cleaned: PreviewList; folder: PreviewList }
-  ) => {
-    promptedSeries.push(seriesList.map((s) => s.seriesName));
-    promptedNaming.push(naming);
-    onConfirm();
-  },
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
 }));
 
@@ -84,6 +66,9 @@ import {
 } from '$lib/util/series-extraction';
 import { importFiles, importQueue, isImporting } from '../import-service';
 import { processVolume } from '../processing';
+import { nameGroup } from '../image-only-review';
+import { storedTitle } from '../image-only-naming';
+import { dialogDefaults, installReviewer, type Reviewer } from './helpers/review-bridge';
 
 // ---------------------------------------------------------------- helpers
 
@@ -295,25 +280,25 @@ describe('processVolume with keepFolderNames', () => {
 // ---------------------------------------------------------------- end to end
 
 describe('importing image-only volumes', () => {
+  let reviewer: Reviewer;
+
   beforeEach(async () => {
-    promptedSeries.length = 0;
-    promptedNaming.length = 0;
+    reviewer = installReviewer();
     importQueue.set([]);
     await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), db.volume_files.clear()]);
   });
 
-  afterEach(() => setKeepFolderNames(false));
+  afterEach(() => {
+    reviewer.restore();
+    setKeepFolderNames(false);
+  });
 
-  describe('the prompt previews exactly the names the import saves', () => {
+  describe('the review offers exactly the names the import saves', () => {
     const files = () => [
       picked('Chained Soldier (Semi-Color)/01/page_0000.jpg'),
       picked('Chained Soldier (Semi-Color)/02/page_0000.jpg'),
       picked('Killing Bites/Killing Bites 01/001.webp')
     ];
-    const flatten = (list: PreviewList) =>
-      list.flatMap((s) =>
-        (s.volumeNames ?? []).map((volume) => ({ series: s.seriesName, volume }))
-      );
     const sorted = (rows: { series: string; volume: string }[]) =>
       [...rows].sort((a, b) => a.volume.localeCompare(b.volume));
 
@@ -321,10 +306,13 @@ describe('importing image-only volumes', () => {
       it(keep ? 'folder names' : 'cleaned up', async () => {
         setKeepFolderNames(keep);
         const rows = await importAndRead(files());
-        const naming = promptedNaming[0]!;
-        expect(sorted(flatten(keep ? naming.folder : naming.cleaned))).toEqual(
-          sorted(titles(rows))
+        const offered = reviewer.offered.flatMap((group) =>
+          [...nameGroup(group, dialogDefaults(group)).values()].map((n) => ({
+            series: storedTitle(n.series),
+            volume: storedTitle(n.volume)
+          }))
         );
+        expect(sorted(offered)).toEqual(sorted(titles(rows)));
       });
     }
   });
@@ -369,7 +357,7 @@ describe('importing image-only volumes', () => {
       expect(titles(rows)).toEqual([
         { series: 'My Series (2023) [Digital]', volume: 'My Series (2023) [Digital] 01' }
       ]);
-      expect(promptedSeries).toEqual([['My Series (2023) [Digital]']]);
+      expect(reviewer.offered.map((g) => g.series)).toEqual(['My Series (2023) [Digital]']);
     });
 
     it('on: both names verbatim, prompt included', async () => {
@@ -381,7 +369,7 @@ describe('importing image-only volumes', () => {
       expect(rows[0].volume_uuid).toBe(
         generateDeterministicUUID('My Series (2023) [Digital]/Vol 03 [Digital]')
       );
-      expect(promptedSeries).toEqual([['My Series (2023) [Digital]']]);
+      expect(reviewer.offered.map((g) => g.series)).toEqual(['My Series (2023) [Digital]']);
     });
   });
 
@@ -389,15 +377,13 @@ describe('importing image-only volumes', () => {
     setKeepFolderNames(true);
     const rows = await importAndRead([picked('Downloads/Gleipnir 01/001.jpg')]);
     expect(titles(rows)).toEqual([{ series: 'Downloads', volume: 'Gleipnir 01' }]);
-    expect(promptedSeries).toEqual([['Downloads']]);
+    expect(reviewer.offered.map((g) => g.series)).toEqual(['Downloads']);
   });
 
-  it('on: a picked root-level folder names both series and volume', async () => {
+  it('on: a picked root-level folder keeps its own name under the extracted series', async () => {
     setKeepFolderNames(true);
     const rows = await importAndRead([picked('Gleipnir v01 (2023) (Digital)/001.jpg')]);
-    expect(titles(rows)).toEqual([
-      { series: 'Gleipnir v01 (2023) (Digital)', volume: 'Gleipnir v01 (2023) (Digital)' }
-    ]);
+    expect(titles(rows)).toEqual([{ series: 'Gleipnir', volume: 'Gleipnir v01 (2023) (Digital)' }]);
   });
 
   it('sanitizes for filesystem safety only, as every import does', async () => {
@@ -415,13 +401,13 @@ describe('importing image-only volumes', () => {
       expect(titles(rows)).toEqual([{ series: 'Gleipnir', volume: 'Gleipnir 01' }]);
     });
 
-    it('on: the archive name is both series and volume', async () => {
+    it('on: a loose archive keeps its own name, under the series the review offered', async () => {
       setKeepFolderNames(true);
       const rows = await importAndRead([await archive()]);
       expect(titles(rows)).toEqual([
-        { series: 'Gleipnir v01 (2023) (Digital)', volume: 'Gleipnir v01 (2023) (Digital)' }
+        { series: 'Gleipnir', volume: 'Gleipnir v01 (2023) (Digital)' }
       ]);
-      expect(promptedSeries).toEqual([['Gleipnir v01 (2023) (Digital)']]);
+      expect(reviewer.offered.map((g) => g.series)).toEqual(['Gleipnir']);
     });
   });
 
@@ -448,7 +434,7 @@ describe('importing image-only volumes', () => {
       { series: 'Series Pack [Digital]', volume: 'v01 extra' },
       { series: 'Series Pack [Digital]', volume: 'v02 extra' }
     ]);
-    expect(promptedSeries).toEqual([['Series Pack [Digital]']]);
+    expect(reviewer.offered.map((g) => g.series)).toEqual(['Series Pack [Digital]']);
   });
 
   it('on: archives nested in a series archive take the outer archive as series', async () => {
