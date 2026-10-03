@@ -35,21 +35,48 @@ Today's problems this fixes:
 
 ## 1. Pre-scan
 
-`runImportFiles`, after pairing and before routing, lists every archive
-pairing's entries (the existing PASS 1 of `processArchiveContents`: zip.js
-central directory + `.mokuro` bytes only, via `decompressArchiveRaw(...,
-{ extensions: ['mokuro'] }, false, true)`), and pairs the listing exactly as
-`processArchiveContents` does today. Result per archive:
+`runImportFiles`, after pairing and before routing, LISTS every archive
+pairing's entry names — zip.js central directory only, the existing `listOnly`
+mode of `decompressArchiveRaw` (worker `decompressCbz`), no entry bytes, not
+even `.mokuro`. From the names alone it tells:
 
-- has `.mokuro` volumes only → unchanged path (silent).
-- image-only volumes (all or some) → one volume candidate per inner image-only
-  pairing, carrying the scan so the queue does not list the archive again.
+- the archive holds a `.mokuro` for every volume → unchanged path (silent);
+- some or all volumes have no `.mokuro` → one volume candidate per inner
+  image-only folder (or the archive itself when its images are at the root).
 
-Scans run with bounded concurrency (4). A scan failure leaves that archive on
-today's path (it will be scanned, and prompted with the review dialog, when the
-queue reaches it). Archives nested inside archives cannot be listed without
-extracting the outer one; they keep the in-queue path, which raises the same
-review dialog (one group) when reached.
+Archives are listed ONE AT A TIME. Nothing from the listing is kept except
+names and flags; the queue still runs today's PASS 1 (list + `.mokuro` bytes)
+and single-pass image streaming when it reaches the archive. A listing failure
+leaves that archive on today's path, which raises the review dialog (one group)
+when the queue reaches it. Archives nested inside archives cannot be listed
+without extracting the outer one; they keep that in-queue path too.
+
+### Mobile constraints (must hold)
+
+The import was tuned for Android and iOS (37cc8559 and earlier): one archive's
+images in memory at a time, single-pass streaming per archive, a strictly
+sequential queue, a worker pool sized from `deviceRamGB`, MIME types in the
+picker's `accept` for iOS. Phones import mostly by picking loose `.cbz` files —
+the pre-scan path — so:
+
+- The pre-scan adds one central-directory read per archive (a few KB from the
+  end of the file) and retains no bytes; peak memory during an import must not
+  rise. Measured, not assumed: JS heap + worker memory peaks for a 20-archive
+  pick, before vs after, in Chromium (CDP `Performance.getMetrics` /
+  `performance.measureUserAgentSpecificMemory`).
+- Extraction, the queue's one-at-a-time order and the worker pool are not
+  changed.
+- The dialog must work at phone width (one column, the volume list scrolls,
+  buttons stay reachable above the on-screen keyboard while a name is edited).
+- Files are read only after the user picked them, as today; the review adds
+  user think-time between the pre-scan and extraction exactly as today's
+  in-queue prompt already does. Not verifiable here: whether iOS can expire a
+  picked File while the app is backgrounded mid-review — an extraction that
+  fails to read its file must surface as a normal per-volume import error, not
+  a hang.
+- Verification includes a Playwright WebKit run of the import path (API
+  compatibility only — not iOS memory) and an owner check on a real Android and
+  iOS device before merge.
 
 ## 2. Candidates and grouping
 
@@ -106,8 +133,8 @@ the dialog shows the stored (sanitized) form.
 
 Approving a group stamps `importNames` on its pairings (archive inner pairings
 keyed by inner basePath) and enqueues them: image folders as today's queue
-items; archives as queue items that carry their scan + per-inner-volume names
-and an `approved` flag, so `processArchiveContents` skips PASS 1 and never
+items; archives as queue items that carry their per-inner-volume names and an
+`approved` flag, so `processArchiveContents` runs its normal PASS 1 but never
 prompts. `processQueue` is kicked; the dialog advances immediately.
 
 Mixed archives: their `.mokuro` volumes import regardless of the review; the
