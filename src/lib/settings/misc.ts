@@ -25,9 +25,10 @@ export type MiscSettings = {
    * Top and left only for now (right/bottom collide with the quick actions
    * menu). */
   editToolbarDock: EditToolbarDock;
-  /** Image-only imports (no `.mokuro`) take their folder/archive names
-   * verbatim as volume and series titles instead of the cleaned-up guess
-   * (`extractFolderTitlesFromPath`, #285). */
+  /** The naming mode last used in the image-only import review (#285):
+   * true = "Folder names" (each volume's own folder/archive name verbatim),
+   * false = "Cleaned up" (series name + number). Only the review's starting
+   * mode — the review's choice is what names the volumes. */
   keepFolderNamesAsTitles: boolean;
 };
 

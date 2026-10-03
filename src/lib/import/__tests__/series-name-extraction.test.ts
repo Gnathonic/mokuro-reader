@@ -8,7 +8,7 @@
  * - Cloud download import
  *
  * The key issue is that there are multiple functions that extract series names:
- * - extractSeriesName / extractTitlesFromPath in image-only-fallback.ts (sophisticated)
+ * - extractSeriesName / extractTitlesFromPath in util/series-extraction.ts (sophisticated)
  * - extractVolumeInfo in processing.ts (simple)
  * - parseFilename in download-queue.ts (simple)
  *
@@ -18,7 +18,7 @@
 import { describe, it, expect } from 'vitest';
 
 // Import the different series name extraction functions
-import { extractSeriesName } from '$lib/upload/image-only-fallback';
+import { extractSeriesName } from '$lib/util/series-extraction';
 import { extractVolumeInfo } from '$lib/import/processing';
 
 // We can't import parseFilename directly as it's not exported,
@@ -78,7 +78,7 @@ describe('series name extraction consistency', () => {
     }
   ];
 
-  describe('extractSeriesName (image-only-fallback.ts)', () => {
+  describe('extractSeriesName (series-extraction.ts)', () => {
     // This is the sophisticated implementation that should be the reference
 
     for (const { input, expectedSeries, description } of testCases) {
