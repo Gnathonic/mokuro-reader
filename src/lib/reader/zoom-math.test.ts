@@ -16,6 +16,7 @@ import {
   pinchMidpoint,
   isFineWheelEvent,
   WheelStreamClassifier,
+  WheelNotchStepper,
   wheelZoomRatio,
   WHEEL_ZOOM_SENSITIVITY
 } from './zoom-math';
@@ -309,9 +310,16 @@ describe('isFineWheelEvent', () => {
     expect(isFineWheelEvent(ev(-1, 0, 2))).toBe(false);
   });
 
-  it('accepts fractional deltas', () => {
+  it('accepts fractional sub-notch deltas', () => {
     expect(isFineWheelEvent(ev(-4.5))).toBe(true);
-    expect(isFineWheelEvent(ev(-133.75))).toBe(true);
+  });
+
+  it('reads a fractional notch as a notch (#272)', () => {
+    // Firefox's pixel mode builds a notch from the line height and display
+    // scale: -102.4 at 100%, -204.8 at 200%. A fraction is not a trackpad.
+    expect(isFineWheelEvent(ev(-102.4))).toBe(false);
+    expect(isFineWheelEvent(ev(-204.8))).toBe(false);
+    expect(isFineWheelEvent(ev(-133.75))).toBe(false);
   });
 
   it('accepts sub-notch magnitudes', () => {
@@ -346,6 +354,66 @@ describe('WheelStreamClassifier', () => {
     const c = new WheelStreamClassifier();
     c.classify({ deltaX: 0, deltaY: -3, deltaMode: 0, timeStamp: 1000 });
     expect(c.classify({ deltaX: 0, deltaY: -120, deltaMode: 0, timeStamp: 2000 })).toBe(false);
+  });
+});
+
+describe('WheelNotchStepper (#272)', () => {
+  const ev = (deltaY: number, timeStamp: number, deltaMode = 0) => ({
+    deltaY,
+    deltaMode,
+    timeStamp
+  });
+
+  it('steps one level per notch whatever pixel size the engine reports', () => {
+    const s = new WheelNotchStepper();
+    // Chromium, Windows, Firefox pixel mode at 100% and 200%, a big
+    // lines-per-notch setting: each is one notch, so one level.
+    for (const [i, d] of [-100, -120, -102.4, -204.8, -333].entries()) {
+      expect(s.steps(ev(d, 1000 + i * 1000))).toBe(1);
+    }
+    expect(s.steps(ev(100, 9000))).toBe(-1);
+  });
+
+  it('steps one level per whole-line notch, however many lines it covers', () => {
+    const s = new WheelNotchStepper();
+    expect(s.steps(ev(-3, 1000, 1))).toBe(1); // Firefox, Windows
+    expect(s.steps(ev(-6, 1050, 1))).toBe(1); // Firefox, Linux (240 px)
+    expect(s.steps(ev(6, 1100, 1))).toBe(-1);
+    expect(s.steps(ev(-1, 1150, 2))).toBe(1); // page mode
+  });
+
+  it('never carries a remainder from one notch into the next', () => {
+    const s = new WheelNotchStepper();
+    // Five fast 132 px notches: one level each, never a sixth from leftovers.
+    const steps = [0, 1, 2, 3, 4].map((i) => s.steps(ev(-132, 1000 + i * 30)));
+    expect(steps).toEqual([1, 1, 1, 1, 1]);
+  });
+
+  it('accumulates sub-line fragments of a high-resolution wheel', () => {
+    const s = new WheelNotchStepper();
+    // Firefox reports a hi-res wheel as -0.75 line fragments (30 px).
+    const steps = [0, 1, 2, 3].map((i) => s.steps(ev(-0.75, 1000 + i * 16, 1)));
+    expect(steps).toEqual([0, 0, 0, 1]);
+  });
+
+  it('accumulates sub-notch pixel deltas until a full step', () => {
+    const s = new WheelNotchStepper();
+    const steps = [0, 1, 2, 3, 4].map((i) => s.steps(ev(-20, 1000 + i * 16)));
+    expect(steps).toEqual([0, 0, 0, 0, 1]);
+  });
+
+  it('drops pending fragments when a whole notch arrives', () => {
+    const s = new WheelNotchStepper();
+    s.steps(ev(-0.75, 1000, 1));
+    s.steps(ev(-0.75, 1016, 1));
+    s.steps(ev(-0.75, 1032, 1));
+    expect(s.steps(ev(-3, 1048, 1))).toBe(1);
+    expect(s.steps(ev(-0.75, 1064, 1))).toBe(0); // fragments start over
+  });
+
+  it('ignores an empty delta', () => {
+    expect(new WheelNotchStepper().steps(ev(0, 1000))).toBe(0);
+    expect(new WheelNotchStepper().steps(ev(-0, 1000, 1))).toBe(0);
   });
 });
 
