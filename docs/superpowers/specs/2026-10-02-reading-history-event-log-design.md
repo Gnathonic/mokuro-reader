@@ -60,19 +60,53 @@ the storage underneath it.
 
 ### Device record
 
+The record splits by **who may write it**. A device's own folder is written only by that device, but a
+user must be able to rename or merge any device from any other device.
+
 ```ts
-interface DeviceRecord {
+// history/<device>/device.json — FACTS, written only by that device
+interface DeviceFacts {
   device: string; // UUID
-  name?: string; // user-editable ("Pixel 8")
-  class: 'phone' | 'tablet' | 'laptop' | 'desktop' | 'unknown'; // auto-detected, user-correctable
+  class: 'phone' | 'tablet' | 'laptop' | 'desktop' | 'unknown'; // auto-detected
+  os?: string; // coarse family: 'Android', 'iOS', 'Windows', 'macOS', 'Linux', 'ChromeOS'
+  browser?: string; // coarse family: 'Chrome', 'Firefox', 'Safari', 'Edge', …
   first_seen: string; // ISO
   last_seen: string;
+}
+
+// volume-data.json → `tracking.devices[device]` — USER CHOICES, any device may edit,
+// newest `updated_at` wins per device key (same merge + future-stamp clamp as the `series` section)
+interface DeviceLabel {
+  name?: string; // "Pixel 8", "Work laptop"
+  class?: DeviceFacts['class']; // user correction of the detected class
   merged_into?: string; // alias: this device's events count as that device's
-  updated_at: string; // newest wins
+  updated_at: string;
 }
 ```
 
-Class comes from coarse signals (pointer type, touch, screen size), not the full user agent.
+Class, OS and browser come from coarse signals (pointer type, touch, screen size,
+`navigator.userAgentData` where available, a minimal UA family match otherwise). No device model, no full
+user agent.
+
+#### Labels
+
+The UUID is never shown. Every device always has a readable label:
+
+- **Generated default**, used until the user names it: `<class> · <OS> · <browser>`, e.g.
+  "Phone · Android · Chrome", "Desktop · Windows · Firefox". When two devices generate the same label,
+  both get their first-seen month appended ("… (since Mar 2026)").
+- **The current device is marked** ("This device") wherever devices are listed, so the user can tell which
+  row to rename without reading anything technical.
+
+Where the user labels a device (recommendation; one edit component, three entry points):
+
+1. **Settings → Sync → Devices**: "This device" with an editable name at the top, then every other device
+   with rename, class correction and merge. The full management screen.
+2. **Inline in the device stats view**: click a device's name to rename it in place, where the label
+   actually matters.
+3. **One non-blocking prompt**, the first time the history holds events from a second device: a dismissible
+   banner on the stats view, "You read on 2 devices — name this one?". Never a first-run modal. A
+   single-device user never sees a device anywhere.
 
 ### Events
 
@@ -113,7 +147,7 @@ New Dexie tables (next schema version, additive):
 ### Cloud
 
 ```
-history/<device>/device.json          DeviceRecord
+history/<device>/device.json          DeviceFacts (labels live in volume-data.json → tracking.devices)
 history/<device>/<YYYY-MM>.events     one month of that device's events
 ```
 
@@ -197,7 +231,7 @@ device.
    from `volume-data.json`, batch the writes, stop syncing per page turn.
 3. **Stats on events.** One clock, adaptive cutoff + synced override, skip classification, recent speed by
    time, per-series time left. Retire `getEffectiveReadingTime` and the minute counter.
-4. **Device views.** Naming, class correction, merging devices, per-device stats.
+4. **Device views.** Generated labels, the three labelling entry points, class correction, merging devices, per-device stats.
 
 ## Testing
 
