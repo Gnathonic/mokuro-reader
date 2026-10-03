@@ -8,7 +8,6 @@
   import {
     INK_GATE_MAX_MS,
     INK_PALETTE,
-    PAPER_TINT_OPACITY,
     inkColorFor,
     pageNeedsInk,
     peekPageInk
@@ -158,7 +157,6 @@
     aria-hidden="true"
     style:--ink={ink?.ink}
     style:--ink-paper={ink?.paper}
-    style:--ink-paper-opacity={ink ? PAPER_TINT_OPACITY : undefined}
   >
     <div class="pageImage" style:background-image={url}></div>
   </div>
@@ -210,17 +208,34 @@
     z-index: 1;
   }
 
-  /* Screen: white stays white, black becomes the ink. */
+  /* Screen: white stays white, black becomes the ink — the page's palette
+     ink moved toward white (faded) or black (deep) by the reader-wide
+     `--ink-mix-to`/`--ink-mix` (ink strength; 0% = the palette ink). */
   .pageArt.inked::before {
-    background: var(--ink);
+    background: color-mix(in srgb, var(--ink), var(--ink-mix-to, #ffffff) var(--ink-mix, 0%));
     mix-blend-mode: screen;
   }
 
-  /* Multiply, faint: the paper takes a trace of the same hue. */
+  /* Multiply: the paper. The tinted paper at `--paper-tint` (a multiply at
+     opacity a = a multiply by white mixed a toward the colour), times the
+     aged-paper colour `--paper-age` (white = fresh). One pseudo-element: its
+     two background layers multiply together first. */
   .pageArt.inked::after {
-    background: var(--ink-paper);
-    opacity: var(--ink-paper-opacity);
+    background-color: color-mix(in srgb, #ffffff, var(--ink-paper) var(--paper-tint, 8%));
+    background-image: linear-gradient(var(--paper-age, #ffffff), var(--paper-age, #ffffff));
+    background-blend-mode: multiply;
     mix-blend-mode: multiply;
+  }
+
+  /* Browsers without color-mix(): the palette ink and paper at the defaults. */
+  @supports not (color: color-mix(in srgb, red, blue 50%)) {
+    .pageArt.inked::before {
+      background: var(--ink);
+    }
+    .pageArt.inked::after {
+      background: var(--ink-paper);
+      opacity: 0.08;
+    }
   }
 
   .pageImage {

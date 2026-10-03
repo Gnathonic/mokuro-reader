@@ -13,10 +13,16 @@ vi.mock('$lib/settings', async () => {
 });
 
 import PageAdjustCard from '../PageAdjustCard.svelte';
+import { settings } from '$lib/settings';
+import type { Writable } from 'svelte/store';
+
+const store = settings as unknown as Writable<Record<string, unknown>>;
+const base = { pageBrightness: 130, pageContrast: 100, pageInkColor: 'auto' };
 
 afterEach(() => {
   cleanup();
   mocks.updateSetting.mockReset();
+  store.set({ ...base });
 });
 
 describe('PageAdjustCard (#256)', () => {
@@ -72,5 +78,41 @@ describe('PageAdjustCard (#256)', () => {
     select.value = 'green';
     await fireEvent.change(select);
     expect(mocks.updateSetting).toHaveBeenCalledWith('pageInkColor', 'green');
+  });
+
+  it('shows the print effect controls only while the effect is on', async () => {
+    store.set({ ...base, pageInkColor: 'off' });
+    const { queryByLabelText } = render(PageAdjustCard);
+    expect(queryByLabelText(/Ink strength/)).toBeNull();
+    expect(queryByLabelText(/Paper tint/)).toBeNull();
+    expect(queryByLabelText(/Paper age/)).toBeNull();
+    store.set({ ...base, pageInkColor: 'blue' });
+    await tick();
+    expect(queryByLabelText('Ink strength: 0')).not.toBeNull();
+    expect(queryByLabelText('Paper tint: 8%')).not.toBeNull();
+    expect(queryByLabelText('Paper age: 0')).not.toBeNull();
+  });
+
+  it('gives each control its range and shows stored values', () => {
+    store.set({ ...base, pageInkStrength: 40, pagePaperTint: 30, pagePaperAge: 55 });
+    const { getByLabelText } = render(PageAdjustCard);
+    const strength = getByLabelText('Ink strength: +40') as HTMLInputElement;
+    expect([strength.min, strength.max, strength.value]).toEqual(['-100', '100', '40']);
+    const tint = getByLabelText('Paper tint: 30%') as HTMLInputElement;
+    expect([tint.min, tint.max, tint.value]).toEqual(['0', '30', '30']);
+    const age = getByLabelText('Paper age: 55') as HTMLInputElement;
+    expect([age.min, age.max, age.value]).toEqual(['0', '100', '55']);
+  });
+
+  it('writes the controls live and resets each to its default', async () => {
+    store.set({ ...base, pageInkStrength: -60, pagePaperTint: 8, pagePaperAge: 0 });
+    const { getByLabelText, getByRole } = render(PageAdjustCard);
+    const age = getByLabelText('Paper age: 0') as HTMLInputElement;
+    age.value = '70';
+    await fireEvent.input(age);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pagePaperAge', 70);
+    expect(getByRole('button', { name: 'Reset paper tint' }).hasAttribute('disabled')).toBe(true);
+    await fireEvent.click(getByRole('button', { name: 'Reset ink strength' }));
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageInkStrength', 0);
   });
 });

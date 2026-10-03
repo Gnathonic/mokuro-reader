@@ -1,7 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   INK_COLOR_NAMES,
+  INK_DEEPEN_MAX,
+  INK_FADE_MAX,
   INK_PALETTE,
+  PAPER_AGE_COLOR,
+  clampInkStrength,
+  clampPaperAge,
+  clampPaperTint,
+  inkEffectVars,
+  inkLayerColor,
+  inkStrengthMix,
+  mixHex,
+  paperAgeColor,
+  paperLayerColor,
   autoInkColor,
   inkColorFor,
   isMonochrome,
@@ -290,3 +302,99 @@ describe('prefetchPageInk', () => {
     expect(started).toEqual([files[1], files[3]]);
   });
 });
+
+describe('print effect controls', () => {
+  it('clamps the three settings, defaulting anything non-numeric', () => {
+    expect(clampInkStrength(40)).toBe(40);
+    expect(clampInkStrength(-300)).toBe(-100);
+    expect(clampInkStrength(300)).toBe(100);
+    expect(clampInkStrength(12.6)).toBe(13);
+    expect(clampPaperTint(30)).toBe(30);
+    expect(clampPaperTint(31)).toBe(30);
+    expect(clampPaperTint(-1)).toBe(0);
+    expect(clampPaperAge(150)).toBe(100);
+    expect(clampPaperAge(-5)).toBe(0);
+    for (const bad of [undefined, null, NaN, '40', {}]) {
+      expect(clampInkStrength(bad)).toBe(0);
+      expect(clampPaperTint(bad)).toBe(8);
+      expect(clampPaperAge(bad)).toBe(0);
+    }
+  });
+
+  it('mixHex interpolates per sRGB channel, rounding', () => {
+    expect(mixHex('#000000', '#ffffff', 0)).toBe('#000000');
+    expect(mixHex('#000000', '#ffffff', 1)).toBe('#ffffff');
+    expect(mixHex('#000000', '#ffffff', 0.5)).toBe('#808080');
+    expect(mixHex('#466dc4', '#ffffff', 0.25)).toBe('#7492d3');
+  });
+
+  it('strength 0 is the palette ink exactly', () => {
+    for (const name of INK_COLOR_NAMES) {
+      expect(inkLayerColor(INK_PALETTE[name].ink, 0)).toBe(INK_PALETTE[name].ink);
+    }
+  });
+
+  it('negative strength fades toward white — pale at −100, but not white', () => {
+    const ink = INK_PALETTE.blue.ink;
+    const pale = hexChannels(inkLayerColor(ink, -100));
+    expect(inkStrengthMix(-100)).toEqual({ toward: '#ffffff', amount: INK_FADE_MAX });
+    expect(inkLayerColor(ink, -100)).toBe(mixHex(ink, '#ffffff', INK_FADE_MAX));
+    expect(Math.min(...pale)).toBeGreaterThan(170);
+    expect(Math.min(...pale)).toBeLessThan(250); // still a visible tint
+    // halfway is halfway along the same line
+    expect(inkLayerColor(ink, -50)).toBe(mixHex(ink, '#ffffff', INK_FADE_MAX / 2));
+  });
+
+  it('positive strength deepens toward black, ~75% at +100, never pure black', () => {
+    const ink = INK_PALETTE.blue.ink;
+    expect(inkStrengthMix(100)).toEqual({ toward: '#000000', amount: INK_DEEPEN_MAX });
+    expect(INK_DEEPEN_MAX).toBeGreaterThanOrEqual(0.75);
+    expect(INK_DEEPEN_MAX).toBeLessThanOrEqual(0.8);
+    const [r, g, b] = hexChannels(inkLayerColor(ink, 100));
+    expect(Math.max(r, g, b)).toBeGreaterThan(30); // the hue survives
+    expect(b).toBeGreaterThan(r); // still blue
+    expect(inkLayerColor(ink, 40)).toBe(mixHex(ink, '#000000', 0.4 * INK_DEEPEN_MAX));
+  });
+
+  it('paper age 0 is white (no-op multiply), 100 the aged-paper colour, linear between', () => {
+    expect(paperAgeColor(0)).toBe('#ffffff');
+    expect(paperAgeColor(100)).toBe(PAPER_AGE_COLOR);
+    expect(paperAgeColor(50)).toBe(mixHex('#ffffff', PAPER_AGE_COLOR, 0.5));
+    const [r, g, b] = hexChannels(PAPER_AGE_COLOR);
+    expect(r).toBeGreaterThan(b); // warm
+    expect(Math.min(r, g, b)).toBeGreaterThan(140); // greyed, not crushed
+  });
+
+  it('paperLayerColor is the whole multiply: tinted paper at its opacity × the age', () => {
+    const paper = INK_PALETTE.red.paper;
+    expect(paperLayerColor(paper, 0, 0)).toBe('#ffffff');
+    expect(paperLayerColor(paper, 30, 0)).toBe(mixHex('#ffffff', paper, 0.3));
+    expect(paperLayerColor(paper, 100, 0)).toBe(paperLayerColor(paper, 30, 0)); // clamped
+    const tinted = hexChannels(mixHex('#ffffff', paper, 0.08));
+    const aged = hexChannels(paperAgeColor(60));
+    expect(hexChannels(paperLayerColor(paper, 8, 60))).toEqual(
+      tinted.map((c, i) => Math.round((c * aged[i]) / 255))
+    );
+  });
+
+  it('inkEffectVars: the reader-wide CSS variables, none of them per page', () => {
+    expect(inkEffectVars(0, 8, 0)).toEqual({
+      mixTo: '#ffffff',
+      mix: '0%',
+      tint: '8%',
+      age: '#ffffff'
+    });
+    expect(inkEffectVars(-50, 30, 100)).toEqual({
+      mixTo: '#ffffff',
+      mix: `${50 * INK_FADE_MAX}%`,
+      tint: '30%',
+      age: PAPER_AGE_COLOR
+    });
+    expect(inkEffectVars(100, 0, 50).mixTo).toBe('#000000');
+    expect(inkEffectVars(100, 0, 50).mix).toBe(`${100 * INK_DEEPEN_MAX}%`);
+  });
+});
+
+function hexChannels(hex: string): number[] {
+  return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+}

@@ -57,7 +57,123 @@ export const INK_PALETTE: Record<InkColorName, InkPaletteEntry> = {
   pink: { rotation: 290, ink: '#c94d80', paper: '#c44d78', text: '#c44d78' }
 };
 
-export const PAPER_TINT_OPACITY = 0.08;
+/**
+ * The print effect's own controls (#256). They shape the effect only — on
+ * black-and-white pages, inside the isolated `.pageArt` group — and never the
+ * scan itself: page brightness/contrast stay the scan adjustment, applied to
+ * every page before the effect. All three reach the page as reader-wide CSS
+ * variables ({@link inkEffectVars}); the per-page colour mixing is CSS
+ * `color-mix(in srgb, …)`, which is the same arithmetic as {@link mixHex}.
+ */
+
+/** Ink strength: −100 (faded, pastel) … 0 (the palette ink) … +100 (deep). */
+export const INK_STRENGTH_MIN = -100;
+export const INK_STRENGTH_MAX = 100;
+export const INK_STRENGTH_DEFAULT = 0;
+/** At −100 the ink is this far toward white: pale, still a visible tint. */
+export const INK_FADE_MAX = 0.65;
+/** At +100 the ink is this far toward black: heavy, but the hue survives. */
+export const INK_DEEPEN_MAX = 0.75;
+
+/** Paper tint: the multiply paper layer's opacity, %. 8 = the userscript's. */
+export const PAPER_TINT_MIN = 0;
+export const PAPER_TINT_MAX = 30;
+export const PAPER_TINT_DEFAULT = 8;
+
+/** Paper age: 0 (fresh) … 100 (old, dingy newsprint). */
+export const PAPER_AGE_MIN = 0;
+export const PAPER_AGE_MAX = 100;
+export const PAPER_AGE_DEFAULT = 0;
+/**
+ * The aged paper at 100, as a multiply colour: a warm grey. Chosen by
+ * rendering candidates over a real black-and-white page in every ink: the
+ * lighter, yellower ones read as cream rather than old; darker ones muddy
+ * the screentone. This one greys the white to ~75% and warms it, the ink
+ * and the art underneath stay legible.
+ */
+export const PAPER_AGE_COLOR = '#c8bca4';
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+export function clampInkStrength(value: unknown): number {
+  return clampInt(value, INK_STRENGTH_MIN, INK_STRENGTH_MAX, INK_STRENGTH_DEFAULT);
+}
+
+export function clampPaperTint(value: unknown): number {
+  return clampInt(value, PAPER_TINT_MIN, PAPER_TINT_MAX, PAPER_TINT_DEFAULT);
+}
+
+export function clampPaperAge(value: unknown): number {
+  return clampInt(value, PAPER_AGE_MIN, PAPER_AGE_MAX, PAPER_AGE_DEFAULT);
+}
+
+function channels(hex: string): [number, number, number] {
+  return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
+}
+
+function toHex(rgb: number[]): string {
+  return '#' + rgb.map((c) => Math.round(c).toString(16).padStart(2, '0')).join('');
+}
+
+/** `a` moved `t` (0…1) of the way to `b`, per sRGB channel — CSS color-mix(in srgb). */
+export function mixHex(a: string, b: string, t: number): string {
+  const ca = channels(a);
+  const cb = channels(b);
+  return toHex(ca.map((c, i) => c + (cb[i] - c) * t));
+}
+
+/** Where a strength moves the ink: toward white (fade) or black (deepen), and how far. */
+export function inkStrengthMix(strength: unknown): { toward: string; amount: number } {
+  const s = clampInkStrength(strength);
+  return s <= 0
+    ? { toward: '#ffffff', amount: (-s / 100) * INK_FADE_MAX }
+    : { toward: '#000000', amount: (s / 100) * INK_DEEPEN_MAX };
+}
+
+/** The screen layer's colour: what black becomes on an inked page. */
+export function inkLayerColor(inkHex: string, strength: unknown): string {
+  const { toward, amount } = inkStrengthMix(strength);
+  return mixHex(inkHex, toward, amount);
+}
+
+/** The age multiply colour: white (no change) at 0, {@link PAPER_AGE_COLOR} at 100. */
+export function paperAgeColor(age: unknown): string {
+  return mixHex('#ffffff', PAPER_AGE_COLOR, clampPaperAge(age) / 100);
+}
+
+/**
+ * The paper multiply as one colour: the tinted paper at its opacity (a
+ * multiply at opacity a is a multiply by white→paper mixed a), times the age.
+ * The page renders it as two background layers of one pseudo-element.
+ */
+export function paperLayerColor(paperHex: string, tint: unknown, age: unknown): string {
+  const tinted = channels(mixHex('#ffffff', paperHex, clampPaperTint(tint) / 100));
+  const aged = channels(paperAgeColor(age));
+  return toHex(tinted.map((c, i) => (c * aged[i]) / 255));
+}
+
+/**
+ * The reader-wide CSS variables for the controls, set once on the reader
+ * (like `--page-filter`) and read by every inked page's layers:
+ * `--ink-mix-to` / `--ink-mix` (color-mix of the page's own ink),
+ * `--paper-tint` (the paper's mix toward its tint), `--paper-age`.
+ */
+export function inkEffectVars(
+  strength: unknown,
+  tint: unknown,
+  age: unknown
+): { mixTo: string; mix: string; tint: string; age: string } {
+  const { toward, amount } = inkStrengthMix(strength);
+  return {
+    mixTo: toward,
+    mix: `${+(amount * 100).toFixed(4)}%`,
+    tint: `${clampPaperTint(tint)}%`,
+    age: paperAgeColor(age)
+  };
+}
 
 /** Auto mode moves to the next colour every this many pages. */
 export const AUTO_INK_BLOCK_PAGES = 32;

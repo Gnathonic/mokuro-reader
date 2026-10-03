@@ -16,6 +16,7 @@
     imageFilter,
     pageFilter,
     pageInkSetting,
+    pageInkEffect,
     preferredTitleLanguage,
     progress,
     settings,
@@ -1619,6 +1620,10 @@
     {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader
         --page-filter={$pageFilter}
+        --ink-mix-to={$pageInkEffect.mixTo}
+        --ink-mix={$pageInkEffect.mix}
+        --paper-tint={$pageInkEffect.tint}
+        --paper-age={$pageInkEffect.age}
         {pages}
         files={volumeData.files}
         {volume}
@@ -1633,6 +1638,10 @@
     {:else}
       <HorizontalScrollReader
         --page-filter={$pageFilter}
+        --ink-mix-to={$pageInkEffect.mixTo}
+        --ink-mix={$pageInkEffect.mix}
+        --paper-tint={$pageInkEffect.tint}
+        --paper-age={$pageInkEffect.age}
         {pages}
         files={volumeData.files}
         {volume}
@@ -1648,8 +1657,17 @@
     {/if}
   {:else}
     <!-- Page-based mode. `--page-filter` (brightness/contrast, #256) is read by
-         each page's image layer only — set once here, not per page. -->
-    <div class="flex" style:background-color="var(--reader-bg)" style:--page-filter={$pageFilter}>
+         each page's image layer only; the print effect's controls (`--ink-mix*`,
+         `--paper-*`) only by an inked page's layers. Set once here, not per page. -->
+    <div
+      class="flex"
+      style:background-color="var(--reader-bg)"
+      style:--page-filter={$pageFilter}
+      style:--ink-mix-to={$pageInkEffect.mixTo}
+      style:--ink-mix={$pageInkEffect.mix}
+      style:--paper-tint={$pageInkEffect.tint}
+      style:--paper-age={$pageInkEffect.age}
+    >
       <PagedViewport
         contentSize={pagedContentSize}
         pageKey={page}

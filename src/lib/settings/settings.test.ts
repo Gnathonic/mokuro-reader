@@ -7,6 +7,7 @@ import {
   imageFilter,
   pageFilter,
   pageInkSetting,
+  pageInkEffect,
   preferredTitleLanguage,
   updateCatalogSetting,
   updateSetting,
@@ -195,6 +196,38 @@ describe('page ink color (#256)', () => {
     updateSetting('pagedGap', 0);
     unsubscribe();
     expect(seen).toEqual(['off', 'blue']);
+  });
+});
+
+describe('print effect controls (#256)', () => {
+  beforeEach(() => {
+    updateSetting('pageInkStrength', 0);
+    updateSetting('pagePaperTint', 8);
+    updateSetting('pagePaperAge', 0);
+  });
+
+  it('defaults on a profile that predates them', () => {
+    const out = migrateProfiles({ Test: {} as any }).Test;
+    expect([out.pageInkStrength, out.pagePaperTint, out.pagePaperAge]).toEqual([0, 8, 0]);
+  });
+
+  it('keeps stored values and repairs malformed ones on migration', () => {
+    const out = migrateProfiles({
+      A: { pageInkStrength: -40, pagePaperTint: 20, pagePaperAge: 70 } as any,
+      B: { pageInkStrength: 500, pagePaperTint: 'x', pagePaperAge: -3 } as any
+    });
+    expect([out.A.pageInkStrength, out.A.pagePaperTint, out.A.pagePaperAge]).toEqual([-40, 20, 70]);
+    expect([out.B.pageInkStrength, out.B.pagePaperTint, out.B.pagePaperAge]).toEqual([100, 8, 0]);
+  });
+
+  it('pageInkEffect follows the controls and ignores unrelated writes', () => {
+    const seen: string[] = [];
+    const unsubscribe = pageInkEffect.subscribe((v) => seen.push(`${v.mix}/${v.tint}/${v.age}`));
+    updateSetting('pagedGap', 7);
+    updateSetting('pagePaperTint', 30);
+    updateSetting('pagedGap', 0);
+    unsubscribe();
+    expect(seen).toEqual(['0%/8%/#ffffff', '0%/30%/#ffffff']);
   });
 });
 
