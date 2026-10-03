@@ -143,6 +143,32 @@ describe('matching review candidates to the library (final review #1)', () => {
     ]);
   });
 
+  it('a bare volume name ("01") never matches another series\' row (follow-up #2)', async () => {
+    // Pre-branch rows: "A.zip" → inner "01" (legacy key "0/Volume 1"), and "A/01".
+    const legacyBare = generateDeterministicUUID('0/Volume 1');
+    const legacyA = generateDeterministicUUID('A/Volume 01');
+    await (db.volumes as any).bulkPut([
+      row(legacyBare, 'A', { metadata_only: true }),
+      row(legacyA, 'A', { metadata_only: true }),
+      row(generateDeterministicUUID('01'), 'Other', { metadata_only: true })
+    ]);
+    const groups = groupCandidates([
+      { id: 'b', basePath: '01', titlePath: 'Series B/01', source: 'Series B.zip' },
+      { id: 'l', basePath: '01', source: '01.cbz' },
+      { id: 'd', basePath: 'Downloads/01', source: 'Downloads/01' }
+    ]);
+    await matchLibraryVolumes(groups);
+    for (const group of groups) expect([...group.matches]).toEqual([]);
+  });
+
+  it('a series folder of bare numbers still finds its pre-branch rows', async () => {
+    const groups = groupCandidates([
+      { id: 'c1', basePath: 'Chained Soldier (Semi-Color)/01', source: 'c1' }
+    ]);
+    await matchLibraryVolumes(groups);
+    expect(groups[0].matches.get('c1')?.uuid).toBe(legacyCs);
+  });
+
   it('a new volume matches nothing', async () => {
     const groups = groupCandidates([{ id: 'g', basePath: 'Gleipnir v01', source: 'g' }]);
     await matchLibraryVolumes(groups);

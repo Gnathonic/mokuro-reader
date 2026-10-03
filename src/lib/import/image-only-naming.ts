@@ -70,15 +70,37 @@ export function locateVolume(pairing: Located) {
  * its literal location; inside the folder it sat in; loose; inside a series
  * folder named after the series its name carries; and the formula every
  * import used before the review (`series/volume` of the cleaned-up guess,
- * which ignores the pick shape). A bare number ("01") alone names no volume,
- * so it is never looked up loose.
+ * which ignores the pick shape).
+ *
+ * Only keys that name a SERIES: a bare number ("01") loose, in a generic
+ * container, or as an archive's inside path says nothing about which series
+ * it is — the pre-review formula even reads "01" as series "0" — so such a
+ * key would match another series' volume. A volume with nothing but a bare
+ * name is looked up under nothing (it is new).
  */
 export function identityUuids(pairing: Located): string[] {
-  const { literalParent, own, identity } = locateVolume(pairing);
-  const keys = [identity];
-  if (literalParent) keys.push(`${literalParent}/${own}`);
-  if (!isBareVolumeName(own)) keys.push(own, `${extractSeriesName(own)}/${own}`);
-  const legacy = extractTitlesFromPath(pairing.basePath);
-  keys.push(`${extractSeriesName(pairing.basePath)}/${legacy.volumeTitle}`);
+  const { parent, literalParent, own, identity } = locateVolume(pairing);
+  const bare = isBareVolumeName(own);
+  const keys: string[] = [];
+  if (parent || !bare) keys.push(identity);
+  if (literalParent && (parent || !bare)) keys.push(`${literalParent}/${own}`);
+  if (!bare) keys.push(own, `${extractSeriesName(own)}/${own}`);
+  if (legacyNamesSeries(pairing.basePath)) {
+    const legacy = extractTitlesFromPath(pairing.basePath);
+    keys.push(`${extractSeriesName(pairing.basePath)}/${legacy.volumeTitle}`);
+  }
   return [...new Set(keys.map(generateDeterministicUUID))];
+}
+
+/** Does the pre-review formula read a series from `basePath`, not just a number? */
+function legacyNamesSeries(basePath: string): boolean {
+  const parts = basePath
+    .replace(/\.(cbz|zip)$/i, '')
+    .split('/')
+    .filter((p) => p.length > 0);
+  const leaf = parts[parts.length - 1];
+  if (!leaf) return false;
+  if (!isBareVolumeName(leaf)) return true;
+  const holder = parts[parts.length - 2];
+  return holder !== undefined && !isSuspectParentFolder(holder);
 }

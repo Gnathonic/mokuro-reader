@@ -83,20 +83,47 @@ export interface GroupNaming {
   overrides: Record<string, string>;
 }
 
+/**
+ * A series name as a vote: group tags and notes in brackets dropped
+ * ("[Group] One Piece", "Chained Soldier (Semi-Color)"), `_` and `.` read as
+ * spaces ("One_Piece"), case and spacing folded.
+ */
+function seriesVoteKey(name: string): string {
+  return normalizeSeriesKey(
+    name.replace(/[[(（{【][^\])）}】]*[\])）}】]/g, ' ').replace(/[_.]+/g, ' ')
+  );
+}
+
+/** Do two folded series names name the same series (one contains the other)? */
+function sameSeries(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short.length >= 3 && long.includes(short);
+}
+
 export function groupCandidates(candidates: ReviewCandidate[]): ReviewGroup[] {
   const located = candidates.map((candidate) => ({ candidate, ...locateVolume(candidate) }));
 
-  // The series each parent folder's volumes name (bare numbers name none).
+  // The series each parent folder's volumes name (bare numbers name none),
+  // folded so one series spelled several ways is one vote.
   const named = new Map<string, Set<string>>();
   for (const { parent, own } of located) {
     if (!parent || isBareVolumeName(own)) continue;
     const series = seriesFromVolumeName(own);
-    if (!series) continue;
+    const key = series ? seriesVoteKey(series) : '';
+    if (!key) continue;
     let set = named.get(parent);
     if (!set) named.set(parent, (set = new Set()));
-    set.add(normalizeSeriesKey(storedTitle(series)));
+    set.add(key);
   }
-  const isCollection = (parent: string) => (named.get(parent)?.size ?? 0) >= 2;
+  const isCollection = (parent: string) => {
+    const keys = named.get(parent);
+    if (!keys || keys.size < 2) return false;
+    // A folder named after a series its volumes name is that series' folder.
+    const folder = seriesVoteKey(parent);
+    return ![...keys].some((key) => sameSeries(folder, key));
+  };
 
   const groups = new Map<
     string,

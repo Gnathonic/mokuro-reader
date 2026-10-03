@@ -581,6 +581,8 @@ async function processArchiveContents(
 ): Promise<{
   success: boolean;
   error?: string;
+  /** Nothing imported because the review skipped everything it held. */
+  skipped?: boolean;
   nestedSources?: PairedSource[];
 }> {
   onProgress?.('Scanning archive...', 5);
@@ -615,10 +617,11 @@ async function processArchiveContents(
   // Image-only volumes: named in the pre-import review when the archive was
   // listed before it was queued; otherwise reviewed now (#285).
   let confirmedImageOnlyPairings: PairedSource[] = [];
+  const reviewOutcome = { failed: false };
   if (imageOnlyPairings.length > 0) {
     const approved = review
       ? namesFromReview(imageOnlyPairings, plan.innerPaths, review)
-      : await reviewInQueue(imageOnlyPairings, archiveFile, plan.innerPaths, batch);
+      : await reviewInQueue(imageOnlyPairings, archiveFile, plan.innerPaths, batch, reviewOutcome);
     confirmedImageOnlyPairings = imageOnlyPairings.filter((pairing) => {
       pairing.importNames = approved.get(pairing.id);
       return pairing.importNames !== undefined;
@@ -664,6 +667,11 @@ async function processArchiveContents(
 
   // If no pairings and no nested archives, nothing to import
   if (allPairings.length === 0 && nestedArchivePaths.length === 0) {
+    // Its image-only volumes were all skipped (Skip, Skip all remaining, a
+    // cancel, or already in the library): finished as asked, not failed.
+    if (imageOnlyPairings.length > 0 && !reviewOutcome.failed) {
+      return { success: true, skipped: true };
+    }
     return { success: false, error: 'No importable volumes found in archive' };
   }
 
@@ -873,7 +881,12 @@ function tocDirectoryToDecompressed(source: PairedSource): DecompressedVolume {
 async function processSingleVolume(
   source: PairedSource,
   onProgress?: (status: string, progress: number) => void
-): Promise<{ success: boolean; error?: string; additionalSources?: PairedSource[] }> {
+): Promise<{
+  success: boolean;
+  error?: string;
+  skipped?: boolean;
+  additionalSources?: PairedSource[];
+}> {
   try {
     onProgress?.('Preparing...', 0);
 
@@ -978,6 +991,7 @@ async function processSingleVolume(
       return {
         success: result.success,
         error: result.error,
+        skipped: result.skipped,
         additionalSources: inheritBatch(result.nestedSources, source)
       };
     }
@@ -1266,7 +1280,7 @@ export async function importArchiveWithOptionalMokuro(
     }
 
     if (processResult.success) {
-      result.imported += 1;
+      if (!processResult.skipped) result.imported += 1;
       removeFromProgressTracker(queueItem.id);
     } else {
       result.success = false;
@@ -1471,7 +1485,7 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
         }
 
         if (processResult.success) {
-          result.imported += 1;
+          if (!processResult.skipped) result.imported += 1;
           removeFromProgressTracker(queueItem.id);
         } else {
           result.failed = 1;
@@ -1603,13 +1617,21 @@ function offerGroups(
   return undecided;
 }
 
-/** The names a decision gives a group's volumes; a failure to name them is reported and skips them. */
-function approvedNames(group: ReviewGroup, decision: GroupDecision): Map<string, ImportNames> {
+/**
+ * The names a decision gives a group's volumes; a failure to name them is
+ * reported (and `onFailure` told) and skips them.
+ */
+function approvedNames(
+  group: ReviewGroup,
+  decision: GroupDecision,
+  onFailure?: () => void
+): Map<string, ImportNames> {
   if (decision.action !== 'import') return new Map();
   try {
     return nameGroup(group, decision.naming);
   } catch (error) {
     reportDecisionFailure(error);
+    onFailure?.();
     return new Map();
   }
 }
@@ -1711,7 +1733,8 @@ async function reviewInQueue(
   pairings: PairedSource[],
   archiveFile: File,
   innerPaths: Map<string, string>,
-  batch?: number
+  batch?: number,
+  outcome: { failed: boolean } = { failed: false }
 ): Promise<Map<string, ImportNames>> {
   const approved = new Map<string, ImportNames>();
   // "Skip all remaining" (or a cancel) already answered for this import.
@@ -1728,7 +1751,7 @@ async function reviewInQueue(
     try {
       offerGroups(groups, (group, decision, undecided) => {
         noteSkipAll(batch, decision);
-        const names = approvedNames(group, decision);
+        const names = approvedNames(group, decision, () => (outcome.failed = true));
         noteApproved(names.values());
         for (const [id, approvedName] of names) approved.set(id, approvedName);
         // The queue resumes after the last decision, whatever became of it.

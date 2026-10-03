@@ -9,7 +9,8 @@
 
 import { db } from '$lib/catalog/db';
 import { seriesVolumeUuids } from './database';
-import { identityUuids, storedTitle } from './image-only-naming';
+import { identityUuids, locateVolume, storedTitle } from './image-only-naming';
+import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import type { LibraryMatch, LibrarySeries, ReviewGroup } from './image-only-review';
 
 /** Every series title the library has, once, with its volume count (index order). */
@@ -97,6 +98,6 @@ export async function matchLibraryVolumes(groups: ReviewGroup[]): Promise<void> 
   for (const group of groups) {
     group.ownUuids = group.candidates
       .filter((c) => !group.matches.has(c.id))
-      .map((c) => identityUuids(c)[0]);
+      .map((c) => generateDeterministicUUID(locateVolume(c).identity));
   }
 }

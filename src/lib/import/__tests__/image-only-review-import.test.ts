@@ -609,6 +609,54 @@ describe('skip all remaining reaches the reviews the queue raises later (final r
   });
 });
 
+describe('an archive whose image-only volumes were all skipped (follow-up #3)', () => {
+  beforeEach(() => vi.mocked(showSnackbar).mockClear());
+
+  const errors = () => get(importQueue).filter((i) => i.status === 'error');
+
+  it('is finished, not failed, when the queue reviews it and it is skipped', async () => {
+    reviewer = installReviewer(() => ({ action: 'skip' }));
+    const inner = new Uint8Array(await (await zipOf(['001.jpg'])).arrayBuffer());
+    const outer = await zipOf([{ path: 'Vol 1 (2020).cbz', data: inner }]);
+    await importFiles([picked('Outer Series (Digital).zip', outer)]);
+    await waitForQueue();
+    expect(reviewer.offered).toHaveLength(1);
+    expect(errors()).toEqual([]);
+    expect(get(importQueue)).toEqual([]);
+    expect(await rows()).toEqual([]);
+  });
+
+  it('a series pack skipped with Skip all remaining leaves no error rows behind', async () => {
+    const inner = new Uint8Array(await (await zipOf(['001.jpg'])).arrayBuffer());
+    const pack = await zipOf([
+      { path: 'Pack v01.cbz', data: inner },
+      { path: 'Pack v02.cbz', data: inner },
+      { path: 'A.mokuro', data: mokuro('Mixed', 'A') },
+      'A/001.jpg'
+    ]);
+    await importFiles([picked('Series Pack.zip', pack)]);
+    await until(() => get(reviewSession).pending.length > 0);
+    skipAllRemaining();
+    await waitForQueue();
+    expect(errors()).toEqual([]);
+    expect(await rows()).toEqual([{ series: 'Mixed', volume: 'A' }]);
+  });
+
+  it('a genuinely empty archive still fails', async () => {
+    reviewer = installReviewer();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const empty = await zipOf([{ path: 'readme.txt', data: new TextEncoder().encode('hi') }]);
+    const inner = new Uint8Array(await empty.arrayBuffer());
+    const outer = await zipOf([{ path: 'Empty.cbz', data: inner }]);
+    await importFiles([picked('Holder.zip', outer)]);
+    await waitForQueue();
+    warn.mockRestore();
+    expect(errors().map((i) => [i.displayTitle, i.errorMessage])).toEqual([
+      ['Empty', 'No importable volumes found in archive']
+    ]);
+  });
+});
+
 describe('what importFiles reports while a review is open', () => {
   it('counts the volumes still waiting for review, and never calls that complete', async () => {
     reviewer = installReviewer('manual');

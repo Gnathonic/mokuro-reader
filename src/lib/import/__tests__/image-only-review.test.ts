@@ -120,6 +120,41 @@ describe('groupCandidates (#285)', () => {
       ).toEqual([{ series: 'Chained Soldier (Semi-Color)', ids: ['c1', 'c2'] }]);
     });
 
+    it('a series folder whose volumes spell the series differently stays one step (follow-up #1)', () => {
+      expect(
+        summary([
+          candidate('a', 'Chained Soldier (Semi-Color)/Chained Soldier (Semi-Color) 05'),
+          candidate('b', 'Chained Soldier (Semi-Color)/Chained Soldier v06')
+        ])
+      ).toEqual([{ series: 'Chained Soldier (Semi-Color)', ids: ['a', 'b'] }]);
+      expect(
+        summary([
+          candidate('1', 'One Piece/[Group] One Piece v01'),
+          candidate('2', 'One Piece/One Piece v02 (2003)'),
+          candidate('3', 'One Piece/One_Piece_v03')
+        ])
+      ).toEqual([{ series: 'One Piece', ids: ['2', '3', '1'] }]);
+    });
+
+    it('tags and spelling are folded before voting, even in a folder named otherwise', () => {
+      expect(
+        summary([
+          candidate('1', 'Shelf 3/[Group] One Piece v01'),
+          candidate('2', 'Shelf 3/One Piece v02 (2003)'),
+          candidate('3', 'Shelf 3/One_Piece_v03')
+        ])
+      ).toEqual([{ series: 'Shelf 3', ids: ['2', '3', '1'] }]);
+    });
+
+    it('Manga/{Killing Bites 01, Gleipnir 01} still splits', () => {
+      expect(
+        summary([
+          candidate('k', 'Manga/Killing Bites 01'),
+          candidate('g', 'Manga/Gleipnir 01')
+        ]).map((g) => g.series)
+      ).toEqual(['Gleipnir', 'Killing Bites']);
+    });
+
     it('a series folder whose volumes all name that series stays one step', () => {
       expect(
         summary([
