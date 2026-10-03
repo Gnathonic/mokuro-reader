@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canonicalSeriesTitle,
   defaultNaming,
   groupCandidates,
   nameGroup,
@@ -214,5 +215,25 @@ describe('nameGroup (#285)', () => {
     expect(storedTitle(nameGroup(g, defaultNaming(g, 'cleaned')).get('r')!.volume)).toBe(
       'Re： Zero？ 01'
     );
+  });
+});
+
+describe('canonicalSeriesTitle (#285)', () => {
+  const library = [
+    { title: 'Killing Bites', count: 2 },
+    { title: 'Re： Zero？', count: 1 }
+  ];
+
+  it("returns the library's spelling of a series typed in another case or spacing", () => {
+    expect(canonicalSeriesTitle(library, 'killing  bites ')).toBe('Killing Bites');
+  });
+
+  it('matches a name typed with reserved characters to its stored form', () => {
+    expect(canonicalSeriesTitle(library, 're: zero?')).toBe('Re： Zero？');
+  });
+
+  it('returns nothing for a new series or an empty field', () => {
+    expect(canonicalSeriesTitle(library, 'Dorohedoro')).toBeUndefined();
+    expect(canonicalSeriesTitle(library, '   ')).toBeUndefined();
   });
 });

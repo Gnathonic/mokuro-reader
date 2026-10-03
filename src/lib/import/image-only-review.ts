@@ -23,6 +23,7 @@
 import { extractSeriesName, generateDeterministicUUID } from '$lib/util/series-extraction';
 import { naturalSort } from '$lib/util/natural-sort';
 import { generateUUID } from '$lib/util/uuid';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { locateVolume, storedTitle, type ImportNames } from './image-only-naming';
 
 export type NamingMode = 'cleaned' | 'folder';
@@ -110,4 +111,25 @@ export function nameGroup(group: ReviewGroup, naming: GroupNaming): Map<string, 
     names.set(candidate.id, { series, volume: typed || generated, identity });
   });
   return names;
+}
+
+/** A series the library already has (keys only: title + how many volumes). */
+export interface LibrarySeries {
+  title: string;
+  count: number;
+}
+
+/**
+ * The library's own spelling of the series `typed` names — case, spacing and
+ * reserved characters aside, the way the catalog groups series — so a typed
+ * "killing bites" joins "Killing Bites" (and continues its numbering) instead
+ * of starting a near-duplicate series.
+ */
+export function canonicalSeriesTitle(
+  library: readonly LibrarySeries[],
+  typed: string
+): string | undefined {
+  if (!typed.trim()) return undefined;
+  const key = normalizeSeriesKey(storedTitle(typed.trim()));
+  return library.find((s) => normalizeSeriesKey(s.title) === key)?.title;
 }
