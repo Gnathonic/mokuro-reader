@@ -7,6 +7,12 @@
 
 import { writable, get } from 'svelte/store';
 import { pairMokuroWithSources } from './pairing';
+import {
+  isThumbnailSidecarPath,
+  joinTitlePath,
+  planArchiveListing,
+  stripArchiveExtension
+} from './archive-listing';
 import { decideImportRouting } from './routing';
 import { processVolume, parseMokuroFile, matchImagesToPages } from './processing';
 import { saveVolume, seriesVolumeUuids, storedTitleSegment, volumeExists } from './database';
@@ -28,13 +34,7 @@ import type {
   DecompressedVolume,
   ProcessedVolume
 } from './types';
-import {
-  isImageExtension,
-  isMokuroExtension,
-  isArchiveExtension,
-  parseFilePath,
-  isSystemFile
-} from './types';
+import { isImageExtension, parseFilePath, isSystemFile } from './types';
 import {
   getFileProcessingPool,
   incrementPoolUsers,
@@ -151,14 +151,6 @@ function filesToEntries(files: File[]): FileEntry[] {
       return { path, file };
     })
     .filter((entry) => !isThumbnailSidecarPath(entry.path, sourceStems));
-}
-
-function isThumbnailSidecarPath(path: string, sourceStems?: Set<string>): boolean {
-  const filename = path.split('/').pop()?.toLowerCase() || '';
-  if (!filename.endsWith('.webp')) return false;
-  if (!sourceStems || sourceStems.size === 0) return false;
-  const stem = filename.slice(0, -5);
-  return sourceStems.has(stem);
 }
 
 function getThumbnailCandidatePaths(basePath: string): string[] {
@@ -435,16 +427,6 @@ function keepFolderNames(): boolean {
   return get(miscSettings).keepFolderNamesAsTitles === true;
 }
 
-/** `path` without an archive extension. */
-function stripArchiveExtension(path: string): string {
-  return path.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '');
-}
-
-/** `parent/child`, where `.`/empty children are the parent itself. */
-function joinTitlePath(parent: string, child: string): string {
-  return child === '' || child === '.' ? parent : `${parent}/${child}`;
-}
-
 /**
  * Process an archive using streaming extraction for memory efficiency.
  * Opens archive once to scan + extract mokuro files, then streams images.
@@ -477,95 +459,20 @@ async function processArchiveContents(
 
   onProgress?.('Analyzing structure...', 15);
 
-  // Build file entries from scan result
-  // Mokuro files have data, other files have empty ArrayBuffers (listed only)
-  const fileEntries: FileEntry[] = [];
-  const nestedArchivePaths: string[] = [];
-
-  // Collect source stems from mokuro files and top-level folders for sidecar detection.
-  // The exporter places thumbnail sidecars at the archive root as {VolumeTitle}.webp,
-  // matching the mokuro filename stem or the image folder name.
-  const archiveSourceStems = new Set<string>();
-  for (const entry of scanResult.entries) {
-    if (isSystemFile(entry.filename)) continue;
-    const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
-    const name = entry.filename.split('/').pop() || entry.filename;
-    if (isMokuroExtension(ext)) {
-      archiveSourceStems.add(name.replace(/\.mokuro$/i, '').toLowerCase());
-    }
-    // Top-level folders (e.g., "VolumeTitle/page.jpg" → "volumetitle")
-    if (entry.filename.includes('/')) {
-      const topFolder = entry.filename.split('/')[0].toLowerCase();
-      if (topFolder) archiveSourceStems.add(topFolder);
-    }
-  }
-
-  // `series.json` entries were only listed by the scan (it extracts .mokuro
-  // content), so their content is fetched in the targeted pass below.
-  const seriesFilePaths: string[] = [];
-
-  for (const entry of scanResult.entries) {
-    // Skip system files and directories
-    if (isSystemFile(entry.filename)) continue;
-
-    const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
-    const filename = entry.filename.split('/').pop() || entry.filename;
-
-    if (isSeriesFilePath(entry.filename)) {
-      seriesFilePaths.push(entry.filename);
-    } else if (isMokuroExtension(ext)) {
-      // Mokuro file - has actual content
-      const file = new File([entry.data], filename, { lastModified: Date.now() });
-      fileEntries.push({ path: entry.filename, file });
-    } else if (isImageExtension(ext)) {
-      if (isThumbnailSidecarPath(entry.filename, archiveSourceStems)) continue;
-      // Image file - placeholder only (empty data)
-      const file = new File([], filename, { lastModified: Date.now() });
-      fileEntries.push({ path: entry.filename, file });
-    } else if (isArchiveExtension(ext)) {
-      // Track nested archives for later
-      nestedArchivePaths.push(entry.filename);
-    }
-  }
-
-  // Add external mokuro if provided
-  if (externalMokuroFile) {
-    fileEntries.push({ path: externalMokuroFile.name, file: externalMokuroFile });
-  }
-
-  // `<stem>.<id>.mokuro` entries beside a volume are its OCR layers, not
-  // volumes of their own: hold them until the volume is saved.
-  const layerSplit = extractLayerEntries(fileEntries);
-  stashLayerEntries([...layerSplit.layers, ...layerSplit.standalone]);
-
-  // Run pairing logic
-  const pairingResult = await pairMokuroWithSources(layerSplit.entries);
-
-  if (pairingResult.warnings.length > 0) {
-    pairingResult.warnings.forEach((warning) => {
-      console.warn('[Archive Import]', warning);
-    });
-  }
-
-  // Separate image-only pairings from mokuro pairings (same as directory flow)
-  const mokuroPairings = pairingResult.pairings.filter((p) => !p.imageOnly);
-  const imageOnlyPairings = pairingResult.pairings.filter((p) => p.imageOnly);
-
-  // For image-only pairings at root level, use archive filename as basePath for series extraction
-  // But preserve the original path for file extraction
-  const archiveStem = archiveFile.name.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '');
+  // The same names → pairings step the pre-import scan runs
+  // (archive-listing.ts), here with the `.mokuro` bytes in hand.
   const archivePath =
     archiveTitlePath ?? stripArchiveExtension(archiveFile.webkitRelativePath || archiveFile.name);
-  const originalBasePaths = new Map<string, string>();
-  for (const pairing of imageOnlyPairings) {
-    // Verbatim titles name a volume from where it sits in the archive AND where
-    // the archive sits — `basePath` here is only the inside half.
-    pairing.titlePath = joinTitlePath(archivePath, pairing.basePath);
-    if (pairing.basePath === '.' || pairing.basePath === '') {
-      originalBasePaths.set(pairing.id, pairing.basePath);
-      pairing.basePath = archiveStem;
-    }
-  }
+  const plan = await planArchiveListing(
+    scanResult.entries,
+    { name: archiveFile.name, titlePath: archivePath },
+    externalMokuroFile
+  );
+  for (const warning of plan.warnings) console.warn('[Archive Import]', warning);
+  // `<stem>.<id>.mokuro` entries beside a volume are its OCR layers, not
+  // volumes of their own: hold them until the volume is saved.
+  stashLayerEntries(plan.layerEntries);
+  const { mokuroPairings, imageOnlyPairings, nestedArchivePaths, seriesFilePaths } = plan;
 
   // If there are image-only pairings, prompt user for confirmation
   let confirmedImageOnlyPairings: PairedSource[] = [];
@@ -629,7 +536,7 @@ async function processArchiveContents(
     // Build volume definitions for extraction
     // Use original basePath for extraction (images are at that path), not the renamed one
     const volumeDefs: VolumeExtractDef[] = allPairings.map((pairing, i) => {
-      const pathPrefix = originalBasePaths.get(pairing.id) ?? pairing.basePath;
+      const pathPrefix = plan.innerPaths.get(pairing.id) ?? pairing.basePath;
       return {
         id: `vol-${i}`,
         pathPrefix
