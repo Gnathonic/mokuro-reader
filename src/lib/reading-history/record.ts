@@ -1,5 +1,5 @@
 import { generateUUID } from '$lib/util/uuid';
-import { historyDb, type HistoryDexie } from './history-db';
+import type { HistoryDexie } from './history-db';
 import type { EventPayload, ReadingEvent } from './types';
 
 const DEVICE_ID_KEY = 'device_id';
@@ -47,6 +47,10 @@ let warned = false;
  * Fire-and-forget recording for UI and store code. Never throws: history is
  * worth less than the reading it describes, so a failing database (private
  * mode, quota, blocked upgrade) logs once per session and is otherwise ignored.
+ *
+ * The database module is loaded on first use, not imported: `volume-data.ts`
+ * imports this file, and loading it must not evaluate the Dexie subclass
+ * (many suites mock `dexie` without a default export).
  */
 export function recordEvent(
   payload: EventPayload,
@@ -54,13 +58,8 @@ export function recordEvent(
   db?: HistoryDexie
 ): Promise<ReadingEvent | null> {
   if (!db && typeof indexedDB === 'undefined') return Promise.resolve(null);
-  let target: HistoryDexie;
-  try {
-    target = db ?? historyDb();
-  } catch (error) {
-    return Promise.resolve(warnOnce(error));
-  }
-  return appendEvent(target, payload, t).catch(warnOnce);
+  const target = db ? Promise.resolve(db) : import('./history-db').then((m) => m.historyDb());
+  return target.then((resolved) => appendEvent(resolved, payload, t)).catch(warnOnce);
 }
 
 function warnOnce(error: unknown): null {
