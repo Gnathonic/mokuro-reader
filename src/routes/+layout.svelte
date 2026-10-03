@@ -8,6 +8,7 @@
   import ConfirmationPopup from '$lib/components/ConfirmationPopup.svelte';
   import ExtractionModal from '$lib/components/ExtractionModal.svelte';
   import ImageOnlyImportModal from '$lib/components/ImageOnlyImportModal.svelte';
+  import ImageOnlyReviewDialog from '$lib/components/ImageOnlyReviewDialog.svelte';
   import ImportMismatchModal from '$lib/components/ImportMismatchModal.svelte';
   import WebDAVErrorModal from '$lib/components/WebDAVErrorModal.svelte';
   import MissingFilesModal from '$lib/components/MissingFilesModal.svelte';
@@ -153,6 +154,7 @@
     <ConfirmationPopup />
     <ExtractionModal />
     <ImageOnlyImportModal />
+    <ImageOnlyReviewDialog />
     <ImportMismatchModal />
     <WebDAVErrorModal />
     <MissingFilesModal />
