@@ -176,7 +176,16 @@ function getThumbnailCandidatePaths(basePath: string): string[] {
 let pendingReviewGroups = 0;
 
 /**
- * Is work still outstanding — queued, processing, or waiting in review?
+ * Volumes being imported OUTSIDE the queue right now: a lone drop processed
+ * directly, a deep link. While one runs, the queue does not start (it resumes
+ * when the last one ends) and no second direct import starts — one archive's
+ * images in memory at a time, whichever path it came by.
+ */
+let directImports = 0;
+
+/**
+ * Is work still outstanding — queued, processing (in the queue or directly),
+ * or waiting in review?
  *
  * Deliberately NOT `queue.length === 0`: failed items stay in the store until
  * the user clears them, and a pinned `error` item must not stop later imports
@@ -186,8 +195,32 @@ let pendingReviewGroups = 0;
 function hasUnfinishedImports(): boolean {
   return (
     pendingReviewGroups > 0 ||
+    directImports > 0 ||
     get(importQueue).some((item) => item.status === 'queued' || item.status === 'processing')
   );
+}
+
+/**
+ * A direct import starts: it holds the shared worker pool (its archive is
+ * listed and extracted there), so no other user's count dropping to zero can
+ * terminate the pool under it.
+ */
+function beginDirectImport(): void {
+  directImports++;
+  incrementPoolUsers();
+}
+
+/**
+ * A direct import ends. Whatever was queued meanwhile waited for it; the
+ * queue takes the pool over BEFORE this import lets go of it, so the pool is
+ * not torn down and rebuilt in between.
+ */
+function endDirectImport(): void {
+  directImports = Math.max(0, directImports - 1);
+  if (directImports === 0 && get(importQueue).some((item) => item.status === 'queued')) {
+    void processQueue();
+  }
+  decrementPoolUsers();
 }
 
 /**
@@ -939,7 +972,8 @@ let processingQueue = false;
  * Process the import queue
  */
 async function processQueue(): Promise<void> {
-  if (processingQueue) return;
+  // A direct import in flight: its end starts the queue (one archive at a time).
+  if (processingQueue || directImports > 0) return;
 
   processingQueue = true;
   isImporting.set(true);
@@ -1022,13 +1056,32 @@ async function processQueue(): Promise<void> {
 export interface ImportResult {
   success: boolean;
   /**
-   * Volumes imported or queued by the time `importFiles` resolves. Image-only
-   * volumes are not counted: they are offered for review and queued only once
-   * the user approves their series (#285).
+   * Items imported or queued by the time `importFiles` resolves. Image-only
+   * volumes are queued only once the user approves their series (#285): those
+   * still in review then are counted in `awaitingReview` instead.
    */
   imported: number;
   failed: number;
   errors: string[];
+  /** Of `imported`, the items handed to the background queue — not saved yet. */
+  queued: number;
+  /** Image-only volumes offered for review and still undecided when `importFiles` resolved. */
+  awaitingReview: number;
+}
+
+/**
+ * What to tell the user once `importFiles` resolves: "complete" only when
+ * nothing of the import is still queued or waiting in review.
+ */
+export function describeImportOutcome(result: ImportResult): string {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (result.awaitingReview > 0) {
+    return `${plural(result.awaitingReview, 'volume')} waiting for your review`;
+  }
+  if (result.queued > 0) return `Importing ${plural(result.queued, 'item')}...`;
+  if (!result.success) return `Import failed: ${result.errors[0] ?? 'Unknown error'}`;
+  if (result.imported === 0) return 'Nothing was imported';
+  return 'Import complete!';
 }
 
 /**
@@ -1072,7 +1125,9 @@ export async function importArchiveWithOptionalMokuro(
     success: true,
     imported: 0,
     failed: 0,
-    errors: []
+    errors: [],
+    queued: 0,
+    awaitingReview: 0
   };
 
   // Request persistent storage within the originating user gesture (see the
@@ -1086,6 +1141,7 @@ export async function importArchiveWithOptionalMokuro(
   isImporting.set(true);
   currentImport.set({ ...queueItem, status: 'processing' });
   updateProgressTracker(queueItem.id, 'Processing', 5);
+  beginDirectImport();
 
   try {
     const processResult = await processSingleVolume(pairedSource, (status, progress) => {
@@ -1096,8 +1152,10 @@ export async function importArchiveWithOptionalMokuro(
       const newItems = processResult.additionalSources.map(createLocalQueueItem);
       newItems.forEach(addToProgressTracker);
       importQueue.update((q) => [...q, ...newItems]);
+      // Runs once this import ends (`endDirectImport`).
       processQueue();
       result.imported += processResult.additionalSources.length;
+      result.queued += processResult.additionalSources.length;
     }
 
     if (processResult.success) {
@@ -1112,6 +1170,7 @@ export async function importArchiveWithOptionalMokuro(
   } finally {
     isImporting.set(false);
     currentImport.set(null);
+    endDirectImport();
     if (!hasUnfinishedImports()) {
       await applyImportedSeriesFiles();
     }
@@ -1139,7 +1198,9 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
     success: true,
     imported: 0,
     failed: 0,
-    errors: []
+    errors: [],
+    queued: 0,
+    awaitingReview: 0
   };
 
   if (files.length === 0) {
@@ -1260,8 +1321,10 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
     options?.onPreparing?.(plain.length + candidates.length);
 
     // `.mokuro` volumes route as before — but a lone one is processed directly
-    // only when nothing else is running or waiting in review: two imports at
-    // once would hold two archives in memory (the queue is strictly sequential).
+    // only when nothing else is running (queued, in the queue, or another
+    // direct import) or waiting in review: two imports at once would hold two
+    // archives in memory (the queue is strictly sequential, and it does not
+    // start while a direct import runs).
     const routing = decideImportRouting(plain);
     if (routing.directProcess && candidates.length === 0 && !hasUnfinishedImports()) {
       // Single item - process directly
@@ -1270,6 +1333,7 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
       currentImport.set(queueItem);
       addToProgressTracker(queueItem);
       updateProgressTracker(queueItem.id, 'Processing', 5);
+      beginDirectImport();
 
       try {
         const processResult = await processSingleVolume(
@@ -1290,10 +1354,11 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
             return [...processing, ...newItems, ...queued];
           });
 
-          // Start processing queue for additional items
+          // Processed once this import ends (`endDirectImport`).
           processQueue();
 
           result.imported += processResult.additionalSources.length;
+          result.queued += processResult.additionalSources.length;
         }
 
         if (processResult.success) {
@@ -1308,17 +1373,24 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
       } finally {
         isImporting.set(false);
         currentImport.set(null);
+        endDirectImport();
       }
     } else if (plain.length > 0) {
       enqueueAtEnd(plain);
       processQueue();
       // The queue processes in the background.
       result.imported = plain.length;
+      result.queued = plain.length;
     }
 
     // Image-only volumes: one review step per series. Each approval is queued
     // at once, so series 1 imports while series 2 is on screen.
-    if (candidates.length > 0) await offerForReview(candidates, targets);
+    if (candidates.length > 0) {
+      const offered = await offerForReview(candidates, targets);
+      result.awaitingReview = offered.awaitingReview;
+      result.imported += offered.queued;
+      result.queued += offered.queued;
+    }
 
     return result;
   } catch (error) {
@@ -1398,7 +1470,7 @@ function reportDecisionFailure(error: unknown, tracked: ImportQueueItem[] = []):
 function offerGroups(
   groups: ReviewGroup[],
   onDecided: (group: ReviewGroup, decision: GroupDecision, undecided: number) => void
-): void {
+): ReadonlySet<string> {
   const undecided = new Set(groups.map((g) => g.id));
   pendingReviewGroups += groups.length;
   try {
@@ -1414,6 +1486,7 @@ function offerGroups(
     undecided.clear();
     throw error;
   }
+  return undecided;
 }
 
 /** The names a decision gives a group's volumes; a failure to name them is reported and skips them. */
@@ -1430,14 +1503,18 @@ function approvedNames(group: ReviewGroup, decision: GroupDecision): Map<string,
 /**
  * Offer a batch's image-only volumes for review and queue each approved
  * group as soon as it is decided. Resolves once the groups are OFFERED — the
- * user reviews while earlier approvals import.
+ * user reviews while earlier approvals import — with how many volumes are
+ * still waiting for a decision, and how many queue items decisions made
+ * before then queued.
  */
 async function offerForReview(
   candidates: ReviewCandidate[],
   targets: Map<string, ReviewTarget>
-): Promise<void> {
+): Promise<{ awaitingReview: number; queued: number }> {
   const groups = await withExistingCounts(groupCandidates(candidates));
-  offerGroups(groups, (group, decision) => {
+  let offering = true;
+  let queuedWhileOffering = 0;
+  const undecided = offerGroups(groups, (group, decision) => {
     const names = approvedNames(group, decision);
     const ready: PairedSource[] = [];
     for (const candidate of group.candidates) {
@@ -1467,6 +1544,7 @@ async function offerForReview(
     try {
       if (ready.length > 0) {
         enqueueAtEnd(ready, tracked);
+        if (offering) queuedWhileOffering += ready.length;
         processQueue().catch((error) => reportDecisionFailure(error));
       } else if (!hasUnfinishedImports()) {
         // Everything skipped and nothing running: settle the batch's series.json.
@@ -1476,6 +1554,13 @@ async function offerForReview(
       reportDecisionFailure(error, tracked);
     }
   });
+  offering = false;
+  return {
+    awaitingReview: groups
+      .filter((group) => undecided.has(group.id))
+      .reduce((sum, group) => sum + group.candidates.length, 0),
+    queued: queuedWhileOffering
+  };
 }
 
 /** Approved names of an archive reviewed before it was queued, by pairing id. */

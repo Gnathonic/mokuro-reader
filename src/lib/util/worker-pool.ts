@@ -288,7 +288,14 @@ export class WorkerPool {
     this.processQueue();
   }
 
+  /**
+   * Stop every worker. Tasks still in flight or queued are REJECTED through
+   * their `onError` — their callers await them, and a task dropped silently
+   * would leave its caller waiting forever.
+   */
   public terminate() {
+    const unsettled = [...this.activeTasks.values(), ...this.taskQueue];
+
     // Terminate all workers
     for (const worker of this.workers) {
       worker.terminate();
@@ -303,6 +310,15 @@ export class WorkerPool {
     this.taskQueue = [];
     this.activeTasks.clear();
     this.workerTaskMap.clear();
+    this.providerOperationCounts.clear();
+
+    for (const task of unsettled) {
+      try {
+        task.onError?.({ type: 'error', fileId: task.id, error: 'Worker pool terminated' });
+      } catch (error) {
+        console.error(`Worker pool: error handler of task ${task.id} threw`, error);
+      }
+    }
   }
 
   public get activeTaskCount() {

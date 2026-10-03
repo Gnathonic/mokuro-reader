@@ -53,7 +53,7 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 }));
 
 import { db } from '$lib/catalog/db';
-import { importFiles, importQueue, isImporting } from '../import-service';
+import { describeImportOutcome, importFiles, importQueue, isImporting } from '../import-service';
 import { decideCurrent, reviewSession, skipAllRemaining } from '../review-session';
 import { defaultNaming } from '../image-only-review';
 import {
@@ -430,5 +430,51 @@ describe('a decision the import cannot act on', () => {
     expect(get(isImporting)).toBe(false);
     expect(get(importQueue).map((i) => i.status)).toEqual(['error']);
     expect(await rows()).toEqual([]);
+  });
+});
+
+describe('what importFiles reports while a review is open', () => {
+  it('counts the volumes still waiting for review, and never calls that complete', async () => {
+    reviewer = installReviewer('manual');
+    const result = await importFiles([
+      picked('Chained Soldier (Semi-Color)/01/001.jpg'),
+      picked('Chained Soldier (Semi-Color)/02/001.jpg'),
+      picked('Dorohedoro v01.cbz', await zipOf(['001.jpg']))
+    ]);
+    expect(result).toMatchObject({ imported: 0, queued: 0, awaitingReview: 3 });
+    expect(describeImportOutcome(result)).toBe('3 volumes waiting for your review');
+    reviewer.pending.forEach((p) => p.decide({ action: 'skip' }));
+  });
+
+  it('counts approvals made before it resolved as queued, not complete', async () => {
+    reviewer = installReviewer();
+    const result = await importFiles([picked('Killing Bites/Killing Bites 01/001.jpg')]);
+    expect(result).toMatchObject({ imported: 1, queued: 1, awaitingReview: 0 });
+    expect(describeImportOutcome(result)).toBe('Importing 1 item...');
+    await waitForQueue();
+  });
+
+  it('calls a lone .mokuro volume imported directly complete', async () => {
+    const solo = await zipOf([
+      { path: 'Solo.mokuro', data: mokuro('Solo', 'Vol 1') },
+      'Solo/001.jpg'
+    ]);
+    const result = await importFiles([picked('Solo.cbz', solo)]);
+    expect(result).toMatchObject({ imported: 1, queued: 0, awaitingReview: 0 });
+    expect(describeImportOutcome(result)).toBe('Import complete!');
+  });
+});
+
+describe('describeImportOutcome', () => {
+  const base = { success: true, imported: 0, failed: 0, errors: [], queued: 0, awaitingReview: 0 };
+  it('names what is still pending, a failure, or nothing at all', () => {
+    expect(describeImportOutcome({ ...base, imported: 3, queued: 3 })).toBe('Importing 3 items...');
+    expect(describeImportOutcome({ ...base, awaitingReview: 1, imported: 2, queued: 2 })).toBe(
+      '1 volume waiting for your review'
+    );
+    expect(describeImportOutcome({ ...base, success: false, failed: 1, errors: ['boom'] })).toBe(
+      'Import failed: boom'
+    );
+    expect(describeImportOutcome(base)).toBe('Nothing was imported');
   });
 });
