@@ -112,23 +112,26 @@ Where the user labels a device (recommendation; one edit component, three entry 
 
 Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock) and one payload:
 
-| Kind      | Payload                                                                                                                                                | Replaces                                  |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
-| `page`    | `volume`, `pages` (first..last visible), `chars_visible`, `chars_new`, `chars_before`, `dwell_ms` (raw, uncapped), `layout`, `orientation`, `viewport` | `recentPageTurns`                         |
-| `adjust`  | `volume`, `time_delta_ms?`, `chars_delta?`                                                                                                             | manual edits in the volume editor         |
-| `restart` | `volume`                                                                                                                                               | `archivedReads` marker                    |
-| `forget`  | `volume`, `before`                                                                                                                                     | "delete stats" (`deleteVolumeCompletely`) |
-| `resolve` | `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                             | — (the user's answer about a long pause)  |
+| Kind      | Payload                                                                                                                                                                                   | Replaces                                  |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `page`    | `volume`, `first_page`, `last_page`, `page_chars` (per page, first..last), `chars_before`, `dwell_ms` (raw, uncapped; `null` = unknown, legacy only), `layout`, `orientation`, `viewport` | `recentPageTurns`                         |
+| `adjust`  | `volume`, `time_delta_ms?`, `chars_delta?`                                                                                                                                                | manual edits in the volume editor         |
+| `restart` | `volume`                                                                                                                                                                                  | `archivedReads` marker                    |
+| `forget`  | `volume`, `before`                                                                                                                                                                        | "delete stats" (`deleteVolumeCompletely`) |
+| `resolve` | `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                                                                | — (the user's answer about a long pause)  |
 
 - A `page` event is written when the user **leaves** a view (turn, close, tab hidden, idle), so dwell is
   known, which fixes problem 5.
 - **One event per view, not per page.** Whatever is on screen together (one page, a double-page spread,
-  several pages of a continuous strip on an ultrawide) is one event. `chars_visible` is the character count
-  of the **whole pages in the layout**: every page with any part on screen counts in full, never a
-  fraction, and a view is always at least one page (a zoomed-in corner of a page counts that whole page).
-  It drives the idle cutoff. `chars_new` is only what this view showed for the first time in
-  this read pass, and drives "characters read", so overlapping views in continuous mode never credit a
-  page twice. `layout` is `single` | `double` | `continuous-v` | `continuous-h`.
+  several pages of a continuous strip on an ultrawide) is one event. Its pages are the **whole pages in
+  the layout**: every page with any part on screen counts in full, never a fraction, and a view is always
+  at least one page (a zoomed-in corner of a page counts that whole page). `layout` is `single` |
+  `double` | `continuous-v` | `continuous-h`.
+- Two figures are **derived at analysis time**, not recorded, because they need every device's events:
+  `chars_visible` = `sum(page_chars)`, which drives the idle cutoff; and `chars_new` = the chars of pages
+  no earlier view of this read pass showed (on any device), which drives "characters read", so
+  overlapping views in continuous mode, or the same pages read on two devices, never credit a page twice.
+  Recording `page_chars` per page is what makes both possible.
 - Nothing is ever edited or deleted. `forget` and `restart` are applied when stats are computed, so both
   are reversible in principle.
 - `completed`, `progress`, `chars` (current position) and per-volume settings stay in `volume-data.json`.
@@ -138,13 +141,17 @@ Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock)
 
 ### Local (IndexedDB)
 
-New Dexie tables (next schema version, additive):
+A **separate Dexie database, `mokuro_history`**, not new tables in `mokuro_v3`. History has its own
+lifecycle (it outlives every catalog row), the export Worker never needs it, it stays off the
+`MOKURO_DB_SCHEMA` ladder, and its small writes never queue behind the catalog's long blob
+transactions.
 
-| Table            | Key                                   | Purpose                                                                |
-| ---------------- | ------------------------------------- | ---------------------------------------------------------------------- |
-| `reading_events` | `[device+seq]`, indexes `volume`, `t` | every device's events, ours and imported                               |
-| `history_files`  | cloud path                            | per remote file: `size`, `modifiedTime`, provider, imported `last_seq` |
-| `devices`        | `device`                              | device records                                                         |
+| Table            | Key                                   | Purpose                                                                          |
+| ---------------- | ------------------------------------- | -------------------------------------------------------------------------------- |
+| `history_meta`   | `key`                                 | this device's ID and next `seq` (phase 1)                                        |
+| `reading_events` | `[device+seq]`, indexes `volume`, `t` | every device's events, ours and imported                                         |
+| `history_files`  | cloud path                            | per remote file: `size`, `modifiedTime`, provider, imported `last_seq` (phase 2) |
+| `devices`        | `device`                              | device facts                                                                     |
 
 - Recording writes one row per event. No more whole-map rewrite to localStorage on every turn. The slimmed
   `volumes` localStorage entry is still written, with a try/catch.
@@ -238,7 +245,11 @@ device.
 
 ## Migration and compatibility
 
-- **Old data.** On first run, each volume's `recentPageTurns` becomes `page` events under a deterministic
+- **Old data** (converted in **phase 2**, at the cut-over where page turns stop being written, never
+  earlier: during phase 1 every device both writes turns and records native events, so converting then
+  would count that reading twice). Only turns that no native `page` event of the same volume covers (on
+  any device, which phase 2's sync makes visible) are converted. Each volume's `recentPageTurns` becomes
+  `page` events under a deterministic
   legacy key, `device = 'legacy:' + volume_uuid` and `seq = turn timestamp`, so every device converting the
   same turns produces the same IDs and the union deduplicates. Dwell comes from the next turn, as today.
   `archivedReads` becomes `restart` events. `timeReadInMinutes` beyond what the turns explain becomes one
@@ -253,10 +264,12 @@ device.
 
 ## Rollout (each phase shippable)
 
-1. **Local event store + recording.** Dexie tables, `page` events on leave, the device record, legacy
-   conversion. Speed still computed the old way, as a parity check.
-2. **Segment sync.** Upload own months, import others, add `history/` to the allowlist, drop page turns
-   from `volume-data.json`, batch the writes, stop syncing per page turn.
+1. **Local event store + recording.** Separate `mokuro_history` IndexedDB, `page` events on leave,
+   `adjust`/`restart`/`forget` from the existing stat edits, device facts. Nothing reads the events yet;
+   page turns, sync and speed are unchanged.
+2. **Segment sync + cut-over.** Upload own months, import others, add `history/` to the allowlist,
+   convert legacy turns (coverage rule above), drop page turns from `volume-data.json`, batch the writes,
+   stop syncing per page turn.
 3. **Stats on events.** One clock, adaptive cutoff + synced override, long-pause prompts + review list,
    skip classification, recent speed by time, per-series time left. Retire `getEffectiveReadingTime` and
    the minute counter.
