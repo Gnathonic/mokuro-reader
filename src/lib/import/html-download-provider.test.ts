@@ -9,7 +9,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // A stand-in for the file-processing worker: it fetches through the same
 // (stubbed) global fetch the real worker would, so every URL it tries is seen.
 const workerTasks = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+/** The shared pool's user tally, and what it was when each task was handed over. */
+const poolUsers = vi.hoisted(() => ({ count: 0, atAddTask: [] as number[] }));
 vi.mock('$lib/util/file-processing-pool', () => ({
+  incrementPoolUsers: () => {
+    poolUsers.count++;
+  },
+  decrementPoolUsers: () => {
+    poolUsers.count--;
+  },
   getFileProcessingPool: async () => ({
     addTask: (task: {
       data: { archiveUrl: string; mokuroUrls: string[]; coverUrls: string[] };
@@ -17,6 +25,7 @@ vi.mock('$lib/util/file-processing-pool', () => ({
       onError: (error: { error: string }) => void;
     }) => {
       workerTasks.push(task.data);
+      poolUsers.atAddTask.push(poolUsers.count);
       void (async () => {
         const archive = await fetch(task.data.archiveUrl, { cache: 'no-store' });
         if (!archive.ok) {
@@ -119,6 +128,8 @@ function serve(url: string, route: Route) {
 
 beforeEach(() => {
   workerTasks.length = 0;
+  poolUsers.count = 0;
+  poolUsers.atAddTask.length = 0;
   routes = new Map();
   fetchMock = vi.fn(async (input: string | URL) => {
     const url = String(input);
@@ -178,6 +189,22 @@ describe('downloading a cbz deep link with a manifest', () => {
     serve(`${BASE}Dr%20Stone%2001.webp`, new Uint8Array([9, 9, 9, 9]));
     serve(`${BASE}series.json`, SERIES_JSON);
   }
+
+  it('holds the shared worker pool while its download runs, and lets go after', async () => {
+    await serveAll();
+    await htmlDownloadProvider.download(link());
+    // Another user's count dropping to zero cannot terminate the pool under it.
+    expect(poolUsers.atAddTask).toEqual([1]);
+    expect(poolUsers.count).toBe(0);
+  });
+
+  it('lets go of the pool when the download fails too', async () => {
+    await serveAll();
+    serve(CBZ, 500);
+    await expect(htmlDownloadProvider.download(link())).rejects.toThrow();
+    expect(poolUsers.atAddTask).toEqual([1]);
+    expect(poolUsers.count).toBe(0);
+  });
 
   it('takes every file from the manifest, and guesses nothing', async () => {
     await serveAll();

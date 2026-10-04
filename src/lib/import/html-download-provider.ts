@@ -1,7 +1,11 @@
 import { getItems } from '$lib/upload';
 import { IMAGE_EXTENSIONS } from './types';
 import { normalizeFilename } from '$lib/util';
-import { getFileProcessingPool } from '$lib/util/file-processing-pool';
+import {
+  decrementPoolUsers,
+  getFileProcessingPool,
+  incrementPoolUsers
+} from '$lib/util/file-processing-pool';
 import { generateUUID } from '$lib/util/uuid';
 import { mayBeImageType } from '$lib/util/image-content-type';
 import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
@@ -82,6 +86,28 @@ async function fetchBlobWithProgress(
 }
 
 async function downloadCbzBundleViaWorker(
+  cbzUrl: string,
+  normalizedVolume: string,
+  mokuroUrls: string[],
+  coverUrls: string[],
+  onProgress?: (state: HtmlDownloadProgress) => void
+): Promise<{
+  archiveFile: File;
+  mokuroFile: File | null;
+  coverFile: File | null;
+}> {
+  // Counted as a pool user for the whole download, so another user's count
+  // dropping to zero (an import's pre-scan, a queue draining) cannot
+  // terminate the pool under this task.
+  incrementPoolUsers();
+  try {
+    return await runCbzBundleTask(cbzUrl, normalizedVolume, mokuroUrls, coverUrls, onProgress);
+  } finally {
+    decrementPoolUsers();
+  }
+}
+
+async function runCbzBundleTask(
   cbzUrl: string,
   normalizedVolume: string,
   mokuroUrls: string[],

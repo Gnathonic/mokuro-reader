@@ -7,6 +7,16 @@
 
 import { writable, get } from 'svelte/store';
 import { pairMokuroWithSources } from './pairing';
+import {
+  archiveSourceLabel,
+  isThumbnailSidecarPath,
+  joinTitlePath,
+  planArchiveListing,
+  prescanArchives,
+  stripArchiveExtension,
+  type ArchiveScan,
+  type ListedEntry
+} from './archive-listing';
 import { decideImportRouting } from './routing';
 import { processVolume, parseMokuroFile, matchImagesToPages } from './processing';
 import { saveVolume, storedTitleSegment, volumeExists } from './database';
@@ -22,19 +32,14 @@ import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
 import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { createLocalQueueItem, requiresWorkerDecompression } from './local-provider';
 import type {
+  ArchiveReview,
   FileEntry,
   PairedSource,
   ImportQueueItem,
   DecompressedVolume,
   ProcessedVolume
 } from './types';
-import {
-  isImageExtension,
-  isMokuroExtension,
-  isArchiveExtension,
-  parseFilePath,
-  isSystemFile
-} from './types';
+import { isImageExtension, parseFilePath, isSystemFile } from './types';
 import {
   getFileProcessingPool,
   incrementPoolUsers,
@@ -48,7 +53,20 @@ import {
   extractLayerEntries,
   stashLayerEntries
 } from '$lib/reader/edit/layer-import';
-import { extractSeriesName } from '$lib/upload/image-only-fallback';
+import type { ImportNames } from './image-only-naming';
+import {
+  groupCandidates,
+  nameGroup,
+  type ReviewCandidate,
+  type ReviewGroup
+} from './image-only-review';
+import { skipAllRemaining, type GroupDecision } from './review-session';
+import {
+  existingVolumeCount,
+  matchLibraryVolumes,
+  noteVolumesInFlight,
+  settleVolumesInFlight
+} from './library-series';
 import { generateUUID } from '$lib/util/uuid';
 import { requestPersistentStorage } from '$lib/util/upload';
 import {
@@ -151,20 +169,82 @@ function filesToEntries(files: File[]): FileEntry[] {
     .filter((entry) => !isThumbnailSidecarPath(entry.path, sourceStems));
 }
 
-function isThumbnailSidecarPath(path: string, sourceStems?: Set<string>): boolean {
-  const filename = path.split('/').pop()?.toLowerCase() || '';
-  if (!filename.endsWith('.webp')) return false;
-  if (!sourceStems || sourceStems.size === 0) return false;
-  const stem = filename.slice(0, -5);
-  return sourceStems.has(stem);
-}
-
 function getThumbnailCandidatePaths(basePath: string): string[] {
   return [`${basePath}.webp`];
 }
 
+/** The last import batch number handed out (`PairedSource.batch`). */
+let lastBatch = 0;
+
 /**
- * Is work still outstanding in the queue?
+ * Batches whose remaining reviews are settled without asking (#285): "Skip all
+ * remaining" skips the rest of that import — the archives a series pack still
+ * holds included, whose steps the queue would only raise later — and a cancel
+ * also drops whatever the review would still have queued. Cleared once
+ * nothing is left to import.
+ */
+const skippedBatches = new Map<number, 'skip' | 'cancel'>();
+
+/** Set while a cancel skips the open review: those skips are cancels. */
+let cancelling = false;
+
+/** A skip decision for `batch`: "all remaining" settles its later reviews too. */
+function noteSkipAll(batch: number | undefined, decision: GroupDecision): void {
+  if (batch === undefined || decision.action !== 'skip' || !decision.all) return;
+  if (skippedBatches.get(batch) !== 'cancel')
+    skippedBatches.set(batch, cancelling ? 'cancel' : 'skip');
+}
+
+/** Sources found inside `parent` belong to its import. */
+function inheritBatch(
+  sources: PairedSource[] | undefined,
+  parent: PairedSource
+): PairedSource[] | undefined {
+  if (parent.batch !== undefined) for (const s of sources ?? []) s.batch ??= parent.batch;
+  return sources;
+}
+
+/** The uuids of the reviewed volumes `pairings` were named with. */
+function namedUuids(pairings: PairedSource[]): string[] {
+  return pairings.flatMap((p) => (p.importNames ? [p.importNames.uuid] : []));
+}
+
+/** The reviewed names a queued source carries (#285). */
+function carriedNames(source: PairedSource): ImportNames[] {
+  return [
+    ...(source.importNames ? [source.importNames] : []),
+    ...(source.archiveReview ? source.archiveReview.names.values() : [])
+  ];
+}
+
+/** The uuids of the reviewed volumes a queued source carries. */
+function carriedUuids(source: PairedSource): string[] {
+  return carriedNames(source).map((n) => n.uuid);
+}
+
+/** Approved volumes now on their way: they count toward their series until they land. */
+function noteApproved(names: Iterable<ImportNames>): void {
+  // A restored volume already has its row (under its own series).
+  noteVolumesInFlight([...names].filter((n) => !n.restore));
+}
+
+/**
+ * Image-only review groups offered but not decided yet (#285). An approval
+ * still has volumes to save, so they keep a batch's `series.json` waiting.
+ */
+let pendingReviewGroups = 0;
+
+/**
+ * Volumes being imported OUTSIDE the queue right now: a lone drop processed
+ * directly, a deep link. While one runs, the queue does not start (it resumes
+ * when the last one ends) and no second direct import starts — one archive's
+ * images in memory at a time, whichever path it came by.
+ */
+let directImports = 0;
+
+/**
+ * Is work still outstanding — queued, processing (in the queue or directly),
+ * or waiting in review?
  *
  * Deliberately NOT `queue.length === 0`: failed items stay in the store until
  * the user clears them, and a pinned `error` item must not stop later imports
@@ -172,7 +252,56 @@ function getThumbnailCandidatePaths(basePath: string): string[] {
  * batch and risk being keyed to an unrelated import).
  */
 function hasUnfinishedImports(): boolean {
-  return get(importQueue).some((item) => item.status === 'queued' || item.status === 'processing');
+  return (
+    pendingReviewGroups > 0 ||
+    directImports > 0 ||
+    get(importQueue).some((item) => item.status === 'queued' || item.status === 'processing')
+  );
+}
+
+/**
+ * A direct import starts: it holds the shared worker pool (its archive is
+ * listed and extracted there), so no other user's count dropping to zero can
+ * terminate the pool under it.
+ */
+function beginDirectImport(): void {
+  directImports++;
+  incrementPoolUsers();
+}
+
+/**
+ * A direct import ends. Whatever was queued meanwhile waited for it; the
+ * queue takes the pool over BEFORE this import lets go of it, so the pool is
+ * not torn down and rebuilt in between.
+ */
+function endDirectImport(): void {
+  directImports = Math.max(0, directImports - 1);
+  if (directImports === 0 && get(importQueue).some((item) => item.status === 'queued')) {
+    void processQueue();
+  }
+  decrementPoolUsers();
+  wakeTurnWaiters();
+}
+
+/** Deep links waiting for the running import to end (`waitForImportTurn`). */
+let turnWaiters: (() => void)[] = [];
+
+function wakeTurnWaiters(): void {
+  const waiting = turnWaiters;
+  turnWaiters = [];
+  for (const wake of waiting) wake();
+}
+
+/**
+ * Resolves once nothing is being imported — neither the queue nor a direct
+ * import — so the caller can start its own direct import at once (no await in
+ * between): one archive in memory at a time. Whatever queued meanwhile goes
+ * first; the queue in turn waits for the caller's import to end.
+ */
+async function waitForImportTurn(): Promise<void> {
+  while (processingQueue || directImports > 0) {
+    await new Promise<void>((resolve) => turnWaiters.push(resolve));
+  }
 }
 
 /**
@@ -190,6 +319,8 @@ function hasUnfinishedImports(): boolean {
  * is dropped by the write's own fire-time gates.
  */
 function noteImportedVolume(processed: ProcessedVolume): void {
+  // Saved: its series counts it from the database now.
+  settleVolumesInFlight([processed.metadata.volumeUuid]);
   recordImportedSeriesTitle(
     storedTitleSegment(processed.metadata.series),
     processed.metadata.volumeUuid
@@ -427,14 +558,31 @@ async function streamExtractAllVolumes(
 /**
  * Process an archive using streaming extraction for memory efficiency.
  * Opens archive once to scan + extract mokuro files, then streams images.
+ *
+ * @param archiveTitlePath - Where the archive itself sits, extension dropped
+ *   (what its image-only volumes are grouped and identified by); defaults to
+ *   the file's own picked path. A nested archive passes its outer archive's
+ *   path + its own.
+ * @param review - Names approved in the pre-import review; without it,
+ *   image-only volumes are reviewed here (nested archives, unlisted archives,
+ *   deep links).
+ * @param batch - The import this archive belongs to (`PairedSource.batch`).
+ * @param reviewed - Collects the uuids of the image-only volumes approved for
+ *   this archive, so the caller can settle them however this ends.
  */
 async function processArchiveContents(
   archiveFile: File,
   externalMokuroFile: File | null,
-  onProgress?: (status: string, progress: number) => void
+  onProgress?: (status: string, progress: number) => void,
+  archiveTitlePath?: string,
+  review?: ArchiveReview,
+  batch?: number,
+  reviewed: string[] = []
 ): Promise<{
   success: boolean;
   error?: string;
+  /** Nothing imported because the review skipped everything it held. */
+  skipped?: boolean;
   nestedSources?: PairedSource[];
 }> {
   onProgress?.('Scanning archive...', 5);
@@ -451,98 +599,34 @@ async function processArchiveContents(
 
   onProgress?.('Analyzing structure...', 15);
 
-  // Build file entries from scan result
-  // Mokuro files have data, other files have empty ArrayBuffers (listed only)
-  const fileEntries: FileEntry[] = [];
-  const nestedArchivePaths: string[] = [];
-
-  // Collect source stems from mokuro files and top-level folders for sidecar detection.
-  // The exporter places thumbnail sidecars at the archive root as {VolumeTitle}.webp,
-  // matching the mokuro filename stem or the image folder name.
-  const archiveSourceStems = new Set<string>();
-  for (const entry of scanResult.entries) {
-    if (isSystemFile(entry.filename)) continue;
-    const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
-    const name = entry.filename.split('/').pop() || entry.filename;
-    if (isMokuroExtension(ext)) {
-      archiveSourceStems.add(name.replace(/\.mokuro$/i, '').toLowerCase());
-    }
-    // Top-level folders (e.g., "VolumeTitle/page.jpg" → "volumetitle")
-    if (entry.filename.includes('/')) {
-      const topFolder = entry.filename.split('/')[0].toLowerCase();
-      if (topFolder) archiveSourceStems.add(topFolder);
-    }
-  }
-
-  // `series.json` entries were only listed by the scan (it extracts .mokuro
-  // content), so their content is fetched in the targeted pass below.
-  const seriesFilePaths: string[] = [];
-
-  for (const entry of scanResult.entries) {
-    // Skip system files and directories
-    if (isSystemFile(entry.filename)) continue;
-
-    const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
-    const filename = entry.filename.split('/').pop() || entry.filename;
-
-    if (isSeriesFilePath(entry.filename)) {
-      seriesFilePaths.push(entry.filename);
-    } else if (isMokuroExtension(ext)) {
-      // Mokuro file - has actual content
-      const file = new File([entry.data], filename, { lastModified: Date.now() });
-      fileEntries.push({ path: entry.filename, file });
-    } else if (isImageExtension(ext)) {
-      if (isThumbnailSidecarPath(entry.filename, archiveSourceStems)) continue;
-      // Image file - placeholder only (empty data)
-      const file = new File([], filename, { lastModified: Date.now() });
-      fileEntries.push({ path: entry.filename, file });
-    } else if (isArchiveExtension(ext)) {
-      // Track nested archives for later
-      nestedArchivePaths.push(entry.filename);
-    }
-  }
-
-  // Add external mokuro if provided
-  if (externalMokuroFile) {
-    fileEntries.push({ path: externalMokuroFile.name, file: externalMokuroFile });
-  }
-
+  // The same names → pairings step the pre-import scan runs
+  // (archive-listing.ts), here with the `.mokuro` bytes in hand.
+  const archivePath =
+    archiveTitlePath ?? stripArchiveExtension(archiveFile.webkitRelativePath || archiveFile.name);
+  const plan = await planArchiveListing(
+    scanResult.entries,
+    { name: archiveFile.name, titlePath: archivePath },
+    externalMokuroFile
+  );
+  for (const warning of plan.warnings) console.warn('[Archive Import]', warning);
   // `<stem>.<id>.mokuro` entries beside a volume are its OCR layers, not
   // volumes of their own: hold them until the volume is saved.
-  const layerSplit = extractLayerEntries(fileEntries);
-  stashLayerEntries([...layerSplit.layers, ...layerSplit.standalone]);
+  stashLayerEntries(plan.layerEntries);
+  const { mokuroPairings, imageOnlyPairings, nestedArchivePaths, seriesFilePaths } = plan;
 
-  // Run pairing logic
-  const pairingResult = await pairMokuroWithSources(layerSplit.entries);
-
-  if (pairingResult.warnings.length > 0) {
-    pairingResult.warnings.forEach((warning) => {
-      console.warn('[Archive Import]', warning);
-    });
-  }
-
-  // Separate image-only pairings from mokuro pairings (same as directory flow)
-  const mokuroPairings = pairingResult.pairings.filter((p) => !p.imageOnly);
-  const imageOnlyPairings = pairingResult.pairings.filter((p) => p.imageOnly);
-
-  // For image-only pairings at root level, use archive filename as basePath for series extraction
-  // But preserve the original path for file extraction
-  const archiveStem = archiveFile.name.replace(/\.(zip|cbz|cbr|rar|7z)$/i, '');
-  const originalBasePaths = new Map<string, string>();
-  for (const pairing of imageOnlyPairings) {
-    if (pairing.basePath === '.' || pairing.basePath === '') {
-      originalBasePaths.set(pairing.id, pairing.basePath);
-      pairing.basePath = archiveStem;
-    }
-  }
-
-  // If there are image-only pairings, prompt user for confirmation
+  // Image-only volumes: named in the pre-import review when the archive was
+  // listed before it was queued; otherwise reviewed now (#285).
   let confirmedImageOnlyPairings: PairedSource[] = [];
+  const reviewOutcome = { failed: false };
   if (imageOnlyPairings.length > 0) {
-    const confirmed = await promptForImageOnlyImport(imageOnlyPairings);
-    if (confirmed) {
-      confirmedImageOnlyPairings = imageOnlyPairings;
-    }
+    const approved = review
+      ? namesFromReview(imageOnlyPairings, plan.innerPaths, review)
+      : await reviewInQueue(imageOnlyPairings, archiveFile, plan.innerPaths, batch, reviewOutcome);
+    confirmedImageOnlyPairings = imageOnlyPairings.filter((pairing) => {
+      pairing.importNames = approved.get(pairing.id);
+      return pairing.importNames !== undefined;
+    });
+    reviewed.push(...namedUuids(confirmedImageOnlyPairings));
   }
 
   // Combine confirmed pairings
@@ -583,6 +667,11 @@ async function processArchiveContents(
 
   // If no pairings and no nested archives, nothing to import
   if (allPairings.length === 0 && nestedArchivePaths.length === 0) {
+    // Its image-only volumes were all skipped (Skip, Skip all remaining, a
+    // cancel, or already in the library): finished as asked, not failed.
+    if (imageOnlyPairings.length > 0 && !reviewOutcome.failed) {
+      return { success: true, skipped: true };
+    }
     return { success: false, error: 'No importable volumes found in archive' };
   }
 
@@ -598,7 +687,7 @@ async function processArchiveContents(
     // Build volume definitions for extraction
     // Use original basePath for extraction (images are at that path), not the renamed one
     const volumeDefs: VolumeExtractDef[] = allPairings.map((pairing, i) => {
-      const pathPrefix = originalBasePaths.get(pairing.id) ?? pairing.basePath;
+      const pathPrefix = plan.innerPaths.get(pairing.id) ?? pairing.basePath;
       return {
         id: `vol-${i}`,
         pathPrefix
@@ -635,6 +724,8 @@ async function processArchiveContents(
         thumbnailSidecar: null,
         imageFiles: volumeImageFiles,
         basePath: pairing.basePath,
+        titlePath: pairing.titlePath,
+        importNames: pairing.importNames,
         sourceType: 'local',
         nestedArchives: []
       };
@@ -712,8 +803,10 @@ async function processArchiveContents(
         mokuroFile: null,
         source: { type: 'archive', file },
         basePath: filename.replace(/\.(zip|cbz|cbr|rar|7z)$/i, ''),
+        titlePath: joinTitlePath(archivePath, stripArchiveExtension(entry.filename)),
         estimatedSize: entry.data.byteLength,
-        imageOnly: false
+        imageOnly: false,
+        batch
       });
     }
   }
@@ -740,6 +833,8 @@ function directoryToDecompressed(source: PairedSource): DecompressedVolume {
     thumbnailSidecar: null,
     imageFiles: source.source.files,
     basePath: source.basePath,
+    titlePath: source.titlePath,
+    importNames: source.importNames,
     sourceType: 'local',
     nestedArchives: []
   };
@@ -768,6 +863,8 @@ function tocDirectoryToDecompressed(source: PairedSource): DecompressedVolume {
     thumbnailSidecar: null,
     imageFiles,
     basePath: source.basePath,
+    titlePath: source.titlePath,
+    importNames: source.importNames,
     sourceType: 'local',
     nestedArchives: []
   };
@@ -784,7 +881,12 @@ function tocDirectoryToDecompressed(source: PairedSource): DecompressedVolume {
 async function processSingleVolume(
   source: PairedSource,
   onProgress?: (status: string, progress: number) => void
-): Promise<{ success: boolean; error?: string; additionalSources?: PairedSource[] }> {
+): Promise<{
+  success: boolean;
+  error?: string;
+  skipped?: boolean;
+  additionalSources?: PairedSource[];
+}> {
   try {
     onProgress?.('Preparing...', 0);
 
@@ -868,16 +970,29 @@ async function processSingleVolume(
     // For archive-only sources, use two-pass extraction for memory efficiency.
     // processArchiveContents handles scan, extraction, pairing, and saving.
     if (source.source.type === 'archive') {
-      const result = await processArchiveContents(
-        source.source.file,
-        source.mokuroFile,
-        onProgress
-      );
+      // Saved, failed or thrown, the volumes reviewed for this archive are no
+      // longer on their way (#285).
+      const reviewed: string[] = [];
+      let result: Awaited<ReturnType<typeof processArchiveContents>>;
+      try {
+        result = await processArchiveContents(
+          source.source.file,
+          source.mokuroFile,
+          onProgress,
+          source.titlePath,
+          source.archiveReview,
+          source.batch,
+          reviewed
+        );
+      } finally {
+        settleVolumesInFlight(reviewed);
+      }
 
       return {
         success: result.success,
         error: result.error,
-        additionalSources: result.nestedSources
+        skipped: result.skipped,
+        additionalSources: inheritBatch(result.nestedSources, source)
       };
     }
 
@@ -939,7 +1054,7 @@ async function processSingleVolume(
     // Add at FRONT of queue so nested archives complete before moving to other items
     if (processed.nestedSources.length > 0) {
       const queue = get(importQueue);
-      const newItems = processed.nestedSources.map(createLocalQueueItem);
+      const newItems = inheritBatch(processed.nestedSources, source)!.map(createLocalQueueItem);
       newItems.forEach(addToProgressTracker);
       const processing = queue.filter((item) => item.status === 'processing');
       const queued = queue.filter((item) => item.status === 'queued');
@@ -963,7 +1078,8 @@ let processingQueue = false;
  * Process the import queue
  */
 async function processQueue(): Promise<void> {
-  if (processingQueue) return;
+  // A direct import in flight: its end starts the queue (one archive at a time).
+  if (processingQueue || directImports > 0) return;
 
   processingQueue = true;
   isImporting.set(true);
@@ -994,6 +1110,8 @@ async function processQueue(): Promise<void> {
         );
         updateProgressTracker(nextItem.id, status, progress);
       });
+      // Saved or failed, what it carried from the review is no longer on its way.
+      settleVolumesInFlight(carriedUuids(nextItem.source));
 
       // Queue additional sources (from multi-volume archives or nested archives)
       // Add at FRONT of queue so all volumes from same archive complete together
@@ -1031,9 +1149,15 @@ async function processQueue(): Promise<void> {
     isImporting.set(false);
     currentImport.set(null);
     decrementPoolUsers(); // Release pool when queue is empty
-    // The queue is drained: every volume of this batch has a stored title, so
-    // any `series.json` that came with it can finally be keyed to a series.
-    await applyImportedSeriesFiles();
+    wakeTurnWaiters();
+    // The queue is drained and no review step is still open: every volume of
+    // this batch has a stored title, so any `series.json` that came with it
+    // can finally be keyed to a series. (A series still in review has
+    // volumes to come; its approval runs the queue again.)
+    if (!hasUnfinishedImports()) {
+      skippedBatches.clear();
+      await applyImportedSeriesFiles();
+    }
   }
 }
 
@@ -1043,9 +1167,33 @@ async function processQueue(): Promise<void> {
 
 export interface ImportResult {
   success: boolean;
+  /**
+   * Items imported or queued by the time `importFiles` resolves. Image-only
+   * volumes are queued only once the user approves their series (#285): those
+   * still in review then are counted in `awaitingReview` instead.
+   */
   imported: number;
   failed: number;
   errors: string[];
+  /** Of `imported`, the items handed to the background queue — not saved yet. */
+  queued: number;
+  /** Image-only volumes offered for review and still undecided when `importFiles` resolved. */
+  awaitingReview: number;
+}
+
+/**
+ * What to tell the user once `importFiles` resolves: "complete" only when
+ * nothing of the import is still queued or waiting in review.
+ */
+export function describeImportOutcome(result: ImportResult): string {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (result.awaitingReview > 0) {
+    return `${plural(result.awaitingReview, 'volume')} waiting for your review`;
+  }
+  if (result.queued > 0) return `Importing ${plural(result.queued, 'item')}...`;
+  if (!result.success) return `Import failed: ${result.errors[0] ?? 'Unknown error'}`;
+  if (result.imported === 0) return 'Nothing was imported';
+  return 'Import complete!';
 }
 
 /**
@@ -1089,7 +1237,9 @@ export async function importArchiveWithOptionalMokuro(
     success: true,
     imported: 0,
     failed: 0,
-    errors: []
+    errors: [],
+    queued: 0,
+    awaitingReview: 0
   };
 
   // Request persistent storage within the originating user gesture (see the
@@ -1097,12 +1247,22 @@ export async function importArchiveWithOptionalMokuro(
   void requestPersistentStorage();
 
   const pairedSource = createArchiveSource(archiveFile, mokuroFile);
+  pairedSource.batch = ++lastBatch;
   const queueItem = createLocalQueueItem(pairedSource);
   addToProgressTracker(queueItem);
+
+  // One archive in memory at a time: a running import (queue or direct)
+  // finishes first. The caller awaits the volume this import installs, so it
+  // waits its turn here rather than joining the queue.
+  if (processingQueue || directImports > 0) {
+    updateProgressTracker(queueItem.id, 'Waiting for the current import...', 0);
+    await waitForImportTurn();
+  }
 
   isImporting.set(true);
   currentImport.set({ ...queueItem, status: 'processing' });
   updateProgressTracker(queueItem.id, 'Processing', 5);
+  beginDirectImport();
 
   try {
     const processResult = await processSingleVolume(pairedSource, (status, progress) => {
@@ -1113,12 +1273,14 @@ export async function importArchiveWithOptionalMokuro(
       const newItems = processResult.additionalSources.map(createLocalQueueItem);
       newItems.forEach(addToProgressTracker);
       importQueue.update((q) => [...q, ...newItems]);
+      // Runs once this import ends (`endDirectImport`).
       processQueue();
       result.imported += processResult.additionalSources.length;
+      result.queued += processResult.additionalSources.length;
     }
 
     if (processResult.success) {
-      result.imported += 1;
+      if (!processResult.skipped) result.imported += 1;
       removeFromProgressTracker(queueItem.id);
     } else {
       result.success = false;
@@ -1129,6 +1291,7 @@ export async function importArchiveWithOptionalMokuro(
   } finally {
     isImporting.set(false);
     currentImport.set(null);
+    endDirectImport();
     if (!hasUnfinishedImports()) {
       await applyImportedSeriesFiles();
     }
@@ -1156,7 +1319,9 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
     success: true,
     imported: 0,
     failed: 0,
-    errors: []
+    errors: [],
+    queued: 0,
+    awaitingReview: 0
   };
 
   if (files.length === 0) {
@@ -1216,41 +1381,82 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
       if (attachedLayers === 0) getImportUiBridge().notify('No importable volumes found');
       return result;
     }
+    const batch = ++lastBatch;
+    for (const pairing of pairingResult.pairings) pairing.batch = batch;
 
-    // Separate image-only pairings from mokuro pairings
-    const mokuroPairings = pairingResult.pairings.filter((p) => !p.imageOnly);
-    const imageOnlyPairings = pairingResult.pairings.filter((p) => p.imageOnly);
+    // Image-only folders are reviewed; archives are LISTED first (entry names
+    // only, one at a time) so their image-only volumes join the same review
+    // instead of stopping the queue archive by archive (#285).
+    const imageOnlyFolders = pairingResult.pairings.filter((p) => p.imageOnly);
+    const others = pairingResult.pairings.filter((p) => !p.imageOnly);
+    incrementPoolUsers();
+    let scans: Map<string, ArchiveScan>;
+    try {
+      scans = await prescanArchives(others, listArchiveNames);
+    } finally {
+      decrementPoolUsers();
+    }
 
-    // If there are image-only pairings, prompt user for confirmation
-    let confirmedImageOnlyPairings: PairedSource[] = [];
-    if (imageOnlyPairings.length > 0) {
-      const confirmed = await promptForImageOnlyImport(imageOnlyPairings);
-      if (confirmed) {
-        confirmedImageOnlyPairings = imageOnlyPairings;
+    const plain: PairedSource[] = [];
+    const candidates: ReviewCandidate[] = [];
+    const targets = new Map<string, ReviewTarget>();
+    for (const pairing of imageOnlyFolders) {
+      candidates.push({
+        id: pairing.id,
+        basePath: pairing.basePath,
+        titlePath: pairing.titlePath,
+        source: pairing.basePath
+      });
+      targets.set(pairing.id, { kind: 'folder', pairing });
+    }
+    for (const pairing of others) {
+      const scan = scans.get(pairing.id);
+      if (scan?.kind !== 'review' || pairing.source.type !== 'archive') {
+        plain.push(pairing);
+        continue;
+      }
+      const held: HeldArchive = {
+        pairing,
+        waiting: new Set(),
+        names: new Map(),
+        importsRegardless: scan.importsRegardless,
+        settled: false
+      };
+      for (const inner of scan.inner) {
+        const id = `${pairing.id}:${inner.innerPath}`;
+        candidates.push({
+          id,
+          basePath: inner.basePath,
+          titlePath: inner.titlePath,
+          source: archiveSourceLabel(pairing.source.file, inner.innerPath)
+        });
+        targets.set(id, { kind: 'archive', held, innerPath: inner.innerPath });
+        held.waiting.add(id);
       }
     }
 
-    // Combine confirmed pairings
-    const allPairings = [...mokuroPairings, ...confirmedImageOnlyPairings];
-
-    if (allPairings.length === 0) {
+    if (plain.length === 0 && candidates.length === 0) {
       getImportUiBridge().notify('No volumes to import');
       return result;
     }
 
     // Notify caller that preparation is complete
-    options?.onPreparing?.(allPairings.length);
+    options?.onPreparing?.(plain.length + candidates.length);
 
-    // Decide routing
-    const routing = decideImportRouting(allPairings);
-
-    if (routing.directProcess) {
+    // `.mokuro` volumes route as before — but a lone one is processed directly
+    // only when nothing else is running (queued, in the queue, or another
+    // direct import) or waiting in review: two imports at once would hold two
+    // archives in memory (the queue is strictly sequential, and it does not
+    // start while a direct import runs).
+    const routing = decideImportRouting(plain);
+    if (routing.directProcess && candidates.length === 0 && !hasUnfinishedImports()) {
       // Single item - process directly
       const queueItem = createLocalQueueItem(routing.directProcess);
       isImporting.set(true);
       currentImport.set(queueItem);
       addToProgressTracker(queueItem);
       updateProgressTracker(queueItem.id, 'Processing', 5);
+      beginDirectImport();
 
       try {
         const processResult = await processSingleVolume(
@@ -1271,14 +1477,15 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
             return [...processing, ...newItems, ...queued];
           });
 
-          // Start processing queue for additional items
+          // Processed once this import ends (`endDirectImport`).
           processQueue();
 
           result.imported += processResult.additionalSources.length;
+          result.queued += processResult.additionalSources.length;
         }
 
         if (processResult.success) {
-          result.imported += 1;
+          if (!processResult.skipped) result.imported += 1;
           removeFromProgressTracker(queueItem.id);
         } else {
           result.failed = 1;
@@ -1289,18 +1496,23 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
       } finally {
         isImporting.set(false);
         currentImport.set(null);
+        endDirectImport();
       }
-    } else {
-      // Multiple items - queue all
-      const queueItems = routing.queuedItems.map(createLocalQueueItem);
-      queueItems.forEach(addToProgressTracker);
-      importQueue.update((q) => [...q, ...queueItems]);
-
-      // Start processing queue
+    } else if (plain.length > 0) {
+      enqueueAtEnd(plain);
       processQueue();
+      // The queue processes in the background.
+      result.imported = plain.length;
+      result.queued = plain.length;
+    }
 
-      // Return immediately - queue will process in background
-      result.imported = routing.queuedItems.length;
+    // Image-only volumes: one review step per series. Each approval is queued
+    // at once, so series 1 imports while series 2 is on screen.
+    if (candidates.length > 0) {
+      const offered = await offerForReview(candidates, targets, batch);
+      result.awaitingReview = offered.awaitingReview;
+      result.imported += offered.queued;
+      result.queued += offered.queued;
     }
 
     return result;
@@ -1313,28 +1525,243 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
   }
 }
 
+/** What approving a review candidate queues. */
+type ReviewTarget =
+  | { kind: 'folder'; pairing: PairedSource }
+  | { kind: 'archive'; held: HeldArchive; innerPath: string };
+
+/** A pre-scanned archive waiting for the review of its image-only volumes. */
+interface HeldArchive {
+  pairing: PairedSource;
+  /** Candidate ids not decided yet; the archive is queued once, after the last. */
+  waiting: Set<string>;
+  names: Map<string, ImportNames>;
+  /** It also holds `.mokuro` volumes or archives: queued whatever the review decides. */
+  importsRegardless: boolean;
+  settled: boolean;
+}
+
 /**
- * Prompt user to confirm image-only import
- * Groups volumes by series and shows a confirmation modal
+ * Entry names of an archive — central directory only, no entry bytes (not
+ * even `.mokuro`): the pre-scan must not raise an import's peak memory.
  */
-async function promptForImageOnlyImport(pairings: PairedSource[]): Promise<boolean> {
-  // Group by series name
-  const seriesGroups = new Map<string, number>();
+async function listArchiveNames(file: File): Promise<ListedEntry[]> {
+  return (await decompressArchiveRaw(file, undefined, undefined, true)).entries;
+}
 
-  for (const pairing of pairings) {
-    const seriesName = extractSeriesName(pairing.basePath);
-    seriesGroups.set(seriesName, (seriesGroups.get(seriesName) || 0) + 1);
+/** Queue `sources` behind everything already queued; `tracked` collects each progress row added. */
+function enqueueAtEnd(sources: PairedSource[], tracked: ImportQueueItem[] = []): void {
+  const items = sources.map(createLocalQueueItem);
+  for (const item of items) {
+    addToProgressTracker(item);
+    tracked.push(item);
   }
+  importQueue.update((q) => [...q, ...items]);
+}
 
-  // Convert to sorted list
-  const seriesList = [...seriesGroups.entries()]
-    .map(([seriesName, volumeCount]) => ({ seriesName, volumeCount }))
-    .sort((a, b) => a.seriesName.localeCompare(b.seriesName));
+/**
+ * Ready `groups` for review, keys only: which volumes the library already has
+ * (`matchLibraryVolumes` — a re-import keeps the row and its history), and
+ * how many volumes each group's series has besides the ones it would add.
+ */
+async function prepareGroups(groups: ReviewGroup[]): Promise<ReviewGroup[]> {
+  await matchLibraryVolumes(groups);
+  for (const group of groups) {
+    group.existingCount = await existingVolumeCount(group.series, group.ownUuids);
+  }
+  return groups;
+}
 
-  return getImportUiBridge().promptImageOnly({
-    seriesList,
-    totalVolumeCount: pairings.length
+/**
+ * A review decision the import could not act on. The review session swallows
+ * a throwing callback with a console line only, so every decision callback
+ * reports its own failures here: to the user, and by dropping any progress
+ * row it added for an item that never reached the queue.
+ */
+function reportDecisionFailure(error: unknown, tracked: ImportQueueItem[] = []): void {
+  console.error('[Import] Could not import a reviewed series:', error);
+  try {
+    const queued = new Set(get(importQueue).map((item) => item.id));
+    for (const item of tracked) if (!queued.has(item.id)) removeFromProgressTracker(item.id);
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    getImportUiBridge().notify(`Import failed: ${message}`);
+  } catch (reportError) {
+    console.error('[Import] Could not report the failure:', reportError);
+  }
+}
+
+/**
+ * Offer `groups` for review and count them as pending until each is decided.
+ * `onDecided` runs exactly once per group (a repeated or unknown id is
+ * ignored), with how many of these groups are still undecided.
+ */
+function offerGroups(
+  groups: ReviewGroup[],
+  onDecided: (group: ReviewGroup, decision: GroupDecision, undecided: number) => void
+): ReadonlySet<string> {
+  const undecided = new Set(groups.map((g) => g.id));
+  pendingReviewGroups += groups.length;
+  try {
+    getImportUiBridge().reviewImageOnly(groups, (groupId, decision) => {
+      const group = groups.find((g) => g.id === groupId);
+      if (!group || !undecided.delete(groupId)) return;
+      pendingReviewGroups--;
+      onDecided(group, decision, undecided.size);
+    });
+  } catch (error) {
+    // Never offered: nothing will ever decide these groups.
+    pendingReviewGroups -= undecided.size;
+    undecided.clear();
+    throw error;
+  }
+  return undecided;
+}
+
+/**
+ * The names a decision gives a group's volumes; a failure to name them is
+ * reported (and `onFailure` told) and skips them.
+ */
+function approvedNames(
+  group: ReviewGroup,
+  decision: GroupDecision,
+  onFailure?: () => void
+): Map<string, ImportNames> {
+  if (decision.action !== 'import') return new Map();
+  try {
+    return nameGroup(group, decision.naming);
+  } catch (error) {
+    reportDecisionFailure(error);
+    onFailure?.();
+    return new Map();
+  }
+}
+
+/**
+ * Offer a batch's image-only volumes for review and queue each approved
+ * group as soon as it is decided. Resolves once the groups are OFFERED — the
+ * user reviews while earlier approvals import — with how many volumes are
+ * still waiting for a decision, and how many queue items decisions made
+ * before then queued.
+ */
+async function offerForReview(
+  candidates: ReviewCandidate[],
+  targets: Map<string, ReviewTarget>,
+  batch: number
+): Promise<{ awaitingReview: number; queued: number }> {
+  const groups = await prepareGroups(groupCandidates(candidates));
+  let offering = true;
+  let queuedWhileOffering = 0;
+  const undecided = offerGroups(groups, (group, decision) => {
+    noteSkipAll(batch, decision);
+    // Cancelled: nothing this import still holds is queued, not even an
+    // archive's `.mokuro` volumes.
+    const cancelled = skippedBatches.get(batch) === 'cancel';
+    const names = cancelled ? new Map<string, ImportNames>() : approvedNames(group, decision);
+    // On their way from now on — an archive also holding another series'
+    // volumes is queued only after that series' decision.
+    noteApproved(names.values());
+    const ready: PairedSource[] = [];
+    for (const candidate of group.candidates) {
+      const target = targets.get(candidate.id);
+      const approved = names.get(candidate.id);
+      if (!target) continue;
+      if (target.kind === 'folder') {
+        if (approved) {
+          target.pairing.importNames = approved;
+          ready.push(target.pairing);
+        }
+        continue;
+      }
+      const { held } = target;
+      held.waiting.delete(candidate.id);
+      if (approved) held.names.set(target.innerPath, approved);
+      if (held.waiting.size === 0 && !held.settled) {
+        held.settled = true;
+        if (!cancelled && (held.names.size > 0 || held.importsRegardless)) {
+          held.pairing.archiveReview = { approved: true, names: held.names };
+          ready.push(held.pairing);
+        } else {
+          settleVolumesInFlight([...held.names.values()].map((n) => n.uuid));
+        }
+      }
+    }
+
+    const tracked: ImportQueueItem[] = [];
+    try {
+      if (ready.length > 0) {
+        enqueueAtEnd(ready, tracked);
+        if (offering) queuedWhileOffering += ready.length;
+        processQueue().catch((error) => reportDecisionFailure(error));
+      } else if (!hasUnfinishedImports()) {
+        // Everything skipped and nothing running: settle the batch's series.json.
+        applyImportedSeriesFiles().catch((error) => reportDecisionFailure(error));
+      }
+    } catch (error) {
+      settleVolumesInFlight([...names.values(), ...ready.flatMap(carriedNames)].map((n) => n.uuid));
+      reportDecisionFailure(error, tracked);
+    }
   });
+  offering = false;
+  return {
+    awaitingReview: groups
+      .filter((group) => undecided.has(group.id))
+      .reduce((sum, group) => sum + group.candidates.length, 0),
+    queued: queuedWhileOffering
+  };
+}
+
+/** Approved names of an archive reviewed before it was queued, by pairing id. */
+function namesFromReview(
+  pairings: PairedSource[],
+  innerPaths: Map<string, string>,
+  review: ArchiveReview
+): Map<string, ImportNames> {
+  const names = new Map<string, ImportNames>();
+  for (const pairing of pairings) {
+    const approved = review.names.get(innerPaths.get(pairing.id) ?? pairing.basePath);
+    if (approved) names.set(pairing.id, approved);
+  }
+  return names;
+}
+
+/**
+ * Review an archive's image-only volumes from inside the queue — archives the
+ * pre-scan could not see (nested in another archive, unlisted, deep links).
+ * The queue waits for these groups' decisions, as it always waited here.
+ */
+async function reviewInQueue(
+  pairings: PairedSource[],
+  archiveFile: File,
+  innerPaths: Map<string, string>,
+  batch?: number,
+  outcome: { failed: boolean } = { failed: false }
+): Promise<Map<string, ImportNames>> {
+  const approved = new Map<string, ImportNames>();
+  // "Skip all remaining" (or a cancel) already answered for this import.
+  if (batch !== undefined && skippedBatches.has(batch)) return approved;
+  const candidates: ReviewCandidate[] = pairings.map((p) => ({
+    id: p.id,
+    basePath: p.basePath,
+    titlePath: p.titlePath,
+    source: archiveSourceLabel(archiveFile, innerPaths.get(p.id) ?? p.basePath)
+  }));
+  const groups = await prepareGroups(groupCandidates(candidates));
+  if (batch !== undefined && skippedBatches.has(batch)) return approved;
+  await new Promise<void>((resolve, reject) => {
+    try {
+      offerGroups(groups, (group, decision, undecided) => {
+        noteSkipAll(batch, decision);
+        const names = approvedNames(group, decision, () => (outcome.failed = true));
+        noteApproved(names.values());
+        for (const [id, approvedName] of names) approved.set(id, approvedName);
+        // The queue resumes after the last decision, whatever became of it.
+        if (undecided === 0) resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+  return approved;
 }
 
 /**
@@ -1358,7 +1785,23 @@ export function clearCompletedImports(): void {
  * Cancel all queued imports
  */
 export function cancelQueuedImports(): void {
+  const queue = get(importQueue);
+  const live = queue.filter((item) => item.status === 'queued' || item.status === 'processing');
+  // Every import still running or queued is cancelled as a whole: its review
+  // steps on screen and the ones its archives would still raise (#285).
+  for (const item of live) {
+    if (item.source.batch !== undefined) skippedBatches.set(item.source.batch, 'cancel');
+  }
+  for (const item of queue) {
+    if (item.status === 'queued') settleVolumesInFlight(carriedUuids(item.source));
+  }
   importQueue.update((q) => q.filter((item) => item.status === 'processing'));
+  cancelling = true;
+  try {
+    skipAllRemaining();
+  } finally {
+    cancelling = false;
+  }
   // The volumes those items would have saved are never coming, so any
   // `series.json` still waiting for them has nothing left to key onto.
   resetImportedSeriesFiles();

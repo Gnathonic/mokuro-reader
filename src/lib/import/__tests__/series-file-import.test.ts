@@ -42,7 +42,6 @@ vi.mock('$lib/util/progress-tracker', () => ({
 }));
 
 vi.mock('$lib/util/modals', () => ({
-  promptImageOnlyImport: (_a: unknown, _b: unknown, onConfirm: () => void) => onConfirm(),
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
 }));
 
@@ -57,7 +56,7 @@ vi.mock('$lib/util/file-processing-pool', () => ({
 
 import { db } from '$lib/catalog/db';
 import { compressVolume } from '$lib/util/compress-volume';
-import { cancelQueuedImports, importFiles, importQueue } from '../import-service';
+import { cancelQueuedImports, importFiles, importQueue, isImporting } from '../import-service';
 import {
   applyImportedSeriesFiles,
   parseImportedSeriesFile,
@@ -69,6 +68,14 @@ import { buildSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import type { VolumeMetadata } from '$lib/types';
+import { get } from 'svelte/store';
+import { approveAsDialogWould, installReviewer, type Reviewer } from './helpers/review-bridge';
+
+let reviewer: Reviewer;
+beforeEach(() => {
+  reviewer = installReviewer();
+});
+afterEach(() => reviewer.restore());
 
 // ---------------------------------------------------------------- fixtures
 
@@ -604,5 +611,59 @@ describe('parseImportedSeriesFile', () => {
       Number.NaN
     );
     expect(Number.isNaN(Date.parse(parsed!.modifiedTime))).toBe(false);
+  });
+});
+
+describe('a series.json beside an image-only series waits for its review', () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    resetImportedSeriesFiles();
+    await clearDb();
+    importQueue.set([]);
+    reviewer.restore();
+    reviewer = installReviewer('manual');
+  });
+
+  afterEach(() => resetImportedSeriesFiles());
+
+  async function waitForIdle(): Promise<void> {
+    const start = Date.now();
+    while (
+      (get(isImporting) ||
+        get(importQueue).some((i) => i.status === 'queued' || i.status === 'processing')) &&
+      Date.now() - start < 10_000
+    ) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  function pickedAt(path: string, bytes: BlobPart): File {
+    const file = new File([bytes], path.split('/').pop()!, { lastModified: 1_700_000_000_000 });
+    Object.defineProperty(file, 'webkitRelativePath', { value: path });
+    return file;
+  }
+
+  it('is applied once the reviewed volumes are saved, not when the queue first drains', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sidecar = pickedAt(
+      'Killing Bites/series.json',
+      JSON.stringify(seriesFileFor('Killing Bites'))
+    );
+    const page = pickedAt('Killing Bites/Killing Bites 01/001.jpg', new Uint8Array([1, 2, 3]));
+    // A .mokuro volume of another series in the same drop drains the queue first.
+    const other = await buildVolumeArchive('Vol 1.cbz', mokuroText);
+
+    await importFiles([sidecar, page, other]);
+    await waitForIdle();
+    expect(await db.volumes.count()).toBe(1);
+    expect(await db.series_metadata.get('killing bites')).toBeUndefined();
+
+    reviewer.pending[0].decide(approveAsDialogWould(reviewer.pending[0].group));
+    await waitForIdle();
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await db.series_metadata.get('killing bites'))?.external_ids).toEqual({
+      anilist: 30013
+    });
   });
 });
