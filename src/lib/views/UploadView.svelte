@@ -54,14 +54,14 @@
       return;
     }
 
-    let dims = { width: 1, height: 1 };
+    // A file the browser cannot decode is no cover: leave the row without one,
+    // so the thumbnail pass builds it from the first page instead.
+    let dims: { width: number; height: number };
     try {
       dims = await getImageDimensions(coverFile);
     } catch (error) {
-      console.warn(
-        '[HTML Download] Failed to read sidecar dimensions; using fallback dimensions',
-        error
-      );
+      console.warn('[HTML Download] Sidecar thumbnail is not a readable image; skipped', error);
+      return;
     }
 
     await db.volumes.update(targetVolume.volume_uuid, {

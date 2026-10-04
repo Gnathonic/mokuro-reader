@@ -108,8 +108,8 @@ async function gzip(text: string): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/** URL → response body (string/bytes), a status number, or an Error to throw. */
-type Route = string | Uint8Array | number | Error;
+/** URL → response body (string/bytes), a status number, an Error to throw, or a Response. */
+type Route = string | Uint8Array | number | Error | Response;
 let routes: Map<string, Route>;
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -126,6 +126,7 @@ beforeEach(() => {
     if (route === undefined) return new Response('missing', { status: 404 });
     if (route instanceof Error) throw route;
     if (typeof route === 'number') return new Response('nope', { status: route });
+    if (route instanceof Response) return route.clone();
     return new Response(route as BodyInit, { status: 200 });
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -257,6 +258,56 @@ describe('downloading a cbz deep link with a manifest', () => {
     );
     expect(result.coverFile?.name).toBe('Dr Stone 01.png');
     expect(fetchedUrls()).not.toContain(`${BASE}Dr%20Stone%2001.webp`);
+  });
+
+  // bunko's catalog passes its library-relative cover path as `cover`, which
+  // never resolves on the origin root: the manifest's own URL must still win out.
+  it('falls back to the manifest cover when the cover param fails', async () => {
+    await serveAll();
+    const result = await htmlDownloadProvider.download(
+      requestFor(
+        `cbz=${encodeURIComponent(CBZ)}&manifest=${encodeURIComponent(MANIFEST)}&cover=${encodeURIComponent('Dr Stone/Dr Stone 01.webp')}`
+      )
+    );
+    expect(fetchedUrls()).toContain(`${ORIGIN}/Dr%20Stone/Dr%20Stone%2001.webp`);
+    expect(result.coverFile?.name).toBe('Dr Stone 01.webp');
+    expect(new Uint8Array(await result.coverFile!.arrayBuffer())).toEqual(
+      new Uint8Array([9, 9, 9, 9])
+    );
+  });
+
+  // A series named `#Zombie Sagashitemasu`: unencoded, the `#` cut the URL to
+  // the site root, whose catalog page was stored as the volume's cover.
+  it('encodes a relative cover param, so a # in a name stays in the path', async () => {
+    await serveAll();
+    serve(
+      `${ORIGIN}/`,
+      new Response('<html>catalog</html>', { headers: { 'content-type': 'text/html' } })
+    );
+    serve(`${ORIGIN}/%23Zombie/%23Zombie%2001.png`, new Uint8Array([7]));
+    const result = await htmlDownloadProvider.download(
+      requestFor(
+        `cbz=${encodeURIComponent(CBZ)}&manifest=${encodeURIComponent(MANIFEST)}&cover=${encodeURIComponent('#Zombie/#Zombie 01.png')}`
+      )
+    );
+    expect(result.coverFile?.name).toBe('Dr Stone 01.png');
+    expect(fetchedUrls()).not.toContain(`${ORIGIN}/`);
+  });
+
+  it('never takes a page that is not an image as the cover', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await serveAll();
+    serve(
+      `${BASE}Dr%20Stone%2001.webp`,
+      new Response('<html>catalog</html>', {
+        headers: { 'content-type': 'text/html; charset=utf-8' }
+      })
+    );
+    const result = await htmlDownloadProvider.download(link());
+    expect(result.coverFile).toBeNull();
+    expect(warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toContain(
+      'Dr%20Stone%2001.webp'
+    );
   });
 
   it('survives every listed file failing, warning once per file by name', async () => {

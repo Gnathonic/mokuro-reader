@@ -55,6 +55,49 @@ describe('processThumbnails', () => {
     expect((await db.volumes.get('uuid-1'))?.thumbnail_width).toBe(210);
   });
 
+  // A deep link once stored the server's HTML catalog page as a cover (a `#`
+  // in the series name cut the cover URL to the site root): no image to show,
+  // yet every field set, so nothing ever replaced it.
+  it('regenerates a thumbnail that is not an image', async () => {
+    db = new CatalogDexieV3(DB_NAME);
+    await db.open();
+    await db.volumes.add(
+      row({
+        thumbnail: new File(['<html></html>'], 'Volume 1.moe', { type: 'text/html' }),
+        thumbnail_width: 1,
+        thumbnail_height: 1
+      }) as never
+    );
+    await db.volume_files.add({
+      volume_uuid: 'uuid-1',
+      files: { 'page001.jpg': new File(['img'], 'page001.jpg') }
+    });
+
+    await db.processThumbnails();
+
+    expect(generateThumbnail).toHaveBeenCalledTimes(1);
+    expect((await db.volumes.get('uuid-1'))?.thumbnail_width).toBe(210);
+  });
+
+  it('keeps an image thumbnail, whatever its type is spelled as', async () => {
+    db = new CatalogDexieV3(DB_NAME);
+    await db.open();
+    for (const [i, type] of ['image/webp', 'application/octet-stream', ''].entries()) {
+      await db.volumes.add(
+        row({
+          volume_uuid: `uuid-${i}`,
+          thumbnail: new File(['img'], 'cover', { type }),
+          thumbnail_width: 210,
+          thumbnail_height: 297
+        }) as never
+      );
+    }
+
+    await db.processThumbnails();
+
+    expect(generateThumbnail).not.toHaveBeenCalled();
+  });
+
   it('never retries a metadata-only row — its images are not on this device', async () => {
     // Without the guard this row qualifies forever: no thumbnail, and no files
     // to build one from, so every pass would pick it up again.

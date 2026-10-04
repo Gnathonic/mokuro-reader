@@ -30,6 +30,7 @@ import {
   type WorkerAuthRefresher
 } from '$lib/util/worker-auth-refresh';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
+import { mayBeImageType } from '$lib/util/image-content-type';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -493,11 +494,14 @@ async function downloadFromUrl(
 }
 
 async function tryDownloadOptionalUrl(
-  urls: string[]
+  urls: string[],
+  acceptType: (contentType: string | undefined) => boolean = () => true
 ): Promise<{ url: string; data: ArrayBuffer; contentType?: string } | undefined> {
   for (const url of urls) {
     try {
       const result = await downloadFromUrl(url);
+      // A server's HTML page for a missing path is a 200 too: try the next URL.
+      if (!acceptType(result.contentType)) continue;
       return { url, data: result.data, contentType: result.contentType };
     } catch {
       // best effort
@@ -644,7 +648,7 @@ ctx.addEventListener('message', async (event) => {
       });
 
       const mokuro = await tryDownloadOptionalUrl(mokuroUrls);
-      const cover = await tryDownloadOptionalUrl(coverUrls);
+      const cover = await tryDownloadOptionalUrl(coverUrls, mayBeImageType);
 
       const completeMessage: DownloadCompleteMessage = {
         type: 'complete',
