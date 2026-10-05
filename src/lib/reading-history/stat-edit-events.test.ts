@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('$lib/reading-history/record', () => ({
-  recordEvent: vi.fn(() => Promise.resolve(null))
+  recordEvent: vi.fn(() => Promise.resolve(null)),
+  onEventsRecorded: vi.fn(() => () => {})
 }));
 
 import { recordEvent } from '$lib/reading-history/record';

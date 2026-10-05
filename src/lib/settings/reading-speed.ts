@@ -1,5 +1,5 @@
 import { derived } from 'svelte/store';
-import { volumes, volumesWithTrash, VolumeData } from './volume-data';
+import { volumes, VolumeData } from './volume-data';
 import { settings } from './settings';
 import { calculateReadingSpeed, type ReadingSpeedResult } from '$lib/util/reading-speed';
 import { db } from '$lib/catalog/db';
@@ -19,7 +19,7 @@ function formatVolumeName(volumeData: VolumeData, volumeId: string): string {
 /**
  * Migrate 2-tuple page turn data to 3-tuple format by enriching with character counts from IndexedDB
  */
-async function migratePageTurnData(
+export async function migratePageTurnData(
   volumeId: string,
   volumeData: VolumeData,
   turns: PageTurn[]
@@ -97,8 +97,7 @@ async function migratePageTurnData(
  * - Prioritizes up to 4 hours of recent page-level session data
  * - Fills remaining time (up to 8 hours total) with completed volume data
  *
- * Character counts are now stored in page turns, so no IndexedDB pages needed
- * Migrates legacy 2-tuple data to 3-tuple format when possible
+ * Character counts are stored in page turns, so no IndexedDB pages needed.
  */
 export const personalizedReadingSpeed = derived<
   [typeof volumes, typeof settings],
@@ -108,48 +107,10 @@ export const personalizedReadingSpeed = derived<
   ([$volumes, $settings], set) => {
     const idleTimeoutMinutes = $settings.inactivityTimeoutMinutes;
 
-    // Set initial value immediately
+    // No write-back migration any more: `$volumes` turns are projected from
+    // reading history (phase 2b) and must never be written into the stored
+    // records. Legacy 2-tuples are upgraded when they are converted instead.
     set(calculateReadingSpeed($volumes, idleTimeoutMinutes));
-
-    // Try to migrate any 2-tuple data
-    const migrationPromises = Object.entries($volumes)
-      .filter(([_, data]) => data.recentPageTurns && data.recentPageTurns.length > 0)
-      .map(async ([volumeId, data]) => {
-        const migrated = await migratePageTurnData(volumeId, data, data.recentPageTurns!);
-        return migrated ? { volumeId, migrated } : null;
-      });
-
-    Promise.all(migrationPromises)
-      .then((results) => {
-        // Update volumes with migrated data
-        const validMigrations = results.filter(
-          (r): r is { volumeId: string; migrated: PageTurn[] } => r !== null
-        );
-        if (validMigrations.length > 0) {
-          volumesWithTrash.update((vols) => {
-            const updated = { ...vols };
-            for (const { volumeId, migrated } of validMigrations) {
-              if (updated[volumeId]) {
-                updated[volumeId] = new VolumeData({
-                  ...updated[volumeId],
-                  recentPageTurns: migrated
-                });
-              }
-            }
-            return updated;
-          });
-        }
-
-        // Calculate with current data (will include migrated data on next call)
-        const result = calculateReadingSpeed($volumes, idleTimeoutMinutes);
-        set(result);
-      })
-      .catch((error) => {
-        console.error('[Migration] Error during migration:', error);
-        // Fall back to calculating without migration
-        const result = calculateReadingSpeed($volumes, idleTimeoutMinutes);
-        set(result);
-      });
   },
   // Initial value
   {

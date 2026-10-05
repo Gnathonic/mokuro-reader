@@ -2,6 +2,7 @@ import { browser } from '$app/environment';
 import { isVolumeComplete } from '$lib/util/volume-helpers';
 import { get } from 'svelte/store';
 import { VolumeData, volumesWithTrash } from '../settings/volume-data';
+import { getHistoryTurns } from '$lib/reading-history/turns-store';
 
 const BACKFILL_KEY = 'volumes.completedAtBackfill.v1';
 const BACKFILL_ATTEMPTS_KEY = 'volumes.completedAtBackfill.attempts';
@@ -94,8 +95,10 @@ export function backfillCompletedAt(
       if (!volumeData.completed && !isVolumeComplete(volumeData.progress, pageCount)) continue;
 
       let stamp: string | undefined;
-      for (let i = volumeData.recentPageTurns.length - 1; i >= 0; i -= 1) {
-        const [timestamp, page] = volumeData.recentPageTurns[i];
+      // Every device's turns from reading history once loaded, else the record's own.
+      const turns = getHistoryTurns(volumeId) ?? volumeData.recentPageTurns;
+      for (let i = turns.length - 1; i >= 0; i -= 1) {
+        const [timestamp, page] = turns[i];
         if (isVolumeComplete(page, pageCount)) {
           stamp = new Date(timestamp).toISOString();
           break;

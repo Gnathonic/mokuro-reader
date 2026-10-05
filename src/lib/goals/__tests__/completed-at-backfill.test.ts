@@ -53,6 +53,36 @@ describe('backfillCompletedAt', () => {
     expect(get(volumesWithTrash).v1.completedAt).toBe(new Date(turn).toISOString());
   });
 
+  it('finds the completing turn in reading history once the record has none', async () => {
+    const { _resetHistoryTurns, _setHistoryTurnsForTest } = await import(
+      '$lib/reading-history/turns-store'
+    );
+    const turn = Date.parse('2025-06-01T00:00:00.000Z');
+    volumesWithTrash.set({
+      v1: new VolumeData({
+        completed: true,
+        progress: 180,
+        lastProgressUpdate: '2026-08-01T00:00:00.000Z'
+      })
+    });
+    _setHistoryTurnsForTest(
+      new Map([
+        [
+          'v1',
+          [
+            [turn - 1000, 90, 900],
+            [turn, 180, 1800]
+          ]
+        ]
+      ])
+    );
+
+    backfillCompletedAt({ v1: 180 });
+    _resetHistoryTurns();
+
+    expect(get(volumesWithTrash).v1.completedAt).toBe(new Date(turn).toISOString());
+  });
+
   it('does NOT record success when there are no records to examine yet', () => {
     // On a device whose progress arrives by sync, the store is legitimately
     // empty for the first moments of a session. A pass that ran then found

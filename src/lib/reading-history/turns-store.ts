@@ -66,6 +66,12 @@ onEventsRecorded((events) => {
   });
 });
 
+/** Test hook: a loaded projection, without a database. */
+export function _setHistoryTurnsForTest(turns: Map<string, PageTurn[]>): void {
+  loaded = true;
+  store.set(turns);
+}
+
 /** Test hook. */
 export function _resetHistoryTurns(): void {
   eventsByVolume.clear();

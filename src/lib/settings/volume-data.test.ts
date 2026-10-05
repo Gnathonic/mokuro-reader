@@ -273,7 +273,10 @@ describe('VolumeData.completedAt', () => {
     expect(new VolumeData({ completedAt: 42 as unknown as string }).completedAt).toBeUndefined();
   });
 
-  it('dates a SECOND reading, so a re-read counts toward the new period', () => {
+  it('dates a SECOND reading, so a re-read counts toward the new period', async () => {
+    const { _resetHistoryTurns, _setHistoryTurnsForTest } = await import(
+      '$lib/reading-history/turns-store'
+    );
     vi.useFakeTimers();
     try {
       // Write-once meant a volume finished in 2025, paged back to the start and
@@ -288,6 +291,10 @@ describe('VolumeData.completedAt', () => {
       vi.setSystemTime(new Date('2026-03-01T00:00:00.000Z'));
       updateProgress('vol-1', 1, 5000);
       expect(get(volumes)['vol-1'].completedAt).toBe('2025-06-01T00:00:00.000Z');
+      // The reader records that view of page 1 in reading history.
+      _setHistoryTurnsForTest(
+        new Map([['vol-1', [[Date.parse('2026-03-01T00:00:00.000Z'), 1, 50]]]])
+      );
 
       // Read it through again: a second completion gets its own date, in the
       // period it actually happened in.
@@ -296,6 +303,7 @@ describe('VolumeData.completedAt', () => {
       expect(get(volumes)['vol-1'].completedAt).toBe('2026-03-20T00:00:00.000Z');
     } finally {
       vi.useRealTimers();
+      _resetHistoryTurns();
     }
   });
 
@@ -426,5 +434,92 @@ describe('VolumeData.forgotAt', () => {
     expect(horizon).toBeDefined();
     updateProgress('vol-g', 4, 40);
     expect(get(volumesWithTrash)['vol-g'].forgotAt).toBe(horizon);
+  });
+});
+
+describe('page turns after the cut-over', () => {
+  beforeEach(async () => {
+    clearVolumes();
+    const { _resetHistoryTurns } = await import('$lib/reading-history/turns-store');
+    _resetHistoryTurns();
+  });
+
+  it('a page turn no longer grows the record', () => {
+    volumesWithTrash.set({
+      v: new VolumeData({
+        progress: 2,
+        recentPageTurns: [
+          [1, 1, 10],
+          [2, 2, 20]
+        ]
+      })
+    });
+    updateProgress('v', 3, 30);
+    expect(get(volumesWithTrash).v.recentPageTurns).toHaveLength(2);
+    expect(get(volumesWithTrash).v.progress).toBe(3);
+  });
+
+  it('stats read projected turns once loaded; the stored record keeps its own', async () => {
+    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    volumesWithTrash.set({ v: new VolumeData({ progress: 2, recentPageTurns: [[9, 9, 90]] }) });
+    _setHistoryTurnsForTest(
+      new Map([
+        [
+          'v',
+          [
+            [1, 1, 10],
+            [2, 2, 20]
+          ]
+        ]
+      ])
+    );
+    expect(get(volumes).v.recentPageTurns).toEqual([
+      [1, 1, 10],
+      [2, 2, 20]
+    ]);
+    expect(get(volumesWithTrash).v.recentPageTurns).toEqual([[9, 9, 90]]);
+  });
+
+  it("before history loads, or for a volume it has nothing for, the record's own turns stand", async () => {
+    volumesWithTrash.set({ v: new VolumeData({ progress: 2, recentPageTurns: [[9, 9, 90]] }) });
+    expect(get(volumes).v.recentPageTurns).toEqual([[9, 9, 90]]);
+    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    _setHistoryTurnsForTest(new Map([['other', [[1, 1, 1]]]]));
+    expect(get(volumes).v.recentPageTurns).toEqual([[9, 9, 90]]);
+  });
+
+  it('keeps record identity across emissions when nothing about it changed', async () => {
+    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    const turns = new Map([['v', [[1, 1, 10]] as [number, number, number][]]]);
+    volumesWithTrash.set({
+      v: new VolumeData({ progress: 1 }),
+      w: new VolumeData({ progress: 1 })
+    });
+    _setHistoryTurnsForTest(turns);
+    const first = get(volumes).v;
+    volumesWithTrash.update((all) => ({ ...all, w: new VolumeData({ progress: 2 }) }));
+    expect(get(volumes).v).toBe(first);
+  });
+
+  it('a re-read is re-dated from projected turns alone', async () => {
+    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    const done = '2026-01-01T00:00:00.000Z';
+    volumesWithTrash.set({
+      v: new VolumeData({ progress: 3, completed: false, completedAt: done })
+    });
+    const now = Date.now();
+    _setHistoryTurnsForTest(new Map([['v', [[now - 5000, 1, 10]]]]));
+    updateProgress('v', 10, 100, true);
+    expect(get(volumesWithTrash).v.completedAt).not.toBe(done);
+  });
+
+  it('a localStorage write that throws (quota) never breaks a store update', () => {
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(() => updateProgress('q', 1, 1)).not.toThrow();
+    spy.mockRestore();
+    warn.mockRestore();
   });
 });
