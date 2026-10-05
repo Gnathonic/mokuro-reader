@@ -113,7 +113,11 @@ export async function decodeSegment(
 ): Promise<{ header: SegmentHeader; events: ReadingEvent[] }> {
   let parsed: any;
   try {
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    // Copied into an ArrayBuffer-backed view: the DOM types refuse a view that
+    // may sit on a SharedArrayBuffer as a BlobPart.
+    const stream = new Blob([new Uint8Array(bytes)])
+      .stream()
+      .pipeThrough(new DecompressionStream('deflate-raw'));
     parsed = JSON.parse(await new Response(stream).text());
   } catch (error) {
     throw new SegmentFormatError(`unreadable segment: ${String(error)}`);
