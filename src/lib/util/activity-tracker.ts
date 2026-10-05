@@ -7,7 +7,7 @@ type ActivityCallback = {
   onInactive: () => void;
 };
 
-class ActivityTracker {
+export class ActivityTracker {
   private timeoutId: number | null = null;
   private isActive = writable(false);
   private callbacks: ActivityCallback | null = null;
@@ -17,6 +17,14 @@ class ActivityTracker {
   // Separate sync timer (decoupled from activity timer)
   private syncTimerId: number | null = null;
   private readonly SYNC_DELAY_MS = 5000; // 5 seconds
+  /**
+   * At most one progress sync per this interval while reading. Each sync
+   * downloads, merges and may re-upload the whole progress file; once per page
+   * pause it was a mobile data and battery drain. Leaving the reader or hiding
+   * the tab flushes a pending change at once (`flush`).
+   */
+  private readonly SYNC_MIN_INTERVAL_MS = 3 * 60 * 1000;
+  private lastSyncAt = -Infinity;
   private hasPendingProgress = false;
 
   constructor() {
@@ -97,9 +105,27 @@ class ActivityTracker {
       clearTimeout(this.syncTimerId);
     }
 
+    // 5 s after the last activity, but never sooner than the interval allows.
+    const delay = Math.max(
+      this.SYNC_DELAY_MS,
+      this.lastSyncAt + this.SYNC_MIN_INTERVAL_MS - Date.now()
+    );
     this.syncTimerId = window.setTimeout(() => {
       this.handleSyncTimeout();
-    }, this.SYNC_DELAY_MS);
+    }, delay);
+  }
+
+  /**
+   * Send a pending change now — leaving the reader, hiding the tab. Nothing
+   * pending, nothing sent.
+   */
+  flush() {
+    if (!this.hasPendingProgress) return;
+    if (this.syncTimerId !== null) {
+      clearTimeout(this.syncTimerId);
+      this.syncTimerId = null;
+    }
+    this.handleSyncTimeout();
   }
 
   /**
@@ -107,6 +133,7 @@ class ActivityTracker {
    */
   private handleSyncTimeout() {
     if (!this.hasPendingProgress) return;
+    this.lastSyncAt = Date.now();
 
     const hasActiveProvider = unifiedCloudManager.getActiveProvider() !== null;
     if (hasActiveProvider) {

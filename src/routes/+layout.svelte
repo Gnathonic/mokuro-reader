@@ -23,6 +23,7 @@
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
   import { foregroundSync } from '$lib/util/sync/foreground-sync';
+  import { activityTracker } from '$lib/util/activity-tracker';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
@@ -58,7 +59,22 @@
 
   inject({ mode: dev ? 'development' : 'production' });
 
-  onMount(() => foregroundSync.listen());
+  onMount(() => {
+    const stopForeground = foregroundSync.listen();
+    // Progress syncs are batched while reading (activity-tracker); a pending
+    // change goes up at once when the tab hides or the page goes away.
+    const flushOnHide = () => {
+      if (document.visibilityState === 'hidden') activityTracker.flush();
+    };
+    const flushOnPageHide = () => activityTracker.flush();
+    document.addEventListener('visibilitychange', flushOnHide);
+    window.addEventListener('pagehide', flushOnPageHide);
+    return () => {
+      stopForeground();
+      document.removeEventListener('visibilitychange', flushOnHide);
+      window.removeEventListener('pagehide', flushOnPageHide);
+    };
+  });
 
   onMount(() => {
     return initGoalsLifecycle();
