@@ -149,4 +149,46 @@ describe('segment codec', () => {
       await expect(decodeSegment(await raw(body))).rejects.toThrow(SegmentFormatError);
     });
   });
+
+  it('round-trips a legacy segment: per-volume legacy devices, uploader in the header', async () => {
+    const legacy: ReadingEvent[] = [
+      { device: 'legacy:vol-2', seq: T + 5, t: T + 5, kind: 'restart', volume: 'vol-2' },
+      {
+        device: 'legacy:vol-1',
+        seq: T,
+        t: T,
+        kind: 'page',
+        volume: 'vol-1',
+        first_page: 4,
+        last_page: 4,
+        page_chars: [0],
+        chars_before: 400,
+        dwell_ms: 30000,
+        layout: 'unknown',
+        orientation: 'unknown',
+        viewport: null
+      },
+      { device: 'legacy:vol-1', seq: T + 9, t: T + 9, kind: 'restart', volume: 'vol-1' }
+    ];
+    const bytes = await encodeSegment('dev-a', 'legacy', legacy, { legacy: true });
+    const { header, events: out } = await decodeSegment(bytes);
+    expect(header).toMatchObject({ device: 'dev-a', month: 'legacy', legacy: true, count: 3 });
+    expect(out).toEqual([legacy[1], legacy[2], legacy[0]]);
+  });
+
+  it('refuses a non-legacy event in a legacy segment, and a legacy event in a native one', async () => {
+    await expect(encodeSegment('dev-a', 'legacy', events, { legacy: true })).rejects.toThrow(
+      SegmentFormatError
+    );
+    const legacyEvent: ReadingEvent = {
+      device: 'legacy:v',
+      seq: 1,
+      t: 1,
+      kind: 'restart',
+      volume: 'v'
+    };
+    await expect(encodeSegment('dev-a', '1970-01', [legacyEvent])).rejects.toThrow(
+      SegmentFormatError
+    );
+  });
 });

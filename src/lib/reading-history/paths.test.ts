@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   historyDeviceFilePath,
+  historyLegacyFilePath,
+  legacyDeviceFor,
   historyMonthOf,
   historySegmentPath,
   isHistoryFileName,
@@ -47,5 +49,15 @@ describe('history paths', () => {
     expect(isHistoryFileName('2026-10.events')).toBe(true);
     expect(isHistoryFileName('device.json')).toBe(true);
     expect(isHistoryFileName('volume-data.json')).toBe(false);
+  });
+
+  it('parses a legacy segment path', () => {
+    expect(parseHistoryPath(`history/${DEV}/legacy.events`)).toEqual({
+      device: DEV,
+      kind: 'legacy'
+    });
+    expect(historyLegacyFilePath(DEV)).toBe(`history/${DEV}/legacy.events`);
+    expect(isHistoryFileName('legacy.events')).toBe(true);
+    expect(legacyDeviceFor('vol-1')).toBe('legacy:vol-1');
   });
 });
