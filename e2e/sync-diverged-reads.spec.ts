@@ -21,7 +21,7 @@ const DATA_FILE = `${ROOT}/volume-data.json`;
 
 interface StubEntry {
   dir: boolean;
-  body: string;
+  body: Buffer;
   mtime: string;
 }
 
@@ -35,9 +35,13 @@ class WebDavStub {
     this.dir(ROOT);
   }
   dir(path: string) {
-    this.files.set(this.norm(path), { dir: true, body: '', mtime: new Date().toUTCString() });
+    this.files.set(this.norm(path), {
+      dir: true,
+      body: Buffer.alloc(0),
+      mtime: new Date().toUTCString()
+    });
   }
-  file(path: string, body: string, mtime: string) {
+  file(path: string, body: Buffer, mtime: string) {
     const p = this.norm(path);
     this.dir(p.slice(0, p.lastIndexOf('/')) || '/');
     this.files.set(p, { dir: false, body, mtime });
@@ -84,8 +88,11 @@ class WebDavStub {
       'Access-Control-Allow-Headers': '*',
       'Access-Control-Expose-Headers': '*'
     };
-    const reply = (status: number, body = '', headers: Record<string, string> = {}) =>
-      route.fulfill({ status, body, headers: { ...cors, ...headers } });
+    const reply = (
+      status: number,
+      body: string | Buffer = '',
+      headers: Record<string, string> = {}
+    ) => route.fulfill({ status, body, headers: { ...cors, ...headers } });
 
     if (url.pathname.endsWith('/login/api/me')) return reply(404, 'not bunko');
     if (method === 'OPTIONS') {
@@ -109,7 +116,7 @@ class WebDavStub {
       case 'HEAD':
       case 'GET': {
         if (!entry || entry.dir) return reply(404);
-        return reply(200, method === 'GET' ? entry.body : '', {
+        return reply(200, method === 'GET' ? entry.body : Buffer.alloc(0), {
           'Content-Type': 'application/json',
           'Content-Length': String(Buffer.byteLength(entry.body))
         });
@@ -119,7 +126,8 @@ class WebDavStub {
         return reply(201);
       }
       case 'PUT': {
-        this.file(path, request.postData() ?? '', new Date().toUTCString());
+        // Binary-safe: history segments are deflated bytes.
+        this.file(path, request.postDataBuffer() ?? Buffer.alloc(0), new Date().toUTCString());
         return reply(201);
       }
       case 'DELETE': {
@@ -152,17 +160,34 @@ async function sync(page: Page) {
   const result = await page.evaluate(async () => {
     const { unifiedCloudManager } = await import('/src/lib/util/sync/unified-cloud-manager.ts');
     await unifiedCloudManager.fetchAllCloudVolumes();
-    return unifiedCloudManager.syncProgress({ silent: true });
+    // Manual: the current month's history goes up now, not on the 5-minute cadence.
+    return unifiedCloudManager.syncProgress({ silent: false });
   });
   expect(result.succeeded).toBe(1);
 }
 
-/** Turn pages in order, a few ms apart, the way the reader records them. */
+/**
+ * Turn pages in order, a few ms apart, the way the reader does: each page is
+ * a view recorded in reading history, and the position moves.
+ */
 async function read(page: Page, pages: number[]) {
   await page.evaluate(
     async ({ VOL, pages }) => {
       const { updateProgress } = await import('/src/lib/settings/volume-data.ts');
+      const { recordEvent } = await import('/src/lib/reading-history/record.ts');
       for (const p of pages) {
+        await recordEvent({
+          kind: 'page',
+          volume: VOL,
+          first_page: p,
+          last_page: p,
+          page_chars: [100],
+          chars_before: (p - 1) * 100,
+          dwell_ms: 5,
+          layout: 'single',
+          orientation: 'portrait',
+          viewport: { w: 400, h: 800 }
+        });
         updateProgress(VOL, p, p * 100);
         await new Promise((r) => setTimeout(r, 5));
       }
@@ -171,11 +196,12 @@ async function read(page: Page, pages: number[]) {
   );
 }
 
+/** The position (stored record) and the reading the stats see (projected turns). */
 async function record(page: Page) {
   return page.evaluate(async (VOL) => {
-    const { volumesWithTrash } = await import('/src/lib/settings/volume-data.ts');
+    const { volumes } = await import('/src/lib/settings/volume-data.ts');
     let all: Record<string, { progress: number; recentPageTurns: number[][] }> = {};
-    volumesWithTrash.subscribe((v) => (all = v))();
+    volumes.subscribe((v) => (all = v))();
     const r = all[VOL];
     return r ? { progress: r.progress, pages: r.recentPageTurns.map((t: number[]) => t[1]) } : null;
   }, VOL);
@@ -184,8 +210,8 @@ async function record(page: Page) {
 function cloudRecord(stub: WebDavStub) {
   const file = stub.files.get(DATA_FILE);
   if (!file) return null;
-  const r = JSON.parse(file.body)[VOL];
-  return { progress: r.progress, pages: r.recentPageTurns.map((t: number[]) => t[1]) };
+  const r = JSON.parse(file.body.toString())[VOL];
+  return { progress: r.progress, turns: r.recentPageTurns };
 }
 
 test.describe('reading on two devices (stubbed WebDAV)', () => {
@@ -213,7 +239,8 @@ test.describe('reading on two devices (stubbed WebDAV)', () => {
     const laptopAfter = await record(laptop);
     expect(laptopAfter?.progress).toBe(41); // the newest page event
     expect(laptopAfter?.pages).toEqual([38, 39, 40, 41, 42, 43, 44, 41]);
-    expect(cloudRecord(stub)).toEqual(laptopAfter);
+    // The file carries the position only; the reading travels as history.
+    expect(cloudRecord(stub)).toEqual({ progress: 41, turns: undefined });
 
     // The phone converges on the same record; its reading is still there.
     await sync(phone);

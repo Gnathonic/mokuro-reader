@@ -645,9 +645,12 @@ class UnifiedSyncService {
 
     // Step 5b: page turns the merge brought back (an older client, a device
     // that has not converted yet) become reading-history events and leave the
-    // records BEFORE the file is built — the file stops carrying them.
-    await this.cutOverLegacyTurns();
-    const finalVolumes = get(volumesWithTrash);
+    // records — but only where history itself can sync. The file keeps
+    // carrying turns (every turn history projects) until this provider holds
+    // them as history: on mokuro-bunko and read-only providers always, and
+    // elsewhere until the converted turns are confirmed uploaded (the history
+    // pass runs after this upload, so that is the next sync).
+    const finalVolumes = await this.volumesForUpload(provider);
 
     // Step 6: Upload if anything differs from what the cloud actually holds.
     //
@@ -922,12 +925,24 @@ class UnifiedSyncService {
    * Best-effort: on failure the turns simply stay in the file, as before.
    * Loaded lazily, like the history pass.
    */
-  private async cutOverLegacyTurns(): Promise<void> {
+  private async volumesForUpload(provider: SyncProvider): Promise<any> {
+    const status = provider.getStatus?.() ?? ({} as Partial<ReturnType<SyncProvider['getStatus']>>);
+    const historySyncs = !status.serverCompilesMetadata && !status.isReadOnly;
     try {
-      const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
-      await cutOverLegacyTurns();
+      const [cutOver, historySync, historyDbModule] = await Promise.all([
+        import('$lib/reading-history/cut-over'),
+        import('$lib/reading-history/history-sync'),
+        import('$lib/reading-history/history-db')
+      ]);
+      if (historySyncs) await cutOver.cutOverLegacyTurns();
+      const records = get(volumesWithTrash);
+      const carried =
+        historySyncs &&
+        (await historySync.legacyCarriedBy(provider.type, historyDbModule.historyDb()));
+      return carried ? records : await cutOver.attachProjectedTurns(records);
     } catch (error) {
       console.warn('Page-turn cut-over failed (turns stay in volume-data.json):', error);
+      return get(volumesWithTrash);
     }
   }
 

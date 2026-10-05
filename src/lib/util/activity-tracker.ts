@@ -106,9 +106,9 @@ export class ActivityTracker {
     }
 
     // 5 s after the last activity, but never sooner than the interval allows.
-    const delay = Math.max(
-      this.SYNC_DELAY_MS,
-      this.lastSyncAt + this.SYNC_MIN_INTERVAL_MS - Date.now()
+    const delay = Math.min(
+      this.SYNC_MIN_INTERVAL_MS,
+      Math.max(this.SYNC_DELAY_MS, this.lastSyncAt + this.SYNC_MIN_INTERVAL_MS - Date.now())
     );
     this.syncTimerId = window.setTimeout(() => {
       this.handleSyncTimeout();
@@ -133,10 +133,12 @@ export class ActivityTracker {
    */
   private handleSyncTimeout() {
     if (!this.hasPendingProgress) return;
-    this.lastSyncAt = Date.now();
 
     const hasActiveProvider = unifiedCloudManager.getActiveProvider() !== null;
     if (hasActiveProvider) {
+      // Only a real sync starts the interval: activity before a provider is
+      // connected must not hold back the first sync after it is.
+      this.lastSyncAt = Date.now();
       console.log('Auto-syncing after 5s inactivity...');
       unifiedCloudManager.syncProgress({ silent: true }).catch((error) => {
         console.error('Auto-sync failed:', error);

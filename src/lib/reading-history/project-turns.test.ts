@@ -76,4 +76,10 @@ describe('projectTurns', () => {
     const legacy = convertLegacyRecord('v', { recentPageTurns: [[1000, 4]] });
     expect(projectTurns(legacy).get('v')).toEqual([[1000, 4]]);
   });
+
+  it('a view left open for hours does not hide other reading for all that time', () => {
+    const legacy = convertLegacyRecord('v', { recentPageTurns: [[5 * 3600_000, 9, 900]] });
+    const turns = projectTurns([native(0, 1, 10 * 3600_000), ...legacy]).get('v')!;
+    expect(turns.map((t) => t[0])).toEqual([0, 5 * 3600_000]);
+  });
 });

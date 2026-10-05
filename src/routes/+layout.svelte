@@ -33,7 +33,6 @@
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
   import { historyDb } from '$lib/reading-history/history-db';
-  import { cutOverLegacyTurns } from '$lib/reading-history/cut-over';
   import { loadHistoryTurns } from '$lib/reading-history/turns-store';
   import {
     detectDeviceFacts,
@@ -133,16 +132,14 @@
       detectDeviceFacts(readDeviceEnv()),
       new Date().toISOString()
     ).catch((error) => console.warn('[reading-history] device record failed:', error));
-    // Turns still held in volume records become history events (phase 2b),
-    // then the stats' page turns are projected from history. The projection
-    // loads even if the cut-over fails: unconverted turns are still served.
-    cutOverLegacyTurns(historyDb())
-      .catch((error) => console.warn('[reading-history] cut-over failed:', error))
-      .finally(() =>
-        loadHistoryTurns(historyDb()).catch((error) =>
-          console.warn('[reading-history] could not load history turns:', error)
-        )
-      );
+    // Reading history's page turns load first (the stats read them); then turns
+    // still held in volume records become history events (phase 2b). The
+    // cut-over strips nothing unless that load succeeded.
+    loadHistoryTurns(historyDb())
+      .catch((error) => console.warn('[reading-history] could not load history turns:', error))
+      .then(() => import('$lib/reading-history/cut-over'))
+      .then(({ cutOverLegacyTurns }) => cutOverLegacyTurns(historyDb()))
+      .catch((error) => console.warn('[reading-history] cut-over failed:', error));
 
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')

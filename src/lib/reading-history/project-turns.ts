@@ -7,6 +7,12 @@ import type { ReadingEvent } from './types';
  * (phase-1 devices recorded both for the same reading).
  */
 export const COVER_SLACK_MS = 2000;
+/**
+ * A view's raw dwell is uncapped (the reader may sit open overnight); for
+ * coverage only its first stretch counts, or one forgotten tab would hide
+ * other reading for hours.
+ */
+export const MAX_COVER_DWELL_MS = 30 * 60 * 1000;
 
 /**
  * The merged event table of every device, back in the shape existing stats
@@ -69,7 +75,13 @@ export function projectVolume(list: ReadingEvent[]): PageTurn[] {
 /** Disjoint, sorted intervals around every native view; binary-searched. */
 function coverage(native: Extract<ReadingEvent, { kind: 'page' }>[]): (t: number) => boolean {
   const spans = native
-    .map((n) => [n.t - COVER_SLACK_MS, n.t + (n.dwell_ms ?? 0) + COVER_SLACK_MS] as const)
+    .map(
+      (n) =>
+        [
+          n.t - COVER_SLACK_MS,
+          n.t + Math.min(n.dwell_ms ?? 0, MAX_COVER_DWELL_MS) + COVER_SLACK_MS
+        ] as const
+    )
     .sort((a, b) => a[0] - b[0]);
   const merged: Array<[number, number]> = [];
   for (const [start, end] of spans) {

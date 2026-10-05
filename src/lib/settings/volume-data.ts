@@ -495,11 +495,38 @@ export const volumesWithTrash = _volumesInternal;
 // changes, so per-volume consumers keep their identity across emissions.
 const projectedCopies = new WeakMap<VolumeData, { turns: PageTurn[]; copy: VolumeData }>();
 
+/**
+ * Projected turns minus those before the record's own forget horizon: a
+ * "forget stats" from before reading history recorded `forget` events lives
+ * only in the record (`forgotAt`), and another device may have converted the
+ * forgotten turns into legacy events. Returns the same array when nothing is
+ * hidden, so identity caching holds.
+ */
+const horizonFiltered = new WeakMap<PageTurn[], { horizon: number; turns: PageTurn[] }>();
+function afterForgetHorizon(
+  vol: VolumeData,
+  turns: PageTurn[] | undefined
+): PageTurn[] | undefined {
+  if (!turns || !vol.forgotAt) return turns;
+  const horizon = Date.parse(vol.forgotAt);
+  const cached = horizonFiltered.get(turns);
+  if (cached?.horizon === horizon) return cached.turns;
+  const kept = turns.filter((turn) => turn[0] > horizon);
+  const result = kept.length === turns.length ? turns : kept.length > 0 ? kept : undefined;
+  if (result) horizonFiltered.set(turns, { horizon, turns: result });
+  return result;
+}
+
+/** Every device's turns for a volume, from history once loaded, else the record's own. */
+export function projectedTurnsOf(volume: string, vol: VolumeData): PageTurn[] {
+  return afterForgetHorizon(vol, getHistoryTurns(volume)) ?? vol.recentPageTurns;
+}
+
 export const volumes = derived([_volumesInternal, historyTurns], ([$internal, $turns]) => {
   const out: Volumes = {};
   for (const [id, vol] of Object.entries($internal)) {
     if (vol.deletedOn) continue;
-    const turns = $turns.get(id);
+    const turns = afterForgetHorizon(vol, $turns.get(id));
     if (!turns || turns === vol.recentPageTurns) {
       out[id] = vol;
       continue;
@@ -642,7 +669,7 @@ function startedFreshPassSince(
   if (Number.isNaN(since)) return true;
 
   // Reading history's turns once loaded (every device's), else the record's own.
-  const turns = getHistoryTurns(volume) ?? volumeData.recentPageTurns;
+  const turns = projectedTurnsOf(volume, volumeData);
   return hasFreshPassSince(turns, since, completingPage);
 }
 

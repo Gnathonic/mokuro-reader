@@ -1,8 +1,7 @@
 import { browser } from '$app/environment';
 import { isVolumeComplete } from '$lib/util/volume-helpers';
 import { get } from 'svelte/store';
-import { VolumeData, volumesWithTrash } from '../settings/volume-data';
-import { getHistoryTurns } from '$lib/reading-history/turns-store';
+import { VolumeData, projectedTurnsOf, volumesWithTrash } from '../settings/volume-data';
 
 const BACKFILL_KEY = 'volumes.completedAtBackfill.v1';
 const BACKFILL_ATTEMPTS_KEY = 'volumes.completedAtBackfill.attempts';
@@ -96,7 +95,7 @@ export function backfillCompletedAt(
 
       let stamp: string | undefined;
       // Every device's turns from reading history once loaded, else the record's own.
-      const turns = getHistoryTurns(volumeId) ?? volumeData.recentPageTurns;
+      const turns = projectedTurnsOf(volumeId, volumeData);
       for (let i = turns.length - 1; i >= 0; i -= 1) {
         const [timestamp, page] = turns[i];
         if (isVolumeComplete(page, pageCount)) {

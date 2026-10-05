@@ -64,4 +64,30 @@ describe('projected turns store', () => {
     await recordEvent(view('v', 4), 9500, db);
     expect(getHistoryTurns('v')).toBeUndefined();
   });
+
+  it('an event stored while the initial load is reading is not lost', async () => {
+    await appendEvent(db, view('v', 1), 1000);
+    // Hold the load after its read, so a later commit lands mid-load.
+    const original = db.reading_events.toArray.bind(db.reading_events);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let read!: () => void;
+    const readDone = new Promise<void>((r) => (read = r));
+    db.reading_events.toArray = (async () => {
+      const all = await original();
+      read();
+      await gate;
+      return all;
+    }) as typeof original;
+    const loading = loadHistoryTurns(db);
+    await readDone;
+    await recordEvent(view('v', 2), 2000, db);
+    release();
+    await loading;
+    await Promise.resolve();
+    expect(getHistoryTurns('v')).toEqual([
+      [1000, 1, 20],
+      [2000, 2, 30]
+    ]);
+  });
 });

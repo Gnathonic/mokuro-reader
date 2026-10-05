@@ -54,4 +54,25 @@ describe('progress sync batching', () => {
     tracker.flush();
     expect(syncProgress).not.toHaveBeenCalled();
   });
+
+  it('activity before a provider is connected does not hold back the first real sync', async () => {
+    const { unifiedCloudManager } = await import('./sync/unified-cloud-manager');
+    vi.mocked(unifiedCloudManager.getActiveProvider).mockReturnValueOnce(null as never);
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(syncProgress).not.toHaveBeenCalled();
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(syncProgress).toHaveBeenCalledTimes(1);
+  });
+
+  it('a clock set back never pushes the next sync beyond the interval', async () => {
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(6_000);
+    vi.setSystemTime(Date.now() + 24 * 3600_000); // last sync now looks a day in the future
+    vi.setSystemTime(Date.now() - 48 * 3600_000);
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(3 * 60_000 + 6_000);
+    expect(syncProgress).toHaveBeenCalledTimes(2);
+  });
 });

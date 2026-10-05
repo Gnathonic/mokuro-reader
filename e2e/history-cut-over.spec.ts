@@ -4,8 +4,9 @@ import { test, expect, type Browser, type Page, type Route } from '@playwright/t
  * The phase-2b cut-over between two devices, through the REAL app and sync
  * code against an in-memory WebDAV server. Device A starts with an old
  * client's progress (page turns + an archived read in localStorage): they
- * become reading-history events, leave volume-data.json, go up as A's
- * legacy.events, and device B serves the same turns from them. Turns an old
+ * become reading-history events and go up as A's legacy.events; only once that
+ * upload is confirmed do they leave volume-data.json. Device B serves the same
+ * turns from A's legacy segment. Turns an old
  * client writes back into the cloud file are converted and stripped again.
  */
 
@@ -209,6 +210,10 @@ test('legacy page turns cut over across two devices', async ({ browser }) => {
   await expect.poll(() => storedTurns(a), { timeout: 10000 }).toEqual([]);
   await expect.poll(() => statTurns(a), { timeout: 10000 }).toEqual(TURNS);
 
+  // First sync: the file keeps the turns while their history copy goes up...
+  await sync(a);
+  expect(cloudRecord(stub).recentPageTurns).toEqual(TURNS);
+  // ...and once this provider holds them as history, the file drops them.
   await sync(a);
   const idA = await a.evaluate(async () => {
     const { historyDb } = await import('/src/lib/reading-history/history-db.ts');
@@ -232,6 +237,7 @@ test('legacy page turns cut over across two devices', async ({ browser }) => {
   file[VOL].lastProgressUpdate = new Date(T0 + 400_000).toISOString();
   stub.file(DATA_FILE, Buffer.from(JSON.stringify(file)), new Date().toUTCString());
 
+  await sync(a);
   await sync(a);
   expect(cloudRecord(stub).recentPageTurns).toBeUndefined();
   await expect.poll(() => statTurns(a), { timeout: 10000 }).toEqual([...TURNS, extra]);

@@ -8,18 +8,37 @@ import type { ReadingEvent } from './types';
 /**
  * Page turns projected from the merged event table (`projectTurns`), for the
  * stats that still read `PageTurn[]` (phase 2b; phase 3 reads events
- * directly). Loaded once; afterwards only the volumes an append touches are
- * re-projected, so a page view costs one volume, not the whole history.
+ * directly). Loaded once; afterwards only the volumes new events touch are
+ * re-projected, at most once per microtask, so a page view costs one volume
+ * and a large import one emission.
+ *
+ * Only `page` and `forget` events are kept in memory: nothing else changes a
+ * projection.
  */
 
 const store = writable<Map<string, PageTurn[]>>(new Map());
 const eventsByVolume = new Map<string, Map<string, ReadingEvent>>();
 let loaded = false;
+/** Events that arrive while the initial read is in flight; applied after it. */
+let arrivedWhileLoading: ReadingEvent[] | null = null;
+let pendingVolumes: Set<string> | null = null;
+
+let resolveReady!: () => void;
+let ready = new Promise<void>((resolve) => (resolveReady = resolve));
 
 export const historyTurns: Readable<Map<string, PageTurn[]>> = { subscribe: store.subscribe };
 
 export function historyTurnsLoaded(): boolean {
   return loaded;
+}
+
+/**
+ * Settles once the first load has finished — or failed, in which case the
+ * records' own turns are what there is. Anything that writes a permanent
+ * conclusion from turns (goal snapshots, completion back-dating) waits for it.
+ */
+export function historyTurnsReady(): Promise<void> {
+  return ready;
 }
 
 /** The volume's projected turns; `undefined` until loaded, or when it has none. */
@@ -29,46 +48,79 @@ export function getHistoryTurns(volume: string): PageTurn[] | undefined {
 
 /** Full (re)load from the database — on start, and after a big import. */
 export async function loadHistoryTurns(db?: HistoryDexie): Promise<void> {
-  const target = db ?? (await import('./history-db')).historyDb();
-  const all = await target.reading_events.toArray();
-  eventsByVolume.clear();
-  for (const event of all) keep(event);
-  const next = new Map<string, PageTurn[]>();
-  for (const [volume, events] of eventsByVolume) {
-    const turns = projectVolume([...events.values()]);
-    if (turns.length > 0) next.set(volume, turns);
+  arrivedWhileLoading = [];
+  try {
+    const target = db ?? (await import('./history-db')).historyDb();
+    const all = await target.reading_events.toArray();
+    eventsByVolume.clear();
+    for (const event of all) keep(event);
+    // Committed after our read began: their notifications came here instead.
+    for (const event of arrivedWhileLoading) keep(event);
+    const next = new Map<string, PageTurn[]>();
+    for (const [volume, events] of eventsByVolume) {
+      const turns = projectVolume([...events.values()]);
+      if (turns.length > 0) next.set(volume, turns);
+    }
+    loaded = true;
+    store.set(next);
+  } finally {
+    arrivedWhileLoading = null;
+    resolveReady();
   }
-  loaded = true;
-  store.set(next);
 }
 
 function keep(event: ReadingEvent): void {
+  if (event.kind !== 'page' && event.kind !== 'forget') return;
   let events = eventsByVolume.get(event.volume);
   if (!events) eventsByVolume.set(event.volume, (events = new Map()));
   events.set(`${event.device}\u0000${event.seq}`, event);
 }
 
 onEventsRecorded((events) => {
-  if (!loaded) return;
-  const touched = new Set<string>();
+  if (arrivedWhileLoading) {
+    arrivedWhileLoading.push(...events);
+    return;
+  }
+  if (!loaded) return; // never loaded: the next load reads them from the database
+  const first = pendingVolumes === null;
+  pendingVolumes ??= new Set();
   for (const event of events) {
     keep(event);
-    touched.add(event.volume);
+    pendingVolumes.add(event.volume);
   }
+  if (first) queueMicrotask(flushPending);
+});
+
+/**
+ * Apply recorded events to the projection now, not at the end of the
+ * microtask — the cut-over calls this before stripping turns from records, so
+ * no store emission ever sees a record without its turns AND a projection
+ * without them.
+ */
+export function flushHistoryTurns(): void {
+  flushPending();
+}
+
+function flushPending(): void {
+  const touched = pendingVolumes;
+  pendingVolumes = null;
+  if (!touched || touched.size === 0) return;
   store.update((current) => {
     const next = new Map(current);
     for (const volume of touched) {
-      const turns = projectVolume([...eventsByVolume.get(volume)!.values()]);
+      const events = eventsByVolume.get(volume);
+      const turns = events ? projectVolume([...events.values()]) : [];
       if (turns.length > 0) next.set(volume, turns);
       else next.delete(volume);
     }
     return next;
   });
-});
+}
 
 /** Test hook: a loaded projection, without a database. */
 export function _setHistoryTurnsForTest(turns: Map<string, PageTurn[]>): void {
   loaded = true;
+  resolveReady();
   store.set(turns);
 }
 
@@ -76,5 +128,8 @@ export function _setHistoryTurnsForTest(turns: Map<string, PageTurn[]>): void {
 export function _resetHistoryTurns(): void {
   eventsByVolume.clear();
   loaded = false;
+  arrivedWhileLoading = null;
+  pendingVolumes = null;
+  ready = new Promise<void>((resolve) => (resolveReady = resolve));
   store.set(new Map());
 }

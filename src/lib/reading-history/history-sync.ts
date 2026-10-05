@@ -90,6 +90,28 @@ export async function syncHistory(
   return result;
 }
 
+/**
+ * Has this provider received every converted turn this device holds (the
+ * `legacy.events` upload mark covers the local legacy count)? Until it has,
+ * `volume-data.json` keeps carrying turns — stripping them would leave the
+ * cloud with no copy at all.
+ */
+export async function legacyCarriedBy(providerType: string, db: HistoryDexie): Promise<boolean> {
+  const local = await legacyEvents(db).count();
+  if (local === 0) return true;
+  const mark = (await db.history_meta.get(`uploaded:${providerType}:legacy`))?.value as
+    | { count: number }
+    | undefined;
+  return (mark?.count ?? 0) >= local;
+}
+
+function legacyEvents(db: HistoryDexie) {
+  // Every device id starting `legacy:` (';' is the character after ':').
+  return db.reading_events
+    .where('[device+seq]')
+    .between([LEGACY_DEVICE_PREFIX, Dexie.minKey], ['legacy;', Dexie.minKey]);
+}
+
 type WarnOnce = (kind: string, ...details: unknown[]) => void;
 
 async function importOthers(
@@ -280,16 +302,14 @@ async function exportLegacy(
   result: HistorySyncResult,
   warnOnce: WarnOnce
 ): Promise<void> {
-  const events = await db.reading_events
-    .where('[device+seq]')
-    // Every device id starting `legacy:` (';' is the character after ':').
-    .between([LEGACY_DEVICE_PREFIX, Dexie.minKey], ['legacy;', Dexie.minKey])
-    .toArray();
-  if (events.length === 0) return;
+  // Count first: on most syncs nothing changed and nothing need be read.
+  const count = await legacyEvents(db).count();
+  if (count === 0) return;
   const path = historyLegacyFilePath(own);
   const key = `uploaded:${provider.type}:legacy`;
   const mark = (await db.history_meta.get(key))?.value as { count: number } | undefined;
-  if (mark?.count === events.length && listed.has(path)) return;
+  if (mark?.count === count && listed.has(path)) return;
+  const events = await legacyEvents(db).toArray();
 
   try {
     const bytes = await encodeSegment(own, 'legacy', events, { legacy: true });

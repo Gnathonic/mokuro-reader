@@ -1,9 +1,15 @@
 import { get } from 'svelte/store';
 import { migratePageTurnData } from '$lib/settings/reading-speed';
-import { VolumeData, volumesWithTrash, type PageTurn } from '$lib/settings/volume-data';
+import {
+  VolumeData,
+  projectedTurnsOf,
+  volumesWithTrash,
+  type PageTurn
+} from '$lib/settings/volume-data';
 import type { HistoryDexie } from './history-db';
 import { convertLegacyRecord } from './legacy';
 import { notifyEventsRecorded } from './record';
+import { flushHistoryTurns, historyTurnsLoaded } from './turns-store';
 import type { ReadingEvent } from './types';
 
 /**
@@ -15,7 +21,8 @@ import type { ReadingEvent } from './types';
  * upload (the merge brings back turns an older client or an unconverted
  * device still had; they are converted and stripped before the file goes up).
  *
- * Safe by order: a turn is stripped only after its event is committed, and
+ * Safe by order: nothing is stripped unless the projection is loaded; a turn
+ * is stripped only after its event is committed AND projected, and
  * only the exact turns that were converted (one that arrived meanwhile stays).
  * If the history database cannot be written, nothing is stripped and the file
  * keeps its turns as before. `archivedReads` are recorded as `restart` events
@@ -24,6 +31,9 @@ import type { ReadingEvent } from './types';
 export async function cutOverLegacyTurns(
   db?: HistoryDexie
 ): Promise<{ volumes: number; events: number }> {
+  // Stripped turns are served from the projection; without it loaded (the
+  // load failed, or has not run) the stats would go empty. Keep them.
+  if (!historyTurnsLoaded()) return { volumes: 0, events: 0 };
   const snapshot = get(volumesWithTrash);
   const candidates = Object.entries(snapshot).filter(
     ([, record]) =>
@@ -39,7 +49,14 @@ export async function cutOverLegacyTurns(
     // installed volume's OCR where possible, so they count toward speed.
     const upgraded =
       (await migratePageTurnData(volume, record, record.recentPageTurns)) ?? record.recentPageTurns;
-    events.push(...convertLegacyRecord(volume, { ...record, recentPageTurns: upgraded }));
+    // One event per key: a turn and an archived read on the same millisecond
+    // share `[legacy:<volume>, t]`; a duplicate would abort the whole batch.
+    const seen = new Set<number>();
+    for (const event of convertLegacyRecord(volume, { ...record, recentPageTurns: upgraded })) {
+      if (seen.has(event.seq)) continue;
+      seen.add(event.seq);
+      events.push(event);
+    }
     converted.set(volume, new Set(record.recentPageTurns.map(turnKey)));
   }
 
@@ -57,6 +74,7 @@ export async function cutOverLegacyTurns(
     return { volumes: 0, events: 0 };
   }
   notifyEventsRecorded(added);
+  flushHistoryTurns();
 
   let stripped = 0;
   volumesWithTrash.update((all) => {
@@ -78,4 +96,34 @@ export async function cutOverLegacyTurns(
 
 function turnKey(turn: PageTurn | number[]): string {
   return `${turn[0]}|${turn[1]}`;
+}
+
+/**
+ * The records as they go into `volume-data.json` while the cloud does not (yet)
+ * hold their turns as history: each live record carries its own turns plus
+ * every turn history projects for it. Used when the provider cannot carry
+ * history at all (mokuro-bunko, read-only) — turns keep travelling in the file
+ * exactly as before the cut-over — and until this device's converted turns are
+ * confirmed uploaded. Never written back into the store.
+ */
+export async function attachProjectedTurns(
+  records: Record<string, VolumeData>
+): Promise<Record<string, VolumeData>> {
+  const out: Record<string, VolumeData> = {};
+  for (const [volume, record] of Object.entries(records)) {
+    if (record.deletedOn) {
+      out[volume] = record;
+      continue;
+    }
+    const projected = projectedTurnsOf(volume, record);
+    if (projected === record.recentPageTurns || projected.length === 0) {
+      out[volume] = record;
+      continue;
+    }
+    const byKey = new Map<string, PageTurn>();
+    for (const turn of [...record.recentPageTurns, ...projected]) byKey.set(turnKey(turn), turn);
+    const turns = [...byKey.values()].sort((a, b) => a[0] - b[0]);
+    out[volume] = new VolumeData({ ...record, recentPageTurns: turns });
+  }
+  return out;
 }

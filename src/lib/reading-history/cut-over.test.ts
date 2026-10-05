@@ -19,11 +19,13 @@ import { cutOverLegacyTurns } from './cut-over';
 import { _resetHistoryTurns, loadHistoryTurns } from './turns-store';
 
 let db: HistoryDexie;
-beforeEach(() => {
+beforeEach(async () => {
   clearVolumes();
   _resetHistoryTurns();
   volumeOcr.get.mockResolvedValue(undefined);
   db = new HistoryDexie(`cut-${Math.random()}`);
+  // The app loads the projection first; the cut-over never strips without it.
+  await loadHistoryTurns(db);
 });
 
 const turns: [number, number, number][] = [
@@ -39,7 +41,7 @@ describe('cutOverLegacyTurns', () => {
     expect(result).toEqual({ volumes: 1, events: 3 });
     expect(await db.reading_events.count()).toBe(3);
     expect(get(volumesWithTrash).v.recentPageTurns).toEqual([]);
-    await loadHistoryTurns(db);
+    // Served at once: the projection was updated before the strip.
     expect(get(volumes).v.recentPageTurns).toEqual(turns);
   });
 
@@ -101,10 +103,40 @@ describe('cutOverLegacyTurns', () => {
       })
     });
     await cutOverLegacyTurns(db);
-    await loadHistoryTurns(db);
     expect(get(volumes).v.recentPageTurns).toEqual([
       [1000, 0, 2],
       [2000, 1, 4]
     ]);
+  });
+
+  it('never strips while the projection is not loaded (stats would go empty)', async () => {
+    _resetHistoryTurns();
+    volumesWithTrash.set({ v: new VolumeData({ progress: 3, recentPageTurns: [...turns] }) });
+    await cutOverLegacyTurns(db);
+    expect(get(volumesWithTrash).v.recentPageTurns).toEqual(turns);
+    expect(get(volumes).v.recentPageTurns).toEqual(turns);
+  });
+
+  it('attachProjectedTurns puts every projected turn back for the file, without touching the store', async () => {
+    const { attachProjectedTurns } = await import('./cut-over');
+    volumesWithTrash.set({ v: new VolumeData({ progress: 3, recentPageTurns: [...turns] }) });
+    await cutOverLegacyTurns(db);
+    const forFile = await attachProjectedTurns(get(volumesWithTrash));
+    expect(forFile.v.recentPageTurns).toEqual(turns);
+    expect(get(volumesWithTrash).v.recentPageTurns).toEqual([]);
+  });
+
+  it('a turn and an archived read on the same millisecond do not stall the conversion', async () => {
+    volumesWithTrash.set({
+      v: new VolumeData({
+        progress: 1,
+        recentPageTurns: [[500, 1, 10]],
+        archivedReads: [{ at: 500, pages: 1, chars: 10, completed: false }]
+      }),
+      w: new VolumeData({ progress: 1, recentPageTurns: [[700, 1, 10]] })
+    });
+    await cutOverLegacyTurns(db);
+    expect(get(volumesWithTrash).w.recentPageTurns).toEqual([]);
+    expect(get(volumesWithTrash).v.recentPageTurns).toEqual([]);
   });
 });

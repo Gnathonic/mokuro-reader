@@ -391,4 +391,18 @@ describe('syncHistory', () => {
     expect(await seqs(a)).toEqual([1000, 2000]);
     expect(await seqs(b)).toEqual([1000, 2000]);
   });
+
+  it('legacyCarriedBy: true with nothing to carry, false until the upload covers every converted turn', async () => {
+    const { legacyCarriedBy } = await import('./history-sync');
+    const { convertLegacyRecord } = await import('./legacy');
+    expect(await legacyCarriedBy('webdav', a)).toBe(true);
+    await a.reading_events.bulkAdd(
+      convertLegacyRecord('vol-c', { recentPageTurns: [[1000, 1, 10]] })
+    );
+    expect(await legacyCarriedBy('webdav', a)).toBe(false);
+    const cloud = fakeCloud();
+    await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
+    expect(await legacyCarriedBy('webdav', a)).toBe(true);
+    expect(await legacyCarriedBy('mega', a)).toBe(false);
+  });
 });

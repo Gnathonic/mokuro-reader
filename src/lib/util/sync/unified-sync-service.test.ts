@@ -54,9 +54,6 @@ vi.mock('$lib/settings/volume-data', async () => {
   };
 });
 vi.mock('$lib/metadata/progress-tracker', () => ({ onSeriesRestarted: vi.fn() }));
-vi.mock('$lib/reading-history/history-sync', () => ({
-  syncHistory: vi.fn(async () => ({ imported: 0, uploaded: [], failed: [] }))
-}));
 vi.mock('$lib/reading-history/history-db', () => ({ historyDb: vi.fn(() => ({})) }));
 // The cut-over, as the real one behaves when the history database works:
 // converted turns leave the records before the file is built.
@@ -78,9 +75,20 @@ vi.mock('$lib/reading-history/cut-over', async () => {
         )
       );
       return { volumes: 1, events: 1 };
-    })
+    }),
+    // History's turns put back into the file's records (here: a marker turn).
+    attachProjectedTurns: vi.fn(async (records: Record<string, Record<string, unknown>>) =>
+      Object.fromEntries(
+        Object.entries(records).map(([id, v]) => [id, { ...v, recentPageTurns: [[9, 9, 90]] }])
+      )
+    )
   };
 });
+const legacyCarried = vi.hoisted(() => ({ value: true }));
+vi.mock('$lib/reading-history/history-sync', () => ({
+  syncHistory: vi.fn(async () => ({ imported: 0, uploaded: [], failed: [] })),
+  legacyCarriedBy: vi.fn(async () => legacyCarried.value)
+}));
 
 import { unifiedSyncService } from './unified-sync-service';
 import { restartSeries } from '$lib/metadata/reread';
@@ -1455,7 +1463,19 @@ describe('reading history rides every sync', () => {
 });
 
 describe('the cut-over rides the volume sync', () => {
-  it('converted turns are not in the uploaded volume-data.json', async () => {
+  function capture(status: Record<string, unknown> = {}) {
+    const uploads: Array<Record<string, Record<string, unknown>>> = [];
+    const provider = {
+      type: 'mega',
+      getStatus: () => ({ isAuthenticated: true, ...status }),
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+    return { uploads, provider };
+  }
+  const seed = () =>
     setLocalVolumes({
       'vol-1': {
         progress: 3,
@@ -1463,20 +1483,39 @@ describe('the cut-over rides the volume sync', () => {
         recentPageTurns: [[1, 3, 30]]
       }
     });
+
+  it('strips converted turns from the file once this provider holds them as history', async () => {
+    legacyCarried.value = true;
+    seed();
     stubCache([]);
-    const uploads: Array<Record<string, Record<string, unknown>>> = [];
-    const provider = {
-      type: 'mega',
-      downloadFile: vi.fn(),
-      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
-        uploads.push(JSON.parse(await blob.text()));
-      })
-    } as unknown as SyncProvider;
-
+    const { uploads, provider } = capture();
     await svc.syncVolumeData(provider);
-
     expect(uploads).toHaveLength(1);
     expect(uploads[0]['vol-1'].recentPageTurns ?? []).toEqual([]);
     expect(uploads[0]['vol-1'].progress).toBe(3);
   });
+
+  it('keeps the turns in the file until the history copy is confirmed', async () => {
+    legacyCarried.value = false;
+    seed();
+    stubCache([]);
+    const { uploads, provider } = capture();
+    await svc.syncVolumeData(provider);
+    expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+  });
+
+  it.each([{ serverCompilesMetadata: true }, { isReadOnly: true }])(
+    'on %o (history cannot sync) never strips, and the file carries the turns',
+    async (status) => {
+      legacyCarried.value = true;
+      const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
+      vi.mocked(cutOverLegacyTurns).mockClear();
+      seed();
+      stubCache([]);
+      const { uploads, provider } = capture(status);
+      await svc.syncVolumeData(provider);
+      expect(cutOverLegacyTurns).not.toHaveBeenCalled();
+      expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+    }
+  );
 });
