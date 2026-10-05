@@ -643,3 +643,33 @@ describe('MegaProvider.renameFile() — modifiedTime provenance', () => {
     expect(result.modifiedTimeProvisional).toBe(true);
   });
 });
+
+describe('MegaProvider listing of reading history', () => {
+  it('lists history/<device>/ files by full path, not look-alikes in a series folder', async () => {
+    const root = { name: 'mokuro-reader', directory: true };
+    const hist = { name: 'history', directory: true, parent: root };
+    const dev = { name: 'dev-a', directory: true, parent: hist };
+    const series = { name: 'Series', directory: true, parent: root };
+    storageState.files = {
+      r: root,
+      h: hist,
+      d: dev,
+      s: series,
+      seg: { name: '2026-10.events', parent: dev, nodeId: 'seg', timestamp: 1790000000, size: 10 },
+      stray: {
+        name: 'device.json',
+        parent: series,
+        nodeId: 'stray',
+        timestamp: 1790000000,
+        size: 5
+      }
+    };
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+
+    const files = await provider.listCloudVolumes(true);
+
+    expect(files.map((f) => f.path)).toEqual(['history/dev-a/2026-10.events']);
+  });
+});

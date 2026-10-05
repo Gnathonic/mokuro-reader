@@ -1214,11 +1214,11 @@ export class WebDAVProvider implements SyncProvider {
             // Recurse into subdirectories
             await processFolder(item.filename);
           } else {
-            // Include CBZ files, sidecars, and JSON config files
-            if (isSyncableFile(item.basename)) {
-              // Build relative path from mokuro folder
-              const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
-
+            // Include CBZ files, sidecars, JSON config files and reading
+            // history — judged by the path RELATIVE to the mokuro folder,
+            // since history is recognised by its folders, not its basename.
+            const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
+            if (isSyncableFile(relativePath)) {
               allFiles.push({
                 provider: 'webdav',
                 fileId: item.filename, // Full WebDAV path as fileId
@@ -1268,11 +1268,10 @@ export class WebDAVProvider implements SyncProvider {
 
     for (const item of contents) {
       if (item.type === 'file') {
-        // Include CBZ files, sidecars, and JSON config files
-        if (isSyncableFile(item.basename)) {
-          // Build relative path from mokuro folder
-          const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
-
+        // Include CBZ files, sidecars, JSON config files and reading history
+        // (judged by the relative path — see the recursive listing).
+        const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
+        if (isSyncableFile(relativePath)) {
           allFiles.push({
             provider: 'webdav',
             fileId: item.filename, // Full WebDAV path as fileId

@@ -718,3 +718,39 @@ describe('WebDAVProvider staged, verified PUTs (X-Mokuro-Put)', () => {
     expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
   });
 });
+
+describe('WebDAVProvider listing of reading history', () => {
+  it('lists history/<device>/ files by relative path and ignores look-alikes elsewhere', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    const lastmod = 'Mon, 05 Oct 2026 00:00:00 GMT';
+    mockClient.getDirectoryContents.mockResolvedValue([
+      {
+        type: 'file',
+        filename: '/mokuro-reader/history/dev-a/2026-10.events',
+        basename: '2026-10.events',
+        lastmod,
+        size: 10
+      },
+      {
+        type: 'file',
+        filename: '/mokuro-reader/Series/device.json',
+        basename: 'device.json',
+        lastmod,
+        size: 5
+      },
+      {
+        type: 'file',
+        filename: '/mokuro-reader/Series/2026-10.events',
+        basename: '2026-10.events',
+        lastmod,
+        size: 5
+      }
+    ]);
+
+    const files = await provider.listCloudVolumes();
+
+    expect(files.map((f) => f.path)).toEqual(['history/dev-a/2026-10.events']);
+  });
+});

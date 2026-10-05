@@ -642,3 +642,49 @@ describe('add() for ROOT config files', () => {
     expect(cache.get('Vol 1.cbz')).toBeNull();
   });
 });
+
+describe('driveFilesCache history segments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    driveFilesCache.clear();
+  });
+
+  it('caches history/<device>/<file> at its full path, and add() agrees', async () => {
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'reader', name: 'mokuro-reader', mimeType: 'application/vnd.google-apps.folder' },
+      {
+        id: 'hist',
+        name: 'history',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: ['reader']
+      },
+      {
+        id: 'dev',
+        name: 'dev-a',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: ['hist']
+      },
+      {
+        id: 'seg',
+        name: '2026-10.events',
+        mimeType: 'application/octet-stream',
+        parents: ['dev'],
+        modifiedTime: '2026-10-03T00:00:00.000Z',
+        size: '42'
+      }
+    ]);
+    await driveFilesCache.fetch();
+    expect(driveFilesCache.get('history/dev-a/2026-10.events')?.fileId).toBe('seg');
+
+    driveFilesCache.add('history/dev-b/2026-10.events', {
+      provider: 'google-drive',
+      fileId: 'up',
+      name: '2026-10.events',
+      path: 'history/dev-b/2026-10.events',
+      modifiedTime: '2026-10-04T00:00:00.000Z',
+      size: 7,
+      modifiedTimeProvisional: true
+    } as never);
+    expect(driveFilesCache.get('history/dev-b/2026-10.events')?.fileId).toBe('up');
+  });
+});
