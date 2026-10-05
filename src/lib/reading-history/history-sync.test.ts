@@ -330,7 +330,7 @@ describe('syncHistory', () => {
     expect(await b.history_files.get(historySegmentPath('dev-y', '1970-01'))).toBeUndefined();
   });
 
-  it("imported events reach the projected turns without a reload", async () => {
+  it('imported events reach the projected turns without a reload', async () => {
     const { _resetHistoryTurns, getHistoryTurns, loadHistoryTurns } = await import('./turns-store');
     const cloud = fakeCloud();
     await appendEvent(a, page('v-import', 3), OCT);
@@ -342,5 +342,53 @@ describe('syncHistory', () => {
     await syncHistory(cloud.provider, cloud.listing(), b, { now: NOV });
     expect(getHistoryTurns('v-import')).toEqual([[OCT, 3, 40]]);
     _resetHistoryTurns();
+  });
+
+  it("uploads this device's converted turns as legacy.events; the other device imports them", async () => {
+    const cloud = fakeCloud();
+    const { convertLegacyRecord } = await import('./legacy');
+    await a.reading_events.bulkAdd(
+      convertLegacyRecord('vol-l', {
+        recentPageTurns: [
+          [1000, 1, 10],
+          [2000, 2, 20]
+        ]
+      })
+    );
+    const devA = await getOrCreateDeviceId(a);
+    const r = await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
+    expect(r.uploaded).toContain(historyLegacyFilePath(devA));
+    await syncHistory(cloud.provider, cloud.listing(), b, { now: NOV });
+    expect(
+      (await b.reading_events.toArray()).filter((e) => e.device === 'legacy:vol-l')
+    ).toHaveLength(2);
+    vi.mocked(cloud.provider.uploadFile).mockClear();
+    await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
+    expect(cloud.provider.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('two devices converting one volume, one with an extra turn, end with the union', async () => {
+    const cloud = fakeCloud();
+    const { convertLegacyRecord } = await import('./legacy');
+    await a.reading_events.bulkAdd(
+      convertLegacyRecord('vol-u', { recentPageTurns: [[1000, 1, 10]] })
+    );
+    await b.reading_events.bulkAdd(
+      convertLegacyRecord('vol-u', {
+        recentPageTurns: [
+          [1000, 1, 10],
+          [2000, 2, 20]
+        ]
+      })
+    );
+    for (const db of [a, b, a, b])
+      await syncHistory(cloud.provider, cloud.listing(), db, { force: true, now: NOV });
+    const seqs = async (db: HistoryDexie) =>
+      (await db.reading_events.toArray())
+        .filter((e) => e.device === 'legacy:vol-u')
+        .map((e) => e.seq)
+        .sort();
+    expect(await seqs(a)).toEqual([1000, 2000]);
+    expect(await seqs(b)).toEqual([1000, 2000]);
   });
 });

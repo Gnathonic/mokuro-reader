@@ -7,7 +7,9 @@ import type {
 } from '$lib/util/sync/provider-interface';
 import type { HistoryDexie } from './history-db';
 import {
+  LEGACY_DEVICE_PREFIX,
   historyDeviceFilePath,
+  historyLegacyFilePath,
   historyMonthOf,
   historySegmentPath,
   parseHistoryPath,
@@ -82,6 +84,7 @@ export async function syncHistory(
   if (!status.serverCompilesMetadata && !status.isReadOnly) {
     const listed = new Set(listing.map((f) => f.path));
     await exportOwnMonths(provider, db, own, listed, now, options, result, warnOnce);
+    await exportLegacy(provider, db, own, listed, options, result, warnOnce);
     await exportOwnFacts(provider, db, own, listed, options, result, warnOnce);
   }
   return result;
@@ -259,6 +262,43 @@ async function exportOwnMonths(
       result.failed.push(path);
       warnOnce('could not upload a history month (retried next sync)', path, error);
     }
+  }
+}
+
+/**
+ * Converted page turns (`legacy:<volume>` events) that this device holds, as
+ * its own `legacy.events`. Every converting device uploads its own copy; the
+ * keys are deterministic, so importing several copies is a union. Re-uploaded
+ * when the count changes (more turns converted here or imported from others).
+ */
+async function exportLegacy(
+  provider: SyncProvider,
+  db: HistoryDexie,
+  own: string,
+  listed: Set<string>,
+  options: HistorySyncOptions,
+  result: HistorySyncResult,
+  warnOnce: WarnOnce
+): Promise<void> {
+  const events = await db.reading_events
+    .where('[device+seq]')
+    // Every device id starting `legacy:` (';' is the character after ':').
+    .between([LEGACY_DEVICE_PREFIX, Dexie.minKey], ['legacy;', Dexie.minKey])
+    .toArray();
+  if (events.length === 0) return;
+  const path = historyLegacyFilePath(own);
+  const key = `uploaded:${provider.type}:legacy`;
+  const mark = (await db.history_meta.get(key))?.value as { count: number } | undefined;
+  if (mark?.count === events.length && listed.has(path)) return;
+
+  try {
+    const bytes = await encodeSegment(own, 'legacy', events, { legacy: true });
+    await upload(provider, path, bytes, options, warnOnce);
+    await db.history_meta.put({ key, value: { count: events.length } });
+    result.uploaded.push(path);
+  } catch (error) {
+    result.failed.push(path);
+    warnOnce('could not upload converted page turns (retried next sync)', path, error);
   }
 }
 

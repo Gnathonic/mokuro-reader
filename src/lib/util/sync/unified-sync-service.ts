@@ -643,6 +643,12 @@ class UnifiedSyncService {
     volumesWithTrash.set(purgedVolumes);
     setSeriesReadingStates(mergedSeries);
 
+    // Step 5b: page turns the merge brought back (an older client, a device
+    // that has not converted yet) become reading-history events and leave the
+    // records BEFORE the file is built — the file stops carrying them.
+    await this.cutOverLegacyTurns();
+    const finalVolumes = get(volumesWithTrash);
+
     // Step 6: Upload if anything differs from what the cloud actually holds.
     //
     // The series half is compared against the RAW cloud section, not the parsed
@@ -650,7 +656,7 @@ class UnifiedSyncService {
     // sanitized value looks like a match and never heals. `stableStringify`
     // sorts keys, so two devices whose maps hold identical state in different
     // insertion orders stop re-uploading the same bytes at each other.
-    const nextFile = this.composeVolumeDataFile(purgedVolumes, mergedSeries);
+    const nextFile = this.composeVolumeDataFile(finalVolumes, mergedSeries);
     const cloudFile = this.composeVolumeDataFile(
       cloud?.volumes ?? {},
       (cloud?.rawSeries as SeriesReadingStates) ?? {}
@@ -908,6 +914,20 @@ class UnifiedSyncService {
     // re-upload the same bytes at each other forever.
     if (stableStringify(purgedProfiles) !== stableStringify(cloudProfiles || {})) {
       await this.uploadProfilesFile(provider, purgedProfiles);
+    }
+  }
+
+  /**
+   * Convert and strip page turns still held in volume records (phase 2b).
+   * Best-effort: on failure the turns simply stay in the file, as before.
+   * Loaded lazily, like the history pass.
+   */
+  private async cutOverLegacyTurns(): Promise<void> {
+    try {
+      const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
+      await cutOverLegacyTurns();
+    } catch (error) {
+      console.warn('Page-turn cut-over failed (turns stay in volume-data.json):', error);
     }
   }
 

@@ -58,6 +58,29 @@ vi.mock('$lib/reading-history/history-sync', () => ({
   syncHistory: vi.fn(async () => ({ imported: 0, uploaded: [], failed: [] }))
 }));
 vi.mock('$lib/reading-history/history-db', () => ({ historyDb: vi.fn(() => ({})) }));
+// The cut-over, as the real one behaves when the history database works:
+// converted turns leave the records before the file is built.
+vi.mock('$lib/reading-history/cut-over', async () => {
+  const { volumesWithTrash } = await import('$lib/settings');
+  return {
+    cutOverLegacyTurns: vi.fn(async () => {
+      const store = volumesWithTrash as unknown as {
+        update: (fn: (all: Record<string, Record<string, unknown>>) => unknown) => void;
+      };
+      store.update((all) =>
+        Object.fromEntries(
+          Object.entries(all).map(([id, v]) => [
+            id,
+            Array.isArray(v.recentPageTurns) && v.recentPageTurns.length > 0
+              ? { ...v, recentPageTurns: [] }
+              : v
+          ])
+        )
+      );
+      return { volumes: 1, events: 1 };
+    })
+  };
+});
 
 import { unifiedSyncService } from './unified-sync-service';
 import { restartSeries } from '$lib/metadata/reread';
@@ -1428,5 +1451,32 @@ describe('reading history rides every sync', () => {
     });
     await svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {});
     expect(syncHistory).not.toHaveBeenCalled();
+  });
+});
+
+describe('the cut-over rides the volume sync', () => {
+  it('converted turns are not in the uploaded volume-data.json', async () => {
+    setLocalVolumes({
+      'vol-1': {
+        progress: 3,
+        lastProgressUpdate: '2026-10-05T00:00:00.000Z',
+        recentPageTurns: [[1, 3, 30]]
+      }
+    });
+    stubCache([]);
+    const uploads: Array<Record<string, Record<string, unknown>>> = [];
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+
+    await svc.syncVolumeData(provider);
+
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]['vol-1'].recentPageTurns ?? []).toEqual([]);
+    expect(uploads[0]['vol-1'].progress).toBe(3);
   });
 });
