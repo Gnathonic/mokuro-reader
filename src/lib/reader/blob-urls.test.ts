@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { acquireBlobUrl, releaseBlobUrl, BLOB_URL_GRACE_MS } from './blob-urls';
+import { acquireBlobUrl, blobForUrl, releaseBlobUrl, BLOB_URL_GRACE_MS } from './blob-urls';
 
 describe('shared blob URLs', () => {
   let created = 0;
@@ -49,5 +49,16 @@ describe('shared blob URLs', () => {
     // a later holder gets a fresh URL
     expect(acquireBlobUrl(file)).not.toBe(url);
     releaseBlobUrl(file);
+  });
+
+  it('maps a live URL back to its Blob until it is revoked', () => {
+    const file = new File(['c'], 'c.png');
+    const url = acquireBlobUrl(file);
+    expect(blobForUrl(url)).toBe(file);
+    expect(blobForUrl('blob:unknown')).toBeNull();
+    releaseBlobUrl(file);
+    expect(blobForUrl(url)).toBe(file); // still inside the grace period
+    vi.advanceTimersByTime(BLOB_URL_GRACE_MS);
+    expect(blobForUrl(url)).toBeNull();
   });
 });

@@ -485,7 +485,17 @@ async function dropSnapshotsOfReplacedPrimary(
   provider: string | undefined
 ): Promise<void> {
   const original = await getLayerMeta(db, volumeUuid, ORIGINAL_LAYER);
-  if (original) {
+  // An `original` pulled from THIS provider and untouched since is not stale.
+  // On plain storage the cloud primary only changes when another device edits
+  // it, and that device published this file as the edit's base: dropping it
+  // (and tombstoning the cloud copy) would take Revert from every device, and
+  // the next edit here would publish the edited OCR as `original`. On a server
+  // that compiles metadata, `original` never leaves its device.
+  const isPublishedBase =
+    !!original?.cloud &&
+    original.cloud.provider === provider &&
+    original.updated_at <= original.cloud.synced_at;
+  if (original && !isPublishedBase) {
     await deleteLayerRows(db, volumeUuid, ORIGINAL_LAYER);
     notePendingLayerDelete({
       volume_uuid: volumeUuid,

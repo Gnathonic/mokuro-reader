@@ -1179,3 +1179,190 @@ describe('goals.json', () => {
     expect(cache.add).toHaveBeenCalledWith('goals.json', expect.anything());
   });
 });
+
+describe('completedAt across the volume merge', () => {
+  const STAMP = '2026-03-01T00:00:00.000Z';
+
+  it('a completed winner without a stamp inherits the losing side’s', () => {
+    // An older client turned a page in a finished volume: newer, but stampless.
+    const local = {
+      'vol-1': { completed: true, completedAt: STAMP, lastProgressUpdate: STAMP }
+    };
+    const cloud = {
+      'vol-1': { completed: true, lastProgressUpdate: '2026-04-01T00:00:00.000Z' }
+    };
+
+    const merged = svc.mergeVolumeData(local, cloud);
+
+    expect(merged['vol-1'].lastProgressUpdate).toBe('2026-04-01T00:00:00.000Z');
+    expect(merged['vol-1'].completedAt).toBe(STAMP);
+  });
+
+  it('an un-read winner does not inherit a stamp', () => {
+    const local = {
+      'vol-1': { completed: true, completedAt: STAMP, lastProgressUpdate: STAMP }
+    };
+    const cloud = {
+      'vol-1': { completed: false, lastProgressUpdate: '2026-04-01T00:00:00.000Z' }
+    };
+
+    expect(svc.mergeVolumeData(local, cloud)['vol-1'].completedAt).toBeUndefined();
+  });
+
+  it("the winner's own stamp stands", () => {
+    const local = {
+      'vol-1': { completed: true, completedAt: STAMP, lastProgressUpdate: STAMP }
+    };
+    const cloud = {
+      'vol-1': {
+        completed: true,
+        completedAt: '2026-04-01T00:00:00.000Z',
+        lastProgressUpdate: '2026-04-01T00:00:00.000Z'
+      }
+    };
+
+    expect(svc.mergeVolumeData(local, cloud)['vol-1'].completedAt).toBe('2026-04-01T00:00:00.000Z');
+  });
+});
+
+describe('reading on two devices survives the volume merge', () => {
+  const MON = '2026-10-05T18:00:00.000Z';
+  const TUE = '2026-10-06T09:00:00.000Z';
+  const ms = (iso: string) => Date.parse(iso);
+
+  it('a blank record made by opening the reader never outranks real reading', () => {
+    // This device had no record, so opening the volume created one stamped
+    // only with `addedOn`. The phone read to p.120 the day before.
+    const local = { 'vol-1': { addedOn: TUE } };
+    const cloud = {
+      'vol-1': {
+        progress: 120,
+        chars: 12000,
+        timeReadInMinutes: 200,
+        lastProgressUpdate: MON,
+        recentPageTurns: [[ms(MON), 120, 12000]]
+      }
+    };
+
+    const merged = svc.mergeVolumeData(local, cloud);
+
+    expect(merged['vol-1']).toMatchObject({ progress: 120, timeReadInMinutes: 200 });
+  });
+
+  it('a re-import still revives a volume whose stats were forgotten', () => {
+    const local = { 'vol-1': { addedOn: TUE } };
+    const cloud = { 'vol-1': { deletedOn: MON, lastProgressUpdate: MON } };
+
+    expect(svc.mergeVolumeData(local, cloud)['vol-1'].deletedOn).toBeUndefined();
+  });
+
+  it("keeps the older copy's page turns when the newer copy's position wins", () => {
+    const base = [[1000, 39, 3900]];
+    const local = {
+      'vol-1': {
+        progress: 41,
+        lastProgressUpdate: TUE,
+        recentPageTurns: [...base, [ms(TUE), 41, 4100]]
+      }
+    };
+    const cloud = {
+      'vol-1': {
+        progress: 120,
+        lastProgressUpdate: MON,
+        recentPageTurns: [...base, [ms(MON), 120, 12000]]
+      }
+    };
+
+    const merged = svc.mergeVolumeData(local, cloud)['vol-1'];
+
+    expect(merged.progress).toBe(41);
+    expect(merged.recentPageTurns).toEqual([...base, [ms(MON), 120, 12000], [ms(TUE), 41, 4100]]);
+  });
+
+  it('a live record that outranks a forget keeps nothing from before it', () => {
+    const local = { 'vol-1': { deletedOn: MON, lastProgressUpdate: MON } };
+    const cloud = {
+      'vol-1': {
+        progress: 3,
+        lastProgressUpdate: TUE,
+        recentPageTurns: [
+          [1000, 40, 4000],
+          [ms(TUE), 3, 300]
+        ]
+      }
+    };
+
+    const merged = svc.mergeVolumeData(local, cloud)['vol-1'];
+
+    expect(merged.recentPageTurns).toEqual([[ms(TUE), 3, 300]]);
+    expect(merged.forgotAt).toBe(MON);
+  });
+
+  it('folds duplicate cloud copies without dropping either copy’s page turns', async () => {
+    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    stubCache([first, second]);
+    const provider = makeProvider(async (file) =>
+      jsonBlob({
+        'vol-1':
+          file.fileId === 'first'
+            ? { progress: 5, lastProgressUpdate: MON, recentPageTurns: [[ms(MON), 5, 50]] }
+            : { progress: 6, lastProgressUpdate: TUE, recentPageTurns: [[ms(TUE), 6, 60]] }
+      })
+    );
+
+    const result = await svc.downloadVolumeDataFile(provider);
+
+    expect(result.volumes['vol-1'].progress).toBe(6);
+    expect(result.volumes['vol-1'].recentPageTurns).toEqual([
+      [ms(MON), 5, 50],
+      [ms(TUE), 6, 60]
+    ]);
+  });
+
+  it('a stale copy from before a forget cannot bring the stats back', () => {
+    // Forgot at T1, reopened at T2 without reading; the stale device last read at T0.
+    const T0 = '2026-10-04T10:00:00.000Z';
+    const T1 = '2026-10-05T10:00:00.000Z';
+    const T2 = '2026-10-05T11:00:00.000Z';
+    const local = { 'vol-1': { addedOn: T2, forgotAt: T1 } };
+    const cloud = {
+      'vol-1': {
+        progress: 40,
+        completed: true,
+        completedAt: T0,
+        timeReadInMinutes: 90,
+        lastProgressUpdate: T0,
+        recentPageTurns: [[ms(T0), 40, 4000]]
+      }
+    };
+
+    const merged = svc.mergeVolumeData(local, cloud)['vol-1'];
+
+    expect(merged.progress ?? 0).toBe(0);
+    expect(merged.completed ?? false).toBe(false);
+    expect(merged.timeReadInMinutes ?? 0).toBe(0);
+    expect(merged.recentPageTurns ?? []).toEqual([]);
+  });
+
+  it('reading done after a forget still wins over the reopened blank record', () => {
+    const T1 = '2026-10-05T10:00:00.000Z';
+    const T2 = '2026-10-05T11:00:00.000Z';
+    const T3 = '2026-10-05T12:00:00.000Z';
+    const local = { 'vol-1': { addedOn: T2, forgotAt: T1 } };
+    const cloud = {
+      'vol-1': { progress: 7, lastProgressUpdate: T3, recentPageTurns: [[ms(T3), 7, 700]] }
+    };
+
+    expect(svc.mergeVolumeData(local, cloud)['vol-1'].progress).toBe(7);
+  });
+
+  it('two blank records settle on the same one whichever side is local', () => {
+    const A = { addedOn: MON, settings: { hasCover: true } };
+    const B = { addedOn: TUE, settings: { hasCover: false } };
+
+    const onA = svc.mergeVolumeData({ 'vol-1': A }, { 'vol-1': B })['vol-1'];
+    const onB = svc.mergeVolumeData({ 'vol-1': B }, { 'vol-1': A })['vol-1'];
+
+    expect(onA).toEqual(onB);
+  });
+});

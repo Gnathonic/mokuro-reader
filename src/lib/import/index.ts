@@ -87,5 +87,6 @@ export {
   isImporting,
   clearCompletedImports,
   cancelQueuedImports,
+  describeImportOutcome,
   type ImportResult
 } from './import-service';

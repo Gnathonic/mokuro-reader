@@ -9,7 +9,6 @@ import {
   putLayerWithPages,
   updateLayerMeta
 } from '$lib/catalog/layer-store';
-import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import {
   layerKindForId,
@@ -491,8 +490,48 @@ function rowKey(volumeTitle: string): string {
   return normalizeVolumeTitleKey(volumeTitle);
 }
 
-async function rowsInFolder(folderTitle: string): Promise<Map<string, VolumeMetadata>> {
-  const rows = await volumesForFoldedSeriesTitle(folderTitle, normalizeSeriesKey);
+/**
+ * The local series titles, folded ONCE per listing run (keys-only cursor).
+ * `literals` maps a folded series key to every stored spelling of it;
+ * `withLocalWork` holds the keys whose series has a volume with a layer row
+ * or a pending delete — the only folders that need planning when the listing
+ * shows no layer files in them. Folding per folder instead re-read and
+ * re-folded every title for every cloud folder, on every listing.
+ */
+interface LocalSeriesIndex {
+  literals: Map<string, string[]>;
+  withLocalWork: Set<string>;
+}
+
+async function buildLocalSeriesIndex(localWork: Set<string>): Promise<LocalSeriesIndex> {
+  const literals = new Map<string, string[]>();
+  const withLocalWork = new Set<string>();
+  const folded = new Map<string, string>();
+  await db.volumes.orderBy('series_title').eachKey((key, cursor) => {
+    const title = String(key);
+    let seriesKey = folded.get(title);
+    if (seriesKey === undefined) {
+      seriesKey = normalizeSeriesKey(title);
+      folded.set(title, seriesKey);
+      const spellings = literals.get(seriesKey);
+      if (spellings) spellings.push(title);
+      else literals.set(seriesKey, [title]);
+    }
+    if (localWork.has(String(cursor.primaryKey))) withLocalWork.add(seriesKey);
+  });
+  return { literals, withLocalWork };
+}
+
+async function rowsInFolder(
+  folderTitle: string,
+  index: LocalSeriesIndex
+): Promise<Map<string, VolumeMetadata>> {
+  const spellings = index.literals.get(normalizeSeriesKey(folderTitle));
+  if (!spellings) return new Map();
+  const rows = (await db.volumes
+    .where('series_title')
+    .anyOf(spellings)
+    .toArray()) as VolumeMetadata[];
   const byTitle = new Map<string, VolumeMetadata>();
   for (const row of rows) {
     if (row.isPlaceholder) continue;
@@ -830,10 +869,10 @@ type Transfer =
  * Runs for every folder of every listing, so it must cost nothing where there
  * is nothing to do, and must never read a layer's PAGES: the decisions below
  * are all made on stamps, and a server that writes an engine sidecar per volume
- * lists a layer for every volume of the library. `volumesWithLayers` (one
- * keys-only read per listing, `runSync`) lets a folder with no listed layer
- * files skip even its `volumes` query unless one of those volumes could be
- * in it.
+ * lists a layer for every volume of the library. `volumesWithLayers` and
+ * the run's `LocalSeriesIndex` (keys-only reads, once per listing, `runSync`)
+ * let a folder with no listed layer files skip even its `volumes` query
+ * unless one of those volumes, or a pending delete, is in it.
  */
 async function planFolder(
   folderTitle: string,
@@ -843,13 +882,14 @@ async function planFolder(
   writable: boolean,
   pendingDeletes: Map<string, Set<string>>,
   volumesWithLayers: Set<string>,
+  index: LocalSeriesIndex,
   serverCompilesMetadata = false
 ): Promise<Transfer[]> {
-  // Nothing listed, nothing local anywhere, no tombstone to retire: done.
-  if (layerFiles.length === 0 && volumesWithLayers.size === 0 && pendingDeletes.size === 0) {
+  // Nothing listed here, no local layer or tombstone in this series: done.
+  if (layerFiles.length === 0 && !index.withLocalWork.has(normalizeSeriesKey(folderTitle))) {
     return [];
   }
-  const rows = await rowsInFolder(folderTitle);
+  const rows = await rowsInFolder(folderTitle, index);
   if (rows.size === 0) return [];
   // ONE indexed query for the whole folder, over metadata rows only.
   const withLayers = [...rows.values()]
@@ -957,6 +997,11 @@ async function runSync(
   const volumesWithLayers = await listVolumeUuidsWithLayers(db);
 
   const layerFiles = collectLayerFiles(cloudFilesMap);
+  // Nothing listed, nothing local, no tombstone: every folder skips, unread.
+  const index: LocalSeriesIndex =
+    layerFiles.length === 0 && volumesWithLayers.size === 0 && pendingDeletes.size === 0
+      ? { literals: new Map(), withLocalWork: new Set() }
+      : await buildLocalSeriesIndex(new Set([...volumesWithLayers, ...pendingDeletes.keys()]));
   const byFolder = new Map<string, ListedLayerFile[]>();
   for (const listed of layerFiles) {
     const group = byFolder.get(listed.folderTitle);
@@ -979,6 +1024,7 @@ async function runSync(
           writable,
           pendingDeletes,
           volumesWithLayers,
+          index,
           serverCompilesMetadata
         ))
       );

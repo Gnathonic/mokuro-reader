@@ -21,6 +21,7 @@ import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-i
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
+import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
 import {
   GOALS_FILE_NAME,
   composeGoalsFile,
@@ -474,23 +475,18 @@ class UnifiedSyncService {
         const bogusSeriesKeys = new Set<string>();
         for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
 
-        // Merge all readable copies (newest lastProgressUpdate wins per volume)
+        // Merge all readable copies volume by volume (`mergeVolumePair`)
         const merged: Record<string, VolumeData> = {};
         let mergedSeries: SeriesReadingStates = {};
         for (let i = 0; i < readable.length; i++) {
           const entry = readable[i];
           for (const [volumeId, volumeData] of Object.entries(entry.result.value.volumes)) {
             const existing = merged[volumeId];
-            if (!existing) {
-              merged[volumeId] = volumeData;
-            } else {
-              // Keep the volume with the most recent progress update
-              const existingTime = new Date(existing.lastProgressUpdate || 0).getTime();
-              const newTime = new Date(volumeData.lastProgressUpdate || 0).getTime();
-              if (newTime > existingTime) {
-                merged[volumeId] = volumeData;
-              }
-            }
+            // Same rules as the local/cloud merge: newest position, both
+            // copies' reading.
+            merged[volumeId] = existing
+              ? this.mergeVolumePair(volumeId, existing, volumeData)
+              : volumeData;
           }
 
           // The series section folds by its own key, newest `lastUpdated`
@@ -932,64 +928,91 @@ class UnifiedSyncService {
         // Only in local - already a VolumeData instance
         merged[volumeId] = localVol;
       } else {
-        // In both - determine which has the most recent user action
-        // Consider all timestamps: lastProgressUpdate (reading), addedOn (import), deletedOn (deletion)
-        // Treat undefined timestamps as epoch (0) for legacy volumes
-        const localMostRecent = Math.max(
-          new Date(localVol.lastProgressUpdate || 0).getTime(),
-          new Date(localVol.addedOn || 0).getTime(),
-          new Date(localVol.deletedOn || 0).getTime()
-        );
-
-        const cloudMostRecent = Math.max(
-          new Date(cloudVol.lastProgressUpdate || 0).getTime(),
-          new Date(cloudVol.addedOn || 0).getTime(),
-          new Date(cloudVol.deletedOn || 0).getTime()
-        );
-
-        let winner;
-        if (cloudMostRecent > localMostRecent) {
-          // Cloud has more recent user action
-          const parsed = parseVolumesFromJson(JSON.stringify({ [volumeId]: cloudVol }));
-          winner = parsed[volumeId];
-        } else if (localMostRecent > cloudMostRecent) {
-          // Local has more recent user action
-          winner = localVol;
-        } else {
-          // Timestamps equal (including both at epoch)
-          // Prefer active over deleted to prevent accidental data loss
-          if (cloudVol.deletedOn && !localVol.deletedOn) {
-            winner = localVol; // Local is active, keep it
-          } else if (localVol.deletedOn && !cloudVol.deletedOn) {
-            const parsed = parseVolumesFromJson(JSON.stringify({ [volumeId]: cloudVol }));
-            winner = parsed[volumeId]; // Cloud is active, keep it
-          } else {
-            // Both same state (both active or both deleted) - arbitrary choice: local
-            winner = localVol;
-          }
-        }
-
-        // Preserve metadata from both records - fill in missing fields
-        // (only if the winner is not deleted - tombstones keep minimal data)
-        if (!winner.deletedOn) {
-          merged[volumeId] = parseVolumesFromJson(
-            JSON.stringify({
-              [volumeId]: {
-                ...winner,
-                series_uuid: winner.series_uuid || localVol.series_uuid || cloudVol.series_uuid,
-                series_title: winner.series_title || localVol.series_title || cloudVol.series_title,
-                volume_title: winner.volume_title || localVol.volume_title || cloudVol.volume_title
-              }
-            })
-          )[volumeId];
-        } else {
-          // Winner is a tombstone - keep it as-is (minimal data)
-          merged[volumeId] = winner;
-        }
+        merged[volumeId] = this.mergeVolumePair(volumeId, localVol, cloudVol);
       }
     });
 
     return merged;
+  }
+
+  /**
+   * One volume held on both sides (or in two duplicate cloud copies; `a` wins
+   * a tie). The newest user action picks the record whose position and
+   * completion stand; when both are live, the other side's reading is merged
+   * in (`mergeLiveVolumeRecords`).
+   */
+  private mergeVolumePair(volumeId: string, a: any, b: any): any {
+    const parse = (vol: any) => parseVolumesFromJson(JSON.stringify({ [volumeId]: vol }))[volumeId];
+    // The synced shape of a record (a VolumeData instance's `toJSON`).
+    const plain = (vol: any) => JSON.parse(JSON.stringify(vol));
+    const bothLive = !a.deletedOn && !b.deletedOn;
+
+    // Treat undefined timestamps as epoch (0) for legacy volumes. Between two
+    // live records `addedOn` does not count: opening a volume this device has
+    // no record for creates one stamped only with `addedOn`, and that blank
+    // record outranked real reading on every other device — progress went to
+    // 0 everywhere. It still counts against a tombstone, so a re-import revives
+    // a volume whose stats were forgotten.
+    // One exception: a record that replaced a "forget stats" tombstone
+    // (`forgotAt`) was opened deliberately after the forget, so its `addedOn`
+    // does count — otherwise a stale pre-forget copy outranks it and brings
+    // the forgotten progress, completion and timer back.
+    const mostRecent = (vol: any) =>
+      Math.max(
+        new Date(vol.lastProgressUpdate || 0).getTime(),
+        bothLive && !vol.forgotAt ? 0 : new Date(vol.addedOn || 0).getTime(),
+        new Date(vol.deletedOn || 0).getTime()
+      );
+    const aMostRecent = mostRecent(a);
+    const bMostRecent = mostRecent(b);
+
+    let winner;
+    let loser;
+    if (bMostRecent > aMostRecent) {
+      [winner, loser] = [b, a];
+    } else if (aMostRecent > bMostRecent) {
+      [winner, loser] = [a, b];
+    } else if (b.deletedOn && !a.deletedOn) {
+      // Timestamps equal: prefer active over deleted to prevent accidental data loss
+      [winner, loser] = [a, b];
+    } else if (a.deletedOn && !b.deletedOn) {
+      [winner, loser] = [b, a];
+    } else if (bothLive) {
+      // A tie between live records must not depend on which side is local, or
+      // two devices each keep their own copy and re-upload it on every sync.
+      // The earlier-added record wins (a legacy one without `addedOn` first),
+      // then the content decides.
+      const addedA = new Date(a.addedOn || 0).getTime();
+      const addedB = new Date(b.addedOn || 0).getTime();
+      const bFirst =
+        addedA !== addedB ? addedB < addedA : stableStringify(plain(b)) < stableStringify(plain(a));
+      [winner, loser] = bFirst ? [b, a] : [a, b];
+    } else {
+      // Both deleted - arbitrary choice: a
+      [winner, loser] = [a, b];
+    }
+
+    // Winner is a tombstone - keep it as-is (minimal data)
+    if (winner.deletedOn) return winner === a ? a : parse(winner);
+
+    const live = loser.deletedOn
+      ? applyForgetHorizon(plain(winner), loser.deletedOn)
+      : mergeLiveVolumeRecords(plain(winner), plain(loser));
+
+    // Preserve metadata from both records - fill in missing fields
+    return parse({
+      ...live,
+      series_uuid: winner.series_uuid || a.series_uuid || b.series_uuid,
+      series_title: winner.series_title || a.series_title || b.series_title,
+      volume_title: winner.volume_title || a.volume_title || b.volume_title,
+      // A completed winner without a stamp (written by a client that
+      // predates `completedAt`, or one that has not backfilled yet)
+      // inherits the other side's: dropping it would re-date the
+      // completion on every device. A winner that is not completed
+      // was un-read, so there is nothing to carry.
+      completedAt:
+        winner.completedAt ?? (winner.completed ? (a.completedAt ?? b.completedAt) : undefined)
+    });
   }
 
   /**

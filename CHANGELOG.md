@@ -1,30 +1,45 @@
 # Changelog
 
-## [1.10.0] - 2026-10-01
+## [1.10.0] - 2026-10-02
 
 ### Added
 
-- **OCR editor** — press E to fix text, move, resize or redraw lines
-- **OCR layers** — keep alternate OCR per volume; L switches, promote or export any
-- Layers sync with your cloud, and mokuro-bunko's OCR generations arrive as layers
-- **Automatic OCR upgrades** — newer server OCR replaces old in the background; your edits stay
-- mokuro-bunko volume cards show pending server OCR and when it should finish
-- mokuro-bunko sign-in uses a token instead of sending your password every request
-- mokuro-bunko catalog links bring the volume's OCR layers and cover along
+- **Progress tracker** — yearly goal, daily or weekly targets, deadlines (#275, @ChristopherFritz)
+- See what you're reading, what's next, and what you've finished
+- Goals and deadlines follow you to every device
+- **Fix OCR mistakes yourself** — press E to edit, move or redraw text
+- Undo, redo, or go back to the original text anytime
+- Right-click any text box and choose "Edit this text"
+- **Multiple OCR versions per volume** — press L to switch between them
+- OCR versions sync to your cloud and ride along in backups
+- **Better OCR arrives automatically** — re-OCR'd volumes update themselves; your fixes stay
+- mokuro-bunko: see which volumes await OCR and when they'll be ready
+- mokuro-bunko: stays signed in without resending your password
+- mokuro-bunko: shared links bring the cover and every OCR version
 
 ### Changed
 
-- Text lines sit on an even character grid; rotated lines follow the page
-- Continuous mode only renders pages near the screen
-- Uploads to mokuro-bunko are checked on arrival and retried if damaged
-- mokuro-bunko accounts without upload or rename rights skip those actions with a clear reason
+- Text lines up more evenly, and slanted text follows the page
+- Continuous scroll loads much faster on long volumes
+- Volumes open right on your page, without scrolling there
+- Interrupted uploads to WebDAV servers retry on their own
+- mokuro-bunko checks every upload and resends damaged ones
+- mokuro-bunko explains why your account can't upload or rename
+- Reading stats and history stay current after every sync
+- Covers load from cache instead of downloading again
 
 ### Fixed
 
-- No black flash when opening a volume or rotating the device
-- Deleting a series reports how many volumes went, not files
+- No black flash when opening a volume or turning your device
+- Volumes open faster
+- Failed uploads no longer go unnoticed; retry them from the volume
+- Deleting a series now counts volumes, not files
 - Original mode keeps text inside its box
-- Notices no longer hide under the progress tray
+- Messages no longer appear off-screen or behind the progress bar
+- Renaming a series folder in your cloud no longer hides it (#278)
+- Exports no longer download duplicate files (#281)
+- mokuro-bunko behind a custom path now gets server OCR
+- mokuro-bunko uploaders can delete their own series
 
 ## [1.9.1] - 2026-08-30
 

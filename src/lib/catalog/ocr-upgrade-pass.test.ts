@@ -760,9 +760,10 @@ describe('the OCR upgrade pass', () => {
         mokuro_sha256: 'f'.repeat(64),
         mokuro_sha256_cloud: { provider: 'webdav', size: 10 }
       });
+      // Synced with ANOTHER provider: not the base of the file arriving here.
       await seedLayer(
         'original',
-        { cloud: { provider: 'webdav', size: 5, synced_at: 't1' } },
+        { cloud: { provider: 'google-drive', size: 5, synced_at: 't1' } },
         '古'
       );
       await seedLayer(
@@ -784,8 +785,32 @@ describe('the OCR upgrade pass', () => {
       expect(tombstones).toContainEqual({
         volume_uuid: 'vol-1',
         layer_id: 'original',
-        provider: 'webdav'
+        provider: 'google-drive'
       });
+    });
+
+    it("keeps an original this provider published: it is the incoming edit's base", async () => {
+      localStorage.removeItem('layer-sync:pending-deletes');
+      await installVolume(['あ', 'い'], {
+        mokuro_sha256: 'f'.repeat(64),
+        mokuro_sha256_cloud: { provider: 'webdav', size: 10 }
+      });
+      // Device A edited, pushing its pre-edit snapshot; this device pulled it.
+      await seedLayer(
+        'original',
+        { cloud: { provider: 'webdav', size: 5, synced_at: 't1' } },
+        'あ'
+      );
+      const body = mokuro(['か', 'き']); // device A's edited primary
+      listSidecar('Vol 1', body);
+      await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+      await pass();
+
+      expect(await primaryTexts()).toEqual(['か', 'き']);
+      expect(await getLayerMeta(db, 'vol-1', 'original')).toBeDefined();
+      expect(await getLayerPages(db, 'vol-1', 'original')).toBeTruthy();
+      expect(localStorage.getItem('layer-sync:pending-deletes') ?? '[]').toBe('[]');
     });
 
     it('keeps an updated-ocr layer the user edited', async () => {

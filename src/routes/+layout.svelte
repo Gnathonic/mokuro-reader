@@ -7,7 +7,7 @@
   import Snackbar from '$lib/components/Snackbar.svelte';
   import ConfirmationPopup from '$lib/components/ConfirmationPopup.svelte';
   import ExtractionModal from '$lib/components/ExtractionModal.svelte';
-  import ImageOnlyImportModal from '$lib/components/ImageOnlyImportModal.svelte';
+  import ImageOnlyReviewDialog from '$lib/components/ImageOnlyReviewDialog.svelte';
   import ImportMismatchModal from '$lib/components/ImportMismatchModal.svelte';
   import WebDAVErrorModal from '$lib/components/WebDAVErrorModal.svelte';
   import MissingFilesModal from '$lib/components/MissingFilesModal.svelte';
@@ -22,6 +22,7 @@
   import MigrationBlocker from '$lib/components/MigrationBlocker.svelte';
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
+  import { foregroundSync } from '$lib/util/sync/foreground-sync';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
@@ -54,6 +55,8 @@
   let { children }: Props = $props();
 
   inject({ mode: dev ? 'development' : 'production' });
+
+  onMount(() => foregroundSync.listen());
 
   onMount(() => {
     return initGoalsLifecycle();
@@ -165,7 +168,7 @@
     <Snackbar />
     <ConfirmationPopup />
     <ExtractionModal />
-    <ImageOnlyImportModal />
+    <ImageOnlyReviewDialog />
     <ImportMismatchModal />
     <WebDAVErrorModal />
     <MissingFilesModal />

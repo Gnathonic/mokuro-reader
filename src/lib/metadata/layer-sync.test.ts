@@ -1412,6 +1412,35 @@ describe('planning a listing never reads layer pages', () => {
     expect(downloadFile).not.toHaveBeenCalled();
   });
 
+  it('a layer on this device does not make every other folder read its volumes', async () => {
+    await seedSynced('v1', 'Vol 1');
+    for (const series of ['Other A', 'Other B', 'Other C']) {
+      await db.volumes.put({
+        volume_uuid: `${series}-1`,
+        series_uuid: series,
+        series_title: series,
+        volume_title: 'Vol 1',
+        mokuro_version: '0.2.1',
+        page_count: 1,
+        character_count: 2,
+        page_char_counts: [2]
+      });
+    }
+    const files = listing(
+      cloudFile('Series/Vol 1.cbz'),
+      cloudFile('Other A/Vol 1.cbz'),
+      cloudFile('Other B/Vol 1.cbz'),
+      cloudFile('Other C/Vol 1.cbz')
+    );
+
+    const counts = await countIdbOps(() => syncLayersFromListing(files, 'webdav'));
+
+    // One keys-only pass folds every series title; only 'Series' (the one with
+    // a layer) reads its rows. The three others issue nothing of their own.
+    const volumeReads = opsOn(counts, 'volumes').filter((key) => !key.endsWith('openKeyCursor'));
+    expect(volumeReads.reduce((sum, key) => sum + counts[key], 0)).toBe(1);
+  });
+
   it('a spent tombstone is still retired in a folder that has nothing else to do', async () => {
     await seedRow('Vol 1', 'v1');
     getActiveProvider.mockReturnValue(null);

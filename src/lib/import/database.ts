@@ -18,6 +18,15 @@ import { naturalSort } from '$lib/util/natural-sort';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 
 /**
+ * The uuids of every volume row filed under a stored series title — keys only,
+ * through the `series_title` index, never a row read.
+ */
+export async function seriesVolumeUuids(seriesTitle: string): Promise<string[]> {
+  const keys = await db.volumes.where('series_title').equals(seriesTitle).primaryKeys();
+  return keys.map(String);
+}
+
+/**
  * Is this volume already INSTALLED?
  *
  * The import's duplicate check, so a row whose files were removed from the
@@ -159,6 +168,16 @@ export async function saveVolume(
     }
 
     if (existingVolume) {
+      // A reviewed image-only volume restored onto the row it already was
+      // (#285) keeps that row's titles, and the caller sees what was stored.
+      if (metadata.keepStoredTitles) {
+        volumeMetadata.series_title = existingVolume.series_title;
+        volumeMetadata.series_uuid = existingVolume.series_uuid;
+        volumeMetadata.volume_title = existingVolume.volume_title;
+        metadata.series = existingVolume.series_title;
+        metadata.seriesUuid = existingVolume.series_uuid;
+        metadata.volume = existingVolume.volume_title;
+      }
       // Reinstall: the retained cover is already the right one, so keep it when
       // the archive did not bring its own rather than re-deriving it from page 1.
       if (!volumeMetadata.thumbnail && existingVolume.thumbnail) {

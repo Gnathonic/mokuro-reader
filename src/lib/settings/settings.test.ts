@@ -5,6 +5,9 @@ import {
   migrateProfiles,
   grayscaleActive,
   imageFilter,
+  pageFilter,
+  pageInkSetting,
+  pageInkLayers,
   preferredTitleLanguage,
   updateCatalogSetting,
   updateSetting,
@@ -117,6 +120,116 @@ describe('imageFilter', () => {
     updateSetting('invertColors', true);
     updateSetting('grayscale', true);
     expect(get(imageFilter)).toBe('invert(1) grayscale(1)');
+  });
+});
+
+describe('page brightness / contrast (#256)', () => {
+  beforeEach(() => {
+    updateSetting('pageBrightness', 100);
+    updateSetting('pageContrast', 100);
+  });
+
+  it('defaults both to 100 on a profile that predates them', () => {
+    const out = migrateProfiles({ Test: {} as any });
+    expect(out.Test.pageBrightness).toBe(100);
+    expect(out.Test.pageContrast).toBe(100);
+  });
+
+  it('keeps stored values and repairs malformed ones on migration', () => {
+    const out = migrateProfiles({
+      A: { pageBrightness: 130, pageContrast: 150 } as any,
+      B: { pageBrightness: 'bright', pageContrast: 5000 } as any
+    });
+    expect(out.A.pageBrightness).toBe(130);
+    expect(out.A.pageContrast).toBe(150);
+    expect(out.B.pageBrightness).toBe(100);
+    expect(out.B.pageContrast).toBe(200);
+  });
+
+  it('pageFilter is none at the defaults', () => {
+    expect(get(pageFilter)).toBe('none');
+  });
+
+  it('pageFilter follows the active profile', () => {
+    updateSetting('pageBrightness', 130);
+    updateSetting('pageContrast', 150);
+    expect(get(pageFilter)).toBe('brightness(130%) contrast(150%)');
+  });
+
+  it('pageFilter does not re-emit for unrelated setting writes', () => {
+    const seen: string[] = [];
+    const unsubscribe = pageFilter.subscribe((v) => seen.push(v));
+    updateSetting('pagedGap', 7);
+    updateSetting('pagedGap', 0);
+    unsubscribe();
+    expect(seen).toEqual(['none']);
+  });
+});
+
+describe('page ink color (#256)', () => {
+  beforeEach(() => {
+    updateSetting('pageInkColor', 'off');
+  });
+
+  it('defaults to off on a profile that predates it', () => {
+    expect(migrateProfiles({ Test: {} as any }).Test.pageInkColor).toBe('off');
+  });
+
+  it('keeps valid values and turns anything else off on migration', () => {
+    const out = migrateProfiles({
+      A: { pageInkColor: 'auto' } as any,
+      B: { pageInkColor: 'violet' } as any,
+      C: { pageInkColor: 'mauve' } as any,
+      D: { pageInkColor: 3 } as any
+    });
+    expect(out.A.pageInkColor).toBe('auto');
+    expect(out.B.pageInkColor).toBe('violet');
+    expect(out.C.pageInkColor).toBe('off');
+    expect(out.D.pageInkColor).toBe('off');
+  });
+
+  it('pageInkSetting follows the active profile and ignores unrelated writes', () => {
+    const seen: string[] = [];
+    const unsubscribe = pageInkSetting.subscribe((v) => seen.push(v));
+    updateSetting('pagedGap', 7);
+    updateSetting('pageInkColor', 'blue');
+    updateSetting('pagedGap', 0);
+    unsubscribe();
+    expect(seen).toEqual(['off', 'blue']);
+  });
+});
+
+describe('print effect controls (#256)', () => {
+  beforeEach(() => {
+    updateSetting('pageInkStrength', 0);
+    updateSetting('pagePaperTint', 8);
+    updateSetting('pagePaperAge', 0);
+  });
+
+  it('defaults on a profile that predates them', () => {
+    const out = migrateProfiles({ Test: {} as any }).Test;
+    expect([out.pageInkStrength, out.pagePaperTint, out.pagePaperAge]).toEqual([0, 8, 0]);
+  });
+
+  it('keeps stored values and repairs malformed ones on migration', () => {
+    const out = migrateProfiles({
+      A: { pageInkStrength: -40, pagePaperTint: 20, pagePaperAge: 70 } as any,
+      B: { pageInkStrength: 500, pagePaperTint: 'x', pagePaperAge: -3 } as any
+    });
+    expect([out.A.pageInkStrength, out.A.pagePaperTint, out.A.pagePaperAge]).toEqual([-40, 20, 70]);
+    expect([out.B.pageInkStrength, out.B.pagePaperTint, out.B.pagePaperAge]).toEqual([100, 8, 0]);
+  });
+
+  it('pageInkLayers follows the controls and ignores unrelated writes', () => {
+    const seen: string[] = [];
+    const unsubscribe = pageInkLayers.subscribe((v) =>
+      seen.push(`${v['--ink-layer-blue']}/${v['--paper-layer-blue']}`)
+    );
+    updateSetting('pagedGap', 7);
+    updateSetting('pagePaperTint', 0);
+    updateSetting('pagedGap', 0);
+    unsubscribe();
+    expect(seen).toEqual(['#466dc4/#f1f3fa', '#466dc4/#ffffff']);
   });
 });
 

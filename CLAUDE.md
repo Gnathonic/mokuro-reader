@@ -455,7 +455,10 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   Revert would restore the pre-upgrade OCR and promoting the `updated-ocr`
   would adopt an old hash. Both are deleted with the replacement (the
   `original`'s cloud copy tombstoned via `notePendingLayerDelete`, so no
-  listing pulls it back); an `updated-ocr` the user edited stays.
+  listing pulls it back); an `updated-ocr` the user edited stays. Exception:
+  an `original` pulled from the SAME provider and untouched since is kept,
+  cloud copy and all — on plain storage the primary only changes when another
+  device edits it, and that device published this file as the edit's base.
 - **Edited volumes keep their edits.** With `ocr_edited_at` set, a file equal
   to the pre-edit `original` layer only records the hash; otherwise it is
   filed as the `updated-ocr` layer ("Updated OCR", kind `ocr`) carrying
