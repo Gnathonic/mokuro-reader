@@ -200,11 +200,22 @@ export function updateVolumeStats(
 ): void {
   volumesWithTrash.update((prev: Volumes) => {
     const currentVolume = prev[volumeUuid] || new VolumeData();
+    // A stat edit is a user action and must win the next merge like a page
+    // turn does; without a fresh stamp the other device's older copy replaced
+    // it. Only a real change counts: the modal re-sends every field on save
+    // (chars as a linear re-estimate), and a rename on a device that missed a
+    // sync must not outrank reading done elsewhere.
+    const statChanged =
+      (updates.progress !== undefined && updates.progress !== currentVolume.progress) ||
+      (updates.timeReadInMinutes !== undefined &&
+        updates.timeReadInMinutes !== currentVolume.timeReadInMinutes) ||
+      (updates.completed !== undefined && updates.completed !== currentVolume.completed);
 
     return {
       ...prev,
       [volumeUuid]: new VolumeData({
         ...currentVolume,
+        ...(statChanged && { lastProgressUpdate: new Date().toISOString() }),
         ...(updates.progress !== undefined && { progress: updates.progress }),
         ...(updates.chars !== undefined && { chars: updates.chars }),
         ...(updates.timeReadInMinutes !== undefined && {
