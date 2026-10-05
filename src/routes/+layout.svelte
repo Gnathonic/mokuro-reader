@@ -22,6 +22,7 @@
   import MigrationBlocker from '$lib/components/MigrationBlocker.svelte';
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
+  import { foregroundSync } from '$lib/util/sync/foreground-sync';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
@@ -48,6 +49,8 @@
   let { children }: Props = $props();
 
   inject({ mode: dev ? 'development' : 'production' });
+
+  onMount(() => foregroundSync.listen());
 
   onMount(() => {
     return initGoalsLifecycle();

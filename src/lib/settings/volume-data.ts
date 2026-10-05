@@ -101,6 +101,8 @@ type VolumeDataJSON = {
   // Deletion tracking for sync (mutually exclusive)
   addedOn?: string; // ISO datetime when volume was added/created
   deletedOn?: string; // ISO datetime when metadata was deleted
+  /** When this volume's stats were last forgotten (see the class field). */
+  forgotAt?: string;
 };
 
 export class VolumeData implements VolumeDataJSON {
@@ -132,6 +134,13 @@ export class VolumeData implements VolumeDataJSON {
   volume_title?: string;
   addedOn?: string; // ISO datetime when volume was added/created
   deletedOn?: string; // ISO datetime when metadata was deleted
+  /**
+   * The `deletedOn` of the "forget stats" tombstone this record replaced, when
+   * the volume was opened again afterwards. The sync merge drops page turns up
+   * to it, so another device's stale copy cannot bring the forgotten reading
+   * back once both records are live again.
+   */
+  forgotAt?: string;
 
   constructor(data: Partial<VolumeDataJSON> = {}) {
     this.progress = typeof data.progress === 'number' ? data.progress : 0;
@@ -163,6 +172,10 @@ export class VolumeData implements VolumeDataJSON {
     // Deletion tracking (optional, undefined means epoch in merge logic)
     this.addedOn = data.addedOn;
     this.deletedOn = data.deletedOn;
+    this.forgotAt =
+      typeof data.forgotAt === 'string' && !Number.isNaN(Date.parse(data.forgotAt))
+        ? data.forgotAt
+        : undefined;
 
     // Only store explicitly set values, leave others undefined to fall back to global defaults
     this.settings = {};
@@ -261,6 +274,9 @@ export class VolumeData implements VolumeDataJSON {
     }
     if (this.deletedOn) {
       result.deletedOn = this.deletedOn;
+    }
+    if (this.forgotAt) {
+      result.forgotAt = this.forgotAt;
     }
 
     return result;
@@ -473,10 +489,14 @@ export const volumes = derived(_volumesInternal, ($internal) => {
 
 export function initializeVolume(volume: string) {
   _volumesInternal.update((prev) => {
+    const previous = prev[volume];
     return {
       ...prev,
       [volume]: new VolumeData({
-        addedOn: new Date().toISOString()
+        addedOn: new Date().toISOString(),
+        // Replacing a "forget stats" tombstone: remember when, so a stale copy
+        // on another device cannot merge the forgotten reading back in.
+        forgotAt: previous?.deletedOn ?? previous?.forgotAt
       })
     };
   });

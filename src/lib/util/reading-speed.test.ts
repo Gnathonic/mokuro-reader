@@ -304,6 +304,32 @@ describe('calculateReadingSpeedFromSessions', () => {
 });
 
 describe('calculateReadingSpeed', () => {
+  it("skips the seam between two devices' interleaved page turns", () => {
+    // Merged history: this device read p.1-2 at 200 CPM; ten seconds later the
+    // other device's turn on p.40 lands in the same stream. That pair is not
+    // 3800 characters read in ten seconds.
+    const t0 = Date.now() - 600000;
+    const result = calculateReadingSpeed(
+      {
+        'vol-1': {
+          completed: false,
+          timeReadInMinutes: 0,
+          chars: 4000,
+          lastProgressUpdate: '2024-01-01T00:00:00Z',
+          recentPageTurns: [
+            [t0, 1, 0],
+            [t0 + 60000, 2, 200],
+            [t0 + 70000, 40, 4000],
+            [t0 + 120000, 3, 400]
+          ]
+        }
+      },
+      10
+    );
+    expect(result.charsPerMinute).toBe(200);
+    expect(result.isPersonalized).toBe(true);
+  });
+
   it('should return default speed when no data available', () => {
     const result = calculateReadingSpeed({}, 10);
     expect(result.charsPerMinute).toBe(100);
