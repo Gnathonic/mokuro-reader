@@ -15,7 +15,7 @@ import {
 } from './paths';
 import { getOrCreateDeviceId } from './record';
 import { decodeSegment, encodeSegment } from './segment-codec';
-import type { DeviceFacts, ReadingEvent } from './types';
+import type { DeviceClass, DeviceFacts, ReadingEvent } from './types';
 
 /**
  * One reading-history pass against a provider (spec: Storage → Cloud, Import):
@@ -38,6 +38,8 @@ import type { DeviceFacts, ReadingEvent } from './types';
 
 export const UPLOAD_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_CONCURRENT_DOWNLOADS = 4;
+const DEVICE_CLASSES: DeviceClass[] = ['phone', 'tablet', 'laptop', 'desktop', 'unknown'];
+const MONTH_RE = /^\d{4}-\d{2}$/;
 
 export interface HistorySyncOptions {
   /** Upload the current month even if it went up less than UPLOAD_INTERVAL_MS ago. */
@@ -137,10 +139,22 @@ async function importOne(
   };
   try {
     const bytes = new Uint8Array(await (await provider.downloadFile(file)).arrayBuffer());
+    // Bytes that disagree with the listing are an older copy (an HTTP cache):
+    // importing them is harmless, but stamping them would never fetch the rest.
+    if (file.size > 0 && bytes.length !== file.size) {
+      warnOnce('downloaded size disagrees with the listing (retried next sync)', file.path);
+      return 0;
+    }
 
     if (parsed.kind === 'device') {
       const facts = JSON.parse(new TextDecoder().decode(bytes)) as DeviceFacts;
-      if (!facts || facts.device !== parsed.device || typeof facts.class !== 'string') {
+      if (
+        !facts ||
+        facts.device !== parsed.device ||
+        !DEVICE_CLASSES.includes(facts.class) ||
+        typeof facts.first_seen !== 'string' ||
+        typeof facts.last_seen !== 'string'
+      ) {
         warnOnce('device file does not match its folder', file.path);
         return 0;
       }
@@ -218,11 +232,15 @@ async function exportOwnMonths(
 
   const current = historyMonthOf(now);
   for (const month of [...months.keys()].sort()) {
+    // A clock far out of range names no month a listing could ever show;
+    // uploading it would repeat on every sync.
+    if (!MONTH_RE.test(month)) continue;
     const events = months.get(month)!;
     const path = historySegmentPath(own, month);
     const key = `uploaded:${provider.type}:${month}`;
     const mark = (await db.history_meta.get(key))?.value as UploadMark | undefined;
-    const last_seq = Math.max(...events.map((e) => e.seq));
+    let last_seq = 0;
+    for (const event of events) if (event.seq > last_seq) last_seq = event.seq;
     const count = events.length;
 
     if (mark && mark.last_seq === last_seq && mark.count === count && listed.has(path)) continue;
@@ -230,8 +248,7 @@ async function exportOwnMonths(
 
     try {
       const bytes = await encodeSegment(own, month, events);
-      const uploaded = await provider.uploadFile(path, bytes);
-      options.onUploaded?.(path, bytes.length, uploaded);
+      await upload(provider, path, bytes, options, warnOnce);
       await db.history_meta.put({ key, value: { last_seq, count, at: now } satisfies UploadMark });
       result.uploaded.push(path);
     } catch (error) {
@@ -262,13 +279,39 @@ async function exportOwnFacts(
 
   try {
     const bytes = new TextEncoder().encode(JSON.stringify(pickFacts(facts)));
-    const uploaded = await provider.uploadFile(path, bytes);
-    options.onUploaded?.(path, bytes.length, uploaded);
+    await upload(provider, path, bytes, options, warnOnce);
     await db.history_meta.put({ key, value: { facts: signature } });
     result.uploaded.push(path);
   } catch (error) {
     result.failed.push(path);
     warnOnce('could not upload device facts (retried next sync)', path, error);
+  }
+}
+
+/**
+ * Upload one history file. As a `Blob` (every provider handles one; some read
+ * `.size`/`.arrayBuffer()`), and through `blindUploadFile` where a provider
+ * has it: on Drive the regular upload re-lists the whole account afterwards,
+ * and a history file changes nothing any view renders, is retried by the next
+ * sync and loses nothing on failure — the documented test for a blind write.
+ * Recording the upload in the listing cache is bookkeeping: if that throws,
+ * the upload still counts.
+ */
+async function upload(
+  provider: SyncProvider,
+  path: string,
+  bytes: Uint8Array,
+  options: HistorySyncOptions,
+  warnOnce: WarnOnce
+): Promise<void> {
+  const blob = new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' });
+  const uploaded = provider.blindUploadFile
+    ? await provider.blindUploadFile(path, blob)
+    : await provider.uploadFile(path, blob);
+  try {
+    options.onUploaded?.(path, bytes.length, uploaded);
+  } catch (error) {
+    warnOnce('could not record an upload in the listing cache', path, error);
   }
 }
 

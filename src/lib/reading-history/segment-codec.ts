@@ -132,7 +132,9 @@ export async function decodeSegment(
     typeof month !== 'string' ||
     !Array.isArray(volumes) ||
     !Array.isArray(rows) ||
-    rows.length !== count
+    rows.length !== count ||
+    !Number.isSafeInteger(first_seq) ||
+    !Number.isSafeInteger(last_seq)
   ) {
     throw new SegmentFormatError('malformed segment header');
   }
@@ -141,8 +143,13 @@ export async function decodeSegment(
   let t = 0;
   const events = rows.map((row: any[]): ReadingEvent => {
     if (!Array.isArray(row)) throw new SegmentFormatError('malformed row');
-    seq += row[1];
-    t += row[2];
+    // Every cell is checked: a file that decodes is still untrusted, and a
+    // malformed cell would otherwise become a garbage event or an invalid
+    // IndexedDB key that aborts the import on every sync.
+    const dSeq = int(row[1]);
+    if (dSeq <= 0) throw new SegmentFormatError('seq must strictly increase');
+    seq += dSeq;
+    t += int(row[2]);
     const volume = volumes[row[3]];
     if (typeof volume !== 'string') throw new SegmentFormatError('unknown volume index');
     let payload: EventPayload;
@@ -151,24 +158,24 @@ export async function decodeSegment(
         payload = {
           kind: 'page',
           volume,
-          first_page: row[4],
-          last_page: row[5],
-          page_chars: row[6],
-          chars_before: row[7],
-          dwell_ms: row[8] === -1 ? null : row[8],
+          first_page: int(row[4]),
+          last_page: int(row[5]),
+          page_chars: numbers(row[6]),
+          chars_before: num(row[7]),
+          dwell_ms: row[8] === -1 ? null : num(row[8]),
           layout: LAYOUTS[row[9]] ?? 'unknown',
           orientation: ORIENTATIONS[row[10]] ?? 'unknown',
-          viewport: row[11] === -1 ? null : { w: row[11], h: row[12] }
+          viewport: row[11] === -1 ? null : { w: num(row[11]), h: num(row[12]) }
         };
         break;
       case 1:
-        payload = { kind: 'adjust', volume, time_delta_ms: row[4], chars_delta: row[5] };
+        payload = { kind: 'adjust', volume, time_delta_ms: num(row[4]), chars_delta: num(row[5]) };
         break;
       case 2:
         payload = { kind: 'restart', volume };
         break;
       case 3:
-        payload = { kind: 'forget', volume, before: row[4] };
+        payload = { kind: 'forget', volume, before: num(row[4]) };
         break;
       default:
         throw new SegmentFormatError(`unknown event kind ${row[0]}`);
@@ -180,4 +187,21 @@ export async function decodeSegment(
     throw new SegmentFormatError('seq range does not match header');
   }
   return { header: { format: parsed.format, device, month, first_seq, last_seq, count }, events };
+}
+
+function num(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new SegmentFormatError('malformed number cell');
+  }
+  return value;
+}
+
+function int(value: unknown): number {
+  if (!Number.isSafeInteger(value)) throw new SegmentFormatError('malformed integer cell');
+  return value as number;
+}
+
+function numbers(value: unknown): number[] {
+  if (!Array.isArray(value)) throw new SegmentFormatError('malformed list cell');
+  return value.map(num);
 }

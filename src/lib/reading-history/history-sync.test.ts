@@ -23,9 +23,10 @@ function fakeCloud(status: { serverCompilesMetadata?: boolean; isReadOnly?: bool
       statusMessage: '',
       ...status
     }),
-    uploadFile: vi.fn(async (path: string, blob: Uint8Array) => {
+    uploadFile: vi.fn(async (path: string, blob: Blob | Uint8Array) => {
       files.set(path, {
-        bytes: new Uint8Array(blob),
+        bytes:
+          blob instanceof Blob ? new Uint8Array(await blob.arrayBuffer()) : new Uint8Array(blob),
         mtime: new Date(++clock * 1000).toISOString()
       });
       return { fileId: path };
@@ -237,5 +238,71 @@ describe('syncHistory', () => {
     expect(cloud.provider.uploadFile).not.toHaveBeenCalled();
     await syncHistory(cloud.provider, cloud.listing(), b, { now: NOV });
     expect((await b.devices.get(devA))?.class).toBe('phone');
+  });
+
+  it('uploads a Blob, through the no-refetch upload when the provider has one', async () => {
+    const cloud = fakeCloud();
+    const blind = vi.fn(async (path: string, blob: Blob) => {
+      cloud.files.set(path, {
+        bytes: new Uint8Array(await blob.arrayBuffer()),
+        mtime: 'Mon, 05 Oct 2026 00:00:00 GMT'
+      });
+      return { fileId: path };
+    });
+    (cloud.provider as unknown as { blindUploadFile: typeof blind }).blindUploadFile = blind;
+    await appendEvent(a, page('v1', 1), OCT);
+    await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
+    expect(cloud.provider.uploadFile).not.toHaveBeenCalled();
+    expect(blind).toHaveBeenCalledTimes(1);
+    expect(blind.mock.calls[0][1]).toBeInstanceOf(Blob);
+    vi.mocked(cloud.provider.uploadFile).mockClear();
+    const plain = fakeCloud();
+    await syncHistory(plain.provider, plain.listing(), a, { force: true, now: NOV });
+    expect(vi.mocked(plain.provider.uploadFile).mock.calls[0][1]).toBeInstanceOf(Blob);
+  });
+
+  it('does not stamp a download whose size disagrees with the listing (a stale cached copy)', async () => {
+    const cloud = fakeCloud();
+    await appendEvent(a, page('v1', 1), OCT);
+    await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
+    const listed = cloud.listing().map((f) => ({ ...f, size: f.size + 1 }));
+    await syncHistory(cloud.provider, listed, b, { now: NOV });
+    expect(await b.history_files.count()).toBe(0);
+  });
+
+  it('an upload that succeeded is marked even if recording it in the cache throws', async () => {
+    const cloud = fakeCloud();
+    await appendEvent(a, page('v1', 1), OCT);
+    const r = await syncHistory(cloud.provider, cloud.listing(), a, {
+      force: true,
+      now: NOV,
+      onUploaded: () => {
+        throw new Error('cache busy');
+      }
+    });
+    expect(r.failed).toEqual([]);
+    vi.mocked(cloud.provider.uploadFile).mockClear();
+    await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
+    expect(cloud.provider.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('never tries to upload a month it cannot name', async () => {
+    const cloud = fakeCloud();
+    const devA = await getOrCreateDeviceId(a);
+    await a.reading_events.add({ ...page('v1', 1), device: devA, seq: 1, t: 1e17 } as ReadingEvent);
+    const r = await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
+    expect(r).toEqual({ imported: 0, uploaded: [], failed: [] });
+  });
+
+  it('ignores a device file with an unknown class', async () => {
+    const cloud = fakeCloud();
+    cloud.files.set(historyDeviceFilePath('dev-x'), {
+      bytes: new TextEncoder().encode(
+        JSON.stringify({ device: 'dev-x', class: 'toaster', first_seen: 'a', last_seen: 'b' })
+      ),
+      mtime: 'Mon, 05 Oct 2026 00:00:00 GMT'
+    });
+    await syncHistory(cloud.provider, cloud.listing(), b, { now: NOV });
+    expect(await b.devices.get('dev-x')).toBeUndefined();
   });
 });

@@ -110,4 +110,43 @@ describe('segment codec', () => {
     const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
     await expect(decodeSegment(bytes)).rejects.toThrow(/format 2/);
   });
+
+  describe('rejects decodable files with malformed cells', () => {
+    async function raw(body: Record<string, unknown>): Promise<Uint8Array> {
+      const json = JSON.stringify({
+        format: 1,
+        device: DEV,
+        month: '2026-10',
+        first_seq: 1,
+        last_seq: 1,
+        count: 1,
+        volumes: ['vol-1'],
+        ...body
+      });
+      const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+
+    it.each([
+      ['a string seq delta', { rows: [[2, '1', T, 0]] }],
+      ['a missing t delta', { rows: [[2, 1, null, 0]] }],
+      [
+        'a repeated seq',
+        {
+          count: 2,
+          last_seq: 1,
+          rows: [
+            [2, 1, T, 0],
+            [2, 0, 1, 0]
+          ]
+        }
+      ],
+      ['page_chars that is not a list', { rows: [[0, 1, T, 0, 1, 1, 'x', 0, 5, 0, 0, 1, 1]] }],
+      ['a non-numeric page', { rows: [[0, 1, T, 0, 'one', 1, [1], 0, 5, 0, 0, 1, 1]] }],
+      ['a string header seq', { first_seq: '1', rows: [[2, 1, T, 0]] }],
+      ['an adjust without numbers', { rows: [[1, 1, T, 0, 'x', 0]] }]
+    ])('%s', async (_label, body) => {
+      await expect(decodeSegment(await raw(body))).rejects.toThrow(SegmentFormatError);
+    });
+  });
 });
