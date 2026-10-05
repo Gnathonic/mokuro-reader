@@ -791,8 +791,32 @@ uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
 tab has no view), `adjust` (volume editor time/chars edits), `restart`
 ("restart series"), `forget` (delete stats). Record through `recordEvent`,
 which never throws and loads the DB module lazily (`volume-data.ts` imports
-it; many suites mock `dexie` bare). Nothing reads the events for stats yet:
-`recentPageTurns`/`timeReadInMinutes` still drive every stat.
+it; many suites mock `dexie` bare).
+
+**Page turns come from history (phase 2b).** `updateProgress` no longer writes
+`recentPageTurns`. The stats still read `PageTurn[]`, but the public `volumes`
+store serves turns PROJECTED from every device's events (`project-turns.ts`,
+`turns-store.ts` — loaded once on start, then updated per recorded/imported
+event): a native view is a turn at its start; a converted legacy turn counts
+only when no native view of that volume covers it (±2 s), so phase-1 reading
+recorded both ways counts once; a `forget` hides that volume's earlier events.
+`volumesWithTrash` records keep only their own UNCONVERTED turns — never write
+projected turns back into a record (that is why the speed store's 2-tuple
+write-back is gone). Until history loads, or for a volume it has nothing for,
+the record's own turns are served, so no stat goes empty.
+
+The cut-over (`cut-over.ts`) runs on start and inside every progress sync
+between the merge and the upload: a record's turns become legacy events
+(`device = 'legacy:' + volume`, `seq` = turn time — identical on every
+device), committed BEFORE exactly those turns are stripped; if IndexedDB
+fails the turns stay in the file. `archivedReads` become `restart` events
+but stay in the record. Each device uploads the legacy events it holds as
+`history/<device>/legacy.events`; imports union by key. The minute counter
+(`timeReadInMinutes`) is untouched until phase 3.
+
+Progress syncs are batched while reading (`activity-tracker.ts`: 5 s debounce,
+at most one per 3 min) and flushed when the reader closes, the tab hides or
+the page goes away.
 
 **Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
 month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
