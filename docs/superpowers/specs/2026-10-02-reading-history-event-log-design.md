@@ -296,3 +296,26 @@ device.
 4. Idle cutoff: **characters in the layout** (whole pages only, at least one page) × one global pace. No
    per-device-class or per-layout term.
 5. Device/layout stats: a section of the existing reading-speed page.
+
+## Position across devices (owner, 2026-10-04)
+
+Reported: a device that missed a sync opens a volume on an old page, one page turn makes that the
+newest position, and every device lands there. The hotfix on `fix/sync-diverged-reads` keeps both
+devices' page turns, stops a blank "just opened" record from resetting progress, and syncs on foreground
+and reader open. It leaves the position rule as is. Phase 2 owns the rest:
+
+1. **Position = the newest page event.** "Highest page wins" is rejected: a reader peeks ahead, goes
+   back and stops; another device must resume where they stopped.
+2. **Diverged reading is offered, not decided.** When two devices each read pages the other never saw,
+   the newest position stands, and the other device's FINAL position (not its furthest page) is offered:
+   "You also read to p.N on another device — Jump / Stay". Offer on **any** page difference.
+3. **A reset wins** (restart series, mark unread, forget). Newer reading from a device that missed the
+   reset is offered as above, not applied.
+4. **Cadence:** at most once per session, in at most 2 sessions; after that a chip on the volume card
+   until answered. An answer is durable (a "dismissed up to" time per volume) and never comes back from a
+   stale copy. Jump is its own event, not a page turn, and fires no completion.
+
+Built on the event log, these come for free or nearly: device ids, reset events (`restart`/`forget`/
+`adjust`), and order-independent merging. A stress review of doing it inside `volume-data.json` found 31
+failure scenarios (three devices, Stay undone by a stale copy, clock skew, resets with no trace in
+turns), which is why it waits for phase 2.
