@@ -54,6 +54,10 @@ vi.mock('$lib/settings/volume-data', async () => {
   };
 });
 vi.mock('$lib/metadata/progress-tracker', () => ({ onSeriesRestarted: vi.fn() }));
+vi.mock('$lib/reading-history/history-sync', () => ({
+  syncHistory: vi.fn(async () => ({ imported: 0, uploaded: [], failed: [] }))
+}));
+vi.mock('$lib/reading-history/history-db', () => ({ historyDb: vi.fn(() => ({})) }));
 
 import { unifiedSyncService } from './unified-sync-service';
 import { restartSeries } from '$lib/metadata/reread';
@@ -1364,5 +1368,65 @@ describe('reading on two devices survives the volume merge', () => {
     const onB = svc.mergeVolumeData({ 'vol-1': B }, { 'vol-1': A })['vol-1'];
 
     expect(onA).toEqual(onB);
+  });
+});
+
+describe('reading history rides every sync', () => {
+  it('passes only history files from a loaded listing, forced on a manual sync', async () => {
+    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    const files = [
+      {
+        provider: 'mega',
+        fileId: '1',
+        path: 'history/dev-a/2026-10.events',
+        modifiedTime: 'm',
+        size: 1
+      },
+      { provider: 'mega', fileId: '2', path: 'volume-data.json', modifiedTime: 'm', size: 1 }
+    ];
+    getCache.mockReturnValue({
+      getAll: vi.fn(() => []),
+      get: vi.fn(() => null),
+      fetch: vi.fn(),
+      isLoaded: () => true,
+      isFetching: () => false,
+      getAllFiles: () => files,
+      add: vi.fn()
+    });
+    const provider = {
+      type: 'mega',
+      name: 'MEGA',
+      isAuthenticated: () => true,
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(async () => ({ fileId: 'x' }))
+    } as unknown as SyncProvider;
+    await svc.syncReadingHistory(provider, { silent: false });
+    expect(vi.mocked(syncHistory).mock.calls[0][1]).toEqual([files[0]]);
+    expect(vi.mocked(syncHistory).mock.calls[0][3]?.force).toBe(true);
+  });
+
+  it('a failing history pass never fails the sync', async () => {
+    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    vi.mocked(syncHistory).mockRejectedValueOnce(new Error('boom'));
+    getCache.mockReturnValue({
+      isLoaded: () => true,
+      isFetching: () => false,
+      getAllFiles: () => []
+    });
+    await expect(
+      svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {})
+    ).resolves.toBeUndefined();
+  });
+
+  it('skips while the listing has not loaded', async () => {
+    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    vi.mocked(syncHistory).mockClear();
+    getCache.mockReturnValue({
+      isLoaded: () => false,
+      isFetching: () => false,
+      getAllFiles: () => []
+    });
+    await svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {});
+    expect(syncHistory).not.toHaveBeenCalled();
   });
 });
