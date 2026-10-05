@@ -14,10 +14,24 @@ export interface HistoryMeta {
   value: unknown;
 }
 
+/**
+ * The stamp of a remote segment this device last imported (phase 2a): the
+ * listing's size + modified time decide whether to download it again, never
+ * what gets written (import is idempotent by `[device, seq]`).
+ */
+export interface HistoryFileRecord {
+  path: string;
+  provider: string;
+  size: number;
+  modifiedTime: string;
+  last_seq: number;
+}
+
 export class HistoryDexie extends Dexie {
   reading_events!: Table<ReadingEvent, [string, number]>;
   devices!: Table<DeviceFacts, string>;
   history_meta!: Table<HistoryMeta, string>;
+  history_files!: Table<HistoryFileRecord, string>;
 
   constructor(name: string = HISTORY_DB_NAME) {
     super(name);
@@ -26,6 +40,8 @@ export class HistoryDexie extends Dexie {
       devices: 'device',
       history_meta: 'key'
     });
+    // Additive: every v1 store is carried forward. Never edit a shipped version.
+    this.version(2).stores({ history_files: 'path' });
   }
 }
 
