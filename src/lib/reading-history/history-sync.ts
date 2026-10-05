@@ -169,11 +169,14 @@ async function importOne(
     }
 
     const { header, events } = await decodeSegment(bytes);
-    if (
-      header.device !== parsed.device ||
-      header.month !== parsed.month ||
-      events.some((e) => historyMonthOf(e.t) !== header.month)
-    ) {
+    const matchesPath =
+      header.device === parsed.device &&
+      (parsed.kind === 'legacy'
+        ? header.legacy === true
+        : !header.legacy &&
+          header.month === parsed.month &&
+          events.every((e) => historyMonthOf(e.t) === header.month));
+    if (!matchesPath) {
       warnOnce('segment does not match its path', file.path);
       return 0;
     }

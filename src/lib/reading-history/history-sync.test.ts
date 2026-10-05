@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HistoryDexie } from './history-db';
 import { appendEvent, getOrCreateDeviceId } from './record';
 import { encodeSegment } from './segment-codec';
-import { historySegmentPath, historyDeviceFilePath } from './paths';
+import { historySegmentPath, historyDeviceFilePath, historyLegacyFilePath } from './paths';
 import { syncHistory } from './history-sync';
 import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
 import type { ReadingEvent } from './types';
@@ -304,5 +304,29 @@ describe('syncHistory', () => {
     });
     await syncHistory(cloud.provider, cloud.listing(), b, { now: NOV });
     expect(await b.devices.get('dev-x')).toBeUndefined();
+  });
+
+  it("imports another device's legacy segment, and refuses one at a month path", async () => {
+    const cloud = fakeCloud();
+    const legacy: ReadingEvent[] = [
+      { device: 'legacy:vol-1', seq: 1000, t: 1000, kind: 'restart', volume: 'vol-1' },
+      { device: 'legacy:vol-2', seq: 2000, t: 2000, kind: 'restart', volume: 'vol-2' }
+    ];
+    const bytes = await encodeSegment('dev-x', 'legacy', legacy, { legacy: true });
+    cloud.files.set(historyLegacyFilePath('dev-x'), {
+      bytes,
+      mtime: 'Mon, 05 Oct 2026 00:00:00 GMT'
+    });
+    cloud.files.set(historySegmentPath('dev-y', '1970-01'), {
+      bytes,
+      mtime: 'Mon, 05 Oct 2026 00:00:00 GMT'
+    });
+    const r = await syncHistory(cloud.provider, cloud.listing(), b, { now: NOV });
+    expect(r.imported).toBe(2);
+    expect((await b.reading_events.toArray()).map((e) => e.device).sort()).toEqual([
+      'legacy:vol-1',
+      'legacy:vol-2'
+    ]);
+    expect(await b.history_files.get(historySegmentPath('dev-y', '1970-01'))).toBeUndefined();
   });
 });
