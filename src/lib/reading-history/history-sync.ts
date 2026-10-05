@@ -13,7 +13,7 @@ import {
   parseHistoryPath,
   type HistoryPath
 } from './paths';
-import { getOrCreateDeviceId } from './record';
+import { getOrCreateDeviceId, notifyEventsRecorded } from './record';
 import { decodeSegment, encodeSegment } from './segment-codec';
 import type { DeviceClass, DeviceFacts, ReadingEvent } from './types';
 
@@ -181,7 +181,7 @@ async function importOne(
       return 0;
     }
 
-    let added = 0;
+    let added: ReadingEvent[] = [];
     await db.transaction('rw', db.reading_events, db.history_files, async () => {
       const previous = await db.history_files.get(file.path);
       if (previous && header.last_seq < previous.last_seq) {
@@ -201,10 +201,11 @@ async function importOne(
         }
       });
       if (fresh.length > 0) await db.reading_events.bulkAdd(fresh);
-      added = fresh.length;
+      added = fresh;
       await db.history_files.put({ ...stamp, last_seq: header.last_seq });
     });
-    return added;
+    notifyEventsRecorded(added);
+    return added.length;
   } catch (error) {
     warnOnce('could not import a history file (retried next sync)', file.path, error);
     return 0;

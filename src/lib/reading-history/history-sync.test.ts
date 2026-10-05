@@ -329,4 +329,18 @@ describe('syncHistory', () => {
     ]);
     expect(await b.history_files.get(historySegmentPath('dev-y', '1970-01'))).toBeUndefined();
   });
+
+  it("imported events reach the projected turns without a reload", async () => {
+    const { _resetHistoryTurns, getHistoryTurns, loadHistoryTurns } = await import('./turns-store');
+    const cloud = fakeCloud();
+    await appendEvent(a, page('v-import', 3), OCT);
+    await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
+    // Loaded from B only now: A's own append (same process) must not count.
+    _resetHistoryTurns();
+    await loadHistoryTurns(b);
+    expect(getHistoryTurns('v-import')).toBeUndefined();
+    await syncHistory(cloud.provider, cloud.listing(), b, { now: NOV });
+    expect(getHistoryTurns('v-import')).toEqual([[OCT, 3, 40]]);
+    _resetHistoryTurns();
+  });
 });
