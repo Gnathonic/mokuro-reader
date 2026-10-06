@@ -1,4 +1,5 @@
 import { test, expect, type Browser, type Page, type Route } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * Reading history between two devices, through the REAL sync code against an
@@ -138,8 +139,7 @@ async function device(browser: Browser, stub: WebDavStub): Promise<Page> {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.route(`${STUB}/**`, stub.handle);
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(async (serverUrl) => {
     const { providerManager } = await import('/src/lib/util/sync/provider-manager.ts');
     const provider = await providerManager.getOrLoadProvider('webdav');

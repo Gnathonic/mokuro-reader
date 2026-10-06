@@ -1,4 +1,5 @@
 import { test, expect, type Browser, type Page, type Route } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * The phase-2b cut-over between two devices, through the REAL app and sync
@@ -150,8 +151,7 @@ async function device(browser: Browser, stub: WebDavStub, seed?: unknown): Promi
   }
   const page = await context.newPage();
   await page.route(`${STUB}/**`, stub.handle);
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(async (serverUrl) => {
     const { providerManager } = await import('/src/lib/util/sync/provider-manager.ts');
     const provider = await providerManager.getOrLoadProvider('webdav');
