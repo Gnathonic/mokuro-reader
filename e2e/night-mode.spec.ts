@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 import http from 'node:http';
 
 /**
@@ -27,7 +28,9 @@ import http from 'node:http';
  * build.
  */
 
-const FRAME_PORT = 8673;
+// Picked by the OS (`listen(0)`): a fixed port collided between workers and
+// between concurrent runs (EADDRINUSE).
+let FRAME_PORT = 0;
 
 // White and mid-grey patches, so we can check the tint value and not just "is red".
 const FRAME_HTML = `<!doctype html><html><body style="margin:0">
@@ -42,7 +45,8 @@ test.beforeAll(async () => {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(FRAME_HTML);
   });
-  await new Promise<void>((resolve) => frameServer.listen(FRAME_PORT, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => frameServer.listen(0, '127.0.0.1', resolve));
+  FRAME_PORT = (frameServer.address() as import('node:net').AddressInfo).port;
 });
 
 test.afterAll(async () => {
@@ -149,8 +153,7 @@ const SURFACES: Array<{ name: string; x: number; y: number }> = [
 
 test('night mode tints every visible surface exactly once', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
-  await page.goto('/');
-  await page.waitForTimeout(1200);
+  await gotoApp(page);
   await injectSurfaces(page, FRAME_PORT);
 
   await setNightMode(page, false);
@@ -177,8 +180,7 @@ test('night mode tints every visible surface exactly once', async ({ page }) => 
 
 test('turning night mode off restores the original colours', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
-  await page.goto('/');
-  await page.waitForTimeout(1200);
+  await gotoApp(page);
   await injectSurfaces(page, FRAME_PORT);
 
   await setNightMode(page, false);
@@ -202,8 +204,7 @@ test('extension content at a maximal z-index is desaturated, not just reddened',
   page
 }) => {
   await page.setViewportSize({ width: 500, height: 400 });
-  await page.goto('/');
-  await page.waitForTimeout(1200);
+  await gotoApp(page);
 
   await page.evaluate((port) => {
     for (const [i, z] of [1000, 2147483646, 2147483647].entries()) {
@@ -240,8 +241,7 @@ test('extension content at a maximal z-index is desaturated, not just reddened',
 
 test('night mode does not unpin position:fixed elements', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
-  await page.goto('/');
-  await page.waitForTimeout(1200);
+  await gotoApp(page);
 
   // A filter on <body> (rather than the root) would re-anchor this to the
   // document and scroll it away — that is why the page-level tint is a blend
