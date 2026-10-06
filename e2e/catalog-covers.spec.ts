@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * The catalog card's covers, against the REAL app.
@@ -20,15 +21,15 @@ const OPFS_PICKER_STUB = `(() => {
     try { if (typeof h.requestPermission !== 'function') h.requestPermission = async () => 'granted'; } catch {}
     return h;
   };
-  window.showDirectoryPicker = async () => patch(await navigator.storage.getDirectory());
+  // A NAMED folder, like any directory a user picks: the OPFS root's name is
+  // "", which leaves the Local Folder provider without an account scope — and
+  // with no scope nothing may be written to the cloud cover cache.
+  window.showDirectoryPicker = async () => patch(await (await navigator.storage.getDirectory()).getDirectoryHandle('library', { create: true }));
 })();`;
 
 async function boot(page: Page) {
   await page.addInitScript(OPFS_PICKER_STUB);
-  await page.goto('/');
-  await expect
-    .poll(() => page.evaluate(() => window.location.hash), { timeout: 20000 })
-    .toBe('#/catalog');
+  await gotoApp(page);
 }
 
 async function goHash(page: Page, hash: string) {
@@ -65,7 +66,9 @@ test('covers land after the downloads that failed while the provider was saturat
     c.fillStyle = '#2a6';
     c.fillRect(0, 0, 250, 350);
     const cover: Blob = await new Promise((r) => cvs.toBlob((b) => r(b!), 'image/webp'));
-    const root = await navigator.storage.getDirectory();
+    const root = await (
+      await navigator.storage.getDirectory()
+    ).getDirectoryHandle('library', { create: true });
     for (let s = 0; s < 6; s++) {
       const dir = await root.getDirectoryHandle(`Cloud Series ${s}`, { create: true });
       for (let v = 0; v < 2; v++) {

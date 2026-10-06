@@ -19,6 +19,9 @@ export default defineConfig({
     port,
     // Reusing a server that another worktree owns would silently test that
     // worktree's code — only reuse outside CI, and prefer E2E_PORT locally.
-    reuseExistingServer: !process.env.CI
+    reuseExistingServer: !process.env.CI,
+    // AniList-gated UI (the series tracking panel) only renders with a client
+    // id; the e2e suite never talks to AniList, so any non-empty value does.
+    env: { VITE_ANILIST_CLIENT_ID: process.env.VITE_ANILIST_CLIENT_ID || 'e2e-anilist-client' }
   }
 });

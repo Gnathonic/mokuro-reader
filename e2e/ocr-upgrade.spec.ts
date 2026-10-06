@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * Automatic OCR upgrades against the REAL app and a stubbed WebDAV server
@@ -180,8 +181,7 @@ class WebDavStub {
 
 /** The volume as a download from this cloud left it: its primary IS `mokuro`'s bytes. */
 async function seedInstalledVolume(page: Page, mokuro: string) {
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, mokuro, hash, size, modified }) => {
       const { db } = await import('/src/lib/catalog/db.ts');
