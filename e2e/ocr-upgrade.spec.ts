@@ -234,6 +234,29 @@ async function seedInstalledVolume(page: Page, mokuro: string) {
       modified: Math.trunc(Date.parse('Wed, 30 Sep 2026 10:00:00 GMT') / 1000)
     }
   );
+  // The catalog reads the database through a coalesced live query. Connect the
+  // cloud before it lists the seeded volume and the listing's archive is, for a
+  // moment, a bare placeholder — whose cover service pulls its .mokuro to learn
+  // what it is. A device that installed a volume has it in its catalog long
+  // before any sync, so wait for that state rather than racing it.
+  await page.evaluate(async (uuid) => {
+    const { volumes } = await import('/src/lib/catalog/index.ts');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('the catalog never listed the seeded volume')),
+        20000
+      );
+      let stop: (() => void) | undefined;
+      let done = false;
+      stop = volumes.subscribe((all: Record<string, unknown> | undefined) => {
+        if (done || !all?.[uuid]) return;
+        done = true;
+        clearTimeout(timer);
+        queueMicrotask(() => stop?.());
+        resolve();
+      });
+    });
+  }, VOLUME_UUID);
 }
 
 async function connectStub(page: Page) {
