@@ -754,6 +754,59 @@ export function updateProgress(
   }
 }
 
+/**
+ * The "Jump" answer to a cross-device position offer (phase 2c): move to the
+ * page another device stopped on. A user action, so it carries a fresh stamp
+ * and wins the next merge — but it is not reading: no page view, and no
+ * completion notice (a `completed` it brings along is only recorded).
+ */
+export function jumpToPosition(
+  volume: string,
+  progress: number,
+  chars: number,
+  completed: boolean
+) {
+  _volumesInternal.update((prev) => {
+    const current = prev[volume] || new VolumeData();
+    const nowIso = new Date().toISOString();
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        progress,
+        chars,
+        completed,
+        completedAt: completed ? (current.completedAt ?? nowIso) : current.completedAt,
+        lastProgressUpdate: nowIso
+      })
+    };
+  });
+}
+
+/**
+ * Re-apply a restart another device made that this position never saw (phase
+ * 2c: a reset wins). The pass was already archived where the restart happened
+ * — the merge keeps both sides' `archivedReads` — so this only resets the
+ * position, with a fresh stamp so it wins the next merge.
+ */
+export function applyMissedRestart(volume: string) {
+  _volumesInternal.update((prev) => {
+    const current = prev[volume];
+    if (!current || current.deletedOn) return prev;
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        progress: 0,
+        chars: 0,
+        completed: false,
+        completedAt: undefined,
+        lastProgressUpdate: new Date().toISOString()
+      })
+    };
+  });
+}
+
 export function markVolumeAsComplete(volumeUuid: string, pageCount: number, totalChars?: number) {
   updateProgress(volumeUuid, pageCount, totalChars, true);
 }
