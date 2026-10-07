@@ -139,7 +139,11 @@
       .catch((error) => console.warn('[reading-history] could not load history turns:', error))
       .then(() => import('$lib/reading-history/cut-over'))
       .then(({ cutOverLegacyTurns }) => cutOverLegacyTurns(historyDb()))
-      .catch((error) => console.warn('[reading-history] cut-over failed:', error));
+      .catch((error) => console.warn('[reading-history] cut-over failed:', error))
+      // Cross-device position offers (phase 2c): watch history once it is loaded.
+      .then(() => import('$lib/reading-history/position-store'))
+      .then(({ initPositionOffers }) => initPositionOffers(historyDb()))
+      .catch((error) => console.warn('[reading-history] position offers failed:', error));
 
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')
