@@ -754,3 +754,34 @@ describe('WebDAVProvider listing of reading history', () => {
     expect(files.map((f) => f.path)).toEqual(['history/dev-a/2026-10.events']);
   });
 });
+
+describe('WebDAVProvider getStatus().historySync (per-user reading history)', () => {
+  it.each([
+    ['0.7.1', true],
+    ['0.8.0', true],
+    ['0.7.0', false],
+    [undefined, false]
+  ])('bunko reporting version %s -> %s', async (version, expected) => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      ...(version ? { serverVersion: version } : {})
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().historySync).toBe(expected);
+  });
+
+  it('anonymous bunko follows its reported version too', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous', serverVersion: '0.7.1' });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().historySync).toBe(true);
+  });
+
+  it('a plain WebDAV server is not restricted (history files are just files there)', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().historySync).toBeUndefined();
+  });
+});

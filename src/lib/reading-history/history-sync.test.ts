@@ -199,26 +199,58 @@ describe('syncHistory', () => {
     expect(r.uploaded).toHaveLength(1);
   });
 
-  it.each([{ serverCompilesMetadata: true }, { isReadOnly: true }])(
-    'never uploads on %o, still imports',
-    async (status) => {
-      const shared = fakeCloud();
-      await appendEvent(a, page('v1', 1), OCT);
-      await syncHistory(shared.provider, shared.listing(), a, { force: true, now: NOV });
-      const limited = {
-        ...shared,
-        provider: {
-          ...shared.provider,
-          getStatus: () => ({ ...shared.provider.getStatus(), ...status }),
-          uploadFile: vi.fn()
-        } as unknown as SyncProvider
-      };
-      await appendEvent(b, page('v2', 1), OCT);
-      await syncHistory(limited.provider, shared.listing(), b, { force: true, now: NOV });
-      expect(limited.provider.uploadFile).not.toHaveBeenCalled();
-      expect(await b.reading_events.count()).toBe(2);
-    }
-  );
+  function withStatus(base: ReturnType<typeof fakeCloud>, status: Record<string, unknown>) {
+    return {
+      ...base.provider,
+      getStatus: () => ({ ...base.provider.getStatus(), ...status }),
+      uploadFile: vi.fn()
+    } as unknown as SyncProvider;
+  }
+
+  it('a read-only provider never gets uploads, but history is still imported', async () => {
+    const shared = fakeCloud();
+    await appendEvent(a, page('v1', 1), OCT);
+    await syncHistory(shared.provider, shared.listing(), a, { force: true, now: NOV });
+    const limited = withStatus(shared, { isReadOnly: true });
+    await appendEvent(b, page('v2', 1), OCT);
+    await syncHistory(limited, shared.listing(), b, { force: true, now: NOV });
+    expect(limited.uploadFile).not.toHaveBeenCalled();
+    expect(await b.reading_events.count()).toBe(2);
+  });
+
+  it.each([
+    [{ serverCompilesMetadata: true }],
+    [{ serverCompilesMetadata: true, historySync: false }]
+  ])('a server that cannot keep history per user (%o): nothing up, nothing in', async (status) => {
+    const shared = fakeCloud();
+    await appendEvent(a, page('v1', 1), OCT);
+    await syncHistory(shared.provider, shared.listing(), a, { force: true, now: NOV });
+    const bunko = withStatus(shared, status);
+    await appendEvent(b, page('v2', 1), OCT);
+    const r = await syncHistory(bunko, shared.listing(), b, { force: true, now: NOV });
+    expect(bunko.uploadFile).not.toHaveBeenCalled();
+    expect(vi.mocked(shared.provider.downloadFile)).toHaveBeenCalledTimes(0);
+    expect(r).toEqual({ imported: 0, uploaded: [], failed: [] });
+    expect(await b.reading_events.count()).toBe(1);
+  });
+
+  it('a bunko that keeps history per user (0.7.1+) syncs it both ways', async () => {
+    const shared = fakeCloud();
+    await appendEvent(a, page('v1', 1), OCT);
+    await syncHistory(shared.provider, shared.listing(), a, { force: true, now: NOV });
+    const bunko = {
+      ...shared.provider,
+      getStatus: () => ({
+        ...shared.provider.getStatus(),
+        serverCompilesMetadata: true,
+        historySync: true
+      })
+    } as unknown as SyncProvider;
+    await appendEvent(b, page('v2', 1), OCT);
+    const r = await syncHistory(bunko, shared.listing(), b, { force: true, now: NOV });
+    expect(r.imported).toBe(1);
+    expect(r.uploaded.length).toBeGreaterThan(0);
+  });
 
   it("uploads device facts once, and imports the other device's", async () => {
     const cloud = fakeCloud();

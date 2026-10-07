@@ -307,4 +307,43 @@ describe('fetchServerIdentity', () => {
     // No creds were sent, so authenticated:false means anonymous (not invalid creds)
     expect(result).toEqual({ kind: 'anonymous' });
   });
+
+  describe('server version (bunko reports it from 0.7.1)', () => {
+    it('carries the reported version on an authenticated identity', async () => {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, {
+          authenticated: true,
+          username: 'alice',
+          role: 'registered',
+          permissions: PERMS,
+          version: '0.7.1'
+        })
+      });
+      const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+      expect(result).toMatchObject({ kind: 'authenticated', serverVersion: '0.7.1' });
+    });
+
+    it('carries it on an anonymous identity too', async () => {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, { authenticated: false, version: '0.7.2' })
+      });
+      expect(await fetchServerIdentity('https://host', undefined, undefined, impl)).toEqual({
+        kind: 'anonymous',
+        serverVersion: '0.7.2'
+      });
+    });
+
+    it('leaves it absent when an older bunko does not report one', async () => {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, {
+          authenticated: true,
+          username: 'alice',
+          role: 'registered',
+          permissions: PERMS
+        })
+      });
+      const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+      expect(result).not.toHaveProperty('serverVersion');
+    });
+  });
 });

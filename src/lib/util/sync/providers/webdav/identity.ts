@@ -35,10 +35,12 @@ export type IdentityResult =
       permissions: ServerPermissions;
       /** The `/login/api/me` URL that answered (the bunko root's mount, subpath or origin). */
       endpoint?: string;
+      /** The server's own version, when it reports one (bunko >= 0.7.1). */
+      serverVersion?: string;
     }
   | { kind: 'invalid-credentials' }
   | { kind: 'rate-limited' } // recognizable 429
-  | { kind: 'anonymous' } // 200 authenticated:false when NO creds were sent
+  | { kind: 'anonymous'; serverVersion?: string } // 200 authenticated:false when NO creds were sent
   | { kind: 'unsupported' }; // anything unrecognizable -> generic WebDAV server
 
 const REQUEST_TIMEOUT_MS = 10000;
@@ -93,6 +95,9 @@ function interpretResponse(
 ): IdentityResult | null {
   const record = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
   const authenticated = record?.authenticated;
+  // bunko >= 0.7.1 reports its version; older servers simply omit it.
+  const version =
+    typeof record?.version === 'string' && record.version ? { serverVersion: record.version } : {};
 
   if (status === 200) {
     // A non-JSON 200 (reverse proxy default page, SPA fallback serving the app
@@ -107,14 +112,15 @@ function interpretResponse(
           kind: 'authenticated',
           username: typeof record?.username === 'string' ? record.username : '',
           role: typeof record?.role === 'string' ? record.role : '',
-          permissions
+          permissions,
+          ...version
         };
       }
       // 200 "authenticated" without a permissions object is not the contract shape
       return { kind: 'unsupported' };
     }
     if (authenticated === false) {
-      return credsSent ? { kind: 'invalid-credentials' } : { kind: 'anonymous' };
+      return credsSent ? { kind: 'invalid-credentials' } : { kind: 'anonymous', ...version };
     }
     // H1: 200 without a boolean `authenticated` field = old mokuro-bunko
     // (<= 0.1.3 returned {username, role, created_at}) or some other server.

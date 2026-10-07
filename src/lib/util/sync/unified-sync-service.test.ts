@@ -87,7 +87,9 @@ vi.mock('$lib/reading-history/cut-over', async () => {
 const legacyCarried = vi.hoisted(() => ({ value: true }));
 vi.mock('$lib/reading-history/history-sync', () => ({
   syncHistory: vi.fn(async () => ({ imported: 0, uploaded: [], failed: [] })),
-  legacyCarriedBy: vi.fn(async () => legacyCarried.value)
+  legacyCarriedBy: vi.fn(async () => legacyCarried.value),
+  historySyncAllowed: (s: { historySync?: boolean; serverCompilesMetadata?: boolean }) =>
+    s.historySync ?? !s.serverCompilesMetadata
 }));
 
 import { unifiedSyncService } from './unified-sync-service';
@@ -1518,4 +1520,16 @@ describe('the cut-over rides the volume sync', () => {
       expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
     }
   );
+
+  it('a bunko that keeps history per user (0.7.1+) is cut over like plain storage', async () => {
+    legacyCarried.value = true;
+    const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
+    vi.mocked(cutOverLegacyTurns).mockClear();
+    seed();
+    stubCache([]);
+    const { uploads, provider } = capture({ serverCompilesMetadata: true, historySync: true });
+    await svc.syncVolumeData(provider);
+    expect(cutOverLegacyTurns).toHaveBeenCalled();
+    expect(uploads[0]['vol-1'].recentPageTurns ?? []).toEqual([]);
+  });
 });

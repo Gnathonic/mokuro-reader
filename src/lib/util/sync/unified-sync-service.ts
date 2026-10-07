@@ -927,13 +927,13 @@ class UnifiedSyncService {
    */
   private async volumesForUpload(provider: SyncProvider): Promise<any> {
     const status = provider.getStatus?.() ?? ({} as Partial<ReturnType<SyncProvider['getStatus']>>);
-    const historySyncs = !status.serverCompilesMetadata && !status.isReadOnly;
     try {
       const [cutOver, historySync, historyDbModule] = await Promise.all([
         import('$lib/reading-history/cut-over'),
         import('$lib/reading-history/history-sync'),
         import('$lib/reading-history/history-db')
       ]);
+      const historySyncs = historySync.historySyncAllowed(status) && !status.isReadOnly;
       if (historySyncs) await cutOver.cutOverLegacyTurns();
       const records = get(volumesWithTrash);
       const carried =

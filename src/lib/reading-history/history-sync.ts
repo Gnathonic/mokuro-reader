@@ -2,6 +2,7 @@ import Dexie from 'dexie';
 import { sourceStampChanged } from '$lib/metadata/series-index';
 import type {
   CloudFileMetadata,
+  ProviderStatus,
   SyncProvider,
   UploadFileResult
 } from '$lib/util/sync/provider-interface';
@@ -33,9 +34,10 @@ import type { DeviceClass, DeviceFacts, ReadingEvent } from './types';
  *    `UPLOAD_INTERVAL_MS` unless forced; closed months always go up.
  * 3. Upload this device's facts (`device.json`) when they change.
  *
- * Never uploads another device's events. Never uploads to a server that
- * compiles its own metadata (mokuro-bunko maps unknown paths into the shared
- * library) or to a read-only provider; imports still run there.
+ * Never uploads another device's events. Does nothing at all on a server that
+ * cannot keep history per user (`historySyncAllowed`: mokuro-bunko before
+ * 0.7.1 maps `history/` into the shared library); never uploads to a
+ * read-only provider, where imports still run.
  */
 
 export const UPLOAD_INTERVAL_MS = 5 * 60 * 1000;
@@ -78,10 +80,15 @@ export async function syncHistory(
     console.warn(`[reading-history] ${kind}`, ...details);
   };
 
+  const status = provider.getStatus();
+  // A server that cannot keep history per user (mokuro-bunko < 0.7.1) files
+  // `history/` into the shared library: nothing goes up, and nothing listed
+  // there is ours to import.
+  if (!historySyncAllowed(status)) return result;
+
   result.imported = await importOthers(provider, listing, db, own, warnOnce);
 
-  const status = provider.getStatus();
-  if (!status.serverCompilesMetadata && !status.isReadOnly) {
+  if (!status.isReadOnly) {
     const listed = new Set(listing.map((f) => f.path));
     await exportOwnMonths(provider, db, own, listed, now, options, result, warnOnce);
     await exportLegacy(provider, db, own, listed, options, result, warnOnce);
@@ -110,6 +117,18 @@ function legacyEvents(db: HistoryDexie) {
   return db.reading_events
     .where('[device+seq]')
     .between([LEGACY_DEVICE_PREFIX, Dexie.minKey], ['legacy;', Dexie.minKey]);
+}
+
+/**
+ * Can this provider carry reading history at all? An explicit `historySync`
+ * decides (the WebDAV provider sets it from the bunko version); otherwise a
+ * server that compiles its own metadata (bunko, version unknown) cannot, and
+ * plain storage can.
+ */
+export function historySyncAllowed(
+  status: Pick<ProviderStatus, 'historySync' | 'serverCompilesMetadata'>
+): boolean {
+  return status.historySync ?? !status.serverCompilesMetadata;
 }
 
 type WarnOnce = (kind: string, ...details: unknown[]) => void;

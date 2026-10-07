@@ -838,10 +838,14 @@ month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
   a new provider gets every month. The current month goes up at most every
   5 min unless the sync is manual (non-silent); closed months always go up.
 - Best-effort: history paths are in `isBestEffortMetadataPath` (a rejected
-  write never demotes WebDAV), and the pass never fails the sync. No uploads on
-  mokuro-bunko (`serverCompilesMetadata` — it maps unknown paths into the shared
-  library until a release lists `history/` per-user) or read-only providers;
-  imports still run.
+  write never demotes WebDAV), and the pass never fails the sync. Read-only
+  providers get no uploads (imports still run). mokuro-bunko gets history only
+  from **0.7.1**, which maps `history/` per user and reports its `version` in
+  `/login/api/me` (bunko issue #27): the WebDAV provider sets
+  `ProviderStatus.historySync` from that version (`bunko-version.ts`), and
+  `historySyncAllowed(status)` (`history-sync.ts`) gates EVERYTHING — before
+  0.7.1 `history/` lands in the shared library, so neither upload nor import
+  runs there, and the file keeps carrying page turns (`attachProjectedTurns`).
 
 ### Settings Architecture
 
