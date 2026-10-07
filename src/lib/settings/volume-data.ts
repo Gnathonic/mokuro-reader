@@ -6,6 +6,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { getEffectiveReadingTime } from '$lib/util/reading-speed';
 import { hasFreshPassSince } from '$lib/util/volume-helpers';
 import { SERIES_SECTION_KEY } from './series-data';
+import { recordEvent } from '$lib/reading-history/record';
 
 // Deep equality check for settings objects
 function settingsEqual(
@@ -503,9 +504,11 @@ export function initializeVolume(volume: string) {
 }
 
 export function deleteVolume(volume: string) {
+  let forgotten = false;
   _volumesInternal.update((prev) => {
     const existing = prev[volume];
     if (!existing) return prev; // Already gone or never existed
+    forgotten = true;
 
     // Create tombstone with deletion timestamp.
     //
@@ -528,34 +531,16 @@ export function deleteVolume(volume: string) {
       [volume]: tombstone
     };
   });
+  // Reading history: forgetting is an event, so every device's stats apply it.
+  if (forgotten) void recordEvent({ kind: 'forget', volume, before: Date.now() });
 }
 
 export function clearVolumes() {
   _volumesInternal.set({});
 }
 
-export function clearVolumeSpeedData(volume: string) {
-  _volumesInternal.update((prev) => {
-    const currentVolume = prev[volume];
-    if (!currentVolume) return prev;
-
-    // Parse the existing timestamp and add 1ms to win sync conflicts
-    const currentTimestamp = new Date(currentVolume.lastProgressUpdate).getTime();
-    const newTimestamp = new Date(currentTimestamp + 1).toISOString();
-
-    return {
-      ...prev,
-      [volume]: new VolumeData({
-        ...currentVolume,
-        timeReadInMinutes: 0,
-        lastProgressUpdate: newTimestamp
-        // Keep: progress, chars, completed, settings, recentPageTurns, sessions
-      })
-    };
-  });
-}
-
 export function clearOrphanedVolumeData(volumeIds: string[]) {
+  const forgotten: string[] = [];
   _volumesInternal.update((prev) => {
     const updated = { ...prev };
     const now = new Date().toISOString();
@@ -563,6 +548,7 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
     volumeIds.forEach((id) => {
       const existing = updated[id];
       if (existing) {
+        forgotten.push(id);
         // Create tombstone instead of deleting
         updated[id] = new VolumeData({
           deletedOn: now,
@@ -576,6 +562,9 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
 
     return updated;
   });
+  // Reading history: the same "forget these stats" as `deleteVolume`.
+  const before = Date.now();
+  for (const id of forgotten) void recordEvent({ kind: 'forget', volume: id, before });
 }
 
 type CompletionListener = (volumeUuid: string) => void;
@@ -743,12 +732,14 @@ export function markVolumeAsUnread(volumeUuid: string) {
 export function archiveAndResetVolumes(volumeUuids: string[]) {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
+  const archived: string[] = [];
   _volumesInternal.update((prev) => {
     const updated = { ...prev };
     for (const uuid of volumeUuids) {
       const existing = updated[uuid];
       if (!existing || existing.deletedOn) continue;
       if (existing.progress <= 0 && !existing.completed) continue;
+      archived.push(uuid);
       updated[uuid] = new VolumeData({
         ...existing,
         archivedReads: [
@@ -772,6 +763,8 @@ export function archiveAndResetVolumes(volumeUuids: string[]) {
     }
     return updated;
   });
+  // Reading history: a new read pass of each archived volume starts here.
+  for (const uuid of archived) void recordEvent({ kind: 'restart', volume: uuid }, now);
 }
 
 export function startCount(volume: string) {

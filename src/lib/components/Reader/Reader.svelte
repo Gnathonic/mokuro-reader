@@ -91,6 +91,14 @@
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache, matchFilesToPages } from '$lib/reader/image-cache';
   import { cancelInkPrefetch, prefetchPageInk } from '$lib/reader/ink-color';
+  import { ViewTracker } from '$lib/reading-history/view-tracker';
+  import {
+    describeView,
+    rangeScopeKey,
+    type ContinuousRange
+  } from '$lib/reading-history/describe-view';
+  import { recordEvent } from '$lib/reading-history/record';
+  import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
   import '$lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
@@ -492,7 +500,17 @@
     // onDestroy flush below never runs for either.
     const stopFlushOnPageHide = flushOnPageHide(() => void editSession?.flush());
 
+    const onVisibility = () => {
+      pageHidden = document.visibilityState === 'hidden';
+    };
+    const onPageHide = () => viewTracker.close(Date.now());
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+      viewTracker.close(Date.now());
       stopFlushOnPageHide();
       // Stop activity tracker when component unmounts
       activityTracker.stop();
@@ -612,6 +630,13 @@
   });
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
+
+  // Reading history: one `page` event per view, emitted when the view ends.
+  // Hidden tab = no view, so a backgrounded reader never accrues dwell.
+  const viewTracker = new ViewTracker((payload, t) => void recordEvent(payload, t));
+  let pageHidden = $state(typeof document !== 'undefined' && document.visibilityState === 'hidden');
+  let continuousRange = $state<ContinuousRange | null>(null);
+  let pageCharCumulative = $derived(buildPageCharCounts(pages).cumulative);
 
   // Set of missing page paths for checking if current page is a placeholder
   let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
@@ -1145,6 +1170,30 @@
   let charCount = $derived($settings.charCount ? getCharCount(pages, page).charCount : 0);
   let maxCharCount = $derived(getCharCount(pages).charCount);
   let charDisplay = $derived(`${charCount} / ${maxCharCount}`);
+
+  let currentView = $derived(
+    describeView({
+      volume: volume?.volume_uuid,
+      pageCharCumulative,
+      page,
+      continuous: !!$settings.continuousScroll,
+      scrollMode: effectiveScrollMode === 'horizontal' ? 'horizontal' : 'vertical',
+      showSecondPage: showSecondPage(),
+      continuousRange,
+      // Same condition the template uses to render the pages.
+      showing: !!volumeData && $progress?.[volume?.volume_uuid || 0] !== undefined,
+      viewport: { w: windowWidth, h: windowHeight }
+    })
+  );
+
+  $effect(() => {
+    viewTracker.setView(pageHidden ? null : currentView, Date.now());
+  });
+
+  function handleVisibleRange(first: number, last: number) {
+    const mode = effectiveScrollMode === 'horizontal' ? 'horizontal' : 'vertical';
+    continuousRange = { scope: rangeScopeKey(volume?.volume_uuid, mode), first, last };
+  }
   let totalLineCount = $derived(getCharCount(pages).lineCount);
   run(() => {
     if (volume) {
@@ -1639,6 +1688,7 @@
         {volumeSettings}
         currentPage={page}
         onPageChange={handleContinuousPageChange}
+        onVisibleRangeChange={handleVisibleRange}
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
@@ -1653,6 +1703,7 @@
         {volumeSettings}
         currentPage={page}
         onPageChange={handleContinuousPageChange}
+        onVisibleRangeChange={handleVisibleRange}
         onVolumeNav={handleContinuousVolumeNav}
         onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}

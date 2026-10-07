@@ -31,6 +31,12 @@
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
+  import { historyDb } from '$lib/reading-history/history-db';
+  import {
+    detectDeviceFacts,
+    readDeviceEnv,
+    touchDeviceRecord
+  } from '$lib/reading-history/device-facts';
   import { initGoalsLifecycle } from '$lib/goals';
   import { cleanupLegacyEngineCredentials } from '$lib/settings/engine-credentials-cleanup';
   import { get } from 'svelte/store';
@@ -102,6 +108,13 @@
 
     // Start background thumbnail generation once startup checks are complete
     startThumbnailProcessing();
+
+    // Reading history: create/refresh this device's facts. Never blocks start-up.
+    touchDeviceRecord(
+      historyDb(),
+      detectDeviceFacts(readDeviceEnv()),
+      new Date().toISOString()
+    ).catch((error) => console.warn('[reading-history] device record failed:', error));
 
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')

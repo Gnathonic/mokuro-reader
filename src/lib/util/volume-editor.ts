@@ -7,6 +7,7 @@ import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
 import { isImageExtension } from '$lib/import';
 import { naturalSort } from '$lib/util/natural-sort';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
+import { recordEvent } from '$lib/reading-history/record';
 import { get } from 'svelte/store';
 import { convertToWebP, generateThumbnail } from '$lib/catalog/thumbnails';
 import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
@@ -198,8 +199,23 @@ export function updateVolumeStats(
     volume_title?: string;
   }
 ): void {
+  let timeDeltaMs = 0;
+  let charsDelta = 0;
+
   volumesWithTrash.update((prev: Volumes) => {
     const currentVolume = prev[volumeUuid] || new VolumeData();
+    if (updates.timeReadInMinutes !== undefined) {
+      timeDeltaMs = (updates.timeReadInMinutes - currentVolume.timeReadInMinutes) * 60000;
+    }
+    // The modal re-sends `chars` as a linear estimate on every save; only a
+    // real progress edit makes its chars a user edit.
+    if (
+      updates.chars !== undefined &&
+      updates.progress !== undefined &&
+      updates.progress !== currentVolume.progress
+    ) {
+      charsDelta = updates.chars - currentVolume.chars;
+    }
     // A stat edit is a user action and must win the next merge like a page
     // turn does; without a fresh stamp the other device's older copy replaced
     // it. Only a real change counts: the modal re-sends every field on save
@@ -237,6 +253,16 @@ export function updateVolumeStats(
       })
     };
   });
+
+  // Reading history: the edit is an event, so every device's stats can apply it.
+  if (timeDeltaMs !== 0 || charsDelta !== 0) {
+    void recordEvent({
+      kind: 'adjust',
+      volume: volumeUuid,
+      time_delta_ms: timeDeltaMs,
+      chars_delta: charsDelta
+    });
+  }
 }
 
 /**

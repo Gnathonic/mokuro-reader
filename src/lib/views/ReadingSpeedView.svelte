@@ -11,7 +11,7 @@
   } from '$lib/util/reading-speed-history';
   import {
     volumes,
-    clearVolumeSpeedData,
+    deleteVolume as deleteVolumeStats,
     clearOrphanedVolumeData,
     isOrphanedVolumeData
   } from '$lib/settings/volume-data';
@@ -1010,7 +1010,9 @@
   function deleteVolumeData() {
     if (!volumeToDelete) return;
 
-    clearVolumeSpeedData(volumeToDelete.volumeId);
+    // Same "forget this volume's stats" as deleting a volume with "remove stats":
+    // progress, time, speed and history all go, and the tombstone syncs.
+    deleteVolumeStats(volumeToDelete.volumeId);
 
     deleteModalOpen = false;
     volumeToDelete = null;

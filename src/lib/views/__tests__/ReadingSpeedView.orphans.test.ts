@@ -267,3 +267,44 @@ describe('ReadingSpeedView orphan bucket', () => {
     expect(others.textContent).not.toMatch(/\b2 other volume\(s\)/);
   });
 });
+
+describe('ReadingSpeedView per-volume delete', () => {
+  it('forgets the volume\'s stats exactly like deleting a volume with "remove stats"', async () => {
+    // The dialog promises "all progress, time, and speed data"; the button used
+    // to zero only `timeReadInMinutes`, so progress, chars and page turns stayed.
+    volumesWithTrash.set({
+      'uuid-real': speedTracked({
+        series_uuid: 'series-real',
+        series_title: 'Real Series',
+        volume_title: 'Real Series v01',
+        recentPageTurns: [
+          [1_000, 1, 10],
+          [61_000, 2, 30]
+        ]
+      })
+    });
+
+    render(ReadingSpeedView);
+
+    const row = await vi.waitFor(() => {
+      const found = screen
+        .getAllByRole('row')
+        .find(
+          (r) =>
+            r.textContent?.includes('Real Series v01') &&
+            within(r).queryAllByRole('button').length > 0
+        );
+      expect(found).toBeDefined();
+      return found!;
+    });
+    await fireEvent.click(within(row).getAllByRole('button')[0]);
+    await fireEvent.click(await screen.findByText('Yes, delete'));
+
+    const record = get(volumesWithTrash)['uuid-real'];
+    expect(record.deletedOn).toBeTruthy();
+    expect(record.progress).toBe(0);
+    expect(record.chars).toBe(0);
+    expect(record.recentPageTurns).toEqual([]);
+    expect(get(volumes)['uuid-real']).toBeUndefined();
+  });
+});
