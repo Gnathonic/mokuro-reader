@@ -1,5 +1,5 @@
 import { legacyDeviceFor } from './paths';
-import type { EventPayload, Layout, Orientation, ReadingEvent } from './types';
+import type { EventPayload, Layout, Orientation, PositionPayload, ReadingEvent } from './types';
 
 /**
  * One month of one device's events, as stored in the cloud (spec: Storage →
@@ -12,6 +12,7 @@ import type { EventPayload, Layout, Orientation, ReadingEvent } from './types';
  *   1 adjust  [1, dSeq, dT, vol, time_delta_ms, chars_delta]
  *   2 restart [2, dSeq, dT, vol]
  *   3 forget  [3, dSeq, dT, vol, before]
+ *   4 position [4, dSeq, dT, vol, answer (0 jump, 1 stay, 2 reset), through, page]
  *
  * A new event kind or field is a new `format`; a reader refuses formats it does
  * not know (the importer keeps the old stamp, so an updated app retries).
@@ -48,6 +49,7 @@ const LAYOUTS: Array<Layout | 'unknown'> = [
   'unknown'
 ];
 const ORIENTATIONS: Array<Orientation | 'unknown'> = ['portrait', 'landscape', 'unknown'];
+const ANSWERS: Array<PositionPayload['answer']> = ['jump', 'stay', 'reset'];
 
 type Row = Array<number | number[]>;
 
@@ -111,6 +113,8 @@ export async function encodeSegment(
         return [2, ...head, vol(e.volume)];
       case 'forget':
         return [3, ...head, vol(e.volume), e.before];
+      case 'position':
+        return [4, ...head, vol(e.volume), ANSWERS.indexOf(e.answer), e.through, e.page];
     }
   });
 
@@ -209,6 +213,12 @@ export async function decodeSegment(
       case 3:
         payload = { kind: 'forget', volume, before: num(row[4]) };
         break;
+      case 4: {
+        const answer = ANSWERS[int(row[4])];
+        if (!answer) throw new SegmentFormatError('unknown position answer');
+        payload = { kind: 'position', volume, answer, through: num(row[5]), page: int(row[6]) };
+        break;
+      }
       default:
         throw new SegmentFormatError(`unknown event kind ${row[0]}`);
     }
