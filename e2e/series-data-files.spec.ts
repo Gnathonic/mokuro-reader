@@ -3,9 +3,19 @@ import { test, expect, type ConsoleMessage, type Page } from '@playwright/test';
 import { gotoApp } from './helpers/app';
 
 /**
- * E2E for the `series-metadata.json` retirement (spec:
+ * E2E for WHERE series data lives and how it syncs:
+ *
+ * - `<Series>/series.json` — the per-series sidecar (facts: AniList link,
+ *   titles, tag, unit; shelf alignment). Live and central to the catalog.
+ * - `volume-data.json` → its `series` section — per-user reading state (read
+ *   count, re-read mute, tracking).
+ *
+ * Both replaced `series-metadata.json`, a single dev-only file retired on
+ * 2026-08-23 before it ever shipped (spec:
  * docs/superpowers/specs/2026-08-23-catalog-distribution-design.md, amendment
  * 2026-08-23; plan: docs/superpowers/plans/2026-08-23-series-metadata-retirement.md).
+ * This file was named after that retirement until 2026-10, which read as if
+ * `series.json` itself had been retired.
  *
  * Two techniques, both against the REAL app, exactly as
  * `e2e/catalog-distribution.spec.ts` uses them:
@@ -20,7 +30,7 @@ import { gotoApp } from './helpers/app';
  *    sidecar writer, `unifiedSyncService`, the merges) is the shipped code, and
  *    the files it produces are read back byte for byte.
  *
- * What the retirement claims, and where each claim is checked:
+ * What this placement claims, and where each claim is checked:
  *
  * | Claim                                                        | Test                        |
  * | ------------------------------------------------------------ | --------------------------- |
