@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -206,8 +207,7 @@ const ORIGINAL_BLOCKS = [
 const ORIGINAL_PAGE: FixturePage = { ...PAGE, blocks: ORIGINAL_BLOCKS };
 
 async function seedVolume(page: Page, pages: FixturePage[], fontSize: string) {
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, pages, fontSize }) => {
       const { db } = await import('/src/lib/catalog/db.ts');

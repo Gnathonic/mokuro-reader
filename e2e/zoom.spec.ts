@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * E2E tests for the continuous-mode targeted zoom (#195).
@@ -15,9 +16,9 @@ import { test, expect, type Page } from '@playwright/test';
 type WorldOpts = { mode: 'vertical' | 'horizontal'; rtl?: boolean; pageWidth?: number };
 
 async function setupWorld(page: Page, opts: WorldOpts) {
-  await page.goto('/');
-  // Let the app finish booting before we take over the document.
-  await page.waitForTimeout(500);
+  // Let the app finish booting before we take over the document: a boot that
+  // completes after the takeover would mount the app over the test world.
+  await gotoApp(page);
 
   await page.evaluate(async ({ mode, rtl, pageWidth }) => {
     const w = window as any;
@@ -355,8 +356,7 @@ test('horizontal LTR: double-tap zooms in and a second double-tap restores 1×',
 // ============================================================
 
 async function setupPagedWorld(page: Page, opts: { rtl: boolean; mode: string }) {
-  await page.goto('/');
-  await page.waitForTimeout(500);
+  await gotoApp(page);
 
   await page.evaluate(async ({ rtl, mode }) => {
     const w = window as any;

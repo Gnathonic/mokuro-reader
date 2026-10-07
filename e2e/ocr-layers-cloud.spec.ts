@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * OCR layers in the cloud, against the REAL app and a stubbed WebDAV server
@@ -180,8 +181,7 @@ class WebDavStub {
 }
 
 async function seedInstalledVolume(page: Page, mokuro = mokuroJson('あい')) {
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, mokuro }) => {
       const { db } = await import('/src/lib/catalog/db.ts');

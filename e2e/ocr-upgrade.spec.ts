@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * Automatic OCR upgrades against the REAL app and a stubbed WebDAV server
@@ -180,8 +181,7 @@ class WebDavStub {
 
 /** The volume as a download from this cloud left it: its primary IS `mokuro`'s bytes. */
 async function seedInstalledVolume(page: Page, mokuro: string) {
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, mokuro, hash, size, modified }) => {
       const { db } = await import('/src/lib/catalog/db.ts');
@@ -234,6 +234,29 @@ async function seedInstalledVolume(page: Page, mokuro: string) {
       modified: Math.trunc(Date.parse('Wed, 30 Sep 2026 10:00:00 GMT') / 1000)
     }
   );
+  // The catalog reads the database through a coalesced live query. Connect the
+  // cloud before it lists the seeded volume and the listing's archive is, for a
+  // moment, a bare placeholder — whose cover service pulls its .mokuro to learn
+  // what it is. A device that installed a volume has it in its catalog long
+  // before any sync, so wait for that state rather than racing it.
+  await page.evaluate(async (uuid) => {
+    const { volumes } = await import('/src/lib/catalog/index.ts');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('the catalog never listed the seeded volume')),
+        20000
+      );
+      let stop: (() => void) | undefined;
+      let done = false;
+      stop = volumes.subscribe((all: Record<string, unknown> | undefined) => {
+        if (done || !all?.[uuid]) return;
+        done = true;
+        clearTimeout(timer);
+        queueMicrotask(() => stop?.());
+        resolve();
+      });
+    });
+  }, VOLUME_UUID);
 }
 
 async function connectStub(page: Page) {
