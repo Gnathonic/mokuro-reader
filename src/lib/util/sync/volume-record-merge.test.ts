@@ -6,6 +6,7 @@ import {
 } from './volume-record-merge';
 
 type Rec = VolumeRecordLike & {
+  archivedReads?: Array<{ at: number; pages: number; chars: number; completed: boolean }>;
   progress?: number;
   chars?: number;
   completed?: boolean;
@@ -181,5 +182,24 @@ describe('applyForgetHorizon', () => {
     );
 
     expect(record.forgotAt).toBe(new Date(8000).toISOString());
+  });
+
+  it("keeps both sides' archived reads (a restart on the older copy survives)", () => {
+    const winner = {
+      progress: 60,
+      archivedReads: [{ at: 100, pages: 10, chars: 1, completed: true }],
+      recentPageTurns: []
+    };
+    const loser = {
+      progress: 0,
+      archivedReads: [
+        { at: 100, pages: 10, chars: 1, completed: true },
+        { at: 500, pages: 200, chars: 9, completed: true }
+      ],
+      recentPageTurns: []
+    } as Rec;
+    expect(mergeLiveVolumeRecords(winner as Rec, loser).archivedReads?.map((r) => r.at)).toEqual([
+      100, 500
+    ]);
   });
 });

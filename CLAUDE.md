@@ -789,7 +789,8 @@ IndexedDB rw transaction as the write (`appendEvent`), so two tabs never
 collide. Kinds: `page` (one per reader VIEW — whole pages on screen, raw
 uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
 tab has no view), `adjust` (volume editor time/chars edits), `restart`
-("restart series"), `forget` (delete stats). Record through `recordEvent`,
+("restart series"), `forget` (delete stats), `position` (an answer to a
+cross-device position offer — see below). Record through `recordEvent`,
 which never throws and loads the DB module lazily (`volume-data.ts` imports
 it; many suites mock `dexie` bare).
 
@@ -817,6 +818,32 @@ but stay in the record. Each device uploads the legacy events it holds as
 Progress syncs are batched while reading (`activity-tracker.ts`: 5 s debounce,
 at most one per 3 min) and flushed when the reader closes, the tab hides or
 the page goes away.
+
+**Position across devices (phase 2c).** The position stays the newest page
+event; `planPosition` (`position-offer.ts`, pure) decides when OTHER reading is
+offered instead of silently losing to it. Rules that must hold:
+
+- The signal is what the NEWEST device (owner of the newest native view) saw.
+  Another device's FINAL view is offered unless the newest device viewed that
+  page after it, or the view's pages already include the current progress.
+  A view's page is its `first_page` (a spread's position). Final, never
+  furthest: peek-ahead-then-back resumes where the reader stopped.
+- A restart wins. It is FOLLOWED once ANY device views page ≤ 1 after it; an
+  unfollowed restart from another device, with newer reading on the newest
+  device, is re-applied (`applyMissedRestart` archives the pass, then zeroes
+  it) and that reading — as it stood when the reset was recorded — is offered.
+  The reset waits while that volume is open in the reader.
+- Answers are `position` events (`jump`/`stay`/`reset`, `through` = the offered
+  reading's time): nothing at or before an answered `through` is offered again
+  on any device, whatever stale copy arrives. Marking a volume read/unread
+  records a `stay` (`settlePositionOffers`). A `forget` hides earlier events;
+  converted `legacy:` events never drive offers.
+- Jump (`jumpToPosition`) is not a page view and fires no completion notice.
+- Cadence (`position-store.ts`, localStorage `position-offer:shown`): the reader
+  banner shows an offer at most once a session, in at most 2 sessions; then the
+  volume card shows a chip (`PositionOfferChip.svelte`) until answered.
+- `positionPlanFor` is memoised per volume on its events version
+  (`volumeEventsVersion`) and progress — the chip mounts once per card.
 
 **Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
 month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —

@@ -129,35 +129,42 @@ describe('catalog refresh facts pass (real IndexedDB)', () => {
   it.each([
     ['a row IndexedDB refuses to store', 'clone' as const],
     ['a file the merge throws on', 'merge' as const]
-  ])('lets one failing entry (%s) cost only itself', async (_label, mode) => {
-    poison.mode = mode;
-    serveCatalog(CATALOG_JSON);
+  ])(
+    'lets one failing entry (%s) cost only itself',
+    async (_label, mode) => {
+      poison.mode = mode;
+      serveCatalog(CATALOG_JSON);
 
-    const { refreshCatalogIndex } = await import('./catalog-index-sync');
-    await refreshCatalogIndex(listing(), 'webdav');
+      const { refreshCatalogIndex } = await import('./catalog-index-sync');
+      await refreshCatalogIndex(listing(), 'webdav');
 
-    // The two healthy entries' facts are stored. Under one shared transaction
-    // 'good first' was rolled back and 'good last' never ran at all.
-    expect(await db.series_metadata.get('good first')).toMatchObject({
-      series_title: 'Good First',
-      external_ids: { anilist: 1 }
-    });
-    expect(await db.series_metadata.get('good last')).toMatchObject({
-      series_title: 'Good Last',
-      external_ids: { anilist: 3 }
-    });
-    // The bad one stored nothing, and took nothing else down with it.
-    expect(await db.series_metadata.get('bad entry')).toBeUndefined();
+      // The two healthy entries' facts are stored. Under one shared transaction
+      // 'good first' was rolled back and 'good last' never ran at all.
+      expect(await db.series_metadata.get('good first')).toMatchObject({
+        series_title: 'Good First',
+        external_ids: { anilist: 1 }
+      });
+      expect(await db.series_metadata.get('good last')).toMatchObject({
+        series_title: 'Good Last',
+        external_ids: { anilist: 3 }
+      });
+      // The bad one stored nothing, and took nothing else down with it.
+      expect(await db.series_metadata.get('bad entry')).toBeUndefined();
 
-    // Names are cached for all three regardless — the catalog can still list
-    // and search a series whose facts failed to apply. One row, holding the
-    // whole file.
-    const rows = await db.catalog_index.toArray();
-    expect(rows).toHaveLength(1);
-    expect(rows[0].file.series.map((e: { series_title: string }) => e.series_title).sort()).toEqual(
-      ['Bad Entry', 'Good First', 'Good Last']
-    );
-  });
+      // Names are cached for all three regardless — the catalog can still list
+      // and search a series whose facts failed to apply. One row, holding the
+      // whole file.
+      const rows = await db.catalog_index.toArray();
+      expect(rows).toHaveLength(1);
+      expect(
+        rows[0].file.series.map((e: { series_title: string }) => e.series_title).sort()
+      ).toEqual(['Bad Entry', 'Good First', 'Good Last']);
+      // The first case pays the module graph's cold import (~2 s on an idle
+      // machine; the second runs in milliseconds), which a busy machine pushed
+      // past the 5 s default.
+    },
+    30_000
+  );
 
   /**
    * THE COMMIT BOUND, and why it is counted in write transactions rather than

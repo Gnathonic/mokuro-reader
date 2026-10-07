@@ -754,8 +754,95 @@ export function updateProgress(
   }
 }
 
+/**
+ * The "Jump" answer to a cross-device position offer (phase 2c): move to the
+ * page another device stopped on. A user action, so it carries a fresh stamp
+ * and wins the next merge — but it is not reading: no page view, and no
+ * completion notice (a `completed` it brings along is only recorded).
+ */
+export function jumpToPosition(
+  volume: string,
+  progress: number,
+  chars: number,
+  completed: boolean,
+  /** When that reading happened: a completion it brings is dated then, not now. */
+  readAt: number = Date.now()
+) {
+  _volumesInternal.update((prev) => {
+    const current = prev[volume] || new VolumeData();
+    const nowIso = new Date().toISOString();
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        progress,
+        chars,
+        completed,
+        completedAt: completed
+          ? (current.completedAt ?? new Date(readAt).toISOString())
+          : current.completedAt,
+        lastProgressUpdate: nowIso
+      })
+    };
+  });
+}
+
+/**
+ * Re-apply a restart another device made that this position never saw (phase
+ * 2c: a reset wins). The pass the restart ended was archived where it happened
+ * (the merge keeps both sides' `archivedReads`); THIS device's reading since,
+ * done without seeing the restart, is archived here. Fresh stamp, so it wins
+ * the next merge.
+ */
+export function applyMissedRestart(volume: string) {
+  _volumesInternal.update((prev) => {
+    const current = prev[volume];
+    if (!current || current.deletedOn) return prev;
+    const now = Date.now();
+    // This device read on without seeing the restart: that pass is real reading
+    // (and may have finished the volume), so it is archived like any restarted
+    // pass, its completion date with it.
+    const archived =
+      current.progress > 0 || current.completed
+        ? [
+            ...current.archivedReads,
+            {
+              at: now,
+              pages: current.progress,
+              chars: current.chars,
+              completed: current.completed,
+              ...(current.completedAt ? { completedAt: current.completedAt } : {})
+            }
+          ]
+        : current.archivedReads;
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        archivedReads: archived,
+        progress: 0,
+        chars: 0,
+        completed: false,
+        completedAt: undefined,
+        lastProgressUpdate: new Date(now).toISOString()
+      })
+    };
+  });
+}
+
+/**
+ * A deliberate position change from outside the reader settles any pending
+ * cross-device position offer up to now (phase 2c): otherwise a page another
+ * device stopped on would be offered back against the user's own choice.
+ */
+function settlePositionOffers(volume: string, page: number): void {
+  const now = Date.now();
+  void recordEvent({ kind: 'position', volume, answer: 'stay', through: now, page }, now);
+}
+
 export function markVolumeAsComplete(volumeUuid: string, pageCount: number, totalChars?: number) {
   updateProgress(volumeUuid, pageCount, totalChars, true);
+  settlePositionOffers(volumeUuid, pageCount);
 }
 
 export function markVolumeAsUnread(volumeUuid: string) {
@@ -764,6 +851,7 @@ export function markVolumeAsUnread(volumeUuid: string) {
   // and rides the fresh `lastProgressUpdate` that call just wrote, so the
   // clear wins the next merge.
   updateProgress(volumeUuid, 0, 0, false);
+  settlePositionOffers(volumeUuid, 0);
   _volumesInternal.update((prev) => {
     const current = prev[volumeUuid];
     if (!current?.completedAt) return prev;

@@ -528,7 +528,74 @@ describe('page turns after the cut-over', () => {
     volumesWithTrash.set({
       v: new VolumeData({ progress: 2, forgotAt: new Date(5000).toISOString() })
     });
-    _setHistoryTurnsForTest(new Map([['v', [[1000, 1, 10], [6000, 2, 20]]]]));
+    _setHistoryTurnsForTest(
+      new Map([
+        [
+          'v',
+          [
+            [1000, 1, 10],
+            [6000, 2, 20]
+          ]
+        ]
+      ])
+    );
     expect(get(volumes).v.recentPageTurns).toEqual([[6000, 2, 20]]);
+  });
+});
+
+describe('cross-device position writers', () => {
+  beforeEach(() => clearVolumes());
+
+  it('jumpToPosition moves the position, wins the next merge, and fires no completion', async () => {
+    const { jumpToPosition, registerCompletionListener } = await import('./volume-data');
+    const heard: string[] = [];
+    const stop = registerCompletionListener((id: string) => heard.push(id));
+    volumesWithTrash.set({
+      v: new VolumeData({
+        progress: 41,
+        chars: 410,
+        lastProgressUpdate: '2026-01-01T00:00:00.000Z'
+      })
+    });
+    jumpToPosition('v', 120, 1200, true, Date.UTC(2026, 2, 5));
+    const r = get(volumesWithTrash).v;
+    expect(r).toMatchObject({ progress: 120, chars: 1200, completed: true });
+    expect(Date.parse(r.lastProgressUpdate)).toBeGreaterThan(
+      Date.parse('2026-01-01T00:00:00.000Z')
+    );
+    // Dated when that reading finished, not when the jump happened.
+    expect(r.completedAt).toBe(new Date(Date.UTC(2026, 2, 5)).toISOString());
+    expect(heard).toEqual([]);
+    stop?.();
+  });
+
+  it('applyMissedRestart resets the position without archiving another pass', async () => {
+    const { applyMissedRestart } = await import('./volume-data');
+    volumesWithTrash.set({
+      v: new VolumeData({
+        progress: 61,
+        chars: 610,
+        completed: true,
+        completedAt: '2026-01-01T00:00:00.000Z',
+        archivedReads: [{ at: 5000, pages: 200, chars: 2000, completed: true }],
+        lastProgressUpdate: '2026-01-01T00:00:00.000Z'
+      })
+    });
+    applyMissedRestart('v');
+    const r = get(volumesWithTrash).v;
+    expect(r).toMatchObject({ progress: 0, chars: 0, completed: false });
+    expect(r.completedAt).toBeUndefined();
+    // This device's own pass (read without seeing the restart) is archived,
+    // with its completion date, so goal credit survives.
+    expect(r.archivedReads).toHaveLength(2);
+    expect(r.archivedReads[1]).toMatchObject({
+      pages: 61,
+      chars: 610,
+      completed: true,
+      completedAt: '2026-01-01T00:00:00.000Z'
+    });
+    expect(Date.parse(r.lastProgressUpdate)).toBeGreaterThan(
+      Date.parse('2026-01-01T00:00:00.000Z')
+    );
   });
 });

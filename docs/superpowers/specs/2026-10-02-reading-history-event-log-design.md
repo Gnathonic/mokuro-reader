@@ -319,3 +319,19 @@ Built on the event log, these come for free or nearly: device ids, reset events 
 `adjust`), and order-independent merging. A stress review of doing it inside `volume-data.json` found 31
 failure scenarios (three devices, Stay undone by a stale copy, clock skew, resets with no trace in
 turns), which is why it waits for phase 2.
+
+**As built (phase 2c, `position-offer.ts`).** "The other device's final position" is decided from what
+the newest device saw, so no pair of devices is ever compared by clock alone:
+
+- The newest device is the one with the newest native page view. Another device's final view is offered
+  unless the newest device viewed that page AFTER it (a handoff, or a stale device the sync on open
+  corrected) or that view already contains the current position. Its page is the view's first page.
+- A restart is followed once any device views page 1 (or earlier) after it. An unfollowed restart from
+  another device, with the newest device reading on after it, is re-applied on this device (the pass is
+  archived, then zeroed; never under an open reader) and recorded as a `position` event with answer
+  `reset`; the newest device's reading, as it stood at that answer, is then offered.
+- Answers are `position` events `{answer: jump|stay|reset, through, page}`. Nothing at or before the
+  latest `jump`/`stay` `through` is offered again; reading from before the newest restart or reset is the
+  previous pass. A `forget` hides everything before it, and converted legacy events never drive offers.
+- The durable "dismissed up to" is that `through` — a synced event, not a per-device flag, so a stale
+  copy cannot bring an answered offer back. Marking a volume read or unread records `stay`.
