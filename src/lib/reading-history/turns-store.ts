@@ -40,6 +40,11 @@ export function historyTurnsReady(): Promise<void> {
   return ready;
 }
 
+/** Every volume history holds events for. */
+export function historyVolumes(): string[] {
+  return [...eventsByVolume.keys()];
+}
+
 /** Every kept event of one volume (empty until loaded). */
 export function getVolumeEvents(volume: string): ReadingEvent[] {
   return [...(eventsByVolume.get(volume)?.values() ?? [])];
