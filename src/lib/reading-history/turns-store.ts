@@ -12,8 +12,7 @@ import type { ReadingEvent } from './types';
  * re-projected, at most once per microtask, so a page view costs one volume
  * and a large import one emission.
  *
- * Only `page` and `forget` events are kept in memory: nothing else changes a
- * projection.
+ * `adjust` events are not kept in memory: nothing here reads them yet.
  */
 
 const store = writable<Map<string, PageTurn[]>>(new Map());
@@ -41,6 +40,30 @@ export function historyTurnsReady(): Promise<void> {
   return ready;
 }
 
+/** Every kept event of one volume (empty until loaded). */
+export function getVolumeEvents(volume: string): ReadingEvent[] {
+  return [...(eventsByVolume.get(volume)?.values() ?? [])];
+}
+
+type ChangeListener = (volumes: Set<string> | 'all') => void;
+const changeListeners = new Set<ChangeListener>();
+
+/** Hear which volumes' events changed: `'all'` after a full load. */
+export function onHistoryChanged(listener: ChangeListener): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
+function announce(volumes: Set<string> | 'all'): void {
+  for (const listener of changeListeners) {
+    try {
+      listener(volumes);
+    } catch (error) {
+      console.warn('[reading-history] history change listener failed:', error);
+    }
+  }
+}
+
 /** The volume's projected turns; `undefined` until loaded, or when it has none. */
 export function getHistoryTurns(volume: string): PageTurn[] | undefined {
   return loaded ? get(store).get(volume) : undefined;
@@ -63,6 +86,7 @@ export async function loadHistoryTurns(db?: HistoryDexie): Promise<void> {
     }
     loaded = true;
     store.set(next);
+    announce('all');
   } finally {
     arrivedWhileLoading = null;
     resolveReady();
@@ -70,7 +94,9 @@ export async function loadHistoryTurns(db?: HistoryDexie): Promise<void> {
 }
 
 function keep(event: ReadingEvent): void {
-  if (event.kind !== 'page' && event.kind !== 'forget') return;
+  // `page`/`forget` shape the projection; `restart`/`position` decide
+  // cross-device position offers (`position-offer.ts`). `adjust` is phase 3.
+  if (event.kind === 'adjust') return;
   let events = eventsByVolume.get(event.volume);
   if (!events) eventsByVolume.set(event.volume, (events = new Map()));
   events.set(`${event.device}\u0000${event.seq}`, event);
@@ -115,6 +141,7 @@ function flushPending(): void {
     }
     return next;
   });
+  announce(touched);
 }
 
 /** Test hook: a loaded projection, without a database. */

@@ -90,4 +90,34 @@ describe('projected turns store', () => {
       [2000, 2, 30]
     ]);
   });
+
+  it('keeps restart and position events for a volume, and says which volumes changed', async () => {
+    const { getVolumeEvents, onHistoryChanged } = await import('./turns-store');
+    await loadHistoryTurns(db);
+    const changed: Array<Set<string> | 'all'> = [];
+    const stop = onHistoryChanged((v) => changed.push(v));
+    await recordEvent({ kind: 'restart', volume: 'r' }, 1000, db);
+    await recordEvent(
+      { kind: 'position', volume: 'r', answer: 'stay', through: 5, page: 3 },
+      2000,
+      db
+    );
+    await Promise.resolve();
+    expect(
+      getVolumeEvents('r')
+        .map((e) => e.kind)
+        .sort()
+    ).toEqual(['position', 'restart']);
+    expect(changed.at(-1)).toEqual(new Set(['r']));
+    stop();
+  });
+
+  it('a full load reports every volume as changed', async () => {
+    const { onHistoryChanged } = await import('./turns-store');
+    const changed: Array<Set<string> | 'all'> = [];
+    const stop = onHistoryChanged((v) => changed.push(v));
+    await loadHistoryTurns(db);
+    expect(changed).toEqual(['all']);
+    stop();
+  });
 });
