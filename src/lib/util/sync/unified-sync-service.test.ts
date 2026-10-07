@@ -1366,3 +1366,108 @@ describe('reading on two devices survives the volume merge', () => {
     expect(onA).toEqual(onB);
   });
 });
+
+describe('syncProvider — one sync per provider at a time', () => {
+  /** Holds every sync step open until released, counting the runs. */
+  function holdSteps() {
+    const runs: Array<{ silent?: boolean }> = [];
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => (release = resolve));
+    const volumeData = vi.spyOn(svc, 'syncVolumeData').mockImplementation(async () => {
+      runs.push({});
+      await gate;
+    });
+    const rest = ['syncProfiles', 'syncGoals', 'syncReadingHistory']
+      .filter((name) => typeof svc[name] === 'function')
+      .map((name) => vi.spyOn(svc, name).mockImplementation(async () => {}));
+    return {
+      runs,
+      release() {
+        release();
+        gate = new Promise<void>((resolve) => (release = resolve));
+      },
+      restore() {
+        volumeData.mockRestore();
+        rest.forEach((spy) => spy.mockRestore());
+      }
+    };
+  }
+
+  const provider = (type: string) =>
+    ({ type, name: type, isAuthenticated: () => true }) as unknown as SyncProvider;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('runs a sync requested mid-run after it, never beside it', async () => {
+    const steps = holdSteps();
+    try {
+      const fs = provider('filesystem');
+      const first = svc.syncProvider(fs);
+      await settle();
+      const second = svc.syncProvider(fs);
+      await settle();
+      // Overlapping, the second sync downloaded a file the first then rewrote.
+      expect(steps.runs).toHaveLength(1);
+
+      steps.release();
+      await first;
+      await settle();
+      expect(steps.runs).toHaveLength(2);
+      steps.release();
+      expect(await second).toEqual({ provider: 'filesystem', success: true });
+    } finally {
+      steps.restore();
+    }
+  });
+
+  it('folds every request made mid-run into ONE follow-up', async () => {
+    const steps = holdSteps();
+    try {
+      const fs = provider('filesystem');
+      const first = svc.syncProvider(fs);
+      await settle();
+      const queued = [svc.syncProvider(fs), svc.syncProvider(fs), svc.syncProvider(fs)];
+      steps.release();
+      await first;
+      await settle();
+      steps.release();
+      await Promise.all(queued);
+      expect(steps.runs).toHaveLength(2);
+    } finally {
+      steps.restore();
+    }
+  });
+
+  it('keeps isSyncing up until the follow-up has finished', async () => {
+    const steps = holdSteps();
+    try {
+      const fs = provider('filesystem');
+      const first = svc.syncProvider(fs);
+      await settle();
+      const second = svc.syncProvider(fs);
+      steps.release();
+      await first;
+      await settle();
+      expect(get(svc.isSyncing)).toBe(true);
+      steps.release();
+      await second;
+      expect(get(svc.isSyncing)).toBe(false);
+    } finally {
+      steps.restore();
+    }
+  });
+
+  it('does not hold up a different provider', async () => {
+    const steps = holdSteps();
+    try {
+      const first = svc.syncProvider(provider('filesystem'));
+      await settle();
+      const other = svc.syncProvider(provider('webdav'));
+      await settle();
+      expect(steps.runs).toHaveLength(2);
+      steps.release();
+      await Promise.all([first, other]);
+    } finally {
+      steps.restore();
+    }
+  });
+});
