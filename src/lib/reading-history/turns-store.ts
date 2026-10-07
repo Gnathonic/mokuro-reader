@@ -81,6 +81,8 @@ export async function loadHistoryTurns(db?: HistoryDexie): Promise<void> {
     const target = db ?? (await import('./history-db')).historyDb();
     const all = await target.reading_events.toArray();
     eventsByVolume.clear();
+    // Bumped, not cleared: a memo keyed on an old version must not match.
+    for (const volume of versions.keys()) versions.set(volume, (versions.get(volume) ?? 0) + 1);
     for (const event of all) keep(event);
     // Committed after our read began: their notifications came here instead.
     for (const event of arrivedWhileLoading) keep(event);
@@ -98,6 +100,13 @@ export async function loadHistoryTurns(db?: HistoryDexie): Promise<void> {
   }
 }
 
+const versions = new Map<string, number>();
+
+/** Bumped whenever a volume's kept events change (for memoised derivations). */
+export function volumeEventsVersion(volume: string): number {
+  return versions.get(volume) ?? 0;
+}
+
 function keep(event: ReadingEvent): void {
   // `page`/`forget` shape the projection; `restart`/`position` decide
   // cross-device position offers (`position-offer.ts`). `adjust` is phase 3.
@@ -105,6 +114,7 @@ function keep(event: ReadingEvent): void {
   let events = eventsByVolume.get(event.volume);
   if (!events) eventsByVolume.set(event.volume, (events = new Map()));
   events.set(`${event.device}\u0000${event.seq}`, event);
+  versions.set(event.volume, (versions.get(event.volume) ?? 0) + 1);
 }
 
 onEventsRecorded((events) => {

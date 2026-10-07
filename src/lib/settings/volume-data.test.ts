@@ -557,13 +557,14 @@ describe('cross-device position writers', () => {
         lastProgressUpdate: '2026-01-01T00:00:00.000Z'
       })
     });
-    jumpToPosition('v', 120, 1200, true);
+    jumpToPosition('v', 120, 1200, true, Date.UTC(2026, 2, 5));
     const r = get(volumesWithTrash).v;
     expect(r).toMatchObject({ progress: 120, chars: 1200, completed: true });
     expect(Date.parse(r.lastProgressUpdate)).toBeGreaterThan(
       Date.parse('2026-01-01T00:00:00.000Z')
     );
-    expect(r.completedAt).toBeTruthy();
+    // Dated when that reading finished, not when the jump happened.
+    expect(r.completedAt).toBe(new Date(Date.UTC(2026, 2, 5)).toISOString());
     expect(heard).toEqual([]);
     stop?.();
   });
@@ -584,7 +585,15 @@ describe('cross-device position writers', () => {
     const r = get(volumesWithTrash).v;
     expect(r).toMatchObject({ progress: 0, chars: 0, completed: false });
     expect(r.completedAt).toBeUndefined();
-    expect(r.archivedReads).toHaveLength(1);
+    // This device's own pass (read without seeing the restart) is archived,
+    // with its completion date, so goal credit survives.
+    expect(r.archivedReads).toHaveLength(2);
+    expect(r.archivedReads[1]).toMatchObject({
+      pages: 61,
+      chars: 610,
+      completed: true,
+      completedAt: '2026-01-01T00:00:00.000Z'
+    });
     expect(Date.parse(r.lastProgressUpdate)).toBeGreaterThan(
       Date.parse('2026-01-01T00:00:00.000Z')
     );

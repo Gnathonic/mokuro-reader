@@ -119,4 +119,31 @@ describe('position store', () => {
     // A new offer (newer reading) starts over.
     expect(shouldPrompt('v', { ...offer, at: 888 })).toBe(true);
   });
+
+  it('waits while the reader has the volume open, and applies the reset once it closes (I5)', async () => {
+    const { currentView } = await import('$lib/util/hash-router');
+    currentView.set({ type: 'reader', seriesId: 's', volumeId: 'v' });
+    volumesWithTrash.set({ v: new VolumeData({ progress: 61, chars: 610 }) });
+    const restart: ReadingEvent = {
+      device: 'phone',
+      seq: ++seq,
+      t: 5_000,
+      kind: 'restart',
+      volume: 'v'
+    };
+    await store([view('phone', 0, 200), restart, view(own, 10_000, 60), view(own, 11_000, 61)]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(get(volumesWithTrash).v.progress).toBe(61);
+    currentView.set({ type: 'catalog' });
+    await vi.waitFor(() => expect(get(volumesWithTrash).v.progress).toBe(0));
+  });
+
+  it('returns the same plan object while nothing about the volume changed', async () => {
+    volumesWithTrash.set({ v: new VolumeData({ progress: 41 }) });
+    await store([view('phone', 0, 120), view(own, 10_000, 41)]);
+    const first = positionPlanFor('v');
+    expect(positionPlanFor('v')).toBe(first);
+    await store([view(own, 12_000, 42)]);
+    expect(positionPlanFor('v')).not.toBe(first);
+  });
 });

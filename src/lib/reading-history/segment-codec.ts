@@ -14,8 +14,10 @@ import type { EventPayload, Layout, Orientation, PositionPayload, ReadingEvent }
  *   3 forget  [3, dSeq, dT, vol, before]
  *   4 position [4, dSeq, dT, vol, answer (0 jump, 1 stay, 2 reset), through, page]
  *
- * A new event kind or field is a new `format`; a reader refuses formats it does
- * not know (the importer keeps the old stamp, so an updated app retries).
+ * A new event kind or field AFTER a release is a new `format`; a reader refuses
+ * formats it does not know (the importer keeps the old stamp, so an updated app
+ * retries). Format 1 was settled before any release read segments, `position`
+ * (kind 4) included.
  */
 export const HISTORY_SEGMENT_FORMAT = 1;
 

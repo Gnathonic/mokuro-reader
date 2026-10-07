@@ -120,7 +120,7 @@ describe('planPosition', () => {
     });
   });
 
-  it('once the reset is applied, only the offer of the missed reading remains', () => {
+  it('once the reset is applied, only the offer of the missed reading remains (from the restarting device)', () => {
     const events = [
       ...run('phone', 0, [200]),
       restart('phone', 5_000),
@@ -150,5 +150,87 @@ describe('planPosition', () => {
     expect(
       planPosition([legacy, ...run('laptop', 10_000, [40])], { progress: 40 }, 'laptop')
     ).toEqual({});
+  });
+
+  // ---- review fixes ----
+
+  it('a handoff after a restart is not a missed restart (C1)', () => {
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('phone', 6_000, [1, 2, 30]),
+      ...run('laptop', 20_000, [30, 31, 40])
+    ];
+    expect(planPosition(events, { progress: 40 }, 'laptop')).toEqual({});
+  });
+
+  it('converted (legacy) restarts never trigger a reset (C2)', () => {
+    const legacyRestart = {
+      device: 'legacy:v',
+      seq: ++seq,
+      t: 5_000,
+      kind: 'restart',
+      volume: 'v'
+    } as ReadingEvent;
+    const events = [legacyRestart, ...run('laptop', 10_000, [81, 82])];
+    expect(planPosition(events, { progress: 82 }, 'laptop')).toEqual({});
+  });
+
+  it('a forget hides everything recorded before it (I1)', () => {
+    const forget = {
+      device: 'phone',
+      seq: ++seq,
+      t: 8_000,
+      kind: 'forget',
+      volume: 'v',
+      before: 8_000
+    } as ReadingEvent;
+    const events = [...run('phone', 0, [120]), forget, ...run('laptop', 10_000, [3, 4])];
+    expect(planPosition(events, { progress: 4 }, 'laptop')).toEqual({});
+  });
+
+  it('a spread showing the current page is the same position; offers anchor on the first page (I2)', () => {
+    const events = [view('phone', 0, 10, 11), ...run('laptop', 10_000, [10])];
+    expect(planPosition(events, { progress: 10 }, 'laptop')).toEqual({});
+    const stale = [view('phone', 0, 50, 51), ...run('laptop', 10_000, [10])];
+    expect(planPosition(stale, { progress: 10 }, 'laptop').offer?.page).toBe(50);
+  });
+
+  it('after a reset is applied, only the reading before it is offered — not every later turn (I2)', () => {
+    const base = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(12_000, 5_000, 'reset')
+    ];
+    expect(planPosition(base, { progress: 0 }, 'laptop').offer).toMatchObject({
+      page: 61,
+      at: 11_000
+    });
+    // The laptop keeps reading (from its old place) before answering: still the same offer.
+    const more = [...base, ...run('laptop', 13_000, [62])];
+    expect(planPosition(more, { progress: 62 }, 'laptop').offer).toMatchObject({
+      page: 61,
+      at: 11_000
+    });
+    // Answered: nothing more, whatever is read later.
+    expect(planPosition([...more, answer(15_000, 11_000)], { progress: 62 }, 'laptop')).toEqual({});
+  });
+
+  it('a restart after the newest view sets the floor: older reading is not offered back (I4)', () => {
+    const events = [
+      ...run('phone', 0, [50]),
+      ...run('laptop', 10_000, [20]),
+      restart('laptop', 20_000)
+    ];
+    expect(planPosition(events, { progress: 0 }, 'laptop')).toEqual({});
+  });
+
+  it('equal timestamps resolve by seq, deterministically', () => {
+    const a = view('phone', 1000, 120);
+    const b = view('laptop', 1000, 40);
+    const p1 = planPosition([a, b], { progress: 40 }, 'laptop');
+    const p2 = planPosition([b, a], { progress: 40 }, 'laptop');
+    expect(p1).toEqual(p2);
   });
 });

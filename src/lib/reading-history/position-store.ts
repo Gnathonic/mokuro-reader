@@ -4,7 +4,14 @@ import { isVolumeComplete } from '$lib/util/volume-helpers';
 import type { HistoryDexie } from './history-db';
 import { planPosition, type PositionOffer, type PositionPlan } from './position-offer';
 import { getOrCreateDeviceId, recordEvent } from './record';
-import { getVolumeEvents, historyTurns, historyVolumes, onHistoryChanged } from './turns-store';
+import {
+  getVolumeEvents,
+  historyTurns,
+  historyVolumes,
+  onHistoryChanged,
+  volumeEventsVersion
+} from './turns-store';
+import { currentView } from '$lib/util/hash-router';
 
 /**
  * Cross-device position offers in the app (phase 2c): the plan for a volume
@@ -21,18 +28,54 @@ export async function initPositionOffers(db?: HistoryDexie): Promise<void> {
   const target = db ?? (await import('./history-db')).historyDb();
   ownDevice.set(await getOrCreateDeviceId(target));
   stopListening?.();
-  stopListening = onHistoryChanged((volumes) =>
+  const stopHistory = onHistoryChanged((volumes) =>
     applyMissedRestarts(volumes === 'all' ? historyVolumes() : [...volumes], target)
   );
+  // A reset never moves the page under an open reader: it waits for the reader
+  // to leave that volume.
+  let openVolume = openVolumeOf(get(currentView));
+  const stopView = currentView.subscribe((view) => {
+    const next = openVolumeOf(view);
+    const closed = openVolume;
+    openVolume = next;
+    if (closed && closed !== next) applyMissedRestarts([closed], target);
+  });
+  stopListening = () => {
+    stopHistory();
+    stopView();
+  };
   applyMissedRestarts(historyVolumes(), target);
 }
 
-/** The plan for one volume right now (`{}` when there is nothing to offer). */
+const EMPTY: PositionPlan = Object.freeze({}) as PositionPlan;
+const memo = new Map<
+  string,
+  { version: number; progress: number; own: string; plan: PositionPlan }
+>();
+
+/**
+ * The plan for one volume right now (`{}` when there is nothing to offer).
+ * Memoised on the volume's events version and position, so a store emission
+ * that did not touch this volume returns the SAME object (no re-render).
+ */
 export function positionPlanFor(volume: string): PositionPlan {
   const own = get(ownDevice);
   const record = get(volumesWithTrash)[volume];
-  if (!own || !record || record.deletedOn) return {};
-  return planPosition(getVolumeEvents(volume), record, own);
+  if (!own || !record || record.deletedOn) return EMPTY;
+  const version = volumeEventsVersion(volume);
+  const cached = memo.get(volume);
+  if (
+    cached &&
+    cached.version === version &&
+    cached.progress === record.progress &&
+    cached.own === own
+  ) {
+    return cached.plan;
+  }
+  const computed = planPosition(getVolumeEvents(volume), record, own);
+  const plan = computed.offer || computed.reset ? computed : EMPTY;
+  memo.set(volume, { version, progress: record.progress, own, plan });
+  return plan;
 }
 
 /** The plan for one volume, kept current as history and the record change. */
@@ -53,7 +96,13 @@ export async function answerPosition(
   db?: HistoryDexie
 ): Promise<void> {
   if (answer === 'jump') {
-    jumpToPosition(volume, offer.page, offer.chars, isVolumeComplete(offer.page, pageCount));
+    jumpToPosition(
+      volume,
+      offer.page,
+      offer.chars,
+      isVolumeComplete(offer.page, pageCount),
+      offer.at
+    );
   }
   await recordEvent(
     { kind: 'position', volume, answer, through: offer.at, page: offer.page },
@@ -62,8 +111,15 @@ export async function answerPosition(
   );
 }
 
+function openVolumeOf(view: unknown): string | null {
+  const v = view as { type?: string; volumeId?: string };
+  return v.type === 'reader' || v.type === 'volume-text' ? (v.volumeId ?? null) : null;
+}
+
 function applyMissedRestarts(volumes: string[], db: HistoryDexie): void {
+  const open = openVolumeOf(get(currentView));
   for (const volume of volumes) {
+    if (volume === open) continue;
     const reset = positionPlanFor(volume).reset;
     if (!reset) continue;
     const key = `${volume}|${reset.at}`;
@@ -137,5 +193,6 @@ export function _resetPositionStoreForTests(): void {
   stopListening?.();
   stopListening = null;
   applying.clear();
+  memo.clear();
   ownDevice.set(null);
 }
