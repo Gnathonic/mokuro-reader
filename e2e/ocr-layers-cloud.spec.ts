@@ -333,11 +333,15 @@ test.describe('OCR layers in the cloud (stubbed WebDAV)', () => {
       'volume',
       'volume_uuid'
     ]);
-    // Stamped: a second relist pushes nothing more.
-    const putsBefore = stub.log.filter((l) => l.method === 'PUT').length;
+    // Stamped: a second relist pushes no layer file again. (Only layer files
+    // count: the cover backfill uploads `Vol 1.webp` on its own schedule, and
+    // under load it landed inside this window.)
+    const layerPuts = () =>
+      stub.log.filter((l) => l.method === 'PUT' && /\.mokuro(\.gz)?$/.test(l.path)).length;
+    const putsBefore = layerPuts();
     await relist(page);
     await page.waitForTimeout(1500);
-    expect(stub.log.filter((l) => l.method === 'PUT').length).toBe(putsBefore);
+    expect(layerPuts()).toBe(putsBefore);
 
     // RENAME: the layer file MOVES with the volume; the primary is regenerated.
     stub.log.length = 0;

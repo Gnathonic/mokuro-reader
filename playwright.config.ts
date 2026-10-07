@@ -5,7 +5,10 @@ const port = Number(process.env.E2E_PORT ?? 5173);
 
 export default defineConfig({
   testDir: 'e2e',
-  timeout: 30000,
+  // Generous per test: import, sync and reader flows run several seconds each,
+  // and a loaded machine (16 workers on one dev server, or other work) can
+  // triple that. A real failure still fails — just later.
+  timeout: 90000,
   use: {
     baseURL: `http://localhost:${port}`,
     viewport: { width: 1920, height: 1080 },
