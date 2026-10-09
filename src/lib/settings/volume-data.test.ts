@@ -31,7 +31,6 @@ import {
   isOrphanedVolumeData,
   parseVolumesFromJson,
   registerCompletionListener,
-  totalStats,
   updateProgress,
   volumes,
   volumesWithTrash
@@ -120,26 +119,6 @@ describe('registerCompletionListener', () => {
     updateProgress('vol-1', 1, 0, false);
     updateProgress('vol-1', 200, 5000, true);
     expect(listener).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('totalStats with archived reads', () => {
-  beforeEach(() => clearVolumes());
-
-  it('keeps lifetime chars/pages after a restart', () => {
-    updateProgress('vol-1', 200, 5000, true);
-    const before = get(totalStats)!;
-    expect(before.charsRead).toBe(5000);
-    expect(before.pagesRead).toBe(200);
-
-    archiveAndResetVolumes(['vol-1']);
-    const after = get(totalStats)!;
-    expect(after.charsRead).toBe(5000);
-    expect(after.pagesRead).toBe(200);
-    expect(after.completed).toBe(0);
-
-    updateProgress('vol-1', 50, 1000, false); // re-reading
-    expect(get(totalStats)!.charsRead).toBe(6000);
   });
 });
 
@@ -597,5 +576,34 @@ describe('cross-device position writers', () => {
     expect(Date.parse(r.lastProgressUpdate)).toBeGreaterThan(
       Date.parse('2026-01-01T00:00:00.000Z')
     );
+  });
+});
+
+describe('VolumeData legacyStats', () => {
+  it('round-trips a valid snapshot and drops a malformed one', () => {
+    const snap = { time_ms: 60_000, chars: 5, before: 1_700_000_000_000 };
+    const ok = new VolumeData({ legacyStats: snap });
+    expect(ok.legacyStats).toEqual(snap);
+    expect(JSON.parse(JSON.stringify(ok)).legacyStats).toEqual(snap);
+    const zero = { time_ms: 0, chars: 0, before: 5 };
+    expect(JSON.parse(JSON.stringify(new VolumeData({ legacyStats: zero }))).legacyStats).toEqual(
+      zero
+    );
+    for (const bad of [
+      { time_ms: -1, chars: 0, before: 5 },
+      { time_ms: 1, chars: 'x', before: 5 },
+      { time_ms: 1, chars: 1 }
+    ]) {
+      expect(new VolumeData({ legacyStats: bad } as never).legacyStats).toBeUndefined();
+    }
+  });
+});
+
+describe('parseVolumesFromJson reserved sections', () => {
+  it('never reads the tracking section as a volume', () => {
+    const parsed = parseVolumesFromJson(
+      JSON.stringify({ 'vol-1': { progress: 2 }, tracking: { idle: { lastUpdated: 'x' } } })
+    );
+    expect(Object.keys(parsed)).toEqual(['vol-1']);
   });
 });

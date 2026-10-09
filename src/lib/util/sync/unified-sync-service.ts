@@ -15,6 +15,15 @@ import {
   type SeriesReadingStates,
   type VolumeData
 } from '$lib/settings';
+import {
+  TRACKING_SECTION_KEY,
+  detectBogusTrackingKeys,
+  mergeTrackingSections,
+  parseTrackingSection,
+  setTrackingStates,
+  trackingState,
+  type TrackingState
+} from '$lib/settings/tracking-data';
 import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
@@ -138,6 +147,12 @@ export interface CloudVolumeDataFile {
    * Drives FORFEIT-ON-BOGUS in `syncVolumeData`'s cloud-vs-local merge.
    */
   bogusSeriesKeys?: ReadonlySet<string>;
+  /** The `tracking` section (idle cutoff), parsed; same rules as `series`. */
+  tracking?: TrackingState;
+  /** The `tracking` section as the surviving copy holds it (see `rawSeries`). */
+  rawTracking?: unknown;
+  /** Tracking keys whose raw stamp needed clamping, in any readable copy. */
+  bogusTrackingKeys?: ReadonlySet<string>;
 }
 
 /**
@@ -499,7 +514,9 @@ class UnifiedSyncService {
             return {
               volumes: parseVolumesFromJson(JSON.stringify(data)),
               series: parseSeriesSection(data?.[SERIES_SECTION_KEY]),
-              rawSeries: data?.[SERIES_SECTION_KEY]
+              rawSeries: data?.[SERIES_SECTION_KEY],
+              tracking: parseTrackingSection(data?.[TRACKING_SECTION_KEY]),
+              rawTracking: data?.[TRACKING_SECTION_KEY]
             };
           })
         );
@@ -538,6 +555,32 @@ class UnifiedSyncService {
         );
         const bogusSeriesKeys = new Set<string>();
         for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
+
+        // The tracking section folds the same way as the series section below:
+        // newest per key, and a copy's bogus key never beats another copy's
+        // honest one.
+        const perCopyBogusTracking = readable.map((entry) =>
+          detectBogusTrackingKeys(entry.result.value.rawTracking)
+        );
+        const bogusTrackingKeys = new Set<string>();
+        for (const keys of perCopyBogusTracking) for (const key of keys) bogusTrackingKeys.add(key);
+        let mergedTracking: TrackingState = {};
+        readable.forEach((entry, i) => {
+          const own = entry.result.value.tracking ?? {};
+          const foldable: TrackingState = {};
+          for (const key of Object.keys(own) as Array<keyof TrackingState>) {
+            const honestElsewhere =
+              perCopyBogusTracking[i].has(key) &&
+              readable.some(
+                (_other, j) =>
+                  j !== i &&
+                  readable[j].result.value.tracking?.[key] &&
+                  !perCopyBogusTracking[j].has(key)
+              );
+            if (!honestElsewhere) foldable[key] = own[key];
+          }
+          mergedTracking = mergeTrackingSections(mergedTracking, foldable, perCopyBogusTracking[i]);
+        });
 
         // Merge all readable copies volume by volume (`mergeVolumePair`)
         const merged: Record<string, VolumeData> = {};
@@ -600,7 +643,10 @@ class UnifiedSyncService {
           volumes: merged,
           series: mergedSeries,
           rawSeries: readable[0].result.value.rawSeries,
-          bogusSeriesKeys
+          bogusSeriesKeys,
+          tracking: mergedTracking,
+          rawTracking: readable[0].result.value.rawTracking,
+          bogusTrackingKeys
         };
       }
 
@@ -608,11 +654,15 @@ class UnifiedSyncService {
       const blob = await provider.downloadFile(volumeDataFiles[0]);
       const data = await this.blobToJson(blob);
       const rawSeries = data?.[SERIES_SECTION_KEY];
+      const rawTracking = data?.[TRACKING_SECTION_KEY];
       return {
         volumes: parseVolumesFromJson(JSON.stringify(data)),
         series: parseSeriesSection(rawSeries),
         rawSeries,
-        bogusSeriesKeys: detectBogusSeriesKeys(rawSeries)
+        bogusSeriesKeys: detectBogusSeriesKeys(rawSeries),
+        tracking: parseTrackingSection(rawTracking),
+        rawTracking,
+        bogusTrackingKeys: detectBogusTrackingKeys(rawTracking)
       };
     } catch (error) {
       // File not found is not an error
@@ -666,10 +716,18 @@ class UnifiedSyncService {
    * series-level state produces byte-identical files to before this existed —
    * no spurious upload, no mtime churn on every other device.
    */
-  private composeVolumeDataFile(volumes: any, series: SeriesReadingStates): any {
-    return Object.keys(series).length > 0
-      ? { ...volumes, [SERIES_SECTION_KEY]: series }
-      : { ...volumes };
+  private composeVolumeDataFile(
+    volumes: any,
+    series: SeriesReadingStates,
+    tracking: unknown = {}
+  ): any {
+    const file: Record<string, unknown> = { ...volumes };
+    if (Object.keys(series).length > 0) file[SERIES_SECTION_KEY] = series;
+    // Same rule for the tracking section: absent until the user sets something.
+    if (tracking && typeof tracking === 'object' && Object.keys(tracking).length > 0) {
+      file[TRACKING_SECTION_KEY] = tracking;
+    }
+    return file;
   }
 
   /**
@@ -695,6 +753,11 @@ class UnifiedSyncService {
       cloud?.series ?? {},
       cloud?.bogusSeriesKeys ?? new Set()
     );
+    const mergedTracking = mergeTrackingSections(
+      get(trackingState),
+      cloud?.tracking ?? {},
+      cloud?.bogusTrackingKeys ?? new Set()
+    );
 
     // Step 4: Purge tombstones older than 30 days
     const purgedVolumes = this.purgeTombstones(mergedVolumes);
@@ -702,6 +765,7 @@ class UnifiedSyncService {
     // Step 5: Update local storage (including tombstones)
     volumesWithTrash.set(purgedVolumes);
     setSeriesReadingStates(mergedSeries);
+    setTrackingStates(mergedTracking);
 
     // Step 5b: page turns the merge brought back (an older client, a device
     // that has not converted yet) become reading-history events and leave the
@@ -719,10 +783,11 @@ class UnifiedSyncService {
     // sanitized value looks like a match and never heals. `stableStringify`
     // sorts keys, so two devices whose maps hold identical state in different
     // insertion orders stop re-uploading the same bytes at each other.
-    const nextFile = this.composeVolumeDataFile(finalVolumes, mergedSeries);
+    const nextFile = this.composeVolumeDataFile(finalVolumes, mergedSeries, mergedTracking);
     const cloudFile = this.composeVolumeDataFile(
       cloud?.volumes ?? {},
-      (cloud?.rawSeries as SeriesReadingStates) ?? {}
+      (cloud?.rawSeries as SeriesReadingStates) ?? {},
+      cloud?.rawTracking ?? {}
     );
 
     if (stableStringify(nextFile) !== stableStringify(cloudFile)) {

@@ -20,8 +20,19 @@ export interface VolumeSpeedData {
   isMilestone?: number; // 1, 5, 10, 25, 50, 100
 }
 
+/**
+ * A volume's time and characters as the stats count them — from reading
+ * history plus its pre-history baseline (`figuresFor` in the stats store).
+ */
+export type FiguresOf = (
+  volumeId: string,
+  data: Record<string, any>
+) => { timeMs: number; chars: number; skippedChars: number };
+
 export interface ReadingSpeedStats {
   totalTimeMinutes: number;
+  /** Characters on pages only skimmed past (never counted as read). */
+  totalSkippedChars: number;
   averageSpeed: number;
   currentSpeed: number;
   volumesCompleted: number;
@@ -47,7 +58,8 @@ export interface SeriesSpeedInfo {
  */
 export function processVolumeSpeedData(
   volumesData: Record<string, any>,
-  catalog: VolumeMetadata[]
+  catalog: VolumeMetadata[],
+  figuresOf: FiguresOf
 ): VolumeSpeedData[] {
   const completed: VolumeSpeedData[] = [];
 
@@ -68,15 +80,14 @@ export function processVolumeSpeedData(
       continue;
     }
 
+    const figures = figuresOf(volumeId, data);
+
     // Must have character data
-    if (data.chars === 0) {
+    if (figures.chars === 0) {
       continue;
     }
 
-    // Both legacy and new volumes have timeReadInMinutes
-    // Legacy: 60-second granularity timer
-    // New: Same field, but more accurate with session-based tracking
-    const timeInMinutes = data.timeReadInMinutes || 0;
+    const timeInMinutes = figures.timeMs / 60_000;
 
     // Must have time data
     if (timeInMinutes === 0) {
@@ -85,7 +96,7 @@ export function processVolumeSpeedData(
 
     // Calculate CPM and filter out unreasonably fast reads
     // This filters out volumes that were marked as read without actually reading them
-    const cpm = data.chars / timeInMinutes;
+    const cpm = figures.chars / timeInMinutes;
     if (cpm <= 0 || cpm > 1000) {
       continue;
     }
@@ -131,7 +142,7 @@ export function processVolumeSpeedData(
       seriesId,
       completionDate,
       durationMinutes: timeInMinutes,
-      charsRead: data.chars,
+      charsRead: figures.chars,
       charsPerMinute: cpm,
       isPersonalBest: false,
       isSlowest: false,
@@ -188,24 +199,26 @@ export function calculateReadingSpeedStats(
   volumeData: VolumeSpeedData[],
   currentPersonalizedSpeed: number,
   allVolumesData: Record<string, any>,
+  figuresOf: FiguresOf,
   isSpeedPersonalized: boolean = true
 ): ReadingSpeedStats {
   // Count volumes and aggregate stats from ALL volumes
   let allCompletedCount = 0;
   let allCharsRead = 0;
   let allVolumesTime = 0;
+  let allSkipped = 0;
 
   for (const [volumeId, data] of Object.entries(allVolumesData)) {
     // Skip entries with empty/invalid volume IDs (bug from null timer)
     if (!volumeId) continue;
 
-    // Use timeReadInMinutes directly (already updated by Timer component)
-    allVolumesTime += data.timeReadInMinutes || 0;
-
+    const figures = figuresOf(volumeId, data);
+    allVolumesTime += figures.timeMs / 60_000;
     // Count chars from ALL volumes (not just completed)
-    allCharsRead += data.chars || 0;
+    allCharsRead += figures.chars;
+    allSkipped += figures.skippedChars;
 
-    if (data.completed && data.chars > 0) {
+    if (data.completed && figures.chars > 0) {
       allCompletedCount++;
     }
   }
@@ -213,6 +226,7 @@ export function calculateReadingSpeedStats(
   if (volumeData.length === 0 && allCharsRead === 0 && allVolumesTime === 0) {
     return {
       totalTimeMinutes: 0,
+      totalSkippedChars: allSkipped,
       averageSpeed: 0,
       currentSpeed: currentPersonalizedSpeed,
       volumesCompleted: 0,
@@ -395,6 +409,7 @@ export function calculateReadingSpeedStats(
 
   return {
     totalTimeMinutes: totalTime,
+    totalSkippedChars: allSkipped,
     averageSpeed: avgSpeed,
     currentSpeed: currentPersonalizedSpeed,
     volumesCompleted: volumeData.length,

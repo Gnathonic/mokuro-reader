@@ -4,9 +4,9 @@ import { getHistoryTurns, historyTurns } from '$lib/reading-history/turns-store'
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
-import { getEffectiveReadingTime } from '$lib/util/reading-speed';
 import { hasFreshPassSince } from '$lib/util/volume-helpers';
 import { SERIES_SECTION_KEY } from './series-data';
+import { TRACKING_SECTION_KEY } from './tracking-data';
 import { recordEvent } from '$lib/reading-history/record';
 
 // Deep equality check for settings objects
@@ -80,6 +80,29 @@ function isArchivedRead(value: unknown): value is ArchivedRead {
   );
 }
 
+/**
+ * Reading done before reading history existed (phase 3a): a SNAPSHOT of the
+ * record's old figures — the retired minute counter and the characters it
+ * held, lifetime — frozen at `before`. Stats show `max(old, what events from
+ * before the freeze explain) + everything after it` (`figuresFor`), so events
+ * another device recorded before the freeze, arriving later, explain the old
+ * figure instead of adding to it. Taken once per record; a merge keeps the
+ * later snapshot; a forget drops it.
+ */
+export interface LegacyStats {
+  time_ms: number;
+  chars: number;
+  /** Epoch ms of the freeze: events from before it are already in the old figures. */
+  before: number;
+}
+
+function parseLegacyStats(value: unknown): LegacyStats | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { time_ms, chars, before } = value as Record<string, unknown>;
+  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  return ok(time_ms) && ok(chars) && ok(before) ? { time_ms, chars, before } : undefined;
+}
+
 type Progress = Record<string, number> | undefined;
 type VolumeDataJSON = {
   progress?: number;
@@ -105,6 +128,7 @@ type VolumeDataJSON = {
   deletedOn?: string; // ISO datetime when metadata was deleted
   /** When this volume's stats were last forgotten (see the class field). */
   forgotAt?: string;
+  legacyStats?: LegacyStats;
 };
 
 export class VolumeData implements VolumeDataJSON {
@@ -143,6 +167,7 @@ export class VolumeData implements VolumeDataJSON {
    * back once both records are live again.
    */
   forgotAt?: string;
+  legacyStats?: LegacyStats;
 
   constructor(data: Partial<VolumeDataJSON> = {}) {
     this.progress = typeof data.progress === 'number' ? data.progress : 0;
@@ -178,6 +203,7 @@ export class VolumeData implements VolumeDataJSON {
       typeof data.forgotAt === 'string' && !Number.isNaN(Date.parse(data.forgotAt))
         ? data.forgotAt
         : undefined;
+    this.legacyStats = parseLegacyStats(data.legacyStats);
 
     // Only store explicitly set values, leave others undefined to fall back to global defaults
     this.settings = {};
@@ -259,6 +285,9 @@ export class VolumeData implements VolumeDataJSON {
       result.archivedReads = this.archivedReads;
     }
 
+    // Kept even when zero: it records that the freeze happened.
+    if (this.legacyStats) result.legacyStats = this.legacyStats;
+
     // Include volume metadata if present (for self-describing sync data)
     if (this.series_uuid) {
       result.series_uuid = this.series_uuid;
@@ -285,13 +314,6 @@ export class VolumeData implements VolumeDataJSON {
   }
 }
 
-type TotalStats = {
-  completed: number;
-  pagesRead: number;
-  charsRead: number;
-  minutesRead: number;
-};
-
 type Volumes = Record<string, VolumeData>;
 
 export function parseVolumesFromJson(storedData: string): Volumes {
@@ -302,7 +324,10 @@ export function parseVolumesFromJson(storedData: string): Volumes {
         // Filter out entries with empty/invalid volume IDs (bug cleanup), and the
         // reserved `series` section — series-level reading state shares this file
         // but is not a volume (see `$lib/settings/series-data`).
-        .filter(([key]) => key && key.length > 0 && key !== SERIES_SECTION_KEY)
+        .filter(
+          ([key]) =>
+            key && key.length > 0 && key !== SERIES_SECTION_KEY && key !== TRACKING_SECTION_KEY
+        )
         .map(([key, value]) => [key, VolumeData.fromJSON(value)])
     );
   } catch {
@@ -906,27 +931,6 @@ export function archiveAndResetVolumes(volumeUuids: string[]) {
   for (const uuid of archived) void recordEvent({ kind: 'restart', volume: uuid }, now);
 }
 
-export function startCount(volume: string) {
-  // Guard against null/undefined/empty volume IDs
-  if (!volume) {
-    console.warn('[startCount] Called with empty volume ID, skipping timer');
-    return undefined;
-  }
-
-  return setInterval(() => {
-    _volumesInternal.update((prev) => {
-      const currentVolume = prev[volume] || new VolumeData();
-      return {
-        ...prev,
-        [volume]: new VolumeData({
-          ...currentVolume,
-          timeReadInMinutes: currentVolume.timeReadInMinutes + 1
-        })
-      };
-    });
-  }, 60 * 1000);
-}
-
 // Save internal store (including tombstones) to localStorage
 _volumesInternal.subscribe((volumes) => {
   if (browser) {
@@ -1044,37 +1048,6 @@ export function calculatePagesReadInPeriod(
 
   return uniquePages.size;
 }
-
-export const totalStats = derived([volumes, globalSettings], ([$volumes, $settings]) => {
-  if ($volumes) {
-    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
-
-    return Object.values($volumes).reduce<TotalStats>(
-      (stats, volumeData) => {
-        if (volumeData.completed) {
-          stats.completed++;
-        }
-
-        stats.pagesRead += volumeData.progress;
-        stats.minutesRead += getEffectiveReadingTime(volumeData, idleTimeoutMs);
-        stats.charsRead += volumeData.chars;
-        // Lifetime totals keep every archived pass (restart series never lowers them)
-        for (const read of volumeData.archivedReads) {
-          stats.pagesRead += read.pages;
-          stats.charsRead += read.chars;
-        }
-
-        return stats;
-      },
-      {
-        charsRead: 0,
-        completed: 0,
-        pagesRead: 0,
-        minutesRead: 0
-      }
-    );
-  }
-});
 
 // mangaStats moved to series page to avoid circular dependency with currentSeries
 // volumeStats moved to Timer component to avoid circular dependency with currentVolume

@@ -243,6 +243,15 @@ device.
   shown as a section of the existing reading-speed page. Comparisons should prefer like-for-like material
   (the same series, or volumes read on several devices) and always show the sample size behind them.
 
+**As built (phase 3a, `stats-engine.ts` / `stats-store.ts`).** Constants: `k` = 3, floor 60 s, ceiling
+30 min, no-data cap 5 min, skip above 1500 cpm, pace = median of the newest 500 views of ≥ 20 characters
+(≥ 30 of them). Until phase 3b asks, a view over its cap counts typical time. Reading from before history
+is kept as a per-volume snapshot in the synced record (`legacyStats`: the old minute counter and lifetime
+characters, frozen at a time `before`); stats show `max(old, history before the freeze) + history after`,
+so events recorded before the freeze but arriving later explain the old figure rather than add to it. It
+is the `adjust` conversion described under Migration, done as record state so it also syncs where history
+cannot (bunko before 0.7.1). The manual override lives in `volume-data.json` → `tracking.idle`.
+
 ## Migration and compatibility
 
 - **Old data** (converted in **phase 2**, at the cut-over where page turns stop being written, never

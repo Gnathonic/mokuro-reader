@@ -145,6 +145,16 @@
       .then(({ initPositionOffers }) => initPositionOffers(historyDb()))
       .catch((error) => console.warn('[reading-history] position offers failed:', error));
 
+    // Reading stats from history (phase 3a). Each record's reading from
+    // before history is frozen into a snapshot right away (it needs no
+    // events: history from before the freeze is set against it as it arrives).
+    void import('$lib/reading-history/stats-store')
+      .then(({ initReadingStats, freezeLegacyBaselines }) => {
+        freezeLegacyBaselines();
+        initReadingStats();
+      })
+      .catch((error) => console.warn('[reading-history] stats failed to start:', error));
+
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')
       .then((m) => m.pruneExpiredCloudCovers())

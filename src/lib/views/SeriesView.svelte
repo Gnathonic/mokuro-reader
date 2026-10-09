@@ -8,7 +8,7 @@
   import { promptExtraction, promptSeriesEditor } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { volumes, progress, settings } from '$lib/settings';
-  import { getEffectiveReadingTime } from '$lib/util/reading-speed';
+  import { figuresFor, readingStats, seriesReadingSpeed } from '$lib/reading-history/stats-store';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
@@ -47,17 +47,14 @@
   let mangaStats = $derived.by(() => {
     if (!manga || manga.length === 0 || !$volumes) return null;
 
-    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
-
     return manga
       .map((vol) => vol.volume_uuid)
       .reduce(
         (stats, volumeId) => {
           const volumeData = $volumes[volumeId];
-          const timeReadInMinutes = volumeData
-            ? getEffectiveReadingTime(volumeData, idleTimeoutMs)
-            : 0;
-          const chars = volumeData?.chars || 0;
+          const figures = figuresFor($readingStats, volumeId, volumeData);
+          const timeReadInMinutes = figures.minutes;
+          const chars = figures.chars;
           const completed = volumeData?.completed ? 1 : 0;
 
           stats.timeReadInMinutes = stats.timeReadInMinutes + timeReadInMinutes;
@@ -121,8 +118,12 @@
     const charsRemaining = totalSeriesChars - charsReadInSeries;
     if (charsRemaining <= 0) return null;
 
-    // Get personalized reading speed
-    const readingSpeed = $personalizedReadingSpeed;
+    // This series' own speed once it has enough reading, else the recent speed
+    const readingSpeed = seriesReadingSpeed(
+      $readingStats,
+      manga.map((vol) => vol.volume_uuid),
+      $personalizedReadingSpeed
+    );
     if (!readingSpeed.isPersonalized || readingSpeed.charsPerMinute <= 0) {
       return null;
     }

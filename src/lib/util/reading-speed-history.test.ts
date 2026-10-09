@@ -1,12 +1,28 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  processVolumeSpeedData,
-  calculateReadingSpeedStats,
+  processVolumeSpeedData as processRows,
+  calculateReadingSpeedStats as calculateStats,
   getSeriesSpeedInfo,
   formatDuration,
   formatRelativeDate,
   type VolumeSpeedData
 } from './reading-speed-history';
+
+// These fixtures describe each volume's figures in its record's own fields;
+// the app passes the event-based figures (`figuresFor`) instead.
+const recordFigures = (_id: string, d: Record<string, any>) => ({
+  timeMs: (d.timeReadInMinutes ?? 0) * 60_000,
+  chars: d.chars ?? 0,
+  skippedChars: d.skippedChars ?? 0
+});
+const processVolumeSpeedData = (data: Record<string, any>, catalog: any[]) =>
+  processRows(data, catalog, recordFigures);
+const calculateReadingSpeedStats = (
+  rows: VolumeSpeedData[],
+  speed: number,
+  all: Record<string, any>,
+  personalized = true
+) => calculateStats(rows, speed, all, recordFigures, personalized);
 
 // Mock the updateVolumeMetadata function to avoid side effects
 vi.mock('$lib/settings/volume-data', () => ({
@@ -874,4 +890,31 @@ describe('processVolumeSpeedData', () => {
 
   // Note: Thumbnail test removed - thumbnails are now loaded from a separate table (volume_thumbnails)
   // and must be loaded asynchronously by the UI component displaying the reading speed history
+});
+
+describe('figures come from the accessor, not the record', () => {
+  const record = {
+    completed: true,
+    chars: 99,
+    timeReadInMinutes: 1,
+    lastProgressUpdate: '2026-01-01T00:00:00Z',
+    volume_title: 'V',
+    series_title: 'S',
+    series_uuid: 's'
+  };
+  const fromEvents = () => ({ timeMs: 30 * 60_000, chars: 6000, skippedChars: 400 });
+
+  it('rows use the event time and characters', () => {
+    const [row] = processRows({ v: record }, [], fromEvents);
+    expect(row.durationMinutes).toBe(30);
+    expect(row.charsRead).toBe(6000);
+    expect(row.charsPerMinute).toBe(200);
+  });
+
+  it('totals use them too, and count skipped characters apart', () => {
+    const stats = calculateStats([], 100, { v: record }, fromEvents);
+    expect(stats.totalTimeMinutes).toBe(30);
+    expect(stats.totalCharsRead).toBe(6000);
+    expect(stats.totalSkippedChars).toBe(400);
+  });
 });

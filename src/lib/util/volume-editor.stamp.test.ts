@@ -24,7 +24,6 @@ const stamp = () => get(volumesWithTrash)['vol-1'].lastProgressUpdate;
 describe('volume editor saves are dated so they win the next merge', () => {
   it.each([
     ['progress', { progress: 60 }],
-    ['time read', { timeReadInMinutes: 45 }],
     ['completion', { completed: true }]
   ])('a %s edit moves the stamp', (_label, updates) => {
     const before = Date.now();
@@ -36,10 +35,15 @@ describe('volume editor saves are dated so they win the next merge', () => {
     updateVolumeStats('vol-1', {
       progress: 58,
       chars: 8700,
-      timeReadInMinutes: 30,
+      timeRead: { from: 30, to: 30 },
       completed: false,
       volume_title: 'Renamed'
     });
+    expect(stamp()).toBe(OLD);
+  });
+
+  it('a time edit is history (an adjust event), not record state: no stamp', () => {
+    updateVolumeStats('vol-1', { timeRead: { from: 30, to: 45 } });
     expect(stamp()).toBe(OLD);
   });
 });

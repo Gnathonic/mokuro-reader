@@ -18,7 +18,8 @@
   } from '$lib/settings';
   import { volumes as catalogVolumes } from '$lib/catalog';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
-  import { getEffectiveReadingTime } from '$lib/util/reading-speed';
+  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
+  import { seriesSpeeds } from '$lib/reading-history/series-speeds';
   import type { VolumeMetadata, Page } from '$lib/types';
   import { promptConfirmation, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
@@ -246,11 +247,7 @@
   let isBackedUp = $derived(cloudFile !== undefined);
 
   // Time statistics
-  let timeReadMinutes = $derived.by(() => {
-    if (!volumeData) return 0;
-    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
-    return getEffectiveReadingTime(volumeData, idleTimeoutMs);
-  });
+  let timeReadMinutes = $derived(figuresFor($readingStats, volume_uuid, volumeData).minutes);
   let charsRead = $derived(volumeData?.chars || 0);
   let fallbackTotalChars = $state<number | undefined>(undefined);
   let totalCharsRequestId = 0;
@@ -422,8 +419,8 @@
     // Try to get reading speed from multiple sources, in order of preference:
     let charsPerMinute = 0;
 
-    // 1. Use personalized reading speed if available
-    const readingSpeed = $personalizedReadingSpeed;
+    // 1. This series' own speed once it has enough reading, else the recent speed
+    const readingSpeed = $seriesSpeeds.get(volume.series_uuid) ?? $personalizedReadingSpeed;
     if (readingSpeed.isPersonalized && readingSpeed.charsPerMinute > 0) {
       charsPerMinute = readingSpeed.charsPerMinute;
     }

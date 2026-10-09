@@ -37,7 +37,9 @@ vi.mock('$lib/settings', async () => {
     // not a volume.
     parseVolumesFromJson: vi.fn((json: string) =>
       Object.fromEntries(
-        Object.entries(JSON.parse(json)).filter(([key]) => key !== seriesData.SERIES_SECTION_KEY)
+        Object.entries(JSON.parse(json)).filter(
+          ([key]) => key !== seriesData.SERIES_SECTION_KEY && key !== 'tracking'
+        )
       )
     )
   };
@@ -104,6 +106,7 @@ import {
   volumesWithTrash
 } from '$lib/settings';
 import { goalsWithTrash, setGoalSections } from '$lib/goals/goals-data';
+import { setTrackingStates, trackingState } from '$lib/settings/tracking-data';
 import { goalSnapshots, setGoalSnapshots } from '$lib/goals/snapshots-store';
 import { setVolumeDeadlineEntries } from '$lib/goals/goal-settings';
 
@@ -1636,5 +1639,87 @@ describe('syncProvider — one sync per provider at a time', () => {
     } finally {
       steps.restore();
     }
+  });
+});
+
+describe('the tracking section of volume-data.json (idle cutoff)', () => {
+  const T1 = '2026-10-01T00:00:00.000Z';
+  const T2 = '2026-10-02T00:00:00.000Z';
+  const file = (tracking: unknown) => ({
+    'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+    ...(tracking === undefined ? {} : { tracking })
+  });
+  function provider(body: unknown) {
+    const uploads: Array<Record<string, any>> = [];
+    const p = {
+      type: 'mega',
+      downloadFile: vi.fn(async () => jsonBlob(body)),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+    return { uploads, provider: p };
+  }
+
+  beforeEach(() => {
+    setLocalVolumes({});
+    setSeriesReadingStates({});
+    setTrackingStates({});
+  });
+
+  it('is read out of the file, never as a volume', async () => {
+    stubCache([fileMeta('only')]);
+    const { provider: p } = provider(file({ idle: { override_minutes: 9, lastUpdated: T1 } }));
+    const result = await svc.downloadVolumeDataFile(p);
+    expect(Object.keys(result.volumes)).toEqual(['vol-1']);
+    expect(result.tracking).toEqual({ idle: { override_minutes: 9, lastUpdated: T1 } });
+  });
+
+  it('uploads a local override the cloud lacks', async () => {
+    setTrackingStates({ idle: { override_minutes: 12, lastUpdated: T2 } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(file(undefined));
+    await svc.syncVolumeData(p);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking).toEqual({ idle: { override_minutes: 12, lastUpdated: T2 } });
+  });
+
+  it('adopts a newer cloud override and uploads nothing when they agree', async () => {
+    setTrackingStates({ idle: { override_minutes: 12, lastUpdated: T1 } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({ idle: { override_minutes: 20, lastUpdated: T2 } })
+    );
+    await svc.syncVolumeData(p);
+    expect(get(trackingState).idle?.override_minutes).toBe(20);
+    expect(uploads).toHaveLength(0);
+  });
+
+  it('heals a future-stamped cloud entry and keeps the pending local edit', async () => {
+    setTrackingStates({ idle: { override_minutes: 12, lastUpdated: T2 } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({ idle: { override_minutes: 3, lastUpdated: '2999-01-01T00:00:00.000Z' } })
+    );
+    await svc.syncVolumeData(p);
+    expect(get(trackingState).idle?.override_minutes).toBe(12);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking.idle).toEqual({ override_minutes: 12, lastUpdated: T2 });
+  });
+
+  it('folds duplicate copies, newest wins', async () => {
+    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    stubCache([first, second]);
+    const p = makeProvider(async (f) =>
+      jsonBlob(
+        file(
+          f.fileId === 'first'
+            ? { idle: { override_minutes: 4, lastUpdated: T1 } }
+            : { idle: { override_minutes: 8, lastUpdated: T2 } }
+        )
+      )
+    );
+    const result = await svc.downloadVolumeDataFile(p);
+    expect(result.tracking.idle.override_minutes).toBe(8);
   });
 });

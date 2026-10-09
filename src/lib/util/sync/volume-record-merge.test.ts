@@ -203,3 +203,42 @@ describe('applyForgetHorizon', () => {
     ]);
   });
 });
+
+describe('legacyStats (the pre-event snapshot)', () => {
+  const older = { time_ms: 600_000, chars: 900, before: 1000 };
+  const newer = { time_ms: 300_000, chars: 1200, before: 2000 };
+
+  it('keeps the later snapshot, whichever side wins', () => {
+    const one = mergeLiveVolumeRecords({ legacyStats: older }, { legacyStats: newer });
+    const two = mergeLiveVolumeRecords({ legacyStats: newer }, { legacyStats: older });
+    expect(one.legacyStats).toEqual(newer);
+    expect(two.legacyStats).toEqual(newer);
+  });
+
+  it('breaks a tie on the freeze time by the larger figures, on either side', () => {
+    const a = { time_ms: 5, chars: 1, before: 7 };
+    const b = { time_ms: 9, chars: 1, before: 7 };
+    expect(mergeLiveVolumeRecords({ legacyStats: a }, { legacyStats: b }).legacyStats).toEqual(b);
+    expect(mergeLiveVolumeRecords({ legacyStats: b }, { legacyStats: a }).legacyStats).toEqual(b);
+  });
+
+  it('carries the loser snapshot onto a winner without one', () => {
+    expect(mergeLiveVolumeRecords({ progress: 3 }, { legacyStats: older }).legacyStats).toEqual(
+      older
+    );
+  });
+
+  it('is dropped by a forget', () => {
+    expect(
+      applyForgetHorizon({ legacyStats: older }, '2026-01-01T00:00:00.000Z').legacyStats
+    ).toBeUndefined();
+  });
+
+  it('a stale live copy cannot bring a forgotten snapshot back', () => {
+    const forgot = '2026-05-01T00:00:00.000Z';
+    const reread = { progress: 2, forgotAt: forgot };
+    const stale = { progress: 40, legacyStats: older };
+    expect(mergeLiveVolumeRecords(reread, stale).legacyStats).toBeUndefined();
+    expect(mergeLiveVolumeRecords(stale, reread).legacyStats).toBeUndefined();
+  });
+});
