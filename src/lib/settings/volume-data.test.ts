@@ -611,3 +611,12 @@ describe('VolumeData legacyStats', () => {
     expect(bad.legacyStats).toBeUndefined();
   });
 });
+
+describe('parseVolumesFromJson reserved sections', () => {
+  it('never reads the tracking section as a volume', () => {
+    const parsed = parseVolumesFromJson(
+      JSON.stringify({ 'vol-1': { progress: 2 }, tracking: { idle: { lastUpdated: 'x' } } })
+    );
+    expect(Object.keys(parsed)).toEqual(['vol-1']);
+  });
+});

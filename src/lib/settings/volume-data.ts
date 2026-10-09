@@ -7,6 +7,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { getEffectiveReadingTime } from '$lib/util/reading-speed';
 import { hasFreshPassSince } from '$lib/util/volume-helpers';
 import { SERIES_SECTION_KEY } from './series-data';
+import { TRACKING_SECTION_KEY } from './tracking-data';
 import { recordEvent } from '$lib/reading-history/record';
 
 // Deep equality check for settings objects
@@ -327,7 +328,10 @@ export function parseVolumesFromJson(storedData: string): Volumes {
         // Filter out entries with empty/invalid volume IDs (bug cleanup), and the
         // reserved `series` section — series-level reading state shares this file
         // but is not a volume (see `$lib/settings/series-data`).
-        .filter(([key]) => key && key.length > 0 && key !== SERIES_SECTION_KEY)
+        .filter(
+          ([key]) =>
+            key && key.length > 0 && key !== SERIES_SECTION_KEY && key !== TRACKING_SECTION_KEY
+        )
         .map(([key, value]) => [key, VolumeData.fromJSON(value)])
     );
   } catch {
