@@ -55,7 +55,7 @@ export function projectVolume(list: ReadingEvent[]): PageTurn[] {
     (e.device.startsWith(LEGACY_DEVICE_PREFIX) ? legacy : native).push(e);
   }
 
-  const covered = coverage(native);
+  const covered = nativeCoverage(native);
   const turns: PageTurn[] = native.map((n) => [
     n.t,
     n.last_page,
@@ -72,8 +72,13 @@ export function projectVolume(list: ReadingEvent[]): PageTurn[] {
   return turns.sort((a, b) => a[0] - b[0]);
 }
 
-/** Disjoint, sorted intervals around every native view; binary-searched. */
-function coverage(native: Extract<ReadingEvent, { kind: 'page' }>[]): (t: number) => boolean {
+/**
+ * Whether a legacy turn at `t` is reading a native view already recorded:
+ * disjoint, sorted intervals around every native view, binary-searched.
+ */
+export function nativeCoverage(
+  native: Extract<ReadingEvent, { kind: 'page' }>[]
+): (t: number) => boolean {
   const spans = native
     .map(
       (n) =>
