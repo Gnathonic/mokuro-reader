@@ -31,7 +31,6 @@ import {
   isOrphanedVolumeData,
   parseVolumesFromJson,
   registerCompletionListener,
-  totalStats,
   updateProgress,
   volumes,
   volumesWithTrash
@@ -120,26 +119,6 @@ describe('registerCompletionListener', () => {
     updateProgress('vol-1', 1, 0, false);
     updateProgress('vol-1', 200, 5000, true);
     expect(listener).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('totalStats with archived reads', () => {
-  beforeEach(() => clearVolumes());
-
-  it('keeps lifetime chars/pages after a restart', () => {
-    updateProgress('vol-1', 200, 5000, true);
-    const before = get(totalStats)!;
-    expect(before.charsRead).toBe(5000);
-    expect(before.pagesRead).toBe(200);
-
-    archiveAndResetVolumes(['vol-1']);
-    const after = get(totalStats)!;
-    expect(after.charsRead).toBe(5000);
-    expect(after.pagesRead).toBe(200);
-    expect(after.completed).toBe(0);
-
-    updateProgress('vol-1', 50, 1000, false); // re-reading
-    expect(get(totalStats)!.charsRead).toBe(6000);
   });
 });
 

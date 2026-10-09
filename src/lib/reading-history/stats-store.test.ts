@@ -23,6 +23,7 @@ import {
   initReadingStats,
   readingStats,
   recentReadingSpeed,
+  seriesReadingSpeed,
   seriesSpeed
 } from './stats-store';
 import type { ReadingEvent } from './types';
@@ -212,5 +213,27 @@ describe('speed', () => {
       Array.from({ length: 40 }, (_, i) => view('a', 200 * MIN + i * 3 * MIN, i + 40, 200, MIN))
     );
     expect(seriesSpeed(get(readingStats), ['a'])?.charsPerMinute).toBe(200);
+  });
+});
+
+describe('seriesReadingSpeed', () => {
+  const fallback = {
+    charsPerMinute: 150,
+    isPersonalized: true,
+    confidence: 'low' as const,
+    sessionsUsed: 3
+  };
+
+  it("is the series' own speed with an hour of its reading", async () => {
+    await record(Array.from({ length: 70 }, (_, i) => view('a', i * 3 * MIN, i + 1, 200, MIN)));
+    expect(seriesReadingSpeed(get(readingStats), ['a'], fallback)).toMatchObject({
+      charsPerMinute: 200,
+      isPersonalized: true,
+      confidence: 'low'
+    });
+  });
+
+  it('falls back to the recent speed without enough series data', () => {
+    expect(seriesReadingSpeed(get(readingStats), ['nothing'], fallback)).toBe(fallback);
   });
 });

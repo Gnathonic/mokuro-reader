@@ -2,7 +2,8 @@
   import { startCount, volumes, settings } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { currentVolume, currentVolumeCharacterCount } from '$lib/catalog';
-  import { calculateVolumeTimeToFinish, getEffectiveReadingTime } from '$lib/util/reading-speed';
+  import { calculateVolumeTimeToFinish } from '$lib/util/reading-speed';
+  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
@@ -20,16 +21,16 @@
 
   // Local volumeStats to avoid circular dependency with currentVolume
   const volumeStats = derived(
-    [currentVolume, volumes, settings],
-    ([$currentVolume, $volumes, $settings]) => {
+    [currentVolume, volumes, readingStats],
+    ([$currentVolume, $volumes, $readingStats]) => {
       if ($currentVolume && $volumes && $volumes[$currentVolume.volume_uuid]) {
         const volumeData = $volumes[$currentVolume.volume_uuid];
-        const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
 
         return {
           chars: volumeData.chars,
           completed: volumeData.completed,
-          timeReadInMinutes: getEffectiveReadingTime(volumeData, idleTimeoutMs),
+          timeReadInMinutes: figuresFor($readingStats, $currentVolume.volume_uuid, volumeData)
+            .minutes,
           progress: volumeData.progress,
           lastProgressUpdate: volumeData.lastProgressUpdate
         };

@@ -4,7 +4,6 @@ import { getHistoryTurns, historyTurns } from '$lib/reading-history/turns-store'
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
-import { getEffectiveReadingTime } from '$lib/util/reading-speed';
 import { hasFreshPassSince } from '$lib/util/volume-helpers';
 import { SERIES_SECTION_KEY } from './series-data';
 import { TRACKING_SECTION_KEY } from './tracking-data';
@@ -310,13 +309,6 @@ export class VolumeData implements VolumeDataJSON {
     return result;
   }
 }
-
-type TotalStats = {
-  completed: number;
-  pagesRead: number;
-  charsRead: number;
-  minutesRead: number;
-};
 
 type Volumes = Record<string, VolumeData>;
 
@@ -1073,37 +1065,6 @@ export function calculatePagesReadInPeriod(
 
   return uniquePages.size;
 }
-
-export const totalStats = derived([volumes, globalSettings], ([$volumes, $settings]) => {
-  if ($volumes) {
-    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
-
-    return Object.values($volumes).reduce<TotalStats>(
-      (stats, volumeData) => {
-        if (volumeData.completed) {
-          stats.completed++;
-        }
-
-        stats.pagesRead += volumeData.progress;
-        stats.minutesRead += getEffectiveReadingTime(volumeData, idleTimeoutMs);
-        stats.charsRead += volumeData.chars;
-        // Lifetime totals keep every archived pass (restart series never lowers them)
-        for (const read of volumeData.archivedReads) {
-          stats.pagesRead += read.pages;
-          stats.charsRead += read.chars;
-        }
-
-        return stats;
-      },
-      {
-        charsRead: 0,
-        completed: 0,
-        pagesRead: 0,
-        minutesRead: 0
-      }
-    );
-  }
-});
 
 // mangaStats moved to series page to avoid circular dependency with currentSeries
 // volumeStats moved to Timer component to avoid circular dependency with currentVolume

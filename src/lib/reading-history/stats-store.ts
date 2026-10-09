@@ -170,6 +170,37 @@ export function seriesSpeed(stats: ReadingStatsState, volumeIds: string[]): Spee
   return estimate.minutes >= SERIES_MIN_MINUTES ? estimate : null;
 }
 
+function confidenceFor(minutes: number): ReadingSpeedResult['confidence'] {
+  const windowMinutes = RECENT_WINDOW_MS / 60_000;
+  return minutes >= windowMinutes * 0.75
+    ? 'high'
+    : minutes >= windowMinutes * 0.5
+      ? 'medium'
+      : minutes >= RECENT_MIN_MINUTES
+        ? 'low'
+        : 'none';
+}
+
+/**
+ * The speed for time left in a series: the series' own, once it has an hour
+ * of reading (spec: "Time left uses the series' own speed once it has enough
+ * data"), else `fallback` (the recent speed).
+ */
+export function seriesReadingSpeed(
+  stats: ReadingStatsState,
+  volumeIds: string[],
+  fallback: ReadingSpeedResult
+): ReadingSpeedResult {
+  const own = seriesSpeed(stats, volumeIds);
+  if (!own) return fallback;
+  return {
+    charsPerMinute: Math.round(own.charsPerMinute),
+    isPersonalized: true,
+    confidence: confidenceFor(own.minutes),
+    sessionsUsed: volumeIds.filter((id) => (stats.byVolume.get(id)?.samples.length ?? 0) > 0).length
+  };
+}
+
 /**
  * The reading speed estimates use: the newest 8 hours of counted reading
  * across every volume and device. With under half an hour of it, completed
@@ -202,18 +233,10 @@ export function recentReadingSpeed(
   }
 
   if (minutes <= 0) return DEFAULT_SPEED;
-  const windowMinutes = RECENT_WINDOW_MS / 60_000;
   return {
     charsPerMinute: Math.round(chars / minutes),
     isPersonalized: true,
-    confidence:
-      minutes >= windowMinutes * 0.75
-        ? 'high'
-        : minutes >= windowMinutes * 0.5
-          ? 'medium'
-          : minutes >= RECENT_MIN_MINUTES
-            ? 'low'
-            : 'none',
+    confidence: confidenceFor(minutes),
     sessionsUsed: used
   };
 }
