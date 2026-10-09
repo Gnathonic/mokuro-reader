@@ -31,7 +31,6 @@ vi.mock('$lib/settings', async () => {
     disableAnimations: false,
     textBoxContextMenu: false,
     continuousScroll: false,
-    inactivityTimeoutMinutes: 5,
     nightMode: false,
     invertColors: false,
     grayscale: false,

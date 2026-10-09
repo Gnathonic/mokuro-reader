@@ -927,27 +927,6 @@ export function archiveAndResetVolumes(volumeUuids: string[]) {
   for (const uuid of archived) void recordEvent({ kind: 'restart', volume: uuid }, now);
 }
 
-export function startCount(volume: string) {
-  // Guard against null/undefined/empty volume IDs
-  if (!volume) {
-    console.warn('[startCount] Called with empty volume ID, skipping timer');
-    return undefined;
-  }
-
-  return setInterval(() => {
-    _volumesInternal.update((prev) => {
-      const currentVolume = prev[volume] || new VolumeData();
-      return {
-        ...prev,
-        [volume]: new VolumeData({
-          ...currentVolume,
-          timeReadInMinutes: currentVolume.timeReadInMinutes + 1
-        })
-      };
-    });
-  }, 60 * 1000);
-}
-
 // Save internal store (including tombstones) to localStorage
 _volumesInternal.subscribe((volumes) => {
   if (browser) {

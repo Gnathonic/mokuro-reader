@@ -92,7 +92,8 @@
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache, matchFilesToPages } from '$lib/reader/image-cache';
   import { cancelInkPrefetch, prefetchPageInk } from '$lib/reader/ink-color';
-  import { ViewTracker } from '$lib/reading-history/view-tracker';
+  import { ViewTracker, viewKey } from '$lib/reading-history/view-tracker';
+  import { liveView, readingPaused } from '$lib/reading-history/live-view';
   import {
     describeView,
     rangeScopeKey,
@@ -476,9 +477,6 @@
   }
 
   onMount(() => {
-    // Set the timeout duration from settings
-    activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
-
     // Enter fullscreen on initial load if defaultFullscreen setting is enabled
     if ($settings.defaultFullscreen && !document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch((err) => {
@@ -512,6 +510,7 @@
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pagehide', onPageHide);
       viewTracker.close(Date.now());
+      readingPaused.set(false);
       stopFlushOnPageHide();
       // Stop activity tracker when component unmounts
       activityTracker.stop();
@@ -519,11 +518,6 @@
       document.documentElement.style.overflow = '';
       window.removeEventListener('offset-spreads', onOffsetSpreads);
     };
-  });
-
-  // Update timeout duration when settings change
-  $effect(() => {
-    activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
   });
 
   // The paged viewport re-applies its base whenever the displayed content,
@@ -634,7 +628,10 @@
 
   // Reading history: one `page` event per view, emitted when the view ends.
   // Hidden tab = no view, so a backgrounded reader never accrues dwell.
-  const viewTracker = new ViewTracker((payload, t) => void recordEvent(payload, t));
+  const viewTracker = new ViewTracker(
+    (payload, t) => void recordEvent(payload, t),
+    (open) => liveView.set(open)
+  );
   let pageHidden = $state(typeof document !== 'undefined' && document.visibilityState === 'hidden');
   let continuousRange = $state<ContinuousRange | null>(null);
   let pageCharCumulative = $derived(buildPageCharCounts(pages).cumulative);
@@ -1188,7 +1185,16 @@
   );
 
   $effect(() => {
-    viewTracker.setView(pageHidden ? null : currentView, Date.now());
+    viewTracker.setView(pageHidden || $readingPaused ? null : currentView, Date.now());
+  });
+
+  // A paused timer resumes with the next page: any new view is reading again.
+  let lastViewKey = '';
+  $effect(() => {
+    const key = currentView ? viewKey(currentView) : '';
+    if (key === lastViewKey) return;
+    lastViewKey = key;
+    readingPaused.set(false);
   });
 
   function handleVisibleRange(first: number, last: number) {

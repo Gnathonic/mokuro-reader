@@ -1,14 +1,21 @@
 <script lang="ts">
-  import { startCount, volumes, settings } from '$lib/settings';
+  import { onMount } from 'svelte';
+  import { volumes } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { currentVolume, currentVolumeCharacterCount } from '$lib/catalog';
   import { calculateVolumeTimeToFinish } from '$lib/util/reading-speed';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
-  import { activityTracker } from '$lib/util/activity-tracker';
-  import { onMount } from 'svelte';
-  import { get } from 'svelte/store';
-  import { derived } from 'svelte/store';
+  import { seriesSpeeds } from '$lib/reading-history/series-speeds';
+  import { liveMinutes, liveView, readingPaused } from '$lib/reading-history/live-view';
+  import { viewCap } from '$lib/reading-history/stats-engine';
 
+  /**
+   * Time read in this volume, live (phase 3a, one clock): the counted reading
+   * history plus the view on screen now, up to its idle cap — the same rule
+   * the stats apply once the view ends. Past the cap it shows "Idle" and stops
+   * counting. Clicking pauses: the view ends and nothing counts until the next
+   * page or a second click.
+   */
   interface Props {
     volumeId: string;
     visible?: boolean;
@@ -16,114 +23,62 @@
 
   let { volumeId, visible = true }: Props = $props();
 
-  // Internal state for the timer interval ID
-  let count: number | undefined = $state(undefined);
+  const TICK_MS = 15_000;
+  let now = $state(Date.now());
+  onMount(() => {
+    const id = setInterval(() => (now = Date.now()), TICK_MS);
+    return () => clearInterval(id);
+  });
 
-  // Local volumeStats to avoid circular dependency with currentVolume
-  const volumeStats = derived(
-    [currentVolume, volumes, readingStats],
-    ([$currentVolume, $volumes, $readingStats]) => {
-      if ($currentVolume && $volumes && $volumes[$currentVolume.volume_uuid]) {
-        const volumeData = $volumes[$currentVolume.volume_uuid];
+  let open = $derived($liveView?.view.volume === volumeId ? $liveView : null);
+  let cap = $derived(
+    open
+      ? viewCap(
+          open.view.page_chars.reduce((sum, c) => sum + c, 0),
+          $readingStats.pace,
+          $readingStats.idle
+        )
+      : 0
+  );
+  let counted = $derived(figuresFor($readingStats, volumeId, $volumes[volumeId]).timeMs);
+  let computed = $derived(liveMinutes(counted, open, now, cap));
 
-        return {
-          chars: volumeData.chars,
-          completed: volumeData.completed,
-          timeReadInMinutes: figuresFor($readingStats, $currentVolume.volume_uuid, volumeData)
-            .minutes,
-          progress: volumeData.progress,
-          lastProgressUpdate: volumeData.lastProgressUpdate
-        };
-      }
-      return {
-        chars: 0,
-        completed: 0,
-        timeReadInMinutes: 0,
-        progress: 0,
-        lastProgressUpdate: new Date(0).toISOString()
-      };
-    }
+  // A view that just ended is on its way into the stats (recorded, then
+  // counted on the next pass) while the next one already shows: never let the
+  // figure step back meanwhile. The component is keyed per volume.
+  let shown = $state(0);
+  $effect(() => {
+    if (computed > shown) shown = computed;
+  });
+
+  let status = $derived(
+    $readingPaused || !open ? 'Paused' : now - open.since > cap ? 'Idle' : 'Active'
   );
 
-  let active = $derived(Boolean(count));
-
-  // Calculate time-to-finish
   let timeEstimate = $derived.by(() => {
-    const volumeProgress = $volumes[volumeId];
-    const charsRead = volumeProgress?.chars || 0;
-    return calculateVolumeTimeToFinish(
-      $currentVolumeCharacterCount,
-      charsRead,
-      $personalizedReadingSpeed
-    );
+    const charsRead = $volumes[volumeId]?.chars || 0;
+    const speed =
+      ($currentVolume && $seriesSpeeds.get($currentVolume.series_uuid)) ||
+      $personalizedReadingSpeed;
+    return calculateVolumeTimeToFinish($currentVolumeCharacterCount, charsRead, speed);
   });
-
-  function startTimer() {
-    if (!count) {
-      count = startCount(volumeId);
-    }
-  }
-
-  function stopTimer() {
-    if (count) {
-      clearInterval(count);
-      count = undefined;
-    }
-  }
 
   function onClick() {
-    if (count) {
-      stopTimer();
-      // Reset activity tracker so next activity can restart timer
-      activityTracker.stop();
-    } else {
-      startTimer();
-      // Record activity to start the inactivity timeout
-      activityTracker.recordActivity();
-    }
+    now = Date.now();
+    readingPaused.update((paused) => !paused);
   }
-
-  // Clean up timer when volumeId changes (e.g., navigating to next volume)
-  // This prevents the old interval from continuing to run against the previous volume
-  $effect(() => {
-    // Track volumeId to trigger cleanup when it changes
-    volumeId;
-
-    return () => {
-      stopTimer();
-    };
-  });
-
-  onMount(() => {
-    // Initialize activity tracker callbacks
-    activityTracker.initialize({
-      onActive: () => {
-        startTimer();
-      },
-      onInactive: () => {
-        stopTimer();
-      }
-    });
-
-    // Start timer immediately on volume load
-    activityTracker.recordActivity();
-
-    return () => {
-      stopTimer();
-    };
-  });
 </script>
 
 {#if visible}
   <button
-    class:text-primary-700={!active}
+    class:text-primary-700={status !== 'Active'}
     class="reader-hud fixed top-5 right-14 z-10 opacity-80"
     onclick={onClick}
   >
-    {#key `${active}-${$volumeStats?.timeReadInMinutes}`}
+    {#key `${status}-${shown}`}
       <div class="text-right">
         <p>
-          {active ? 'Active' : 'Paused'} | Minutes read: {$volumeStats?.timeReadInMinutes}
+          {status} | Minutes read: {shown}
         </p>
         {#if timeEstimate}
           <p class="text-sm">

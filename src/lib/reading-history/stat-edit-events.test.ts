@@ -23,19 +23,29 @@ beforeEach(() => {
 });
 
 describe('stat edits record history events', () => {
-  it('volume editor: records the time and chars deltas', () => {
-    updateVolumeStats('vol-a', { timeReadInMinutes: 30, progress: 10, chars: 1000 });
-    updateVolumeStats('vol-a', { timeReadInMinutes: 45, progress: 9, chars: 900 });
+  it('volume editor: records the time delta against the time the stats showed, and chars', () => {
+    updateVolumeStats('vol-a', { timeRead: { from: 0, to: 30 }, progress: 10, chars: 1000 });
+    updateVolumeStats('vol-a', { timeRead: { from: 32, to: 45 }, progress: 9, chars: 900 });
     expect(recorded.mock.calls.map((c) => c[0])).toEqual([
       { kind: 'adjust', volume: 'vol-a', time_delta_ms: 30 * 60000, chars_delta: 1000 },
-      { kind: 'adjust', volume: 'vol-a', time_delta_ms: 15 * 60000, chars_delta: -100 }
+      { kind: 'adjust', volume: 'vol-a', time_delta_ms: 13 * 60000, chars_delta: -100 }
     ]);
   });
 
+  it('volume editor: never writes the retired minute counter, nor stamps a time-only edit', () => {
+    updateVolumeStats('vol-a', { progress: 3 });
+    let before = '';
+    volumesWithTrash.subscribe((all) => (before = all['vol-a'].lastProgressUpdate))();
+    updateVolumeStats('vol-a', { timeRead: { from: 5, to: 50 } });
+    volumesWithTrash.subscribe((all) => {
+      expect(all['vol-a'].timeReadInMinutes).toBe(0);
+      expect(all['vol-a'].lastProgressUpdate).toBe(before);
+    })();
+  });
+
   it('volume editor: records nothing when time and chars are unchanged', () => {
-    updateVolumeStats('vol-a', { timeReadInMinutes: 10 });
-    recorded.mockClear();
-    updateVolumeStats('vol-a', { timeReadInMinutes: 10, volume_title: 'Renamed' });
+    updateVolumeStats('vol-a', { timeRead: { from: 10, to: 10 } });
+    updateVolumeStats('vol-a', { timeRead: { from: 10, to: 10 }, volume_title: 'Renamed' });
     expect(recorded).not.toHaveBeenCalled();
   });
 

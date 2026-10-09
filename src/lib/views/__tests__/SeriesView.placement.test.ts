@@ -56,13 +56,13 @@ vi.mock('$lib/settings/settings', () => ({
   // below), and that module's own top-level `totalStats` derived store reads
   // `settings` from THIS module — so the binding must exist here too, even
   // though nothing in this suite exercises it.
-  settings: emptyStore({ inactivityTimeoutMinutes: 5 })
+  settings: emptyStore({})
 }));
 vi.mock('$lib/settings', () => ({
   deleteVolume: vi.fn(),
   volumes: emptyStore<Record<string, unknown>>({ 'uuid-1': { progress: 1 } }),
   progress: readingProgress,
-  settings: emptyStore({ inactivityTimeoutMinutes: 5 }),
+  settings: emptyStore({}),
   markVolumeAsComplete: vi.fn(),
   markVolumeAsUnread: vi.fn()
 }));
