@@ -12,7 +12,8 @@ import type { ReadingEvent } from './types';
  * re-projected, at most once per microtask, so a page view costs one volume
  * and a large import one emission.
  *
- * `adjust` events are not kept in memory: nothing here reads them yet.
+ * Every kind is kept: `page`/`forget` shape the projection, `restart`/
+ * `position` drive position offers, and the stats read `adjust` too.
  */
 
 const store = writable<Map<string, PageTurn[]>>(new Map());
@@ -108,9 +109,6 @@ export function volumeEventsVersion(volume: string): number {
 }
 
 function keep(event: ReadingEvent): void {
-  // `page`/`forget` shape the projection; `restart`/`position` decide
-  // cross-device position offers (`position-offer.ts`). `adjust` is phase 3.
-  if (event.kind === 'adjust') return;
   let events = eventsByVolume.get(event.volume);
   if (!events) eventsByVolume.set(event.volume, (events = new Map()));
   events.set(`${event.device}\u0000${event.seq}`, event);

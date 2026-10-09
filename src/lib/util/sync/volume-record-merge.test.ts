@@ -203,3 +203,25 @@ describe('applyForgetHorizon', () => {
     ]);
   });
 });
+
+describe('legacyStats (the pre-event baseline)', () => {
+  const a = { time_ms: 600_000, chars: 900 };
+  const b = { time_ms: 300_000, chars: 1200 };
+
+  it('takes the smaller of each figure, whichever side wins', () => {
+    const one = mergeLiveVolumeRecords({ legacyStats: a }, { legacyStats: b });
+    const two = mergeLiveVolumeRecords({ legacyStats: b }, { legacyStats: a });
+    expect(one.legacyStats).toEqual({ time_ms: 300_000, chars: 900 });
+    expect(two.legacyStats).toEqual(one.legacyStats);
+  });
+
+  it('carries the loser baseline onto a winner without one', () => {
+    expect(mergeLiveVolumeRecords({ progress: 3 }, { legacyStats: a }).legacyStats).toEqual(a);
+  });
+
+  it('is dropped by a forget', () => {
+    expect(
+      applyForgetHorizon({ legacyStats: a }, '2026-01-01T00:00:00.000Z').legacyStats
+    ).toBeUndefined();
+  });
+});

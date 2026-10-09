@@ -2347,7 +2347,14 @@ class UnifiedCloudManager {
     // Synced progress may reference series this device has no rows for. THE
     // one trigger for resolving that — never a view mount — and started
     // behind the result: sync reports what it did, resolution continues.
-    if (result.success) this.startProgressResolution();
+    if (result.success) {
+      this.startProgressResolution();
+      // History now holds every device's events: reading from before history
+      // can be measured against them (a no-op once each record has a baseline).
+      void import('$lib/reading-history/stats-store')
+        .then(({ fillLegacyBaselines }) => fillLegacyBaselines())
+        .catch((error) => console.debug('[reading-history] baselines skipped:', error));
+    }
     return {
       totalProviders: 1,
       succeeded: result.success ? 1 : 0,

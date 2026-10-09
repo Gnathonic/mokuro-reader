@@ -23,6 +23,7 @@
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
   import { foregroundSync } from '$lib/util/sync/foreground-sync';
+  import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
@@ -144,6 +145,19 @@
       .then(() => import('$lib/reading-history/position-store'))
       .then(({ initPositionOffers }) => initPositionOffers(historyDb()))
       .catch((error) => console.warn('[reading-history] position offers failed:', error));
+
+    // Reading stats from history (phase 3a). Reading from before history
+    // becomes per-volume baselines once history is complete: after a sync
+    // imported other devices' events (`syncProgress`), or — with no provider
+    // connected by then — here.
+    void import('$lib/reading-history/stats-store')
+      .then(({ initReadingStats, fillLegacyBaselines }) => {
+        initReadingStats();
+        setTimeout(() => {
+          if (!unifiedCloudManager.getActiveProvider()) void fillLegacyBaselines();
+        }, 30_000);
+      })
+      .catch((error) => console.warn('[reading-history] stats failed to start:', error));
 
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')

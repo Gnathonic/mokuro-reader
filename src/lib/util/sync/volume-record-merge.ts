@@ -27,6 +27,7 @@ export interface VolumeRecordLike {
   recentPageTurns?: Turn[];
   forgotAt?: string;
   archivedReads?: Array<{ at: number }>;
+  legacyStats?: { time_ms: number; chars: number };
 }
 
 const turnKey = (turn: Turn) => `${turn[0]}|${turn[1]}`;
@@ -35,16 +36,22 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
   const horizon = laterStamp(winner.forgotAt, loser.forgotAt);
   const winnerTurns = afterHorizon(winner.recentPageTurns ?? [], horizon);
   const loserTurns = afterHorizon(loser.recentPageTurns ?? [], horizon);
+  const legacyStats = mergeLegacyStats(winner.legacyStats, loser.legacyStats);
+  const legacyChanged =
+    legacyStats?.time_ms !== winner.legacyStats?.time_ms ||
+    legacyStats?.chars !== winner.legacyStats?.chars;
   if (
     !horizon &&
     winnerTurns.length === 0 &&
     loserTurns.length === 0 &&
+    !legacyChanged &&
     !unionArchivedReads(winner.archivedReads, loser.archivedReads)
   ) {
     return winner;
   }
 
   const record: T = { ...winner, recentPageTurns: unionTurns(winnerTurns, loserTurns) };
+  if (legacyStats) record.legacyStats = legacyStats;
   if (horizon) record.forgotAt = horizon;
   // Restarts are user actions that must survive whichever copy wins: a pass
   // archived on the older copy (another device restarted the series) is kept.
@@ -69,8 +76,10 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
 export function applyForgetHorizon<T extends VolumeRecordLike>(record: T, forgotAt: string): T {
   const horizon = laterStamp(record.forgotAt, forgotAt);
   if (!horizon) return record;
+  // Forgotten stats include the reading from before history.
+  const { legacyStats: _forgotten, ...rest } = record;
   return {
-    ...record,
+    ...(rest as T),
     forgotAt: horizon,
     recentPageTurns: afterHorizon(record.recentPageTurns ?? [], horizon)
   };
@@ -116,4 +125,19 @@ function unionArchivedReads<R extends { at: number }>(
     }
   }
   return added ? [...byAt.values()].sort((a, b) => a.at - b.at) : undefined;
+}
+
+/**
+ * Two devices' pre-history baselines: the smaller of each figure. Each device
+ * computed "what my events do not explain"; the one that saw more events
+ * explains more, so the smaller residual is the better one, and the result
+ * does not depend on which copy won.
+ */
+export function mergeLegacyStats(
+  a: { time_ms: number; chars: number } | undefined,
+  b: { time_ms: number; chars: number } | undefined
+): { time_ms: number; chars: number } | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return { time_ms: Math.min(a.time_ms, b.time_ms), chars: Math.min(a.chars, b.chars) };
 }

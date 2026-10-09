@@ -599,3 +599,15 @@ describe('cross-device position writers', () => {
     );
   });
 });
+
+describe('VolumeData legacyStats', () => {
+  it('round-trips a valid baseline and drops a malformed one', () => {
+    const ok = new VolumeData({ legacyStats: { time_ms: 60_000, chars: 5 } });
+    expect(ok.legacyStats).toEqual({ time_ms: 60_000, chars: 5 });
+    expect(JSON.parse(JSON.stringify(ok)).legacyStats).toEqual({ time_ms: 60_000, chars: 5 });
+    const zero = new VolumeData({ legacyStats: { time_ms: 0, chars: 0 } });
+    expect(JSON.parse(JSON.stringify(zero)).legacyStats).toEqual({ time_ms: 0, chars: 0 });
+    const bad = new VolumeData({ legacyStats: { time_ms: -1, chars: 'x' } } as never);
+    expect(bad.legacyStats).toBeUndefined();
+  });
+});
