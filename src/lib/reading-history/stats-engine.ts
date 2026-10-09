@@ -62,8 +62,10 @@ export interface PreparedView {
 
 export interface PreparedVolume {
   views: PreparedView[];
-  adjustMs: number;
-  adjustChars: number;
+  /** Volume-editor edits, in time order. */
+  adjusts: Array<{ t: number; ms: number; chars: number }>;
+  /** This volume's newest views usable for the pace, `[t, ms per char]`, newest first. */
+  paceTail: Array<[t: number, rate: number]>;
 }
 
 export interface SpeedSample {
@@ -72,11 +74,22 @@ export interface SpeedSample {
   chars: number;
 }
 
+/** Running totals after each counted entry, by time — for `totalsBefore`. */
+export type TimelinePoint = [t: number, timeMs: number, readChars: number, skippedChars: number];
+
 export interface VolumeTotals {
+  /**
+   * RAW totals: a negative `adjust` (an editor edit below what history
+   * holds) may take them below zero — the pre-history baseline is added
+   * before anything is clamped (`figuresFor`).
+   */
   timeMs: number;
   readChars: number;
   skippedChars: number;
   lastReadAt: number | null;
+  /** Latest end among `samples` (−Infinity without any). */
+  newestSampleEnd: number;
+  timeline: TimelinePoint[];
   /** Non-skip views that counted time, oldest first. */
   samples: SpeedSample[];
 }
@@ -115,8 +128,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   }
 
   const views: PreparedView[] = [];
-  let adjustMs = 0;
-  let adjustChars = 0;
+  const adjusts: PreparedVolume['adjusts'] = [];
   let pass = 0;
   for (const e of live) {
     if (e.kind === 'restart') {
@@ -124,8 +136,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
       continue;
     }
     if (e.kind === 'adjust') {
-      adjustMs += e.time_delta_ms;
-      adjustChars += e.chars_delta;
+      adjusts.push({ t: e.t, ms: e.time_delta_ms, chars: e.chars_delta });
       continue;
     }
     if (e.kind !== 'page') continue;
@@ -147,24 +158,40 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
       pages
     });
   }
-  return { views, adjustMs, adjustChars };
+  const paceTail: PreparedVolume['paceTail'] = [];
+  for (let i = views.length - 1; i >= 0 && paceTail.length < PACE_MAX_SAMPLES; i--) {
+    const v = views[i];
+    if (v.skip || v.dwell === null || v.chars < PACE_MIN_CHARS) continue;
+    if (v.dwell <= 0 || v.dwell > CEILING_MS) continue;
+    paceTail.push([v.t, v.dwell / v.chars]);
+  }
+  paceTail.sort((a, b) => b[0] - a[0]);
+  return { views, adjusts, paceTail };
 }
 
 /** Median ms per character over the newest usable views of every volume. */
 export function estimatePace(volumes: Iterable<PreparedVolume>): number | null {
-  const usable: Array<{ t: number; rate: number }> = [];
-  for (const volume of volumes) {
-    for (const v of volume.views) {
-      if (v.skip || v.dwell === null || v.chars < PACE_MIN_CHARS) continue;
-      if (v.dwell <= 0 || v.dwell > CEILING_MS) continue;
-      usable.push({ t: v.t, rate: v.dwell / v.chars });
+  // Newest volumes first; once 500 candidates are in hand, a volume whose
+  // newest view is older than the 500th can contribute nothing. A page turn
+  // then costs the few volumes read lately, not the whole library.
+  const tails = [...volumes]
+    .map((v) => v.paceTail)
+    .filter((tail) => tail.length > 0)
+    .sort((a, b) => b[0][0] - a[0][0]);
+  let usable: Array<[number, number]> = [];
+  for (const tail of tails) {
+    if (usable.length >= PACE_MAX_SAMPLES) {
+      usable.sort((a, b) => b[0] - a[0]);
+      usable.length = PACE_MAX_SAMPLES;
+      if (tail[0][0] < usable[PACE_MAX_SAMPLES - 1][0]) break;
     }
+    usable = usable.concat(tail);
   }
   if (usable.length < PACE_MIN_SAMPLES) return null;
   const recent = usable
-    .sort((a, b) => b.t - a.t)
+    .sort((a, b) => b[0] - a[0])
     .slice(0, PACE_MAX_SAMPLES)
-    .map((s) => s.rate)
+    .map((s) => s[1])
     .sort((a, b) => a - b);
   const mid = recent.length >> 1;
   return recent.length % 2 ? recent[mid] : (recent[mid - 1] + recent[mid]) / 2;
@@ -188,7 +215,7 @@ export function countVolume(
   pace: number | null,
   idle: IdleSettings
 ): VolumeTotals {
-  let timeMs = prepared.adjustMs;
+  let timeMs = 0;
   let lastReadAt: number | null = null;
   const counted: Array<{ view: PreparedView; ms: number; reads: boolean }> = [];
   for (const view of prepared.views) {
@@ -209,8 +236,9 @@ export function countVolume(
 
   // Per pass: a page is read when any counting non-skip view showed it,
   // skipped when only skip views did.
-  let readChars = prepared.adjustChars;
+  let readChars = 0;
   let skippedChars = 0;
+  const entries: Array<[t: number, ms: number, read: number, skipped: number]> = [];
   const samples: SpeedSample[] = [];
   const credited = new Set<string>();
   const readPages = new Set<string>();
@@ -220,6 +248,7 @@ export function countVolume(
   const skippedSeen = new Set<string>();
   for (const { view, ms, reads } of counted) {
     let fresh = 0;
+    let skimmed = 0;
     for (const [page, chars] of view.pages) {
       const key = `${view.pass}|${page}`;
       if (reads) {
@@ -228,20 +257,54 @@ export function countVolume(
         fresh += chars;
       } else if (view.skip && !readPages.has(key) && !skippedSeen.has(key)) {
         skippedSeen.add(key);
-        skippedChars += chars;
+        skimmed += chars;
       }
     }
     readChars += fresh;
+    skippedChars += skimmed;
+    entries.push([view.t, ms, fresh, skimmed]);
     if (reads && ms > 0) samples.push({ end: view.end, ms, chars: fresh });
   }
+  for (const a of prepared.adjusts) {
+    timeMs += a.ms;
+    readChars += a.chars;
+    entries.push([a.t, a.ms, a.chars, 0]);
+  }
 
-  return {
-    timeMs: Math.max(0, timeMs),
-    readChars: Math.max(0, readChars),
-    skippedChars,
-    lastReadAt,
-    samples
-  };
+  entries.sort((a, b) => a[0] - b[0]);
+  const timeline: TimelinePoint[] = [];
+  let [t0, r0, s0] = [0, 0, 0];
+  for (const [t, ms, read, skipped] of entries) {
+    t0 += ms;
+    r0 += read;
+    s0 += skipped;
+    timeline.push([t, t0, r0, s0]);
+  }
+
+  let newestSampleEnd = -Infinity;
+  for (const sample of samples) if (sample.end > newestSampleEnd) newestSampleEnd = sample.end;
+  return { timeMs, readChars, skippedChars, lastReadAt, newestSampleEnd, timeline, samples };
+}
+
+/** What a volume's history held from before `before` (views by their start). */
+export function totalsBefore(
+  totals: Pick<VolumeTotals, 'timeline'>,
+  before: number
+): { timeMs: number; readChars: number; skippedChars: number } {
+  const line = totals.timeline;
+  let lo = 0;
+  let hi = line.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (line[mid][0] < before) {
+      found = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  if (found < 0) return { timeMs: 0, readChars: 0, skippedChars: 0 };
+  const [, timeMs, readChars, skippedChars] = line[found];
+  return { timeMs, readChars, skippedChars };
 }
 
 /** Speed over the newest `windowMs` of counted reading; a sample straddling the edge counts pro rata. */
@@ -265,4 +328,37 @@ export function speedFromSamples(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * `speedFromSamples` over many volumes without sorting every sample: volumes
+ * are taken newest first until the window is full and the next volume's
+ * newest sample is older than the window's edge.
+ */
+export function recentSpeed(
+  volumes: Iterable<Pick<VolumeTotals, 'samples' | 'newestSampleEnd'>>,
+  windowMs: number = RECENT_WINDOW_MS
+): SpeedEstimate {
+  const ordered = [...volumes]
+    .filter((v) => v.samples.length > 0)
+    .sort((a, b) => b.newestSampleEnd - a.newestSampleEnd);
+  let picked: SpeedSample[] = [];
+  let pickedMs = 0;
+  for (const volume of ordered) {
+    if (pickedMs >= windowMs && volume.newestSampleEnd < windowEdge(picked, windowMs)) break;
+    picked = picked.concat(volume.samples);
+    for (const s of volume.samples) pickedMs += s.ms;
+  }
+  return speedFromSamples(picked, windowMs);
+}
+
+/** The end of the oldest sample the window (newest first) still reaches. */
+function windowEdge(samples: SpeedSample[], windowMs: number): number {
+  const newest = [...samples].sort((a, b) => b.end - a.end);
+  let ms = 0;
+  for (const s of newest) {
+    ms += s.ms;
+    if (ms >= windowMs) return s.end;
+  }
+  return -Infinity;
 }

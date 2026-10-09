@@ -2349,10 +2349,10 @@ class UnifiedCloudManager {
     // behind the result: sync reports what it did, resolution continues.
     if (result.success) {
       this.startProgressResolution();
-      // History now holds every device's events: reading from before history
-      // can be measured against them (a no-op once each record has a baseline).
+      // A record from a device still on the minute counter gets its
+      // pre-history snapshot (a no-op once each record has one).
       void import('$lib/reading-history/stats-store')
-        .then(({ fillLegacyBaselines }) => fillLegacyBaselines())
+        .then(({ freezeLegacyBaselines }) => freezeLegacyBaselines())
         .catch((error) => console.debug('[reading-history] baselines skipped:', error));
     }
     return {

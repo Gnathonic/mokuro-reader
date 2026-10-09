@@ -9,7 +9,8 @@ import {
   countVolume,
   estimatePace,
   prepareVolume,
-  speedFromSamples,
+  recentSpeed,
+  totalsBefore,
   type IdleSettings,
   type PreparedVolume,
   type SpeedEstimate,
@@ -80,6 +81,11 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 let idle: IdleSettings = EMPTY.idle;
 let stop: (() => void) | null = null;
 let preparedLog: string[] = [];
+let countedLog: string[] = [];
+/** Relative pace change that makes every volume's counts stale. */
+const PACE_TOLERANCE = 0.02;
+/** This device has taken its first-pass snapshots (`freezeLegacyBaselines`). */
+let baselinesFrozen = readFlag() === 'done';
 
 /** Start counting: once history has loaded, and again whenever it changes. */
 export function initReadingStats(): () => void {
@@ -128,36 +134,91 @@ export function flushReadingStats(): void {
   }
 
   const previous = get(state);
-  const pace = estimatePace(prepared.values());
+  const estimated = estimatePace(prepared.values());
+  // Every volume's caps depend on the pace, but the median of the newest 500
+  // views moves a hair with nearly every page: recounting the whole library
+  // for that cost ~100 ms per page on a large history. Counts keep the pace
+  // they were made with until it moves by more than PACE_TOLERANCE.
+  const paceMoved =
+    (estimated === null) !== (previous.pace === null) ||
+    (estimated !== null &&
+      previous.pace !== null &&
+      Math.abs(estimated - previous.pace) > PACE_TOLERANCE * previous.pace);
   const recountAll =
     work === 'all' ||
     !previous.ready ||
-    pace !== previous.pace ||
+    paceMoved ||
     idle.k !== previous.idle.k ||
     idle.overrideMs !== previous.idle.overrideMs;
+  const pace = recountAll ? estimated : previous.pace;
   const byVolume = recountAll ? new Map<string, VolumeTotals>() : new Map(previous.byVolume);
   for (const volume of recountAll ? prepared.keys() : volumes) {
     const p = prepared.get(volume);
-    if (p) byVolume.set(volume, countVolume(p, pace, idle));
-    else byVolume.delete(volume);
+    if (p) {
+      byVolume.set(volume, countVolume(p, pace, idle));
+      countedLog.push(volume);
+    } else byVolume.delete(volume);
   }
 
-  const samples = [...byVolume.values()].flatMap((t) => t.samples);
-  state.set({ ready: true, pace, idle, byVolume, recent: speedFromSamples(samples) });
+  state.set({ ready: true, pace, idle, byVolume, recent: recentSpeed(byVolume.values()) });
 }
 
-/** A volume's time and characters: its events plus its pre-history baseline. */
+/** The record fields the pre-history snapshot is taken from. */
+export type BaselineSource = {
+  legacyStats?: LegacyStats;
+  timeReadInMinutes?: number;
+  chars?: number;
+  completed?: boolean;
+  archivedReads?: Array<{ chars: number }>;
+};
+
+/**
+ * The record's pre-history snapshot: the stored one, or — for a record that
+ * should get one and has not been frozen yet — the same figures, unfrozen
+ * (`before: Infinity`, so every event is set against them). Either way the
+ * total never shows less than the old figure.
+ */
+function snapshotOf(
+  record: BaselineSource | undefined,
+  firstPass: boolean
+): LegacyStats | undefined {
+  if (!record) return undefined;
+  if (record.legacyStats) return record.legacyStats;
+  const minutes = record.timeReadInMinutes ?? 0;
+  const oldChars =
+    (record.chars ?? 0) + (record.archivedReads ?? []).reduce((n, r) => n + r.chars, 0);
+  const hasReading = oldChars > 0 || !!record.completed;
+  if (minutes <= 0 && !(firstPass && hasReading)) return undefined;
+  return { time_ms: minutes * 60_000, chars: oldChars, before: Infinity };
+}
+
+/**
+ * A volume's time and characters: its history, plus whatever of the
+ * pre-history snapshot the events from before its freeze do not explain.
+ * Clamped only here, after the snapshot is added, so an editor edit below
+ * the old figure takes effect.
+ */
 export function figuresFor(
   stats: ReadingStatsState,
   volume: string,
-  record?: { legacyStats?: LegacyStats }
+  record?: BaselineSource
 ): VolumeFigures {
   const totals = stats.byVolume.get(volume);
-  const timeMs = (totals?.timeMs ?? 0) + (record?.legacyStats?.time_ms ?? 0);
+  let timeMs = totals?.timeMs ?? 0;
+  let chars = totals?.readChars ?? 0;
+  const snapshot = snapshotOf(record, !baselinesFrozen);
+  if (snapshot) {
+    const explained = totals
+      ? totalsBefore(totals, snapshot.before)
+      : { timeMs: 0, readChars: 0, skippedChars: 0 };
+    timeMs += Math.max(0, snapshot.time_ms - explained.timeMs);
+    chars += Math.max(0, snapshot.chars - explained.readChars - explained.skippedChars);
+  }
+  timeMs = Math.max(0, timeMs);
   return {
     timeMs,
     minutes: Math.floor(timeMs / 60_000),
-    chars: (totals?.readChars ?? 0) + (record?.legacyStats?.chars ?? 0),
+    chars: Math.max(0, chars),
     skippedChars: totals?.skippedChars ?? 0,
     lastReadAt: totals?.lastReadAt ?? null
   };
@@ -165,8 +226,8 @@ export function figuresFor(
 
 /** A series' own speed, once it has an hour of reading; else `null`. */
 export function seriesSpeed(stats: ReadingStatsState, volumeIds: string[]): SpeedEstimate | null {
-  const samples = volumeIds.flatMap((id) => stats.byVolume.get(id)?.samples ?? []);
-  const estimate = speedFromSamples(samples, RECENT_WINDOW_MS);
+  const totals = volumeIds.flatMap((id) => stats.byVolume.get(id) ?? []);
+  const estimate = recentSpeed(totals, RECENT_WINDOW_MS);
   return estimate.minutes >= SERIES_MIN_MINUTES ? estimate : null;
 }
 
@@ -242,46 +303,31 @@ export function recentReadingSpeed(
 }
 
 /**
- * Give each volume's reading from before history a baseline (`legacyStats`):
- * the minutes and characters its record holds that its events do not
- * explain, so totals never drop at the switch to event-based stats.
+ * Freeze each record's pre-history snapshot (`legacyStats`): its old minutes
+ * and lifetime characters, stamped with now. Needs no events — what history
+ * holds from before the freeze is set against it whenever it arrives
+ * (`figuresFor`) — so it runs at start, and after each sync for records a
+ * device still on the minute counter sent.
  *
  * Once per device, every live record with reading gets one; after that only
- * records still carrying the retired minute counter (from a device that has
- * not switched yet). Never twice for a record: a baseline only merges down.
- * Run once history is complete — after a sync imported other devices' events,
- * or on a device with no provider.
+ * records still carrying the retired minute counter. Never twice for a record.
  */
-export async function fillLegacyBaselines(): Promise<number> {
-  await historyTurnsReady();
-  if (!get(state).ready && historyTurnsLoaded()) schedule('all');
-  flushReadingStats();
-  const stats = get(state);
-  const firstPass = readFlag() !== 'done';
-
+export function freezeLegacyBaselines(now: number = Date.now()): number {
+  const firstPass = !baselinesFrozen;
   let changed = 0;
   volumesWithTrash.update((all) => {
     const next = { ...all };
     for (const [id, record] of Object.entries(all)) {
       if (record.deletedOn || record.legacyStats) continue;
-      const oldMinutes = record.timeReadInMinutes > 0;
-      const hasReading = record.chars > 0 || record.completed || record.archivedReads.length > 0;
-      if (!oldMinutes && !(firstPass && hasReading)) continue;
-      const totals = stats.byVolume.get(id);
-      const oldChars = record.chars + record.archivedReads.reduce((sum, r) => sum + r.chars, 0);
-      const explainedChars = (totals?.readChars ?? 0) + (totals?.skippedChars ?? 0);
+      const snapshot = snapshotOf(record, firstPass);
+      if (!snapshot) continue;
       // Not a user action: no new stamp.
-      next[id] = new VolumeData({
-        ...record,
-        legacyStats: {
-          time_ms: Math.max(0, record.timeReadInMinutes * 60_000 - (totals?.timeMs ?? 0)),
-          chars: Math.max(0, oldChars - explainedChars)
-        }
-      });
+      next[id] = new VolumeData({ ...record, legacyStats: { ...snapshot, before: now } });
       changed++;
     }
     return changed > 0 ? next : all;
   });
+  baselinesFrozen = true;
   writeFlag('done');
   return changed;
 }
@@ -309,6 +355,9 @@ function writeFlag(value: string): void {
 export function _preparedForTests(): string[] {
   return preparedLog;
 }
+export function _countedForTests(): string[] {
+  return countedLog;
+}
 export function _resetReadingStatsForTests(): void {
   stop?.();
   stop = null;
@@ -317,6 +366,8 @@ export function _resetReadingStatsForTests(): void {
   pending = null;
   prepared.clear();
   preparedLog = [];
+  countedLog = [];
+  baselinesFrozen = readFlag() === 'done';
   idle = EMPTY.idle;
   state.set(EMPTY);
 }

@@ -56,7 +56,7 @@ describe('totalStats', () => {
         progress: 10,
         chars: 5000,
         archivedReads: [{ at: 1, pages: 30, chars: 9000, completed: true }],
-        legacyStats: { time_ms: 60 * MIN, chars: 14_000 }
+        legacyStats: { time_ms: 60 * MIN, chars: 14_000, before: 1 }
       })
     });
     const events = [view('a', 1, 300, 2 * MIN), view('a', 2, 1000, 5_000)];

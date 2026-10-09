@@ -113,7 +113,7 @@ function speedTracked(over: Partial<VolumeData> & { minutes?: number } = {}) {
     progress: 180,
     chars,
     lastProgressUpdate: '2026-08-01T00:00:00.000Z',
-    legacyStats: { time_ms: minutes * 60_000, chars },
+    legacyStats: { time_ms: minutes * 60_000, chars, before: 1 },
     ...rest
   });
 }

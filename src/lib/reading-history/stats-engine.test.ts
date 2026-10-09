@@ -7,7 +7,9 @@ import {
   countVolume,
   estimatePace,
   prepareVolume,
+  recentSpeed,
   speedFromSamples,
+  totalsBefore,
   viewCap,
   type IdleSettings,
   type PreparedVolume
@@ -252,5 +254,107 @@ describe('speedFromSamples', () => {
 
   it('is zero minutes with no samples', () => {
     expect(speedFromSamples([])).toEqual({ charsPerMinute: 0, minutes: 0 });
+  });
+});
+
+describe('raw totals and totals before a cutoff', () => {
+  const pace = 200;
+
+  it('keeps a negative adjust unclamped, so a baseline above it can be edited down', () => {
+    const totals = countVolume(
+      prepareVolume([view(0, 1, [300], MIN), adjust(5 * MIN, -100 * MIN, -900)]),
+      pace,
+      AUTO
+    );
+    expect(totals.timeMs).toBe(-99 * MIN);
+    expect(totals.readChars).toBe(-600);
+  });
+
+  it('sums only what was recorded before the cutoff (views at their start, adjusts at their time)', () => {
+    const totals = countVolume(
+      prepareVolume([
+        view(0, 1, [300], MIN),
+        view(10 * MIN, 2, [1000], 5_000),
+        adjust(20 * MIN, 3 * MIN, 50),
+        view(30 * MIN, 3, [200], MIN)
+      ]),
+      pace,
+      AUTO
+    );
+    expect(totalsBefore(totals, 10 * MIN)).toEqual({
+      timeMs: MIN,
+      readChars: 300,
+      skippedChars: 0
+    });
+    expect(totalsBefore(totals, 25 * MIN)).toEqual({
+      timeMs: MIN + 5_000 + 3 * MIN,
+      readChars: 350,
+      skippedChars: 1000
+    });
+    expect(totalsBefore(totals, Infinity)).toEqual({
+      timeMs: totals.timeMs,
+      readChars: totals.readChars,
+      skippedChars: totals.skippedChars
+    });
+  });
+});
+
+describe('fast paths agree with the brute force (random libraries)', () => {
+  function library(seed: number) {
+    let x = seed;
+    const rand = () => (x = (x * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+    const volumes: PreparedVolume[] = [];
+    for (let v = 0; v < 40; v++) {
+      const events: ReadingEvent[] = [];
+      let t = Math.floor(rand() * 1e9);
+      for (let i = 0; i < 20 + Math.floor(rand() * 80); i++) {
+        t += Math.floor(rand() * 600_000);
+        events.push(
+          view(
+            t,
+            1 + Math.floor(rand() * 50),
+            [Math.floor(rand() * 400)],
+            Math.floor(rand() * 3_600_000)
+          )
+        );
+      }
+      volumes.push(prepareVolume(events));
+    }
+    return volumes;
+  }
+
+  function bruteForcePace(volumes: PreparedVolume[]): number | null {
+    const usable = volumes
+      .flatMap((v) => v.views)
+      .filter(
+        (v) => !v.skip && v.dwell !== null && v.chars >= 20 && v.dwell > 0 && v.dwell <= CEILING_MS
+      )
+      .sort((a, b) => b.t - a.t)
+      .slice(0, 500)
+      .map((v) => v.dwell! / v.chars)
+      .sort((a, b) => a - b);
+    if (usable.length < 30) return null;
+    const mid = usable.length >> 1;
+    return usable.length % 2 ? usable[mid] : (usable[mid - 1] + usable[mid]) / 2;
+  }
+
+  it('estimatePace is the median of the newest 500 usable views across the library', () => {
+    for (const seed of [1, 7, 42, 99, 1234]) {
+      const volumes = library(seed);
+      expect(estimatePace(volumes)).toBe(bruteForcePace(volumes));
+    }
+  });
+
+  it('recentSpeed equals the speed over every sample', () => {
+    for (const seed of [3, 8, 55, 600]) {
+      const totals = library(seed).map((p) => countVolume(p, 200, AUTO));
+      const all = speedFromSamples(
+        totals.flatMap((t) => t.samples),
+        2 * 60 * MIN
+      );
+      const fast = recentSpeed(totals, 2 * 60 * MIN);
+      expect(fast.minutes).toBeCloseTo(all.minutes, 6);
+      expect(fast.charsPerMinute).toBeCloseTo(all.charsPerMinute, 6);
+    }
   });
 });

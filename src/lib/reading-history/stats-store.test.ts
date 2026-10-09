@@ -15,10 +15,11 @@ import { HistoryDexie } from './history-db';
 import { notifyEventsRecorded } from './record';
 import { _resetHistoryTurns, loadHistoryTurns } from './turns-store';
 import {
+  _countedForTests,
   _preparedForTests,
   _resetReadingStatsForTests,
   figuresFor,
-  fillLegacyBaselines,
+  freezeLegacyBaselines,
   flushReadingStats,
   initReadingStats,
   readingStats,
@@ -79,24 +80,66 @@ beforeEach(async () => {
 });
 
 describe('figuresFor', () => {
-  it('adds the record baseline to the event totals', async () => {
-    await record([view('v1', 0, 1, 300, 2 * MIN)]);
-    const state = get(readingStats);
-    const figures = figuresFor(state, 'v1', { legacyStats: { time_ms: 10 * MIN, chars: 1000 } });
-    expect(figures.timeMs).toBe(12 * MIN);
-    expect(figures.minutes).toBe(12);
+  it('a frozen snapshot counts what events before its freeze do not explain, plus everything after', async () => {
+    const freeze = 10 * MIN;
+    await record([view('v1', 0, 1, 300, 2 * MIN), view('v1', 20 * MIN, 2, 300, MIN)]);
+    const legacyStats = { time_ms: 10 * MIN, chars: 1000, before: freeze };
+    const figures = figuresFor(get(readingStats), 'v1', { legacyStats });
+    // max(10 min old, 2 min before the freeze) + 1 min after it.
+    expect(figures.timeMs).toBe(11 * MIN);
+    expect(figures.minutes).toBe(11);
+    // max(1000 old, 300 before) + 300 after.
     expect(figures.chars).toBe(1300);
   });
 
-  it('is the baseline alone for a volume with no events', () => {
+  it('is the snapshot alone for a volume with no events', () => {
     const figures = figuresFor(get(readingStats), 'old', {
-      legacyStats: { time_ms: 5 * MIN, chars: 7 }
+      legacyStats: { time_ms: 5 * MIN, chars: 7, before: 1 }
     });
     expect(figures).toMatchObject({ minutes: 5, chars: 7, skippedChars: 0, lastReadAt: null });
+  });
+
+  it('never shows less than the old figures before the snapshot is frozen', async () => {
+    await record([view('v1', 0, 1, 300, 3 * MIN)]);
+    const stats = get(readingStats);
+    expect(figuresFor(stats, 'v1', { timeReadInMinutes: 120, chars: 5000 })).toMatchObject({
+      minutes: 120,
+      chars: 5000
+    });
+    expect(figuresFor(stats, 'v1', { timeReadInMinutes: 1, chars: 100 })).toMatchObject({
+      minutes: 3,
+      chars: 300
+    });
+  });
+
+  it('lets an editor edit go below the snapshot (clamped only after it is added)', async () => {
+    const legacyStats = { time_ms: 100 * 60 * MIN, chars: 50_000, before: 1 };
+    const adjust: ReadingEvent = {
+      device: 'dev-a',
+      seq: ++seq,
+      t: 2,
+      kind: 'adjust',
+      volume: 'v1',
+      time_delta_ms: -100 * 60 * MIN,
+      chars_delta: -50_000
+    };
+    await record([adjust]);
+    expect(figuresFor(get(readingStats), 'v1', { legacyStats })).toMatchObject({
+      timeMs: 0,
+      chars: 0
+    });
   });
 });
 
 describe('recomputation', () => {
+  it('a page turn recounts only its volume while the pace holds within 2%', async () => {
+    await record(Array.from({ length: 40 }, (_, i) => view('v1', i * MIN, i + 1, 100, 20_000)));
+    await record([view('v2', 50 * MIN, 1, 100, 20_000)]);
+    _countedForTests().length = 0;
+    await record([view('v2', 51 * MIN, 2, 100, 20_400)]);
+    expect(_countedForTests()).toEqual(['v2']);
+  });
+
   it('re-prepares only the volumes whose events changed', async () => {
     await record([view('v1', 0, 1, 300, MIN), view('v2', 0, 1, 300, MIN)]);
     _preparedForTests().length = 0;
@@ -119,60 +162,76 @@ describe('recomputation', () => {
   });
 });
 
-describe('fillLegacyBaselines', () => {
-  it('keeps an old completed volume with no events at its old totals', async () => {
+describe('freezeLegacyBaselines', () => {
+  it('snapshots an old completed volume with no events at its old totals', () => {
     setRecords({
       old: { completed: true, progress: 200, chars: 50_000, timeReadInMinutes: 120 }
     });
-    expect(await fillLegacyBaselines()).toBe(1);
+    const before = Date.now();
+    expect(freezeLegacyBaselines()).toBe(1);
     const record = get(volumesWithTrash).old;
-    expect(record.legacyStats).toEqual({ time_ms: 120 * MIN, chars: 50_000 });
+    expect(record.legacyStats).toMatchObject({ time_ms: 120 * MIN, chars: 50_000 });
+    expect(record.legacyStats!.before).toBeGreaterThanOrEqual(before);
     expect(figuresFor(get(readingStats), 'old', record)).toMatchObject({
       minutes: 120,
       chars: 50_000
     });
   });
 
-  it('records only what events do not explain, and never runs twice for a record', async () => {
-    // One view: no pace yet, so the cap is the 5-minute default; 4 minutes fit.
+  it('freezes each record once; reading after the freeze adds on top', async () => {
     await record([view('v1', 0, 1, 300, 4 * MIN)]);
     setRecords({ v1: { progress: 1, chars: 300, timeReadInMinutes: 6 } });
-    await fillLegacyBaselines();
-    expect(get(volumesWithTrash).v1.legacyStats).toEqual({ time_ms: 2 * MIN, chars: 0 });
-    // A second pass changes nothing, even after more reading.
-    await record([view('v1', 20 * MIN, 2, 300, MIN)]);
-    expect(await fillLegacyBaselines()).toBe(0);
-    expect(get(volumesWithTrash).v1.legacyStats).toEqual({ time_ms: 2 * MIN, chars: 0 });
+    freezeLegacyBaselines();
+    expect(figuresFor(get(readingStats), 'v1', get(volumesWithTrash).v1).minutes).toBe(6);
+    await record([view('v1', Date.now() + MIN, 2, 300, MIN)]);
+    expect(freezeLegacyBaselines()).toBe(0);
+    expect(figuresFor(get(readingStats), 'v1', get(volumesWithTrash).v1).minutes).toBe(7);
   });
 
-  it('counts skipped characters as explained, so a skim is not re-credited as read', async () => {
+  it("another device's events arriving after the freeze explain the old figure instead of adding to it", async () => {
+    setRecords({ v1: { progress: 9, chars: 3000, timeReadInMinutes: 60 } });
+    freezeLegacyBaselines();
+    // The phone's reading from before the freeze reaches this device later.
+    await record([view('v1', 0, 1, 300, 4 * MIN)]);
+    const figures = figuresFor(get(readingStats), 'v1', get(volumesWithTrash).v1);
+    expect(figures.minutes).toBe(60);
+    expect(figures.chars).toBe(3000);
+  });
+
+  it('counts skimmed characters as explained, so a skim is not re-credited as read', async () => {
     await record([view('v1', 0, 1, 1000, 5_000)]);
     setRecords({ v1: { progress: 1, chars: 1000 } });
-    await fillLegacyBaselines();
-    expect(get(volumesWithTrash).v1.legacyStats).toEqual({ time_ms: 0, chars: 0 });
+    freezeLegacyBaselines();
+    expect(figuresFor(get(readingStats), 'v1', get(volumesWithTrash).v1)).toMatchObject({
+      chars: 0,
+      skippedChars: 1000
+    });
   });
 
-  it('after its first pass, gives a baseline only to records still carrying old minutes', async () => {
+  it('after its first pass, snapshots only records still carrying old minutes', () => {
     setRecords({});
-    await fillLegacyBaselines();
+    freezeLegacyBaselines();
     setRecords({
       fresh: { progress: 3, chars: 900 },
       oldDevice: { progress: 3, chars: 900, timeReadInMinutes: 4 }
     });
-    expect(await fillLegacyBaselines()).toBe(1);
+    expect(freezeLegacyBaselines()).toBe(1);
     expect(get(volumesWithTrash).fresh.legacyStats).toBeUndefined();
-    expect(get(volumesWithTrash).oldDevice.legacyStats).toEqual({ time_ms: 4 * MIN, chars: 900 });
+    expect(get(volumesWithTrash).oldDevice.legacyStats).toMatchObject({
+      time_ms: 4 * MIN,
+      chars: 900
+    });
   });
 
-  it('includes archived passes in the old characters', async () => {
+  it('includes archived passes in the old characters', () => {
     setRecords({
       v: {
         chars: 100,
         archivedReads: [{ at: 1, pages: 10, chars: 2000, completed: true }]
       }
     });
-    await fillLegacyBaselines();
-    expect(get(volumesWithTrash).v.legacyStats).toEqual({ time_ms: 0, chars: 2100 });
+    freezeLegacyBaselines();
+    expect(get(volumesWithTrash).v.legacyStats).toMatchObject({ time_ms: 0, chars: 2100 });
   });
 });
 
@@ -191,7 +250,7 @@ describe('speed', () => {
         completed: true,
         chars: 24_000,
         lastProgressUpdate: '2026-01-01T00:00:00.000Z',
-        legacyStats: { time_ms: 120 * MIN, chars: 24_000 }
+        legacyStats: { time_ms: 120 * MIN, chars: 24_000, before: 1 }
       })
     };
     const speed = recentReadingSpeed(get(readingStats), records);

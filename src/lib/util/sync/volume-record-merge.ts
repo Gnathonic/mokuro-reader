@@ -27,8 +27,10 @@ export interface VolumeRecordLike {
   recentPageTurns?: Turn[];
   forgotAt?: string;
   archivedReads?: Array<{ at: number }>;
-  legacyStats?: { time_ms: number; chars: number };
+  legacyStats?: LegacyStatsLike;
 }
+
+type LegacyStatsLike = { time_ms: number; chars: number; before: number };
 
 const turnKey = (turn: Turn) => `${turn[0]}|${turn[1]}`;
 
@@ -36,10 +38,14 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
   const horizon = laterStamp(winner.forgotAt, loser.forgotAt);
   const winnerTurns = afterHorizon(winner.recentPageTurns ?? [], horizon);
   const loserTurns = afterHorizon(loser.recentPageTurns ?? [], horizon);
-  const legacyStats = mergeLegacyStats(winner.legacyStats, loser.legacyStats);
-  const legacyChanged =
-    legacyStats?.time_ms !== winner.legacyStats?.time_ms ||
-    legacyStats?.chars !== winner.legacyStats?.chars;
+  // A forget hides the reading from before history too: after one, only a
+  // copy that already knows of it (its own horizon) may carry a snapshot.
+  const keepsSnapshot = (side: T) => !horizon || side.forgotAt === horizon;
+  const legacyStats = mergeLegacyStats(
+    keepsSnapshot(winner) ? winner.legacyStats : undefined,
+    keepsSnapshot(loser) ? loser.legacyStats : undefined
+  );
+  const legacyChanged = !sameSnapshot(legacyStats, winner.legacyStats);
   if (
     !horizon &&
     winnerTurns.length === 0 &&
@@ -52,6 +58,7 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
 
   const record: T = { ...winner, recentPageTurns: unionTurns(winnerTurns, loserTurns) };
   if (legacyStats) record.legacyStats = legacyStats;
+  else delete record.legacyStats;
   if (horizon) record.forgotAt = horizon;
   // Restarts are user actions that must survive whichever copy wins: a pass
   // archived on the older copy (another device restarted the series) is kept.
@@ -128,16 +135,21 @@ function unionArchivedReads<R extends { at: number }>(
 }
 
 /**
- * Two devices' pre-history baselines: the smaller of each figure. Each device
- * computed "what my events do not explain"; the one that saw more events
- * explains more, so the smaller residual is the better one, and the result
- * does not depend on which copy won.
+ * Two devices' pre-history snapshots: the LATER freeze wins (it saw more of
+ * the old counter), then the larger figures — the same result whichever copy
+ * won the merge.
  */
 export function mergeLegacyStats(
-  a: { time_ms: number; chars: number } | undefined,
-  b: { time_ms: number; chars: number } | undefined
-): { time_ms: number; chars: number } | undefined {
+  a: LegacyStatsLike | undefined,
+  b: LegacyStatsLike | undefined
+): LegacyStatsLike | undefined {
   if (!a) return b;
   if (!b) return a;
-  return { time_ms: Math.min(a.time_ms, b.time_ms), chars: Math.min(a.chars, b.chars) };
+  const order = b.before - a.before || b.time_ms - a.time_ms || b.chars - a.chars;
+  return order > 0 ? b : a;
+}
+
+function sameSnapshot(a: LegacyStatsLike | undefined, b: LegacyStatsLike | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.before === b.before && a.time_ms === b.time_ms && a.chars === b.chars;
 }

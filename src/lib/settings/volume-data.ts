@@ -81,21 +81,26 @@ function isArchivedRead(value: unknown): value is ArchivedRead {
 }
 
 /**
- * Reading done before reading history existed, as one figure per volume: the
- * minutes and characters the record held that its events do not explain
- * (phase 3a, `fillLegacyBaselines`). Set once; a merge keeps the smaller of
- * each (the device that saw more events explains more); a forget drops it.
+ * Reading done before reading history existed (phase 3a): a SNAPSHOT of the
+ * record's old figures — the retired minute counter and the characters it
+ * held, lifetime — frozen at `before`. Stats show `max(old, what events from
+ * before the freeze explain) + everything after it` (`figuresFor`), so events
+ * another device recorded before the freeze, arriving later, explain the old
+ * figure instead of adding to it. Taken once per record; a merge keeps the
+ * later snapshot; a forget drops it.
  */
 export interface LegacyStats {
   time_ms: number;
   chars: number;
+  /** Epoch ms of the freeze: events from before it are already in the old figures. */
+  before: number;
 }
 
 function parseLegacyStats(value: unknown): LegacyStats | undefined {
   if (!value || typeof value !== 'object') return undefined;
-  const { time_ms, chars } = value as Record<string, unknown>;
+  const { time_ms, chars, before } = value as Record<string, unknown>;
   const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
-  return ok(time_ms) && ok(chars) ? { time_ms, chars } : undefined;
+  return ok(time_ms) && ok(chars) && ok(before) ? { time_ms, chars, before } : undefined;
 }
 
 type Progress = Record<string, number> | undefined;
@@ -280,8 +285,7 @@ export class VolumeData implements VolumeDataJSON {
       result.archivedReads = this.archivedReads;
     }
 
-    // Kept even when zero: a zero baseline says "events explain it all",
-    // and wins the min-merge against a device that saw fewer events.
+    // Kept even when zero: it records that the freeze happened.
     if (this.legacyStats) result.legacyStats = this.legacyStats;
 
     // Include volume metadata if present (for self-describing sync data)

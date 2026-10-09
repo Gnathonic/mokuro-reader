@@ -580,14 +580,22 @@ describe('cross-device position writers', () => {
 });
 
 describe('VolumeData legacyStats', () => {
-  it('round-trips a valid baseline and drops a malformed one', () => {
-    const ok = new VolumeData({ legacyStats: { time_ms: 60_000, chars: 5 } });
-    expect(ok.legacyStats).toEqual({ time_ms: 60_000, chars: 5 });
-    expect(JSON.parse(JSON.stringify(ok)).legacyStats).toEqual({ time_ms: 60_000, chars: 5 });
-    const zero = new VolumeData({ legacyStats: { time_ms: 0, chars: 0 } });
-    expect(JSON.parse(JSON.stringify(zero)).legacyStats).toEqual({ time_ms: 0, chars: 0 });
-    const bad = new VolumeData({ legacyStats: { time_ms: -1, chars: 'x' } } as never);
-    expect(bad.legacyStats).toBeUndefined();
+  it('round-trips a valid snapshot and drops a malformed one', () => {
+    const snap = { time_ms: 60_000, chars: 5, before: 1_700_000_000_000 };
+    const ok = new VolumeData({ legacyStats: snap });
+    expect(ok.legacyStats).toEqual(snap);
+    expect(JSON.parse(JSON.stringify(ok)).legacyStats).toEqual(snap);
+    const zero = { time_ms: 0, chars: 0, before: 5 };
+    expect(JSON.parse(JSON.stringify(new VolumeData({ legacyStats: zero }))).legacyStats).toEqual(
+      zero
+    );
+    for (const bad of [
+      { time_ms: -1, chars: 0, before: 5 },
+      { time_ms: 1, chars: 'x', before: 5 },
+      { time_ms: 1, chars: 1 }
+    ]) {
+      expect(new VolumeData({ legacyStats: bad } as never).legacyStats).toBeUndefined();
+    }
   });
 });
 
