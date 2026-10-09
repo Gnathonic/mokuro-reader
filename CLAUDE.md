@@ -685,6 +685,8 @@ Rules:
 | Volume completion date (`completedAt`)                      | `volume-data.json` (volume uuid keys)     | rides the whole-entry volume merge     |
 | Reading goals, custom goals, closed-period snapshots        | `goals.json`                              | `lastUpdated` per key; snapshots union |
 | Per-volume reading deadlines                                | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
+| Idle cutoff (automatic / manual override, `k`)              | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
+| Pre-history reading baseline (`legacyStats`)                | `volume-data.json` (volume uuid keys)     | element-wise min                       |
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no
@@ -812,12 +814,42 @@ between the merge and the upload: a record's turns become legacy events
 device), committed BEFORE exactly those turns are stripped; if IndexedDB
 fails the turns stay in the file. `archivedReads` become `restart` events
 but stay in the record. Each device uploads the legacy events it holds as
-`history/<device>/legacy.events`; imports union by key. The minute counter
-(`timeReadInMinutes`) is untouched until phase 3.
+`history/<device>/legacy.events`; imports union by key.
 
 Progress syncs are batched while reading (`activity-tracker.ts`: 5 s debounce,
 at most one per 3 min) and flushed when the reader closes, the tab hides or
 the page goes away.
+
+**Stats on events (phase 3a).** Time read, characters read, speed and time
+left come from history — one clock (`stats-engine.ts`, pure; `stats-store.ts`
+keeps it current, re-preparing only volumes whose events changed). Rules that
+must hold:
+
+- A view counts its raw dwell up to its CAP: `clamp(k × chars_visible × pace,
+60 s, 30 min)`, pace = median ms/char of the newest 500 views (≥ 30 needed,
+  else 5 min), or the synced manual override. Over the cap it counts TYPICAL
+  time (`expected`, at least the floor) — phase 3b will ask instead.
+- A view faster than 1500 cpm is a SKIP: its time counts, never its speed; a
+  page only skip views showed is skimmed, not read (`skippedChars`, shown apart).
+  Per pass (split at `restart`) a page's characters count once.
+- Converted legacy turns: page chars = the next turn's cumulative minus this
+  one's; over the cap they count nothing (the old idle rule).
+- Reading from before history is a per-volume baseline in the synced record,
+  `legacyStats {time_ms, chars}`: what the record held that events do not
+  explain, set ONCE (`fillLegacyBaselines`, after a successful sync, or 30 s
+  after start with no provider), merged by element-wise MIN, dropped by a
+  forget. Figures everywhere = events + baseline (`figuresFor`).
+- `timeReadInMinutes` is frozen: parsed, never written. The volume editor
+  edits the derived time and records the difference as an `adjust` event (no
+  record stamp). The reader timer is that figure plus the open view up to its
+  cap (`live-view.ts`); clicking it ends the view until the next page.
+- Recent speed = the newest 8 h of counted reading, by time (no per-volume
+  window); under 30 min, completed volumes' BASELINES fill in. A series' own
+  speed (≥ 60 min of its reading) drives its time left (`series-speeds.ts`,
+  one shared map — never group the catalog per card).
+- The idle cutoff is NOT a profile setting: `tracking.idle` in
+  `volume-data.json` (`tracking-data.ts`), per key newest-wins with the
+  series section's clamp + forfeit-on-bogus and raw upload comparison.
 
 **Position across devices (phase 2c).** The position stays the newest page
 event; `planPosition` (`position-offer.ts`, pure) decides when OTHER reading is
