@@ -686,7 +686,7 @@ Rules:
 | Reading goals, custom goals, closed-period snapshots        | `goals.json`                              | `lastUpdated` per key; snapshots union |
 | Per-volume reading deadlines                                | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
 | Idle cutoff (automatic / manual override, `k`)              | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
-| Pre-history reading baseline (`legacyStats`)                | `volume-data.json` (volume uuid keys)     | element-wise min                       |
+| Pre-history reading snapshot (`legacyStats`)                | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no
@@ -834,11 +834,19 @@ must hold:
   Per pass (split at `restart`) a page's characters count once.
 - Converted legacy turns: page chars = the next turn's cumulative minus this
   one's; over the cap they count nothing (the old idle rule).
-- Reading from before history is a per-volume baseline in the synced record,
-  `legacyStats {time_ms, chars}`: what the record held that events do not
-  explain, set ONCE (`fillLegacyBaselines`, after a successful sync, or 30 s
-  after start with no provider), merged by element-wise MIN, dropped by a
-  forget. Figures everywhere = events + baseline (`figuresFor`).
+- Reading from before history is a per-volume SNAPSHOT in the synced record,
+  `legacyStats {time_ms, chars, before}`: the old minute counter and lifetime
+  characters, frozen at `before` (`freezeLegacyBaselines`, at start and after
+  each sync — no events needed). Figures = `max(old, history before the
+freeze) + history after` (`figuresFor`, via the engine's per-volume
+  timeline): another device's pre-freeze events arriving later EXPLAIN the old
+  figure, never add to it; an unfrozen record shows `max(old, history)`. Raw
+  totals are clamped only after that, so an editor edit below the old figure
+  works. Merge keeps the later snapshot; a forget drops it, and after one only
+  a copy carrying that `forgotAt` may hold one.
+- Per page turn the store counts only the changed volume: counts keep their
+  pace until it moves > 2%, and the pace / recent speed take volumes newest
+  first (`estimatePace`, `recentSpeed`) — never sort the whole library there.
 - `timeReadInMinutes` is frozen: parsed, never written. The volume editor
   edits the derived time and records the difference as an `adjust` event (no
   record stamp). The reader timer is that figure plus the open view up to its
