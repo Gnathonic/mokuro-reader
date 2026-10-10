@@ -674,19 +674,19 @@ Rules:
 
 ### What syncs where
 
-| Data                                                        | File                                      | Merge key                              |
-| ----------------------------------------------------------- | ----------------------------------------- | -------------------------------------- |
-| Read progress, per-volume settings                          | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume        |
-| Series reading state (`read_count`, re-read mute, tracking) | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`         |
-| Settings profiles                                           | `profiles.json`                           | `lastUpdated` per profile              |
-| Series facts (link, titles, synonyms, tag, unit)            | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp         |
-| Shelf alignment (`spine_offset`, per-volume `offset`)       | `<Series>/series.json` (index fields)     | local wins, else the published value   |
-| Primary OCR identity (`mokuro_sha256`)                      | `<Series>/series.json` (index field)      | rides with its file's `mokuro_*` stamp |
-| Volume completion date (`completedAt`)                      | `volume-data.json` (volume uuid keys)     | rides the whole-entry volume merge     |
-| Reading goals, custom goals, closed-period snapshots        | `goals.json`                              | `lastUpdated` per key; snapshots union |
-| Per-volume reading deadlines                                | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
-| Idle cutoff (automatic / manual override, `k`)              | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
-| Pre-history reading snapshot (`legacyStats`)                | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
+| Data                                                               | File                                      | Merge key                              |
+| ------------------------------------------------------------------ | ----------------------------------------- | -------------------------------------- |
+| Read progress, per-volume settings                                 | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume        |
+| Series reading state (`read_count`, re-read mute, tracking)        | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`         |
+| Settings profiles                                                  | `profiles.json`                           | `lastUpdated` per profile              |
+| Series facts (link, titles, synonyms, tag, unit)                   | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp         |
+| Shelf alignment (`spine_offset`, per-volume `offset`)              | `<Series>/series.json` (index fields)     | local wins, else the published value   |
+| Primary OCR identity (`mokuro_sha256`)                             | `<Series>/series.json` (index field)      | rides with its file's `mokuro_*` stamp |
+| Volume completion date (`completedAt`)                             | `volume-data.json` (volume uuid keys)     | rides the whole-entry volume merge     |
+| Reading goals, custom goals, closed-period snapshots               | `goals.json`                              | `lastUpdated` per key; snapshots union |
+| Per-volume reading deadlines                                       | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
+| Idle cutoff (automatic / manual override, `k`), long-pause default | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
+| Pre-history reading snapshot (`legacyStats`)                       | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no
@@ -792,9 +792,11 @@ collide. Kinds: `page` (one per reader VIEW — whole pages on screen, raw
 uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
 tab has no view), `adjust` (volume editor time/chars edits), `restart`
 ("restart series"), `forget` (delete stats), `position` (an answer to a
-cross-device position offer — see below). Record through `recordEvent`,
-which never throws and loads the DB module lazily (`volume-data.ts` imports
-it; many suites mock `dexie` bare).
+cross-device position offer — see below), `resolve` (an answer about a long
+pause — see below). Record through `recordEvent` (`recordView` for a view and
+its answer in one transaction, `recordResolve` for a later answer), which
+never throw and load the DB module lazily (`volume-data.ts` imports it; many
+suites mock `dexie` bare).
 
 **Page turns come from history (phase 2b).** `updateProgress` no longer writes
 `recentPageTurns`. The stats still read `PageTurn[]`, but the public `volumes`
@@ -827,8 +829,9 @@ must hold:
 
 - A view counts its raw dwell up to its CAP: `clamp(k × chars_visible × pace,
 60 s, 30 min)`, pace = median ms/char of the newest 500 views (≥ 30 needed,
-  else 5 min), or the synced manual override. Over the cap it counts TYPICAL
-  time (`expected`, at least the floor) — phase 3b will ask instead.
+  else 5 min), or the synced manual override. Over the cap the reader ASKS
+  (phase 3b, below); unanswered, it counts TYPICAL time (`expected`, at least
+  the floor), provisionally.
 - A view faster than 1500 cpm is a SKIP: its time counts, never its speed; a
   page only skip views showed is skimmed, not read (`skippedChars`, shown apart).
   Per pass (split at `restart`) a page's characters count once.
@@ -849,8 +852,9 @@ freeze) + history after` (`figuresFor`, via the engine's per-volume
   first (`estimatePace`, `recentSpeed`) — never sort the whole library there.
 - `timeReadInMinutes` is frozen: parsed, never written. The volume editor
   edits the derived time and records the difference as an `adjust` event (no
-  record stamp). The reader timer is that figure plus the open view up to its
-  cap (`live-view.ts`); clicking it ends the view until the next page.
+  record stamp). The reader timer is that figure plus the open view counted by
+  the same rule (`countedDwell`: up to its cap, or as a standing long-pause
+  default counts it); clicking it ends the view until the next page.
 - Recent speed = the newest 8 h of counted reading, by time (no per-volume
   window); under 30 min, completed volumes' BASELINES fill in. A series' own
   speed (≥ 60 min of its reading) drives its time left (`series-speeds.ts`,
@@ -858,6 +862,52 @@ freeze) + history after` (`figuresFor`, via the engine's per-volume
 - The idle cutoff is NOT a profile setting: `tracking.idle` in
   `volume-data.json` (`tracking-data.ts`), per key newest-wins with the
   series section's clamp + forfeit-on-bogus and raw upload comparison.
+
+**Long pauses (phase 3b).** A view that reaches its cap is ASKED about, never
+guessed: `pause-watch.ts` arms one timer at `since + cap` (re-armed when the
+pace, `k` or the override moves) and `LongPausePrompt.svelte` asks, non-modal,
+above the page — never inside `Timer.svelte`, whose markup hides with the HUD.
+Rules that must hold:
+
+- An answer is a `resolve` event (`volume`, `target: [device, seq]`, `count`
+  = `full` | `typical` | `none`), kind 5 inside segment format 1. `volume` is
+  the target's, so everything keyed by volume (turns store, codec, index)
+  handles it unchanged. The latest answer per target wins in event order
+  (t, device, seq) on every device; nothing is ever edited.
+- A live answer SPLITS the view: the view so far and its `resolve` go in ONE
+  rw transaction (`recordView` → `appendView`), and a continuation view of the
+  same pages opens at the answer (`ViewTracker.split`). Nothing waits for a
+  later event, so a page turn or close loses no answer; the continuation earns
+  no new characters (a page counts once per pass).
+- `countedDwell` is the one rule for engine and live timer: `full` = the raw
+  dwell, `none` = 0, `typical` or unanswered-over-cap = typical. Live, an
+  unanswered view STOPS at its cap while the prompt asks; a view that just
+  ended adds `endedViewMs` (what the stats will count) until the stats move,
+  so the timer is exact both ways — no dip on a page turn, and no kept
+  minutes after "Don't count" (it used to only ever rise). An answer
+  applies under any later cap, and only to TIME — reads and skips are
+  unchanged (`none` keeps the pages read and gives no speed sample).
+- "Still reading" = `full` plus `widenedK`: `k` fits this view × 1.5, up to a
+  half step, at most 20 and never past where the ceiling caps it; it never
+  shrinks. `null` (nothing changes) under a manual override, without a pace,
+  or when this page's CURRENT cap is held at the floor (`k × expected ≤
+floor`: its time reflects the floor, not pace — fitting `k` to one tap on a
+  one-bubble page raised every other page's cap ~5.5×). `k` shares
+  `tracking.idle`'s stamp with the override; Settings shows the widening with
+  a Reset.
+- Two minutes past the cap the prompt shows how long the page has been open:
+  count all / typical / none. Unanswered (turn, hide, pause click, close) the
+  pause counts typical and is listed PROVISIONAL on the reading-speed page
+  (`pause-review.ts`, `LongPausesCard.svelte`), where any answer can change.
+- "Always do this" appears once 3 pauses are answered — DERIVED from the
+  answers across every volume and device, never stored. The standing default
+  is `tracking.pauses` (its own key and stamp), written as a view's answer
+  when the view ENDS, only for views that reached the cap while it was set —
+  never backwards over the review list.
+- Converted `legacy:` views are never prompted; over the cap they still count
+  nothing, and a `resolve` aimed at one is ignored.
+- `e2e/long-pauses.spec.ts` drives all of it on Playwright's page clock
+  (`clock.install()` before the app loads, then `fastForward`).
 
 **Position across devices (phase 2c).** The position stays the newest page
 event; `planPosition` (`position-offer.ts`, pure) decides when OTHER reading is

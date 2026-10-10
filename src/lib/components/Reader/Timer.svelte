@@ -1,20 +1,21 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { volumes } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { currentVolume, currentVolumeCharacterCount } from '$lib/catalog';
   import { calculateVolumeTimeToFinish } from '$lib/util/reading-speed';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import { seriesSpeeds } from '$lib/reading-history/series-speeds';
-  import { liveMinutes, liveView, readingPaused } from '$lib/reading-history/live-view';
-  import { viewCap } from '$lib/reading-history/stats-engine';
+  import { endedView, liveMinutes, liveView, readingPaused } from '$lib/reading-history/live-view';
+  import { typicalDwell, viewCap } from '$lib/reading-history/stats-engine';
 
   /**
    * Time read in this volume, live (phase 3a, one clock): the counted reading
-   * history plus the view on screen now, up to its idle cap — the same rule
-   * the stats apply once the view ends. Past the cap it shows "Idle" and stops
-   * counting. Clicking pauses: the view ends and nothing counts until the next
-   * page or a second click.
+   * history plus the view on screen now, its dwell up to the idle cap. Past
+   * the cap the timer stops while the prompt asks, or counts as an answer says
+   * (phase 3b, `OpenView.answer`; views that just ended via `endedView`) and
+   * shows "Idle" unless "Count all" keeps it counting. Clicking pauses: the
+   * view ends and nothing counts until the next page or a second click.
    */
   interface Props {
     volumeId: string;
@@ -31,28 +32,35 @@
   });
 
   let open = $derived($liveView?.view.volume === volumeId ? $liveView : null);
-  let cap = $derived(
-    open
-      ? viewCap(
-          open.view.page_chars.reduce((sum, c) => sum + c, 0),
-          $readingStats.pace,
-          $readingStats.idle
-        )
-      : 0
-  );
+  let chars = $derived(open ? open.view.page_chars.reduce((sum, c) => sum + c, 0) : 0);
+  let cap = $derived(open ? viewCap(chars, $readingStats.pace, $readingStats.idle) : 0);
+  let typical = $derived(open ? typicalDwell(chars, $readingStats.pace, cap) : 0);
   let counted = $derived(figuresFor($readingStats, volumeId, $volumes[volumeId]).timeMs);
-  let computed = $derived(liveMinutes(counted, open, now, cap));
 
-  // A view that just ended is on its way into the stats (recorded, then
-  // counted on the next pass) while the next one already shows: never let the
-  // figure step back meanwhile. The component is keyed per volume.
-  let shown = $state(0);
+  // Views that just ended are on their way into the stats (recorded, then
+  // counted on the next pass): add what the stats WILL count for them until
+  // the counted figure moves. Exact both ways — a page turn never dips, and an
+  // answer that counts less than the time on screen shows at once.
+  let pending = $state<{ ms: number; base: number } | null>(null);
   $effect(() => {
-    if (computed > shown) shown = computed;
+    const ended = $endedView;
+    if (!ended || ended.volume !== volumeId) return;
+    untrack(() => {
+      const base = counted;
+      pending = { ms: (pending?.base === base ? pending.ms : 0) + ended.ms, base };
+    });
   });
+  let pendingMs = $derived(pending && pending.base === counted ? pending.ms : 0);
+  let shown = $derived(
+    liveMinutes(counted + pendingMs, open, now, cap, typical, open?.answer ?? null)
+  );
 
   let status = $derived(
-    $readingPaused || !open ? 'Paused' : now - open.since > cap ? 'Idle' : 'Active'
+    $readingPaused || !open
+      ? 'Paused'
+      : now - open.since > cap && open.answer !== 'full'
+        ? 'Idle'
+        : 'Active'
   );
 
   let timeEstimate = $derived.by(() => {

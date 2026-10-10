@@ -3,18 +3,22 @@ import {
   CEILING_MS,
   DEFAULT_K,
   FLOOR_MS,
+  K_MAX,
   NO_DATA_CAP_MS,
   countVolume,
+  countedDwell,
   estimatePace,
   prepareVolume,
   recentSpeed,
   speedFromSamples,
   totalsBefore,
   viewCap,
+  widenedK,
   type IdleSettings,
+  type Pause,
   type PreparedVolume
 } from './stats-engine';
-import type { ReadingEvent } from './types';
+import type { PauseCount, ReadingEvent } from './types';
 
 const AUTO: IdleSettings = { k: DEFAULT_K, overrideMs: null };
 const MIN = 60_000;
@@ -87,6 +91,22 @@ const adjust = (t: number, time: number, chars: number): ReadingEvent => ({
   time_delta_ms: time,
   chars_delta: chars
 });
+/** The user's answer about the view `target` (`[device, seq]`). */
+const resolve = (
+  t: number,
+  target: [string, number],
+  count: PauseCount,
+  device = 'dev-a'
+): ReadingEvent => ({
+  device,
+  seq: ++seq,
+  t,
+  kind: 'resolve',
+  volume: 'vol',
+  target,
+  count
+});
+const id = (e: ReadingEvent): [string, number] => [e.device, e.seq];
 
 /** A library whose pace is exactly `msPerChar`: 40 views of 100 chars. */
 function paced(msPerChar: number): PreparedVolume[] {
@@ -236,6 +256,263 @@ describe('countVolume', () => {
     const library = paced(200);
     const p = estimatePace(library);
     expect(p).toBe(200);
+  });
+});
+
+describe('countedDwell', () => {
+  it('counts all, typical or nothing as answered, and typical while unanswered over the cap', () => {
+    expect(countedDwell(10 * MIN, 4 * MIN, 80_000, 'full')).toBe(10 * MIN);
+    expect(countedDwell(10 * MIN, 4 * MIN, 80_000, 'typical')).toBe(80_000);
+    expect(countedDwell(10 * MIN, 4 * MIN, 80_000, 'none')).toBe(0);
+    expect(countedDwell(10 * MIN, 4 * MIN, 80_000, null)).toBe(80_000);
+  });
+
+  it('counts an unanswered view within its cap in full, and typical never above the dwell', () => {
+    expect(countedDwell(3 * MIN, 4 * MIN, 80_000, null)).toBe(3 * MIN);
+    expect(countedDwell(60_000, 4 * MIN, 80_000, 'typical')).toBe(60_000);
+  });
+});
+
+describe('long-pause answers (resolve events)', () => {
+  // 400 chars at 200 ms/char: expected 80 s, cap 240 s.
+  const pace = 200;
+  const long = () => view(0, 1, [400], 8 * 60 * MIN);
+
+  it('counts a long pause in full, typical or not at all as answered', () => {
+    const cases = [
+      ['full', 8 * 60 * MIN],
+      ['typical', 80_000],
+      ['none', 0]
+    ] as const;
+    for (const [count, ms] of cases) {
+      const v = long();
+      const totals = countVolume(
+        prepareVolume([v, resolve(8 * 60 * MIN, id(v), count)]),
+        pace,
+        AUTO
+      );
+      expect(totals.timeMs).toBe(ms);
+    }
+  });
+
+  it("keeps the pages of a 'none' pause read, but takes no speed sample from it", () => {
+    const v = long();
+    const totals = countVolume(
+      prepareVolume([v, resolve(8 * 60 * MIN, id(v), 'none')]),
+      pace,
+      AUTO
+    );
+    expect(totals.timeMs).toBe(0);
+    expect(totals.readChars).toBe(400);
+    expect(totals.samples).toEqual([]);
+  });
+
+  it('takes the latest answer by time, whatever order the events arrive in', () => {
+    const v = long();
+    const events = [resolve(9 * 60 * MIN, id(v), 'none'), v, resolve(8 * 60 * MIN, id(v), 'full')];
+    expect(countVolume(prepareVolume(events), pace, AUTO).timeMs).toBe(0);
+  });
+
+  it('breaks a tie in time by device, the same on every device', () => {
+    const v = long();
+    const a = resolve(8 * 60 * MIN, id(v), 'full', 'dev-a');
+    const b = resolve(8 * 60 * MIN, id(v), 'none', 'dev-b');
+    expect(countVolume(prepareVolume([v, b, a]), pace, AUTO).timeMs).toBe(0);
+    expect(countVolume(prepareVolume([a, v, b]), pace, AUTO).timeMs).toBe(0);
+  });
+
+  it('applies an answer under the cap, and keeps it when the pace moves', () => {
+    const v = view(0, 1, [400], 3 * MIN);
+    const none = [v, resolve(3 * MIN, id(v), 'none')];
+    expect(countVolume(prepareVolume(none), 200, AUTO).timeMs).toBe(0);
+    expect(countVolume(prepareVolume(none), 400, AUTO).timeMs).toBe(0);
+    const typical = [v, resolve(3 * MIN, id(v), 'typical')];
+    expect(countVolume(prepareVolume(typical), 200, AUTO).timeMs).toBe(80_000);
+  });
+
+  it('never applies an answer to a legacy view, and never lists one', () => {
+    const events = [
+      legacy(0, 1, 0, 10 * 60 * MIN),
+      legacy(10 * 60 * MIN, 9, 5000, null),
+      resolve(11 * 60 * MIN, ['legacy:vol', 0], 'full')
+    ];
+    const totals = countVolume(prepareVolume(events), pace, AUTO);
+    expect(totals.timeMs).toBe(0);
+    expect(totals.readChars).toBe(0);
+    expect(totals.pauses).toEqual([]);
+  });
+
+  it('ignores an answer aimed at no view', () => {
+    const v = long();
+    const stray = resolve(8 * 60 * MIN, ['dev-z', 99], 'none');
+    expect(countVolume(prepareVolume([v, stray]), pace, AUTO).timeMs).toBe(80_000);
+  });
+
+  it('drops answers a forget hides, even one whose view is after the horizon', () => {
+    const v = long();
+    const w = view(10 * 60 * MIN, 2, [400], 8 * 60 * MIN);
+    // dev-b's slow clock stamps its answer about w before the forget's horizon.
+    const skewed = resolve(8 * 60 * MIN + 30 * MIN, id(w), 'full', 'dev-b');
+    const events = [
+      v,
+      resolve(8 * 60 * MIN, id(v), 'full'),
+      forget(9 * 60 * MIN, 9 * 60 * MIN),
+      w,
+      skewed
+    ];
+    const totals = countVolume(prepareVolume(events), pace, AUTO);
+    expect(totals.timeMs).toBe(80_000);
+    expect(totals.pauses.map((p) => [p.seq, p.answer])).toEqual([[w.seq, null]]);
+  });
+
+  it('lists long pauses and answered views in time order, with what each counted', () => {
+    const a = view(0, 1, [400], MIN); // within its cap, unanswered: not listed
+    const b = view(10 * MIN, 5, [400, 100], 8 * 60 * MIN); // provisional
+    const c = view(9 * 60 * MIN, 7, [400], 20 * MIN); // answered: all
+    const d = view(10 * 60 * MIN, 8, [400], 2 * MIN); // under its cap, answered: typical
+    const events = [
+      a,
+      b,
+      c,
+      resolve(9 * 60 * MIN + 20 * MIN, id(c), 'full'),
+      d,
+      resolve(11 * 60 * MIN, id(d), 'typical')
+    ];
+    const totals = countVolume(prepareVolume(events), pace, AUTO);
+    const expected: Pause[] = [
+      {
+        device: 'dev-a',
+        seq: b.seq,
+        t: 10 * MIN,
+        page: 5,
+        dwell: 8 * 60 * MIN,
+        cap: 300_000,
+        typical: 100_000,
+        counted: 100_000,
+        answer: null
+      },
+      {
+        device: 'dev-a',
+        seq: c.seq,
+        t: 9 * 60 * MIN,
+        page: 7,
+        dwell: 20 * MIN,
+        cap: 240_000,
+        typical: 80_000,
+        counted: 20 * MIN,
+        answer: 'full'
+      },
+      {
+        device: 'dev-a',
+        seq: d.seq,
+        t: 10 * 60 * MIN,
+        page: 8,
+        dwell: 2 * MIN,
+        cap: 240_000,
+        typical: 80_000,
+        counted: 80_000,
+        answer: 'typical'
+      }
+    ];
+    expect(totals.pauses).toEqual(expected);
+    expect(totals.timeMs).toBe(60_000 + 100_000 + 20 * MIN + 80_000);
+  });
+});
+
+describe('long-pause answers: review focus', () => {
+  const pace = 200;
+
+  it('credits a split pair once: the continuation is a harmless skip, only the paused view listed', () => {
+    for (const count of ['full', 'typical', 'none'] as const) {
+      const paused = view(0, 5, [400, 100], 8 * 60 * MIN);
+      const answer = resolve(8 * 60 * MIN, id(paused), count);
+      // The continuation opens at the answer, same pages, turned 2 s later.
+      const cont = view(8 * 60 * MIN, 5, [400, 100], 2_000);
+      const totals = countVolume(prepareVolume([paused, answer, cont]), pace, AUTO);
+      expect(totals.readChars).toBe(500);
+      expect(totals.skippedChars).toBe(0);
+      expect(totals.pauses.map((p) => [p.seq, p.answer])).toEqual([[paused.seq, count]]);
+      const pausedMs = { full: 8 * 60 * MIN, typical: 100_000, none: 0 }[count];
+      expect(totals.timeMs).toBe(pausedMs + 2_000);
+    }
+  });
+
+  it('an answer aimed at an earlier pass (after a restart) changes time only', () => {
+    const v1 = view(0, 1, [400], 8 * 60 * MIN);
+    const r = restart(9 * 60 * MIN);
+    const v2 = view(10 * 60 * MIN, 1, [400], MIN);
+    const without = countVolume(prepareVolume([v1, r, v2]), pace, AUTO);
+    const answered = countVolume(
+      prepareVolume([v1, r, v2, resolve(11 * 60 * MIN, id(v1), 'none')]),
+      pace,
+      AUTO
+    );
+    expect(without.readChars).toBe(800);
+    expect(answered.readChars).toBe(without.readChars);
+    expect(answered.skippedChars).toBe(without.skippedChars);
+    expect(without.timeMs).toBe(80_000 + MIN);
+    expect(answered.timeMs).toBe(MIN);
+    expect(answered.pauses.map((p) => [p.seq, p.answer])).toEqual([[v1.seq, 'none']]);
+  });
+
+  it('an answer newer than a forget whose target was forgotten matches nothing', () => {
+    const v = view(0, 1, [400], 8 * 60 * MIN);
+    const w = view(10 * 60 * MIN, 2, [400], MIN);
+    const events = [
+      v,
+      forget(9 * 60 * MIN, 9 * 60 * MIN),
+      w,
+      resolve(11 * 60 * MIN, id(v), 'full')
+    ];
+    const totals = countVolume(prepareVolume(events), pace, AUTO);
+    expect(totals.timeMs).toBe(MIN);
+    expect(totals.readChars).toBe(400);
+    expect(totals.pauses).toEqual([]);
+  });
+});
+
+describe('widenedK', () => {
+  // 400 chars at 200 ms/char: expected 80 s; k = 3 caps it at 240 s.
+  it('fits the time so far with 1.5× headroom, rounded up to a half step', () => {
+    expect(widenedK(6 * MIN, 400, 200, AUTO)).toBe(7);
+    expect(viewCap(400, 200, { k: 7, overrideMs: null })).toBe(560_000);
+    expect(widenedK(270_000, 400, 200, AUTO)).toBe(5.5);
+  });
+
+  it('stops where the cap of this view reaches the ceiling', () => {
+    // 2000 chars: expected 400 s; the ceiling is reached at k = 4.5.
+    const k = widenedK(25 * MIN, 2000, 200, AUTO);
+    expect(k).toBe(4.5);
+    expect(viewCap(2000, 200, { k: k!, overrideMs: null })).toBe(CEILING_MS);
+    // 4000 chars: already at the ceiling with k = 3.
+    expect(widenedK(40 * MIN, 4000, 200, AUTO)).toBeNull();
+  });
+
+  it(`never goes past K_MAX (${K_MAX})`, () => {
+    // 200 chars: expected 40 s, cap 2 min at k = 3; the fit at 10 min (22.5) is bounded.
+    expect(widenedK(10 * MIN, 200, 200, AUTO)).toBe(K_MAX);
+  });
+
+  it('is null on a page whose cap is held at the floor (art, one bubble)', () => {
+    // 30 chars: expected 6 s, so k = 3 gives 18 s and the floor (60 s) decides
+    // the cap. Fitting k to 65 s would be 16.5 — every other page's cap would
+    // grow 5.5× from one tap on a bubble.
+    expect(viewCap(30, 200, AUTO)).toBe(FLOOR_MS);
+    expect(widenedK(65_000, 30, 200, AUTO)).toBeNull();
+    expect(widenedK(2 * MIN, 30, 200, AUTO)).toBeNull();
+  });
+
+  it('is null when widening cannot lengthen this view’s cap', () => {
+    expect(widenedK(10 * MIN, 400, 200, { k: DEFAULT_K, overrideMs: 5 * MIN })).toBeNull();
+    expect(widenedK(10 * MIN, 400, null, AUTO)).toBeNull();
+    expect(widenedK(10 * MIN, 0, 200, AUTO)).toBeNull();
+    // 1 char: even k = K_MAX leaves the cap at the floor.
+    expect(widenedK(2 * MIN, 1, 200, AUTO)).toBeNull();
+    expect(viewCap(1, 200, AUTO)).toBe(FLOOR_MS);
+  });
+
+  it('never shrinks k', () => {
+    expect(widenedK(4 * MIN, 400, 200, { k: 10, overrideMs: null })).toBeNull();
   });
 });
 

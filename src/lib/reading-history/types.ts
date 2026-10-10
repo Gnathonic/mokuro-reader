@@ -63,12 +63,29 @@ export interface PositionPayload {
   page: number;
 }
 
+/** How a long pause counts: all of it, the typical time for its pages, or none. */
+export type PauseCount = 'full' | 'typical' | 'none';
+
+/**
+ * The user's answer about a long pause on one `page` event (phase 3b). The
+ * latest answer per target wins (stats engine). `volume` is the target's
+ * volume, denormalised so that every per-volume path (stores, the codec's
+ * volume dictionary, the `volume` index) carries this kind unchanged.
+ */
+export interface ResolvePayload {
+  kind: 'resolve';
+  volume: string;
+  target: [device: string, seq: number];
+  count: PauseCount;
+}
+
 export type EventPayload =
   | PagePayload
   | AdjustPayload
   | RestartPayload
   | ForgetPayload
-  | PositionPayload;
+  | PositionPayload
+  | ResolvePayload;
 
 /** `t` = epoch ms on the recording device (for `page`: when the view opened). */
 export type ReadingEvent = { device: string; seq: number; t: number } & EventPayload;

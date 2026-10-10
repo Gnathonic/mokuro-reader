@@ -118,7 +118,7 @@ Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock)
 | `adjust`  | `volume`, `time_delta_ms?`, `chars_delta?`                                                                                                                                                | manual edits in the volume editor                                                                          |
 | `restart` | `volume`                                                                                                                                                                                  | `archivedReads` marker                                                                                     |
 | `forget`  | `volume`, `before`                                                                                                                                                                        | "delete stats" (`deleteVolume`: volume delete with "remove stats", and the speed page's per-volume delete) |
-| `resolve` | `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                                                                | — (the user's answer about a long pause)                                                                   |
+| `resolve` | `volume` (the target's), `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                                       | — (the user's answer about a long pause)                                                                   |
 
 - A `page` event is written when the user **leaves** a view (turn, close, tab hidden, idle), so dwell is
   known, which fixes problem 5.
@@ -231,7 +231,9 @@ device.
   - **Don't ask again:** offered only after the user has answered a few prompts (e.g. 3), not on the first
     ones. It stores a standing default (`'full'` | `'typical'` | `'none'`) in the `tracking` section; prompts
     stop and new pauses resolve to that default. Changeable in settings.
-  - Legacy data converted from `recentPageTurns` is never prompted for; it counts as typical.
+  - Legacy data converted from `recentPageTurns` is never prompted for; over its cap it counts nothing
+    (the old idle rule, kept in phase 3b: counting typical could lift history from before the freeze above
+    the frozen `legacyStats` snapshot).
 - **Skips.** A view read faster than an implausible rate (e.g. 1500 cpm) is a skip: its time and chars are
   excluded from speed, and its `chars_new` count as **skipped, not read**. "Characters read" totals exclude
   skips; the stats show a separate skipped figure (#160, #224). Existing totals drop slightly once history is
@@ -245,12 +247,33 @@ device.
 
 **As built (phase 3a, `stats-engine.ts` / `stats-store.ts`).** Constants: `k` = 3, floor 60 s, ceiling
 30 min, no-data cap 5 min, skip above 1500 cpm, pace = median of the newest 500 views of ≥ 20 characters
-(≥ 30 of them). Until phase 3b asks, a view over its cap counts typical time. Reading from before history
+(≥ 30 of them). A view over its cap with no answer counts typical time (phase 3b asks about it). Reading from before history
 is kept as a per-volume snapshot in the synced record (`legacyStats`: the old minute counter and lifetime
 characters, frozen at a time `before`); stats show `max(old, history before the freeze) + history after`,
 so events recorded before the freeze but arriving later explain the old figure rather than add to it. It
 is the `adjust` conversion described under Migration, done as record state so it also syncs where history
 cannot (bunko before 0.7.1). The manual override lives in `volume-data.json` → `tracking.idle`.
+
+**As built (phase 3b, `pause-watch.ts` / `LongPausePrompt.svelte` / `pause-review.ts`).** The reader arms one
+timer for the open view at `since + cap`, re-armed when the pace, `k` or the override moves, and asks in a
+non-modal prompt above the page. A `resolve` also carries its target's `volume`, so everything keyed by
+volume handles it unchanged; it is kind 5 inside segment format 1 (the codec had not shipped). A live answer
+**splits the view**: the view so far and its `resolve` are written in one transaction, and a continuation
+view of the same pages opens at the answer time. No answer waits on a later event, and the continuation
+earns no new characters. "Still reading" counts the time in full and widens `k` to fit this view × 1.5,
+rounded up to a half step, at most 20 and never past where the ceiling caps it anyway. It changes nothing
+under a manual override, without a pace yet, or on a page whose cap is held at the floor (its time says
+nothing about pace, and one tap on a one-bubble page would widen every other page's cap; the floor stays
+fixed). The live timer stops at the cap while the prompt asks, then shows what the answer counts; a view
+that just ended adds what the stats will count for it until they do (`endedView`). `k`
+keeps sharing `tracking.idle`'s stamp with the override. Two minutes past the cap the prompt shows how long
+the page has been open: count all, typical, or none. An answer applies under whatever cap holds later, and
+only to time: pages stay read and skips stay skips, and `'none'` gives no speed sample. The latest answer per
+target wins in event order (t, device, seq), the same on every device. Unanswered pauses count typical and are
+listed as provisional on the reading-speed page, where any answer can be changed. "Always do this" appears once
+3 pauses are answered, counted from the answers themselves across devices (nothing is stored). The standing
+default (`tracking.pauses`, its own key and stamp) is written as a view's answer when the view ends, and only
+for views that reached the cap while it was set, never backwards over the review list.
 
 ## Migration and compatibility
 
