@@ -1722,4 +1722,69 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
     const result = await svc.downloadVolumeDataFile(p);
     expect(result.tracking.idle.override_minutes).toBe(8);
   });
+
+  it('round-trips the standing pause default through the file', async () => {
+    const pauses = { default: 'typical', lastUpdated: T2 };
+    setTrackingStates({ pauses: { default: 'typical', lastUpdated: T2 } });
+    stubCache([fileMeta('only')]);
+    const first = provider(file(undefined));
+    await svc.syncVolumeData(first.provider);
+    expect(first.uploads).toHaveLength(1);
+    expect(first.uploads[0].tracking).toEqual({ pauses });
+
+    // Another device reads that upload back: adopted, and nothing to upload.
+    setTrackingStates({});
+    stubCache([fileMeta('only')]);
+    const second = provider(first.uploads[0]);
+    await svc.syncVolumeData(second.provider);
+    expect(get(trackingState)).toEqual({ pauses });
+    expect(second.uploads).toHaveLength(0);
+  });
+
+  it('merges the pause default and the idle cutoff apart', async () => {
+    setTrackingStates({
+      idle: { override_minutes: 12, lastUpdated: T2 },
+      pauses: { default: 'full', lastUpdated: T1 }
+    });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({
+        idle: { override_minutes: 20, lastUpdated: T1 },
+        pauses: { default: 'none', lastUpdated: T2 }
+      })
+    );
+    await svc.syncVolumeData(p);
+    const expected = {
+      idle: { override_minutes: 12, lastUpdated: T2 },
+      pauses: { default: 'none', lastUpdated: T2 }
+    };
+    expect(get(trackingState)).toEqual(expected);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking).toEqual(expected);
+  });
+
+  it('folds duplicate copies per key', async () => {
+    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    stubCache([first, second]);
+    const p = makeProvider(async (f) =>
+      jsonBlob(
+        file(
+          f.fileId === 'first'
+            ? {
+                idle: { override_minutes: 4, lastUpdated: T2 },
+                pauses: { default: 'full', lastUpdated: T1 }
+              }
+            : {
+                idle: { override_minutes: 8, lastUpdated: T1 },
+                pauses: { default: 'none', lastUpdated: T2 }
+              }
+        )
+      )
+    );
+    const result = await svc.downloadVolumeDataFile(p);
+    expect(result.tracking).toEqual({
+      idle: { override_minutes: 4, lastUpdated: T2 },
+      pauses: { default: 'none', lastUpdated: T2 }
+    });
+  });
 });
