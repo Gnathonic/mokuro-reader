@@ -1,6 +1,6 @@
 import { LEGACY_DEVICE_PREFIX } from './paths';
 import { nativeCoverage } from './project-turns';
-import type { ReadingEvent } from './types';
+import type { PauseCount, ReadingEvent } from './types';
 
 /**
  * Reading stats from history events (phase 3a; spec: "Speed and stats"). Pure:
@@ -11,8 +11,9 @@ import type { ReadingEvent } from './types';
  * - **Adaptive cutoff.** A view's expected dwell is its visible characters ×
  *   one global pace (the median ms per character of recent views); its cap is
  *   `clamp(k × expected, FLOOR, CEILING)`, or the manual override. A view over
- *   its cap counts TYPICAL time (`expected`, at least the floor) — the spec's
- *   "unanswered" rule until phase 3b asks the user.
+ *   its cap is a long pause: it counts TYPICAL time (`expected`, at least the
+ *   floor) until the user answers, then what the latest `resolve` targeting
+ *   it says (`countedDwell`) — an answer applies whatever the cap is now.
  * - **Skips.** A view faster than `SKIP_CPM` is a skip: its time counts, but
  *   it never feeds speed, and pages only skip views showed are skipped, not
  *   read.
@@ -32,6 +33,10 @@ export const CEILING_MS = 30 * 60_000;
 /** The cap before there is enough data for a pace: the old default timeout. */
 export const NO_DATA_CAP_MS = 5 * 60_000;
 export const SKIP_CPM = 1500;
+/** The widest "Still reading" may make `k` (tracking-data's range ends here too). */
+export const K_MAX = 20;
+/** "Still reading" fits `k` to the view's time so far × this. */
+export const WIDEN_HEADROOM = 1.5;
 
 const PACE_MIN_CHARS = 20;
 const PACE_MAX_SAMPLES = 500;
@@ -58,6 +63,11 @@ export interface PreparedView {
   pass: number;
   /** Pages on screen and their characters. */
   pages: Array<[page: number, chars: number]>;
+  /** The recording event's id — what a `resolve` targets. */
+  device: string;
+  seq: number;
+  /** The latest answer about this view; always `null` for legacy (never prompted). */
+  answer: PauseCount | null;
 }
 
 export interface PreparedVolume {
@@ -77,6 +87,22 @@ export interface SpeedSample {
 /** Running totals after each counted entry, by time — for `totalsBefore`. */
 export type TimelinePoint = [t: number, timeMs: number, readChars: number, skippedChars: number];
 
+/** A native view over its cap, or one the user answered about (review list, answer count). */
+export interface Pause {
+  device: string;
+  seq: number;
+  t: number;
+  /** First page on screen. */
+  page: number;
+  dwell: number;
+  cap: number;
+  typical: number;
+  /** What it counts now (`countedDwell`). */
+  counted: number;
+  /** `null` = provisional: unanswered, counts typical. */
+  answer: PauseCount | null;
+}
+
 export interface VolumeTotals {
   /**
    * RAW totals: a negative `adjust` (an editor edit below what history
@@ -92,6 +118,8 @@ export interface VolumeTotals {
   timeline: TimelinePoint[];
   /** Non-skip views that counted time, oldest first. */
   samples: SpeedSample[];
+  /** Native views over their cap or answered, oldest first. Legacy never. */
+  pauses: Pause[];
 }
 
 export interface SpeedEstimate {
@@ -109,6 +137,12 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   let horizon = -Infinity;
   for (const e of events) if (e.kind === 'forget' && e.before > horizon) horizon = e.before;
   const live = events.filter((e) => e.t >= horizon).sort(byTime);
+  // `live` is in time order (ties by device, then seq), so the last answer
+  // set for a view is the latest — the same on every device.
+  const answers = new Map<string, PauseCount>();
+  for (const e of live) {
+    if (e.kind === 'resolve') answers.set(`${e.target[0]}\u0000${e.target[1]}`, e.count);
+  }
 
   const native = live.filter(
     (e): e is PageEvent => e.kind === 'page' && !e.device.startsWith(LEGACY_DEVICE_PREFIX)
@@ -155,7 +189,11 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
       skip: chars > 0 && dwell !== null && (dwell <= 0 || (chars / dwell) * 60_000 > SKIP_CPM),
       legacy,
       pass,
-      pages
+      pages,
+      device: e.device,
+      seq: e.seq,
+      answer:
+        legacy || answers.size === 0 ? null : (answers.get(`${e.device}\u0000${e.seq}`) ?? null)
     });
   }
   const paceTail: PreparedVolume['paceTail'] = [];
@@ -210,6 +248,49 @@ export function typicalDwell(chars: number, pace: number | null, cap: number): n
   return clamp(expected, Math.min(FLOOR_MS, cap), cap);
 }
 
+/**
+ * What a view's dwell counts, given the user's answer (`null` = none yet):
+ * `full` all of it, `none` nothing, `typical` at most its typical time. An
+ * unanswered view counts in full within its cap and typical over it
+ * (provisional). An answer holds whatever the cap is now, so a pace change
+ * never undoes a "don't count".
+ */
+export function countedDwell(
+  dwell: number,
+  cap: number,
+  typical: number,
+  answer: PauseCount | null
+): number {
+  if (answer === 'full') return dwell;
+  if (answer === 'none') return 0;
+  if (answer === 'typical' || dwell > cap) return Math.min(dwell, typical);
+  return dwell;
+}
+
+/**
+ * `k` after "Still reading" on a view of `chars` characters open for
+ * `elapsed`: fits that time with `WIDEN_HEADROOM`, rounded up to a half step,
+ * never past `K_MAX` nor the half step at which this view's cap meets the
+ * ceiling. `null` when widening cannot lengthen THIS view's cap — a manual
+ * override, no pace yet, an art-only page, a cap held at the floor or already
+ * at the ceiling — since `k` is global and would only move other views' caps.
+ */
+export function widenedK(
+  elapsed: number,
+  chars: number,
+  pace: number | null,
+  idle: IdleSettings
+): number | null {
+  if (idle.overrideMs !== null || pace === null || chars * pace <= 0) return null;
+  const expected = chars * pace;
+  const fit = Math.ceil(((elapsed * WIDEN_HEADROOM) / expected) * 2) / 2;
+  const reach = Math.ceil((CEILING_MS / expected) * 2) / 2;
+  const next = Math.min(K_MAX, reach, fit);
+  if (next <= idle.k) return null;
+  const widened = viewCap(chars, pace, { k: next, overrideMs: null });
+  return widened > viewCap(chars, pace, idle) ? next : null;
+}
+
 export function countVolume(
   prepared: PreparedVolume,
   pace: number | null,
@@ -218,17 +299,34 @@ export function countVolume(
   let timeMs = 0;
   let lastReadAt: number | null = null;
   const counted: Array<{ view: PreparedView; ms: number; reads: boolean }> = [];
+  const pauses: Pause[] = [];
   for (const view of prepared.views) {
     const cap = viewCap(view.chars, pace, idle);
     let ms: number;
     let reads = !view.skip;
     if (view.dwell === null) ms = 0;
-    else if (view.dwell <= cap) ms = view.dwell;
+    else if (view.dwell <= cap && view.answer === null) ms = view.dwell;
     else if (view.legacy) {
       // The old idle rule: a gap over the timeout was neither time nor reading.
       ms = 0;
       reads = false;
-    } else ms = Math.min(view.dwell, typicalDwell(view.chars, pace, cap));
+    } else {
+      // A long pause or an answered view. An answer moves time only: whether
+      // its pages were read stays as the view's own speed says.
+      const typical = typicalDwell(view.chars, pace, cap);
+      ms = countedDwell(view.dwell, cap, typical, view.answer);
+      pauses.push({
+        device: view.device,
+        seq: view.seq,
+        t: view.t,
+        page: view.pages[0]?.[0] ?? 0,
+        dwell: view.dwell,
+        cap,
+        typical,
+        counted: ms,
+        answer: view.answer
+      });
+    }
     timeMs += ms;
     lastReadAt = Math.max(lastReadAt ?? view.end, view.end);
     counted.push({ view, ms, reads });
@@ -283,7 +381,16 @@ export function countVolume(
 
   let newestSampleEnd = -Infinity;
   for (const sample of samples) if (sample.end > newestSampleEnd) newestSampleEnd = sample.end;
-  return { timeMs, readChars, skippedChars, lastReadAt, newestSampleEnd, timeline, samples };
+  return {
+    timeMs,
+    readChars,
+    skippedChars,
+    lastReadAt,
+    newestSampleEnd,
+    timeline,
+    samples,
+    pauses
+  };
 }
 
 /** What a volume's history held from before `before` (views by their start). */
