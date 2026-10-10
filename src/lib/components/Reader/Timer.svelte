@@ -7,14 +7,16 @@
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import { seriesSpeeds } from '$lib/reading-history/series-speeds';
   import { liveMinutes, liveView, readingPaused } from '$lib/reading-history/live-view';
-  import { viewCap } from '$lib/reading-history/stats-engine';
+  import { typicalDwell, viewCap } from '$lib/reading-history/stats-engine';
 
   /**
    * Time read in this volume, live (phase 3a, one clock): the counted reading
-   * history plus the view on screen now, up to its idle cap — the same rule
-   * the stats apply once the view ends. Past the cap it shows "Idle" and stops
-   * counting. Clicking pauses: the view ends and nothing counts until the next
-   * page or a second click.
+   * history plus the view on screen now, counted by the rule the stats apply
+   * once the view ends (`countedDwell`): its dwell up to the idle cap, then the
+   * typical time, or everything when a standing "Count all" default answered
+   * it (phase 3b, `OpenView.answer`). Past the cap it shows "Idle" unless that
+   * default keeps it counting. Clicking pauses: the view ends and nothing
+   * counts until the next page or a second click.
    */
   interface Props {
     volumeId: string;
@@ -31,17 +33,11 @@
   });
 
   let open = $derived($liveView?.view.volume === volumeId ? $liveView : null);
-  let cap = $derived(
-    open
-      ? viewCap(
-          open.view.page_chars.reduce((sum, c) => sum + c, 0),
-          $readingStats.pace,
-          $readingStats.idle
-        )
-      : 0
-  );
+  let chars = $derived(open ? open.view.page_chars.reduce((sum, c) => sum + c, 0) : 0);
+  let cap = $derived(open ? viewCap(chars, $readingStats.pace, $readingStats.idle) : 0);
+  let typical = $derived(open ? typicalDwell(chars, $readingStats.pace, cap) : 0);
   let counted = $derived(figuresFor($readingStats, volumeId, $volumes[volumeId]).timeMs);
-  let computed = $derived(liveMinutes(counted, open, now, cap));
+  let computed = $derived(liveMinutes(counted, open, now, cap, typical, open?.answer ?? null));
 
   // A view that just ended is on its way into the stats (recorded, then
   // counted on the next pass) while the next one already shows: never let the
@@ -52,7 +48,11 @@
   });
 
   let status = $derived(
-    $readingPaused || !open ? 'Paused' : now - open.since > cap ? 'Idle' : 'Active'
+    $readingPaused || !open
+      ? 'Paused'
+      : now - open.since > cap && open.answer !== 'full'
+        ? 'Idle'
+        : 'Active'
   );
 
   let timeEstimate = $derived.by(() => {
