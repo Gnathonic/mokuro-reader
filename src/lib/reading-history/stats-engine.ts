@@ -272,8 +272,9 @@ export function countedDwell(
  * `elapsed`: fits that time with `WIDEN_HEADROOM`, rounded up to a half step,
  * never past `K_MAX` nor the half step at which this view's cap meets the
  * ceiling. `null` when widening cannot lengthen THIS view's cap — a manual
- * override, no pace yet, an art-only page, a cap held at the floor or already
- * at the ceiling — since `k` is global and would only move other views' caps.
+ * override, no pace yet, an art-only page, a cap held at the floor (its time
+ * reflects the floor, not the reader's pace) or already at the ceiling —
+ * since `k` is global and would only move other views' caps.
  */
 export function widenedK(
   elapsed: number,
@@ -283,6 +284,9 @@ export function widenedK(
 ): number | null {
   if (idle.overrideMs !== null || pace === null || chars * pace <= 0) return null;
   const expected = chars * pace;
+  // Held at the floor, the time so far says nothing about pace: fitting k to
+  // it would move every other page's cap far more than this one's.
+  if (idle.k * expected <= FLOOR_MS) return null;
   const fit = Math.ceil(((elapsed * WIDEN_HEADROOM) / expected) * 2) / 2;
   const reach = Math.ceil((CEILING_MS / expected) * 2) / 2;
   const next = Math.min(K_MAX, reach, fit);

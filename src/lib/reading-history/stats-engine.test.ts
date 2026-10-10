@@ -489,8 +489,17 @@ describe('widenedK', () => {
   });
 
   it(`never goes past K_MAX (${K_MAX})`, () => {
-    // 30 chars: expected 6 s; the fit (30) is bounded, and the cap still grows past the floor.
-    expect(widenedK(2 * MIN, 30, 200, AUTO)).toBe(K_MAX);
+    // 200 chars: expected 40 s, cap 2 min at k = 3; the fit at 10 min (22.5) is bounded.
+    expect(widenedK(10 * MIN, 200, 200, AUTO)).toBe(K_MAX);
+  });
+
+  it('is null on a page whose cap is held at the floor (art, one bubble)', () => {
+    // 30 chars: expected 6 s, so k = 3 gives 18 s and the floor (60 s) decides
+    // the cap. Fitting k to 65 s would be 16.5 — every other page's cap would
+    // grow 5.5× from one tap on a bubble.
+    expect(viewCap(30, 200, AUTO)).toBe(FLOOR_MS);
+    expect(widenedK(65_000, 30, 200, AUTO)).toBeNull();
+    expect(widenedK(2 * MIN, 30, 200, AUTO)).toBeNull();
   });
 
   it('is null when widening cannot lengthen this view’s cap', () => {
