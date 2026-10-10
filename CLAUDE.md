@@ -880,13 +880,19 @@ Rules that must hold:
   later event, so a page turn or close loses no answer; the continuation earns
   no new characters (a page counts once per pass).
 - `countedDwell` is the one rule for engine and live timer: `full` = the raw
-  dwell, `none` = 0, `typical` or unanswered-over-cap = typical. An answer
+  dwell, `none` = 0, `typical` or unanswered-over-cap = typical. Live, an
+  unanswered view STOPS at its cap while the prompt asks; a view that just
+  ended adds `endedViewMs` (what the stats will count) until the stats move,
+  so the timer is exact both ways — no dip on a page turn, and no kept
+  minutes after "Don't count" (it used to only ever rise). An answer
   applies under any later cap, and only to TIME — reads and skips are
   unchanged (`none` keeps the pages read and gives no speed sample).
 - "Still reading" = `full` plus `widenedK`: `k` fits this view × 1.5, up to a
   half step, at most 20 and never past where the ceiling caps it; it never
   shrinks. `null` (nothing changes) under a manual override, without a pace,
-  or on a page held at the floor — the floor is fixed. `k` shares
+  or when this page's CURRENT cap is held at the floor (`k × expected ≤
+floor`: its time reflects the floor, not pace — fitting `k` to one tap on a
+  one-bubble page raised every other page's cap ~5.5×). `k` shares
   `tracking.idle`'s stamp with the override; Settings shows the widening with
   a Reset.
 - Two minutes past the cap the prompt shows how long the page has been open:

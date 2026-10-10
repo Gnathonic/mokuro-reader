@@ -247,7 +247,7 @@ device.
 
 **As built (phase 3a, `stats-engine.ts` / `stats-store.ts`).** Constants: `k` = 3, floor 60 s, ceiling
 30 min, no-data cap 5 min, skip above 1500 cpm, pace = median of the newest 500 views of ≥ 20 characters
-(≥ 30 of them). Until phase 3b asks, a view over its cap counts typical time. Reading from before history
+(≥ 30 of them). A view over its cap with no answer counts typical time (phase 3b asks about it). Reading from before history
 is kept as a per-volume snapshot in the synced record (`legacyStats`: the old minute counter and lifetime
 characters, frozen at a time `before`); stats show `max(old, history before the freeze) + history after`,
 so events recorded before the freeze but arriving later explain the old figure rather than add to it. It
@@ -262,7 +262,10 @@ volume handles it unchanged; it is kind 5 inside segment format 1 (the codec had
 view of the same pages opens at the answer time. No answer waits on a later event, and the continuation
 earns no new characters. "Still reading" counts the time in full and widens `k` to fit this view × 1.5,
 rounded up to a half step, at most 20 and never past where the ceiling caps it anyway. It changes nothing
-under a manual override, without a pace yet, or on a page held at the floor (the floor stays fixed). `k`
+under a manual override, without a pace yet, or on a page whose cap is held at the floor (its time says
+nothing about pace, and one tap on a one-bubble page would widen every other page's cap; the floor stays
+fixed). The live timer stops at the cap while the prompt asks, then shows what the answer counts; a view
+that just ended adds what the stats will count for it until they do (`endedView`). `k`
 keeps sharing `tracking.idle`'s stamp with the override. Two minutes past the cap the prompt shows how long
 the page has been open: count all, typical, or none. An answer applies under whatever cap holds later, and
 only to time: pages stay read and skips stay skips, and `'none'` gives no speed sample. The latest answer per
