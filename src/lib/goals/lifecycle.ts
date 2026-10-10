@@ -10,6 +10,7 @@ import { getCustomPeriod, getPeriodForSelection } from './periods';
 import { finalizeGoalSnapshot } from './snapshots';
 import { _goalSnapshots, buildGoalSnapshotKey } from './snapshots-store';
 import type { GoalSelection } from './types';
+import { historyTurnsReady } from '$lib/reading-history/turns-store';
 
 function isVolumeView(view: View) {
   return view.type === 'reader' || view.type === 'volume-text';
@@ -72,10 +73,27 @@ export function finalizeClosedGoalSnapshots() {
   });
 }
 
+/**
+ * Page turns come from reading history once it has loaded (phase 2b). Before
+ * then a volume's turns can be missing — and both maintenance writes are
+ * permanent (a closed period's snapshot; a back-dated completion). So they
+ * wait for the history load to settle, or give up waiting after
+ * `HISTORY_WAIT_MS` and use what the records hold.
+ */
+const HISTORY_WAIT_MS = 15_000;
+
 export function initGoalsLifecycle() {
   if (!browser) {
     return () => {};
   }
+
+  let historySettled = false;
+  const historyGate = Promise.race([
+    historyTurnsReady(),
+    new Promise<void>((resolve) => setTimeout(resolve, HISTORY_WAIT_MS))
+  ]).then(() => {
+    historySettled = true;
+  });
 
   /*
    * Never throws.
@@ -96,7 +114,7 @@ export function initGoalsLifecycle() {
   };
 
   const runMaintenanceUnguarded = () => {
-    if (!catalogLoaded()) return;
+    if (!catalogLoaded() || !historySettled) return;
     // Recurring, because this is the only pass that ever runs AFTER the cloud
     // listing lands — the boot pass fires the moment the local Dexie catalog
     // resolves, which is always before it. Cheap when there is nothing to do:
@@ -116,6 +134,7 @@ export function initGoalsLifecycle() {
   };
 
   const runBootMaintenance = () => {
+    if (!historySettled) return;
     try {
       // The boot pass is the one that SPENDS a deferral. See the note in
       // `backfillCompletedAt`: counting on every focus exhausted the budget in
@@ -133,7 +152,7 @@ export function initGoalsLifecycle() {
   let unsubscribeCatalog: (() => void) | null = null;
   unsubscribeCatalog = catalogVolumes.subscribe((catalog) => {
     if (catalog === undefined) return;
-    runBootMaintenance();
+    void historyGate.then(runBootMaintenance);
     // Svelte calls the subscriber synchronously on subscribe, so the handle may
     // not be assigned yet; defer the teardown in that case.
     if (unsubscribeCatalog) {

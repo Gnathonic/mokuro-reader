@@ -148,3 +148,28 @@ describe('removeDirectoryIfEmpty', () => {
     expect(vi.mocked(deleteItem)).not.toHaveBeenCalled();
   });
 });
+
+describe('nested folders (reading history)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('creates history/<device> one segment at a time, never a name with a slash', async () => {
+    const existing = new Set(['mokuro-reader']);
+    vi.mocked(getItemByPath).mockImplementation(async (_t, path) =>
+      existing.has(path) ? { id: path, name: path.split('/').pop()!, folder: {} } : null
+    );
+    vi.mocked(createFolder).mockImplementation(async (_t, parent, name) => {
+      existing.add(`${parent}/${name}`);
+      return { id: `${parent}/${name}`, name, folder: {} };
+    });
+
+    const provider = new OneDriveProvider();
+    await provider.prepareUploadTarget('history/dev-a');
+
+    expect(vi.mocked(createFolder).mock.calls.map((c) => [c[1], c[2]])).toEqual([
+      ['mokuro-reader', 'history'],
+      ['mokuro-reader/history', 'dev-a']
+    ]);
+  });
+});

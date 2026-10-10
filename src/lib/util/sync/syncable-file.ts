@@ -24,6 +24,7 @@
 import { CATALOG_FILE_NAME, isCatalogFilePath } from '$lib/metadata/catalog-file';
 import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
 import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
+import { isHistoryFilePath } from '$lib/reading-history/paths';
 
 const ROOT_CONFIG_FILENAMES = new Set([
   'volume-data.json',
@@ -62,9 +63,18 @@ export function isRootConfigFile(basename: string): boolean {
   return ROOT_CONFIG_FILENAMES.has(basename.toLowerCase());
 }
 
+/**
+ * Pass the path RELATIVE to the mokuro folder, not a bare basename: reading
+ * history (`history/<device>/<file>`) is recognised by its full path.
+ */
 export function isSyncableFile(path: string): boolean {
   const basename = basenameOf(path);
-  return isCbzFile(basename) || isSidecarFile(basename) || isRootConfigFile(basename);
+  return (
+    isCbzFile(basename) ||
+    isSidecarFile(basename) ||
+    isRootConfigFile(basename) ||
+    isHistoryFilePath(path)
+  );
 }
 
 /**
@@ -86,9 +96,14 @@ export function isSyncableFile(path: string): boolean {
  * personal reading goals, so there is nothing for a server to reject by design.
  * It is the user's own state, like progress and profiles, and a silently
  * dropped write there is data loss they never learn about.
+ *
+ * Reading-history segments (`history/<device>/…`) are best-effort too: they
+ * are this device's copy of data it keeps locally and re-uploads on the next
+ * sync. A rejection (a bunko server that does not map `history/` per-user yet,
+ * a read-only share) must not demote the provider.
  */
 export function isBestEffortMetadataPath(path: string): boolean {
-  return isSeriesFilePath(path) || isCatalogFilePath(path);
+  return isSeriesFilePath(path) || isCatalogFilePath(path) || isHistoryFilePath(path);
 }
 
 /**

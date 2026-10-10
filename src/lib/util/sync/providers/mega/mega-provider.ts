@@ -13,6 +13,7 @@ import { megaCache } from './mega-cache';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
+import { isHistoryFileName, isHistoryFilePath } from '$lib/reading-history/paths';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import {
   isMfaRequiredError,
@@ -657,8 +658,9 @@ export class MegaProvider implements SyncProvider {
         const isCbz = isCbzFile(name);
         const isSidecar = isSidecarFile(name);
         const isJson = isRootConfigFile(name);
+        const isHistory = isHistoryFileName(name);
 
-        if (!isCbz && !isSidecar && !isJson) continue;
+        if (!isCbz && !isSidecar && !isJson && !isHistory) continue;
 
         // Check if file is in ANY mokuro-reader folder or subfolder
         let parent = (file as any).parent;
@@ -702,6 +704,9 @@ export class MegaProvider implements SyncProvider {
             pathParts.push(name);
             path = pathParts.join('/');
           }
+          // A history name only counts at history/<device>/<file>: a stray
+          // `device.json` in a series folder is not ours.
+          if (isHistory && !isCbz && !isSidecar && !isHistoryFilePath(path)) continue;
 
           // Get file metadata
           const fileId = (file as any).nodeId || (file as any).id || '';

@@ -20,6 +20,7 @@ import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
+import { isHistoryFilePath } from '$lib/reading-history/paths';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
 import {
@@ -328,6 +329,9 @@ class UnifiedSyncService {
       console.log('🔄 Syncing goals...');
       await this.syncGoals(provider);
       console.log('✅ Goals synced');
+
+      // Reading history last: best-effort, it never fails the sync above.
+      await this.syncReadingHistory(provider, options);
 
       console.log(`✅ ${provider.name} sync complete`);
       return {
@@ -639,6 +643,15 @@ class UnifiedSyncService {
     volumesWithTrash.set(purgedVolumes);
     setSeriesReadingStates(mergedSeries);
 
+    // Step 5b: page turns the merge brought back (an older client, a device
+    // that has not converted yet) become reading-history events and leave the
+    // records — but only where history itself can sync. The file keeps
+    // carrying turns (every turn history projects) until this provider holds
+    // them as history: on mokuro-bunko and read-only providers always, and
+    // elsewhere until the converted turns are confirmed uploaded (the history
+    // pass runs after this upload, so that is the next sync).
+    const finalVolumes = await this.volumesForUpload(provider);
+
     // Step 6: Upload if anything differs from what the cloud actually holds.
     //
     // The series half is compared against the RAW cloud section, not the parsed
@@ -646,7 +659,7 @@ class UnifiedSyncService {
     // sanitized value looks like a match and never heals. `stableStringify`
     // sorts keys, so two devices whose maps hold identical state in different
     // insertion orders stop re-uploading the same bytes at each other.
-    const nextFile = this.composeVolumeDataFile(purgedVolumes, mergedSeries);
+    const nextFile = this.composeVolumeDataFile(finalVolumes, mergedSeries);
     const cloudFile = this.composeVolumeDataFile(
       cloud?.volumes ?? {},
       (cloud?.rawSeries as SeriesReadingStates) ?? {}
@@ -904,6 +917,64 @@ class UnifiedSyncService {
     // re-upload the same bytes at each other forever.
     if (stableStringify(purgedProfiles) !== stableStringify(cloudProfiles || {})) {
       await this.uploadProfilesFile(provider, purgedProfiles);
+    }
+  }
+
+  /**
+   * Convert and strip page turns still held in volume records (phase 2b).
+   * Best-effort: on failure the turns simply stay in the file, as before.
+   * Loaded lazily, like the history pass.
+   */
+  private async volumesForUpload(provider: SyncProvider): Promise<any> {
+    const status = provider.getStatus?.() ?? ({} as Partial<ReturnType<SyncProvider['getStatus']>>);
+    try {
+      const [cutOver, historySync, historyDbModule] = await Promise.all([
+        import('$lib/reading-history/cut-over'),
+        import('$lib/reading-history/history-sync'),
+        import('$lib/reading-history/history-db')
+      ]);
+      const historySyncs = historySync.historySyncAllowed(status) && !status.isReadOnly;
+      if (historySyncs) await cutOver.cutOverLegacyTurns();
+      const records = get(volumesWithTrash);
+      const carried =
+        historySyncs &&
+        (await historySync.legacyCarriedBy(provider.type, historyDbModule.historyDb()));
+      return carried ? records : await cutOver.attachProjectedTurns(records);
+    } catch (error) {
+      console.warn('Page-turn cut-over failed (turns stay in volume-data.json):', error);
+      return get(volumesWithTrash);
+    }
+  }
+
+  /**
+   * Reading history (spec: Storage → Cloud): upload this device's months,
+   * import every other device's. Best-effort — it is this device's copy of
+   * data it keeps locally, so a failure logs and the next sync retries; it
+   * never fails the progress sync. Loaded lazily: the history database module
+   * must not be evaluated by suites that mock `dexie`.
+   */
+  private async syncReadingHistory(
+    provider: SyncProvider,
+    options: SyncOptions = {}
+  ): Promise<void> {
+    try {
+      const cache = cacheManager.getCache(provider.type);
+      if (!cache?.isLoaded?.() || cache.isFetching?.()) return;
+      const listing = cache.getAllFiles().filter((f) => isHistoryFilePath(f.path));
+      const [{ syncHistory }, { historyDb }] = await Promise.all([
+        import('$lib/reading-history/history-sync'),
+        import('$lib/reading-history/history-db')
+      ]);
+      const result = await syncHistory(provider, listing, historyDb(), {
+        force: !options.silent,
+        onUploaded: (path, bytes, uploaded) =>
+          cache.add?.(path, uploadCacheEntry(provider.type, path, bytes, uploaded))
+      });
+      if (result.imported || result.uploaded.length || result.failed.length) {
+        console.log('📚 Reading history:', result);
+      }
+    } catch (error) {
+      console.warn('Reading history sync failed (will retry next sync):', error);
     }
   }
 

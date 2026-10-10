@@ -90,8 +90,10 @@
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
 
     return () => {
-      // Stop activity tracker when component unmounts
+      // Stop activity tracker when component unmounts, and send a pending
+      // progress change now rather than when the batching interval allows.
       activityTracker.stop();
+      activityTracker.flush();
     };
   });
 </script>

@@ -2,23 +2,17 @@ import { test, expect, type Browser, type Page, type Route } from '@playwright/t
 import { gotoApp } from './helpers/app';
 
 /**
- * Two devices, one cloud: the bug report behind fix/sync-diverged-reads,
- * replayed through the REAL sync code against an in-memory WebDAV server
- * (`page.route` on `http://stub.test`), each device a separate browser context
- * (its own localStorage + IndexedDB).
+ * Reading history between two devices, through the REAL sync code against an
+ * in-memory WebDAV server (`page.route` on `http://stub.test`), each device a
+ * separate browser context (its own IndexedDB).
  *
- * The phone reads on and syncs; the laptop never pulls that, turns one page
- * from its stale position and syncs. Before the fix the laptop's newer record
- * replaced the phone's on every device — page turns, timer and all. Now the
- * newest page event still decides the position, but both devices' reading
- * survives. A third device opening the volume with no record of it no longer
- * resets progress everywhere, and a device coming back to the foreground pulls.
+ * Device A records page views and syncs: its month goes up as
+ * `history/<A>/<YYYY-MM>.events` beside `device.json`. Device B syncs and holds
+ * A's events, identical, under A's device id. Syncing again moves nothing.
  */
 
 const STUB = 'http://stub.test';
 const ROOT = '/mokuro-reader';
-const VOL = 'e2e-diverged-volume';
-const DATA_FILE = `${ROOT}/volume-data.json`;
 
 interface StubEntry {
   dir: boolean;
@@ -118,7 +112,7 @@ class WebDavStub {
       case 'GET': {
         if (!entry || entry.dir) return reply(404);
         return reply(200, method === 'GET' ? entry.body : Buffer.alloc(0), {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/octet-stream',
           'Content-Length': String(Buffer.byteLength(entry.body))
         });
       }
@@ -127,7 +121,6 @@ class WebDavStub {
         return reply(201);
       }
       case 'PUT': {
-        // Binary-safe: history segments are deflated bytes.
         this.file(path, request.postDataBuffer() ?? Buffer.alloc(0), new Date().toUTCString());
         return reply(201);
       }
@@ -160,134 +153,87 @@ async function sync(page: Page) {
   const result = await page.evaluate(async () => {
     const { unifiedCloudManager } = await import('/src/lib/util/sync/unified-cloud-manager.ts');
     await unifiedCloudManager.fetchAllCloudVolumes();
-    // Manual: the current month's history goes up now, not on the 5-minute cadence.
     return unifiedCloudManager.syncProgress({ silent: false });
   });
   expect(result.succeeded).toBe(1);
 }
 
-/**
- * Turn pages in order, a few ms apart, the way the reader does: each page is
- * a view recorded in reading history, and the position moves.
- */
-async function read(page: Page, pages: number[]) {
-  await page.evaluate(
-    async ({ VOL, pages }) => {
-      const { updateProgress } = await import('/src/lib/settings/volume-data.ts');
-      const { recordEvent } = await import('/src/lib/reading-history/record.ts');
-      for (const p of pages) {
-        await recordEvent({
+async function deviceId(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    const { historyDb } = await import('/src/lib/reading-history/history-db.ts');
+    const { getOrCreateDeviceId } = await import('/src/lib/reading-history/record.ts');
+    return getOrCreateDeviceId(historyDb());
+  });
+}
+
+async function events(page: Page) {
+  return page.evaluate(async () => {
+    const { historyDb } = await import('/src/lib/reading-history/history-db.ts');
+    return historyDb().reading_events.toArray();
+  });
+}
+
+const historyPuts = (stub: WebDavStub) =>
+  stub.log.filter((l) => l.method === 'PUT' && l.path.startsWith(`${ROOT}/history/`)).length;
+
+test('two devices exchange reading history through WebDAV', async ({ browser }) => {
+  const stub = new WebDavStub();
+  const a = await device(browser, stub);
+  const idA = await deviceId(a);
+
+  await a.evaluate(async () => {
+    const { recordEvent } = await import('/src/lib/reading-history/record.ts');
+    for (const p of [1, 2, 3]) {
+      await recordEvent(
+        {
           kind: 'page',
-          volume: VOL,
+          volume: 'e2e-history-volume',
           first_page: p,
           last_page: p,
-          page_chars: [100],
-          chars_before: (p - 1) * 100,
-          dwell_ms: 5,
+          page_chars: [p * 10],
+          chars_before: p * 100,
+          dwell_ms: 4000 + p,
           layout: 'single',
           orientation: 'portrait',
           viewport: { w: 400, h: 800 }
-        });
-        updateProgress(VOL, p, p * 100);
-        await new Promise((r) => setTimeout(r, 5));
-      }
-    },
-    { VOL, pages }
+        },
+        Date.UTC(2026, 9, 3, 12, p)
+      );
+    }
+  });
+  await sync(a);
+
+  expect(stub.files.has(`${ROOT}/history/${idA}/2026-10.events`)).toBe(true);
+  expect(stub.files.has(`${ROOT}/history/${idA}/device.json`)).toBe(true);
+  const facts = JSON.parse(stub.files.get(`${ROOT}/history/${idA}/device.json`)!.body.toString());
+  expect(facts.device).toBe(idA);
+
+  const b = await device(browser, stub);
+  const idB = await deviceId(b);
+  expect(idB).not.toBe(idA);
+  await sync(b);
+
+  const fromA = (await events(a)).filter((e) => e.device === idA);
+  const onB = (await events(b)).filter((e) => e.device === idA);
+  expect(onB).toHaveLength(3);
+  expect(onB.sort((x, y) => x.seq - y.seq)).toEqual(fromA.sort((x, y) => x.seq - y.seq));
+
+  // B wrote only its own folder; a second round moves nothing more.
+  expect(
+    [...stub.files]
+      .filter(([p, e]) => !e.dir && p.startsWith(`${ROOT}/history/`))
+      .map(([p]) => p)
+      .sort()
+  ).toEqual(
+    [
+      `${ROOT}/history/${idA}/2026-10.events`,
+      `${ROOT}/history/${idA}/device.json`,
+      `${ROOT}/history/${idB}/device.json`
+    ].sort()
   );
-}
-
-/** The position (stored record) and the reading the stats see (projected turns). */
-async function record(page: Page) {
-  return page.evaluate(async (VOL) => {
-    const { volumes } = await import('/src/lib/settings/volume-data.ts');
-    let all: Record<string, { progress: number; recentPageTurns: number[][] }> = {};
-    volumes.subscribe((v) => (all = v))();
-    const r = all[VOL];
-    return r ? { progress: r.progress, pages: r.recentPageTurns.map((t: number[]) => t[1]) } : null;
-  }, VOL);
-}
-
-function cloudRecord(stub: WebDavStub) {
-  const file = stub.files.get(DATA_FILE);
-  if (!file) return null;
-  const r = JSON.parse(file.body.toString())[VOL];
-  return { progress: r.progress, turns: r.recentPageTurns };
-}
-
-test.describe('reading on two devices (stubbed WebDAV)', () => {
-  test("a stale device keeps the newest position but loses nobody's reading", async ({
-    browser
-  }) => {
-    const stub = new WebDavStub();
-    const phone = await device(browser, stub);
-    const laptop = await device(browser, stub);
-
-    // Both devices know p.38-40.
-    await read(phone, [38, 39, 40]);
-    await sync(phone);
-    await sync(laptop);
-    expect((await record(laptop))?.progress).toBe(40);
-
-    // The phone reads on to p.44 and syncs; the laptop never pulls it.
-    await read(phone, [41, 42, 43, 44]);
-    await sync(phone);
-
-    // The laptop, still on p.40, turns one page and syncs first.
-    await read(laptop, [41]);
-    await sync(laptop);
-
-    const laptopAfter = await record(laptop);
-    expect(laptopAfter?.progress).toBe(41); // the newest page event
-    expect(laptopAfter?.pages).toEqual([38, 39, 40, 41, 42, 43, 44, 41]);
-    // The file carries the position only; the reading travels as history.
-    expect(cloudRecord(stub)).toEqual({ progress: 41, turns: undefined });
-
-    // The phone converges on the same record; its reading is still there.
-    await sync(phone);
-    expect(await record(phone)).toEqual(laptopAfter);
-  });
-
-  test('opening a volume on a device with no record of it does not reset progress', async ({
-    browser
-  }) => {
-    const stub = new WebDavStub();
-    const phone = await device(browser, stub);
-    await read(phone, [1, 2, 3, 120]);
-    await sync(phone);
-
-    // A new device opens the volume: the reader creates a blank record.
-    const tablet = await device(browser, stub);
-    await tablet.evaluate(async (VOL) => {
-      const { initializeVolume } = await import('/src/lib/settings/volume-data.ts');
-      await new Promise((r) => setTimeout(r, 5));
-      initializeVolume(VOL);
-    }, VOL);
-    await sync(tablet);
-
-    expect((await record(tablet))?.progress).toBe(120);
-    expect(cloudRecord(stub)?.progress).toBe(120);
-    await sync(phone);
-    expect((await record(phone))?.progress).toBe(120);
-  });
-
-  test('coming back to the foreground pulls the cloud', async ({ browser }) => {
-    const stub = new WebDavStub();
-    const phone = await device(browser, stub);
-    await read(phone, [5]);
-    await sync(phone);
-
-    // The laptop starts up (lists and syncs), then sleeps while the phone reads.
-    const laptop = await device(browser, stub);
-    await sync(laptop);
-    await read(phone, [6]);
-    await sync(phone);
-    expect((await record(laptop))?.progress).toBe(5);
-
-    await laptop.evaluate(() => {
-      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
-
-    await expect.poll(async () => (await record(laptop))?.progress, { timeout: 10000 }).toBe(6);
-  });
+  const putsBefore = historyPuts(stub);
+  await sync(a);
+  await sync(b);
+  expect(historyPuts(stub)).toBe(putsBefore);
+  expect((await events(b)).filter((e) => e.device === idA)).toHaveLength(3);
 });

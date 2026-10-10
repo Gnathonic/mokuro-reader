@@ -54,6 +54,43 @@ vi.mock('$lib/settings/volume-data', async () => {
   };
 });
 vi.mock('$lib/metadata/progress-tracker', () => ({ onSeriesRestarted: vi.fn() }));
+vi.mock('$lib/reading-history/history-db', () => ({ historyDb: vi.fn(() => ({})) }));
+// The cut-over, as the real one behaves when the history database works:
+// converted turns leave the records before the file is built.
+vi.mock('$lib/reading-history/cut-over', async () => {
+  const { volumesWithTrash } = await import('$lib/settings');
+  return {
+    cutOverLegacyTurns: vi.fn(async () => {
+      const store = volumesWithTrash as unknown as {
+        update: (fn: (all: Record<string, Record<string, unknown>>) => unknown) => void;
+      };
+      store.update((all) =>
+        Object.fromEntries(
+          Object.entries(all).map(([id, v]) => [
+            id,
+            Array.isArray(v.recentPageTurns) && v.recentPageTurns.length > 0
+              ? { ...v, recentPageTurns: [] }
+              : v
+          ])
+        )
+      );
+      return { volumes: 1, events: 1 };
+    }),
+    // History's turns put back into the file's records (here: a marker turn).
+    attachProjectedTurns: vi.fn(async (records: Record<string, Record<string, unknown>>) =>
+      Object.fromEntries(
+        Object.entries(records).map(([id, v]) => [id, { ...v, recentPageTurns: [[9, 9, 90]] }])
+      )
+    )
+  };
+});
+const legacyCarried = vi.hoisted(() => ({ value: true }));
+vi.mock('$lib/reading-history/history-sync', () => ({
+  syncHistory: vi.fn(async () => ({ imported: 0, uploaded: [], failed: [] })),
+  legacyCarriedBy: vi.fn(async () => legacyCarried.value),
+  historySyncAllowed: (s: { historySync?: boolean; serverCompilesMetadata?: boolean }) =>
+    s.historySync ?? !s.serverCompilesMetadata
+}));
 
 import { unifiedSyncService } from './unified-sync-service';
 import { restartSeries } from '$lib/metadata/reread';
@@ -1364,5 +1401,135 @@ describe('reading on two devices survives the volume merge', () => {
     const onB = svc.mergeVolumeData({ 'vol-1': B }, { 'vol-1': A })['vol-1'];
 
     expect(onA).toEqual(onB);
+  });
+});
+
+describe('reading history rides every sync', () => {
+  it('passes only history files from a loaded listing, forced on a manual sync', async () => {
+    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    const files = [
+      {
+        provider: 'mega',
+        fileId: '1',
+        path: 'history/dev-a/2026-10.events',
+        modifiedTime: 'm',
+        size: 1
+      },
+      { provider: 'mega', fileId: '2', path: 'volume-data.json', modifiedTime: 'm', size: 1 }
+    ];
+    getCache.mockReturnValue({
+      getAll: vi.fn(() => []),
+      get: vi.fn(() => null),
+      fetch: vi.fn(),
+      isLoaded: () => true,
+      isFetching: () => false,
+      getAllFiles: () => files,
+      add: vi.fn()
+    });
+    const provider = {
+      type: 'mega',
+      name: 'MEGA',
+      isAuthenticated: () => true,
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(async () => ({ fileId: 'x' }))
+    } as unknown as SyncProvider;
+    await svc.syncReadingHistory(provider, { silent: false });
+    expect(vi.mocked(syncHistory).mock.calls[0][1]).toEqual([files[0]]);
+    expect(vi.mocked(syncHistory).mock.calls[0][3]?.force).toBe(true);
+  });
+
+  it('a failing history pass never fails the sync', async () => {
+    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    vi.mocked(syncHistory).mockRejectedValueOnce(new Error('boom'));
+    getCache.mockReturnValue({
+      isLoaded: () => true,
+      isFetching: () => false,
+      getAllFiles: () => []
+    });
+    await expect(
+      svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {})
+    ).resolves.toBeUndefined();
+  });
+
+  it('skips while the listing has not loaded', async () => {
+    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    vi.mocked(syncHistory).mockClear();
+    getCache.mockReturnValue({
+      isLoaded: () => false,
+      isFetching: () => false,
+      getAllFiles: () => []
+    });
+    await svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {});
+    expect(syncHistory).not.toHaveBeenCalled();
+  });
+});
+
+describe('the cut-over rides the volume sync', () => {
+  function capture(status: Record<string, unknown> = {}) {
+    const uploads: Array<Record<string, Record<string, unknown>>> = [];
+    const provider = {
+      type: 'mega',
+      getStatus: () => ({ isAuthenticated: true, ...status }),
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+    return { uploads, provider };
+  }
+  const seed = () =>
+    setLocalVolumes({
+      'vol-1': {
+        progress: 3,
+        lastProgressUpdate: '2026-10-05T00:00:00.000Z',
+        recentPageTurns: [[1, 3, 30]]
+      }
+    });
+
+  it('strips converted turns from the file once this provider holds them as history', async () => {
+    legacyCarried.value = true;
+    seed();
+    stubCache([]);
+    const { uploads, provider } = capture();
+    await svc.syncVolumeData(provider);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]['vol-1'].recentPageTurns ?? []).toEqual([]);
+    expect(uploads[0]['vol-1'].progress).toBe(3);
+  });
+
+  it('keeps the turns in the file until the history copy is confirmed', async () => {
+    legacyCarried.value = false;
+    seed();
+    stubCache([]);
+    const { uploads, provider } = capture();
+    await svc.syncVolumeData(provider);
+    expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+  });
+
+  it.each([{ serverCompilesMetadata: true }, { isReadOnly: true }])(
+    'on %o (history cannot sync) never strips, and the file carries the turns',
+    async (status) => {
+      legacyCarried.value = true;
+      const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
+      vi.mocked(cutOverLegacyTurns).mockClear();
+      seed();
+      stubCache([]);
+      const { uploads, provider } = capture(status);
+      await svc.syncVolumeData(provider);
+      expect(cutOverLegacyTurns).not.toHaveBeenCalled();
+      expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+    }
+  );
+
+  it('a bunko that keeps history per user (0.7.1+) is cut over like plain storage', async () => {
+    legacyCarried.value = true;
+    const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
+    vi.mocked(cutOverLegacyTurns).mockClear();
+    seed();
+    stubCache([]);
+    const { uploads, provider } = capture({ serverCompilesMetadata: true, historySync: true });
+    await svc.syncVolumeData(provider);
+    expect(cutOverLegacyTurns).toHaveBeenCalled();
+    expect(uploads[0]['vol-1'].recentPageTurns ?? []).toEqual([]);
   });
 });

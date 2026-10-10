@@ -791,8 +791,61 @@ uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
 tab has no view), `adjust` (volume editor time/chars edits), `restart`
 ("restart series"), `forget` (delete stats). Record through `recordEvent`,
 which never throws and loads the DB module lazily (`volume-data.ts` imports
-it; many suites mock `dexie` bare). Phase 1 only writes: nothing reads the
-events yet, and `recentPageTurns`/`timeReadInMinutes` still drive every stat.
+it; many suites mock `dexie` bare).
+
+**Page turns come from history (phase 2b).** `updateProgress` no longer writes
+`recentPageTurns`. The stats still read `PageTurn[]`, but the public `volumes`
+store serves turns PROJECTED from every device's events (`project-turns.ts`,
+`turns-store.ts` — loaded once on start, then updated per recorded/imported
+event): a native view is a turn at its start; a converted legacy turn counts
+only when no native view of that volume covers it (±2 s), so phase-1 reading
+recorded both ways counts once; a `forget` hides that volume's earlier events.
+`volumesWithTrash` records keep only their own UNCONVERTED turns — never write
+projected turns back into a record (that is why the speed store's 2-tuple
+write-back is gone). Until history loads, or for a volume it has nothing for,
+the record's own turns are served, so no stat goes empty.
+
+The cut-over (`cut-over.ts`) runs on start and inside every progress sync
+between the merge and the upload: a record's turns become legacy events
+(`device = 'legacy:' + volume`, `seq` = turn time — identical on every
+device), committed BEFORE exactly those turns are stripped; if IndexedDB
+fails the turns stay in the file. `archivedReads` become `restart` events
+but stay in the record. Each device uploads the legacy events it holds as
+`history/<device>/legacy.events`; imports union by key. The minute counter
+(`timeReadInMinutes`) is untouched until phase 3.
+
+Progress syncs are batched while reading (`activity-tracker.ts`: 5 s debounce,
+at most one per 3 min) and flushed when the reader closes, the tab hides or
+the page goes away.
+
+**Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
+month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
+`segment-codec.ts`; a reader refuses a `format` it does not know), plus
+`history/<device>/device.json` (its facts), and imports every other device's
+(`history-sync.ts`, run at the end of every `syncProvider` by
+`syncReadingHistory`, lazily imported). Rules that must hold:
+
+- History is recognised by its FULL path (`reading-history/paths.ts`):
+  `isSyncableFile` must be given the path relative to the mokuro folder, never a
+  bare basename. Drive lists the account flat and walks parents to build it
+  (`drive-history-path.ts`); its cache groups by the FIRST segment like every
+  other provider. OneDrive creates nested folders one segment at a time.
+- Import is idempotent by `[device, seq]` in one transaction with the file's
+  stamp (`history_files`, Dexie v2); a file that fails to download, decode or
+  match its path (device/month) records nothing and is retried next listing.
+  Size/mtime only decide whether to download.
+- Upload marks are per provider (`history_meta` `uploaded:<provider>:<month>`):
+  a new provider gets every month. The current month goes up at most every
+  5 min unless the sync is manual (non-silent); closed months always go up.
+- Best-effort: history paths are in `isBestEffortMetadataPath` (a rejected
+  write never demotes WebDAV), and the pass never fails the sync. Read-only
+  providers get no uploads (imports still run). mokuro-bunko gets history only
+  from **0.7.1**, which maps `history/` per user and reports its `version` in
+  `/login/api/me` (bunko issue #27): the WebDAV provider sets
+  `ProviderStatus.historySync` from that version (`bunko-version.ts`), and
+  `historySyncAllowed(status)` (`history-sync.ts`) gates EVERYTHING — before
+  0.7.1 `history/` lands in the shared library, so neither upload nor import
+  runs there, and the file keeps carrying page turns (`attachProjectedTurns`).
 
 ### Settings Architecture
 

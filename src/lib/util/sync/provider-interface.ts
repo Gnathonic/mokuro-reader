@@ -124,6 +124,13 @@ export interface ProviderStatus {
    */
   serverCompilesMetadata?: boolean;
   /**
+   * Can this server keep this user's reading history (`history/<device>/`)?
+   * `false` = no: mokuro-bunko before 0.7.1 files those paths into the SHARED
+   * library, so the client neither uploads nor imports history there and keeps
+   * page turns in `volume-data.json`. Absent = no restriction (plain storage).
+   */
+  historySync?: boolean;
+  /**
    * Per-series metadata (names/links/tag/unit/spine offsets) edit scope, as reported by a
    * provider capable of restricting it (currently mokuro-bunko's identity endpoint, via
    * WebDAV). Absent = no restriction — an older server that doesn't report the field, or

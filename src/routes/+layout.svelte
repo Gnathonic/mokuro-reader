@@ -23,6 +23,7 @@
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
   import { foregroundSync } from '$lib/util/sync/foreground-sync';
+  import { activityTracker } from '$lib/util/activity-tracker';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
@@ -32,6 +33,7 @@
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
   import { historyDb } from '$lib/reading-history/history-db';
+  import { loadHistoryTurns } from '$lib/reading-history/turns-store';
   import {
     detectDeviceFacts,
     readDeviceEnv,
@@ -56,7 +58,22 @@
 
   inject({ mode: dev ? 'development' : 'production' });
 
-  onMount(() => foregroundSync.listen());
+  onMount(() => {
+    const stopForeground = foregroundSync.listen();
+    // Progress syncs are batched while reading (activity-tracker); a pending
+    // change goes up at once when the tab hides or the page goes away.
+    const flushOnHide = () => {
+      if (document.visibilityState === 'hidden') activityTracker.flush();
+    };
+    const flushOnPageHide = () => activityTracker.flush();
+    document.addEventListener('visibilitychange', flushOnHide);
+    window.addEventListener('pagehide', flushOnPageHide);
+    return () => {
+      stopForeground();
+      document.removeEventListener('visibilitychange', flushOnHide);
+      window.removeEventListener('pagehide', flushOnPageHide);
+    };
+  });
 
   onMount(() => {
     return initGoalsLifecycle();
@@ -115,6 +132,14 @@
       detectDeviceFacts(readDeviceEnv()),
       new Date().toISOString()
     ).catch((error) => console.warn('[reading-history] device record failed:', error));
+    // Reading history's page turns load first (the stats read them); then turns
+    // still held in volume records become history events (phase 2b). The
+    // cut-over strips nothing unless that load succeeded.
+    loadHistoryTurns(historyDb())
+      .catch((error) => console.warn('[reading-history] could not load history turns:', error))
+      .then(() => import('$lib/reading-history/cut-over'))
+      .then(({ cutOverLegacyTurns }) => cutOverLegacyTurns(historyDb()))
+      .catch((error) => console.warn('[reading-history] cut-over failed:', error));
 
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')
