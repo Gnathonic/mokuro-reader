@@ -94,7 +94,7 @@
   import { ImageCache, matchFilesToPages } from '$lib/reader/image-cache';
   import { cancelInkPrefetch, prefetchPageInk } from '$lib/reader/ink-color';
   import { ViewTracker, viewKey } from '$lib/reading-history/view-tracker';
-  import { liveView, readingPaused } from '$lib/reading-history/live-view';
+  import { endedView, endedViewMs, liveView, readingPaused } from '$lib/reading-history/live-view';
   import {
     describeView,
     rangeScopeKey,
@@ -644,7 +644,14 @@
   // with its long-pause answer (if any) in the same transaction.
   // Hidden tab = no view, so a backgrounded reader never accrues dwell.
   const viewTracker = new ViewTracker(
-    (payload, t, answer) => void recordView(payload, t, answer),
+    (payload, t, answer) => {
+      const { pace, idle } = get(readingStats);
+      endedView.set({
+        volume: payload.volume,
+        ms: endedViewMs(payload, answer?.count ?? null, pace, idle)
+      });
+      void recordView(payload, t, answer);
+    },
     (open) => {
       liveView.set(open);
       // A new view (or none): a prompt about the last one is moot.

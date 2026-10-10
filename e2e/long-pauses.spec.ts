@@ -225,6 +225,9 @@ test('a long pause is asked about at its cap; unanswered it waits on the stats p
   await expect(prompt).toContainText(/\b10\s?m/);
   await prompt.getByRole('button', { name: /^Don.t count/ }).click();
   await expect(prompt).toBeHidden();
+  // The timer drops the uncounted minute it was holding at the cap: only the
+  // 65 s answered "Still reading" stand.
+  await expect(timer).toContainText(/Minutes read: 1\b/);
 
   // Page 2 runs past its cap, and the reader turns on without answering.
   await page.keyboard.press('ArrowLeft');
