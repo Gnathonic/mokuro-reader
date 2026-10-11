@@ -108,6 +108,39 @@ Where the user labels a device (recommendation; one edit component, three entry 
    banner on the stats view, "You read on 2 devices — name this one?". Never a first-run modal. A
    single-device user never sees a device anywhere.
 
+**As built (phase 4, `devices.ts` / `device-stats.ts` / `tracking-data.ts` / `DevicesSettings.svelte` /
+`DeviceStatsCard.svelte` / `SecondDeviceBanner.svelte`).** Deviations from the design above:
+
+- The label entry is `tracking.devices[<id>]` = `{name?, class?, merged_into?, lastUpdated}` —
+  `lastUpdated`, not `updated_at`, like every other `tracking` key (the bogus-stamp check reads that
+  name). One stamp per entry, newest wins, a tie keeps local; a future stamp is clamped and forfeits as in
+  `series`, detected per id (`devices/<id>` in the tracking section's one bogus set), and the multi-copy
+  fold filters per id. The entry is replaced whole, so a cleared name or an unmerge wins by its stamp; a
+  rename and a merge of the same device on two devices between syncs keep only the newer. Labels never
+  touch `device.json` or the history database.
+- A device is any id with a facts row or a native event; `legacy:` ids are never devices. Generated
+  labels still equal after the month get " 2", " 3", … by first-seen, then id; the month is UTC so
+  every device shows the same suffix. Collisions are counted over every known id, merged ones included,
+  so a device keeps one label everywhere. A device with events but no facts is "Unknown device", its
+  first-seen taken from its earliest event.
+- `merged_into` applies only where reading is grouped by device (the per-device rows and the device
+  lists), followed with a cycle guard: two devices merged into each other between syncs both show
+  unmerged, and the next merge into either takes that device off the cycle first, so it wins. Events are never re-keyed, so volume, series and total figures, long-pause answers and
+  position offers keep raw ids and do not move on a merge. Merging does not carry the source's name; the
+  group shows the target's.
+- Entry point 1 is a "Devices" block on the cloud screen (`#/cloud`); the app has no "Settings → Sync".
+  It shows once two device ids are known, so an unmerge stays reachable after everything is merged.
+  Entry points 2 and 3 show once two device groups hold native reading. "Not now" on the banner is per
+  browser (`localStorage`); naming this device ends it too — the banner stays as "Saved." with a Close
+  button until closed, so nothing vanishes under the pointer.
+- Per device: time, characters read, share of time, last read (its newest event — another device's
+  `last_seen` is stale by design, the upload signature leaves it out) and speed once ≥ 30 min of samples.
+  "Before history" holds converted legacy views plus the unexplained pre-history snapshot, so the rows
+  sum to the page's totals; volume-editor `adjust`s are their own "Edits" row, not the editing
+  device's. Both are hidden at zero and cannot be renamed. Per-class and per-layout totals are not built.
+- The position offer names the device the reading comes from ("on Pixel 8", the generated label when
+  unnamed); a device this one knows nothing about keeps "on another device".
+
 ### Events
 
 Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock) and one payload:

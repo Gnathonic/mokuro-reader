@@ -6,6 +6,7 @@ import {
   historyMonthOf,
   historySegmentPath,
   isHistoryFileName,
+  isDeviceId,
   isHistoryFilePath,
   parseHistoryPath
 } from './paths';
@@ -59,5 +60,18 @@ describe('history paths', () => {
     expect(historyLegacyFilePath(DEV)).toBe(`history/${DEV}/legacy.events`);
     expect(isHistoryFileName('legacy.events')).toBe(true);
     expect(legacyDeviceFor('vol-1')).toBe('legacy:vol-1');
+  });
+
+  it('a device id is what may name a history folder; legacy pseudo-devices are not devices', () => {
+    expect(isDeviceId(DEV)).toBe(true);
+    expect(isDeviceId('A-1')).toBe(true);
+    expect(isDeviceId('x'.repeat(64))).toBe(true);
+    expect(isDeviceId('x'.repeat(65))).toBe(false);
+    expect(isDeviceId('')).toBe(false);
+    expect(isDeviceId(legacyDeviceFor('vol-1'))).toBe(false);
+    expect(isDeviceId('bad id!')).toBe(false);
+    // `devices/<id>` namespaces a device's bogus-stamp key in `tracking`:
+    // no device id can contain the slash.
+    expect(isDeviceId('devices/x')).toBe(false);
   });
 });

@@ -1787,4 +1787,114 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
       pauses: { default: 'none', lastUpdated: T2 }
     });
   });
+
+  it('round-trips device labels through the file', async () => {
+    const devices = { 'dev-a': { name: 'Pixel 8', class: 'phone', lastUpdated: T2 } };
+    setTrackingStates({
+      devices: { 'dev-a': { name: 'Pixel 8', class: 'phone', lastUpdated: T2 } }
+    });
+    stubCache([fileMeta('only')]);
+    const first = provider(file(undefined));
+    await svc.syncVolumeData(first.provider);
+    expect(first.uploads).toHaveLength(1);
+    expect(first.uploads[0].tracking).toEqual({ devices });
+
+    // Another device reads that upload back: adopted, and nothing to upload.
+    setTrackingStates({});
+    stubCache([fileMeta('only')]);
+    const second = provider(first.uploads[0]);
+    await svc.syncVolumeData(second.provider);
+    expect(get(trackingState)).toEqual({ devices });
+    expect(second.uploads).toHaveLength(0);
+  });
+
+  it('merges device labels per id, never as one block', async () => {
+    setTrackingStates({ devices: { 'dev-a': { name: 'Mine', lastUpdated: T2 } } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({
+        devices: {
+          'dev-a': { name: 'Theirs', lastUpdated: T1 },
+          'dev-b': { name: 'Tablet', lastUpdated: T1 }
+        }
+      })
+    );
+    await svc.syncVolumeData(p);
+    const expected = {
+      'dev-a': { name: 'Mine', lastUpdated: T2 },
+      'dev-b': { name: 'Tablet', lastUpdated: T1 }
+    };
+    expect(get(trackingState).devices).toEqual(expected);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking.devices).toEqual(expected);
+  });
+
+  it('heals a future-stamped device label and keeps the pending local name', async () => {
+    setTrackingStates({ devices: { 'dev-a': { name: 'Mine', lastUpdated: T2 } } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({
+        devices: {
+          'dev-a': { name: 'Junk', lastUpdated: '2999-01-01T00:00:00.000Z' },
+          'dev-b': { name: 'Other', lastUpdated: T1 }
+        }
+      })
+    );
+    await svc.syncVolumeData(p);
+    expect(get(trackingState).devices?.['dev-a']).toEqual({ name: 'Mine', lastUpdated: T2 });
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking.devices).toEqual({
+      'dev-a': { name: 'Mine', lastUpdated: T2 },
+      'dev-b': { name: 'Other', lastUpdated: T1 }
+    });
+  });
+
+  it.each([
+    ['poisoned copy first', ['poisoned', 'honest']],
+    ['honest copy first', ['honest', 'poisoned']]
+  ])(
+    'folds duplicate copies per device id: a bogus label never beats an honest one (%s)',
+    async (_order, ids) => {
+      const bodies: Record<string, unknown> = {
+        poisoned: {
+          devices: {
+            'dev-a': { name: 'Junk', lastUpdated: '2999-01-01T00:00:00.000Z' },
+            'dev-b': { name: 'Kept', lastUpdated: T1 }
+          }
+        },
+        honest: { devices: { 'dev-a': { name: 'Honest', lastUpdated: T1 } } }
+      };
+      stubCache(ids.map(fileMeta));
+      const p = makeProvider(async (f) => jsonBlob(file(bodies[f.fileId])));
+      const result = await svc.downloadVolumeDataFile(p);
+      expect(result.tracking.devices).toEqual({
+        'dev-a': { name: 'Honest', lastUpdated: T1 },
+        'dev-b': { name: 'Kept', lastUpdated: T1 }
+      });
+      expect([...result.bogusTrackingKeys]).toEqual(['devices/dev-a']);
+    }
+  );
+
+  it.each([
+    ['the rename is newer', 'rename', { name: 'Pixel 8', lastUpdated: T2 }],
+    ['the merge is newer', 'merge', { merged_into: 'dev-b', lastUpdated: T2 }]
+  ])(
+    'a rename here and a merge of the same device elsewhere between syncs: only the newer edit survives (%s)',
+    async (_case, winner, expected) => {
+      // Q7: one stamp per device entry, replaced whole; the older edit is lost.
+      const rename = { name: 'Pixel 8', lastUpdated: winner === 'rename' ? T2 : T1 };
+      const merge = { merged_into: 'dev-b', lastUpdated: winner === 'merge' ? T2 : T1 };
+      setTrackingStates({ devices: { 'dev-a': rename } });
+      stubCache([fileMeta('only')]);
+      const { uploads, provider: p } = provider(file({ devices: { 'dev-a': merge } }));
+      await svc.syncVolumeData(p);
+      expect(get(trackingState).devices?.['dev-a']).toEqual(expected);
+      if (winner === 'rename') {
+        expect(uploads).toHaveLength(1);
+        expect(uploads[0].tracking.devices).toEqual({ 'dev-a': expected });
+      } else {
+        expect(uploads).toHaveLength(0);
+      }
+    }
+  );
 });
