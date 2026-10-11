@@ -17,8 +17,8 @@ import {
 } from '$lib/settings';
 import {
   TRACKING_SECTION_KEY,
-  copyTrackingEntry,
   detectBogusTrackingKeys,
+  foldableTracking,
   mergeTrackingSections,
   parseTrackingSection,
   setTrackingStates,
@@ -558,29 +558,21 @@ class UnifiedSyncService {
         for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
 
         // The tracking section folds the same way as the series section below:
-        // newest per key, and a copy's bogus key never beats another copy's
-        // honest one.
-        const perCopyBogusTracking = readable.map((entry) =>
-          detectBogusTrackingKeys(entry.result.value.rawTracking)
-        );
+        // newest per key (`devices`: per device id), and a copy's bogus entry
+        // never beats another copy's honest one (`foldableTracking`).
+        const trackingCopies = readable.map((entry) => ({
+          tracking: entry.result.value.tracking ?? {},
+          bogus: detectBogusTrackingKeys(entry.result.value.rawTracking)
+        }));
         const bogusTrackingKeys = new Set<string>();
-        for (const keys of perCopyBogusTracking) for (const key of keys) bogusTrackingKeys.add(key);
+        for (const copy of trackingCopies) for (const key of copy.bogus) bogusTrackingKeys.add(key);
         let mergedTracking: TrackingState = {};
-        readable.forEach((entry, i) => {
-          const own = entry.result.value.tracking ?? {};
-          const foldable: TrackingState = {};
-          for (const key of Object.keys(own) as Array<keyof TrackingState>) {
-            const honestElsewhere =
-              perCopyBogusTracking[i].has(key) &&
-              readable.some(
-                (_other, j) =>
-                  j !== i &&
-                  readable[j].result.value.tracking?.[key] &&
-                  !perCopyBogusTracking[j].has(key)
-              );
-            if (!honestElsewhere) copyTrackingEntry(foldable, own, key);
-          }
-          mergedTracking = mergeTrackingSections(mergedTracking, foldable, perCopyBogusTracking[i]);
+        trackingCopies.forEach((copy, i) => {
+          mergedTracking = mergeTrackingSections(
+            mergedTracking,
+            foldableTracking(trackingCopies, i),
+            copy.bogus
+          );
         });
 
         // Merge all readable copies volume by volume (`mergeVolumePair`)
