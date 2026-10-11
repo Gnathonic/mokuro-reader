@@ -687,6 +687,7 @@ Rules:
 | Per-volume reading deadlines                                       | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
 | Idle cutoff (automatic / manual override, `k`), long-pause default | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
 | Pre-history reading snapshot (`legacyStats`)                       | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
+| Device names, class corrections, merges                            | `volume-data.json` → `tracking.devices`   | `lastUpdated` per device id            |
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no
@@ -934,6 +935,53 @@ offered instead of silently losing to it. Rules that must hold:
   volume card shows a chip (`PositionOfferChip.svelte`) until answered.
 - `positionPlanFor` is memoised per volume on its events version
   (`volumeEventsVersion`) and progress — the chip mounts once per card.
+
+**Devices (phase 4).** A device is a raw id with a facts row (`devices`, from
+its `device.json`) or a native event; `legacy:` ids are never devices
+(`isDeviceId`, `paths.ts`). What the user chooses about a device lives ONLY in
+`volume-data.json` → `tracking.devices[<id>]` (`DeviceLabel {name?, class?,
+merged_into?, lastUpdated}`, `tracking-data.ts`) — never in `device.json`,
+`pickFacts` or the history DB. Rules that must hold:
+
+- One stamp per entry, newest `lastUpdated` wins, a tie keeps local, with the
+  clamp + forfeit-on-bogus of the other `tracking` keys (bogus ids are
+  `devices/<id>` in the one bogus set). The entry is replaced whole, so a
+  cleared name or an unmerge wins by its stamp. The multi-copy fold filters per
+  device id (`foldableTracking`): a bogus copy must never wipe other devices'
+  labels.
+- Labels (`devices.ts`, pure): a user name verbatim, else `<Class> · <OS> ·
+<browser>` (`generatedLabel`). Generated labels that collide over ALL known
+  raw ids (merged ones too) get ` (since Mar 2026)` from first-seen (UTC month,
+  so every device agrees), then ` 2`, ` 3` by first-seen and id. "This device"
+  is a badge on the group holding `resolveDevice(own)`, never in the label. The
+  UUID is never shown.
+- `merged_into` applies ONLY where reading is grouped by device: `resolveDevice`
+  follows it with a visited set, and a cycle leaves every member unmerged.
+  Events are never re-keyed — volume/series/total figures, resolve targets and
+  `planPosition` use raw ids, so a merge or unmerge never recounts. Merging does
+  not carry the source's name.
+- Never show another device's `facts.last_seen`: `exportOwnFacts` leaves it out
+  of the upload signature, so it is stale by design. "Last read" is the group's
+  newest event.
+- Per-device stats come from the engine's `byDevice` (raw id; every `legacy:`
+  view under one key; characters to the first crediting view's device),
+  grouped by `resolveDevice` in `deviceStats` (`device-stats.ts`; also
+  `devices`, `knownDevices`, `deviceFacts`) — a label change regroups, never
+  recounts. "Before history" = legacy views + the pre-history baseline, so rows
+  sum to the page's totals; volume-editor `adjust`s are an "Edits" row. Both
+  hidden at zero, neither renamable. Speed shows only with ≥ 30 min of samples.
+- One edit component (`DeviceNameField.svelte`), three entry points: the
+  "Devices" block on `#/cloud` (`DevicesSettings.svelte`, once ≥ 2 raw ids are
+  known, so an unmerge stays reachable), inline rename in the reading-speed
+  page's per-device card (`DeviceStatsCard.svelte`, ≥ 2 groups with native
+  events) and `SecondDeviceBanner.svelte` under that page's heading (same rule,
+  this device unnamed, `localStorage` `device-banner:dismissed` unset — per
+  browser). The banner stays as "Saved." after naming until closed (no layout
+  motion). A single-device user sees none of them.
+- The position offer names the offering device by its label ("on Pixel 8");
+  a device this one knows nothing about keeps "on another device".
+- `e2e/devices.spec.ts` drives all of it: two browser contexts plus a third
+  device planted on the WebDAV stub (`device.json` + an encoded month).
 
 **Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
 month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
