@@ -1,3 +1,4 @@
+import type { DeviceView } from './devices';
 import { LEGACY_DEVICE_PREFIX } from './paths';
 import type { ReadingEvent } from './types';
 
@@ -118,4 +119,27 @@ export function planPosition(
     if (!best || byTime(final, best) > 0) best = final;
   }
   return best ? { offer: offerOf(best) } : {};
+}
+
+/**
+ * Which device to name for where an offer's reading happened (phase 4), or
+ * null to say "another device". This is wording only. The plan above compares
+ * raw ids, so a merge never hides an offer.
+ *
+ * A merged device is named after its group, as it is shown everywhere else.
+ * The exception is a device merged into THIS one: "this device" would be the
+ * wrong name for it, so it keeps its own name. A device the list knows only
+ * by its id (no facts, no name: "Unknown device") is not named.
+ */
+export function offerDeviceName(
+  offer: Pick<PositionOffer, 'device' | 'ownDevice'>,
+  views: ReadonlyMap<string, DeviceView>
+): string | null {
+  if (offer.ownDevice) return null;
+  const view = views.get(offer.device);
+  if (!view) return null;
+  const group = views.get(view.canonical) ?? view;
+  const shown = group.isThisDevice ? view : group;
+  if (!shown.named && shown.class === 'unknown') return null;
+  return shown.label;
 }
