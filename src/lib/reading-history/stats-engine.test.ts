@@ -14,6 +14,7 @@ import {
   totalsBefore,
   viewCap,
   widenedK,
+  type DeviceTotals,
   type IdleSettings,
   type Pause,
   type PreparedVolume
@@ -82,8 +83,8 @@ const forget = (t: number, before: number): ReadingEvent => ({
   volume: 'vol',
   before
 });
-const adjust = (t: number, time: number, chars: number): ReadingEvent => ({
-  device: 'dev-a',
+const adjust = (t: number, time: number, chars: number, device = 'dev-a'): ReadingEvent => ({
+  device,
   seq: ++seq,
   t,
   kind: 'adjust',
@@ -632,6 +633,128 @@ describe('fast paths agree with the brute force (random libraries)', () => {
       const fast = recentSpeed(totals, 2 * 60 * MIN);
       expect(fast.minutes).toBeCloseTo(all.minutes, 6);
       expect(fast.charsPerMinute).toBeCloseTo(all.charsPerMinute, 6);
+    }
+  });
+});
+
+describe('per-device totals', () => {
+  const pace = 200;
+  const none: DeviceTotals = {
+    timeMs: 0,
+    readChars: 0,
+    skippedChars: 0,
+    sampleMs: 0,
+    sampleChars: 0,
+    adjustMs: 0,
+    adjustChars: 0,
+    firstReadAt: null,
+    lastReadAt: null
+  };
+
+  it('keeps the device on each volume-editor edit', () => {
+    expect(prepareVolume([adjust(5, MIN, 40, 'dev-c')]).adjusts).toEqual([
+      { t: 5, ms: MIN, chars: 40, device: 'dev-c' }
+    ]);
+  });
+
+  it('splits a volume by raw device: first view credits a page, legacy under one key, edits apart', () => {
+    const totals = countVolume(
+      prepareVolume([
+        view(0, 1, [300], 60_000, 'dev-a'),
+        // Page 1 again, same pass: time counts here, characters went to dev-a.
+        view(2 * MIN, 1, [300], 30_000, 'dev-b'),
+        // A skim: 1000 characters in 5 s.
+        view(3 * MIN, 2, [1000], 5_000, 'dev-b'),
+        adjust(50 * MIN, 4 * MIN, 100, 'dev-c'),
+        legacy(100 * MIN, 5, 100, 60_000),
+        legacy(101 * MIN, 6, 400, null)
+      ]),
+      pace,
+      AUTO
+    );
+    expect(totals.byDevice).toEqual(
+      new Map<string, DeviceTotals>([
+        [
+          'dev-a',
+          {
+            ...none,
+            timeMs: 60_000,
+            readChars: 300,
+            sampleMs: 60_000,
+            sampleChars: 300,
+            firstReadAt: 0,
+            lastReadAt: 60_000
+          }
+        ],
+        [
+          'dev-b',
+          {
+            ...none,
+            timeMs: 35_000,
+            skippedChars: 1000,
+            sampleMs: 30_000,
+            firstReadAt: 2 * MIN,
+            lastReadAt: 3 * MIN + 5_000
+          }
+        ],
+        ['dev-c', { ...none, adjustMs: 4 * MIN, adjustChars: 100 }],
+        [
+          'legacy:',
+          {
+            ...none,
+            timeMs: 60_000,
+            readChars: 300,
+            sampleMs: 60_000,
+            sampleChars: 300,
+            firstReadAt: 100 * MIN,
+            lastReadAt: 101 * MIN
+          }
+        ]
+      ])
+    );
+  });
+
+  it('sums to the volume totals on random multi-device libraries', () => {
+    const devices = ['dev-a', 'dev-b', 'dev-c'];
+    for (const seed of [2, 17, 333, 4096]) {
+      let x = seed;
+      const rand = () => (x = (x * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+      const events: ReadingEvent[] = [];
+      let t = 0;
+      for (let i = 0; i < 120; i++) {
+        t += Math.floor(rand() * 600_000);
+        const device = devices[Math.floor(rand() * devices.length)];
+        const page = 1 + Math.floor(rand() * 50);
+        const amount = rand();
+        const roll = rand();
+        if (roll < 0.05) events.push(restart(t));
+        else if (roll < 0.1) {
+          events.push(
+            adjust(t, (amount - 0.5) * 20 * MIN, Math.round((amount - 0.5) * 900), device)
+          );
+        } else if (roll < 0.2) {
+          events.push(legacy(t, page, Math.floor(amount * 9000), Math.floor(amount * 600_000)));
+        } else {
+          events.push(
+            view(t, page, [Math.floor(amount * 400)], Math.floor(rand() * 3_600_000), device)
+          );
+        }
+      }
+      const totals = countVolume(prepareVolume(events), pace, AUTO);
+      const parts = [...totals.byDevice.values()];
+      const sum = (f: (d: DeviceTotals) => number) => parts.reduce((n, d) => n + f(d), 0);
+      expect(sum((d) => d.timeMs + d.adjustMs)).toBeCloseTo(totals.timeMs, 6);
+      expect(sum((d) => d.readChars + d.adjustChars)).toBe(totals.readChars);
+      expect(sum((d) => d.skippedChars)).toBe(totals.skippedChars);
+      expect(sum((d) => d.sampleMs)).toBeCloseTo(
+        totals.samples.reduce((n, s) => n + s.ms, 0),
+        6
+      );
+      expect(sum((d) => d.sampleChars)).toBe(totals.samples.reduce((n, s) => n + s.chars, 0));
+      expect(Math.max(...parts.map((d) => d.lastReadAt ?? -Infinity))).toBe(totals.lastReadAt);
+      expect([...totals.byDevice.keys()].every((k) => devices.includes(k) || k === 'legacy:')).toBe(
+        true
+      );
     }
   });
 });

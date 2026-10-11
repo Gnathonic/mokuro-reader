@@ -25,7 +25,8 @@ import {
   readingStats,
   recentReadingSpeed,
   seriesReadingSpeed,
-  seriesSpeed
+  seriesSpeed,
+  unexplainedBaseline
 } from './stats-store';
 import type { ReadingEvent } from './types';
 
@@ -90,6 +91,27 @@ describe('figuresFor', () => {
     expect(figures.minutes).toBe(11);
     // max(1000 old, 300 before) + 300 after.
     expect(figures.chars).toBe(1300);
+  });
+
+  it('names the part of the snapshot its history does not explain (what figuresFor adds)', async () => {
+    await record([view('v1', 0, 1, 300, 2 * MIN), view('v1', 20 * MIN, 2, 300, MIN)]);
+    const stats = get(readingStats);
+    const legacyStats = { time_ms: 10 * MIN, chars: 1000, before: 10 * MIN };
+    expect(unexplainedBaseline(stats, 'v1', { legacyStats })).toEqual({
+      timeMs: 8 * MIN,
+      chars: 700
+    });
+    // History before the freeze already explains more than the snapshot held.
+    const small = { time_ms: MIN, chars: 100, before: 10 * MIN };
+    expect(unexplainedBaseline(stats, 'v1', { legacyStats: small })).toEqual({
+      timeMs: 0,
+      chars: 0
+    });
+    expect(unexplainedBaseline(stats, 'v1')).toEqual({ timeMs: 0, chars: 0 });
+    expect(unexplainedBaseline(stats, 'none', { legacyStats })).toEqual({
+      timeMs: 10 * MIN,
+      chars: 1000
+    });
   });
 
   it('is the snapshot alone for a volume with no events', () => {

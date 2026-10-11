@@ -72,8 +72,8 @@ export interface PreparedView {
 
 export interface PreparedVolume {
   views: PreparedView[];
-  /** Volume-editor edits, in time order. */
-  adjusts: Array<{ t: number; ms: number; chars: number }>;
+  /** Volume-editor edits, in time order, with the device that made each. */
+  adjusts: Array<{ t: number; ms: number; chars: number; device: string }>;
   /** This volume's newest views usable for the pace, `[t, ms per char]`, newest first. */
   paceTail: Array<[t: number, rate: number]>;
 }
@@ -103,6 +103,28 @@ export interface Pause {
   answer: PauseCount | null;
 }
 
+/**
+ * One device's share of a volume (phase 4). The parts sum to the volume:
+ * Σ (`timeMs` + `adjustMs`) = `VolumeTotals.timeMs`, Σ (`readChars` +
+ * `adjustChars`) = `readChars`, Σ `skippedChars` = `skippedChars`. A page's
+ * characters go to the device whose view credited them (first view wins).
+ */
+export interface DeviceTotals {
+  /** Counted dwell of this device's views. */
+  timeMs: number;
+  readChars: number;
+  skippedChars: number;
+  /** What its speed samples hold (non-skip views that counted time). */
+  sampleMs: number;
+  sampleChars: number;
+  /** Its volume-editor edits — kept apart: they are not reading. */
+  adjustMs: number;
+  adjustChars: number;
+  /** Earliest view start and latest view end; `null` when it only edited. */
+  firstReadAt: number | null;
+  lastReadAt: number | null;
+}
+
 export interface VolumeTotals {
   /**
    * RAW totals: a negative `adjust` (an editor edit below what history
@@ -120,6 +142,11 @@ export interface VolumeTotals {
   samples: SpeedSample[];
   /** Native views over their cap or answered, oldest first. Legacy never. */
   pauses: Pause[];
+  /**
+   * By RAW device id (merges are applied by whoever groups them); every
+   * converted turn under the one key `LEGACY_DEVICE_PREFIX`.
+   */
+  byDevice: Map<string, DeviceTotals>;
 }
 
 export interface SpeedEstimate {
@@ -170,7 +197,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
       continue;
     }
     if (e.kind === 'adjust') {
-      adjusts.push({ t: e.t, ms: e.time_delta_ms, chars: e.chars_delta });
+      adjusts.push({ t: e.t, ms: e.time_delta_ms, chars: e.chars_delta, device: e.device });
       continue;
     }
     if (e.kind !== 'page') continue;
@@ -348,6 +375,7 @@ export function countVolume(
     if (reads) for (const [page] of view.pages) readPages.add(`${view.pass}|${page}`);
   }
   const skippedSeen = new Set<string>();
+  const byDevice = new Map<string, DeviceTotals>();
   for (const { view, ms, reads } of counted) {
     let fresh = 0;
     let skimmed = 0;
@@ -365,12 +393,25 @@ export function countVolume(
     readChars += fresh;
     skippedChars += skimmed;
     entries.push([view.t, ms, fresh, skimmed]);
-    if (reads && ms > 0) samples.push({ end: view.end, ms, chars: fresh });
+    const part = deviceTotals(byDevice, view.device);
+    part.timeMs += ms;
+    part.readChars += fresh;
+    part.skippedChars += skimmed;
+    part.firstReadAt = Math.min(part.firstReadAt ?? view.t, view.t);
+    part.lastReadAt = Math.max(part.lastReadAt ?? view.end, view.end);
+    if (reads && ms > 0) {
+      samples.push({ end: view.end, ms, chars: fresh });
+      part.sampleMs += ms;
+      part.sampleChars += fresh;
+    }
   }
   for (const a of prepared.adjusts) {
     timeMs += a.ms;
     readChars += a.chars;
     entries.push([a.t, a.ms, a.chars, 0]);
+    const part = deviceTotals(byDevice, a.device);
+    part.adjustMs += a.ms;
+    part.adjustChars += a.chars;
   }
 
   entries.sort((a, b) => a[0] - b[0]);
@@ -393,8 +434,30 @@ export function countVolume(
     newestSampleEnd,
     timeline,
     samples,
-    pauses
+    pauses,
+    byDevice
   };
+}
+
+/** The running share of `device` (converted turns all share one key), created empty. */
+function deviceTotals(byDevice: Map<string, DeviceTotals>, device: string): DeviceTotals {
+  const key = device.startsWith(LEGACY_DEVICE_PREFIX) ? LEGACY_DEVICE_PREFIX : device;
+  let part = byDevice.get(key);
+  if (!part) {
+    part = {
+      timeMs: 0,
+      readChars: 0,
+      skippedChars: 0,
+      sampleMs: 0,
+      sampleChars: 0,
+      adjustMs: 0,
+      adjustChars: 0,
+      firstReadAt: null,
+      lastReadAt: null
+    };
+    byDevice.set(key, part);
+  }
+  return part;
 }
 
 /** What a volume's history held from before `before` (views by their start). */
