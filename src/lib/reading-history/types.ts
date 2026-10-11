@@ -92,7 +92,7 @@ export type ReadingEvent = { device: string; seq: number; t: number } & EventPay
 
 export type DeviceClass = 'phone' | 'tablet' | 'laptop' | 'desktop' | 'unknown';
 
-/** Facts a device records about itself. User labels live elsewhere (phase 4). */
+/** Facts a device records about itself. User labels are `DeviceLabel`, synced apart. */
 export interface DeviceFacts {
   device: string;
   class: DeviceClass;
@@ -100,4 +100,20 @@ export interface DeviceFacts {
   browser?: string;
   first_seen: string;
   last_seen: string;
+}
+
+/**
+ * The user's choices about a device (phase 4), which any device may edit:
+ * `volume-data.json → tracking.devices[device]`, newest `lastUpdated` wins per
+ * device and the entry is replaced whole. `lastUpdated`, not the spec's
+ * `updated_at`, like every other `tracking` entry.
+ */
+export interface DeviceLabel {
+  /** Trimmed, non-empty. Absent = the generated label. */
+  name?: string;
+  /** The user's correction of the detected class. Absent = detected. */
+  class?: DeviceClass;
+  /** This device's events count as that device's (another real device id). */
+  merged_into?: string;
+  lastUpdated: string;
 }

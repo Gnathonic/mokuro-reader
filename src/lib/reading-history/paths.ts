@@ -43,11 +43,20 @@ export function legacyDeviceFor(volume: string): string {
   return `${LEGACY_DEVICE_PREFIX}${volume}`;
 }
 
+/**
+ * A real device: an id that may name a `history/<device>/` folder. Legacy
+ * pseudo-devices (`legacy:<volume>`) fail it — `:` is not allowed — so every
+ * device list, count and label filters with this.
+ */
+export function isDeviceId(id: string): boolean {
+  return DEVICE_ID_RE.test(id);
+}
+
 export function parseHistoryPath(path: string): HistoryPath | null {
   const parts = path.split('/');
   if (parts.length !== 3 || parts[0] !== HISTORY_FOLDER) return null;
   const [, device, name] = parts;
-  if (!DEVICE_ID_RE.test(device)) return null;
+  if (!isDeviceId(device)) return null;
   if (name === DEVICE_FILE_NAME) return { device, kind: 'device' };
   if (name === LEGACY_FILE_NAME) return { device, kind: 'legacy' };
   const match = MONTH_FILE_RE.exec(name);
