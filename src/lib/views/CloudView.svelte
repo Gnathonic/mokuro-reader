@@ -24,6 +24,7 @@
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
   import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
+  import DevicesSettings from '$lib/components/Devices/DevicesSettings.svelte';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -1120,6 +1121,9 @@
                 <p class="text-sm text-gray-500">Storage information unavailable</p>
               {/if}
             </div>
+
+            <!-- Devices: names, types and merges (renders nothing until 2 devices are known) -->
+            <DevicesSettings />
 
             <!-- Provider info box -->
             <div class="mt-4 rounded-lg bg-gray-800 p-4">
