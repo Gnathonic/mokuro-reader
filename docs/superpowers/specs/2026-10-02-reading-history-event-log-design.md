@@ -125,7 +125,7 @@ Where the user labels a device (recommendation; one edit component, three entry 
   first-seen taken from its earliest event.
 - `merged_into` applies only where reading is grouped by device (the per-device rows and the device
   lists), followed with a cycle guard: two devices merged into each other between syncs both show
-  unmerged. Events are never re-keyed, so volume, series and total figures, long-pause answers and
+  unmerged, and the next merge into either takes that device off the cycle first, so it wins. Events are never re-keyed, so volume, series and total figures, long-pause answers and
   position offers keep raw ids and do not move on a merge. Merging does not carry the source's name; the
   group shows the target's.
 - Entry point 1 is a "Devices" block on the cloud screen (`#/cloud`); the app has no "Settings → Sync".

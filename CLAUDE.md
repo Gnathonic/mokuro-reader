@@ -956,7 +956,8 @@ merged_into?, lastUpdated}`, `tracking-data.ts`) — never in `device.json`,
   is a badge on the group holding `resolveDevice(own)`, never in the label. The
   UUID is never shown.
 - `merged_into` applies ONLY where reading is grouped by device: `resolveDevice`
-  follows it with a visited set, and a cycle leaves every member unmerged.
+  follows it with a visited set, and a cycle leaves every member unmerged;
+  `mergeDevice` into a cycle member first takes it off the cycle.
   Events are never re-keyed — volume/series/total figures, resolve targets and
   `planPosition` use raw ids, so a merge or unmerge never recounts. Merging does
   not carry the source's name.
