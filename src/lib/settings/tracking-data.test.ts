@@ -1,3 +1,4 @@
+import { resolveDevice } from '$lib/reading-history/devices';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('$app/environment', () => ({ browser: true }));
@@ -501,16 +502,50 @@ describe('device label setters', () => {
     expect(get(trackingState)).toBe(before);
   });
 
-  it('refuses a merge that would join an existing cycle', () => {
-    // A cycle from two devices merging concurrently (A→B here, B→A there).
+  it('a merge between two devices merged into each other breaks the cycle', () => {
+    // A cycle from two devices merging concurrently (A→B here, B→A there):
+    // each shows on its own with no Unmerge, so the next merge must win.
     setTrackingStates({
       devices: {
         'dev-a': { merged_into: 'dev-b', lastUpdated: T1 },
         'dev-b': { merged_into: 'dev-a', lastUpdated: T1 }
       }
     });
-    expect(mergeDevice('dev-b', 'dev-a')).toBe(false);
+    expect(mergeDevice('dev-b', 'dev-a')).toBe(true);
+    const labels = get(trackingState).devices!;
+    expect(labels['dev-a'].merged_into).toBeUndefined();
+    expect(labels['dev-b'].merged_into).toBe('dev-a');
+    expect(resolveDevice('dev-b', labels)).toBe('dev-a');
+    expect(labels['dev-a'].lastUpdated > T1).toBe(true);
+    expect(labels['dev-b'].lastUpdated > T1).toBe(true);
+  });
+
+  it('a merge into a device on a three-way cycle keeps the rest of the cycle with it', () => {
+    setTrackingStates({
+      devices: {
+        'dev-a': { merged_into: 'dev-b', lastUpdated: T1 },
+        'dev-b': { merged_into: 'dev-c', lastUpdated: T1 },
+        'dev-c': { merged_into: 'dev-a', lastUpdated: T1 }
+      }
+    });
+    expect(mergeDevice('dev-a', 'dev-b')).toBe(true);
+    const labels = get(trackingState).devices!;
+    expect(['dev-a', 'dev-b', 'dev-c'].map((id) => resolveDevice(id, labels))).toEqual([
+      'dev-b',
+      'dev-b',
+      'dev-b'
+    ]);
+  });
+
+  it('a third device merged into a cycle member really joins a group', () => {
+    setTrackingStates({
+      devices: {
+        'dev-a': { merged_into: 'dev-b', lastUpdated: T1 },
+        'dev-b': { merged_into: 'dev-a', lastUpdated: T1 }
+      }
+    });
     expect(mergeDevice('dev-c', 'dev-a')).toBe(true);
+    expect(resolveDevice('dev-c', get(trackingState).devices!)).not.toBe('dev-c');
   });
 
   it('unmerges under a newer stamp, which beats the merged entry in the next merge', () => {

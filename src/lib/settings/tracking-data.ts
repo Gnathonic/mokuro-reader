@@ -383,16 +383,30 @@ function mergeReaches(from: string, to: string, labels: Record<string, DeviceLab
   return false;
 }
 
+/** Is `id` on a `merged_into` cycle (two devices merged into each other between syncs)? */
+function onMergeCycle(id: string, labels: Record<string, DeviceLabel>): boolean {
+  const next = ownLabel(labels, id)?.merged_into;
+  return !!next && mergeReaches(next, id, labels);
+}
+
 /**
  * Show `source` as part of `target`. The target is resolved to its canonical
  * id first, so chains are flattened at write time. Refused (`false`, nothing
  * written) for a non-device id, a merge into itself, or one that would close
  * a cycle — `target` already resolves through `source`. It resolves against
  * the state it writes to, never a caller's (possibly stale) map.
+ *
+ * A target on a cycle (two devices merged into each other before either
+ * synced, so each shows on its own with no Unmerge) first leaves it: the
+ * user's newest merge decides, and the rest of the cycle stays behind it.
  */
 export function mergeDevice(source: string, target: string): boolean {
-  if (!isDeviceId(source) || !isDeviceId(target)) return false;
-  const labels = get(trackingState).devices ?? {};
+  if (!isDeviceId(source) || !isDeviceId(target) || source === target) return false;
+  let labels = get(trackingState).devices ?? {};
+  if (onMergeCycle(target, labels)) {
+    patchDeviceLabel(target, { merged_into: undefined });
+    labels = get(trackingState).devices ?? {};
+  }
   const canonical = resolveDevice(target, labels);
   if (mergeReaches(canonical, source, labels)) return false;
   patchDeviceLabel(source, { merged_into: canonical });
