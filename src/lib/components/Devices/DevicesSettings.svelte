@@ -85,6 +85,15 @@
     mergeOpen = true;
   }
 
+  /** The dialog closes itself on Escape; the app-wide Escape would also leave this screen. */
+  function keepEscapeInDialog(node: HTMLElement) {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') event.stopPropagation();
+    };
+    node.addEventListener('keydown', onKey);
+    return () => node.removeEventListener('keydown', onKey);
+  }
+
   function confirmMerge() {
     if (!mergeSource || !mergeTarget) return;
     if (!mergeDevice(mergeSource.id, mergeTarget)) {
@@ -149,7 +158,7 @@
 
 <Modal bind:open={mergeOpen} size="xs" autoclose={false}>
   {#if mergeSource}
-    <div class="flex flex-col gap-4">
+    <div class="flex flex-col gap-4" {@attach keepEscapeInDialog}>
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
         Merge {mergeSource.label}
       </h3>

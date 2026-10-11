@@ -31,6 +31,22 @@ describe('DeviceNameField', () => {
     expect(onDone).toHaveBeenCalledOnce();
   });
 
+  it('Enter and Escape while an IME is composing leave the draft alone', async () => {
+    const onDone = vi.fn();
+    const { getByLabelText } = render(DeviceNameField, {
+      props: { device: deviceView('dev-a'), onDone }
+    });
+    const field = getByLabelText('Device name') as HTMLInputElement;
+    await fireEvent.input(field, { target: { value: 'ぴくせる' } });
+    // Enter commits the IME candidate; Escape cancels it. Neither is ours.
+    await fireEvent.keyDown(field, { key: 'Enter', isComposing: true });
+    await fireEvent.keyDown(field, { key: 'Escape', isComposing: true });
+    await fireEvent.keyDown(field, { key: 'Process', keyCode: 229 });
+    expect(renameDevice).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+    expect(field.value).toBe('ぴくせる');
+  });
+
   it('a named device shows its name; clearing it and saving goes back to the generated label', async () => {
     const device = deviceView('dev-a', { named: true, label: 'Pixel 8' });
     const { getByLabelText, getByRole } = render(DeviceNameField, { props: { device } });

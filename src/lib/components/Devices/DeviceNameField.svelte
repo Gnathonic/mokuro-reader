@@ -39,6 +39,9 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
+    // Enter and Escape mid-composition belong to the IME (commit / cancel a
+    // candidate) — a Japanese name would save half-typed, or be wiped.
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       save();

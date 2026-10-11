@@ -204,6 +204,21 @@ describe('DevicesSettings', () => {
     expect(setters.mergeDevice).not.toHaveBeenCalled();
   });
 
+  it('Escape in the merge dialog does not reach the app-wide back shortcut', async () => {
+    const onWindowKey = vi.fn();
+    window.addEventListener('keydown', onWindowKey);
+    try {
+      const { getAllByTestId, getByLabelText } = render(DevicesSettings);
+      await fireEvent.click(
+        within(getAllByTestId('device-row')[1]).getByRole('button', { name: 'Merge into…' })
+      );
+      await fireEvent.keyDown(getByLabelText('Merge into'), { key: 'Escape' });
+      expect(onWindowKey).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', onWindowKey);
+    }
+  });
+
   it('merged devices sit under their target with Unmerge, even when one group is left', async () => {
     state.devices.set(
       deviceMap(
