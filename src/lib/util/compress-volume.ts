@@ -10,8 +10,13 @@ import {
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
+import { mainSidecarPagesForCloud } from '$lib/catalog/main-sidecar';
 import { layerStaysLocal } from '$lib/catalog/mokuro-hash';
-import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
+import {
+  buildLayerMokuroMetadata,
+  buildMokuroMetadata,
+  type MokuroMetadata
+} from './mokuro-metadata';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerSidecarName } from './sync/syncable-file';
 
@@ -197,8 +202,22 @@ function getDatabase(): Dexie {
 export async function generateVolumeSidecarsFromDb(
   volumeUuid: string,
   overrides?: { seriesTitle?: string; volumeTitle?: string },
-  /** The target compiles its own metadata (bunko): see `layerStaysLocal`. */
-  target: { serverCompilesMetadata?: boolean } = {}
+  target: {
+    /** The target compiles its own metadata (bunko): see `layerStaysLocal`. */
+    serverCompilesMetadata?: boolean;
+    /**
+     * The sidecars go to the CLOUD: the main `.mokuro` is model output
+     * (`catalog/main-sidecar.ts`) — an edited volume's comes from its
+     * `original` snapshot, and with none it is left out.
+     */
+    cloud?: boolean;
+    /**
+     * With `cloud`: an edited volume with no snapshot falls back to its
+     * primary rather than leaving the main sidecar out — for a rename, which
+     * must regenerate the file the cloud already holds.
+     */
+    editedFallbackToPrimary?: boolean;
+  } = {}
 ): Promise<VolumeSidecarBlobResult> {
   const db = getDatabase();
 
@@ -219,8 +238,25 @@ export async function generateVolumeSidecarsFromDb(
     typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
   if (hasMokuroVersion) {
     const volumeOcr = await db.table('volume_ocr').get(volumeUuid);
-    if (volumeOcr?.pages) {
-      const metadata = buildMokuroMetadata(volume, volumeOcr.pages, {
+    let pages: unknown[] | null = volumeOcr?.pages ?? null;
+    if (pages && target.cloud) {
+      const modelOutput = await mainSidecarPagesForCloud(db, volume, pages as never);
+      if (modelOutput) {
+        pages = modelOutput;
+      } else if (!target.editedFallbackToPrimary) {
+        pages = null;
+        console.warn(
+          `[sidecars] '${volume.volume_title}' is edited and has no original snapshot: no main .mokuro is uploaded`
+        );
+      }
+    }
+    if (pages) {
+      // The snapshot's own character count, not the edited primary's.
+      const counted =
+        pages === volumeOcr?.pages
+          ? volume
+          : { ...volume, character_count: buildPageCharCounts(pages).totalChars };
+      const metadata = buildMokuroMetadata(counted, pages, {
         seriesTitle,
         volumeTitle
       });
@@ -278,11 +314,7 @@ async function buildLayerSidecarsFromDb(
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {
         const { totalChars } = buildPageCharCounts(layer.pages);
-        const metadata = buildMokuroMetadata(
-          { ...volume, character_count: totalChars },
-          layer.pages,
-          titles
-        );
+        const metadata = buildLayerMokuroMetadata(volume, layer, totalChars, titles);
         return {
           layerId: layer.layer_id,
           filename: layerSidecarName(titles.volumeTitle, layer.layer_id),

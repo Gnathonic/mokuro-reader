@@ -334,6 +334,30 @@ pushed by layer-sync, not uploaded beside a backup (`layerStaysLocal`,
 `mokuro-hash.ts`); on a shared library it would publish a reserved, meaningless
 layer to every user. Plain storage keeps syncing it.
 
+**Corrections go up as the `edit` layer, never as the main sidecar** (bunko
+design 0.8 D4: the main `<Volume>.mokuro` is model output). `persistPageEdit`
+still writes the primary row — the local view every consumer reads — and, in
+the same transaction, the page into the `edit` layer (`EDIT_LAYER_ID`,
+"Your corrections"; created from the pre-edit primary on the first save, then
+page by page, so pages edited in the layer itself survive). Layer-sync pushes
+it as `<Volume>.edit.mokuro` (`scheduleLayerPush`, debounced, from the cached
+listing). Every layer file of kind `edit` carries a top-level
+`"edited": {"by": "mokuro-reader", "at": <layer updated_at>, "base_sha256":
+<row mokuro_sha256 or null>}` block (`buildLayerMokuroMetadata`, the one
+serializer for pushes, backup layer sidecars and exports); nothing the app
+writes carries `ocr_engine`. An edit or a promotion NEVER re-uploads the main
+sidecar: the backfill no longer re-uploads an edited volume's listed `.mokuro`,
+and every cloud write of a main sidecar (a first backup, the backfill of a
+missing one, a rename's regeneration) is built from the `original` snapshot
+when the row is edited (`catalog/main-sidecar.ts`) — a missing snapshot means
+no main sidecar (a rename falls back to the primary). Exports keep the primary.
+`edit` is a reserved slug like `original`. Edits made before this change live
+only in the primary: `migrateEditedPrimariesToEditLayers` (once per device,
+rows stamped before `edit-layer:epoch`) copies such a primary into an `edit`
+layer when it differs from its `original`. bunko's `pre-upgrade[-N]` layer (the
+main sidecar it replaced on an upgrade) is labelled "Before upgrade (may
+contain your corrections)" (`layer-names.ts`).
+
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings
 toggle, or "Edit text" in the text-box context menu — all funnel through the
@@ -377,12 +401,36 @@ everything that removes or moves a layer works from all listed copies
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
 
-`.mokuro` files themselves stay pure upstream format regardless of which
-layer produced them. A `gcv` or `tr-<lang>` layer from the removed
+`.mokuro` files themselves stay upstream format regardless of which layer
+produced them (plus the `edited` block on `edit`-kind layers, above). A `gcv` or `tr-<lang>` layer from the removed
 experimental client-side OCR/translation engines still lists, displays and
 deletes like any other layer — `KNOWN_ENGINE_IDS` (`reader/edit/layers.ts`)
 and `isTranslationLayerId` (`layer-kind.ts`) keep classifying those ids
 correctly on purpose, for devices that still have them in IndexedDB.
+
+### Cloud-direct mokuro-bunko (marker + queue file)
+
+A Bunko that manages a library on Drive / OneDrive / MEGA / plain WebDAV
+writes two control files at the library root, read by name through
+`SyncProvider.readControlFile` (every same-name node; never listed —
+`isBunkoControlFile` stays out of `isSyncableFile`):
+
+- `.mokuro-bunko.json`, the marker/lease (`catalog/cloud-bunko-marker.ts`):
+  per node, `changedAt` = when this device first saw its current version;
+  fresh iff `state == active`, `compiles` lists the file and
+  `now − changedAt < 2 × ttl_s` (cold start: `|now − heartbeat_at| < ttl_s + 5
+min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
+  Every provider's `getStatus()` folds it in (`withCloudBunkoStatus`):
+  `serverCompilesMetadata = reported || anyMarkerFresh`, and the provider
+  manager republishes on every verdict change and at expiry.
+- `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
+  queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
+  `instance_id` names the top-ranked fresh marker. The cloud poller keeps
+  going while the tab is visible (per-provider floors; MEGA also on its live
+  tree's events), completes a volume ONLY via `done[]` (absence from a
+  truncated list is waiting), and then relists (the hook `+layout.svelte`
+  sets), runs the OCR upgrade pass and pulls layers — never
+  `pullCompletedVolume`. Cloud uploads are watched while a marker is fresh.
 
 ### OCR upgrades
 
@@ -396,8 +444,8 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   it (local import, cloud download, deep link); the OCR upgrade and the
   image-only upgrade set it from the file they applied; this device's own
   uploads of the primary sidecar set it to the hash of exactly the bytes sent
-  (backup — worker and main-thread —, the sidecar backfill incl. edited
-  volumes' re-uploads, a rename's regenerated sidecar; `mokuro-upload-record.ts`).
+  (backup — worker and main-thread —, the sidecar backfill, a rename's
+  regenerated sidecar; `mokuro-upload-record.ts`).
   `mokuro_sha256_cloud` records where that file is KNOWN to be stored (a
   listed sidecar a download installed from, or an upload) — the certainty
   `buildSeriesFile` needs to publish the hash. A download takes the listed

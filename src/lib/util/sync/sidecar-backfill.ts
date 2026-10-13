@@ -187,50 +187,11 @@ const importArrivalSignals = new Set<() => void>();
  */
 const attemptedThisSession = new Set<string>();
 
-/**
- * Volumes edited in the reader whose cloud `.mokuro` has not yet been seen to
- * be at least as new as the edit (TRIGGER 3). Persisted in localStorage — NOT
- * derived from the rows — so the steady-state sweep on a converged library
- * still opens no IndexedDB transaction at all (the Finding 2 property): an
- * empty marker costs one localStorage read and nothing else. Entries leave
- * the marker when the listing shows the sidecar converged, or when this
- * device uploads it.
- */
-const EDITED_MARKER_KEY = 'sidecar-backfill:edited-volumes';
-
-function readEditedMarker(): Set<string> {
-  try {
-    const raw = globalThis.localStorage?.getItem(EDITED_MARKER_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function writeEditedMarker(uuids: Set<string>): void {
-  try {
-    if (uuids.size === 0) globalThis.localStorage?.removeItem(EDITED_MARKER_KEY);
-    else globalThis.localStorage?.setItem(EDITED_MARKER_KEY, JSON.stringify([...uuids]));
-  } catch {
-    // Storage unavailable (private mode, quota): the in-session trigger still
-    // ran; cross-session convergence is simply lost for this edit.
-  }
-}
-
-function markEdited(volumeUuid: string): void {
-  const marker = readEditedMarker();
-  if (marker.has(volumeUuid)) return;
-  marker.add(volumeUuid);
-  writeEditedMarker(marker);
-}
-
-/** The cloud `.mokuro` is now at least as new as the local edit. */
-function noteEditConverged(volumeUuid: string): void {
-  const marker = readEditedMarker();
-  if (!marker.delete(volumeUuid)) return;
-  writeEditedMarker(marker);
-}
+// Until bunko design 0.8 D4 an in-reader OCR edit re-uploaded the volume's
+// MAIN `.mokuro` from here (TRIGGER 3, with a localStorage list of edits still
+// due). An edit now goes to the `edit` layer (`reader/edit/edit-persist.ts`)
+// and the main sidecar is never re-uploaded after one; the old list is handed
+// to the one-time edit-layer migration in `layer-sync.ts`.
 
 let drainRunning: Promise<void> | null = null;
 
@@ -240,7 +201,6 @@ export function _resetSidecarBackfillForTests(): void {
   immediate.length = 0;
   importArrivalSignals.clear();
   attemptedThisSession.clear();
-  writeEditedMarker(new Set());
 }
 
 /** Test-only: the drain currently running, so a test can await convergence. */
@@ -329,54 +289,13 @@ function whenDownloadQueueIdleOrImportWork(): Promise<void> {
 }
 
 /**
- * TRIGGER 3 — the reader's OCR editor just wrote `volume_ocr` and stamped
- * `ocr_edited_at` on the row (`persistPageEdit`). The cloud `.mokuro` is now
- * behind the local row, which no "missing sidecar" check would ever notice:
- * {@link deriveSidecarGap} therefore also compares the listed `.mokuro`'s
- * mtime against the stamp, and this trigger nominates the volume right away.
- * The attempted-mark is cleared first — an edit is new information, so the
- * once-per-session rule restarts for this volume. Never throws.
+ * Does the local row want its `.mokuro` uploaded next to this listing entry?
+ * Only when the listing has none: an edit never makes the cloud's main
+ * sidecar "behind" (D4 — corrections ride the `edit` layer), so a listed
+ * `.mokuro` is never re-uploaded from here.
  */
-export function noteOcrEdited(volumeUuid: string): void {
-  try {
-    if (!volumeUuid) return;
-    // Remembered BEFORE the readiness gate: a read-only or not-yet-loaded
-    // provider must not lose the edit — the next writable session's sweep
-    // picks it up from the marker.
-    markEdited(volumeUuid);
-    if (!backfillReady()) return;
-    const key = attemptKey(volumeUuid);
-    if (key) attemptedThisSession.delete(key);
-    pending.add(volumeUuid);
-    kickDrain();
-  } catch (error) {
-    console.debug('[sidecar-backfill] could not queue edited volume:', error);
-  }
-}
-
-/**
- * The listed `.mokuro` predates this device's last OCR edit — or carries no
- * mtime to prove otherwise. Compared against the LISTING's stamp (never a
- * local stat), like every other freshness decision in this layer; a
- * just-uploaded provisional cache entry carries the client clock, which a
- * later edit's stamp is naturally newer than.
- */
-function mokuroSidecarBehindEdit(
-  entry: CloudFileMetadata | undefined,
-  volume: VolumeMetadata
-): boolean {
-  if (!entry || !volume.ocr_edited_at) return false;
-  const edited = Date.parse(volume.ocr_edited_at);
-  if (!Number.isFinite(edited)) return false;
-  const listed = entry.modifiedTime ? Date.parse(entry.modifiedTime) : NaN;
-  return !Number.isFinite(listed) || listed < edited;
-}
-
-/** Does the local row want its `.mokuro` (re)uploaded next to this listing entry? */
 function wantsMokuroUpload(entry: SeriesSidecarFiles | undefined, volume: VolumeMetadata): boolean {
-  return (
-    hasMokuroVersion(volume) && (!entry?.mokuro || mokuroSidecarBehindEdit(entry.mokuro, volume))
-  );
+  return hasMokuroVersion(volume) && !entry?.mokuro;
 }
 
 /**
@@ -445,7 +364,12 @@ export function queueSidecarBackfillFromImport(
       // Deferred serialization: a volume whose sidecars turn out to be
       // present (or wanted by nothing) never pays the JSON stringify — the
       // shared core only calls this once the listing shows a real gap.
-      loadSidecars: () => buildVolumeSidecarsFromData(volume, saved.ocrPages),
+      // An edited row (a re-download over local corrections) is model output
+      // only from its `original` snapshot: read it from the database.
+      loadSidecars: () =>
+        volume.ocr_edited_at
+          ? loadVolumeSidecars(volume.volume_uuid, { forCloud: true })
+          : buildVolumeSidecarsFromData(volume, saved.ocrPages),
       isImportFeed: true
     });
     // Wake a drain parked on the download-queue-idle wait, then make sure one
@@ -551,15 +475,9 @@ export async function sweepInstalledVolumesForSidecarBackfill(
         }
       }
     }
-    // Volumes edited in the reader (TRIGGER 3): their listed `.mokuro` may be
-    // behind the row even when the listing shows nothing MISSING. Read from
-    // the localStorage marker, never from the rows — an empty marker keeps
-    // the steady state below transaction-free.
-    const editedUuids = [...readEditedMarker()];
-
-    // The steady state: every listed archive already has both sidecars and
-    // nothing was edited. `db.volumes` is never opened.
-    if (gapFolderKeys.size === 0 && editedUuids.length === 0) return;
+    // The steady state: every listed archive already has both sidecars.
+    // `db.volumes` is never opened.
+    if (gapFolderKeys.size === 0) return;
 
     let gapUuids: string[] = [];
     if (gapFolderKeys.size > 0) {
@@ -580,23 +498,18 @@ export async function sweepInstalledVolumesForSidecarBackfill(
           .primaryKeys()) as string[];
       }
     }
-    const candidateUuids = [...new Set([...gapUuids, ...editedUuids])];
+    const candidateUuids = gapUuids;
     if (candidateUuids.length === 0) return;
 
-    // NOW read rows — bounded to volumes that live in a gap folder or were
-    // edited here, never the rest of the table.
+    // NOW read rows — bounded to volumes that live in a gap folder, never the
+    // rest of the table.
     const candidates = (await db.volumes.bulkGet(candidateUuids)) as Array<
       VolumeMetadata | undefined
     >;
-    const editedSet = new Set(editedUuids);
     let queued = false;
     for (let c = 0; c < candidates.length; c++) {
       const volume = candidates[c];
-      if (!volume) {
-        // The edited row is gone (volume deleted): nothing left to converge.
-        noteEditConverged(candidateUuids[c]);
-        continue;
-      }
+      if (!volume) continue;
       if (!isVolumeInstalled(volume)) continue;
       const key = attemptKey(volume.volume_uuid);
       if (!key || attemptedThisSession.has(key)) continue;
@@ -612,11 +525,6 @@ export async function sweepInstalledVolumesForSidecarBackfill(
       const entry = groupsFor(folderKey).get(volumeKey);
       const wantsMokuro = wantsMokuroUpload(entry, volume);
       const wantsCover = !entry?.cover && !!volume.thumbnail;
-      // An edited volume whose listed `.mokuro` is already newer than the
-      // edit has converged (another device or an earlier session uploaded).
-      if (!wantsMokuro && editedSet.has(volume.volume_uuid)) {
-        noteEditConverged(volume.volume_uuid);
-      }
       if (!wantsMokuro && !wantsCover) continue;
 
       pending.add(volume.volume_uuid);
@@ -806,7 +714,8 @@ async function backfillOne(volumeUuid: string): Promise<void> {
 
   await uploadMissingSidecars({
     volume,
-    loadSidecars: () => loadVolumeSidecars(volumeUuid),
+    // Cloud-bound: an edited volume's main `.mokuro` is its model output.
+    loadSidecars: () => loadVolumeSidecars(volumeUuid, { forCloud: true }),
     isImportFeed: false
   });
 }
@@ -954,7 +863,6 @@ function recordWorkerSidecarUploads(
   const cache = cacheManager.getCache(providerType);
   for (const result of data?.sidecarResults ?? []) {
     if (result.kind === 'mokuro') {
-      noteEditConverged(volume.volume_uuid);
       // The bytes the cloud now holds as this volume's primary (batched write).
       noteUploadedPrimarySidecar(volume.volume_uuid, {
         sha256: result.sha256,
@@ -1052,8 +960,6 @@ async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
   const gap = deriveSidecarGap(volume);
   if (!gap) return;
   const { archiveStem, wantsMokuro, wantsCover } = gap;
-  // The listing shows the `.mokuro` at least as new as any local edit.
-  if (!wantsMokuro) noteEditConverged(volume.volume_uuid);
 
   // Serialize through the SAME builder the backup and export paths use
   // (`buildVolumeSidecarsFromData` → `buildMokuroMetadata`): an image-only
@@ -1117,7 +1023,6 @@ async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
       const sha256 = isPrimary ? await sha256Hex(upload.file) : undefined;
       await unifiedCloudManager.blindUploadFile(upload.path, upload.file);
       if (isPrimary) {
-        noteEditConverged(volume.volume_uuid);
         // The exact bytes the cloud now holds as this volume's primary.
         if (uploadedTo) {
           noteUploadedPrimarySidecar(volume.volume_uuid, {

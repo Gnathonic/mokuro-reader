@@ -11,8 +11,8 @@ vi.mock('$lib/catalog/db', async () => {
     await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
   return { db: new CatalogDexieV3('mokuro_v3_layers_test') };
 });
-const noteOcrEdited = vi.hoisted(() => vi.fn());
-vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited }));
+const scheduleLayerPush = vi.hoisted(() => vi.fn());
+vi.mock('$lib/metadata/layer-sync', () => ({ scheduleLayerPush }));
 
 import { db } from '$lib/catalog/db';
 import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
@@ -43,7 +43,7 @@ function pg(text: string, img_path = 'p.png'): Page {
 const PAGES = [pg('あい'), pg('うえ', 'q.png')];
 
 beforeEach(async () => {
-  noteOcrEdited.mockClear();
+  scheduleLayerPush.mockClear();
   await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), clearAllLayers(db)]);
   await db.volumes.put({
     volume_uuid: 'v1',
@@ -175,7 +175,11 @@ describe('promoteLayer', () => {
       'あい'
     ]);
     expect(replacedLayerId).toBeNull();
-    expect(noteOcrEdited).toHaveBeenCalledWith('v1');
+    // A local view choice (D4): nothing is scheduled for upload, and the
+    // promoted layer is no edit layer either.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(scheduleLayerPush).not.toHaveBeenCalled();
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
   });
 
   it('keeps a replaced-… snapshot when the previous primary differs from the original', async () => {
@@ -223,7 +227,7 @@ describe('promoteLayer', () => {
     expect(row?.page_char_counts).toEqual([2, 4]);
     expect(row?.ocr_edited_at).toBeUndefined();
     expect(await getLayerWithPages(db, 'v1', 'original')).toBeUndefined();
-    expect(noteOcrEdited).not.toHaveBeenCalled();
+    expect(scheduleLayerPush).not.toHaveBeenCalled();
   });
 
   it('refuses a missing layer and leaves primary untouched', async () => {
@@ -365,6 +369,35 @@ describe('upsertLayerPages', () => {
       expect(layer.pages[0].blocks[0].lines).toEqual(['新0']);
       expect(layer.pages[1].blocks[0].lines).toEqual(['手書き']);
     });
+  });
+});
+
+describe('the editor’s edit layer and bunko’s pre-upgrade layers (D4)', () => {
+  it('an edit-kind layer file carries the edited block (base = the main sidecar hash), no ocr_engine', async () => {
+    const sha = 'ab'.repeat(32);
+    await db.volumes.update('v1', { mokuro_sha256: sha });
+    const layer = await createLayer('v1', { name: 'Fixes', pages: [pg('直'), pg('す', 'q.png')] });
+    const json = JSON.parse(await (await buildLayerExportFile('v1', layer.layer_id)).text());
+    expect(json.edited).toEqual({ by: 'mokuro-reader', at: layer.updated_at, base_sha256: sha });
+    expect(json.ocr_engine).toBeUndefined();
+  });
+
+  it('base_sha256 is null when this device does not know the main sidecar’s hash', async () => {
+    const layer = await createLayer('v1', { name: 'Fixes', pages: PAGES });
+    const json = JSON.parse(await (await buildLayerExportFile('v1', layer.layer_id)).text());
+    expect(json.edited.base_sha256).toBeNull();
+  });
+
+  it('a new layer never takes the reserved edit id', () => {
+    expect(slugifyLayerId('Edit', [])).toBe('edit-2');
+    expect(slugifyLayerId('original', [])).toBe('original-2');
+  });
+
+  it('names the edit layer and labels pre-upgrade layers', () => {
+    expect(layerNameForId('edit')).toBe('Your corrections');
+    expect(layerNameForId('pre-upgrade')).toBe('Before upgrade (may contain your corrections)');
+    expect(layerNameForId('pre-upgrade-2')).toBe('Before upgrade 2 (may contain your corrections)');
+    expect(layerNameForId('pre-upgraded')).toBe('Pre Upgraded');
   });
 });
 
