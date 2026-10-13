@@ -62,6 +62,24 @@ export function isRootConfigFile(basename: string): boolean {
   return ROOT_CONFIG_FILENAMES.has(basename.toLowerCase());
 }
 
+/**
+ * The two CONTROL files a cloud-direct mokuro-bunko keeps at the library root
+ * (`mokuro-reader/`): its OCR queue and its liveness marker / lease. They are
+ * read directly by name (`SyncProvider.readControlFile`), never listed: neither
+ * is a volume, a sidecar or a root config, and putting them in the listing
+ * would feed them to the listing caches, the sync diff and the managed-file
+ * matcher — some of which would try to download, move or delete them. So they
+ * stay OUT of {@link isSyncableFile} on purpose (pinned by tests). Names are
+ * exact (case-sensitive), like every other root file the reader owns.
+ */
+export const QUEUE_FILE_NAME = '.mokuro-queue.json';
+export const BUNKO_MARKER_NAME = '.mokuro-bunko.json';
+
+/** Is this basename one of Bunko's control files? */
+export function isBunkoControlFile(basename: string): boolean {
+  return basename === QUEUE_FILE_NAME || basename === BUNKO_MARKER_NAME;
+}
+
 export function isSyncableFile(path: string): boolean {
   const basename = basenameOf(path);
   return isCbzFile(basename) || isSidecarFile(basename) || isRootConfigFile(basename);
