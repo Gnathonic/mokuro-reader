@@ -83,13 +83,28 @@ interface WorkerUploadCompleteData {
 
 /**
  * The server queued the archive for OCR: watch the volume on that server's
- * queue file (`server-ocr-queue.ts`), which starts polling at once.
+ * queue file (`server-ocr-queue.ts`), which starts polling at once. A cloud
+ * upload answers nothing about OCR; while a cloud-direct Bunko's marker is
+ * fresh on that library the volume is watched on its queue file instead
+ * (`watchCloudUpload` checks the marker and does nothing without one).
  */
 async function rememberServerOcr(
   item: Pick<BackupQueueItem, 'volumeUuid' | 'seriesTitle' | 'volumeTitle'>,
   serverOcr: ServerOcrQueued | undefined
 ): Promise<void> {
-  if (!serverOcr) return;
+  if (!serverOcr) {
+    try {
+      const { watchCloudUpload } = await import('$lib/catalog/server-ocr-queue');
+      await watchCloudUpload({
+        volumeUuid: item.volumeUuid,
+        series: item.seriesTitle,
+        volume: item.volumeTitle
+      });
+    } catch (error) {
+      console.debug('[Backup] Could not watch the cloud Bunko queue:', error);
+    }
+    return;
+  }
   try {
     const { watchUploadedVolume } = await import('$lib/catalog/server-ocr-queue');
     await watchUploadedVolume({
