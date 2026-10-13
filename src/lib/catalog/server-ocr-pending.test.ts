@@ -45,6 +45,16 @@ describe('heldText', () => {
     expect(heldText({ reason: 'paused' })).toBe('held: queue paused');
     expect(heldText({ reason: 'benchmarking' })).toBe('held: benchmarking');
     expect(heldText({ reason: 'something-new' })).toBe('held');
+  });
+
+  it("names a cloud-direct Bunko's storage reasons", () => {
+    expect(heldText({ reason: 'storage-offline' })).toBe("held: Bunko can't reach your storage");
+    expect(heldText({ reason: 'storage-auth' })).toBe(
+      'held: Bunko needs you to sign in to your storage again'
+    );
+    expect(heldText({ reason: 'storage-full' })).toBe('held: your storage is full');
+    expect(heldText({ reason: 'transfer-quota' })).toBe('held: storage transfer limit reached');
+    expect(heldText({ reason: 'storage-lease' })).toBe('held: another Bunko manages this library');
     expect(heldText(null)).toBe('held');
   });
 });
