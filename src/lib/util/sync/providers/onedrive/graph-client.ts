@@ -10,6 +10,8 @@ export interface DriveItem {
   size?: number;
   lastModifiedDateTime?: string;
   eTag?: string;
+  /** Changes whenever the item's CONTENT does (eTag also moves on metadata-only edits). */
+  cTag?: string;
   folder?: Record<string, unknown>;
   file?: Record<string, unknown>;
   parentReference?: { id?: string; path?: string };
@@ -76,6 +78,15 @@ export async function getItemByPath(accessToken: string, path: string): Promise<
   if (response.status === 404) return null;
   if (!response.ok) await parseError(response);
   return (await response.json()) as DriveItem;
+}
+
+/** Download an item's content (`/content` redirects to a pre-authenticated URL). */
+export async function downloadItemContent(accessToken: string, itemId: string): Promise<Blob> {
+  const response = await fetch(`${BASE}/me/drive/items/${encodeURIComponent(itemId)}/content`, {
+    headers: authHeaders(accessToken)
+  });
+  if (!response.ok) await parseError(response);
+  return await response.blob();
 }
 
 export async function createFolder(

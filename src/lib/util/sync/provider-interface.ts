@@ -536,6 +536,13 @@ export interface SyncProvider {
   readControlFile?(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult>;
 
   /**
+   * Subscribe to changes of control files (called with the file's basename).
+   * MEGA: the live tree's change events; providers without a push feed omit
+   * it. Returns the unsubscribe.
+   */
+  onControlFileChange?(listener: (name: string) => void): () => void;
+
+  /**
    * Get storage quota information from the provider
    * @returns Storage quota with used, total, and available bytes
    */

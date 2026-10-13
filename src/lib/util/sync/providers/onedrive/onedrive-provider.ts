@@ -1,5 +1,6 @@
 import { browser } from '$app/environment';
 import type {
+  ControlFileResult,
   SyncProvider,
   ProviderCredentials,
   ProviderStatus,
@@ -15,6 +16,7 @@ import { onedriveTokenManager } from './token-manager';
 import {
   createFolder,
   deleteItem,
+  downloadItemContent,
   getDriveQuota,
   getItemByPath,
   listChildren,
@@ -22,6 +24,8 @@ import {
 } from './graph-client';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { isSyncableFile } from '../../syncable-file';
+import { ControlNodeCache, readControlNodes } from '../../control-file-read';
+import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 
 export class OneDriveProvider implements SyncProvider {
   readonly type = 'onedrive' as const;
@@ -32,6 +36,8 @@ export class OneDriveProvider implements SyncProvider {
   readonly downloadConcurrencyLimit = 4;
 
   private cloudCore = getCloudProviderCore('onedrive');
+  /** Control-file bodies by item id + cTag, so an unchanged marker is never re-downloaded. */
+  private controlCache = new ControlNodeCache();
   private initPromise: Promise<void>;
   private initError: Error | null = null;
 
@@ -82,13 +88,13 @@ export class OneDriveProvider implements SyncProvider {
         ? 'Configured (not connected)'
         : 'Not configured';
     const accountId = onedriveTokenManager.getActiveAccountId();
-    return {
+    return withCloudBunkoStatus(this.type, {
       isAuthenticated: authenticated,
       hasStoredCredentials: hasCredentials,
       needsAttention,
       statusMessage,
       accountScope: accountId ? `onedrive:${accountId}` : undefined
-    };
+    });
   }
 
   async login(_credentials?: ProviderCredentials): Promise<void> {
@@ -136,6 +142,7 @@ export class OneDriveProvider implements SyncProvider {
     // Clear the active-provider key BEFORE the token manager's logout —
     // logoutRedirect() navigates the window away and nothing after it runs.
     clearActiveProviderKey();
+    this.controlCache.clear();
     console.log('OneDrive logged out');
     await onedriveTokenManager.logout();
   }
@@ -205,6 +212,57 @@ export class OneDriveProvider implements SyncProvider {
     })();
     this.seriesFolderPromises.set(seriesTitle, promise);
     return promise;
+  }
+
+  /**
+   * Read a control file at the library root (`mokuro-reader/<name>`): ONE
+   * `GET /me/drive/root:/mokuro-reader/<name>` per read. OneDrive names are
+   * unique within a folder, so there is at most one node. Its `cTag` (content
+   * tag; falls back to `eTag`) is the version: unchanged means no content
+   * download. Never creates anything; a missing file (or folder) is null.
+   */
+  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
+    }
+    try {
+      const token = await onedriveTokenManager.getAccessToken();
+      const item = await getItemByPath(token, `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${name}`);
+      const version = item ? (item.cTag ?? item.eTag) : undefined;
+      const listed =
+        item && version
+          ? [
+              {
+                id: item.id,
+                etag: version,
+                ...(item.lastModifiedDateTime ? { modified: item.lastModifiedDateTime } : {})
+              }
+            ]
+          : [];
+      return await readControlNodes(
+        name,
+        listed,
+        async (node) => downloadItemContent(await onedriveTokenManager.getAccessToken(), node.id),
+        this.controlCache,
+        opts?.ifNoneMatch
+      );
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      // MSAL asks for interaction when the refresh token is gone: that is an
+      // auth failure the UI resolves with a reconnect (needsAttention is set
+      // by the token manager).
+      const isAuth =
+        (error instanceof Error && error.name === 'InteractionRequiredAuthError') ||
+        /Not authenticated with OneDrive/.test(message);
+      throw new ProviderError(
+        `OneDrive control file read failed: ${message}`,
+        'onedrive',
+        'CONTROL_READ_FAILED',
+        isAuth,
+        /network|failed to fetch|timed out/i.test(message)
+      );
+    }
   }
 
   async listCloudVolumes(): Promise<CloudFileMetadata[]> {

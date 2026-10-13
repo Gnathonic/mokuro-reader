@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ControlFileResult } from '$lib/util/sync/provider-interface';
+import type { ControlFileResult, ProviderStatus } from '$lib/util/sync/provider-interface';
 import {
   cloudBunkoHolder,
   cloudBunkoStatus,
@@ -247,7 +247,7 @@ describe('the marker store', () => {
   });
 
   it('withCloudBunkoStatus: serverCompilesMetadata = reported || anyMarkerFresh', async () => {
-    const base = {
+    const base: ProviderStatus = {
       isAuthenticated: true,
       hasStoredCredentials: true,
       needsAttention: false,

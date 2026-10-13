@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('$app/environment', () => ({ browser: true }));
 vi.mock('./mega-cache', () => ({ megaCache: { fetch: vi.fn() } }));
@@ -53,6 +53,8 @@ vi.mock('megajs', () => {
 });
 
 import { MegaProvider } from './mega-provider';
+import { megaCache } from './mega-cache';
+import { ingestMarkerRead, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -641,5 +643,314 @@ describe('MegaProvider.renameFile() — modifiedTime provenance', () => {
 
     expect(result.modifiedTime).toBe('2020-01-01T00:00:00.000Z');
     expect(result.modifiedTimeProvisional).toBe(true);
+  });
+});
+
+describe('MegaProvider.readControlFile() — live tree', () => {
+  const MARKER = '.mokuro-bunko.json';
+
+  function markerBody(extra: Record<string, unknown> = {}) {
+    return JSON.stringify({
+      version: 1,
+      kind: 'mokuro-bunko',
+      instance_id: 'aaa',
+      instance_name: 'nas',
+      epoch: 1,
+      claimed_at: '2026-10-12T09:00:00Z',
+      heartbeat_at: new Date().toISOString(),
+      ttl_s: 900,
+      state: 'active',
+      compiles: ['series.json', 'catalog.json'],
+      ocr: true,
+      queue: '.mokuro-queue.json',
+      ...extra
+    });
+  }
+
+  function makeFolder(name = 'mokuro-reader', parent?: any) {
+    return { name, directory: true, parent, children: [] as any[] } as any;
+  }
+
+  /** A file node linked into `parent.children` like megajs leaves it. */
+  function makeNode(
+    handle: string,
+    name: string,
+    parent: any,
+    timestamp: number,
+    body: string | Error = markerBody()
+  ) {
+    const node: any = {
+      nodeId: handle,
+      name,
+      directory: false,
+      parent,
+      timestamp,
+      download: vi.fn((cb: (e: Error | null, d?: Uint8Array) => void) => {
+        queueMicrotask(() =>
+          body instanceof Error ? cb(body) : cb(null, new TextEncoder().encode(body))
+        );
+      })
+    };
+    parent.children.push(node);
+    return node;
+  }
+
+  async function loginWithTree(files: Record<string, any>) {
+    storageState.files = files;
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+    return provider;
+  }
+
+  async function textOf(node: { blob: Blob }) {
+    return new TextDecoder().decode(await node.blob.arrayBuffer());
+  }
+
+  beforeEach(() => {
+    resetCloudBunkoMarkersForTest();
+    localStorage.clear();
+  });
+
+  it('returns the marker of every mokuro-reader folder, newest first', async () => {
+    const a = makeFolder();
+    const b = makeFolder();
+    const older = makeNode('H-old', MARKER, a, 1_780_000_000, markerBody({ instance_id: 'old' }));
+    const newer = makeNode('H-new', MARKER, b, 1_780_000_500, markerBody({ instance_id: 'new' }));
+    const provider = await loginWithTree({ a, b, older, newer });
+
+    const result = await provider.readControlFile(MARKER);
+
+    expect(result).not.toBeNull();
+    expect(result).not.toBe('not-modified');
+    const read = result as Exclude<typeof result, null | 'not-modified'>;
+    expect(read.nodes.map((n) => n.id)).toEqual(['H-new', 'H-old']);
+    expect(read.nodes[0]).toMatchObject({
+      etag: 'H-new:1780000500',
+      modified: new Date(1_780_000_500 * 1000).toISOString()
+    });
+    expect(JSON.parse(await textOf(read.nodes[0])).instance_id).toBe('new');
+    expect(JSON.parse(await textOf(read.nodes[1])).instance_id).toBe('old');
+  });
+
+  it('answers not-modified for an unchanged tree without downloading', async () => {
+    const folder = makeFolder();
+    const marker = makeNode('H1', MARKER, folder, 1_780_000_000);
+    const provider = await loginWithTree({ folder, marker });
+
+    const first = (await provider.readControlFile(MARKER)) as any;
+    expect(marker.download).toHaveBeenCalledTimes(1);
+
+    const again = await provider.readControlFile(MARKER, { ifNoneMatch: first.etag });
+    expect(again).toBe('not-modified');
+    expect(marker.download).toHaveBeenCalledTimes(1);
+
+    // Without ifNoneMatch the cached body is served, still no second download.
+    const plain = (await provider.readControlFile(MARKER)) as any;
+    expect(plain.nodes).toHaveLength(1);
+    expect(marker.download).toHaveBeenCalledTimes(1);
+  });
+
+  it('downloads the new node after a live-tree replace (new handle), and the old one is gone', async () => {
+    const folder = makeFolder();
+    const v1 = makeNode('H1', MARKER, folder, 1_780_000_000, markerBody({ instance_name: 'one' }));
+    const provider = await loginWithTree({ folder, v1 });
+    const storage = (provider as any).storage;
+    const first = (await provider.readControlFile(MARKER)) as any;
+
+    // megajs's sc stream: the rewrite arrives as an add (new handle) + a delete
+    // (the old handle is unlinked from its parent but lingers in storage.files).
+    folder.children.splice(folder.children.indexOf(v1), 1);
+    const v2 = makeNode('H2', MARKER, folder, 1_780_000_900, markerBody({ instance_name: 'two' }));
+    storage.files.v2 = v2;
+
+    const second = await provider.readControlFile(MARKER, { ifNoneMatch: first.etag });
+
+    expect(second).not.toBe('not-modified');
+    const read = second as any;
+    expect(read.nodes.map((n: any) => n.id)).toEqual(['H2']);
+    expect(JSON.parse(await textOf(read.nodes[0])).instance_name).toBe('two');
+    expect(v2.download).toHaveBeenCalledTimes(1);
+    expect(v1.download).toHaveBeenCalledTimes(1); // only the original read
+    expect(read.etag).not.toBe(first.etag);
+  });
+
+  it('skips a node whose download fails with ENOENT and still resolves, retrying it next read', async () => {
+    const folder = makeFolder();
+    const good = makeNode('Hgood', MARKER, folder, 1_780_000_000);
+    const gone = makeNode(
+      'Hgone',
+      MARKER,
+      folder,
+      1_780_000_500,
+      new Error('ENOENT (-9): Object (typically, node or user) not found')
+    );
+    const provider = await loginWithTree({ folder, good, gone });
+
+    const result = (await provider.readControlFile(MARKER)) as any;
+
+    expect(result.nodes.map((n: any) => n.id)).toEqual(['Hgood']);
+    expect(gone.download).toHaveBeenCalledTimes(1);
+
+    // The skipped handle is retried once an sc event touches a control file.
+    const storage = (provider as any).storage;
+    const handlers = storage.on.mock.calls.filter((c: any[]) => c[0] === 'delete');
+    for (const [, handler] of handlers) handler({ name: MARKER });
+    await provider.readControlFile(MARKER);
+    expect(gone.download).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores nodes in the Rubbish Bin and in folders that are not mokuro-reader', async () => {
+    const live = makeFolder();
+    const other = makeFolder('Documents');
+    const bin = makeFolder('Rubbish Bin');
+    const trashedLibrary = makeFolder('mokuro-reader', bin);
+    const sub = makeFolder('Some Series', live);
+    const ok = makeNode('Hok', MARKER, live, 1_780_000_000);
+    const inOther = makeNode('Hother', MARKER, other, 1_780_000_100);
+    const inBin = makeNode('Hbin', MARKER, bin, 1_780_000_200);
+    const inTrashedLibrary = makeNode('Htrashlib', MARKER, trashedLibrary, 1_780_000_300);
+    const inSub = makeNode('Hsub', MARKER, sub, 1_780_000_400);
+    const provider = await loginWithTree({
+      live,
+      other,
+      bin,
+      trashedLibrary,
+      sub,
+      ok,
+      inOther,
+      inBin,
+      inTrashedLibrary,
+      inSub
+    });
+
+    const result = (await provider.readControlFile(MARKER)) as any;
+
+    expect(result.nodes.map((n: any) => n.id)).toEqual(['Hok']);
+    expect(inOther.download).not.toHaveBeenCalled();
+    expect(inBin.download).not.toHaveBeenCalled();
+    expect(inTrashedLibrary.download).not.toHaveBeenCalled();
+    expect(inSub.download).not.toHaveBeenCalled();
+  });
+
+  it('returns null when no node of that name exists', async () => {
+    const folder = makeFolder();
+    const provider = await loginWithTree({ folder });
+    expect(await provider.readControlFile(MARKER)).toBeNull();
+  });
+
+  it('never reinitializes or reloads the storage', async () => {
+    const folder = makeFolder();
+    const marker = makeNode('H1', MARKER, folder, 1_780_000_000);
+    const provider = await loginWithTree({ folder, marker });
+    const storage = (provider as any).storage;
+    const reinit = vi.spyOn(provider as any, 'reinitialize');
+
+    const first = (await provider.readControlFile(MARKER)) as any;
+    await provider.readControlFile(MARKER, { ifNoneMatch: first.etag });
+
+    expect(reinit).not.toHaveBeenCalled();
+    expect(storage.reload).not.toHaveBeenCalled();
+  });
+
+  it('throws an auth ProviderError when not authenticated', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await expect(provider.readControlFile(MARKER)).rejects.toMatchObject({
+      name: 'ProviderError',
+      code: 'NOT_AUTHENTICATED',
+      isAuthError: true
+    });
+  });
+
+  it('maps a session expiry during the download to an auth ProviderError', async () => {
+    const folder = makeFolder();
+    const marker = makeNode(
+      'H1',
+      MARKER,
+      folder,
+      1_780_000_000,
+      new Error('ESID (-15): Invalid or expired user session, please relogin')
+    );
+    const provider = await loginWithTree({ folder, marker });
+
+    await expect(provider.readControlFile(MARKER)).rejects.toMatchObject({
+      name: 'ProviderError',
+      isAuthError: true
+    });
+    expect(provider.isAuthenticated()).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(true);
+  });
+
+  it('getStatus() folds in a fresh marker verdict: serverCompilesMetadata true after, false before', async () => {
+    const folder = makeFolder();
+    const marker = makeNode('H1', MARKER, folder, 1_780_000_000);
+    const provider = await loginWithTree({ folder, marker });
+    expect(provider.getStatus().serverCompilesMetadata).toBeFalsy();
+
+    await ingestMarkerRead('mega', (await provider.readControlFile(MARKER)) as any);
+
+    const status = provider.getStatus();
+    expect(status.serverCompilesMetadata).toBe(true);
+    expect(status.cloudBunko?.fresh).toBe(true);
+  });
+});
+
+describe('MegaProvider.onControlFileChange()', () => {
+  async function loggedIn() {
+    storageState.files = { f1: { name: 'mokuro-reader', directory: true } };
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+    const storage = (provider as any).storage;
+    const emit = (event: string, node: any) => {
+      for (const [name, handler] of storage.on.mock.calls) if (name === event) handler(node);
+    };
+    return { provider, emit };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(megaCache.fetch).mockResolvedValue(undefined as any);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fires (debounced) for a control-file event and not for a .cbz event', async () => {
+    const { provider, emit } = await loggedIn();
+    const seen: string[] = [];
+    provider.onControlFileChange((name) => seen.push(name));
+
+    emit('add', { name: 'Vol 1.cbz' });
+    emit('update', { name: 'Vol 1.mokuro' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(seen).toEqual([]);
+
+    emit('add', { name: '.mokuro-bunko.json' });
+    emit('update', { name: '.mokuro-bunko.json' });
+    emit('delete', { name: '.mokuro-queue.json' });
+    expect(seen).toEqual([]); // debounced
+    await vi.advanceTimersByTimeAsync(600);
+    expect(seen.sort()).toEqual(['.mokuro-bunko.json', '.mokuro-queue.json']);
+  });
+
+  it('stops firing after unsubscribe, and keeps working after listeners are re-attached', async () => {
+    const { provider, emit } = await loggedIn();
+    const seen: string[] = [];
+    const off = provider.onControlFileChange((name) => seen.push(name));
+    // reinitialize() re-attaches nothing new on the same storage, but a new
+    // storage (restore) calls attachChangeListeners again: listeners are on the provider.
+    (provider as any).attachChangeListeners((provider as any).storage);
+
+    emit('move', { name: '.mokuro-queue.json' });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(seen.length).toBeGreaterThan(0);
+
+    off();
+    seen.length = 0;
+    emit('add', { name: '.mokuro-bunko.json' });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(seen).toEqual([]);
   });
 });
