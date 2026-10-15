@@ -8,7 +8,10 @@ import {
   splitLayerSidecarName,
   classifyMokuroSidecar,
   layerSidecarName,
-  cbzStemsOf
+  cbzStemsOf,
+  QUEUE_FILE_NAME,
+  BUNKO_MARKER_NAME,
+  isBunkoControlFile
 } from './syncable-file';
 
 describe('syncable-file', () => {
@@ -228,5 +231,29 @@ describe('series-metadata.json stays retired', () => {
       // Case-folded id, stem kept verbatim.
       expect(splitLayerSidecarName('Vol 1.GCV.mokuro')?.layerId).toBe('gcv');
     });
+  });
+});
+
+describe('Bunko control files', () => {
+  it('names the queue file and the marker', () => {
+    expect(QUEUE_FILE_NAME).toBe('.mokuro-queue.json');
+    expect(BUNKO_MARKER_NAME).toBe('.mokuro-bunko.json');
+    expect(isBunkoControlFile('.mokuro-queue.json')).toBe(true);
+    expect(isBunkoControlFile('.mokuro-bunko.json')).toBe(true);
+    expect(isBunkoControlFile('mokuro-queue.json')).toBe(false);
+    expect(isBunkoControlFile('.bunko.json')).toBe(false);
+  });
+
+  it('keeps both control files out of every listing category', () => {
+    for (const name of [QUEUE_FILE_NAME, BUNKO_MARKER_NAME]) {
+      expect(isSyncableFile(name)).toBe(false);
+      expect(isSyncableFile(`mokuro-reader/${name}`)).toBe(false);
+      expect(isSyncableFile(`Series/${name}`)).toBe(false);
+      expect(isSidecarFile(name)).toBe(false);
+      expect(isRootConfigFile(name)).toBe(false);
+      expect(isCbzFile(name)).toBe(false);
+      expect(isBestEffortMetadataPath(name)).toBe(false);
+      expect(classifyMokuroSidecar(name, new Set(['.mokuro-queue']))).toEqual({ kind: 'orphan' });
+    }
   });
 });

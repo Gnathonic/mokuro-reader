@@ -5,7 +5,8 @@ import type {
   ProviderStatus,
   StorageQuota,
   CloudFileMetadata,
-  UploadFileResult
+  UploadFileResult,
+  ControlFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
@@ -34,6 +35,8 @@ import {
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
 import { CANNOT_RENAME_MESSAGE } from '../../account-capabilities';
 import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
+import { controlSetEtag } from '../../control-file-read';
+import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 
 interface WebDAVCredentials {
   serverUrl: string;
@@ -113,6 +116,14 @@ type ReissueOutcome =
  */
 type ReissueVerdict = 'retry' | 'final' | 'transient';
 
+/** Last-resort version of a body when the server sent neither ETag nor Last-Modified. */
+async function bodyFingerprint(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let hash = 0x811c9dc5; // FNV-1a
+  for (const byte of bytes) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+  return `len${bytes.length}-${hash.toString(16)}`;
+}
+
 function isUnauthorized(error: unknown): boolean {
   return (error as { status?: number } | null)?.status === 401;
 }
@@ -178,6 +189,8 @@ export class WebDAVProvider implements SyncProvider {
   private _serverCompilesMetadata = false;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
+  /** Per control-file name: the last read's set etag and the server's raw ETag for its one node. */
+  private controlReads = new Map<string, { setEtag: string; serverEtag: string }>();
   /** Whether the current session was established with a password */
   private _hasPassword = false;
   private cloudCore = getCloudProviderCore('webdav');
@@ -590,7 +603,10 @@ export class WebDAVProvider implements SyncProvider {
     const hasCredentials = !!serverUrl;
     const isConnected = this.isAuthenticated();
 
-    return {
+    // The marker is a fourth `serverCompilesMetadata` source beside the identity
+    // endpoint, anonymous access and PUT_VERIFIED: `withCloudBunkoStatus` ORs a
+    // fresh marker onto whatever those said.
+    return withCloudBunkoStatus(this.type, {
       isAuthenticated: isConnected,
       hasStoredCredentials: hasCredentials,
       needsAttention: this._needsAttention,
@@ -612,7 +628,7 @@ export class WebDAVProvider implements SyncProvider {
       accountScope: serverUrl
         ? `webdav:${stripUrlUserinfo(serverUrl)}${username ? `|${username}` : ''}`
         : undefined
-    };
+    });
   }
 
   async login(credentials?: ProviderCredentials): Promise<void> {
@@ -872,6 +888,7 @@ export class WebDAVProvider implements SyncProvider {
     this._supportsDepthInfinity = null; // Reset for next connection (may be different server)
     this._capabilities = null;
     this._serverCompilesMetadata = false;
+    this.controlReads.clear();
     this._hasPassword = false;
     this._needsAttention = false; // Deliberate logout - nothing to flag
 
@@ -1480,6 +1497,92 @@ export class WebDAVProvider implements SyncProvider {
         true
       );
     }
+  }
+
+  /**
+   * Read `<server>/mokuro-reader/<name>` with ONE conditional GET (the server
+   * does the version check: `If-None-Match` with the previous read's ETag).
+   * 304 -> 'not-modified', 404 -> null, 200 -> a single node.
+   */
+  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+    const account = this.sessionAccount();
+    if (!this.isAuthenticated() || !account) {
+      throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
+    }
+    const base = stripUrlUserinfo(account.serverUrl).replace(/\/$/, '');
+    const url = `${base}${MOKURO_FOLDER}/${encodeURIComponent(name)}`;
+    const previous = this.controlReads.get(name);
+    const conditional =
+      previous !== undefined &&
+      opts?.ifNoneMatch !== undefined &&
+      opts.ifNoneMatch === previous.setEtag;
+
+    const request = async (): Promise<{ response: Response; sent: string | null }> => {
+      const sent = this.authorizationHeader();
+      const headers: Record<string, string> = webdavAuthHeaders(this.sessionAuth());
+      if (conditional) headers['If-None-Match'] = previous.serverEtag;
+      try {
+        const response = await fetch(url, { method: 'GET', headers, cache: 'no-store' });
+        return { response, sent };
+      } catch (error) {
+        throw new ProviderError(
+          `Failed to read ${name}: ${error instanceof Error ? error.message : 'Network error'}`,
+          'webdav',
+          'READ_FAILED',
+          false,
+          true
+        );
+      }
+    };
+
+    let { response, sent } = await request();
+    if (response.status === 401 && bearerOf(sent) && (await this.reissueAfterUnauthorized(sent))) {
+      ({ response, sent } = await request()); // once, under the re-issued header
+    }
+
+    if (response.status === 304 && conditional) return 'not-modified';
+    if (response.status === 404) {
+      this.controlReads.delete(name);
+      return null;
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new ProviderError(
+        `WebDAV refused reading ${name} (${response.status})`,
+        'webdav',
+        'AUTH_FAILED',
+        true
+      );
+    }
+    if (!response.ok) {
+      throw new ProviderError(
+        `Failed to read ${name}: HTTP ${response.status}`,
+        'webdav',
+        'READ_FAILED',
+        false,
+        response.status >= 500
+      );
+    }
+
+    const blob = await response.blob();
+    const lastModified = response.headers.get('Last-Modified');
+    const serverEtag =
+      response.headers.get('ETag') || lastModified || (await bodyFingerprint(blob));
+    const etag = controlSetEtag([{ id: url, etag: serverEtag }]);
+    this.controlReads.set(name, { setEtag: etag, serverEtag });
+    // A server that ignored the conditional still answers 'unchanged' honestly.
+    if (opts?.ifNoneMatch !== undefined && opts.ifNoneMatch === etag) return 'not-modified';
+    const modifiedMs = lastModified ? Date.parse(lastModified) : NaN;
+    return {
+      nodes: [
+        {
+          id: url,
+          etag: serverEtag,
+          ...(Number.isFinite(modifiedMs) ? { modified: new Date(modifiedMs).toISOString() } : {}),
+          blob
+        }
+      ],
+      etag
+    };
   }
 
   async deleteFile(file: import('../../provider-interface').CloudFileMetadata): Promise<void> {

@@ -308,6 +308,51 @@ describe('syncLayersFromListing', () => {
     expect(downloadFile).toHaveBeenCalledTimes(1);
   });
 
+  it('a pulled bunko pre-upgrade layer is labelled "Before upgrade (may contain your corrections)"', async () => {
+    await seedRow();
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('旧')]));
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.pre-upgrade.mokuro')),
+      'webdav'
+    );
+    expect((await getLayerWithPages(db, 'v1', 'pre-upgrade'))?.name).toBe(
+      'Before upgrade (may contain your corrections)'
+    );
+  });
+
+  it('a pre-upgrade row pulled under its old title-cased name is renamed; a hand-renamed one is not', async () => {
+    await seedRow();
+    const row = (name: string, layer_id: string) => ({
+      volume_uuid: 'v1',
+      layer_id,
+      name,
+      kind: 'edit' as const,
+      created_at: '2026-09-16T09:00:00.000Z',
+      updated_at: '2026-09-16T09:00:00.000Z',
+      cloud: {
+        provider: 'webdav',
+        size: 100,
+        modified: 1789552800,
+        synced_at: '2026-09-16T10:00:00.000Z'
+      },
+      pages: [pg('旧')]
+    });
+    await putLayerWithPages(db, row('Pre Upgrade', 'pre-upgrade'));
+    await putLayerWithPages(db, row('Old OCR', 'pre-upgrade-2'));
+    await syncLayersFromListing(
+      listing(
+        cloudFile('Series/Vol 1.cbz'),
+        cloudFile('Series/Vol 1.pre-upgrade.mokuro'),
+        cloudFile('Series/Vol 1.pre-upgrade-2.mokuro')
+      ),
+      'webdav'
+    );
+    expect((await getLayerWithPages(db, 'v1', 'pre-upgrade'))?.name).toBe(
+      'Before upgrade (may contain your corrections)'
+    );
+    expect((await getLayerWithPages(db, 'v1', 'pre-upgrade-2'))?.name).toBe('Old OCR');
+  });
+
   it('a pulled tr-<lang> file is filed as a translation — which can never become the primary', async () => {
     await seedRow();
     downloadFile.mockResolvedValue(new Blob([mokuroJson('Hello')]));
@@ -443,8 +488,11 @@ describe('syncLayersFromListing', () => {
     expect(path).toBe('Series/Vol 1.fix.mokuro');
     const json = JSON.parse(await (blob as Blob).text());
     expect(json.pages[0].blocks[0].lines).toEqual(['なお']);
+    // Upstream format plus, for a layer of a person's corrections, the D4
+    // `edited` block — and never an `ocr_engine` stamp.
     expect(Object.keys(json).sort()).toEqual([
       'chars',
+      'edited',
       'pages',
       'title',
       'title_uuid',
@@ -452,6 +500,11 @@ describe('syncLayersFromListing', () => {
       'volume',
       'volume_uuid'
     ]);
+    expect(json.edited).toEqual({
+      by: 'mokuro-reader',
+      at: '2026-09-16T09:00:00.000Z',
+      base_sha256: null
+    });
     expect(cacheAdd).toHaveBeenCalledWith('Series/Vol 1.fix.mokuro', expect.anything());
     const row = await getLayerWithPages(db, 'v1', 'fix');
     expect(row!.cloud).toMatchObject({ provider: 'webdav', size: 77, modified: 1789560000 });

@@ -2,7 +2,9 @@ import { db } from '$lib/catalog/db';
 import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
 import {
   getLayerMeta,
+  getLayerPages,
   getLayerWithPages,
+  layerTables,
   listLayerMetasForVolumes,
   listVolumeUuidsWithLayers,
   patchLayerMeta,
@@ -17,10 +19,12 @@ import {
   titleCasedLayerId
 } from '$lib/reader/edit/layers';
 import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
+import { EDIT_LAYER_ID, isPreUpgradeLayerId } from '$lib/reader/edit/layer-names';
+import { editLayerEpoch } from '$lib/reader/edit/edit-layer-epoch';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerStaysLocal } from '$lib/catalog/mokuro-hash';
-import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
+import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
 import {
@@ -55,9 +59,10 @@ import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
  * - Newest wins, no merge: a row edited locally since its last sync is pushed
  *   (writable providers) unless the cloud copy is newer than the edit, in
  *   which case the cloud copy replaces it.
- * - The `.mokuro` a push writes is pure upstream format (`buildMokuroMetadata`);
+ * - The `.mokuro` a push writes is upstream format (`buildLayerMokuroMetadata`);
  *   the layer's kind/name are inferred from the id on the other side, never
- *   embedded.
+ *   embedded — except that a layer of kind `edit` carries the top-level
+ *   `edited` block (bunko design 0.8 D4: human corrections, not model output).
  * - A layer may be listed twice, as `.mokuro` AND `.mokuro.gz`. The plain file
  *   wins every read; a push (always the plain name) removes the `.gz` it
  *   supersedes, and a delete removes both — see `ListedLayerFile.copies`.
@@ -781,7 +786,7 @@ async function pushOne(
     const layer = await getLayerWithPages(db, planned.volume_uuid, planned.layer_id);
     if (!layer) return false; // deleted since the plan
     const { totalChars } = buildPageCharCounts(layer.pages);
-    const meta = buildMokuroMetadata({ ...row, character_count: totalChars }, layer.pages);
+    const meta = buildLayerMokuroMetadata(row, layer, totalChars);
     const blob = new Blob([JSON.stringify(meta)], { type: 'application/json' });
     const path = `${folderTitle}/${layerSidecarName(stem, layer.layer_id)}`;
     const uploaded = await provider.uploadFile(path, blob);
@@ -827,6 +832,13 @@ async function pushOne(
  */
 async function refileKnownEngineRows(local: VolumeOcrLayer[]): Promise<void> {
   for (const layer of local) {
+    // bunko's `pre-upgrade` keepsake pulled before it had a name of its own
+    // ("Pre Upgrade"): name it for what it may hold. Never a hand-renamed row.
+    if (isPreUpgradeLayerId(layer.layer_id) && layer.name === titleCasedLayerId(layer.layer_id)) {
+      const name = layerNameForId(layer.layer_id);
+      await updateLayerMeta(db, layer.volume_uuid, layer.layer_id, { name });
+      layer.name = name;
+    }
     if (layer.kind !== 'edit' || layer.engine || !layer.cloud) continue;
     if (layerKindForId(layer.layer_id) !== 'ocr') continue;
     const renamed = layer.name !== titleCasedLayerId(layer.layer_id);
@@ -991,6 +1003,7 @@ async function runSync(
   const writable = providerIsWritable(provider);
   const serverCompilesMetadata = provider.getStatus().serverCompilesMetadata === true;
 
+  await migrateEditedPrimariesToEditLayers();
   await dropPendingDeletesOfMissingVolumes().catch(() => {});
   await dropRejectedFilesOfMissingVolumes().catch(() => {});
   const pendingDeletes = pendingDeletesFor(providerType);
@@ -1085,6 +1098,126 @@ export function syncLayersFromListing(
     }
   })();
   return inFlight;
+}
+
+// ---------------------------------------------------------------- the edit-layer migration
+
+/** The pre-D4 backfill's list of edited volumes whose main-sidecar upload was still due. */
+const LEGACY_EDITED_MARKER_KEY = 'sidecar-backfill:edited-volumes';
+const EDIT_LAYER_MIGRATION_KEY = 'layer-sync:edit-layer-migration:v1';
+let editLayerMigration: Promise<number> | null = null;
+
+/**
+ * Once per device: give every EDITED volume (`ocr_edited_at`) whose corrections
+ * live only in its primary row — edits made before bunko design 0.8 D4, when
+ * an edit re-uploaded the main sidecar — an `edit` layer holding that primary,
+ * so the corrections reach the cloud as `<Volume>.edit.mokuro` now that the
+ * main sidecar is never re-uploaded after an edit. A volume whose primary
+ * still equals its `original` snapshot has nothing to carry; one that already
+ * has an `edit` layer keeps it. Additive only (nothing is deleted or
+ * changed), and the old backfill's localStorage list is dropped. Resolves the
+ * number of layers made; never rejects.
+ */
+export function migrateEditedPrimariesToEditLayers(): Promise<number> {
+  if (editLayerMigration) return editLayerMigration;
+  editLayerMigration = (async () => {
+    try {
+      if (globalThis.localStorage?.getItem(EDIT_LAYER_MIGRATION_KEY) === 'done') return 0;
+    } catch {
+      // Storage unavailable: run it (it is idempotent), once this session.
+    }
+    let made = 0;
+    try {
+      // Only edits from before the new write path: later ones already have
+      // their layer, and a later promotion must stay a local view.
+      const epoch = editLayerEpoch();
+      const index = db.volumes.where('ocr_edited_at');
+      const uuids = (await (
+        epoch ? index.between('', epoch, false, false) : index.above('')
+      ).primaryKeys()) as string[];
+      for (const uuid of uuids) {
+        try {
+          if (await carryPrimaryIntoEditLayer(uuid)) made++;
+        } catch (error) {
+          console.debug(`[layer-sync] could not migrate the edits of ${uuid}:`, error);
+        }
+      }
+      try {
+        globalThis.localStorage?.removeItem(LEGACY_EDITED_MARKER_KEY);
+        globalThis.localStorage?.setItem(EDIT_LAYER_MIGRATION_KEY, 'done');
+      } catch {
+        // The next session runs it again: idempotent.
+      }
+      if (made)
+        console.log(`[layer-sync] moved the corrections of ${made} volume(s) into an edit layer`);
+    } catch (error) {
+      console.debug('[layer-sync] edit-layer migration skipped:', error);
+      editLayerMigration = null;
+    }
+    return made;
+  })();
+  return editLayerMigration;
+}
+
+async function carryPrimaryIntoEditLayer(volumeUuid: string): Promise<boolean> {
+  return db.transaction('rw', [db.volumes, db.volume_ocr, ...layerTables(db)], async () => {
+    const row = await db.volumes.get(volumeUuid);
+    if (!row?.ocr_edited_at || !isVolumeInstalled(row)) return false;
+    if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return false;
+    const ocr = await db.volume_ocr.get(volumeUuid);
+    if (!ocr?.pages?.length) return false;
+    const original = await getLayerPages(db, volumeUuid, 'original');
+    if (original && JSON.stringify(original) === JSON.stringify(ocr.pages)) return false;
+    // Stamped with the edit's own time, so it ranks as the edit it is.
+    const at = row.ocr_edited_at;
+    await putLayerWithPages(db, {
+      volume_uuid: volumeUuid,
+      layer_id: EDIT_LAYER_ID,
+      name: layerNameForId(EDIT_LAYER_ID),
+      kind: 'edit',
+      created_at: at,
+      updated_at: at,
+      pages: ocr.pages
+    });
+    return true;
+  });
+}
+
+/** Tests: run the migration again. */
+export function resetEditLayerMigrationForTest(): void {
+  editLayerMigration = null;
+}
+
+/** How long after the last layer edit its push waits (an editing session autosaves often). */
+export const LAYER_PUSH_DEBOUNCE_MS = 15_000;
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * A layer was just edited here (the editor's `edit` layer, or any layer edited
+ * in place): run the layer sync against the CACHED listing once the edits
+ * settle, so the change goes up without waiting for the next whole-account
+ * listing. Never fetches a listing; does nothing without a connected provider
+ * whose listing cache is loaded (the next listing pushes it then).
+ */
+export function scheduleLayerPush(): void {
+  if (pushTimer) clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    pushTimer = null;
+    try {
+      const provider = providerManager.getActiveProvider();
+      if (!provider) return;
+      if (!cacheManager.getCache(provider.type)?.isLoaded?.()) return;
+      void syncLayersFromListing(listingFromCache(provider.type), provider.type);
+    } catch (error) {
+      console.debug('[layer-sync] scheduled push skipped:', error);
+    }
+  }, LAYER_PUSH_DEBOUNCE_MS);
+}
+
+/** Tests: drop a scheduled push. */
+export function cancelScheduledLayerPushForTest(): void {
+  if (pushTimer) clearTimeout(pushTimer);
+  pushTimer = null;
 }
 
 /** Group the provider cache's flat file list by folder, the listing shape the sync takes. */

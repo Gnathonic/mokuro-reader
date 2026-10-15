@@ -1,12 +1,13 @@
 import { isUntouchedUpgradeLayer } from '$lib/catalog/mokuro-hash';
 import { db } from '$lib/catalog/db';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
+import { mainSidecarPagesForCloud } from '$lib/catalog/main-sidecar';
 import type { VolumeMetadata } from '$lib/types';
 import { getSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
 import { getSeriesMetadataForTitle } from '$lib/metadata/store';
-import { buildMokuroMetadata } from './mokuro-metadata';
+import { buildLayerMokuroMetadata, buildMokuroMetadata } from './mokuro-metadata';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerSidecarName } from './sync/syncable-file';
 
@@ -94,7 +95,15 @@ export function buildVolumeSidecarsFromData(
  * which a per-volume caller (the export loop) must not pay once per volume —
  * `buildSeriesFileForExport` is called once per series instead.
  */
-export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSidecarFiles> {
+export async function loadVolumeSidecars(
+  volumeUuid: string,
+  /**
+   * `forCloud`: the main `.mokuro` is model output (`catalog/main-sidecar.ts`)
+   * — an edited volume's comes from its `original` snapshot, or is left out.
+   * Exports keep the primary (the user's own view) as it is.
+   */
+  opts: { forCloud?: boolean } = {}
+): Promise<VolumeSidecarFiles> {
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {
     throw new Error(`Volume ${volumeUuid} not found`);
@@ -103,7 +112,14 @@ export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSide
   const hasMokuroVersion =
     typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
   const volumeOcr = hasMokuroVersion ? await db.volume_ocr.get(volumeUuid) : undefined;
-  return buildVolumeSidecarsFromData(volume, volumeOcr?.pages ?? null);
+  const primary = volumeOcr?.pages ?? null;
+  if (!opts.forCloud || !primary) return buildVolumeSidecarsFromData(volume, primary);
+  const pages = await mainSidecarPagesForCloud(db, volume, primary);
+  const counted =
+    pages && pages !== primary
+      ? { ...volume, character_count: buildPageCharCounts(pages).totalChars }
+      : volume;
+  return buildVolumeSidecarsFromData(counted, pages);
 }
 
 export function downloadFileBlob(file: File): void {
@@ -132,10 +148,7 @@ export async function loadVolumeLayerFiles(volumeUuid: string): Promise<File[]> 
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {
         const { totalChars } = buildPageCharCounts(layer.pages);
-        const metadata = buildMokuroMetadata(
-          { ...volume, character_count: totalChars },
-          layer.pages
-        );
+        const metadata = buildLayerMokuroMetadata(volume, layer, totalChars);
         return new File(
           [JSON.stringify(metadata)],
           layerSidecarName(volume.volume_title, layer.layer_id),

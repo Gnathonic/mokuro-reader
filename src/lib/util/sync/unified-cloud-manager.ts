@@ -963,10 +963,13 @@ class UnifiedCloudManager {
       ? isMetadataOnly((await db.volumes.get(volumeUuid)) ?? ({} as VolumeMetadata))
       : false;
     if (volumeUuid && !volumeIsMetadataOnly) {
-      const sidecars = await generateVolumeSidecarsFromDb(volumeUuid, {
-        seriesTitle: newSeriesTitle,
-        volumeTitle: newVolumeTitle
-      });
+      // Model output (D4): an edited volume's regenerated main sidecar comes
+      // from its `original` snapshot; the primary only when it has none.
+      const sidecars = await generateVolumeSidecarsFromDb(
+        volumeUuid,
+        { seriesTitle: newSeriesTitle, volumeTitle: newVolumeTitle },
+        { cloud: true, editedFallbackToPrimary: true }
+      );
       freshMokuroBlob = sidecars.mokuro?.blob ?? null;
     }
 

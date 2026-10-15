@@ -1006,7 +1006,8 @@ ctx.addEventListener('message', async (event) => {
 
         if (message.includeSidecars === true) {
           const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
-            serverCompilesMetadata: message.serverCompilesMetadata === true
+            serverCompilesMetadata: message.serverCompilesMetadata === true,
+            cloud: true
           });
           const sidecarsToUpload: Array<{ filename: string; blob: Blob }> = [];
           if (generatedSidecars.mokuro) {
@@ -1111,7 +1112,7 @@ ctx.addEventListener('message', async (event) => {
         // what `loadVolumeSidecars`/`buildVolumeSidecarsFromData` produce from
         // the same rows on the main thread (pinned by the byte-identity test).
         // Only the upload FILENAME takes the archive's stem.
-        const sidecars = await generateVolumeSidecarsFromDb(volumeUuid);
+        const sidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, { cloud: true });
         if (wantMokuro && sidecars.mokuro) {
           const uploaded = await cloudProvider.uploadFile({
             seriesTitle,

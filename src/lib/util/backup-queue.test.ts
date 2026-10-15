@@ -127,7 +127,8 @@ const uploadRecord = vi.hoisted(() => ({
 }));
 vi.mock('$lib/catalog/mokuro-upload-record', () => uploadRecord);
 const watchUploadedVolume = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('$lib/catalog/server-ocr-queue', () => ({ watchUploadedVolume }));
+const watchCloudUpload = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('$lib/catalog/server-ocr-queue', () => ({ watchUploadedVolume, watchCloudUpload }));
 
 import type { VolumeMetadata } from '$lib/types';
 import { downloadFileBlob } from './volume-sidecars';
@@ -760,6 +761,27 @@ describe('export-for-download sidecars', () => {
     await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
     await capturedTasks[0].onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
     expect(watchUploadedVolume).not.toHaveBeenCalled();
+  });
+
+  it('offers a cloud upload to the cloud Bunko queue (which watches only while a marker is fresh)', async () => {
+    const provider = {
+      type: 'google-drive',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'cloud-uuid' }), provider, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
+    expect(watchUploadedVolume).not.toHaveBeenCalled();
+    expect(watchCloudUpload).toHaveBeenCalledWith({
+      volumeUuid: 'cloud-uuid',
+      series: 'One Piece',
+      volume: 'Volume 1'
+    });
   });
 });
 

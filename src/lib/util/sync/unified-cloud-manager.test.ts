@@ -350,10 +350,13 @@ describe('UnifiedCloudManager rename operations', () => {
     );
 
     // fresh .mokuro built with the NEW names (DB still old) and uploaded to new path
-    expect(generateSidecars).toHaveBeenCalledWith('uuid-1', {
-      seriesTitle: 'New Series',
-      volumeTitle: 'Volume X'
-    });
+    // A cloud write of the main sidecar: model output (D4) — an edited
+    // volume's comes from its `original` snapshot.
+    expect(generateSidecars).toHaveBeenCalledWith(
+      'uuid-1',
+      { seriesTitle: 'New Series', volumeTitle: 'Volume X' },
+      { cloud: true, editedFallbackToPrimary: true }
+    );
     expect(provider.uploadFile).toHaveBeenCalledWith(
       'New Series/Volume X.mokuro',
       expect.any(Blob),
@@ -1059,10 +1062,13 @@ describe('UnifiedCloudManager rename operations', () => {
     ]);
 
     // sidecar regenerated with the new SERIES title (volume title unchanged)
-    expect(generateSidecars).toHaveBeenCalledWith('uuid-1', {
-      seriesTitle: 'New Series',
-      volumeTitle: 'Volume 1'
-    });
+    // A cloud write of the main sidecar: model output (D4) — an edited
+    // volume's comes from its `original` snapshot.
+    expect(generateSidecars).toHaveBeenCalledWith(
+      'uuid-1',
+      { seriesTitle: 'New Series', volumeTitle: 'Volume 1' },
+      { cloud: true, editedFallbackToPrimary: true }
+    );
     expect(provider.uploadFile).toHaveBeenCalledWith(
       'New Series/Volume 1.mokuro',
       expect.any(Blob),

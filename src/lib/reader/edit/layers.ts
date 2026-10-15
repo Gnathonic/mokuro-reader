@@ -26,12 +26,12 @@ import {
 } from '$lib/catalog/layer-store';
 import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
-import { noteOcrEdited } from '$lib/util/sync/sidecar-backfill';
+import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
 import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
 import { layerNameForId, titleCasedLayerId } from './layer-names';
-import { ORIGINAL_LAYER_ID } from './edit-persist';
+import { EDIT_LAYER_ID, ORIGINAL_LAYER_ID, noteLayerEdited } from './edit-persist';
+import { editLayerEpoch } from './edit-layer-epoch';
 import {
   TRANSLATION_PROMOTE_BLOCKED,
   isTranslationLayer,
@@ -96,7 +96,7 @@ export function layerKindForId(layerId: string, servedEngine?: string): VolumeOc
   return 'edit';
 }
 
-/** A display name → a unique `layer_id` slug (never the reserved `original`). */
+/** A display name → a unique `layer_id` slug (never the reserved `original` or `edit`). */
 export function slugifyLayerId(name: string, taken: Iterable<string>): string {
   const used = new Set(taken);
   let base = name
@@ -108,7 +108,13 @@ export function slugifyLayerId(name: string, taken: Iterable<string>): string {
   if (!base) base = 'layer';
   let candidate = base;
   let n = 2;
-  while (candidate === ORIGINAL_LAYER_ID || used.has(candidate) || !LAYER_ID_RE.test(candidate)) {
+  while (
+    candidate === ORIGINAL_LAYER_ID ||
+    // Reserved for the editor's corrections (`persistPageEdit`).
+    candidate === EDIT_LAYER_ID ||
+    used.has(candidate) ||
+    !LAYER_ID_RE.test(candidate)
+  ) {
     candidate = `${base.slice(0, MAX_SLUG - 3)}-${n++}`;
   }
   return candidate;
@@ -202,6 +208,7 @@ export async function persistLayerPageEdit(
     pages[pageIndex] = page;
     await putLayerWithPages(db, { ...row, pages, updated_at: new Date().toISOString() });
   });
+  noteLayerEdited();
 }
 
 /** `replaced-YYYYMMDD-HHMM` (UTC), de-duplicated against `taken`. */
@@ -221,8 +228,9 @@ function samePages(a: Page[], b: Page[]): boolean {
  * Make a layer THE primary OCR. The previous primary is never lost: it
  * becomes `original` if no original exists yet, or a `replaced-…` layer if
  * it had drifted from the original (byte-equal → nothing to keep). The
- * primary write goes through the same recount + `ocr_edited_at` stamp +
- * `noteOcrEdited` as an in-place edit, so the cloud `.mokuro` re-uploads.
+ * primary write goes through the same recount + `ocr_edited_at` stamp as an
+ * in-place edit. It stays LOCAL: the cloud main `.mokuro` is
+ * model output and is never re-uploaded from a promoted primary (D4).
  *
  * A TRANSLATION layer is refused (see `TRANSLATION_PROMOTE_BLOCKED`): that
  * very recount would zero the volume's character stats. The UI never offers
@@ -232,6 +240,7 @@ export async function promoteLayer(
   volumeUuid: string,
   layerId: string
 ): Promise<{ replacedLayerId: string | null }> {
+  editLayerEpoch(); // a promotion after it is never migrated into an `edit` layer
   const now = new Date();
   const editedAt = now.toISOString();
   const result = await db.transaction(
@@ -290,11 +299,9 @@ export async function promoteLayer(
       return { replacedLayerId: replaced };
     }
   );
-  try {
-    noteOcrEdited(volumeUuid);
-  } catch (error) {
-    console.debug('[layers] could not nominate volume for sidecar re-upload:', error);
-  }
+  // No upload: promotion is a LOCAL view choice (bunko design 0.8 D4). The
+  // main sidecar stays model output — a later cloud write of it is built from
+  // the `original` snapshot (`mainSidecarPagesForCloud`), never from this.
   return result;
 }
 
@@ -307,7 +314,7 @@ export async function buildLayerExportFile(volumeUuid: string, layerId: string):
   if (!volume) throw new Error(`Volume ${volumeUuid} not found`);
   if (!layer) throw new Error(`Layer ${layerId} not found`);
   const { totalChars } = buildPageCharCounts(layer.pages);
-  const meta = buildMokuroMetadata({ ...volume, character_count: totalChars }, layer.pages);
+  const meta = buildLayerMokuroMetadata(volume, layer, totalChars);
   return new File([JSON.stringify(meta)], layerSidecarName(volume.volume_title, layerId), {
     type: 'application/json'
   });

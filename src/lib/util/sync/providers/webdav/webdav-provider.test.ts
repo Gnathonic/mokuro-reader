@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderError } from '../../provider-interface';
 import { fetchServerIdentity } from './identity';
+import { ingestMarkerRead, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
 
 const { mockClient, mockCore, createClientMock } = vi.hoisted(() => {
   const mockClient = {
@@ -61,6 +62,7 @@ function authenticatedIdentity() {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  resetCloudBunkoMarkersForTest();
   mockClient.getDirectoryContents.mockResolvedValue([]);
   mockClient.exists.mockResolvedValue(true);
   mockClient.createDirectory.mockResolvedValue(undefined);
@@ -716,5 +718,163 @@ describe('WebDAVProvider staged, verified PUTs (X-Mokuro-Put)', () => {
     await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
     provider.notePutVerified();
     expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
+  });
+});
+
+describe('WebDAVProvider.readControlFile()', () => {
+  const MARKER = '.mokuro-bunko.json';
+  const URL_OF_MARKER = 'https://host/mokuro-reader/.mokuro-bunko.json';
+
+  function freshMarkerBody() {
+    return JSON.stringify({
+      version: 1,
+      kind: 'mokuro-bunko',
+      instance_id: 'aaa',
+      instance_name: 'nas',
+      epoch: 1,
+      claimed_at: '2026-10-12T09:00:00Z',
+      heartbeat_at: new Date().toISOString(),
+      ttl_s: 900,
+      state: 'active',
+      compiles: ['series.json', 'catalog.json'],
+      ocr: true,
+      queue: '.mokuro-queue.json'
+    });
+  }
+
+  /** A plain (non-bunko) WebDAV: no identity endpoint, no PUT_VERIFIED. */
+  async function plainConnected(): Promise<WebDAVProvider> {
+    resetCloudBunkoMarkersForTest();
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' } as any);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    fetchMock.mockReset();
+    return provider;
+  }
+
+  function lastGet() {
+    const call = fetchMock.mock.calls.at(-1)!;
+    return { url: String(call[0]), init: call[1] as RequestInit };
+  }
+
+  it('reads one node with a no-store GET carrying the account Authorization', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), {
+        status: 200,
+        headers: { ETag: '"v1"', 'Last-Modified': 'Mon, 12 Oct 2026 09:00:00 GMT' }
+      })
+    );
+
+    const result = (await provider.readControlFile(MARKER)) as any;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const { url, init } = lastGet();
+    expect(url).toBe(URL_OF_MARKER);
+    expect(init.method).toBe('GET');
+    expect(init.cache).toBe('no-store');
+    const auth = (init.headers as Record<string, string>).Authorization;
+    expect(auth).toBeTruthy();
+    expect(auth).toBe(provider.authorizationHeader());
+    expect((init.headers as Record<string, string>)['If-None-Match']).toBeUndefined();
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0]).toMatchObject({
+      id: URL_OF_MARKER,
+      etag: '"v1"',
+      modified: '2026-10-12T09:00:00.000Z'
+    });
+    expect(JSON.parse(await result.nodes[0].blob.text()).instance_id).toBe('aaa');
+  });
+
+  it('sends If-None-Match with the server ETag and maps 304 to not-modified', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v1"' } })
+    );
+    const first = (await provider.readControlFile(MARKER)) as any;
+
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 304 }));
+    const second = await provider.readControlFile(MARKER, { ifNoneMatch: first.etag });
+
+    expect(second).toBe('not-modified');
+    expect((lastGet().init.headers as Record<string, string>)['If-None-Match']).toBe('"v1"');
+  });
+
+  it('does not send If-None-Match for an unknown set etag, and reads the new version', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v1"' } })
+    );
+    await provider.readControlFile(MARKER);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v2"' } })
+    );
+    const next = (await provider.readControlFile(MARKER, { ifNoneMatch: 'something-else' })) as any;
+
+    expect((lastGet().init.headers as Record<string, string>)['If-None-Match']).toBeUndefined();
+    expect(next.nodes[0].etag).toBe('"v2"');
+  });
+
+  it('falls back to Last-Modified, then a body fingerprint, when there is no ETag', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(
+      new Response('{}', {
+        status: 200,
+        headers: { 'Last-Modified': 'Mon, 12 Oct 2026 09:00:00 GMT' }
+      })
+    );
+    const byDate = (await provider.readControlFile(MARKER)) as any;
+    expect(byDate.nodes[0].etag).toBe('Mon, 12 Oct 2026 09:00:00 GMT');
+
+    fetchMock.mockResolvedValueOnce(new Response('{"a":1}', { status: 200 }));
+    const byBody = (await provider.readControlFile(MARKER)) as any;
+    expect(byBody.nodes[0].etag).toMatch(/^len7-[0-9a-f]+$/);
+    expect(byBody.nodes[0].modified).toBeUndefined();
+  });
+
+  it('returns null for 404', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }));
+    expect(await provider.readControlFile(MARKER)).toBeNull();
+  });
+
+  it('throws an auth ProviderError for 401', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }));
+    const err = await provider.readControlFile(MARKER).catch((e) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.isAuthError).toBe(true);
+  });
+
+  it('throws an auth ProviderError when not connected', async () => {
+    const provider = await freshProvider();
+    await expect(provider.readControlFile(MARKER)).rejects.toMatchObject({
+      code: 'NOT_AUTHENTICATED',
+      isAuthError: true
+    });
+  });
+
+  it('throws a network ProviderError when the request fails', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(provider.readControlFile(MARKER)).rejects.toMatchObject({
+      isAuthError: false,
+      isNetworkError: true
+    });
+  });
+
+  it('a fresh marker makes serverCompilesMetadata true on a plain WebDAV (false before)', async () => {
+    const provider = await plainConnected();
+    expect(provider.getStatus().serverCompilesMetadata).toBeFalsy();
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v1"' } })
+    );
+    await ingestMarkerRead('webdav', await provider.readControlFile(MARKER));
+
+    const status = provider.getStatus();
+    expect(status.serverCompilesMetadata).toBe(true);
+    expect(status.cloudBunko?.fresh).toBe(true);
   });
 });

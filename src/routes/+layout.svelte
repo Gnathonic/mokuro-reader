@@ -131,7 +131,15 @@
       // the connected server is known and can authenticate.
       .finally(() => {
         void import('$lib/catalog/server-ocr-queue')
-          .then((m) => m.startServerOcrQueue())
+          .then((m) => {
+            // A cloud Bunko finished volumes: pick up their new sidecars
+            // (the listing's index refresh runs the OCR upgrade + layer pull).
+            m.setQueueRelistHook(async () => {
+              const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+              await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true });
+            });
+            return m.startServerOcrQueue();
+          })
           .catch((error) => console.debug('[OCR queue] start skipped:', error));
       });
 

@@ -2,6 +2,7 @@ import { derived, writable, type Readable } from 'svelte/store';
 import type { SyncProvider, ProviderType, ProviderStatus } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { getConfiguredProviderType, clearActiveProviderKey } from './provider-detection';
+import { clearCloudBunkoMarkers, onCloudBunkoMarkerChange } from '$lib/catalog/cloud-bunko-marker';
 
 /**
  * How many times one `updateStatus()` call may recompute because a subscriber
@@ -49,6 +50,14 @@ class ProviderManager {
   });
 
   constructor() {
+    // A cloud-direct Bunko's marker feeds every provider's
+    // `serverCompilesMetadata` (`withCloudBunkoStatus` in each `getStatus`).
+    // The snapshot below is only recomputed when asked, so a marker read that
+    // changed the verdict — or a fresh marker expiring, on the marker store's
+    // own timer — must ask: otherwise the gates that read this store
+    // (`canProduceCatalog`, `hasWritableNonServerProvider`) keep the old answer.
+    onCloudBunkoMarkerChange(() => this.updateStatus());
+
     // Check localStorage synchronously to set initial "configured" state
     // This prevents UI from showing "not connected" while waiting for async init
     const configuredProvider = getConfiguredProviderType();
@@ -197,6 +206,8 @@ class ProviderManager {
 
     // Always clear state — belt and suspenders
     cacheManager.clearAll();
+    // The next account's library has its own marker (or none).
+    clearCloudBunkoMarkers();
     clearActiveProviderKey();
 
     // Force-clear all provider credential keys from localStorage

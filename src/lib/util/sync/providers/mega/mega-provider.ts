@@ -6,13 +6,25 @@ import type {
   CloudFileMetadata,
   StorageQuota,
   UploadPayload,
-  UploadFileResult
+  UploadFileResult,
+  ControlFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { megaCache } from './mega-cache';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
-import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
+import {
+  isCbzFile,
+  isSidecarFile,
+  isRootConfigFile,
+  isBunkoControlFile
+} from '../../syncable-file';
+import {
+  ControlNodeCache,
+  readControlNodes,
+  type ListedControlNode
+} from '../../control-file-read';
+import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import {
   isMfaRequiredError,
@@ -181,6 +193,16 @@ export class MegaProvider implements SyncProvider {
 
   private cacheRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Control files (`.mokuro-bunko.json`, `.mokuro-queue.json`) are read from the
+  // live tree: bodies cached per node handle, change listeners fed by the same
+  // sc events as the reactive cache (provider-level, so they survive
+  // reinitialize() and re-attachment), and handles whose download hit ENOENT.
+  private controlCache = new ControlNodeCache();
+  private controlListeners = new Set<(name: string) => void>();
+  private controlPendingNames = new Set<string>();
+  private controlNotifyTimer: ReturnType<typeof setTimeout> | null = null;
+  private vanishedControlHandles = new Set<string>();
+
   /**
    * Reactive cache: megajs's sc stream applies every change (ours AND other
    * devices') to storage.files and emits these events. A debounced rebuild
@@ -200,9 +222,50 @@ export class MegaProvider implements SyncProvider {
         });
       }, 500);
     };
+    // Control-file changes (add/update/delete/move of a node named like one):
+    // the live tree already holds the new state, so subscribers just re-read.
+    const onNode = (node: any) => {
+      const name = typeof node?.name === 'string' ? node.name : '';
+      if (!isBunkoControlFile(name)) return;
+      this.vanishedControlHandles.clear(); // give a skipped node another chance
+      this.scheduleControlNotify(name, storage);
+    };
     for (const event of ['add', 'move', 'delete', 'update']) {
       storage.on(event, schedule);
+      storage.on(event, onNode);
     }
+  }
+
+  private scheduleControlNotify(name: string, storage: any): void {
+    if (this.controlListeners.size === 0) return;
+    this.controlPendingNames.add(name);
+    if (this.controlNotifyTimer) clearTimeout(this.controlNotifyTimer);
+    this.controlNotifyTimer = setTimeout(() => {
+      this.controlNotifyTimer = null;
+      const names = [...this.controlPendingNames];
+      this.controlPendingNames.clear();
+      if (this.storage !== storage) return; // logged out / replaced
+      for (const n of names) {
+        for (const listener of [...this.controlListeners]) {
+          try {
+            listener(n);
+          } catch (err) {
+            console.error('[MEGA] control-file listener failed:', err);
+          }
+        }
+      }
+    }, 500);
+  }
+
+  /**
+   * Subscribe to changes of control files in the live tree (MEGA's sc stream) —
+   * the push feed that replaces polling. Returns the unsubscribe.
+   */
+  onControlFileChange(listener: (name: string) => void): () => void {
+    this.controlListeners.add(listener);
+    return () => {
+      this.controlListeners.delete(listener);
+    };
   }
 
   constructor() {
@@ -234,7 +297,7 @@ export class MegaProvider implements SyncProvider {
     );
     const isConnected = this.isAuthenticated();
 
-    return {
+    return withCloudBunkoStatus(this.type, {
       isAuthenticated: isConnected,
       hasStoredCredentials: hasSession || hasLegacy,
       needsAttention: this.needsReconnect,
@@ -248,7 +311,7 @@ export class MegaProvider implements SyncProvider {
       // Lowercased: MEGA email login is case-insensitive, so 'A@B.com' and
       // 'a@b.com' authenticate the same account and must not split the cache.
       accountScope: this.reconnectEmail ? `mega:${this.reconnectEmail.toLowerCase()}` : undefined
-    };
+    });
   }
 
   /** Drop the stored session and flag the UI to prompt for reconnect (password never stored). */
@@ -357,6 +420,8 @@ export class MegaProvider implements SyncProvider {
   }
 
   async logout(): Promise<void> {
+    this.controlCache.clear();
+    this.vanishedControlHandles.clear();
     this.storage = null;
     this.mokuroFolder = null;
     this.needsReconnect = false;
@@ -731,6 +796,109 @@ export class MegaProvider implements SyncProvider {
         true
       );
     }
+  }
+
+  /**
+   * Read a control file from the LIVE tree: no network listing, no
+   * reinitialize/reload (the sc stream keeps `storage.files` current). A file
+   * rewrite is a new node (new handle), so the handle is the version and a
+   * download only happens for a handle not seen before. A node whose download
+   * reports it vanished (a just-deleted node) is skipped, not fatal.
+   */
+  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+
+    const listed = this.listControlNodes(name);
+    const handles = new Map<string, any>(listed.map((l) => [l.node.nodeId as string, l.node]));
+    let nodes: ListedControlNode[] = listed.map((l) => l.listed);
+
+    // Each pass either resolves or drops one vanished node and goes again;
+    // already-downloaded bodies are served from the cache on later passes.
+    for (;;) {
+      const gone: { id: string | null } = { id: null };
+      try {
+        return await readControlNodes(
+          name,
+          nodes,
+          async (n) => {
+            try {
+              return await this.downloadControlNode(handles.get(n.id));
+            } catch (err) {
+              if (isMegaNotFoundError(err) && !isSessionExpiredError(err)) {
+                gone.id = n.id;
+              }
+              throw err;
+            }
+          },
+          this.controlCache,
+          opts?.ifNoneMatch
+        );
+      } catch (err) {
+        const vanished = gone.id;
+        if (vanished === null) {
+          if (err instanceof ProviderError) throw err;
+          if (isSessionExpiredError(err)) {
+            this.markSessionExpired();
+            throw new ProviderError(
+              'MEGA session expired — please reconnect',
+              'mega',
+              'SESSION_EXPIRED',
+              true
+            );
+          }
+          throw new ProviderError(
+            `Failed to read ${name}: ${err instanceof Error ? err.message : 'Unknown error'}`,
+            'mega',
+            'READ_FAILED',
+            false,
+            true
+          );
+        }
+        // Retried on the next read, or sooner when an sc event touches a control file.
+        this.vanishedControlHandles.add(vanished);
+        nodes = nodes.filter((n) => n.id !== vanished);
+      }
+    }
+  }
+
+  /** Control-file nodes of `name` directly inside any `mokuro-reader` folder, newest first. */
+  private listControlNodes(name: string): { node: any; listed: ListedControlNode }[] {
+    const files = Object.values(this.storage?.files || {}) as any[];
+    const found: { node: any; listed: ListedControlNode; ts: number }[] = [];
+    for (const f of files) {
+      if (!f || f.directory || f.name !== name) continue;
+      const parent = f.parent;
+      if (!parent || !parent.directory || parent.name !== MOKURO_FOLDER) continue;
+      // A deleted node lingers in storage.files (megajs only unlinks it from
+      // its parent's children) — treat it as gone.
+      if (Array.isArray(parent.children) && !parent.children.includes(f)) continue;
+      if (this.isInTrash(f) || this.isInTrash(parent)) continue;
+      const id = this.getFileNodeId(f);
+      if (!id || this.vanishedControlHandles.has(id)) continue;
+      const ts = typeof f.timestamp === 'number' ? f.timestamp : 0;
+      found.push({
+        node: f,
+        ts,
+        listed: {
+          id,
+          etag: `${id}:${ts}`,
+          ...(ts ? { modified: new Date(ts * 1000).toISOString() } : {})
+        }
+      });
+    }
+    found.sort((a, b) => b.ts - a.ts || (a.listed.id < b.listed.id ? -1 : 1));
+    return found;
+  }
+
+  private downloadControlNode(node: any): Promise<Blob> {
+    return new Promise<Blob>((resolve, reject) => {
+      node.download((error: Error | null, data: Uint8Array) => {
+        if (error) reject(error);
+        else resolve(new Blob([new Uint8Array(data)], { type: 'application/json' }));
+      });
+    });
   }
 
   async uploadFile(

@@ -152,7 +152,60 @@ export interface ProviderStatus {
    * account, and the cache is skipped entirely for it.
    */
   accountScope?: string;
+  /**
+   * What this library's cloud-direct mokuro-bunko marker
+   * (`mokuro-reader/.mokuro-bunko.json`) says, when one has been read for this
+   * provider — see `catalog/cloud-bunko-marker.ts`. A fresh marker makes
+   * `serverCompilesMetadata` true even on plain storage. Absent = no marker
+   * seen (no Bunko manages this folder, or it has not been read yet).
+   */
+  cloudBunko?: CloudBunkoStatus;
 }
+
+/** The marker's verdict as the views and gates see it (`ProviderStatus.cloudBunko`). */
+export interface CloudBunkoStatus {
+  /** A fresh, active marker that compiles the library metadata exists right now. */
+  fresh: boolean;
+  /** The top-ranked fresh marker (the lease holder); null when none is fresh. */
+  holder: {
+    instanceId: string;
+    instanceName: string;
+    /** Bunko's own clock, ISO — for "last seen" wording only, never for freshness. */
+    heartbeatAt: string;
+  } | null;
+}
+
+/**
+ * One node of a control file. Providers that allow duplicate names (Drive,
+ * MEGA, merged `mokuro-reader` roots) may hold several nodes of one name, and
+ * every one of them is returned: the marker's rank is computed over all of
+ * them, never over a single "winner".
+ */
+export interface ControlFileNode {
+  /** The provider's node id (Drive file id, Graph item id, MEGA handle, WebDAV href). */
+  id: string;
+  /**
+   * The node's VERSION: something that changes whenever its content does
+   * (Drive md5Checksum + modifiedTime, Graph cTag, MEGA handle, WebDAV ETag).
+   * Never a client clock.
+   */
+  etag: string;
+  /** The provider's modification time (ISO), when it reports one. */
+  modified?: string;
+  blob: Blob;
+}
+
+export interface ControlFileRead {
+  nodes: ControlFileNode[];
+  /** Opaque version of the WHOLE node set: hand it back as `ifNoneMatch`. */
+  etag: string;
+}
+
+/**
+ * `readControlFile` result: the nodes, `'not-modified'` when `ifNoneMatch`
+ * still names the current set, or null when no node of that name exists.
+ */
+export type ControlFileResult = ControlFileRead | 'not-modified' | null;
 
 /** Scope of a `metadataPermissions.scope` value — see `ProviderStatus.metadataPermissions`. */
 export type SeriesMetadataScope = 'all' | 'owned' | 'none';
@@ -470,6 +523,24 @@ export interface SyncProvider {
    * (or that auto-prune) can omit this.
    */
   removeDirectoryIfEmpty?(relativePath: string): Promise<void>;
+
+  /**
+   * Read a CONTROL file at the library root (`mokuro-reader/<name>`, see
+   * `isBunkoControlFile`) directly by name — these files are never listed.
+   * Returns EVERY node of that name (duplicates included), `'not-modified'`
+   * when `opts.ifNoneMatch` equals the current set's `etag`, or null when
+   * there is none. Downloads only nodes whose version changed since the last
+   * read. Throws a `ProviderError` on failure (auth expiry: `isAuthError`).
+   * Optional: a provider without it simply never sees a cloud-direct Bunko.
+   */
+  readControlFile?(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult>;
+
+  /**
+   * Subscribe to changes of control files (called with the file's basename).
+   * MEGA: the live tree's change events; providers without a push feed omit
+   * it. Returns the unsubscribe.
+   */
+  onControlFileChange?(listener: (name: string) => void): () => void;
 
   /**
    * Get storage quota information from the provider
