@@ -38,24 +38,67 @@ is ~15 KB, written only by its own device. After phase 2 and `timeReadInMinutes`
 
 | Tier | Runs | Reads | Writes |
 | --- | --- | --- | --- |
-| **Ultrafast** | a few seconds after page turns settle; leaving the reader; `visibilitychange` → hidden | nothing | this device's current month segment, `history/<device>/<YYYY-MM>.events` |
-| **Fast** | app start; focus regained; leaving the reader; every few minutes while open | conditional reads of the root config files and `catalog.json`; a listing of `history/` only; the changed series' `series.json` | merged root config files, only when they changed |
+| **Ultrafast** | a few seconds after page turns settle; leaving the reader; `visibilitychange` → hidden | conditional read of `positions.json` (almost always `304`) | `positions.json` merged with this device's newest position; this device's current month segment, `history/<device>/<YYYY-MM>.events` |
+| **Fast** | app start; focus regained; **reader open**; leaving the reader; every few minutes while open | conditional reads of `positions.json`, the root config files and `catalog.json`; a listing of `history/` only; the changed series' `series.json` | merged root config files, only when they changed |
 | **Slow** | first connect; the Cloud screen; backup, rename, delete; explicit refresh; a daily safety net on plain storage | today's full listing | as today |
 
 A tier is not a separate sync engine. It is a way to refresh part of the listing cache plus the merge
 steps that depend on that part. Everything that reads the cache today keeps reading it.
 
-### No position file
+### The position file
 
-The earlier sketch had a per-device position file. It is unnecessary: since 2026-10-04 the position IS
-the newest page event (see "Position across devices"), and page events already ride the device's own
-segment. Ultrafast pushes the segment; the fast tier imports the other devices' segments; the position
-falls out.
+The position is still the newest page event (see "Position across devices"), and page events still ride
+each device's own segment. But a segment has no fixed address: `history/<device>/` is named by device
+ids another device only learns by listing `history/`. A device that has just been picked up needs one
+answer, fast: where did I stop? That needs a file at a known path.
 
-Exception: where history does not sync (`historySyncAllowed(status)` is false — bunko before 0.7.1),
-position stays in `volume-data.json`. There ultrafast degenerates to today's throttled
-`volume-data.json` merge-and-upload, and the turns-only-convert-at-next-start gap (found 2026-10-11)
-is fixed in the same change.
+`positions.json`, at the root beside `volume-data.json`:
+
+```json
+{ "version": 1, "positions": { "<volume_uuid>": [1791688941862, 120, 12000, "<device>"] } }
+```
+
+- One entry per volume: time of the page view that set it (epoch ms), page, characters, device.
+- **Window: 30 days.** Measured on 17 real libraries: ≤ 802 B for everyone. An entry older than that
+  leaves the file. The position it carried is still in the events, and in `volume-data.json` while
+  history does not sync.
+- **Merge:** per volume, newest view time wins. Read-merge-write: ultrafast does a conditional GET first
+  (a `304` while only this device is reading) and writes only when its own entry changed. Two devices
+  writing in the same second can drop one entry; the events still hold it, so the next fast tier
+  restores it. A user reads on one device at a time, so this is rare and self-healing.
+- **Not authoritative.** It is a fast index of the newest page events. Events win wherever both are
+  known. `positions.json` exists so the question can be answered before any listing.
+
+### The device swap
+
+The reported failure: pick up the other device, open the book before sync has caught up, land on the old
+page, and the act of opening stamps that old page as the newest position. Every device then follows it
+back.
+
+1. **Reader open checks first.** Opening a volume starts a conditional GET of `positions.json` (its ETag
+   is known from the last read). The reader waits for it up to ~1 s (a `304` takes 0.64 s round trip
+   from a home connection to the live server) before choosing the page.
+2. **A newer remote position wins silently**: the reader opens there, with a toast naming the device
+   ("Continued from Phone, p.120").
+3. **An opened page never claims the position by itself.** The page the reader opens on — before the
+   check answers or after a timeout — is recorded as a page view for stats, but it is not a position
+   until the reader turns a page or the check has answered. A late answer with a newer remote position
+   therefore still jumps, with the same toast, as long as no page has been turned.
+4. **After a page turn, it is an offer.** If the late answer shows newer reading elsewhere and the
+   reader has already turned a page, the existing phase 2c offer applies: "You also read to p.N on
+   another device — Jump / Stay".
+5. **Offline or provider down:** the timeout opens the local page; steps 3–4 apply when the answer
+   arrives.
+
+The same conditional GET runs on focus regained and app start, so the catalog's "continue" points at
+the right page before a book is even opened.
+
+### Where history does not sync
+
+`historySyncAllowed(status)` is false on bunko before 0.7.1. There, position also stays in
+`volume-data.json`, and ultrafast falls back to today's throttled `volume-data.json` merge-and-upload.
+The turns-only-convert-at-next-start gap (found 2026-10-11) is fixed in the same change.
+`positions.json` is still written wherever the provider maps it per user (see bunko changes).
 
 ## How it fits the unified provider layer
 
@@ -91,7 +134,8 @@ changesSince?(token: string | null): Promise<{
 ```
 
 Ultrafast writes use `blindUploadFile` (an upload that never refetches). It becomes the default write
-for single-writer files, not a Drive-only escape hatch. A provider whose `uploadFile` is already a
+for this device's own segments and for `positions.json` after its conditional read, not a Drive-only
+escape hatch. Both are known paths whose fileId the cache already holds after the first write. A provider whose `uploadFile` is already a
 single PUT needs no separate implementation.
 
 | Provider | `listFolder` | `downloadIfChanged` | `changesSince` |
@@ -152,6 +196,10 @@ Local Folder. Drive and OneDrive never synthesize; their feed is authoritative.
   entries) and `archive_modified`.
 - Both are additive and stay inside bunko's existing field-order contract
   (`orderVolumeEntryFields`).
+- **`positions.json` joins `PathMapper.PER_USER_FILES`.** Anything else under `/mokuro-reader/`
+  resolves into the shared library: without the mapping the file is one file for every account, each
+  overwriting the others. The reader writes it only when the server says it maps it (a capability flag,
+  like `historySync`); until then bunko users keep position in `volume-data.json`.
 - Conditional GET on the per-user root files and under `history/` must answer `304` like the library
   files do. To verify, not assumed.
 - Root `Depth: 1` is 457 KB, sent uncompressed (1,074 series folders sit beside the config files). The
@@ -170,8 +218,9 @@ read volumes stay, since they are the only name a volume keeps after it is delet
 
 ## Rollout (each step shippable)
 
-1. **Ultrafast.** Segment push on the triggers above via `blindUploadFile`; the history-off
-   fallback; `volume-data.json` per-record `updatedAt`. Drive's `uploadFile` stops refetching the whole
+1. **Position file + ultrafast.** `positions.json` (allowlist, merge, 30-day window), the
+   reader-open check and the open-never-claims rule, segment push on the triggers above via
+   `blindUploadFile`; the history-off fallback; `volume-data.json` per-record `updatedAt`. Drive's `uploadFile` stops refetching the whole
    listing after an upload of a single-writer file.
 2. **Persisted cache + scheduler + fast tier on plain probes.** `mokuro_sync`, `patch`,
    `sync-scheduler.ts`, `listFolder` / `downloadIfChanged` on every provider. App start no longer waits
@@ -200,6 +249,11 @@ read volumes stay, since they are the only name a volume keeps after it is delet
 - Catalog cascade: unchanged catalog → no `series.json` read; one changed stamp → exactly that series
   refetched and patched; a removed series is pruned.
 - Feed: `reset` falls back to a slow listing; a replayed token is idempotent.
+- Device swap: device A reads to p.120 and pushes; device B, holding p.40, opens the volume. Check
+  answers in time → B opens at p.120. Check times out → B opens at p.40, records no position; the late
+  answer moves B to p.120. B turns a page first → the offer, never a silent move back to p.40 on A.
+- `positions.json` merge: newest view time wins per volume; entries older than 30 days leave the file;
+  a lost concurrent write is restored by the next fast tier from the events.
 - History-off fallback: positions still converge across two devices through `volume-data.json`.
 - Restored cache: app start with a fresh persisted cache issues no full listing (count requests in the
   WebDAV stub).
