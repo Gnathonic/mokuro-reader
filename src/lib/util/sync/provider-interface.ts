@@ -131,6 +131,13 @@ export interface ProviderStatus {
    */
   historySync?: boolean;
   /**
+   * Can this server keep `positions.json` per user? `false` = no (mokuro-bunko
+   * not listing it in its identity's `per_user_files`): the path is a SHARED
+   * library file there, so the client neither reads nor writes it. Absent =
+   * plain storage.
+   */
+  positionsSync?: boolean;
+  /**
    * Per-series metadata (names/links/tag/unit/spine offsets) edit scope, as reported by a
    * provider capable of restricting it (currently mokuro-bunko's identity endpoint, via
    * WebDAV). Absent = no restriction — an older server that doesn't report the field, or

@@ -179,6 +179,8 @@ export class WebDAVProvider implements SyncProvider {
   private _serverCompilesMetadata = false;
   /** The bunko version `/login/api/me` reported (bunko >= 0.7.1); undefined otherwise. */
   private _serverVersion: string | undefined;
+  /** Root files bunko reports keeping per account (`per_user_files`); undefined = not reported. */
+  private _perUserFiles: string[] | undefined;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
   /** Whether the current session was established with a password */
@@ -611,6 +613,11 @@ export class WebDAVProvider implements SyncProvider {
       historySync: this._serverCompilesMetadata
         ? bunkoSupportsHistory(this._serverVersion)
         : undefined,
+      // positions.json is per user only where bunko says so; otherwise that
+      // path is a shared library file. Plain WebDAV: no limit.
+      positionsSync: this._serverCompilesMetadata
+        ? (this._perUserFiles?.includes('positions.json') ?? false)
+        : undefined,
       metadataPermissions: this._capabilities?.metadata,
       canModifyDelete: this._capabilities?.canModifyDelete,
       canAddFiles: this._capabilities?.canAddFiles,
@@ -725,6 +732,7 @@ export class WebDAVProvider implements SyncProvider {
           // series.json/catalog.json itself and this client must not.
           this._serverCompilesMetadata = true;
           this._serverVersion = identity.serverVersion;
+          this._perUserFiles = identity.perUserFiles;
           this._isReadOnly = !(
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
           );
@@ -747,6 +755,7 @@ export class WebDAVProvider implements SyncProvider {
           this._isReadOnly = true;
           this._serverCompilesMetadata = true;
           this._serverVersion = identity.serverVersion;
+          this._perUserFiles = identity.perUserFiles;
           break;
 
         case 'unsupported':
@@ -777,6 +786,7 @@ export class WebDAVProvider implements SyncProvider {
           this._serverCompilesMetadata = this.isKnownBunkoServer(normalizedUrl);
           // A bunko recognised only by its verified PUTs reported no version.
           this._serverVersion = undefined;
+          this._perUserFiles = undefined;
           break;
       }
 
@@ -885,6 +895,7 @@ export class WebDAVProvider implements SyncProvider {
     this._capabilities = null;
     this._serverCompilesMetadata = false;
     this._serverVersion = undefined;
+    this._perUserFiles = undefined;
     this._hasPassword = false;
     this._needsAttention = false; // Deliberate logout - nothing to flag
 
