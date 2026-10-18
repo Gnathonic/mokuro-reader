@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 
 vi.mock('$app/environment', () => ({ browser: true }));
@@ -23,7 +23,12 @@ vi.mock('$lib/catalog/db', () => ({
 
 import {
   VolumeData,
+  adoptPosition,
+  applyMissedRestart,
   archiveAndResetVolumes,
+  jumpToPosition,
+  markVolumeAsUnread,
+  registerPositionListener,
   clearVolumes,
   deleteVolume,
   initializeVolume,
@@ -605,5 +610,120 @@ describe('parseVolumesFromJson reserved sections', () => {
       JSON.stringify({ 'vol-1': { progress: 2 }, tracking: { idle: { lastUpdated: 'x' } } })
     );
     expect(Object.keys(parsed)).toEqual(['vol-1']);
+  });
+});
+
+describe('position stamps (positions.json)', () => {
+  beforeEach(() => {
+    clearVolumes();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-16T12:00:00.000Z'));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('re-reporting the current page changes nothing and stamps nothing', () => {
+    updateProgress('v', 40, 4000, false);
+    const before = get(volumesWithTrash).v.lastProgressUpdate;
+    vi.advanceTimersByTime(60_000);
+    updateProgress('v', 40, 4000, false);
+    expect(get(volumesWithTrash).v.lastProgressUpdate).toBe(before);
+    // chars omitted = "unchanged", the same as passing the current value.
+    updateProgress('v', 40, undefined, false);
+    expect(get(volumesWithTrash).v.lastProgressUpdate).toBe(before);
+  });
+
+  it('opening a volume that has no position yet stamps none', () => {
+    initializeVolume('fresh');
+    updateProgress('fresh', 0, 0, false);
+    expect(get(volumesWithTrash).fresh.lastProgressUpdate).toBe(new Date(0).toISOString());
+  });
+
+  it('a real page turn stamps and notifies', () => {
+    updateProgress('v', 40, 4000, false);
+    const seen: string[] = [];
+    const stop = registerPositionListener((v) => seen.push(v));
+    vi.advanceTimersByTime(1000);
+    updateProgress('v', 40, 4000, false); // no-op: no notice
+    updateProgress('v', 41, 4100, false);
+    expect(seen).toEqual(['v']);
+    stop();
+  });
+
+  it('archiveAndResetVolumes notifies once per reset volume', () => {
+    updateProgress('w', 3, 30, false);
+    updateProgress('z', 0, 0, false);
+    const seen: string[] = [];
+    const stop = registerPositionListener((v) => seen.push(v));
+    archiveAndResetVolumes(['w', 'z', 'missing']);
+    expect(seen).toEqual(['w']);
+    stop();
+  });
+
+  it('jumpToPosition and applyMissedRestart each notify once', () => {
+    updateProgress('v', 40, 4000, false);
+    const seen: string[] = [];
+    const stop = registerPositionListener((v) => seen.push(v));
+    jumpToPosition('v', 50, 5000, false);
+    applyMissedRestart('v');
+    expect(seen).toEqual(['v', 'v']);
+    stop();
+  });
+
+  it('markVolumeAsUnread notifies', () => {
+    updateProgress('v', 40, 4000, true);
+    const seen: string[] = [];
+    const stop = registerPositionListener((v) => seen.push(v));
+    markVolumeAsUnread('v');
+    expect(seen).toContain('v');
+    stop();
+  });
+
+  it('adoptPosition takes the remote stamp, only when newer', () => {
+    updateProgress('v', 40, 4000, false);
+    const local = Date.parse(get(volumesWithTrash).v.lastProgressUpdate!);
+    expect(adoptPosition('v', 120, 12000, false, local - 1)).toBe(false);
+    expect(adoptPosition('v', 120, 12000, false, local)).toBe(false);
+    expect(get(volumesWithTrash).v.progress).toBe(40);
+    expect(adoptPosition('v', 120, 12000, false, local + 1)).toBe(true);
+    expect(get(volumesWithTrash).v).toMatchObject({
+      progress: 120,
+      chars: 12000,
+      lastProgressUpdate: new Date(local + 1).toISOString()
+    });
+  });
+
+  it('adoptPosition creates a record for a volume this device never opened', () => {
+    expect(adoptPosition('n', 7, 70, undefined, 1000)).toBe(true);
+    expect(get(volumesWithTrash).n).toMatchObject({ progress: 7, chars: 70 });
+  });
+
+  it('adoptPosition refuses a deleted record', () => {
+    updateProgress('v', 40, 4000, false);
+    deleteVolume('v');
+    expect(adoptPosition('v', 120, 12000, false, Date.now() + 1000)).toBe(false);
+    expect(get(volumesWithTrash).v.progress).not.toBe(120);
+  });
+
+  it('adoptPosition does not notify', () => {
+    const seen: string[] = [];
+    const stop = registerPositionListener((v) => seen.push(v));
+    adoptPosition('v', 120, 12000, false, Date.now());
+    expect(seen).toEqual([]);
+    stop();
+  });
+
+  it('adoptPosition completed: undefined keeps the flag; true dates completedAt at setAt when absent', () => {
+    updateProgress('v', 200, 9000, true);
+    const at = Date.now() + 1000;
+    expect(adoptPosition('v', 199, 8900, undefined, at)).toBe(true);
+    expect(get(volumesWithTrash).v.completed).toBe(true);
+
+    updateProgress('u', 10, 100, false);
+    const later = Date.now() + 2000;
+    expect(adoptPosition('u', 200, 9000, true, later)).toBe(true);
+    expect(get(volumesWithTrash).u).toMatchObject({
+      completed: true,
+      completedAt: new Date(later).toISOString()
+    });
   });
 });

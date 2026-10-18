@@ -671,6 +671,32 @@ function notifyCompletion(volumeUuid: string) {
   }
 }
 
+type PositionListener = (volumeUuid: string) => void;
+const positionListeners = new Set<PositionListener>();
+
+/**
+ * Called after THIS device moved a volume's position: a real page turn, a
+ * jump, a restart or an un-read. Not for a re-report of the page the reader
+ * already shows, and not for `adoptPosition` (another device's news). Feeds
+ * the `positions.json` push. Returns an unregister function.
+ */
+export function registerPositionListener(fn: PositionListener): () => void {
+  positionListeners.add(fn);
+  return () => {
+    positionListeners.delete(fn);
+  };
+}
+
+function notifyPosition(volumeUuid: string) {
+  for (const fn of positionListeners) {
+    try {
+      fn(volumeUuid);
+    } catch (error) {
+      console.warn('[volume-data] position listener failed:', error);
+    }
+  }
+}
+
 /**
  * Has the reader started a fresh pass since this volume was last finished?
  *
@@ -705,6 +731,7 @@ export function updateProgress(
   completed = false
 ) {
   let becameCompleted = false;
+  let moved = false;
   _volumesInternal.update((prev) => {
     const currentVolume = prev[volume] || new VolumeData();
     becameCompleted = completed && !currentVolume.completed;
@@ -735,6 +762,21 @@ export function updateProgress(
           console.warn(`Failed to enrich metadata for ${volume}:`, err);
         });
     }
+
+    // The reader reports the page it shows when a volume opens, and again on
+    // layout changes. A report of the position the record already holds is
+    // not a position change: stamping it would make an opened-but-unread
+    // device the "newest" position and drag the device that actually read on
+    // back to it at the next sync — the device-swap bug.
+    if (
+      prev[volume] &&
+      progress === currentVolume.progress &&
+      (chars ?? currentVolume.chars) === currentVolume.chars &&
+      completed === currentVolume.completed
+    ) {
+      return prev;
+    }
+    moved = true;
 
     return {
       ...prev,
@@ -774,6 +816,7 @@ export function updateProgress(
     };
   });
 
+  if (moved) notifyPosition(volume);
   if (becameCompleted) {
     notifyCompletion(volume);
   }
@@ -810,6 +853,48 @@ export function jumpToPosition(
       })
     };
   });
+  notifyPosition(volume);
+}
+
+/**
+ * Take a position another device set (`positions.json`), WITH ITS STAMP: this
+ * device did not move it now, so it must not out-rank a later turn made on the
+ * device that did. A no-op (false) unless `setAt` is strictly newer than the
+ * local stamp, and for a deleted ("forget stats") record. Reading, not a user
+ * action here: no page view, no completion notice, no position notice.
+ */
+export function adoptPosition(
+  volume: string,
+  page: number,
+  chars: number,
+  /** undefined = keep the local flag (the page count was unknown). */
+  completed: boolean | undefined,
+  setAt: number
+): boolean {
+  let adopted = false;
+  _volumesInternal.update((prev) => {
+    const current = prev[volume] || new VolumeData();
+    if (current.deletedOn) return prev;
+    const stamp = Date.parse(current.lastProgressUpdate);
+    if (!(setAt > (Number.isNaN(stamp) ? 0 : stamp))) return prev;
+    adopted = true;
+    const nextCompleted = completed ?? current.completed;
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        progress: page,
+        chars,
+        completed: nextCompleted,
+        completedAt:
+          completed === true
+            ? (current.completedAt ?? new Date(setAt).toISOString())
+            : current.completedAt,
+        lastProgressUpdate: new Date(setAt).toISOString()
+      })
+    };
+  });
+  return adopted;
 }
 
 /**
@@ -820,9 +905,11 @@ export function jumpToPosition(
  * the next merge.
  */
 export function applyMissedRestart(volume: string) {
+  let restarted = false;
   _volumesInternal.update((prev) => {
     const current = prev[volume];
     if (!current || current.deletedOn) return prev;
+    restarted = true;
     const now = Date.now();
     // This device read on without seeing the restart: that pass is real reading
     // (and may have finished the volume), so it is archived like any restarted
@@ -853,6 +940,7 @@ export function applyMissedRestart(volume: string) {
       })
     };
   });
+  if (restarted) notifyPosition(volume);
 }
 
 /**
@@ -929,6 +1017,7 @@ export function archiveAndResetVolumes(volumeUuids: string[]) {
   });
   // Reading history: a new read pass of each archived volume starts here.
   for (const uuid of archived) void recordEvent({ kind: 'restart', volume: uuid }, now);
+  for (const uuid of archived) notifyPosition(uuid);
 }
 
 // Save internal store (including tombstones) to localStorage
