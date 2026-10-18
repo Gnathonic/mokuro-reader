@@ -10,6 +10,15 @@ export function noteReaderOpened(volume: string, at: number = Date.now()): void 
   open = { volume, openedAt: at };
 }
 
+/**
+ * The user has made the open volume's position theirs, though its stamp may
+ * be older than the open (a look-up gave its claim back): a newer position
+ * elsewhere is an offer from now on, never a silent move under the reader.
+ */
+export function noteReaderTurned(volume: string): void {
+  if (open?.volume === volume) open = { volume, openedAt: -Infinity };
+}
+
 export function noteReaderClosed(volume: string): void {
   if (open?.volume === volume) open = null;
 }

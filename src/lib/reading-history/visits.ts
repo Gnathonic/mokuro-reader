@@ -44,17 +44,22 @@ export function readsPages(v: ViewLike): boolean {
   return chars === 0 || (chars / dwell) * 60_000 <= SKIP_CPM;
 }
 
-export function isLookupVisit(visit: ViewLike[]): boolean {
-  if (visit.length < 2) return false;
+/** Distinct pages read outside the first view, counted up to one past the limit. */
+export function pagesReadAway(visit: ViewLike[]): number {
   const home = visit[0];
-  if (!sameView(visit[visit.length - 1], home)) return false;
   const read = new Set<number>();
   for (const view of visit) {
-    if (sameView(view, home) || !readsPages(view)) continue;
+    if (!home || sameView(view, home) || !readsPages(view)) continue;
     for (let p = view.first_page; p <= view.last_page; p++) read.add(p);
-    if (read.size > LOOKUP_MAX_READ_PAGES) return false;
+    if (read.size > LOOKUP_MAX_READ_PAGES) break;
   }
-  return true;
+  return read.size;
+}
+
+export function isLookupVisit(visit: ViewLike[]): boolean {
+  if (visit.length < 2) return false;
+  if (!sameView(visit[visit.length - 1], visit[0])) return false;
+  return pagesReadAway(visit) <= LOOKUP_MAX_READ_PAGES;
 }
 
 /** Native page views, grouped per device and volume, in time order, split on gaps. */

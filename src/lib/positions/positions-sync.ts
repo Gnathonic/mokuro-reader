@@ -180,10 +180,11 @@ async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
       return outcome;
     }
     if (!positionsWriteAllowed(status)) return outcome;
+    // These stamps leave the device now — reported BEFORE the upload, so a
+    // look-up that comes home while the PUT is in flight still beats them.
+    for (const [volume, entry] of Object.entries(own)) noteUploaded(volume, entry.t);
     await upload(provider, plan.next);
     outcome.uploaded = true;
-    // These stamps have left the device: a look-up restore must beat them.
-    for (const [volume, entry] of Object.entries(own)) noteUploaded(volume, entry.t);
     clearChanged(own);
     return outcome;
   } catch (error) {

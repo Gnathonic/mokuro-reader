@@ -1,6 +1,6 @@
 import { VolumeData, calculatePagesReadInPeriod } from '$lib/settings/volume-data';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
-import { lastReadTime } from '$lib/reading-history/last-read';
+import { lastReadTime, type LastRead } from '$lib/reading-history/last-read';
 import { isCompletedInPeriod, isFinished } from '$lib/goals/goal-counting';
 import { calculatePeriodPageTargetTotal } from '$lib/goals/progress-targets';
 import type { GoalPeriod, GoalSnapshot } from '$lib/goals/types';
@@ -242,7 +242,7 @@ export function createEntriesWithSortData(
   deadlines: Record<string, string>,
   mode: ProgressTargetMode,
   periodStart: number,
-  lastReadTimes: ReadonlyMap<string, number> = new Map()
+  lastReadTimes: ReadonlyMap<string, LastRead> = new Map()
 ): TrackerEntryWithSortData[] {
   return entries.map(([volumeId, volumeData]) => {
     const remainingPages = stats[volumeId]?.remainingPages ?? 0;

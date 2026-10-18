@@ -380,8 +380,8 @@ describe('last read order', () => {
       'daily',
       0,
       new Map([
-        ['restamped', Date.parse('2026-09-15T00:00:00.000Z')],
-        ['read', Date.parse('2026-10-02T00:00:00.000Z')]
+        ['restamped', { at: Date.parse('2026-09-15T00:00:00.000Z'), since: 0 }],
+        ['read', { at: Date.parse('2026-10-02T00:00:00.000Z'), since: 0 }]
       ])
     );
     expect(entries.find((e) => e.volumeId === 'old')?.lastReadAt).toBe(

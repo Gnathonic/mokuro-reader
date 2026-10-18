@@ -665,12 +665,17 @@ describe('the series section of volume-data.json', () => {
       downloadFile: vi.fn(async () =>
         jsonBlob({ 'vol-1': { progress: 5, lastProgressUpdate: '2026-01-02T00:00:00Z' } })
       ),
-      uploadFile: vi.fn(async () => {})
+      uploadFile: vi.fn(async () => {
+        duringUpload = newestUploaded('vol-1');
+      })
     } as unknown as SyncProvider;
+    let duringUpload = -1;
 
     await svc.syncVolumeData(provider);
 
     expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+    // Escaped from the moment the PUT starts: a turn home mid-PUT must beat it.
+    expect(duringUpload).toBe(Date.parse('2026-01-05T00:00:00Z'));
     expect(newestUploaded('vol-1')).toBe(Date.parse('2026-01-05T00:00:00Z'));
     expect(newestUploaded('vol-2')).toBe(0);
     _resetEscapesForTests();

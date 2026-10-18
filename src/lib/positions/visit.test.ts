@@ -22,6 +22,8 @@ import { notifyEventsRecorded } from '$lib/reading-history/record';
 import { _resetHistoryTurns, loadHistoryTurns } from '$lib/reading-history/turns-store';
 import type { ReadingEvent } from '$lib/reading-history/types';
 import { _resetEscapesForTests, noteUploaded } from './escapes';
+import { reconcilePositions } from './positions-reconcile';
+import { noteReaderClosed, noteReaderOpened, openReader } from './reader-open';
 import { _resetPositionTracking, initPositionTracking, ownChangedEntries } from './positions-local';
 import {
   _resetVisitsForTests,
@@ -38,7 +40,7 @@ const LAST_PAGE = 200;
 
 let seq = 0;
 let clock = START;
-let open: { page: number; since: number } | null = null;
+let open: { page: number; last: number; since: number } | null = null;
 let stops: Array<() => void> = [];
 let completions: string[] = [];
 let notices: string[] = [];
@@ -47,7 +49,7 @@ const flush = async () => {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 };
 
-function pageEvent(page: number, since: number, dwell: number): ReadingEvent {
+function pageEvent(page: number, since: number, dwell: number, last = page): ReadingEvent {
   return {
     device: DEVICE,
     seq: ++seq,
@@ -55,8 +57,8 @@ function pageEvent(page: number, since: number, dwell: number): ReadingEvent {
     kind: 'page',
     volume: 'v',
     first_page: page,
-    last_page: page,
-    page_chars: [300],
+    last_page: last,
+    page_chars: Array.from({ length: last - page + 1 }, () => 300),
     chars_before: (page - 1) * 300,
     dwell_ms: dwell,
     layout: 'single',
@@ -70,22 +72,29 @@ function pageEvent(page: number, since: number, dwell: number): ReadingEvent {
  * view opens and the record moves at once; the ended view's event lands a
  * moment later (the history write is async), as in the app.
  */
-async function show(page: number, after = 0) {
-  await land(await turn(page, after));
+interface ViewOptions {
+  /** Last page on screen (continuous scroll shows several). */
+  last?: number;
+  /** The position the reader reports (default: the first page). */
+  progress?: number;
+}
+
+async function show(page: number, after = 0, options: ViewOptions = {}) {
+  await land(await turn(page, after, options));
 }
 
 /** The turn alone: the ended view's event not landed yet. */
-async function turn(page: number, after = 0) {
+async function turn(page: number, after = 0, { last = page, progress = page }: ViewOptions = {}) {
   clock += after;
   vi.setSystemTime(clock);
   const ended = open;
-  open = { page, since: clock };
+  open = { page, last, since: clock };
   liveView.set({
     view: {
       volume: 'v',
       first_page: page,
-      last_page: page,
-      page_chars: [300],
+      last_page: last,
+      page_chars: Array.from({ length: last - page + 1 }, () => 300),
       chars_before: (page - 1) * 300,
       layout: 'single',
       orientation: 'portrait',
@@ -94,9 +103,9 @@ async function turn(page: number, after = 0) {
     since: clock,
     answer: null
   });
-  updateProgress('v', page, page * 300, page === LAST_PAGE);
+  updateProgress('v', progress, progress * 300, progress === LAST_PAGE);
   await flush();
-  return ended && pageEvent(ended.page, ended.since, clock - ended.since);
+  return ended && pageEvent(ended.page, ended.since, clock - ended.since, ended.last);
 }
 
 async function land(event: ReadingEvent | null) {
@@ -178,7 +187,7 @@ describe('look-up visits (live)', () => {
     clock += QUICK;
     vi.setSystemTime(clock);
     const ended = pageEvent(41, open!.since, QUICK);
-    open = { page: 40, since: clock };
+    open = { page: 40, last: 40, since: clock };
     liveView.set({
       view: { ...get(liveView)!.view, first_page: 40, last_page: 40, chars_before: 39 * 300 },
       since: clock,
@@ -331,5 +340,119 @@ describe('look-up visits (live)', () => {
     startVisit('v', clock);
     await show(40);
     expect(record().lastProgressUpdate).toBe(OLD);
+  });
+
+  it('a real read that finishes is announced at once, as today', async () => {
+    // Pages 196 → 200: three read away from home before the last page.
+    // Three pages read before the last: this visit can never be a look-up, so
+    // nothing waits — paging back below the window and closing loses nothing.
+    setRecord(LAST_PAGE - 4);
+    startVisit('v', clock);
+    await show(LAST_PAGE - 4);
+    await show(LAST_PAGE - 3, READ);
+    await show(LAST_PAGE - 2, READ);
+    await show(LAST_PAGE - 1, READ);
+    await show(LAST_PAGE, READ);
+    expect(completions).toEqual(['v']);
+    await show(LAST_PAGE - 4, READ); // back to where it began: still reading
+    endVisit('v');
+    expect(completions).toEqual(['v']);
+  });
+
+  it('in the reader’s own order (record first, view after) a real finish is announced at once', async () => {
+    setRecord(LAST_PAGE - 4);
+    startVisit('v', clock);
+    await show(LAST_PAGE - 4);
+    await show(LAST_PAGE - 3, READ);
+    await show(LAST_PAGE - 2, READ);
+    await show(LAST_PAGE - 1, READ);
+    // p.199 (the third page read) is still the live view when the record reaches the last page.
+    clock += READ;
+    vi.setSystemTime(clock);
+    updateProgress('v', LAST_PAGE, LAST_PAGE * 300, true);
+    expect(completions).toEqual(['v']);
+  });
+
+  it('a restore never moves the page on screen (continuous scroll)', async () => {
+    // The home view shows pages 38–42 at position 40; after a peek the
+    // reader settles on 41, still inside home. Restoring p.40 would scroll it.
+    setRecord(40);
+    startVisit('v', clock);
+    await show(38, 0, { last: 42, progress: 40 });
+    await show(50, READ, { last: 54, progress: 52 });
+    await show(39, QUICK, { last: 43, progress: 41 });
+    expect(record().progress).toBe(41);
+  });
+
+  it('after a restore, a newer position elsewhere is offered, not jumped to', async () => {
+    setRecord(40);
+    noteReaderOpened('v', clock);
+    startVisit('v', clock);
+    await show(40);
+    await show(41, READ);
+    await show(40, QUICK);
+    expect(record().lastProgressUpdate).toBe(OLD);
+    const plan = reconcilePositions({
+      cloud: { v: { t: clock + 1000, page: 60, chars: 18_000, device: 'phone' } },
+      cloudContent: 'x',
+      local: () => ({
+        stamp: Date.parse(record().lastProgressUpdate),
+        deleted: false,
+        forgotAt: 0
+      }),
+      own: {},
+      ownDevice: DEVICE,
+      open: openReader(),
+      now: clock + 2000
+    });
+    expect(plan.adopt).toEqual([]);
+    expect(plan.deferred).toEqual(['v']);
+    noteReaderClosed('v');
+  });
+
+  it('a merge while the reader is closed spoils the continued visit', async () => {
+    setRecord(40);
+    startVisit('v', clock);
+    await show(40);
+    await show(41, READ);
+    clock += QUICK;
+    vi.setSystemTime(clock);
+    const closing = pageEvent(41, open!.since, QUICK);
+    open = null;
+    liveView.set(null);
+    endVisit('v');
+    await land(closing);
+    // The phone's newer position arrives with an idle volume-data.json merge.
+    clock += 30_000;
+    setRecord(60, new Date(clock).toISOString());
+    await flush();
+    clock += 30_000;
+    startVisit('v', clock);
+    await show(40);
+    expect(record().progress).toBe(40);
+    expect(Date.parse(record().lastProgressUpdate)).toBe(clock);
+  });
+
+  it('sitting home after an escaped restore re-pushes nothing', async () => {
+    setRecord(40);
+    startVisit('v', clock);
+    await show(40);
+    await show(41, READ);
+    const peekStamp = Date.parse(record().lastProgressUpdate);
+    noteUploaded('v', peekStamp);
+    await show(40, 4000);
+    expect(Date.parse(record().lastProgressUpdate)).toBe(peekStamp + 1);
+    noteUploaded('v', peekStamp + 1); // the restore went up
+    notices = [];
+    // The tab hides and shows: the home view ends and reopens, its event lands.
+    clock += 5000;
+    vi.setSystemTime(clock);
+    const home = pageEvent(40, open!.since, 5000);
+    liveView.set(null);
+    open = null;
+    await land(home);
+    await show(40, 1000);
+    expect(notices).toEqual([]);
+    expect(Date.parse(record().lastProgressUpdate)).toBe(peekStamp + 1);
   });
 });

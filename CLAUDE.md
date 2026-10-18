@@ -707,13 +707,16 @@ split on a gap over 10 min; it is a look-up when it has ≥ 2 views, ends on its
 first view's pages, and read at most 2 other pages (≥ 3 s each, not skip-fast).
 On coming home the record is put back as it was when the reader opened — its
 own stamp when nothing of the visit was uploaded, else 1 ms above the newest
-upload (`positions/escapes.ts`) — unless another device's position landed
-mid-visit. Completion notices wait for the visit's end and a restore drops
-them; offers, characters read and speed samples ignore look-up views. "Last
-read" (smart sort, progress tracker) comes from history
-(`reading-history/last-read.ts`), with `lastProgressUpdate` only for volumes
-without events: the merge key is bookkeeping, so a re-stamp never moves a
-series.
+upload (`positions/escapes.ts`, reported before each PUT starts) — unless the
+page on screen would move, or another device's position landed during the
+visit (even while the reader was closed between two opens of it). After a
+restore a newer position elsewhere is an offer, never a silent move. A
+completion is held only while the visit could still be a look-up, and a
+restore drops it; offers, characters read and speed samples ignore look-up
+views. "Last read" (smart sort, progress tracker) comes from history
+(`reading-history/last-read.ts`): the newest reading view, else a
+`lastProgressUpdate` from before the volume's first event (reading history
+never saw), else 0 — a re-stamp never moves a series.
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no

@@ -280,6 +280,22 @@ describe('syncPositions', () => {
     expect(newestUploaded('w')).toBe(0);
   });
 
+  it('a stamp counts as escaped from the moment its upload starts', async () => {
+    // The user may turn home while the PUT is in flight: the restore must
+    // already beat the stamp the PUT is carrying.
+    stubCache([]);
+    watchEscapes('v');
+    updateProgress('v', 41, 4100, false);
+    let duringUpload = -1;
+    blindUploadFile.mockImplementationOnce(async () => {
+      duringUpload = newestUploaded('v');
+      return 'uploaded-id';
+    });
+    const provider = makeProvider(async () => fileBlob({}));
+    await syncPositions(provider);
+    expect(duringUpload).toBe(Date.parse(get(volumesWithTrash).v.lastProgressUpdate));
+  });
+
   it('no file and nothing of its own: no request beyond the listing, no upload', async () => {
     stubCache([]);
     const provider = makeProvider(async () => fileBlob({}));

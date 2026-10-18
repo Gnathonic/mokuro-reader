@@ -12,33 +12,40 @@ import { eventKey, lookupVisits } from './visits';
  * look-up visits, after the volume's `forget` horizon.
  */
 
-/** null = no page events; 0 = page events, none of them reading. */
-export function lastReadFromEvents(events: ReadingEvent[]): number | null {
+export interface LastRead {
+  /** Newest end of a view that was reading; 0 = none was. */
+  at: number;
+  /** The volume's oldest page event: history knows nothing from before it. */
+  since: number;
+}
+
+/** null = no page events. */
+export function lastReadFromEvents(events: ReadingEvent[]): LastRead | null {
   let horizon = -Infinity;
-  let pages = false;
+  let since = Infinity;
   for (const e of events) {
     if (e.kind === 'forget' && e.before > horizon) horizon = e.before;
-    if (e.kind === 'page') pages = true;
+    if (e.kind === 'page' && e.t < since) since = e.t;
   }
-  if (!pages) return null;
+  if (since === Infinity) return null;
   const live = events.filter((e) => e.t >= horizon);
   const { lookup } = lookupVisits(live);
-  let newest = 0;
+  let at = 0;
   for (const e of live) {
     if (e.kind !== 'page' || lookup.has(eventKey(e))) continue;
-    newest = Math.max(newest, e.t + (e.dwell_ms ?? 0));
+    at = Math.max(at, e.t + (e.dwell_ms ?? 0));
   }
-  return newest;
+  return { at, since };
 }
 
 /**
  * Every volume with page events → its last read. Rebuilt per volume when its
  * events change, never on a record write.
  */
-export const lastReadTimes: Readable<ReadonlyMap<string, number>> = readable<
-  ReadonlyMap<string, number>
+export const lastReadTimes: Readable<ReadonlyMap<string, LastRead>> = readable<
+  ReadonlyMap<string, LastRead>
 >(new Map(), (set) => {
-  let times = new Map<string, number>();
+  let times = new Map<string, LastRead>();
   const rebuild = (volumes: Iterable<string>) => {
     for (const volume of volumes) {
       const at = lastReadFromEvents(getVolumeEvents(volume));
@@ -60,22 +67,30 @@ export const lastReadTimes: Readable<ReadonlyMap<string, number>> = readable<
   });
 });
 
+/**
+ * History's last read when it saw reading. Otherwise the record's stamp — but
+ * with events present, only a stamp from before them: that is reading history
+ * never saw (read before history existed), while a later one is a re-stamp
+ * (a look-up's restore, a cover toggle), never a read.
+ */
 export function lastReadTime(
   volume: string,
   record: { lastProgressUpdate?: string } | undefined,
-  times: ReadonlyMap<string, number>
+  times: ReadonlyMap<string, LastRead>
 ): number {
   const fromHistory = times.get(volume);
-  if (fromHistory !== undefined) return fromHistory;
-  const stamp = Date.parse(record?.lastProgressUpdate ?? '');
-  return Number.isNaN(stamp) ? 0 : stamp;
+  if (fromHistory && fromHistory.at > 0) return fromHistory.at;
+  const parsed = Date.parse(record?.lastProgressUpdate ?? '');
+  const stamp = Number.isNaN(parsed) ? 0 : parsed;
+  if (!fromHistory) return stamp;
+  return stamp < fromHistory.since ? stamp : 0;
 }
 
 /** Smart sort's recency: the newest last read over the series' volumes past page 1. */
 export function seriesLastRead(
   volumeIds: string[],
   records: Record<string, { progress?: number; lastProgressUpdate?: string }>,
-  times: ReadonlyMap<string, number>
+  times: ReadonlyMap<string, LastRead>
 ): number {
   let newest = 0;
   for (const id of volumeIds) {

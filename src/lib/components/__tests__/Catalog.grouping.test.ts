@@ -26,7 +26,7 @@ const { catalogStore, miscSettings, queueSeriesVolumes, readingVolumes, readTime
       // The reading record the smart sort reads completion and recency from.
       readingVolumes: createStore<Record<string, unknown>>({}),
       // Last read from reading history (`lastReadTimes`).
-      readTimes: createStore<ReadonlyMap<string, number>>(new Map())
+      readTimes: createStore<ReadonlyMap<string, { at: number; since: number }>>(new Map())
     };
   }
 );
@@ -458,8 +458,8 @@ describe('Catalog smart sort recency', () => {
     });
     readTimes.set(
       new Map([
-        ['a-1', Date.parse('2026-08-01T00:00:00.000Z')],
-        ['b-1', Date.parse('2026-08-09T00:00:00.000Z')]
+        ['a-1', { at: Date.parse('2026-08-01T00:00:00.000Z'), since: 0 }],
+        ['b-1', { at: Date.parse('2026-08-09T00:00:00.000Z'), since: 0 }]
       ])
     );
     catalogStore.set([

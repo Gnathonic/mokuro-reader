@@ -789,13 +789,14 @@ class UnifiedSyncService {
     );
 
     if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
-      await this.uploadVolumeDataFile(provider, nextFile);
-      // A look-up visit's stamps that just left the device: its restore must
-      // beat them (`positions/visit.ts`).
+      // A look-up visit's stamps leave the device now: its restore must beat
+      // them (`positions/visit.ts`) — reported before the PUT, which may still
+      // be in flight when the reader comes home.
       for (const volume of watchedEscapes()) {
         const stamp = finalVolumes[volume]?.lastProgressUpdate;
         if (stamp) noteUploaded(volume, Date.parse(stamp));
       }
+      await this.uploadVolumeDataFile(provider, nextFile);
     }
   }
 

@@ -25,7 +25,13 @@ import { get } from 'svelte/store';
 import { liveView } from '$lib/reading-history/live-view';
 import { getVolumeEvents, onHistoryChanged } from '$lib/reading-history/turns-store';
 import type { ReadingEvent } from '$lib/reading-history/types';
-import { VISIT_GAP_MS, isLookupVisit, type ViewLike } from '$lib/reading-history/visits';
+import {
+  LOOKUP_MAX_READ_PAGES,
+  VISIT_GAP_MS,
+  isLookupVisit,
+  pagesReadAway,
+  type ViewLike
+} from '$lib/reading-history/visits';
 import {
   registerCompletionHold,
   registerPositionListener,
@@ -34,6 +40,7 @@ import {
   volumesWithTrash
 } from '$lib/settings/volume-data';
 import { newestUploaded, unwatchEscapes, watchEscapes } from './escapes';
+import { noteReaderTurned } from './reader-open';
 
 type PageEvent = Extract<ReadingEvent, { kind: 'page' }>;
 
@@ -53,10 +60,12 @@ interface Visit {
   snapshot: Snapshot | null;
   /** Stamps this visit set (its turns, its restores). */
   own: Set<number>;
-  /** Every stamp the record carried during the visit. */
+  /** Every stamp the record carried during the visit, open or closed. */
   seen: Set<number>;
-  /** Start times of views that ended here and whose events have not landed. */
-  pending: Set<number>;
+  /** Views that ended here and whose events have not landed, by start time. */
+  pending: Map<number, ViewLike>;
+  /** The stamp of the last restore: nothing to do again until the record moves. */
+  restoredAt: number | null;
   open: boolean;
 }
 
@@ -88,25 +97,67 @@ function ownViews(volume: string, since: number): PageEvent[] {
     .sort((a, b) => a.t - b.t || a.seq - b.seq);
 }
 
+/** Another device's position landed during the visit: there is nothing to undo. */
+function spoiled(v: Visit & { snapshot: Snapshot }): boolean {
+  for (const seen of v.seen) if (!v.own.has(seen) && seen !== v.snapshot.stamp) return true;
+  return false;
+}
+
+/** The view on screen, as it stands now (`dwell` so far, or 0). */
+function liveViewOf(volume: string, dwellUntil: number | null): ViewLike | null {
+  const live = get(liveView);
+  if (!live || live.view.volume !== volume) return null;
+  const { first_page, last_page, page_chars } = live.view;
+  const dwell_ms = dwellUntil === null ? 0 : Math.max(0, dwellUntil - live.since);
+  return { first_page, last_page, page_chars, dwell_ms, t: live.since };
+}
+
+/** The visit's views so far: landed events, then ended views still on their way. */
+function visitViews(v: Visit): ViewLike[] {
+  const views: ViewLike[] = ownViews(v.volume, v.since);
+  for (const e of views) v.pending.delete(e.t);
+  views.push(...v.pending.values());
+  return views.sort((a, b) => a.t - b.t);
+}
+
+/**
+ * Could this visit still come home as a look-up? Only then is a completion
+ * held: a visit that already read more than `LOOKUP_MAX_READ_PAGES` pages away
+ * from home is reading, and its completion is announced at once, as always.
+ */
+function couldBeLookup(volume: string): boolean {
+  const v = visit;
+  if (!v?.open || v.volume !== volume || !v.snapshot || spoiled({ ...v, snapshot: v.snapshot })) {
+    return false;
+  }
+  // The view on screen counts with its time so far: the record moves before
+  // the view tracker hears of the turn.
+  const current = liveViewOf(volume, Date.now());
+  const views = visitViews(v);
+  if (current) views.push(current);
+  return pagesReadAway(views) <= LOOKUP_MAX_READ_PAGES;
+}
+
 function check(volume: string): void {
   const v = visit;
   if (!v?.open || v.volume !== volume || !v.snapshot || restoring) return;
+  const snapshot = v.snapshot;
   const record = get(volumesWithTrash)[volume];
   if (!record || record.deletedOn) return;
   const stamp = stampOf(record.lastProgressUpdate);
-  if (!v.own.has(stamp)) return;
-  for (const seen of v.seen) if (!v.own.has(seen) && seen !== v.snapshot.stamp) return;
+  if (!v.own.has(stamp) || stamp === v.restoredAt) return;
+  if (spoiled({ ...v, snapshot })) return;
+  // The page on screen stays: a restore that moved it would scroll the reader
+  // (continuous mode shows several pages; its position is one of them).
+  if ((record.progress || 1) !== (snapshot.progress || 1)) return;
 
-  const views: ViewLike[] = ownViews(volume, v.since);
   // Until every ended view's event has landed the visit is not whole, and
   // judging it now could miss read pages.
+  const views: ViewLike[] = ownViews(volume, v.since);
   for (const e of views) v.pending.delete(e.t);
   if (v.pending.size > 0) return;
-  const live = get(liveView);
-  if (live && live.view.volume === volume) {
-    const { first_page, last_page, page_chars } = live.view;
-    views.push({ first_page, last_page, page_chars, dwell_ms: 0, t: live.since });
-  }
+  const current = liveViewOf(volume, null);
+  if (current) views.push(current);
   if (views.length === 0) return;
   const home = views[0];
   const page = Math.max(1, record.progress);
@@ -119,10 +170,13 @@ function check(volume: string): void {
   v.own.add(at);
   restoring = true;
   try {
-    restoreVolumePosition(volume, v.snapshot, at, { announce: escaped });
+    if (restoreVolumePosition(volume, snapshot, at, { announce: escaped })) v.restoredAt = at;
   } finally {
     restoring = false;
   }
+  // The position is the user's now, whatever its stamp says: a newer one from
+  // another device is an offer, not a move under the reader.
+  noteReaderTurned(volume);
 }
 
 /** Position listener, history change, completion hold, hidden tab → release. */
@@ -137,8 +191,9 @@ export function initVisitTracking(ownDevice: string): () => void {
     queueMicrotask(() => check(volume));
   });
   const stopRecords = volumesWithTrash.subscribe((records) => {
+    // Closed too: a merge between two opens of one continued visit spoils it.
     const v = visit;
-    if (!v?.open) return;
+    if (!v) return;
     const record = records[v.volume];
     if (record) v.seen.add(stampOf(record.lastProgressUpdate));
   });
@@ -151,15 +206,21 @@ export function initVisitTracking(ownDevice: string): () => void {
     if (!v?.open || !prev || prev.view.volume !== v.volume || prev.since < v.since) return;
     // The same view re-announced (an answer preset on it) has not ended.
     if (next && next.since === prev.since && next.view.volume === prev.view.volume) return;
-    v.pending.add(prev.since);
+    const ended = next?.since ?? Date.now();
+    const { first_page, last_page, page_chars } = prev.view;
+    v.pending.set(prev.since, {
+      first_page,
+      last_page,
+      page_chars,
+      dwell_ms: Math.max(0, ended - prev.since),
+      t: prev.since
+    });
   });
   const stopHistory = onHistoryChanged((volumes) => {
     const v = visit;
     if (v?.open && (volumes === 'all' || volumes.has(v.volume))) check(v.volume);
   });
-  const stopHold = registerCompletionHold(
-    (volume) => visit?.open === true && visit.volume === volume
-  );
+  const stopHold = registerCompletionHold(couldBeLookup);
   const onVisibility = () => {
     if (document.visibilityState === 'hidden' && visit) releaseHeldCompletion(visit.volume);
   };
@@ -197,7 +258,8 @@ export function startVisit(volume: string, now: number = Date.now()): void {
     snapshot,
     own: new Set(),
     seen: new Set(snapshot ? [snapshot.stamp] : []),
-    pending: new Set(),
+    pending: new Map(),
+    restoredAt: null,
     open: true
   };
   watchEscapes(volume);
@@ -218,7 +280,8 @@ export function rehomeVisit(volume: string): void {
 
 /**
  * The reader left `volume`. A held completion is announced now if the record
- * is still completed. The visit is kept, and its escapes watched, so a reopen
+ * is still completed (a completion is held only while the visit could still
+ * be a look-up). The visit is kept, and its escapes watched, so a reopen
  * within the gap continues it.
  */
 export function endVisit(volume: string): void {
