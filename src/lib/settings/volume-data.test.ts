@@ -35,7 +35,10 @@ import {
   enrichAllOrphanedVolumes,
   isOrphanedVolumeData,
   parseVolumesFromJson,
+  registerCompletionHold,
   registerCompletionListener,
+  releaseHeldCompletion,
+  restoreVolumePosition,
   updateProgress,
   volumes,
   volumesWithTrash
@@ -725,5 +728,121 @@ describe('position stamps (positions.json)', () => {
       completed: true,
       completedAt: new Date(later).toISOString()
     });
+  });
+});
+
+describe('held completions and restores (look-up visits)', () => {
+  let heard: string[];
+  let stops: Array<() => void>;
+  beforeEach(() => {
+    clearVolumes();
+    heard = [];
+    stops = [registerCompletionListener((id) => heard.push(id))];
+  });
+  afterEach(() => stops.forEach((stop) => stop()));
+
+  it('a held completion is announced once at release, if still completed', () => {
+    stops.push(registerCompletionHold((volume) => volume === 'v'));
+    updateProgress('v', 200, 5000, true);
+    expect(heard).toEqual([]);
+    expect(get(volumesWithTrash).v.completed).toBe(true);
+    releaseHeldCompletion('v');
+    expect(heard).toEqual(['v']);
+  });
+
+  it('a held completion whose flag fell before release is never announced', () => {
+    stops.push(registerCompletionHold(() => true));
+    updateProgress('v', 200, 5000, true);
+    updateProgress('v', 150, 4000, false);
+    releaseHeldCompletion('v');
+    expect(heard).toEqual([]);
+  });
+
+  it('releasing twice announces once (hidden, then closed)', () => {
+    stops.push(registerCompletionHold(() => true));
+    updateProgress('v', 200, 5000, true);
+    releaseHeldCompletion('v');
+    releaseHeldCompletion('v');
+    expect(heard).toEqual(['v']);
+  });
+
+  it('the flag falling and rising again within one hold is one notice', () => {
+    stops.push(registerCompletionHold(() => true));
+    updateProgress('v', 200, 5000, true);
+    updateProgress('v', 199, 4900, false);
+    updateProgress('v', 200, 5000, true);
+    releaseHeldCompletion('v');
+    expect(heard).toEqual(['v']);
+  });
+
+  it('no hold registered → completion announced at once, as today', () => {
+    updateProgress('v', 200, 5000, true);
+    expect(heard).toEqual(['v']);
+  });
+
+  it('restoreVolumePosition puts values and stamp back; announce controls the position notice; deletedOn → false', () => {
+    const moved: string[] = [];
+    stops.push(registerPositionListener((id) => moved.push(id)));
+    updateProgress('v', 41, 4100, false);
+    moved.length = 0;
+    const stamp = Date.parse('2026-10-01T00:00:00.000Z');
+    expect(
+      restoreVolumePosition('v', { progress: 40, chars: 4000, completed: false }, stamp, {
+        announce: false
+      })
+    ).toBe(true);
+    const record = get(volumesWithTrash).v;
+    expect([record.progress, record.chars, record.completed]).toEqual([40, 4000, false]);
+    expect(record.lastProgressUpdate).toBe('2026-10-01T00:00:00.000Z');
+    expect(moved).toEqual([]);
+
+    const done = '2026-09-01T00:00:00.000Z';
+    restoreVolumePosition(
+      'v',
+      { progress: 200, chars: 5000, completed: true, completedAt: done },
+      stamp + 1,
+      { announce: true }
+    );
+    expect(get(volumesWithTrash).v.completedAt).toBe(done);
+    expect(moved).toEqual(['v']);
+
+    // 0 = "never": the epoch, as an untouched record has.
+    restoreVolumePosition('v', { progress: 0, chars: 0, completed: false }, 0, { announce: false });
+    expect(get(volumesWithTrash).v.lastProgressUpdate).toBe(new Date(0).toISOString());
+    expect(get(volumesWithTrash).v.completedAt).toBeUndefined();
+
+    expect(
+      restoreVolumePosition('missing', { progress: 1, chars: 0, completed: false }, 0, {
+        announce: false
+      })
+    ).toBe(false);
+    expect(get(volumesWithTrash).missing).toBeUndefined();
+    deleteVolume('v');
+    expect(
+      restoreVolumePosition('v', { progress: 40, chars: 4000, completed: false }, stamp, {
+        announce: false
+      })
+    ).toBe(false);
+  });
+
+  it('a restore drops a held completion: a look-up from the last page of a finished volume announces nothing', () => {
+    stops.push(registerCompletionHold(() => true));
+    const done = '2026-09-01T00:00:00.000Z';
+    restoreVolumePosition(
+      'v',
+      { progress: 200, chars: 5000, completed: true, completedAt: done },
+      1000,
+      { announce: false }
+    );
+    updateProgress('v', 199, 4900, false); // paged back…
+    updateProgress('v', 200, 5000, true); // …and home: the flag rose again
+    restoreVolumePosition(
+      'v',
+      { progress: 200, chars: 5000, completed: true, completedAt: done },
+      1000,
+      { announce: false }
+    );
+    releaseHeldCompletion('v');
+    expect(heard).toEqual([]);
   });
 });

@@ -671,6 +671,46 @@ function notifyCompletion(volumeUuid: string) {
   }
 }
 
+type CompletionHold = (volumeUuid: string) => boolean;
+const completionHolds = new Set<CompletionHold>();
+/** Completions kept back by a hold, announced (or dropped) at release. */
+const heldCompletions = new Set<string>();
+
+/**
+ * While `hold(volume)` is true, a completion of that volume is kept instead of
+ * announced (look-up visits: the AniList push waits until the visit ends, and
+ * a look-up that came back restores the flag, so nothing goes). Returns an
+ * unregister function.
+ */
+export function registerCompletionHold(hold: CompletionHold): () => void {
+  completionHolds.add(hold);
+  return () => {
+    completionHolds.delete(hold);
+  };
+}
+
+function announceCompletion(volumeUuid: string) {
+  for (const hold of completionHolds) {
+    let held = false;
+    try {
+      held = hold(volumeUuid);
+    } catch (error) {
+      console.warn('[volume-data] completion hold failed:', error);
+    }
+    if (held) {
+      heldCompletions.add(volumeUuid);
+      return;
+    }
+  }
+  notifyCompletion(volumeUuid);
+}
+
+/** Announce a kept completion if the record is still completed; forget it either way. */
+export function releaseHeldCompletion(volumeUuid: string): void {
+  if (!heldCompletions.delete(volumeUuid)) return;
+  if (get(_volumesInternal)[volumeUuid]?.completed) notifyCompletion(volumeUuid);
+}
+
 type PositionListener = (volumeUuid: string) => void;
 const positionListeners = new Set<PositionListener>();
 
@@ -817,9 +857,42 @@ export function updateProgress(
   });
 
   if (moved) notifyPosition(volume);
-  if (becameCompleted) {
-    notifyCompletion(volume);
-  }
+  if (becameCompleted) announceCompletion(volume);
+}
+
+/**
+ * Put a position back as it was, with the given stamp (look-up visits: the
+ * visit claimed nothing). Drops a completion the visit held. Notifies position
+ * listeners only when `announce` — a restore with the record's own old stamp
+ * has nothing to push. False for a missing or deleted ("forget stats") record.
+ */
+export function restoreVolumePosition(
+  volume: string,
+  snapshot: { progress: number; chars: number; completed: boolean; completedAt?: string },
+  stamp: number,
+  options: { announce: boolean }
+): boolean {
+  let restored = false;
+  _volumesInternal.update((prev) => {
+    const current = prev[volume];
+    if (!current || current.deletedOn) return prev;
+    restored = true;
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        progress: snapshot.progress,
+        chars: snapshot.chars,
+        completed: snapshot.completed,
+        completedAt: snapshot.completedAt,
+        lastProgressUpdate: new Date(stamp).toISOString()
+      })
+    };
+  });
+  if (!restored) return false;
+  heldCompletions.delete(volume);
+  if (options.announce) notifyPosition(volume);
+  return true;
 }
 
 /**
