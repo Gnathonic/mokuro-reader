@@ -20,6 +20,8 @@ interface StubEntry {
 export class WebDavStub {
   files = new Map<string, StubEntry>();
   log: Array<{ method: string; path: string }> = [];
+  /** Hold a GET of this path (normalized) for this many ms — a slow server. */
+  delays = new Map<string, number>();
 
   constructor() {
     this.dir('/');
@@ -106,10 +108,14 @@ export class WebDavStub {
       }
       case 'HEAD':
       case 'GET': {
-        if (!entry || entry.dir) return reply(404);
-        return reply(200, method === 'GET' ? entry.body : Buffer.alloc(0), {
+        const delay = method === 'GET' ? this.delays.get(path) : undefined;
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        // Read after the delay: a slow server answers with what it holds THEN.
+        const current = this.files.get(path);
+        if (!current || current.dir) return reply(404);
+        return reply(200, method === 'GET' ? current.body : Buffer.alloc(0), {
           'Content-Type': 'application/octet-stream',
-          'Content-Length': String(Buffer.byteLength(entry.body))
+          'Content-Length': String(Buffer.byteLength(current.body))
         });
       }
       case 'MKCOL': {
