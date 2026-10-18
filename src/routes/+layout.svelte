@@ -34,6 +34,7 @@
   import { startThumbnailProcessing } from '$lib/catalog/db';
   import { historyDb } from '$lib/reading-history/history-db';
   import { loadHistoryTurns } from '$lib/reading-history/turns-store';
+  import { getOrCreateDeviceId } from '$lib/reading-history/record';
   import {
     detectDeviceFacts,
     readDeviceEnv,
@@ -136,11 +137,14 @@
     // page turns settle. Started at once, so no turn goes unmarked.
     void Promise.all([
       import('$lib/positions/positions-local'),
-      import('$lib/positions/positions-sync')
+      import('$lib/positions/positions-sync'),
+      import('$lib/positions/visit')
     ])
-      .then(([{ initPositionTracking }, { initPositionPush }]) => {
+      .then(([{ initPositionTracking }, { initPositionPush }, { initVisitTracking }]) => {
         initPositionTracking();
         initPositionPush();
+        // Look-up visits give their position back; they need this device's id.
+        return getOrCreateDeviceId(historyDb()).then(initVisitTracking);
       })
       .catch((error) => console.warn('[positions] could not start:', error));
     // Reading history's page turns load first (the stats read them); then turns

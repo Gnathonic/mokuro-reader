@@ -701,6 +701,20 @@ mokuro-bunko gets it only when its identity lists it in `per_user_files`;
 before that the path is a shared library file, and the client neither reads
 nor writes it.
 
+**Look-up visits claim nothing** (`reading-history/visits.ts`, live side
+`positions/visit.ts`). A visit is one device's run of page views of one volume,
+split on a gap over 10 min; it is a look-up when it has ≥ 2 views, ends on its
+first view's pages, and read at most 2 other pages (≥ 3 s each, not skip-fast).
+On coming home the record is put back as it was when the reader opened — its
+own stamp when nothing of the visit was uploaded, else 1 ms above the newest
+upload (`positions/escapes.ts`) — unless another device's position landed
+mid-visit. Completion notices wait for the visit's end and a restore drops
+them; offers, characters read and speed samples ignore look-up views. "Last
+read" (smart sort, progress tracker) comes from history
+(`reading-history/last-read.ts`), with `lastProgressUpdate` only for volumes
+without events: the merge key is bookkeeping, so a re-stamp never moves a
+series.
+
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no
 separate "Sync profiles" button; `profiles.json` and `goals.json` ride along

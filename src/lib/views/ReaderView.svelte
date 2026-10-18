@@ -12,6 +12,7 @@
   import { foregroundSync } from '$lib/util/sync/foreground-sync';
   import { checkPositionsOnOpen } from '$lib/positions/positions-sync';
   import { noteReaderClosed } from '$lib/positions/reader-open';
+  import { endVisit, startVisit } from '$lib/positions/visit';
 
   let volumeId = $derived($routeParams.volume || '');
 
@@ -87,6 +88,7 @@
   // (fixed address, no listing) whether another device read on. At most
   // READER_OPEN_WAIT_MS, then the local page; a later answer still moves the
   // page while none has been turned here. Re-run for every volume opened.
+  // The visit (look-ups claim nothing) starts from the page the check settled.
   let positionsChecked = $state(false);
   $effect(() => {
     const id = volumeId;
@@ -94,11 +96,14 @@
     positionsChecked = false;
     let live = true;
     void checkPositionsOnOpen(id).finally(() => {
-      if (live) positionsChecked = true;
+      if (!live) return;
+      startVisit(id);
+      positionsChecked = true;
     });
     return () => {
       live = false;
       noteReaderClosed(id);
+      endVisit(id);
     };
   });
 

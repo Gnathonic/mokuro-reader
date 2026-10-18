@@ -45,6 +45,8 @@ vi.mock('$lib/reading-history/device-stats', () => ({
     ])
   )
 }));
+const rehomeVisit = vi.hoisted(() => vi.fn());
+vi.mock('./visit', () => ({ rehomeVisit: (volume: string) => rehomeVisit(volume) }));
 const pageCounts = vi.hoisted(() => new Map<string, number>());
 vi.mock('$lib/catalog/db', () => ({
   db: {
@@ -59,6 +61,7 @@ vi.mock('$lib/catalog/db', () => ({
 
 import { showSnackbar } from '$lib/util/snackbar';
 import { clearVolumes, updateProgress, volumesWithTrash } from '$lib/settings/volume-data';
+import { _resetEscapesForTests, newestUploaded, watchEscapes } from './escapes';
 import { _resetPositionTracking, changedVolumes, initPositionTracking } from './positions-local';
 import { noteReaderClosed, noteReaderOpened } from './reader-open';
 import {
@@ -126,6 +129,7 @@ beforeEach(() => {
   pageCounts.clear();
   _resetPositionTracking();
   _resetPositionsSyncForTests();
+  _resetEscapesForTests();
   syncReady.mockReturnValue(true);
   stops.push(initPositionTracking());
 });
@@ -207,6 +211,8 @@ describe('syncPositions', () => {
     });
     expect(showSnackbar).toHaveBeenCalledTimes(1);
     expect(showSnackbar).toHaveBeenCalledWith('Continued from Pixel, p.120');
+    // The open volume's visit starts again where the reader now is.
+    expect(rehomeVisit.mock.calls).toEqual([['v']]);
   });
 
   it('an unnamed device toasts "another device"', async () => {
@@ -261,6 +267,17 @@ describe('syncPositions', () => {
     const again = makeProvider(async () => ({ text: async () => sent }) as unknown as Blob);
     expect((await syncPositions(again)).uploaded).toBe(false);
     expect(blindUploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('an upload reports each own stamp as escaped, for the volumes a visit watches', async () => {
+    stubCache([]);
+    watchEscapes('v');
+    updateProgress('v', 41, 4100, false);
+    updateProgress('w', 9, 90, false);
+    const provider = makeProvider(async () => fileBlob({}));
+    expect((await syncPositions(provider)).uploaded).toBe(true);
+    expect(newestUploaded('v')).toBe(Date.parse(get(volumesWithTrash).v.lastProgressUpdate));
+    expect(newestUploaded('w')).toBe(0);
   });
 
   it('no file and nothing of its own: no request beyond the listing, no upload', async () => {

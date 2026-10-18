@@ -36,9 +36,11 @@ import {
   type PositionsMap
 } from './positions-file';
 import { positionsReadAllowed, positionsWriteAllowed } from './positions-capability';
+import { noteUploaded } from './escapes';
 import { clearChanged, ownChangedEntries } from './positions-local';
 import { reconcilePositions, type LocalPosition } from './positions-reconcile';
 import { noteReaderOpened, openReader } from './reader-open';
+import { rehomeVisit } from './visit';
 
 export interface PositionsSyncOutcome {
   adopted: string[];
@@ -162,6 +164,8 @@ async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
       const completed = row?.page_count ? isVolumeComplete(entry.page, row.page_count) : undefined;
       if (!adoptPosition(volume, entry.page, entry.chars, completed, entry.t)) continue;
       outcome.adopted.push(volume);
+      // Adopted before any turn here: the visit's home is the new page.
+      if (open) rehomeVisit(volume);
       if (toast) {
         const name = deviceLabel(entry.device);
         showSnackbar(`Continued from ${name ?? 'another device'}, p.${entry.page}`);
@@ -178,6 +182,8 @@ async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
     if (!positionsWriteAllowed(status)) return outcome;
     await upload(provider, plan.next);
     outcome.uploaded = true;
+    // These stamps have left the device: a look-up restore must beat them.
+    for (const [volume, entry] of Object.entries(own)) noteUploaded(volume, entry.t);
     clearChanged(own);
     return outcome;
   } catch (error) {

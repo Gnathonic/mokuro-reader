@@ -31,6 +31,7 @@ import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-i
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { isHistoryFilePath } from '$lib/reading-history/paths';
+import { noteUploaded, watchedEscapes } from '$lib/positions/escapes';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
 import {
@@ -789,6 +790,12 @@ class UnifiedSyncService {
 
     if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
       await this.uploadVolumeDataFile(provider, nextFile);
+      // A look-up visit's stamps that just left the device: its restore must
+      // beat them (`positions/visit.ts`).
+      for (const volume of watchedEscapes()) {
+        const stamp = finalVolumes[volume]?.lastProgressUpdate;
+        if (stamp) noteUploaded(volume, Date.parse(stamp));
+      }
     }
   }
 

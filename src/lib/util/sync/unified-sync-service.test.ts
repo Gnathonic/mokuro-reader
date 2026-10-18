@@ -99,6 +99,7 @@ vi.mock('$lib/positions/positions-sync', () => ({
 }));
 
 import { unifiedSyncService } from './unified-sync-service';
+import { _resetEscapesForTests, newestUploaded, watchEscapes } from '$lib/positions/escapes';
 import { restartSeries } from '$lib/metadata/reread';
 import { volumes as volumeCompletion } from '$lib/settings/volume-data';
 import type { VolumeMetadata } from '$lib/types';
@@ -649,6 +650,30 @@ describe('the series section of volume-data.json', () => {
     await svc.syncVolumeData(provider);
 
     expect(uploads).toEqual([]);
+  });
+
+  it('an upload reports the stamps of volumes a look-up visit watches as escaped', async () => {
+    _resetEscapesForTests();
+    watchEscapes('vol-1');
+    setLocalVolumes({
+      'vol-1': { lastProgressUpdate: '2026-01-05T00:00:00Z', progress: 6 },
+      'vol-2': { lastProgressUpdate: '2026-01-06T00:00:00Z', progress: 8 }
+    });
+    stubCache([fileMeta('only')]);
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async () =>
+        jsonBlob({ 'vol-1': { progress: 5, lastProgressUpdate: '2026-01-02T00:00:00Z' } })
+      ),
+      uploadFile: vi.fn(async () => {})
+    } as unknown as SyncProvider;
+
+    await svc.syncVolumeData(provider);
+
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+    expect(newestUploaded('vol-1')).toBe(Date.parse('2026-01-05T00:00:00Z'));
+    expect(newestUploaded('vol-2')).toBe(0);
+    _resetEscapesForTests();
   });
 
   it('omits the section entirely when there is no series state at all', async () => {
