@@ -36,6 +36,7 @@ describe('syncable-file', () => {
     expect(isSyncableFile('volume-data.json')).toBe(true);
     expect(isSyncableFile('profiles.json')).toBe(true);
     expect(isSyncableFile('goals.json')).toBe(true);
+    expect(isSyncableFile('positions.json')).toBe(true);
   });
 
   it('no longer treats series-metadata.json as a root config file', () => {
@@ -104,6 +105,8 @@ describe('isBestEffortMetadataPath', () => {
     // nothing for a server to reject by design — a failed write is a real
     // failure and must surface, exactly like a failed progress write.
     expect(isBestEffortMetadataPath('goals.json')).toBe(false);
+    // positions.json is the user's own state too.
+    expect(isBestEffortMetadataPath('positions.json')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/Volume 1.cbz')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/catalog.json')).toBe(false);
   });
