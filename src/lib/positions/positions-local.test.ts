@@ -101,4 +101,19 @@ describe('positions-local', () => {
     });
     expect(ownChangedEntries('me')).toEqual({});
   });
+
+  it('a volume another device moved after this device marked it yields no own entry', () => {
+    stop = initPositionTracking();
+    updateProgress('v', 41, 4100, false);
+    // A volume-data merge replaces the record with the other device's newer
+    // position — no position notice, it is not this device's news.
+    volumesWithTrash.update((all) => {
+      all.v.progress = 120;
+      all.v.lastProgressUpdate = new Date(Date.now() + 5000).toISOString();
+      return { ...all };
+    });
+    expect(ownChangedEntries('me')).toEqual({});
+    clearChanged(ownChangedEntries('me'));
+    expect(changedVolumes()).toEqual([]);
+  });
 });

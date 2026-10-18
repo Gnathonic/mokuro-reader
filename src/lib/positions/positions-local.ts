@@ -14,16 +14,29 @@ import type { PositionsMap } from './positions-file';
 
 const STORAGE_KEY = 'positions:changed';
 
-let changed: Set<string> | null = null;
+/**
+ * Volume → the record stamp THIS device set. A record whose stamp has since
+ * moved without a notice was moved by another device's position (a
+ * volume-data merge, an adoption): it is not ours to push under our name.
+ */
+let changed: Map<string, number> | null = null;
 
-function load(): Set<string> {
+function stampOf(volume: string): number {
+  const record = get(volumesWithTrash)[volume];
+  if (!record || record.deletedOn) return NaN;
+  return Date.parse(record.lastProgressUpdate);
+}
+
+function load(): Map<string, number> {
   if (changed) return changed;
-  changed = new Set();
+  changed = new Map();
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(parsed)) {
-      for (const id of parsed) if (typeof id === 'string') changed.add(id);
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [id, t] of Object.entries(parsed)) {
+        if (typeof t === 'number' && Number.isFinite(t)) changed.set(id, t);
+      }
     }
   } catch {
     // Unreadable storage: start empty, in memory.
@@ -33,7 +46,7 @@ function load(): Set<string> {
 
 function save(): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify([...load()]));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(load())));
   } catch {
     // In memory only.
   }
@@ -43,47 +56,43 @@ function save(): void {
 export function initPositionTracking(): () => void {
   load();
   return registerPositionListener((volume) => {
-    load().add(volume);
+    const t = stampOf(volume);
+    if (!(t > 0)) return;
+    load().set(volume, t);
     save();
   });
 }
 
 export function changedVolumes(): string[] {
-  return [...load()];
+  return [...load().keys()];
 }
 
 /** Entries for the changed volumes, from the local records, under `device`. */
 export function ownChangedEntries(device: string): PositionsMap {
   const records = get(volumesWithTrash);
   const out: PositionsMap = {};
-  for (const volume of load()) {
+  for (const [volume, marked] of load()) {
     const record = records[volume];
     if (!record || record.deletedOn) continue;
     const t = Date.parse(record.lastProgressUpdate);
-    if (!(t > 0)) continue;
+    // Moved since by another device's position: not ours to label.
+    if (!(t > 0) || t !== marked) continue;
     out[volume] = { t, page: record.progress, chars: record.chars, device };
   }
   return out;
 }
 
 /**
- * After a write: clear only the volumes whose record stamp still equals the
- * entry that went up. A turn that landed during the upload moved the stamp, so
- * that volume stays marked for the next push.
+ * After a write: clear the volumes whose mark went up as built. A turn that
+ * landed during the upload moved the mark, so that volume stays for the next
+ * push. A volume deleted, unstamped, or moved by another device since its mark
+ * has nothing of ours left to push.
  */
 export function clearChanged(built: PositionsMap): void {
-  const set = load();
-  const records = get(volumesWithTrash);
-  for (const volume of [...set]) {
-    const record = records[volume];
-    const stamp = record ? Date.parse(record.lastProgressUpdate) : NaN;
-    if (!record || record.deletedOn || !(stamp > 0)) {
-      // Nothing left to push for it.
-      set.delete(volume);
-      continue;
-    }
-    const entry = built[volume];
-    if (entry && stamp === entry.t) set.delete(volume);
+  const marks = load();
+  for (const [volume, marked] of [...marks]) {
+    const stamp = stampOf(volume);
+    if (!(stamp > 0) || stamp !== marked || built[volume]?.t === marked) marks.delete(volume);
   }
   save();
 }

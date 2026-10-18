@@ -153,7 +153,12 @@ async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
     });
 
     for (const { volume, entry, toast } of plan.adopt) {
-      const row = await db.volumes.get(volume).catch(() => undefined);
+      // Only the open volume's completion is judged here: a catalog row read
+      // (thumbnail and all) per entry would eat the reader's 1000 ms wait on a
+      // device picked up with a full file. A closed volume keeps its flag;
+      // volume-data.json brings the other device's `completed` with it.
+      const open = volume === openReader()?.volume;
+      const row = open ? await db.volumes.get(volume).catch(() => undefined) : undefined;
       const completed = row?.page_count ? isVolumeComplete(entry.page, row.page_count) : undefined;
       if (!adoptPosition(volume, entry.page, entry.chars, completed, entry.t)) continue;
       outcome.adopted.push(volume);
@@ -223,15 +228,21 @@ export function checkPositionsOnOpen(
   wait: number = READER_OPEN_WAIT_MS
 ): Promise<void> {
   noteReaderOpened(volume);
-  const provider = unifiedCloudManager.getActiveProvider();
-  if (!provider || !syncReady()) return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, wait);
-    void syncPositions(provider).finally(() => {
-      clearTimeout(timer);
-      resolve();
+  try {
+    const provider = unifiedCloudManager.getActiveProvider();
+    if (!provider || !syncReady()) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, wait);
+      void syncPositions(provider).finally(() => {
+        clearTimeout(timer);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    // The reader waits on this: it must open, whatever went wrong.
+    console.warn('[positions] open check failed:', error);
+    return Promise.resolve();
+  }
 }
 
 let lastFocusCheck = -Infinity;

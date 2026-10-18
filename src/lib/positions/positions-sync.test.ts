@@ -227,9 +227,10 @@ describe('syncPositions', () => {
     expect(get(volumesWithTrash).v.progress).toBe(41);
   });
 
-  it('a completed remote position marks the volume complete when the page count is known', async () => {
+  it('a completed remote position marks the open volume complete when the page count is known', async () => {
     stubCache([listed('a')]);
     pageCounts.set('v', 120);
+    noteReaderOpened('v', Date.now());
     const provider = makeProvider(async () => fileBlob({ v: [now - 1000, 120, 12000, 'phone'] }));
     await syncPositions(provider);
     expect(get(volumesWithTrash).v.completed).toBe(true);
@@ -311,6 +312,25 @@ describe('syncPositions', () => {
     release();
     await Promise.all([first, second, third]);
     expect(provider.downloadFile).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('adoption cost', () => {
+  it('reads a catalog row only for the open volume, never one per adopted entry', async () => {
+    const { db } = await import('$lib/catalog/db');
+    stubCache([listed('a')]);
+    pageCounts.set('v', 200);
+    noteReaderOpened('v', Date.now());
+    const provider = makeProvider(async () =>
+      fileBlob({
+        v: [now - 1000, 120, 12000, 'phone'],
+        x: [now - 1000, 5, 50, 'phone'],
+        y: [now - 1000, 6, 60, 'phone']
+      })
+    );
+    const outcome = await syncPositions(provider);
+    expect(outcome.adopted.sort()).toEqual(['v', 'x', 'y']);
+    expect(vi.mocked(db.volumes.get).mock.calls.map((c) => c[0])).toEqual(['v']);
   });
 });
 
@@ -402,6 +422,13 @@ describe('the reader-open check', () => {
     makeProvider(async () => fileBlob({ v: [now - 1000, 9, 90, 'phone'] }));
     await checkPositionsOnOpen('v');
     expect(showSnackbar).toHaveBeenCalledTimes(1);
+  });
+
+  it('never throws, even when the readiness check does', async () => {
+    syncReady.mockImplementation(() => {
+      throw new Error('cache gone');
+    });
+    await expect(Promise.resolve().then(() => checkPositionsOnOpen('v'))).resolves.toBeUndefined();
   });
 
   it('focus check is throttled to one per 10 s', async () => {
