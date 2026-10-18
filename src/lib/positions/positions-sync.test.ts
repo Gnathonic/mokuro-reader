@@ -63,7 +63,9 @@ import { _resetPositionTracking, changedVolumes, initPositionTracking } from './
 import { noteReaderClosed, noteReaderOpened } from './reader-open';
 import {
   _resetPositionsSyncForTests,
+  checkPositionsOnOpen,
   flushPositionPush,
+  requestPositionCheck,
   initPositionPush,
   syncPositions
 } from './positions-sync';
@@ -343,5 +345,81 @@ describe('the position push', () => {
     await flushPositionPush();
     expect(blindUploadFile).not.toHaveBeenCalled();
     expect(changedVolumes()).toEqual(['v']);
+  });
+});
+
+describe('the reader-open check', () => {
+  it('resolves when the answer arrives', async () => {
+    stubCache([listed('a')]);
+    makeProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return fileBlob({ v: [now - 1000, 120, 12000, 'phone'] });
+    });
+    let done = false;
+    const check = checkPositionsOnOpen('v').then(() => (done = true));
+    await vi.advanceTimersByTimeAsync(199);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await check;
+    expect(done).toBe(true);
+    expect(get(volumesWithTrash).v.progress).toBe(120);
+    expect(showSnackbar).toHaveBeenCalledWith('Continued from Pixel, p.120');
+  });
+
+  it('resolves at 1000 ms when the provider is slow; the late answer still adopts', async () => {
+    stubCache([listed('a')]);
+    makeProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      return fileBlob({ v: [now - 1000, 120, 12000, 'phone'] });
+    });
+    let done = false;
+    void checkPositionsOnOpen('v').then(() => (done = true));
+    await vi.advanceTimersByTimeAsync(999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toBe(true);
+    expect(get(volumesWithTrash).v?.progress ?? 0).toBe(0);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.waitFor(() => expect(get(volumesWithTrash).v.progress).toBe(120));
+    expect(showSnackbar).toHaveBeenCalledWith('Continued from Pixel, p.120');
+  });
+
+  it('not ready (no provider / listing not loaded) → resolves at once, no request', async () => {
+    stubCache([listed('a')]);
+    const provider = makeProvider(async () => fileBlob({}));
+    syncReady.mockReturnValue(false);
+    await checkPositionsOnOpen('v');
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+
+    syncReady.mockReturnValue(true);
+    getActiveProvider.mockReturnValue(null);
+    await checkPositionsOnOpen('v');
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('notes the open volume, so an answer for it toasts', async () => {
+    stubCache([listed('a')]);
+    makeProvider(async () => fileBlob({ v: [now - 1000, 9, 90, 'phone'] }));
+    await checkPositionsOnOpen('v');
+    expect(showSnackbar).toHaveBeenCalledTimes(1);
+  });
+
+  it('focus check is throttled to one per 10 s', async () => {
+    stubCache([listed('a')]);
+    const provider = makeProvider(async () => fileBlob({}));
+    requestPositionCheck(100_000);
+    requestPositionCheck(105_000);
+    await vi.waitFor(() => expect(provider.downloadFile).toHaveBeenCalledTimes(1));
+    requestPositionCheck(110_000);
+    await vi.waitFor(() => expect(provider.downloadFile).toHaveBeenCalledTimes(2));
+  });
+
+  it('a visible tab asks for a check', async () => {
+    stubCache([listed('a')]);
+    const provider = makeProvider(async () => fileBlob({}));
+    stops.push(initPositionPush());
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.waitFor(() => expect(provider.downloadFile).toHaveBeenCalledTimes(1));
   });
 });

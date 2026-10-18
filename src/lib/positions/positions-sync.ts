@@ -38,7 +38,7 @@ import {
 import { positionsReadAllowed, positionsWriteAllowed } from './positions-capability';
 import { clearChanged, ownChangedEntries } from './positions-local';
 import { reconcilePositions, type LocalPosition } from './positions-reconcile';
-import { openReader } from './reader-open';
+import { noteReaderOpened, openReader } from './reader-open';
 
 export interface PositionsSyncOutcome {
   adopted: string[];
@@ -48,6 +48,12 @@ export interface PositionsSyncOutcome {
 }
 
 const PUSH_DEBOUNCE_MS = 3000;
+
+/** How long the reader waits for the position check before it opens anyway. */
+export const READER_OPEN_WAIT_MS = 1000;
+
+/** At most one focus-triggered check per this long. */
+const FOCUS_CHECK_INTERVAL_MS = 10_000;
 
 function isNotFound(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -207,6 +213,39 @@ export async function flushPositionPush(): Promise<void> {
 }
 
 /**
+ * The device-swap check: note the open volume, then ask the cloud. Resolves on
+ * the answer or after `wait`, whichever is first, so the reader never waits
+ * longer. A late answer still lands: the reconcile adopts it (with a toast)
+ * while no page has been turned here, and leaves it to the offer after.
+ */
+export function checkPositionsOnOpen(
+  volume: string,
+  wait: number = READER_OPEN_WAIT_MS
+): Promise<void> {
+  noteReaderOpened(volume);
+  const provider = unifiedCloudManager.getActiveProvider();
+  if (!provider || !syncReady()) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, wait);
+    void syncPositions(provider).finally(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+let lastFocusCheck = -Infinity;
+
+/** Re-check when the app returns to the foreground; throttled to once per 10 s. */
+export function requestPositionCheck(now: number = Date.now()): void {
+  if (now - lastFocusCheck < FOCUS_CHECK_INTERVAL_MS) return;
+  const provider = unifiedCloudManager.getActiveProvider();
+  if (!provider || !syncReady()) return;
+  lastFocusCheck = now;
+  void syncPositions(provider);
+}
+
+/**
  * Push after page turns settle (3 s), and at once when the tab is hidden — a
  * device put down mid-volume is exactly the one whose position the next device
  * needs. Returns the cleanup.
@@ -224,6 +263,8 @@ export function initPositionPush(): () => void {
   });
   const onVisibility = () => {
     if (document.visibilityState === 'hidden') flush();
+    // Back in the foreground: another device may have read on meanwhile.
+    else if (document.visibilityState === 'visible') requestPositionCheck();
   };
   document.addEventListener('visibilitychange', onVisibility);
   deviceViews = devices as Readable<ReadonlyMap<string, unknown>>;
@@ -240,4 +281,5 @@ export function initPositionPush(): () => void {
 export function _resetPositionsSyncForTests(): void {
   running = null;
   followUp = null;
+  lastFocusCheck = -Infinity;
 }
