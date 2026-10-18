@@ -394,6 +394,10 @@ class UnifiedSyncService {
       await this.syncVolumeData(provider);
       console.log('✅ Volume data synced');
 
+      // The fixed-address position index, right after the volume data it
+      // mirrors. Best-effort: it never fails the sync.
+      await this.syncPositionsFile(provider);
+
       // Profiles get the same treatment: read → merge (newest `lastUpdated` per
       // profile, tombstones honoured) → push. It used to be a button nobody
       // pressed, which is how devices ended up with divergent settings.
@@ -806,6 +810,16 @@ class UnifiedSyncService {
    * and a `get`-only path silently ignores every copy but one — losing whatever
    * only the other copies held.
    */
+  /** `positions.json` (`$lib/positions`), loaded lazily like the history modules. */
+  private async syncPositionsFile(provider: SyncProvider): Promise<void> {
+    try {
+      const { syncPositions } = await import('$lib/positions/positions-sync');
+      await syncPositions(provider);
+    } catch (error) {
+      console.warn('[positions] sync step failed:', error);
+    }
+  }
+
   private findGoalsFiles(provider: SyncProvider): CloudFileMetadata[] {
     const cache = cacheManager.getCache(provider.type);
     if (!cache) return [];

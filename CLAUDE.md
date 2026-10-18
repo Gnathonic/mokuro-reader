@@ -688,6 +688,18 @@ Rules:
 | Idle cutoff (automatic / manual override, `k`), long-pause default | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
 | Pre-history reading snapshot (`legacyStats`)                       | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
 | Device names, class corrections, merges                            | `volume-data.json` → `tracking.devices`   | `lastUpdated` per device id            |
+| Newest reading position (30 days)                                  | `positions.json`                          | newest `t` per volume                  |
+
+`positions.json` (`src/lib/positions/`) is the newest position per volume at a
+FIXED path, so a device that was just picked up can learn where the user
+stopped without the full listing: it is checked when the reader opens (≤ 1 s),
+rides every sync right after the volume data, and is pushed 3 s after page
+turns settle (at once when the tab is hidden). Opening a page never stamps a
+position, and an adopted position keeps the other device's stamp. Not
+authoritative: history and `volume-data.json` still carry every position.
+mokuro-bunko gets it only when its identity lists it in `per_user_files`;
+before that the path is a shared library file, and the client neither reads
+nor writes it.
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no

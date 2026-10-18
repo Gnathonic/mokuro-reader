@@ -94,6 +94,10 @@ vi.mock('$lib/reading-history/history-sync', () => ({
     s.historySync ?? !s.serverCompilesMetadata
 }));
 
+vi.mock('$lib/positions/positions-sync', () => ({
+  syncPositions: vi.fn(async () => ({ adopted: [], deferred: [], uploaded: false }))
+}));
+
 import { unifiedSyncService } from './unified-sync-service';
 import { restartSeries } from '$lib/metadata/reread';
 import { volumes as volumeCompletion } from '$lib/settings/volume-data';
@@ -1897,4 +1901,49 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
       }
     }
   );
+});
+
+describe('positions.json rides every sync', () => {
+  function stubSteps(order: string[]) {
+    return ['syncVolumeData', 'syncProfiles', 'syncGoals', 'syncReadingHistory'].map((name) =>
+      vi.spyOn(svc, name).mockImplementation(async () => {
+        order.push(name);
+      })
+    );
+  }
+  const provider = {
+    type: 'mega',
+    name: 'MEGA',
+    isAuthenticated: () => true
+  } as unknown as SyncProvider;
+
+  it('runs right after the volume data', async () => {
+    const { syncPositions } = await import('$lib/positions/positions-sync');
+    const order: string[] = [];
+    vi.mocked(syncPositions).mockImplementationOnce(async () => {
+      order.push('syncPositions');
+      return { adopted: [], deferred: [], uploaded: false };
+    });
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(provider, {})).toMatchObject({ success: true });
+      expect(order.slice(0, 2)).toEqual(['syncVolumeData', 'syncPositions']);
+      expect(vi.mocked(syncPositions)).toHaveBeenCalledWith(provider);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
+
+  it('a rejecting position sync does not fail the sync', async () => {
+    const { syncPositions } = await import('$lib/positions/positions-sync');
+    vi.mocked(syncPositions).mockRejectedValueOnce(new Error('boom'));
+    const order: string[] = [];
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(provider, {})).toMatchObject({ success: true });
+      expect(order).toContain('syncGoals');
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
 });

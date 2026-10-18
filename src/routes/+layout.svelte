@@ -132,6 +132,17 @@
       detectDeviceFacts(readDeviceEnv()),
       new Date().toISOString()
     ).catch((error) => console.warn('[reading-history] device record failed:', error));
+    // positions.json: mark this device's position changes and push them after
+    // page turns settle. Started at once, so no turn goes unmarked.
+    void Promise.all([
+      import('$lib/positions/positions-local'),
+      import('$lib/positions/positions-sync')
+    ])
+      .then(([{ initPositionTracking }, { initPositionPush }]) => {
+        initPositionTracking();
+        initPositionPush();
+      })
+      .catch((error) => console.warn('[positions] could not start:', error));
     // Reading history's page turns load first (the stats read them); then turns
     // still held in volume records become history events (phase 2b). The
     // cut-over strips nothing unless that load succeeded.
