@@ -260,6 +260,34 @@ describe('countVolume', () => {
   });
 });
 
+describe('look-up visits', () => {
+  it('look-up away views count time but no characters', () => {
+    // Home p.40, p.41 at reading pace (20 s each), back to p.40: a look-up.
+    const totals = countVolume(
+      prepareVolume([
+        view(0, 40, [300], 20_000),
+        view(21_000, 41, [300], 20_000),
+        view(42_000, 40, [300], 1000)
+      ]),
+      null,
+      AUTO
+    );
+    expect(totals.timeMs).toBe(41_000);
+    expect(totals.readChars).toBe(300);
+    expect(totals.skippedChars).toBe(300);
+    expect(totals.samples.some((s) => s.end === 41_000)).toBe(false);
+  });
+
+  it('the same views, not back home, are reading', () => {
+    const totals = countVolume(
+      prepareVolume([view(0, 40, [300], 20_000), view(21_000, 41, [300], 20_000)]),
+      null,
+      AUTO
+    );
+    expect(totals.readChars).toBe(600);
+  });
+});
+
 describe('countedDwell', () => {
   it('counts all, typical or nothing as answered, and typical while unanswered over the cap', () => {
     expect(countedDwell(10 * MIN, 4 * MIN, 80_000, 'full')).toBe(10 * MIN);

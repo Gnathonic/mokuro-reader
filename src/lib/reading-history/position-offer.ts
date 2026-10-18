@@ -1,6 +1,7 @@
 import type { DeviceView } from './devices';
 import { LEGACY_DEVICE_PREFIX } from './paths';
 import type { ReadingEvent } from './types';
+import { eventKey, lookupVisits } from './visits';
 
 /**
  * Where a volume should be, across devices (phase 2c, spec: "Position across
@@ -24,6 +25,10 @@ import type { ReadingEvent } from './types';
  * made again for reading at or before an answered `through`, on any device,
  * and no stale copy can bring it back. A `forget` hides everything before it.
  * Converted (legacy) events never drive offers — they carry no device.
+ *
+ * Look-up visits (`visits.ts`) are not reading: their views are left out
+ * entirely, so a look-up neither makes its device the newest reader nor
+ * leaves a "stopped here" to offer.
  */
 
 export interface PositionOffer {
@@ -61,7 +66,10 @@ export function planPosition(
   for (const e of events) if (e.kind === 'forget' && e.before > horizon) horizon = e.before;
   const live = events.filter((e) => e.t >= horizon).sort(byTime);
 
-  const views = live.filter((e): e is PageEvent => e.kind === 'page' && isNative(e));
+  const { lookup } = lookupVisits(live);
+  const views = live.filter(
+    (e): e is PageEvent => e.kind === 'page' && isNative(e) && !lookup.has(eventKey(e))
+  );
   const restarts = live.filter((e): e is RestartEvent => e.kind === 'restart' && isNative(e));
   const answers = live.filter((e): e is PositionEvent => e.kind === 'position');
   const last = views.at(-1);

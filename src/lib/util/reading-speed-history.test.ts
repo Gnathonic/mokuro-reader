@@ -702,6 +702,25 @@ describe('processVolumeSpeedData', () => {
     expect(result[1].volumeId).toBe('vol-1'); // Older
   });
 
+  it('dates a completion by completedAt before the merge stamp', () => {
+    const volumesData = {
+      'vol-1': {
+        completed: true,
+        timeReadInMinutes: 60,
+        chars: 6000,
+        completedAt: '2024-03-01T00:00:00.000Z',
+        lastProgressUpdate: '2024-09-01T00:00:00Z',
+        series_title: 'Series A',
+        series_uuid: 'series-a',
+        volume_title: 'Volume 1'
+      }
+    };
+
+    const result = processVolumeSpeedData(volumesData, []);
+
+    expect(result[0].completionDate.toISOString()).toBe('2024-03-01T00:00:00.000Z');
+  });
+
   it('should assign isPersonalBest to fastest volume', () => {
     const volumesData = {
       'vol-1': {

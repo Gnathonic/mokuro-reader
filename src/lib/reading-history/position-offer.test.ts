@@ -142,6 +142,27 @@ describe('planPosition', () => {
     expect(planPosition(events, { progress: 3 }, 'laptop')).toEqual({});
   });
 
+  it('a look-up on another device makes no offer elsewhere', () => {
+    // The laptop looked up p.40 (40, a quick 41, back to 40) between the
+    // phone's reading; the phone read on. Nothing the laptop did is a place
+    // the volume "stopped".
+    const events = [
+      ...run('phone', 0, [58, 59, 60]),
+      ...run('laptop', 10_000, [40, 41, 40]),
+      ...run('phone', 20_000, [61])
+    ];
+    expect(planPosition(events, { progress: 61 }, 'phone')).toEqual({});
+  });
+
+  it('a look-up never makes its device the newest reader', () => {
+    // Without the look-up the phone is newest, and the laptop's final p.20 is offered.
+    const events = [...run('laptop', 0, [19, 20]), ...run('phone', 5000, [58, 59, 60])];
+    const lookup = run('laptop', 3_600_000, [40, 41, 40]); // an hour on: its own visit
+    const before = planPosition(events, { progress: 60 }, 'phone');
+    expect(before.offer).toMatchObject({ page: 20, device: 'laptop' });
+    expect(planPosition([...events, ...lookup], { progress: 60 }, 'phone')).toEqual(before);
+  });
+
   it('a single device never gets an offer', () => {
     expect(planPosition(run('phone', 0, [10, 50, 20]), { progress: 20 }, 'phone')).toEqual({});
   });

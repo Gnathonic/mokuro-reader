@@ -1,6 +1,7 @@
 import { LEGACY_DEVICE_PREFIX } from './paths';
 import { nativeCoverage } from './project-turns';
 import type { PauseCount, ReadingEvent } from './types';
+import { eventKey, lookupVisits } from './visits';
 
 /**
  * Reading stats from history events (phase 3a; spec: "Speed and stats"). Pure:
@@ -24,6 +25,9 @@ import type { PauseCount, ReadingEvent } from './types';
  *   view covers them; their page characters are the difference between
  *   consecutive turns' cumulative counts (the old pair rule), and one over its
  *   cap counts nothing (the old idle rule).
+ * - **Look-ups** (`visits.ts`). The views of a look-up visit that showed no
+ *   page of its home view count their time but are skips: no characters
+ *   read, no speed sample. Its home views count as any other.
  */
 
 export const DEFAULT_K = 3;
@@ -174,6 +178,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   const native = live.filter(
     (e): e is PageEvent => e.kind === 'page' && !e.device.startsWith(LEGACY_DEVICE_PREFIX)
   );
+  const { outsideHome } = lookupVisits(native);
   const covered = nativeCoverage(native);
   // Legacy page chars come from the NEXT legacy turn, covered or not: the
   // cumulative count is a position, whichever device recorded the next one.
@@ -213,7 +218,9 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
       end: e.t + (dwell ?? 0),
       dwell,
       chars,
-      skip: chars > 0 && dwell !== null && (dwell <= 0 || (chars / dwell) * 60_000 > SKIP_CPM),
+      skip:
+        (chars > 0 && dwell !== null && (dwell <= 0 || (chars / dwell) * 60_000 > SKIP_CPM)) ||
+        (!legacy && outsideHome.has(eventKey(e))),
       legacy,
       pass,
       pages,
