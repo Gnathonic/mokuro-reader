@@ -1,6 +1,8 @@
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
+import { driveApiBase, driveUploadBase } from '../../providers/google-drive/constants';
+import { CLOUD_TEST_HOOKS, credentialBase } from '../../cloud-test-hooks';
 
 export const googleDriveCore: CloudProviderCore = {
   async downloadFile({ fileId, credentials, onProgress }): Promise<ArrayBuffer> {
@@ -9,15 +11,16 @@ export const googleDriveCore: CloudProviderCore = {
       'accessToken',
       'Google Drive access token'
     );
+    // A worker's bases come in its credentials (see cloudTestCredentials).
+    const api = CLOUD_TEST_HOOKS
+      ? credentialBase(credentials, 'driveApi', driveApiBase())
+      : driveApiBase();
 
-    const sizeResponse = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${fileId}?fields=size`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
+    const sizeResponse = await fetch(`${api}/drive/v3/files/${fileId}?fields=size`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
       }
-    );
+    });
 
     if (!sizeResponse.ok) {
       throw new Error(`Failed to get file size: ${sizeResponse.statusText}`);
@@ -27,7 +30,7 @@ export const googleDriveCore: CloudProviderCore = {
     const totalSize = parseInt(sizeData.size, 10);
 
     const xhr = new XMLHttpRequest();
-    xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+    xhr.open('GET', `${api}/drive/v3/files/${fileId}?alt=media`);
     xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
     xhr.responseType = 'arraybuffer';
 
@@ -82,9 +85,12 @@ export const googleDriveCore: CloudProviderCore = {
     // returns: the server's own `modifiedTime` (and authoritative `size`) come
     // back with the last PUT for free — no follow-up metadata request needed.
     const responseFields = 'fields=id,modifiedTime,size';
+    const upload = CLOUD_TEST_HOOKS
+      ? credentialBase(credentials, 'driveUpload', driveUploadBase())
+      : driveUploadBase();
     const uploadBase = existingFileId
-      ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=resumable&${responseFields}`
-      : `https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&${responseFields}`;
+      ? `${upload}/drive/v3/files/${existingFileId}?uploadType=resumable&${responseFields}`
+      : `${upload}/drive/v3/files?uploadType=resumable&${responseFields}`;
 
     const initResponse = await fetch(uploadBase, {
       method: existingFileId ? 'PATCH' : 'POST',

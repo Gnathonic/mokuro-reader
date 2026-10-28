@@ -28,6 +28,7 @@ import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-dedu
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
 
 /** How long a resolved list of `mokuro-reader` root ids is trusted by `readControlFile`. */
 const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
@@ -1459,7 +1460,7 @@ class GoogleDriveProvider implements SyncProvider {
     tokenManager.token.subscribe((value) => {
       token = value;
     })();
-    return { accessToken: token };
+    return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<Record<string, any>> {
@@ -1472,7 +1473,7 @@ class GoogleDriveProvider implements SyncProvider {
     tokenManager.token.subscribe((value) => {
       token = value;
     })();
-    return { accessToken: token };
+    return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 }
 

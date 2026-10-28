@@ -1,10 +1,9 @@
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
-import { ONEDRIVE_CONFIG } from '../../providers/onedrive/constants';
+import { ONEDRIVE_CONFIG, graphBase } from '../../providers/onedrive/constants';
 import { parseNextExpectedRange } from '../../providers/onedrive/upload-session';
-
-const BASE = ONEDRIVE_CONFIG.GRAPH_BASE_URL;
+import { CLOUD_TEST_HOOKS, credentialBase } from '../../cloud-test-hooks';
 
 function encodePath(path: string): string {
   return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
@@ -57,12 +56,13 @@ async function queryResumeOffset(uploadUrl: string): Promise<number | null> {
  * an upload that actually succeeded.
  */
 async function findCompletedUpload(
+  graph: string,
   accessToken: string,
   targetPath: string,
   expectedSize: number
 ): Promise<CompletedDriveItem | null> {
   try {
-    const response = await fetch(`${BASE}/me/drive/root:/${encodePath(targetPath)}`, {
+    const response = await fetch(`${graph}/me/drive/root:/${encodePath(targetPath)}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(SESSION_TIMEOUT_MS)
     });
@@ -89,10 +89,14 @@ export const onedriveCore: CloudProviderCore = {
       'accessToken',
       'OneDrive access token'
     );
+    // A worker's bases come in its credentials (see cloudTestCredentials).
+    const graph = CLOUD_TEST_HOOKS
+      ? credentialBase(credentials, 'graph', graphBase())
+      : graphBase();
 
     return await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('GET', `${BASE}/me/drive/items/${encodeURIComponent(fileId)}/content`);
+      xhr.open('GET', `${graph}/me/drive/items/${encodeURIComponent(fileId)}/content`);
       xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
       xhr.responseType = 'arraybuffer';
       xhr.onprogress = (event) => {
@@ -134,6 +138,9 @@ export const onedriveCore: CloudProviderCore = {
       ? `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${seriesTitle}`
       : ONEDRIVE_CONFIG.MOKURO_FOLDER;
     const targetPath = `${folderPath}/${filename}`;
+    const graph = CLOUD_TEST_HOOKS
+      ? credentialBase(credentials, 'graph', graphBase())
+      : graphBase();
 
     let uploadUrl: string | null = null;
     let sessionAttempt = 0;
@@ -142,7 +149,7 @@ export const onedriveCore: CloudProviderCore = {
       sessionAttempt++;
       try {
         const sessionResponse = await fetch(
-          `${BASE}/me/drive/root:/${encodePath(targetPath)}:/createUploadSession`,
+          `${graph}/me/drive/root:/${encodePath(targetPath)}:/createUploadSession`,
           {
             method: 'POST',
             headers: {
@@ -193,7 +200,7 @@ export const onedriveCore: CloudProviderCore = {
       if (attempt >= MAX_CHUNK_ATTEMPTS) {
         // The write may well have succeeded even though we never saw the ack
         // (dropped connection, client-side timeout). Confirm before failing.
-        const completed = await findCompletedUpload(accessToken, targetPath, blob.size);
+        const completed = await findCompletedUpload(graph, accessToken, targetPath, blob.size);
         if (completed) {
           lastItem = completed;
           offset = blob.size;

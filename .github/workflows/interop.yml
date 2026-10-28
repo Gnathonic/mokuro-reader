@@ -1,0 +1,86 @@
+name: Interop
+
+# The reader's Drive, OneDrive and MEGA providers against Bunko's cloud
+# simulator (bunko-cloudsim), plus the check that the cloud test hooks never
+# reach a production build. Nothing here talks to a real cloud.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    # feat/cloud-bunko: PRs stacked on the cloud branch run it too.
+    branches: [main, develop, feat/cloud-bunko]
+
+jobs:
+  cloudsim:
+    name: Providers against cloudsim
+    runs-on: ubuntu-latest
+    env:
+      # The suites throw at collection without CLOUDSIM_URL, so the job can never
+      # pass with every test skipped.
+      REQUIRE_CLOUDSIM: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out Bunko (for cloudsim)
+        uses: actions/checkout@v4
+        with:
+          repository: Gnathonic/mokuro-bunko
+          # The default moves to `main` once 0.8 is merged there.
+          ref: ${{ vars.BUNKO_REF || '0.8/remote-storage' }}
+          path: bunko
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bunko
+
+      - name: Build cloudsim
+        run: cargo build --release -p bunko-cloudsim --locked --manifest-path bunko/Cargo.toml
+
+      - name: Start cloudsim
+        run: |
+          # --preauth-host: jsdom drops a token on a redirect only when the host
+          # name changes (a browser does on any change of origin).
+          bunko/target/release/bunko-cloudsim --port 0 --preauth-host localhost \
+            > cloudsim.out 2> cloudsim.log &
+          for _ in $(seq 100); do
+            [ -s cloudsim.out ] && break
+            sleep 0.1
+          done
+          url=$(head -n 1 cloudsim.out | sed 's/^listening on //')
+          case "$url" in
+            http://*) ;;
+            *) echo "cloudsim did not start"; cat cloudsim.log; exit 1 ;;
+          esac
+          curl -sf "$url/_sim/health"
+          echo "CLOUDSIM_URL=$url" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The suites share one simulator and reset it, so they run one file at a time.
+      - name: Provider suite against cloudsim
+        run: npx vitest run src/lib/interop/cloudsim --no-file-parallelism
+
+      - name: Production build
+        run: npm run build
+
+      - name: No cloud test hooks in the production build
+        run: node scripts/check-no-test-hooks.mjs
+
+      - name: Upload the cloudsim log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudsim-log
+          path: |
+            cloudsim.out
+            cloudsim.log

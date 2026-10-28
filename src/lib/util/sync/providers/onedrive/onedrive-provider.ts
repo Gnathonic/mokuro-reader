@@ -13,6 +13,7 @@ import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import { ONEDRIVE_CONFIG } from './constants';
 import { onedriveTokenManager } from './token-manager';
+import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
 import {
   createFolder,
   deleteItem,
@@ -548,12 +549,12 @@ export class OneDriveProvider implements SyncProvider {
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {
     const accessToken = await onedriveTokenManager.getAccessToken();
-    return { accessToken };
+    return { accessToken, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 
   async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
     const accessToken = await onedriveTokenManager.getAccessToken();
-    return { accessToken };
+    return { accessToken, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 }
 

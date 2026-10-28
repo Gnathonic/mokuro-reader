@@ -1,8 +1,6 @@
-import { ONEDRIVE_CONFIG } from './constants';
+import { graphBase } from './constants';
 import { ProviderError } from '../../provider-interface';
 import { onedriveTokenManager } from './token-manager';
-
-const BASE = ONEDRIVE_CONFIG.GRAPH_BASE_URL;
 
 export interface DriveItem {
   id: string;
@@ -48,7 +46,7 @@ async function parseError(response: Response): Promise<never> {
 }
 
 export async function getDriveQuota(accessToken: string): Promise<DriveQuota> {
-  const response = await fetch(`${BASE}/me/drive`, { headers: authHeaders(accessToken) });
+  const response = await fetch(`${graphBase()}/me/drive`, { headers: authHeaders(accessToken) });
   if (!response.ok) await parseError(response);
   const data = (await response.json()) as { quota?: DriveQuota };
   return data.quota ?? { used: 0, total: 0, remaining: 0 };
@@ -59,8 +57,8 @@ export async function listChildren(accessToken: string, path: string): Promise<D
   // large folders (a library with hundreds of series, or a series with many
   // files) are not silently truncated.
   let url: string = path
-    ? `${BASE}/me/drive/root:/${encodePath(path)}:/children`
-    : `${BASE}/me/drive/root/children`;
+    ? `${graphBase()}/me/drive/root:/${encodePath(path)}:/children`
+    : `${graphBase()}/me/drive/root/children`;
   const items: DriveItem[] = [];
   while (url) {
     const response = await fetch(url, { headers: authHeaders(accessToken) });
@@ -73,7 +71,9 @@ export async function listChildren(accessToken: string, path: string): Promise<D
 }
 
 export async function getItemByPath(accessToken: string, path: string): Promise<DriveItem | null> {
-  const url = path ? `${BASE}/me/drive/root:/${encodePath(path)}` : `${BASE}/me/drive/root`;
+  const url = path
+    ? `${graphBase()}/me/drive/root:/${encodePath(path)}`
+    : `${graphBase()}/me/drive/root`;
   const response = await fetch(url, { headers: authHeaders(accessToken) });
   if (response.status === 404) return null;
   if (!response.ok) await parseError(response);
@@ -82,9 +82,12 @@ export async function getItemByPath(accessToken: string, path: string): Promise<
 
 /** Download an item's content (`/content` redirects to a pre-authenticated URL). */
 export async function downloadItemContent(accessToken: string, itemId: string): Promise<Blob> {
-  const response = await fetch(`${BASE}/me/drive/items/${encodeURIComponent(itemId)}/content`, {
-    headers: authHeaders(accessToken)
-  });
+  const response = await fetch(
+    `${graphBase()}/me/drive/items/${encodeURIComponent(itemId)}/content`,
+    {
+      headers: authHeaders(accessToken)
+    }
+  );
   if (!response.ok) await parseError(response);
   return await response.blob();
 }
@@ -95,8 +98,8 @@ export async function createFolder(
   name: string
 ): Promise<DriveItem> {
   const url = parentPath
-    ? `${BASE}/me/drive/root:/${encodePath(parentPath)}:/children`
-    : `${BASE}/me/drive/root/children`;
+    ? `${graphBase()}/me/drive/root:/${encodePath(parentPath)}:/children`
+    : `${graphBase()}/me/drive/root/children`;
   const response = await fetch(url, {
     method: 'POST',
     headers: authHeaders(accessToken, { 'Content-Type': 'application/json' }),
@@ -111,7 +114,7 @@ export async function createFolder(
 }
 
 export async function deleteItem(accessToken: string, itemId: string): Promise<void> {
-  const response = await fetch(`${BASE}/me/drive/items/${encodeURIComponent(itemId)}`, {
+  const response = await fetch(`${graphBase()}/me/drive/items/${encodeURIComponent(itemId)}`, {
     method: 'DELETE',
     headers: authHeaders(accessToken)
   });
@@ -129,7 +132,7 @@ export async function patchItem(
   itemId: string,
   body: PatchItemBody
 ): Promise<DriveItem> {
-  const response = await fetch(`${BASE}/me/drive/items/${encodeURIComponent(itemId)}`, {
+  const response = await fetch(`${graphBase()}/me/drive/items/${encodeURIComponent(itemId)}`, {
     method: 'PATCH',
     headers: authHeaders(accessToken, { 'Content-Type': 'application/json' }),
     body: JSON.stringify(body)
@@ -139,13 +142,16 @@ export async function patchItem(
 }
 
 export async function createUploadSession(accessToken: string, path: string): Promise<string> {
-  const response = await fetch(`${BASE}/me/drive/root:/${encodePath(path)}:/createUploadSession`, {
-    method: 'POST',
-    headers: authHeaders(accessToken, { 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
-      item: { '@microsoft.graph.conflictBehavior': 'replace' }
-    })
-  });
+  const response = await fetch(
+    `${graphBase()}/me/drive/root:/${encodePath(path)}:/createUploadSession`,
+    {
+      method: 'POST',
+      headers: authHeaders(accessToken, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        item: { '@microsoft.graph.conflictBehavior': 'replace' }
+      })
+    }
+  );
   if (!response.ok) await parseError(response);
   const data = (await response.json()) as { uploadUrl: string };
   return data.uploadUrl;

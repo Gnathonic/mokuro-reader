@@ -34,6 +34,7 @@ import {
   encodeMegaKey,
   type MegaSessionBlob
 } from './mega-session';
+import { CLOUD_TEST_HOOKS, megaGatewayOption } from '../../cloud-test-hooks';
 
 interface MegaCredentials {
   email: string;
@@ -375,7 +376,14 @@ export class MegaProvider implements SyncProvider {
       // and crashed on `.parent`. The manual removals are gone.)
       const storage: any = await new Promise((resolve, reject) => {
         const s = new Storage(
-          { email, password, secondFactorCode, autoload: true, keepalive: true } as any,
+          {
+            email,
+            password,
+            secondFactorCode,
+            autoload: true,
+            keepalive: true,
+            ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {})
+          } as any,
           (error: Error | null) => (error ? reject(error) : resolve(s))
         );
       });
@@ -446,7 +454,11 @@ export class MegaProvider implements SyncProvider {
     // reactive cache events. See login() for why the old crash is gone.
     const storage: any = Storage.fromJSON({
       ...(blob as any),
-      options: { ...((blob as any).options ?? {}), keepalive: true }
+      options: {
+        ...((blob as any).options ?? {}),
+        ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {}),
+        keepalive: true
+      }
     });
     // fromJSON does no network and loads no tree; reload populates root + files.
     // A dead session throws ESID here.
@@ -1499,7 +1511,7 @@ export class MegaProvider implements SyncProvider {
     if (!browser) return {};
     const session = localStorage.getItem(STORAGE_KEYS.SESSION);
     if (!session) return {};
-    return { megaSession: session };
+    return { megaSession: session, ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {}) };
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<Record<string, any>> {
@@ -1531,7 +1543,8 @@ export class MegaProvider implements SyncProvider {
     return {
       sid: this.storage.sid,
       nodeId: node.nodeId,
-      fileKey: encodeMegaKey(node.key as Uint8Array)
+      fileKey: encodeMegaKey(node.key as Uint8Array),
+      ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {})
     };
   }
 

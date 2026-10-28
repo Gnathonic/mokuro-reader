@@ -1,4 +1,4 @@
-import { GOOGLE_DRIVE_CONFIG, type DriveFile } from './constants';
+import { GOOGLE_DRIVE_CONFIG, driveApiBase, driveUploadBase, type DriveFile } from './constants';
 import { tokenManager } from './token-manager';
 
 /**
@@ -224,7 +224,7 @@ class DriveApiClient {
     // Download file with XMLHttpRequest for progress tracking
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+      xhr.open('GET', `${driveApiBase()}/drive/v3/files/${fileId}?alt=media`);
       xhr.setRequestHeader('Authorization', `Bearer ${token}`);
       xhr.responseType = 'blob';
 
@@ -271,7 +271,7 @@ class DriveApiClient {
     form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
     form.append('file', blob);
 
-    const url = `https://www.googleapis.com/upload/drive/v3/files${fileId ? `/${fileId}` : ''}?uploadType=multipart`;
+    const url = `${driveUploadBase()}/drive/v3/files${fileId ? `/${fileId}` : ''}?uploadType=multipart`;
     const token = tokenManager.isAuthenticated() ? this.getCurrentToken() : null;
 
     if (!token) {

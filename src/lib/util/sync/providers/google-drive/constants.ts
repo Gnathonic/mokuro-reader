@@ -1,3 +1,5 @@
+import { CLOUD_TEST_HOOKS, cloudBase } from '../../cloud-test-hooks';
+
 export interface DriveFile {
   id: string;
   name: string;
@@ -46,3 +48,16 @@ export const GOOGLE_DRIVE_CONFIG = {
   // Debug mode: Set to true to use short-lived tokens for testing (30 seconds)
   DEBUG_SHORT_TOKEN_EXPIRY: false
 } as const;
+
+const DRIVE_API = 'https://www.googleapis.com';
+const DRIVE_UPLOAD = 'https://www.googleapis.com/upload';
+
+/** The Drive API origin (`/drive/v3/...` follows), read per request. */
+export function driveApiBase(): string {
+  return CLOUD_TEST_HOOKS ? cloudBase('driveApi', DRIVE_API) : DRIVE_API;
+}
+
+/** The Drive upload origin (`/drive/v3/files...` follows), read per request. */
+export function driveUploadBase(): string {
+  return CLOUD_TEST_HOOKS ? cloudBase('driveUpload', DRIVE_UPLOAD) : DRIVE_UPLOAD;
+}
