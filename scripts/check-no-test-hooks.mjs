@@ -3,7 +3,7 @@
 // test hooks (src/lib/util/sync/cloud-test-hooks.ts and the interop helpers).
 // They are guarded by a compile-time constant that is false in a production
 // build, so the bundler drops them; this proves it. Exits 1 listing every file
-// that still names one. A build made with VITE_CLOUD_TEST_HOOKS=1 fails it.
+// that still names one. A `vite build --mode interop` build (hooks on) fails it.
 //
 // Source maps are skipped: their `sourcesContent` carries the original source
 // of every module that fed a chunk, hooks module included, though none of its
@@ -17,7 +17,6 @@ const NAMES = [
   'cloudTestToken',
   '__mokuroCloudTestHooks',
   'installGapiRestShim',
-  'VITE_CLOUD_TEST_HOOKS',
   'CLOUDSIM'
 ];
 // SvelteKit's output, and the adapter's (adapter-auto writes one only on a host it knows).

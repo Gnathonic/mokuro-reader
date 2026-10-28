@@ -37,7 +37,7 @@ async function resetUploadStorage(): Promise<void> {
   }
 }
 
-async function getUploadStorage(session: string): Promise<Storage> {
+async function getUploadStorage(session: string, gateway?: string): Promise<Storage> {
   const parsed = JSON.parse(session);
   const sessionKey: string = parsed.sid;
 
@@ -55,7 +55,12 @@ async function getUploadStorage(session: string): Promise<Storage> {
     // and its handler crashes on delete events).
     const storage = Storage.fromJSON({
       ...parsed,
-      options: { ...(parsed.options ?? {}), keepalive: false }
+      options: {
+        ...(parsed.options ?? {}),
+        // A test build's simulator gateway, passed in the worker credentials.
+        ...(CLOUD_TEST_HOOKS && gateway ? { gateway } : {}),
+        keepalive: false
+      }
     }) as any;
     // fromJSON loads no tree; reload populates storage.root for folder navigation/upload.
     await storage.reload(true);
@@ -277,7 +282,9 @@ export const megaCore: CloudProviderCore = {
     mimeType
   }): Promise<UploadFileResult> {
     const session = requireCredentialString(credentials, 'megaSession', 'MEGA session');
-    const storage = await getUploadStorage(session);
+    const gateway =
+      CLOUD_TEST_HOOKS && typeof credentials.gateway === 'string' ? credentials.gateway : undefined;
+    const storage = await getUploadStorage(session, gateway);
 
     try {
       const CHUNK_SIZE = 1024 * 1024;

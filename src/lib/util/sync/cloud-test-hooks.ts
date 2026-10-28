@@ -8,11 +8,13 @@
  * so the bundler folds each guarded read to its fallback and drops the hook
  * state. `scripts/check-no-test-hooks.mjs` greps the production bundle to
  * prove it. The hooks are on under Vitest (`MODE === 'test'`) or in a build
- * made with `VITE_CLOUD_TEST_HOOKS=1` (the interop rig's reader).
+ * made with `vite build --mode interop` (the interop rig's reader). They key on
+ * the mode, never on an environment variable, so a hosting provider's settings
+ * cannot switch them on in a production build.
  */
 
 export const CLOUD_TEST_HOOKS: boolean =
-  import.meta.env.MODE === 'test' || import.meta.env.VITE_CLOUD_TEST_HOOKS === '1';
+  import.meta.env.MODE === 'test' || import.meta.env.MODE === 'interop';
 
 /** Base addresses, each replacing one provider's real one. */
 export type CloudBases = {
@@ -55,6 +57,26 @@ export function setCloudTestToken(provider: 'onedrive', token: string | null): v
 /** The injected token, or null (always, when hooks are off). */
 export function cloudTestToken(provider: 'onedrive'): string | null {
   return CLOUD_TEST_HOOKS ? tokens[provider] : null;
+}
+
+/**
+ * The bases for a worker's credentials. A Web Worker loads its own copy of this
+ * module, where no bases are set, so the main thread passes them along with the
+ * token (as MEGA's `gateway`); `{}` unless some are set.
+ */
+export function cloudTestCredentials(): { cloudBases?: CloudBases } {
+  return CLOUD_TEST_HOOKS && bases ? { cloudBases: { ...bases } } : {};
+}
+
+/** The `kind` base from worker credentials ({@link cloudTestCredentials}), else `fallback`. */
+export function credentialBase(
+  credentials: Record<string, unknown>,
+  kind: keyof CloudBases,
+  fallback: string
+): string {
+  if (!CLOUD_TEST_HOOKS) return fallback;
+  const passed = (credentials.cloudBases as CloudBases | undefined)?.[kind];
+  return typeof passed === 'string' ? passed : fallback;
 }
 
 /** megajs `Storage` options for the overridden gateway; `{}` unless one is set. */

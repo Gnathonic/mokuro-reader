@@ -1511,7 +1511,7 @@ export class MegaProvider implements SyncProvider {
     if (!browser) return {};
     const session = localStorage.getItem(STORAGE_KEYS.SESSION);
     if (!session) return {};
-    return { megaSession: session };
+    return { megaSession: session, ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {}) };
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<Record<string, any>> {
