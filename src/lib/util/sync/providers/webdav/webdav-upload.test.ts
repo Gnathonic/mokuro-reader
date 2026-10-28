@@ -7,6 +7,7 @@ import {
   uploadFileWithClient,
   uploadWithRetry
 } from './webdav-upload';
+import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
 
 /** What the fake server answers each PUT with, in order. */
 type Answer =
@@ -109,6 +110,27 @@ describe('a WebDAV PUT that the server queued for OCR (Addendum A)', () => {
     expect(result.serverOcr).toEqual({
       manifestUrl: 'https://bunko.example/dav/m',
       recheckAfter: null
+    });
+  });
+});
+
+describeContract('a volume PUT as Bunko answers it (Addendum A)', () => {
+  // The fixture's server is mounted under `/dav`, so bunko's root-absolute
+  // manifest link is put back under that prefix (`resolveBunkoLink`).
+  it('reports the manifest URL, resolved against the upload URL, and the recheck delay', async () => {
+    const put = loadBunkoFixture('put-volume');
+    const headers = put.headers!;
+    answers = [{ status: put.status!, headers }];
+    const result = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/Contract Series/Volume 03.cbz',
+      new Blob([new Uint8Array(Number(headers['x-mokuro-size']))])
+    );
+    expect(result.path).toBe('/mokuro-reader/Contract Series/Volume 03.cbz');
+    expect(result.putVerified).toBe(true);
+    expect(result.serverOcr).toEqual({
+      manifestUrl: `https://bunko.example/dav${headers['x-mokuro-manifest']}`,
+      recheckAfter: Number(headers['x-mokuro-recheck-after'])
     });
   });
 });

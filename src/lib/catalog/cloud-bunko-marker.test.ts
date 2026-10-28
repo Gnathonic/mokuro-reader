@@ -14,14 +14,15 @@ import {
   clearCloudBunkoMarkers,
   type MarkerNodeRecord
 } from './cloud-bunko-marker';
+import { editExisting } from '$lib/interop/contract';
+import { servedMarker } from './__fixtures__/bunko-marker';
 
 const T0 = Date.parse('2026-10-12T10:00:00Z');
 const TTL = 900;
 
+/** Bunko's own marker (its contract fixture), with these tests' values in its fields. */
 function marker(over: Record<string, unknown> = {}) {
-  return {
-    version: 1,
-    kind: 'mokuro-bunko',
+  return editExisting(servedMarker(T0), {
     instance_id: 'aaa',
     boot_id: 'b1',
     instance_name: 'nas',
@@ -30,13 +31,8 @@ function marker(over: Record<string, unknown> = {}) {
     claimed_at: '2026-10-12T09:00:00Z',
     heartbeat_at: new Date(T0).toISOString(),
     ttl_s: TTL,
-    state: 'active',
-    compiles: ['series.json', 'catalog.json'],
-    ocr: true,
-    queue: '.mokuro-queue.json',
-    took_over_from: null,
     ...over
-  };
+  });
 }
 
 function read(
