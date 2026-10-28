@@ -137,7 +137,9 @@ describeContract('identity and tokens', () => {
     );
     record('token-issue', captured(calls[0]), {
       status: [200],
-      body_fields: ['token', 'token_type', 'expires_at']
+      body_fields: ['token', 'token_type', 'expires_at'],
+      // A reader token (90 days), not the web kind a missing `kind` would get.
+      body_values: { kind: 'reader', token_type: 'Bearer' }
     });
   });
 
@@ -167,10 +169,17 @@ describeContract('the manifest and the queue file', () => {
         'archive.size',
         'archive.modified',
         'ocr.url',
+        'ocr.size',
+        'layers.0.id',
+        'layers.0.url',
+        'cover.url',
         'series_file.url',
-        'layers',
+        'series_file.size',
+        'series_file.modified',
         'pending'
-      ]
+      ],
+      // Read, and null when there is none.
+      nullable_fields: ['recheck_after', 'cover', 'ocr']
     });
   });
 
@@ -203,6 +212,7 @@ describeContract('the manifest and the queue file', () => {
         'volumes.0.jobs.0.id',
         'volumes.0.jobs.0.state'
       ],
+      nullable_fields: ['held', 'volumes.0.jobs.0.eta', 'volumes.0.jobs.0.progress'],
       headers: ['etag']
     });
 
@@ -259,6 +269,19 @@ describeContract('WebDAV reads through the provider', () => {
     );
   });
 
+  it('options-library: the OPTIONS the write-permission fallback and the PUT probe send', async () => {
+    const provider = await signedIn();
+    const probe = fixtureFetch([fx('propfind-root-depth0-privileges'), fx('options-library')]);
+    fetchHandler.impl = probe.fetch;
+    await provider.checkWritePermissions(SERVER);
+    const call = probe.calls.find((c) => c.method === 'OPTIONS')!;
+    // The fallback reads `Allow`; the probe at sign-in (the same request) `X-Mokuro-Put`.
+    record('options-library', captured(call), {
+      status: [200],
+      headers: ['allow', 'x-mokuro-put']
+    });
+  });
+
   it('propfind-privileges: the write-permission probe', async () => {
     const provider = await signedIn();
     const probe = fixtureFetch([fx('propfind-root-depth0-privileges')]);
@@ -297,6 +320,7 @@ class RecordingXhr {
   private url = '';
   private headers: Record<string, string> = {};
   private answer: Fixture | null = null;
+  private sentBytes = 0;
   open(method: string, url: string) {
     this.method = method;
     this.url = url;
@@ -305,9 +329,14 @@ class RecordingXhr {
     this.headers[k] = v;
   }
   getResponseHeader(name: string): string | null {
+    // Bunko's answer, with the size it stored being the size of this body.
+    if (name.toLowerCase() === 'x-mokuro-size' && this.answer?.headers?.['x-mokuro-size']) {
+      return String(this.sentBytes);
+    }
     return this.answer ? fixtureHeader(this.answer)(name) : null;
   }
-  send() {
+  send(body: Blob) {
+    this.sentBytes = body.size;
     xhrSent.push({ method: this.method, url: this.url, headers: this.headers });
     this.answer = xhrAnswers.shift()!;
     queueMicrotask(() => {
@@ -332,6 +361,8 @@ describeContract('uploads', () => {
 
   /** The verdict headers `uploadFileWithClient` reads from every answer. */
   const VERDICT = ['x-mokuro-upload', 'x-mokuro-size'];
+  /** Bunko checked the `Content-Digest` the reader sent (`digestVerified`). */
+  const DIGEST = 'x-mokuro-digest-verified';
 
   it('put-volume: a new archive, with its digest', async () => {
     const f = fx('put-volume');
@@ -352,23 +383,57 @@ describeContract('uploads', () => {
       { ...sent, body: { cbz: { pages: 2 } } },
       {
         status: [201, 204],
-        headers: [...VERDICT, 'x-mokuro-put', 'x-mokuro-manifest', 'x-mokuro-recheck-after']
+        headers: [...VERDICT, DIGEST, 'x-mokuro-put', 'x-mokuro-manifest', 'x-mokuro-recheck-after']
       }
     );
   });
 
   it('put-sidecar: an OCR sidecar for a volume that has none', async () => {
-    const f = fx('put-sidecar');
-    xhrAnswers = [f];
-    const text = JSON.stringify(f.request.body);
+    // The `.mokuro` a reader holds for a volume, as it uploads it.
+    const sidecar = {
+      version: '0.2.2',
+      title: 'Contract Series',
+      title_uuid: '11111111-1111-4111-8111-111111111111',
+      volume: 'Volume 02',
+      volume_uuid: '33333333-3333-4333-8333-333333333333',
+      pages: [1, 2].map((n) => ({
+        version: '0.2.2',
+        img_width: 100,
+        img_height: 150,
+        img_path: `00${n}.jpg`,
+        blocks: [
+          {
+            box: [1, 1, 50, 50],
+            vertical: true,
+            font_size: 12,
+            lines_coords: [
+              [
+                [1, 1],
+                [50, 1],
+                [50, 50],
+                [1, 50]
+              ]
+            ],
+            lines: ['読者のテキスト']
+          }
+        ]
+      }))
+    };
+    const text = JSON.stringify(sidecar);
     const blob = new Blob([text]);
-    await uploadFileWithClient(
+    xhrAnswers = [fx('put-sidecar')];
+    const result = await uploadFileWithClient(
       client,
       '/mokuro-reader/Contract Series/Volume 02.mokuro',
       blob,
       undefined,
       { contentDigest: (await contentDigestOf(blob))! }
-    ).catch(() => undefined);
-    record('put-sidecar', { ...xhrSent[0], body: text }, { status: [201, 204], headers: VERDICT });
+    );
+    expect(result.digestVerified).toBe('sha-256');
+    record(
+      'put-sidecar',
+      { ...xhrSent[0], body: text },
+      { status: [201, 204], headers: [...VERDICT, DIGEST] }
+    );
   });
 });

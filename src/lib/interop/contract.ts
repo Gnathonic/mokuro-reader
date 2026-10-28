@@ -17,7 +17,7 @@
  * Test-only: never import this from app code.
  */
 import { describe } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 
 /** The reader repo's root (this file is `src/lib/interop/contract.ts`). */
@@ -77,7 +77,11 @@ export function contractDir(): string | null {
   const env = process.env.BUNKO_REPO;
   if (env) {
     const dir = join(resolve(REPO_ROOT, env), 'interop', 'contract');
-    return hasSeed(dir) ? dir : null;
+    // Asked for by name: a wrong path is a mistake, never a quiet skip.
+    if (!hasSeed(dir)) {
+      throw new Error(`BUNKO_REPO=${env} has no interop/contract/seed.json (looked in ${dir})`);
+    }
+    return dir;
   }
   for (const rel of [
     '../mokuro-webdav-library',
@@ -133,15 +137,25 @@ export function loadSeed(): Seed {
   return readJson(join(dir, 'seed.json'));
 }
 
+/**
+ * Bunko's time sentinels, in every format it writes (`T` or a space, any number of
+ * fraction digits, `Z`, an offset or no zone): rebased, each keeps its format.
+ */
+const ISO_SENTINEL_RE = /2000-01-01([T ])00:00:00(\.0+)?(Z|[+-]00:00)?/g;
+
 /** Seconds/ms/ISO/HTTP-date sentinels moved so that the sentinel time is `now`. */
 export function rebase<T>(value: T, now: number): T {
-  const iso = new Date(Math.floor(now / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const utc = new Date(now).toISOString(); // YYYY-MM-DDTHH:MM:SS.mmmZ
   const http = new Date(now).toUTCString();
+  const iso = (_m: string, sep: string, frac: string | undefined, zone: string | undefined) => {
+    const digits = frac ? (utc.slice(20, 23) + '000000000').slice(0, frac.length - 1) : '';
+    return `${utc.slice(0, 10)}${sep}${utc.slice(11, 19)}${frac ? '.' + digits : ''}${zone ?? ''}`;
+  };
   const walk = (v: any): any => {
     if (v === EPOCH_S) return Math.floor(now / 1000);
     if (v === EPOCH_MS) return now;
     if (typeof v === 'string') {
-      return v.split(ISO_SENTINEL).join(iso).split(HTTP_DATE_SENTINEL).join(http);
+      return v.replace(ISO_SENTINEL_RE, iso).split(HTTP_DATE_SENTINEL).join(http);
     }
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === 'object') {
@@ -189,16 +203,6 @@ export function editExisting<T extends object>(obj: T, patch: Partial<T>): T {
     }
   }
   return { ...obj, ...patch };
-}
-
-/** Every fixture name Bunko exported. */
-export function bunkoFixtureNames(): string[] {
-  const dir = contractDir();
-  if (!dir) return [];
-  return readdirSync(join(dir, 'bunko'))
-    .filter((f) => f.endsWith('.json'))
-    .map((f) => f.slice(0, -'.json'.length))
-    .sort();
 }
 
 /** The fixture's answer as a fetch `Response`. */
@@ -266,7 +270,13 @@ export function fixtureFetch(fixtures: Fixture[]) {
 
 export interface ReaderExpect {
   status: number[];
+  /** Dot paths that must be present and non-null. */
   body_fields?: string[];
+  /** Dot paths that must be present; null is a value the code handles. */
+  nullable_fields?: string[];
+  /** Dot paths that must have exactly this value. */
+  body_values?: Record<string, unknown>;
+  /** Response headers the code reads: present, and exposed to a cross-origin page. */
   headers?: string[];
 }
 
@@ -398,6 +408,11 @@ export function recordRequest(
   record: { request: CapturedRequest; expect: ReaderExpect; after?: string },
   opts: { tokens?: Record<string, string> } = {}
 ): string | null {
+  const bless = process.env.READER_BLESS === '1';
+  // Never into a checkout found by looking around (it may be someone's main one).
+  if (bless && !process.env.BUNKO_REPO) {
+    throw new Error('READER_BLESS=1 needs BUNKO_REPO=<the Bunko checkout to write into>');
+  }
   const dir = contractDir();
   if (!dir) throw new Error('no Bunko contract to record into (see describeContract)');
   const out: ReaderRecord = {
@@ -407,7 +422,7 @@ export function recordRequest(
   };
   const path = join(dir, 'reader', `${name}.json`);
   const want = render(out);
-  if (process.env.READER_BLESS === '1') {
+  if (bless) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, want);
     return null;

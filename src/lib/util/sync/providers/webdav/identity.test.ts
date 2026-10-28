@@ -34,6 +34,27 @@ function mockFetch(routes: Record<string, MockResponse | Error>) {
 const PERMS = { canWriteProgress: true, canAddFiles: false, canModifyDelete: false };
 
 describe('fetchServerIdentity', () => {
+  it('returns authenticated with permissions on a 200 authenticated:true', async () => {
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, {
+        authenticated: true,
+        username: 'alice',
+        role: 'registered',
+        created_at: '2026-01-01',
+        permissions: PERMS
+      })
+    });
+
+    const result = await fetchServerIdentity('https://host', 'alice', 'pässwörd', impl);
+    expect(result).toEqual({
+      kind: 'authenticated',
+      username: 'alice',
+      role: 'registered',
+      permissions: PERMS,
+      endpoint: 'https://host/login/api/me'
+    });
+  });
+
   describe('permissions.metadata (per-series metadata edit scope)', () => {
     async function identityWith(permissions: Record<string, unknown>) {
       const { impl } = mockFetch({
@@ -112,6 +133,15 @@ describe('fetchServerIdentity', () => {
 
     const result = await fetchServerIdentity('https://host', 'alice', 'wrong', impl);
     expect(result).toEqual({ kind: 'invalid-credentials' });
+  });
+
+  it('returns anonymous for 200 authenticated:false when no creds were sent', async () => {
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, { authenticated: false, role: 'anonymous' })
+    });
+
+    const result = await fetchServerIdentity('https://host', undefined, undefined, impl);
+    expect(result).toEqual({ kind: 'anonymous' });
   });
 
   it('H1: returns unsupported for a 200 old-shape body without an authenticated boolean', async () => {

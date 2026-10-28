@@ -36,7 +36,10 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
 }));
 vi.mock('$lib/util/sync/providers/webdav/webdav-cache', () => ({ webdavCache: {} }));
 
+import { QUEUE_SNAPSHOT } from '$lib/catalog/__fixtures__/mokuro-queue';
+import { MARKER_SNAPSHOT } from '$lib/catalog/__fixtures__/bunko-marker';
 import {
+  EPOCH_MS,
   describeContract,
   fixtureFetch,
   fixtureHeader,
@@ -64,6 +67,15 @@ import { classifyWriteError } from '$lib/util/sync/providers/webdav/webdav-error
 
 const SERVER = 'https://bunko.example';
 const NOW = Date.parse('2026-10-28T12:00:00Z');
+
+/**
+ * Keys of `raw` (Bunko's object) that `parsed` (the reader's) lost, beyond `ignored`.
+ * The reader's parsers drop unknown keys silently, so a field Bunko renames would
+ * otherwise vanish without a failing test.
+ */
+function lostKeys(raw: object, parsed: object, ignored: readonly string[] = []): string[] {
+  return Object.keys(raw).filter((k) => !(k in parsed) && !ignored.includes(k));
+}
 
 const fx = (name: string, now = NOW) => loadBunkoFixture(name, { now });
 const password = (user: string) => loadSeed().users.find((u) => u.username === user)!.password;
@@ -103,6 +115,15 @@ describeContract('identity (`/login/api/me`) as Bunko answers it', () => {
       kind: 'authenticated',
       username: 'viewer',
       permissions: { canWriteProgress: false, canAddFiles: false, canModifyDelete: false }
+    });
+  });
+
+  it('a hot limiter is rate-limited, a dead token is invalid', async () => {
+    expect(await identify('login-me-rate-limited', 'reader', password('reader'))).toEqual({
+      kind: 'rate-limited'
+    });
+    expect(await identify('login-me-bearer-invalid', undefined, undefined, 'dead')).toEqual({
+      kind: 'invalid-credentials'
     });
   });
 
@@ -155,8 +176,47 @@ describeContract('the volume manifest as Bunko answers it', () => {
     return parseVolumeManifest(f.body, `${SERVER}${f.request.path}`)!;
   };
 
-  it('a volume with OCR: archive, sidecar and series file, resolved on the server', () => {
+  it('every field the manifest carries survives the parse', () => {
+    for (const name of ['manifest-with-ocr', 'manifest-without-ocr', 'manifest-japanese']) {
+      const raw = fx(name).body;
+      const m = parseVolumeManifest(raw, `${SERVER}${fx(name).request.path}`)!;
+      // `version` is checked, not kept.
+      expect(lostKeys(raw, m, ['version'])).toEqual([]);
+      for (const key of ['archive', 'ocr', 'cover', 'series_file'] as const) {
+        if (raw[key] === null) continue;
+        // `sha256`: the reader hashes the sidecar it fetched itself (cloud-ocr-upgrade.ts).
+        expect(lostKeys(raw[key], m[key]!, ['sha256'])).toEqual([]);
+      }
+      raw.layers.forEach((l: Record<string, unknown>, i: number) => {
+        expect(lostKeys(l, m.layers[i])).toEqual([]);
+      });
+    }
+  });
+
+  it('a volume with OCR: archive, sidecar, layer, cover and series file, resolved on the server', () => {
+    const raw = fx('manifest-with-ocr').body;
     const m = parse('manifest-with-ocr');
+    const at = new Date(NOW).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    expect(m.series_file).toEqual({
+      url: `${SERVER}/mokuro-reader/Contract%20Series/series.json`,
+      size: raw.series_file.size,
+      modified: at
+    });
+    expect(m.series_file!.size).toBeGreaterThan(0);
+    expect(m.layers).toEqual([
+      {
+        id: 'hayai-nova',
+        url: `${SERVER}/mokuro-reader/Contract%20Series/Volume%2001.hayai-nova.mokuro`,
+        size: raw.layers[0].size,
+        modified: at,
+        gz: false
+      }
+    ]);
+    expect(m.cover).toEqual({
+      url: `${SERVER}/mokuro-reader/Contract%20Series/Volume%2001.webp`,
+      size: raw.cover.size,
+      modified: at
+    });
     expect(m.series).toBe('Contract Series');
     expect(m.volume).toBe('Volume 01');
     expect(m.archive.url).toBe(`${SERVER}/mokuro-reader/Contract%20Series/Volume%2001.cbz`);
@@ -196,6 +256,13 @@ describeContract('the volume manifest as Bunko answers it', () => {
     expect(await loadVolumeManifest(`${SERVER}${f.request.path}`, undefined, fetch)).toEqual({
       error: 'HTTP 404'
     });
+  });
+});
+
+describeContract('the snapshots used without a Bunko checkout', () => {
+  it('match Bunko’s fixtures', () => {
+    expect(QUEUE_SNAPSHOT).toEqual(loadBunkoFixture('queue-file-http', { now: EPOCH_MS }).body);
+    expect(MARKER_SNAPSHOT).toEqual(loadBunkoFixture('marker-active', { now: EPOCH_MS }).body);
   });
 });
 
@@ -292,12 +359,19 @@ describeContract('the lease marker as Bunko writes it', () => {
   });
 });
 
+/**
+ * `series.json` volume fields the reader drops on purpose. `matched_page_count`:
+ * Bunko's own bookkeeping (how many of the `.mokuro`'s pages it found in the
+ * archive, for its manifest and OCR queue); the reader neither reads nor writes it.
+ */
+const SERIES_VOLUME_IGNORED: readonly string[] = ['matched_page_count'];
+
 describeContract('the compiled metadata files as Bunko writes them', () => {
   for (const [name, title, count] of [
     ['series-json', 'Contract Series', 2],
     ['series-json-japanese', '日本語シリーズ', 1]
   ] as const) {
-    it(`${name}: every volume survives the parse`, () => {
+    it(`${name}: every field of every volume survives the parse, in Bunko's order`, () => {
       const raw = fx(name).body;
       const { file, entryCollapse } = parseSeriesFileWithReport(raw);
       expect(file).toBeDefined();
@@ -305,17 +379,44 @@ describeContract('the compiled metadata files as Bunko writes them', () => {
       expect(file!.series_title).toBe(title);
       expect(raw.volumes).toHaveLength(count);
       expect(file!.volumes).toHaveLength(count);
-      expect(file!.volumes.map((v) => v.volume_title)).toEqual(
-        raw.volumes.map((v: { volume_title: string }) => v.volume_title)
-      );
+      expect(lostKeys(raw, file!)).toEqual([]);
+      raw.volumes.forEach((v: Record<string, unknown>, i: number) => {
+        expect(lostKeys(v, file!.volumes[i], SERIES_VOLUME_IGNORED)).toEqual([]);
+        // The reader writes series.json byte for byte as Bunko does (series-file.ts).
+        expect(Object.keys(file!.volumes[i])).toEqual(
+          Object.keys(v).filter((k) => !SERIES_VOLUME_IGNORED.includes(k))
+        );
+      });
+      expect(Object.keys(file!)).toEqual(Object.keys(raw));
     });
   }
 
-  it('catalog.json lists both series', () => {
+  it('series.json: the stamps the reader compares come through as Bunko wrote them', () => {
+    const raw = fx('series-json').body;
+    const file = parseSeriesFileWithReport(raw).file!;
+    const [v1, v2] = file.volumes;
+    expect(v1).toMatchObject({
+      volume_uuid: '22222222-2222-4222-8222-222222222222',
+      archive_size: raw.volumes[0].archive_size,
+      mokuro_size: raw.volumes[0].mokuro_size,
+      mokuro_modified: Math.floor(NOW / 1000),
+      mokuro_sha256: raw.volumes[0].mokuro_sha256,
+      cover_size: raw.volumes[0].cover_size
+    });
+    // A volume without OCR: Bunko's deterministic uuid, as the reader derives it too.
+    expect(v2.volume_uuid).toBe(raw.volumes[1].volume_uuid);
+    expect(v2.archive_size).toBe(raw.volumes[1].archive_size);
+  });
+
+  it('catalog.json lists both series, every field kept', () => {
     const raw = fx('catalog-json').body;
     const file = parseCatalogFile(raw)!;
     expect(file).toBeDefined();
     expect(file.series.map((s) => s.series_title)).toEqual(['Contract Series', '日本語シリーズ']);
+    expect(lostKeys(raw, file)).toEqual([]);
+    raw.series.forEach((entry: Record<string, unknown>, i: number) => {
+      expect(lostKeys(entry, file.series[i])).toEqual([]);
+    });
   });
 });
 
@@ -470,11 +571,13 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
   let calls: ReturnType<typeof fixtureFetch>['calls'];
 
   beforeAll(async () => {
+    localStorage.clear();
     const answers = fixtureFetch([
       fx('propfind-server-root-depth1'),
       fx('propfind-library-depth0'),
       fx('login-me-basic'),
       fx('login-token-issue'),
+      fx('options-library'),
       fx('propfind-root-depth0-privileges'),
       fx('propfind-root-depth1'),
       fx('propfind-root-depth-infinity'),
@@ -500,17 +603,33 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     }
   });
 
-  it('signs in from the identity Bunko gives', () => {
+  it('signs in from the identity Bunko gives, and learns that PUTs are verified', () => {
     expect(provider.isAuthenticated()).toBe(true);
     expect(provider.isReadOnly).toBe(false);
     expect(calls.some((c) => c.url === `${SERVER}/login/api/me`)).toBe(true);
+    // The OPTIONS probe read `X-Mokuro-Put: verified` (uploads then carry a digest).
+    expect(calls.some((c) => c.method === 'OPTIONS')).toBe(true);
+    expect(localStorage.getItem('webdav_put_verified')).toBe(SERVER);
   });
 
-  it('the privilege probe finds no ACL and falls back to OPTIONS (fail open)', async () => {
-    const answers = fixtureFetch([fx('propfind-root-depth0-privileges')]);
+  it('the privilege probe finds no ACL, and the OPTIONS fallback reads Bunko’s Allow', async () => {
+    const answers = fixtureFetch([fx('propfind-root-depth0-privileges'), fx('options-library')]);
     fetchHandler.impl = answers.fetch;
-    expect(await provider.checkWritePermissions(SERVER)).toBe(true);
+    const allow = fx('options-library').headers!.allow;
+    expect(allow).toBeTruthy();
+    // Bunko's Allow on the library folder names no PUT or MKCOL (a collection takes
+    // neither), so this generic-WebDAV fallback calls it read-only. It runs only when
+    // the identity endpoint did not answer for the account.
+    expect(await provider.checkWritePermissions(SERVER)).toBe(
+      ['PUT', 'DELETE', 'MKCOL'].every((m) =>
+        allow
+          .split(',')
+          .map((x: string) => x.trim())
+          .includes(m)
+      )
+    );
     expect(answers.calls.map((c) => c.method)).toEqual(['PROPFIND', 'OPTIONS']);
+    expect(answers.calls[1].url).toBe(`${SERVER}/mokuro-reader/`);
   });
 
   it('the Depth: infinity listing yields every volume, sidecar and metadata file', async () => {
@@ -520,6 +639,8 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
       [
         'Contract Series/Volume 01.cbz',
         'Contract Series/Volume 01.mokuro',
+        'Contract Series/Volume 01.hayai-nova.mokuro',
+        'Contract Series/Volume 01.webp',
         'Contract Series/Volume 02.cbz',
         'Contract Series/series.json',
         'catalog.json',

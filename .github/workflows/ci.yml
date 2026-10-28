@@ -4,7 +4,8 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop]
+    # feat/cloud-bunko: PRs into it run the Bunko contract job too.
+    branches: [main, develop, feat/cloud-bunko]
 
 jobs:
   lint:

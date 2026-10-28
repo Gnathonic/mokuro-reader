@@ -36,27 +36,30 @@ export interface QueueFixtureDoc {
   volumes: QueueVolumeDoc[];
 }
 
-/** `queue-file-http`'s body as exported (sentinel times). */
-const SNAPSHOT: QueueFixtureDoc = {
+/**
+ * `queue-file-http`'s body as exported (sentinel times). `bunko-contract.test.ts`
+ * checks it still equals the fixture whenever a Bunko checkout is there.
+ */
+export const QUEUE_SNAPSHOT: QueueFixtureDoc = {
+  version: 1,
   generated_at: '2000-01-01T00:00:00Z',
   held: { reason: 'no-processor' },
   next_check_after: 300,
   pending_volumes: 1,
-  version: 1,
   volumes: [
     {
-      jobs: [{ eta: null, id: 'hayai-nova', kind: 'ocr', progress: null, state: 'held' }],
-      manifest: '/catalog/api/manifest?series=Contract%20Series&volume=Volume%2002',
-      path: '/mokuro-reader/Contract%20Series/Volume%2002.cbz',
       series: 'Contract Series',
-      volume: 'Volume 02'
+      volume: 'Volume 02',
+      path: '/mokuro-reader/Contract%20Series/Volume%2002.cbz',
+      manifest: '/catalog/api/manifest?series=Contract%20Series&volume=Volume%2002',
+      jobs: [{ kind: 'ocr', id: 'hayai-nova', state: 'held', eta: null, progress: null }]
     }
   ]
 };
 
 /** The queue file Bunko serves, its times rebased onto `now`. */
 export function servedQueueFile(now: number): QueueFixtureDoc {
-  return bunkoBody('queue-file-http', SNAPSHOT, now);
+  return bunkoBody('queue-file-http', QUEUE_SNAPSHOT, now);
 }
 
 export function queueFixture(now: number): QueueFixtureDoc {

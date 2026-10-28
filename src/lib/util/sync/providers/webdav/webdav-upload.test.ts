@@ -78,6 +78,24 @@ describe('a WebDAV PUT that the server queued for OCR (Addendum A)', () => {
   // The fixture's server is mounted under `/dav` (its uploads go to
   // `/dav/mokuro-reader/...`), so bunko's root-absolute manifest link is put
   // back under that prefix (`resolveBunkoLink`); a root mount resolves as is.
+  it('reports the manifest URL, resolved against the upload URL, and the recheck delay', async () => {
+    answers = [
+      {
+        status: 201,
+        headers: {
+          'X-Mokuro-Manifest': '/catalog/api/manifest?series=S&volume=V',
+          'X-Mokuro-Recheck-After': '95'
+        }
+      }
+    ];
+    const result = await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['x']));
+    expect(result.path).toBe('/mokuro-reader/S/V.cbz');
+    expect(result.serverOcr).toEqual({
+      manifestUrl: 'https://bunko.example/dav/catalog/api/manifest?series=S&volume=V',
+      recheckAfter: 95
+    });
+  });
+
   it('reports no server OCR when the headers are absent (any other WebDAV server)', async () => {
     answers = [{ status: 204 }];
     const result = await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['x']));

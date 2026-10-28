@@ -14,33 +14,15 @@ import {
   clearCloudBunkoMarkers,
   type MarkerNodeRecord
 } from './cloud-bunko-marker';
-import { bunkoBody, editExisting } from '$lib/interop/contract';
+import { editExisting } from '$lib/interop/contract';
+import { servedMarker } from './__fixtures__/bunko-marker';
 
 const T0 = Date.parse('2026-10-12T10:00:00Z');
 const TTL = 900;
 
-/** `marker-active` as Bunko exported it (sentinel times), for runs without a Bunko checkout. */
-const MARKER_SNAPSHOT = {
-  boot_id: '<id-1>',
-  bunko_version: '0.0.0',
-  claimed_at: '2000-01-01T00:00:00Z',
-  compiles: ['series.json', 'catalog.json'],
-  epoch: 1,
-  heartbeat_at: '2000-01-01T00:00:00Z',
-  instance_id: '<id-2>',
-  instance_name: 'contract-host',
-  kind: 'mokuro-bunko',
-  ocr: true,
-  queue: '.mokuro-queue.json',
-  state: 'active',
-  took_over_from: null as string | null,
-  ttl_s: 900,
-  version: 1
-};
-
 /** Bunko's own marker (its contract fixture), with these tests' values in its fields. */
 function marker(over: Record<string, unknown> = {}) {
-  return editExisting(bunkoBody('marker-active', MARKER_SNAPSHOT, T0), {
+  return editExisting(servedMarker(T0), {
     instance_id: 'aaa',
     boot_id: 'b1',
     instance_name: 'nas',
