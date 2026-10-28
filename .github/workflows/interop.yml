@@ -8,12 +8,17 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop]
+    # feat/cloud-bunko: PRs stacked on the cloud branch run it too.
+    branches: [main, develop, feat/cloud-bunko]
 
 jobs:
   cloudsim:
     name: Providers against cloudsim
     runs-on: ubuntu-latest
+    env:
+      # The suites throw at collection without CLOUDSIM_URL, so the job can never
+      # pass with every test skipped.
+      REQUIRE_CLOUDSIM: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +41,10 @@ jobs:
 
       - name: Start cloudsim
         run: |
-          bunko/target/release/bunko-cloudsim --port 0 > cloudsim.out 2> cloudsim.log &
+          # --preauth-host: jsdom drops a token on a redirect only when the host
+          # name changes (a browser does on any change of origin).
+          bunko/target/release/bunko-cloudsim --port 0 --preauth-host localhost \
+            > cloudsim.out 2> cloudsim.log &
           for _ in $(seq 100); do
             [ -s cloudsim.out ] && break
             sleep 0.1
