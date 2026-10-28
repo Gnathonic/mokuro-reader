@@ -8,6 +8,7 @@ import type {
   SilentRequest
 } from '@azure/msal-browser';
 import { ONEDRIVE_CONFIG } from './constants';
+import { CLOUD_TEST_HOOKS, cloudTestToken } from '../../cloud-test-hooks';
 
 type Msal = typeof import('@azure/msal-browser');
 
@@ -97,6 +98,7 @@ class OneDriveTokenManager {
   }
 
   isAuthenticated(): boolean {
+    if (CLOUD_TEST_HOOKS && cloudTestToken('onedrive') !== null) return true;
     return this.account !== null && !!this.instance;
   }
 
@@ -190,6 +192,8 @@ class OneDriveTokenManager {
    * required (the caller should prompt the user via reauthenticate()).
    */
   async getAccessToken(): Promise<string> {
+    const injected = CLOUD_TEST_HOOKS ? cloudTestToken('onedrive') : null;
+    if (injected !== null) return injected;
     await this.initialize();
     if (!this.instance || !this.account || !this.msal) {
       throw new Error('Not authenticated with OneDrive');

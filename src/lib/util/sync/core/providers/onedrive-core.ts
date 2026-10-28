@@ -1,10 +1,8 @@
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
-import { ONEDRIVE_CONFIG } from '../../providers/onedrive/constants';
+import { ONEDRIVE_CONFIG, graphBase } from '../../providers/onedrive/constants';
 import { parseNextExpectedRange } from '../../providers/onedrive/upload-session';
-
-const BASE = ONEDRIVE_CONFIG.GRAPH_BASE_URL;
 
 function encodePath(path: string): string {
   return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
@@ -62,7 +60,7 @@ async function findCompletedUpload(
   expectedSize: number
 ): Promise<CompletedDriveItem | null> {
   try {
-    const response = await fetch(`${BASE}/me/drive/root:/${encodePath(targetPath)}`, {
+    const response = await fetch(`${graphBase()}/me/drive/root:/${encodePath(targetPath)}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(SESSION_TIMEOUT_MS)
     });
@@ -92,7 +90,7 @@ export const onedriveCore: CloudProviderCore = {
 
     return await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('GET', `${BASE}/me/drive/items/${encodeURIComponent(fileId)}/content`);
+      xhr.open('GET', `${graphBase()}/me/drive/items/${encodeURIComponent(fileId)}/content`);
       xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
       xhr.responseType = 'arraybuffer';
       xhr.onprogress = (event) => {
@@ -142,7 +140,7 @@ export const onedriveCore: CloudProviderCore = {
       sessionAttempt++;
       try {
         const sessionResponse = await fetch(
-          `${BASE}/me/drive/root:/${encodePath(targetPath)}:/createUploadSession`,
+          `${graphBase()}/me/drive/root:/${encodePath(targetPath)}:/createUploadSession`,
           {
             method: 'POST',
             headers: {

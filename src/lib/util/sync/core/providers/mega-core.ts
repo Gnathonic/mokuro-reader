@@ -2,6 +2,7 @@ import { File as MegaFile, Storage } from 'megajs';
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
+import { CLOUD_TEST_HOOKS } from '../../cloud-test-hooks';
 
 /**
  * The server timestamp of a completed-upload node, as an ISO string — the
@@ -78,13 +79,15 @@ async function getUploadStorage(session: string): Promise<Storage> {
 // `api` (with the session id) to authorize `a:"g", n:<nodeId>` requests.
 const downloadApiBySid = new Map<string, any>();
 
-function getDownloadApi(sid: string): any {
+function getDownloadApi(sid: string, gateway?: string): any {
   let api = downloadApiBySid.get(sid);
   if (!api) {
     const storage: any = new Storage({
       autologin: false,
       autoload: false,
-      keepalive: false
+      keepalive: false,
+      // A test build's simulator gateway, passed in the worker credentials.
+      ...(CLOUD_TEST_HOOKS && gateway ? { gateway } : {})
     } as any);
     storage.api.sid = sid;
     api = storage.api;
@@ -222,7 +225,9 @@ export const megaCore: CloudProviderCore = {
     const sid = requireCredentialString(credentials, 'sid', 'MEGA session id');
     const nodeId = requireCredentialString(credentials, 'nodeId', 'MEGA node id');
     const fileKey = requireCredentialString(credentials, 'fileKey', 'MEGA file key');
-    const api = getDownloadApi(sid);
+    const gateway =
+      CLOUD_TEST_HOOKS && typeof credentials.gateway === 'string' ? credentials.gateway : undefined;
+    const api = getDownloadApi(sid, gateway);
 
     return await new Promise<ArrayBuffer>((resolve, reject) => {
       try {
