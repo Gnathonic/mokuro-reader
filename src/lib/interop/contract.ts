@@ -30,6 +30,8 @@ export const EPOCH_S = 946684800;
 export const EPOCH_MS = 946684800000;
 export const ETAG_SENTINEL = '"etag"';
 export const TOKEN_SENTINEL = '<token>';
+/** A recorded `Content-Digest`: Bunko's replay sends the digest of its own body. */
+export const DIGEST_SENTINEL = '<digest>';
 
 export interface ContractRequest {
   method?: string;
@@ -321,6 +323,8 @@ function authOf(value: string | null, tokens: Record<string, string>, seed: Seed
 /** Header values with their volatile part replaced, as Bunko's normalizer does. */
 function normalizeHeader(name: string, value: string): string {
   if ((name === 'if-none-match' || name === 'if-match') && value !== '*') return ETAG_SENTINEL;
+  // Of the body the test sent; the replay computes it for the body it sends.
+  if (name === 'content-digest') return DIGEST_SENTINEL;
   return value;
 }
 
