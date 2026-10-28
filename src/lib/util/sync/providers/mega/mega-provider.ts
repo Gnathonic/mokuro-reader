@@ -535,7 +535,29 @@ export class MegaProvider implements SyncProvider {
 
   private findMokuroFolder(): any | null {
     const files = Object.values(this.storage.files || {});
-    return files.find((f: any) => f.name === MOKURO_FOLDER && f.directory) || null;
+    return (
+      files.find((f: any) => f.name === MOKURO_FOLDER && f.directory && this.isLiveNode(f)) || null
+    );
+  }
+
+  /**
+   * Is this node still in the user's drive? megajs never evicts a node from
+   * storage.files: the sc delete handler only splices it out of
+   * parent.children, and a move to the Rubbish Bin only re-parents it. So a
+   * node is gone when any link up its ancestry is broken, or the chain ends in
+   * the Rubbish Bin — exactly the nodes MEGA's own apps no longer show. (Every
+   * megajs create path — mkdir, upload, copy — links the new node into its
+   * parent's children, so a live node always passes.)
+   */
+  private isLiveNode(node: any): boolean {
+    let current = node;
+    while (current) {
+      if (current === this.storage?.trash) return false;
+      const parent = current.parent;
+      if (parent && !parent.children?.includes(current)) return false;
+      current = parent;
+    }
+    return true;
   }
 
   private listFolder(folder: any): Promise<any[]> {
@@ -544,7 +566,7 @@ export class MegaProvider implements SyncProvider {
       const files = Object.values(this.storage.files || {});
 
       // Filter files that are children of this folder
-      const children = files.filter((f: any) => f.parent === folder);
+      const children = files.filter((f: any) => f.parent === folder && this.isLiveNode(f));
       resolve(children);
     });
   }
@@ -660,20 +682,18 @@ export class MegaProvider implements SyncProvider {
 
         if (!isCbz && !isSidecar && !isJson) continue;
 
+        // Deleted (still in storage.files) or in the Rubbish Bin — including a
+        // whole mokuro-reader folder moved there, which the walk below would
+        // stop at before ever reaching the bin.
+        if (!this.isLiveNode(file)) continue;
+
         // Check if file is in ANY mokuro-reader folder or subfolder
         let parent = (file as any).parent;
         let pathParts: string[] = [];
         let foundMokuroRoot = false;
-        let isInTrash = false;
 
         // Walk up the tree to build path and verify it's under a mokuro-reader folder
         while (parent) {
-          // Check if any parent is the Rubbish Bin (trash)
-          if (parent.name === 'Rubbish Bin') {
-            isInTrash = true;
-            break;
-          }
-
           // Check if this parent is ANY mokuro-reader folder
           const isMokuroFolder = mokuroFolders.some((mf: any) => mf === parent);
           if (isMokuroFolder) {
@@ -685,9 +705,6 @@ export class MegaProvider implements SyncProvider {
           }
           parent = parent.parent;
         }
-
-        // Skip files in trash
-        if (isInTrash) continue;
 
         // If we found mokuro root, this file is under a mokuro-reader folder
         if (foundMokuroRoot) {
@@ -984,9 +1001,10 @@ export class MegaProvider implements SyncProvider {
                 console.log(`✅ Deleted file from MEGA (${fileId})`);
                 resolve();
                 // No manual storage.files cleanup: the sc stream applies the
-                // delete (and a manual removal would crash its handler). The
-                // caller's cache update + the change listeners keep the UI
-                // current.
+                // delete (and a manual removal would crash its handler). megajs
+                // only unlinks the node, so the listing skips it via
+                // isLiveNode. The caller's cache update + the change listeners
+                // keep the UI current.
               }
             });
           });
@@ -1442,15 +1460,6 @@ export class MegaProvider implements SyncProvider {
     });
   }
 
-  private isInTrash(file: any): boolean {
-    let parent = file?.parent;
-    while (parent) {
-      if (parent.name === 'Rubbish Bin') return true;
-      parent = parent.parent;
-    }
-    return false;
-  }
-
   private findNodeById(id: string): any | null {
     const files = Object.values(this.storage?.files || {}) as any[];
     return files.find((f: any) => this.getFileNodeId(f) === id) || null;
@@ -1471,7 +1480,7 @@ export class MegaProvider implements SyncProvider {
         const folders: FolderInfo[] = [];
         for (const f of files) {
           if (!f.directory) continue;
-          if (this.isInTrash(f)) continue;
+          if (!this.isLiveNode(f)) continue;
           const id = this.getFileNodeId(f);
           if (!id) continue;
           const parentId = f.parent ? this.getFileNodeId(f.parent) : null;
@@ -1494,7 +1503,7 @@ export class MegaProvider implements SyncProvider {
         const files = Object.values(this.storage.files || {}) as any[];
         const items: FolderItem[] = [];
         for (const f of files) {
-          if (f.parent !== target) continue;
+          if (f.parent !== target || !this.isLiveNode(f)) continue;
           const id = this.getFileNodeId(f);
           if (!id) continue;
           items.push({ id, name: f.name, isFolder: !!f.directory });
