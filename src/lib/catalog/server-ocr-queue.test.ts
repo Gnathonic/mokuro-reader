@@ -83,6 +83,8 @@ describe('parseQueueFile', () => {
       ...queueFixture(NOW),
       held: { reason: 'no-processor' },
       next_check_after: null,
+      // An older server's file: no count of the waiting volumes.
+      pending_volumes: undefined,
       volumes: [
         ...queueFixture(NOW).volumes,
         { series: 'x' },

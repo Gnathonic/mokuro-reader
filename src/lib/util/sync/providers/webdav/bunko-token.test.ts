@@ -7,6 +7,7 @@ import {
   tokenLabel,
   tokenNeedsRenewal
 } from './bunko-token';
+import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
 
 const ENDPOINT = 'https://host/login/api/token';
 
@@ -18,31 +19,6 @@ function json(status: number, body: unknown): Response {
 }
 
 describe('requestBunkoToken', () => {
-  it('posts a reader token request as JSON and returns the token on 200', async () => {
-    const fetchImpl = vi.fn(async () =>
-      json(200, {
-        token: 'tok-1',
-        token_type: 'Bearer',
-        kind: 'reader',
-        expires_at: 1_800_000_000.5,
-        user: { username: 'alice', role: 'registered' }
-      })
-    );
-    const result = await requestBunkoToken(ENDPOINT, 'alice', 'pässwörd', 'label', fetchImpl);
-    expect(result).toEqual({ kind: 'issued', token: 'tok-1', expiresAt: 1_800_000_000_500 });
-    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe(ENDPOINT);
-    expect(init.method).toBe('POST');
-    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
-    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
-    expect(JSON.parse(init.body as string)).toEqual({
-      username: 'alice',
-      password: 'pässwörd',
-      kind: 'reader',
-      label: 'label'
-    });
-  });
-
   it('accepts a 200 without an expiry (no proactive renewal then)', async () => {
     const result = await requestBunkoToken(ENDPOINT, 'a', 'p', 'l', async () =>
       json(200, { token: 't', token_type: 'bearer' })
@@ -85,13 +61,6 @@ describe('requestBunkoToken', () => {
     }
   });
 
-  it('a JSON 429 is the login rate limiter', async () => {
-    const result = await requestBunkoToken(ENDPOINT, 'a', 'p', 'l', async () =>
-      json(429, { error: 'Too many failed attempts. Retry in 60s' })
-    );
-    expect(result).toEqual({ kind: 'rate-limited' });
-  });
-
   it('a network error or a 5xx learns nothing: unreachable', async () => {
     expect(
       await requestBunkoToken(ENDPOINT, 'a', 'p', 'l', async () => {
@@ -124,6 +93,53 @@ describe('revokeBunkoToken', () => {
         throw new TypeError('offline');
       })
     ).toBe(false);
+  });
+});
+
+/** Bunko's own answer (its contract fixture) as a fetch `Response`. */
+function bunko(name: string): Response {
+  const f = loadBunkoFixture(name);
+  return json(f.status!, f.body);
+}
+
+describeContract('the token endpoint on Bunko’s own answers', () => {
+  it('posts a reader token request as JSON and returns the token on 200', async () => {
+    const issued = loadBunkoFixture('login-token-issue');
+    const fetchImpl = vi.fn(async () => bunko('login-token-issue'));
+    const result = await requestBunkoToken(ENDPOINT, 'alice', 'pässwörd', 'label', fetchImpl);
+    expect(result).toEqual({
+      kind: 'issued',
+      token: issued.body.token,
+      expiresAt: issued.body.expires_at * 1000
+    });
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(ENDPOINT);
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect(JSON.parse(init.body as string)).toEqual({
+      username: 'alice',
+      password: 'pässwörd',
+      kind: 'reader',
+      label: 'label'
+    });
+    // The fields Bunko took from the reader that the fixture was made with.
+    expect(Object.keys(JSON.parse(init.body as string)).sort()).toEqual(
+      Object.keys(issued.request.body as object).sort()
+    );
+  });
+
+  it('a JSON 429 is the login rate limiter', async () => {
+    const result = await requestBunkoToken(ENDPOINT, 'a', 'p', 'l', async () =>
+      bunko('login-token-rate-limited')
+    );
+    expect(result).toEqual({ kind: 'rate-limited' });
+  });
+
+  it('a sign-out answers 2xx', async () => {
+    expect(await revokeBunkoToken(ENDPOINT, 'tok', async () => bunko('login-token-revoke'))).toBe(
+      true
+    );
   });
 });
 

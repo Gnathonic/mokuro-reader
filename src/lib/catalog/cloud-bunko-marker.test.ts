@@ -14,14 +14,33 @@ import {
   clearCloudBunkoMarkers,
   type MarkerNodeRecord
 } from './cloud-bunko-marker';
+import { bunkoBody, editExisting } from '$lib/interop/contract';
 
 const T0 = Date.parse('2026-10-12T10:00:00Z');
 const TTL = 900;
 
+/** `marker-active` as Bunko exported it (sentinel times), for runs without a Bunko checkout. */
+const MARKER_SNAPSHOT = {
+  boot_id: '<id-1>',
+  bunko_version: '0.0.0',
+  claimed_at: '2000-01-01T00:00:00Z',
+  compiles: ['series.json', 'catalog.json'],
+  epoch: 1,
+  heartbeat_at: '2000-01-01T00:00:00Z',
+  instance_id: '<id-2>',
+  instance_name: 'contract-host',
+  kind: 'mokuro-bunko',
+  ocr: true,
+  queue: '.mokuro-queue.json',
+  state: 'active',
+  took_over_from: null as string | null,
+  ttl_s: 900,
+  version: 1
+};
+
+/** Bunko's own marker (its contract fixture), with these tests' values in its fields. */
 function marker(over: Record<string, unknown> = {}) {
-  return {
-    version: 1,
-    kind: 'mokuro-bunko',
+  return editExisting(bunkoBody('marker-active', MARKER_SNAPSHOT, T0), {
     instance_id: 'aaa',
     boot_id: 'b1',
     instance_name: 'nas',
@@ -30,13 +49,8 @@ function marker(over: Record<string, unknown> = {}) {
     claimed_at: '2026-10-12T09:00:00Z',
     heartbeat_at: new Date(T0).toISOString(),
     ttl_s: TTL,
-    state: 'active',
-    compiles: ['series.json', 'catalog.json'],
-    ocr: true,
-    queue: '.mokuro-queue.json',
-    took_over_from: null,
     ...over
-  };
+  });
 }
 
 function read(

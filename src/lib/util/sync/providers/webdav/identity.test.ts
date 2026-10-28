@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fetchServerIdentity } from './identity';
+import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
 
 type MockResponse = { status: number; body: string; contentType?: string };
 
@@ -33,27 +34,6 @@ function mockFetch(routes: Record<string, MockResponse | Error>) {
 const PERMS = { canWriteProgress: true, canAddFiles: false, canModifyDelete: false };
 
 describe('fetchServerIdentity', () => {
-  it('returns authenticated with permissions on a 200 authenticated:true', async () => {
-    const { impl } = mockFetch({
-      'https://host/login/api/me': jsonResponse(200, {
-        authenticated: true,
-        username: 'alice',
-        role: 'registered',
-        created_at: '2026-01-01',
-        permissions: PERMS
-      })
-    });
-
-    const result = await fetchServerIdentity('https://host', 'alice', 'pässwörd', impl);
-    expect(result).toEqual({
-      kind: 'authenticated',
-      username: 'alice',
-      role: 'registered',
-      permissions: PERMS,
-      endpoint: 'https://host/login/api/me'
-    });
-  });
-
   describe('permissions.metadata (per-series metadata edit scope)', () => {
     async function identityWith(permissions: Record<string, unknown>) {
       const { impl } = mockFetch({
@@ -132,15 +112,6 @@ describe('fetchServerIdentity', () => {
 
     const result = await fetchServerIdentity('https://host', 'alice', 'wrong', impl);
     expect(result).toEqual({ kind: 'invalid-credentials' });
-  });
-
-  it('returns anonymous for 200 authenticated:false when no creds were sent', async () => {
-    const { impl } = mockFetch({
-      'https://host/login/api/me': jsonResponse(200, { authenticated: false, role: 'anonymous' })
-    });
-
-    const result = await fetchServerIdentity('https://host', undefined, undefined, impl);
-    expect(result).toEqual({ kind: 'anonymous' });
   });
 
   it('H1: returns unsupported for a 200 old-shape body without an authenticated boolean', async () => {
@@ -306,5 +277,49 @@ describe('fetchServerIdentity', () => {
     expect(headers).not.toHaveProperty('Authorization');
     // No creds were sent, so authenticated:false means anonymous (not invalid creds)
     expect(result).toEqual({ kind: 'anonymous' });
+  });
+});
+
+/** What Bunko answers (its contract fixtures), served at `https://host/login/api/me`. */
+function bunko(name: string): MockResponse {
+  const f = loadBunkoFixture(name);
+  return {
+    status: f.status!,
+    body: JSON.stringify(f.body),
+    contentType: f.headers!['content-type']
+  };
+}
+
+describeContract('fetchServerIdentity on Bunko’s own answers', () => {
+  it('returns authenticated with permissions on a 200 authenticated:true', async () => {
+    const { impl } = mockFetch({ 'https://host/login/api/me': bunko('login-me-basic') });
+
+    const result = await fetchServerIdentity('https://host', 'reader', 'pässwörd', impl);
+    expect(result).toEqual({
+      kind: 'authenticated',
+      username: 'reader',
+      role: 'uploader',
+      permissions: {
+        canWriteProgress: true,
+        canAddFiles: true,
+        canModifyDelete: false,
+        metadata: { scope: 'owned', ownedSeries: [] }
+      },
+      endpoint: 'https://host/login/api/me'
+    });
+  });
+
+  it('returns anonymous for 200 authenticated:false when no creds were sent', async () => {
+    const { impl } = mockFetch({ 'https://host/login/api/me': bunko('login-me-anonymous') });
+
+    const result = await fetchServerIdentity('https://host', undefined, undefined, impl);
+    expect(result).toEqual({ kind: 'anonymous' });
+  });
+
+  it('returns invalid-credentials for Bunko’s 401 to a wrong password', async () => {
+    const { impl } = mockFetch({ 'https://host/login/api/me': bunko('login-me-bad-password') });
+
+    const result = await fetchServerIdentity('https://host', 'reader', 'wrong', impl);
+    expect(result).toEqual({ kind: 'invalid-credentials' });
   });
 });

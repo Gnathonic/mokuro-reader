@@ -7,6 +7,7 @@ import {
   uploadFileWithClient,
   uploadWithRetry
 } from './webdav-upload';
+import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
 
 /** What the fake server answers each PUT with, in order. */
 type Answer =
@@ -77,24 +78,6 @@ describe('a WebDAV PUT that the server queued for OCR (Addendum A)', () => {
   // The fixture's server is mounted under `/dav` (its uploads go to
   // `/dav/mokuro-reader/...`), so bunko's root-absolute manifest link is put
   // back under that prefix (`resolveBunkoLink`); a root mount resolves as is.
-  it('reports the manifest URL, resolved against the upload URL, and the recheck delay', async () => {
-    answers = [
-      {
-        status: 201,
-        headers: {
-          'X-Mokuro-Manifest': '/catalog/api/manifest?series=S&volume=V',
-          'X-Mokuro-Recheck-After': '95'
-        }
-      }
-    ];
-    const result = await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['x']));
-    expect(result.path).toBe('/mokuro-reader/S/V.cbz');
-    expect(result.serverOcr).toEqual({
-      manifestUrl: 'https://bunko.example/dav/catalog/api/manifest?series=S&volume=V',
-      recheckAfter: 95
-    });
-  });
-
   it('reports no server OCR when the headers are absent (any other WebDAV server)', async () => {
     answers = [{ status: 204 }];
     const result = await uploadFileWithClient(client, '/mokuro-reader/S/V.cbz', new Blob(['x']));
@@ -109,6 +92,27 @@ describe('a WebDAV PUT that the server queued for OCR (Addendum A)', () => {
     expect(result.serverOcr).toEqual({
       manifestUrl: 'https://bunko.example/dav/m',
       recheckAfter: null
+    });
+  });
+});
+
+describeContract('a volume PUT as Bunko answers it (Addendum A)', () => {
+  // The fixture's server is mounted under `/dav`, so bunko's root-absolute
+  // manifest link is put back under that prefix (`resolveBunkoLink`).
+  it('reports the manifest URL, resolved against the upload URL, and the recheck delay', async () => {
+    const put = loadBunkoFixture('put-volume');
+    const headers = put.headers!;
+    answers = [{ status: put.status!, headers }];
+    const result = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/Contract Series/Volume 03.cbz',
+      new Blob([new Uint8Array(Number(headers['x-mokuro-size']))])
+    );
+    expect(result.path).toBe('/mokuro-reader/Contract Series/Volume 03.cbz');
+    expect(result.putVerified).toBe(true);
+    expect(result.serverOcr).toEqual({
+      manifestUrl: `https://bunko.example/dav${headers['x-mokuro-manifest']}`,
+      recheckAfter: Number(headers['x-mokuro-recheck-after'])
     });
   });
 });
