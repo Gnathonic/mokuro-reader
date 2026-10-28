@@ -8,8 +8,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   blobText,
+  cloudsimForSuite,
   cloudsimUrl,
   fetchWithoutForeignSignals,
+  refuseNonLocalRequests,
   sendBlobsAsBytes,
   sha256Hex,
   sim
@@ -23,13 +25,14 @@ const VOLUME = new Uint8Array(90_000).map((_, i) => (i * 7) % 253);
 const SIDECAR = JSON.stringify({ version: '0.2.5', volume: 'Vol 1', pages: [] });
 const CATALOG = JSON.stringify({ version: 1, series: [] });
 
-describe.skipIf(!cloudsimUrl())('OneDrive provider against cloudsim', () => {
+describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () => {
   type Provider = import('$lib/util/sync/providers/onedrive/onedrive-provider').OneDriveProvider;
   let provider: Provider;
   let tokenManager: typeof import('$lib/util/sync/providers/onedrive/token-manager').onedriveTokenManager;
   let accessToken = '';
   let restoreXhr = () => {};
   let restoreFetch = () => {};
+  let restoreLocal = () => {};
 
   async function signIn(): Promise<void> {
     const t = await sim.token('microsoft');
@@ -45,6 +48,16 @@ describe.skipIf(!cloudsimUrl())('OneDrive provider against cloudsim', () => {
 
   beforeAll(async () => {
     await sim.reset();
+    // OneDrive's pre-authenticated URLs are on the simulator's second listener. A
+    // browser drops the token on any change of origin; jsdom's XHR only on a change
+    // of host name, so the listener must be named by another one.
+    const { preauth } = await sim.health();
+    if (new URL(preauth).hostname === new URL(cloudsimUrl() as string).hostname) {
+      throw new Error(
+        `cloudsim's pre-auth listener (${preauth}) shares the API's host name: start it with --preauth-host localhost`
+      );
+    }
+    restoreLocal = refuseNonLocalRequests();
     restoreXhr = sendBlobsAsBytes();
     restoreFetch = fetchWithoutForeignSignals();
     setCloudTestBases(sim.bases());
@@ -72,6 +85,7 @@ describe.skipIf(!cloudsimUrl())('OneDrive provider against cloudsim', () => {
     setCloudTestBases(null);
     restoreXhr();
     restoreFetch();
+    restoreLocal();
     await sim.reset();
   });
 
@@ -150,9 +164,11 @@ describe.skipIf(!cloudsimUrl())('OneDrive provider against cloudsim', () => {
     expect(files.some((f) => f.path === 'mokuro-reader/Series A/Vol 3.mokuro')).toBe(true);
   });
 
-  // The upload core treats every 5xx as transient, 507 included: it tries the
-  // session five times before giving up (Retry-After: 0 keeps this quick).
-  it('a 507 insufficientStorage fails the upload after the session retries', async () => {
+  // GAP (reader): the upload core treats every 5xx as transient, so a 507
+  // (storage full, which waiting does not fix) is tried five times and then
+  // reported as a plain UPLOAD_FAILED. Passes while the gap is there; flips when
+  // it is fixed. (Retry-After: 0 keeps the retries quick.)
+  it.fails('a 507 insufficientStorage fails at once as a quota error', async () => {
     await sim.clearLog();
     await sim.fault({
       provider: 'microsoft',
@@ -163,17 +179,54 @@ describe.skipIf(!cloudsimUrl())('OneDrive provider against cloudsim', () => {
       retry_after: 0,
       times: 10
     });
-    const err = await provider
-      .uploadFile('Series A/Vol 4.mokuro', new Blob(['{}']))
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ProviderError);
-    expect((err as ProviderError).code).toBe('UPLOAD_FAILED');
-    expect((err as ProviderError).message).toContain('507');
-    const sessions = (await sim.log()).filter((e) => e.path.endsWith(':/createUploadSession'));
-    expect(sessions.map((e) => e.status)).toEqual([507, 507, 507, 507, 507]);
-    await sim.reset();
-    await sim.seed('microsoft', [{ path: 'mokuro-reader/catalog.json', data: CATALOG }]);
-    await signIn();
+    try {
+      const err = await provider
+        .uploadFile('Series A/Vol 4.mokuro', new Blob(['{}']))
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      const sessions = (await sim.log()).filter((e) => e.path.endsWith(':/createUploadSession'));
+      expect(sessions.map((e) => e.status)).toEqual([507]);
+      expect((err as ProviderError).code).toBe('QUOTA_EXCEEDED');
+    } finally {
+      await sim.reset();
+      await sim.seed('microsoft', [
+        { path: 'mokuro-reader/Series A/Vol 1.cbz', data: VOLUME },
+        { path: 'mokuro-reader/catalog.json', data: CATALOG }
+      ]);
+      await signIn();
+    }
+  });
+
+  it('a worker transfer reaches the simulator with the bases from its credentials', async () => {
+    const { onedriveCore } = await import('$lib/util/sync/core/providers/onedrive-core');
+    const vol = await find('Series A/Vol 1.cbz');
+    const down = await provider.getWorkerDownloadCredentials(vol.fileId);
+    await provider.prepareUploadTarget('Series A');
+    const up = await provider.getWorkerUploadCredentials();
+    await sim.clearLog();
+    // A worker has its own copy of the hooks module: no bases there.
+    setCloudTestBases(null);
+    try {
+      const data = await onedriveCore.downloadFile({
+        fileId: vol.fileId,
+        credentials: down,
+        onProgress: () => {}
+      });
+      expect(await sha256Hex(new Uint8Array(data))).toBe(await sha256Hex(VOLUME));
+      await onedriveCore.uploadFile({
+        seriesTitle: 'Series A',
+        filename: 'Vol 6.mokuro',
+        blob: new Blob(['{"v":6}']),
+        credentials: up
+      });
+    } finally {
+      setCloudTestBases(sim.bases());
+    }
+    const log = await sim.log();
+    expect(log.some((e) => e.path.includes('/graph/preauth/'))).toBe(true);
+    expect(log.some((e) => e.path.endsWith(':/createUploadSession'))).toBe(true);
+    const files = await sim.files('microsoft');
+    expect(files.some((f) => f.path === 'mokuro-reader/Series A/Vol 6.mokuro')).toBe(true);
   });
 
   it('an expired token surfaces as an auth error and flags the session for reconnect', async () => {

@@ -6,8 +6,9 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  cloudsimUrl,
+  cloudsimForSuite,
   fetchWithoutForeignSignals,
+  refuseNonLocalRequests,
   sha256Hex,
   sim,
   type SimLogEntry
@@ -22,12 +23,13 @@ const EMAIL = 'reader@cloudsim.test';
 const PASSWORD = 'cloudsim-password';
 const VOLUME = new Uint8Array(200_003).map((_, i) => (i * 13) % 251);
 
-describe.skipIf(!cloudsimUrl())('MEGA provider against cloudsim', () => {
+describe.skipIf(!cloudsimForSuite())('MEGA provider against cloudsim', () => {
   type Provider = import('$lib/util/sync/providers/mega/mega-provider').MegaProvider;
   let MegaProviderClass: new () => Provider;
   let provider: Provider;
   const opened: Provider[] = [];
   let restoreFetch = () => {};
+  let restoreLocal = () => {};
 
   async function find(p: Provider, path: string): Promise<CloudFileMetadata> {
     const hit = (await p.listCloudVolumes()).find((f) => f.path === path);
@@ -41,6 +43,7 @@ describe.skipIf(!cloudsimUrl())('MEGA provider against cloudsim', () => {
 
   beforeAll(async () => {
     await sim.reset();
+    restoreLocal = refuseNonLocalRequests();
     restoreFetch = fetchWithoutForeignSignals();
     setCloudTestBases(sim.bases());
     localStorage.removeItem('mega_session');
@@ -72,6 +75,7 @@ describe.skipIf(!cloudsimUrl())('MEGA provider against cloudsim', () => {
     localStorage.removeItem('mega_session');
     setCloudTestBases(null);
     restoreFetch();
+    restoreLocal();
     await sim.reset();
   });
 
@@ -106,16 +110,59 @@ describe.skipIf(!cloudsimUrl())('MEGA provider against cloudsim', () => {
     expect(files.some((f) => f.path.endsWith('Vol 2.cbz'))).toBe(false);
   });
 
-  it('restores from the saved session (no password) and lists again', async () => {
+  it('restores from a saved session without a gateway: the hook supplies it', async () => {
+    // A session saved by a build without the hooks carries no gateway; the restore
+    // path must still reach the simulator, never the real MEGA.
+    const blob = JSON.parse(localStorage.getItem('mega_session') ?? '{}');
+    delete blob.options.gateway;
+    localStorage.setItem('mega_session', JSON.stringify(blob));
     await sim.clearLog();
     const restored = new MegaProviderClass();
     opened.push(restored);
     await restored.whenReady();
     expect(restored.isAuthenticated()).toBe(true);
+    expect((restored as any).storage.api.gateway).toBe(sim.bases().megaGateway);
     const paths = (await restored.listCloudVolumes()).map((f) => f.path).sort();
     expect(paths).toEqual(['Series A/Vol 1.cbz', 'Series A/Vol 1.mokuro']);
     const log = megaLog(await sim.log());
     expect(log.filter((e) => e.class === 'auth')).toEqual([]);
-    expect(log.every((e) => e.account === ACCOUNT)).toBe(true);
+    expect(log.some((e) => e.class === 'list' && e.account === ACCOUNT)).toBe(true);
+    provider = restored;
+  });
+
+  it('worker transfers reach the simulator with the gateway from their credentials', async () => {
+    const { megaCore } = await import('$lib/util/sync/core/providers/mega-core');
+    const vol = await find(provider, 'Series A/Vol 1.cbz');
+    const down = await provider.getWorkerDownloadCredentials(vol.fileId);
+    // The saved session has no gateway (previous test): only the credentials do.
+    const up = {
+      ...(await provider.getWorkerUploadCredentials()),
+      ...(await provider.prepareUploadTarget('Series A'))
+    };
+    expect(JSON.parse(up.megaSession).options.gateway).toBeUndefined();
+    await sim.clearLog();
+    // A worker has its own copy of the hooks module: no bases there.
+    setCloudTestBases(null);
+    try {
+      const data = await megaCore.downloadFile({
+        fileId: vol.fileId,
+        credentials: down,
+        onProgress: () => {}
+      });
+      expect(await sha256Hex(new Uint8Array(data))).toBe(await sha256Hex(VOLUME));
+      await megaCore.uploadFile({
+        seriesTitle: 'Series A',
+        filename: 'Vol 7.mokuro',
+        blob: new Blob(['{"v":7}']),
+        credentials: up
+      });
+    } finally {
+      setCloudTestBases(sim.bases());
+    }
+    const log = megaLog(await sim.log());
+    expect(log.some((e) => e.class === 'download')).toBe(true);
+    expect(log.some((e) => e.class === 'upload')).toBe(true);
+    const files = await sim.files('mega', ACCOUNT);
+    expect(files.some((f) => f.path === 'mokuro-reader/Series A/Vol 7.mokuro')).toBe(true);
   });
 });

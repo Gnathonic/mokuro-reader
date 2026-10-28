@@ -43,12 +43,29 @@ export interface SimFault {
   times?: number;
 }
 
+function env(): Record<string, string | undefined> {
+  return (
+    (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}
+  );
+}
+
 /** The simulator's base URL from `CLOUDSIM_URL`, or null when none is running. */
 export function cloudsimUrl(): string | null {
-  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
-    ?.env;
-  const url = env?.CLOUDSIM_URL?.trim();
+  const url = env().CLOUDSIM_URL?.trim();
   return url ? url.replace(/\/+$/, '') : null;
+}
+
+/**
+ * The simulator for a suite, or null to skip it. With `REQUIRE_CLOUDSIM=1` (CI)
+ * a missing `CLOUDSIM_URL` throws instead, at collection, so a run can never
+ * go green with every suite skipped.
+ */
+export function cloudsimForSuite(): string | null {
+  const url = cloudsimUrl();
+  if (!url && env().REQUIRE_CLOUDSIM === '1') {
+    throw new Error('REQUIRE_CLOUDSIM=1 but CLOUDSIM_URL is not set: start bunko-cloudsim');
+  }
+  return url;
 }
 
 function base(): string {
@@ -85,6 +102,7 @@ export const sim = {
       megaGateway: `${b}/mega/`
     };
   },
+  health: () => control<{ ok: boolean; providers: string[]; preauth: string }>('GET', 'health'),
   token: (provider: SimProvider, account = 'default') =>
     control<SimTokens>('POST', 'token', { provider, account }),
   revoke: (token: string) => control<{ ok: boolean }>('POST', 'token/revoke', { token }),
@@ -151,6 +169,13 @@ export function sendBlobsAsBytes(): () => void {
   const proto = XMLHttpRequest.prototype;
   const send = proto.send;
   proto.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+    if ((body as unknown) instanceof TestFormData) {
+      multipart(body as unknown as TestFormData).then(({ type, body: bytes }) => {
+        this.setRequestHeader('Content-Type', type);
+        send.call(this, bytes);
+      });
+      return;
+    }
     if (body instanceof Blob) {
       body.arrayBuffer().then(
         (buf) => send.call(this, new Uint8Array(buf)),
@@ -186,5 +211,95 @@ export function fetchWithoutForeignSignals(): () => void {
   }) as typeof fetch;
   return () => {
     globalThis.fetch = original;
+  };
+}
+
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+function isLocal(url: string | URL): boolean {
+  try {
+    return LOCAL_HOSTS.has(new URL(String(url), 'http://localhost/').hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Refuse every request that would leave this machine (fetch and XHR), so a
+ * provider path that misses the simulator fails the test instead of reaching a
+ * real cloud with a simulator token. Returns the undo.
+ */
+export function refuseNonLocalRequests(): () => void {
+  const fetch0 = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : input;
+    if (!isLocal(url)) {
+      return Promise.reject(new Error(`refused a request off this machine: ${String(url)}`));
+    }
+    return fetch0(input, init);
+  }) as typeof fetch;
+  const proto = XMLHttpRequest.prototype;
+  const open0 = proto.open;
+  proto.open = function (
+    this: XMLHttpRequest,
+    method: string,
+    url: string | URL,
+    ...rest: unknown[]
+  ) {
+    if (!isLocal(url)) throw new Error(`refused an XHR off this machine: ${String(url)}`);
+    return (open0 as (...a: unknown[]) => void).call(this, method, url, ...rest);
+  } as typeof proto.open;
+  return () => {
+    globalThis.fetch = fetch0;
+    proto.open = open0;
+  };
+}
+
+/**
+ * A browser-like `FormData` for the suites: jsdom's refuses the Node Blobs
+ * `src/test-setup.ts` installs. `sendBlobsAsBytes` sends it as the
+ * `multipart/form-data` body a browser would.
+ */
+export class TestFormData {
+  readonly entries: Array<[string, Blob | string]> = [];
+  append(name: string, value: Blob | string): void {
+    this.entries.push([name, value]);
+  }
+}
+
+async function multipart(
+  form: TestFormData
+): Promise<{ type: string; body: Uint8Array<ArrayBuffer> }> {
+  const boundary = `----cloudsim${Math.random().toString(16).slice(2)}`;
+  const enc = new TextEncoder();
+  const parts: Uint8Array[] = [];
+  for (const [name, value] of form.entries) {
+    const isBlob = value instanceof Blob;
+    const head =
+      `--${boundary}\r\nContent-Disposition: form-data; name="${name}"` +
+      (isBlob
+        ? `; filename="blob"\r\nContent-Type: ${value.type || 'application/octet-stream'}`
+        : '') +
+      '\r\n\r\n';
+    parts.push(enc.encode(head));
+    parts.push(isBlob ? new Uint8Array(await value.arrayBuffer()) : enc.encode(value));
+    parts.push(enc.encode('\r\n'));
+  }
+  parts.push(enc.encode(`--${boundary}--\r\n`));
+  const body = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    body.set(p, at);
+    at += p.length;
+  }
+  return { type: `multipart/form-data; boundary=${boundary}`, body };
+}
+
+/** Swap in {@link TestFormData} for `FormData`. Returns the undo. */
+export function useTestFormData(): () => void {
+  const original = globalThis.FormData;
+  globalThis.FormData = TestFormData as unknown as typeof FormData;
+  return () => {
+    globalThis.FormData = original;
   };
 }

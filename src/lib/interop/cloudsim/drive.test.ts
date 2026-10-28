@@ -6,7 +6,15 @@
  * `--no-file-parallelism`.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { blobText, cloudsimUrl, sendBlobsAsBytes, sha256Hex, sim } from '../cloudsim';
+import {
+  blobText,
+  cloudsimForSuite,
+  refuseNonLocalRequests,
+  sendBlobsAsBytes,
+  sha256Hex,
+  sim,
+  useTestFormData
+} from '../cloudsim';
 import { installGapiRestShim, removeGapiRestShim } from '../gapi-rest-shim';
 import { setCloudTestBases } from '$lib/util/sync/cloud-test-hooks';
 import { ProviderError, type CloudFileMetadata } from '$lib/util/sync/provider-interface';
@@ -17,11 +25,12 @@ const VOLUME = new Uint8Array(70_000).map((_, i) => (i * 31) % 251);
 const SIDECAR = JSON.stringify({ version: '0.2.5', volume: 'Vol 1', pages: [] });
 const CATALOG = JSON.stringify({ version: 1, series: [] });
 
-describe.skipIf(!cloudsimUrl())('Google Drive provider against cloudsim', () => {
+describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', () => {
   let provider: typeof import('$lib/util/sync/providers/google-drive/google-drive-provider').googleDriveProvider;
   let tokenManager: typeof import('$lib/util/sync/providers/google-drive/token-manager').tokenManager;
   let accessToken = '';
   let restoreXhr = () => {};
+  let restoreLocal = () => {};
 
   async function signIn(): Promise<void> {
     const t = await sim.token('google');
@@ -42,6 +51,7 @@ describe.skipIf(!cloudsimUrl())('Google Drive provider against cloudsim', () => 
 
   beforeAll(async () => {
     await sim.reset();
+    restoreLocal = refuseNonLocalRequests();
     restoreXhr = sendBlobsAsBytes();
     installGapiRestShim(sim.bases().driveApi);
     setCloudTestBases(sim.bases());
@@ -65,6 +75,7 @@ describe.skipIf(!cloudsimUrl())('Google Drive provider against cloudsim', () => 
     setCloudTestBases(null);
     removeGapiRestShim();
     restoreXhr();
+    restoreLocal();
     await sim.reset();
   });
 
@@ -115,7 +126,9 @@ describe.skipIf(!cloudsimUrl())('Google Drive provider against cloudsim', () => 
     expect(downloads).toHaveLength(1);
   });
 
-  it('a 403 storageQuotaExceeded on upload fails the upload', async () => {
+  // GAP (reader): the Drive provider has no storage-full error; a quota 403 is a
+  // plain UPLOAD_FAILED. Passes while the gap is there; flips when it is fixed.
+  it.fails('a 403 storageQuotaExceeded on upload surfaces as a quota error', async () => {
     await sim.fault({
       provider: 'google',
       method: 'POST',
@@ -126,13 +139,14 @@ describe.skipIf(!cloudsimUrl())('Google Drive provider against cloudsim', () => 
     const err = await provider
       .uploadFile('Series A/Vol 3.mokuro', new Blob(['{}']))
       .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ProviderError);
-    expect((err as ProviderError).code).toBe('UPLOAD_FAILED');
-    expect((err as ProviderError).message).toContain('403');
     expect((await sim.files('google')).some((f) => f.path.endsWith('Vol 3.mokuro'))).toBe(false);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).code).toBe('QUOTA_EXCEEDED');
   });
 
-  it('a 429 with Retry-After fails that call (no Drive-level retry); the next call succeeds', async () => {
+  // GAP (reader): the Drive provider retries nothing, so a 429 fails the call even
+  // with Retry-After. Passes while the gap is there; flips when it is fixed.
+  it.fails('a 429 with Retry-After is retried after the wait and the call succeeds', async () => {
     await sim.clearLog();
     await sim.fault({
       provider: 'google',
@@ -142,12 +156,76 @@ describe.skipIf(!cloudsimUrl())('Google Drive provider against cloudsim', () => 
       reason: 'rateLimitExceeded',
       retry_after: 1
     });
-    const err = await listed().catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ProviderError);
-    expect((err as ProviderError).code).toBe('LIST_FAILED');
-    const attempts = (await sim.log()).filter((e) => e.class === 'list');
-    expect(attempts.map((e) => e.status)).toEqual([429]);
-    expect((await listed()).length).toBeGreaterThan(0);
+    try {
+      expect((await listed()).length).toBeGreaterThan(0);
+      const attempts = (await sim.log()).filter((e) => e.class === 'list');
+      expect(attempts.map((e) => e.status).slice(0, 2)).toEqual([429, 200]);
+    } finally {
+      // The provider is usable again either way.
+      expect((await listed()).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('a worker transfer reaches the simulator with the bases from its credentials', async () => {
+    const { googleDriveCore } = await import('$lib/util/sync/core/providers/google-drive-core');
+    const vol = await find('Series A/Vol 1.cbz');
+    const down = await provider.getWorkerDownloadCredentials(vol.fileId);
+    const up = {
+      ...(await provider.getWorkerUploadCredentials()),
+      ...(await provider.prepareUploadTarget('Series A'))
+    };
+    await sim.clearLog();
+    // A worker has its own copy of the hooks module: no bases there.
+    setCloudTestBases(null);
+    try {
+      const data = await googleDriveCore.downloadFile({
+        fileId: vol.fileId,
+        credentials: down,
+        onProgress: () => {}
+      });
+      expect(await sha256Hex(new Uint8Array(data))).toBe(await sha256Hex(VOLUME));
+      const done = await googleDriveCore.uploadFile({
+        seriesTitle: 'Series A',
+        filename: 'Vol 5.mokuro',
+        blob: new Blob(['{"v":5}']),
+        credentials: up,
+        mimeType: 'application/json'
+      });
+      expect(done.fileId).toBeTruthy();
+    } finally {
+      setCloudTestBases(sim.bases());
+    }
+    const log = await sim.log();
+    expect(log.some((e) => e.class === 'download')).toBe(true);
+    expect(log.some((e) => e.class === 'upload')).toBe(true);
+    const files = await sim.files('google');
+    expect(files.some((f) => f.path === 'mokuro-reader/Series A/Vol 5.mokuro')).toBe(true);
+  });
+
+  it('the multipart upload (api-client) goes to the simulator', async () => {
+    const { driveApiClient } = await import('$lib/util/sync/providers/google-drive/api-client');
+    const series = (await find('Series A/Vol 1.cbz')) as CloudFileMetadata & { parentId?: string };
+    const restoreForm = useTestFormData();
+    try {
+      const created = await driveApiClient.uploadFile(new Blob(['{"profiles":1}']), {
+        name: 'profiles.json',
+        mimeType: 'application/json',
+        parents: [series.parentId as string]
+      });
+      expect(created.id).toBeTruthy();
+      await driveApiClient.uploadFile(
+        new Blob(['{"profiles":2}']),
+        { name: 'profiles.json', mimeType: 'application/json' },
+        created.id
+      );
+    } finally {
+      restoreForm();
+    }
+    const hit = (await sim.files('google')).filter(
+      (f) => f.path === 'mokuro-reader/Series A/profiles.json'
+    );
+    expect(hit).toHaveLength(1);
+    expect(hit[0].sha256).toBe(await sha256Hex(new TextEncoder().encode('{"profiles":2}')));
   });
 
   it('a query the simulator does not model is a 400 naming it, never a wrong listing', async () => {
