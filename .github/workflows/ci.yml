@@ -52,8 +52,26 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      # The Bunko contract (src/lib/interop/contract.ts): the tests read Bunko's
+      # exported fixtures from this checkout, and fail rather than skip without it.
+      BUNKO_REPO: bunko
+      BUNKO_CONTRACT_REQUIRED: '1'
     steps:
       - uses: actions/checkout@v4
+
+      # Bunko's contract fixtures (interop/contract/), at the ref the repository
+      # variable BUNKO_REF names. The contract lives on 0.8/remote-storage until
+      # 0.8 is merged into Bunko's main: feat/cloud-bunko sets BUNKO_REF to it
+      # (or keeps this branch default) until then, after which main is right.
+      - name: Check out the Bunko contract
+        uses: actions/checkout@v4
+        with:
+          repository: Gnathonic/mokuro-bunko
+          ref: ${{ vars.BUNKO_REF || '0.8/remote-storage' }}
+          path: bunko
+          sparse-checkout: interop/contract
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

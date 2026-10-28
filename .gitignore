@@ -21,3 +21,6 @@ vite.config.ts.timestamp-*
 # Playwright artifacts
 test-results/
 playwright-report/
+
+# The Bunko contract checkout CI makes (BUNKO_REPO=bunko)
+/bunko
