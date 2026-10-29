@@ -419,12 +419,23 @@ and every cloud write of a main sidecar (a first backup, the backfill of a
 missing one, a rename's regeneration) is built from the `original` snapshot
 when the row is edited (`catalog/main-sidecar.ts`) — a missing snapshot means
 no main sidecar (a rename falls back to the primary). Exports keep the primary.
-`edit` is a reserved slug like `original`. Edits made before this change live
+A layer made by name never takes a RESERVED id (`isReservedLayerId`,
+`layer-names.ts` — bunko's set: `original`, `gcv`, `updated-ocr`, `edit`,
+`curated`, the `tr-`, `pre-upgrade` and `previous-ocr` prefixes, and
+`edit-<n>`/`curated-<n>`): `slugifyLayerId` turns such a slug (or one with no
+letter) into `layer-<slug>` before de-duplicating with `-<n>` (X11; "Edit" →
+`layer-edit`, "2024" → `layer-2024`). Edits made before this change live
 only in the primary: `migrateEditedPrimariesToEditLayers` (once per device,
 rows stamped before `edit-layer:epoch`) copies such a primary into an `edit`
 layer when it differs from its `original`. bunko's `pre-upgrade[-N]` layer (the
 main sidecar it replaced on an upgrade) is labelled "Before upgrade (may
-contain your corrections)" (`layer-names.ts`).
+contain your corrections)" (`layer-names.ts`). Three id families are
+CORRECTIONS by id (`isCorrectionsLayerId`): an account's own `edit`/`edit-<n>`
+("Your corrections [n]", `isPersonalLayerId` — bunko 0.8 keeps them per
+account), the library's shared `curated` ("Shared corrections",
+`isCuratedLayerId`, published by accounts with the rights), and `pre-upgrade*`
+(`isServerKeepsakeLayerId`). They are filed kind `edit` whatever `ocr_engine`
+stamp their file carries, and a pull never re-files one as `ocr`.
 
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings

@@ -29,8 +29,15 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
 import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
-import { layerNameForId, titleCasedLayerId } from './layer-names';
-import { EDIT_LAYER_ID, ORIGINAL_LAYER_ID, noteLayerEdited } from './edit-persist';
+import {
+  isCuratedLayerId,
+  isPersonalLayerId,
+  isReservedLayerId,
+  isServerKeepsakeLayerId,
+  layerNameForId,
+  titleCasedLayerId
+} from './layer-names';
+import { ORIGINAL_LAYER_ID, noteLayerEdited } from './edit-persist';
 import { editLayerEpoch } from './edit-layer-epoch';
 import {
   TRANSLATION_PROMOTE_BLOCKED,
@@ -86,22 +93,40 @@ export function servedEngineOf(json: unknown): string | undefined {
 }
 
 /**
+ * A layer of corrections by its id alone: the shared `curated`, an account's
+ * `edit`/`edit-<n>`, or bunko's `pre-upgrade` keepsake. No server stamp makes
+ * one of them a generation (`layerKindForId`, `layer-sync`'s re-filing).
+ */
+export function isCorrectionsLayerId(layerId: string): boolean {
+  return (
+    isCuratedLayerId(layerId) || isPersonalLayerId(layerId) || isServerKeepsakeLayerId(layerId)
+  );
+}
+
+/**
  * The kind a layer file with no local row is filed under: from the engine
  * stamp it carried (`servedEngineOf`) when it had one, else from its id alone.
  */
 export function layerKindForId(layerId: string, servedEngine?: string): VolumeOcrLayerKind {
   if (layerId === ORIGINAL_LAYER_ID) return 'original';
   if (isTranslationLayerId(layerId)) return 'translation';
+  // Corrections whatever the file claims: the shared `curated` layer, an
+  // account's own `edit`, bunko's `pre-upgrade` copy of a main that may hold
+  // edits. What may write them is read from the id (`layerStaysLocal`).
+  if (isCorrectionsLayerId(layerId)) return 'edit';
   if (servedEngine || KNOWN_ENGINE_IDS.has(layerId)) return 'ocr';
   return 'edit';
 }
 
 /**
- * A display name → a unique `layer_id` slug (never the reserved `original` or
- * `edit`, and always with a letter in it — sidecar names rule v1 #8).
+ * A display name → a unique `layer_id` slug. Never a reserved id or family
+ * (`isReservedLayerId`) and always with a letter in it (sidecar names rule v1
+ * #8): such a slug becomes `layer-<slug>` (X11) — a `-<n>` alone would never
+ * leave `edit-<n>`, `pre-upgrade…` or `previous-ocr…` — then de-duplicates.
  */
 export function slugifyLayerId(name: string, taken: Iterable<string>): string {
   const used = new Set(taken);
+  const prefixed = (slug: string) => `layer-${slug}`.slice(0, MAX_SLUG).replace(/-+$/g, '');
   let base = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -111,17 +136,17 @@ export function slugifyLayerId(name: string, taken: Iterable<string>): string {
   if (!base) base = 'layer';
   // An all-digit id is valid in a listing, but bunko's listing-free paths
   // need a letter to tell `Vol 1.2024.mokuro` from the primary of `Vol 1.2024`.
-  if (!/[a-z]/.test(base)) base = `layer-${base}`.slice(0, MAX_SLUG).replace(/-+$/g, '');
+  if (!/[a-z]/.test(base) || isReservedLayerId(base)) base = prefixed(base);
   let candidate = base;
   let n = 2;
-  while (
-    candidate === ORIGINAL_LAYER_ID ||
-    // Reserved for the editor's corrections (`persistPageEdit`).
-    candidate === EDIT_LAYER_ID ||
-    used.has(candidate) ||
-    !LAYER_ID_RE.test(candidate)
-  ) {
+  while (used.has(candidate) || !LAYER_ID_RE.test(candidate) || isReservedLayerId(candidate)) {
     candidate = `${base.slice(0, MAX_SLUG - 3)}-${n++}`;
+    // `tr` is free but `tr-2` is a translation id: step out the same way.
+    if (isReservedLayerId(candidate)) {
+      base = prefixed(base);
+      candidate = base;
+      n = 2;
+    }
   }
   return candidate;
 }

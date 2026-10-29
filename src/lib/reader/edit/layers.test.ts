@@ -30,6 +30,7 @@ import {
   servedEngineOf,
   layerNameForId
 } from './layers';
+import { isReservedLayerId } from './layer-names';
 
 function pg(text: string, img_path = 'p.png'): Page {
   return {
@@ -61,8 +62,8 @@ beforeEach(async () => {
 describe('slugifyLayerId', () => {
   it('slugs, truncates, and de-duplicates; never yields "original"', () => {
     expect(slugifyLayerId('My Translation!', [])).toBe('my-translation');
-    expect(slugifyLayerId('Original', [])).toBe('original-2');
-    expect(slugifyLayerId('gcv', ['gcv', 'gcv-2'])).toBe('gcv-3');
+    expect(slugifyLayerId('Original', [])).toBe('layer-original');
+    expect(slugifyLayerId('Fixes', ['fixes', 'fixes-2'])).toBe('fixes-3');
     expect(slugifyLayerId('', [])).toBe('layer');
     expect(slugifyLayerId('a'.repeat(40), [])).toHaveLength(24);
   });
@@ -75,6 +76,40 @@ describe('slugifyLayerId', () => {
     expect(slugifyLayerId('9'.repeat(40), [])).toMatch(/^layer-9+$/);
     expect(slugifyLayerId('New layer', [])).toBe('new-layer');
     expect(slugifyLayerId('Vol 2', [])).toBe('vol-2');
+  });
+
+  it('steps out of every reserved id and family with a layer- prefix (X11)', () => {
+    expect(slugifyLayerId('Edit', [])).toBe('layer-edit');
+    expect(slugifyLayerId('Curated', [])).toBe('layer-curated');
+    expect(slugifyLayerId('Pre upgrade', [])).toBe('layer-pre-upgrade');
+    expect(slugifyLayerId('Previous OCR', [])).toBe('layer-previous-ocr');
+    expect(slugifyLayerId('Updated OCR', [])).toBe('layer-updated-ocr');
+    expect(slugifyLayerId('gcv', [])).toBe('layer-gcv');
+    expect(slugifyLayerId('Edit 2', [])).toBe('layer-edit-2');
+    expect(slugifyLayerId('curated 7', [])).toBe('layer-curated-7');
+    expect(slugifyLayerId('TR en', [])).toBe('layer-tr-en');
+    // Then de-duplicated like any other id.
+    expect(slugifyLayerId('Edit', ['layer-edit'])).toBe('layer-edit-2');
+    // `tr` is free, but its first de-duplicated form `tr-2` is a translation id.
+    expect(slugifyLayerId('tr', ['tr'])).toBe('layer-tr');
+    expect(slugifyLayerId('tr', ['tr', 'layer-tr'])).toBe('layer-tr-2');
+    // Not reserved: kept as they are.
+    expect(slugifyLayerId('Editorial', [])).toBe('editorial');
+    expect(slugifyLayerId('Edit X', [])).toBe('edit-x');
+  });
+
+  it('never returns a reserved id, whatever the name', () => {
+    const names = ['Edit', 'edit-2', 'Curated', 'curated 2', 'original', 'GCV', 'updated ocr'];
+    names.push('pre-upgrade 9', 'previous ocr 2', 'tr', 'tr ja', '2024', '', '---', 'Ｅｄｉｔ');
+    for (const name of names) {
+      const taken: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        const id = slugifyLayerId(name, taken);
+        expect(isReservedLayerId(id), `${name} -> ${id}`).toBe(false);
+        expect(taken).not.toContain(id);
+        taken.push(id);
+      }
+    }
   });
 });
 
@@ -224,8 +259,17 @@ describe('promoteLayer', () => {
       pages: [pg('Hello there'), pg('General', 'q.png')]
     });
     // A row whose kind says "edit" but whose id files it as a translation
-    // everywhere a kind is inferred (cloud pull, import).
-    await createLayer('v1', { name: 'tr en', pages: [pg('Hi'), pg('Yo', 'q.png')] });
+    // everywhere a kind is inferred (cloud pull, import). `createLayer` no
+    // longer mints a `tr-` id (reserved), so an older row is seeded directly.
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'tr-en',
+      name: 'tr en',
+      kind: 'edit',
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+      pages: [pg('Hi'), pg('Yo', 'q.png')]
+    });
     expect((await getLayerWithPages(db, 'v1', 'tr-en'))?.kind).toBe('edit');
 
     for (const id of ['english', 'tr-en']) {
@@ -399,8 +443,8 @@ describe('the editor’s edit layer and bunko’s pre-upgrade layers (D4)', () =
   });
 
   it('a new layer never takes the reserved edit id', () => {
-    expect(slugifyLayerId('Edit', [])).toBe('edit-2');
-    expect(slugifyLayerId('original', [])).toBe('original-2');
+    expect(slugifyLayerId('Edit', [])).toBe('layer-edit');
+    expect(slugifyLayerId('original', [])).toBe('layer-original');
   });
 
   it('names the edit layer and labels pre-upgrade layers', () => {
@@ -430,6 +474,16 @@ describe('layerKindForId / layerNameForId', () => {
     // The reserved ids keep their meaning even if a file claims an engine.
     expect(layerKindForId('original', 'hayai-nova')).toBe('original');
     expect(layerKindForId('tr-en', 'hayai-nova')).toBe('translation');
+  });
+
+  it('files the shared, personal and keepsake layers as corrections, stamp or not (C4)', () => {
+    // A stamp on these never makes them a server's OCR: curated is published
+    // corrections, edit-<n> a person's, pre-upgrade bunko's copy of a main
+    // that may hold corrections. Their role is read from the id.
+    for (const id of ['curated', 'edit', 'edit-2', 'pre-upgrade', 'pre-upgrade-2']) {
+      expect(layerKindForId(id)).toBe('edit');
+      expect(layerKindForId(id, 'hayai-nova')).toBe('edit');
+    }
   });
 
   it('reads the engine stamp bunko writes, and nothing that merely looks like one', () => {

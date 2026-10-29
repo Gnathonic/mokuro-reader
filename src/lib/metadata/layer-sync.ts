@@ -13,6 +13,7 @@ import {
 } from '$lib/catalog/layer-store';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import {
+  isCorrectionsLayerId,
   layerKindForId,
   layerNameForId,
   servedEngineOf,
@@ -723,10 +724,15 @@ async function storePulledLayer(
   const now = new Date().toISOString();
   // A row a cloud vouches for that was filed as a person's `edit` before the
   // stamp was read (or while its id was unknown) and turns out to be a server's
-  // OCR is re-filed as what it is. Never a row made here by hand, and never one
-  // already attributed to an engine.
+  // OCR is re-filed as what it is. Never a row made here by hand, never one
+  // already attributed to an engine, and never a corrections layer (`curated`,
+  // `edit`, `pre-upgrade`), whatever stamp its file carries.
   const misfiled =
-    existing?.kind === 'edit' && !existing.engine && !!existing.cloud && !!pulled.engine;
+    existing?.kind === 'edit' &&
+    !existing.engine &&
+    !!existing.cloud &&
+    !!pulled.engine &&
+    !isCorrectionsLayerId(layerId);
   const kind = misfiled
     ? ('ocr' as const)
     : (existing?.kind ?? layerKindForId(layerId, pulled.engine));

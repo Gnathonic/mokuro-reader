@@ -971,6 +971,65 @@ describe('a generation the server named itself', () => {
     expect((await getLayerWithPages(db, 'v1', 'odd'))!.kind).toBe('edit');
   });
 
+  it('files a stamped curated, personal or keepsake file as corrections, never as OCR (C4)', async () => {
+    await seedRow();
+    downloadFile.mockResolvedValue(new Blob([servedJson('かな', 'hayai-nova')]));
+    await syncLayersFromListing(
+      listing(
+        cloudFile('Series/Vol 1.cbz'),
+        cloudFile('Series/Vol 1.curated.mokuro'),
+        cloudFile('Series/Vol 1.edit-2.mokuro'),
+        cloudFile('Series/Vol 1.pre-upgrade.mokuro')
+      ),
+      'webdav'
+    );
+    expect(await getLayerWithPages(db, 'v1', 'curated')).toMatchObject({
+      kind: 'edit',
+      name: 'Shared corrections'
+    });
+    expect((await getLayerWithPages(db, 'v1', 'curated'))!.engine).toBeUndefined();
+    expect(await getLayerWithPages(db, 'v1', 'edit-2')).toMatchObject({
+      kind: 'edit',
+      name: 'Your corrections 2'
+    });
+    expect((await getLayerWithPages(db, 'v1', 'pre-upgrade'))!.kind).toBe('edit');
+  });
+
+  it('never re-files a cloud curated row as OCR when a newer stamped copy arrives', async () => {
+    const STAMP = '2026-09-16T10:00:00.000Z';
+    await seedRow();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'curated',
+      name: 'Shared corrections',
+      kind: 'edit',
+      created_at: STAMP,
+      updated_at: STAMP,
+      cloud: {
+        provider: 'webdav',
+        size: 100,
+        modified: Date.parse(STAMP) / 1000,
+        synced_at: STAMP
+      },
+      pages: [pg('えん')]
+    });
+    downloadFile.mockResolvedValue(new Blob([servedJson('かな', 'paddle-manga')]));
+    await syncLayersFromListing(
+      listing(
+        cloudFile('Series/Vol 1.cbz'),
+        cloudFile('Series/Vol 1.curated.mokuro', {
+          size: 222,
+          modifiedTime: '2026-09-17T10:00:00.000Z'
+        })
+      ),
+      'webdav'
+    );
+    const row = (await getLayerWithPages(db, 'v1', 'curated'))!;
+    expect(row.kind).toBe('edit');
+    expect(row.engine).toBeUndefined();
+    expect(row.pages[0].blocks[0].lines).toEqual(['かな']);
+  });
+
   it('re-files a cloud row that was filed as an edit once its file says a server made it', async () => {
     const STAMP = '2026-09-16T10:00:00.000Z';
     await seedRow();
