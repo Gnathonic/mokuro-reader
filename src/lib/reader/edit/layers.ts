@@ -123,7 +123,7 @@ export function layerKindForId(layerId: string, servedEngine?: string): VolumeOc
 /**
  * A display name → a unique `layer_id` slug. Never a reserved id or family
  * (`isReservedLayerId`) and always with a letter in it (sidecar names rule v1
- * #8): such a slug becomes `layer-<slug>` (X11) — a `-<n>` alone would never
+ * #8): such a slug becomes `layer-<slug>` — a `-<n>` alone would never
  * leave `edit-<n>`, `pre-upgrade…` or `previous-ocr…` — then de-duplicates.
  */
 export function slugifyLayerId(name: string, taken: Iterable<string>): string {
@@ -261,7 +261,8 @@ export async function persistLayerPageEdit(
  * there is none, with no cloud stamp, so the next sync pushes it wherever
  * personal layers go up (`layerNeedsPush`). An existing `edit` layer holds
  * corrections of its own and is never overwritten (`copyIntoEditLayer` does
- * that, on the user's word).
+ * that, on the user's word) — nor is one only listed in the cloud so far: the
+ * caller pulls that first (`pullOwnEditLayerBeforeFork`, `layer-sync.ts`).
  */
 export async function forkIntoEditLayer(
   volumeUuid: string,

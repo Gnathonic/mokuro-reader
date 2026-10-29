@@ -273,7 +273,7 @@ describe('the one-time edit-layer migration', () => {
     });
   }
 
-  it('on a 0.7.x bunko the migrated edit row stays on the device, run after run (C3-R6)', async () => {
+  it('on a 0.7.x bunko the migrated edit row stays on the device, run after run', async () => {
     await legacyEdited();
     bunko('local');
     await syncLayersFromListing(listing(), 'webdav');

@@ -103,7 +103,7 @@ describe('LayerPicker — keyboard escape hatch', () => {
   });
 });
 
-describe('LayerPicker — personal and shared corrections (C3-R5)', () => {
+describe('LayerPicker — personal and shared corrections', () => {
   const corrections = [
     { layer_id: 'edit', name: 'Your corrections', kind: 'edit' as const, updated_at: 'x' },
     { layer_id: 'curated', name: 'Shared corrections', kind: 'edit' as const, updated_at: 'x' }

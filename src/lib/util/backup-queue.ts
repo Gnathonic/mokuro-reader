@@ -619,7 +619,9 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // bunko: the editor's `original` snapshot stays local, and the `edit`
           // layer wherever the server would share it (`layerStaysLocal`).
           serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true,
-          editLayerSync: provider!.getStatus?.().editLayerSync
+          editLayerSync: provider!.getStatus?.().editLayerSync,
+          // Another account's personal layer never goes into this one's overlay.
+          accountScope: provider!.getStatus?.().accountScope
         };
       },
       onProgress: (data) => {

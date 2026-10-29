@@ -46,6 +46,7 @@ import {
   listedCuratedLayerFile,
   publishCuratedLayer,
   pullLayersForVolume,
+  pullOwnEditLayerBeforeFork,
   unpublishCuratedLayer,
   stampLayersSynced,
   syncLayersFromListing
@@ -987,7 +988,7 @@ describe('a generation the server named itself', () => {
     expect((await getLayerWithPages(db, 'v1', 'odd'))!.kind).toBe('edit');
   });
 
-  it('files a stamped curated, personal or keepsake file as corrections, never as OCR (C4)', async () => {
+  it('files a stamped curated, personal or keepsake file as corrections, never as OCR', async () => {
     await seedRow();
     downloadFile.mockResolvedValue(new Blob([servedJson('かな', 'hayai-nova')]));
     await syncLayersFromListing(
@@ -1883,6 +1884,7 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
       cloudFile('Series/Vol 1.fix.mokuro')
     ];
     expect(await deleteCloudLayerFile('v1', 'edit')).toBe('gone');
+    // A library file a progress-only account may not delete: maybe later, by another.
     expect(await deleteCloudLayerFile('v1', 'fix')).toBe('unconfirmed');
     expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual(['Series/Vol 1.edit.mokuro']);
   });
@@ -1897,9 +1899,31 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
       cloud: { provider: 'webdav', size: 100, modified: 1789552800, synced_at: T0 }
     });
     cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.curated.mokuro')];
-    expect(await deleteCloudLayerFile('v1', 'curated')).toBe('unconfirmed');
+    expect(await deleteCloudLayerFile('v1', 'curated')).toBe('kept-shared');
     await deleteLayerRows(db, 'v1', 'curated');
     downloadFile.mockResolvedValue(new Blob([mokuroJson('もど')]));
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    expect(deleteFile).not.toHaveBeenCalled();
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  it("a shared edit layer (0.7.x) or the server's pre-upgrade is 'kept-shared', and stays hidden", async () => {
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'local';
+    canAddFiles = true;
+    const synced = { provider: 'webdav', size: 100, modified: 1789552800, synced_at: T0 };
+    await seedLayer('edit', { updated_at: T0, cloud: synced });
+    await seedLayer('pre-upgrade', { updated_at: T0, cloud: synced });
+    cachedFiles = [
+      cloudFile('Series/Vol 1.cbz'),
+      cloudFile('Series/Vol 1.edit.mokuro'),
+      cloudFile('Series/Vol 1.pre-upgrade.mokuro')
+    ];
+    expect(await deleteCloudLayerFile('v1', 'edit')).toBe('kept-shared');
+    expect(await deleteCloudLayerFile('v1', 'pre-upgrade')).toBe('kept-shared');
+    await deleteLayerRows(db, 'v1', 'edit');
+    await deleteLayerRows(db, 'v1', 'pre-upgrade');
     await syncLayersFromListing(listing(...cachedFiles), 'webdav');
     expect(deleteFile).not.toHaveBeenCalled();
     expect(downloadFile).not.toHaveBeenCalled();
@@ -1987,10 +2011,125 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
       expect((await getLayerWithPages(db, 'v1', 'edit'))!.cloud?.account).toBe(ACCOUNT_A);
       expect((await getLayerWithPages(db, 'v1', 'fix'))!.cloud).not.toHaveProperty('account');
     });
+
+    it("deleting A's edit row while B is active never deletes B's overlay; A's next listing does", async () => {
+      await seedRow();
+      await seedLayer('edit', {
+        updated_at: T0,
+        cloud: {
+          provider: 'webdav',
+          account: ACCOUNT_A,
+          size: 100,
+          modified: 1789552800,
+          synced_at: T0
+        }
+      });
+      accountScope = ACCOUNT_B;
+      cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro')];
+      expect(await deleteCloudLayerFile('v1', 'edit')).toBe('unconfirmed');
+      expect(deleteFile).not.toHaveBeenCalled();
+      await deleteLayerRows(db, 'v1', 'edit');
+
+      // B's listing: A's tombstone is not about B's file — neither deleted nor hidden.
+      downloadFile.mockResolvedValue(new Blob([mokuroJson('びー')]));
+      await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect((await getLayerWithPages(db, 'v1', 'edit'))!.cloud?.account).toBe(ACCOUNT_B);
+    });
+
+    it("A's edit-layer tombstone is retried by A's listing only", async () => {
+      await seedRow();
+      localStorage.setItem(
+        'layer-sync:pending-deletes',
+        JSON.stringify([
+          { volume_uuid: 'v1', layer_id: 'edit', provider: 'webdav', account: ACCOUNT_A }
+        ])
+      );
+      const files = listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro'));
+      accountScope = ACCOUNT_B;
+      downloadFile.mockRejectedValue(new Error('not now'));
+      await syncLayersFromListing(files, 'webdav');
+      expect(deleteFile).not.toHaveBeenCalled();
+      accountScope = ACCOUNT_A;
+      await syncLayersFromListing(files, 'webdav');
+      expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual(['Series/Vol 1.edit.mokuro']);
+    });
+  });
+
+  it("a fork pulls the account's listed overlay first instead of minting a copy over it", async () => {
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    await seedLayer('curated', {
+      updated_at: T0,
+      cloud: { provider: 'webdav', size: 100, modified: 1789552800, synced_at: T0 }
+    });
+    cachedFiles = [
+      cloudFile('Series/Vol 1.cbz'),
+      cloudFile('Series/Vol 1.curated.mokuro'),
+      cloudFile('Series/Vol 1.edit.mokuro', { size: 55 })
+    ];
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('わたし')]));
+    expect(await pullOwnEditLayerBeforeFork('v1')).toBe(true);
+    // Only the overlay: the curated row is in sync and not this helper's business.
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+    const edit = (await getLayerWithPages(db, 'v1', 'edit'))!;
+    expect(edit.pages[0].blocks[0].lines).toEqual(['わたし']);
+    expect(edit.cloud).toMatchObject({ provider: 'webdav', size: 55 });
+
+    // A local edit row is the account's already: nothing is fetched.
+    downloadFile.mockClear();
+    expect(await pullOwnEditLayerBeforeFork('v1')).toBe(false);
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('a fork pulls nothing where the edit file is the shared one (0.7.x) or none is listed', async () => {
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'local';
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro')];
+    expect(await pullOwnEditLayerBeforeFork('v1')).toBe(false);
+    editLayerSync = 'push';
+    cachedFiles = [cloudFile('Series/Vol 1.cbz')];
+    expect(await pullOwnEditLayerBeforeFork('v1')).toBe(false);
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('never tidies the .gz beside a layer this device may not delete', async () => {
+    await seedRow();
+    canAddFiles = true;
+    const inSync = {
+      provider: 'webdav',
+      size: 100,
+      modified: 1789552800,
+      synced_at: T0
+    };
+    await seedLayer('curated', { updated_at: T0, cloud: inSync });
+    await seedLayer('edit', { updated_at: T0, cloud: inSync });
+    for (const gate of ['push', 'local'] as const) {
+      serverCompilesMetadata = true;
+      editLayerSync = gate;
+      await syncLayersFromListing(
+        listing(
+          cloudFile('Series/Vol 1.cbz'),
+          cloudFile('Series/Vol 1.curated.mokuro'),
+          cloudFile('Series/Vol 1.curated.mokuro.gz'),
+          cloudFile('Series/Vol 1.edit.mokuro'),
+          cloudFile('Series/Vol 1.edit.mokuro.gz')
+        ),
+        'webdav'
+      );
+      const deleted = deleteFile.mock.calls.map(([f]) => f.path);
+      expect(deleted).not.toContain('Series/Vol 1.curated.mokuro.gz');
+      // The account's own per-account overlay is its to tidy; a shared one is not.
+      if (gate === 'local') expect(deleted).not.toContain('Series/Vol 1.edit.mokuro.gz');
+      else expect(deleted).toContain('Series/Vol 1.edit.mokuro.gz');
+      deleteFile.mockClear();
+    }
   });
 });
 
-describe('Publish and Unpublish the shared curated layer (C3-R5)', () => {
+describe('Publish and Unpublish the shared curated layer', () => {
   const T0 = '2026-09-16T09:00:00.000Z';
   const T1 = '2026-09-16T09:30:00.000Z';
 
@@ -2153,9 +2292,32 @@ describe('Publish and Unpublish the shared curated layer (C3-R5)', () => {
     await syncLayersFromListing(listing(...cachedFiles), 'webdav');
     expect(deleteFile).not.toHaveBeenCalled();
   });
+
+  it('a retried Unpublish never deletes a newer curated file another editor published', async () => {
+    await seedRow();
+    await seedEdit();
+    await publishCuratedLayer('v1');
+    cachedFiles.push(cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }));
+    deleteFile.mockRejectedValueOnce(new Error('offline'));
+    expect(await unpublishCuratedLayer('v1')).toBe('unconfirmed');
+    deleteFile.mockClear();
+
+    // Another editor publishes before this device lists again.
+    const republished = cloudFile('Series/VOL 1.curated.mokuro', {
+      size: 120,
+      modifiedTime: '2026-09-16T13:00:00.000Z'
+    });
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('べつ')]));
+    await syncLayersFromListing(listing(cloudFile('Series/VOL 1.cbz'), republished), 'webdav');
+    expect(deleteFile).not.toHaveBeenCalled();
+    expect((await getLayerWithPages(db, 'v1', 'curated'))!.pages[0].blocks[0].lines).toEqual([
+      'べつ'
+    ]);
+    expect(localStorage.getItem('layer-sync:pending-deletes')).toBeNull();
+  });
 });
 
-describe('the migration guard on shared servers (C3-R6)', () => {
+describe('the migration guard on shared servers', () => {
   const T0 = '2026-09-16T09:00:00.000Z';
   const T1 = '2026-09-16T09:30:00.000Z';
 

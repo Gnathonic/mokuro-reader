@@ -326,6 +326,30 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
       await seedLayers();
       expect(await ids({ cloud: true })).toEqual(['edit', 'fix']);
     });
+
+    it("a backup under account B never uploads A's edit layer into B's overlay", async () => {
+      await seedLayers();
+      await putLayerWithPages(db, {
+        volume_uuid: 'volume-uuid',
+        layer_id: 'edit',
+        name: 'edit',
+        kind: 'edit',
+        created_at: '2026-09-16T00:00:00.000Z',
+        updated_at: '2026-09-17T00:00:00.000Z',
+        cloud: {
+          provider: 'webdav',
+          account: 'webdav:https://host|alice',
+          synced_at: '2026-09-16T00:00:00.000Z'
+        },
+        pages: []
+      });
+      const target = { serverCompilesMetadata: true, editLayerSync: 'push', cloud: true } as const;
+      expect(await ids({ ...target, account: 'webdav:https://host|bob' })).toEqual(['fix']);
+      expect(await ids({ ...target, account: 'webdav:https://host|alice' })).toEqual([
+        'edit',
+        'fix'
+      ]);
+    });
   });
 
   it("never uploads the editor's original snapshot to a server that compiles its metadata", async () => {

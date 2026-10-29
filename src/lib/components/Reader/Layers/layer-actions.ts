@@ -214,7 +214,9 @@ export async function runLayerAction(action: LayerAction, ctx: LayerActionContex
         d.notify(
           cloud === 'unconfirmed'
             ? 'Layer deleted on this device. Its cloud copy will be removed when the cloud allows it.'
-            : 'Layer deleted'
+            : cloud === 'kept-shared'
+              ? 'Layer deleted on this device. The shared copy stays on the server.'
+              : 'Layer deleted'
         );
         return;
       }

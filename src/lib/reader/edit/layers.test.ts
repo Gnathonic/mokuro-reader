@@ -81,7 +81,7 @@ describe('slugifyLayerId', () => {
     expect(slugifyLayerId('Vol 2', [])).toBe('vol-2');
   });
 
-  it('steps out of every reserved id and family with a layer- prefix (X11)', () => {
+  it('steps out of every reserved id and family with a layer- prefix', () => {
     expect(slugifyLayerId('Edit', [])).toBe('layer-edit');
     expect(slugifyLayerId('Curated', [])).toBe('layer-curated');
     expect(slugifyLayerId('Pre upgrade', [])).toBe('layer-pre-upgrade');
@@ -479,7 +479,7 @@ describe('layerKindForId / layerNameForId', () => {
     expect(layerKindForId('tr-en', 'hayai-nova')).toBe('translation');
   });
 
-  it('files the shared, personal and keepsake layers as corrections, stamp or not (C4)', () => {
+  it('files the shared, personal and keepsake layers as corrections, stamp or not', () => {
     // A stamp on these never makes them a server's OCR: curated is published
     // corrections, edit-<n> a person's, pre-upgrade bunko's copy of a main
     // that may hold corrections. Their role is read from the id.
@@ -516,7 +516,7 @@ describe('layerKindForId / layerNameForId', () => {
   });
 });
 
-describe('shared layers are read-only: an edit forks into `edit` (C3-R4)', () => {
+describe('shared layers are read-only: an edit forks into `edit`', () => {
   async function seedCurated(pages = [pg('共有'), pg('ページ', 'q.png')]) {
     await putLayerWithPages(db, {
       volume_uuid: 'v1',

@@ -5,7 +5,7 @@ const BUNKO = { serverCompilesMetadata: true };
 const DRIVE = { serverCompilesMetadata: false };
 const CLOUD = { provider: 'webdav', synced_at: '2026-10-01T00:00:00.000Z' };
 
-describe('forksOnEdit: which layers an edit leaves alone and copies into `edit` (C3-R4)', () => {
+describe('forksOnEdit: which layers an edit leaves alone and copies into `edit`', () => {
   it('the shared curated layer, on any provider and with none', () => {
     const curated = { layer_id: 'curated', kind: 'edit' as const, cloud: CLOUD };
     expect(forksOnEdit(curated, BUNKO)).toBe(true);
@@ -36,7 +36,7 @@ describe('forksOnEdit: which layers an edit leaves alone and copies into `edit` 
   });
 });
 
-describe('layerRowActions: what the layer menu offers on a row (C3-R5)', () => {
+describe('layerRowActions: what the layer menu offers on a row', () => {
   const at = (layer_id: string, canPublish: boolean, kind = 'edit' as const) =>
     layerRowActions({ layer_id, kind }, { canPublish, status: { serverCompilesMetadata: true } });
 

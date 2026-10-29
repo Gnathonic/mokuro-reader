@@ -75,6 +75,7 @@
     type LayerSummary
   } from '$lib/reader/edit/layer-list';
   import { forkIntoEditLayer, loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
+  import { pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
   import { forksOnEdit } from '$lib/reader/edit/layer-kind';
   import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
   import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
@@ -802,7 +803,7 @@
   }
 
   /**
-   * Editing a shared layer (C3-R4): copy it into the account's own `edit`
+   * Editing a shared layer: copy it into the account's own `edit`
    * layer — or keep the one there is — and edit THAT. The shared layer stays
    * as everyone reads it. A focus (the context menu's line) carries over only
    * into a fresh copy, whose blocks are the source's.
@@ -812,6 +813,9 @@
     const uuid = volume.volume_uuid;
     try {
       await settleEditsBeforeLayerMutation('new');
+      // The account's overlay from another device, listed but not pulled yet,
+      // is the copy to edit — a fresh fork would replace it on the next sync.
+      await pullOwnEditLayerBeforeFork(uuid);
       const { created } = await forkIntoEditLayer(uuid, sourceLayerId);
       if (volume?.volume_uuid !== uuid) return;
       reenterEditOnLayer = { layer: EDIT_LAYER_ID, focus: created ? focus : undefined };

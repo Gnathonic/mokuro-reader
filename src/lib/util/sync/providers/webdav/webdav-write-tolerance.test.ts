@@ -120,7 +120,7 @@ describe('best-effort metadata deletes', () => {
 
 // bunko answers a PUT of a reserved layer id 403 by design (its `pre-upgrade`
 // keepsake, an account's `curated` without the rights, a 0.7.x `edit`): that
-// says nothing about the account's other writes (critique C4).
+// says nothing about the account's other writes.
 describe('a refused reserved layer file', () => {
   it.each(['pre-upgrade', 'pre-upgrade-2', 'curated', 'edit', 'edit-2', 'original'])(
     'a 403 on <Vol>.%s.mokuro leaves the provider read-write and reads as a refusal',

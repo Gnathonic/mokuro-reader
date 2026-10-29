@@ -18,7 +18,7 @@ describe('layerNameForId: the shared and personal correction layers', () => {
     // Not personal: a slug that merely starts with `edit`.
     expect(layerNameForId('edit-x')).toBe('Edit X');
     expect(layerNameForId('editorial')).toBe('Editorial');
-    // Reserved, but not a class of its own (C17): named like any other id.
+    // Reserved, but not a class of its own: named like any other id.
     expect(layerNameForId('curated-2')).toBe('Curated 2');
   });
 });

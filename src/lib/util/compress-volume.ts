@@ -12,6 +12,7 @@ import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
 import { mainSidecarPagesForCloud } from '$lib/catalog/main-sidecar';
 import { layerStaysLocal, type LayerTarget } from '$lib/catalog/mokuro-hash';
+import { isPersonalLayerId } from '$lib/reader/edit/layer-names';
 import {
   buildLayerMokuroMetadata,
   buildMokuroMetadata,
@@ -208,6 +209,11 @@ export async function generateVolumeSidecarsFromDb(
     /** The target's `ProviderStatus.editLayerSync`: see `layerStaysLocal`. */
     editLayerSync?: 'push' | 'local';
     /**
+     * The target's `accountScope`: a personal layer last synced under another
+     * account is that account's overlay, never uploaded into this one's.
+     */
+    account?: string;
+    /**
      * The sidecars go to the CLOUD: the main `.mokuro` is model output
      * (`catalog/main-sidecar.ts`) — an edited volume's comes from its
      * `original` snapshot, and with none it is left out.
@@ -284,7 +290,8 @@ export async function generateVolumeSidecarsFromDb(
     {
       serverCompilesMetadata: target.serverCompilesMetadata === true,
       editLayerSync: target.editLayerSync
-    }
+    },
+    target.account
   );
   if (layers.length > 0) sidecars.layers = layers;
 
@@ -302,7 +309,9 @@ async function buildLayerSidecarsFromDb(
   db: Dexie,
   volume: VolumeMetadata,
   titles: { seriesTitle: string; volumeTitle: string },
-  target: LayerTarget = { serverCompilesMetadata: false }
+  target: LayerTarget = { serverCompilesMetadata: false },
+  /** The target's `accountScope` (`generateVolumeSidecarsFromDb`). */
+  account?: string
 ): Promise<VolumeLayerSidecarBlobData[]> {
   // Metadata and pages in one read transaction: `updatedAt` below must be the
   // stamp of exactly the pages serialized (`stampLayersSynced` compares it).
@@ -318,6 +327,17 @@ async function buildLayerSidecarsFromDb(
       // snapshot and bunko's `pre-upgrade` to a server that compiles its own
       // metadata (`layerStaysLocal`).
       .filter((layer) => !layerStaysLocal(layer, target))
+      // Another account's personal layer (two accounts, one device, one
+      // bunko): uploading it would overwrite this account's own overlay.
+      .filter(
+        (layer) =>
+          !(
+            account &&
+            layer.cloud?.account &&
+            layer.cloud.account !== account &&
+            isPersonalLayerId(layer.layer_id)
+          )
+      )
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {
         const { totalChars } = buildPageCharCounts(layer.pages);

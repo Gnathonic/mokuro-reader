@@ -397,7 +397,7 @@ describe('per-user files (bunko keeps these per account)', () => {
 });
 
 describe('per-account layers and the curated scope (bunko 0.8)', () => {
-  /** The signed-in `/login/api/me` body of plan §1, in bunko's key order. */
+  /** The signed-in `/login/api/me` body bunko 0.8 serves, in bunko's key order. */
   const signedIn = (
     extra: Record<string, unknown> = {},
     curated: unknown = { scope: 'owned' }

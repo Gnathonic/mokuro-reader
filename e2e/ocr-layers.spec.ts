@@ -292,7 +292,7 @@ test.describe('OCR layers', () => {
   });
 });
 
-test.describe('shared corrections (C3-R4)', () => {
+test.describe('shared corrections: an edit forks into your own', () => {
   test('E on the shared curated layer edits Your corrections; the shared pages stay', async ({
     page
   }) => {

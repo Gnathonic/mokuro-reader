@@ -423,7 +423,7 @@ A layer made by name never takes a RESERVED id (`isReservedLayerId`,
 `layer-names.ts` — bunko's set: `original`, `gcv`, `updated-ocr`, `edit`,
 `curated`, the `tr-`, `pre-upgrade` and `previous-ocr` prefixes, and
 `edit-<n>`/`curated-<n>`): `slugifyLayerId` turns such a slug (or one with no
-letter) into `layer-<slug>` before de-duplicating with `-<n>` (X11; "Edit" →
+letter) into `layer-<slug>` before de-duplicating with `-<n>` ("Edit" →
 `layer-edit`, "2024" → `layer-2024`). Edits made before this change live
 only in the primary: `migrateEditedPrimariesToEditLayers` (once per device,
 rows stamped before `edit-layer:epoch`) copies such a primary into an `edit`
@@ -455,14 +455,19 @@ worker message): an untouched upgrade layer everywhere; `curated` everywhere
 `edit`/`edit-<n>` where `editLayerSync` is `local`; and `original` and
 `pre-upgrade*` on a server that compiles its metadata. Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
-IS is somebody else's file, so neither a local delete nor its tombstone ever
-removes its cloud copy. Writability is per layer (`canPushLayer`): a personal
+IS is somebody else's file, so neither a local delete, its tombstone nor the
+`.gz`-sibling tidy ever removes its cloud copy (the delete reports
+`'kept-shared'`, and the user is told the shared copy stays). Writability is per layer (`canPushLayer`): a personal
 id on a `push` bunko needs only `isReadOnly !== true` (a `registered` account
 writes its own overlay), anything else also needs `canAddFiles`. A personal
 row records the provider's `accountScope` in `cloud.account` (push, pull,
 `stampLayersSynced`): a row of another account on this device is never
-pushed, and is replaced by this account's listed file only while it holds no
-unsynced edit. A 403 on a reserved layer file (`isReservedLayerSidecarPath`)
+pushed — by sync or by a backup's layer sidecars (`account` in
+`generateVolumeSidecarsFromDb`) — and is replaced by this account's listed file
+only while it holds no unsynced edit. Its delete never touches the file at its
+path (that is the ACTIVE account's overlay): the tombstone carries the row's
+account (`PendingLayerDelete.account`), and only that account's listings
+retry, hide or spend it. A 403 on a reserved layer file (`isReservedLayerSidecarPath`)
 is that file's refusal (`PERMISSION_DENIED`, remembered by layer-sync), never
 a read-only demotion of the WebDAV provider.
 
@@ -483,9 +488,9 @@ So `edit` lives per account on a bunko that lists it in `per_user_layers`
 (the server serves each account its own file at the same path), stays on the
 device on any other bunko, and syncs as a normal layer file on plain storage
 and in cloud-direct folders (the folder owner's file). Hand-made ids stay
-shared library files (owner question Q1, default).
+shared library files.
 
-**Shared layers are read-only; an edit forks into `edit`** (C3-R4).
+**Shared layers are read-only; an edit forks into `edit`.**
 `forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
 and on a server that compiles its metadata also for `pre-upgrade*` and for
 server-stamped OCR rows (kind `ocr` with an `engine` and a `cloud` stamp) —
@@ -494,7 +499,10 @@ layer (`E`, quick actions, context menu) calls `forkIntoEditLayer`: it makes
 `edit` from the displayed layer's pages when there is none (no cloud stamp, so
 the push rule decides where it goes), switches the display to `edit` and
 opens the editor there ("Editing your corrections — the shared layer stays as
-it is"). An existing `edit` layer is never overwritten by a fork; the layer
+it is"). An existing `edit` layer is never overwritten by a fork — nor one
+only LISTED so far (pushed from another device, not pulled here yet): the
+fork pulls that first (`pullOwnEditLayerBeforeFork`), since a fresh copy
+would be newer and replace it on the next sync. The layer
 menu's **Copy to your corrections** (`copyIntoEditLayer`, after a confirm)
 replaces its pages on purpose. A layer SWAP from inside the editor (L, the
 toolbar strip) onto such a layer does not fork — the editor closes and says to
@@ -503,7 +511,7 @@ press E — or L could never cycle past it. `persistLayerPageEdit` and
 stays renamable (a display name is local). Edits on the primary are unchanged
 (primary + `edit`, above).
 
-**Publish / Unpublish** (C3-R5, `layer-sync.ts`). Shown only when
+**Publish / Unpublish** (`layer-sync.ts`). Shown only when
 `canPublishCurated(status, series)` (the picker: Publish on `edit`, Unpublish
 on `curated`; the badges read "Yours" and "Shared"). `publishCuratedLayer`
 uploads the `edit` layer's own serialization (with its `edited` block) to
@@ -514,11 +522,14 @@ neither pulls nor pushes it; a 403 is `'refused'` and writes nothing.
 `unpublishCuratedLayer` deletes every listed copy, then the row; a 403 changes
 nothing (`'refused'`), any other failure leaves a tombstone flagged
 `unpublish`, the only tombstone whose retry may delete a `curated` file (and
-only for an account that may publish that series). Delete is never offered on
+only for an account that may publish that series). It carries the stamp of
+the copy it meant (`file`): a listed `curated` that moved since is another
+editor's newer publish — the tombstone is spent and that file pulled, never
+deleted. Delete is never offered on
 `curated` (it could only hide the shared file here); the settings panel hides it
 too.
 
-**Migration guard on shared servers** (C3-R6). The one-time
+**Migration guard on shared servers.** The one-time
 `migrateEditedPrimariesToEditLayers` stays local and additive and uploads
 nothing itself: the `edit` row it makes goes where the push rule sends it —
 nowhere on a 0.7.x bunko, the account's overlay on 0.8, the folder on plain
