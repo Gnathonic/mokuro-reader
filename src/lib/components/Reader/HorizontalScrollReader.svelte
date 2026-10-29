@@ -9,7 +9,11 @@
   import { ScrollAnimator, type ScrollOptions } from '$lib/reader/scroll-animator';
   import { ContinuousZoomController, type SettleReason } from '$lib/reader/zoom-controller';
   import { applyHorizontalAlignment, applyHorizontalZoomLayout } from '$lib/reader/zoom-layout';
-  import { detectHorizontalPage, horizontalVisibilityRatio } from '$lib/reader/page-detection';
+  import {
+    detectHorizontalPage,
+    horizontalVisibilityRatio,
+    visiblePageRange
+  } from '$lib/reader/page-detection';
   import {
     GAP_WHEEL_STEP_SIZE,
     MAX_PAGE_GAP,
@@ -41,6 +45,8 @@
     onGapChange?: (px: number) => void;
     onVisibleCountChange?: (count: number) => void;
     onContextMenu?: (data: any) => void;
+    /** Pages with any part on screen, 1-based inclusive (reading history). */
+    onVisibleRangeChange?: (first: number, last: number) => void;
   }
 
   let {
@@ -54,7 +60,8 @@
     onOverlayToggle,
     onGapChange,
     onVisibleCountChange,
-    onContextMenu
+    onContextMenu,
+    onVisibleRangeChange
   }: Props = $props();
 
   let outerDiv: HTMLDivElement | undefined = $state();
@@ -218,6 +225,7 @@
   let navIsKeyboard = false; // true when navTarget was set by keyboard, not scroll
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let pageElements: HTMLDivElement[] = [];
+  let lastReportedRange = '';
 
   /**
    * Detect current page: the >95% visible page whose center is closest
@@ -253,6 +261,19 @@
         if (horizontalVisibilityRatio(el.getBoundingClientRect(), containerRect) > 0.95) count++;
       }
       onVisibleCountChange(Math.max(count, 1));
+    }
+
+    if (onVisibleRangeChange && scrollContainer) {
+      const range = visiblePageRange(
+        scrollContainer.getBoundingClientRect(),
+        pageElements.map((el) => el?.getBoundingClientRect()),
+        'x'
+      );
+      const key = range ? range.join('-') : '';
+      if (range && key !== lastReportedRange) {
+        lastReportedRange = key;
+        onVisibleRangeChange(range[0], range[1]);
+      }
     }
   }
 

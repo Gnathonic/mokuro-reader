@@ -1,8 +1,13 @@
 import { getItems } from '$lib/upload';
 import { IMAGE_EXTENSIONS } from './types';
 import { normalizeFilename } from '$lib/util';
-import { getFileProcessingPool } from '$lib/util/file-processing-pool';
+import {
+  decrementPoolUsers,
+  getFileProcessingPool,
+  incrementPoolUsers
+} from '$lib/util/file-processing-pool';
 import { generateUUID } from '$lib/util/uuid';
+import { mayBeImageType } from '$lib/util/image-content-type';
 import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
 import { fetchVolumeManifest, type VolumeManifest } from './deep-link-manifest';
 import { parseImportedSeriesFile, type PendingSeriesFile } from './series-file-import';
@@ -91,6 +96,28 @@ async function downloadCbzBundleViaWorker(
   mokuroFile: File | null;
   coverFile: File | null;
 }> {
+  // Counted as a pool user for the whole download, so another user's count
+  // dropping to zero (an import's pre-scan, a queue draining) cannot
+  // terminate the pool under this task.
+  incrementPoolUsers();
+  try {
+    return await runCbzBundleTask(cbzUrl, normalizedVolume, mokuroUrls, coverUrls, onProgress);
+  } finally {
+    decrementPoolUsers();
+  }
+}
+
+async function runCbzBundleTask(
+  cbzUrl: string,
+  normalizedVolume: string,
+  mokuroUrls: string[],
+  coverUrls: string[],
+  onProgress?: (state: HtmlDownloadProgress) => void
+): Promise<{
+  archiveFile: File;
+  mokuroFile: File | null;
+  coverFile: File | null;
+}> {
   const pool = await getFileProcessingPool();
   const taskId = `html-download-${generateUUID()}`;
 
@@ -141,7 +168,7 @@ async function downloadCbzBundleViaWorker(
         }
 
         let coverFile: File | null = null;
-        if (bundle.cover?.data) {
+        if (bundle.cover?.data && mayBeImageType(bundle.cover.contentType)) {
           const extFromPath = extensionFromPath(bundle.cover.url);
           const extFromMime = extensionFromMimeType(bundle.cover.contentType || '');
           const extension = extFromPath || extFromMime || 'webp';
@@ -233,12 +260,16 @@ export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadR
   };
 }
 
-/** The `cover` param as a URL: absolute as given, else a path on the source's origin. */
+/**
+ * The `cover` param as a URL: absolute as given, else a path on the source's
+ * origin. A relative path is a decoded query value naming files — each segment
+ * is encoded, or a `#` or `?` in a series name ends the path there.
+ */
 function coverParamUrl(request: HtmlDownloadRequest): string | null {
   if (!request.cover) return null;
-  return /^https?:\/\//i.test(request.cover)
-    ? request.cover
-    : `${request.source}/${request.cover.replace(/^\/+/, '')}`;
+  if (/^https?:\/\//i.test(request.cover)) return request.cover;
+  const path = request.cover.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
+  return `${request.source}/${path}`;
 }
 
 function extensionFromPath(pathOrUrl: string): string {
@@ -350,6 +381,11 @@ async function tryFetchCoverSidecar(
       console.log('[HTML Download] Thumbnail sidecar not found:', coverUrl, response.status);
       continue;
     }
+    const contentType = response.headers.get('content-type');
+    if (!mayBeImageType(contentType)) {
+      console.warn(`[HTML Download] Thumbnail sidecar is not an image (${contentType}):`, coverUrl);
+      continue;
+    }
 
     const blob = await response.blob();
     const extFromPath = extensionFromPath(coverUrl);
@@ -431,6 +467,11 @@ async function fetchManifestLayers(layers: VolumeManifest['layers']): Promise<Fe
 async function fetchCoverFile(url: string, normalizedVolume: string): Promise<File | null> {
   const response = await fetchListedFile(url, 'cover');
   if (!response) return null;
+  const contentType = response.headers.get('content-type');
+  if (!mayBeImageType(contentType)) {
+    console.warn(`[HTML Download] Cover ${url} is not an image (${contentType})`);
+    return null;
+  }
   try {
     const blob = await response.blob();
     const extension =
@@ -505,12 +546,17 @@ async function downloadFromManifest(
     layers = await fetchManifestLayers(manifest.layers);
   }
 
-  // A `cover` param on the link wins; the manifest's cover is used only without one.
-  const coverUrl = coverParamUrl(request) ?? manifest.cover?.url ?? null;
+  // A `cover` param on the link wins; the manifest's cover is used without one,
+  // or when the param fetches no image (bunko's catalog passes a library-relative
+  // path there, which does not resolve on the origin root).
+  const coverUrls = [coverParamUrl(request), manifest.cover?.url].filter(
+    (url): url is string => !!url
+  );
   let coverFile: File | null = null;
-  if (coverUrl) {
+  for (const coverUrl of coverUrls) {
     onProgress?.({ status: 'Fetching cover...', progress: 86 });
     coverFile = await fetchCoverFile(coverUrl, normalizedVolume);
+    if (coverFile) break;
   }
 
   let seriesFile: PendingSeriesFile | null = null;

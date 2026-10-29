@@ -424,8 +424,7 @@ test.describe('automatic OCR upgrade (real mokuro-bunko)', () => {
           consoleLines.push(`${new Date().toISOString().slice(11, 23)} ${text.slice(0, 300)}`);
         }
       });
-      await page.goto('/');
-      await page.waitForTimeout(800);
+      await gotoApp(page);
       await page.evaluate(async () => {
         const { updateSetting } = await import('/src/lib/settings/index.ts');
         updateSetting('continuousScroll', false);
@@ -764,8 +763,7 @@ test.describe('OCR upgrade vs the browser HTTP cache (real mokuro-bunko)', () =>
       await waitForSeriesFile(request, password, SERIES, (m) => !!m.get('Vol 1')?.mokuro_sha256);
 
       const seen = recordRequests(context);
-      await page.goto('/');
-      await page.waitForTimeout(800);
+      await gotoApp(page);
       await connect(page, password);
       await relist(page);
       await download(page, `${SERIES}/Vol 1.cbz`);
@@ -975,8 +973,7 @@ test.describe('OCR queue file (real mokuro-bunko)', () => {
           )
           .toBe('listed');
         console.log('[evidence] (3) queue file:', JSON.stringify(raw));
-        await page.goto('/');
-        await page.waitForTimeout(500);
+        await gotoApp(page);
         const parsed = await page.evaluate(async (raw) => {
           const { parseQueueFile } = await import('/src/lib/catalog/server-ocr-queue.ts');
           return parseQueueFile(raw);

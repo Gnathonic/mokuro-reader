@@ -7,6 +7,7 @@ import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
 import { isImageExtension } from '$lib/import';
 import { naturalSort } from '$lib/util/natural-sort';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
+import { recordEvent } from '$lib/reading-history/record';
 import { get } from 'svelte/store';
 import { convertToWebP, generateThumbnail } from '$lib/catalog/thumbnails';
 import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
@@ -198,13 +199,39 @@ export function updateVolumeStats(
     volume_title?: string;
   }
 ): void {
+  let timeDeltaMs = 0;
+  let charsDelta = 0;
+
   volumesWithTrash.update((prev: Volumes) => {
     const currentVolume = prev[volumeUuid] || new VolumeData();
+    if (updates.timeReadInMinutes !== undefined) {
+      timeDeltaMs = (updates.timeReadInMinutes - currentVolume.timeReadInMinutes) * 60000;
+    }
+    // The modal re-sends `chars` as a linear estimate on every save; only a
+    // real progress edit makes its chars a user edit.
+    if (
+      updates.chars !== undefined &&
+      updates.progress !== undefined &&
+      updates.progress !== currentVolume.progress
+    ) {
+      charsDelta = updates.chars - currentVolume.chars;
+    }
+    // A stat edit is a user action and must win the next merge like a page
+    // turn does; without a fresh stamp the other device's older copy replaced
+    // it. Only a real change counts: the modal re-sends every field on save
+    // (chars as a linear re-estimate), and a rename on a device that missed a
+    // sync must not outrank reading done elsewhere.
+    const statChanged =
+      (updates.progress !== undefined && updates.progress !== currentVolume.progress) ||
+      (updates.timeReadInMinutes !== undefined &&
+        updates.timeReadInMinutes !== currentVolume.timeReadInMinutes) ||
+      (updates.completed !== undefined && updates.completed !== currentVolume.completed);
 
     return {
       ...prev,
       [volumeUuid]: new VolumeData({
         ...currentVolume,
+        ...(statChanged && { lastProgressUpdate: new Date().toISOString() }),
         ...(updates.progress !== undefined && { progress: updates.progress }),
         ...(updates.chars !== undefined && { chars: updates.chars }),
         ...(updates.timeReadInMinutes !== undefined && {
@@ -226,6 +253,16 @@ export function updateVolumeStats(
       })
     };
   });
+
+  // Reading history: the edit is an event, so every device's stats can apply it.
+  if (timeDeltaMs !== 0 || charsDelta !== 0) {
+    void recordEvent({
+      kind: 'adjust',
+      volume: volumeUuid,
+      time_delta_ms: timeDeltaMs,
+      chars_delta: charsDelta
+    });
+  }
 }
 
 /**

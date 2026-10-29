@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Duplicate-folder cleanup never removes mokuro-bunko's own files
+- MEGA catches mokuro-bunko changes made while you were offline
+
 ## [1.10.0] - 2026-10-02
 
 ### Added

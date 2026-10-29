@@ -29,7 +29,6 @@ vi.mock('$lib/util/progress-tracker', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 vi.mock('$lib/util/modals', () => ({
-  promptImageOnlyImport: (_a: unknown, _b: unknown, onConfirm: () => void) => onConfirm(),
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
 }));
 const scheduleSeriesFileWrite = vi.hoisted(() => vi.fn());
@@ -66,6 +65,7 @@ import type { HtmlDownloadResult } from '../html-download-provider';
 import { parseImportedSeriesFile, resetImportedSeriesFiles } from '../series-file-import';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import type { Page, VolumeMetadata } from '$lib/types';
+import { installReviewer, type Reviewer } from './helpers/review-bridge';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.
 if (typeof Blob !== 'undefined' && !Blob.prototype.stream) {
@@ -168,7 +168,10 @@ async function downloaded(
   };
 }
 
+let reviewer: Reviewer;
+
 beforeEach(async () => {
+  reviewer = installReviewer();
   resetImportedSeriesFiles();
   scheduleSeriesFileWrite.mockReset();
   watchServerOcr.mockReset();
@@ -184,6 +187,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  reviewer.restore();
   vi.restoreAllMocks();
   resetImportedSeriesFiles();
 });

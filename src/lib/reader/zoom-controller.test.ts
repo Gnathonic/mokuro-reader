@@ -285,6 +285,19 @@ describe('ContinuousZoomController — wheel', () => {
     expect(settled).toHaveBeenCalledTimes(1);
   });
 
+  it('one Firefox notch is one level, not continuous zoom or two levels (#272)', () => {
+    const world = tallPageWorld();
+    const c = makeController(world);
+
+    // Firefox pixel mode at 200% scaling, then Firefox line mode on Linux.
+    c.wheelZoom({ deltaY: -204.8, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 1000 });
+    pump();
+    expect(c.currentZoom).toBe(1.5);
+    c.wheelZoom({ deltaY: -6, deltaMode: 1, clientX: 500, clientY: 400, timeStamp: 2000 });
+    pump();
+    expect(c.currentZoom).toBe(2);
+  });
+
   it('accumulates trackpad deltas into a single step', () => {
     const world = tallPageWorld();
     const c = makeController(world);
@@ -775,7 +788,8 @@ describe('ZoomController — surface abstraction (additive)', () => {
     pump();
     expect(c.currentZoom).toBe(4);
 
-    c.wheelZoom({ deltaY: 240, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 3000 });
+    c.wheelZoom({ deltaY: 120, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 3000 });
+    c.wheelZoom({ deltaY: 120, deltaMode: 0, clientX: 500, clientY: 400, timeStamp: 3050 });
     pump();
     expect(c.currentZoom).toBe(1);
   });

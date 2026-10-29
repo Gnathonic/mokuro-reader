@@ -3,7 +3,16 @@
   import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
   import TextBoxes from './TextBoxes.svelte';
   import EditOverlay from './Edit/EditOverlay.svelte';
-  import { acquireBlobUrl, releaseBlobUrl } from '$lib/reader/blob-urls';
+  import { acquireBlobUrl, blobForUrl, releaseBlobUrl } from '$lib/reader/blob-urls';
+  import { pageInkSetting } from '$lib/settings';
+  import {
+    INK_GATE_MAX_MS,
+    INK_PALETTE,
+    PAPER_DEFAULT_LAYERS,
+    inkColorFor,
+    pageNeedsInk,
+    peekPageInk
+  } from '$lib/reader/ink-color';
 
   interface ContextMenuData {
     x: number;
@@ -71,6 +80,59 @@
       if (held) releaseBlobUrl(held);
     };
   });
+
+  // Ink color (#256): is this page black and white? Sampled once per image
+  // (cached in ink-color.ts) and never while the setting is off. The reader
+  // samples the pages around the one being read AHEAD (prefetchPageInk), so a
+  // page usually mounts with its verdict already settled and paints inked in
+  // its very first frame. Otherwise (the first page of a volume, a far jump)
+  // the image layer is held hidden until the verdict arrives — the reader
+  // background shows, as it does while any page image decodes — so no frame
+  // ever shows a black-and-white page without its ink.
+  //
+  // The image's identity is its Blob: the File when the parent passes one,
+  // else the Blob behind the preloaded URL (paged mode renders with
+  // `cachedUrl` before the image cache can hand over the File).
+  let inkImage = $derived(file ?? (cached ? blobForUrl(cached) : null));
+  let inkOn = $derived($pageInkSetting !== 'off');
+  let inkVerdict = $state<{ image: Blob; ink: boolean } | null>(null);
+  // Safety valve only: a sample that never settles must not blank the page
+  // for good. Never reached in practice (a sample takes tens of ms).
+  let inkGateExpired = $state<Blob | null>(null);
+
+  $effect(() => {
+    const image = inkImage;
+    if (!inkOn || !image || peekPageInk(image) !== undefined) return;
+    let live = true;
+    pageNeedsInk(image).then((ink) => {
+      if (live) inkVerdict = { image, ink };
+    });
+    const valve = setTimeout(() => {
+      if (live) inkGateExpired = image;
+    }, INK_GATE_MAX_MS);
+    return () => {
+      live = false;
+      clearTimeout(valve);
+    };
+  });
+
+  // true / false once known, undefined while the sample is running. Settled
+  // verdicts are read synchronously so a prefetched page is inked at mount.
+  let pageIsMono = $derived.by(() => {
+    if (!inkOn || !inkImage) return false;
+    if (inkVerdict?.image === inkImage) return inkVerdict.ink;
+    return peekPageInk(inkImage);
+  });
+
+  let inkPending = $derived(
+    inkOn && !!url && pageIsMono === undefined && inkGateExpired !== inkImage
+  );
+
+  let ink = $derived.by(() => {
+    if (pageIsMono !== true) return null;
+    const name = inkColorFor($pageInkSetting, volumeUuid, pageIndex);
+    return name ? { name, ...INK_PALETTE[name], paperDefault: PAPER_DEFAULT_LAYERS[name] } : null;
+  });
 </script>
 
 <div
@@ -78,12 +140,27 @@
   data-page-index={pageIndex}
   style:width={`${page.img_width}px`}
   style:height={`${page.img_height}px`}
-  style:background-image={url}
-  style:background-size="contain"
-  style:background-repeat="no-repeat"
-  style:background-position="center"
   class="relative"
+  data-ink={ink?.name}
+  style:--page-ink-text={ink?.text}
 >
+  <!-- The image is its own layer, not this div's background, so the page
+       brightness/contrast filter (#256, `--page-filter` from the reader) reaches
+       the image and never the text boxes or edit overlay beside it. First child
+       and positioned: it paints under them (both are positioned, later in tree
+       order). Pointer events pass through to this div, as with a background.
+       `.pageArt` holds the image and, on a black-and-white page with ink color
+       on, the two ink blend layers above it. -->
+  <div
+    class="pageArt"
+    class:inked={ink !== null}
+    class:inkPending
+    aria-hidden="true"
+    style:--ink={ink ? `var(--ink-layer-${ink.name}, ${ink.ink})` : undefined}
+    style:--ink-paper={ink ? `var(--paper-layer-${ink.name}, ${ink.paperDefault})` : undefined}
+  >
+    <div class="pageImage" style:background-image={url}></div>
+  </div>
   {#if editSession && pageIndex !== undefined}
     <EditOverlay {page} {pageIndex} session={editSession} />
   {:else}
@@ -97,3 +174,63 @@
     />
   {/if}
 </div>
+
+<style>
+  .pageArt,
+  .pageImage {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  /* Ink color (#256). The two layers blend with what is painted under them in
+     their stacking context; `isolation` makes this wrapper that context, so the
+     backdrop is this page's (brightness/contrast-filtered) image and nothing
+     else — not the reader background, not the other page of a spread. Only an
+     inked page pays for the group. The wrapper is positioned with z-index auto
+     and comes first, so the text boxes and the edit overlay (z-index 11) still
+     paint above it, untouched by either blend. Plain colours, no per-layer
+     filter: the palette is the userscript's filtered red, pre-measured. */
+  .pageArt.inked {
+    isolation: isolate;
+  }
+
+  /* Ink on, verdict not in yet: show nothing rather than the page uninked. */
+  .pageArt.inkPending {
+    visibility: hidden;
+  }
+
+  .pageArt.inked::before,
+  .pageArt.inked::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    /* above .pageImage (z-index auto) inside the group; ::after above ::before */
+    z-index: 1;
+  }
+
+  /* Screen: white stays white, black becomes the ink. `--ink` is this page's
+     palette colour's finished ink (`--ink-layer-<colour>`, set once by the
+     reader from the ink strength). */
+  .pageArt.inked::before {
+    background: var(--ink);
+    mix-blend-mode: screen;
+  }
+
+  /* Multiply: the paper — its tint and age folded into one colour
+     (`--paper-layer-<colour>`; a multiply at opacity a = a multiply by white
+     mixed a toward the colour). */
+  .pageArt.inked::after {
+    background: var(--ink-paper);
+    mix-blend-mode: multiply;
+  }
+
+  .pageImage {
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    /* `none` unless the reader sets brightness/contrast: no stacking context
+       and no compositing cost at the defaults. */
+    filter: var(--page-filter, none);
+  }
+</style>

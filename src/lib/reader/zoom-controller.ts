@@ -25,7 +25,7 @@ import {
   normalizeWheelDelta,
   pinchDistance,
   pinchMidpoint,
-  WheelAccumulator,
+  WheelNotchStepper,
   wheelZoomRatio,
   zoomProgress,
   type Point,
@@ -157,7 +157,7 @@ export class ContinuousZoomController {
   private staticLevels: readonly number[];
   private surface: ZoomSurface;
   private animator: Animator;
-  private wheelAcc = new WheelAccumulator();
+  private wheelNotches = new WheelNotchStepper();
 
   private target = 1;
   private startZoom = 1;
@@ -222,12 +222,14 @@ export class ContinuousZoomController {
    * one notch is one deliberate step.
    */
   wheelZoom(e: ZoomWheelEventLike, fine = false): void {
-    const deltaPx = normalizeWheelDelta(e.deltaY, e.deltaMode);
     if (fine) {
-      this.continuousWheelZoom(deltaPx, { x: e.clientX, y: e.clientY });
+      this.continuousWheelZoom(normalizeWheelDelta(e.deltaY, e.deltaMode), {
+        x: e.clientX,
+        y: e.clientY
+      });
       return;
     }
-    const steps = this.wheelAcc.add(deltaPx, e.timeStamp);
+    const steps = this.wheelNotches.steps(e);
     if (steps === 0) return;
     const direction = steps > 0 ? 1 : -1;
     let next = this.target;

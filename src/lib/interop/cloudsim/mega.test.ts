@@ -70,8 +70,9 @@ describe.skipIf(!cloudsimForSuite())('MEGA provider against cloudsim', () => {
   });
 
   afterAll(async () => {
-    // Stop megajs's server-change long-poll so the run can end.
-    for (const p of opened) (p as any).storage?.api?.close?.();
+    // logout() stops the provider's own server-change long-poll (its abort
+    // lives on the poll view, not storage.api), so the run can end.
+    for (const p of opened) await p.logout();
     localStorage.removeItem('mega_session');
     setCloudTestBases(null);
     restoreFetch();

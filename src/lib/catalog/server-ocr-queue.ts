@@ -12,7 +12,7 @@ import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { VolumeMetadata } from '$lib/types';
 import type { ProviderType, SyncProvider } from '$lib/util/sync/provider-interface';
-import { BUNKO_MARKER_NAME, QUEUE_FILE_NAME } from '$lib/util/sync/syncable-file';
+import { QUEUE_FILE_NAME } from '$lib/util/sync/syncable-file';
 import {
   authFromCredentials,
   bearerOf,
@@ -1189,7 +1189,6 @@ const cloudSources = new Map<ProviderType, CloudQueueSource>();
 export function cloudSourceFor(providerType: ProviderType): CloudQueueSource {
   const existing = cloudSources.get(providerType);
   if (existing) return existing;
-  let markerEtag: string | undefined;
   let queueEtag: string | undefined;
   let candidates: QueueFile[] = [];
   const source: CloudQueueSource = {
@@ -1203,12 +1202,12 @@ export function cloudSourceFor(providerType: ProviderType): CloudQueueSource {
       if (!provider || provider.type !== providerType || !provider.readControlFile) {
         return 'unavailable';
       }
-      const { ingestMarkerRead, cloudBunkoHolder } = await import('./cloud-bunko-marker');
-      const marker = await provider.readControlFile(BUNKO_MARKER_NAME, {
-        ifNoneMatch: markerEtag
-      });
-      if (marker !== 'not-modified') markerEtag = marker?.etag;
-      await ingestMarkerRead(providerType, marker);
+      const { refreshCloudBunkoMarker, cloudBunkoHolder } = await import('./cloud-bunko-marker');
+      // One marker etag per scope, shared with the dedup pass's reads.
+      if (!(await refreshCloudBunkoMarker(provider))) {
+        // Back off as for any failed read; the last verdict stands meanwhile.
+        throw new Error('the Bunko marker could not be read');
+      }
       const holder = cloudBunkoHolder(providerType);
       if (!holder) {
         // Nobody is managing the library right now: whatever a queue file

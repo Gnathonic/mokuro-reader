@@ -193,6 +193,11 @@ export class WheelAccumulator {
     this.acc -= steps * this.stepSize;
     return steps === 0 ? 0 : -steps;
   }
+
+  /** Drop any partial travel. */
+  reset(): void {
+    this.acc = 0;
+  }
 }
 
 /**
@@ -217,11 +222,51 @@ export function isFineWheelEvent(e: Pick<WheelEvent, 'deltaX' | 'deltaY' | 'delt
   // device has sub-line travel to report and never picks those units.
   if (e.deltaMode !== 0) return false;
   const { deltaX, deltaY } = e;
-  if (!Number.isInteger(deltaX) || !Number.isInteger(deltaY)) return true;
+  // Whether a delta is a whole number says nothing about the device: Firefox
+  // builds a notch from the line height and display scale (-102.4, -204.8 at
+  // 200%), and reading those as a trackpad was #272. Sub-notch travel is the
+  // evidence, and it covers trackpads, whose per-event deltas are far below
+  // a notch.
   // No mouse drives both axes at once; a trackpad barely avoids it.
   if (deltaX !== 0 && deltaY !== 0) return true;
   const magnitude = Math.max(Math.abs(deltaX), Math.abs(deltaY));
   return magnitude > 0 && magnitude < FINE_WHEEL_MAX_DELTA;
+}
+
+/**
+ * Turns a NOTCHED wheel stream into zoom-ladder steps: one notch, one level
+ * (#272).
+ *
+ * How many pixels a notch is worth depends on the engine, the OS and the
+ * display scale — 100 in Chromium, 120 on Windows, -102.4 or -204.8 in
+ * Firefox's pixel mode, 6 lines (240 px) in Firefox on Linux — so any
+ * pixels-per-level rate over- or under-steps somewhere, and a remainder
+ * carried between notches adds a stray level every few notches. An event
+ * that is a whole notch by itself — at least a line or page, or at least a
+ * notch's worth of pixels — is exactly one level instead, whatever its size.
+ * Engines that coalesce two quick notches into one event lose a level, the
+ * safe direction.
+ *
+ * Smaller events (a high-resolution wheel's sub-line fragments, a stray
+ * sub-notch delta) still accumulate pixels toward a level. Firefox reports
+ * 6 lines per detent of a Linux hi-res wheel, so it gets two levels per
+ * detent there.
+ */
+export class WheelNotchStepper {
+  private fragments = new WheelAccumulator();
+
+  /** Levels to step: positive = zoom in (wheel up / negative deltaY). */
+  steps(e: Pick<WheelEvent, 'deltaY' | 'deltaMode' | 'timeStamp'>): number {
+    // deltaMode before deltaY: Firefox fixes an event's unit at first read.
+    const { deltaMode, deltaY } = e;
+    const wholeNotch =
+      deltaMode !== 0 ? Math.abs(deltaY) >= 1 : Math.abs(deltaY) >= FINE_WHEEL_MAX_DELTA;
+    if (!wholeNotch) {
+      return this.fragments.add(normalizeWheelDelta(deltaY, deltaMode), e.timeStamp);
+    }
+    this.fragments.reset();
+    return deltaY < 0 ? 1 : -1;
+  }
 }
 
 /**

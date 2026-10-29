@@ -69,37 +69,6 @@ export function promptExtraction(
   });
 }
 
-// Image-only import confirmation modal
-export type SeriesImportInfo = {
-  seriesName: string;
-  volumeCount: number;
-};
-
-type ImageOnlyImportModal = {
-  open: boolean;
-  seriesList: SeriesImportInfo[];
-  totalVolumes: number;
-  onConfirm?: () => void;
-  onCancel?: () => void;
-};
-
-export const imageOnlyImportModalStore = writable<ImageOnlyImportModal | undefined>(undefined);
-
-export function promptImageOnlyImport(
-  seriesList: SeriesImportInfo[],
-  totalVolumes: number,
-  onConfirm?: () => void,
-  onCancel?: () => void
-) {
-  imageOnlyImportModalStore.set({
-    open: true,
-    seriesList,
-    totalVolumes,
-    onConfirm,
-    onCancel
-  });
-}
-
 // Import mismatch modal - shows when mokuro pages don't match downloaded files
 export type ImportMismatchInfo = {
   volumeName: string;

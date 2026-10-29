@@ -37,6 +37,13 @@ export class WorkerPool {
   private providerOperationCounts: Map<string, number> = new Map(); // Track concurrent operations per provider
   private workerConstructor: WorkerConstructor;
   private poolId: string; // Unique identifier for this pool
+  /**
+   * Tasks whose `onComplete` or `onError` has been called: each settles
+   * EXACTLY ONCE. A handler can terminate the pool re-entrantly (the last
+   * pool user's error handler counts it down to zero), and `terminate()` must
+   * not reject a task that is already settled — nor reject it a second time.
+   */
+  private settledTasks = new WeakSet<WorkerTask>();
 
   constructor(
     poolId: string,
@@ -101,12 +108,16 @@ export class WorkerPool {
           dataSize: data.data?.byteLength
         });
 
-        task.onComplete(data, () => {
-          this.completeTask(worker);
-        });
+        const onComplete = task.onComplete;
+        this.settle(task, () =>
+          onComplete(data, () => {
+            this.completeTask(worker);
+          })
+        );
       } else if (data.type === 'error' && task.onError) {
         console.error(`Worker pool: Error for task ${taskId}:`, data.error);
-        task.onError(data);
+        const onError = task.onError;
+        this.settle(task, () => onError(data));
         this.completeTask(worker);
       }
     };
@@ -123,7 +134,8 @@ export class WorkerPool {
       const task = this.activeTasks.get(taskId);
       if (task && task.onError) {
         console.error(`Worker pool: Calling onError for task ${taskId}`, error.message);
-        task.onError({ type: 'error', fileId: taskId, error: error.message });
+        const onError = task.onError;
+        this.settle(task, () => onError({ type: 'error', fileId: taskId, error: error.message }));
       } else {
         console.warn(`Worker pool: No onError handler for task ${taskId}`);
       }
@@ -261,12 +273,15 @@ export class WorkerPool {
       console.error(`Worker pool: Error preparing data for task ${task.id}:`, error);
 
       // Call onError if available
-      if (task.onError) {
-        task.onError({
-          type: 'error',
-          fileId: task.id,
-          error: error instanceof Error ? error.message : 'Failed to prepare task data'
-        });
+      const onError = task.onError;
+      if (onError) {
+        this.settle(task, () =>
+          onError({
+            type: 'error',
+            fileId: task.id,
+            error: error instanceof Error ? error.message : 'Failed to prepare task data'
+          })
+        );
       }
 
       // Clean up the failed task
@@ -281,6 +296,9 @@ export class WorkerPool {
       task.memoryRequirement = 50 * 1024 * 1024; // 50 MB default
     }
 
+    // A task object handed over again (a retry) settles again.
+    this.settledTasks.delete(task);
+
     // Add task to queue
     this.taskQueue.push(task);
 
@@ -288,7 +306,14 @@ export class WorkerPool {
     this.processQueue();
   }
 
+  /**
+   * Stop every worker. Tasks still in flight or queued are REJECTED through
+   * their `onError` — their callers await them, and a task dropped silently
+   * would leave its caller waiting forever.
+   */
   public terminate() {
+    const unsettled = [...this.activeTasks.values(), ...this.taskQueue];
+
     // Terminate all workers
     for (const worker of this.workers) {
       worker.terminate();
@@ -303,6 +328,30 @@ export class WorkerPool {
     this.taskQueue = [];
     this.activeTasks.clear();
     this.workerTaskMap.clear();
+    this.providerOperationCounts.clear();
+
+    for (const task of unsettled) {
+      const onError = task.onError;
+      if (!onError) continue;
+      try {
+        this.settle(task, () =>
+          onError({ type: 'error', fileId: task.id, error: 'Worker pool terminated' })
+        );
+      } catch (error) {
+        console.error(`Worker pool: error handler of task ${task.id} threw`, error);
+      }
+    }
+  }
+
+  /**
+   * Run `handler` (the task's `onComplete` or `onError`) unless the task has
+   * already settled. Marked BEFORE the call, so a handler that terminates the
+   * pool re-entrantly is not followed by a second, "terminated" rejection.
+   */
+  private settle(task: WorkerTask, handler: () => void): void {
+    if (this.settledTasks.has(task)) return;
+    this.settledTasks.add(task);
+    handler();
   }
 
   public get activeTaskCount() {

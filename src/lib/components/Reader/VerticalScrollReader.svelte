@@ -9,7 +9,7 @@
   import { ScrollAnimator } from '$lib/reader/scroll-animator';
   import { ContinuousZoomController, type SettleReason } from '$lib/reader/zoom-controller';
   import { applyVerticalZoomLayout } from '$lib/reader/zoom-layout';
-  import { closestPageToCenter } from '$lib/reader/page-detection';
+  import { closestPageToCenter, visiblePageRange } from '$lib/reader/page-detection';
   import {
     GAP_WHEEL_STEP_SIZE,
     MAX_PAGE_GAP,
@@ -40,6 +40,8 @@
     /** The gap-adjust wheel chord changed the divider gap to this value (px). */
     onGapChange?: (px: number) => void;
     onContextMenu?: (data: any) => void;
+    /** Pages with any part on screen, 1-based inclusive (reading history). */
+    onVisibleRangeChange?: (first: number, last: number) => void;
   }
 
   let {
@@ -52,7 +54,8 @@
     onVolumeNav,
     onOverlayToggle,
     onGapChange,
-    onContextMenu
+    onContextMenu,
+    onVisibleRangeChange
   }: Props = $props();
 
   let outerDiv: HTMLDivElement | undefined = $state();
@@ -250,6 +253,8 @@
     );
   }
 
+  let lastReportedRange = '';
+
   function reportProgress() {
     const pageIdx = detectCurrentPage();
     const pageNum = pageIdx + 1;
@@ -257,6 +262,19 @@
       lastReportedPage = pageNum;
       const { charCount } = getCharCount(pages, pageNum);
       onPageChange(pageNum, charCount, pageNum >= pages.length);
+    }
+
+    if (onVisibleRangeChange && scrollContainer) {
+      const range = visiblePageRange(
+        scrollContainer.getBoundingClientRect(),
+        pageElements.map((el) => el?.getBoundingClientRect()),
+        'y'
+      );
+      const key = range ? range.join('-') : '';
+      if (range && key !== lastReportedRange) {
+        lastReportedRange = key;
+        onVisibleRangeChange(range[0], range[1]);
+      }
     }
   }
 

@@ -172,6 +172,14 @@ export interface CloudBunkoStatus {
     instanceName: string;
     /** Bunko's own clock, ISO — for "last seen" wording only, never for freshness. */
     heartbeatAt: string;
+    /** The holder's `bunko_version`; '' when its marker names none (pre-0.8). */
+    bunkoVersion: string;
+    /** Files the holder keeps per account (`history/` = a per-account tree); [] pre-0.8. */
+    perUserFiles: string[];
+    /** The holder merges duplicate folders and files itself. */
+    dedup: boolean;
+    /** The holder keeps a shared `curated` layer. */
+    curated: boolean;
   } | null;
 }
 

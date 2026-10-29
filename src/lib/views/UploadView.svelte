@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    describeImportOutcome,
     importFiles,
     htmlDownloadProvider,
     getUploadParamsFromLocation,
@@ -54,14 +55,14 @@
       return;
     }
 
-    let dims = { width: 1, height: 1 };
+    // A file the browser cannot decode is no cover: leave the row without one,
+    // so the thumbnail pass builds it from the first page instead.
+    let dims: { width: number; height: number };
     try {
       dims = await getImageDimensions(coverFile);
     } catch (error) {
-      console.warn(
-        '[HTML Download] Failed to read sidecar dimensions; using fallback dimensions',
-        error
-      );
+      console.warn('[HTML Download] Sidecar thumbnail is not a readable image; skipped', error);
+      return;
     }
 
     await db.volumes.update(targetVolume.volume_uuid, {
@@ -126,23 +127,41 @@
       // For CBZ deep links, queue a pre-paired archive item so we don't rely on generic
       // post-download pairing for archive+sidecar combinations. A manifest's
       // series.json and OCR layers ride along (applied once the volume is saved).
+      // What to report: "Complete" only for a volume that actually saved — an
+      // image-only one may still be waiting for its review, or be skipped in it.
+      let status: string;
+      let message: string;
       if (downloaded.archiveFile && request.type === 'cbz') {
-        await importDeepLinkedArchive(downloaded, normalizedVolume, installedBefore);
+        // Resolves after the archive's own import, review included.
+        const installed = await importDeepLinkedArchive(
+          downloaded,
+          normalizedVolume,
+          installedBefore
+        );
+        status = installed ? 'Complete' : 'Nothing imported';
+        message = installed ? `Imported ${displayName}` : `Nothing imported from ${displayName}`;
       } else {
         // Directory mode and fallback paths still use generic import pairing.
-        await importFiles(files);
+        const result = await importFiles(files);
+        const pending = result.awaitingReview > 0 || result.queued > 0;
+        const done = !pending && result.success && result.imported > 0;
+        status = done
+          ? 'Complete'
+          : result.awaitingReview > 0
+            ? 'Waiting for review'
+            : pending
+              ? 'Queued'
+              : 'Nothing imported';
+        message = done ? `Imported ${displayName}` : describeImportOutcome(result);
       }
 
       if (downloaded.coverFile) {
         await applyDownloadedCoverSidecar(downloaded.coverFile, installedBefore, normalizedVolume);
       }
 
-      progressTrackerStore.updateProcess(processId, {
-        status: 'Complete',
-        progress: 100
-      });
+      progressTrackerStore.updateProcess(processId, { status, progress: 100 });
 
-      showSnackbar(`Imported ${displayName}`);
+      showSnackbar(message);
 
       // Remove from tracker after a short delay
       setTimeout(() => {
