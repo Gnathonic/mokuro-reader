@@ -234,7 +234,7 @@ describe('syncHistory', () => {
     expect(await b.reading_events.count()).toBe(1);
   });
 
-  it('a bunko that keeps history per user (0.7.1+) syncs it both ways', async () => {
+  it('a bunko that keeps history per user (0.8.0+) syncs it both ways', async () => {
     const shared = fakeCloud();
     await appendEvent(a, page('v1', 1), OCT);
     await syncHistory(shared.provider, shared.listing(), a, { force: true, now: NOV });
