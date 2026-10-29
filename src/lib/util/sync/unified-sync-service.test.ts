@@ -37,7 +37,9 @@ vi.mock('$lib/settings', async () => {
     // not a volume.
     parseVolumesFromJson: vi.fn((json: string) =>
       Object.fromEntries(
-        Object.entries(JSON.parse(json)).filter(([key]) => key !== seriesData.SERIES_SECTION_KEY)
+        Object.entries(JSON.parse(json)).filter(
+          ([key]) => key !== seriesData.SERIES_SECTION_KEY && key !== 'tracking'
+        )
       )
     )
   };
@@ -54,8 +56,50 @@ vi.mock('$lib/settings/volume-data', async () => {
   };
 });
 vi.mock('$lib/metadata/progress-tracker', () => ({ onSeriesRestarted: vi.fn() }));
+vi.mock('$lib/reading-history/history-db', () => ({ historyDb: vi.fn(() => ({})) }));
+// The cut-over, as the real one behaves when the history database works:
+// converted turns leave the records before the file is built.
+vi.mock('$lib/reading-history/cut-over', async () => {
+  const { volumesWithTrash } = await import('$lib/settings');
+  return {
+    cutOverLegacyTurns: vi.fn(async () => {
+      const store = volumesWithTrash as unknown as {
+        update: (fn: (all: Record<string, Record<string, unknown>>) => unknown) => void;
+      };
+      store.update((all) =>
+        Object.fromEntries(
+          Object.entries(all).map(([id, v]) => [
+            id,
+            Array.isArray(v.recentPageTurns) && v.recentPageTurns.length > 0
+              ? { ...v, recentPageTurns: [] }
+              : v
+          ])
+        )
+      );
+      return { volumes: 1, events: 1 };
+    }),
+    // History's turns put back into the file's records (here: a marker turn).
+    attachProjectedTurns: vi.fn(async (records: Record<string, Record<string, unknown>>) =>
+      Object.fromEntries(
+        Object.entries(records).map(([id, v]) => [id, { ...v, recentPageTurns: [[9, 9, 90]] }])
+      )
+    )
+  };
+});
+const legacyCarried = vi.hoisted(() => ({ value: true }));
+vi.mock('$lib/reading-history/history-sync', () => ({
+  syncHistory: vi.fn(async () => ({ imported: 0, uploaded: [], failed: [] })),
+  legacyCarriedBy: vi.fn(async () => legacyCarried.value),
+  historySyncAllowed: (s: { historySync?: boolean; serverCompilesMetadata?: boolean }) =>
+    s.historySync ?? !s.serverCompilesMetadata
+}));
+
+vi.mock('$lib/positions/positions-sync', () => ({
+  syncPositions: vi.fn(async () => ({ adopted: [], deferred: [], uploaded: false }))
+}));
 
 import { unifiedSyncService } from './unified-sync-service';
+import { _resetEscapesForTests, newestUploaded, watchEscapes } from '$lib/positions/escapes';
 import { restartSeries } from '$lib/metadata/reread';
 import { volumes as volumeCompletion } from '$lib/settings/volume-data';
 import type { VolumeMetadata } from '$lib/types';
@@ -67,6 +111,7 @@ import {
   volumesWithTrash
 } from '$lib/settings';
 import { goalsWithTrash, setGoalSections } from '$lib/goals/goals-data';
+import { setTrackingStates, trackingState } from '$lib/settings/tracking-data';
 import { goalSnapshots, setGoalSnapshots } from '$lib/goals/snapshots-store';
 import { setVolumeDeadlineEntries } from '$lib/goals/goal-settings';
 
@@ -605,6 +650,35 @@ describe('the series section of volume-data.json', () => {
     await svc.syncVolumeData(provider);
 
     expect(uploads).toEqual([]);
+  });
+
+  it('an upload reports the stamps of volumes a look-up visit watches as escaped', async () => {
+    _resetEscapesForTests();
+    watchEscapes('vol-1');
+    setLocalVolumes({
+      'vol-1': { lastProgressUpdate: '2026-01-05T00:00:00Z', progress: 6 },
+      'vol-2': { lastProgressUpdate: '2026-01-06T00:00:00Z', progress: 8 }
+    });
+    stubCache([fileMeta('only')]);
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async () =>
+        jsonBlob({ 'vol-1': { progress: 5, lastProgressUpdate: '2026-01-02T00:00:00Z' } })
+      ),
+      uploadFile: vi.fn(async () => {
+        duringUpload = newestUploaded('vol-1');
+      })
+    } as unknown as SyncProvider;
+    let duringUpload = -1;
+
+    await svc.syncVolumeData(provider);
+
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+    // Escaped from the moment the PUT starts: a turn home mid-PUT must beat it.
+    expect(duringUpload).toBe(Date.parse('2026-01-05T00:00:00Z'));
+    expect(newestUploaded('vol-1')).toBe(Date.parse('2026-01-05T00:00:00Z'));
+    expect(newestUploaded('vol-2')).toBe(0);
+    _resetEscapesForTests();
   });
 
   it('omits the section entirely when there is no series state at all', async () => {
@@ -1364,5 +1438,542 @@ describe('reading on two devices survives the volume merge', () => {
     const onB = svc.mergeVolumeData({ 'vol-1': B }, { 'vol-1': A })['vol-1'];
 
     expect(onA).toEqual(onB);
+  });
+});
+
+describe('reading history rides every sync', () => {
+  it('passes only history files from a loaded listing, forced on a manual sync', async () => {
+    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    const files = [
+      {
+        provider: 'mega',
+        fileId: '1',
+        path: 'history/dev-a/2026-10.events',
+        modifiedTime: 'm',
+        size: 1
+      },
+      { provider: 'mega', fileId: '2', path: 'volume-data.json', modifiedTime: 'm', size: 1 }
+    ];
+    getCache.mockReturnValue({
+      getAll: vi.fn(() => []),
+      get: vi.fn(() => null),
+      fetch: vi.fn(),
+      isLoaded: () => true,
+      isFetching: () => false,
+      getAllFiles: () => files,
+      add: vi.fn()
+    });
+    const provider = {
+      type: 'mega',
+      name: 'MEGA',
+      isAuthenticated: () => true,
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(async () => ({ fileId: 'x' }))
+    } as unknown as SyncProvider;
+    await svc.syncReadingHistory(provider, { silent: false });
+    expect(vi.mocked(syncHistory).mock.calls[0][1]).toEqual([files[0]]);
+    expect(vi.mocked(syncHistory).mock.calls[0][3]?.force).toBe(true);
+  });
+
+  it('a failing history pass never fails the sync', async () => {
+    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    vi.mocked(syncHistory).mockRejectedValueOnce(new Error('boom'));
+    getCache.mockReturnValue({
+      isLoaded: () => true,
+      isFetching: () => false,
+      getAllFiles: () => []
+    });
+    await expect(
+      svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {})
+    ).resolves.toBeUndefined();
+  });
+
+  it('skips while the listing has not loaded', async () => {
+    const { syncHistory } = await import('$lib/reading-history/history-sync');
+    vi.mocked(syncHistory).mockClear();
+    getCache.mockReturnValue({
+      isLoaded: () => false,
+      isFetching: () => false,
+      getAllFiles: () => []
+    });
+    await svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {});
+    expect(syncHistory).not.toHaveBeenCalled();
+  });
+});
+
+describe('the cut-over rides the volume sync', () => {
+  function capture(status: Record<string, unknown> = {}) {
+    const uploads: Array<Record<string, Record<string, unknown>>> = [];
+    const provider = {
+      type: 'mega',
+      getStatus: () => ({ isAuthenticated: true, ...status }),
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+    return { uploads, provider };
+  }
+  const seed = () =>
+    setLocalVolumes({
+      'vol-1': {
+        progress: 3,
+        lastProgressUpdate: '2026-10-05T00:00:00.000Z',
+        recentPageTurns: [[1, 3, 30]]
+      }
+    });
+
+  it('strips converted turns from the file once this provider holds them as history', async () => {
+    legacyCarried.value = true;
+    seed();
+    stubCache([]);
+    const { uploads, provider } = capture();
+    await svc.syncVolumeData(provider);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]['vol-1'].recentPageTurns ?? []).toEqual([]);
+    expect(uploads[0]['vol-1'].progress).toBe(3);
+  });
+
+  it('keeps the turns in the file until the history copy is confirmed', async () => {
+    legacyCarried.value = false;
+    seed();
+    stubCache([]);
+    const { uploads, provider } = capture();
+    await svc.syncVolumeData(provider);
+    expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+  });
+
+  it.each([{ serverCompilesMetadata: true }, { isReadOnly: true }])(
+    'on %o (history cannot sync) never strips, and the file carries the turns',
+    async (status) => {
+      legacyCarried.value = true;
+      const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
+      vi.mocked(cutOverLegacyTurns).mockClear();
+      seed();
+      stubCache([]);
+      const { uploads, provider } = capture(status);
+      await svc.syncVolumeData(provider);
+      expect(cutOverLegacyTurns).not.toHaveBeenCalled();
+      expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+    }
+  );
+
+  it('a bunko that keeps history per user (0.8.0+) is cut over like plain storage', async () => {
+    legacyCarried.value = true;
+    const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
+    vi.mocked(cutOverLegacyTurns).mockClear();
+    seed();
+    stubCache([]);
+    const { uploads, provider } = capture({ serverCompilesMetadata: true, historySync: true });
+    await svc.syncVolumeData(provider);
+    expect(cutOverLegacyTurns).toHaveBeenCalled();
+    expect(uploads[0]['vol-1'].recentPageTurns ?? []).toEqual([]);
+  });
+});
+
+describe('syncProvider — one sync per provider at a time', () => {
+  /** Holds every sync step open until released, counting the runs. */
+  function holdSteps() {
+    const runs: Array<{ silent?: boolean }> = [];
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => (release = resolve));
+    const volumeData = vi.spyOn(svc, 'syncVolumeData').mockImplementation(async () => {
+      runs.push({});
+      await gate;
+    });
+    const rest = ['syncProfiles', 'syncGoals', 'syncReadingHistory']
+      .filter((name) => typeof svc[name] === 'function')
+      .map((name) => vi.spyOn(svc, name).mockImplementation(async () => {}));
+    return {
+      runs,
+      release() {
+        release();
+        gate = new Promise<void>((resolve) => (release = resolve));
+      },
+      restore() {
+        volumeData.mockRestore();
+        rest.forEach((spy) => spy.mockRestore());
+      }
+    };
+  }
+
+  const provider = (type: string) =>
+    ({ type, name: type, isAuthenticated: () => true }) as unknown as SyncProvider;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('runs a sync requested mid-run after it, never beside it', async () => {
+    const steps = holdSteps();
+    try {
+      const fs = provider('filesystem');
+      const first = svc.syncProvider(fs);
+      await settle();
+      const second = svc.syncProvider(fs);
+      await settle();
+      // Overlapping, the second sync downloaded a file the first then rewrote.
+      expect(steps.runs).toHaveLength(1);
+
+      steps.release();
+      await first;
+      await settle();
+      expect(steps.runs).toHaveLength(2);
+      steps.release();
+      expect(await second).toEqual({ provider: 'filesystem', success: true });
+    } finally {
+      steps.restore();
+    }
+  });
+
+  it('folds every request made mid-run into ONE follow-up', async () => {
+    const steps = holdSteps();
+    try {
+      const fs = provider('filesystem');
+      const first = svc.syncProvider(fs);
+      await settle();
+      const queued = [svc.syncProvider(fs), svc.syncProvider(fs), svc.syncProvider(fs)];
+      steps.release();
+      await first;
+      await settle();
+      steps.release();
+      await Promise.all(queued);
+      expect(steps.runs).toHaveLength(2);
+    } finally {
+      steps.restore();
+    }
+  });
+
+  it('keeps isSyncing up until the follow-up has finished', async () => {
+    const steps = holdSteps();
+    try {
+      const fs = provider('filesystem');
+      const first = svc.syncProvider(fs);
+      await settle();
+      const second = svc.syncProvider(fs);
+      steps.release();
+      await first;
+      await settle();
+      expect(get(svc.isSyncing)).toBe(true);
+      steps.release();
+      await second;
+      expect(get(svc.isSyncing)).toBe(false);
+    } finally {
+      steps.restore();
+    }
+  });
+
+  it('does not hold up a different provider', async () => {
+    const steps = holdSteps();
+    try {
+      const first = svc.syncProvider(provider('filesystem'));
+      await settle();
+      const other = svc.syncProvider(provider('webdav'));
+      await settle();
+      expect(steps.runs).toHaveLength(2);
+      steps.release();
+      await Promise.all([first, other]);
+    } finally {
+      steps.restore();
+    }
+  });
+});
+
+describe('the tracking section of volume-data.json (idle cutoff)', () => {
+  const T1 = '2026-10-01T00:00:00.000Z';
+  const T2 = '2026-10-02T00:00:00.000Z';
+  const file = (tracking: unknown) => ({
+    'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+    ...(tracking === undefined ? {} : { tracking })
+  });
+  function provider(body: unknown) {
+    const uploads: Array<Record<string, any>> = [];
+    const p = {
+      type: 'mega',
+      downloadFile: vi.fn(async () => jsonBlob(body)),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+    return { uploads, provider: p };
+  }
+
+  beforeEach(() => {
+    setLocalVolumes({});
+    setSeriesReadingStates({});
+    setTrackingStates({});
+  });
+
+  it('is read out of the file, never as a volume', async () => {
+    stubCache([fileMeta('only')]);
+    const { provider: p } = provider(file({ idle: { override_minutes: 9, lastUpdated: T1 } }));
+    const result = await svc.downloadVolumeDataFile(p);
+    expect(Object.keys(result.volumes)).toEqual(['vol-1']);
+    expect(result.tracking).toEqual({ idle: { override_minutes: 9, lastUpdated: T1 } });
+  });
+
+  it('uploads a local override the cloud lacks', async () => {
+    setTrackingStates({ idle: { override_minutes: 12, lastUpdated: T2 } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(file(undefined));
+    await svc.syncVolumeData(p);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking).toEqual({ idle: { override_minutes: 12, lastUpdated: T2 } });
+  });
+
+  it('adopts a newer cloud override and uploads nothing when they agree', async () => {
+    setTrackingStates({ idle: { override_minutes: 12, lastUpdated: T1 } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({ idle: { override_minutes: 20, lastUpdated: T2 } })
+    );
+    await svc.syncVolumeData(p);
+    expect(get(trackingState).idle?.override_minutes).toBe(20);
+    expect(uploads).toHaveLength(0);
+  });
+
+  it('heals a future-stamped cloud entry and keeps the pending local edit', async () => {
+    setTrackingStates({ idle: { override_minutes: 12, lastUpdated: T2 } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({ idle: { override_minutes: 3, lastUpdated: '2999-01-01T00:00:00.000Z' } })
+    );
+    await svc.syncVolumeData(p);
+    expect(get(trackingState).idle?.override_minutes).toBe(12);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking.idle).toEqual({ override_minutes: 12, lastUpdated: T2 });
+  });
+
+  it('folds duplicate copies, newest wins', async () => {
+    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    stubCache([first, second]);
+    const p = makeProvider(async (f) =>
+      jsonBlob(
+        file(
+          f.fileId === 'first'
+            ? { idle: { override_minutes: 4, lastUpdated: T1 } }
+            : { idle: { override_minutes: 8, lastUpdated: T2 } }
+        )
+      )
+    );
+    const result = await svc.downloadVolumeDataFile(p);
+    expect(result.tracking.idle.override_minutes).toBe(8);
+  });
+
+  it('round-trips the standing pause default through the file', async () => {
+    const pauses = { default: 'typical', lastUpdated: T2 };
+    setTrackingStates({ pauses: { default: 'typical', lastUpdated: T2 } });
+    stubCache([fileMeta('only')]);
+    const first = provider(file(undefined));
+    await svc.syncVolumeData(first.provider);
+    expect(first.uploads).toHaveLength(1);
+    expect(first.uploads[0].tracking).toEqual({ pauses });
+
+    // Another device reads that upload back: adopted, and nothing to upload.
+    setTrackingStates({});
+    stubCache([fileMeta('only')]);
+    const second = provider(first.uploads[0]);
+    await svc.syncVolumeData(second.provider);
+    expect(get(trackingState)).toEqual({ pauses });
+    expect(second.uploads).toHaveLength(0);
+  });
+
+  it('merges the pause default and the idle cutoff apart', async () => {
+    setTrackingStates({
+      idle: { override_minutes: 12, lastUpdated: T2 },
+      pauses: { default: 'full', lastUpdated: T1 }
+    });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({
+        idle: { override_minutes: 20, lastUpdated: T1 },
+        pauses: { default: 'none', lastUpdated: T2 }
+      })
+    );
+    await svc.syncVolumeData(p);
+    const expected = {
+      idle: { override_minutes: 12, lastUpdated: T2 },
+      pauses: { default: 'none', lastUpdated: T2 }
+    };
+    expect(get(trackingState)).toEqual(expected);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking).toEqual(expected);
+  });
+
+  it('folds duplicate copies per key', async () => {
+    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    stubCache([first, second]);
+    const p = makeProvider(async (f) =>
+      jsonBlob(
+        file(
+          f.fileId === 'first'
+            ? {
+                idle: { override_minutes: 4, lastUpdated: T2 },
+                pauses: { default: 'full', lastUpdated: T1 }
+              }
+            : {
+                idle: { override_minutes: 8, lastUpdated: T1 },
+                pauses: { default: 'none', lastUpdated: T2 }
+              }
+        )
+      )
+    );
+    const result = await svc.downloadVolumeDataFile(p);
+    expect(result.tracking).toEqual({
+      idle: { override_minutes: 4, lastUpdated: T2 },
+      pauses: { default: 'none', lastUpdated: T2 }
+    });
+  });
+
+  it('round-trips device labels through the file', async () => {
+    const devices = { 'dev-a': { name: 'Pixel 8', class: 'phone', lastUpdated: T2 } };
+    setTrackingStates({
+      devices: { 'dev-a': { name: 'Pixel 8', class: 'phone', lastUpdated: T2 } }
+    });
+    stubCache([fileMeta('only')]);
+    const first = provider(file(undefined));
+    await svc.syncVolumeData(first.provider);
+    expect(first.uploads).toHaveLength(1);
+    expect(first.uploads[0].tracking).toEqual({ devices });
+
+    // Another device reads that upload back: adopted, and nothing to upload.
+    setTrackingStates({});
+    stubCache([fileMeta('only')]);
+    const second = provider(first.uploads[0]);
+    await svc.syncVolumeData(second.provider);
+    expect(get(trackingState)).toEqual({ devices });
+    expect(second.uploads).toHaveLength(0);
+  });
+
+  it('merges device labels per id, never as one block', async () => {
+    setTrackingStates({ devices: { 'dev-a': { name: 'Mine', lastUpdated: T2 } } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({
+        devices: {
+          'dev-a': { name: 'Theirs', lastUpdated: T1 },
+          'dev-b': { name: 'Tablet', lastUpdated: T1 }
+        }
+      })
+    );
+    await svc.syncVolumeData(p);
+    const expected = {
+      'dev-a': { name: 'Mine', lastUpdated: T2 },
+      'dev-b': { name: 'Tablet', lastUpdated: T1 }
+    };
+    expect(get(trackingState).devices).toEqual(expected);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking.devices).toEqual(expected);
+  });
+
+  it('heals a future-stamped device label and keeps the pending local name', async () => {
+    setTrackingStates({ devices: { 'dev-a': { name: 'Mine', lastUpdated: T2 } } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({
+        devices: {
+          'dev-a': { name: 'Junk', lastUpdated: '2999-01-01T00:00:00.000Z' },
+          'dev-b': { name: 'Other', lastUpdated: T1 }
+        }
+      })
+    );
+    await svc.syncVolumeData(p);
+    expect(get(trackingState).devices?.['dev-a']).toEqual({ name: 'Mine', lastUpdated: T2 });
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking.devices).toEqual({
+      'dev-a': { name: 'Mine', lastUpdated: T2 },
+      'dev-b': { name: 'Other', lastUpdated: T1 }
+    });
+  });
+
+  it.each([
+    ['poisoned copy first', ['poisoned', 'honest']],
+    ['honest copy first', ['honest', 'poisoned']]
+  ])(
+    'folds duplicate copies per device id: a bogus label never beats an honest one (%s)',
+    async (_order, ids) => {
+      const bodies: Record<string, unknown> = {
+        poisoned: {
+          devices: {
+            'dev-a': { name: 'Junk', lastUpdated: '2999-01-01T00:00:00.000Z' },
+            'dev-b': { name: 'Kept', lastUpdated: T1 }
+          }
+        },
+        honest: { devices: { 'dev-a': { name: 'Honest', lastUpdated: T1 } } }
+      };
+      stubCache(ids.map(fileMeta));
+      const p = makeProvider(async (f) => jsonBlob(file(bodies[f.fileId])));
+      const result = await svc.downloadVolumeDataFile(p);
+      expect(result.tracking.devices).toEqual({
+        'dev-a': { name: 'Honest', lastUpdated: T1 },
+        'dev-b': { name: 'Kept', lastUpdated: T1 }
+      });
+      expect([...result.bogusTrackingKeys]).toEqual(['devices/dev-a']);
+    }
+  );
+
+  it.each([
+    ['the rename is newer', 'rename', { name: 'Pixel 8', lastUpdated: T2 }],
+    ['the merge is newer', 'merge', { merged_into: 'dev-b', lastUpdated: T2 }]
+  ])(
+    'a rename here and a merge of the same device elsewhere between syncs: only the newer edit survives (%s)',
+    async (_case, winner, expected) => {
+      // Q7: one stamp per device entry, replaced whole; the older edit is lost.
+      const rename = { name: 'Pixel 8', lastUpdated: winner === 'rename' ? T2 : T1 };
+      const merge = { merged_into: 'dev-b', lastUpdated: winner === 'merge' ? T2 : T1 };
+      setTrackingStates({ devices: { 'dev-a': rename } });
+      stubCache([fileMeta('only')]);
+      const { uploads, provider: p } = provider(file({ devices: { 'dev-a': merge } }));
+      await svc.syncVolumeData(p);
+      expect(get(trackingState).devices?.['dev-a']).toEqual(expected);
+      if (winner === 'rename') {
+        expect(uploads).toHaveLength(1);
+        expect(uploads[0].tracking.devices).toEqual({ 'dev-a': expected });
+      } else {
+        expect(uploads).toHaveLength(0);
+      }
+    }
+  );
+});
+
+describe('positions.json rides every sync', () => {
+  function stubSteps(order: string[]) {
+    return ['syncVolumeData', 'syncProfiles', 'syncGoals', 'syncReadingHistory'].map((name) =>
+      vi.spyOn(svc, name).mockImplementation(async () => {
+        order.push(name);
+      })
+    );
+  }
+  const provider = {
+    type: 'mega',
+    name: 'MEGA',
+    isAuthenticated: () => true
+  } as unknown as SyncProvider;
+
+  it('runs right after the volume data', async () => {
+    const { syncPositions } = await import('$lib/positions/positions-sync');
+    const order: string[] = [];
+    vi.mocked(syncPositions).mockImplementationOnce(async () => {
+      order.push('syncPositions');
+      return { adopted: [], deferred: [], uploaded: false };
+    });
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(provider, {})).toMatchObject({ success: true });
+      expect(order.slice(0, 2)).toEqual(['syncVolumeData', 'syncPositions']);
+      expect(vi.mocked(syncPositions)).toHaveBeenCalledWith(provider);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
+
+  it('a rejecting position sync does not fail the sync', async () => {
+    const { syncPositions } = await import('$lib/positions/positions-sync');
+    vi.mocked(syncPositions).mockRejectedValueOnce(new Error('boom'));
+    const order: string[] = [];
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(provider, {})).toMatchObject({ success: true });
+      expect(order).toContain('syncGoals');
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
   });
 });

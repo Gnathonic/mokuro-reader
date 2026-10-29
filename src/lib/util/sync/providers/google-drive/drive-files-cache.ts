@@ -8,6 +8,8 @@ import type { DriveFileMetadata } from '../../provider-interface';
 import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
 import { compareByAge } from '../../folder-deduplicator';
 import type { DriveFile } from './constants';
+import { HISTORY_FOLDER, isHistoryFileName } from '$lib/reading-history/paths';
+import { driveHistoryPath } from './drive-history-path';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -182,7 +184,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         const cbzFiles: any[] = [];
         const sidecarFiles: any[] = [];
         const rootConfigFiles: any[] = [];
+        const historyFiles: any[] = [];
         const folderNames = new Map<string, string>();
+        // id -> name + parent, for paths deeper than one folder (history/<device>/…)
+        const folders = new Map<string, { name: string; parent?: string }>();
         const foundFolderNames: string[] = [];
         const readerFolders: DriveFile[] = [];
 
@@ -195,6 +200,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
           if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
             folderNames.set(item.id, item.name);
+            folders.set(item.id, { name: item.name, parent: item.parents?.[0] });
             foundFolderNames.push(item.name);
 
             if (item.name === GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER) {
@@ -202,6 +208,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
             }
           } else if (item.name.endsWith('.cbz')) {
             cbzFiles.push(item);
+          } else if (isHistoryFileName(item.name)) {
+            // Reading history: placed by its full path below, never by parent name.
+            historyFiles.push(item);
           } else if (isSidecarFile(item.name)) {
             // .mokuro / .mokuro.gz / cover images AND the per-series index
             // `<Series>/series.json`. Hand-rolling this test is what made
@@ -296,6 +305,26 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           } else {
             cacheMap.set(key, [metadata]);
           }
+        }
+
+        // Reading history, two folders deep: mokuro-reader/history/<device>/<file>.
+        // Cached under `history`, the first segment, like every other provider.
+        for (const file of historyFiles) {
+          const path = driveHistoryPath(file, folders, GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER);
+          if (!path) continue;
+          const metadata: DriveFileMetadata = {
+            provider: 'google-drive',
+            fileId: file.id,
+            name: file.name,
+            modifiedTime: file.modifiedTime || new Date().toISOString(),
+            size: file.size ? parseInt(file.size) : 0,
+            path,
+            description: file.description,
+            parentId: file.parents?.[0]
+          };
+          const existing = cacheMap.get(HISTORY_FOLDER);
+          if (existing) existing.push(metadata);
+          else cacheMap.set(HISTORY_FOLDER, [metadata]);
         }
 
         console.log(
@@ -779,7 +808,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     // Parse path to get series and volume title
     const parts = path.split('/');
     if (parts.length >= 2) {
-      const seriesTitle = parts.slice(0, -1).join('/');
+      // Grouped by the FIRST segment, which is what `has`/`get`/`getAll` look
+      // up. For every two-segment path (`<Series>/<file>`) that is the folder;
+      // reading history (`history/<device>/<file>`) is the one deeper path.
+      const seriesTitle = parts[0];
       const volumeTitle = parts[parts.length - 1]?.replace('.cbz', '') || '';
       this.addDriveFile(seriesTitle, volumeTitle, metadata);
       return;

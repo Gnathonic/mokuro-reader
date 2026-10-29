@@ -41,6 +41,7 @@
   import { getCloudFileId, getCloudProvider } from '$lib/util/cloud-fields';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { isSeriesFinished } from '$lib/util/volume-helpers';
+  import { lastReadTimes, seriesLastRead } from '$lib/reading-history/last-read';
   import { showSnackbar } from '$lib/util';
   import type { ProviderType } from '$lib/util/sync/provider-interface';
 
@@ -196,6 +197,15 @@
     // Reading $volumes inside the sort comparator can cause deadlocks if the
     // store updates mid-sort, violating the comparator's transitivity requirement.
     const volumesSnapshot = $volumes;
+    // Each series' recency once per sort, never inside the comparator.
+    const recency = new Map<(typeof $catalog)[number], number>();
+    if ($miscSettings.gallerySorting === 'SMART') {
+      const readTimes = $lastReadTimes;
+      for (const item of $catalog) {
+        const ids = item.volumes.map((vol) => vol.volume_uuid);
+        recency.set(item, seriesLastRead(ids, volumesSnapshot, readTimes));
+      }
+    }
 
     return [...$catalog]
       .sort((a, b) => {
@@ -215,9 +225,6 @@
           // the same call the cards colour themselves by (`$lib/util/volume-helpers`).
           // This used to read the stored `completed` flag alone, which the card did not,
           // so a finished series could sort to the bottom and never turn green.
-          const aVolumes = a.volumes.map((vol) => vol.volume_uuid);
-          const bVolumes = b.volumes.map((vol) => vol.volume_uuid);
-
           const aCompleted = isSeriesFinished(a.volumes, volumesSnapshot);
           const bCompleted = isSeriesFinished(b.volumes, volumesSnapshot);
 
@@ -226,20 +233,11 @@
             return aCompleted ? 1 : -1;
           }
 
-          // If both have the same completion status, sort by last updated date
-          // Only consider volumes with actual progress (page > 1)
-          const aLastUpdated = Math.max(
-            ...aVolumes
-              .filter((volId) => (volumesSnapshot[volId]?.progress || 0) > 1)
-              .map((volId) => new Date(volumesSnapshot[volId]?.lastProgressUpdate || 0).getTime()),
-            0 // Default to 0 if no volumes have progress
-          );
-          const bLastUpdated = Math.max(
-            ...bVolumes
-              .filter((volId) => (volumesSnapshot[volId]?.progress || 0) > 1)
-              .map((volId) => new Date(volumesSnapshot[volId]?.lastProgressUpdate || 0).getTime()),
-            0 // Default to 0 if no volumes have progress
-          );
+          // Same completion status: most recently READ first — from reading
+          // history (look-ups and merge re-stamps never move it), over the
+          // volumes with actual progress (page > 1).
+          const aLastUpdated = recency.get(a) ?? 0;
+          const bLastUpdated = recency.get(b) ?? 0;
 
           if (aLastUpdated !== bLastUpdated) {
             // Most recently read first

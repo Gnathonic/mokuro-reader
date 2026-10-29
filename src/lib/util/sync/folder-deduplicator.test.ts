@@ -132,6 +132,18 @@ describe('FolderDeduplicator: same-named files when duplicate folders merge', ()
     expect(drive.trashed()).toEqual([]);
   });
 
+  it('keeps BOTH copies of positions.json: positions sync folds every copy into one', async () => {
+    const drive = twoRoots([
+      file('PK', 'KEEP', 'positions.json', at(20)),
+      file('PD', 'DUP', 'positions.json', at(10))
+    ]);
+
+    await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+    expect(drive.filesIn('KEEP')).toEqual(['positions.json#PD', 'positions.json#PK']);
+    expect(drive.trashed()).toEqual([]);
+  });
+
   it('moves a file in beside a folder of the same name instead of trashing either', async () => {
     const drive = twoRoots([
       { id: 'FOLDER', name: 'Notes', parentId: 'KEEP', isFolder: true, createdTime: at(1) },

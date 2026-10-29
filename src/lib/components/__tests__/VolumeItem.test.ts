@@ -40,7 +40,7 @@ vi.mock('$lib/settings', () => ({
   deleteVolume: vi.fn(),
   progress: emptyStore<Record<string, number>>({}),
   volumes: emptyStore<Record<string, unknown>>({}),
-  settings: emptyStore({ inactivityTimeoutMinutes: 5 }),
+  settings: emptyStore({}),
   markVolumeAsComplete: vi.fn(),
   markVolumeAsUnread: vi.fn()
 }));

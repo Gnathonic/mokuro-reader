@@ -40,6 +40,7 @@ describe('syncable-file', () => {
     expect(isSyncableFile('volume-data.json')).toBe(true);
     expect(isSyncableFile('profiles.json')).toBe(true);
     expect(isSyncableFile('goals.json')).toBe(true);
+    expect(isSyncableFile('positions.json')).toBe(true);
   });
 
   it('no longer treats series-metadata.json as a root config file', () => {
@@ -108,6 +109,8 @@ describe('isBestEffortMetadataPath', () => {
     // nothing for a server to reject by design — a failed write is a real
     // failure and must surface, exactly like a failed progress write.
     expect(isBestEffortMetadataPath('goals.json')).toBe(false);
+    // positions.json is the user's own state too.
+    expect(isBestEffortMetadataPath('positions.json')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/Volume 1.cbz')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/catalog.json')).toBe(false);
   });
@@ -391,5 +394,22 @@ describe('series-metadata.json stays retired', () => {
       expect(foldStem('\u00c4RA')).toBe('\u00e4ra');
       expect([...cbzStemsOf([`${NFD}.cbz`, 'Vol 1.cbr'])]).toEqual(['v\u00f3l 1']);
     });
+  });
+});
+
+describe('history files', () => {
+  const DEV = '0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e';
+  it('lists history segments and device facts by full path', () => {
+    expect(isSyncableFile(`history/${DEV}/2026-10.events`)).toBe(true);
+    expect(isSyncableFile(`history/${DEV}/device.json`)).toBe(true);
+  });
+  it('does not list a device.json or .events anywhere else', () => {
+    expect(isSyncableFile('device.json')).toBe(false);
+    expect(isSyncableFile('Series/device.json')).toBe(false);
+    expect(isSyncableFile('Series/2026-10.events')).toBe(false);
+  });
+  it('treats history writes as best-effort', () => {
+    expect(isBestEffortMetadataPath(`history/${DEV}/2026-10.events`)).toBe(true);
+    expect(isBestEffortMetadataPath('volume-data.json')).toBe(false);
   });
 });

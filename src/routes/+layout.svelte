@@ -23,6 +23,7 @@
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
   import { foregroundSync } from '$lib/util/sync/foreground-sync';
+  import { activityTracker } from '$lib/util/activity-tracker';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
@@ -32,6 +33,8 @@
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
   import { historyDb } from '$lib/reading-history/history-db';
+  import { loadHistoryTurns } from '$lib/reading-history/turns-store';
+  import { getOrCreateDeviceId } from '$lib/reading-history/record';
   import {
     detectDeviceFacts,
     readDeviceEnv,
@@ -56,7 +59,22 @@
 
   inject({ mode: dev ? 'development' : 'production' });
 
-  onMount(() => foregroundSync.listen());
+  onMount(() => {
+    const stopForeground = foregroundSync.listen();
+    // Progress syncs are batched while reading (activity-tracker); a pending
+    // change goes up at once when the tab hides or the page goes away.
+    const flushOnHide = () => {
+      if (document.visibilityState === 'hidden') activityTracker.flush();
+    };
+    const flushOnPageHide = () => activityTracker.flush();
+    document.addEventListener('visibilitychange', flushOnHide);
+    window.addEventListener('pagehide', flushOnPageHide);
+    return () => {
+      stopForeground();
+      document.removeEventListener('visibilitychange', flushOnHide);
+      window.removeEventListener('pagehide', flushOnPageHide);
+    };
+  });
 
   onMount(() => {
     return initGoalsLifecycle();
@@ -115,6 +133,42 @@
       detectDeviceFacts(readDeviceEnv()),
       new Date().toISOString()
     ).catch((error) => console.warn('[reading-history] device record failed:', error));
+    // positions.json: mark this device's position changes and push them after
+    // page turns settle. Started at once, so no turn goes unmarked.
+    void Promise.all([
+      import('$lib/positions/positions-local'),
+      import('$lib/positions/positions-sync'),
+      import('$lib/positions/visit')
+    ])
+      .then(([{ initPositionTracking }, { initPositionPush }, { initVisitTracking }]) => {
+        initPositionTracking();
+        initPositionPush();
+        // Look-up visits give their position back; they need this device's id.
+        return getOrCreateDeviceId(historyDb()).then(initVisitTracking);
+      })
+      .catch((error) => console.warn('[positions] could not start:', error));
+    // Reading history's page turns load first (the stats read them); then turns
+    // still held in volume records become history events (phase 2b). The
+    // cut-over strips nothing unless that load succeeded.
+    loadHistoryTurns(historyDb())
+      .catch((error) => console.warn('[reading-history] could not load history turns:', error))
+      .then(() => import('$lib/reading-history/cut-over'))
+      .then(({ cutOverLegacyTurns }) => cutOverLegacyTurns(historyDb()))
+      .catch((error) => console.warn('[reading-history] cut-over failed:', error))
+      // Cross-device position offers (phase 2c): watch history once it is loaded.
+      .then(() => import('$lib/reading-history/position-store'))
+      .then(({ initPositionOffers }) => initPositionOffers(historyDb()))
+      .catch((error) => console.warn('[reading-history] position offers failed:', error));
+
+    // Reading stats from history (phase 3a). Each record's reading from
+    // before history is frozen into a snapshot right away (it needs no
+    // events: history from before the freeze is set against it as it arrives).
+    void import('$lib/reading-history/stats-store')
+      .then(({ initReadingStats, freezeLegacyBaselines }) => {
+        freezeLegacyBaselines();
+        initReadingStats();
+      })
+      .catch((error) => console.warn('[reading-history] stats failed to start:', error));
 
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')
