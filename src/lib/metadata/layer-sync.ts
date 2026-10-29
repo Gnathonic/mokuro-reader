@@ -34,7 +34,13 @@ import {
   type SyncProvider
 } from '$lib/util/sync/provider-interface';
 import { providerManager } from '$lib/util/sync/provider-manager';
-import { cbzStemsOf, classifyMokuroSidecar, layerSidecarName } from '$lib/util/sync/syncable-file';
+import {
+  cbzStemsOf,
+  classifyMokuroSidecar,
+  foldStem,
+  isCbzFile,
+  layerSidecarName
+} from '$lib/util/sync/syncable-file';
 import { isoToEpochSeconds } from './cloud-sidecar-stamps';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 
@@ -98,14 +104,14 @@ export interface ListedLayerFile {
   copies: Array<{ file: CloudFileMetadata; gz: boolean }>;
 }
 
-/** The archive stems of a folder, keyed lowercased → spelled as listed. */
+/** The archive stems of a folder, keyed folded (`foldStem`) → spelled as listed. */
 function archiveStemsOf(files: CloudFileMetadata[]): Map<string, string> {
   const spelled = new Map<string, string>();
   for (const file of files) {
     const name = basename(file.path);
-    if (name.toLowerCase().endsWith('.cbz')) {
+    if (isCbzFile(name)) {
       const stem = name.slice(0, -4);
-      spelled.set(stem.toLowerCase(), stem);
+      spelled.set(foldStem(stem), stem);
     }
   }
   return spelled;
@@ -127,12 +133,24 @@ export function collectLayerFiles(
     if (oneDeep.length === 0) continue;
     const folderTitle = normalizeCloudPath(oneDeep[0].path).split('/')[0];
     const stems = archiveStemsOf(oneDeep);
+    // Every spelling, not just the one `stems` keeps per folded key.
+    const archiveSpellings = new Set(
+      oneDeep
+        .map((f) => basename(f.path))
+        .filter(isCbzFile)
+        .map((name) => name.slice(0, -4))
+    );
     const cbzStems = cbzStemsOf(oneDeep.map((f) => basename(f.path)));
     const seen = new Map<string, ListedLayerFile>();
     for (const file of oneDeep) {
       const cls = classifyMokuroSidecar(basename(file.path), cbzStems);
       if (cls.kind !== 'layer') continue;
-      const key = `${cls.stem.toLowerCase()}\u0000${cls.layerId}`;
+      // The archive spelled exactly like the layer's stem owns it before one
+      // that only folds alike (sidecar names rule v1 #6).
+      const stem = archiveSpellings.has(cls.stem)
+        ? cls.stem
+        : (stems.get(foldStem(cls.stem)) ?? cls.stem);
+      const key = `${stem}\u0000${cls.layerId}`;
       const existing = seen.get(key);
       const copies = [...(existing?.copies ?? []), { file, gz: cls.gz }];
       if (existing && !existing.gz) {
@@ -141,7 +159,7 @@ export function collectLayerFiles(
       }
       seen.set(key, {
         folderTitle,
-        stem: stems.get(cls.stem.toLowerCase()) ?? cls.stem,
+        stem,
         layerId: cls.layerId,
         gz: cls.gz,
         file,

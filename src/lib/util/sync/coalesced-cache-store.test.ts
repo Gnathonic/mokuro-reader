@@ -40,6 +40,26 @@ describe('CoalescedCacheStore', () => {
   const addEntry = (key: string) =>
     store.update((map) => new Map(map).set(key, [`${key}/file.cbz`]));
 
+  it('moves its revision on every update and set at once — never on a read or a flush', () => {
+    // Whole-listing derivations are memoised on this token
+    // (`unifiedCloudManager`'s folder index), so it must track the STATE —
+    // a just-added file is visible to the very next lookup — not the
+    // coalesced emission.
+    const first = store.revision();
+    store.read();
+    expect(store.revision()).toBe(first);
+
+    addEntry('series-a');
+    const second = store.revision();
+    expect(second).not.toBe(first);
+
+    store.flush();
+    expect(store.revision()).toBe(second);
+
+    store.set(new Map());
+    expect(store.revision()).not.toBe(second);
+  });
+
   it('publishes a burst of updates ONCE, carrying the final map — not per mutation, not an arm-time snapshot', () => {
     for (let i = 0; i < 10; i++) addEntry(`series-${i}`);
 

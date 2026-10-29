@@ -94,6 +94,24 @@ describe('extractLayerEntries', () => {
     ]);
     expect(standalone.map((l) => [l.stem, l.layerId])).toEqual([['Vol 7', 'fix']]);
   });
+
+  it('drops a miscased layer name beside its volume (a rule-v1 orphan); a volume of that name keeps it', () => {
+    const { entries, layers, standalone } = extractLayerEntries([
+      entry('S/Vol 1.mokuro'),
+      entry('S/Vol 1.cbz'),
+      entry('S/Vol 1.GCV.mokuro'),
+      entry('S/Vol 2.EN.mokuro'),
+      entry('S/Vol 2.EN.cbz')
+    ]);
+    expect(entries.map((e) => e.path)).toEqual([
+      'S/Vol 1.mokuro',
+      'S/Vol 1.cbz',
+      'S/Vol 2.EN.mokuro',
+      'S/Vol 2.EN.cbz'
+    ]);
+    expect(layers).toEqual([]);
+    expect(standalone).toEqual([]);
+  });
 });
 
 describe('attachLayerFile', () => {

@@ -40,7 +40,12 @@ export interface FolderOperations {
   /** Move an item to a new parent folder */
   moveItem(itemId: string, newParentId: string, oldParentId: string): Promise<void>;
 
-  /** Delete a folder (should be empty) */
+  /**
+   * Remove a duplicate folder the merge just emptied. The merge judged it
+   * empty from a listing a moment old, so a provider re-checks with the
+   * server first and leaves a folder that still holds anything for the next
+   * pass: a folder removal takes its contents with it.
+   */
   deleteFolder(folderId: string): Promise<void>;
 
   /**
@@ -73,6 +78,26 @@ function isNewer(a: FolderItem, b: FolderItem): boolean {
   const ta = a.modifiedTime ? Date.parse(a.modifiedTime) : NaN;
   const tb = b.modifiedTime ? Date.parse(b.modifiedTime) : NaN;
   return Number.isFinite(ta) && Number.isFinite(tb) && ta > tb;
+}
+
+/** A creation time in ms; missing or unparsable counts as oldest. */
+function createdAt(createdTime: string | undefined): number {
+  const t = createdTime ? Date.parse(createdTime) : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Oldest first, then the smaller id (code-unit order, as MEGA and bunko
+ * compare). The id tie-break makes the kept folder independent of the order a
+ * provider happens to list in, so every client keeps the same one.
+ */
+export function compareByAge(
+  a: { id: string; createdTime?: string },
+  b: { id: string; createdTime?: string }
+): number {
+  const age = createdAt(a.createdTime) - createdAt(b.createdTime);
+  if (age !== 0) return age;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 /**
@@ -169,7 +194,7 @@ class FolderDeduplicator {
 
   /**
    * Find all groups of duplicate folders (same name + same parent)
-   * Each group is sorted by creation time (oldest first = canonical)
+   * Each group is sorted oldest first, then by id (first = canonical)
    */
   private findAllDuplicateGroups(folders: FolderInfo[]): FolderInfo[][] {
     // Group folders by "parentId:name" key
@@ -185,17 +210,12 @@ class FolderDeduplicator {
       }
     }
 
-    // Filter to only groups with duplicates and sort each by creation time
+    // Filter to only groups with duplicates; the first after sorting is canonical
     const duplicateGroups: FolderInfo[][] = [];
 
     for (const group of byKey.values()) {
       if (group.length > 1) {
-        // Sort by creation time - oldest first (canonical)
-        group.sort((a, b) => {
-          const dateA = new Date(a.createdTime || 0).getTime();
-          const dateB = new Date(b.createdTime || 0).getTime();
-          return dateA - dateB;
-        });
+        group.sort(compareByAge);
         duplicateGroups.push(group);
       }
     }

@@ -96,7 +96,10 @@ export function layerKindForId(layerId: string, servedEngine?: string): VolumeOc
   return 'edit';
 }
 
-/** A display name → a unique `layer_id` slug (never the reserved `original` or `edit`). */
+/**
+ * A display name → a unique `layer_id` slug (never the reserved `original` or
+ * `edit`, and always with a letter in it — sidecar names rule v1 #8).
+ */
 export function slugifyLayerId(name: string, taken: Iterable<string>): string {
   const used = new Set(taken);
   let base = name
@@ -106,6 +109,9 @@ export function slugifyLayerId(name: string, taken: Iterable<string>): string {
     .slice(0, MAX_SLUG)
     .replace(/-+$/g, '');
   if (!base) base = 'layer';
+  // An all-digit id is valid in a listing, but bunko's listing-free paths
+  // need a letter to tell `Vol 1.2024.mokuro` from the primary of `Vol 1.2024`.
+  if (!/[a-z]/.test(base)) base = `layer-${base}`.slice(0, MAX_SLUG).replace(/-+$/g, '');
   let candidate = base;
   let n = 2;
   while (

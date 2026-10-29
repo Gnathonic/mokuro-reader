@@ -49,14 +49,50 @@ export interface ForgetPayload {
   before: number;
 }
 
-export type EventPayload = PagePayload | AdjustPayload | RestartPayload | ForgetPayload;
+/**
+ * The answer to a cross-device position offer (phase 2c): `jump` moved here to
+ * `page`, `stay` kept the current page, `reset` re-applied a restart this
+ * position had missed. `through` is the time of the reading the answer covers;
+ * an offer is never shown again for reading at or before it, on any device.
+ */
+export interface PositionPayload {
+  kind: 'position';
+  volume: string;
+  answer: 'jump' | 'stay' | 'reset';
+  through: number;
+  page: number;
+}
+
+/** How a long pause counts: all of it, the typical time for its pages, or none. */
+export type PauseCount = 'full' | 'typical' | 'none';
+
+/**
+ * The user's answer about a long pause on one `page` event (phase 3b). The
+ * latest answer per target wins (stats engine). `volume` is the target's
+ * volume, denormalised so that every per-volume path (stores, the codec's
+ * volume dictionary, the `volume` index) carries this kind unchanged.
+ */
+export interface ResolvePayload {
+  kind: 'resolve';
+  volume: string;
+  target: [device: string, seq: number];
+  count: PauseCount;
+}
+
+export type EventPayload =
+  | PagePayload
+  | AdjustPayload
+  | RestartPayload
+  | ForgetPayload
+  | PositionPayload
+  | ResolvePayload;
 
 /** `t` = epoch ms on the recording device (for `page`: when the view opened). */
 export type ReadingEvent = { device: string; seq: number; t: number } & EventPayload;
 
 export type DeviceClass = 'phone' | 'tablet' | 'laptop' | 'desktop' | 'unknown';
 
-/** Facts a device records about itself. User labels live elsewhere (phase 4). */
+/** Facts a device records about itself. User labels are `DeviceLabel`, synced apart. */
 export interface DeviceFacts {
   device: string;
   class: DeviceClass;
@@ -64,4 +100,20 @@ export interface DeviceFacts {
   browser?: string;
   first_seen: string;
   last_seen: string;
+}
+
+/**
+ * The user's choices about a device (phase 4), which any device may edit:
+ * `volume-data.json → tracking.devices[device]`, newest `lastUpdated` wins per
+ * device and the entry is replaced whole. `lastUpdated`, not the spec's
+ * `updated_at`, like every other `tracking` entry.
+ */
+export interface DeviceLabel {
+  /** Trimmed, non-empty. Absent = the generated label. */
+  name?: string;
+  /** The user's correction of the detected class. Absent = detected. */
+  class?: DeviceClass;
+  /** This device's events count as that device's (another real device id). */
+  merged_into?: string;
+  lastUpdated: string;
 }

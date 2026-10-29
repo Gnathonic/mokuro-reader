@@ -31,7 +31,6 @@ vi.mock('$lib/settings', async () => {
     disableAnimations: false,
     textBoxContextMenu: false,
     continuousScroll: false,
-    inactivityTimeoutMinutes: 5,
     nightMode: false,
     invertColors: false,
     grayscale: false,
@@ -93,5 +92,14 @@ describe('ReaderToggles — Edit OCR text', () => {
     const input = getByLabelText(/Edit OCR text/) as HTMLInputElement;
     expect(input.disabled).toBe(true);
     expect(getByText(/paged mode only/i)).toBeTruthy();
+  });
+});
+
+describe('ReaderToggles — long pauses', () => {
+  it('carries the long-pause setting right after the idle cutoff', () => {
+    const { getByLabelText } = render(ReaderToggles);
+    const cutoff = getByLabelText('Automatic idle cutoff');
+    const pauses = getByLabelText('When a page stays open past the cutoff');
+    expect(cutoff.compareDocumentPosition(pauses) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

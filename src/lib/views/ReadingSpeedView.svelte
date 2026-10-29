@@ -7,8 +7,14 @@
     getSeriesSpeedInfo,
     formatDuration,
     formatRelativeDate,
+    type FiguresOf,
     type VolumeSpeedData
   } from '$lib/util/reading-speed-history';
+  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
+  import { pauseVolumeTitle } from '$lib/reading-history/pause-review';
+  import LongPausesCard from '$lib/components/Stats/LongPausesCard.svelte';
+  import DeviceStatsCard from '$lib/components/Stats/DeviceStatsCard.svelte';
+  import SecondDeviceBanner from '$lib/components/Stats/SecondDeviceBanner.svelte';
   import {
     volumes,
     deleteVolume as deleteVolumeStats,
@@ -251,20 +257,32 @@
   }
 
   // Derived stores
-  const volumeSpeedData = derived([volumes, catalogStore], ([$volumes, $catalogStore]) => {
-    // Handle loading state (undefined until the first coalesced emission from IndexedDB)
-    if ($catalogStore === undefined) return [];
-    const catalog = Object.values($catalogStore);
-    return processVolumeSpeedData($volumes, catalog);
-  });
+  // Each volume's time and characters from reading history (+ its baseline).
+  const figuresOf = derived(
+    readingStats,
+    ($readingStats): FiguresOf =>
+      (volumeId, data) =>
+        figuresFor($readingStats, volumeId, data)
+  );
+
+  const volumeSpeedData = derived(
+    [volumes, catalogStore, figuresOf],
+    ([$volumes, $catalogStore, $figuresOf]) => {
+      // Handle loading state (undefined until the first coalesced emission from IndexedDB)
+      if ($catalogStore === undefined) return [];
+      const catalog = Object.values($catalogStore);
+      return processVolumeSpeedData($volumes, catalog, $figuresOf);
+    }
+  );
 
   const stats = derived(
-    [volumeSpeedData, personalizedReadingSpeed, volumes],
-    ([$volumeSpeedData, $personalizedSpeed, $volumes]) => {
+    [volumeSpeedData, personalizedReadingSpeed, volumes, figuresOf],
+    ([$volumeSpeedData, $personalizedSpeed, $volumes, $figuresOf]) => {
       return calculateReadingSpeedStats(
         $volumeSpeedData,
         $personalizedSpeed.charsPerMinute,
         $volumes,
+        $figuresOf,
         $personalizedSpeed.confidence !== 'none'
       );
     }
@@ -306,17 +324,10 @@
   });
 
   // Unified check for any reading activity (page turns or completed volumes)
-  const hasReadingData = $derived.by(() => {
-    // Has valid page turn data (3-tuple format with at least 2 turns)
-    const hasPageTurns = Object.values($volumes).some(
-      (vol) =>
-        vol.recentPageTurns &&
-        vol.recentPageTurns.length >= 2 &&
-        vol.recentPageTurns.some((t) => t.length === 3)
-    );
-
-    return hasPageTurns;
-  });
+  // Any counted reading in history at all.
+  const hasReadingData = $derived(
+    [...$readingStats.byVolume.values()].some((totals) => totals.timeMs > 0)
+  );
 
   // Detect ALL orphaned volumes (lacking metadata) in the entire volumes store.
   // The predicate is IMPORTED, not transcribed: this page uses it to decide what
@@ -1108,6 +1119,8 @@
 
 <div class="min-h-[90svh] w-full p-4">
   <h1 class="mb-6 text-3xl font-bold">Reading Speed History</h1>
+  <!-- Asks to name this device once a second one has reading (phase 4) -->
+  <SecondDeviceBanner />
 
   {#if !hasReadingData && $volumeSpeedData.length === 0}
     <!-- Empty State Message - No reading activity at all -->
@@ -1156,6 +1169,11 @@
             <p class="mb-1 text-sm text-gray-400">Characters Read</p>
             <p class="text-2xl font-bold">{formatMetric($stats.totalCharsRead)}</p>
             <p class="text-xs text-gray-500">{formatNumber($stats.totalCharsRead)} total</p>
+            {#if $stats.totalSkippedChars > 0}
+              <p class="text-xs text-gray-500">
+                {formatNumber($stats.totalSkippedChars)} skimmed (not counted)
+              </p>
+            {/if}
           </div>
           <ChartLineUpOutline size="lg" class="text-blue-500" />
         </div>
@@ -1198,6 +1216,12 @@
         </div>
       </Card>
     </div>
+
+    <!-- Long pauses to review (phase 3b); renders nothing when there are none -->
+    <LongPausesCard titleOf={(volume) => pauseVolumeTitle(volume, $catalogStore, $volumes)} />
+
+    <!-- Reading per device (phase 4); renders nothing for a single device -->
+    <DeviceStatsCard />
 
     <!-- Achievement Badges -->
     <Card class="mb-6 w-full max-w-none p-6">

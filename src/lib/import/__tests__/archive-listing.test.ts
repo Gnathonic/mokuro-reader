@@ -69,6 +69,21 @@ describe('planArchiveListing', () => {
     expect(plan.mokuroPairings).toHaveLength(1);
     expect(plan.layerEntries.map((e) => e.path)).toEqual(['A.gcv.mokuro']);
   });
+
+  it('ignores a layer name whose id is miscased — an orphan, never the primary', async () => {
+    // Rule v1: `A.GCV.mokuro` is neither layer `gcv` nor a `.mokuro` of A.
+    for (const order of [
+      ['A.mokuro', 'A.GCV.mokuro'],
+      ['A.GCV.mokuro', 'A.mokuro']
+    ]) {
+      for (const page of ['A/001.jpg', '001.jpg']) {
+        const plan = await planArchiveListing(listed(...order, page), archive('A.cbz'));
+        expect(plan.mokuroPairings.map((p) => p.mokuroFile?.name)).toEqual(['A.mokuro']);
+        expect(plan.imageOnlyPairings).toEqual([]);
+        expect(plan.layerEntries).toEqual([]);
+      }
+    }
+  });
 });
 
 describe('scanArchiveListing', () => {

@@ -10,6 +10,8 @@ import type {
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
+import { isHistoryFileName } from '$lib/reading-history/paths';
+import { driveHistoryPath } from './drive-history-path';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import {
   driveApiClient,
@@ -24,10 +26,16 @@ import { findFile } from '$lib/util/backup';
 import { cacheManager } from '../../cache-manager';
 import { providerManager } from '../../provider-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
-import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
+import {
+  compareByAge,
+  type FolderOperations,
+  type FolderInfo,
+  type FolderItem
+} from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { isDriveQuotaError } from '../../core/providers/drive-http';
 
 /** How long a resolved list of `mokuro-reader` root ids is trusted by `readControlFile`. */
 const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
@@ -389,15 +397,20 @@ class GoogleDriveProvider implements SyncProvider {
       // Build folder map (folder ID -> folder name)
       const READER_FOLDER_NAME = GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER;
       const folderNames = new Map<string, string>();
+      const folders = new Map<string, { name: string; parent?: string }>();
       const cbzFiles: any[] = [];
       const sidecarFiles: any[] = [];
       const jsonFiles: any[] = [];
+      const historyFiles: any[] = [];
 
       for (const item of allItems) {
         if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
           folderNames.set(item.id, item.name);
+          folders.set(item.id, { name: item.name, parent: item.parents?.[0] });
         } else if (isCbzFile(item.name)) {
           cbzFiles.push(item);
+        } else if (isHistoryFileName(item.name)) {
+          historyFiles.push(item);
         } else if (isSidecarFile(item.name)) {
           sidecarFiles.push(item);
         } else if (isRootConfigFile(item.name)) {
@@ -474,6 +487,22 @@ class GoogleDriveProvider implements SyncProvider {
         });
       }
 
+      // Reading history: mokuro-reader/history/<device>/<file>, by its full path.
+      for (const file of historyFiles) {
+        const path = driveHistoryPath(file, folders, READER_FOLDER_NAME);
+        if (!path) continue;
+        cloudVolumes.push({
+          provider: 'google-drive',
+          fileId: file.id,
+          path,
+          modifiedTime: file.modifiedTime || new Date().toISOString(),
+          size: file.size ? parseInt(file.size) : 0,
+          description: file.description,
+          parentId: file.parents?.[0],
+          name: file.name
+        });
+      }
+
       console.log(
         `✅ Listed ${cloudVolumes.length} files from Google Drive (${cbzFiles.length} CBZ, ${sidecarFiles.length} sidecars, ${jsonFiles.length} JSON)`
       );
@@ -545,7 +574,9 @@ class GoogleDriveProvider implements SyncProvider {
           ? 'image/webp'
           : lowerFileName.endsWith('.jpg') || lowerFileName.endsWith('.jpeg')
             ? 'image/jpeg'
-            : 'application/x-cbz';
+            : lowerFileName.endsWith('.events')
+              ? 'application/octet-stream'
+              : 'application/x-cbz';
 
       // Ensure folder structure exists
       const rootFolderId = await this.ensureReaderFolder();
@@ -592,6 +623,14 @@ class GoogleDriveProvider implements SyncProvider {
       console.log(`✅ Uploaded ${fileName} to Google Drive (${uploaded.fileId})`);
       return uploaded;
     } catch (error) {
+      // Typed, and worded so the user can act on it — not a network blip to retry.
+      if (isDriveQuotaError(error)) {
+        throw new ProviderError(
+          'Google Drive storage is full — free up space or upgrade your plan',
+          'google-drive',
+          'QUOTA_EXCEEDED'
+        );
+      }
       throw new ProviderError(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
@@ -1188,13 +1227,10 @@ class GoogleDriveProvider implements SyncProvider {
       );
     }
 
-    // Return first folder found (oldest if multiple - they'll be deduped later)
+    // The folder FolderDeduplicator keeps (oldest, then id), so writes never
+    // go to the copy the next merge empties.
     if (folders.length > 1) {
-      folders.sort((a, b) => {
-        const dateA = new Date(a.createdTime || 0).getTime();
-        const dateB = new Date(b.createdTime || 0).getTime();
-        return dateA - dateB;
-      });
+      folders.sort(compareByAge);
       console.log(
         `⚠️ Found ${folders.length} folders named '${folderName}', using oldest (dedup will run later)`
       );
@@ -1274,11 +1310,7 @@ class GoogleDriveProvider implements SyncProvider {
       return null;
     }
 
-    folders.sort((a, b) => {
-      const dateA = new Date(a.createdTime || 0).getTime();
-      const dateB = new Date(b.createdTime || 0).getTime();
-      return dateA - dateB;
-    });
+    folders.sort(compareByAge);
 
     const folder = folders[0];
     return {
@@ -1338,8 +1370,15 @@ class GoogleDriveProvider implements SyncProvider {
    * Returns an object that implements FolderOperations
    */
   getFolderOperations(): FolderOperations {
+    const READER = GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER;
+    // Duplicates this run already kept once because the server still listed
+    // children in them (see deleteFolder).
+    const keptOnce = new Set<string>();
+    // The write root the cache picks from the last listFolders' roots; null
+    // before any listing, which confirms any root as before.
+    let writeRoot: string | null = null;
     return {
-      rootFolderName: GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER,
+      rootFolderName: READER,
 
       listFolders: async (): Promise<FolderInfo[]> => {
         await this.ensureInitialized();
@@ -1347,7 +1386,29 @@ class GoogleDriveProvider implements SyncProvider {
           `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and 'me' in owners and trashed=false`,
           'files(id,name,parents,createdTime)'
         );
-        return items.map((item) => ({
+        // The listing is account-wide: two same-named folders the user keeps
+        // for anything else are not ours to merge. Only `mokuro-reader`
+        // folders and what is inside them, as MEGA's isInLibrary.
+        const byId = new Map(items.map((item) => [item.id, item]));
+        const inLibrary = (item: DriveFile): boolean => {
+          const seen = new Set<string>();
+          for (
+            let current: DriveFile | undefined = item;
+            current && !seen.has(current.id);
+            current = current.parents?.[0] ? byId.get(current.parents[0]) : undefined
+          ) {
+            if (current.name === READER) return true;
+            seen.add(current.id);
+          }
+          return false;
+        };
+        const library = items.filter(inLibrary).sort(compareByAge);
+
+        writeRoot = await driveFilesCache.pickReaderFolder(
+          library.filter((item) => item.name === READER)
+        );
+
+        return library.map((item) => ({
           id: item.id,
           name: item.name,
           parentId: item.parents?.[0] || null,
@@ -1375,9 +1436,29 @@ class GoogleDriveProvider implements SyncProvider {
       },
 
       // Both to Drive's trash, never files.delete: the folder was judged empty
-      // from a listing a moment old, and a deleted folder takes its contents.
+      // from a listing a moment old, and a trashed folder takes its contents.
       deleteFolder: async (folderId: string): Promise<void> => {
         await this.ensureInitialized();
+        // So ask the server again, and trash only what it lists empty: another
+        // device's upload may have landed since. The next pass moves it.
+        const remaining = await driveApiClient.listFiles(
+          `'${folderId}' in parents and trashed=false`,
+          'files(id)'
+        );
+        if (remaining.length > 0) {
+          // Still not empty after a second merge (another device keeps
+          // writing there): stop this run rather than loop on it.
+          if (keptOnce.has(folderId)) {
+            throw new Error(
+              `Drive dedup: duplicate folder ${folderId} still holds ${remaining.length} item(s); stopping`
+            );
+          }
+          keptOnce.add(folderId);
+          console.warn(
+            `[GoogleDrive] duplicate folder ${folderId} kept: server still lists ${remaining.length} item(s)`
+          );
+          return;
+        }
         await driveApiClient.updateFileMetadata(folderId, { trashed: true }, { fields: 'id' });
       },
 
@@ -1387,6 +1468,10 @@ class GoogleDriveProvider implements SyncProvider {
       },
 
       onRootFolderConfirmed: (folderId: string): void => {
+        // A merged group of nested roots (`Backup/mokuro-reader` twice) has a
+        // canonical folder too: it is read, never the write root while the
+        // cache's choice (top-level first) is another folder.
+        if (writeRoot && folderId !== writeRoot) return;
         this.setReaderFolderId(folderId);
         driveFilesCache.setReaderFolderId(folderId);
       }

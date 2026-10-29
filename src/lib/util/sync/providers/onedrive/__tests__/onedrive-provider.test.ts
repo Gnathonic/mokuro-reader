@@ -148,3 +148,73 @@ describe('removeDirectoryIfEmpty', () => {
     expect(vi.mocked(deleteItem)).not.toHaveBeenCalled();
   });
 });
+
+describe('upload failure classification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getItemByPath).mockResolvedValue({
+      id: 'root-id',
+      name: 'mokuro-reader',
+      folder: {}
+    });
+  });
+
+  function providerWithCoreFailure(message: string): OneDriveProvider {
+    const provider = new OneDriveProvider();
+    (provider as unknown as { cloudCore: unknown }).cloudCore = {
+      uploadFile: vi.fn().mockRejectedValue(new Error(message)),
+      downloadFile: vi.fn().mockRejectedValue(new Error(message))
+    };
+    return provider;
+  }
+
+  it('a full drive (worker message) becomes QUOTA_EXCEEDED, not a retryable 5xx', async () => {
+    const provider = providerWithCoreFailure(
+      'Failed to create OneDrive upload session: OneDrive storage full (507 insufficientStorage)'
+    );
+
+    const err = await provider.uploadFile('volume-data.json', new Blob(['x'])).catch((e) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.code).toBe('QUOTA_EXCEEDED');
+    expect(err.isNetworkError).toBe(false);
+    expect(err.message).toMatch(/storage is full/);
+  });
+
+  it('a quotaLimitReached message is a full drive too', async () => {
+    const provider = providerWithCoreFailure('OneDrive storage full (403 quotaLimitReached)');
+    const err = await provider.uploadFile('volume-data.json', new Blob(['x'])).catch((e) => e);
+    expect(err.code).toBe('QUOTA_EXCEEDED');
+  });
+
+  it('other 5xx failures stay retryable UPLOAD_FAILED', async () => {
+    const provider = providerWithCoreFailure('OneDrive upload failed after 5 attempts: HTTP 503');
+    const err = await provider.uploadFile('volume-data.json', new Blob(['x'])).catch((e) => e);
+    expect(err.code).toBe('UPLOAD_FAILED');
+    expect(err.isNetworkError).toBe(true);
+  });
+});
+
+describe('nested folders (reading history)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('creates history/<device> one segment at a time, never a name with a slash', async () => {
+    const existing = new Set(['mokuro-reader']);
+    vi.mocked(getItemByPath).mockImplementation(async (_t, path) =>
+      existing.has(path) ? { id: path, name: path.split('/').pop()!, folder: {} } : null
+    );
+    vi.mocked(createFolder).mockImplementation(async (_t, parent, name) => {
+      existing.add(`${parent}/${name}`);
+      return { id: `${parent}/${name}`, name, folder: {} };
+    });
+
+    const provider = new OneDriveProvider();
+    await provider.prepareUploadTarget('history/dev-a');
+
+    expect(vi.mocked(createFolder).mock.calls.map((c) => [c[1], c[2]])).toEqual([
+      ['mokuro-reader', 'history'],
+      ['mokuro-reader/history', 'dev-a']
+    ]);
+  });
+});
