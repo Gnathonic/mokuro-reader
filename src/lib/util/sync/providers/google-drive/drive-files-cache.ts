@@ -87,9 +87,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   private fetchingFlag = false;
   private lastFetchTime: number | null = null;
   private readerFolderId: string | null = null;
-  /** My Drive's own folder id, asked for once per session (see getMyDriveRootId). */
+  /** My Drive's own folder id, learnt once per session (see topLevelTest). */
   private myDriveRootId: string | null = null;
-  private myDriveRootIdPromise: Promise<string | null> | null = null;
+  private topLevelPromise: Promise<((f: DriveFile) => boolean) | null> | null = null;
   private fetchPromise: Promise<void> | null = null;
   /**
    * How many times IN A ROW a dedup-triggered refetch has re-entered
@@ -421,41 +421,49 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * then the smaller id — the folder FolderDeduplicator keeps when it merges
    * the top-level ones, so writes never go to the copy the next merge
    * empties. A nested root is never merged away; it is the write root only
-   * when there is no top-level one.
+   * when there is no top-level one. The provider's dedup confirms a root only
+   * when it is this same choice, so the two never disagree.
    */
-  private async pickReaderFolder(folders: DriveFile[]): Promise<string | null> {
+  async pickReaderFolder(folders: DriveFile[]): Promise<string | null> {
     if (folders.length <= 1) return folders[0]?.id ?? null;
-    const myDriveId = await this.getMyDriveRootId();
-    const atTop = (f: DriveFile) => (myDriveId && f.parents?.[0] === myDriveId ? 0 : 1);
-    return [...folders].sort((a, b) => atTop(a) - atTop(b) || compareByAge(a, b))[0].id;
+    const atTop = await this.topLevelTest();
+    const rank = (f: DriveFile) => (atTop?.(f) ? 0 : 1);
+    return [...folders].sort((a, b) => rank(a) - rank(b) || compareByAge(a, b))[0].id;
   }
 
   /**
-   * My Drive's own folder id, which a top-level folder names as its parent
-   * (`'root'` is only an alias in queries). One `files/root` call per
-   * session; null when it cannot be had, and asked again next time.
+   * Is a folder directly in My Drive? Not `files.get('root')`: under the
+   * app's drive.file scope that is a 404 (rclone hit the same). The `'root'`
+   * alias does work in a query, so ask for the top-level `mokuro-reader`
+   * folders; their parent is My Drive's id, remembered for the session. Null
+   * when the query fails (ordered by age alone, asked again next time).
    */
-  async getMyDriveRootId(): Promise<string | null> {
-    if (this.myDriveRootId) return this.myDriveRootId;
-    if (!this.myDriveRootIdPromise) {
+  private async topLevelTest(): Promise<((f: DriveFile) => boolean) | null> {
+    const known = this.myDriveRootId;
+    if (known) return (f) => f.parents?.[0] === known;
+    if (!this.topLevelPromise) {
       const generation = this.cacheGeneration;
-      this.myDriveRootIdPromise = driveApiClient
-        .getFileMetadata('root', 'id')
-        .then((result: { id?: unknown } | undefined) => {
-          const id = typeof result?.id === 'string' && result.id ? result.id : null;
+      this.topLevelPromise = driveApiClient
+        .listFiles(
+          `'root' in parents and name='${GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+          'files(id,parents)'
+        )
+        .then((top: DriveFile[]) => {
+          const id = top.find((f) => f.parents?.[0])?.parents?.[0];
           // An answer for an account signed out meanwhile is not this one's.
           if (id && this.cacheGeneration === generation) this.myDriveRootId = id;
-          return id;
+          const ids = new Set(top.map((f) => f.id));
+          return (f: DriveFile) => ids.has(f.id) || (!!id && f.parents?.[0] === id);
         })
         .catch((error: unknown) => {
-          console.warn("[DriveCache] Could not read My Drive's folder id:", error);
+          console.warn('[DriveCache] Could not list the top-level mokuro-reader folders:', error);
           return null;
         })
         .finally(() => {
-          this.myDriveRootIdPromise = null;
+          this.topLevelPromise = null;
         });
     }
-    return this.myDriveRootIdPromise;
+    return this.topLevelPromise;
   }
 
   /**
@@ -650,7 +658,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     this.lastFetchTime = null;
     this.readerFolderId = null;
     this.myDriveRootId = null;
-    this.myDriveRootIdPromise = null;
+    this.topLevelPromise = null;
     this.fetchPromise = null;
   }
 

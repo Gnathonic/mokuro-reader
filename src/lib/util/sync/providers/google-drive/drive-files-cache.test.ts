@@ -677,13 +677,30 @@ describe('driveFilesCache reader folder choice', () => {
       createdTime: '2026-02-01T00:00:00.000Z'
     }
   };
-  const listing = (items: object[]) =>
-    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(items);
+  const TOP_LEVEL_QUERY =
+    "'root' in parents and name='mokuro-reader' and mimeType='application/vnd.google-apps.folder' and trashed=false";
+  type Fixture = (typeof roots)[keyof typeof roots];
+  // The account listing answers everything; the 'root' in parents query
+  // answers the folders directly in My Drive, as Drive would.
+  const listing = (items: Fixture[]) =>
+    vi
+      .mocked(driveApiClient.listFiles)
+      .mockImplementation(async (query: string) =>
+        query === TOP_LEVEL_QUERY
+          ? items.filter((item) => item.parents?.[0] === 'MY_DRIVE')
+          : (items as never)
+      );
+  const topLevelQueries = () =>
+    vi.mocked(driveApiClient.listFiles).mock.calls.filter(([query]) => query === TOP_LEVEL_QUERY);
 
   beforeEach(() => {
     vi.clearAllMocks();
     driveFilesCache.clear();
-    vi.mocked(driveApiClient.getFileMetadata).mockResolvedValue({ id: 'MY_DRIVE' });
+    // Under the app's drive.file scope, files.get('root') is a 404: the
+    // choice must not depend on it.
+    vi.mocked(driveApiClient.getFileMetadata).mockRejectedValue(
+      Object.assign(new Error('File not found: root.'), { status: 404 })
+    );
     // No dedup pass (and so no refetch) behind these fetches.
     vi.mocked(googleDriveProvider.isAuthenticated).mockReturnValue(false);
   });
@@ -700,27 +717,45 @@ describe('driveFilesCache reader folder choice', () => {
       await driveFilesCache.fetch();
       expect(await driveFilesCache.getReaderFolderId()).toBe('top-oldest');
     }
+    expect(driveApiClient.getFileMetadata).not.toHaveBeenCalled();
   });
 
-  it("asks for My Drive's id once per session, and only when there is a choice", async () => {
+  it('finds My Drive by query once per session, and only when there is a choice', async () => {
     listing([roots.topOldest]);
     await driveFilesCache.fetch();
-    expect(driveApiClient.getFileMetadata).not.toHaveBeenCalled();
+    expect(topLevelQueries()).toHaveLength(0);
 
-    listing([roots.topNewer, roots.topOldest]);
+    listing([roots.nestedOlder, roots.topOldest]);
     await driveFilesCache.fetch();
     await driveFilesCache.fetch();
-    expect(driveApiClient.getFileMetadata).toHaveBeenCalledTimes(1);
-    expect(driveApiClient.getFileMetadata).toHaveBeenCalledWith('root', 'id');
+    // The second fetch knows My Drive's id from the first answer's parents.
+    expect(topLevelQueries()).toHaveLength(1);
+    expect(await driveFilesCache.getReaderFolderId()).toBe('top-oldest');
   });
 
-  it('falls back to the oldest, then the smaller id, when My Drive is unknown', async () => {
-    vi.mocked(driveApiClient.getFileMetadata).mockRejectedValue(new Error('offline'));
+  it("asks again while no top-level root has told it My Drive's id", async () => {
     listing([
-      { ...roots.topOldest, id: 'b', createdTime: roots.nestedOlder.createdTime },
-      { ...roots.nestedOlder, id: 'a' },
-      roots.topNewer
+      roots.nestedOlder,
+      { ...roots.nestedOlder, id: 'nested-newer', createdTime: roots.topNewer.createdTime }
     ]);
+    await driveFilesCache.fetch();
+    expect(await driveFilesCache.getReaderFolderId()).toBe('nested-older');
+
+    listing([roots.nestedOlder, roots.topNewer]);
+    await driveFilesCache.fetch();
+    expect(topLevelQueries()).toHaveLength(2);
+    expect(await driveFilesCache.getReaderFolderId()).toBe('top-newer');
+  });
+
+  it('falls back to the oldest, then the smaller id, when the query fails', async () => {
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: string) => {
+      if (query === TOP_LEVEL_QUERY) throw new Error('offline');
+      return [
+        { ...roots.topOldest, id: 'b', createdTime: roots.nestedOlder.createdTime },
+        { ...roots.nestedOlder, id: 'a' },
+        roots.topNewer
+      ] as never;
+    });
 
     await driveFilesCache.fetch();
 

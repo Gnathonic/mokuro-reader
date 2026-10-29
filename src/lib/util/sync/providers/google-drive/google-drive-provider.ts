@@ -1224,9 +1224,9 @@ class GoogleDriveProvider implements SyncProvider {
     // Duplicates this run already kept once because the server still listed
     // children in them (see deleteFolder).
     const keptOnce = new Set<string>();
-    // The top-level roots the last listFolders saw; null while My Drive's id
-    // is unknown, which confirms any root as before.
-    let topLevelRoots: Set<string> | null = null;
+    // The write root the cache picks from the last listFolders' roots; null
+    // before any listing, which confirms any root as before.
+    let writeRoot: string | null = null;
     return {
       rootFolderName: READER,
 
@@ -1254,14 +1254,9 @@ class GoogleDriveProvider implements SyncProvider {
         };
         const library = items.filter(inLibrary).sort(compareByAge);
 
-        const myDriveId = await driveFilesCache.getMyDriveRootId();
-        topLevelRoots = myDriveId
-          ? new Set(
-              library
-                .filter((item) => item.name === READER && item.parents?.[0] === myDriveId)
-                .map((item) => item.id)
-            )
-          : null;
+        writeRoot = await driveFilesCache.pickReaderFolder(
+          library.filter((item) => item.name === READER)
+        );
 
         return library.map((item) => ({
           id: item.id,
@@ -1324,8 +1319,9 @@ class GoogleDriveProvider implements SyncProvider {
 
       onRootFolderConfirmed: (folderId: string): void => {
         // A merged group of nested roots (`Backup/mokuro-reader` twice) has a
-        // canonical folder too: it is read, never the write root.
-        if (topLevelRoots && !topLevelRoots.has(folderId)) return;
+        // canonical folder too: it is read, never the write root while the
+        // cache's choice (top-level first) is another folder.
+        if (writeRoot && folderId !== writeRoot) return;
         this.setReaderFolderId(folderId);
         driveFilesCache.setReaderFolderId(folderId);
       }

@@ -30,7 +30,7 @@ vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
   driveFilesCache: {
     getReaderFolderId: vi.fn(async () => 'reader-root'),
     setReaderFolderId: vi.fn(),
-    getMyDriveRootId: vi.fn(async () => 'MY_DRIVE'),
+    pickReaderFolder: vi.fn(async () => null),
     getDriveFilesBySeries: vi.fn(() => []),
     removeById: vi.fn(),
     clear: vi.fn(),
@@ -547,13 +547,23 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
     expect(driveApiClient.deleteFile).not.toHaveBeenCalled();
   });
 
-  it('only confirms a TOP-LEVEL root as the write root', async () => {
+  it('only confirms the root the cache picks as the write root (top-level first)', async () => {
     vi.mocked(driveApiClient.listFiles).mockResolvedValue([
       folder('TOP', 'mokuro-reader', 'MY_DRIVE'),
-      folder('NESTED', 'mokuro-reader', 'BACKUP')
+      folder('NESTED', 'mokuro-reader', 'BACKUP'),
+      folder('NESTED_SERIES', 'Ippo', 'NESTED')
     ]);
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce('TOP');
     const ops = googleDriveProvider.getFolderOperations();
     await ops.listFolders();
+
+    // The same rule the cache's listing uses, over the roots only.
+    expect(
+      vi
+        .mocked(driveFilesCache.pickReaderFolder)
+        .mock.calls[0][0].map((f) => f.id)
+        .sort()
+    ).toEqual(['NESTED', 'TOP']);
 
     // A merged group of nested roots has a canonical too: read, never written to.
     ops.onRootFolderConfirmed?.('NESTED');
@@ -561,6 +571,19 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
 
     ops.onRootFolderConfirmed?.('TOP');
     expect(driveFilesCache.setReaderFolderId).toHaveBeenCalledWith('TOP');
+  });
+
+  it('confirms a nested root when the cache picks it (no top-level root)', async () => {
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      folder('NESTED_A', 'mokuro-reader', 'BACKUP'),
+      folder('NESTED_B', 'mokuro-reader', 'BACKUP')
+    ]);
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce('NESTED_A');
+    const ops = googleDriveProvider.getFolderOperations();
+    await ops.listFolders();
+
+    ops.onRootFolderConfirmed?.('NESTED_A');
+    expect(driveFilesCache.setReaderFolderId).toHaveBeenCalledWith('NESTED_A');
   });
 
   it('breaks a creation-time tie by id when several folders share a name', async () => {
