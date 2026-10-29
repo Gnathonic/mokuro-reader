@@ -114,9 +114,11 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
   `error.errors[0].reason`: a 403 is a full account (`storageQuotaExceeded`/`quotaExceeded` →
   `QUOTA_EXCEEDED`, never retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`,
-  like any 429: retried by `withDriveRetry` after Retry-After, capped 60 s, 4 attempts), or —
-  only otherwise — an auth failure that may re-authenticate. Messages carry `[reason]` so a
-  worker's serialized error is still recognisable. OneDrive's equivalent is
+  like any 429 — whatever its reason: retried by `withDriveRetry` after Retry-After, capped
+  60 s, 4 attempts), or — only otherwise — an auth failure that may re-authenticate. 5xx are
+  retried too, except on a request that CREATES a file or folder (`rateLimitOnly`): Drive can
+  answer a 5xx after committing it, and a retry would make a duplicate. Messages carry
+  `[reason]` so a worker's serialized error is still recognisable. OneDrive's equivalent is
   `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
   `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
 

@@ -121,11 +121,13 @@ class FakeXhr {
 
 describe('driveApiClient failure classification', () => {
   const list = vi.fn();
+  const create = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
     list.mockReset();
-    vi.stubGlobal('gapi', { client: { drive: { files: { list } } } });
+    create.mockReset();
+    vi.stubGlobal('gapi', { client: { drive: { files: { list, create } } } });
     vi.stubGlobal('XMLHttpRequest', FakeXhr);
     FakeXhr.replies = [];
     FakeXhr.sent = 0;
@@ -184,6 +186,24 @@ describe('driveApiClient failure classification', () => {
 
     await expect(driveApiClient.listFiles("name='x'")).rejects.toThrow(/Re-authentication/);
     expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a folder create answered 503 is not retried: Drive may have made the folder', async () => {
+    create.mockRejectedValue({ status: 503, result: {}, headers: {} });
+
+    await expect(driveApiClient.createFolder('mokuro-reader')).rejects.toMatchObject({
+      kind: 'transient'
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('a folder create answered 429 is retried', async () => {
+    create
+      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0' } })
+      .mockResolvedValueOnce({ result: { id: 'folder-1' } });
+
+    await expect(driveApiClient.createFolder('mokuro-reader')).resolves.toBe('folder-1');
+    expect(create).toHaveBeenCalledTimes(2);
   });
 
   it('an XHR upload answered 403 storageQuotaExceeded rejects as quota without re-auth', async () => {

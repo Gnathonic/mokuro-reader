@@ -36,10 +36,11 @@ export function driveErrorReason(body: unknown): string | undefined {
 }
 
 export function classifyDriveFailure(status: number, reason?: string): DriveFailureKind {
+  // Every 429 is a rate limit, even one naming the generic `quotaExceeded`
+  // (per-minute usage limits do): it clears in seconds, a full account never.
+  if (status === 429) return 'rate-limit';
   if (reason && QUOTA_REASONS.has(reason)) return 'quota';
-  if (status === 429 || (status === 403 && reason && RATE_LIMIT_REASONS.has(reason))) {
-    return 'rate-limit';
-  }
+  if (status === 403 && reason && RATE_LIMIT_REASONS.has(reason)) return 'rate-limit';
   if (TRANSIENT_STATUSES.has(status)) return 'transient';
   // Any other 403 keeps the old auth handling.
   if (status === 401 || status === 403) return 'auth';
@@ -137,7 +138,9 @@ export function isDriveQuotaError(error: unknown): boolean {
   if (error instanceof DriveHttpError) return error.kind === 'quota';
   if ((error as { kind?: unknown } | null)?.kind === 'quota') return true;
   const message = error instanceof Error ? error.message : '';
-  return /\[(storageQuotaExceeded|quotaExceeded)\]/.test(message);
+  // DriveHttpError's message is `context: status statusText [reason]`.
+  const match = /(?::\s*(\d{3})\b[^[]*)?\[(storageQuotaExceeded|quotaExceeded)\]/.exec(message);
+  return !!match && match[1] !== '429';
 }
 
 export interface DriveRetryOptions {

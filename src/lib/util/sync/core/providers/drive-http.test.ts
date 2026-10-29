@@ -40,6 +40,9 @@ describe('classifyDriveFailure', () => {
     [403, 'quotaExceeded', 'quota'],
     [429, undefined, 'rate-limit'],
     [429, 'rateLimitExceeded', 'rate-limit'],
+    // A per-minute usage limit can carry the generic reason: every 429 waits.
+    [429, 'quotaExceeded', 'rate-limit'],
+    [429, 'storageQuotaExceeded', 'rate-limit'],
     [403, 'userRateLimitExceeded', 'rate-limit'],
     [403, 'rateLimitExceeded', 'rate-limit'],
     [500, undefined, 'transient'],
@@ -116,6 +119,10 @@ describe('isDriveQuotaError', () => {
   it('recognises the kind, or the bracketed reason in a bare message', () => {
     expect(isDriveQuotaError(new DriveHttpError(403, 'quotaExceeded'))).toBe(true);
     expect(isDriveQuotaError(new Error('Upload failed: 403 [quotaExceeded]'))).toBe(true);
+    expect(isDriveQuotaError(new DriveHttpError(429, 'quotaExceeded'))).toBe(false);
+    expect(
+      isDriveQuotaError(new Error('Upload failed: 429 Too Many Requests [quotaExceeded]'))
+    ).toBe(false);
     expect(isDriveQuotaError(new DriveHttpError(403, 'userRateLimitExceeded'))).toBe(false);
     expect(isDriveQuotaError(new Error('storage quota'))).toBe(false);
     expect(isDriveQuotaError('nope')).toBe(false);

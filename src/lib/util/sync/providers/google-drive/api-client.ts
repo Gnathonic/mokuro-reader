@@ -6,7 +6,8 @@ import {
   driveHttpErrorFromXhr,
   parseRetryAfter,
   withDriveRetry,
-  type DriveFailureKind
+  type DriveFailureKind,
+  type DriveRetryOptions
 } from '../../core/providers/drive-http';
 
 /**
@@ -72,7 +73,7 @@ function fromGapiError(error: unknown): unknown {
   });
 }
 
-/** Whole-request uploads that CREATE a file retry rate limits only: a 5xx may have created it. */
+/** Requests that CREATE a file or folder retry rate limits only: a 5xx may have created it. */
 const rateLimitOnly = (kind: DriveFailureKind) => kind === 'rate-limit';
 
 /**
@@ -175,16 +176,23 @@ class DriveApiClient {
     });
   }
 
-  private async handleApiCall<T>(apiCall: () => Promise<T>, retryOnAuth = true): Promise<T> {
+  private async handleApiCall<T>(
+    apiCall: () => Promise<T>,
+    retryOnAuth = true,
+    retryOn?: DriveRetryOptions['retryOn']
+  ): Promise<T> {
     try {
       // Rate limits and 5xx are retried after Retry-After; see drive-http.ts.
-      return await withDriveRetry(async () => {
-        try {
-          return await apiCall();
-        } catch (error) {
-          throw fromGapiError(error);
-        }
-      });
+      return await withDriveRetry(
+        async () => {
+          try {
+            return await apiCall();
+          } catch (error) {
+            throw fromGapiError(error);
+          }
+        },
+        { retryOn }
+      );
     } catch (error: any) {
       console.error('Drive API error caught:', error);
       console.error('Error details - status:', error.status, 'message:', error.message);
@@ -237,23 +245,28 @@ class DriveApiClient {
   }
 
   async createFolder(name: string, parentId?: string): Promise<string> {
-    return this.handleApiCall(async () => {
-      const resource: any = {
-        mimeType: GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER,
-        name
-      };
+    return this.handleApiCall(
+      async () => {
+        const resource: any = {
+          mimeType: GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER,
+          name
+        };
 
-      if (parentId) {
-        resource.parents = [parentId];
-      }
+        if (parentId) {
+          resource.parents = [parentId];
+        }
 
-      const { result } = await gapi.client.drive.files.create({
-        resource,
-        fields: 'id'
-      });
+        const { result } = await gapi.client.drive.files.create({
+          resource,
+          fields: 'id'
+        });
 
-      return result.id || '';
-    });
+        return result.id || '';
+      },
+      true,
+      // A 5xx may have made the folder already; a retry would make a duplicate.
+      rateLimitOnly
+    );
   }
 
   /**
