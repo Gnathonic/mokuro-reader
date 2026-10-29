@@ -884,8 +884,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * being CREATED between passes — `findOrCreateFolder` creates a folder
    * whenever its lookup misses, and Drive's file index is eventually
    * consistent, so a write landing during a dedup pass can mint the very
-   * duplicate the next pass merges. That is an unbounded refetch engine, and
-   * it exists on no other provider: WebDAV and MEGA run no dedup at all.
+   * duplicate the next pass merges. That is an unbounded refetch engine
+   * (MEGA's dedup, added later, bounds its refetch the same way; WebDAV runs
+   * no dedup).
    *
    * So the chain is now DEPTH-BOUNDED. Convergence is unaffected (one refetch
    * is all a converged dedup ever needed); a pathological account gives up on
@@ -900,6 +901,11 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         if (!googleDriveProvider.isAuthenticated()) {
           return;
         }
+
+        // Before any merge: the merge below confirms its root itself, but a
+        // root merged away elsewhere (or by the Bunko this skips for) is only
+        // ever noticed here, as a listing that picks another one.
+        if (this.readerFolderId) googleDriveProvider.adoptListedReaderFolder(this.readerFolderId);
 
         // A fresh Bunko lease holder that merges duplicates does it with the
         // same rule; a second merger on the same folders only races its moves.

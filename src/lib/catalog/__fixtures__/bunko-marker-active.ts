@@ -9,6 +9,11 @@
  * A stand-in until `$lib/interop/contract` reaches this branch: then
  * `servedMarker` (`__fixtures__/bunko-marker.ts`) replaces it.
  *
+ * The tests that read it assert `dedup: true`, so a Bunko checkout from
+ * before the marker carried `dedup` fails them on purpose: whatever Bunko ref
+ * CI checks out for `BUNKO_REPO` must carry that fixture before this runs
+ * there with `BUNKO_CONTRACT_REQUIRED=1`.
+ *
  * Test-only: never import this from app code.
  */
 import { existsSync, readFileSync } from 'fs';

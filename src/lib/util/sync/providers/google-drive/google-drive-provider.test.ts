@@ -436,6 +436,30 @@ describe('google drive account scope', () => {
   });
 });
 
+describe('GoogleDriveProvider.adoptListedReaderFolder()', () => {
+  beforeEach(() => {
+    (googleDriveProvider as unknown as { readerFolderId: string | null }).readerFolderId = null;
+  });
+
+  it('re-points a pinned write root at the root the latest listing chose', async () => {
+    // A missed lookup minted a newer root and the session pinned it; another
+    // merger (Bunko, another device) has since trashed it into the older one.
+    vi.mocked(driveFilesCache.getReaderFolderId).mockResolvedValueOnce('newer-root');
+    expect(await googleDriveProvider.ensureReaderFolder()).toBe('newer-root');
+
+    googleDriveProvider.adoptListedReaderFolder('older-root');
+
+    expect(await googleDriveProvider.ensureReaderFolder()).toBe('older-root');
+    expect(googleDriveProvider.getStatus().accountScope).toBe('google-drive:older-root');
+  });
+
+  it('pins nothing before the session resolved a root of its own', () => {
+    googleDriveProvider.adoptListedReaderFolder('older-root');
+
+    expect(googleDriveProvider.getStatus().accountScope).toBe('google-drive:default');
+  });
+});
+
 describe('GoogleDriveProvider uploads — the blind path skips the whole-account refetch', () => {
   /**
    * `uploadFile` has always ended with `driveFilesCache.fetch()` — a FULL

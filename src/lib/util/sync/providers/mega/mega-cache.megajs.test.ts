@@ -11,7 +11,7 @@ import { megaCache } from './mega-cache';
 import { megaProvider } from './mega-provider';
 import { FakeMegaServer } from './mega-fake-server';
 import { folderDeduplicator } from '../../folder-deduplicator';
-import { resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
+import { COLD_START_GRACE_S, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
 import { activeBunkoMarker } from '$lib/catalog/__fixtures__/bunko-marker-active';
 
 let server: FakeMegaServer;
@@ -121,8 +121,9 @@ describe('dedup under a cloud-direct Bunko', () => {
     expect(runs).not.toHaveBeenCalled();
     expect((await server.tree()).count('mokuro-reader')).toBe(2);
 
-    // The marker never moved again: stale after 2 × ttl.
-    now = heartbeat + 2 * marker.ttl_s * 1000;
+    // The marker never moved again. Read cold (no change seen), it is stale
+    // once ttl + the cold-start grace has passed since its own heartbeat.
+    now = heartbeat + (marker.ttl_s + COLD_START_GRACE_S) * 1000;
     await megaCache.fetch(true);
     await vi.waitFor(() => expect(runs).toHaveBeenCalled(), { timeout: 3000 });
     await Promise.allSettled(runs.mock.results.map((r) => r.value));

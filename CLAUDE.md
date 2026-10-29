@@ -153,6 +153,10 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   `cloudBunkoMergesDuplicates` — a fresh lease holder with `dedup: true`
   merges with the same rules, and two mergers would only race each other's
   moves. A stale or released holder hands the job back on the next fetch.
+  Drive pins its write root for the session and only its OWN merge
+  re-points it (`onRootFolderConfirmed`), so every listing also re-points a
+  pinned root at the cache's pick (`adoptListedReaderFolder`): a root that
+  Bunko or another device merged away and trashed is not written to again.
 
 **mokuro-bunko specifics** (the WebDAV provider against a bunko server):
 

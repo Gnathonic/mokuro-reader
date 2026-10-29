@@ -1479,6 +1479,20 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   /**
+   * Follow the write root a fresh listing chose (`pickReaderFolder`). The
+   * session pins its root on first use, and only a merge THIS device runs
+   * re-points it (`onRootFolderConfirmed`). When another merger empties the
+   * pinned root and trashes it — a cloud-direct Bunko that merges duplicates,
+   * which this device then steps aside for, or another device — the listing
+   * no longer shows it, and writes would keep landing under a trashed folder.
+   * Nothing is pinned before the session resolved a root of its own.
+   */
+  adoptListedReaderFolder(folderId: string): void {
+    if (!this.readerFolderId || this.readerFolderId === folderId) return;
+    this.setReaderFolderId(folderId);
+  }
+
+  /**
    * Ensure the mokuro-reader folder exists in Google Drive
    * Uses mutex to prevent race conditions from simultaneous calls
    * Public so backup-queue can use it instead of duplicating folder creation logic
