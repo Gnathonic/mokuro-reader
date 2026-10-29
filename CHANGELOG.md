@@ -12,6 +12,9 @@
 - mokuro-bunko no longer connects read-only on a flaky connection
 - mokuro-bunko series differing only in case stay merged
 - Backups join a cloud folder differing only in case
+- mokuro-bunko: resetting a shelf's alignment now sticks
+- OCR layer files found on decomposed-name storage
+- mokuro-bunko: renaming a volume no longer duplicates OCR layers
 
 ## [1.10.0] - 2026-10-02
 

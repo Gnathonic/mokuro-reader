@@ -171,6 +171,32 @@ describe('collectLayerFiles', () => {
   });
 });
 
+describe('collectLayerFiles under sidecar names rule v1', () => {
+  it('folds stems NFC + lowercase, keeps ids as written, and files a layer under the exactly-spelled archive first', () => {
+    const NFC = 'V\u00f3l 1';
+    const NFD = 'Vo\u0301l 1';
+    const files = collectLayerFiles(
+      listing(
+        cloudFile(`Series/${NFC}.cbz`),
+        cloudFile(`Series/${NFD}.gcv.mokuro`),
+        cloudFile('Series/Vol 2.cbz'),
+        cloudFile('Series/Vol 2.GCV.mokuro'),
+        cloudFile('Series/Vol 2.2024.mokuro'),
+        cloudFile('Series/Vol 3.cbz'),
+        cloudFile('Series/vol 3.cbz'),
+        cloudFile('Series/Vol 3.hayai.mokuro'),
+        cloudFile('Series/vol 3.hayai.mokuro')
+      )
+    );
+    expect(files.map((f) => [f.stem, f.layerId, f.file.path])).toEqual([
+      [NFC, 'gcv', `Series/${NFD}.gcv.mokuro`],
+      ['Vol 2', '2024', 'Series/Vol 2.2024.mokuro'],
+      ['Vol 3', 'hayai', 'Series/Vol 3.hayai.mokuro'],
+      ['vol 3', 'hayai', 'Series/vol 3.hayai.mokuro']
+    ]);
+  });
+});
+
 describe('layerNeedsPull / layerNeedsPush', () => {
   const file = cloudFile('Series/Vol 1.fix.mokuro', {
     size: 100,

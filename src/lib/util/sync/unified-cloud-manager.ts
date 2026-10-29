@@ -27,6 +27,7 @@ import {
   parseSeriesFileWithReport,
   seriesFactsStamp,
   seriesFileCarriesServerRequest,
+  withServerIndexClears,
   type CloudSidecarStamp,
   type SeriesFile,
   type SeriesFileVolume,
@@ -79,7 +80,7 @@ import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 import { syncLayersFromListing } from '$lib/metadata/layer-sync';
 import { adoptCloudSeriesSpellings } from './cloud-spelling-adoption';
 import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
-import { cbzStemsOf, classifyMokuroSidecar } from './syncable-file';
+import { cbzStemsOf, classifyMokuroSidecar, isCbzFile } from './syncable-file';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -98,13 +99,27 @@ function layerFilesOfVolume(
   folderFiles: CloudFileMetadata[],
   volumeBaseName: string
 ): Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> {
-  const stems = cbzStemsOf(folderFiles.map((f) => basenameOfPath(f.path)));
+  const names = folderFiles.map((f) => basenameOfPath(f.path));
+  const stems = cbzStemsOf(names);
+  // Archive stems as spelled: a layer whose stem is EXACTLY another archive's
+  // belongs to that volume, however it folds (sidecar names rule v1 #6).
+  const spelled = new Set(names.filter(isCbzFile).map((name) => name.slice(0, -4)));
   const key = normalizeVolumeTitleKey(volumeBaseName);
+  // The volume's OWN archive as the cloud spells it. Callers pass the DB title,
+  // which may differ from the listing (decomposed, another case); measured
+  // against that, the volume's own layers would read as another archive's and
+  // a rename would delete them as "the stale .mokuro". Same pick as
+  // `getManagedCloudFilesForVolume`: exact first, else the first folded match.
+  const own = spelled.has(volumeBaseName)
+    ? volumeBaseName
+    : [...spelled].filter((stem) => normalizeVolumeTitleKey(stem) === key).sort(naturalSort)[0];
   const out: Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> = [];
   for (const file of folderFiles) {
     const cls = classifyMokuroSidecar(basenameOfPath(file.path), stems);
     if (cls.kind !== 'layer') continue;
-    if (cls.stem !== volumeBaseName && normalizeVolumeTitleKey(cls.stem) !== key) continue;
+    if (cls.stem !== volumeBaseName && cls.stem !== own) {
+      if (spelled.has(cls.stem) || normalizeVolumeTitleKey(cls.stem) !== key) continue;
+    }
     out.push({ file, layerId: cls.layerId, gz: cls.gz });
   }
   return out;
@@ -627,11 +642,17 @@ class UnifiedCloudManager {
    * Best-effort — an orphaned sidecar is harmless, so nothing here is allowed to
    * fail the delete/rename that triggered it.
    *
+   * On a server that compiles `series.json` itself (`serverCompilesMetadata`)
+   * only the cached record goes: that server refuses a client DELETE of the
+   * file and retires an orphan on its own, and the refresh pass already
+   * ignores a folder without archives meanwhile.
+   *
    * CAVEAT (deferred): "no `.cbz` left" is read from the CACHED listing, which
-   * the caller has just mutated locally. A cache that under-reports the folder
-   * (a listing that predates another device's upload) makes this delete a real
-   * remote `series.json` — recoverable, since the next write republishes it from
-   * the cached index, but it is a destructive step gated on local state.
+   * the caller has just mutated locally. On plain storage, a cache that
+   * under-reports the folder (a listing that predates another device's upload)
+   * makes this delete a real remote `series.json` — recoverable, since the next
+   * write republishes it from the cached index, but it is a destructive step
+   * gated on local state.
    */
   /**
    * After a delete/rename mutated cloud files, bring the metadata files back
@@ -669,8 +690,12 @@ class UnifiedCloudManager {
       );
       if (stillHasArchive) return;
 
-      const sidecar = this.getCloudSeriesFile(folderTitle);
-      if (sidecar) await this.deleteFileIdempotent(sidecar);
+      // A server that compiles `series.json` refuses a client DELETE of it and
+      // retires the orphan itself; only the local cache is ours to drop.
+      if (this.getActiveProvider()?.getStatus().serverCompilesMetadata !== true) {
+        const sidecar = this.getCloudSeriesFile(folderTitle);
+        if (sidecar) await this.deleteFileIdempotent(sidecar);
+      }
       await deleteSeriesIndex(normalizeSeriesKey(folderTitle));
     } catch (error) {
       console.warn(`Failed to clean up series.json for '${seriesTitle}':`, error);
@@ -1085,18 +1110,28 @@ class UnifiedCloudManager {
       }
     }
 
-    // 2. Move the non-mokuro files (cbz, cover). Their content is name-agnostic.
+    // 2. Move the layers, then the cover, then the archive LAST. Their content
+    //    is name-agnostic. The order is for servers that OCR what they find:
+    //    an archive at the new name with no main or layers beside it looks
+    //    like a volume that owes OCR, and mokuro-bunko's walk would queue a
+    //    job whose output collides with the layers arriving after it.
     //    Move errors PROPAGATE — the destructive step 3 must never run after a
     //    failed move. Retry convergence needs no error-swallowing here: a file
     //    moved by a prior attempt is simply absent from the old path after the
-    //    fresh fetch, so it never re-enters this loop.
+    //    fresh fetch, so it never re-enters these loops.
     for (const file of managedFiles) {
-      if (isLayerFile(file)) {
-        await this.moveFile(provider, file, layerDestinations.get(file)!);
-        changed++;
-        continue;
-      }
-      if (isMokuroSidecarPath(file.path)) continue;
+      if (!isLayerFile(file)) continue;
+      await this.moveFile(provider, file, layerDestinations.get(file)!);
+      changed++;
+    }
+    const movedByName = managedFiles.filter(
+      (file) => !isLayerFile(file) && !isMokuroSidecarPath(file.path)
+    );
+    const archivesLast = [
+      ...movedByName.filter((file) => !isCbzFile(file.path)),
+      ...movedByName.filter((file) => isCbzFile(file.path))
+    ];
+    for (const file of archivesLast) {
       await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
       changed++;
     }
@@ -1917,11 +1952,12 @@ class UnifiedCloudManager {
     // all — every unconditional schedule (a placeholder's measurement, a
     // download's recorded hash, a backup's drain, a delete's maintenance)
     // would otherwise PUT one per series, including series this account never
-    // uploaded.
-    if (
-      provider.getStatus().serverCompilesMetadata === true &&
-      !seriesFileCarriesServerRequest(existing, file)
-    ) {
+    // uploaded. Such a server also reads an absent `spine_offset` as "keep
+    // yours", so a local reset goes up as an explicit 0 (`body`); the cache
+    // keeps `file`, where a 0 is never written.
+    const serverCompiles = provider.getStatus().serverCompilesMetadata === true;
+    const body = serverCompiles ? withServerIndexClears(file, existing, meta) : file;
+    if (serverCompiles && !seriesFileCarriesServerRequest(existing, body)) {
       console.debug(
         `[series.json] '${folderTitle}': nothing for the server to take (facts and offsets unchanged)`
       );
@@ -1932,7 +1968,7 @@ class UnifiedCloudManager {
     // (see `maybeScheduleSeriesHealWrite` for the read-side materiality rules
     // that keep identical rewrites from being scheduled in the first place).
     const path = normalizeCloudPath(`${folderTitle}/${SERIES_FILE_NAME}`);
-    const blob = new Blob([stringifySeriesFile(file)], { type: 'application/json' });
+    const blob = new Blob([stringifySeriesFile(body)], { type: 'application/json' });
     await this.uploadFile(path, blob);
 
     // Stamp the cache with EXACTLY what the file cache now holds for this path
@@ -2160,7 +2196,10 @@ class UnifiedCloudManager {
       // holds no archive any more (a stale sidecar with nothing to index). A
       // skipped write while the old folder still lists archives means the
       // moved files have not surfaced under the new title yet; keeping the old
-      // index beats leaving the series with none until the next backup.
+      // index beats leaving the series with none until the next backup. A
+      // server that compiles `series.json` refuses the DELETE and retires the
+      // old folder's copy itself (see `cleanupSeriesFileIfFolderEmptied`).
+      if (this.getActiveProvider()?.getStatus().serverCompilesMetadata === true) return;
       const oldFolderStillHasArchive = this.getCloudVolumesBySeries(oldFolderTitle).some((file) =>
         normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
       );
