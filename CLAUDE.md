@@ -147,6 +147,12 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   re-list misses files the app did not create (dropped in through the Drive
   web UI, written by another client), and those go to the trash with the
   folder. Recoverable from the trash, but not a "never deletes files" promise.
+- **Bunko merges, the reader steps aside.** Before each pass
+  (`runDeduplication`, `mega-cache.ts` / `drive-files-cache.ts`) the cache
+  re-reads the marker (`refreshCloudBunkoMarker`) and skips the pass while
+  `cloudBunkoMergesDuplicates` — a fresh lease holder with `dedup: true`
+  merges with the same rules, and two mergers would only race each other's
+  moves. A stale or released holder hands the job back on the next fetch.
 
 **mokuro-bunko specifics** (the WebDAV provider against a bunko server):
 
@@ -514,8 +520,9 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `bunko_version`, all optional (absent = '' / [] / false; a list with a
   non-string entry reads as []). They reach `cloudBunko.holder` from the
   top-ranked FRESH marker only; records stored before v2 load with those
-  defaults. Nothing gates on them yet. `cloudBunkoMergesDuplicates(scope)` is
-  the holder's `dedup`. Read the marker through `refreshCloudBunkoMarker`:
+  defaults. `cloudBunkoMergesDuplicates(scope)` is the holder's `dedup`, and
+  gates the reader's own folder dedup (see Duplicate folders). Read the
+  marker through `refreshCloudBunkoMarker`:
   one If-None-Match etag per scope, shared by every caller, and one read in
   flight per scope that concurrent callers await. The etag moves only after
   its nodes are recorded (else a second caller is answered not-modified

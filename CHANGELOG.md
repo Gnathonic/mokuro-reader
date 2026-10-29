@@ -5,6 +5,7 @@
 ### Changed
 
 - Duplicate-folder cleanup never removes mokuro-bunko's own files
+- Duplicate-folder cleanup leaves it to mokuro-bunko when it merges them
 - MEGA catches mokuro-bunko changes made while you were offline
 
 ### Fixed

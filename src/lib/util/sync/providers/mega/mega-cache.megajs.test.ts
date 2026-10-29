@@ -11,6 +11,8 @@ import { megaCache } from './mega-cache';
 import { megaProvider } from './mega-provider';
 import { FakeMegaServer } from './mega-fake-server';
 import { folderDeduplicator } from '../../folder-deduplicator';
+import { resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
+import { activeBunkoMarker } from '$lib/catalog/__fixtures__/bunko-marker-active';
 
 let server: FakeMegaServer;
 
@@ -78,5 +80,54 @@ describe('dedup after a fetch', () => {
     // The first run and two refetches' runs, then it waits for the next fetch.
     expect(runs).toHaveBeenCalledTimes(3);
     expect(megaCache.isFetching()).toBe(false);
+  });
+});
+
+describe('dedup under a cloud-direct Bunko', () => {
+  const marker = activeBunkoMarker();
+  /** Bunko's clock at its last heartbeat: a cold read then sees a fresh holder. */
+  const heartbeat = Date.parse(marker.heartbeat_at);
+  let now = heartbeat;
+
+  beforeEach(() => {
+    now = heartbeat;
+    resetCloudBunkoMarkersForTest(() => now);
+  });
+
+  afterEach(() => {
+    resetCloudBunkoMarkersForTest();
+  });
+
+  it('leaves duplicate roots to a fresh holder that merges them, and merges once it is stale', async () => {
+    expect(marker.dedup).toBe(true);
+    const other = await server.otherDevice();
+    server.clock = 1_780_000_000;
+    const older = await other.mkdir(server.rootHandle, 'mokuro-reader');
+    await other.upload(await other.mkdir(older, 'SeriesA'), 'a.cbz');
+    await other.upload(older, '.mokuro-bunko.json', JSON.stringify(marker));
+    server.clock = 1_790_000_000;
+    const newer = await other.mkdir(server.rootHandle, 'mokuro-reader');
+    await other.upload(await other.mkdir(newer, 'SeriesB'), 'b.cbz');
+    localStorage.setItem('mega_session', JSON.stringify(server.sessionBlob()));
+    await megaProvider.restorePersistedSession();
+    const reads = vi.spyOn(megaProvider, 'readControlFile');
+    const runs = vi.spyOn(folderDeduplicator, 'deduplicateAll');
+
+    await megaCache.fetch(true);
+    await vi.waitFor(() => expect(reads).toHaveBeenCalled(), { timeout: 3000 });
+    await Promise.allSettled(reads.mock.results.map((r) => r.value));
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(runs).not.toHaveBeenCalled();
+    expect((await server.tree()).count('mokuro-reader')).toBe(2);
+
+    // The marker never moved again: stale after 2 × ttl.
+    now = heartbeat + 2 * marker.ttl_s * 1000;
+    await megaCache.fetch(true);
+    await vi.waitFor(() => expect(runs).toHaveBeenCalled(), { timeout: 3000 });
+    await Promise.allSettled(runs.mock.results.map((r) => r.value));
+    await server.flush();
+
+    expect((await server.tree()).find('mokuro-reader').map((n) => n.handle)).toEqual([older]);
   });
 });

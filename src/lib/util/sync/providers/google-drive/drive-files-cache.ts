@@ -10,6 +10,10 @@ import { compareByAge } from '../../folder-deduplicator';
 import type { DriveFile } from './constants';
 import { HISTORY_FOLDER, isHistoryFileName } from '$lib/reading-history/paths';
 import { driveHistoryPath } from './drive-history-path';
+import {
+  cloudBunkoMergesDuplicates,
+  refreshCloudBunkoMarker
+} from '$lib/catalog/cloud-bunko-marker';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -894,6 +898,14 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     Promise.all([import('../../folder-deduplicator'), import('./google-drive-provider')])
       .then(async ([{ folderDeduplicator }, { googleDriveProvider }]) => {
         if (!googleDriveProvider.isAuthenticated()) {
+          return;
+        }
+
+        // A fresh Bunko lease holder that merges duplicates does it with the
+        // same rule; a second merger on the same folders only races its moves.
+        await refreshCloudBunkoMarker(googleDriveProvider);
+        if (cloudBunkoMergesDuplicates(googleDriveProvider.type)) {
+          console.log('[Dedup] a cloud-direct Bunko merges duplicates here; skipping');
           return;
         }
 
