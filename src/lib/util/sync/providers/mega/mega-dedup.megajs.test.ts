@@ -165,4 +165,31 @@ describe('merging duplicate mokuro-reader roots', () => {
         .sort()
     ).toEqual([first, second].sort());
   });
+
+  it("keeps every copy of Bunko's control files, whatever their times, and trashes none", async () => {
+    const other = await server.otherDevice();
+    const controls: string[] = [];
+    const roots: string[] = [];
+    for (const n of [1, 2]) {
+      server.clock += 100;
+      const root = await other.mkdir(server.rootHandle, 'mokuro-reader');
+      roots.push(root);
+      controls.push(await other.upload(root, '.mokuro-bunko.json', `{"root":${n}}`));
+      server.clock += n === 1 ? 300 : -200; // the duplicate's queue is the OLDER copy
+      controls.push(await other.upload(root, '.mokuro-queue.json', `{"root":${n}}`));
+    }
+    const provider = await restoredProvider();
+
+    await folderDeduplicator.deduplicateAll('mega', provider.getFolderOperations());
+    await server.flush();
+
+    const tree = await server.tree();
+    expect(tree.find('mokuro-reader').map((n) => n.handle)).toEqual([roots[0]]);
+    const kept = [
+      ...tree.find('mokuro-reader/.mokuro-bunko.json'),
+      ...tree.find('mokuro-reader/.mokuro-queue.json')
+    ].map((n) => n.handle);
+    expect(kept.sort()).toEqual([...controls].sort());
+    expect(controls.filter(inTrash)).toEqual([]);
+  });
 });

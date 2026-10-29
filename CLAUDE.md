@@ -530,7 +530,9 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `pullCompletedVolume`. Cloud uploads are watched while a marker is fresh.
 - Folder dedup keeps EVERY copy of both control files when duplicate roots
   merge (`dedupKeepsEveryCopy`, beside the merged root files): trashing the
-  older one would pull a marker or queue out from under a running Bunko.
+  older one would pull a marker or queue out from under a running Bunko. A
+  guard in front of both trash calls moves a control file instead, should
+  that rule ever miss one.
 - MEGA feeds control-file listeners from sc events AND from full tree loads
   (`refreshTree`, incl. the sc outage recovery): a load that changes a
   control file's handle set notifies that name. `endSession()` (logout and
