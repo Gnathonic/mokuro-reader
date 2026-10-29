@@ -19,18 +19,42 @@ const storageState = vi.hoisted(() => ({
     options: { email: 'a@b.c', password: 'secret', secondFactorCode: '123456', autoload: true }
   }),
   files: { f1: { name: 'mokuro-reader', directory: true } } as Record<string, any>,
+  // megajs's own handles on the Cloud Drive and Rubbish Bin nodes.
+  root: undefined as any,
+  trash: undefined as any,
   reloadError: null as Error | null
 }));
+
+/**
+ * A stand-in for megajs's API object: request() plus the EventEmitter calls
+ * the provider makes on its 'sc' channel.
+ */
+const fakeApi = vi.hoisted(() => (): any => {
+  const handlers: Array<(...args: any[]) => void> = [];
+  return {
+    request: vi.fn(),
+    on: (_event: string, handler: (...args: any[]) => void) => handlers.push(handler),
+    listeners: () => [...handlers],
+    listenerCount: () => handlers.length,
+    removeAllListeners: () => handlers.splice(0),
+    emit: (_event: string, ...args: any[]) => handlers.forEach((handler) => handler(...args))
+  };
+});
 
 vi.mock('megajs', () => {
   class MockStorage {
     files: Record<string, any>;
+    root: any;
+    trash: any;
     sid = 'SID123';
+    api = fakeApi();
     reload = vi.fn(async () => {});
     on = vi.fn();
     constructor(options: any, cb?: (e: Error | null) => void) {
       storageState.lastOptions = options;
       this.files = storageState.files;
+      this.root = storageState.root;
+      this.trash = storageState.trash;
       // Defer cb so the caller's `const s = new Storage(...)` is assigned first.
       if (cb) queueMicrotask(() => cb(storageState.loginError));
     }
@@ -60,6 +84,8 @@ beforeEach(() => {
   storageState.loginError = null;
   storageState.reloadError = null;
   storageState.files = { f1: { name: 'mokuro-reader', directory: true } };
+  storageState.root = undefined;
+  storageState.trash = undefined;
 });
 
 describe('MegaProvider.login()', () => {
@@ -94,16 +120,18 @@ describe('MegaProvider.login()', () => {
     expect(storageState.lastOptions.secondFactorCode).toBe('654321');
   });
 
-  it('logs in with keepalive enabled and listens to storage change events', async () => {
+  it('logs in without megajs keepalive, loads the tree once, and listens to storage change events', async () => {
     // The sc long-poll keeps the local tree in sync and feeds the reactive
-    // cache. (Its old delete-event crash came from us manually removing nodes
-    // from storage.files — those manual removals are gone.)
+    // cache — but megajs (keepalive:true) starts a new poll per full load and
+    // never stops the old ones, so the provider runs the one poll itself.
     const provider = new MegaProvider();
     await provider.whenReady();
 
     await provider.login({ email: 'a@b.c', password: 'secret' });
 
-    expect(storageState.lastOptions.keepalive).toBe(true);
+    expect(storageState.lastOptions.keepalive).toBe(false);
+    expect(storageState.lastOptions.autoload).toBe(false);
+    expect((provider as any).storage.reload).toHaveBeenCalledOnce();
     const listened = (provider as any).storage.on.mock.calls.map((c: any[]) => c[0]);
     expect(listened).toEqual(expect.arrayContaining(['add', 'move', 'delete', 'update']));
   });
@@ -314,6 +342,7 @@ describe('MegaProvider.reinitialize() — session-safe refresh', () => {
     (provider as any).storage = {
       sid: 'SID123',
       files: { f1: { name: 'mokuro-reader', directory: true } },
+      api: fakeApi(),
       reload,
       close
     };
@@ -337,6 +366,7 @@ describe('MegaProvider.reinitialize() — session-safe refresh', () => {
     (provider as any).storage = {
       sid: 'SID',
       files: {},
+      api: fakeApi(),
       close,
       reload: vi.fn(async () => {
         throw new Error('ESID (-15): Invalid or expired user session, please relogin');
@@ -372,7 +402,12 @@ describe('MegaProvider.removeDirectoryIfEmpty()', () => {
     await provider.login({ email: 'a@b.c', password: 'secret' });
 
     const storage = (provider as any).storage;
-    const mokuroFolder = { name: 'mokuro-reader', directory: true, nodeId: 'root-1' };
+    const mokuroFolder: any = {
+      name: 'mokuro-reader',
+      directory: true,
+      nodeId: 'root-1',
+      children: []
+    };
     const seriesFolder = {
       name: 'Old Series',
       directory: true,
@@ -380,6 +415,7 @@ describe('MegaProvider.removeDirectoryIfEmpty()', () => {
       parent: mokuroFolder,
       delete: vi.fn((_permanent: boolean, cb: (e: Error | null) => void) => cb(null))
     };
+    mokuroFolder.children.push(seriesFolder);
     storage.files = { root: mokuroFolder, series: seriesFolder };
     storage.api = {
       request: vi.fn((_req: any, cb: (e: Error | null, r: any) => void) =>
@@ -414,6 +450,32 @@ describe('MegaProvider.removeDirectoryIfEmpty()', () => {
     expect(seriesFolder.delete).not.toHaveBeenCalled();
   });
 
+  it("counts only the folder's own subtree when the server answers with the whole tree", async () => {
+    const { provider, seriesFolder } = await providerWithSeriesFolder([
+      { h: 'drive' },
+      { h: 'root-1', p: 'drive' },
+      { h: 'series-1', p: 'root-1' },
+      { h: 'other-series', p: 'root-1' },
+      { h: 'file-1', p: 'other-series' }
+    ]);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(seriesFolder.delete).toHaveBeenCalled();
+  });
+
+  it('counts nested contents as contents', async () => {
+    const { provider, seriesFolder } = await providerWithSeriesFolder([
+      { h: 'series-1', p: 'root-1' },
+      { h: 'sub', p: 'series-1' },
+      { h: 'deep', p: 'sub' }
+    ]);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(seriesFolder.delete).not.toHaveBeenCalled();
+  });
+
   it('no-ops when the folder does not exist', async () => {
     const { provider, storage } = await providerWithSeriesFolder([]);
     storage.files = { root: { name: 'mokuro-reader', directory: true, nodeId: 'root-1' } };
@@ -434,6 +496,7 @@ describe('MegaProvider ghost-node handling', () => {
     return {
       name: 'mokuro-reader',
       directory: true,
+      children: [],
       upload: vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
         // `timestamp` (epoch seconds) is the SERVER's stamp on the completed
         // node — the same field listCloudVolumes maps to `modifiedTime`.
@@ -443,7 +506,7 @@ describe('MegaProvider ghost-node handling', () => {
   }
 
   function makeFile(name: string, parent: any, deleteError: Error | null = null) {
-    return {
+    const file = {
       name,
       directory: false,
       parent,
@@ -451,6 +514,9 @@ describe('MegaProvider ghost-node handling', () => {
         queueMicrotask(() => cb(deleteError));
       })
     } as any;
+    // Linked both ways, as megajs's _importFile links it.
+    parent.children.push(file);
+    return file;
   }
 
   async function loginWithTree(files: Record<string, any>) {
@@ -503,29 +569,49 @@ describe('MegaProvider ghost-node handling', () => {
     const provider = await loginWithTree({ root: folder, ghost });
     const storage = (provider as any).storage;
 
-    // Mirror megajs reload() semantics: additive import of the server's
-    // node set (which no longer contains the ghost).
-    storage.reload = vi.fn(async () => {
-      const server: Record<string, any> = { root: folder, real };
-      for (const [handle, node] of Object.entries(server)) {
-        if (!storage.files[handle]) storage.files[handle] = node;
-      }
+    // Mirror megajs reload() semantics: one `{a:'f'}` request whose callback
+    // imports the server's node set (which no longer contains the ghost)
+    // ADDITIVELY into storage.files.
+    const server: Record<string, any> = { root: folder, real };
+    storage.api.request = vi.fn((_json: any, cb: (e: Error | null, r?: any) => void) => {
+      queueMicrotask(() => cb(null, { f: Object.keys(server).map((h) => ({ h })), ok: [] }));
     });
+    storage.reload = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          storage.api.request({ a: 'f', c: 1 }, (_e: Error | null, response: any) => {
+            for (const { h } of response.f) {
+              if (!storage.files[h]) storage.files[h] = server[h];
+            }
+            resolve();
+          });
+        })
+    );
 
     await (provider as any).reinitialize();
 
     expect(Object.keys(storage.files).sort()).toEqual(['real', 'root']);
   });
 
-  it('reinitialize strips stale sc listeners before reloading (megajs stacks one per reload)', async () => {
+  it('reinitialize leaves ONE sc handler, however many reloads ran (megajs stacks one per reload)', async () => {
     const folder = makeMokuroFolder();
     const provider = await loginWithTree({ root: folder });
     const storage = (provider as any).storage;
-    storage.api = { removeAllListeners: vi.fn() };
+    // megajs's reload() attaches a new api 'sc' handler on every call.
+    const handlers: any[] = [];
+    storage.reload = vi.fn(async () => {
+      const handler = vi.fn();
+      handlers.push(handler);
+      storage.api.on('sc', handler);
+    });
 
     await (provider as any).reinitialize();
+    await (provider as any).reinitialize();
+    storage.api.emit('sc', [{ a: 'u', n: 'x' }]);
 
-    expect(storage.api.removeAllListeners).toHaveBeenCalledWith('sc');
+    expect(storage.api.listenerCount('sc')).toBe(1);
+    // Every packet is applied once, not once per reload.
+    expect(handlers.map((h) => h.mock.calls.length)).toEqual([0, 1]);
   });
 
   it('reinitialize keeps the previous tree when the reload fails transiently', async () => {
@@ -541,6 +627,162 @@ describe('MegaProvider ghost-node handling', () => {
 
     expect(provider.isAuthenticated()).toBe(true);
     expect(Object.keys(storage.files).sort()).toEqual(['ghost', 'root']);
+  });
+});
+
+describe('MegaProvider listing — nodes MEGA no longer shows', () => {
+  // megajs never evicts a node from storage.files. Its sc delete handler only
+  // splices the node out of parent.children, and a move to the Rubbish Bin
+  // only re-parents it. The reader must still treat both as gone, the way
+  // MEGA's own apps do: a deleted volume that keeps being listed has a dead
+  // handle (every download fails with ENOENT -9), and a trashed library keeps
+  // showing every series it had.
+
+  /** A tree linked the way megajs's _importFile and sc handler link it. */
+  function megaTree() {
+    const files: Record<string, any> = {};
+    const add = (handle: string, name: string, parent: any, directory = false) => {
+      const node: any = { nodeId: handle, name, directory, timestamp: 1_780_000_000, size: 1 };
+      if (directory) {
+        node.children = [];
+        node.mkdir = vi.fn((childName: string, cb: (e: Error | null, f?: any) => void) => {
+          queueMicrotask(() => cb(null, add(`${handle}/${childName}`, childName, node, true)));
+        });
+        node.upload = vi.fn((opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
+          queueMicrotask(() => cb(null, add(`${handle}/${opts.name}`, opts.name, node)));
+        });
+      }
+      files[handle] = node;
+      if (parent) {
+        node.parent = parent;
+        parent.children.push(node);
+      }
+      return node;
+    };
+    const root = add('ROOT', 'Cloud Drive', null, true);
+    const trash = add('TRASH', 'Rubbish Bin', null, true);
+    /** megajs's sc `d` handler: unlinked from the parent, kept in storage.files. */
+    const scDelete = (node: any) => {
+      node.parent.children.splice(node.parent.children.indexOf(node), 1);
+    };
+    /** megajs's sc `t` handler for a known node: re-parented and re-linked. */
+    const scMove = (node: any, to: any) => {
+      scDelete(node);
+      node.parent = to;
+      to.children.push(node);
+    };
+    return { files, root, trash, add, scDelete, scMove };
+  }
+
+  function seriesLibrary(tree: ReturnType<typeof megaTree>, parent: any, series: string) {
+    const library = tree.add(`${series}-lib`, 'mokuro-reader', parent, true);
+    const folder = tree.add(`${series}-dir`, series, library, true);
+    const volume = tree.add(`${series}-v1`, `${series} 01.cbz`, folder);
+    tree.add(`${series}-index`, 'series.json', folder);
+    return { library, folder, volume };
+  }
+
+  async function loginWithTree(tree: ReturnType<typeof megaTree>) {
+    storageState.files = tree.files;
+    storageState.root = tree.root;
+    storageState.trash = tree.trash;
+    // A new library folder comes from the Cloud Drive node's own mkdir.
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+    return provider;
+  }
+
+  const listedPaths = async (provider: MegaProvider) =>
+    (await provider.listCloudVolumes(true)).map((f) => f.path).sort();
+
+  it('does not list a mokuro-reader folder that was moved to the Rubbish Bin', async () => {
+    const tree = megaTree();
+    seriesLibrary(tree, tree.trash, 'Ippo');
+    const provider = await loginWithTree(tree);
+
+    expect(await listedPaths(provider)).toEqual([]);
+  });
+
+  it('lists only the live library when a trashed mokuro-reader sits beside it', async () => {
+    const tree = megaTree();
+    seriesLibrary(tree, tree.trash, 'Ippo');
+    seriesLibrary(tree, tree.root, 'Live');
+    const provider = await loginWithTree(tree);
+
+    expect(await listedPaths(provider)).toEqual(['Live/Live 01.cbz', 'Live/series.json']);
+  });
+
+  it('never uploads into a mokuro-reader folder that is in the Rubbish Bin', async () => {
+    const tree = megaTree();
+    const trashed = seriesLibrary(tree, tree.trash, 'Ippo');
+    const provider = await loginWithTree(tree);
+
+    await provider.uploadFile('volume-data.json', new Uint8Array([1]));
+
+    expect(trashed.library.upload).not.toHaveBeenCalled();
+    const fresh = tree.root.children.find((n: any) => n.name === 'mokuro-reader');
+    expect(fresh?.upload).toHaveBeenCalledOnce();
+  });
+
+  it('stops listing a volume once the sc stream deletes it', async () => {
+    const tree = megaTree();
+    const { volume } = seriesLibrary(tree, tree.root, 'Ippo');
+    const provider = await loginWithTree(tree);
+    expect(await listedPaths(provider)).toEqual(['Ippo/Ippo 01.cbz', 'Ippo/series.json']);
+
+    tree.scDelete(volume);
+
+    expect(await listedPaths(provider)).toEqual(['Ippo/series.json']);
+  });
+
+  it('stops listing every file of a series folder the sc stream deletes', async () => {
+    const tree = megaTree();
+    const { folder } = seriesLibrary(tree, tree.root, 'Ippo');
+    const provider = await loginWithTree(tree);
+
+    tree.scDelete(folder);
+
+    expect(await listedPaths(provider)).toEqual([]);
+  });
+
+  it('stops listing a library another device moved to the Rubbish Bin mid-session', async () => {
+    const tree = megaTree();
+    const { library } = seriesLibrary(tree, tree.root, 'Ippo');
+    const provider = await loginWithTree(tree);
+
+    tree.scMove(library, tree.trash);
+
+    expect(await listedPaths(provider)).toEqual([]);
+  });
+
+  it('uploads into a new series folder, not one the sc stream deleted', async () => {
+    const tree = megaTree();
+    const { library, folder } = seriesLibrary(tree, tree.root, 'Ippo');
+    const provider = await loginWithTree(tree);
+    tree.scDelete(folder);
+
+    await provider.uploadFile('Ippo/Ippo 02.cbz', new Uint8Array([1]));
+
+    expect(folder.upload).not.toHaveBeenCalled();
+    expect(library.mkdir).toHaveBeenCalledWith('Ippo', expect.any(Function));
+  });
+
+  it('keeps deleted and trashed folders out of the dedup pass', async () => {
+    const tree = megaTree();
+    seriesLibrary(tree, tree.trash, 'Trashed');
+    const { folder } = seriesLibrary(tree, tree.root, 'Ippo');
+    const ghost = tree.add('ghost-dir', 'Ghost', folder.parent, true);
+    const provider = await loginWithTree(tree);
+    tree.scDelete(ghost);
+
+    const ops = provider.getFolderOperations();
+    const names = (await ops.listFolders()).map((f) => f.name).sort();
+    const contents = (await ops.listFolderContents(folder.parent.nodeId)).map((f) => f.name);
+
+    // Only the library: the Cloud Drive itself is not the dedup's to merge.
+    expect(names).toEqual(['Ippo', 'mokuro-reader']);
+    expect(contents).toEqual(['Ippo']);
   });
 });
 
