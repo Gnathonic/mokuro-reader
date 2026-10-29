@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
+import { provenanceFromParsed, type OcrProvenance } from '$lib/catalog/ocr-provenance';
 import {
   extractSeriesName,
   extractTitlesFromPath,
@@ -45,6 +46,8 @@ export interface ParsedMokuro {
   pages: MokuroPage[];
   chars: number;
   spineWidth?: number;
+  /** The file's `ocr_engine` block, verbatim, when it is a plain object (`ocr-provenance.ts`). */
+  ocrEngine?: Record<string, unknown>;
 }
 
 /**
@@ -154,6 +157,10 @@ async function getImageDimensions(file: File): Promise<{ width: number; height: 
  * @returns Parsed mokuro data
  * @throws If the file is invalid or missing required fields
  */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
   const text = await readFileAsText(file);
   let data: unknown;
@@ -181,7 +188,8 @@ export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
     volumeUuid: obj.volume_uuid as string,
     pages: obj.pages as MokuroPage[],
     chars: (obj.chars as number) ?? 0,
-    ...(obj.spine_width != null && { spineWidth: obj.spine_width as number })
+    ...(obj.spine_width != null && { spineWidth: obj.spine_width as number }),
+    ...(isPlainObject(obj.ocr_engine) ? { ocrEngine: obj.ocr_engine } : {})
   };
 }
 
@@ -487,9 +495,13 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
   // these exact bytes, whichever path delivered them — an imported file, an
   // archive entry, a cloud sidecar (already gunzipped), a deep link's fetch.
   let mokuroSha256: string | undefined;
+  // What the file says made its OCR, with a digest of the FILE's pages: taken
+  // before the image matching below remaps any `img_path`.
+  let ocrProvenance: OcrProvenance | undefined;
   if (mokuroFile) {
     mokuroData = await parseMokuroFile(mokuroFile);
     mokuroSha256 = await sha256Hex(mokuroFile);
+    ocrProvenance = await provenanceFromParsed(mokuroData.ocrEngine, mokuroData.pages);
     volumeInfo = {
       series: mokuroData.series,
       volume: mokuroData.volume
@@ -710,7 +722,8 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     ...(!mokuroData && input.importNames?.restore ? { keepStoredTitles: true } : {}),
     sourceType,
     spineWidth: mokuroData?.spineWidth,
-    ...(mokuroSha256 ? { mokuroSha256 } : {})
+    ...(mokuroSha256 ? { mokuroSha256 } : {}),
+    ...(ocrProvenance ? { ocrProvenance } : {})
   };
 
   return {

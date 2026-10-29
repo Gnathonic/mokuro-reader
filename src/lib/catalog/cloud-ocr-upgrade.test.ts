@@ -196,6 +196,30 @@ describe('upgradeOcrFromSidecarBlob (a sidecar fetched outside any provider)', (
     expect(row.mokuro_sha256_cloud).toEqual({ provider: 'webdav', size: gz.size });
   });
 
+  it("replaces the row's OCR provenance with the file's block, or clears it", async () => {
+    const { contentDigest } = await import('./ocr-provenance');
+    const engine = { id: 'hayai-nova', revision: 2 };
+    const pages = [{ blocks: [{ lines: ['あ'] }] }];
+    const stale = [{ engine: { id: 'old' }, digest: `v1:${'a'.repeat(64)}` }];
+    await (db as any).table('volumes').put({ ...imageOnlyVolume, ocr_provenance: stale });
+    parseMokuroFile.mockResolvedValue({
+      version: '0.2.0',
+      seriesUuid: 'series-1',
+      pages,
+      ocrEngine: engine
+    });
+
+    await upgradeOcrFromSidecarBlob('vol-1', 'S/Volume 1.mokuro', new Blob(['{}']));
+    let row = await (db as any).table('volumes').get('vol-1');
+    expect(row.ocr_provenance).toEqual([{ engine, digest: await contentDigest(engine, pages) }]);
+
+    await (db as any).table('volumes').put({ ...imageOnlyVolume, ocr_provenance: stale });
+    parseMokuroFile.mockResolvedValue({ version: '0.2.0', seriesUuid: 'series-1', pages });
+    await upgradeOcrFromSidecarBlob('vol-1', 'S/Volume 1.mokuro', new Blob(['{}']));
+    row = await (db as any).table('volumes').get('vol-1');
+    expect(row.ocr_provenance).toBeUndefined();
+  });
+
   it('decompresses a .mokuro.gz by its name', async () => {
     const gz = await new Response(
       new Blob(['{"pages":[]}']).stream().pipeThrough(new CompressionStream('gzip'))

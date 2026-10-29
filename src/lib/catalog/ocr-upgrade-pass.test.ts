@@ -71,6 +71,7 @@ import { db } from '$lib/catalog/db';
 import { currentView } from '$lib/util/hash-router';
 import { getLayerMeta, getLayerPages, putLayerWithPages } from './layer-store';
 import { sha256Hex } from './mokuro-hash';
+import { contentDigest } from './ocr-provenance';
 import { putSeriesIndex } from '$lib/metadata/series-index';
 import type { SeriesFileVolume } from '$lib/metadata/series-file';
 import type { Page, VolumeMetadata } from '$lib/types';
@@ -893,5 +894,103 @@ describe('the OCR upgrade pass', () => {
     await pass();
     expect(cloud.downloadFile).toHaveBeenCalledTimes(2);
     expect(await primaryTexts()).toEqual(['かき', 'くけ']);
+  });
+});
+
+describe('OCR provenance (ocr_engine) flows from the download to the row', () => {
+  const ENGINE = { id: 'hayai-nova', revision: 2, created: '2026-10-29T00:00:00Z' };
+
+  /** `mokuro(texts)` with an `ocr_engine` block, and the digest of its pages. */
+  async function stamped(
+    texts: string[],
+    engine: Record<string, unknown> = ENGINE
+  ): Promise<{ body: string; digest: string }> {
+    const doc = { ...JSON.parse(mokuro(texts)), ocr_engine: engine };
+    return { body: JSON.stringify(doc), digest: (await contentDigest(engine, doc.pages))! };
+  }
+
+  const older = (n: number) => ({
+    engine: { id: `older-${n}` },
+    digest: `v1:${String(n).repeat(64).slice(0, 64)}`
+  });
+
+  it('upgraded: the new file’s block goes in front of the list', async () => {
+    await installVolume(['あ', 'い'], {
+      mokuro_sha256: 'f'.repeat(64),
+      ocr_provenance: [older(1)]
+    });
+    const { body, digest } = await stamped(['か', 'き']);
+    listSidecar('Vol 1', body);
+    await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+    await pass();
+
+    expect(_lastOcrUpgradeResultForTests()).toMatchObject({ upgraded: 1 });
+    expect((await db.volumes.get('vol-1'))!.ocr_provenance).toEqual([
+      { engine: ENGINE, digest },
+      older(1)
+    ]);
+  });
+
+  it('recorded: the same OCR under other bytes teaches this device its block', async () => {
+    await installVolume(['か', 'き']);
+    const { body, digest } = await stamped(['か', 'き']);
+    listSidecar('Vol 1', body);
+    await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+    await pass();
+
+    const row = (await db.volumes.get('vol-1'))!;
+    expect(row.mokuro_sha256).toBe(await hashOf(body));
+    expect(row.ocr_provenance).toEqual([{ engine: ENGINE, digest }]);
+  });
+
+  it('layered: an edited volume learns the block of the file filed as updated-ocr', async () => {
+    await installVolume(['なおした', 'い'], {
+      mokuro_sha256: 'f'.repeat(64),
+      ocr_edited_at: '2026-09-01T00:00:00.000Z'
+    });
+    const { body, digest } = await stamped(['か', 'き']);
+    listSidecar('Vol 1', body);
+    await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+    await pass();
+
+    expect(await getLayerMeta(db, 'vol-1', UPDATED_OCR_LAYER_ID)).toBeDefined();
+    expect((await db.volumes.get('vol-1'))!.ocr_provenance).toEqual([{ engine: ENGINE, digest }]);
+  });
+
+  it('keeps at most 4 entries, newest first', async () => {
+    await installVolume(['あ', 'い'], {
+      mokuro_sha256: 'f'.repeat(64),
+      ocr_provenance: [older(1), older(2), older(3), older(4)]
+    });
+    const { body, digest } = await stamped(['か', 'き']);
+    listSidecar('Vol 1', body);
+    await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+    await pass();
+
+    expect((await db.volumes.get('vol-1'))!.ocr_provenance).toEqual([
+      { engine: ENGINE, digest },
+      older(1),
+      older(2),
+      older(3)
+    ]);
+  });
+
+  it('a file without a block leaves the list as it was', async () => {
+    await installVolume(['あ', 'い'], {
+      mokuro_sha256: 'f'.repeat(64),
+      ocr_provenance: [older(1)]
+    });
+    const body = mokuro(['か', 'き']);
+    listSidecar('Vol 1', body);
+    await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+    await pass();
+
+    expect(await primaryTexts()).toEqual(['か', 'き']);
+    expect((await db.volumes.get('vol-1'))!.ocr_provenance).toEqual([older(1)]);
   });
 });
