@@ -1,10 +1,21 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { test, expect, type ConsoleMessage, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
- * E2E for the `series-metadata.json` retirement (spec:
+ * E2E for WHERE series data lives and how it syncs:
+ *
+ * - `<Series>/series.json` — the per-series sidecar (facts: AniList link,
+ *   titles, tag, unit; shelf alignment). Live and central to the catalog.
+ * - `volume-data.json` → its `series` section — per-user reading state (read
+ *   count, re-read mute, tracking).
+ *
+ * Both replaced `series-metadata.json`, a single dev-only file retired on
+ * 2026-08-23 before it ever shipped (spec:
  * docs/superpowers/specs/2026-08-23-catalog-distribution-design.md, amendment
  * 2026-08-23; plan: docs/superpowers/plans/2026-08-23-series-metadata-retirement.md).
+ * This file was named after that retirement until 2026-10, which read as if
+ * `series.json` itself had been retired.
  *
  * Two techniques, both against the REAL app, exactly as
  * `e2e/catalog-distribution.spec.ts` uses them:
@@ -14,11 +25,12 @@ import { test, expect, type ConsoleMessage, type Page } from '@playwright/test';
  *    the real Dexie database and the real localStorage.
  * 2. Real provider — the Local Folder (`filesystem`) provider connected against
  *    OPFS, which needs no account and no server: the directory picker is stubbed
- *    to hand back `navigator.storage.getDirectory()`. Everything downstream (the
+ *    to hand back a NAMED folder inside OPFS (`library` — the root's name is "",
+ *    which would leave the provider without an account scope). Everything downstream (the
  *    sidecar writer, `unifiedSyncService`, the merges) is the shipped code, and
  *    the files it produces are read back byte for byte.
  *
- * What the retirement claims, and where each claim is checked:
+ * What this placement claims, and where each claim is checked:
  *
  * | Claim                                                        | Test                        |
  * | ------------------------------------------------------------ | --------------------------- |
@@ -108,7 +120,7 @@ const OPFS_PICKER_STUB = `(() => {
     try { if (typeof h.requestPermission !== 'function') h.requestPermission = async () => 'granted'; } catch {}
     return h;
   };
-  window.showDirectoryPicker = async () => patch(await navigator.storage.getDirectory());
+  window.showDirectoryPicker = async () => patch(await (await navigator.storage.getDirectory()).getDirectoryHandle('library', { create: true }));
 })();`;
 
 /**
@@ -118,13 +130,7 @@ const OPFS_PICKER_STUB = `(() => {
  */
 async function boot(page: Page) {
   await page.addInitScript(OPFS_PICKER_STUB);
-  await page.goto('/');
-  await expect
-    .poll(() => page.evaluate(() => window.location.hash), {
-      timeout: 20000,
-      message: 'the app never claimed the URL'
-    })
-    .toBe('#/catalog');
+  await gotoApp(page);
   await page.evaluate(async () => {
     const { db } = await import('/src/lib/catalog/db.ts');
     await db.open();
@@ -152,7 +158,9 @@ async function resetState(page: Page) {
 /** Create files in OPFS — the "cloud folder" the Local Folder provider reads. */
 async function seedOpfs(page: Page, files: Array<{ path: string; text?: string; bytes?: number }>) {
   await page.evaluate(async (specs) => {
-    const root = await navigator.storage.getDirectory();
+    const root = await (
+      await navigator.storage.getDirectory()
+    ).getDirectoryHandle('library', { create: true });
     for (const spec of specs) {
       const parts = spec.path.split('/');
       let dir = root;
@@ -196,7 +204,12 @@ const opfsTree = (page: Page) =>
         } else out.push(path);
       }
     };
-    await walk(await navigator.storage.getDirectory(), '');
+    await walk(
+      await (
+        await navigator.storage.getDirectory()
+      ).getDirectoryHandle('library', { create: true }),
+      ''
+    );
     return out;
   });
 
@@ -205,7 +218,9 @@ const opfsRead = (page: Page, relative: string) =>
   probe(() =>
     page.evaluate(async (rel) => {
       const parts = rel.split('/');
-      let dir = await navigator.storage.getDirectory();
+      let dir = await (
+        await navigator.storage.getDirectory()
+      ).getDirectoryHandle('library', { create: true });
       try {
         for (const segment of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(segment);
         const handle = await dir.getFileHandle(parts[parts.length - 1]);
@@ -355,6 +370,7 @@ test.describe('record and file shape', () => {
         '/src/lib/metadata/store.ts'
       );
       const { db } = await import('/src/lib/catalog/db.ts');
+      const { getSpineOffsets } = await import('/src/lib/metadata/spine-offsets.ts');
 
       const localVolumes = [
         {
@@ -382,11 +398,13 @@ test.describe('record and file shape', () => {
 
       // A second library, which has never seen this series, inherits it.
       await db.series_metadata.delete('dr stone');
-      await upsertFromSeriesFile(
-        'Dr Stone',
-        parseSeriesFile(JSON.parse(stringifySeriesFile(file)))
-      );
+      const published = parseSeriesFile(JSON.parse(stringifySeriesFile(file)));
+      await upsertFromSeriesFile('Dr Stone', published);
       const inherited = await db.series_metadata.get('dr stone');
+      // A published alignment reaches the shelf by a JOIN at read time, never
+      // by being copied into this library's record (that would make it ours to
+      // republish forever) — `getSpineOffsets(record, published)`.
+      const joined = getSpineOffsets(inherited, published);
 
       // …and then resets its shelf: an explicit zero, which must SUPPRESS the
       // published alignment rather than inherit it back, and must not appear in
@@ -407,8 +425,10 @@ test.describe('record and file shape', () => {
         publishedSpine: file.spine_offset,
         publishedVolume: file.volumes[0].offset,
         factsStampUnchanged: linked.facts_updated_at === nudged.facts_updated_at,
-        inheritedSpine: inherited.spine_offset,
-        inheritedVolume: inherited.volume_offsets?.['vol-1'],
+        inheritedSpine: joined.spineOffset,
+        inheritedVolume: joined.volumeOffsets['vol-1'],
+        recordSpine: inherited.spine_offset,
+        recordVolumeOffsets: inherited.volume_offsets,
         inheritedFactsStamp: inherited.facts_updated_at,
         resetFactsStamp: reset.facts_updated_at,
         republishedSpine: republished.spine_offset,
@@ -424,6 +444,9 @@ test.describe('record and file shape', () => {
     expect(result.factsStampUnchanged).toBe(true);
     expect(result.inheritedSpine).toBe(12);
     expect(result.inheritedVolume).toBe(-30);
+    // …joined, never adopted: the record holds only what this library set.
+    expect(result.recordSpine).toBeUndefined();
+    expect(result.recordVolumeOffsets).toBeUndefined();
     // The file carried a real link, so the facts stamp is the link's — not the
     // offsets', which have none.
     expect(result.inheritedFactsStamp).toBeTruthy();
@@ -642,10 +665,19 @@ test.describe('Local Folder provider (OPFS)', () => {
       const { parseSeriesFile } = await import('/src/lib/metadata/series-file.ts');
       const { upsertFromSeriesFile } = await import('/src/lib/metadata/store.ts');
       const { db } = await import('/src/lib/catalog/db.ts');
+      const { getSpineOffsets } = await import('/src/lib/metadata/spine-offsets.ts');
       await db.series_metadata.delete('offset series');
-      await upsertFromSeriesFile('Offset Series', parseSeriesFile(JSON.parse(text)));
+      const published = parseSeriesFile(JSON.parse(text));
+      await upsertFromSeriesFile('Offset Series', published);
       const record = await db.series_metadata.get('offset series');
-      return { spine: record?.spine_offset, volume: record?.volume_offsets?.['off-1'] };
+      // Joined at read time (`getSpineOffsets`), never copied into the record.
+      const joined = getSpineOffsets(record, published);
+      return {
+        spine: joined.spineOffset,
+        volume: joined.volumeOffsets['off-1'],
+        recordSpine: record?.spine_offset,
+        recordVolume: record?.volume_offsets?.['off-1']
+      };
     }, nudged.text);
     record('opfs: nudged series.json', {
       spine_offset: nudged.json.spine_offset,
@@ -653,7 +685,12 @@ test.describe('Local Folder provider (OPFS)', () => {
       updated_at: nudged.json.updated_at,
       inherited
     });
-    expect(inherited).toEqual({ spine: 12, volume: -30 });
+    expect(inherited).toEqual({
+      spine: 12,
+      volume: -30,
+      recordSpine: undefined,
+      recordVolume: undefined
+    });
 
     // An explicit zero is a reset, not "no opinion": it suppresses what the file
     // publishes and disappears from the republished file.
@@ -661,7 +698,13 @@ test.describe('Local Folder provider (OPFS)', () => {
       const { scheduleSpineOffsetWrite, flushSpineOffsetWrites } = await import(
         '/src/lib/metadata/spine-offsets.ts'
       );
-      scheduleSpineOffsetWrite('Offset Series', { spineOffset: 0, volumeOffsets: {} });
+      // "Reset all", as the shelf sends it: the volumes on screen go with it,
+      // so an INHERITED offset is suppressed too, not just this library's own.
+      scheduleSpineOffsetWrite('Offset Series', {
+        spineOffset: 0,
+        volumeOffsets: {},
+        inheritedUuids: ['off-1']
+      });
       await flushSpineOffsetWrites();
     });
 
@@ -1037,7 +1080,9 @@ test.describe('Local Folder provider (OPFS)', () => {
           profiles = v;
         })();
         const desktop = profiles.Desktop;
-        const root = await navigator.storage.getDirectory();
+        const root = await (
+          await navigator.storage.getDirectory()
+        ).getDirectoryHandle('library', { create: true });
         const write = async (name: string, text: string) => {
           const handle = await root.getFileHandle(name, { create: true });
           const writable = await handle.createWritable();

@@ -6,7 +6,7 @@
  * @see https://developer.chrome.com/docs/capabilities/web-apis/file-handling
  */
 
-import { importFiles } from '$lib/import';
+import { describeImportOutcome, importFiles } from '$lib/import';
 import { showSnackbar } from '$lib/util/snackbar';
 
 // Extend the Window interface for the File Handling API
@@ -99,8 +99,9 @@ export function initFileHandler(): void {
       }
 
       if (files.length > 0) {
-        await importFiles(files);
-        showSnackbar('Import complete!', 3000);
+        // "Complete" only when it is: a queued batch or an image-only review
+        // still open says so instead.
+        showSnackbar(describeImportOutcome(await importFiles(files)), 3000);
       }
     } catch (error) {
       console.error('Error processing files from file handler:', error);

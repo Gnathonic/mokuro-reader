@@ -89,3 +89,31 @@ export function detectHorizontalPage(
 
   return bestIdx >= 0 ? bestIdx : fallback;
 }
+
+/**
+ * 1-based inclusive range of pages with ANY part inside the container along
+ * `axis` — reading history counts whole pages, so a sliver counts. Null when
+ * no page is on screen.
+ */
+export function visiblePageRange(
+  containerRect: RectLike,
+  rects: (RectLike | undefined)[],
+  axis: 'x' | 'y'
+): [number, number] | null {
+  const cStart = axis === 'x' ? containerRect.left : containerRect.top;
+  const cEnd = cStart + (axis === 'x' ? containerRect.width : containerRect.height);
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < rects.length; i++) {
+    const rect = rects[i];
+    if (!rect) continue;
+    const start = axis === 'x' ? rect.left : rect.top;
+    const size = axis === 'x' ? rect.width : rect.height;
+    if (size <= 0) continue;
+    if (Math.min(start + size, cEnd) - Math.max(start, cStart) > 0) {
+      if (first < 0) first = i;
+      last = i;
+    }
+  }
+  return first < 0 ? null : [first + 1, last + 1];
+}

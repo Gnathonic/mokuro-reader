@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * E2E for the reading-goals progress tracker (PR #270, integrated onto v1.9.1).
@@ -95,6 +96,13 @@ async function goHash(page: Page, hash: string) {
       { timeout: 20000, message: `the router never navigated to ${hash}` }
     )
     .toBe(expected);
+  if (expected === 'progress-tracker') {
+    // The store names the view before its lazy chunk (and its CSS) has
+    // mounted; wait for the view itself, not a fixed time.
+    await expect(page.getByRole('heading', { name: 'Progress Tracker', level: 1 })).toBeVisible({
+      timeout: 20000
+    });
+  }
   await page.waitForTimeout(900);
 }
 
@@ -108,8 +116,7 @@ test.describe('progress tracker', () => {
     // spacing utility to `calc(var(--spacing) * N)`, so every padding, margin,
     // gap and icon in the app grew 25% for the rest of the session.
     const errors = watchConsole(page);
-    await page.goto('/');
-    await page.waitForTimeout(1500);
+    await gotoApp(page);
 
     const before = await page.evaluate(() =>
       getComputedStyle(document.documentElement).getPropertyValue('--spacing').trim()
@@ -142,8 +149,7 @@ test.describe('progress tracker', () => {
     // per store, on the boot path, for everyone — and it minted goals state for
     // users who have no goals.
     const errors = watchConsole(page);
-    await page.goto('/');
-    await page.waitForTimeout(2000);
+    await gotoApp(page);
 
     const keys = await page.evaluate(() =>
       ['goalsData', 'goalSettings', 'goalSnapshots'].filter(
@@ -156,14 +162,18 @@ test.describe('progress tracker', () => {
 
   test('opening the tracker is what creates the goal, and it persists', async ({ page }) => {
     const errors = watchConsole(page);
-    await page.goto('/');
-    await page.waitForTimeout(1500);
+    await gotoApp(page);
     await goHash(page, '#/progress-tracker');
 
+    await expect
+      .poll(() => page.evaluate(() => window.localStorage.getItem('goalsData')), {
+        timeout: 10000,
+        message: 'opening the tracker did not mint the default goal'
+      })
+      .not.toBeNull();
     const stored = await page.evaluate(() =>
       JSON.parse(window.localStorage.getItem('goalsData') || 'null')
     );
-    expect(stored, 'opening the tracker did not mint the default goal').toBeTruthy();
 
     const target = stored.targets[Object.keys(stored.targets)[0]];
     expect(target.targetVolumes).toBe(52);
@@ -176,8 +186,7 @@ test.describe('progress tracker', () => {
 
   test('a volume finished on another device is both counted and listed', async ({ page }) => {
     const errors = watchConsole(page);
-    await page.goto('/');
-    await page.waitForTimeout(1500);
+    await gotoApp(page);
 
     // `cloud-only` has NO catalog row: pages never downloaded here, so its page
     // count is unknown. Its reading record says it was finished in March.
@@ -264,8 +273,7 @@ test.describe('progress tracker', () => {
     // What it cannot do is open — the reader has no pages for it. The card used
     // to link straight into the reader and dead-end.
     const errors = watchConsole(page);
-    await page.goto('/');
-    await page.waitForTimeout(1500);
+    await gotoApp(page);
 
     await page.evaluate(async () => {
       const { db } = await import('/src/lib/catalog/db.ts');
@@ -312,8 +320,7 @@ test.describe('progress tracker', () => {
     // for series it has never opened, so no rows, no page counts, no covers.
     // Each one used to render a card reading "0% (0p)" in Currently Reading.
     const errors = watchConsole(page);
-    await page.goto('/');
-    await page.waitForTimeout(1500);
+    await gotoApp(page);
 
     // One volume WITH a row, to prove the lists still work.
     await seedVolumes(page, [{ uuid: 'known', series: 'Known', title: 'Volume 1' }]);
@@ -355,8 +362,7 @@ test.describe('progress tracker', () => {
     // back and it was stripped by the very next write, so nothing survived a
     // reload and nothing ever reached the cloud file.
     const errors = watchConsole(page);
-    await page.goto('/');
-    await page.waitForTimeout(1500);
+    await gotoApp(page);
 
     await seedVolumes(page, [{ uuid: 'v1', series: 'S', title: 'Volume 1', pageCount: 10 }]);
 

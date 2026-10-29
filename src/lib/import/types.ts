@@ -1,3 +1,4 @@
+import type { ImportNames } from './image-only-naming';
 /**
  * Types for the unified import system
  *
@@ -52,10 +53,44 @@ export interface PairedSource {
   source: SourceDescriptor;
   /** Base path for series/volume name extraction */
   basePath: string;
+  /**
+   * Where the source sat, when `basePath` alone loses it: a picked archive's
+   * folder path, a nested archive's outer archive path plus its own
+   * (`Series.zip/Vol 1.cbz` → `Series/Vol 1`). The image-only review groups
+   * the volume and derives its uuid from it (`locateVolume`, #285).
+   */
+  titlePath?: string;
+  /**
+   * The names an image-only volume is saved under, decided in the image-only
+   * review (`nameGroup`, #285).
+   */
+  importNames?: ImportNames;
+  /**
+   * An archive whose image-only volumes were reviewed before it was queued
+   * (#285). `processArchiveContents` takes their names from here and never
+   * prompts. Its `.mokuro` volumes import regardless.
+   */
+  archiveReview?: ArchiveReview;
   /** Estimated size in bytes for memory management */
   estimatedSize: number;
   /** Whether this is an image-only source (no mokuro found anywhere) */
   imageOnly: boolean;
+  /**
+   * The import (one pick, drop or deep link) this source belongs to; archives
+   * found inside it inherit it. "Skip all remaining" and a cancel apply to
+   * every later review of the same import (#285).
+   */
+  batch?: number;
+}
+
+export interface ArchiveReview {
+  approved: true;
+  /**
+   * Approved names by the volume's path INSIDE the archive (`.` = its root),
+   * as `planArchiveListing` reports it. An image-only volume not listed here
+   * was skipped.
+   */
+  names: Map<string, ImportNames>;
 }
 
 /**
@@ -135,6 +170,18 @@ export interface DecompressedVolume {
   imageFiles: Map<string, File>;
   /** Base path for series/volume name extraction */
   basePath: string;
+  /**
+   * The volume's full path, including the folder or archive it came from —
+   * `basePath` of an archive's image-only volume is relative to the archive's
+   * inside. Defaults to `basePath`. Archives found inside the volume inherit
+   * it, so their review sees where they sat (#285).
+   */
+  titlePath?: string;
+  /**
+   * The names an image-only volume is saved under, decided in the image-only
+   * review (`nameGroup`, #285).
+   */
+  importNames?: ImportNames;
   /** Where this came from */
   sourceType: 'local' | 'cloud';
   /** Archives discovered inside (for recursive processing) */
@@ -189,6 +236,12 @@ export interface ProcessedMetadata {
   missingPagePaths?: string[];
   /** Whether this is an image-only volume (no mokuro) */
   imageOnly?: boolean;
+  /**
+   * Restore a volume the library kept after "Remove from device" (#285): if
+   * its row is still there, the save keeps the row's own series and volume
+   * titles (and series uuid) instead of `series`/`volume`/`seriesUuid`.
+   */
+  keepStoredTitles?: boolean;
   /** Where this volume came from */
   sourceType?: 'local' | 'cloud';
   /** Spine width in pixels (from mokuro metadata) */

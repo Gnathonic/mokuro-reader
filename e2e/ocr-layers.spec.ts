@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 import { readFile } from 'node:fs/promises';
 
 /**
@@ -15,8 +16,7 @@ const VOLUME_UUID = 'e2e-layers-volume';
 const ORIGINAL_BLOCK = { box: [250, 50, 310, 250], vertical: true, font_size: 30, lines: ['あい'] };
 
 async function seedVolume(page: Page) {
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, ORIGINAL_BLOCK }) => {
       const { db } = await import('/src/lib/catalog/db.ts');

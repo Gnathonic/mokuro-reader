@@ -15,6 +15,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { test, expect, type BrowserContext, type Page, type Route } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 const BUNKO = (process.env.E2E_BUNKO_URL ?? '').replace(/\/$/, '');
 const USER = process.env.E2E_BUNKO_USER ?? '';
@@ -145,8 +146,7 @@ test.describe('bunko bearer tokens (real server)', () => {
     const baseRows = tokenRows().length;
     const since = (n: number) => seen.slice(n);
 
-    await page.goto('/');
-    await page.waitForTimeout(800);
+    await gotoApp(page);
     await seedLocalVolume(page, 'tok-local-1', 'LocalSeries');
 
     // ---- connect through the real login form
@@ -357,8 +357,7 @@ test.describe('bunko bearer tokens: sign-out (real server)', () => {
     const password = readFileSync(PW_FILE, 'utf8').trim();
     const seen = recordRequests(context, BUNKO);
     const baseRows = tokenRows().length;
-    await page.goto('/');
-    await page.waitForTimeout(800);
+    await gotoApp(page);
     await page.evaluate(
       async ({ serverUrl, username, password }) => {
         const { providerManager } = await import('/src/lib/util/sync/provider-manager.ts');
@@ -436,8 +435,7 @@ for (const kind of ['plain WebDAV', 'pre-token bunko'] as const) {
   test(`${kind}: Basic exactly as before`, async ({ page }) => {
     const stub = davStub({ bunkoIdentity: kind === 'pre-token bunko' });
     await page.route(`${STUB}/**`, stub.handle);
-    await page.goto('/');
-    await page.waitForTimeout(800);
+    await gotoApp(page);
     await page.evaluate(async (serverUrl) => {
       const { providerManager } = await import('/src/lib/util/sync/provider-manager.ts');
       const provider = await providerManager.getOrLoadProvider('webdav');

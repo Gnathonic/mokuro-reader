@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pageImageUrlFrom } from '$lib/reader/page-image-url';
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
@@ -13,6 +14,9 @@
   import {
     effectiveVolumeSettings,
     imageFilter,
+    pageFilter,
+    pageInkSetting,
+    pageInkLayers,
     preferredTitleLanguage,
     progress,
     settings,
@@ -85,7 +89,16 @@
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
-  import { ImageCache } from '$lib/reader/image-cache';
+  import { ImageCache, matchFilesToPages } from '$lib/reader/image-cache';
+  import { cancelInkPrefetch, prefetchPageInk } from '$lib/reader/ink-color';
+  import { ViewTracker } from '$lib/reading-history/view-tracker';
+  import {
+    describeView,
+    rangeScopeKey,
+    type ContinuousRange
+  } from '$lib/reading-history/describe-view';
+  import { recordEvent } from '$lib/reading-history/record';
+  import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
   import '$lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
@@ -487,7 +500,17 @@
     // onDestroy flush below never runs for either.
     const stopFlushOnPageHide = flushOnPageHide(() => void editSession?.flush());
 
+    const onVisibility = () => {
+      pageHidden = document.visibilityState === 'hidden';
+    };
+    const onPageHide = () => viewTracker.close(Date.now());
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+      viewTracker.close(Date.now());
       stopFlushOnPageHide();
       // Stop activity tracker when component unmounts
       activityTracker.stop();
@@ -607,6 +630,13 @@
   });
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
+
+  // Reading history: one `page` event per view, emitted when the view ends.
+  // Hidden tab = no view, so a backgrounded reader never accrues dwell.
+  const viewTracker = new ViewTracker((payload, t) => void recordEvent(payload, t));
+  let pageHidden = $state(typeof document !== 'undefined' && document.visibilityState === 'hidden');
+  let continuousRange = $state<ContinuousRange | null>(null);
+  let pageCharCumulative = $derived(buildPageCharCounts(pages).cumulative);
 
   // Set of missing page paths for checking if current page is a placeholder
   let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
@@ -959,6 +989,36 @@
     };
   }
 
+  // Ink color (#256): decide the pages around the one being read AHEAD, so a
+  // page mounts with its verdict settled and is inked in its first frame
+  // (MangaPage hides a page whose verdict is still pending). Both modes:
+  // `index` follows continuous scroll too. Nothing at all while ink is off —
+  // the file matching below is not even computed.
+  let inkFiles = $derived.by(() =>
+    volumeData?.files && pages.length > 0 ? matchFilesToPages(volumeData.files, pages) : null
+  );
+  $effect(() => {
+    if ($pageInkSetting === 'off') return;
+    const files = inkFiles;
+    const current = index;
+    if (!files || current < 0) return;
+    prefetchPageInk(files, current);
+    return cancelInkPrefetch;
+  });
+
+  // The print effect's controls (#256): a finished ink and paper colour per
+  // palette colour, set ONCE on the document while the effect is on; an inked
+  // page's layers pick their colour's pair (MangaPage). Nothing while off.
+  $effect(() => {
+    if ($pageInkSetting === 'off') return;
+    const vars = $pageInkLayers;
+    const root = document.documentElement.style;
+    for (const [name, value] of Object.entries(vars)) root.setProperty(name, value);
+    return () => {
+      for (const name of Object.keys(vars)) root.removeProperty(name);
+    };
+  });
+
   // Image cache for preloading
   let imageCache = new ImageCache();
   let cachedImageUrl1 = $state<string | null>(null);
@@ -1110,6 +1170,30 @@
   let charCount = $derived($settings.charCount ? getCharCount(pages, page).charCount : 0);
   let maxCharCount = $derived(getCharCount(pages).charCount);
   let charDisplay = $derived(`${charCount} / ${maxCharCount}`);
+
+  let currentView = $derived(
+    describeView({
+      volume: volume?.volume_uuid,
+      pageCharCumulative,
+      page,
+      continuous: !!$settings.continuousScroll,
+      scrollMode: effectiveScrollMode === 'horizontal' ? 'horizontal' : 'vertical',
+      showSecondPage: showSecondPage(),
+      continuousRange,
+      // Same condition the template uses to render the pages.
+      showing: !!volumeData && $progress?.[volume?.volume_uuid || 0] !== undefined,
+      viewport: { w: windowWidth, h: windowHeight }
+    })
+  );
+
+  $effect(() => {
+    viewTracker.setView(pageHidden ? null : currentView, Date.now());
+  });
+
+  function handleVisibleRange(first: number, last: number) {
+    const mode = effectiveScrollMode === 'horizontal' ? 'horizontal' : 'vertical';
+    continuousRange = { scope: rangeScopeKey(volume?.volume_uuid, mode), first, last };
+  }
   let totalLineCount = $derived(getCharCount(pages).lineCount);
   run(() => {
     if (volume) {
@@ -1147,25 +1231,10 @@
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
 
-  // Extract image URL from an element by traversing up to find background-image
-  function extractImageUrlFromElement(element: HTMLElement | null): string | null {
-    if (!element) return null;
-    let current: HTMLElement | null = element;
-    while (current) {
-      const bgImage = getComputedStyle(current).backgroundImage;
-      if (bgImage && bgImage !== 'none') {
-        const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
-        if (match) return match[1];
-      }
-      current = current.parentElement;
-    }
-    return null;
-  }
-
   function handleTextBoxContextMenu(data: ContextMenuData) {
     // Capture the image URL immediately while the DOM is in a known good state
     // This prevents issues when Yomitan or other extensions modify the DOM
-    const imageUrl = extractImageUrlFromElement(data.imgElement) ?? undefined;
+    const imageUrl = pageImageUrlFrom(data.imgElement) ?? undefined;
     // Prefer pageIndex from the data (set by TextBoxes), fall back to progress store
     const pageIndex =
       data.pageIndex ??
@@ -1612,12 +1681,14 @@
   {#if $settings.continuousScroll && volumeData?.files}
     {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader
+        --page-filter={$pageFilter}
         {pages}
         files={volumeData.files}
         {volume}
         {volumeSettings}
         currentPage={page}
         onPageChange={handleContinuousPageChange}
+        onVisibleRangeChange={handleVisibleRange}
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
@@ -1625,12 +1696,14 @@
       />
     {:else}
       <HorizontalScrollReader
+        --page-filter={$pageFilter}
         {pages}
         files={volumeData.files}
         {volume}
         {volumeSettings}
         currentPage={page}
         onPageChange={handleContinuousPageChange}
+        onVisibleRangeChange={handleVisibleRange}
         onVolumeNav={handleContinuousVolumeNav}
         onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
@@ -1639,8 +1712,9 @@
       />
     {/if}
   {:else}
-    <!-- Page-based mode -->
-    <div class="flex" style:background-color="var(--reader-bg)">
+    <!-- Page-based mode. `--page-filter` (brightness/contrast, #256) is read by
+         each page's image layer only — set once here, not per page. -->
+    <div class="flex" style:background-color="var(--reader-bg)" style:--page-filter={$pageFilter}>
       <PagedViewport
         contentSize={pagedContentSize}
         pageKey={page}

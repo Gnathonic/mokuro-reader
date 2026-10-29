@@ -15,6 +15,7 @@ import { browser } from '$app/environment';
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { naturalSort } from '$lib/util/natural-sort';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { mayBeImageType } from '$lib/util/image-content-type';
 import { MOKURO_DB_NAME, declareMokuroSchema } from './db-schema';
 
 export class CatalogDexieV3 extends Dexie {
@@ -43,14 +44,19 @@ export class CatalogDexieV3 extends Dexie {
     const processId = 'thumbnail-generation';
 
     // Get volumes that need thumbnail generation/regeneration
-    // Missing any of thumbnail, width, or height indicates need for (re)generation.
+    // Missing any of thumbnail, width, or height indicates need for (re)generation,
+    // and so does a thumbnail that is no image (an HTML page a deep link once
+    // stored as the cover: every field set, nothing to show).
     // Metadata-only rows are excluded: their images are not on this device, so
     // there is nothing to generate from and every pass would retry them forever.
     const volumesNeedingThumbnails = await this.volumes
       .filter(
         (vol) =>
           isVolumeInstalled(vol) &&
-          (!vol.thumbnail || !vol.thumbnail_width || !vol.thumbnail_height)
+          (!vol.thumbnail ||
+            !vol.thumbnail_width ||
+            !vol.thumbnail_height ||
+            !mayBeImageType(vol.thumbnail.type))
       )
       .primaryKeys();
 
