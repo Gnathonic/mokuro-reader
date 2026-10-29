@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- A full Google Drive no longer signs you out
+- Google Drive rate limits wait and retry instead of failing
+- A full Google Drive or OneDrive says so plainly
+
 ## [1.10.0] - 2026-10-02
 
 ### Added

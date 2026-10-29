@@ -111,6 +111,14 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - Uses OAuth2 implicit flow (access tokens only, ~1 hour expiry)
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
+- Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
+  `error.errors[0].reason`: a 403 is a full account (`storageQuotaExceeded`/`quotaExceeded` →
+  `QUOTA_EXCEEDED`, never retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`,
+  like any 429: retried by `withDriveRetry` after Retry-After, capped 60 s, 4 attempts), or —
+  only otherwise — an auth failure that may re-authenticate. Messages carry `[reason]` so a
+  worker's serialized error is still recognisable. OneDrive's equivalent is
+  `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
+  `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
 
 ### Svelte 5 Reactive Performance
 
