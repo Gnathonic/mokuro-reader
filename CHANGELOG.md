@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- mokuro-bunko no longer connects read-only on a flaky connection
+
 ## [1.10.0] - 2026-10-02
 
 ### Added
