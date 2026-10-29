@@ -17,7 +17,9 @@ import {
   isCbzFile,
   isSidecarFile,
   isRootConfigFile,
-  isBunkoControlFile
+  isBunkoControlFile,
+  BUNKO_MARKER_NAME,
+  QUEUE_FILE_NAME
 } from '../../syncable-file';
 import {
   ControlNodeCache,
@@ -591,12 +593,41 @@ export class MegaProvider implements SyncProvider {
   /** One full-tree load at a time: concurrent callers share the one in flight. */
   private refreshTree(): Promise<void> {
     if (!this.treeRefresh) {
-      const refresh: Promise<void> = this.loadTree(this.storage).finally(() => {
-        if (this.treeRefresh === refresh) this.treeRefresh = null;
-      });
+      const storage = this.storage;
+      const controlBefore = this.controlHandleSets();
+      const refresh: Promise<void> = this.loadTree(storage)
+        .then(() => {
+          if (this.storage === storage) this.notifyControlSwaps(controlBefore, storage);
+        })
+        .finally(() => {
+          if (this.treeRefresh === refresh) this.treeRefresh = null;
+        });
       this.treeRefresh = refresh;
     }
     return this.treeRefresh;
+  }
+
+  /** The listed node handles of each control file, keyed by name. */
+  private controlHandleSets(): Map<string, string> {
+    const sets = new Map<string, string>();
+    for (const name of [BUNKO_MARKER_NAME, QUEUE_FILE_NAME]) {
+      const ids = this.listControlNodes(name).map((l) => l.listed.id);
+      sets.set(name, ids.sort().join(','));
+    }
+    return sets;
+  }
+
+  /**
+   * A full load swaps the tree in without sc events (after an sc outage too),
+   * so a control file rewritten meanwhile would never reach the listeners:
+   * notify every name whose handle set the load changed.
+   */
+  private notifyControlSwaps(before: Map<string, string>, storage: any): void {
+    const after = this.controlHandleSets();
+    const changed = [...after].filter(([name, ids]) => before.get(name) !== ids);
+    if (changed.length === 0) return;
+    this.vanishedControlHandles.clear(); // give a skipped node another chance
+    for (const [name] of changed) this.scheduleControlNotify(name, storage);
   }
 
   /**

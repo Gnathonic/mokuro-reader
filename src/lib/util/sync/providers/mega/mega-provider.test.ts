@@ -1217,6 +1217,40 @@ describe('MegaProvider.onControlFileChange()', () => {
     expect(seen.sort()).toEqual(['.mokuro-bunko.json', '.mokuro-queue.json']);
   });
 
+  it('fires once for a control file whose handles a full tree load changed', async () => {
+    // After an sc outage the provider reloads the whole tree (refreshTree):
+    // a marker rewritten meanwhile arrives with no sc event of its own.
+    const folder = { name: 'mokuro-reader', directory: true, children: [] as any[] } as any;
+    const node = (handle: string, name: string) => {
+      const n = { nodeId: handle, name, directory: false, parent: folder, timestamp: 1 } as any;
+      folder.children.push(n);
+      return n;
+    };
+    const marker = node('M1', '.mokuro-bunko.json');
+    const queue = node('Q1', '.mokuro-queue.json');
+    storageState.files = { folder, marker, queue };
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+    const storage = (provider as any).storage;
+    const seen: string[] = [];
+    provider.onControlFileChange((name) => seen.push(name));
+
+    storage.reload.mockImplementationOnce(async () => {
+      folder.children.splice(folder.children.indexOf(marker), 1);
+      storage.files.marker2 = node('M2', '.mokuro-bunko.json');
+    });
+    await (provider as any).refreshTree();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(seen).toEqual(['.mokuro-bunko.json']);
+
+    // A load that changes no control handle notifies nobody.
+    seen.length = 0;
+    await (provider as any).refreshTree();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(seen).toEqual([]);
+  });
+
   it('stops firing after unsubscribe, and keeps working after listeners are re-attached', async () => {
     const { provider, emit } = await loggedIn();
     const seen: string[] = [];
