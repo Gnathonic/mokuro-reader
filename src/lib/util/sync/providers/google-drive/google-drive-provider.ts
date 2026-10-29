@@ -23,7 +23,12 @@ import { findFile } from '$lib/util/backup';
 import { cacheManager } from '../../cache-manager';
 import { providerManager } from '../../provider-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
-import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
+import {
+  compareByAge,
+  type FolderOperations,
+  type FolderInfo,
+  type FolderItem
+} from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 
 /**
@@ -1072,13 +1077,10 @@ class GoogleDriveProvider implements SyncProvider {
       );
     }
 
-    // Return first folder found (oldest if multiple - they'll be deduped later)
+    // The folder FolderDeduplicator keeps (oldest, then id), so writes never
+    // go to the copy the next merge empties.
     if (folders.length > 1) {
-      folders.sort((a, b) => {
-        const dateA = new Date(a.createdTime || 0).getTime();
-        const dateB = new Date(b.createdTime || 0).getTime();
-        return dateA - dateB;
-      });
+      folders.sort(compareByAge);
       console.log(
         `⚠️ Found ${folders.length} folders named '${folderName}', using oldest (dedup will run later)`
       );
@@ -1158,11 +1160,7 @@ class GoogleDriveProvider implements SyncProvider {
       return null;
     }
 
-    folders.sort((a, b) => {
-      const dateA = new Date(a.createdTime || 0).getTime();
-      const dateB = new Date(b.createdTime || 0).getTime();
-      return dateA - dateB;
-    });
+    folders.sort(compareByAge);
 
     const folder = folders[0];
     return {
@@ -1222,8 +1220,15 @@ class GoogleDriveProvider implements SyncProvider {
    * Returns an object that implements FolderOperations
    */
   getFolderOperations(): FolderOperations {
+    const READER = GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER;
+    // Duplicates this run already kept once because the server still listed
+    // children in them (see deleteFolder).
+    const keptOnce = new Set<string>();
+    // The write root the cache picks from the last listFolders' roots; null
+    // before any listing, which confirms any root as before.
+    let writeRoot: string | null = null;
     return {
-      rootFolderName: GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER,
+      rootFolderName: READER,
 
       listFolders: async (): Promise<FolderInfo[]> => {
         await this.ensureInitialized();
@@ -1231,7 +1236,29 @@ class GoogleDriveProvider implements SyncProvider {
           `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and 'me' in owners and trashed=false`,
           'files(id,name,parents,createdTime)'
         );
-        return items.map((item) => ({
+        // The listing is account-wide: two same-named folders the user keeps
+        // for anything else are not ours to merge. Only `mokuro-reader`
+        // folders and what is inside them, as MEGA's isInLibrary.
+        const byId = new Map(items.map((item) => [item.id, item]));
+        const inLibrary = (item: DriveFile): boolean => {
+          const seen = new Set<string>();
+          for (
+            let current: DriveFile | undefined = item;
+            current && !seen.has(current.id);
+            current = current.parents?.[0] ? byId.get(current.parents[0]) : undefined
+          ) {
+            if (current.name === READER) return true;
+            seen.add(current.id);
+          }
+          return false;
+        };
+        const library = items.filter(inLibrary).sort(compareByAge);
+
+        writeRoot = await driveFilesCache.pickReaderFolder(
+          library.filter((item) => item.name === READER)
+        );
+
+        return library.map((item) => ({
           id: item.id,
           name: item.name,
           parentId: item.parents?.[0] || null,
@@ -1259,9 +1286,29 @@ class GoogleDriveProvider implements SyncProvider {
       },
 
       // Both to Drive's trash, never files.delete: the folder was judged empty
-      // from a listing a moment old, and a deleted folder takes its contents.
+      // from a listing a moment old, and a trashed folder takes its contents.
       deleteFolder: async (folderId: string): Promise<void> => {
         await this.ensureInitialized();
+        // So ask the server again, and trash only what it lists empty: another
+        // device's upload may have landed since. The next pass moves it.
+        const remaining = await driveApiClient.listFiles(
+          `'${folderId}' in parents and trashed=false`,
+          'files(id)'
+        );
+        if (remaining.length > 0) {
+          // Still not empty after a second merge (another device keeps
+          // writing there): stop this run rather than loop on it.
+          if (keptOnce.has(folderId)) {
+            throw new Error(
+              `Drive dedup: duplicate folder ${folderId} still holds ${remaining.length} item(s); stopping`
+            );
+          }
+          keptOnce.add(folderId);
+          console.warn(
+            `[GoogleDrive] duplicate folder ${folderId} kept: server still lists ${remaining.length} item(s)`
+          );
+          return;
+        }
         await driveApiClient.updateFileMetadata(folderId, { trashed: true }, { fields: 'id' });
       },
 
@@ -1271,6 +1318,10 @@ class GoogleDriveProvider implements SyncProvider {
       },
 
       onRootFolderConfirmed: (folderId: string): void => {
+        // A merged group of nested roots (`Backup/mokuro-reader` twice) has a
+        // canonical folder too: it is read, never the write root while the
+        // cache's choice (top-level first) is another folder.
+        if (writeRoot && folderId !== writeRoot) return;
         this.setReaderFolderId(folderId);
         driveFilesCache.setReaderFolderId(folderId);
       }
