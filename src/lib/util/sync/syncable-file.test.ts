@@ -9,7 +9,8 @@ import {
   classifyMokuroSidecar,
   layerSidecarName,
   cbzStemsOf,
-  foldStem
+  foldStem,
+  miscasedLayerStem
 } from './syncable-file';
 
 describe('syncable-file', () => {
@@ -228,6 +229,17 @@ describe('series-metadata.json stays retired', () => {
       expect(splitLayerSidecarName(name)).toEqual({ stem: 'Vol 1', layerId: 'gcv', gz: false });
       // The id is matched as written (rule v1 #5): an upper-case id is no id.
       expect(splitLayerSidecarName('Vol 1.GCV.mokuro')).toBeNull();
+    });
+
+    it('names the stem of a layer file whose id is only miscased (an orphan, not a primary)', () => {
+      expect(miscasedLayerStem('Vol 1.GCV.mokuro')).toBe('Vol 1');
+      expect(miscasedLayerStem('Vol 1.Tr-En.mokuro.gz')).toBe('Vol 1');
+      // A valid id is a layer, not a miscased one; an id invalid in any case is neither.
+      expect(miscasedLayerStem('Vol 1.gcv.mokuro')).toBeNull();
+      expect(miscasedLayerStem('Vol 1.Bad_Id.mokuro')).toBeNull();
+      expect(miscasedLayerStem('Vol. 1.mokuro')).toBeNull();
+      expect(miscasedLayerStem('Vol 1.mokuro')).toBeNull();
+      expect(miscasedLayerStem('Vol 1.GCV.cbz')).toBeNull();
     });
   });
 

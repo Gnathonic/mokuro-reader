@@ -530,6 +530,53 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.renameFile).toHaveBeenCalledTimes(2);
   });
 
+  // The caller passes the DB title; the cloud may spell the same volume
+  // decomposed (a decomposing filesystem) or in another case. The volume's
+  // layers are found under the CLOUD spelling, so they move with it.
+  it.each([
+    ['decomposed', 'S', 'S', 'Vól 1'.normalize('NFD'), 'Vól 1'],
+    ['case-only', 'S', 'S', 'Vol 1', 'vol 1'],
+    ['decomposed folder', 'Sé'.normalize('NFD'), 'Sé', 'Vol 1', 'Vol 1']
+  ])(
+    'a rename called with a %s spelling of the cloud title MOVES the layer, never deletes it',
+    async (_label, cloudSeries, dbSeries, cloudTitle, dbTitle) => {
+      const provider = makeRenameProvider();
+      const file = (fileId: string, path: string, size: number): CloudFileMetadata => ({
+        provider: 'webdav',
+        fileId,
+        path,
+        modifiedTime: 't',
+        size
+      });
+      const cbz = file('cbz', `${cloudSeries}/${cloudTitle}.cbz`, 100);
+      const primary = file('primary', `${cloudSeries}/${cloudTitle}.mokuro`, 10);
+      const gcv = file('gcv', `${cloudSeries}/${cloudTitle}.gcv.mokuro`, 9);
+      const files = [cbz, primary, gcv];
+      layerRows.mockResolvedValue([stampedLayer('uuid-v', 'gcv', gcv)]);
+      getActiveProvider.mockReturnValue(provider);
+      getBySeries.mockImplementation((s: string) =>
+        files.filter((f) => f.path.startsWith(`${s}/`))
+      );
+      getAllFiles.mockImplementation(() => files);
+      getCache.mockReturnValue(loadedCache());
+      generateSidecars.mockResolvedValue({
+        mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
+      });
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(
+        (
+          await unifiedCloudManager.getSweepableCloudFilesForVolume(dbSeries, dbTitle, 'uuid-v')
+        ).map((f) => f.path)
+      ).toEqual([cbz.path, primary.path, gcv.path]);
+      await unifiedCloudManager.renameVolume(dbSeries, dbTitle, dbSeries, 'Bar', 'uuid-v');
+
+      expect(provider.renameFile).toHaveBeenCalledWith(gcv, `${cloudSeries}/Bar.gcv.mokuro`);
+      expect(provider.deleteFile).not.toHaveBeenCalledWith(gcv);
+      expect(provider.deleteFile).toHaveBeenCalledWith(primary);
+    }
+  );
+
   it('a corroborated layer moves with BOTH its copies (.mokuro and the .mokuro.gz it superseded)', async () => {
     const provider = makeRenameProvider();
     const { gcv, lookAlike, files } = fooListing();
@@ -1752,6 +1799,38 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
     it('another volume’s stamped row does not corroborate it either', async () => {
       const deleted = await deleteFoo([stampedLayer('uuid-other', '5', lookAlike)]);
       expect(deleted).not.toContain('S/Foo.5.mokuro');
+    });
+
+    it('is still corroborated per layer when the DB title is spelled otherwise than the cloud', async () => {
+      // The cloud spells the volume decomposed; the caller names it composed.
+      const cloud = 'Fóo'.normalize('NFD');
+      const nfdGcv = file('fóo-gcv', `S/${cloud}.gcv.mokuro`, 9);
+      const nfdLookAlike = file('fóo-5', `S/${cloud}.5.mokuro`, 11);
+      const files = [
+        file('fóo-cbz', `S/${cloud}.cbz`, 100),
+        file('fóo-mokuro', `S/${cloud}.mokuro`, 10),
+        nfdGcv,
+        nfdLookAlike
+      ];
+      const deleted: string[] = [];
+      getActiveProvider.mockReturnValue({
+        type: 'mega',
+        deleteFile: vi.fn(async (f: CloudFileMetadata) => {
+          deleted.push(f.path);
+        })
+      });
+      localVolumes.mockResolvedValue([
+        { volume_uuid: 'uuid-foo', series_title: 'S', volume_title: 'Fóo' }
+      ]);
+      layerRows.mockResolvedValue([stampedLayer('uuid-foo', 'gcv', nfdGcv)]);
+      getBySeries.mockImplementation((s: string) =>
+        files.filter((f) => f.path.startsWith(`${s}/`))
+      );
+      getCache.mockReturnValue({ removeById: vi.fn() });
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      await unifiedCloudManager.deleteManagedVolume('S', 'Fóo');
+      expect(deleted).toContain(nfdGcv.path);
+      expect(deleted).not.toContain(nfdLookAlike.path);
     });
   });
 

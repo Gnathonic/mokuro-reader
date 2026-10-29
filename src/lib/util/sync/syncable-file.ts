@@ -123,7 +123,8 @@ export function isBestEffortMetadataPath(path: string): boolean {
  * 3. stems compare folded, NFC then lowercase ({@link foldStem});
  * 4. a primary reading wins over a layer reading of the same name;
  * 5. the id must match {@link LAYER_ID_RE} AS WRITTEN — `Vol 1.GCV.mokuro` is
- *    an orphan, never layer `gcv` — and an all-digit id is a valid id;
+ *    an orphan, never layer `gcv` nor a primary ({@link miscasedLayerStem}) —
+ *    and an all-digit id is a valid id;
  * 6. a sweep takes a layer with the archive spelled exactly like its stem
  *    before one that merely folds alike (`unified-cloud-manager.ts`);
  * 7. a leading UTF-8 BOM is tolerated on read (the text decoder drops it),
@@ -179,6 +180,23 @@ export function splitLayerSidecarName(
   const layerId = stripped.base.slice(dot + 1);
   if (!LAYER_ID_RE.test(layerId)) return null;
   return { stem, layerId, gz: stripped.gz };
+}
+
+/**
+ * The stem of `<stem>.<ID>.mokuro[.gz]` whose id is a layer id but for its
+ * case (`Vol 1.GCV.mokuro` → `Vol 1`), else null. Rule v1 makes such a file an
+ * ORPHAN of `<stem>` — not a layer, and not its primary either — so a pass
+ * that takes "any other `.mokuro`" as the primary must skip it, or it can
+ * outrank the real `Vol 1.mokuro`. This reader used to file it as layer `gcv`.
+ */
+export function miscasedLayerStem(basename: string): string | null {
+  const stripped = stripMokuroExtension(basename);
+  if (!stripped) return null;
+  const dot = stripped.base.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const id = stripped.base.slice(dot + 1);
+  if (LAYER_ID_RE.test(id) || !LAYER_ID_RE.test(id.toLowerCase())) return null;
+  return stripped.base.slice(0, dot);
 }
 
 /**

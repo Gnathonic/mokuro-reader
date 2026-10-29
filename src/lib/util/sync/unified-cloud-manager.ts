@@ -104,11 +104,19 @@ function layerFilesOfVolume(
   // belongs to that volume, however it folds (sidecar names rule v1 #6).
   const spelled = new Set(names.filter(isCbzFile).map((name) => name.slice(0, -4)));
   const key = normalizeVolumeTitleKey(volumeBaseName);
+  // The volume's OWN archive as the cloud spells it. Callers pass the DB title,
+  // which may differ from the listing (decomposed, another case); measured
+  // against that, the volume's own layers would read as another archive's and
+  // a rename would delete them as "the stale .mokuro". Same pick as
+  // `getManagedCloudFilesForVolume`: exact first, else the first folded match.
+  const own = spelled.has(volumeBaseName)
+    ? volumeBaseName
+    : [...spelled].filter((stem) => normalizeVolumeTitleKey(stem) === key).sort(naturalSort)[0];
   const out: Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> = [];
   for (const file of folderFiles) {
     const cls = classifyMokuroSidecar(basenameOfPath(file.path), stems);
     if (cls.kind !== 'layer') continue;
-    if (cls.stem !== volumeBaseName) {
+    if (cls.stem !== volumeBaseName && cls.stem !== own) {
       if (spelled.has(cls.stem) || normalizeVolumeTitleKey(cls.stem) !== key) continue;
     }
     out.push({ file, layerId: cls.layerId, gz: cls.gz });

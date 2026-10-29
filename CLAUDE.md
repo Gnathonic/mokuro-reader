@@ -355,8 +355,11 @@ listing — under **sidecar names rule v1**, which mokuro-bunko shares
 (`bunko_core::sidecar_names`; the rule is spelled out above `LAYER_ID_RE`):
 suffixes in any ASCII case, only `.cbz` defines stems, stems fold NFC +
 lowercase (`foldStem`), a primary wins over a layer reading, the id is matched
-AS WRITTEN (`Vol 1.GCV.mokuro` is an orphan; all-digit ids are valid), a sweep
-takes the exactly-spelled archive's layers first, a leading UTF-8 BOM is
+AS WRITTEN (`Vol 1.GCV.mokuro` is an orphan — never a layer, and never taken
+for `Vol 1`'s primary inside an archive or an import, `miscasedLayerStem`;
+all-digit ids are valid), a sweep takes the exactly-spelled archive's layers
+first (measured against the volume's OWN archive as the listing spells it, so a
+caller's DB spelling — composed, another case — still finds them), a leading UTF-8 BOM is
 tolerated on read, and every id the reader mints contains a letter
 (`slugifyLayerId`). The vectors both sides test against live in bunko's
 `interop/contract/sidecar-names.json` (hand-copied into `syncable-file.test.ts`
