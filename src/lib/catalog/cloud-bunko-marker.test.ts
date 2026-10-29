@@ -27,21 +27,26 @@ const T0 = Date.parse('2026-10-12T10:00:00Z');
 const TTL = 900;
 
 /**
- * The 0.8 marker keys (B2.6 per_user_files, B3.6 curated, B5.7 dedup) that
- * Bunko's blessed `marker-active` does not carry yet. While the fixture lacks
+ * The 0.8 marker keys (B2.6 per_user_files, B3.6 curated, B5.7 dedup). Bunko's
+ * blessed `marker-active` does not carry them yet: while the fixture lacks
  * one, a test that sets it ADDS it; once Bunko blesses it, `editExisting`
  * checks it like every other field.
  */
-const PENDING_08_KEYS = ['per_user_files', 'curated', 'dedup'];
+const V08_KEYS = ['per_user_files', 'curated', 'dedup'];
 
-/** Bunko's own marker (its contract fixture), with these tests' values in its fields. */
+/**
+ * Bunko's own marker (its contract fixture), with these tests' values in its
+ * fields. A 0.8 key a test does not set is left OUT, whatever the fixture
+ * carries: unset means a 0.7 marker's none-of-them, so no test starts reading
+ * the blessed fixture's `dedup: true` once Bunko adds it.
+ */
 function marker(over: Record<string, unknown> = {}) {
   const served = servedMarker(T0);
   const pending = Object.fromEntries(
-    Object.entries(over).filter(([k]) => PENDING_08_KEYS.includes(k) && !(k in served))
+    Object.entries(over).filter(([k]) => V08_KEYS.includes(k) && !(k in served))
   );
   const known = Object.fromEntries(Object.entries(over).filter(([k]) => !(k in pending)));
-  return {
+  const body: Record<string, unknown> = {
     ...editExisting(served, {
       instance_id: 'aaa',
       boot_id: 'b1',
@@ -55,6 +60,8 @@ function marker(over: Record<string, unknown> = {}) {
     }),
     ...pending
   };
+  for (const k of V08_KEYS) if (!(k in over)) delete body[k];
+  return body;
 }
 
 function read(
@@ -145,7 +152,9 @@ describe('parseBunkoMarker', () => {
   });
 
   it('a 0.7 marker (no new keys) reads as none of them', () => {
-    const m = parseBunkoMarker(marker({ bunko_version: undefined }));
+    const body = marker({ bunko_version: undefined });
+    for (const k of V08_KEYS) expect(body).not.toHaveProperty(k);
+    const m = parseBunkoMarker(body);
     expect(m).toMatchObject({
       bunko_version: '',
       per_user_files: [],
