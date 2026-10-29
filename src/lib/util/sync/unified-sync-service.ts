@@ -146,9 +146,33 @@ export interface CloudVolumeDataFile {
  * authenticated cloud providers. Works with the SyncProvider interface,
  * making it provider-agnostic.
  */
+interface SyncFlight {
+  running: Promise<ProviderSyncResult>;
+  followUp?: {
+    silent: boolean;
+    promise: Promise<ProviderSyncResult>;
+    resolve: (result: ProviderSyncResult) => void;
+    reject: (error: unknown) => void;
+  };
+}
+
 class UnifiedSyncService {
   private isSyncingStore = writable<boolean>(false);
   private syncLock = false;
+  /** Syncs (or `syncAllProviders` runs) in progress; `isSyncing` is "any". */
+  private activeSyncs = 0;
+  /** The sync running per provider type, and the one queued behind it. */
+  private flights = new Map<string, SyncFlight>();
+
+  private beginSyncing(): void {
+    this.activeSyncs++;
+    this.isSyncingStore.set(true);
+  }
+
+  private endSyncing(): void {
+    this.activeSyncs = Math.max(0, this.activeSyncs - 1);
+    if (this.activeSyncs === 0) this.isSyncingStore.set(false);
+  }
 
   get isSyncing() {
     return this.isSyncingStore;
@@ -176,7 +200,7 @@ class UnifiedSyncService {
     }
 
     this.syncLock = true;
-    this.isSyncingStore.set(true);
+    this.beginSyncing();
 
     // Filter to only authenticated providers
     const authenticatedProviders = providers.filter((p) => p.isAuthenticated());
@@ -187,7 +211,7 @@ class UnifiedSyncService {
         showSnackbar('No cloud providers connected');
       }
       this.syncLock = false;
-      this.isSyncingStore.set(false);
+      this.endSyncing();
       return {
         totalProviders: 0,
         succeeded: 0,
@@ -280,20 +304,59 @@ class UnifiedSyncService {
         setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
       }
       this.syncLock = false;
-      this.isSyncingStore.set(false);
+      this.endSyncing();
     }
   }
 
   /**
-   * Sync with a single provider
+   * Sync with a single provider. One at a time per provider: two overlapping
+   * syncs each download the config files, merge and upload, and the second
+   * can read a file the first is rewriting (a Local Folder `File` goes
+   * unreadable mid-read). A request made while one runs waits for it, and
+   * every such request shares ONE follow-up sync — silent only if all were.
    */
-  async syncProvider(
-    provider: SyncProvider,
-    options: SyncOptions = {}
-  ): Promise<ProviderSyncResult> {
-    // Set syncing state
-    this.isSyncingStore.set(true);
+  syncProvider(provider: SyncProvider, options: SyncOptions = {}): Promise<ProviderSyncResult> {
+    const flight = this.flights.get(provider.type);
+    if (!flight) return this.startFlight(provider, options, false);
+    if (flight.followUp) {
+      if (!options.silent) flight.followUp.silent = false;
+      return flight.followUp.promise;
+    }
+    let resolve!: (result: ProviderSyncResult) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<ProviderSyncResult>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    flight.followUp = { silent: !!options.silent, promise, resolve, reject };
+    return promise;
+  }
 
+  /** Run a sync and, when it ends, the follow-up queued behind it — with no gap a third could slip into. */
+  private startFlight(
+    provider: SyncProvider,
+    options: SyncOptions,
+    continuing: boolean
+  ): Promise<ProviderSyncResult> {
+    if (!continuing) this.beginSyncing();
+    const flight: SyncFlight = { running: undefined as unknown as Promise<ProviderSyncResult> };
+    this.flights.set(provider.type, flight);
+    flight.running = this.runProviderSync(provider, options).finally(() => {
+      const next = flight.followUp;
+      if (next) {
+        this.startFlight(provider, { silent: next.silent }, true).then(next.resolve, next.reject);
+      } else {
+        this.flights.delete(provider.type);
+        this.endSyncing();
+      }
+    });
+    return flight.running;
+  }
+
+  private async runProviderSync(
+    provider: SyncProvider,
+    options: SyncOptions
+  ): Promise<ProviderSyncResult> {
     try {
       console.log(`🔄 Syncing with ${provider.name}...`);
       console.log('🔄 Sync options:', options);
@@ -348,9 +411,6 @@ class UnifiedSyncService {
         success: false,
         error: errorMessage
       };
-    } finally {
-      // Clear syncing state
-      this.isSyncingStore.set(false);
     }
   }
 
