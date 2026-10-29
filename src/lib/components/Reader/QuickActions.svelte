@@ -41,6 +41,10 @@
     layers?: LayerSummary[];
     currentLayer?: string | null;
     primaryLayerName?: string;
+    /** Passed to the picker: may the account publish this volume's shared corrections? */
+    canPublishLayers?: boolean;
+    /** Passed to the picker: the connected provider's status (`forksOnEdit`). */
+    layerStatus?: { serverCompilesMetadata?: boolean } | null;
     onSelectLayer?: (layerId: string | null) => void;
     onLayerAction?: (action: LayerAction, layerId: string | null) => void;
     /**
@@ -69,6 +73,8 @@
     layers = [],
     currentLayer = null,
     primaryLayerName = 'Primary',
+    canPublishLayers = false,
+    layerStatus = null,
     onSelectLayer,
     onLayerAction,
     layersOpen = $bindable(false)
@@ -227,6 +233,8 @@
         {layers}
         current={currentLayer}
         primaryName={primaryLayerName}
+        canPublish={canPublishLayers}
+        status={layerStatus}
         onSelect={(id) => {
           onSelectLayer?.(id);
           layersOpen = false;

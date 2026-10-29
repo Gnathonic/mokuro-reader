@@ -256,4 +256,56 @@ describe('the one-time edit-layer migration', () => {
     await db.volume_ocr.put({ volume_uuid: 'v1', pages: [pg('後'), pg('うえ', 'q.png')] });
     expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
   });
+
+  function bunko(editLayerSync: 'push' | 'local') {
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getStatus: () => ({
+        isReadOnly: false,
+        canAddFiles: true,
+        serverCompilesMetadata: true,
+        editLayerSync,
+        curatedPublish: 'all'
+      }),
+      uploadFile,
+      downloadFile: vi.fn(),
+      deleteFile: vi.fn()
+    });
+  }
+
+  it('on a 0.7.x bunko the migrated edit row stays on the device, run after run (C3-R6)', async () => {
+    await legacyEdited();
+    bunko('local');
+    await syncLayersFromListing(listing(), 'webdav');
+    await syncLayersFromListing(listing(), 'webdav');
+    expect((await getLayerWithPages(db, 'v1', 'edit'))?.pages[0].blocks[0].lines).toEqual([
+      'なおし'
+    ]);
+    // Neither the corrections nor the primary they sit in go up wholesale.
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it("on a 0.8 bunko it goes into the account's own overlay: one PUT, no curated", async () => {
+    await legacyEdited();
+    bunko('push');
+    await syncLayersFromListing(listing(), 'webdav');
+    await syncLayersFromListing(listing(), 'webdav');
+    expect(uploadedPaths()).toEqual(['Series/Vol 1.edit.mokuro']);
+  });
+
+  it('a primary promoted from the shared curated layer is not "your corrections"', async () => {
+    await legacyEdited();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'curated',
+      name: 'Shared corrections',
+      kind: 'edit',
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+      cloud: { provider: 'webdav', size: 5, synced_at: '2026-09-01T00:00:00.000Z' },
+      pages: [pg('なおし'), pg('うえ', 'q.png')]
+    });
+    expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
+  });
 });

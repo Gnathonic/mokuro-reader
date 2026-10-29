@@ -18,7 +18,9 @@ import { db } from '$lib/catalog/db';
 import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
 import {
   buildLayerExportFile,
+  copyIntoEditLayer,
   createLayer,
+  forkIntoEditLayer,
   deleteLayer,
   listLayers,
   loadLayerPages,
@@ -26,6 +28,7 @@ import {
   promoteLayer,
   renameLayer,
   slugifyLayerId,
+  upsertLayerPages,
   layerKindForId,
   servedEngineOf,
   layerNameForId
@@ -510,5 +513,86 @@ describe('layerKindForId / layerNameForId', () => {
     expect(layerKindForId('ppocr-manga')).toBe('ocr');
     // Title-casing the slug would read "Ppocr Manga".
     expect(layerNameForId('ppocr-manga')).toBe('PP-OCR Manga');
+  });
+});
+
+describe('shared layers are read-only: an edit forks into `edit` (C3-R4)', () => {
+  async function seedCurated(pages = [pg('共有'), pg('ページ', 'q.png')]) {
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'curated',
+      name: 'Shared corrections',
+      kind: 'edit',
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-01T00:00:00.000Z',
+      cloud: { provider: 'webdav', size: 10, synced_at: '2026-10-01T00:00:00.000Z' },
+      pages
+    });
+  }
+
+  it('persistLayerPageEdit and upsertLayerPages refuse the curated layer and change nothing', async () => {
+    await seedCurated();
+    await expect(persistLayerPageEdit('v1', 'curated', 0, pg('x'))).rejects.toThrow(/read-only/);
+    await expect(
+      upsertLayerPages('v1', 'curated', {
+        name: 'x',
+        kind: 'ocr',
+        engine: 'x',
+        sourcePages: PAGES,
+        pages: new Map([[0, pg('x')]])
+      })
+    ).rejects.toThrow(/read-only/);
+    expect((await getLayerWithPages(db, 'v1', 'curated'))?.pages[0].blocks[0].lines).toEqual([
+      '共有'
+    ]);
+    // The display name is local: renaming stays allowed.
+    await renameLayer('v1', 'curated', 'Team fixes');
+    expect((await getLayerWithPages(db, 'v1', 'curated'))?.name).toBe('Team fixes');
+  });
+
+  it('forkIntoEditLayer creates `edit` from the source pages once, never stamped as synced', async () => {
+    await seedCurated();
+    expect(await forkIntoEditLayer('v1', 'curated')).toEqual({ created: true });
+    const edit = await getLayerWithPages(db, 'v1', 'edit');
+    expect(edit).toMatchObject({ kind: 'edit', name: 'Your corrections' });
+    expect(edit?.cloud).toBeUndefined();
+    expect(edit?.pages.map((p) => p.blocks[0].lines[0])).toEqual(['共有', 'ページ']);
+
+    // An existing edit layer is never overwritten by a fork.
+    await persistLayerPageEdit('v1', 'edit', 0, pg('私の'));
+    expect(await forkIntoEditLayer('v1', 'curated')).toEqual({ created: false });
+    expect((await getLayerWithPages(db, 'v1', 'edit'))?.pages[0].blocks[0].lines).toEqual(['私の']);
+    // The source is untouched either way.
+    expect((await getLayerWithPages(db, 'v1', 'curated'))?.pages[0].blocks[0].lines).toEqual([
+      '共有'
+    ]);
+  });
+
+  it('forkIntoEditLayer refuses a missing source and writes nothing', async () => {
+    await expect(forkIntoEditLayer('v1', 'curated')).rejects.toThrow(/not found/);
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
+  });
+
+  it('copyIntoEditLayer replaces the pages of an existing edit layer and keeps its identity', async () => {
+    await seedCurated();
+    await forkIntoEditLayer('v1', 'curated');
+    await persistLayerPageEdit('v1', 'edit', 0, pg('私の'));
+    await renameLayer('v1', 'edit', 'Mine');
+    const before = await getLayerWithPages(db, 'v1', 'edit');
+
+    await copyIntoEditLayer('v1', 'curated');
+    const after = await getLayerWithPages(db, 'v1', 'edit');
+    expect(after?.pages[0].blocks[0].lines).toEqual(['共有']);
+    expect(after?.name).toBe('Mine');
+    expect(after?.created_at).toBe(before?.created_at);
+    expect(after!.updated_at >= before!.updated_at).toBe(true);
+  });
+
+  it('copyIntoEditLayer makes the edit layer when there is none', async () => {
+    await seedCurated();
+    await copyIntoEditLayer('v1', 'curated');
+    expect((await getLayerWithPages(db, 'v1', 'edit'))?.pages[1].blocks[0].lines).toEqual([
+      'ページ'
+    ]);
   });
 });

@@ -466,6 +466,74 @@ unsynced edit. A 403 on a reserved layer file (`isReservedLayerSidecarPath`)
 is that file's refusal (`PERMISSION_DENIED`, remembered by layer-sync), never
 a read-only demotion of the WebDAV provider.
 
+**Layer ids at a glance** (reserved: `isReservedLayerId`). "Local" is
+`layerStaysLocal` — never pushed by layer-sync, never a backup sidecar, never
+exported or embedded:
+
+| Id                                | What it is                                                         | Written by         | Local?                           |
+| --------------------------------- | ------------------------------------------------------------------ | ------------------ | -------------------------------- |
+| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                    |
+| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched                  |
+| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local` |
+| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                           |
+| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                         |
+| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | no                               |
+
+So `edit` lives per account on a bunko that lists it in `per_user_layers`
+(the server serves each account its own file at the same path), stays on the
+device on any other bunko, and syncs as a normal layer file on plain storage
+and in cloud-direct folders (the folder owner's file). Hand-made ids stay
+shared library files (owner question Q1, default).
+
+**Shared layers are read-only; an edit forks into `edit`** (C3-R4).
+`forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
+and on a server that compiles its metadata also for `pre-upgrade*` and for
+server-stamped OCR rows (kind `ocr` with an `engine` and a `cloud` stamp) —
+on a shared library those are the one copy everyone reads. Edit mode on such a
+layer (`E`, quick actions, context menu) calls `forkIntoEditLayer`: it makes
+`edit` from the displayed layer's pages when there is none (no cloud stamp, so
+the push rule decides where it goes), switches the display to `edit` and
+opens the editor there ("Editing your corrections — the shared layer stays as
+it is"). An existing `edit` layer is never overwritten by a fork; the layer
+menu's **Copy to your corrections** (`copyIntoEditLayer`, after a confirm)
+replaces its pages on purpose. A layer SWAP from inside the editor (L, the
+toolbar strip) onto such a layer does not fork — the editor closes and says to
+press E — or L could never cycle past it. `persistLayerPageEdit` and
+`upsertLayerPages` refuse `curated` outright (`assertPagesWritable`); its name
+stays renamable (a display name is local). Edits on the primary are unchanged
+(primary + `edit`, above).
+
+**Publish / Unpublish** (C3-R5, `layer-sync.ts`). Shown only when
+`canPublishCurated(status, series)` (the picker: Publish on `edit`, Unpublish
+on `curated`; the badges read "Yours" and "Shared"). `publishCuratedLayer`
+uploads the `edit` layer's own serialization (with its `edited` block) to
+`<folder>/<stem>.curated.mokuro`, spelled as the LISTING spells the folder and
+archive — the only code that writes `curated` — then writes the local
+`curated` row with the same pages and the upload's stamp, so the next listing
+neither pulls nor pushes it; a 403 is `'refused'` and writes nothing.
+`unpublishCuratedLayer` deletes every listed copy, then the row; a 403 changes
+nothing (`'refused'`), any other failure leaves a tombstone flagged
+`unpublish`, the only tombstone whose retry may delete a `curated` file (and
+only for an account that may publish that series). Delete is never offered on
+`curated` (it could only hide the shared file here); the settings panel hides it
+too.
+
+**Migration guard on shared servers** (C3-R6). The one-time
+`migrateEditedPrimariesToEditLayers` stays local and additive and uploads
+nothing itself: the `edit` row it makes goes where the push rule sends it —
+nowhere on a 0.7.x bunko, the account's overlay on 0.8, the folder on plain
+storage. It skips a primary equal to the `curated` layer's pages (a promoted
+curated is not "your corrections"). And a personal row that stays local with
+unsynced edits (`keepsLocalEdits`) is never pulled over: on a 0.7.x bunko the
+listed `<Volume>.edit.mokuro` is the SHARED file, another account's work.
+
+mokuro-bunko must, for all of this: list `edit` in `/login/api/me`'s
+`per_user_layers` only when it keeps that file per account; report
+`permissions.curated.scope` (`all` / `owned` / `none`) for the signed-in role;
+answer a client PUT of `curated` without the right, or of `pre-upgrade*`, with
+403; and (cloud-direct) write `curated: true` into the marker when the folder's
+owner may publish.
+
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings
 toggle, or "Edit text" in the text-box context menu — all funnel through the
@@ -529,7 +597,9 @@ without its main and layers and queues no job there (whose output would land
 as `<stem>.<layer>_1.mokuro`).
 
 `.mokuro` files themselves stay upstream format regardless of which layer
-produced them (plus the `edited` block on `edit`-kind layers, above). A `gcv` or `tr-<lang>` layer from the removed
+produced them (plus the `edited` block on `edit`-kind layers, above — the
+reader's half of the provenance rule; the full provenance block is that
+cluster's to document). A `gcv` or `tr-<lang>` layer from the removed
 experimental client-side OCR/translation engines still lists, displays and
 deletes like any other layer — `KNOWN_ENGINE_IDS` (`reader/edit/layers.ts`)
 and `isTranslationLayerId` (`layer-kind.ts`) keep classifying those ids

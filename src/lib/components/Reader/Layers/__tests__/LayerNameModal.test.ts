@@ -5,6 +5,7 @@ import { tick } from 'svelte';
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 vi.mock('$lib/reader/edit/layers', () => ({
   buildLayerExportFile: vi.fn(),
+  copyIntoEditLayer: vi.fn(),
   createLayer: vi.fn(),
   deleteLayer: vi.fn(),
   promoteLayer: vi.fn(),

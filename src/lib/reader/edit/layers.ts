@@ -16,6 +16,7 @@
 import { db } from '$lib/catalog/db';
 import {
   deleteLayerRows,
+  getLayerMeta,
   getLayerPages,
   getLayerWithPages,
   layerTables,
@@ -30,6 +31,7 @@ import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
 import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
 import {
+  EDIT_LAYER_ID,
   isCuratedLayerId,
   isPersonalLayerId,
   isReservedLayerId,
@@ -155,6 +157,17 @@ function assertEditable(layerId: string): void {
   if (layerId === ORIGINAL_LAYER_ID) throw new Error('The original layer is read-only');
 }
 
+/**
+ * May this layer's PAGES be written here? Never the `original` snapshot, and
+ * never the shared `curated` layer: only Publish writes that (`layer-sync`),
+ * and an in-place edit would be pulled over by the next listing anyway. Its
+ * name stays the user's to change: a display name is local.
+ */
+function assertPagesWritable(layerId: string): void {
+  assertEditable(layerId);
+  if (isCuratedLayerId(layerId)) throw new Error('The shared corrections layer is read-only');
+}
+
 function byOriginalThenCreated(a: VolumeOcrLayer, b: VolumeOcrLayer): number {
   if (a.layer_id === ORIGINAL_LAYER_ID) return -1;
   if (b.layer_id === ORIGINAL_LAYER_ID) return 1;
@@ -231,13 +244,71 @@ export async function persistLayerPageEdit(
   pageIndex: number,
   page: Page
 ): Promise<void> {
-  assertEditable(layerId);
+  assertPagesWritable(layerId);
   await db.transaction('rw', layerTables(db), async () => {
     const row = await getLayerWithPages(db, volumeUuid, layerId);
     if (!row) throw new Error(`Layer ${layerId} not found`);
     const pages = row.pages.slice();
     pages[pageIndex] = page;
     await putLayerWithPages(db, { ...row, pages, updated_at: new Date().toISOString() });
+  });
+  noteLayerEdited();
+}
+
+/**
+ * An edit of a layer that must stay as it is (`forksOnEdit`) goes into the
+ * account's own `edit` layer: made here from `sourceLayerId`'s pages when
+ * there is none, with no cloud stamp, so the next sync pushes it wherever
+ * personal layers go up (`layerNeedsPush`). An existing `edit` layer holds
+ * corrections of its own and is never overwritten (`copyIntoEditLayer` does
+ * that, on the user's word).
+ */
+export async function forkIntoEditLayer(
+  volumeUuid: string,
+  sourceLayerId: string
+): Promise<{ created: boolean }> {
+  const created = await db.transaction('rw', layerTables(db), async () => {
+    if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return false;
+    const source = await getLayerPages(db, volumeUuid, sourceLayerId);
+    if (!source) throw new Error(`Layer ${sourceLayerId} not found`);
+    const now = new Date().toISOString();
+    await putLayerWithPages(db, {
+      volume_uuid: volumeUuid,
+      layer_id: EDIT_LAYER_ID,
+      name: layerNameForId(EDIT_LAYER_ID),
+      kind: 'edit',
+      created_at: now,
+      updated_at: now,
+      pages: structuredClone(source)
+    });
+    return true;
+  });
+  return { created };
+}
+
+/**
+ * "Copy to your corrections": `sourceLayerId`'s pages REPLACE the `edit`
+ * layer's (made when there is none). The row keeps its name, creation and
+ * cloud stamp, so the replacement is an edit since its last sync and goes up
+ * like any other. The caller has the user's confirmation.
+ */
+export async function copyIntoEditLayer(volumeUuid: string, sourceLayerId: string): Promise<void> {
+  await db.transaction('rw', layerTables(db), async () => {
+    const source = await getLayerPages(db, volumeUuid, sourceLayerId);
+    if (!source) throw new Error(`Layer ${sourceLayerId} not found`);
+    const existing = await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID);
+    const now = new Date().toISOString();
+    await putLayerWithPages(db, {
+      ...(existing ?? {
+        volume_uuid: volumeUuid,
+        layer_id: EDIT_LAYER_ID,
+        name: layerNameForId(EDIT_LAYER_ID),
+        kind: 'edit' as const,
+        created_at: now
+      }),
+      updated_at: now,
+      pages: structuredClone(source)
+    });
   });
   noteLayerEdited();
 }
@@ -392,7 +463,7 @@ export async function upsertLayerPages(
   layerId: string,
   opts: UpsertLayerPagesOptions
 ): Promise<VolumeOcrLayerWithPages | null> {
-  assertEditable(layerId);
+  assertPagesWritable(layerId);
   const now = new Date().toISOString();
   return db.transaction('rw', [db.volumes, ...layerTables(db)], async () => {
     const volume = await db.volumes.get(volumeUuid);

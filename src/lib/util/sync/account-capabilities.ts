@@ -18,6 +18,8 @@ type Capabilities = Pick<ProviderStatus, 'canAddFiles' | 'canModifyDelete'>;
 
 export const CANNOT_ADD_FILES_MESSAGE = "This account can't add files on this server";
 export const CANNOT_RENAME_MESSAGE = "This account can't rename on this server";
+export const CANNOT_PUBLISH_CURATED_MESSAGE =
+  "This account can't publish shared corrections for this volume";
 
 /** May this account upload archives, sidecars and layer files, and create folders? */
 export function accountCanAddFiles(status: Capabilities | null | undefined): boolean {
