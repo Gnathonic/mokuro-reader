@@ -8,11 +8,13 @@ const getBySeries = vi.fn();
 const getCache = vi.fn();
 const getAllFiles = vi.fn(() => [] as unknown[]);
 const getActiveProvider = vi.fn();
+const cacheGet = vi.fn((_path: string): unknown => null);
 
 vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: {
     fetchAll,
     getBySeries,
+    get: (path: string) => cacheGet(path),
     getCache,
     getAllFiles,
     allFiles: { subscribe: vi.fn() },
@@ -178,8 +180,17 @@ const resolveSyncedProgress = vi.fn(async () => {});
 vi.mock('$lib/metadata/hole-patch', () => ({
   resolveSyncedProgress: () => resolveSyncedProgress()
 }));
+const sweepInstalledVolumesForSidecarBackfill = vi.fn(async (_files?: unknown) => {});
 vi.mock('$lib/util/sync/sidecar-backfill', () => ({
-  sweepInstalledVolumesForSidecarBackfill: vi.fn(async () => {})
+  sweepInstalledVolumesForSidecarBackfill: (files?: unknown) =>
+    sweepInstalledVolumesForSidecarBackfill(files)
+}));
+const adoptCloudSeriesSpellings = vi.fn(
+  async (_files?: unknown, _providerType?: string): Promise<unknown[]> => []
+);
+vi.mock('$lib/util/sync/cloud-spelling-adoption', () => ({
+  adoptCloudSeriesSpellings: (files: unknown, providerType: string) =>
+    adoptCloudSeriesSpellings(files, providerType)
 }));
 
 const refreshCatalogIndex = vi.fn(async (_map: unknown, _providerType?: string) => {});
@@ -3960,6 +3971,8 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     unifiedCloudManager.refreshSeriesIndexesInBackground();
+    // Behind the spelling adoption (see below), so a turn or two later.
+    await vi.waitFor(() => expect(reconcileMissingMetadataFiles).toHaveBeenCalled());
 
     // The same listing the index refreshes ride, not a second fetch.
     expect(reconcileMissingMetadataFiles).toHaveBeenCalledTimes(1);
@@ -3997,6 +4010,99 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     expect(() => unifiedCloudManager.refreshSeriesIndexesInBackground()).not.toThrow();
+  });
+
+  it('runs the write-side passes only after the spelling adoption settled', async () => {
+    // A bunko that merged `one piece/` into `One Piece/`: the backfills must
+    // see the rows already renamed, or they would upload into the losing
+    // spelling in the same cycle.
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    const files = [cloudFile('One Piece/Volume 1.cbz')];
+    getAllFiles.mockReturnValue(files);
+    let release!: () => void;
+    adoptCloudSeriesSpellings.mockReturnValueOnce(
+      new Promise<unknown[]>((resolve) => (release = () => resolve([])))
+    );
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+
+    expect(adoptCloudSeriesSpellings).toHaveBeenCalledWith(files, 'webdav');
+    // The read-only refreshes do not wait.
+    expect(refreshSeriesIndexes).toHaveBeenCalledTimes(1);
+    expect(refreshCatalogIndex).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(reconcileMissingMetadataFiles).not.toHaveBeenCalled();
+    expect(sweepInstalledVolumesForSidecarBackfill).not.toHaveBeenCalled();
+
+    release();
+    await vi.waitFor(() =>
+      expect(sweepInstalledVolumesForSidecarBackfill).toHaveBeenCalledWith(files)
+    );
+    expect(reconcileMissingMetadataFiles).toHaveBeenCalledWith(files);
+  });
+
+  it('still runs the write-side passes when the adoption fails', async () => {
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    getAllFiles.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    adoptCloudSeriesSpellings.mockRejectedValueOnce(new Error('boom'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+
+    await vi.waitFor(() => expect(sweepInstalledVolumesForSidecarBackfill).toHaveBeenCalled());
+    expect(reconcileMissingMetadataFiles).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('existsInCloud / getCloudFile resolve the cloud spelling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cacheGet.mockImplementation(() => null);
+  });
+
+  function cloudFile(path: string): CloudFileMetadata {
+    return {
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: '2026-10-29T00:00:00.000Z',
+      size: 100
+    };
+  }
+
+  function listing(files: CloudFileMetadata[]) {
+    getAllFiles.mockReturnValue(files);
+    getBySeries.mockImplementation((series: string) =>
+      files.filter((file) => file.path.startsWith(`${series}/`))
+    );
+    cacheGet.mockImplementation((path: string) => files.find((f) => f.path === path) ?? null);
+  }
+
+  it('finds a volume under a case-merged folder', async () => {
+    const archive = cloudFile('One Piece/Vol 1.cbz');
+    listing([archive, cloudFile('One Piece/Vol 1.mokuro')]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(true);
+    expect(unifiedCloudManager.getCloudFile('one piece', 'vol 1')).toBe(archive);
+    expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 2')).toBe(false);
+    expect(unifiedCloudManager.getCloudFile('Berserk', 'Vol 1')).toBeNull();
+  });
+
+  it('answers the exact path first', async () => {
+    const exact = cloudFile('one piece/Vol 1.cbz');
+    listing([cloudFile('One Piece/Vol 1.cbz'), exact]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(exact);
+  });
+
+  it('never answers with a sidecar', async () => {
+    listing([cloudFile('One Piece/Vol 1.mokuro')]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(false);
   });
 });
 

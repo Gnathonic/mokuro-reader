@@ -77,6 +77,7 @@ import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
 import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 import { syncLayersFromListing } from '$lib/metadata/layer-sync';
+import { adoptCloudSeriesSpellings } from './cloud-spelling-adoption';
 import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
 import { cbzStemsOf, classifyMokuroSidecar } from './syncable-file';
 
@@ -361,32 +362,47 @@ class UnifiedCloudManager {
       void Promise.resolve(refreshCatalogIndex(listing, provider.type)).catch((error) =>
         console.warn('Catalog index refresh failed:', error)
       );
-      // The refreshes above READ the metadata files; this writes the ones that
-      // were never produced. A library uploaded by an older build (or whose
-      // facts were set before it was ever connected) has folders full of
-      // archives and no `series.json`, and no other path fixes it: the backup
-      // run only publishes indexes when it actually uploads something, and the
-      // facts listener only fires on a fresh edit. The listing in hand is
-      // exactly what the backfill needs, so it rides along here — stamped
-      // first, because the writes it queues are 2 s out and would each open
-      // with a second whole-account fetch of the listing already in hand.
+      // The refreshes above READ the metadata files; everything below WRITES,
+      // so it waits until a server that merged `one piece/` into `One Piece/`
+      // has had its spelling adopted locally (`cloud-spelling-adoption.ts`, a
+      // no-op on plain storage). Run first, the backfills would upload this
+      // device's rows into the losing spelling in the same cycle. A failed
+      // adoption only costs the rename; the writes still run.
+      const adoption = Promise.resolve(adoptCloudSeriesSpellings(files, provider.type)).catch(
+        (error) => console.warn('Cloud spelling adoption failed:', error)
+      );
+      // This writes the metadata files that were never produced. A library
+      // uploaded by an older build (or whose facts were set before it was ever
+      // connected) has folders full of archives and no `series.json`, and no
+      // other path fixes it: the backup run only publishes indexes when it
+      // actually uploads something, and the facts listener only fires on a
+      // fresh edit. The listing in hand is exactly what the backfill needs, so
+      // it rides along here — stamped first, because the writes it queues are
+      // 2 s out and would each open with a second whole-account fetch of the
+      // listing already in hand.
       markListingFresh();
-      void Promise.resolve(reconcileMissingMetadataFiles(files)).catch((error) =>
-        console.warn('Metadata backfill failed:', error)
+      void adoption.then(() =>
+        Promise.resolve(reconcileMissingMetadataFiles(files)).catch((error) =>
+          console.warn('Metadata backfill failed:', error)
+        )
       );
       // The per-VOLUME counterpart of the reconcile above: archives this
       // listing shows without their `.mokuro`/cover sidecars, for volumes
       // installed locally, get them uploaded from local data. Rides the same
       // settled listing for the same reason — the writes it queues must never
       // re-fetch the listing that scheduled them (see `sidecar-backfill.ts`).
-      void Promise.resolve(sweepInstalledVolumesForSidecarBackfill(files)).catch((error) =>
-        console.warn('Volume sidecar backfill failed:', error)
+      void adoption.then(() =>
+        Promise.resolve(sweepInstalledVolumesForSidecarBackfill(files)).catch((error) =>
+          console.warn('Volume sidecar backfill failed:', error)
+        )
       );
       // OCR layers (`<Volume>.<id>.mokuro`, the shape bunko's engines write)
       // for volumes this device holds rows for: pull the ones the listing
       // shows as changed, push the ones edited here since their last sync.
-      void Promise.resolve(syncLayersFromListing(listing, provider.type)).catch((error) =>
-        console.warn('Layer sync failed:', error)
+      void adoption.then(() =>
+        Promise.resolve(syncLayersFromListing(listing, provider.type)).catch((error) =>
+          console.warn('Layer sync failed:', error)
+        )
       );
     } catch (error) {
       console.warn('Series index refresh could not start:', error);
@@ -2266,16 +2282,26 @@ class UnifiedCloudManager {
    * Check if a volume exists in the current provider by path
    */
   existsInCloud(seriesTitle: string, volumeTitle: string): boolean {
-    const path = `${seriesTitle}/${volumeTitle}.cbz`;
-    return cacheManager.has(path);
+    return this.getCloudFile(seriesTitle, volumeTitle) !== null;
   }
 
   /**
-   * Get cloud file metadata by path from the current provider
+   * Get a volume's archive from the current provider's listing.
+   *
+   * The exact path first; failing that, the folder and the file are resolved
+   * the way every other lookup resolves them (`getManagedCloudFilesForVolume`):
+   * a server that merged `one piece/` into `One Piece/` must not read as "not
+   * backed up" to a device still holding the old spelling, or a backup would
+   * upload into the losing folder again.
    */
   getCloudFile(seriesTitle: string, volumeTitle: string): CloudFileMetadata | null {
-    const path = `${seriesTitle}/${volumeTitle}.cbz`;
-    return cacheManager.get(path) as CloudFileMetadata | null;
+    const exact = cacheManager.get(`${seriesTitle}/${volumeTitle}.cbz`) as CloudFileMetadata | null;
+    if (exact) return exact;
+    return (
+      this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle).find((file) =>
+        normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
+      ) ?? null
+    );
   }
 
   /**

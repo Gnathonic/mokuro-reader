@@ -112,6 +112,30 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 
+**mokuro-bunko specifics** (the WebDAV provider against a bunko server):
+
+- **Write access.** A server known to be bunko — `PUT_VERIFIED` recorded for
+  the base URL, or an OPTIONS answering `X-Mokuro-Put: verified` — skips the
+  generic OPTIONS `Allow` verdict in `checkWritePermissions`: bunko decides
+  each request itself and its `Allow` is advisory (older versions list no PUT
+  or MKCOL on collections). A real refusal still demotes through
+  `handleWriteFailure`.
+- **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
+  a `serverCompilesMetadata` provider every listing runs
+  `adoptCloudSeriesSpellings` (`util/sync/cloud-spelling-adoption.ts`): a local
+  series title with NO folder of its own, EXACTLY ONE folder folding onto it
+  (`normalizeVolumeTitleKey`), and at least one of its volumes listed there as a
+  `.cbz` takes the folder's spelling as a LOCAL-ONLY rename
+  (`commitLocalSeriesRename`, the local half of `executeRenameSeries`: rows,
+  stats, `series_metadata`, series reading state). The write-side listing
+  passes (`reconcileMissingMetadataFiles`, the sidecar backfill, layer sync)
+  wait for it in `refreshSeriesIndexesInBackground`; the index/catalog refreshes
+  do not. Backup enqueue (`resolveCloudFolderTitle`) and
+  `existsInCloud`/`getCloudFile` (exact path, then the folded fallback of
+  `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so nothing
+  uploads into the losing folder. Plain storage never adopts — there two
+  folders that fold alike are two folders.
+
 ### Svelte 5 Reactive Performance
 
 - `$derived` and `$derived.by()` run for EVERY component instance

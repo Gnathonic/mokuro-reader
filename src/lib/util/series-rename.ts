@@ -221,45 +221,19 @@ export async function executeRenameSeries(
 
   try {
     // Commit ONLY the volumes whose cloud files are fully at the new path.
-    await db.transaction('rw', [db.volumes], async () => {
-      for (const change of preview.indexedDbChanges) {
-        if (!renamedSet.has(change.volumeUuid)) continue;
-        await db.volumes.update(change.volumeUuid, {
-          series_title: change.newValue
-        });
-      }
-    });
-
-    // LocalStorage stats: commit for renamed volumes, and for stats-only
-    // entries with no DB row (volumes deleted locally AND absent from the
-    // cloud — the cloud-only gate already rejected everything else).
-    if (preview.localStorageChanges.length > 0) {
-      const { updateVolumeSeriesTitle } = await import('$lib/settings/volume-data');
-
-      for (const change of preview.localStorageChanges) {
-        if (!renamedSet.has(change.volumeUuid) && dbUuids.has(change.volumeUuid)) continue;
-        updateVolumeSeriesTitle(change.volumeUuid, change.newValue);
-      }
-    }
-
-    // Carry the per-series metadata (AniList link, tag, …) and the per-user
-    // reading state (read count, re-read suppression, push bookkeeping) to the
-    // new key — both are keyed by the series title. Non-fatal: the rename itself
-    // already succeeded.
-    if (renamedSet.size > 0) {
-      try {
-        const { moveSeriesMetadataKey } = await import('$lib/metadata/store');
-        await moveSeriesMetadataKey(oldTitle, newTitle);
-      } catch (error) {
-        console.warn('Failed to move series metadata after rename:', error);
-      }
-      try {
-        const { moveSeriesReadingStateKey } = await import('$lib/settings/series-data');
-        moveSeriesReadingStateKey(oldTitle, newTitle);
-      } catch (error) {
-        console.warn('Failed to move series reading state after rename:', error);
-      }
-    }
+    // Stats: for renamed volumes, and for stats-only entries with no DB row
+    // (volumes deleted locally AND absent from the cloud — the cloud-only gate
+    // already rejected everything else).
+    await commitLocalSeriesRename(
+      oldTitle,
+      newTitle,
+      preview.indexedDbChanges
+        .filter((change) => renamedSet.has(change.volumeUuid))
+        .map((change) => change.volumeUuid),
+      preview.localStorageChanges
+        .filter((change) => renamedSet.has(change.volumeUuid) || !dbUuids.has(change.volumeUuid))
+        .map((change) => change.volumeUuid)
+    );
 
     return {
       finalTitle: newTitle,
@@ -273,5 +247,51 @@ export async function executeRenameSeries(
   } catch (error) {
     console.error('Error executing series rename:', error);
     throw new Error('Failed to execute series rename');
+  }
+}
+
+/**
+ * The LOCAL half of a series rename: the volume rows, their synced stats, and
+ * the per-series records keyed by title. Touches nothing in the cloud — a user
+ * rename calls it only for volumes whose cloud files already moved, and cloud
+ * spelling adoption (`cloud-spelling-adoption.ts`) calls it because the cloud
+ * is already right.
+ *
+ * `statsUuids` defaults to the rows; a caller passes it to also move stats
+ * entries whose volume has no row on this device.
+ */
+export async function commitLocalSeriesRename(
+  oldTitle: string,
+  newTitle: string,
+  volumeUuids: string[],
+  statsUuids: string[] = volumeUuids
+): Promise<void> {
+  await db.transaction('rw', [db.volumes], async () => {
+    for (const volumeUuid of volumeUuids) {
+      await db.volumes.update(volumeUuid, { series_title: newTitle });
+    }
+  });
+
+  if (statsUuids.length > 0) {
+    const { updateVolumeSeriesTitle } = await import('$lib/settings/volume-data');
+    for (const volumeUuid of statsUuids) updateVolumeSeriesTitle(volumeUuid, newTitle);
+  }
+
+  // Carry the per-series metadata (AniList link, tag, …) and the per-user
+  // reading state (read count, re-read suppression, push bookkeeping) to the
+  // new key — both are keyed by the series title. Non-fatal: the rows already
+  // moved.
+  if (volumeUuids.length === 0) return;
+  try {
+    const { moveSeriesMetadataKey } = await import('$lib/metadata/store');
+    await moveSeriesMetadataKey(oldTitle, newTitle);
+  } catch (error) {
+    console.warn('Failed to move series metadata after rename:', error);
+  }
+  try {
+    const { moveSeriesReadingStateKey } = await import('$lib/settings/series-data');
+    moveSeriesReadingStateKey(oldTitle, newTitle);
+  } catch (error) {
+    console.warn('Failed to move series reading state after rename:', error);
   }
 }
