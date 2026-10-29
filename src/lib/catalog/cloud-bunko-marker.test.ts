@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ControlFileResult, ProviderStatus } from '$lib/util/sync/provider-interface';
+import type {
+  ControlFileResult,
+  ProviderStatus,
+  SyncProvider
+} from '$lib/util/sync/provider-interface';
 import {
   cloudBunkoHolder,
+  cloudBunkoMergesDuplicates,
   cloudBunkoStatus,
   compareMarkerRank,
   ingestMarkerRead,
@@ -9,6 +14,7 @@ import {
   markerRecords,
   onCloudBunkoMarkerChange,
   parseBunkoMarker,
+  refreshCloudBunkoMarker,
   resetCloudBunkoMarkersForTest,
   withCloudBunkoStatus,
   clearCloudBunkoMarkers,
@@ -64,6 +70,10 @@ function rec(over: Partial<MarkerNodeRecord> = {}): MarkerNodeRecord {
     epoch: 1,
     claimed_at: '2026-10-12T09:00:00Z',
     compiles: ['series.json', 'catalog.json'],
+    bunko_version: '0.8.0',
+    per_user_files: [],
+    curated: false,
+    dedup: false,
     changedAt: T0,
     ...over
   };
@@ -104,6 +114,99 @@ describe('parseBunkoMarker', () => {
 
   it('defaults a missing ttl to 900 s', () => {
     expect(parseBunkoMarker({ ...marker(), ttl_s: undefined })?.ttl_s).toBe(900);
+  });
+
+  it('keeps bunko_version, per_user_files, curated and dedup', () => {
+    const m = parseBunkoMarker(
+      marker({
+        per_user_files: ['volume-data.json', 'history/'],
+        curated: true,
+        dedup: true
+      })
+    );
+    expect(m).toMatchObject({
+      bunko_version: '0.8.0',
+      per_user_files: ['volume-data.json', 'history/'],
+      curated: true,
+      dedup: true
+    });
+  });
+
+  it('a 0.7 marker (no new keys) reads as none of them', () => {
+    const m = parseBunkoMarker(marker({ bunko_version: undefined }));
+    expect(m).toMatchObject({
+      bunko_version: '',
+      per_user_files: [],
+      curated: false,
+      dedup: false
+    });
+  });
+
+  it('garbage in the new keys reads as their defaults', () => {
+    const m = parseBunkoMarker(
+      marker({ bunko_version: 8, per_user_files: 'history/', curated: 'yes', dedup: 1 })
+    );
+    expect(m).toMatchObject({
+      bunko_version: '',
+      per_user_files: [],
+      curated: false,
+      dedup: false
+    });
+    // A mixed list is not trusted at all: a gate must never read half a list.
+    expect(parseBunkoMarker(marker({ per_user_files: ['history/', 3] }))?.per_user_files).toEqual(
+      []
+    );
+  });
+
+  it("parses the shape of bunko's marker-active.json contract fixture", () => {
+    // interop/contract/bunko/marker-active.json, body, with the 0.8 keys
+    // (B2.6 per_user_files, B3.6 curated, B5.7 dedup). The fixture blesses
+    // its version as the "0.0.0" sentinel.
+    const body = {
+      version: 1,
+      kind: 'mokuro-bunko',
+      instance_id: '<id-1>',
+      boot_id: '<id-2>',
+      instance_name: 'contract-host',
+      bunko_version: '0.0.0',
+      epoch: 1,
+      claimed_at: '2000-01-01T00:00:00.000Z',
+      heartbeat_at: '2000-01-01T00:00:00.000Z',
+      ttl_s: 900,
+      state: 'active',
+      compiles: ['series.json', 'catalog.json'],
+      ocr: true,
+      queue: '.mokuro-queue.json',
+      took_over_from: null,
+      per_user_files: [
+        'goals.json',
+        'profiles.json',
+        'volume-data.json',
+        'positions.json',
+        'history/'
+      ],
+      curated: true,
+      dedup: true
+    };
+    const m = parseBunkoMarker(body);
+    expect(m).toEqual({
+      version: 1,
+      instance_id: '<id-1>',
+      instance_name: 'contract-host',
+      bunko_version: '0.0.0',
+      epoch: 1,
+      claimed_at: '2000-01-01T00:00:00.000Z',
+      heartbeat_at: '2000-01-01T00:00:00.000Z',
+      ttl_s: 900,
+      state: 'active',
+      compiles: ['series.json', 'catalog.json'],
+      ocr: true,
+      queue: '.mokuro-queue.json',
+      per_user_files: body.per_user_files,
+      curated: true,
+      dedup: true
+    });
+    expect(m?.per_user_files).toContain('history/');
   });
 });
 
@@ -264,5 +367,190 @@ describe('the marker store', () => {
     ).toBe(true);
     clearCloudBunkoMarkers('mega');
     expect(withCloudBunkoStatus('mega', base).cloudBunko).toBeUndefined();
+  });
+});
+
+describe('the holder carries the marker v2 keys', () => {
+  it('holder reports bunkoVersion, perUserFiles, dedup and curated of the top fresh marker', async () => {
+    await ingestMarkerRead(
+      'google-drive',
+      read(
+        {
+          id: 'low',
+          etag: '1',
+          body: marker({ instance_id: 'bbb', epoch: 2, bunko_version: '0.7.3', dedup: true })
+        },
+        {
+          id: 'top',
+          etag: '1',
+          body: marker({
+            instance_id: 'ccc',
+            epoch: 4,
+            bunko_version: '0.8.0-beta.1',
+            per_user_files: ['positions.json', 'history/'],
+            curated: true
+          })
+        }
+      )
+    );
+    expect(cloudBunkoStatus('google-drive')?.holder).toEqual({
+      instanceId: 'ccc',
+      instanceName: 'nas',
+      heartbeatAt: new Date(T0).toISOString(),
+      bunkoVersion: '0.8.0-beta.1',
+      perUserFiles: ['positions.json', 'history/'],
+      dedup: false,
+      curated: true
+    });
+  });
+
+  it('a record stored by an earlier build (no v2 keys) still loads, as none of them', () => {
+    const legacy: Record<string, unknown> = { ...rec({ changedAt: T0 }) };
+    delete legacy.bunko_version;
+    delete legacy.per_user_files;
+    delete legacy.curated;
+    delete legacy.dedup;
+    localStorage.setItem('cloud-bunko-marker:v1', JSON.stringify({ mega: [legacy] }));
+    resetCloudBunkoMarkersForTest();
+    expect(markerRecords('mega')).toHaveLength(1);
+    expect(cloudBunkoStatus('mega')?.holder).toMatchObject({
+      instanceId: 'aaa',
+      bunkoVersion: '',
+      perUserFiles: [],
+      dedup: false,
+      curated: false
+    });
+  });
+
+  it('a stored record with a wrongly typed v2 key is dropped', () => {
+    localStorage.setItem(
+      'cloud-bunko-marker:v1',
+      JSON.stringify({
+        mega: [
+          { ...rec({ id: 'bad1' }), per_user_files: 'history/' },
+          { ...rec({ id: 'bad2' }), dedup: 'yes' },
+          { ...rec({ id: 'ok' }) }
+        ]
+      })
+    );
+    resetCloudBunkoMarkersForTest();
+    expect(markerRecords('mega').map((r) => r.id)).toEqual(['ok']);
+  });
+
+  it('the v2 keys survive a reload', async () => {
+    await ingestMarkerRead(
+      'onedrive',
+      read({ id: 'n1', etag: 'v1', body: marker({ per_user_files: ['history/'], dedup: true }) })
+    );
+    resetCloudBunkoMarkersForTest();
+    expect(cloudBunkoHolder('onedrive')).toMatchObject({
+      per_user_files: ['history/'],
+      dedup: true
+    });
+  });
+});
+
+describe('cloudBunkoMergesDuplicates', () => {
+  it('is true only while the fresh top-ranked holder says dedup', async () => {
+    expect(cloudBunkoMergesDuplicates('mega')).toBe(false);
+    await ingestMarkerRead('mega', read({ id: 'n1', etag: 'v1', body: marker({ dedup: true }) }));
+    await ingestMarkerRead('mega', read({ id: 'n1', etag: 'v2', body: marker({ dedup: true }) }));
+    expect(cloudBunkoMergesDuplicates('mega')).toBe(true);
+    // Stale: the marker has not moved for 2 × ttl.
+    vi.setSystemTime(T0 + 2 * TTL * 1000);
+    expect(cloudBunkoMergesDuplicates('mega')).toBe(false);
+  });
+
+  it('is false once the holder released its lease', async () => {
+    await ingestMarkerRead('mega', read({ id: 'n1', etag: 'v1', body: marker({ dedup: true }) }));
+    await ingestMarkerRead(
+      'mega',
+      read({ id: 'n1', etag: 'v2', body: marker({ dedup: true, state: 'released' }) })
+    );
+    expect(cloudBunkoMergesDuplicates('mega')).toBe(false);
+  });
+
+  it('a lower-ranked marker saying dedup does not count', async () => {
+    await ingestMarkerRead(
+      'mega',
+      read(
+        { id: 'low', etag: '1', body: marker({ instance_id: 'bbb', epoch: 2, dedup: true }) },
+        { id: 'top', etag: '1', body: marker({ instance_id: 'ccc', epoch: 4, dedup: false }) }
+      )
+    );
+    expect(cloudBunkoMergesDuplicates('mega')).toBe(false);
+  });
+});
+
+describe('refreshCloudBunkoMarker', () => {
+  function provider(type: string, files: { current: ControlFileResult }) {
+    const readControlFile = vi.fn(async (_name: string, opts?: { ifNoneMatch?: string }) => {
+      const current = files.current;
+      if (current && current !== 'not-modified' && opts?.ifNoneMatch === current.etag) {
+        return 'not-modified' as const;
+      }
+      return current;
+    });
+    return { provider: { type, readControlFile } as unknown as SyncProvider, readControlFile };
+  }
+
+  it('reads the marker once per change, sharing one etag per scope', async () => {
+    const files = { current: read({ id: 'n1', etag: 'v1', body: marker({ dedup: true }) }) };
+    const p = provider('mega', files);
+    expect(await refreshCloudBunkoMarker(p.provider)).toBe(true);
+    expect(p.readControlFile).toHaveBeenLastCalledWith('.mokuro-bunko.json', {
+      ifNoneMatch: undefined
+    });
+    expect(cloudBunkoHolder('mega')?.dedup).toBe(true);
+    // Another caller (a second provider object, same scope) asks with the etag.
+    const other = provider('mega', files);
+    expect(await refreshCloudBunkoMarker(other.provider)).toBe(true);
+    expect(other.readControlFile).toHaveBeenLastCalledWith('.mokuro-bunko.json', {
+      ifNoneMatch: 'n1=v1'
+    });
+  });
+
+  it('no marker forgets the scope and its etag', async () => {
+    const files: { current: ControlFileResult } = {
+      current: read({ id: 'n1', etag: 'v1', body: marker() })
+    };
+    const p = provider('google-drive', files);
+    await refreshCloudBunkoMarker(p.provider);
+    files.current = null;
+    await refreshCloudBunkoMarker(p.provider);
+    expect(cloudBunkoStatus('google-drive')).toBeUndefined();
+    files.current = read({ id: 'n1', etag: 'v1', body: marker() });
+    await refreshCloudBunkoMarker(p.provider);
+    expect(p.readControlFile).toHaveBeenLastCalledWith('.mokuro-bunko.json', {
+      ifNoneMatch: undefined
+    });
+    expect(cloudBunkoStatus('google-drive')?.fresh).toBe(true);
+  });
+
+  it('a cleared scope asks again from scratch', async () => {
+    const files = { current: read({ id: 'n1', etag: 'v1', body: marker() }) };
+    const p = provider('mega', files);
+    await refreshCloudBunkoMarker(p.provider);
+    clearCloudBunkoMarkers('mega');
+    await refreshCloudBunkoMarker(p.provider);
+    expect(p.readControlFile).toHaveBeenLastCalledWith('.mokuro-bunko.json', {
+      ifNoneMatch: undefined
+    });
+    expect(cloudBunkoStatus('mega')?.fresh).toBe(true);
+  });
+
+  it('swallows a failed read and keeps what was known', async () => {
+    const files = { current: read({ id: 'n1', etag: 'v1', body: marker() }) };
+    const p = provider('mega', files);
+    await refreshCloudBunkoMarker(p.provider);
+    p.readControlFile.mockRejectedValueOnce(new Error('offline'));
+    expect(await refreshCloudBunkoMarker(p.provider)).toBe(false);
+    expect(cloudBunkoStatus('mega')?.fresh).toBe(true);
+  });
+
+  it('a provider that cannot read control files is a no-op', async () => {
+    const p = { type: 'filesystem' } as unknown as SyncProvider;
+    expect(await refreshCloudBunkoMarker(p)).toBe(false);
+    expect(cloudBunkoStatus('filesystem')).toBeUndefined();
   });
 });

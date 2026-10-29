@@ -29,12 +29,18 @@
  * Records persist in localStorage per provider, so a cold offline start keeps
  * the last verdict, and an expiry timer re-announces the verdict the moment a
  * fresh marker goes stale (the provider manager recomputes its status then).
+ *
+ * Marker v2 (bunko 0.8) adds `per_user_files`, `curated` and `dedup` beside
+ * `bunko_version`, all optional on the wire. They describe the lease HOLDER's
+ * rules, so they reach the views through `holder`, never from any other node.
  */
 import type {
   CloudBunkoStatus,
   ControlFileResult,
-  ProviderStatus
+  ProviderStatus,
+  SyncProvider
 } from '$lib/util/sync/provider-interface';
+import { BUNKO_MARKER_NAME } from '$lib/util/sync/syncable-file';
 
 /** Files a marker may say Bunko compiles. */
 export const COMPILED_METADATA_FILES = ['series.json', 'catalog.json'] as const;
@@ -56,6 +62,14 @@ export interface BunkoMarker {
   compiles: string[];
   ocr: boolean;
   queue: string;
+  /** Bunko's own version string; '' when the marker names none. */
+  bunko_version: string;
+  /** Files Bunko keeps per account (`history/`: a per-account tree); [] when absent. */
+  per_user_files: string[];
+  /** Bunko keeps a shared `curated` layer this folder's owner may publish. */
+  curated: boolean;
+  /** Bunko merges duplicate folders and files itself. */
+  dedup: boolean;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -83,8 +97,17 @@ export function parseBunkoMarker(json: unknown): BunkoMarker | null {
       ? json.compiles.filter((f): f is string => typeof f === 'string')
       : [],
     ocr: json.ocr === true,
-    queue: typeof json.queue === 'string' ? json.queue : ''
+    queue: typeof json.queue === 'string' ? json.queue : '',
+    bunko_version: typeof json.bunko_version === 'string' ? json.bunko_version : '',
+    per_user_files: stringList(json.per_user_files),
+    curated: json.curated === true,
+    dedup: json.dedup === true
   };
+}
+
+/** A list of strings, else [] — a gate must never act on half of a garbled list. */
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) && v.every((f) => typeof f === 'string') ? [...v] : [];
 }
 
 /** What this device keeps about one marker node. */
@@ -101,6 +124,10 @@ export interface MarkerNodeRecord {
   epoch: number;
   claimed_at: string;
   compiles: string[];
+  bunko_version: string;
+  per_user_files: string[];
+  curated: boolean;
+  dedup: boolean;
   /** Local ms this device first saw `version`; null = no history (cold start). */
   changedAt: number | null;
 }
@@ -205,6 +232,10 @@ export function foldMarkerNodes(
       epoch: marker.epoch,
       claimed_at: marker.claimed_at,
       compiles: marker.compiles,
+      bunko_version: marker.bunko_version,
+      per_user_files: marker.per_user_files,
+      curated: marker.curated,
+      dedup: marker.dedup,
       changedAt
     };
   });
@@ -219,7 +250,11 @@ export function markerStatusOf(recs: readonly MarkerNodeRecord[], now: number): 
       ? {
           instanceId: top.instance_id,
           instanceName: top.instance_name,
-          heartbeatAt: top.heartbeat_at
+          heartbeatAt: top.heartbeat_at,
+          bunkoVersion: top.bunko_version,
+          perUserFiles: [...top.per_user_files],
+          dedup: top.dedup,
+          curated: top.curated
         }
       : null
   };
@@ -232,11 +267,22 @@ const listeners = new Set<() => void>();
 let expiryTimer: ReturnType<typeof setTimeout> | null = null;
 let lastAnnounced = '';
 let clock: () => number = () => Date.now();
+/** The marker set's version last read per scope, shared by every caller of `refreshCloudBunkoMarker`. */
+const markerEtags = new Map<string, string>();
 
+/**
+ * A stored record. The v2 keys may be absent (stored by an earlier build:
+ * `normalizeRecord` fills their defaults) but are refused when wrongly typed.
+ */
 function isRecord(v: unknown): v is MarkerNodeRecord {
-  const r = v as MarkerNodeRecord;
+  const r = v as Partial<MarkerNodeRecord>;
   return (
     isObject(v) &&
+    (r.bunko_version === undefined || typeof r.bunko_version === 'string') &&
+    (r.per_user_files === undefined ||
+      (Array.isArray(r.per_user_files) && r.per_user_files.every((f) => typeof f === 'string'))) &&
+    (r.curated === undefined || typeof r.curated === 'boolean') &&
+    (r.dedup === undefined || typeof r.dedup === 'boolean') &&
     typeof r.id === 'string' &&
     typeof r.version === 'string' &&
     typeof r.instance_id === 'string' &&
@@ -251,6 +297,16 @@ function isRecord(v: unknown): v is MarkerNodeRecord {
   );
 }
 
+function normalizeRecord(r: MarkerNodeRecord): MarkerNodeRecord {
+  return {
+    ...r,
+    bunko_version: r.bunko_version ?? '',
+    per_user_files: r.per_user_files ?? [],
+    curated: r.curated ?? false,
+    dedup: r.dedup ?? false
+  };
+}
+
 function load(): Map<string, MarkerNodeRecord[]> {
   if (records) return records;
   records = new Map();
@@ -259,7 +315,7 @@ function load(): Map<string, MarkerNodeRecord[]> {
     const parsed = raw ? (JSON.parse(raw) as unknown) : null;
     if (isObject(parsed)) {
       for (const [scope, list] of Object.entries(parsed)) {
-        if (Array.isArray(list)) records.set(scope, list.filter(isRecord));
+        if (Array.isArray(list)) records.set(scope, list.filter(isRecord).map(normalizeRecord));
       }
     }
   } catch {
@@ -358,6 +414,40 @@ export function cloudBunkoHolder(scope: string): MarkerNodeRecord | null {
   return topFreshMarker(load().get(scope) ?? [], clock());
 }
 
+/**
+ * Does the lease holder for `scope` merge duplicate folders and files itself?
+ * Only the top-ranked FRESH marker counts: a stale or released Bunko merges
+ * nothing, and a lower-ranked one does not run the library.
+ */
+export function cloudBunkoMergesDuplicates(scope: string): boolean {
+  return cloudBunkoHolder(scope)?.dedup === true;
+}
+
+/**
+ * Read the provider's marker (If-None-Match against the last read of ANY
+ * caller in this scope) and record it. False when the read did not land: no
+ * `readControlFile`, or an error — swallowed, so what was known stands and
+ * ages towards stale as usual.
+ */
+export async function refreshCloudBunkoMarker(provider: SyncProvider): Promise<boolean> {
+  if (!provider.readControlFile) return false;
+  const scope = provider.type;
+  try {
+    const result = await provider.readControlFile(BUNKO_MARKER_NAME, {
+      ifNoneMatch: markerEtags.get(scope)
+    });
+    if (result !== 'not-modified') {
+      if (result) markerEtags.set(scope, result.etag);
+      else markerEtags.delete(scope);
+    }
+    await ingestMarkerRead(scope, result);
+    return true;
+  } catch (error) {
+    console.debug('[cloud-bunko-marker] marker read failed:', error);
+    return false;
+  }
+}
+
 /** The marker verdict for `scope`, or undefined when no marker was ever read there. */
 export function cloudBunkoStatus(scope: string): CloudBunkoStatus | undefined {
   const recs = load().get(scope);
@@ -388,8 +478,14 @@ export function onCloudBunkoMarkerChange(listener: () => void): () => void {
 /** Forget the marker of one scope (logout), or of every scope. */
 export function clearCloudBunkoMarkers(scope?: string): void {
   const map = load();
-  if (scope === undefined) map.clear();
-  else map.delete(scope);
+  if (scope === undefined) {
+    map.clear();
+    markerEtags.clear();
+  } else {
+    map.delete(scope);
+    // Else the next read answers not-modified and the forgotten marker never returns.
+    markerEtags.delete(scope);
+  }
   save();
   reannounce();
 }
@@ -399,6 +495,7 @@ export function resetCloudBunkoMarkersForTest(now?: () => number): void {
   if (expiryTimer) clearTimeout(expiryTimer);
   expiryTimer = null;
   records = null;
+  markerEtags.clear();
   listeners.clear();
   lastAnnounced = '';
   clock = now ?? (() => Date.now());

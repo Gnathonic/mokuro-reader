@@ -423,6 +423,13 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   Every provider's `getStatus()` folds it in (`withCloudBunkoStatus`):
   `serverCompilesMetadata = reported || anyMarkerFresh`, and the provider
   manager republishes on every verdict change and at expiry.
+  Marker v2 (bunko 0.8) adds `per_user_files`, `curated` and `dedup` beside
+  `bunko_version`, all optional (absent = '' / [] / false; a list with a
+  non-string entry reads as []). They reach `cloudBunko.holder` from the
+  top-ranked FRESH marker only; records stored before v2 load with those
+  defaults. Nothing gates on them yet. `cloudBunkoMergesDuplicates(scope)` is
+  the holder's `dedup`. Read the marker through `refreshCloudBunkoMarker`:
+  one If-None-Match etag per scope, shared by every caller.
 - `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
   queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
   `instance_id` names the top-ranked fresh marker. The cloud poller keeps
