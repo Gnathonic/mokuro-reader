@@ -670,6 +670,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     return this.getAllDriveFiles();
   }
 
+  revision(): object {
+    return this.cache.revision();
+  }
+
   /**
    * Fetch fresh data from Google Drive and populate cache
    */

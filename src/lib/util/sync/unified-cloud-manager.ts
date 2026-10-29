@@ -173,6 +173,18 @@ export interface SeriesRenameResult {
   failures: SeriesRenameFailure[];
 }
 
+/** See `UnifiedCloudManager.listingFolderIndex`. */
+interface ListingFolderIndex {
+  /** The cache revision it was built from; `null` is never reused. */
+  revision: object | null;
+  /** The first segment of every listed path — the exact-folder test. */
+  firstSegments: Set<string>;
+  /** Folded name → the folders holding a file directly, naturally sorted. */
+  foldedFolders: Map<string, string[]>;
+  /** `<folded folder>\n<folded volume>` for every listed `.cbz`, at any depth. */
+  foldedArchives: Set<string>;
+}
+
 function normalizeCloudPath(path: string): string {
   return path.replace(/^\/+|\/+$/g, '');
 }
@@ -1502,46 +1514,78 @@ class UnifiedCloudManager {
    * trigger, which carries the local composed title: the gate finds no archive,
    * the write is skipped, and the folder's facts never move again.
    *
-   * Exact match first, so the ordinary case costs one cache read and nothing
-   * else, and the answer is always the LISTING's spelling — the folder name is
-   * the path a write goes to, and is never derived. Unresolvable (a series the
-   * cloud does not hold) returns the title unchanged, so the gates downstream
-   * skip exactly as they did before.
+   * Exact match first, and the answer is always the LISTING's spelling — the
+   * folder name is the path a write goes to, and is never derived. Unresolvable
+   * (a series the cloud does not hold) returns the title unchanged, so the gates
+   * downstream skip exactly as they did before. Both halves read the memoised
+   * {@link listingFolderIndex}: this runs once per volume in a backup enqueue.
    */
   resolveCloudFolderTitle(seriesTitle: string): string {
-    if (this.getCloudVolumesBySeries(seriesTitle).length > 0) return seriesTitle;
+    const index = this.listingFolderIndex();
+    // `getBySeries(t)` is non-empty exactly when a listed path starts `t/`, i.e.
+    // has `t` as its first segment — unless `t` itself holds a `/`.
+    const exact = seriesTitle.includes('/')
+      ? this.getCloudVolumesBySeries(seriesTitle).length > 0
+      : index.firstSegments.has(seriesTitle);
+    if (exact) return seriesTitle;
 
     const key = normalizeVolumeTitleKey(seriesTitle);
     if (!key) return seriesTitle;
-    const candidates = [...this.cloudFolderNames()].filter(
-      (title) => normalizeVolumeTitleKey(title) === key
-    );
-    if (candidates.length === 0) return seriesTitle;
+    return index.foldedFolders.get(key)?.[0] ?? seriesTitle;
+  }
+
+  /** The {@link listingFolderIndex} of the cache revision it was built from. */
+  private folderIndex: ListingFolderIndex | null = null;
+
+  /**
+   * The folder-level facts the folded lookups need, derived in ONE pass over
+   * the listing and memoised on the active cache's revision (`cacheManager.
+   * revision()`, replaced by every add/remove/install — never stale by a
+   * coalesced emission). Without it, every `existsInCloud` miss and every
+   * backup enqueue split every listed path: ~7 s for 1,000 volumes against a
+   * 10k-file listing, on the main thread, inside a click handler.
+   */
+  private listingFolderIndex(): ListingFolderIndex {
+    const revision = cacheManager.revision();
+    if (revision !== null && this.folderIndex?.revision === revision) return this.folderIndex;
+
+    const firstSegments = new Set<string>();
+    const foldedFolders = new Map<string, string[]>();
+    const foldedArchives = new Set<string>();
+    for (const file of this.getAllCloudVolumes()) {
+      const slash = file.path.indexOf('/');
+      if (slash >= 0) firstSegments.add(file.path.slice(0, slash));
+
+      const path = normalizeCloudPath(file.path);
+      const parts = path.split('/');
+      if (parts.length < 2 || !parts[0]) continue;
+      const folderKey = normalizeVolumeTitleKey(parts[0]);
+      // Every folder the listing shows a file in DIRECTLY — archives, sidecars,
+      // covers alike. Wider than `cloudSeriesTitles` (which wants a `.cbz`)
+      // because the callers of `resolveCloudFolderTitle` include the clean-up
+      // paths: a folder whose last archive was just deleted still has a
+      // `series.json` to retire, and it has to be findable by the title the
+      // caller holds. Every gate downstream still asks for archives
+      // separately, so this cannot make a write happen for an empty folder.
+      if (parts.length === 2) {
+        const folders = foldedFolders.get(folderKey);
+        if (!folders) foldedFolders.set(folderKey, [parts[0]]);
+        else if (!folders.includes(parts[0])) folders.push(parts[0]);
+      }
+      if (path.toLowerCase().endsWith('.cbz')) {
+        const base = stripManagedFileExtension(path);
+        const name = base.slice(base.lastIndexOf('/') + 1);
+        foldedArchives.add(`${folderKey}\n${normalizeVolumeTitleKey(name)}`);
+      }
+    }
     // Two folders CAN fold alike ("One Piece" beside "ONE  PIECE" on a
     // case-sensitive backend). Neither is more correct, but the pick must be
     // stable across listings — alternating would publish half an index to each —
     // so it is ordered, not first-seen.
-    return candidates.sort(naturalSort)[0];
-  }
+    for (const folders of foldedFolders.values()) folders.sort(naturalSort);
 
-  /**
-   * Every folder the listing shows a file in — archives, sidecars, covers alike.
-   *
-   * Wider than `cloudSeriesTitles` (which wants a `.cbz`) because the callers of
-   * {@link resolveCloudFolderTitle} include the clean-up paths: a folder whose
-   * last archive was just deleted still has a `series.json` to retire, and it
-   * has to be findable by the title the caller holds. Every gate downstream
-   * still asks for archives separately, so widening this cannot make a write
-   * happen for an empty folder.
-   */
-  private cloudFolderNames(): Set<string> {
-    const folders = new Set<string>();
-    for (const file of this.getAllCloudVolumes()) {
-      const parts = normalizeCloudPath(file.path).split('/');
-      if (parts.length !== 2 || !parts[0]) continue;
-      folders.add(parts[0]);
-    }
-    return folders;
+    this.folderIndex = { revision, firstSegments, foldedFolders, foldedArchives };
+    return this.folderIndex;
   }
 
   /**
@@ -2297,6 +2341,19 @@ class UnifiedCloudManager {
   getCloudFile(seriesTitle: string, volumeTitle: string): CloudFileMetadata | null {
     const exact = cacheManager.get(`${seriesTitle}/${volumeTitle}.cbz`) as CloudFileMetadata | null;
     if (exact) return exact;
+    // Any archive the lookup below can return sits in a folder folding onto
+    // the series and carries a name folding onto the volume. When the index
+    // lists no such pair — every volume not backed up yet — that is the
+    // answer, without two whole-listing series filters per volume.
+    if (
+      !seriesTitle.includes('/') &&
+      !volumeTitle.includes('/') &&
+      !this.listingFolderIndex().foldedArchives.has(
+        `${normalizeVolumeTitleKey(seriesTitle)}\n${normalizeVolumeTitleKey(volumeTitle)}`
+      )
+    ) {
+      return null;
+    }
     return (
       this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle).find((file) =>
         normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')

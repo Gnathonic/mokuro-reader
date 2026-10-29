@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { naturalSort } from '$lib/util/natural-sort';
 import { unifiedSyncService } from './unified-sync-service';
 import type { CloudFileMetadata } from './provider-interface';
 
@@ -9,6 +10,8 @@ const getCache = vi.fn();
 const getAllFiles = vi.fn(() => [] as unknown[]);
 const getActiveProvider = vi.fn();
 const cacheGet = vi.fn((_path: string): unknown => null);
+/** The active cache's revision token; `null` (no memo) unless a test pins one. */
+const cacheRevision = vi.fn((): object | null => null);
 
 vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: {
@@ -17,6 +20,7 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
     get: (path: string) => cacheGet(path),
     getCache,
     getAllFiles,
+    revision: () => cacheRevision(),
     allFiles: { subscribe: vi.fn() },
     isFetchingState: { subscribe: vi.fn() }
   }
@@ -4103,6 +4107,80 @@ describe('existsInCloud / getCloudFile resolve the cloud spelling', () => {
     listing([cloudFile('One Piece/Vol 1.mokuro')]);
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(false);
+  });
+});
+
+describe('folded lookups read a per-listing index, not the whole listing per call', () => {
+  // `existsInCloud` runs once per volume in "back up all" and the removal
+  // dialog, `resolveCloudFolderTitle` once per enqueued volume. A miss used to
+  // split every listed path (and filter every series) per call: ~7 s for 1,000
+  // volumes against a 10k-file listing, on the main thread, in a click handler.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cacheGet.mockImplementation(() => null);
+    cacheRevision.mockImplementation(() => null);
+  });
+
+  function cloudFile(path: string): CloudFileMetadata {
+    return { provider: 'webdav', fileId: path, path, modifiedTime: 't', size: 1 };
+  }
+
+  function listing(files: CloudFileMetadata[]) {
+    getAllFiles.mockReturnValue(files);
+    getBySeries.mockImplementation((series: string) =>
+      files.filter((file) => file.path.startsWith(`${series}/`))
+    );
+    cacheGet.mockImplementation((path: string) => files.find((f) => f.path === path) ?? null);
+  }
+
+  it('builds the index once per cache revision', async () => {
+    const revision = {};
+    cacheRevision.mockImplementation(() => revision);
+    listing([cloudFile('One Piece/Vol 1.cbz'), cloudFile('Berserk/Vol 1.cbz')]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    for (let i = 0; i < 50; i++) {
+      expect(unifiedCloudManager.existsInCloud(`Local ${i}`, 'Vol 1')).toBe(false);
+      expect(unifiedCloudManager.existsInCloud('one piece', `Vol ${i + 2}`)).toBe(false);
+      expect(unifiedCloudManager.resolveCloudFolderTitle(`local ${i}`)).toBe(`local ${i}`);
+      expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('One Piece');
+      expect(unifiedCloudManager.resolveCloudFolderTitle('Berserk')).toBe('Berserk');
+    }
+    expect(getAllFiles).toHaveBeenCalledTimes(1);
+    // Misses never fall through to a whole-listing series filter.
+    expect(getBySeries).not.toHaveBeenCalled();
+    // A real folded match still resolves through the full lookup.
+    expect(unifiedCloudManager.existsInCloud('one piece', 'vol 1')).toBe(true);
+  });
+
+  it('rebuilds when the cache changes', async () => {
+    cacheRevision.mockImplementation(() => ({ first: true }));
+    listing([cloudFile('Berserk/Vol 1.cbz')]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('one piece');
+
+    // An upload's `cache.add` is a new revision: the folder it created is
+    // visible to the very next lookup.
+    cacheRevision.mockImplementation(() => ({ second: true }));
+    listing([cloudFile('Berserk/Vol 1.cbz'), cloudFile('One Piece/Vol 1.cbz')]);
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('One Piece');
+    expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(true);
+  });
+
+  it('keeps the exact-first and ordered picks of the unindexed lookup', async () => {
+    listing([
+      cloudFile('ONE  PIECE/Vol 1.cbz'),
+      cloudFile('One Piece/Vol 2.cbz'),
+      cloudFile('one piece/Vol 3.cbz'),
+      cloudFile('Nested/sub/Vol 1.cbz')
+    ]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('one piece');
+    expect(unifiedCloudManager.resolveCloudFolderTitle('One piece')).toBe(
+      ['ONE  PIECE', 'One Piece', 'one piece'].sort(naturalSort)[0]
+    );
+    // A folder holding only deeper paths is still a folder of that exact name.
+    expect(unifiedCloudManager.resolveCloudFolderTitle('Nested')).toBe('Nested');
   });
 });
 

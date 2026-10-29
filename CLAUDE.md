@@ -133,8 +133,16 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   do not. Backup enqueue (`resolveCloudFolderTitle`) and
   `existsInCloud`/`getCloudFile` (exact path, then the folded fallback of
   `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so nothing
-  uploads into the losing folder. Plain storage never adopts — there two
-  folders that fold alike are two folders.
+  uploads into the losing folder. Those backstops are NOT gated on bunko: like
+  every other folder lookup (rename, delete, `series.json`) they run on every
+  provider, so on plain storage too a title with no exact folder backs up into,
+  counts as backed up in, and is deleted from (the series removal dialog's
+  "also delete" and `deleteSeriesFromCloudByTitle` resolve alike) the ONE
+  folder folding onto it, naturally first when several do. An exact folder
+  always wins, and plain storage never ADOPTS: its rows keep their spelling.
+  The folded lookups read `listingFolderIndex`, built once per cache revision
+  (`CoalescedCacheStore.revision`, replaced by every add/remove/install), so a
+  per-volume caller costs O(1), not a pass over the listing.
 
 ### Svelte 5 Reactive Performance
 

@@ -10,8 +10,11 @@
  * the cloud's spelling — LOCAL ONLY, nothing in the cloud moves, because the
  * cloud is already right.
  *
- * Deliberately narrow. Plain storage never adopts: there two folders that fold
- * alike are two folders, and the user may want both. And even on bunko a plan
+ * Deliberately narrow. Plain storage never adopts: nothing merges folders
+ * there, so its rows keep the spelling the user gave them (the folded lookups
+ * — `resolveCloudFolderTitle` — still back them up into, and find them in, a
+ * folder folding onto that title when none is spelled exactly like it; an
+ * exact folder always wins). And even on bunko a plan
  * needs all three of: exactly one cloud folder folding onto the local title,
  * none spelled exactly like it, and at least one local volume listed in that
  * folder — evidence the folder IS this series, not a namesake.
