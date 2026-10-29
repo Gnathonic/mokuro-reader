@@ -1086,13 +1086,17 @@ describe('MegaProvider.readControlFile() — live tree', () => {
     const marker = makeNode('H1', MARKER, folder, 1_780_000_000);
     const provider = await loginWithTree({ folder, marker });
     const storage = (provider as any).storage;
+    // Login itself loads the tree once (loadTree → reload); reads add none.
+    const loadsAtLogin = storage.reload.mock.calls.length;
     const reinit = vi.spyOn(provider as any, 'reinitialize');
+    const refresh = vi.spyOn(provider as any, 'refreshTree');
 
     const first = (await provider.readControlFile(MARKER)) as any;
     await provider.readControlFile(MARKER, { ifNoneMatch: first.etag });
 
     expect(reinit).not.toHaveBeenCalled();
-    expect(storage.reload).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(storage.reload).toHaveBeenCalledTimes(loadsAtLogin);
   });
 
   it('throws an auth ProviderError when not authenticated', async () => {
