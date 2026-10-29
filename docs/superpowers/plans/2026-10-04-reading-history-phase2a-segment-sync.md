@@ -35,12 +35,14 @@
 ### Task 1: History paths and the allowlist
 
 **Files:**
+
 - Create: `src/lib/reading-history/paths.ts`
 - Test: `src/lib/reading-history/paths.test.ts`
 - Modify: `src/lib/util/sync/syncable-file.ts` (`isSyncableFile`, `isBestEffortMetadataPath` + doc)
 - Test: `src/lib/util/sync/syncable-file.test.ts`
 
 **Interfaces:**
+
 - Produces:
   - `HISTORY_FOLDER = 'history'`, `DEVICE_FILE_NAME = 'device.json'`
   - `historyMonthOf(t: number): string` (UTC `YYYY-MM`)
@@ -197,10 +199,12 @@ export function isHistoryFileName(name: string): boolean {
 ### Task 2: Segment codec
 
 **Files:**
+
 - Create: `src/lib/reading-history/segment-codec.ts`
 - Test: `src/lib/reading-history/segment-codec.test.ts`
 
 **Interfaces:**
+
 - Consumes: `ReadingEvent`, `PagePayload`, `Layout`, `Orientation` from `./types`
 - Produces:
   - `HISTORY_SEGMENT_FORMAT = 1`
@@ -220,16 +224,44 @@ const DEV = 'dev-a';
 const T = Date.UTC(2026, 9, 3, 12);
 const events: ReadingEvent[] = [
   {
-    device: DEV, seq: 4, t: T, kind: 'page', volume: 'vol-1', first_page: 3, last_page: 4,
-    page_chars: [120, 0], chars_before: 300, dwell_ms: 41000, layout: 'double',
-    orientation: 'landscape', viewport: { w: 1920, h: 1080 }
+    device: DEV,
+    seq: 4,
+    t: T,
+    kind: 'page',
+    volume: 'vol-1',
+    first_page: 3,
+    last_page: 4,
+    page_chars: [120, 0],
+    chars_before: 300,
+    dwell_ms: 41000,
+    layout: 'double',
+    orientation: 'landscape',
+    viewport: { w: 1920, h: 1080 }
   },
   {
-    device: DEV, seq: 5, t: T + 41000, kind: 'page', volume: 'vol-1', first_page: 5, last_page: 5,
-    page_chars: [88], chars_before: 420, dwell_ms: null, layout: 'unknown',
-    orientation: 'unknown', viewport: null
+    device: DEV,
+    seq: 5,
+    t: T + 41000,
+    kind: 'page',
+    volume: 'vol-1',
+    first_page: 5,
+    last_page: 5,
+    page_chars: [88],
+    chars_before: 420,
+    dwell_ms: null,
+    layout: 'unknown',
+    orientation: 'unknown',
+    viewport: null
   },
-  { device: DEV, seq: 6, t: T + 60000, kind: 'adjust', volume: 'vol-2', time_delta_ms: -60000, chars_delta: 0 },
+  {
+    device: DEV,
+    seq: 6,
+    t: T + 60000,
+    kind: 'adjust',
+    volume: 'vol-2',
+    time_delta_ms: -60000,
+    chars_delta: 0
+  },
   { device: DEV, seq: 9, t: T + 61000, kind: 'restart', volume: 'vol-2' },
   { device: DEV, seq: 10, t: T + 62000, kind: 'forget', volume: 'vol-1', before: T + 62000 }
 ];
@@ -238,15 +270,26 @@ describe('segment codec', () => {
   it('round-trips every event kind exactly, in seq order', async () => {
     const bytes = await encodeSegment(DEV, '2026-10', [...events].reverse());
     const { header, events: out } = await decodeSegment(bytes);
-    expect(header).toEqual({ format: 1, device: DEV, month: '2026-10', first_seq: 4, last_seq: 10, count: 5 });
+    expect(header).toEqual({
+      format: 1,
+      device: DEV,
+      month: '2026-10',
+      first_seq: 4,
+      last_seq: 10,
+      count: 5
+    });
     expect(out).toEqual(events);
   });
 
   it('is much smaller than the JSON it replaces', async () => {
     const many: ReadingEvent[] = Array.from({ length: 500 }, (_, i) => ({
       ...(events[0] as Extract<ReadingEvent, { kind: 'page' }>),
-      seq: i + 1, t: T + i * 30000, first_page: i + 1, last_page: i + 1,
-      page_chars: [100 + (i % 7)], chars_before: i * 100
+      seq: i + 1,
+      t: T + i * 30000,
+      first_page: i + 1,
+      last_page: i + 1,
+      page_chars: [100 + (i % 7)],
+      chars_before: i * 100
     }));
     const bytes = await encodeSegment(DEV, '2026-10', many);
     expect(bytes.length * 5).toBeLessThan(JSON.stringify(many).length);
@@ -271,7 +314,16 @@ describe('segment codec', () => {
   });
 
   it('rejects a newer format it cannot read', async () => {
-    const json = JSON.stringify({ format: 2, device: DEV, month: '2026-10', first_seq: 1, last_seq: 1, count: 0, volumes: [], rows: [] });
+    const json = JSON.stringify({
+      format: 2,
+      device: DEV,
+      month: '2026-10',
+      first_seq: 1,
+      last_seq: 1,
+      count: 0,
+      volumes: [],
+      rows: []
+    });
     const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
     const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
     await expect(decodeSegment(bytes)).rejects.toThrow(/format 2/);
@@ -318,7 +370,13 @@ export class SegmentFormatError extends Error {
   }
 }
 
-const LAYOUTS: Array<Layout | 'unknown'> = ['single', 'double', 'continuous-v', 'continuous-h', 'unknown'];
+const LAYOUTS: Array<Layout | 'unknown'> = [
+  'single',
+  'double',
+  'continuous-v',
+  'continuous-h',
+  'unknown'
+];
 const ORIENTATIONS: Array<Orientation | 'unknown'> = ['portrait', 'landscape', 'unknown'];
 
 type Row = Array<number | number[]>;
@@ -344,16 +402,26 @@ export async function encodeSegment(
   let prevSeq = 0;
   let prevT = 0;
   const rows: Row[] = sorted.map((e) => {
-    if (e.device !== device) throw new SegmentFormatError(`event of ${e.device} in ${device}'s segment`);
+    if (e.device !== device)
+      throw new SegmentFormatError(`event of ${e.device} in ${device}'s segment`);
     const head = [e.seq - prevSeq, e.t - prevT];
     prevSeq = e.seq;
     prevT = e.t;
     switch (e.kind) {
       case 'page':
         return [
-          0, ...head, vol(e.volume), e.first_page, e.last_page, e.page_chars, e.chars_before,
-          e.dwell_ms ?? -1, LAYOUTS.indexOf(e.layout), ORIENTATIONS.indexOf(e.orientation),
-          e.viewport?.w ?? -1, e.viewport?.h ?? -1
+          0,
+          ...head,
+          vol(e.volume),
+          e.first_page,
+          e.last_page,
+          e.page_chars,
+          e.chars_before,
+          e.dwell_ms ?? -1,
+          LAYOUTS.indexOf(e.layout),
+          ORIENTATIONS.indexOf(e.orientation),
+          e.viewport?.w ?? -1,
+          e.viewport?.h ?? -1
         ];
       case 'adjust':
         return [1, ...head, vol(e.volume), e.time_delta_ms, e.chars_delta];
@@ -393,8 +461,11 @@ export async function decodeSegment(
   }
   const { device, month, first_seq, last_seq, count, volumes, rows } = parsed;
   if (
-    typeof device !== 'string' || typeof month !== 'string' || !Array.isArray(volumes) ||
-    !Array.isArray(rows) || rows.length !== count
+    typeof device !== 'string' ||
+    typeof month !== 'string' ||
+    !Array.isArray(volumes) ||
+    !Array.isArray(rows) ||
+    rows.length !== count
   ) {
     throw new SegmentFormatError('malformed segment header');
   }
@@ -411,9 +482,15 @@ export async function decodeSegment(
     switch (row[0]) {
       case 0:
         payload = {
-          kind: 'page', volume, first_page: row[4], last_page: row[5], page_chars: row[6],
-          chars_before: row[7], dwell_ms: row[8] === -1 ? null : row[8],
-          layout: LAYOUTS[row[9]] ?? 'unknown', orientation: ORIENTATIONS[row[10]] ?? 'unknown',
+          kind: 'page',
+          volume,
+          first_page: row[4],
+          last_page: row[5],
+          page_chars: row[6],
+          chars_before: row[7],
+          dwell_ms: row[8] === -1 ? null : row[8],
+          layout: LAYOUTS[row[9]] ?? 'unknown',
+          orientation: ORIENTATIONS[row[10]] ?? 'unknown',
           viewport: row[11] === -1 ? null : { w: row[11], h: row[12] }
         };
         break;
@@ -449,10 +526,12 @@ Format the file with Prettier after writing (the dense literals above are for th
 ### Task 3: `history_files` table (Dexie version 2)
 
 **Files:**
+
 - Modify: `src/lib/reading-history/history-db.ts`
 - Test: `src/lib/reading-history/history-db.test.ts` (create)
 
 **Interfaces:**
+
 - Produces: `interface HistoryFileRecord { path: string; provider: string; size: number; modifiedTime: string; last_seq: number }`; `HistoryDexie.history_files: Table<HistoryFileRecord, string>`.
 
 - [ ] **Step 1: Failing test**:
@@ -467,13 +546,25 @@ describe('history db v2', () => {
   it('upgrades a v1 database in place, keeping its events', async () => {
     const name = `upgrade-${Math.random()}`;
     const v1 = new Dexie(name);
-    v1.version(1).stores({ reading_events: '[device+seq], volume, t', devices: 'device', history_meta: 'key' });
-    await v1.table('reading_events').add({ device: 'd', seq: 1, t: 5, kind: 'restart', volume: 'v' });
+    v1.version(1).stores({
+      reading_events: '[device+seq], volume, t',
+      devices: 'device',
+      history_meta: 'key'
+    });
+    await v1
+      .table('reading_events')
+      .add({ device: 'd', seq: 1, t: 5, kind: 'restart', volume: 'v' });
     v1.close();
 
     const db = new HistoryDexie(name);
     expect(await db.reading_events.count()).toBe(1);
-    await db.history_files.put({ path: 'history/x/2026-10.events', provider: 'webdav', size: 3, modifiedTime: 'm', last_seq: 9 });
+    await db.history_files.put({
+      path: 'history/x/2026-10.events',
+      provider: 'webdav',
+      size: 3,
+      modifiedTime: 'm',
+      last_seq: 9
+    });
     expect((await db.history_files.get('history/x/2026-10.events'))?.last_seq).toBe(9);
     db.close();
   });
@@ -490,6 +581,7 @@ describe('history db v2', () => {
 ### Task 4: Provider listings and uploads for nested history paths
 
 **Files:**
+
 - Modify: `src/lib/util/sync/providers/webdav/webdav-provider.ts` (both `isSyncableFile(item.basename)` call sites → relative path)
 - Modify: `src/lib/util/sync/providers/mega/mega-provider.ts` (listing prefilter + full-path check)
 - Modify: `src/lib/util/sync/providers/onedrive/onedrive-provider.ts` (`ensureSeriesFolder` walks segments)
@@ -499,6 +591,7 @@ describe('history db v2', () => {
 - Tests: `drive-history-path.test.ts` (create), `drive-files-cache.test.ts`, `onedrive/__tests__/onedrive-provider.test.ts`, `webdav/webdav-provider.test.ts`, `mega/mega-provider.test.ts`
 
 **Interfaces:**
+
 - Consumes: `isHistoryFileName`, `isHistoryFilePath`, `HISTORY_FOLDER` (Task 1)
 - Produces: `driveHistoryPath(file: { name: string; parents?: string[] }, folders: Map<string, { name: string; parent?: string }>, readerFolderName: string): string | null`
 
@@ -521,13 +614,17 @@ const folders = new Map([
 
 describe('driveHistoryPath', () => {
   it('walks up to mokuro-reader/history/<device>', () => {
-    expect(driveHistoryPath({ name: '2026-10.events', parents: ['dev'] }, folders, 'mokuro-reader')).toBe(
-      'history/dev-a/2026-10.events'
-    );
+    expect(
+      driveHistoryPath({ name: '2026-10.events', parents: ['dev'] }, folders, 'mokuro-reader')
+    ).toBe('history/dev-a/2026-10.events');
   });
   it('rejects a history folder outside mokuro-reader, or a file in a series folder', () => {
-    expect(driveHistoryPath({ name: '2026-10.events', parents: ['dev2'] }, folders, 'mokuro-reader')).toBeNull();
-    expect(driveHistoryPath({ name: 'device.json', parents: ['series'] }, folders, 'mokuro-reader')).toBeNull();
+    expect(
+      driveHistoryPath({ name: '2026-10.events', parents: ['dev2'] }, folders, 'mokuro-reader')
+    ).toBeNull();
+    expect(
+      driveHistoryPath({ name: 'device.json', parents: ['series'] }, folders, 'mokuro-reader')
+    ).toBeNull();
     expect(driveHistoryPath({ name: '2026-10.events' }, folders, 'mokuro-reader')).toBeNull();
   });
 });
@@ -537,21 +634,46 @@ describe('driveHistoryPath', () => {
 
 ```ts
 describe('driveFilesCache history segments', () => {
-  beforeEach(() => { vi.clearAllMocks(); driveFilesCache.clear(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    driveFilesCache.clear();
+  });
 
   it('caches history/<device>/<file> at its full path, and add() agrees', async () => {
     (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: 'reader', name: 'mokuro-reader', mimeType: 'application/vnd.google-apps.folder' },
-      { id: 'hist', name: 'history', mimeType: 'application/vnd.google-apps.folder', parents: ['reader'] },
-      { id: 'dev', name: 'dev-a', mimeType: 'application/vnd.google-apps.folder', parents: ['hist'] },
-      { id: 'seg', name: '2026-10.events', mimeType: 'application/octet-stream', parents: ['dev'], modifiedTime: '2026-10-03T00:00:00.000Z', size: '42' }
+      {
+        id: 'hist',
+        name: 'history',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: ['reader']
+      },
+      {
+        id: 'dev',
+        name: 'dev-a',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: ['hist']
+      },
+      {
+        id: 'seg',
+        name: '2026-10.events',
+        mimeType: 'application/octet-stream',
+        parents: ['dev'],
+        modifiedTime: '2026-10-03T00:00:00.000Z',
+        size: '42'
+      }
     ]);
     await driveFilesCache.fetch();
     expect(driveFilesCache.get('history/dev-a/2026-10.events')?.fileId).toBe('seg');
 
     driveFilesCache.add('history/dev-b/2026-10.events', {
-      provider: 'google-drive', fileId: 'up', name: '2026-10.events', path: 'history/dev-b/2026-10.events',
-      modifiedTime: '2026-10-04T00:00:00.000Z', size: 7, modifiedTimeProvisional: true
+      provider: 'google-drive',
+      fileId: 'up',
+      name: '2026-10.events',
+      path: 'history/dev-b/2026-10.events',
+      modifiedTime: '2026-10-04T00:00:00.000Z',
+      size: 7,
+      modifiedTimeProvisional: true
     } as never);
     expect(driveFilesCache.get('history/dev-b/2026-10.events')?.fileId).toBe('up');
   });
@@ -626,10 +748,12 @@ return id;
 ### Task 5: The history sync pass
 
 **Files:**
+
 - Create: `src/lib/reading-history/history-sync.ts`
 - Test: `src/lib/reading-history/history-sync.test.ts`
 
 **Interfaces:**
+
 - Consumes: Tasks 1–3; `getOrCreateDeviceId(db)` (`./record`); `DeviceFacts` (`./types`); `sourceStampChanged` (`$lib/metadata/series-index`); `CloudFileMetadata`, `SyncProvider`, `UploadFileResult` (`$lib/util/sync/provider-interface`)
 - Produces:
 
@@ -640,7 +764,11 @@ export interface HistorySyncOptions {
   now?: number;
   onUploaded?: (path: string, bytes: number, result: UploadFileResult) => void;
 }
-export interface HistorySyncResult { imported: number; uploaded: string[]; failed: string[] }
+export interface HistorySyncResult {
+  imported: number;
+  uploaded: string[];
+  failed: string[];
+}
 export const UPLOAD_INTERVAL_MS = 5 * 60 * 1000;
 export async function syncHistory(
   provider: SyncProvider,
@@ -653,6 +781,7 @@ export async function syncHistory(
 Upload marks live in `history_meta` under `uploaded:<provider>:<month>` = `{ last_seq: number; count: number; at: number }` and `uploaded:<provider>:device` = `{ facts: string }`.
 
 Rules:
+
 1. **Import** every listed file whose parsed device ≠ own and whose `history_files` record is missing or `sourceStampChanged(record, file, provider.type)`; ≤ 4 downloads at once. Month file: `decodeSegment`; header `device`/`month` must equal the path's; every event's month must equal the header month; then ONE `rw` transaction over `reading_events` + `history_files`: for each event, `get([device, seq])` — absent → add; present with different JSON → log anomaly once (`console.warn`), keep the stored one; then put the stamp record (`last_seq` = header.last_seq; a lower value than the old record's → `console.warn` anomaly, nothing deleted). Any failure (download, decode, validation) → skip the file, record nothing. Device file: JSON `DeviceFacts` whose `device` equals the path's → `devices.put` keeping the later `last_seen`; then stamp.
 2. **Export** only if `!status.serverCompilesMetadata && !status.isReadOnly`. Group own events (`reading_events.where('[device+seq]').between([own, Dexie.minKey], [own, Dexie.maxKey])`) by `historyMonthOf(t)`. For each month whose mark is missing or whose `{last_seq, count}` differs, OR whose path is absent from `listing` (deleted remotely): skip the CURRENT month (`historyMonthOf(now)`) when `!force && now - mark.at < UPLOAD_INTERVAL_MS`; else encode, `provider.uploadFile(path, bytes)`, `onUploaded?.(…)`, write the mark. A throw → push path to `failed`, no mark, continue with the next month.
 3. **Device facts**: own `devices` row; `facts` = `JSON.stringify({ ...row, last_seen: undefined })`; upload `device.json` when the mark differs or the path is absent from `listing`.
@@ -678,21 +807,43 @@ function fakeCloud(status: { serverCompilesMetadata?: boolean; isReadOnly?: bool
   let clock = 0;
   const provider = {
     type: 'webdav',
-    getStatus: () => ({ isAuthenticated: true, hasStoredCredentials: true, needsAttention: false, statusMessage: '', ...status }),
+    getStatus: () => ({
+      isAuthenticated: true,
+      hasStoredCredentials: true,
+      needsAttention: false,
+      statusMessage: '',
+      ...status
+    }),
     uploadFile: vi.fn(async (path: string, blob: Uint8Array) => {
-      files.set(path, { bytes: new Uint8Array(blob), mtime: new Date(++clock * 1000).toISOString() });
+      files.set(path, {
+        bytes: new Uint8Array(blob),
+        mtime: new Date(++clock * 1000).toISOString()
+      });
       return { fileId: path };
     }),
     downloadFile: vi.fn(async (f: CloudFileMetadata) => new Blob([files.get(f.path)!.bytes]))
   } as unknown as SyncProvider;
   const listing = (): CloudFileMetadata[] =>
-    [...files].map(([path, f]) => ({ provider: 'webdav', fileId: path, path, modifiedTime: f.mtime, size: f.bytes.length }));
+    [...files].map(([path, f]) => ({
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: f.mtime,
+      size: f.bytes.length
+    }));
   return { provider, files, listing };
 }
 
 const page = (volume: string, first: number) => ({
-  kind: 'page' as const, volume, first_page: first, last_page: first, page_chars: [10],
-  chars_before: first * 10, dwell_ms: 5000, layout: 'single' as const, orientation: 'portrait' as const,
+  kind: 'page' as const,
+  volume,
+  first_page: first,
+  last_page: first,
+  page_chars: [10],
+  chars_before: first * 10,
+  dwell_ms: 5000,
+  layout: 'single' as const,
+  orientation: 'portrait' as const,
   viewport: { w: 400, h: 800 }
 });
 
@@ -713,14 +864,17 @@ describe('syncHistory', () => {
 
     await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
     expect([...cloud.files.keys()].sort()).toEqual([
-      historySegmentPath(devA, '2026-10'), historySegmentPath(devA, '2026-11')
+      historySegmentPath(devA, '2026-10'),
+      historySegmentPath(devA, '2026-11')
     ]);
     const r = await syncHistory(cloud.provider, cloud.listing(), b, { force: true, now: NOV });
     expect(r.imported).toBe(2);
     await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
 
     const key = (e: ReadingEvent) => `${e.device}:${e.seq}`;
-    expect((await a.reading_events.toArray()).map(key).sort()).toEqual((await b.reading_events.toArray()).map(key).sort());
+    expect((await a.reading_events.toArray()).map(key).sort()).toEqual(
+      (await b.reading_events.toArray()).map(key).sort()
+    );
     expect(await a.reading_events.count()).toBe(3);
   });
 
@@ -743,7 +897,9 @@ describe('syncHistory', () => {
     await appendEvent(a, page('v1', 1), OCT);
     await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
     const listed = cloud.listing();
-    await syncHistory(cloud.provider, [...listed, { ...listed[0], fileId: 'dup' }], b, { now: NOV });
+    await syncHistory(cloud.provider, [...listed, { ...listed[0], fileId: 'dup' }], b, {
+      now: NOV
+    });
     expect(await b.reading_events.count()).toBe(1);
   });
 
@@ -752,7 +908,10 @@ describe('syncHistory', () => {
     await appendEvent(a, page('v1', 1), OCT);
     const devA = await getOrCreateDeviceId(a);
     const path = historySegmentPath(devA, '2026-10');
-    cloud.files.set(path, { bytes: new Uint8Array([9, 9, 9]), mtime: 'Mon, 05 Oct 2026 00:00:00 GMT' });
+    cloud.files.set(path, {
+      bytes: new Uint8Array([9, 9, 9]),
+      mtime: 'Mon, 05 Oct 2026 00:00:00 GMT'
+    });
     await syncHistory(cloud.provider, cloud.listing(), b, { now: NOV });
     expect(await b.reading_events.count()).toBe(0);
     expect(await b.history_files.get(path)).toBeUndefined();
@@ -761,13 +920,14 @@ describe('syncHistory', () => {
     expect(await b.reading_events.count()).toBe(1);
   });
 
-  it("refuses a file whose events belong to another device than its folder", async () => {
+  it('refuses a file whose events belong to another device than its folder', async () => {
     const cloud = fakeCloud();
     await appendEvent(a, page('v1', 1), OCT);
     const events = await a.reading_events.toArray();
     const devA = events[0].device;
     cloud.files.set(historySegmentPath('impostor', '2026-10'), {
-      bytes: await encodeSegment(devA, '2026-10', events), mtime: 'Mon, 05 Oct 2026 00:00:00 GMT'
+      bytes: await encodeSegment(devA, '2026-10', events),
+      mtime: 'Mon, 05 Oct 2026 00:00:00 GMT'
     });
     await syncHistory(cloud.provider, cloud.listing(), b, { now: NOV });
     expect(await b.reading_events.count()).toBe(0);
@@ -780,9 +940,14 @@ describe('syncHistory', () => {
     await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
     await syncHistory(cloud.provider, cloud.listing(), b, { force: true, now: NOV });
     const devB = await getOrCreateDeviceId(b);
-    const bUploads = vi.mocked(cloud.provider.uploadFile).mock.calls.map((c) => c[0]).filter((p) => !p.includes(devB));
+    const bUploads = vi
+      .mocked(cloud.provider.uploadFile)
+      .mock.calls.map((c) => c[0])
+      .filter((p) => !p.includes(devB));
     expect(bUploads.every((p) => !p.startsWith(`history/${devB}`))).toBe(true);
-    expect([...cloud.files.keys()].filter((p) => p.startsWith(`history/${devB}/`))).toEqual([historySegmentPath(devB, '2026-10')]);
+    expect([...cloud.files.keys()].filter((p) => p.startsWith(`history/${devB}/`))).toEqual([
+      historySegmentPath(devB, '2026-10')
+    ]);
   });
 
   it('throttles the current month unless forced; closed months always go up', async () => {
@@ -801,7 +966,9 @@ describe('syncHistory', () => {
     const cloud = fakeCloud();
     await appendEvent(a, page('v1', 1), OCT);
     await appendEvent(a, page('v1', 2), NOV);
-    vi.mocked(cloud.provider.uploadFile).mockImplementationOnce(async () => { throw new Error('offline'); });
+    vi.mocked(cloud.provider.uploadFile).mockImplementationOnce(async () => {
+      throw new Error('offline');
+    });
     const r = await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
     expect(r.failed).toHaveLength(1);
     expect(r.uploaded).toHaveLength(1);
@@ -819,21 +986,37 @@ describe('syncHistory', () => {
     expect(r.uploaded).toHaveLength(1);
   });
 
-  it.each([{ serverCompilesMetadata: true }, { isReadOnly: true }])('never uploads on %o, still imports', async (status) => {
-    const shared = fakeCloud();
-    await appendEvent(a, page('v1', 1), OCT);
-    await syncHistory(shared.provider, shared.listing(), a, { force: true, now: NOV });
-    const limited = { ...shared, provider: { ...shared.provider, getStatus: () => ({ ...shared.provider.getStatus(), ...status }), uploadFile: vi.fn() } as unknown as SyncProvider };
-    await appendEvent(b, page('v2', 1), OCT);
-    await syncHistory(limited.provider, shared.listing(), b, { force: true, now: NOV });
-    expect(limited.provider.uploadFile).not.toHaveBeenCalled();
-    expect(await b.reading_events.count()).toBe(2);
-  });
+  it.each([{ serverCompilesMetadata: true }, { isReadOnly: true }])(
+    'never uploads on %o, still imports',
+    async (status) => {
+      const shared = fakeCloud();
+      await appendEvent(a, page('v1', 1), OCT);
+      await syncHistory(shared.provider, shared.listing(), a, { force: true, now: NOV });
+      const limited = {
+        ...shared,
+        provider: {
+          ...shared.provider,
+          getStatus: () => ({ ...shared.provider.getStatus(), ...status }),
+          uploadFile: vi.fn()
+        } as unknown as SyncProvider
+      };
+      await appendEvent(b, page('v2', 1), OCT);
+      await syncHistory(limited.provider, shared.listing(), b, { force: true, now: NOV });
+      expect(limited.provider.uploadFile).not.toHaveBeenCalled();
+      expect(await b.reading_events.count()).toBe(2);
+    }
+  );
 
-  it('uploads device facts once, and imports the other device\'s', async () => {
+  it("uploads device facts once, and imports the other device's", async () => {
     const cloud = fakeCloud();
     const devA = await getOrCreateDeviceId(a);
-    await a.devices.put({ device: devA, class: 'phone', os: 'Android', first_seen: 'x', last_seen: 'y' });
+    await a.devices.put({
+      device: devA,
+      class: 'phone',
+      os: 'Android',
+      first_seen: 'x',
+      last_seen: 'y'
+    });
     await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
     expect(cloud.files.has(historyDeviceFilePath(devA))).toBe(true);
     await a.devices.update(devA, { last_seen: 'z' });
@@ -856,10 +1039,12 @@ describe('syncHistory', () => {
 ### Task 6: Run the pass on every progress sync
 
 **Files:**
+
 - Modify: `src/lib/util/sync/unified-sync-service.ts` (`syncProvider`, new private `syncReadingHistory`)
 - Test: `src/lib/util/sync/unified-sync-service.test.ts`
 
 **Interfaces:**
+
 - Consumes: `syncHistory`, `historyDb` (lazy `import()`), `isHistoryFilePath`, `uploadCacheEntry`.
 
 - [ ] **Step 1: Failing tests** (in `unified-sync-service.test.ts`; add `vi.mock('$lib/reading-history/history-sync', () => ({ syncHistory: vi.fn(async () => ({ imported: 0, uploaded: [], failed: [] })) }))` and `vi.mock('$lib/reading-history/history-db', () => ({ historyDb: vi.fn(() => ({})) }))` at the top):
@@ -869,11 +1054,31 @@ describe('reading history rides every sync', () => {
   it('passes only history files from a loaded listing, forced on a manual sync', async () => {
     const { syncHistory } = await import('$lib/reading-history/history-sync');
     const files = [
-      { provider: 'mega', fileId: '1', path: 'history/dev-a/2026-10.events', modifiedTime: 'm', size: 1 },
+      {
+        provider: 'mega',
+        fileId: '1',
+        path: 'history/dev-a/2026-10.events',
+        modifiedTime: 'm',
+        size: 1
+      },
       { provider: 'mega', fileId: '2', path: 'volume-data.json', modifiedTime: 'm', size: 1 }
     ];
-    getCache.mockReturnValue({ getAll: vi.fn(() => []), get: vi.fn(() => null), fetch: vi.fn(), isLoaded: () => true, isFetching: () => false, getAllFiles: () => files, add: vi.fn() });
-    const provider = { type: 'mega', name: 'MEGA', isAuthenticated: () => true, downloadFile: vi.fn(), uploadFile: vi.fn(async () => ({ fileId: 'x' })) } as unknown as SyncProvider;
+    getCache.mockReturnValue({
+      getAll: vi.fn(() => []),
+      get: vi.fn(() => null),
+      fetch: vi.fn(),
+      isLoaded: () => true,
+      isFetching: () => false,
+      getAllFiles: () => files,
+      add: vi.fn()
+    });
+    const provider = {
+      type: 'mega',
+      name: 'MEGA',
+      isAuthenticated: () => true,
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(async () => ({ fileId: 'x' }))
+    } as unknown as SyncProvider;
     await svc.syncReadingHistory(provider, { silent: false });
     expect(vi.mocked(syncHistory).mock.calls[0][1]).toEqual([files[0]]);
     expect(vi.mocked(syncHistory).mock.calls[0][3]?.force).toBe(true);
@@ -882,14 +1087,24 @@ describe('reading history rides every sync', () => {
   it('a failing history pass never fails the sync', async () => {
     const { syncHistory } = await import('$lib/reading-history/history-sync');
     vi.mocked(syncHistory).mockRejectedValueOnce(new Error('boom'));
-    getCache.mockReturnValue({ isLoaded: () => true, isFetching: () => false, getAllFiles: () => [] });
-    await expect(svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {})).resolves.toBeUndefined();
+    getCache.mockReturnValue({
+      isLoaded: () => true,
+      isFetching: () => false,
+      getAllFiles: () => []
+    });
+    await expect(
+      svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {})
+    ).resolves.toBeUndefined();
   });
 
   it('skips while the listing has not loaded', async () => {
     const { syncHistory } = await import('$lib/reading-history/history-sync');
     vi.mocked(syncHistory).mockClear();
-    getCache.mockReturnValue({ isLoaded: () => false, isFetching: () => false, getAllFiles: () => [] });
+    getCache.mockReturnValue({
+      isLoaded: () => false,
+      isFetching: () => false,
+      getAllFiles: () => []
+    });
     await svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {});
     expect(syncHistory).not.toHaveBeenCalled();
   });
@@ -940,6 +1155,7 @@ describe('reading history rides every sync', () => {
 ### Task 7: Two devices end to end
 
 **Files:**
+
 - Create: `e2e/history-sync.spec.ts` (copy the `WebDavStub` from `e2e/sync-diverged-reads.spec.ts`; store PUT bodies as `Buffer` via `request.postDataBuffer()` and serve them back as bytes)
 - Modify: `CLAUDE.md` ("Reading history (`mokuro_history`)" section: phase 2a cloud layout, best-effort rule, bunko skip)
 
