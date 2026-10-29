@@ -20,17 +20,22 @@ import {
   titleCasedLayerId
 } from '$lib/reader/edit/layers';
 import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
-import { EDIT_LAYER_ID, isPreUpgradeLayerId } from '$lib/reader/edit/layer-names';
+import {
+  EDIT_LAYER_ID,
+  isPersonalLayerId,
+  isPreUpgradeLayerId
+} from '$lib/reader/edit/layer-names';
 import { editLayerEpoch } from '$lib/reader/edit/edit-layer-epoch';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
-import { layerStaysLocal } from '$lib/catalog/mokuro-hash';
+import { layerIdStaysLocal, layerStaysLocal, type LayerTarget } from '$lib/catalog/mokuro-hash';
 import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
 import {
   ProviderError,
   type CloudFileMetadata,
+  type ProviderStatus,
   type ProviderType,
   type SyncProvider
 } from '$lib/util/sync/provider-interface';
@@ -459,18 +464,38 @@ function isPassiveSnapshot(
 }
 
 /**
+ * A personal layer (`edit`, `edit-<n>`) last synced under ANOTHER account of
+ * this provider — two accounts on one device and one server, each of which
+ * bunko serves its own `<Volume>.edit.mokuro` at the same path. A row stamped
+ * before accounts were recorded has no `account` and counts as this one's.
+ */
+function syncedForOtherAccount(row: VolumeOcrLayer, account: string | undefined): boolean {
+  return (
+    !!account &&
+    !!row.cloud?.account &&
+    row.cloud.account !== account &&
+    isPersonalLayerId(row.layer_id)
+  );
+}
+
+/**
  * Should this listed file replace the local row? No row → yes. A passive
  * snapshot → yes, whatever the mtimes say. Stamps equal → no. Cloud moved and
  * the row is untouched since its sync → yes. Both moved → the cloud copy wins
- * only when its mtime is newer than the local edit.
+ * only when its mtime is newer than the local edit. A row synced with another
+ * provider, or (a personal layer) under another account (`account` = the
+ * active `accountScope`), is replaced only while it holds no unsynced edit:
+ * those already sit in the other copy.
  */
 export function layerNeedsPull(
   row: VolumeOcrLayer | undefined,
   file: LayerFileStamp,
-  providerType: string
+  providerType: string,
+  account?: string
 ): boolean {
   if (!row || isPassiveSnapshot(row)) return true;
   if (row.cloud && row.cloud.provider !== providerType) return !editedSinceSync(row);
+  if (syncedForOtherAccount(row, account)) return !editedSinceSync(row);
   if (!cloudCopyMoved(row, file)) return false;
   if (!editedSinceSync(row)) return true;
   const cloudMtime = file.modifiedTimeProvisional ? undefined : Date.parse(file.modifiedTime);
@@ -489,24 +514,78 @@ export function layerNeedsPush(
   row: VolumeOcrLayer,
   file: LayerFileStamp | undefined,
   providerType: string,
-  /** The provider compiles its own metadata (bunko): see `layerStaysLocal`. */
-  serverCompilesMetadata = false
+  /** What the provider takes (bunko, the edit-layer gate): see `layerStaysLocal`. */
+  target: LayerTarget = { serverCompilesMetadata: false },
+  /** The active `accountScope`: a personal row of another account is not ours to push. */
+  account?: string
 ): boolean {
   // The cloud's own primary sidecar, mirrored for an edited volume by the OCR
   // upgrade (pushing it would publish the primary a second time as a layer),
-  // the local primary an upgrade replaced (a device-local keepsake), or the
-  // editor's `original` snapshot on a server that keeps primary edits local.
-  if (layerStaysLocal(row, serverCompilesMetadata)) return false;
+  // the local primary an upgrade replaced (a device-local keepsake), the
+  // shared `curated` layer, an `edit` layer the server would share, or the
+  // editor's `original` / bunko's `pre-upgrade` on a server that compiles
+  // its metadata.
+  if (layerStaysLocal(row, target)) return false;
+  if (syncedForOtherAccount(row, account)) return false;
   if (row.cloud && row.cloud.provider === providerType && !editedSinceSync(row)) return false;
   if (!file) return true;
-  return !layerNeedsPull(row, file, providerType);
+  return !layerNeedsPull(row, file, providerType, account);
 }
 
-function providerIsWritable(provider: SyncProvider): boolean {
+/**
+ * May this account write `layerId`'s file on this provider? Never when it is
+ * read-only. An account's own `edit` layer on a bunko that keeps it per
+ * account needs nothing more: every role that may write progress may write
+ * its own overlay (and `isReadOnly` = neither progress nor files). Any other
+ * layer is a library file: a progress-only account (bunko `registered`) would
+ * be refused per file on every listing, so it only pulls those.
+ */
+export function canPushLayer(
+  status: Pick<
+    ProviderStatus,
+    'isReadOnly' | 'canAddFiles' | 'serverCompilesMetadata' | 'editLayerSync'
+  >,
+  layerId: string
+): boolean {
+  if (status.isReadOnly === true) return false;
+  if (
+    isPersonalLayerId(layerId) &&
+    status.serverCompilesMetadata === true &&
+    status.editLayerSync === 'push'
+  ) {
+    return true;
+  }
+  return accountCanAddFiles(status);
+}
+
+/** What one listing's plan needs of the provider, read once per run. */
+interface PushGate {
+  status: ProviderStatus;
+  target: LayerTarget;
+  /** The provider's `accountScope`, stamped on (and compared with) personal rows. */
+  account?: string;
+}
+
+function pushGateOf(provider: SyncProvider): PushGate {
   const status = provider.getStatus();
-  // A progress-only account (bunko `registered`) is not read-only, but every
-  // layer push would be refused per file on every listing: pull only.
-  return status.isReadOnly !== true && accountCanAddFiles(status);
+  return {
+    status,
+    target: {
+      serverCompilesMetadata: status.serverCompilesMetadata === true,
+      editLayerSync: status.editLayerSync
+    },
+    account: status.accountScope
+  };
+}
+
+/**
+ * May this device delete `layerId`'s cloud file? Only where it could push it:
+ * a layer that stays local by what it IS (`layerIdStaysLocal` — the shared
+ * `curated`, an `edit` the server shares, bunko's own keepsakes) is somebody
+ * else's file, whatever the account's rights.
+ */
+function canDeleteLayer(gate: PushGate, layerId: string): boolean {
+  return canPushLayer(gate.status, layerId) && !layerIdStaysLocal(layerId, gate.target);
 }
 
 /** Same key every "which row is this cloud file" question uses. */
@@ -674,6 +753,7 @@ async function pullOne(
   if (!pulled) return false;
   const stored = await storePulledLayer(row, listed.layerId, pulled, existing, {
     provider: provider.type,
+    account: provider.getStatus().accountScope,
     stamp: stampOf(listed.file),
     label: listed.file.path
   });
@@ -697,7 +777,13 @@ async function storePulledLayer(
   layerId: string,
   pulled: PulledLayerFile,
   existing: VolumeOcrLayer | undefined,
-  source: { provider: string; stamp: { size?: number; modified?: number }; label: string }
+  source: {
+    provider: string;
+    /** The provider's `accountScope`, stamped on a personal layer. */
+    account?: string;
+    stamp: { size?: number; modified?: number };
+    label: string;
+  }
 ): Promise<boolean> {
   const read = pulled.pages;
   const pages = await fitToVolume(row, read);
@@ -750,7 +836,12 @@ async function storePulledLayer(
         : {}),
     created_at: existing?.created_at ?? now,
     updated_at: now,
-    cloud: { provider: source.provider, ...source.stamp, synced_at: now }
+    cloud: {
+      provider: source.provider,
+      ...accountStamp(layerId, source.account),
+      ...source.stamp,
+      synced_at: now
+    }
   };
   await putLayerWithPages(db, { ...layer, pages });
   return true;
@@ -779,6 +870,11 @@ async function removeGzSiblings(provider: SyncProvider, siblings: CloudFileMetad
  */
 const refusedPushes = new Set<string>();
 
+/** `{ account }` for a personal layer (its file is the account's own), else nothing. */
+function accountStamp(layerId: string, account: string | undefined): { account?: string } {
+  return account && isPersonalLayerId(layerId) ? { account } : {};
+}
+
 function refusedPushKey(layer: Pick<VolumeOcrLayer, 'volume_uuid' | 'layer_id' | 'updated_at'>) {
   return `${layer.volume_uuid}\u0000${layer.layer_id}\u0000${layer.updated_at}`;
 }
@@ -801,7 +897,8 @@ async function pushOne(
   stem: string,
   row: VolumeMetadata,
   planned: VolumeOcrLayer,
-  gzSiblings: CloudFileMetadata[] = []
+  gzSiblings: CloudFileMetadata[] = [],
+  account?: string
 ): Promise<boolean> {
   try {
     // The plan carries metadata only — it is drawn up for a whole listing, and
@@ -821,6 +918,7 @@ async function pushOne(
     await updateLayerMeta(db, layer.volume_uuid, layer.layer_id, {
       cloud: {
         provider: provider.type,
+        ...accountStamp(layer.layer_id, account),
         size: uploaded.size ?? blob.size,
         ...(uploaded.modifiedTime ? { modified: isoToEpochSeconds(uploaded.modifiedTime) } : {}),
         synced_at: now
@@ -915,11 +1013,10 @@ async function planFolder(
   files: CloudFileMetadata[],
   layerFiles: ListedLayerFile[],
   providerType: ProviderType,
-  writable: boolean,
+  gate: PushGate,
   pendingDeletes: Map<string, Set<string>>,
   volumesWithLayers: Set<string>,
-  index: LocalSeriesIndex,
-  serverCompilesMetadata = false
+  index: LocalSeriesIndex
 ): Promise<Transfer[]> {
   // Nothing listed here, no local layer or tombstone in this series: done.
   if (layerFiles.length === 0 && !index.withLocalWork.has(normalizeSeriesKey(folderTitle))) {
@@ -976,21 +1073,26 @@ async function planFolder(
     }
     for (const [layerId, file] of listed) {
       if (tombstoned.has(layerId)) {
-        // Deleted here: never pulled back; removed as soon as the cloud allows.
-        if (writable) transfers.push({ kind: 'delete', listed: file, volumeUuid: row.volume_uuid });
+        // Deleted here: never pulled back; removed as soon as the cloud allows
+        // (and only a file this device could have pushed: `canDeleteLayer`).
+        if (canDeleteLayer(gate, layerId)) {
+          transfers.push({ kind: 'delete', listed: file, volumeUuid: row.volume_uuid });
+        }
         continue;
       }
       const existing = localById.get(layerId);
-      if (layerNeedsPull(existing, file.file, providerType)) {
+      if (layerNeedsPull(existing, file.file, providerType, gate.account)) {
         transfers.push({ kind: 'pull', listed: file, row, existing });
       }
     }
-    if (!writable || archiveStem === undefined) continue;
+    if (archiveStem === undefined) continue;
     for (const layer of local) {
+      // Per layer: a progress-only account still writes its own `edit` overlay.
+      if (!canPushLayer(gate.status, layer.layer_id)) continue;
       const listedLayer = listed.get(layer.layer_id);
       const gzSiblings = gzCopiesOf(listedLayer);
       if (
-        layerNeedsPush(layer, listedLayer?.file, providerType, serverCompilesMetadata) &&
+        layerNeedsPush(layer, listedLayer?.file, providerType, gate.target, gate.account) &&
         !refusedPushes.has(refusedPushKey(layer))
       ) {
         transfers.push({ kind: 'push', folderTitle, stem: archiveStem, row, layer, gzSiblings });
@@ -1003,7 +1105,7 @@ async function planFolder(
         listedLayer &&
         !listedLayer.gz &&
         layer.cloud?.provider === providerType &&
-        !layerNeedsPull(layer, listedLayer.file, providerType)
+        !layerNeedsPull(layer, listedLayer.file, providerType, gate.account)
       ) {
         transfers.push({ kind: 'tidy', gzSiblings });
       }
@@ -1024,8 +1126,7 @@ async function runSync(
   if (cloudFilesMap.size === 0) return result;
   const provider = providerManager.getActiveProvider();
   if (!provider || provider.type !== providerType) return result;
-  const writable = providerIsWritable(provider);
-  const serverCompilesMetadata = provider.getStatus().serverCompilesMetadata === true;
+  const gate = pushGateOf(provider);
 
   await migrateEditedPrimariesToEditLayers();
   await dropPendingDeletesOfMissingVolumes().catch(() => {});
@@ -1058,11 +1159,10 @@ async function runSync(
           files,
           byFolder.get(folderTitle) ?? [],
           providerType,
-          writable,
+          gate,
           pendingDeletes,
           volumesWithLayers,
-          index,
-          serverCompilesMetadata
+          index
         ))
       );
     } catch (error) {
@@ -1082,7 +1182,9 @@ async function runSync(
       await removeGzSiblings(provider, t.gzSiblings);
     } else if (t.kind === 'pull') {
       if (await pullOne(provider, t.listed, t.row, t.existing)) result.pulled++;
-    } else if (await pushOne(provider, t.folderTitle, t.stem, t.row, t.layer, t.gzSiblings)) {
+    } else if (
+      await pushOne(provider, t.folderTitle, t.stem, t.row, t.layer, t.gzSiblings, gate.account)
+    ) {
       result.pushed++;
     }
   });
@@ -1284,7 +1386,9 @@ export async function pullLayersForVolume(
       const existing = await getLayerMeta(db, volumeUuid, listed.layerId);
       // Deleted here and not re-created: a fresh download must not bring it back.
       if (!existing && tombstoned?.has(listed.layerId)) return;
-      if (!layerNeedsPull(existing, listed.file, providerType)) return;
+      if (!layerNeedsPull(existing, listed.file, providerType, provider.getStatus().accountScope)) {
+        return;
+      }
       if (await pullOne(provider, listed, row, existing)) pulled++;
     });
     return pulled;
@@ -1438,7 +1542,7 @@ export async function deleteLayerFileInCloud(
       );
       return covered ? 'gone' : 'unconfirmed';
     }
-    if (!providerIsWritable(provider)) return 'unconfirmed';
+    if (!canDeleteLayer(pushGateOf(provider), layer.layer_id)) return 'unconfirmed';
     return (await deleteListedLayerFile(provider, listed)) ? 'gone' : 'unconfirmed';
   } catch (error) {
     console.warn('[layer-sync] could not delete the cloud layer file:', error);
@@ -1475,7 +1579,9 @@ export interface LayerUploadSnapshot {
 export async function stampLayersSynced(
   volumeUuid: string,
   providerType: ProviderType,
-  uploaded: LayerUploadSnapshot[]
+  uploaded: LayerUploadSnapshot[],
+  /** The provider's `accountScope`, recorded on a personal layer (`VolumeOcrLayer.cloud`). */
+  account?: string
 ): Promise<void> {
   try {
     const now = new Date().toISOString();
@@ -1484,6 +1590,7 @@ export async function stampLayersSynced(
       await patchLayerMeta(db, volumeUuid, snapshot.layerId, (row) => ({
         cloud: {
           provider: providerType,
+          ...accountStamp(snapshot.layerId, account),
           size: snapshot.size,
           synced_at: row.updated_at === snapshot.updatedAt ? now : snapshot.updatedAt
         }

@@ -616,8 +616,10 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           embedMokuroInArchive: false,
           downloadFilename: `${item.volumeTitle}.cbz`,
           includeSidecars: item.sidecarOptions.includeSidecars,
-          // bunko: the editor's `original` snapshot stays local (`layerStaysLocal`).
-          serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true
+          // bunko: the editor's `original` snapshot stays local, and the `edit`
+          // layer wherever the server would share it (`layerStaysLocal`).
+          serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true,
+          editLayerSync: provider!.getStatus?.().editLayerSync
         };
       },
       onProgress: (data) => {
@@ -739,7 +741,8 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
                   layerId: layer.layerId,
                   updatedAt: layer.updatedAt,
                   size: layer.blob.size
-                }))
+                })),
+                provider!.getStatus?.().accountScope
               );
             }
 
@@ -849,7 +852,12 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // the rows as synced so the next listing does not push them again —
           // against the snapshot it uploaded, so an edit made meanwhile survives.
           if (item.sidecarOptions.includeSidecars) {
-            void stampLayersSynced(item.volumeUuid, provider!.type, data.layerSnapshots ?? []);
+            void stampLayersSynced(
+              item.volumeUuid,
+              provider!.type,
+              data.layerSnapshots ?? [],
+              provider!.getStatus?.().accountScope
+            );
           }
           // The primary sidecar the worker sent: its hash is this volume's now,
           // and one this device can vouch for in `series.json`. Before the

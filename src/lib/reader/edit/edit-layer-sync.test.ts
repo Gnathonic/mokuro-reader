@@ -149,6 +149,28 @@ describe('an OCR edit goes up as the edit layer, never as the main sidecar', () 
     expect(uploadedPaths()).not.toContain('Series/Vol 1.mokuro');
   });
 
+  it('on a 0.7.x bunko (edit layers shared there) nothing goes up, scheduled push included', async () => {
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getStatus: () => ({
+        isReadOnly: false,
+        serverCompilesMetadata: true,
+        editLayerSync: 'local'
+      }),
+      uploadFile,
+      downloadFile: vi.fn(),
+      deleteFile: vi.fn()
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await persistPageEdit('v1', 0, pg('一'));
+    await vi.advanceTimersByTimeAsync(LAYER_PUSH_DEBOUNCE_MS + 10);
+    vi.useRealTimers();
+    // Joins the run the timer started (single-flight), so it has finished.
+    await syncLayersFromListing(listing(), 'webdav');
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeDefined();
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
   it('a promoted layer stays local: nothing goes up as the main sidecar, and the main is model output', async () => {
     await createLayer('v1', { name: 'Better', kind: 'ocr', pages: [pg('良'), pg('い', 'q.png')] });
     await promoteLayer('v1', 'better');

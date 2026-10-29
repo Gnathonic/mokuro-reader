@@ -34,7 +34,11 @@ import {
 } from '$lib/util/worker-auth-refresh';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
 import { CANNOT_RENAME_MESSAGE } from '../../account-capabilities';
-import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
+import {
+  isBestEffortMetadataPath,
+  isReservedLayerSidecarPath,
+  isSyncableFile
+} from '../../syncable-file';
 import { controlSetEtag } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { bunkoSupportsHistory } from './bunko-version';
@@ -157,6 +161,23 @@ export function stripUrlUserinfo(url: string): string {
 const MOKURO_FOLDER = '/mokuro-reader';
 const VOLUME_DATA_FILE = '/mokuro-reader/volume-data.json';
 const PROFILES_FILE = '/mokuro-reader/profiles.json';
+
+/**
+ * A 403 on a reserved layer file (`isReservedLayerSidecarPath`): bunko refuses
+ * some of those by design (its `pre-upgrade` keepsake, `curated` without the
+ * rights, a 0.7.x `edit`), so the refusal is that file's alone — reported as
+ * one (layer-sync stops asking), never as a read-only server.
+ */
+function reservedLayerRefusal(path: string): ProviderError {
+  return new ProviderError(
+    `The server refused the layer file ${path}`,
+    'webdav',
+    'PERMISSION_DENIED',
+    false,
+    false,
+    'permission'
+  );
+}
 
 export class WebDAVProvider implements SyncProvider {
   readonly type = 'webdav' as const;
@@ -1391,6 +1412,9 @@ export class WebDAVProvider implements SyncProvider {
       // here would hide backup and upload for a perfectly writable account.
       if (!isBestEffortMetadataPath(path)) {
         const kind = classifyWriteError(errorMessage);
+        if (kind === 'permission' && isReservedLayerSidecarPath(path)) {
+          throw reservedLayerRefusal(path);
+        }
         if (kind !== 'other') {
           this.handleWriteFailure(kind, 'Write permission denied - server is read-only');
         }
@@ -1658,6 +1682,9 @@ export class WebDAVProvider implements SyncProvider {
       // so an unguarded demotion here would flip the provider read-only silently.
       if (!isBestEffortMetadataPath(file.path)) {
         const kind = classifyWriteError(errorMessage);
+        if (kind === 'permission' && isReservedLayerSidecarPath(file.path)) {
+          throw reservedLayerRefusal(file.path);
+        }
         if (kind !== 'other') {
           this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
         }

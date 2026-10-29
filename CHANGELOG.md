@@ -4,6 +4,7 @@
 
 ### Changed
 
+- mokuro-bunko: your OCR fixes no longer reach other accounts
 - Duplicate-folder cleanup never removes mokuro-bunko's own files
 - MEGA catches mokuro-bunko changes made while you were offline
 

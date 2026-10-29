@@ -14,6 +14,7 @@ import {
   isBunkoControlFile,
   dedupKeepsEveryCopy,
   foldStem,
+  isReservedLayerSidecarPath,
   miscasedLayerStem
 } from './syncable-file';
 
@@ -453,5 +454,27 @@ describe('history files', () => {
   it('treats history writes as best-effort', () => {
     expect(isBestEffortMetadataPath(`history/${DEV}/2026-10.events`)).toBe(true);
     expect(isBestEffortMetadataPath('volume-data.json')).toBe(false);
+  });
+});
+
+describe('isReservedLayerSidecarPath', () => {
+  it('names a layer file whose id is reserved, in any folder, plain or gz', () => {
+    expect(isReservedLayerSidecarPath('S/Vol 1.edit.mokuro')).toBe(true);
+    expect(isReservedLayerSidecarPath('S/Vol 1.curated.mokuro.gz')).toBe(true);
+    expect(isReservedLayerSidecarPath('S/Vol 1.pre-upgrade-2.mokuro')).toBe(true);
+    expect(isReservedLayerSidecarPath('Vol 1.tr-en.mokuro')).toBe(true);
+  });
+
+  it('nothing else', () => {
+    for (const path of [
+      'S/Vol 1.mokuro',
+      'S/Vol 1.fix.mokuro',
+      'S/Vol 1.EDIT.mokuro',
+      'S/Vol 1.edit.cbz',
+      'S/series.json',
+      'S/edit.mokuro'
+    ]) {
+      expect(isReservedLayerSidecarPath(path), path).toBe(false);
+    }
   });
 });

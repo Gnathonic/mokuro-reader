@@ -447,6 +447,25 @@ file: push). `curatedPublish` is the identity's `permissions.curated.scope`
 curated layer; `canPublishCurated(status, seriesTitle)` reads it (`owned` =
 a series in `metadataPermissions.ownedSeries`; absent = no).
 
+**What stays local** is one predicate, `layerStaysLocal(layer, target)`
+(`mokuro-hash.ts`; `target` = `{ serverCompilesMetadata, editLayerSync }`,
+threaded through layer-sync's plan, the backup's layer sidecars and the
+worker message): an untouched upgrade layer everywhere; `curated` everywhere
+(it goes up only by an explicit Publish — not by sync, backup or export);
+`edit`/`edit-<n>` where `editLayerSync` is `local`; and `original` and
+`pre-upgrade*` on a server that compiles its metadata. Its id half,
+`layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
+IS is somebody else's file, so neither a local delete nor its tombstone ever
+removes its cloud copy. Writability is per layer (`canPushLayer`): a personal
+id on a `push` bunko needs only `isReadOnly !== true` (a `registered` account
+writes its own overlay), anything else also needs `canAddFiles`. A personal
+row records the provider's `accountScope` in `cloud.account` (push, pull,
+`stampLayersSynced`): a row of another account on this device is never
+pushed, and is replaced by this account's listed file only while it holds no
+unsynced edit. A 403 on a reserved layer file (`isReservedLayerSidecarPath`)
+is that file's refusal (`PERMISSION_DENIED`, remembered by layer-sync), never
+a read-only demotion of the WebDAV provider.
+
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings
 toggle, or "Edit text" in the text-box context menu — all funnel through the
