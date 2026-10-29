@@ -7,7 +7,7 @@ import { getSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
 import { getSeriesMetadataForTitle } from '$lib/metadata/store';
-import { buildLayerMokuroMetadata, buildMokuroMetadata } from './mokuro-metadata';
+import { buildLayerMokuroMetadata, buildPrimaryMokuroMetadata } from './mokuro-metadata';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerSidecarName } from './sync/syncable-file';
 
@@ -63,17 +63,19 @@ function extensionFromMimeType(contentType: string): string {
  * stores (`cumulativeChars` removed, exactly what `saveVolume` writes) —
  * never the import pipeline's in-flight pages. Pass `null` when there is no
  * OCR row; an image-only volume (empty `mokuro_version`) never yields a
- * `.mokuro` either way.
+ * `.mokuro` either way. `markEdited`: the pages are the volume's own primary
+ * row (see `buildPrimaryMokuroMetadata`).
  */
-export function buildVolumeSidecarsFromData(
+export async function buildVolumeSidecarsFromData(
   volume: VolumeMetadata,
-  pages: unknown[] | null
-): VolumeSidecarFiles {
+  pages: unknown[] | null,
+  opts: { markEdited?: boolean } = {}
+): Promise<VolumeSidecarFiles> {
   let mokuroFile: File | null = null;
   const hasMokuroVersion =
     typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
   if (hasMokuroVersion && pages) {
-    const metadata = buildMokuroMetadata(volume, pages);
+    const metadata = await buildPrimaryMokuroMetadata(volume, pages, opts);
     const blob = new Blob([JSON.stringify(metadata)], { type: 'application/json' });
     mokuroFile = new File([blob], `${volume.volume_title}.mokuro`, { type: 'application/json' });
   }
@@ -113,13 +115,15 @@ export async function loadVolumeSidecars(
     typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
   const volumeOcr = hasMokuroVersion ? await db.volume_ocr.get(volumeUuid) : undefined;
   const primary = volumeOcr?.pages ?? null;
-  if (!opts.forCloud || !primary) return buildVolumeSidecarsFromData(volume, primary);
+  if (!opts.forCloud || !primary) {
+    return buildVolumeSidecarsFromData(volume, primary, { markEdited: true });
+  }
   const pages = await mainSidecarPagesForCloud(db, volume, primary);
   const counted =
     pages && pages !== primary
       ? { ...volume, character_count: buildPageCharCounts(pages).totalChars }
       : volume;
-  return buildVolumeSidecarsFromData(counted, pages);
+  return buildVolumeSidecarsFromData(counted, pages, { markEdited: pages === primary });
 }
 
 export function downloadFileBlob(file: File): void {

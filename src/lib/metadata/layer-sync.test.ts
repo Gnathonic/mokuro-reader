@@ -529,7 +529,8 @@ describe('syncLayersFromListing', () => {
     expect(json.edited).toEqual({
       by: 'mokuro-reader',
       at: '2026-09-16T09:00:00.000Z',
-      base_sha256: null
+      base_sha256: null,
+      base_seal: null
     });
     expect(cacheAdd).toHaveBeenCalledWith('Series/Vol 1.fix.mokuro', expect.anything());
     const row = await getLayerWithPages(db, 'v1', 'fix');

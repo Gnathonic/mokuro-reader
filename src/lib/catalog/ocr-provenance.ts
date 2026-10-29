@@ -18,7 +18,10 @@
  *
  * Pure and worker-safe: the backup Worker builds primaries too.
  */
+import type Dexie from 'dexie';
+import type { Page } from '$lib/types';
 import { sha256Hex } from './mokuro-hash';
+import { getLayerPages } from './layer-store';
 
 /** One installed file's block and the digest of its pages (`v1:<hex>`). */
 export interface OcrProvenance {
@@ -178,4 +181,27 @@ export function addProvenance(
   const rest = (list ?? []).filter(isOcrProvenance);
   if (!p) return rest.slice(0, max);
   return [p, ...rest.filter((e) => e.digest !== p.digest)].slice(0, max);
+}
+
+/** The editor's pre-edit snapshot (`edit-persist.ts`'s `ORIGINAL_LAYER_ID`). */
+const ORIGINAL_LAYER = 'original';
+
+/**
+ * `edited.base_seal` for an edit-kind layer file: the seal of the generated
+ * main sidecar the edits sit on — the `original` snapshot's pages for an
+ * edited primary, else the primary's own — when those pages are an installed
+ * sealed file's (`carriedOcrEngine`). Null when the base was never sealed (a
+ * 0.7.x file, a local import) or is not known. Worker-safe: takes the
+ * connection; reads nothing when the row records no block.
+ */
+export async function editBaseSeal(
+  db: Dexie,
+  volume: { volume_uuid: string; ocr_edited_at?: string; ocr_provenance?: OcrProvenance[] }
+): Promise<string | null> {
+  if (!(volume.ocr_provenance ?? []).some(isOcrProvenance)) return null;
+  const pages: Page[] | null | undefined = volume.ocr_edited_at
+    ? await getLayerPages(db, volume.volume_uuid, ORIGINAL_LAYER)
+    : (await db.table('volume_ocr').get(volume.volume_uuid))?.pages;
+  if (!pages) return null;
+  return sealOf(await carriedOcrEngine(volume.ocr_provenance, pages)) ?? null;
 }

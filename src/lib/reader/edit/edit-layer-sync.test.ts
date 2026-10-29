@@ -45,6 +45,7 @@ import {
 import { persistPageEdit } from './edit-persist';
 import { promoteLayer, createLayer } from './layers';
 import { mainSidecarPagesForCloud } from './edit-persist';
+import { contentDigest, provenanceFromParsed } from '$lib/catalog/ocr-provenance';
 
 const SHA = 'cd'.repeat(32);
 
@@ -115,6 +116,28 @@ function uploadedPaths(): string[] {
 }
 
 describe('an OCR edit goes up as the edit layer, never as the main sidecar', () => {
+  it('names the seal of the generated main the edits were made on (edited.base_seal)', async () => {
+    const pages = (await db.volume_ocr.get('v1'))!.pages;
+    const seal = (await contentDigest({ id: 'hayai-nova', revision: 2 }, pages))!;
+    const engine = { id: 'hayai-nova', revision: 2, seal };
+    await db.volumes.update('v1', {
+      ocr_provenance: [(await provenanceFromParsed(engine, pages))!]
+    });
+
+    await persistPageEdit('v1', 1, pg('直した', 'q.png'));
+    await syncLayersFromListing(listing(), 'webdav');
+
+    const call = uploadFile.mock.calls.find((c) => c[0] === 'Series/Vol 1.edit.mokuro')!;
+    const json = JSON.parse(await (call[1] as Blob).text());
+    expect(json.edited).toMatchObject({ base_sha256: SHA, base_seal: seal });
+    expect(json.ocr_engine).toBeUndefined();
+    // The original snapshot is a layer file: never carries the block either.
+    const originalCall = uploadFile.mock.calls.find(
+      (c) => c[0] === 'Series/Vol 1.original.mokuro'
+    )!;
+    expect(JSON.parse(await (originalCall[1] as Blob).text()).ocr_engine).toBeUndefined();
+  });
+
   it('pushes <Vol>.edit.mokuro with the edited block and no ocr_engine', async () => {
     await persistPageEdit('v1', 1, pg('直した', 'q.png'));
     await syncLayersFromListing(listing(), 'webdav');
@@ -131,7 +154,13 @@ describe('an OCR edit goes up as the edit layer, never as the main sidecar', () 
     )!;
     expect(JSON.parse(await (originalCall[1] as Blob).text()).edited).toBeUndefined();
     const edit = await getLayerWithPages(db, 'v1', 'edit');
-    expect(json.edited).toEqual({ by: 'mokuro-reader', at: edit!.updated_at, base_sha256: SHA });
+    expect(json.edited).toEqual({
+      by: 'mokuro-reader',
+      at: edit!.updated_at,
+      base_sha256: SHA,
+      // A 0.7.x base (no block recorded): no seal to name.
+      base_seal: null
+    });
     expect(json.ocr_engine).toBeUndefined();
     expect(json.pages[1].blocks[0].lines).toEqual(['直した']);
     expect(json.pages[0].blocks[0].lines).toEqual(['あい']);

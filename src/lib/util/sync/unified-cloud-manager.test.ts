@@ -949,6 +949,39 @@ describe('UnifiedCloudManager rename operations', () => {
     ]);
   });
 
+  it('the main it puts first is the regenerated one, ocr_engine and all, byte for byte', async () => {
+    // bunko re-seals an older reader's rename; this reader's own must arrive
+    // already carrying the block (generateVolumeSidecarsFromDb carries it).
+    const { log } = orderedRenameSetup();
+    const main = JSON.stringify({
+      title: 'New Series',
+      volume: 'Volume X',
+      ocr_engine: { id: 'hayai-nova', revision: 2, seal: `v1:${'1'.repeat(64)}` },
+      pages: []
+    });
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob([main]) }
+    });
+    const provider = getActiveProvider();
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume(
+      'Old Series',
+      'Volume 1',
+      'New Series',
+      'Volume X',
+      'uuid-1'
+    );
+
+    expect(log[0]).toBe('put New Series/Volume X.mokuro');
+    const put = provider.uploadFile.mock.calls[0];
+    expect(put[0]).toBe('New Series/Volume X.mokuro');
+    expect(JSON.parse(await (put[1] as Blob).text()).ocr_engine).toEqual({
+      id: 'hayai-nova',
+      revision: 2,
+      seal: `v1:${'1'.repeat(64)}`
+    });
+  });
+
   it('a retry after a failed archive move moves only the archive, then drops the stale main', async () => {
     const { state, log } = orderedRenameSetup(1);
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
