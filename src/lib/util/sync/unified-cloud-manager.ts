@@ -1074,18 +1074,28 @@ class UnifiedCloudManager {
       }
     }
 
-    // 2. Move the non-mokuro files (cbz, cover). Their content is name-agnostic.
+    // 2. Move the layers, then the cover, then the archive LAST. Their content
+    //    is name-agnostic. The order is for servers that OCR what they find:
+    //    an archive at the new name with no main or layers beside it looks
+    //    like a volume that owes OCR, and mokuro-bunko's walk would queue a
+    //    job whose output collides with the layers arriving after it.
     //    Move errors PROPAGATE — the destructive step 3 must never run after a
     //    failed move. Retry convergence needs no error-swallowing here: a file
     //    moved by a prior attempt is simply absent from the old path after the
-    //    fresh fetch, so it never re-enters this loop.
+    //    fresh fetch, so it never re-enters these loops.
     for (const file of managedFiles) {
-      if (isLayerFile(file)) {
-        await this.moveFile(provider, file, layerDestinations.get(file)!);
-        changed++;
-        continue;
-      }
-      if (isMokuroSidecarPath(file.path)) continue;
+      if (!isLayerFile(file)) continue;
+      await this.moveFile(provider, file, layerDestinations.get(file)!);
+      changed++;
+    }
+    const movedByName = managedFiles.filter(
+      (file) => !isLayerFile(file) && !isMokuroSidecarPath(file.path)
+    );
+    const archivesLast = [
+      ...movedByName.filter((file) => !isCbzFile(file.path)),
+      ...movedByName.filter((file) => isCbzFile(file.path))
+    ];
+    for (const file of archivesLast) {
       await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
       changed++;
     }

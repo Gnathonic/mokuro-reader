@@ -356,8 +356,11 @@ listing — under **sidecar names rule v1**, which mokuro-bunko shares
 suffixes in any ASCII case, only `.cbz` defines stems, stems fold NFC +
 lowercase (`foldStem`), a primary wins over a layer reading, the id is matched
 AS WRITTEN (`Vol 1.GCV.mokuro` is an orphan; all-digit ids are valid), a sweep
-takes the exactly-spelled archive's layers first, and every id the reader mints
-contains a letter (`slugifyLayerId`) — and `src/lib/metadata/layer-sync.ts`
+takes the exactly-spelled archive's layers first, a leading UTF-8 BOM is
+tolerated on read, and every id the reader mints contains a letter
+(`slugifyLayerId`). The vectors both sides test against live in bunko's
+`interop/contract/sidecar-names.json` (hand-copied into `syncable-file.test.ts`
+for now) — and `src/lib/metadata/layer-sync.ts`
 syncs layers for rows that already exist locally (installed or metadata-only), newest-wins, no merge. A
 layer with no local record is filed by inferring its kind from the id alone:
 `original` stays `original`, `tr-<lang>` is a `translation`, a known engine id
@@ -382,6 +385,13 @@ everything that removes or moves a layer works from all listed copies
 (else the tombstone stays), a push removes the `.gz` it superseded
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
+
+A volume rename (`renameVolumeFiles`) writes in a fixed order: PUT the
+regenerated main at the new name, move the layers, move the cover, move the
+`.cbz` LAST, and only then delete the stale main — so a server that OCRs the
+archives it finds (mokuro-bunko) never sees the archive at its new name
+without its main and layers and queues no job there (whose output would land
+as `<stem>.<layer>_1.mokuro`).
 
 `.mokuro` files themselves stay pure upstream format regardless of which
 layer produced them. A `gcv` or `tr-<lang>` layer from the removed
@@ -553,7 +563,10 @@ Rules:
   The one exception is the PUT body to a `serverCompilesMetadata` provider,
   which reads an absent key as "keep yours": a deliberate local reset of a
   non-zero server `spine_offset` goes up as an explicit `0`
-  (`withServerIndexClears`); the cached copy never holds it.
+  (`withServerIndexClears`); the cached copy never holds it. bunko (≥ 0.8)
+  reads a present `0`/`null` as "clear" and an absent key as "inherit"; older
+  servers read the `0` as absent, so the reset only lands there once they
+  update. A plain-storage file never carries a `0`.
   Inheritance is a JOIN, never an adoption: `series_metadata` stores only what
   this user edited, and a published alignment reaches the shelf from the cached
   `series_index` copy (`getSpineOffsets` returns `record ?? published`, per key)
@@ -625,7 +638,10 @@ Rules:
   `writeSeriesFile` PUTs only when the built file's facts or offsets differ
   from the server's copy (`seriesFileCarriesServerRequest`): a placeholder's
   measurement, a download's recorded hash, a backup's drain or a delete's
-  maintenance never cost a PUT there.
+  maintenance never cost a PUT there. bunko retires `<Series>/series.json`
+  itself when the folder loses its last `.cbz`; the reader's cleanup never
+  DELETEs it there (an emptied folder, a series rename) and only drops its
+  cached index.
 
 ### Root `catalog.json`
 

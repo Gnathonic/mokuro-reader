@@ -749,9 +749,10 @@ describe('UnifiedCloudManager rename operations', () => {
     // .mokuro and report success while the cbz is stranded or gone.
     const cache = loadedCache();
     const provider = makeRenameProvider({
-      renameFile: vi.fn(async (file: CloudFileMetadata) => {
+      renameFile: vi.fn(async (file: CloudFileMetadata, newPath: string) => {
         if (file.fileId === 'cbz-1') throw new Error('Request failed with status 404 Not Found');
-        throw new Error('unexpected');
+        // The cover moves before the archive and succeeds.
+        return { ...file, fileId: `renamed-${file.fileId}`, path: newPath };
       })
     });
     const files = oldSeriesFiles();
@@ -814,6 +815,103 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(changed).toBe(2);
     expect(provider.renameFile).not.toHaveBeenCalled();
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A volume with a layer whose listing puts the archive FIRST, and a provider
+   * whose every write lands in one ordered log and moves the file in `state`,
+   * so a retry lists exactly what the previous attempt left behind.
+   */
+  function orderedRenameSetup(failArchiveMoves = 0) {
+    const layer: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'layer-1',
+      path: 'Old Series/Volume 1.hayai.mokuro',
+      modifiedTime: 't',
+      size: 9
+    };
+    const state: CloudFileMetadata[] = [...oldSeriesFiles(), layer];
+    const log: string[] = [];
+    let archiveFailures = failArchiveMoves;
+    const provider = makeRenameProvider({
+      uploadFile: vi.fn(async (path: string) => {
+        log.push(`put ${path}`);
+        return { fileId: 'uploaded-fileid' };
+      }),
+      renameFile: vi.fn(async (file: CloudFileMetadata, newPath: string) => {
+        if (file.path.endsWith('.cbz') && archiveFailures-- > 0) {
+          throw new Error('Request failed with status 502 Bad Gateway');
+        }
+        log.push(`move ${file.path} -> ${newPath}`);
+        const moved = { ...file, fileId: `renamed-${file.fileId}`, path: newPath };
+        state.splice(state.indexOf(file), 1, moved);
+        return moved;
+      }),
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        log.push(`delete ${file.path}`);
+        state.splice(state.indexOf(file), 1);
+      })
+    });
+    layerRows.mockResolvedValue([stampedLayer('uuid-1', 'hayai', layer)]);
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
+    });
+    return { state, log };
+  }
+
+  it('moves the layers, then the cover, then the archive — after the new main and before the stale one goes', async () => {
+    // bunko walks the library for archives that owe OCR. An archive that
+    // arrives at the new name before its main and layers looks like one, and
+    // the job it queues lands beside the moved layer as `<stem>.<layer>_1`.
+    const { log } = orderedRenameSetup();
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume(
+      'Old Series',
+      'Volume 1',
+      'New Series',
+      'Volume X',
+      'uuid-1'
+    );
+    expect(log).toEqual([
+      'put New Series/Volume X.mokuro',
+      'move Old Series/Volume 1.hayai.mokuro -> New Series/Volume X.hayai.mokuro',
+      'move Old Series/Volume 1.webp -> New Series/Volume X.webp',
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
+      'delete Old Series/Volume 1.mokuro'
+    ]);
+  });
+
+  it('a retry after a failed archive move moves only the archive, then drops the stale main', async () => {
+    const { state, log } = orderedRenameSetup(1);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const rename = () =>
+      unifiedCloudManager.renameVolume(
+        'Old Series',
+        'Volume 1',
+        'New Series',
+        'Volume X',
+        'uuid-1'
+      );
+    await expect(rename()).rejects.toThrow('502');
+    // The stale main survives a failed move; the archive stays at the old name.
+    expect(log.some((entry) => entry.startsWith('delete'))).toBe(false);
+    expect(state.map((f) => f.path)).toContain('Old Series/Volume 1.cbz');
+
+    log.length = 0;
+    await rename();
+    expect(log).toEqual([
+      'put New Series/Volume X.mokuro',
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
+      'delete Old Series/Volume 1.mokuro'
+    ]);
+    expect(state.map((f) => f.path).sort()).toEqual([
+      'New Series/Volume X.cbz',
+      'New Series/Volume X.hayai.mokuro',
+      'New Series/Volume X.webp'
+    ]);
   });
 
   it('refuses to rename onto an occupied name before any remote write (TARGET_EXISTS)', async () => {
