@@ -2581,6 +2581,82 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
       expect((await uploadedSeriesFile(provider)).volumes[0].offset).toBe(12);
     });
+
+    /** A record holding a deliberate shelf reset (spine-offsets.ts stores the 0). */
+    function resetRecord() {
+      const meta = {
+        series_key: 'one piece',
+        series_title: 'One Piece',
+        external_ids: { anilist: 21 },
+        titles: { native: 'ワンピース' },
+        synonyms: [],
+        updated_at: '2026-02-01T00:00:00.000Z',
+        facts_updated_at: PUBLISHED,
+        spine_offset: 0
+      };
+      getSeriesMetadataForTitle.mockResolvedValue(meta);
+      getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
+    }
+
+    it('a shelf reset over a published spine_offset sends an explicit 0 (and never caches it)', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+      publish({ spine_offset: -40 });
+      localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+      resetRecord();
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+      expect((await uploadedSeriesFile(provider)).spine_offset).toBe(0);
+      // The cache keeps the file as built: a 0 there would read as an opinion.
+      const cached = putSeriesIndex.mock.calls.at(-1)![0] as { file: Record<string, unknown> };
+      expect(Object.hasOwn(cached.file, 'spine_offset')).toBe(false);
+    });
+
+    it('once the server dropped the offset, the same reset is no request: skipped', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+      publish();
+      localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+      resetRecord();
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
+      expect(provider.uploadFile).not.toHaveBeenCalled();
+    });
+  });
+
+  it('plain storage: a shelf reset never writes a 0 into the file', async () => {
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(loadedCache());
+    getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    getSeriesIndex.mockResolvedValue({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: { ...JSON.parse(seriesFileJson([], '2026-01-01T00:00:00.000Z')), spine_offset: -40 },
+      source: { provider: 'webdav', path: 'One Piece/series.json', size: 42, modifiedTime: 't' },
+      fetched_at: '2026-08-17T00:00:00.000Z',
+      parser: 1
+    });
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+    const meta = {
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      synonyms: [],
+      updated_at: '2026-02-01T00:00:00.000Z',
+      spine_offset: 0
+    };
+    getSeriesMetadataForTitle.mockResolvedValue(meta);
+    getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+    expect(Object.hasOwn(await uploadedSeriesFile(provider), 'spine_offset')).toBe(false);
   });
 });
 
@@ -2665,6 +2741,54 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       undefined
     );
     expect(provider.deleteFile).toHaveBeenCalledWith(sidecar);
+  });
+
+  it('on a server that compiles series.json, a series rename never DELETEs the old file', async () => {
+    // The server refuses a DELETE of a compiled path and retires the orphan
+    // left in the old folder itself.
+    const provider = makeRenameProvider({
+      getStatus: vi.fn(() => ({ isReadOnly: false, serverCompilesMetadata: true }))
+    });
+    const sidecar: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'sj',
+      path: 'Old Series/series.json',
+      modifiedTime: 't',
+      size: 20
+    };
+    getActiveProvider.mockReturnValue(provider);
+    mutableCache([
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Old Series/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      sidecar
+    ]);
+    generateSidecars.mockResolvedValue({});
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_uuid: 's',
+        series_title: 'Old Series',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1]
+      }
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
+
+    expect(result.renamedVolumeUuids).toEqual(['uuid-1']);
+    expect(provider.deleteFile).not.toHaveBeenCalledWith(sidecar);
+    expect(moveSeriesIndexKey).toHaveBeenCalledWith('Old Series', 'New Series');
   });
 
   it('carries series.json across the rename even when the catalog cache move fails', async () => {
@@ -3304,6 +3428,27 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
     await unifiedCloudManager.deleteManagedVolume('One Piece', 'Volume 1');
 
     expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
+    expect(deleteSeriesIndex).toHaveBeenCalledWith('one piece');
+  });
+
+  it('on a server that compiles series.json, the last volume leaving drops only the cached index', async () => {
+    // The server refuses a DELETE of a compiled path and retires the orphan
+    // itself; the client's DELETE would only be a refused request.
+    const provider = makeRenameProvider({
+      getStatus: vi.fn(() => ({ isReadOnly: false, serverCompilesMetadata: true }))
+    });
+    getActiveProvider.mockReturnValue(provider);
+    statefulCache([
+      file('One Piece/Volume 1.cbz', { fileId: 'cbz-1' }),
+      file('One Piece/Volume 1.mokuro', { fileId: 'mokuro-1' }),
+      file('One Piece/series.json', { fileId: 'sj' })
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume('One Piece', 'Volume 1');
+
+    expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'cbz-1' }));
+    expect(provider.deleteFile).not.toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
     expect(deleteSeriesIndex).toHaveBeenCalledWith('one piece');
   });
 

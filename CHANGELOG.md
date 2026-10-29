@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- mokuro-bunko: resetting a shelf's alignment now sticks
+
 ## [1.10.0] - 2026-10-02
 
 ### Added

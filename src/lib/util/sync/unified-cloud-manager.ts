@@ -27,6 +27,7 @@ import {
   parseSeriesFileWithReport,
   seriesFactsStamp,
   seriesFileCarriesServerRequest,
+  withServerIndexClears,
   type CloudSidecarStamp,
   type SeriesFile,
   type SeriesFileVolume,
@@ -599,11 +600,17 @@ class UnifiedCloudManager {
    * Best-effort — an orphaned sidecar is harmless, so nothing here is allowed to
    * fail the delete/rename that triggered it.
    *
+   * On a server that compiles `series.json` itself (`serverCompilesMetadata`)
+   * only the cached record goes: that server refuses a client DELETE of the
+   * file and retires an orphan on its own, and the refresh pass already
+   * ignores a folder without archives meanwhile.
+   *
    * CAVEAT (deferred): "no `.cbz` left" is read from the CACHED listing, which
-   * the caller has just mutated locally. A cache that under-reports the folder
-   * (a listing that predates another device's upload) makes this delete a real
-   * remote `series.json` — recoverable, since the next write republishes it from
-   * the cached index, but it is a destructive step gated on local state.
+   * the caller has just mutated locally. On plain storage, a cache that
+   * under-reports the folder (a listing that predates another device's upload)
+   * makes this delete a real remote `series.json` — recoverable, since the next
+   * write republishes it from the cached index, but it is a destructive step
+   * gated on local state.
    */
   /**
    * After a delete/rename mutated cloud files, bring the metadata files back
@@ -641,8 +648,12 @@ class UnifiedCloudManager {
       );
       if (stillHasArchive) return;
 
-      const sidecar = this.getCloudSeriesFile(folderTitle);
-      if (sidecar) await this.deleteFileIdempotent(sidecar);
+      // A server that compiles `series.json` refuses a client DELETE of it and
+      // retires the orphan itself; only the local cache is ours to drop.
+      if (this.getActiveProvider()?.getStatus().serverCompilesMetadata !== true) {
+        const sidecar = this.getCloudSeriesFile(folderTitle);
+        if (sidecar) await this.deleteFileIdempotent(sidecar);
+      }
       await deleteSeriesIndex(normalizeSeriesKey(folderTitle));
     } catch (error) {
       console.warn(`Failed to clean up series.json for '${seriesTitle}':`, error);
@@ -1857,11 +1868,12 @@ class UnifiedCloudManager {
     // all — every unconditional schedule (a placeholder's measurement, a
     // download's recorded hash, a backup's drain, a delete's maintenance)
     // would otherwise PUT one per series, including series this account never
-    // uploaded.
-    if (
-      provider.getStatus().serverCompilesMetadata === true &&
-      !seriesFileCarriesServerRequest(existing, file)
-    ) {
+    // uploaded. Such a server also reads an absent `spine_offset` as "keep
+    // yours", so a local reset goes up as an explicit 0 (`body`); the cache
+    // keeps `file`, where a 0 is never written.
+    const serverCompiles = provider.getStatus().serverCompilesMetadata === true;
+    const body = serverCompiles ? withServerIndexClears(file, existing, meta) : file;
+    if (serverCompiles && !seriesFileCarriesServerRequest(existing, body)) {
       console.debug(
         `[series.json] '${folderTitle}': nothing for the server to take (facts and offsets unchanged)`
       );
@@ -1872,7 +1884,7 @@ class UnifiedCloudManager {
     // (see `maybeScheduleSeriesHealWrite` for the read-side materiality rules
     // that keep identical rewrites from being scheduled in the first place).
     const path = normalizeCloudPath(`${folderTitle}/${SERIES_FILE_NAME}`);
-    const blob = new Blob([stringifySeriesFile(file)], { type: 'application/json' });
+    const blob = new Blob([stringifySeriesFile(body)], { type: 'application/json' });
     await this.uploadFile(path, blob);
 
     // Stamp the cache with EXACTLY what the file cache now holds for this path
@@ -2100,7 +2112,10 @@ class UnifiedCloudManager {
       // holds no archive any more (a stale sidecar with nothing to index). A
       // skipped write while the old folder still lists archives means the
       // moved files have not surfaced under the new title yet; keeping the old
-      // index beats leaving the series with none until the next backup.
+      // index beats leaving the series with none until the next backup. A
+      // server that compiles `series.json` refuses the DELETE and retires the
+      // old folder's copy itself (see `cleanupSeriesFileIfFolderEmptied`).
+      if (this.getActiveProvider()?.getStatus().serverCompilesMetadata === true) return;
       const oldFolderStillHasArchive = this.getCloudVolumesBySeries(oldFolderTitle).some((file) =>
         normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
       );

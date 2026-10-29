@@ -544,6 +544,10 @@ Rules:
   `facts_updated_at`. An absent value means "no opinion" and inherits whatever
   the other side already published; a local `0` suppresses the published value
   at build time and is omitted from the file (build → parse stays an identity).
+  The one exception is the PUT body to a `serverCompilesMetadata` provider,
+  which reads an absent key as "keep yours": a deliberate local reset of a
+  non-zero server `spine_offset` goes up as an explicit `0`
+  (`withServerIndexClears`); the cached copy never holds it.
   Inheritance is a JOIN, never an adoption: `series_metadata` stores only what
   this user edited, and a published alignment reaches the shelf from the cached
   `series_index` copy (`getSpineOffsets` returns `record ?? published`, per key)
@@ -583,7 +587,9 @@ Rules:
   `store.ts`, funnelling into the same per-series debounce so one patch
   touching both costs one write), after a series' backup uploads finish, on
   series rename (written at the new title, old deleted) and removed with the
-  series folder. Gated on a writable connected provider and ≥1 backed-up
+  series folder — on a `serverCompilesMetadata` provider the client never
+  DELETEs a `series.json` (the server refuses it and retires orphans itself);
+  it only drops the cached index. Gated on a writable connected provider and ≥1 backed-up
   volume; read-only providers skip silently. There is no UI button. Facts or
   offsets arriving _from_ a sidecar never schedule a write (no ping-pong).
 - **Backfill.** Every cloud listing also reconciles: a folder with at least one
