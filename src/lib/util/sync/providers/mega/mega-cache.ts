@@ -4,6 +4,9 @@ import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import { megaProvider } from './mega-provider';
 
+/** Dedup-triggered refetches in a row before the cache stops asking (see runDeduplication). */
+const MAX_DEDUP_REFETCHES = 2;
+
 /**
  * MEGA Cache Wrapper
  *
@@ -15,8 +18,12 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   // subscribers get incremental mutations coalesced — see CoalescedCacheStore.
   private cache = new CoalescedCacheStore<CloudFileMetadata[]>();
   private isFetchingStore = writable<boolean>(false);
-  private fetchingFlag = false;
+  /** The fetch in flight, and whether it reloads the tree (a full fetch). */
+  private running: Promise<void> | null = null;
+  private runningReloads = false;
   private loadedFlag = false;
+  /** Refetches in a row that a dedup run asked for (see runDeduplication). */
+  private dedupRefetches = 0;
 
   get store() {
     // Return Map grouped by series for efficient series-based operations
@@ -33,9 +40,15 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
    * @param skipReinitialize If true, skip reinitializing MEGA connection (use for post-operation refreshes)
    */
   async fetch(skipReinitialize = false): Promise<void> {
-    if (this.fetchingFlag) {
-      console.log('MEGA cache fetch already in progress');
-      return;
+    if (this.running) {
+      // Join it rather than return at once: callers read the cache (or
+      // upload against the tree) next, and resuming before the listing lands
+      // reads an empty or stale one. A caller that asked for a reload gets
+      // one after a listing-only fetch.
+      const reloads = this.runningReloads;
+      await this.running;
+      if (skipReinitialize || reloads) return;
+      return this.fetch(false);
     }
 
     if (!megaProvider.isAuthenticated()) {
@@ -43,7 +56,12 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
       return;
     }
 
-    this.fetchingFlag = true;
+    this.runningReloads = !skipReinitialize;
+    this.running = this.load(skipReinitialize);
+    return this.running;
+  }
+
+  private async load(skipReinitialize: boolean): Promise<void> {
     this.isFetchingStore.set(true);
     try {
       // Query MEGA provider (which reads from its internal storage.files cache)
@@ -73,10 +91,11 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
     } catch (error) {
       console.error('Failed to fetch MEGA cache:', error);
     } finally {
-      this.fetchingFlag = false;
+      this.running = null;
       this.isFetchingStore.set(false);
 
-      // Run folder deduplication after cache load (incremental - one pass per call)
+      // Run folder deduplication after cache load (incremental - one pass per call).
+      // Not awaited: its own refetch joins whatever fetch is running then.
       this.runDeduplication();
     }
   }
@@ -94,10 +113,21 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
         const ops = megaProvider.getFolderOperations();
         const result = await folderDeduplicator.deduplicateAll('mega', ops);
 
-        if (result.groupsMerged > 0) {
-          console.log('[MegaCache] Dedup merged folders, refetching cache...');
-          await this.fetch(true);
+        if (result.groupsMerged === 0) {
+          this.dedupRefetches = 0;
+          return;
         }
+        // Each refetch runs dedup again. A duplicate that never empties (a
+        // device still writing there) would make that a loop of full
+        // fetches; the next fetch from elsewhere tries again.
+        if (this.dedupRefetches >= MAX_DEDUP_REFETCHES) {
+          console.warn('[MegaCache] Dedup still finds duplicates after refetching; leaving them');
+          this.dedupRefetches = 0;
+          return;
+        }
+        this.dedupRefetches++;
+        console.log('[MegaCache] Dedup merged folders, refetching cache...');
+        await this.fetch(true);
       })
       .catch((err) => {
         console.error('[MegaCache] Deduplication failed:', err);
@@ -157,7 +187,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   isFetching(): boolean {
-    return this.fetchingFlag;
+    return this.running !== null;
   }
 
   isLoaded(): boolean {

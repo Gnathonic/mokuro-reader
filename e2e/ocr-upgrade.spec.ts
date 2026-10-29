@@ -343,7 +343,9 @@ test.describe('automatic OCR upgrade (stubbed WebDAV)', () => {
       { SERIES_UUID, VOLUME_UUID }
     );
     const firstPage = page.locator('[data-page-index="0"]');
-    await expect(firstPage).toBeVisible({ timeout: 20000 });
+    // The reader route is a large lazy chunk the dev server compiles on first
+    // use; on a loaded machine that alone took over 20 s.
+    await expect(firstPage).toBeVisible({ timeout: 45000 });
     await expect(firstPage.locator('.textBox').first()).toContainText('あたらしい', {
       timeout: 10000
     });
