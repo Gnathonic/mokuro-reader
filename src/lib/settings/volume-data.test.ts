@@ -528,7 +528,17 @@ describe('page turns after the cut-over', () => {
     volumesWithTrash.set({
       v: new VolumeData({ progress: 2, forgotAt: new Date(5000).toISOString() })
     });
-    _setHistoryTurnsForTest(new Map([['v', [[1000, 1, 10], [6000, 2, 20]]]]));
+    _setHistoryTurnsForTest(
+      new Map([
+        [
+          'v',
+          [
+            [1000, 1, 10],
+            [6000, 2, 20]
+          ]
+        ]
+      ])
+    );
     expect(get(volumes).v.recentPageTurns).toEqual([[6000, 2, 20]]);
   });
 });
