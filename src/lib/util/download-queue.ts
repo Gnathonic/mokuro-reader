@@ -37,7 +37,7 @@ import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
-import { splitLayerSidecarName } from './sync/syncable-file';
+import { foldStem, splitLayerSidecarName } from './sync/syncable-file';
 import { attachLayerToVolume, readLayerFile } from '$lib/reader/edit/layer-import';
 import { pullLayersForVolume } from '$lib/metadata/layer-sync';
 import {
@@ -413,7 +413,7 @@ export function classifyArchiveMokuroEntry(
   const name = entryName.split('/').pop() ?? entryName;
   const split = splitLayerSidecarName(name);
   if (!split) return null;
-  return split.stem.toLowerCase() === archiveStem.toLowerCase() ? { layerId: split.layerId } : null;
+  return foldStem(split.stem) === foldStem(archiveStem) ? { layerId: split.layerId } : null;
 }
 
 /**

@@ -79,7 +79,7 @@ import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/s
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 import { syncLayersFromListing } from '$lib/metadata/layer-sync';
 import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
-import { cbzStemsOf, classifyMokuroSidecar } from './syncable-file';
+import { cbzStemsOf, classifyMokuroSidecar, isCbzFile } from './syncable-file';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -98,13 +98,19 @@ function layerFilesOfVolume(
   folderFiles: CloudFileMetadata[],
   volumeBaseName: string
 ): Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> {
-  const stems = cbzStemsOf(folderFiles.map((f) => basenameOfPath(f.path)));
+  const names = folderFiles.map((f) => basenameOfPath(f.path));
+  const stems = cbzStemsOf(names);
+  // Archive stems as spelled: a layer whose stem is EXACTLY another archive's
+  // belongs to that volume, however it folds (sidecar names rule v1 #6).
+  const spelled = new Set(names.filter(isCbzFile).map((name) => name.slice(0, -4)));
   const key = normalizeVolumeTitleKey(volumeBaseName);
   const out: Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> = [];
   for (const file of folderFiles) {
     const cls = classifyMokuroSidecar(basenameOfPath(file.path), stems);
     if (cls.kind !== 'layer') continue;
-    if (cls.stem !== volumeBaseName && normalizeVolumeTitleKey(cls.stem) !== key) continue;
+    if (cls.stem !== volumeBaseName) {
+      if (spelled.has(cls.stem) || normalizeVolumeTitleKey(cls.stem) !== key) continue;
+    }
     out.push({ file, layerId: cls.layerId, gz: cls.gz });
   }
   return out;

@@ -5,6 +5,7 @@
 ### Fixed
 
 - mokuro-bunko: resetting a shelf's alignment now sticks
+- OCR layer files found on decomposed-name storage
 
 ## [1.10.0] - 2026-10-02
 

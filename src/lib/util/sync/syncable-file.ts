@@ -115,6 +115,20 @@ export function isBestEffortMetadataPath(path: string): boolean {
  * pairs a `.mokuro` with a volume must go through it. {@link splitLayerSidecarName}
  * is the listing-free split for a file arriving on its own (an import, an
  * export name round-trip), where the caller matches the stem itself.
+ *
+ * Sidecar names rule v1 — mokuro-bunko classifies with the same rule
+ * (`bunko_core::sidecar_names`), so a file is the same thing on both sides:
+ * 1. `.cbz`, `.mokuro` and `.mokuro.gz` match in any ASCII case;
+ * 2. only `.cbz` archives define volume stems;
+ * 3. stems compare folded, NFC then lowercase ({@link foldStem});
+ * 4. a primary reading wins over a layer reading of the same name;
+ * 5. the id must match {@link LAYER_ID_RE} AS WRITTEN — `Vol 1.GCV.mokuro` is
+ *    an orphan, never layer `gcv` — and an all-digit id is a valid id;
+ * 6. a sweep takes a layer with the archive spelled exactly like its stem
+ *    before one that merely folds alike (`unified-cloud-manager.ts`);
+ * 7. a leading UTF-8 BOM is tolerated on read (the text decoder drops it),
+ *    never written, and hashes cover the raw bytes;
+ * 8. ids this reader mints always contain a letter (`slugifyLayerId`).
  */
 export const LAYER_ID_RE = /^[a-z0-9-]{1,32}$/;
 
@@ -130,11 +144,19 @@ function stripMokuroExtension(basename: string): { base: string; gz: boolean } |
   return null;
 }
 
-/** Lowercased archive stems (`Vol 1.cbz` → `vol 1`) of a folder's basenames. */
+/**
+ * A volume stem as rule v1 compares it: NFC, then lowercase. A filename that
+ * went through a decomposing filesystem (NFD) is still the same volume.
+ */
+export function foldStem(stem: string): string {
+  return stem.normalize('NFC').toLowerCase();
+}
+
+/** Folded archive stems (`Vol 1.cbz` → `vol 1`) of a folder's basenames. */
 export function cbzStemsOf(basenames: Iterable<string>): Set<string> {
   const stems = new Set<string>();
   for (const name of basenames) {
-    if (isCbzFile(name)) stems.add(name.slice(0, -4).toLowerCase());
+    if (isCbzFile(name)) stems.add(foldStem(name.slice(0, -4)));
   }
   return stems;
 }
@@ -152,7 +174,9 @@ export function splitLayerSidecarName(
   const dot = stripped.base.lastIndexOf('.');
   if (dot <= 0) return null;
   const stem = stripped.base.slice(0, dot);
-  const layerId = stripped.base.slice(dot + 1).toLowerCase();
+  // As written: lowercasing here made `Vol 1.GCV.mokuro` a layer for this
+  // reader and an orphan for bunko.
+  const layerId = stripped.base.slice(dot + 1);
   if (!LAYER_ID_RE.test(layerId)) return null;
   return { stem, layerId, gz: stripped.gz };
 }
@@ -163,7 +187,7 @@ export function splitLayerSidecarName(
  * 2. else `<stem>.<id>` with `<stem>.cbz` present and a valid id → LAYER `<id>`
  *    of `<stem>`;
  * 3. else an ORPHAN, ignored exactly as an unmatched `.mokuro` always was.
- * `cbzStems` come from {@link cbzStemsOf} (lowercased).
+ * `cbzStems` come from {@link cbzStemsOf} (folded).
  */
 export function classifyMokuroSidecar(
   basename: string,
@@ -171,11 +195,11 @@ export function classifyMokuroSidecar(
 ): MokuroSidecarClass {
   const stripped = stripMokuroExtension(basename);
   if (!stripped) return { kind: 'orphan' };
-  if (cbzStems.has(stripped.base.toLowerCase())) {
+  if (cbzStems.has(foldStem(stripped.base))) {
     return { kind: 'primary', stem: stripped.base, gz: stripped.gz };
   }
   const split = splitLayerSidecarName(basename);
-  if (split && cbzStems.has(split.stem.toLowerCase())) {
+  if (split && cbzStems.has(foldStem(split.stem))) {
     return { kind: 'layer', stem: split.stem, layerId: split.layerId, gz: split.gz };
   }
   return { kind: 'orphan' };

@@ -414,6 +414,37 @@ describe('UnifiedCloudManager rename operations', () => {
     ).toEqual(['Old Series/Volume 1.5.cbz', 'Old Series/Volume 1.5.mokuro']);
   });
 
+  it('a layer file goes with the archive spelled exactly like its stem before one that only folds alike', async () => {
+    const file = (path: string): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: 't',
+      size: 1
+    });
+    const pair = [
+      file('S/Vol 01.cbz'),
+      file('S/vol 01.cbz'),
+      file('S/Vol 01.gcv.mokuro'),
+      file('S/vol 01.hayai.mokuro')
+    ];
+    let files = pair;
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const managed = (volume: string) =>
+      unifiedCloudManager.getManagedCloudFilesForVolume('S', volume).map((f) => f.path);
+    // Two archives that fold alike are two volumes: each keeps its own layers.
+    expect(managed('Vol 01')).toEqual(['S/Vol 01.cbz', 'S/Vol 01.gcv.mokuro']);
+    expect(managed('vol 01')).toEqual(['S/vol 01.cbz', 'S/vol 01.hayai.mokuro']);
+    // With no archive spelled `vol 01`, the folded match is the volume's own.
+    files = pair.filter((f) => f.path !== 'S/vol 01.cbz');
+    expect(managed('Vol 01')).toEqual([
+      'S/Vol 01.cbz',
+      'S/Vol 01.gcv.mokuro',
+      'S/vol 01.hayai.mokuro'
+    ]);
+  });
+
   it('a rename MOVES the layer files to the new name and never deletes them', async () => {
     const cache = loadedCache();
     const provider = makeRenameProvider();

@@ -3,7 +3,7 @@ import { getLayerMeta, layerTables, putLayerWithPages } from '$lib/catalog/layer
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
-import { splitLayerSidecarName } from '$lib/util/sync/syncable-file';
+import { foldStem, splitLayerSidecarName } from '$lib/util/sync/syncable-file';
 import { layerKindForId, layerNameForId, servedEngineOf } from './layers';
 
 /**
@@ -66,7 +66,7 @@ export function extractLayerEntries(entries: LayerFileEntry[]): {
   const note = (dir: string, stem: string) => {
     let set = stemsByDir.get(dir);
     if (!set) stemsByDir.set(dir, (set = new Set()));
-    set.add(stem.toLowerCase());
+    set.add(foldStem(stem));
   };
   for (const entry of entries) {
     const name = basename(entry.path);
@@ -93,12 +93,12 @@ export function extractLayerEntries(entries: LayerFileEntry[]): {
     }
     const dir = dirname(entry.path);
     const siblings = stemsByDir.get(dir);
-    const fullBase = sourceStemOf(name)!.toLowerCase();
+    const fullBase = foldStem(sourceStemOf(name)!);
     const extracted: ExtractedLayerEntry = { ...entry, ...split, dir };
     if (siblings?.has(fullBase)) {
       // `<stem>.<id>` is itself a volume here (`Vol 1.5.cbz` beside `Vol 1.5.mokuro`).
       kept.push(entry);
-    } else if (siblings?.has(split.stem.toLowerCase())) {
+    } else if (siblings?.has(foldStem(split.stem))) {
       layers.push(extracted);
     } else {
       standalone.push(extracted);

@@ -351,8 +351,14 @@ Cloud layer sidecars are named `<Volume Title>.<layer-id>.mokuro[.gz]`
 `classifyMokuroSidecar` (`src/lib/util/sync/syncable-file.ts`) tells a listed
 `.mokuro` apart from a layer file the same way it always disambiguated dotted
 volume titles — by checking which stems have a `.cbz` in the same folder
-listing — and `src/lib/metadata/layer-sync.ts` syncs layers for rows that
-already exist locally (installed or metadata-only), newest-wins, no merge. A
+listing — under **sidecar names rule v1**, which mokuro-bunko shares
+(`bunko_core::sidecar_names`; the rule is spelled out above `LAYER_ID_RE`):
+suffixes in any ASCII case, only `.cbz` defines stems, stems fold NFC +
+lowercase (`foldStem`), a primary wins over a layer reading, the id is matched
+AS WRITTEN (`Vol 1.GCV.mokuro` is an orphan; all-digit ids are valid), a sweep
+takes the exactly-spelled archive's layers first, and every id the reader mints
+contains a letter (`slugifyLayerId`) — and `src/lib/metadata/layer-sync.ts`
+syncs layers for rows that already exist locally (installed or metadata-only), newest-wins, no merge. A
 layer with no local record is filed by inferring its kind from the id alone:
 `original` stays `original`, `tr-<lang>` is a `translation`, a known engine id
 (`gcv`, `hayai`, `paddle-manga`, `ppocr-manga`, `mokuro-fp16`, `mokuro`) is

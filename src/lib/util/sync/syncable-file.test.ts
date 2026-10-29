@@ -8,7 +8,8 @@ import {
   splitLayerSidecarName,
   classifyMokuroSidecar,
   layerSidecarName,
-  cbzStemsOf
+  cbzStemsOf,
+  foldStem
 } from './syncable-file';
 
 describe('syncable-file', () => {
@@ -225,8 +226,125 @@ describe('series-metadata.json stays retired', () => {
       const name = layerSidecarName('Vol 1', 'gcv');
       expect(name).toBe('Vol 1.gcv.mokuro');
       expect(splitLayerSidecarName(name)).toEqual({ stem: 'Vol 1', layerId: 'gcv', gz: false });
-      // Case-folded id, stem kept verbatim.
-      expect(splitLayerSidecarName('Vol 1.GCV.mokuro')?.layerId).toBe('gcv');
+      // The id is matched as written (rule v1 #5): an upper-case id is no id.
+      expect(splitLayerSidecarName('Vol 1.GCV.mokuro')).toBeNull();
+    });
+  });
+
+  // Sidecar names rule v1 — the same rule as mokuro-bunko's
+  // `bunko_core::sidecar_names`. These are the vectors of its contract file
+  // (`interop/contract/sidecar-names.json`), encoded by hand until the reader
+  // reads that file directly.
+  describe('sidecar names rule v1', () => {
+    const NFC = 'V\u00f3l 1'; // Vól 1, composed
+    const NFD = 'Vo\u0301l 1'; // Vól 1, decomposed
+    const cases: Array<{
+      name: string;
+      folder: string[];
+      expect: { kind: 'primary' | 'layer' | 'orphan'; stem?: string; layer?: string; gz?: boolean };
+    }> = [
+      // 1. suffixes match regardless of ASCII case
+      {
+        name: 'Vol 1.MOKURO',
+        folder: ['Vol 1.cbz'],
+        expect: { kind: 'primary', stem: 'Vol 1', gz: false }
+      },
+      {
+        name: 'Vol 1.MOKURO.GZ',
+        folder: ['Vol 1.cbz'],
+        expect: { kind: 'primary', stem: 'Vol 1', gz: true }
+      },
+      {
+        name: 'Vol 1.mokuro',
+        folder: ['Vol 1.CBZ'],
+        expect: { kind: 'primary', stem: 'Vol 1', gz: false }
+      },
+      {
+        name: 'Vol 1.edit.MOKURO',
+        folder: ['Vol 1.cbz'],
+        expect: { kind: 'layer', stem: 'Vol 1', layer: 'edit', gz: false }
+      },
+      {
+        name: 'Vol 1.gcv.mokuro.gz',
+        folder: ['Vol 1.cbz'],
+        expect: { kind: 'layer', stem: 'Vol 1', layer: 'gcv', gz: true }
+      },
+      // 2. only .cbz defines a volume stem
+      { name: 'Vol 1.mokuro', folder: ['Vol 1.cbr'], expect: { kind: 'orphan' } },
+      {
+        name: 'Vol 1.5.mokuro',
+        folder: ['Vol 1.5.zip', 'Vol 1.cbz'],
+        expect: { kind: 'layer', stem: 'Vol 1', layer: '5', gz: false }
+      },
+      // 3. stems fold as NFC then lowercase
+      {
+        name: `${NFD}.mokuro`,
+        folder: [`${NFC}.cbz`],
+        expect: { kind: 'primary', stem: NFD, gz: false }
+      },
+      {
+        name: `${NFC}.mokuro`,
+        folder: [`${NFD}.cbz`],
+        expect: { kind: 'primary', stem: NFC, gz: false }
+      },
+      {
+        name: 'vol 1.gcv.mokuro',
+        folder: ['Vol 1.cbz'],
+        expect: { kind: 'layer', stem: 'vol 1', layer: 'gcv', gz: false }
+      },
+      // 4. a primary wins over a layer reading of the same name
+      {
+        name: 'Vol 1.5.mokuro',
+        folder: ['Vol 1.cbz', 'Vol 1.5.cbz'],
+        expect: { kind: 'primary', stem: 'Vol 1.5', gz: false }
+      },
+      {
+        name: 'Vol 01.5.mokuro',
+        folder: ['Vol 01.cbz'],
+        expect: { kind: 'layer', stem: 'Vol 01', layer: '5', gz: false }
+      },
+      // 5. the id is matched exactly as written; all-digit ids are allowed
+      { name: 'Vol 1.Upper.mokuro', folder: ['Vol 1.cbz'], expect: { kind: 'orphan' } },
+      { name: 'Vol 1.EDIT.mokuro', folder: ['Vol 1.cbz'], expect: { kind: 'orphan' } },
+      {
+        name: 'Vol 1.2024.mokuro',
+        folder: ['Vol 1.cbz'],
+        expect: { kind: 'layer', stem: 'Vol 1', layer: '2024', gz: false }
+      },
+      {
+        name: `Vol 1.${'a'.repeat(32)}.mokuro`,
+        folder: ['Vol 1.cbz'],
+        expect: { kind: 'layer', stem: 'Vol 1', layer: 'a'.repeat(32), gz: false }
+      },
+      { name: `Vol 1.${'a'.repeat(33)}.mokuro`, folder: ['Vol 1.cbz'], expect: { kind: 'orphan' } },
+      { name: 'Vol 1.gcv.mokuro', folder: ['Vol 2.cbz'], expect: { kind: 'orphan' } },
+      // A case-variant archive pair: both spellings are volumes of their own.
+      {
+        name: 'vol 01.mokuro',
+        folder: ['Vol 01.cbz', 'vol 01.cbz'],
+        expect: { kind: 'primary', stem: 'vol 01', gz: false }
+      },
+      {
+        name: 'vol 01.hayai.mokuro',
+        folder: ['Vol 01.cbz', 'vol 01.cbz'],
+        expect: { kind: 'layer', stem: 'vol 01', layer: 'hayai', gz: false }
+      }
+    ];
+
+    it.each(cases)('$name beside $folder', ({ name, folder, expect: want }) => {
+      const got = classifyMokuroSidecar(name, cbzStemsOf(folder));
+      expect(got.kind).toBe(want.kind);
+      if (got.kind === 'orphan') return;
+      expect(got.stem).toBe(want.stem);
+      expect(got.gz).toBe(want.gz);
+      if (got.kind === 'layer') expect(got.layerId).toBe(want.layer);
+    });
+
+    it('foldStem is NFC then Unicode lowercase', () => {
+      expect(foldStem(NFD)).toBe(foldStem(NFC));
+      expect(foldStem(NFD)).toBe('v\u00f3l 1');
+      expect(foldStem('\u00c4RA')).toBe('\u00e4ra');
+      expect([...cbzStemsOf([`${NFD}.cbz`, 'Vol 1.cbr'])]).toEqual(['v\u00f3l 1']);
     });
   });
 });
