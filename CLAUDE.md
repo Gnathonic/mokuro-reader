@@ -263,6 +263,7 @@ interface VolumeMetadata {
   mokuro_sha256?: string; // hash of the .mokuro bytes the installed primary came from — see "OCR upgrades"
   mokuro_sha256_cloud?: { provider: string; size: number; modified?: number }; // where that file is KNOWN to be stored
   updated_ocr_sha256?: string; // edited volumes: newest cloud OCR filed as the `updated-ocr` layer
+  ocr_provenance?: { engine: object; digest: string }[]; // installed files' `ocr_engine` blocks — see "Provenance blocks"
 }
 
 interface VolumeOCR {
@@ -380,8 +381,50 @@ Mokuro generates a `.mokuro` JSON file with this structure:
 
 Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and OCR text lines.
 
-The app writes `.mokuro` files in this pure upstream format — no reader-specific
-keys. Series-level data lives beside them in `series.json`.
+The app writes `.mokuro` files in this upstream format plus two reader
+extensions (`chars`, `spine_width`) and at most ONE provenance block (below).
+Series-level data lives beside them in `series.json`.
+
+#### Provenance blocks (`ocr_engine` / `edited`)
+
+A `.mokuro` says where its text came from with a top-level block — never both
+(bunko's `docs/design/sidecar-provenance.md` is the normative description):
+
+- **`ocr_engine`** (GENERATED): written by a server (mokuro-bunko) that ran an
+  engine — `id`, an integer `revision` (absent = 1; same id, higher revision =
+  newer output that replaces the old), `created`, recipe details, and `seal`.
+  The reader NEVER mints one. Every primary install (`processVolume` — local
+  import, cloud download, deep link — and the image-only upgrade) stores the
+  file's block verbatim in `VolumeMetadata.ocr_provenance` together with a
+  seal v1 digest of THAT FILE's pages (taken before the import remaps any
+  `img_path`); a reinstall from a file without one clears the list. A primary
+  the reader regenerates — a rename's new main, a backup, the sidecar
+  backfill, an export, an archive's embedded copy, an edited volume's cloud
+  main from its `original` snapshot — carries the block exactly when the pages
+  written reproduce an entry's digest (`buildPrimaryMokuroMetadata` →
+  `carriedOcrEngine`, `catalog/ocr-provenance.ts`), so the block survives
+  reader renames (names are outside the seal) and drops off the moment a page
+  is edited. A layer file never carries one.
+- **`edited`** (EDITED): `by` (`"mokuro-reader"`), `at`, `base_sha256` and
+  `base_seal` — on every `edit`-kind layer file (`buildLayerMokuroMetadata`)
+  and on a primary written from the EDITED primary row itself (exports, Local
+  Folder, archives, a rename's fallback when the snapshot is missing) when no
+  block can be carried. `base_sha256` is the row's `mokuro_sha256`;
+  `base_seal` is the seal of the sealed main the edits sit on (`editBaseSeal`:
+  the `original` snapshot's pages for an edited primary, else the primary's),
+  computed for layer-sync pushes and the Worker's layer sidecars (backup,
+  rename, Worker exports); null from the main-thread layer exports
+  (`buildLayerExportFile`, `loadVolumeLayerFiles`), on an edited primary's own
+  `edited` block, and for an unsealed base.
+
+**Seal v1** = `"v1:"` + hex sha256 of the RFC 8785 (JCS) text of
+`{"ocr_engine": <block minus seal and content_sha256>, "pages": <pages>}` —
+keys sorted by UTF-16 code units, numbers as `JSON.stringify` spells them, no
+whitespace; a non-finite number means no seal (`canonicalJson`,
+`contentDigest`). Title, volume, uuids, `chars`, `spine_width`, `version`,
+`edited` and key order are outside it. The cross-language vectors live in
+bunko's `interop/contract/seal/*.json`; `runner-output` is hand-copied into
+`catalog/__fixtures__/seal-vector.ts` until the contract suite reads them all.
 
 ### OCR editor and layers
 
@@ -411,9 +454,10 @@ page by page, so pages edited in the layer itself survive). Layer-sync pushes
 it as `<Volume>.edit.mokuro` (`scheduleLayerPush`, debounced, from the cached
 listing). Every layer file of kind `edit` carries a top-level
 `"edited": {"by": "mokuro-reader", "at": <layer updated_at>, "base_sha256":
-<row mokuro_sha256 or null>}` block (`buildLayerMokuroMetadata`, the one
-serializer for pushes, backup layer sidecars and exports); nothing the app
-writes carries `ocr_engine`. An edit or a promotion NEVER re-uploads the main
+<row mokuro_sha256 or null>, "base_seal": <seal or null>}` block
+(`buildLayerMokuroMetadata`, the one serializer for pushes, backup layer
+sidecars and exports); no layer file the app writes carries `ocr_engine` (see
+"Provenance blocks"). An edit or a promotion NEVER re-uploads the main
 sidecar: the backfill no longer re-uploads an edited volume's listed `.mokuro`,
 and every cloud write of a main sidecar (a first backup, the backfill of a
 missing one, a rename's regeneration) is built from the `original` snapshot
@@ -489,7 +533,11 @@ without its main and layers and queues no job there (whose output would land
 as `<stem>.<layer>_1.mokuro`).
 
 `.mokuro` files themselves stay upstream format regardless of which layer
-produced them (plus the `edited` block on `edit`-kind layers, above). A `gcv` or `tr-<lang>` layer from the removed
+produced them, plus the provenance blocks above. A layer that carries an
+`ocr_engine` (`servedEngineOf`) is a server's OCR and is filed as `ocr` whatever
+its id — including the `<Volume>.<primary generation>.mokuro` bunko writes beside
+an EDITED main when the recipe beneath the edit is outdated (it never replaces
+an edited main). A `gcv` or `tr-<lang>` layer from the removed
 experimental client-side OCR/translation engines still lists, displays and
 deletes like any other layer — `KNOWN_ENGINE_IDS` (`reader/edit/layers.ts`)
 and `isTranslationLayerId` (`layer-kind.ts`) keep classifying those ids
@@ -560,6 +608,13 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   `updated-ocr` layer adopts its `source_sha256` (attestation cleared);
   promoting any other layer leaves it. A reinstall's `put` replaces it.
   Unindexed fields: no Dexie version.
+- **Provenance learned.** `VolumeMetadata.ocr_provenance` (newest first, ≤ 4,
+  deduplicated by digest — `addProvenance`) is set by every primary install and
+  by the image-only upgrade, and the hash-driven pass APPENDS the downloaded
+  file's `ocr_engine` on `upgraded`, `recorded` (another device's rename: same
+  pages, new bytes) and `layered` (so promoting `updated-ocr` later still
+  finds its block). Nothing is learned on `kept`, `mismatch` or `skipped`. See
+  "Provenance blocks".
 - **When.** After a listing refreshed `series.json` copies (`series-index-sync.ts`,
   for the refreshed series) and on series open (`series-open.ts`, that
   series). Single-flight (a request mid-run merges into ONE follow-up),
