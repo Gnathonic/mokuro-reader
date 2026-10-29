@@ -192,6 +192,8 @@ export class WebDAVProvider implements SyncProvider {
   private _serverVersion: string | undefined;
   /** Root files bunko reports keeping per account (`per_user_files`); undefined = not reported. */
   private _perUserFiles: string[] | undefined;
+  /** Layer ids bunko reports keeping per account (`per_user_layers`); undefined = not reported. */
+  private _perUserLayers: string[] | undefined;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
   /** Per control-file name: the last read's set etag and the server's raw ETag for its one node. */
@@ -635,6 +637,15 @@ export class WebDAVProvider implements SyncProvider {
       positionsSync: this._serverCompilesMetadata
         ? (this._perUserFiles?.includes('positions.json') ?? false)
         : undefined,
+      // The edit layer goes up only to a bunko that keeps it per account; any
+      // other bunko would publish it to every account. Plain WebDAV: the
+      // user's own file.
+      editLayerSync: this._serverCompilesMetadata
+        ? this._perUserLayers?.includes('edit')
+          ? 'push'
+          : 'local'
+        : undefined,
+      curatedPublish: this._capabilities?.curated?.scope,
       metadataPermissions: this._capabilities?.metadata,
       canModifyDelete: this._capabilities?.canModifyDelete,
       canAddFiles: this._capabilities?.canAddFiles,
@@ -750,6 +761,7 @@ export class WebDAVProvider implements SyncProvider {
           this._serverCompilesMetadata = true;
           this._serverVersion = identity.serverVersion;
           this._perUserFiles = identity.perUserFiles;
+          this._perUserLayers = identity.perUserLayers;
           this._isReadOnly = !(
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
           );
@@ -773,6 +785,7 @@ export class WebDAVProvider implements SyncProvider {
           this._serverCompilesMetadata = true;
           this._serverVersion = identity.serverVersion;
           this._perUserFiles = identity.perUserFiles;
+          this._perUserLayers = identity.perUserLayers;
           break;
 
         case 'unsupported':
@@ -804,6 +817,7 @@ export class WebDAVProvider implements SyncProvider {
           // A bunko recognised only by its verified PUTs reported no version.
           this._serverVersion = undefined;
           this._perUserFiles = undefined;
+          this._perUserLayers = undefined;
           break;
       }
 
@@ -913,6 +927,7 @@ export class WebDAVProvider implements SyncProvider {
     this._serverCompilesMetadata = false;
     this._serverVersion = undefined;
     this._perUserFiles = undefined;
+    this._perUserLayers = undefined;
     this.controlReads.clear();
     this._hasPassword = false;
     this._needsAttention = false; // Deliberate logout - nothing to flag

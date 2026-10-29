@@ -436,6 +436,16 @@ account), the library's shared `curated` ("Shared corrections",
 `isCuratedLayerId`, published by accounts with the rights), and `pre-upgrade*`
 (`isServerKeepsakeLayerId`). They are filed kind `edit` whatever `ocr_engine`
 stamp their file carries, and a pull never re-files one as `ocr`.
+Two capabilities say what this server does with them
+(`ProviderStatus`): `editLayerSync` is `push` when bunko's identity lists
+`edit` in `per_user_layers` (it keeps `edit`/`edit-<n>` per account), `local`
+on any other bunko (0.7.x, or one known only by its verified PUTs — there the
+file would land in the SHARED library and replace every account's
+corrections), and absent on plain storage and cloud-direct (the user's own
+file: push). `curatedPublish` is the identity's `permissions.curated.scope`
+(`all` / `owned` / `none`), or `all` from a fresh cloud marker that keeps a
+curated layer; `canPublishCurated(status, seriesTitle)` reads it (`owned` =
+a series in `metadataPermissions.ownedSeries`; absent = no).
 
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings
@@ -525,7 +535,8 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `bunko_version`, all optional (absent = '' / [] / false; a list with a
   non-string entry reads as []). They reach `cloudBunko.holder` from the
   top-ranked FRESH marker only; records stored before v2 load with those
-  defaults. Nothing gates on them yet. `cloudBunkoMergesDuplicates(scope)` is
+  defaults. A holder's `curated` makes `curatedPublish` `all` (the cloud
+  folder's owner may publish the shared layer). `cloudBunkoMergesDuplicates(scope)` is
   the holder's `dedup`. Read the marker through `refreshCloudBunkoMarker`:
   one If-None-Match etag per scope, shared by every caller, and one read in
   flight per scope that concurrent callers await. The etag moves only after

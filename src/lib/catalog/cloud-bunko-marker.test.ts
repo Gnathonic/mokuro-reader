@@ -453,6 +453,39 @@ describe('the holder carries the marker v2 keys', () => {
   });
 });
 
+describe('curatedPublish from the holder', () => {
+  const base: ProviderStatus = {
+    isAuthenticated: true,
+    hasStoredCredentials: true,
+    needsAttention: false,
+    statusMessage: 'ok'
+  };
+
+  it('is all while a fresh holder keeps a curated layer (cloud-direct: the folder’s owner)', async () => {
+    await ingestMarkerRead('mega', read({ id: 'n1', etag: 'v1', body: marker({ curated: true }) }));
+    const status = withCloudBunkoStatus('mega', base);
+    expect(status.curatedPublish).toBe('all');
+    // Cloud-direct pushes its edit layer like plain storage: no gate set here.
+    expect(status.editLayerSync).toBeUndefined();
+  });
+
+  it('is left as the provider said when the holder keeps none', async () => {
+    await ingestMarkerRead('mega', read({ id: 'n1', etag: 'v1', body: marker() }));
+    expect(withCloudBunkoStatus('mega', base).curatedPublish).toBeUndefined();
+    expect(withCloudBunkoStatus('mega', { ...base, curatedPublish: 'none' }).curatedPublish).toBe(
+      'none'
+    );
+  });
+
+  it('stops once the marker is no longer fresh', async () => {
+    await ingestMarkerRead('mega', read({ id: 'n1', etag: 'v1', body: marker({ curated: true }) }));
+    expect(withCloudBunkoStatus('mega', base).curatedPublish).toBe('all');
+    vi.setSystemTime(T0 + 2 * TTL * 1000 + 1000);
+    expect(withCloudBunkoStatus('mega', base).cloudBunko?.fresh).toBe(false);
+    expect(withCloudBunkoStatus('mega', base).curatedPublish).toBeUndefined();
+  });
+});
+
 describe('cloudBunkoMergesDuplicates', () => {
   it('is true only while the fresh top-ranked holder says dedup', async () => {
     expect(cloudBunkoMergesDuplicates('mega')).toBe(false);

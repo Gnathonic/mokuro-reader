@@ -139,6 +139,22 @@ export interface ProviderStatus {
    */
   positionsSync?: boolean;
   /**
+   * May the account's own `edit` layer (`<Volume>.edit.mokuro`) go up here?
+   * `push` = yes: mokuro-bunko lists `edit` in `per_user_layers`, so it keeps
+   * that file per account. `local` = no: any other bunko (0.7.x, or one known
+   * only by its verified PUTs) files it into the SHARED library, where it
+   * would replace every account's corrections. Absent = plain storage or a
+   * cloud-direct bunko, where the file is the user's own: push.
+   */
+  editLayerSync?: 'push' | 'local';
+  /**
+   * Who may publish the library's shared `curated` layer
+   * (`canPublishCurated`): bunko's `permissions.curated.scope`, or `all` for
+   * the owner of a cloud folder whose fresh bunko marker keeps one. Absent =
+   * no curated layer here.
+   */
+  curatedPublish?: CuratedScope;
+  /**
    * Per-series metadata (names/links/tag/unit/spine offsets) edit scope, as reported by a
    * provider capable of restricting it (currently mokuro-bunko's identity endpoint, via
    * WebDAV). Absent = no restriction — an older server that doesn't report the field, or
@@ -229,6 +245,9 @@ export interface ControlFileRead {
  * still names the current set, or null when no node of that name exists.
  */
 export type ControlFileResult = ControlFileRead | 'not-modified' | null;
+
+/** Scope of `ProviderStatus.curatedPublish`: every volume, the account's own uploads, or none. */
+export type CuratedScope = 'all' | 'owned' | 'none';
 
 /** Scope of a `metadataPermissions.scope` value — see `ProviderStatus.metadataPermissions`. */
 export type SeriesMetadataScope = 'all' | 'owned' | 'none';
