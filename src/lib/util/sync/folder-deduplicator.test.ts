@@ -132,6 +132,25 @@ describe('FolderDeduplicator: same-named files when duplicate folders merge', ()
     expect(drive.trashed()).toEqual([]);
   });
 
+  it('keeps BOTH copies of the Bunko control files: Bunko reads every copy', async () => {
+    const drive = twoRoots([
+      file('MK', 'KEEP', '.mokuro-bunko.json', at(10)),
+      file('MD', 'DUP', '.mokuro-bunko.json', at(20)),
+      file('QK', 'KEEP', '.mokuro-queue.json', at(20)),
+      file('QD', 'DUP', '.mokuro-queue.json', at(10))
+    ]);
+
+    await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+    expect(drive.filesIn('KEEP')).toEqual([
+      '.mokuro-bunko.json#MD',
+      '.mokuro-bunko.json#MK',
+      '.mokuro-queue.json#QD',
+      '.mokuro-queue.json#QK'
+    ]);
+    expect(drive.trashed()).toEqual([]);
+  });
+
   it('moves a file in beside a folder of the same name instead of trashing either', async () => {
     const drive = twoRoots([
       { id: 'FOLDER', name: 'Notes', parentId: 'KEEP', isFolder: true, createdTime: at(1) },

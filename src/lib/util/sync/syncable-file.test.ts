@@ -11,7 +11,8 @@ import {
   cbzStemsOf,
   QUEUE_FILE_NAME,
   BUNKO_MARKER_NAME,
-  isBunkoControlFile
+  isBunkoControlFile,
+  dedupKeepsEveryCopy
 } from './syncable-file';
 
 describe('syncable-file', () => {
@@ -255,5 +256,14 @@ describe('Bunko control files', () => {
       expect(isBestEffortMetadataPath(name)).toBe(false);
       expect(classifyMokuroSidecar(name, new Set(['.mokuro-queue']))).toEqual({ kind: 'orphan' });
     }
+  });
+  // Folder dedup must never trash a copy: sync folds every copy of the merged
+  // root files into one, and Bunko reads every copy of its control files.
+  it('dedup keeps every copy of the merged root files and both control files', () => {
+    for (const name of ['volume-data.json', 'goals.json', QUEUE_FILE_NAME, BUNKO_MARKER_NAME]) {
+      expect(dedupKeepsEveryCopy(name)).toBe(true);
+    }
+    expect(dedupKeepsEveryCopy('Vol.mokuro')).toBe(false);
+    expect(dedupKeepsEveryCopy('profiles.json')).toBe(false);
   });
 });

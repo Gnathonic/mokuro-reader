@@ -1,5 +1,5 @@
 import type { ProviderType } from './provider-interface';
-import { syncMergesEveryCopy } from './syncable-file';
+import { dedupKeepsEveryCopy } from './syncable-file';
 
 /**
  * Folder information for deduplication
@@ -237,11 +237,13 @@ class FolderDeduplicator {
           await ops.moveItem(item.id, canonical.id, duplicate.id);
           canonicalItems.set(item.name, item);
           itemsMoved++;
-        } else if (item.isFolder || existing.isFolder || syncMergesEveryCopy(item.name)) {
+        } else if (item.isFolder || existing.isFolder || dedupKeepsEveryCopy(item.name)) {
           // Moved in beside the same name: two folders merge on the next
-          // pass; a file next to a folder is no duplicate; and sync folds
-          // every copy of volume-data.json / goals.json into one, so dropping
-          // either here would lose what only that copy held.
+          // pass; a file next to a folder is no duplicate; sync folds every
+          // copy of volume-data.json / goals.json into one, so dropping either
+          // here would lose what only that copy held; and Bunko reads every
+          // copy of its control files (trashing its marker or queue would
+          // break a running Bunko).
           console.log(`[Dedup:${provider}]   Moving (name kept twice): ${item.name}`);
           await ops.moveItem(item.id, canonical.id, duplicate.id);
           itemsMoved++;

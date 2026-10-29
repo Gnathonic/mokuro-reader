@@ -91,6 +91,15 @@ export function isBunkoControlFile(basename: string): boolean {
   return basename === QUEUE_FILE_NAME || basename === BUNKO_MARKER_NAME;
 }
 
+/**
+ * Must a folder merge keep EVERY copy of this file rather than trash the older?
+ * Sync folds every copy of the merged root files into one, and Bunko reads
+ * every copy of its control files (newest wins there, not here).
+ */
+export function dedupKeepsEveryCopy(basename: string): boolean {
+  return syncMergesEveryCopy(basename) || isBunkoControlFile(basename);
+}
+
 export function isSyncableFile(path: string): boolean {
   const basename = basenameOf(path);
   return isCbzFile(basename) || isSidecarFile(basename) || isRootConfigFile(basename);
