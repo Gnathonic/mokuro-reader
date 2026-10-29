@@ -148,6 +148,38 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   web UI, written by another client), and those go to the trash with the
   folder. Recoverable from the trash, but not a "never deletes files" promise.
 
+**mokuro-bunko specifics** (the WebDAV provider against a bunko server):
+
+- **Write access.** A server known to be bunko — `PUT_VERIFIED` recorded for
+  the base URL, or an OPTIONS answering `X-Mokuro-Put: verified` — skips the
+  generic OPTIONS `Allow` verdict in `checkWritePermissions`: bunko decides
+  each request itself and its `Allow` is advisory (older versions list no PUT
+  or MKCOL on collections). A real refusal still demotes through
+  `handleWriteFailure`.
+- **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
+  a `serverCompilesMetadata` provider every listing runs
+  `adoptCloudSeriesSpellings` (`util/sync/cloud-spelling-adoption.ts`): a local
+  series title with NO folder of its own, EXACTLY ONE folder folding onto it
+  (`normalizeVolumeTitleKey`), and at least one of its volumes listed there as a
+  `.cbz` takes the folder's spelling as a LOCAL-ONLY rename
+  (`commitLocalSeriesRename`, the local half of `executeRenameSeries`: rows,
+  stats, `series_metadata`, series reading state). The write-side listing
+  passes (`reconcileMissingMetadataFiles`, the sidecar backfill, layer sync)
+  wait for it in `refreshSeriesIndexesInBackground`; the index/catalog refreshes
+  do not. Backup enqueue (`resolveCloudFolderTitle`) and
+  `existsInCloud`/`getCloudFile` (exact path, then the folded fallback of
+  `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so nothing
+  uploads into the losing folder. Those backstops are NOT gated on bunko: like
+  every other folder lookup (rename, delete, `series.json`) they run on every
+  provider, so on plain storage too a title with no exact folder backs up into,
+  counts as backed up in, and is deleted from (the series removal dialog's
+  "also delete" and `deleteSeriesFromCloudByTitle` resolve alike) the ONE
+  folder folding onto it, naturally first when several do. An exact folder
+  always wins, and plain storage never ADOPTS: its rows keep their spelling.
+  The folded lookups read `listingFolderIndex`, built once per cache revision
+  (`CoalescedCacheStore.revision`, replaced by every add/remove/install), so a
+  per-volume caller costs O(1), not a pass over the listing.
+
 ### Svelte 5 Reactive Performance
 
 - `$derived` and `$derived.by()` run for EVERY component instance

@@ -16,6 +16,7 @@ const {
   scheduleSeriesFileWrite,
   cancelScheduledSeriesFileWrite,
   getActiveProvider,
+  resolveCloudFolderTitle,
   capturedTasks,
   addTaskMock
 } = vi.hoisted(() => {
@@ -54,6 +55,7 @@ const {
     // below, but the live-scheduling tests need a real provider to reach
     // `processBackup`'s upload-success path.
     getActiveProvider: vi.fn(() => null as unknown),
+    resolveCloudFolderTitle: vi.fn((title: string) => title),
     capturedTasks,
     addTaskMock: vi.fn((task: Record<string, any>) => {
       capturedTasks.push(task);
@@ -67,6 +69,8 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     writeSeriesFile,
     refreshSeriesIndexesInBackground,
     getDefaultProvider: () => null,
+    // Identity, as the real one is for a series the cloud does not hold.
+    resolveCloudFolderTitle: (title: string) => resolveCloudFolderTitle(title),
     // Queueing a volume kicks off `processQueue` in the background. Without
     // this the drain throws asynchronously, which vitest reports as an
     // unhandled rejection and turns into a non-zero exit while every test
@@ -331,6 +335,25 @@ describe('queueing a volume that is not installed', () => {
     expect(backupQueue.isVolumeInBackupQueue('a')).toBe(false);
     expect(backupQueue.isVolumeInBackupQueue('b')).toBe(false);
     expect(bridge.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues into the cloud's spelling of the series folder", () => {
+    // A server that merged `one piece/` into `One Piece/`: uploading under the
+    // local spelling would re-create the folder it just merged away.
+    resolveCloudFolderTitle.mockImplementation((title: string) =>
+      title === 'one piece' ? 'One Piece' : title
+    );
+    let items: Array<{ volumeUuid: string; seriesTitle: string }> = [];
+    const unsubscribe = backupQueue.subscribe((q) => (items = q));
+
+    queueVolumeForBackup(
+      volume({ volume_uuid: 'spelled-uuid', series_title: 'one piece' }),
+      provider
+    );
+
+    expect(items.find((item) => item.volumeUuid === 'spelled-uuid')?.seriesTitle).toBe('One Piece');
+    unsubscribe();
+    resolveCloudFolderTitle.mockImplementation((title: string) => title);
   });
 
   it('does not export a metadata-only volume', () => {

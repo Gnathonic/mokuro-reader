@@ -718,3 +718,59 @@ describe('WebDAVProvider staged, verified PUTs (X-Mokuro-Put)', () => {
     expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
   });
 });
+
+describe('WebDAVProvider Allow verdict on a known mokuro-bunko', () => {
+  // bunko <= 0.7 answers a collection OPTIONS with no PUT or MKCOL in Allow;
+  // its permissions are decided per request, so Allow must not demote it.
+  const BUNKO_COLLECTION_ALLOW =
+    'OPTIONS, HEAD, GET, PROPFIND, DELETE, COPY, MOVE, PROPPATCH, LOCK, UNLOCK';
+
+  function optionsAnswer(allow: string, put: string | null) {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'OPTIONS') {
+        return new Response('', {
+          status: 200,
+          headers: { Allow: allow, ...(put ? { 'X-Mokuro-Put': put } : {}) }
+        });
+      }
+      return new Response('', { status: 404 });
+    });
+  }
+
+  it('an OPTIONS answering X-Mokuro-Put: verified skips the Allow verdict', async () => {
+    optionsAnswer(BUNKO_COLLECTION_ALLOW, 'verified');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it('a recorded PUT_VERIFIED skips the PROPFIND and OPTIONS probes entirely', async () => {
+    localStorage.setItem('webdav_put_verified', 'https://host');
+    optionsAnswer(BUNKO_COLLECTION_ALLOW, null);
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    const methods = fetchMock.mock.calls.map((c) => c[1]?.method);
+    expect(methods).not.toContain('PROPFIND');
+    expect(methods).not.toContain('OPTIONS');
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it('a generic server whose Allow lacks PUT is still read-only', async () => {
+    optionsAnswer(BUNKO_COLLECTION_ALLOW, null);
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    expect(provider.isReadOnly).toBe(true);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+  });
+});
