@@ -514,8 +514,12 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `bunko_version`, all optional (absent = '' / [] / false; a list with a
   non-string entry reads as []). They reach `cloudBunko.holder` from the
   top-ranked FRESH marker only; records stored before v2 load with those
-  defaults. Nothing gates on them yet. `cloudBunkoMergesDuplicates(scope)` is
-  the holder's `dedup`. Read the marker through `refreshCloudBunkoMarker`:
+  defaults. The fold also sets the per-user gates from the holder:
+  `historySync` = `bunko_version` core ≥ 0.8.0 AND `per_user_files` has
+  `history/` (`bunkoSupportsHistory`), `positionsSync` = `per_user_files` has
+  `positions.json`. A gate the provider set itself (a bunko server's `/me`)
+  wins; with no fresh holder both stay undefined, so the folder is judged as
+  plain storage. `cloudBunkoMergesDuplicates(scope)` is the holder's `dedup`. Read the marker through `refreshCloudBunkoMarker`:
   one If-None-Match etag per scope, shared by every caller, and one read in
   flight per scope that concurrent callers await. The etag moves only after
   its nodes are recorded (else a second caller is answered not-modified
@@ -861,10 +865,11 @@ rides every sync right after the volume data, and is pushed 3 s after page
 turns settle (at once when the tab is hidden). Opening a page never stamps a
 position, and an adopted position keeps the other device's stamp. Not
 authoritative: history and `volume-data.json` still carry every position.
-mokuro-bunko gets it only when its identity lists it in `per_user_files`
-(`ProviderStatus.positionsSync`; no version floor, unlike `historySync`);
-before that the path is a shared library file, and the client neither reads
-nor writes it. Sync merges every listed copy (newest `t` per volume), so it is
+mokuro-bunko gets it only when it lists it in `per_user_files`
+(`ProviderStatus.positionsSync`; no version floor, unlike `historySync`) — a
+bunko server through its identity, a cloud-direct folder through the lease
+holder's marker (`withCloudBunkoStatus`); before that the path is a shared
+library file, and the client neither reads nor writes it. Sync merges every listed copy (newest `t` per volume), so it is
 in `MERGED_ACROSS_COPIES` (`syncable-file.ts`) with `volume-data.json` and
 `goals.json`: the folder dedup moves a duplicate copy in beside the other
 instead of trashing it.
@@ -1208,7 +1213,10 @@ month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
   #27): the WebDAV provider sets `ProviderStatus.historySync` only when BOTH
   hold — the version's numeric core ≥ 0.8.0 (a `0.8.0-beta.N` counts as 0.8.0;
   missing or unparseable = no) AND `per_user_files` contains `history/`
-  (`bunko-version.ts`) — and `historySyncAllowed(status)` (`history-sync.ts`)
+  (`bunko-version.ts`). On a cloud-direct folder (Drive/OneDrive/MEGA/plain
+  WebDAV) the fresh lease holder's marker decides the same way, from its
+  `bunko_version` and `per_user_files` (`withCloudBunkoStatus`); no fresh
+  holder = plain storage. `historySyncAllowed(status)` (`history-sync.ts`)
   gates EVERYTHING. Otherwise `history/` lands in the shared library, so neither
   upload nor import runs there, and the file keeps carrying page turns
   (`attachProjectedTurns`).

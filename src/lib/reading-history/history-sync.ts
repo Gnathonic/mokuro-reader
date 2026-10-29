@@ -121,8 +121,9 @@ function legacyEvents(db: HistoryDexie) {
 
 /**
  * Can this provider carry reading history at all? An explicit `historySync`
- * decides (the WebDAV provider sets it from the bunko version); otherwise a
- * server that compiles its own metadata (bunko, version unknown) cannot, and
+ * decides (a bunko server's version and `per_user_files`, or on a cloud-direct
+ * folder the lease holder's marker — `withCloudBunkoStatus`); otherwise a
+ * server that compiles its own metadata (bunko, rules unknown) cannot, and
  * plain storage can.
  */
 export function historySyncAllowed(
