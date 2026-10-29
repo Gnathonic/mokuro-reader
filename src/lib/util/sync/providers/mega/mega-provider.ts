@@ -1244,10 +1244,9 @@ export class MegaProvider implements SyncProvider {
       if (!f || f.directory || f.name !== name) continue;
       const parent = f.parent;
       if (!parent || !parent.directory || parent.name !== MOKURO_FOLDER) continue;
-      // A deleted node lingers in storage.files (megajs only unlinks it from
-      // its parent's children) — treat it as gone.
-      if (Array.isArray(parent.children) && !parent.children.includes(f)) continue;
-      if (this.isInTrash(f) || this.isInTrash(parent)) continue;
+      // A deleted node lingers in storage.files (megajs only unlinks it), and a
+      // library in the Rubbish Bin is not the library: both are gone.
+      if (!this.isLiveNode(f)) continue;
       const id = this.getFileNodeId(f);
       if (!id || this.vanishedControlHandles.has(id)) continue;
       const ts = typeof f.timestamp === 'number' ? f.timestamp : 0;
