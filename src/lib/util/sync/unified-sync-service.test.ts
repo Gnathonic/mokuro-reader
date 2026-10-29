@@ -1524,7 +1524,7 @@ describe('the cut-over rides the volume sync', () => {
     }
   );
 
-  it('a bunko that keeps history per user (0.7.1+) is cut over like plain storage', async () => {
+  it('a bunko that keeps history per user (0.8.0+) is cut over like plain storage', async () => {
     legacyCarried.value = true;
     const { cutOverLegacyTurns } = await import('$lib/reading-history/cut-over');
     vi.mocked(cutOverLegacyTurns).mockClear();

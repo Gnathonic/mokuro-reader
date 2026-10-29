@@ -957,12 +957,15 @@ month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
 - Best-effort: history paths are in `isBestEffortMetadataPath` (a rejected
   write never demotes WebDAV), and the pass never fails the sync. Read-only
   providers get no uploads (imports still run). mokuro-bunko gets history only
-  from **0.7.1**, which maps `history/` per user and reports its `version` in
-  `/login/api/me` (bunko issue #27): the WebDAV provider sets
-  `ProviderStatus.historySync` from that version (`bunko-version.ts`), and
-  `historySyncAllowed(status)` (`history-sync.ts`) gates EVERYTHING — before
-  0.7.1 `history/` lands in the shared library, so neither upload nor import
-  runs there, and the file keeps carrying page turns (`attachProjectedTurns`).
+  from **0.8.0**, which maps `history/` per user, lists it in `per_user_files`
+  and is the first to report its `version` in `/login/api/me` (bunko issue
+  #27): the WebDAV provider sets `ProviderStatus.historySync` only when BOTH
+  hold — the version's numeric core ≥ 0.8.0 (a `0.8.0-beta.N` counts as 0.8.0;
+  missing or unparseable = no) AND `per_user_files` contains `history/`
+  (`bunko-version.ts`) — and `historySyncAllowed(status)` (`history-sync.ts`)
+  gates EVERYTHING. Otherwise `history/` lands in the shared library, so neither
+  upload nor import runs there, and the file keeps carrying page turns
+  (`attachProjectedTurns`).
 
 ### Settings Architecture
 
