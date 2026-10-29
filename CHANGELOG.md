@@ -6,6 +6,9 @@
 
 - Google Drive trashes duplicate folders only once they are empty
 - Google Drive leaves your own same-named folders alone
+- A full Google Drive no longer signs you out
+- Google Drive rate limits wait and retry instead of failing
+- A full Google Drive or OneDrive says so plainly
 
 ## [1.10.0] - 2026-10-02
 
