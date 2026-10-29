@@ -1105,6 +1105,36 @@ describe('MegaProvider.readControlFile() — live tree', () => {
     expect(storage.reload).toHaveBeenCalledTimes(loadsAtLogin);
   });
 
+  it.each([
+    ['logout', (p: any) => p.logout()],
+    ['session expiry', (p: any) => p.markSessionExpired()]
+  ])('%s empties the control cache, skipped handles and any pending notify', async (_, end) => {
+    vi.useFakeTimers();
+    try {
+      const folder = makeFolder();
+      makeNode('H1', MARKER, folder, 1_780_000_000);
+      makeNode('Hgone', MARKER, folder, 1_780_000_500, new Error('ENOENT (-9): not found'));
+      const provider = (await loginWithTree({ ...folder.children, folder })) as any;
+      await provider.readControlFile(MARKER);
+      const seen: string[] = [];
+      provider.onControlFileChange((name: string) => seen.push(name));
+      provider.scheduleControlNotify(MARKER, provider.storage);
+      expect(provider.controlCache.byName.size).toBe(1);
+      expect(provider.vanishedControlHandles.size).toBe(1);
+
+      await end(provider);
+
+      expect(provider.controlCache.byName.size).toBe(0);
+      expect(provider.vanishedControlHandles.size).toBe(0);
+      expect(provider.controlPendingNames.size).toBe(0);
+      expect(provider.controlNotifyTimer).toBeNull();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(seen).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('throws an auth ProviderError when not authenticated', async () => {
     const provider = new MegaProvider();
     await provider.whenReady();
