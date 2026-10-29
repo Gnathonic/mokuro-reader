@@ -1,4 +1,5 @@
 import type { ProviderType } from './provider-interface';
+import { syncMergesEveryCopy } from './syncable-file';
 
 /**
  * Folder information for deduplication
@@ -17,6 +18,8 @@ export interface FolderItem {
   id: string;
   name: string;
   isFolder: boolean;
+  /** ISO time of the last write, when the provider knows it. */
+  modifiedTime?: string;
 }
 
 /**
@@ -24,7 +27,11 @@ export interface FolderItem {
  * Providers that support folder dedup implement this
  */
 export interface FolderOperations {
-  /** List all folders the user owns */
+  /**
+   * The folders that may be merged: the app's own folders only. On a
+   * provider that can see the whole account (MEGA), this must not reach
+   * folders the user keeps for anything else.
+   */
   listFolders(): Promise<FolderInfo[]>;
 
   /** List contents of a specific folder */
@@ -36,8 +43,11 @@ export interface FolderOperations {
   /** Delete a folder (should be empty) */
   deleteFolder(folderId: string): Promise<void>;
 
-  /** Delete a file */
-  deleteFile(fileId: string): Promise<void>;
+  /**
+   * Move a superseded copy of a file to the provider's trash. Never a
+   * permanent delete: a shared name says nothing about shared content.
+   */
+  trashFile(fileId: string): Promise<void>;
 
   /** Called when root app folder ID is confirmed (e.g., mokuro-reader) */
   onRootFolderConfirmed?(folderId: string): void;
@@ -56,6 +66,13 @@ export interface DeduplicationResult {
   foldersDeleted: number;
   /** Total number of items moved */
   itemsMoved: number;
+}
+
+/** Strictly newer by the provider's write time; unknown or equal times keep the canonical copy. */
+function isNewer(a: FolderItem, b: FolderItem): boolean {
+  const ta = a.modifiedTime ? Date.parse(a.modifiedTime) : NaN;
+  const tb = b.modifiedTime ? Date.parse(b.modifiedTime) : NaN;
+  return Number.isFinite(ta) && Number.isFinite(tb) && ta > tb;
 }
 
 /**
@@ -204,33 +221,40 @@ class FolderDeduplicator {
       `[Dedup:${provider}] Merging ${duplicates.length} duplicate(s) of "${canonical.name}" into ${canonical.id}`
     );
 
-    // Get existing items in canonical folder (for collision detection)
-    const canonicalContents = await ops.listFolderContents(canonical.id);
-    const canonicalNames = new Set(canonicalContents.map((c) => c.name));
-
     // Merge each duplicate into canonical
     for (const duplicate of duplicates) {
+      // Listed afresh per duplicate, for collision detection: a sync running
+      // beside a long merge may have written into the canonical folder since.
+      const canonicalContents = await ops.listFolderContents(canonical.id);
+      const canonicalItems = new Map(canonicalContents.map((c) => [c.name, c]));
       const contents = await ops.listFolderContents(duplicate.id);
 
       for (const item of contents) {
-        if (canonicalNames.has(item.name)) {
-          if (item.isFolder) {
-            // Folder with same name exists - move it anyway, creates duplicate
-            // Next pass will see these duplicates and merge them
-            console.log(`[Dedup:${provider}]   Moving folder (will merge next pass): ${item.name}`);
-            await ops.moveItem(item.id, canonical.id, duplicate.id);
-            itemsMoved++;
-          } else {
-            // File with same name - delete the duplicate's version
-            console.log(`[Dedup:${provider}]   Deleting duplicate file: ${item.name}`);
-            await ops.deleteFile(item.id);
-          }
-        } else {
+        const existing = canonicalItems.get(item.name);
+        if (!existing) {
           // No collision - move to canonical
           console.log(`[Dedup:${provider}]   Moving: ${item.name}`);
           await ops.moveItem(item.id, canonical.id, duplicate.id);
-          canonicalNames.add(item.name);
+          canonicalItems.set(item.name, item);
           itemsMoved++;
+        } else if (item.isFolder || existing.isFolder || syncMergesEveryCopy(item.name)) {
+          // Moved in beside the same name: two folders merge on the next
+          // pass; a file next to a folder is no duplicate; and sync folds
+          // every copy of volume-data.json / goals.json into one, so dropping
+          // either here would lose what only that copy held.
+          console.log(`[Dedup:${provider}]   Moving (name kept twice): ${item.name}`);
+          await ops.moveItem(item.id, canonical.id, duplicate.id);
+          itemsMoved++;
+        } else if (isNewer(item, existing)) {
+          // Two copies of one file: the newer stays, the other goes to the trash.
+          console.log(`[Dedup:${provider}]   Trashing the older copy of: ${item.name}`);
+          await ops.trashFile(existing.id);
+          await ops.moveItem(item.id, canonical.id, duplicate.id);
+          canonicalItems.set(item.name, item);
+          itemsMoved++;
+        } else {
+          console.log(`[Dedup:${provider}]   Trashing the older copy of: ${item.name}`);
+          await ops.trashFile(item.id);
         }
       }
 
