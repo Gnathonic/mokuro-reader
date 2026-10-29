@@ -137,7 +137,7 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   kept folder is the oldest, then the smaller id (`compareByAge`).
 - **Same name on merge.** Folders, or a file beside a folder, move in and keep
   the name twice; so do `dedupKeepsEveryCopy` files (volume-data.json,
-  goals.json, and bunko's control files `.mokuro-bunko.json` /
+  goals.json, positions.json, and bunko's control files `.mokuro-bunko.json` /
   `.mokuro-queue.json`, exact names). Any other file: the strictly newer write
   wins, a tie keeps the canonical copy, the loser goes to the TRASH.
 - **Folder removal.** `deleteFolder` re-lists the duplicate on the server and
