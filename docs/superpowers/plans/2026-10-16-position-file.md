@@ -61,19 +61,30 @@ changes". Background: "Position across devices" in
 ### Task 1: `positions.json` codec, merge and prune
 
 **Files:**
+
 - Create: `src/lib/positions/positions-file.ts`
 - Test: `src/lib/positions/positions-file.test.ts`
 - Modify: `src/lib/util/sync/syncable-file.ts:29-34` (add `POSITIONS_FILE_NAME` to `ROOT_CONFIG_FILENAMES`)
 - Test: `src/lib/util/sync/syncable-file.test.ts`
 
 **Interfaces:**
+
 - Produces:
+
   ```ts
   export const POSITIONS_FILE_NAME = 'positions.json';
   export const POSITION_WINDOW_MS = 30 * 86_400_000;
-  export interface PositionEntry { t: number; page: number; chars: number; device: string }
+  export interface PositionEntry {
+    t: number;
+    page: number;
+    chars: number;
+    device: string;
+  }
   export type PositionsMap = Record<string, PositionEntry>;
-  export interface PositionsFile { version: 1; positions: Record<string, [number, number, number, string]> }
+  export interface PositionsFile {
+    version: 1;
+    positions: Record<string, [number, number, number, string]>;
+  }
   export function parsePositionsFile(raw: unknown, now: number): PositionsMap;
   export function mergePositions(a: PositionsMap, b: PositionsMap): PositionsMap;
   export function prunePositions(map: PositionsMap, now: number): PositionsMap;
@@ -93,7 +104,9 @@ it('parses well-formed entries', () => {
   });
 });
 it('drops malformed entries and tolerates junk files', () => {
-  expect(parsePositionsFile({ version: 1, positions: { a: [1, 'x', 0, 'd'], b: [1, 2], c: ok } }, now)).toEqual({
+  expect(
+    parsePositionsFile({ version: 1, positions: { a: [1, 'x', 0, 'd'], b: [1, 2], c: ok } }, now)
+  ).toEqual({
     c: expect.any(Object)
   });
   expect(parsePositionsFile('not json', now)).toEqual({});
@@ -118,12 +131,17 @@ it('a page-0 reset entry is kept and beats an older entry', () => {
   expect(mergePositions(read, reset).v.page).toBe(0);
 });
 it('prunes entries older than 30 days', () => {
-  const map = { old: { t: now - POSITION_WINDOW_MS - 1, page: 1, chars: 0, device: 'a' },
-                fresh: { t: now - POSITION_WINDOW_MS + 1, page: 1, chars: 0, device: 'a' } };
+  const map = {
+    old: { t: now - POSITION_WINDOW_MS - 1, page: 1, chars: 0, device: 'a' },
+    fresh: { t: now - POSITION_WINDOW_MS + 1, page: 1, chars: 0, device: 'a' }
+  };
   expect(Object.keys(prunePositions(map, now))).toEqual(['fresh']);
 });
 it('compose → parse is an identity, keys sorted', () => {
-  const map = { b: { t: 2, page: 2, chars: 2, device: 'x' }, a: { t: 1, page: 1, chars: 1, device: 'x' } };
+  const map = {
+    b: { t: 2, page: 2, chars: 2, device: 'x' },
+    a: { t: 1, page: 1, chars: 1, device: 'x' }
+  };
   const file = composePositionsFile(map);
   expect(Object.keys(file.positions)).toEqual(['a', 'b']);
   expect(parsePositionsFile(JSON.parse(JSON.stringify(file)), 3)).toEqual(map);
@@ -139,9 +157,9 @@ Run: `npx vitest run src/lib/positions/positions-file.test.ts src/lib/util/sync/
 Expected: FAIL — module `./positions-file` not found; `isSyncableFile('positions.json')` false.
 
 - [ ] **Step 3: Implement** `positions-file.ts` with the Interfaces above. An entry is well-formed when
-  `t`, `page`, `chars` are finite non-negative integers and `device` a non-empty string. Add
-  `POSITIONS_FILE_NAME` to `ROOT_CONFIG_FILENAMES` with a one-line comment (fast position index, the user's
-  own state like `goals.json`, so not best-effort).
+      `t`, `page`, `chars` are finite non-negative integers and `device` a non-empty string. Add
+      `POSITIONS_FILE_NAME` to `ROOT_CONFIG_FILENAMES` with a one-line comment (fast position index, the user's
+      own state like `goals.json`, so not best-effort).
 
 - [ ] **Step 4: Run to verify they pass** — same command. Expected: PASS.
 
@@ -155,17 +173,24 @@ git commit -m "feat(positions): positions.json codec, merge and 30-day window"
 ### Task 2: Opening never claims the position; adopting keeps the remote stamp
 
 **Files:**
+
 - Modify: `src/lib/settings/volume-data.ts` (`updateProgress` :701, `jumpToPosition` :788,
   `applyMissedRestart` :822, `markVolumeAsUnread` :873, `archiveAndResetVolumes` :896; new exports)
 - Test: `src/lib/settings/volume-data.test.ts` (create if absent; follow the existing tests' store reset)
 
 **Interfaces:**
+
 - Produces:
   ```ts
   export function registerPositionListener(fn: (volume: string) => void): () => void;
   /** Take another device's position with ITS stamp. False (no change) unless strictly newer than local. */
-  export function adoptPosition(volume: string, page: number, chars: number,
-    completed: boolean | undefined, setAt: number): boolean;
+  export function adoptPosition(
+    volume: string,
+    page: number,
+    chars: number,
+    completed: boolean | undefined,
+    setAt: number
+  ): boolean;
   ```
 - Listener fires when the position actually changed: `updateProgress` (only when not a no-op),
   `jumpToPosition`, `applyMissedRestart`, `markVolumeAsUnread`, `archiveAndResetVolumes` (once per volume).
@@ -182,19 +207,25 @@ it('re-reporting the current page changes nothing and stamps nothing', () => {
   expect(get(volumesWithTrash).v.lastProgressUpdate).toBe(before);
 });
 it('a real page turn stamps and notifies', () => {
-  const seen: string[] = []; registerPositionListener((v) => seen.push(v));
+  const seen: string[] = [];
+  registerPositionListener((v) => seen.push(v));
   updateProgress('v', 41, 4100, false);
   expect(seen).toEqual(['v']);
 });
 it('adoptPosition takes the remote stamp, only when newer', () => {
-  updateProgress('v', 40, 4000, false);               // local stamp = now
+  updateProgress('v', 40, 4000, false); // local stamp = now
   const local = Date.parse(get(volumesWithTrash).v.lastProgressUpdate!);
   expect(adoptPosition('v', 120, 12000, false, local - 1)).toBe(false);
   expect(adoptPosition('v', 120, 12000, false, local + 1)).toBe(true);
-  expect(get(volumesWithTrash).v).toMatchObject({ progress: 120, chars: 12000,
-    lastProgressUpdate: new Date(local + 1).toISOString() });
+  expect(get(volumesWithTrash).v).toMatchObject({
+    progress: 120,
+    chars: 12000,
+    lastProgressUpdate: new Date(local + 1).toISOString()
+  });
 });
-it('adoptPosition does not notify', () => { /* listener registered → adopt → seen stays [] */ });
+it('adoptPosition does not notify', () => {
+  /* listener registered → adopt → seen stays [] */
+});
 it('adoptPosition completed: undefined keeps the flag; true dates completedAt at setAt when absent', () => {});
 ```
 
@@ -204,24 +235,26 @@ Run: `npx vitest run src/lib/settings/volume-data.test.ts`
 Expected: FAIL — `registerPositionListener`/`adoptPosition` not exported; the same-page test sees a new stamp.
 
 - [ ] **Step 3: Implement.** In `updateProgress`, return `prev` unchanged when `progress`,
-  `chars ?? current.chars` and `completed` all equal the current record's (no metadata enrichment
-  skipped by this: the enrichment branch still runs). Listener registry mirrors
-  `registerCompletionListener` (:657); notify after the store update. `adoptPosition` sets `progress`,
-  `chars`, `lastProgressUpdate = new Date(setAt).toISOString()`, `completed` (when defined) and
-  `completedAt ??= setAt` when it becomes true; it refuses a record with `deletedOn`.
+      `chars ?? current.chars` and `completed` all equal the current record's (no metadata enrichment
+      skipped by this: the enrichment branch still runs). Listener registry mirrors
+      `registerCompletionListener` (:657); notify after the store update. `adoptPosition` sets `progress`,
+      `chars`, `lastProgressUpdate = new Date(setAt).toISOString()`, `completed` (when defined) and
+      `completedAt ??= setAt` when it becomes true; it refuses a record with `deletedOn`.
 
 - [ ] **Step 4: Run** `npx vitest run src/lib/settings` — Expected: PASS (whole folder, to catch the
-  callers' tests).
+      callers' tests).
 
 - [ ] **Step 5: Commit** — `feat(progress): opening a page claims no position; adopt keeps the remote stamp`
 
 ### Task 3: This device's changed positions
 
 **Files:**
+
 - Create: `src/lib/positions/positions-local.ts`
 - Test: `src/lib/positions/positions-local.test.ts`
 
 **Interfaces:**
+
 - Consumes: `registerPositionListener`, `volumesWithTrash` (Task 2); `PositionsMap` (Task 1).
 - Produces:
   ```ts
@@ -239,14 +272,22 @@ Expected: FAIL — `registerPositionListener`/`adoptPosition` not exported; the 
 
 ```ts
 it('a page turn marks the volume; its entry carries the record stamp and this device', () => {
-  initPositionTracking(); updateProgress('v', 41, 4100, false);
+  initPositionTracking();
+  updateProgress('v', 41, 4100, false);
   const e = ownChangedEntries('me').v;
-  expect(e).toEqual({ t: Date.parse(get(volumesWithTrash).v.lastProgressUpdate!), page: 41, chars: 4100, device: 'me' });
+  expect(e).toEqual({
+    t: Date.parse(get(volumesWithTrash).v.lastProgressUpdate!),
+    page: 41,
+    chars: 4100,
+    device: 'me'
+  });
 });
 it('a turn during an upload survives clearChanged', () => {
-  initPositionTracking(); updateProgress('v', 41, 4100, false);
+  initPositionTracking();
+  updateProgress('v', 41, 4100, false);
   const built = ownChangedEntries('me');
-  vi.advanceTimersByTime(1000); updateProgress('v', 42, 4200, false); // lands mid-upload
+  vi.advanceTimersByTime(1000);
+  updateProgress('v', 42, 4200, false); // lands mid-upload
   clearChanged(built);
   expect(changedVolumes()).toEqual(['v']);
 });
@@ -262,6 +303,7 @@ it('a deleted record yields no entry', () => {});
 ### Task 4: Capability — who may read and write `positions.json`
 
 **Files:**
+
 - Modify: `src/lib/util/sync/providers/webdav/identity.ts` (parse `per_user_files`)
 - Modify: `src/lib/util/sync/provider-interface.ts:120-135` (add `positionsSync?` beside `historySync?`)
 - Modify: `src/lib/util/sync/providers/webdav/webdav-provider.ts:600-620` (`getStatus`), :715-760 (store it)
@@ -269,6 +311,7 @@ it('a deleted record yields no entry', () => {});
 - Test: `src/lib/util/sync/providers/webdav/identity.test.ts`, `src/lib/positions/positions-capability.test.ts`
 
 **Interfaces:**
+
 - Produces:
   - `IdentityResult` `authenticated` and `anonymous` variants gain `perUserFiles?: string[]` from the body's
     `per_user_files` (array of strings; anything else → absent).
@@ -284,9 +327,11 @@ it('a deleted record yields no entry', () => {});
 // identity.test.ts — an authenticated body with per_user_files: ['volume-data.json','positions.json']
 //   → result.perUserFiles equals that array; per_user_files: 'x' → perUserFiles undefined.
 // positions-capability.test.ts
-expect(positionsReadAllowed({ ...base })).toBe(true);                                  // plain storage
-expect(positionsReadAllowed({ ...base, serverCompilesMetadata: true })).toBe(false);  // old bunko
-expect(positionsReadAllowed({ ...base, serverCompilesMetadata: true, positionsSync: true })).toBe(true);
+expect(positionsReadAllowed({ ...base })).toBe(true); // plain storage
+expect(positionsReadAllowed({ ...base, serverCompilesMetadata: true })).toBe(false); // old bunko
+expect(positionsReadAllowed({ ...base, serverCompilesMetadata: true, positionsSync: true })).toBe(
+  true
+);
 expect(positionsWriteAllowed({ ...base, isReadOnly: true })).toBe(false);
 ```
 
@@ -298,28 +343,34 @@ expect(positionsWriteAllowed({ ...base, isReadOnly: true })).toBe(false);
 ### Task 5: Reconcile — what to adopt, defer and upload
 
 **Files:**
+
 - Create: `src/lib/positions/positions-reconcile.ts`
 - Test: `src/lib/positions/positions-reconcile.test.ts`
 
 **Interfaces:**
+
 - Consumes: Task 1 types and functions.
 - Produces:
   ```ts
-  export interface LocalPosition { stamp: number /* ms; 0 = never */; deleted: boolean; forgotAt: number /* ms; 0 = none */ }
+  export interface LocalPosition {
+    stamp: number /* ms; 0 = never */;
+    deleted: boolean;
+    forgotAt: number /* ms; 0 = none */;
+  }
   export interface ReconcileInput {
-    cloud: PositionsMap;                     // parsed, merged across every readable copy
-    cloudContent: string;                    // positionsContent() of the surviving raw copy ('' = no file)
+    cloud: PositionsMap; // parsed, merged across every readable copy
+    cloudContent: string; // positionsContent() of the surviving raw copy ('' = no file)
     local: (volume: string) => LocalPosition | undefined;
-    own: PositionsMap;                       // ownChangedEntries(ownDevice)
+    own: PositionsMap; // ownChangedEntries(ownDevice)
     ownDevice: string;
     open: { volume: string; openedAt: number } | null;
     now: number;
   }
   export interface ReconcileResult {
     adopt: Array<{ volume: string; entry: PositionEntry; toast: boolean }>;
-    deferred: string[];                      // newer elsewhere, but the open reader has turned a page
-    next: PositionsMap;                      // prunePositions(mergePositions(cloud, own), now)
-    upload: boolean;                         // see the upload rule below
+    deferred: string[]; // newer elsewhere, but the open reader has turned a page
+    next: PositionsMap; // prunePositions(mergePositions(cloud, own), now)
+    upload: boolean; // see the upload rule below
   }
   export function reconcilePositions(input: ReconcileInput): ReconcileResult;
   ```
@@ -333,7 +384,7 @@ expect(positionsWriteAllowed({ ...base, isReadOnly: true })).toBe(false);
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-it('adopts a newer remote position for a closed volume', () => {});        // adopt[0].toast false
+it('adopts a newer remote position for a closed volume', () => {}); // adopt[0].toast false
 it('never adopts its own device, an older entry, or a page-0 reset', () => {});
 it('never resurrects a deleted volume or reading before a forget', () => {
   // local: { stamp: 5, deleted: true, forgotAt: 0 }  → no adopt
@@ -361,6 +412,7 @@ it('no cloud file and nothing of its own → no upload (no empty file is minted)
 ### Task 6: Sync — read every copy, apply, write; inside full sync and as a push
 
 **Files:**
+
 - Create: `src/lib/positions/positions-sync.ts`
 - Create: `src/lib/positions/reader-open.ts`
 - Modify: `src/lib/util/sync/unified-sync-service.ts:373-415` (`runProviderSync`: after `syncVolumeData`)
@@ -370,6 +422,7 @@ it('no cloud file and nothing of its own → no upload (no empty file is minted)
 - Test: `src/lib/positions/positions-sync.test.ts`
 
 **Interfaces:**
+
 - Consumes: Tasks 1–5; `cacheManager.getCache(type)?.getAll(POSITIONS_FILE_NAME)` (same lookup as
   `findGoalsFiles`, `unified-sync-service.ts:809`); `provider.downloadFile`;
   `unifiedCloudManager.blindUploadFile(path, blob)`; `adoptPosition` (Task 2); `ownDeviceId` /
@@ -384,9 +437,14 @@ it('no cloud file and nothing of its own → no upload (no empty file is minted)
   export function noteReaderClosed(volume: string): void;
   export function openReader(): { volume: string; openedAt: number } | null;
   // positions-sync.ts
-  export interface PositionsSyncOutcome { adopted: string[]; deferred: string[]; uploaded: boolean; skipped?: 'not-allowed' | 'not-ready' }
+  export interface PositionsSyncOutcome {
+    adopted: string[];
+    deferred: string[];
+    uploaded: boolean;
+    skipped?: 'not-allowed' | 'not-ready';
+  }
   export async function syncPositions(provider: SyncProvider): Promise<PositionsSyncOutcome>; // never throws
-  export function initPositionPush(): () => void;   // 3000 ms debounce after a listener fire; flush on visibilitychange → hidden
+  export function initPositionPush(): () => void; // 3000 ms debounce after a listener fire; flush on visibilitychange → hidden
   export function flushPositionPush(): Promise<void>;
   ```
 - `syncPositions`: `positionsReadAllowed(status)` false → `{ skipped: 'not-allowed' }` with no request.
@@ -398,7 +456,7 @@ it('no cloud file and nothing of its own → no upload (no empty file is minted)
   returns that run's promise after queueing ONE follow-up.
 
 - [ ] **Step 1: Write the failing tests** (`positions-sync.test.ts`, provider + cache stubbed through
-  `cacheManager`/`unifiedCloudManager` mocks in the style of `unified-sync-service.test.ts`)
+      `cacheManager`/`unifiedCloudManager` mocks in the style of `unified-sync-service.test.ts`)
 
 ```ts
 it('old bunko: no GET and no PUT of positions.json', async () => {
@@ -417,21 +475,23 @@ rejecting `syncPositions` mock does not fail the sync.
 
 - [ ] **Step 2: Run** `npx vitest run src/lib/positions src/lib/util/sync/unified-sync-service.test.ts` — Expected: FAIL.
 - [ ] **Step 3: Implement** per Interfaces. `runProviderSync`: `await syncPositions(provider)` right after
-  `syncVolumeData`, inside its own try/catch. Layout: start tracking and push after the device record is
-  ready (beside `initPositionOffers`). CLAUDE.md row: `| Newest reading position (30 days) | positions.json | newest t per volume |`,
-  plus one sentence that bunko gets it only when it lists the file in `per_user_files`.
+      `syncVolumeData`, inside its own try/catch. Layout: start tracking and push after the device record is
+      ready (beside `initPositionOffers`). CLAUDE.md row: `| Newest reading position (30 days) | positions.json | newest t per volume |`,
+      plus one sentence that bunko gets it only when it lists the file in `per_user_files`.
 - [ ] **Step 4: Run** `npm test` — Expected: PASS, whole suite.
 - [ ] **Step 5: Commit** — `feat(positions): sync positions.json in every sync and push after page turns`
 
 ### Task 7: Reader open waits for the position (≤ 1000 ms)
 
 **Files:**
+
 - Modify: `src/lib/positions/positions-sync.ts` (add the open check)
 - Modify: `src/lib/views/ReaderView.svelte:76-95` (gate render; note open/close; volume change)
 - Modify: `src/lib/util/sync/foreground-sync.ts` (on visible: `requestPositionCheck()`, throttled 10 s)
 - Test: `src/lib/positions/positions-sync.test.ts`
 
 **Interfaces:**
+
 - Consumes: Task 6.
 - Produces:
   ```ts
@@ -449,7 +509,7 @@ rejecting `syncPositions` mock does not fail the sync.
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-it('resolves when the answer arrives', async () => {});                 // download resolves at 200 ms → resolved by 200 ms
+it('resolves when the answer arrives', async () => {}); // download resolves at 200 ms → resolved by 200 ms
 it('resolves at 1000 ms when the provider is slow; the late answer still adopts', async () => {
   // download resolves at 3000 ms; promise resolved at 1000; at 3000 adoptPosition called with toast
 });
@@ -465,10 +525,12 @@ it('focus check is throttled to one per 10 s', () => {});
 ### Task 8: End-to-end device swap
 
 **Files:**
+
 - Create: `e2e/position-file.spec.ts`
 - Modify (only if a delay hook is missing): `e2e/helpers/webdav-stub.ts`
 
 **Interfaces:**
+
 - Consumes: `WebDavStub` (`e2e/helpers/webdav-stub.ts`), the WebDAV connect + volume seeding helpers used
   by `e2e/position-offer.spec.ts` and `e2e/history-sync.spec.ts` (reuse them; copy nothing).
 
@@ -492,7 +554,7 @@ test('opening and closing without turning writes no position', async ({ browser 
 ```
 
 - [ ] **Step 2: Run** `E2E_PORT=5197 npx playwright test e2e/position-file.spec.ts` — Expected: PASS
-  (the feature exists since Task 7; a failure here is a real defect — debug it, do not loosen the spec).
+      (the feature exists since Task 7; a failure here is a real defect — debug it, do not loosen the spec).
 - [ ] **Step 3: Run the whole e2e suite** `E2E_PORT=5197 npm run test:e2e` — Expected: 0 failures.
 - [ ] **Step 4: Commit** — `test(e2e): the device swap lands on the newest position`
 
@@ -502,19 +564,21 @@ test('opening and closing without turning writes no position', async ({ browser 
 `../mokuro-webdav-library-worktrees/feat-positions-per-user` off `0.8/remote-storage`.
 
 **Files:**
+
 - Modify: `crates/bunko-dav/src/paths.rs:23` — `PER_USER_FILES` gains `"positions.json"` (array length 4)
 - Modify: `crates/bunko-server/src/accounts/login.rs` — `identity_body` and the anonymous body add
   `"per_user_files": paths::PER_USER_FILES`
 - Test: the crates' existing test modules for `classify`/PROPFIND and `/login/api/me`
 
 **Interfaces:**
+
 - Produces: `/login/api/me` → `"per_user_files": ["goals.json","profiles.json","volume-data.json","positions.json"]`
   (order as in the const); `PUT /mokuro-reader/positions.json` by user A is invisible to user B; the
   per-user PROPFIND injection (`methods/read.rs:183`) lists it like the others.
 
 - [ ] **Step 1: Write failing tests** — `classify("mokuro-reader/positions.json")` is the per-user target;
-  two users PUT different bodies and each GETs back their own; the identity body contains
-  `per_user_files` including `positions.json`.
+      two users PUT different bodies and each GETs back their own; the identity body contains
+      `per_user_files` including `positions.json`.
 - [ ] **Step 2: Run** `cargo test -p bunko-dav -p bunko-server` — Expected: FAIL on the new tests.
 - [ ] **Step 3: Implement** the two changes.
 - [ ] **Step 4: Run** `cargo test -p bunko-dav -p bunko-server` — Expected: PASS.
