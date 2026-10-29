@@ -429,7 +429,10 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   top-ranked FRESH marker only; records stored before v2 load with those
   defaults. Nothing gates on them yet. `cloudBunkoMergesDuplicates(scope)` is
   the holder's `dedup`. Read the marker through `refreshCloudBunkoMarker`:
-  one If-None-Match etag per scope, shared by every caller.
+  one If-None-Match etag per scope, shared by every caller, and one read in
+  flight per scope that concurrent callers await. The etag moves only after
+  its nodes are recorded (else a second caller is answered not-modified
+  against records that are not there yet); a clear voids a read in flight.
 - `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
   queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
   `instance_id` names the top-ranked fresh marker. The cloud poller keeps

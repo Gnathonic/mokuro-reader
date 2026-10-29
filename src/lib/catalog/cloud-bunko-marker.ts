@@ -269,6 +269,12 @@ let lastAnnounced = '';
 let clock: () => number = () => Date.now();
 /** The marker set's version last read per scope, shared by every caller of `refreshCloudBunkoMarker`. */
 const markerEtags = new Map<string, string>();
+/**
+ * The marker read in flight per scope. Concurrent callers share it: a second
+ * read with the first one's etag would answer not-modified before the first
+ * had recorded anything. A clear drops the entry, which voids the read.
+ */
+const markerReads = new Map<string, { promise?: Promise<boolean> }>();
 
 /**
  * A stored record. The v2 keys may be absent (stored by an earlier build:
@@ -382,26 +388,34 @@ async function readNodes(
   return out;
 }
 
+type DecodedMarkerRead = 'not-modified' | Array<{ id: string; etag: string; marker: BunkoMarker }>;
+
+async function decodeMarkerRead(result: ControlFileResult): Promise<DecodedMarkerRead> {
+  if (result === 'not-modified') return result;
+  if (result === null || result.nodes.length === 0) return [];
+  return readNodes(result);
+}
+
+function commitMarkerRead(scope: string, decoded: DecodedMarkerRead): void {
+  if (decoded !== 'not-modified') {
+    const map = load();
+    if (decoded.length === 0) {
+      if (map.delete(scope)) save();
+    } else {
+      map.set(scope, foldMarkerNodes(map.get(scope) ?? [], decoded, clock()));
+      save();
+    }
+  }
+  reannounce();
+}
+
 /**
  * Record a read of the marker for `scope` (the provider type). `'not-modified'`
  * changes nothing — an unchanged marker ages towards stale — and null (no
  * marker node at all) forgets the scope.
  */
 export async function ingestMarkerRead(scope: string, result: ControlFileResult): Promise<void> {
-  if (result === 'not-modified') {
-    reannounce();
-    return;
-  }
-  const map = load();
-  if (result === null || result.nodes.length === 0) {
-    if (map.delete(scope)) save();
-    reannounce();
-    return;
-  }
-  const nodes = await readNodes(result);
-  map.set(scope, foldMarkerNodes(map.get(scope) ?? [], nodes, clock()));
-  save();
-  reannounce();
+  commitMarkerRead(scope, await decodeMarkerRead(result));
 }
 
 /** The marker nodes known for `scope`. */
@@ -425,26 +439,47 @@ export function cloudBunkoMergesDuplicates(scope: string): boolean {
 
 /**
  * Read the provider's marker (If-None-Match against the last read of ANY
- * caller in this scope) and record it. False when the read did not land: no
- * `readControlFile`, or an error — swallowed, so what was known stands and
- * ages towards stale as usual.
+ * caller in this scope) and record it. Concurrent callers share one read. False
+ * when the read did not land: no `readControlFile`, an error — swallowed, so
+ * what was known stands and ages towards stale as usual — or a clear of the
+ * scope (logout) while it was in flight.
  */
-export async function refreshCloudBunkoMarker(provider: SyncProvider): Promise<boolean> {
-  if (!provider.readControlFile) return false;
+export function refreshCloudBunkoMarker(provider: SyncProvider): Promise<boolean> {
+  if (!provider.readControlFile) return Promise.resolve(false);
   const scope = provider.type;
+  const pending = markerReads.get(scope)?.promise;
+  if (pending) return pending;
+  const entry: { promise?: Promise<boolean> } = {};
+  markerReads.set(scope, entry);
+  entry.promise = readMarker(provider, scope, entry);
+  return entry.promise;
+}
+
+async function readMarker(
+  provider: SyncProvider,
+  scope: string,
+  entry: { promise?: Promise<boolean> }
+): Promise<boolean> {
   try {
-    const result = await provider.readControlFile(BUNKO_MARKER_NAME, {
+    const result = await provider.readControlFile!(BUNKO_MARKER_NAME, {
       ifNoneMatch: markerEtags.get(scope)
     });
+    const decoded = await decodeMarkerRead(result);
+    // Cleared mid-read: the read belongs to the forgotten session.
+    if (markerReads.get(scope) !== entry) return false;
+    commitMarkerRead(scope, decoded);
+    // Only now: an etag published before its nodes are recorded answers
+    // another caller not-modified against records that are not there yet.
     if (result !== 'not-modified') {
       if (result) markerEtags.set(scope, result.etag);
       else markerEtags.delete(scope);
     }
-    await ingestMarkerRead(scope, result);
     return true;
   } catch (error) {
     console.debug('[cloud-bunko-marker] marker read failed:', error);
     return false;
+  } finally {
+    if (markerReads.get(scope) === entry) markerReads.delete(scope);
   }
 }
 
@@ -481,10 +516,12 @@ export function clearCloudBunkoMarkers(scope?: string): void {
   if (scope === undefined) {
     map.clear();
     markerEtags.clear();
+    markerReads.clear();
   } else {
     map.delete(scope);
     // Else the next read answers not-modified and the forgotten marker never returns.
     markerEtags.delete(scope);
+    markerReads.delete(scope);
   }
   save();
   reannounce();
@@ -496,6 +533,7 @@ export function resetCloudBunkoMarkersForTest(now?: () => number): void {
   expiryTimer = null;
   records = null;
   markerEtags.clear();
+  markerReads.clear();
   listeners.clear();
   lastAnnounced = '';
   clock = now ?? (() => Date.now());

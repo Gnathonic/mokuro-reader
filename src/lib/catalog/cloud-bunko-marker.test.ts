@@ -158,10 +158,13 @@ describe('parseBunkoMarker', () => {
     );
   });
 
-  it("parses the shape of bunko's marker-active.json contract fixture", () => {
-    // interop/contract/bunko/marker-active.json, body, with the 0.8 keys
-    // (B2.6 per_user_files, B3.6 curated, B5.7 dedup). The fixture blesses
-    // its version as the "0.0.0" sentinel.
+  it('parses the planned 0.8 marker shape (placeholder for the blessed fixture)', () => {
+    // PLACEHOLDER, typed by hand: bunko's interop/contract/bunko/marker-active.json
+    // does not carry the 0.8 keys yet (B2.6 per_user_files, B3.6 curated,
+    // B5.7 dedup). Once bunko blesses them and src/lib/interop is on this
+    // branch (R6.3), read the blessed body through BUNKO_REPO instead. The
+    // list order is not part of the contract (the gates test membership);
+    // this is cc320b6's auth-list order (C16).
     const body = {
       version: 1,
       kind: 'mokuro-bunko',
@@ -179,9 +182,9 @@ describe('parseBunkoMarker', () => {
       queue: '.mokuro-queue.json',
       took_over_from: null,
       per_user_files: [
-        'goals.json',
-        'profiles.json',
         'volume-data.json',
+        'profiles.json',
+        'goals.json',
         'positions.json',
         'history/'
       ],
@@ -545,6 +548,65 @@ describe('refreshCloudBunkoMarker', () => {
     await refreshCloudBunkoMarker(p.provider);
     p.readControlFile.mockRejectedValueOnce(new Error('offline'));
     expect(await refreshCloudBunkoMarker(p.provider)).toBe(false);
+    expect(cloudBunkoStatus('mega')?.fresh).toBe(true);
+  });
+
+  /** A read whose node body arrives only when `release` is called. */
+  function slowRead(body: unknown) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const result = read({ id: 'n1', etag: 'v1', body });
+    const blob = result.nodes[0].blob;
+    result.nodes[0].blob = {
+      text: async () => {
+        await gate;
+        return blob.text();
+      }
+    } as Blob;
+    return { result, release };
+  }
+
+  it('overlapping callers share one read; neither returns before the marker is recorded', async () => {
+    const slow = slowRead(marker({ dedup: true }));
+    const files: { current: ControlFileResult } = { current: slow.result };
+    const poller = provider('mega', files);
+    const dedup = provider('mega', files);
+    const first = refreshCloudBunkoMarker(poller.provider);
+    await vi.advanceTimersByTimeAsync(0);
+    let secondDone = false;
+    const second = refreshCloudBunkoMarker(dedup.provider).then((ok) => {
+      secondDone = true;
+      return ok;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // The body is still arriving: the second caller must not be told "not modified" yet.
+    expect(secondDone).toBe(false);
+    slow.release();
+    expect(await second).toBe(true);
+    expect(cloudBunkoMergesDuplicates('mega')).toBe(true);
+    expect(await first).toBe(true);
+    expect(poller.readControlFile.mock.calls.length + dedup.readControlFile.mock.calls.length).toBe(
+      1
+    );
+  });
+
+  it('the etag is kept only once its read is recorded', async () => {
+    const slow = slowRead(marker());
+    const files: { current: ControlFileResult } = { current: slow.result };
+    const p = provider('mega', files);
+    const pending = refreshCloudBunkoMarker(p.provider);
+    await vi.advanceTimersByTimeAsync(0);
+    // Cleared mid-read (logout): the read belongs to the forgotten session.
+    clearCloudBunkoMarkers('mega');
+    slow.release();
+    expect(await pending).toBe(false);
+    expect(cloudBunkoStatus('mega')).toBeUndefined();
+    // So the next read asks from scratch instead of being answered not-modified.
+    files.current = read({ id: 'n1', etag: 'v1', body: marker() });
+    expect(await refreshCloudBunkoMarker(p.provider)).toBe(true);
+    expect(p.readControlFile).toHaveBeenLastCalledWith('.mokuro-bunko.json', {
+      ifNoneMatch: undefined
+    });
     expect(cloudBunkoStatus('mega')?.fresh).toBe(true);
   });
 
