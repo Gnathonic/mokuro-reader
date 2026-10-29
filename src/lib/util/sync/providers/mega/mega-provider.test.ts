@@ -22,10 +22,24 @@ const storageState = vi.hoisted(() => ({
   // megajs's own handles on the Cloud Drive and Rubbish Bin nodes.
   root: undefined as any,
   trash: undefined as any,
-  // What `storage.mkdir(name)` (a folder at the Cloud Drive root) creates.
-  mkdir: null as ((name: string) => any) | null,
   reloadError: null as Error | null
 }));
+
+/**
+ * A stand-in for megajs's API object: request() plus the EventEmitter calls
+ * the provider makes on its 'sc' channel.
+ */
+const fakeApi = vi.hoisted(() => (): any => {
+  const handlers: Array<(...args: any[]) => void> = [];
+  return {
+    request: vi.fn(),
+    on: (_event: string, handler: (...args: any[]) => void) => handlers.push(handler),
+    listeners: () => [...handlers],
+    listenerCount: () => handlers.length,
+    removeAllListeners: () => handlers.splice(0),
+    emit: (_event: string, ...args: any[]) => handlers.forEach((handler) => handler(...args))
+  };
+});
 
 vi.mock('megajs', () => {
   class MockStorage {
@@ -33,13 +47,9 @@ vi.mock('megajs', () => {
     root: any;
     trash: any;
     sid = 'SID123';
+    api = fakeApi();
     reload = vi.fn(async () => {});
     on = vi.fn();
-    mkdir = vi.fn((name: string, cb: (e: Error | null, f?: any) => void) => {
-      queueMicrotask(() =>
-        storageState.mkdir ? cb(null, storageState.mkdir(name)) : cb(new Error('mkdir not stubbed'))
-      );
-    });
     constructor(options: any, cb?: (e: Error | null) => void) {
       storageState.lastOptions = options;
       this.files = storageState.files;
@@ -76,7 +86,6 @@ beforeEach(() => {
   storageState.files = { f1: { name: 'mokuro-reader', directory: true } };
   storageState.root = undefined;
   storageState.trash = undefined;
-  storageState.mkdir = null;
 });
 
 describe('MegaProvider.login()', () => {
@@ -111,16 +120,18 @@ describe('MegaProvider.login()', () => {
     expect(storageState.lastOptions.secondFactorCode).toBe('654321');
   });
 
-  it('logs in with keepalive enabled and listens to storage change events', async () => {
+  it('logs in without megajs keepalive, loads the tree once, and listens to storage change events', async () => {
     // The sc long-poll keeps the local tree in sync and feeds the reactive
-    // cache. (Its old delete-event crash came from us manually removing nodes
-    // from storage.files — those manual removals are gone.)
+    // cache — but megajs (keepalive:true) starts a new poll per full load and
+    // never stops the old ones, so the provider runs the one poll itself.
     const provider = new MegaProvider();
     await provider.whenReady();
 
     await provider.login({ email: 'a@b.c', password: 'secret' });
 
-    expect(storageState.lastOptions.keepalive).toBe(true);
+    expect(storageState.lastOptions.keepalive).toBe(false);
+    expect(storageState.lastOptions.autoload).toBe(false);
+    expect((provider as any).storage.reload).toHaveBeenCalledOnce();
     const listened = (provider as any).storage.on.mock.calls.map((c: any[]) => c[0]);
     expect(listened).toEqual(expect.arrayContaining(['add', 'move', 'delete', 'update']));
   });
@@ -331,6 +342,7 @@ describe('MegaProvider.reinitialize() — session-safe refresh', () => {
     (provider as any).storage = {
       sid: 'SID123',
       files: { f1: { name: 'mokuro-reader', directory: true } },
+      api: fakeApi(),
       reload,
       close
     };
@@ -354,6 +366,7 @@ describe('MegaProvider.reinitialize() — session-safe refresh', () => {
     (provider as any).storage = {
       sid: 'SID',
       files: {},
+      api: fakeApi(),
       close,
       reload: vi.fn(async () => {
         throw new Error('ESID (-15): Invalid or expired user session, please relogin');
@@ -430,6 +443,32 @@ describe('MegaProvider.removeDirectoryIfEmpty()', () => {
     const { provider, seriesFolder } = await providerWithSeriesFolder([
       { h: 'series-1' },
       { h: 'file-9', p: 'series-1' } // a straggler another device just added
+    ]);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(seriesFolder.delete).not.toHaveBeenCalled();
+  });
+
+  it("counts only the folder's own subtree when the server answers with the whole tree", async () => {
+    const { provider, seriesFolder } = await providerWithSeriesFolder([
+      { h: 'drive' },
+      { h: 'root-1', p: 'drive' },
+      { h: 'series-1', p: 'root-1' },
+      { h: 'other-series', p: 'root-1' },
+      { h: 'file-1', p: 'other-series' }
+    ]);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(seriesFolder.delete).toHaveBeenCalled();
+  });
+
+  it('counts nested contents as contents', async () => {
+    const { provider, seriesFolder } = await providerWithSeriesFolder([
+      { h: 'series-1', p: 'root-1' },
+      { h: 'sub', p: 'series-1' },
+      { h: 'deep', p: 'sub' }
     ]);
 
     await provider.removeDirectoryIfEmpty('Old Series');
@@ -530,29 +569,49 @@ describe('MegaProvider ghost-node handling', () => {
     const provider = await loginWithTree({ root: folder, ghost });
     const storage = (provider as any).storage;
 
-    // Mirror megajs reload() semantics: additive import of the server's
-    // node set (which no longer contains the ghost).
-    storage.reload = vi.fn(async () => {
-      const server: Record<string, any> = { root: folder, real };
-      for (const [handle, node] of Object.entries(server)) {
-        if (!storage.files[handle]) storage.files[handle] = node;
-      }
+    // Mirror megajs reload() semantics: one `{a:'f'}` request whose callback
+    // imports the server's node set (which no longer contains the ghost)
+    // ADDITIVELY into storage.files.
+    const server: Record<string, any> = { root: folder, real };
+    storage.api.request = vi.fn((_json: any, cb: (e: Error | null, r?: any) => void) => {
+      queueMicrotask(() => cb(null, { f: Object.keys(server).map((h) => ({ h })), ok: [] }));
     });
+    storage.reload = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          storage.api.request({ a: 'f', c: 1 }, (_e: Error | null, response: any) => {
+            for (const { h } of response.f) {
+              if (!storage.files[h]) storage.files[h] = server[h];
+            }
+            resolve();
+          });
+        })
+    );
 
     await (provider as any).reinitialize();
 
     expect(Object.keys(storage.files).sort()).toEqual(['real', 'root']);
   });
 
-  it('reinitialize strips stale sc listeners before reloading (megajs stacks one per reload)', async () => {
+  it('reinitialize leaves ONE sc handler, however many reloads ran (megajs stacks one per reload)', async () => {
     const folder = makeMokuroFolder();
     const provider = await loginWithTree({ root: folder });
     const storage = (provider as any).storage;
-    storage.api = { removeAllListeners: vi.fn() };
+    // megajs's reload() attaches a new api 'sc' handler on every call.
+    const handlers: any[] = [];
+    storage.reload = vi.fn(async () => {
+      const handler = vi.fn();
+      handlers.push(handler);
+      storage.api.on('sc', handler);
+    });
 
     await (provider as any).reinitialize();
+    await (provider as any).reinitialize();
+    storage.api.emit('sc', [{ a: 'u', n: 'x' }]);
 
-    expect(storage.api.removeAllListeners).toHaveBeenCalledWith('sc');
+    expect(storage.api.listenerCount('sc')).toBe(1);
+    // Every packet is applied once, not once per reload.
+    expect(handlers.map((h) => h.mock.calls.length)).toEqual([0, 1]);
   });
 
   it('reinitialize keeps the previous tree when the reload fails transiently', async () => {
@@ -627,7 +686,7 @@ describe('MegaProvider listing — nodes MEGA no longer shows', () => {
     storageState.files = tree.files;
     storageState.root = tree.root;
     storageState.trash = tree.trash;
-    storageState.mkdir = (name) => tree.add(`ROOT/${name}`, name, tree.root, true);
+    // A new library folder comes from the Cloud Drive node's own mkdir.
     const provider = new MegaProvider();
     await provider.whenReady();
     await provider.login({ email: 'a@b.c', password: 'secret' });

@@ -78,9 +78,10 @@ describe('MegaProvider listing on real megajs trees', () => {
     ]);
 
     expect(storage.files.MOKU.parent).toBe(storage.trash);
-    // With no live library the listing makes a new one at the root; this is
-    // what megajs does with the server's mkdir answer.
-    storage.mkdir = (name: string, cb: (e: Error | null, f?: any) => void) => {
+    // With no live library the listing makes a new one at the root (through
+    // the Cloud Drive node's mkdir); this is what megajs does with the
+    // server's mkdir answer.
+    storage.root.mkdir = (name: string, cb: (e: Error | null, f?: any) => void) => {
       const folder = storage._importFile({ h: 'FRESH', p: 'ROOT', t: 1, ts: 1_780_000_000 });
       folder.name = name;
       cb(null, folder);
