@@ -834,6 +834,22 @@ describe('WebDAVProvider getStatus().positionsSync (per-user positions.json)', (
     expect(old.getStatus().positionsSync).toBe(false);
   });
 
+  // Unlike historySync, no version floor: the per-user mapping alone decides.
+  it.each([['0.7.3'], ['0.8.0'], [undefined]])(
+    'bunko reporting version %s and listing it -> true, whatever historySync says',
+    async (version) => {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({
+        ...authenticatedIdentity(),
+        ...(version ? { serverVersion: version } : {}),
+        perUserFiles: ['volume-data.json', 'positions.json']
+      });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      expect(provider.getStatus().positionsSync).toBe(true);
+      expect(provider.getStatus().historySync).toBe(false);
+    }
+  );
+
   it('anonymous bunko listing it -> true', async () => {
     const provider = await freshProvider();
     identityMock.mockResolvedValue({ kind: 'anonymous', perUserFiles: ['positions.json'] });

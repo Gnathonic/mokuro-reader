@@ -697,9 +697,13 @@ rides every sync right after the volume data, and is pushed 3 s after page
 turns settle (at once when the tab is hidden). Opening a page never stamps a
 position, and an adopted position keeps the other device's stamp. Not
 authoritative: history and `volume-data.json` still carry every position.
-mokuro-bunko gets it only when its identity lists it in `per_user_files`;
+mokuro-bunko gets it only when its identity lists it in `per_user_files`
+(`ProviderStatus.positionsSync`; no version floor, unlike `historySync`);
 before that the path is a shared library file, and the client neither reads
-nor writes it.
+nor writes it. Sync merges every listed copy (newest `t` per volume), so it is
+in `MERGED_ACROSS_COPIES` (`syncable-file.ts`) with `volume-data.json` and
+`goals.json`: the folder dedup moves a duplicate copy in beside the other
+instead of trashing it.
 
 **Look-up visits claim nothing** (`reading-history/visits.ts`, live side
 `positions/visit.ts`). A visit is one device's run of page views of one volume,

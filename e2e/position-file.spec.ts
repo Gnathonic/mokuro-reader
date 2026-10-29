@@ -123,3 +123,38 @@ test('opening and closing without turning writes no position', async ({ browser 
   );
   expect(positionsFile(stub)[VOL]).toEqual(before);
 });
+
+test('device swap lands on the newest position, not the last one written', async ({ browser }) => {
+  const stub = new WebDavStub();
+  const { phone, laptop } = await bothAtForty(browser, stub);
+  const tablet = await device(browser, stub);
+  await installVolume(tablet);
+  await sync(tablet);
+
+  // The phone's push stalls on its read of the file: it reads to p.44 FIRST,
+  // but its merge lands only after the tablet's newer p.47 is up.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let held = false;
+  await phone.route(`**${POSITIONS}`, async (route) => {
+    if (route.request().method() === 'GET') {
+      held = true;
+      await gate;
+    }
+    await route.fallback();
+  });
+  await read(phone, [41, 42, 43, 44]);
+  await expect.poll(() => held, { timeout: 15000 }).toBe(true);
+
+  await phoneReadsOn(tablet, stub, [45, 46, 47]);
+  release();
+  // The phone's run finishes by adopting the newer position…
+  await expect.poll(() => progress(phone), { timeout: 15000 }).toBe(47);
+  // …and its later write keeps it: p.44 is older, whoever wrote last.
+  expect(positionsFile(stub)[VOL][1]).toBe(47);
+
+  await openVolume(laptop);
+  await expect(counter(laptop, 47)).toBeVisible({ timeout: 20000 });
+  await expect(laptop.getByText(/Continued from .+, p\.47/)).toBeVisible();
+  expect(await progress(laptop)).toBe(47);
+});

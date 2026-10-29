@@ -160,7 +160,9 @@ home. The series moves back when it does, on every device as the history arrives
 
 ### Where history does not sync
 
-`historySyncAllowed(status)` is false on bunko before 0.7.1. There, position also stays in
+`historySyncAllowed(status)` is false on bunko unless its identity reports a `version` whose numeric
+core is at least 0.8.0 AND its `per_user_files` lists `history/` (0.8.0 is the first to do both; a
+missing version means no). There, position also stays in
 `volume-data.json`, and ultrafast falls back to today's throttled `volume-data.json` merge-and-upload.
 The turns-only-convert-at-next-start gap (found 2026-10-11) is fixed in the same change.
 `positions.json` is still written wherever the provider maps it per user (see bunko changes).
@@ -263,8 +265,13 @@ Local Folder. Drive and OneDrive never synthesize; their feed is authoritative.
   (`orderVolumeEntryFields`).
 - **`positions.json` joins `PathMapper.PER_USER_FILES`.** Anything else under `/mokuro-reader/`
   resolves into the shared library: without the mapping the file is one file for every account, each
-  overwriting the others. The reader writes it only when the server says it maps it (a capability flag,
-  like `historySync`); until then bunko users keep position in `volume-data.json`.
+  overwriting the others. The reader reads and writes it only when the server says it maps it:
+  `positionsSync` is true when the identity's `per_user_files` contains `positions.json`, whatever the
+  version (unlike `historySync`, which also needs 0.8.0). Until then bunko users keep position in
+  `volume-data.json`.
+- **Duplicate copies are kept, not trashed.** Positions sync merges every listed `positions.json`
+  copy, like `volume-data.json` and `goals.json`, so the reader's folder dedup (and bunko's, on
+  Drive/MEGA) moves both copies in and lets the next sync fold them.
 - Conditional GET on the per-user root files and under `history/` must answer `304` like the library
   files do. To verify, not assumed.
 - Root `Depth: 1` is 457 KB, sent uncompressed (1,074 series folders sit beside the config files). The

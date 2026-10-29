@@ -39,10 +39,11 @@ const ROOT_CONFIG_FILENAMES = new Set([
 
 /**
  * Root files whose sync downloads EVERY listed copy and folds them into one
- * (`downloadVolumeDataFile`, `downloadGoalsFile`), so two copies converge
- * losslessly at the next sync. profiles.json is not one: sync reads one copy.
+ * (`downloadVolumeDataFile`, `downloadGoalsFile`, positions sync's `runSync`),
+ * so two copies converge losslessly at the next sync — the folder dedup keeps
+ * both instead of trashing one. profiles.json is not one: sync reads one copy.
  */
-const MERGED_ACROSS_COPIES = new Set(['volume-data.json', GOALS_FILE_NAME]);
+const MERGED_ACROSS_COPIES = new Set(['volume-data.json', GOALS_FILE_NAME, POSITIONS_FILE_NAME]);
 
 // series-metadata.json is deliberately NOT listed: it was retired on 2026-08-23
 // before ever shipping (facts moved to <Series>/series.json, reading state to
