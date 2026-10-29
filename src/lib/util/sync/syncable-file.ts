@@ -32,6 +32,13 @@ const ROOT_CONFIG_FILENAMES = new Set([
   CATALOG_FILE_NAME
 ]);
 
+/**
+ * Root files whose sync downloads EVERY listed copy and folds them into one
+ * (`downloadVolumeDataFile`, `downloadGoalsFile`), so two copies converge
+ * losslessly at the next sync. profiles.json is not one: sync reads one copy.
+ */
+const MERGED_ACROSS_COPIES = new Set(['volume-data.json', GOALS_FILE_NAME]);
+
 // series-metadata.json is deliberately NOT listed: it was retired on 2026-08-23
 // before ever shipping (facts moved to <Series>/series.json, reading state to
 // volume-data.json's `series` section). A stale copy may still sit in a folder
@@ -60,6 +67,10 @@ export function isSidecarFile(basename: string): boolean {
 
 export function isRootConfigFile(basename: string): boolean {
   return ROOT_CONFIG_FILENAMES.has(basename.toLowerCase());
+}
+
+export function syncMergesEveryCopy(basename: string): boolean {
+  return MERGED_ACROSS_COPIES.has(basename.toLowerCase());
 }
 
 export function isSyncableFile(path: string): boolean {

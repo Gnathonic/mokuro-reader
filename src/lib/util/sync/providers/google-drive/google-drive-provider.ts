@@ -1243,12 +1243,13 @@ class GoogleDriveProvider implements SyncProvider {
         await this.ensureInitialized();
         const items = await driveApiClient.listFiles(
           `'${folderId}' in parents and trashed=false`,
-          'files(id,name,mimeType)'
+          'files(id,name,mimeType,modifiedTime)'
         );
         return items.map((item) => ({
           id: item.id,
           name: item.name,
-          isFolder: item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER
+          isFolder: item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER,
+          modifiedTime: item.modifiedTime
         }));
       },
 
@@ -1257,14 +1258,16 @@ class GoogleDriveProvider implements SyncProvider {
         await driveApiClient.moveFile(itemId, newParentId, oldParentId);
       },
 
+      // Both to Drive's trash, never files.delete: the folder was judged empty
+      // from a listing a moment old, and a deleted folder takes its contents.
       deleteFolder: async (folderId: string): Promise<void> => {
         await this.ensureInitialized();
-        await driveApiClient.deleteFile(folderId);
+        await driveApiClient.updateFileMetadata(folderId, { trashed: true }, { fields: 'id' });
       },
 
-      deleteFile: async (fileId: string): Promise<void> => {
+      trashFile: async (fileId: string): Promise<void> => {
         await this.ensureInitialized();
-        await driveApiClient.deleteFile(fileId);
+        await driveApiClient.updateFileMetadata(fileId, { trashed: true }, { fields: 'id' });
       },
 
       onRootFolderConfirmed: (folderId: string): void => {

@@ -1830,6 +1830,14 @@ export class MegaProvider implements SyncProvider {
     });
   }
 
+  /** A `mokuro-reader` folder, or anything inside one. */
+  private isInLibrary(node: any): boolean {
+    for (let current = node; current; current = current.parent) {
+      if (current.directory && current.name === MOKURO_FOLDER) return true;
+    }
+    return false;
+  }
+
   private findNodeById(id: string): any | null {
     const files = Object.values(this.storage?.files || {}) as any[];
     return files.find((f: any) => this.getFileNodeId(f) === id) || null;
@@ -1857,6 +1865,9 @@ export class MegaProvider implements SyncProvider {
         for (const f of files) {
           if (!f.directory) continue;
           if (!this.isLiveNode(f)) continue;
+          // The session sees the user's WHOLE drive: two same-named folders
+          // of their own elsewhere are not ours to merge.
+          if (!this.isInLibrary(f)) continue;
           const id = this.getFileNodeId(f);
           if (!id) continue;
           const parentId = f.parent ? this.getFileNodeId(f.parent) : null;
@@ -1882,7 +1893,12 @@ export class MegaProvider implements SyncProvider {
           if (!sameNode(f.parent, target) || !this.isLiveNode(f)) continue;
           const id = this.getFileNodeId(f);
           if (!id) continue;
-          items.push({ id, name: f.name, isFolder: !!f.directory });
+          items.push({
+            id,
+            name: f.name,
+            isFolder: !!f.directory,
+            modifiedTime: f.timestamp ? new Date(f.timestamp * 1000).toISOString() : undefined
+          });
         }
         return items;
       },
@@ -1933,16 +1949,14 @@ export class MegaProvider implements SyncProvider {
         await stateSynced;
       },
 
-      deleteFile: async (fileId): Promise<void> => {
+      trashFile: async (fileId): Promise<void> => {
         const file = this.findNodeById(fileId);
         if (!file) return;
-        const stateSynced = this.waitForNodeEvent(file, 'delete');
-        await new Promise<void>((resolve, reject) => {
-          file.delete(true, (error: Error | null) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
+        // The Rubbish Bin, never a permanent delete; without one, stop.
+        const trash = this.storage?.trash;
+        if (!trash) throw new Error('MEGA dedup: no Rubbish Bin in the tree');
+        const stateSynced = this.waitForNodeEvent(file, 'move');
+        await file.moveTo(trash);
         await stateSynced;
       },
 

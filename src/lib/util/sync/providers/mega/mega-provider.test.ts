@@ -780,7 +780,8 @@ describe('MegaProvider listing — nodes MEGA no longer shows', () => {
     const names = (await ops.listFolders()).map((f) => f.name).sort();
     const contents = (await ops.listFolderContents(folder.parent.nodeId)).map((f) => f.name);
 
-    expect(names).toEqual(['Cloud Drive', 'Ippo', 'mokuro-reader']);
+    // Only the library: the Cloud Drive itself is not the dedup's to merge.
+    expect(names).toEqual(['Ippo', 'mokuro-reader']);
     expect(contents).toEqual(['Ippo']);
   });
 });
