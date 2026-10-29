@@ -308,7 +308,7 @@ describe('fetchServerIdentity', () => {
     expect(result).toEqual({ kind: 'anonymous' });
   });
 
-  describe('server version (bunko reports it from 0.7.1)', () => {
+  describe('server version (bunko reports it from 0.8.0)', () => {
     it('carries the reported version on an authenticated identity', async () => {
       const { impl } = mockFetch({
         'https://host/login/api/me': jsonResponse(200, {
@@ -316,20 +316,20 @@ describe('fetchServerIdentity', () => {
           username: 'alice',
           role: 'registered',
           permissions: PERMS,
-          version: '0.7.1'
+          version: '0.8.0'
         })
       });
       const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
-      expect(result).toMatchObject({ kind: 'authenticated', serverVersion: '0.7.1' });
+      expect(result).toMatchObject({ kind: 'authenticated', serverVersion: '0.8.0' });
     });
 
     it('carries it on an anonymous identity too', async () => {
       const { impl } = mockFetch({
-        'https://host/login/api/me': jsonResponse(200, { authenticated: false, version: '0.7.2' })
+        'https://host/login/api/me': jsonResponse(200, { authenticated: false, version: '0.8.1' })
       });
       expect(await fetchServerIdentity('https://host', undefined, undefined, impl)).toEqual({
         kind: 'anonymous',
-        serverVersion: '0.7.2'
+        serverVersion: '0.8.1'
       });
     });
 

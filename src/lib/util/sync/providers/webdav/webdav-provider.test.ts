@@ -756,26 +756,51 @@ describe('WebDAVProvider listing of reading history', () => {
 });
 
 describe('WebDAVProvider getStatus().historySync (per-user reading history)', () => {
+  const PER_USER = ['volume-data.json', 'profiles.json', 'goals.json', 'history/'];
+
   it.each([
-    ['0.7.1', true],
-    ['0.8.0', true],
-    ['0.7.0', false],
-    [undefined, false]
-  ])('bunko reporting version %s -> %s', async (version, expected) => {
+    ['0.7.1', PER_USER, false],
+    ['0.7.3', PER_USER, false],
+    ['0.8.0', PER_USER, true],
+    ['0.8.0-beta.1', PER_USER, true],
+    ['0.8.0', ['volume-data.json', 'profiles.json', 'goals.json'], false],
+    ['0.8.0', undefined, false],
+    [undefined, PER_USER, false],
+    [undefined, undefined, false]
+  ])(
+    'bunko reporting version %s, per_user_files %j -> %s',
+    async (version, perUserFiles, expected) => {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({
+        ...authenticatedIdentity(),
+        ...(version ? { serverVersion: version } : {}),
+        ...(perUserFiles ? { perUserFiles } : {})
+      });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      expect(provider.getStatus().historySync).toBe(expected);
+    }
+  );
+
+  it('anonymous bunko follows its reported version and per-user files too', async () => {
     const provider = await freshProvider();
     identityMock.mockResolvedValue({
-      ...authenticatedIdentity(),
-      ...(version ? { serverVersion: version } : {})
+      kind: 'anonymous',
+      serverVersion: '0.8.0',
+      perUserFiles: PER_USER
     });
-    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
-    expect(provider.getStatus().historySync).toBe(expected);
-  });
-
-  it('anonymous bunko follows its reported version too', async () => {
-    const provider = await freshProvider();
-    identityMock.mockResolvedValue({ kind: 'anonymous', serverVersion: '0.7.1' });
     await provider.login({ serverUrl: 'https://host' });
     expect(provider.getStatus().historySync).toBe(true);
+  });
+
+  it('anonymous bunko 0.7.1 does not', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'anonymous',
+      serverVersion: '0.7.1',
+      perUserFiles: PER_USER
+    });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().historySync).toBe(false);
   });
 
   it('a plain WebDAV server is not restricted (history files are just files there)', async () => {

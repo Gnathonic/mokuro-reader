@@ -35,7 +35,7 @@ export type IdentityResult =
       permissions: ServerPermissions;
       /** The `/login/api/me` URL that answered (the bunko root's mount, subpath or origin). */
       endpoint?: string;
-      /** The server's own version, when it reports one (bunko >= 0.7.1). */
+      /** The server's own version, when it reports one (bunko >= 0.8.0). */
       serverVersion?: string;
       /** Root files the server keeps per account (`per_user_files`), when it reports them. */
       perUserFiles?: string[];
@@ -97,7 +97,7 @@ function interpretResponse(
 ): IdentityResult | null {
   const record = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
   const authenticated = record?.authenticated;
-  // bunko >= 0.7.1 reports its version; older servers simply omit it.
+  // bunko >= 0.8.0 reports its version; older servers simply omit it.
   const version =
     typeof record?.version === 'string' && record.version ? { serverVersion: record.version } : {};
   // Root files the server keeps per account; anything but a string array = not reported.

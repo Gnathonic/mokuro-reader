@@ -177,7 +177,7 @@ export class WebDAVProvider implements SyncProvider {
   private _capabilities: ServerPermissions | null = null;
   /** The server answered the mokuro-bunko identity endpoint: it compiles the metadata files. */
   private _serverCompilesMetadata = false;
-  /** The bunko version `/login/api/me` reported (bunko >= 0.7.1); undefined otherwise. */
+  /** The bunko version `/login/api/me` reported (bunko >= 0.8.0); undefined otherwise. */
   private _serverVersion: string | undefined;
   /** Root files bunko reports keeping per account (`per_user_files`); undefined = not reported. */
   private _perUserFiles: string[] | undefined;
@@ -608,10 +608,11 @@ export class WebDAVProvider implements SyncProvider {
           : 'Not configured',
       isReadOnly: this._isReadOnly,
       serverCompilesMetadata: this._serverCompilesMetadata,
-      // mokuro-bunko keeps reading history per user only from 0.7.1; before
-      // that `history/` lands in the shared library. Plain WebDAV: no limit.
+      // mokuro-bunko keeps reading history per user only from 0.8.0, and only
+      // when it lists `history/` per user; otherwise `history/` lands in the
+      // shared library. Plain WebDAV: no limit.
       historySync: this._serverCompilesMetadata
-        ? bunkoSupportsHistory(this._serverVersion)
+        ? bunkoSupportsHistory(this._serverVersion, this._perUserFiles)
         : undefined,
       // positions.json is per user only where bunko says so; otherwise that
       // path is a shared library file. Plain WebDAV: no limit.
