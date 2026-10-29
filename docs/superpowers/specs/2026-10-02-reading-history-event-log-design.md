@@ -250,7 +250,8 @@ is kept as a per-volume snapshot in the synced record (`legacyStats`: the old mi
 characters, frozen at a time `before`); stats show `max(old, history before the freeze) + history after`,
 so events recorded before the freeze but arriving later explain the old figure rather than add to it. It
 is the `adjust` conversion described under Migration, done as record state so it also syncs where history
-cannot (bunko before 0.7.1). The manual override lives in `volume-data.json` → `tracking.idle`.
+cannot (a bunko server unless its version core is at least 0.8.0 and its `per_user_files` lists
+`history/`). The manual override lives in `volume-data.json` → `tracking.idle`.
 
 ## Migration and compatibility
 
