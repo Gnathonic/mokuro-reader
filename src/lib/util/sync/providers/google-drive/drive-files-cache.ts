@@ -6,6 +6,8 @@ import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import type { DriveFileMetadata } from '../../provider-interface';
 import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
+import { compareByAge } from '../../folder-deduplicator';
+import type { DriveFile } from './constants';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -85,6 +87,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   private fetchingFlag = false;
   private lastFetchTime: number | null = null;
   private readerFolderId: string | null = null;
+  /** My Drive's own folder id, asked for once per session (see getMyDriveRootId). */
+  private myDriveRootId: string | null = null;
+  private myDriveRootIdPromise: Promise<string | null> | null = null;
   private fetchPromise: Promise<void> | null = null;
   /**
    * How many times IN A ROW a dedup-triggered refetch has re-entered
@@ -168,7 +173,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         // This filters out viewer-only shared files while keeping shared files with edit access that user owns
         const allItems = await driveApiClient.listFiles(
           `'me' in owners and trashed=false`,
-          'files(id,name,mimeType,modifiedTime,size,parents,description)'
+          'files(id,name,mimeType,modifiedTime,size,parents,description,createdTime)'
         );
         console.log('Found items:', allItems);
 
@@ -179,6 +184,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         const rootConfigFiles: any[] = [];
         const folderNames = new Map<string, string>();
         const foundFolderNames: string[] = [];
+        const readerFolders: DriveFile[] = [];
 
         for (const item of allItems) {
           const ext =
@@ -191,10 +197,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
             folderNames.set(item.id, item.name);
             foundFolderNames.push(item.name);
 
-            // Capture mokuro-reader folder ID
             if (item.name === GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER) {
-              this.readerFolderId = item.id;
-              console.log('Found mokuro-reader folder ID:', item.id);
+              readerFolders.push(item);
             }
           } else if (item.name.endsWith('.cbz')) {
             cbzFiles.push(item);
@@ -297,6 +301,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         console.log(
           `Cached ${cbzFiles.length} .cbz files, ${sidecarFiles.length} sidecar files and ${rootConfigFiles.length} root config file(s)`
         );
+        // Chosen before the swap below, and kept only if the account is still
+        // this one: the choice may ask Drive for My Drive's id.
+        const readerFolderId = await this.pickReaderFolder(readerFolders);
         // IDENTITY IS A SIGNAL, so do not spend it on a listing that did not
         // change. `catalog/index.ts`'s `volumesWithPlaceholders` decides
         // whether to re-mint EVERY placeholder object by comparing the
@@ -325,6 +332,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         if (this.cacheGeneration !== startedAtGeneration) {
           console.log('Drive files cache was cleared mid-fetch; discarding this listing');
           return;
+        }
+        if (readerFolderId) {
+          this.readerFolderId = readerFolderId;
+          console.log('Found mokuro-reader folder ID:', readerFolderId);
         }
         const replayed = (this.mutationsDuringFetch ?? []).reduce(
           (map, fn) => fn(map),
@@ -402,6 +413,49 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
     // Cache is loaded but no folder found - it needs to be created
     return null;
+  }
+
+  /**
+   * THE library folder among every live `mokuro-reader` folder (duplicates,
+   * or one the user moved): one directly in My Drive first, then the oldest,
+   * then the smaller id — the folder FolderDeduplicator keeps when it merges
+   * the top-level ones, so writes never go to the copy the next merge
+   * empties. A nested root is never merged away; it is the write root only
+   * when there is no top-level one.
+   */
+  private async pickReaderFolder(folders: DriveFile[]): Promise<string | null> {
+    if (folders.length <= 1) return folders[0]?.id ?? null;
+    const myDriveId = await this.getMyDriveRootId();
+    const atTop = (f: DriveFile) => (myDriveId && f.parents?.[0] === myDriveId ? 0 : 1);
+    return [...folders].sort((a, b) => atTop(a) - atTop(b) || compareByAge(a, b))[0].id;
+  }
+
+  /**
+   * My Drive's own folder id, which a top-level folder names as its parent
+   * (`'root'` is only an alias in queries). One `files/root` call per
+   * session; null when it cannot be had, and asked again next time.
+   */
+  async getMyDriveRootId(): Promise<string | null> {
+    if (this.myDriveRootId) return this.myDriveRootId;
+    if (!this.myDriveRootIdPromise) {
+      const generation = this.cacheGeneration;
+      this.myDriveRootIdPromise = driveApiClient
+        .getFileMetadata('root', 'id')
+        .then((result: { id?: unknown } | undefined) => {
+          const id = typeof result?.id === 'string' && result.id ? result.id : null;
+          // An answer for an account signed out meanwhile is not this one's.
+          if (id && this.cacheGeneration === generation) this.myDriveRootId = id;
+          return id;
+        })
+        .catch((error: unknown) => {
+          console.warn("[DriveCache] Could not read My Drive's folder id:", error);
+          return null;
+        })
+        .finally(() => {
+          this.myDriveRootIdPromise = null;
+        });
+    }
+    return this.myDriveRootIdPromise;
   }
 
   /**
@@ -595,6 +649,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     this.cacheLoadedStore.set(false);
     this.lastFetchTime = null;
     this.readerFolderId = null;
+    this.myDriveRootId = null;
+    this.myDriveRootIdPromise = null;
     this.fetchPromise = null;
   }
 

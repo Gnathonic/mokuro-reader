@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Google Drive: merging duplicate folders never deletes files
+- Google Drive leaves your own same-named folders alone
+
 ## [1.10.0] - 2026-10-02
 
 ### Added

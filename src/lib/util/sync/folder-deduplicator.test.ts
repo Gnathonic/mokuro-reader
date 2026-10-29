@@ -162,4 +162,64 @@ describe('FolderDeduplicator: same-named files when duplicate folders merge', ()
     expect(drive.filesIn('SK')).toEqual(['Ippo 01.cbz#V1', 'Ippo 02.cbz#V2', 'series.json#J2']);
     expect(drive.trashed()).toEqual(['J1']);
   });
+
+  it('keeps BOTH copies of the bunko control files, whatever their times', async () => {
+    const drive = twoRoots([
+      file('MK', 'KEEP', '.mokuro-bunko.json', at(10)),
+      file('MD', 'DUP', '.mokuro-bunko.json', at(20)),
+      file('QK', 'KEEP', '.mokuro-queue.json', at(20)),
+      file('QD', 'DUP', '.mokuro-queue.json', at(10))
+    ]);
+
+    await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+    expect(drive.filesIn('KEEP')).toEqual([
+      '.mokuro-bunko.json#MD',
+      '.mokuro-bunko.json#MK',
+      '.mokuro-queue.json#QD',
+      '.mokuro-queue.json#QK'
+    ]);
+    expect(drive.trashed()).toEqual([]);
+  });
+});
+
+describe('FolderDeduplicator: which folder of a group is kept', () => {
+  it('keeps the smaller id when the creation times are equal, whatever the listing order', async () => {
+    for (const order of [
+      ['B', 'A'],
+      ['A', 'B']
+    ]) {
+      const drive = memoryDrive([
+        ...order.map((id) => ({
+          id,
+          name: 'mokuro-reader',
+          parentId: 'DRIVE',
+          isFolder: true,
+          createdTime: at(0)
+        })),
+        file('FA', 'A', 'a.cbz', at(1)),
+        file('FB', 'B', 'b.cbz', at(1))
+      ]);
+
+      await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+      expect(drive.filesIn('A')).toEqual(['a.cbz#FA', 'b.cbz#FB']);
+      expect(drive.filesIn('B')).toEqual([]);
+    }
+  });
+
+  it('never merges two roots under different parents', async () => {
+    const drive = memoryDrive([
+      { id: 'TOP', name: 'mokuro-reader', parentId: 'DRIVE', isFolder: true, createdTime: at(5) },
+      { id: 'NEST', name: 'mokuro-reader', parentId: 'BACKUP', isFolder: true, createdTime: at(0) },
+      file('F1', 'TOP', 'a.cbz', at(6)),
+      file('F2', 'NEST', 'b.cbz', at(1))
+    ]);
+
+    const result = await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+    expect(result.groupsMerged).toBe(0);
+    expect(drive.filesIn('TOP')).toEqual(['a.cbz#F1']);
+    expect(drive.filesIn('NEST')).toEqual(['b.cbz#F2']);
+  });
 });

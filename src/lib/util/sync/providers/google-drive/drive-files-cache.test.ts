@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./api-client', () => ({
   driveApiClient: {
-    listFiles: vi.fn()
+    listFiles: vi.fn(),
+    getFileMetadata: vi.fn(async () => ({ id: 'MY_DRIVE' }))
   }
 }));
 
-vi.mock('../../folder-deduplicator', () => ({
+vi.mock('../../folder-deduplicator', async (importOriginal) => ({
+  // The real compareByAge: the root choice must order exactly as dedup keeps.
+  ...(await importOriginal<typeof import('../../folder-deduplicator')>()),
   folderDeduplicator: {
     deduplicateAll: vi.fn().mockResolvedValue({ groupsMerged: 0 })
   }
@@ -640,5 +643,93 @@ describe('add() for ROOT config files', () => {
 
     expect(cache.get('Berserk/Vol 1.cbz')?.fileId).toBe('cbz-1');
     expect(cache.get('Vol 1.cbz')).toBeNull();
+  });
+});
+
+/**
+ * Which `mokuro-reader` folder is the write root when there are several: one
+ * directly in My Drive first, then the oldest, then the smaller id — the same
+ * folder FolderDeduplicator keeps, and the same order MEGA and bunko use. The
+ * LAST one listed (the old rule) depends on Drive's paging order.
+ */
+describe('driveFilesCache reader folder choice', () => {
+  const FOLDER_MIME = 'application/vnd.google-apps.folder';
+  const roots = {
+    nestedOlder: {
+      id: 'nested-older',
+      name: 'mokuro-reader',
+      mimeType: FOLDER_MIME,
+      parents: ['backup'],
+      createdTime: '2026-01-01T00:00:00.000Z'
+    },
+    topNewer: {
+      id: 'top-newer',
+      name: 'mokuro-reader',
+      mimeType: FOLDER_MIME,
+      parents: ['MY_DRIVE'],
+      createdTime: '2026-03-01T00:00:00.000Z'
+    },
+    topOldest: {
+      id: 'top-oldest',
+      name: 'mokuro-reader',
+      mimeType: FOLDER_MIME,
+      parents: ['MY_DRIVE'],
+      createdTime: '2026-02-01T00:00:00.000Z'
+    }
+  };
+  const listing = (items: object[]) =>
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(items);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    driveFilesCache.clear();
+    vi.mocked(driveApiClient.getFileMetadata).mockResolvedValue({ id: 'MY_DRIVE' });
+    // No dedup pass (and so no refetch) behind these fetches.
+    vi.mocked(googleDriveProvider.isAuthenticated).mockReturnValue(false);
+  });
+
+  it('is the oldest top-level folder, whatever the listing order', async () => {
+    const { nestedOlder, topNewer, topOldest } = roots;
+    for (const order of [
+      [nestedOlder, topNewer, topOldest],
+      [topOldest, topNewer, nestedOlder],
+      [topNewer, nestedOlder, topOldest]
+    ]) {
+      driveFilesCache.clear();
+      listing(order);
+      await driveFilesCache.fetch();
+      expect(await driveFilesCache.getReaderFolderId()).toBe('top-oldest');
+    }
+  });
+
+  it("asks for My Drive's id once per session, and only when there is a choice", async () => {
+    listing([roots.topOldest]);
+    await driveFilesCache.fetch();
+    expect(driveApiClient.getFileMetadata).not.toHaveBeenCalled();
+
+    listing([roots.topNewer, roots.topOldest]);
+    await driveFilesCache.fetch();
+    await driveFilesCache.fetch();
+    expect(driveApiClient.getFileMetadata).toHaveBeenCalledTimes(1);
+    expect(driveApiClient.getFileMetadata).toHaveBeenCalledWith('root', 'id');
+  });
+
+  it('falls back to the oldest, then the smaller id, when My Drive is unknown', async () => {
+    vi.mocked(driveApiClient.getFileMetadata).mockRejectedValue(new Error('offline'));
+    listing([
+      { ...roots.topOldest, id: 'b', createdTime: roots.nestedOlder.createdTime },
+      { ...roots.nestedOlder, id: 'a' },
+      roots.topNewer
+    ]);
+
+    await driveFilesCache.fetch();
+
+    expect(await driveFilesCache.getReaderFolderId()).toBe('a');
+  });
+
+  it('uses a moved (nested) library when it is the only one', async () => {
+    listing([roots.nestedOlder]);
+    await driveFilesCache.fetch();
+    expect(await driveFilesCache.getReaderFolderId()).toBe('nested-older');
   });
 });

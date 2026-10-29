@@ -112,6 +112,25 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 
+**Duplicate folders** (`folder-deduplicator.ts`, Drive and MEGA):
+
+- **Write root.** Of several `mokuro-reader` folders, one directly in My Drive /
+  the Cloud Drive first, then the oldest, then the smaller id (code-unit
+  compare) — `pickReaderFolder` (`drive-files-cache.ts`), `findMokuroFolder`
+  (MEGA). Every root is read; only same-parent roots merge, so a nested
+  `Backup/mokuro-reader` is never merged into the top-level one.
+- **Groups** are an exact name under one parent, within the library only
+  (`listFolders` keeps `mokuro-reader` folders and their descendants). The
+  kept folder is the oldest, then the smaller id (`compareByAge`).
+- **Same name on merge.** Folders, or a file beside a folder, move in and keep
+  the name twice; so do `dedupKeepsEveryCopy` files (volume-data.json,
+  goals.json, and bunko's control files `.mokuro-bunko.json` /
+  `.mokuro-queue.json`, exact names). Any other file: the strictly newer write
+  wins, a tie keeps the canonical copy, the loser goes to the TRASH.
+- **Folder removal.** `deleteFolder` re-lists the duplicate on the server and
+  removes it (Drive: to the trash) only when empty; a folder still holding
+  anything is kept for the next pass, and a second refusal ends the run.
+
 ### Svelte 5 Reactive Performance
 
 - `$derived` and `$derived.by()` run for EVERY component instance

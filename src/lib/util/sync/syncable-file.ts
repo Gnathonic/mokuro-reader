@@ -73,6 +73,31 @@ export function syncMergesEveryCopy(basename: string): boolean {
   return MERGED_ACROSS_COPIES.has(basename.toLowerCase());
 }
 
+/**
+ * Files FolderDeduplicator moves in beside a same-named copy instead of
+ * trashing the older one: the copies sync folds into one, and bunko's control
+ * files. Two bunko roots each hold their own marker and queue, and trashing
+ * one by write time could drop the live lease or queued work.
+ */
+export function dedupKeepsEveryCopy(basename: string): boolean {
+  return syncMergesEveryCopy(basename) || isBunkoControlFile(basename);
+}
+
+/**
+ * The two CONTROL files a cloud-direct mokuro-bunko keeps at the library root
+ * (`mokuro-reader/`): its OCR queue and its liveness marker / lease. Neither is
+ * a volume, a sidecar or a root config, so they stay OUT of
+ * {@link isSyncableFile} on purpose (pinned by tests). Names are exact
+ * (case-sensitive), like every other root file the reader owns.
+ */
+export const QUEUE_FILE_NAME = '.mokuro-queue.json';
+export const BUNKO_MARKER_NAME = '.mokuro-bunko.json';
+
+/** Is this basename one of Bunko's control files? */
+export function isBunkoControlFile(basename: string): boolean {
+  return basename === QUEUE_FILE_NAME || basename === BUNKO_MARKER_NAME;
+}
+
 export function isSyncableFile(path: string): boolean {
   const basename = basenameOf(path);
   return isCbzFile(basename) || isSidecarFile(basename) || isRootConfigFile(basename);
