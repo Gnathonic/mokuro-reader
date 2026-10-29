@@ -909,8 +909,11 @@ describe('MegaProvider.readControlFile() — live tree', () => {
     });
   }
 
+  /** A folder node, linked into `parent.children` like megajs leaves it. */
   function makeFolder(name = 'mokuro-reader', parent?: any) {
-    return { name, directory: true, parent, children: [] as any[] } as any;
+    const folder = { name, directory: true, parent, children: [] as any[] } as any;
+    parent?.children.push(folder);
+    return folder;
   }
 
   /** A file node linked into `parent.children` like megajs leaves it. */
@@ -1053,6 +1056,9 @@ describe('MegaProvider.readControlFile() — live tree', () => {
     const inBin = makeNode('Hbin', MARKER, bin, 1_780_000_200);
     const inTrashedLibrary = makeNode('Htrashlib', MARKER, trashedLibrary, 1_780_000_300);
     const inSub = makeNode('Hsub', MARKER, sub, 1_780_000_400);
+    // megajs's own Rubbish Bin handle: the trashed library is fully linked,
+    // so only the trash check (not a broken link) can turn it away.
+    storageState.trash = bin;
     const provider = await loginWithTree({
       live,
       other,
