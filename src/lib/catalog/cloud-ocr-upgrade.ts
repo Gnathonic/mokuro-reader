@@ -24,7 +24,7 @@ import {
 } from './mokuro-hash';
 export { isUntouchedUpgradeLayer };
 import { firstImageSizeMismatch, fitPagesToVolume, sameOcrPages } from './ocr-upgrade-pages';
-import { addProvenance, provenanceFromParsed, type OcrProvenance } from './ocr-provenance';
+import { addProvenance, provenanceOfFile, type OcrProvenance } from './ocr-provenance';
 
 /**
  * Upgrading an installed volume's OCR from the cloud's `.mokuro`/`.mokuro.gz`
@@ -186,7 +186,7 @@ export async function upgradeOcrFromSidecarBlob(
   );
   const pages = Array.isArray(parsed.pages) ? parsed.pages : [];
   const { totalChars, cumulative } = buildPageCharCounts(pages);
-  const provenance = await provenanceFromParsed(parsed.ocrEngine, pages);
+  const provenance = await provenanceOfFile(parsed, pages);
 
   // The row is re-read INSIDE the write transaction: the snapshot this task was
   // enqueued with predates a download and a parse, and an edit that commits

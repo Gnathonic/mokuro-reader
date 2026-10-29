@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildMokuroMetadata, buildPrimaryMokuroMetadata } from './mokuro-metadata';
-import { contentDigest, sealOf } from '$lib/catalog/ocr-provenance';
+import { contentDigest, provenanceOfFile, sealOf } from '$lib/catalog/ocr-provenance';
 import { RUNNER_OUTPUT_DOCUMENT, RUNNER_OUTPUT_SEAL } from '$lib/catalog/__fixtures__/seal-vector';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -138,5 +138,38 @@ describe('buildPrimaryMokuroMetadata (provenance)', () => {
     });
     expect(reverted.ocr_engine).toEqual(doc.ocr_engine);
     expect('edited' in reverted).toBe(false);
+  });
+
+  it('a volume installed from an EDITED main writes that `edited` block back, verbatim', async () => {
+    const block = {
+      by: 'mokuro-reader',
+      at: '2026-09-01T00:00:00.000Z',
+      base_sha256: 'b'.repeat(64),
+      base_seal: RUNNER_OUTPUT_SEAL
+    };
+    const fromEdited: VolumeMetadata = {
+      ...volume,
+      mokuro_sha256: 'a'.repeat(64),
+      ocr_provenance: [
+        (await provenanceOfFile({ ocrEngine: doc.ocr_engine, edited: block }, doc.pages))!
+      ]
+    };
+    // A rename (no markEdited, no local edit): the file's own block, in the block slot.
+    const meta = await buildPrimaryMokuroMetadata(fromEdited, structuredClone(doc.pages), {
+      seriesTitle: 'New'
+    });
+    expect(meta.edited).toEqual(block);
+    expect('ocr_engine' in meta).toBe(false);
+    expect(Object.keys(meta).indexOf('edited')).toBe(5);
+    // A local edit on top: the pages are no longer that file's — a fresh block.
+    const changed = structuredClone(doc.pages);
+    changed[0].blocks[0].lines[0] = '橋を渡った';
+    const local = await buildPrimaryMokuroMetadata(
+      { ...fromEdited, ocr_edited_at: '2026-10-01T00:00:00.000Z' },
+      changed,
+      { markEdited: true }
+    );
+    expect(local.edited?.at).toBe('2026-10-01T00:00:00.000Z');
+    expect('ocr_engine' in local).toBe(false);
   });
 });

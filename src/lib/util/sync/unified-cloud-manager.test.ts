@@ -949,9 +949,11 @@ describe('UnifiedCloudManager rename operations', () => {
     ]);
   });
 
-  it('the main it puts first is the regenerated one, ocr_engine and all, byte for byte', async () => {
-    // bunko re-seals an older reader's rename; this reader's own must arrive
-    // already carrying the block (generateVolumeSidecarsFromDb carries it).
+  it('puts the regenerated main first and uploads its bytes unchanged', async () => {
+    // Only the order and the byte passthrough: generateVolumeSidecars is mocked
+    // here, so the CARRY of ocr_engine is not under test. That is
+    // compress-volume.test ("a rename regenerates the main with the installed
+    // block") and, end to end, e2e/ocr-layers-cloud.spec.ts.
     const { log } = orderedRenameSetup();
     const main = JSON.stringify({
       title: 'New Series',

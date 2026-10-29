@@ -6,7 +6,7 @@
 
 - Duplicate-folder cleanup never removes mokuro-bunko's own files
 - MEGA catches mokuro-bunko changes made while you were offline
-- Renamed volumes keep mokuro-bunko's OCR engine record
+- Renamed volumes keep their OCR engine or corrected mark
 - Exported or uploaded OCR you corrected is marked as corrected
 
 ### Fixed

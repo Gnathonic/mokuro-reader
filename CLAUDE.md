@@ -263,7 +263,7 @@ interface VolumeMetadata {
   mokuro_sha256?: string; // hash of the .mokuro bytes the installed primary came from — see "OCR upgrades"
   mokuro_sha256_cloud?: { provider: string; size: number; modified?: number }; // where that file is KNOWN to be stored
   updated_ocr_sha256?: string; // edited volumes: newest cloud OCR filed as the `updated-ocr` layer
-  ocr_provenance?: { engine: object; digest: string }[]; // installed files' `ocr_engine` blocks — see "Provenance blocks"
+  ocr_provenance?: (({ engine: object } | { edited: object }) & { digest: string })[]; // installed files' blocks — see "Provenance blocks"
 }
 
 interface VolumeOCR {
@@ -397,21 +397,29 @@ A `.mokuro` says where its text came from with a top-level block — never both
   import, cloud download, deep link — and the image-only upgrade) stores the
   file's block verbatim in `VolumeMetadata.ocr_provenance` together with a
   seal v1 digest of THAT FILE's pages (taken before the import remaps any
-  `img_path`); a reinstall from a file without one clears the list. A primary
+  `img_path`); a reinstall from a file without one clears the list. What is
+  recorded follows bunko's precedence (`provenanceOfFile`): a file with an
+  `edited` object records THAT block (any `ocr_engine` left in it is
+  ignored), one with `preserved` records nothing, else its `ocr_engine`. A primary
   the reader regenerates — a rename's new main, a backup, the sidecar
   backfill, an export, an archive's embedded copy, an edited volume's cloud
   main from its `original` snapshot — carries the block exactly when the pages
   written reproduce an entry's digest (`buildPrimaryMokuroMetadata` →
-  `carriedOcrEngine`, `catalog/ocr-provenance.ts`), so the block survives
-  reader renames (names are outside the seal) and drops off the moment a page
-  is edited. A layer file never carries one.
+  `carriedProvenance`, `catalog/ocr-provenance.ts`; the newest matching entry
+  wins), so the block survives reader renames (names are outside the seal)
+  and drops off the moment a page is edited. A layer file never carries one.
 - **`edited`** (EDITED): `by` (`"mokuro-reader"`), `at`, `base_sha256` and
   `base_seal` — on every `edit`-kind layer file (`buildLayerMokuroMetadata`)
   and on a primary written from the EDITED primary row itself (exports, Local
   Folder, archives, a rename's fallback when the snapshot is missing) when no
-  block can be carried. `base_sha256` is the row's `mokuro_sha256`;
-  `base_seal` is the seal of the sealed main the edits sit on (`editBaseSeal`:
-  the `original` snapshot's pages for an edited primary, else the primary's),
+  block can be carried. A primary installed from an EDITED main (another
+  device's export or fallback rename) carries THAT file's `edited` block
+  verbatim the same way an `ocr_engine` is carried — dropping it would turn a
+  person's text into LEGACY OCR a bunko upgrade replaces. `base_sha256` is the
+  row's `mokuro_sha256`; `base_seal` is the seal of the sealed main the edits
+  sit on (`editBaseSeal`: the `original` snapshot's pages for an edited
+  primary, else the primary's — and only when that seal checks over those
+  pages, never a stale one),
   computed for layer-sync pushes and the Worker's layer sidecars (backup,
   rename, Worker exports); null from the main-thread layer exports
   (`buildLayerExportFile`, `loadVolumeLayerFiles`), on an edited primary's own
@@ -611,7 +619,7 @@ re-fetches it and swaps the new OCR in — automatically, in the background
 - **Provenance learned.** `VolumeMetadata.ocr_provenance` (newest first, ≤ 4,
   deduplicated by digest — `addProvenance`) is set by every primary install and
   by the image-only upgrade, and the hash-driven pass APPENDS the downloaded
-  file's `ocr_engine` on `upgraded`, `recorded` (another device's rename: same
+  file's block (`ocr_engine`, or `edited`) on `upgraded`, `recorded` (another device's rename: same
   pages, new bytes) and `layered` (so promoting `updated-ocr` later still
   finds its block). Nothing is learned on `kept`, `mismatch` or `skipped`. See
   "Provenance blocks".

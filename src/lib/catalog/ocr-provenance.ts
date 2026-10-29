@@ -14,7 +14,11 @@
  * verbatim with a v1 digest over THAT FILE's pages
  * (`VolumeMetadata.ocr_provenance`), and writes the block back onto a primary
  * it regenerates only when the pages written digest the same — so a carried
- * block is always true of the file it rides on.
+ * block is always true of the file it rides on. The block is the one bunko's
+ * precedence reads (`edited`, then `preserved`, then `ocr_engine`): an
+ * installed EDITED main keeps its `edited` block through a rename here, or a
+ * reader on another device would turn a person's text back into LEGACY OCR
+ * that a server upgrade replaces.
  *
  * Pure and worker-safe: the backup Worker builds primaries too.
  */
@@ -23,15 +27,29 @@ import type { Page } from '$lib/types';
 import { sha256Hex } from './mokuro-hash';
 import { getLayerPages } from './layer-store';
 
-/** One installed file's block and the digest of its pages (`v1:<hex>`). */
-export interface OcrProvenance {
+/**
+ * One installed file's block and the digest of its pages (`v1:<hex>`): a
+ * GENERATED file's `engine`, or an EDITED file's `edited` — never both.
+ */
+export type OcrProvenance = GeneratedProvenance | EditedProvenance;
+
+export interface GeneratedProvenance {
   /** The file's `ocr_engine`, verbatim (seal included when it had one). */
   engine: Record<string, unknown>;
+  edited?: never;
   /**
    * Seal v1 recomputed by this reader over the installed file's pages. Equal
-   * to `engine.seal` for a sealed block; for an unsealed (0.7.x) block it is
+   * to `engine.seal` for a sealed block whose seal still checks; otherwise
    * only this reader's reference for the carry check.
    */
+  digest: string;
+}
+
+export interface EditedProvenance {
+  /** The file's `edited` block, verbatim. */
+  edited: Record<string, unknown>;
+  engine?: never;
+  /** `v1:` + sha256 of `{"pages": <JCS pages>}` — this reader's reference only. */
   digest: string;
 }
 
@@ -48,7 +66,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export function isOcrProvenance(value: unknown): value is OcrProvenance {
   return (
     isPlainObject(value) &&
-    isPlainObject(value.engine) &&
+    isPlainObject(value.engine) !== isPlainObject(value.edited) &&
     typeof value.digest === 'string' &&
     SEAL_RE.test(value.digest)
   );
@@ -102,6 +120,11 @@ async function digestOf(input: string): Promise<string | undefined> {
   return hex ? `v1:${hex}` : undefined;
 }
 
+/** An EDITED entry's digest: the pages alone (an `edited` block is outside any seal). */
+function editedDigestInput(pagesJcs: string): string {
+  return `{"pages":${pagesJcs}}`;
+}
+
 /**
  * Seal v1 of this block over these pages, or undefined when it cannot be
  * computed (no `crypto.subtle`, a non-finite number).
@@ -132,7 +155,7 @@ export function sealOf(engine: unknown): string | undefined {
 export async function provenanceFromParsed(
   engine: unknown,
   pages: unknown[]
-): Promise<OcrProvenance | undefined> {
+): Promise<GeneratedProvenance | undefined> {
   if (!isPlainObject(engine) || typeof engine.id !== 'string') return undefined;
   if (!Array.isArray(pages)) return undefined;
   const digest = await contentDigest(engine, pages);
@@ -140,15 +163,41 @@ export async function provenanceFromParsed(
 }
 
 /**
- * The block to write on a primary built from these pages: the first entry
- * whose digest the pages reproduce, verbatim — else undefined (the pages are
+ * The entry an installed file gives, by bunko's precedence: an `edited` object
+ * makes it EDITED (any `ocr_engine` left beside it is ignored, as bunko does —
+ * carrying it alone would pass a person's text off as model output); a
+ * `preserved` object makes it nobody's recipe, so nothing is recorded; else
+ * its `ocr_engine` (`provenanceFromParsed`). Every primary install goes
+ * through here.
+ */
+export async function provenanceOfFile(
+  blocks: { ocrEngine?: unknown; edited?: unknown; preserved?: unknown },
+  pages: unknown[]
+): Promise<OcrProvenance | undefined> {
+  if (!Array.isArray(pages)) return undefined;
+  if (isPlainObject(blocks.edited)) {
+    let digest: string | undefined;
+    try {
+      digest = await digestOf(editedDigestInput(canonicalJson(pages)));
+    } catch {
+      return undefined;
+    }
+    return digest ? { edited: blocks.edited, digest } : undefined;
+  }
+  if (isPlainObject(blocks.preserved)) return undefined;
+  return provenanceFromParsed(blocks.ocrEngine, pages);
+}
+
+/**
+ * The entry whose block goes on a primary built from these pages: the first
+ * (newest) whose digest the pages reproduce — else undefined (the pages are
  * not any installed file's, e.g. a person edited them). The pages are
  * canonicalized once; each entry costs one hash.
  */
-export async function carriedOcrEngine(
+export async function carriedProvenance(
   list: readonly OcrProvenance[] | undefined,
   pages: unknown[]
-): Promise<Record<string, unknown> | undefined> {
+): Promise<OcrProvenance | undefined> {
   const entries = (list ?? []).filter(isOcrProvenance);
   if (entries.length === 0 || !Array.isArray(pages)) return undefined;
   let pagesJcs: string;
@@ -160,13 +209,23 @@ export async function carriedOcrEngine(
   for (const entry of entries) {
     let digest: string | undefined;
     try {
-      digest = await digestOf(sealInput(entry.engine, pagesJcs));
+      digest = await digestOf(
+        entry.engine ? sealInput(entry.engine, pagesJcs) : editedDigestInput(pagesJcs)
+      );
     } catch {
       continue;
     }
-    if (digest === entry.digest) return entry.engine;
+    if (digest === entry.digest) return entry;
   }
   return undefined;
+}
+
+/** The `ocr_engine` a primary built from these pages carries, if any (`carriedProvenance`). */
+export async function carriedOcrEngine(
+  list: readonly OcrProvenance[] | undefined,
+  pages: unknown[]
+): Promise<Record<string, unknown> | undefined> {
+  return (await carriedProvenance(list, pages))?.engine;
 }
 
 /**
@@ -190,18 +249,27 @@ const ORIGINAL_LAYER = 'original';
  * `edited.base_seal` for an edit-kind layer file: the seal of the generated
  * main sidecar the edits sit on — the `original` snapshot's pages for an
  * edited primary, else the primary's own — when those pages are an installed
- * sealed file's (`carriedOcrEngine`). Null when the base was never sealed (a
- * 0.7.x file, a local import) or is not known. Worker-safe: takes the
- * connection; reads nothing when the row records no block.
+ * sealed file's (`carriedProvenance`) AND that seal checks over them. Null
+ * when the base was never sealed (a 0.7.x file, a local import), carries a
+ * stale seal (a line corrected and the seal kept), is an EDITED file, or is
+ * not known: a stale seal named here could match a main carrying the same
+ * stale seal and pass for an unchanged base. Worker-safe: takes the
+ * connection; reads nothing when the row records no sealed block.
  */
 export async function editBaseSeal(
   db: Dexie,
   volume: { volume_uuid: string; ocr_edited_at?: string; ocr_provenance?: OcrProvenance[] }
 ): Promise<string | null> {
-  if (!(volume.ocr_provenance ?? []).some(isOcrProvenance)) return null;
+  if (!(volume.ocr_provenance ?? []).some((e) => isOcrProvenance(e) && sealOf(e.engine))) {
+    return null;
+  }
   const pages: Page[] | null | undefined = volume.ocr_edited_at
     ? await getLayerPages(db, volume.volume_uuid, ORIGINAL_LAYER)
     : (await db.table('volume_ocr').get(volume.volume_uuid))?.pages;
   if (!pages) return null;
-  return sealOf(await carriedOcrEngine(volume.ocr_provenance, pages)) ?? null;
+  const entry = await carriedProvenance(volume.ocr_provenance, pages);
+  // The digest is this reader's own over the base pages: the seal is true of
+  // them only when the two agree.
+  const seal = sealOf(entry?.engine);
+  return seal && seal === entry?.digest ? seal : null;
 }

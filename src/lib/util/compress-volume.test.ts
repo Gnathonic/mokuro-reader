@@ -20,7 +20,7 @@ import { parseSeriesFile } from '$lib/metadata/series-file';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { clearAllLayers, putLayerWithPages } from '$lib/catalog/layer-store';
-import { contentDigest } from '$lib/catalog/ocr-provenance';
+import { contentDigest, provenanceOfFile } from '$lib/catalog/ocr-provenance';
 import { RUNNER_OUTPUT_DOCUMENT, RUNNER_OUTPUT_SEAL } from '$lib/catalog/__fixtures__/seal-vector';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.
@@ -383,6 +383,32 @@ describe('the primary .mokuro carries its provenance', () => {
     const embedded = JSON.parse(await entryText(archive, 'Vol 1.mokuro'));
     expect('ocr_engine' in embedded).toBe(false);
     expect(embedded.edited.at).toBe('2026-10-01T00:00:00.000Z');
+  });
+
+  it('a volume installed from an EDITED main keeps `edited` through a rename, and no ocr_engine', async () => {
+    const block = {
+      by: 'mokuro-reader',
+      at: '2026-09-01T00:00:00.000Z',
+      base_sha256: 'b'.repeat(64),
+      base_seal: null
+    };
+    // Installed on this device from another device's edited main: no local edit.
+    await db.table('volumes').put({
+      ...volume,
+      mokuro_sha256: 'a'.repeat(64),
+      ocr_provenance: [
+        await provenanceOfFile({ ocrEngine: doc.ocr_engine, edited: block }, doc.pages)
+      ]
+    });
+    const sidecars = await generateVolumeSidecarsFromDb(
+      'volume-uuid',
+      { seriesTitle: 'Renamed', volumeTitle: 'Renamed 01' },
+      { cloud: true, editedFallbackToPrimary: true }
+    );
+    const main = JSON.parse(await sidecars.mokuro!.blob.text());
+    expect(main.edited).toEqual(block);
+    expect('ocr_engine' in main).toBe(false);
+    expect(main.volume).toBe('Renamed 01');
   });
 
   it('an unedited export and archive carry the block too', async () => {

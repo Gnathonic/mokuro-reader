@@ -138,6 +138,26 @@ describe('an OCR edit goes up as the edit layer, never as the main sidecar', () 
     expect(JSON.parse(await (originalCall[1] as Blob).text()).ocr_engine).toBeUndefined();
   });
 
+  it('no base_seal when the base block carries a seal its pages no longer check', async () => {
+    // bunko's edited-line vector: a line corrected, the seal kept. The reader's
+    // digest still matches its own record of the file, but the seal is stale.
+    const pages = (await db.volume_ocr.get('v1'))!.pages;
+    const sealedOver = structuredClone(pages);
+    sealedOver[0].blocks = [];
+    const stale = (await contentDigest({ id: 'hayai-nova', revision: 2 }, sealedOver))!;
+    const engine = { id: 'hayai-nova', revision: 2, seal: stale };
+    await db.volumes.update('v1', {
+      ocr_provenance: [(await provenanceFromParsed(engine, pages))!]
+    });
+
+    await persistPageEdit('v1', 1, pg('直した', 'q.png'));
+    await syncLayersFromListing(listing(), 'webdav');
+
+    const call = uploadFile.mock.calls.find((c) => c[0] === 'Series/Vol 1.edit.mokuro')!;
+    const json = JSON.parse(await (call[1] as Blob).text());
+    expect(json.edited).toMatchObject({ base_sha256: SHA, base_seal: null });
+  });
+
   it('pushes <Vol>.edit.mokuro with the edited block and no ocr_engine', async () => {
     await persistPageEdit('v1', 1, pg('直した', 'q.png'));
     await syncLayersFromListing(listing(), 'webdav');

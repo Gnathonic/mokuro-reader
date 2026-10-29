@@ -21,7 +21,7 @@ import {
   type CloudPrimaryOutcome
 } from './cloud-ocr-upgrade';
 import { isMokuroSha256, sha256Hex } from './mokuro-hash';
-import { provenanceFromParsed, type OcrProvenance } from './ocr-provenance';
+import { provenanceOfFile, type OcrProvenance } from './ocr-provenance';
 import { volumesForFoldedSeriesTitle } from './volumes-by-series';
 import { isVolumeInstalled } from './volume-state';
 
@@ -245,7 +245,7 @@ async function readSidecarBytes(
   if (!sha256) return null;
   const parsed = await parseMokuroFile(file);
   const pages = Array.isArray(parsed.pages) ? (parsed.pages as unknown as Page[]) : [];
-  const provenance = await provenanceFromParsed(parsed.ocrEngine, pages);
+  const provenance = await provenanceOfFile(parsed, pages);
   return {
     pages,
     version: typeof parsed.version === 'string' ? parsed.version : '',

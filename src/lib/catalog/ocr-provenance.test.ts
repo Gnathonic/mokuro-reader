@@ -3,9 +3,11 @@ import {
   addProvenance,
   canonicalJson,
   carriedOcrEngine,
+  carriedProvenance,
   contentDigest,
   isOcrProvenance,
   provenanceFromParsed,
+  provenanceOfFile,
   sealInput,
   sealOf,
   type OcrProvenance
@@ -176,9 +178,9 @@ describe('addProvenance', () => {
     let list = addProvenance(undefined, p(1));
     list = addProvenance(list, p(2));
     list = addProvenance(list, p(1));
-    expect(list.map((e) => e.engine.id)).toEqual(['e1', 'e2']);
+    expect(list.map((e) => e.engine?.id)).toEqual(['e1', 'e2']);
     for (const n of [3, 4, 5, 6]) list = addProvenance(list, p(n));
-    expect(list.map((e) => e.engine.id)).toEqual(['e6', 'e5', 'e4', 'e3']);
+    expect(list.map((e) => e.engine?.id)).toEqual(['e6', 'e5', 'e4', 'e3']);
   });
 
   it('adds nothing for an undefined entry and drops malformed rows', () => {
@@ -186,5 +188,72 @@ describe('addProvenance', () => {
     expect(addProvenance([{ bad: true } as unknown as OcrProvenance, p(1)], undefined)).toEqual([
       p(1)
     ]);
+  });
+});
+
+describe('provenanceOfFile (bunko precedence: edited, preserved, ocr_engine)', () => {
+  const EDITED = {
+    by: 'mokuro-reader',
+    at: '2026-10-01T00:00:00.000Z',
+    base_sha256: 'a'.repeat(64),
+    base_seal: null
+  };
+
+  it('a GENERATED file gives the same entry as provenanceFromParsed', async () => {
+    const doc = runnerOutput();
+    expect(await provenanceOfFile({ ocrEngine: doc.ocr_engine }, doc.pages)).toEqual({
+      engine: doc.ocr_engine,
+      digest: RUNNER_OUTPUT_SEAL
+    });
+  });
+
+  it('an EDITED file keeps its `edited` block, never the `ocr_engine` left beside it', async () => {
+    const doc = runnerOutput();
+    const p = await provenanceOfFile({ ocrEngine: doc.ocr_engine, edited: EDITED }, doc.pages);
+    expect(p?.edited).toEqual(EDITED);
+    expect(p && 'engine' in p).toBe(false);
+    expect(p?.digest).toMatch(/^v1:[0-9a-f]{64}$/);
+    expect(isOcrProvenance(p)).toBe(true);
+  });
+
+  it('a PRESERVED file records nothing: its leftover recipe is nobody’s', async () => {
+    const doc = runnerOutput();
+    const preserved = { by: 'mokuro-bunko', reason: 'generation-upgrade' };
+    expect(await provenanceOfFile({ ocrEngine: doc.ocr_engine, preserved }, doc.pages)).toBe(
+      undefined
+    );
+  });
+
+  it('an `edited` that is not an object does not count', async () => {
+    const doc = runnerOutput();
+    expect(await provenanceOfFile({ ocrEngine: doc.ocr_engine, edited: 'yes' }, doc.pages)).toEqual(
+      { engine: doc.ocr_engine, digest: RUNNER_OUTPUT_SEAL }
+    );
+  });
+
+  it('an entry is one block or the other, never both', () => {
+    expect(
+      isOcrProvenance({ engine: { id: 'x' }, edited: EDITED, digest: RUNNER_OUTPUT_SEAL })
+    ).toBe(false);
+    expect(isOcrProvenance({ digest: RUNNER_OUTPUT_SEAL })).toBe(false);
+  });
+
+  it('carries the `edited` block for the same pages, keys reordered; nothing once they change', async () => {
+    const doc = runnerOutput();
+    const p = (await provenanceOfFile({ edited: EDITED }, doc.pages))!;
+    expect(await carriedProvenance([p], reverseKeys(doc.pages) as unknown[])).toBe(p);
+    expect(await carriedOcrEngine([p], doc.pages)).toBeUndefined();
+    const changed = structuredClone(doc.pages) as any[];
+    changed[0].blocks[0].lines[0] = '橋を渡った';
+    expect(await carriedProvenance([p], changed)).toBeUndefined();
+  });
+
+  it('the newest entry for the pages wins between an `edited` and an `ocr_engine` file', async () => {
+    const doc = runnerOutput();
+    const gen = (await provenanceOfFile({ ocrEngine: doc.ocr_engine }, doc.pages))!;
+    const ed = (await provenanceOfFile({ edited: EDITED }, doc.pages))!;
+    expect(await carriedProvenance(addProvenance([gen], ed), doc.pages)).toBe(ed);
+    // The edited block was removed and the sealed file installed since.
+    expect(await carriedProvenance(addProvenance([ed], gen), doc.pages)).toBe(gen);
   });
 });

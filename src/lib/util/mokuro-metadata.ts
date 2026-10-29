@@ -1,5 +1,5 @@
 import type { VolumeMetadata } from '$lib/types';
-import { carriedOcrEngine } from '$lib/catalog/ocr-provenance';
+import { carriedProvenance } from '$lib/catalog/ocr-provenance';
 
 /**
  * The .mokuro JSON the app writes (sidecars, CBZ-embedded, exports).
@@ -23,8 +23,12 @@ export interface MokuroMetadata {
    * whose pages these are (`$lib/catalog/ocr-provenance`).
    */
   ocr_engine?: Record<string, unknown>;
-  /** Human corrections (bunko design 0.8 D4) — see {@link buildLayerMokuroMetadata}. */
-  edited?: MokuroEditedBlock;
+  /**
+   * Human corrections (bunko design 0.8 D4) — see {@link buildLayerMokuroMetadata}.
+   * On a primary, either this reader's own block or an installed EDITED file's,
+   * carried verbatim.
+   */
+  edited?: MokuroEditedBlock | Record<string, unknown>;
 }
 
 /**
@@ -102,11 +106,12 @@ export interface BuildPrimaryMokuroMetadataOptions extends BuildMokuroMetadataOp
  * The volume's PRIMARY `.mokuro` — every primary or main sidecar the app
  * writes goes through here (layers: `buildLayerMokuroMetadata`).
  *
- * Carries `ocr_engine` exactly when these pages reproduce the digest of an
- * installed file's pages (`carriedOcrEngine`): a rename or re-serialization
- * keeps the block (and its seal still checks, names being outside it), an
- * edit drops it. With `markEdited`, an edited volume whose pages carry no
- * block gets the `edited` block instead. Never both. Keys in Bunko's order:
+ * Carries the installed file's block (`ocr_engine`, or an EDITED file's
+ * `edited`) exactly when these pages reproduce the digest of that file's
+ * pages (`carriedProvenance`): a rename or re-serialization keeps the block
+ * (and a seal still checks, names being outside it), an edit drops it. With
+ * `markEdited`, an edited volume whose pages carry no block gets a fresh
+ * `edited` block instead. Never both. Keys in Bunko's order:
  * version, title, title_uuid, volume, volume_uuid, the block, pages, chars,
  * spine_width.
  */
@@ -115,11 +120,13 @@ export async function buildPrimaryMokuroMetadata(
   pages: unknown[],
   opts: BuildPrimaryMokuroMetadataOptions = {}
 ): Promise<MokuroMetadata> {
-  const ocrEngine = await carriedOcrEngine(volume.ocr_provenance, pages);
+  const carried = await carriedProvenance(volume.ocr_provenance, pages);
+  const ocrEngine = carried?.engine;
   const edited =
-    !ocrEngine && opts.markEdited && volume.ocr_edited_at
+    carried?.edited ??
+    (!carried && opts.markEdited && volume.ocr_edited_at
       ? editedBlock(volume.ocr_edited_at, volume.mokuro_sha256, opts.baseSeal)
-      : undefined;
+      : undefined);
   const meta: MokuroMetadata = {
     version: volume.mokuro_version,
     title: opts.seriesTitle ?? volume.series_title,

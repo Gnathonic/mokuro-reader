@@ -21,7 +21,7 @@ import type {
 } from './types';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
-import { provenanceFromParsed, type OcrProvenance } from '$lib/catalog/ocr-provenance';
+import { provenanceOfFile, type OcrProvenance } from '$lib/catalog/ocr-provenance';
 import {
   extractSeriesName,
   extractTitlesFromPath,
@@ -48,6 +48,10 @@ export interface ParsedMokuro {
   spineWidth?: number;
   /** The file's `ocr_engine` block, verbatim, when it is a plain object (`ocr-provenance.ts`). */
   ocrEngine?: Record<string, unknown>;
+  /** The file's `edited` block (a person's text), verbatim, when it is a plain object. */
+  edited?: Record<string, unknown>;
+  /** The file's `preserved` block (bunko's keepsake of a replaced main), when it is a plain object. */
+  preserved?: Record<string, unknown>;
 }
 
 /**
@@ -189,7 +193,9 @@ export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
     pages: obj.pages as MokuroPage[],
     chars: (obj.chars as number) ?? 0,
     ...(obj.spine_width != null && { spineWidth: obj.spine_width as number }),
-    ...(isPlainObject(obj.ocr_engine) ? { ocrEngine: obj.ocr_engine } : {})
+    ...(isPlainObject(obj.ocr_engine) ? { ocrEngine: obj.ocr_engine } : {}),
+    ...(isPlainObject(obj.edited) ? { edited: obj.edited } : {}),
+    ...(isPlainObject(obj.preserved) ? { preserved: obj.preserved } : {})
   };
 }
 
@@ -495,13 +501,14 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
   // these exact bytes, whichever path delivered them — an imported file, an
   // archive entry, a cloud sidecar (already gunzipped), a deep link's fetch.
   let mokuroSha256: string | undefined;
-  // What the file says made its OCR, with a digest of the FILE's pages: taken
-  // before the image matching below remaps any `img_path`.
+  // What the file says made its OCR (or that a person did), with a digest of
+  // the FILE's pages: taken before the image matching below remaps any
+  // `img_path`.
   let ocrProvenance: OcrProvenance | undefined;
   if (mokuroFile) {
     mokuroData = await parseMokuroFile(mokuroFile);
     mokuroSha256 = await sha256Hex(mokuroFile);
-    ocrProvenance = await provenanceFromParsed(mokuroData.ocrEngine, mokuroData.pages);
+    ocrProvenance = await provenanceOfFile(mokuroData, mokuroData.pages);
     volumeInfo = {
       series: mokuroData.series,
       volume: mokuroData.volume

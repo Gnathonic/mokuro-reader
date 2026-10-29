@@ -89,8 +89,9 @@ export interface VolumeMetadata {
   mokuro_sha256_cloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
 
   /**
-   * The `ocr_engine` blocks of the files this volume's primary was installed
-   * or learned from, each with a seal v1 digest of THAT file's pages
+   * The provenance blocks (`ocr_engine`, or an EDITED file's `edited`) of the
+   * files this volume's primary was installed or learned from, each with a
+   * digest of THAT file's pages
    * (`$lib/catalog/ocr-provenance`), newest first, at most 4. Every primary
    * install records its file's block (or clears the list); the OCR upgrade
    * also learns one when a file only re-serializes OCR the volume has

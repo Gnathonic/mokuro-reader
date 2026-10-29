@@ -979,6 +979,26 @@ describe('OCR provenance (ocr_engine) flows from the download to the row', () =>
     ]);
   });
 
+  it('an EDITED main is learned as `edited`; the ocr_engine left in it is not recorded', async () => {
+    await installVolume(['あ', 'い'], { mokuro_sha256: 'f'.repeat(64) });
+    const edited = { by: 'mokuro-reader', at: '2026-10-01T00:00:00.000Z', base_sha256: null };
+    const body = JSON.stringify({
+      ...JSON.parse(mokuro(['か', 'き'])),
+      ocr_engine: ENGINE,
+      edited
+    });
+    listSidecar('Vol 1', body);
+    await cacheIndex([{ mokuro_sha256: await hashOf(body) }]);
+
+    await pass();
+
+    expect(await primaryTexts()).toEqual(['か', 'き']);
+    const list = (await db.volumes.get('vol-1'))!.ocr_provenance!;
+    expect(list).toHaveLength(1);
+    expect(list[0].edited).toEqual(edited);
+    expect('engine' in list[0]).toBe(false);
+  });
+
   it('a file without a block leaves the list as it was', async () => {
     await installVolume(['あ', 'い'], {
       mokuro_sha256: 'f'.repeat(64),
