@@ -19,6 +19,7 @@ function formatVolumeName(
 // Reading speed estimation constants
 export const SESSION_DATA_HOURS = 4; // Hours of page-level session data to keep/use
 export const ESTIMATION_HOURS = 8; // Total hours of reading data to use for speed estimates
+const MAX_PAIR_CHARS_PER_MINUTE = 1000;
 
 /**
  * Calculate statistics from page turns
@@ -61,6 +62,13 @@ function calculateTurnStats(
     // volume to page 1 mid-history, making that boundary a normal event.
     // Counting it would subtract characters the user really did read.
     if (charsOnPage < 0) continue;
+
+    // Nor is a pair faster than anyone reads (the cap `calculateReadingSpeed`
+    // applies per volume): a jump ahead, or — since the sync merge keeps every
+    // device's turns — the seam where another device's turn lands between two
+    // of this one's. Counted, one such pair pushed the whole volume over the
+    // cap and its real reading was thrown away with it.
+    if (duration <= 0 || (charsOnPage / duration) * 60 > MAX_PAIR_CHARS_PER_MINUTE) continue;
 
     // Accumulate time and chars for this page
     const current = timePerPage.get(prevPage) || { duration: 0, chars: 0 };

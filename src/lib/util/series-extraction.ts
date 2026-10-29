@@ -2,7 +2,7 @@
  * Shared utilities for extracting series and volume information from paths/filenames.
  *
  * This module consolidates the sophisticated parsing logic that was previously
- * duplicated across image-only-fallback.ts and processing.ts.
+ * duplicated across the import paths.
  */
 
 /**
@@ -94,7 +94,7 @@ const SUSPECT_PARENT_NAMES = new Set([
 /**
  * Checks if a folder name looks like a generic container rather than a series name
  */
-function isSuspectParentFolder(name: string): boolean {
+export function isSuspectParentFolder(name: string): boolean {
   const normalized = name.toLowerCase().trim();
 
   // Check against blocklist
@@ -357,6 +357,63 @@ export function extractTitlesFromPath(path: string): { seriesTitle: string; volu
     seriesTitle,
     volumeTitle: stripMetadata(stripAuthorPrefix(leafFolder))
   };
+}
+
+/**
+ * Where an image-only volume sits, by literal folder names (#285): its own
+ * folder or archive name (extension dropped) and the folder or archive that
+ * holds it — the IMMEDIATE parent, whatever it is called ("Downloads"
+ * included). No cleanup, no guessing. A volume with no parent (a root-level
+ * folder or archive) has `hasParent: false` and names the series after itself.
+ *
+ * Adjacent identical segments count once: an archive that wraps its pages in a
+ * folder of its own name (`Vol 1.cbz` → `Vol 1/001.jpg`) is one volume level,
+ * not a "Vol 1" series. Filesystem-safety sanitizing still happens at save time
+ * (`storedTitleSegment`), like every import.
+ *
+ *   "Chained Soldier (Semi-Color)/01"   -> { "Chained Soldier (Semi-Color)", "01" }
+ *   "Killing Bites/Killing Bites 01"    -> { "Killing Bites", "Killing Bites 01" }
+ *   "Downloads/Gleipnir 01"             -> { "Downloads", "Gleipnir 01" }
+ *   "Vol 03 extra.cbz"                  -> { "Vol 03 extra", "Vol 03 extra" }, no parent
+ */
+export function extractFolderTitlesFromPath(path: string): {
+  seriesTitle: string;
+  volumeTitle: string;
+  hasParent: boolean;
+} {
+  const parts = path
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((p) => p.length > 0 && p !== '.');
+  if (parts.length > 0) {
+    parts[parts.length - 1] = parts[parts.length - 1].replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+  }
+  const segments = parts.filter((p, i) => p.length > 0 && (i === 0 || p !== parts[i - 1]));
+
+  if (segments.length === 0) {
+    return { seriesTitle: 'Unknown', volumeTitle: 'Unknown', hasParent: false };
+  }
+  const volumeTitle = segments[segments.length - 1];
+  const hasParent = segments.length > 1;
+  const seriesTitle = hasParent ? segments[segments.length - 2] : volumeTitle;
+  return { seriesTitle, volumeTitle, hasParent };
+}
+
+/**
+ * Is `name` only a volume number ("01", "v1", "Vol 02", "第3巻")? Such a name
+ * says nothing about which series it belongs to.
+ */
+export function isBareVolumeName(name: string): boolean {
+  return extractBareVolumeNumber(name) !== null;
+}
+
+/**
+ * The series a volume's own name carries ("Killing Bites v01" → "Killing
+ * Bites"), or null when the name has no volume number to split it at.
+ */
+export function seriesFromVolumeName(name: string): string | null {
+  const info = extractVolumeInfoFromName(name);
+  return info ? info.seriesName.trim().replace(/\s+/g, ' ') : null;
 }
 
 /**

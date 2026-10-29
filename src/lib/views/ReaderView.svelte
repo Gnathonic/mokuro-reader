@@ -9,6 +9,7 @@
   import { routeParams } from '$lib/util/hash-router';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
+  import { foregroundSync } from '$lib/util/sync/foreground-sync';
 
   let volumeId = $derived($routeParams.volume || '');
 
@@ -81,6 +82,10 @@
   });
 
   onMount(() => {
+    // Pull other devices' progress before the first page turn here can make
+    // this device's (possibly stale) page the newest.
+    foregroundSync.request();
+
     // Set up activity tracker timeout
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
 

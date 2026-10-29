@@ -7,7 +7,7 @@
   import Snackbar from '$lib/components/Snackbar.svelte';
   import ConfirmationPopup from '$lib/components/ConfirmationPopup.svelte';
   import ExtractionModal from '$lib/components/ExtractionModal.svelte';
-  import ImageOnlyImportModal from '$lib/components/ImageOnlyImportModal.svelte';
+  import ImageOnlyReviewDialog from '$lib/components/ImageOnlyReviewDialog.svelte';
   import ImportMismatchModal from '$lib/components/ImportMismatchModal.svelte';
   import WebDAVErrorModal from '$lib/components/WebDAVErrorModal.svelte';
   import MissingFilesModal from '$lib/components/MissingFilesModal.svelte';
@@ -22,6 +22,7 @@
   import MigrationBlocker from '$lib/components/MigrationBlocker.svelte';
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
+  import { foregroundSync } from '$lib/util/sync/foreground-sync';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
@@ -30,6 +31,12 @@
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
+  import { historyDb } from '$lib/reading-history/history-db';
+  import {
+    detectDeviceFacts,
+    readDeviceEnv,
+    touchDeviceRecord
+  } from '$lib/reading-history/device-facts';
   import { initGoalsLifecycle } from '$lib/goals';
   import { cleanupLegacyEngineCredentials } from '$lib/settings/engine-credentials-cleanup';
   import { get } from 'svelte/store';
@@ -48,6 +55,8 @@
   let { children }: Props = $props();
 
   inject({ mode: dev ? 'development' : 'production' });
+
+  onMount(() => foregroundSync.listen());
 
   onMount(() => {
     return initGoalsLifecycle();
@@ -99,6 +108,13 @@
 
     // Start background thumbnail generation once startup checks are complete
     startThumbnailProcessing();
+
+    // Reading history: create/refresh this device's facts. Never blocks start-up.
+    touchDeviceRecord(
+      historyDb(),
+      detectDeviceFacts(readDeviceEnv()),
+      new Date().toISOString()
+    ).catch((error) => console.warn('[reading-history] device record failed:', error));
 
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')
@@ -160,7 +176,7 @@
     <Snackbar />
     <ConfirmationPopup />
     <ExtractionModal />
-    <ImageOnlyImportModal />
+    <ImageOnlyReviewDialog />
     <ImportMismatchModal />
     <WebDAVErrorModal />
     <MissingFilesModal />

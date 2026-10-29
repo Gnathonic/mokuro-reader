@@ -24,8 +24,12 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
 }));
 
 import { db } from '$lib/catalog/db';
-import type { ControlFileResult } from '$lib/util/sync/provider-interface';
-import { resetCloudBunkoMarkersForTest } from './cloud-bunko-marker';
+import type { ControlFileResult, SyncProvider } from '$lib/util/sync/provider-interface';
+import {
+  cloudBunkoStatus,
+  refreshCloudBunkoMarker,
+  resetCloudBunkoMarkersForTest
+} from './cloud-bunko-marker';
 import { markVolumeShown, serverOcrQueueStatus, volumeQueueKey } from './server-ocr-pending';
 import {
   QueuePoller,
@@ -355,6 +359,31 @@ describe('cloudSourceFor (marker, then the holder’s queue file)', () => {
     });
     if (again === 'not-modified' || again === 'unavailable') throw new Error(String(again));
     expect(again.file?.volumes).toHaveLength(1);
+  });
+
+  it('shares the marker etag with every other marker reader of the scope', async () => {
+    const c = cloudProvider();
+    getActiveProvider.mockReturnValue(c.provider);
+    c.files['.mokuro-bunko.json'] = nodes({ id: 'm1', etag: '1', body: markerBody() });
+    c.files['.mokuro-queue.json'] = nodes({ id: 'q1', etag: '1', body: queueBody() });
+    // Another reader (the dedup pass) read the marker first.
+    await refreshCloudBunkoMarker(c.provider as unknown as SyncProvider);
+    await cloudSourceFor('google-drive').read({ etag: null, file: null });
+    expect(c.readControlFile).toHaveBeenNthCalledWith(2, '.mokuro-bunko.json', {
+      ifNoneMatch: 'm1=1'
+    });
+  });
+
+  it('a failed marker read backs the poller off, and keeps the last verdict', async () => {
+    const c = cloudProvider();
+    getActiveProvider.mockReturnValue(c.provider);
+    c.files['.mokuro-bunko.json'] = nodes({ id: 'm1', etag: '1', body: markerBody() });
+    c.files['.mokuro-queue.json'] = nodes({ id: 'q1', etag: '1', body: queueBody() });
+    const source = cloudSourceFor('google-drive');
+    await source.read({ etag: null, file: null });
+    c.readControlFile.mockRejectedValueOnce(new Error('offline'));
+    await expect(source.read({ etag: null, file: null })).rejects.toThrow();
+    expect(cloudBunkoStatus('google-drive')?.fresh).toBe(true);
   });
 
   it('is unavailable once its provider is no longer the connected one', async () => {

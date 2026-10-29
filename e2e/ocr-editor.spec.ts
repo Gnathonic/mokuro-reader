@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * The in-reader OCR editor against the REAL app: a seeded one-page volume is
@@ -15,8 +16,7 @@ const ORIGINAL_BLOCK = { box: [250, 50, 310, 250], vertical: true, font_size: 30
 async function seedVolume(page: Page, opts: { pages?: number; view?: 'single' | 'dual' } = {}) {
   const pageCount = opts.pages ?? 1;
   const view = opts.view ?? 'single';
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, ORIGINAL_BLOCK, pageCount, view }) => {
       const { db } = await import('/src/lib/catalog/db.ts');

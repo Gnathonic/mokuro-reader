@@ -25,6 +25,8 @@ import {
   VolumeData,
   archiveAndResetVolumes,
   clearVolumes,
+  deleteVolume,
+  initializeVolume,
   enrichAllOrphanedVolumes,
   isOrphanedVolumeData,
   parseVolumesFromJson,
@@ -385,5 +387,44 @@ describe('VolumeData.settings.ocrLayer', () => {
       new VolumeData({ settings: { ocrLayer: 3 as unknown as string } }).settings.ocrLayer
     ).toBeUndefined();
     expect(new VolumeData({}).toJSON().settings).toBeUndefined();
+  });
+});
+
+describe('VolumeData.forgotAt', () => {
+  beforeEach(() => clearVolumes());
+
+  it('round-trips through the synced JSON', () => {
+    const json = new VolumeData({ forgotAt: '2026-10-05T18:00:00.000Z' }).toJSON();
+    expect(json.forgotAt).toBe('2026-10-05T18:00:00.000Z');
+    expect(new VolumeData(json).forgotAt).toBe('2026-10-05T18:00:00.000Z');
+  });
+
+  it('drops a junk value', () => {
+    expect(new VolumeData({ forgotAt: 'not a date' }).forgotAt).toBeUndefined();
+    expect(new VolumeData({}).toJSON()).not.toHaveProperty('forgotAt');
+  });
+
+  it('opening a volume whose stats were forgotten remembers when', () => {
+    updateProgress('vol-f', 40, 4000);
+    deleteVolume('vol-f');
+    const deletedOn = get(volumesWithTrash)['vol-f'].deletedOn;
+
+    initializeVolume('vol-f');
+
+    const record = get(volumesWithTrash)['vol-f'];
+    expect(record.deletedOn).toBeUndefined();
+    expect(record.forgotAt).toBe(deletedOn);
+  });
+
+  it('a later forget moves the horizon on; reading never clears it', () => {
+    initializeVolume('vol-g');
+    expect(get(volumesWithTrash)['vol-g'].forgotAt).toBeUndefined();
+    updateProgress('vol-g', 3, 30);
+    deleteVolume('vol-g');
+    initializeVolume('vol-g');
+    const horizon = get(volumesWithTrash)['vol-g'].forgotAt;
+    expect(horizon).toBeDefined();
+    updateProgress('vol-g', 4, 40);
+    expect(get(volumesWithTrash)['vol-g'].forgotAt).toBe(horizon);
   });
 });

@@ -32,6 +32,13 @@ const ROOT_CONFIG_FILENAMES = new Set([
   CATALOG_FILE_NAME
 ]);
 
+/**
+ * Root files whose sync downloads EVERY listed copy and folds them into one
+ * (`downloadVolumeDataFile`, `downloadGoalsFile`), so two copies converge
+ * losslessly at the next sync. profiles.json is not one: sync reads one copy.
+ */
+const MERGED_ACROSS_COPIES = new Set(['volume-data.json', GOALS_FILE_NAME]);
+
 // series-metadata.json is deliberately NOT listed: it was retired on 2026-08-23
 // before ever shipping (facts moved to <Series>/series.json, reading state to
 // volume-data.json's `series` section). A stale copy may still sit in a folder
@@ -62,6 +69,10 @@ export function isRootConfigFile(basename: string): boolean {
   return ROOT_CONFIG_FILENAMES.has(basename.toLowerCase());
 }
 
+export function syncMergesEveryCopy(basename: string): boolean {
+  return MERGED_ACROSS_COPIES.has(basename.toLowerCase());
+}
+
 /**
  * The two CONTROL files a cloud-direct mokuro-bunko keeps at the library root
  * (`mokuro-reader/`): its OCR queue and its liveness marker / lease. They are
@@ -78,6 +89,15 @@ export const BUNKO_MARKER_NAME = '.mokuro-bunko.json';
 /** Is this basename one of Bunko's control files? */
 export function isBunkoControlFile(basename: string): boolean {
   return basename === QUEUE_FILE_NAME || basename === BUNKO_MARKER_NAME;
+}
+
+/**
+ * Must a folder merge keep EVERY copy of this file rather than trash the older?
+ * Sync folds every copy of the merged root files into one, and Bunko reads
+ * every copy of its control files (newest wins there, not here).
+ */
+export function dedupKeepsEveryCopy(basename: string): boolean {
+  return syncMergesEveryCopy(basename) || isBunkoControlFile(basename);
 }
 
 export function isSyncableFile(path: string): boolean {

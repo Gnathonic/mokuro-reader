@@ -21,12 +21,14 @@ interface Entry {
 }
 
 const entries = new Map<Blob, Entry>();
+const blobsByUrl = new Map<string, Blob>();
 
 export function acquireBlobUrl(blob: Blob): string {
   let entry = entries.get(blob);
   if (!entry) {
     entry = { url: URL.createObjectURL(blob), refs: 0, timer: null };
     entries.set(blob, entry);
+    blobsByUrl.set(entry.url, blob);
   }
   if (entry.timer) {
     clearTimeout(entry.timer);
@@ -43,5 +45,15 @@ export function releaseBlobUrl(blob: Blob): void {
     if (entry.refs > 0) return;
     URL.revokeObjectURL(entry.url);
     entries.delete(blob);
+    blobsByUrl.delete(entry.url);
   }, BLOB_URL_GRACE_MS);
+}
+
+/**
+ * The Blob behind a live URL from {@link acquireBlobUrl}, or null. A page
+ * handed only a URL (paged mode's preloaded `cachedUrl`, before the image
+ * cache has its File to pass along) can still reach its image's identity.
+ */
+export function blobForUrl(url: string): Blob | null {
+  return blobsByUrl.get(url) ?? null;
 }

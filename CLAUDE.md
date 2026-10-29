@@ -423,6 +423,16 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   Every provider's `getStatus()` folds it in (`withCloudBunkoStatus`):
   `serverCompilesMetadata = reported || anyMarkerFresh`, and the provider
   manager republishes on every verdict change and at expiry.
+  Marker v2 (bunko 0.8) adds `per_user_files`, `curated` and `dedup` beside
+  `bunko_version`, all optional (absent = '' / [] / false; a list with a
+  non-string entry reads as []). They reach `cloudBunko.holder` from the
+  top-ranked FRESH marker only; records stored before v2 load with those
+  defaults. Nothing gates on them yet. `cloudBunkoMergesDuplicates(scope)` is
+  the holder's `dedup`. Read the marker through `refreshCloudBunkoMarker`:
+  one If-None-Match etag per scope, shared by every caller, and one read in
+  flight per scope that concurrent callers await. The etag moves only after
+  its nodes are recorded (else a second caller is answered not-modified
+  against records that are not there yet); a clear voids a read in flight.
 - `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
   queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
   `instance_id` names the top-ranked fresh marker. The cloud poller keeps
@@ -431,6 +441,13 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   truncated list is waiting), and then relists (the hook `+layout.svelte`
   sets), runs the OCR upgrade pass and pulls layers — never
   `pullCompletedVolume`. Cloud uploads are watched while a marker is fresh.
+- Folder dedup keeps EVERY copy of both control files when duplicate roots
+  merge (`dedupKeepsEveryCopy`, beside the merged root files): trashing the
+  older one would pull a marker or queue out from under a running Bunko.
+- MEGA feeds control-file listeners from sc events AND from full tree loads
+  (`refreshTree`, incl. the sc outage recovery): a load that changes a
+  control file's handle set notifies that name. `endSession()` (logout and
+  expiry alike) drops the cached bodies and any pending notify.
 
 ### OCR upgrades
 
@@ -826,6 +843,21 @@ Rules:
 - **Hole patching.** Synced progress referencing a series with no local rows and
   no cached index pulls that series' `series.json` and materializes it
   (`hole-patch.ts`), so stats views never dangle.
+
+### Reading history (`mokuro_history`)
+
+A SEPARATE Dexie database (`src/lib/reading-history/`, spec
+`docs/superpowers/specs/2026-10-02-reading-history-event-log-design.md`), never
+tables in `mokuro_v3`. Every event is permanent and keyed `[device+seq]`:
+`device` is this install's random ID and `seq` is allocated inside the same
+IndexedDB rw transaction as the write (`appendEvent`), so two tabs never
+collide. Kinds: `page` (one per reader VIEW — whole pages on screen, raw
+uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
+tab has no view), `adjust` (volume editor time/chars edits), `restart`
+("restart series"), `forget` (delete stats). Record through `recordEvent`,
+which never throws and loads the DB module lazily (`volume-data.ts` imports
+it; many suites mock `dexie` bare). Phase 1 only writes: nothing reads the
+events yet, and `recentPageTurns`/`timeReadInMinutes` still drive every stat.
 
 ### Settings Architecture
 

@@ -331,6 +331,10 @@ describeContract('the lease marker as Bunko writes it', () => {
       epoch: m.epoch,
       claimed_at: m.claimed_at,
       compiles: m.compiles,
+      bunko_version: m.bunko_version,
+      per_user_files: m.per_user_files,
+      curated: m.curated,
+      dedup: m.dedup,
       changedAt: null
     };
   };
