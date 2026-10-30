@@ -226,8 +226,7 @@ async function library(): Promise<{ volumes: RigVolume[] }> {
 async function cardVolume(volumeId: string): Promise<VolumeMetadata | null> {
   const files = get(unifiedCloudManager.cloudFiles);
   const indexMap = await seriesIndexMap();
-  const row = await db.volumes.get(volumeId);
-  if (row) {
+  const decorated = (row: VolumeMetadata): VolumeMetadata => {
     if (!isMetadataOnly(row)) return row;
     const fields = cloudFieldsForRemovedVolume(
       indexCloudFilesByPath(files),
@@ -236,18 +235,22 @@ async function cardVolume(volumeId: string): Promise<VolumeMetadata | null> {
       indexCloudFilesByUuid(files, indexMap)
     );
     return { ...row, ...fields };
-  }
+  };
+  const row = await db.volumes.get(volumeId);
+  if (row) return decorated(row);
   const rows = await db.volumes.toArray();
   const placeholders = generatePlaceholders(files, rows, indexMap);
-  return (
-    placeholders.find((p) => p.volume_uuid === volumeId) ??
-    // Listed before its series index arrived (in the background, after a
-    // listing): the card then carried the id its path gives, the index's since.
-    placeholders.find(
-      (p) => generateDeterministicUUID(`${p.series_title}/${p.volume_title}`) === volumeId
-    ) ??
-    null
-  );
+  // Listed before its series index arrived (in the background, after a
+  // listing): the card then carried the id its path gives, the index's since.
+  const byPath = (v: VolumeMetadata) =>
+    generateDeterministicUUID(`${v.series_title}/${v.volume_title}`) === volumeId;
+  const placeholder =
+    placeholders.find((p) => p.volume_uuid === volumeId) ?? placeholders.find(byPath);
+  if (placeholder) return placeholder;
+  // ...and the app may since have made it a metadata-only row (a cover
+  // request, the series backfill), which shadows the placeholder.
+  const materialized = rows.find((r) => isMetadataOnly(r) && byPath(r));
+  return materialized ? decorated(materialized) : null;
 }
 
 /** The card's Download, to the end: resolves once the volume left the queue. */

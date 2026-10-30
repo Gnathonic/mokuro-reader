@@ -569,6 +569,38 @@ describe('reading', () => {
     expect(await opening).toEqual({ id: 'real-9' });
   });
 
+  // Once the index is in, the app may make the placeholder a metadata-only row of its
+  // own (a cover request, the series backfill), which shadows the placeholder. The
+  // card is that row now, under the real uuid, and still downloads.
+  it('open downloads a volume listed as a placeholder that has since become a row', async () => {
+    listed('Series B/Vol 9.cbz');
+    const listedId = (await install().library()).volumes.find((v) => v.series === 'Series B')!.id;
+    await db.volumes.put({
+      volume_uuid: 'real-9',
+      series_uuid: 's9',
+      series_title: 'Series B',
+      volume_title: 'Vol 9',
+      mokuro_version: '0.2.1',
+      page_count: 2,
+      character_count: 4,
+      page_char_counts: [2, 4],
+      metadata_only: true
+    });
+    expect((await install().library()).volumes.filter((v) => v.series === 'Series B')).toEqual([
+      expect.objectContaining({ id: 'real-9' })
+    ]);
+
+    const opening = install().open(listedId);
+    await vi.waitFor(() => expect(dq.queued).toHaveLength(1));
+    expect(dq.queued[0]).toMatchObject({
+      volume_uuid: 'real-9',
+      cloudFileId: 'Series B/Vol 9.cbz'
+    });
+    await finishDownload('real-9', true);
+    expect(await opening).toEqual({ id: 'real-9' });
+    expect(nav.toReader).toHaveBeenCalledWith('s9', 'real-9');
+  });
+
   it('open fails, and goes nowhere, when the download did not install the volume', async () => {
     listed('Series A/Vol 2.cbz');
     const opening = install().open('v2');
