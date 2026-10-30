@@ -507,7 +507,7 @@ on any other bunko (0.7.x, or one known only by its verified PUTs — there the
 file would land in the SHARED library and replace every account's
 corrections), and absent on plain storage and cloud-direct (the user's own
 file: push). `curatedPublish` is the identity's `permissions.curated.scope`
-(`all` / `owned` / `none`), or `all` from a fresh cloud marker that keeps a
+(`all` / `owned` / `none`), else `all` from a fresh cloud marker that keeps a
 curated layer; `canPublishCurated(status, seriesTitle)` reads it (`owned` =
 a series in `metadataPermissions.ownedSeries`; absent = no).
 
@@ -712,7 +712,8 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `positions.json`. A gate the provider set itself (a bunko server's `/me`)
   wins; with no fresh holder both stay undefined, so the folder is judged as
   plain storage. A holder's `curated` makes `curatedPublish` `all` (the cloud
-  folder's owner may publish the shared layer).
+  folder's owner may publish the shared layer) — unless the provider reported
+  its own, which wins the same way.
   `cloudBunkoMergesDuplicates(scope)` is the holder's `dedup`, and gates the
   reader's own folder dedup (see Duplicate folders). Read the marker through
   `refreshCloudBunkoMarker`:

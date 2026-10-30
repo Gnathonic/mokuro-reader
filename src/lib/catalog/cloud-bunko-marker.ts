@@ -498,9 +498,9 @@ export function cloudBunkoStatus(scope: string): CloudBunkoStatus | undefined {
  * from the lease HOLDER's rules — `historySync` needs bunko 0.8.0+ AND
  * `history/` per user, `positionsSync` needs `positions.json` per user; and
  * `curatedPublish` `all` while the fresh holder keeps a curated layer — a
- * cloud-direct reader is the folder's owner. A history/positions verdict the
- * provider set itself (a bunko server's `/me`) wins; with no fresh holder both
- * stay undefined, so the folder is judged as plain storage. `editLayerSync`
+ * cloud-direct reader is the folder's owner. A verdict the provider set
+ * itself (a bunko server's `/me`) wins, for all three; with no fresh holder
+ * they stay undefined, so the folder is judged as plain storage. `editLayerSync`
  * stays as reported (absent = push: the edit layer in the owner's own cloud is
  * the owner's file).
  */
@@ -518,7 +518,7 @@ export function withCloudBunkoStatus<T extends ProviderStatus>(scope: string, st
     positionsSync:
       status.positionsSync ??
       (holder ? holder.perUserFiles.includes(POSITIONS_FILE_NAME) : undefined),
-    ...(holder?.curated ? { curatedPublish: 'all' as const } : {})
+    curatedPublish: status.curatedPublish ?? (holder?.curated ? 'all' : undefined)
   };
 }
 
