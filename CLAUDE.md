@@ -442,8 +442,12 @@ keys sorted by UTF-16 code units, numbers as `JSON.stringify` spells them, no
 whitespace; a non-finite number means no seal (`canonicalJson`,
 `contentDigest`). Title, volume, uuids, `chars`, `spine_width`, `version`,
 `edited` and key order are outside it. The cross-language vectors live in
-bunko's `interop/contract/seal/*.json`; `runner-output` is hand-copied into
-`catalog/__fixtures__/seal-vector.ts` until the contract suite reads them all.
+bunko's `interop/contract/seal/*.json`, and `src/lib/interop/seal-vectors.test.ts`
+runs every one of them, plus an install → rename round trip (`processVolume`,
+`saveVolume`, `generateVolumeSidecarsFromDb`) whose regenerated main seals
+exactly when the installed file did. `runner-output` is also hand-copied into
+`catalog/__fixtures__/seal-vector.ts` for the unit tests that run without a
+Bunko checkout; the contract suite checks the copy is still Bunko's.
 
 ### OCR editor and layers
 
@@ -636,8 +640,10 @@ first (measured against the volume's OWN archive as the listing spells it, so a
 caller's DB spelling — composed, another case — still finds them), a leading UTF-8 BOM is
 tolerated on read, and every id the reader mints contains a letter
 (`slugifyLayerId`). The vectors both sides test against live in bunko's
-`interop/contract/sidecar-names.json` (hand-copied into `syncable-file.test.ts`
-for now) — and `src/lib/metadata/layer-sync.ts`
+`interop/contract/sidecar-names.json` — `src/lib/interop/sidecar-names.contract.test.ts`
+runs its `classify` and `layer_class` vectors (the reader's sweep is no pure
+function, so `sweep` is Bunko's alone), and a hand copy in `syncable-file.test.ts`
+runs without a checkout — and `src/lib/metadata/layer-sync.ts`
 syncs layers for rows that already exist locally (installed or metadata-only), newest-wins, no merge. A
 layer with no local record is filed by inferring its kind from the id alone:
 `original` stays `original`, `tr-<lang>` is a `translation`, a known engine id
@@ -1581,6 +1587,19 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 - Component tests use @testing-library/svelte
 - Run tests with `npm test`
 - Example test files: `src/lib/util/count-chars.test.ts`, `src/lib/components/Settings/__tests__/QuickAccess.test.ts`
+
+### Bunko contract (`src/lib/interop/`)
+
+- The reader's tests parse mokuro-bunko's own answers (`interop/contract/bunko/*.json`), record the
+  requests the reader sends (`reader/*.json`, which bunko replays), and run its seal and sidecar-name
+  vectors. They read a bunko checkout: `BUNKO_REPO=<checkout>`, else a sibling `mokuro-webdav-library`
+  found by looking around — which may be on an older branch than the one you are pairing with, so name
+  it. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into a failure.
+- `BUNKO_REPO=<checkout> READER_BLESS=1 npx vitest run src/lib/interop` rewrites the records, in that
+  checkout only. A changed request lands in bunko FIRST (commit the records there, run its
+  `contract_replay`), then in the reader.
+- Fixtures report `/login/api/me`'s `version` as the sentinel `"0.0.0"`, below 0.8.0: a gate derived
+  from a recorded identity (history) is OFF there. A test that needs it on sets it itself.
 
 ### E2E (Playwright)
 

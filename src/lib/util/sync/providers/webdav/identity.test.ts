@@ -496,6 +496,16 @@ function bunko(name: string): MockResponse {
   };
 }
 
+/**
+ * What a 0.8 Bunko's `/login/api/me` carries beside the account; the version
+ * is the fixtures' sentinel (`bunko-contract.test.ts`).
+ */
+const BUNKO_08 = {
+  serverVersion: '0.0.0',
+  perUserFiles: ['volume-data.json', 'profiles.json', 'goals.json', 'positions.json', 'history/'],
+  perUserLayers: ['edit']
+};
+
 describeContract('fetchServerIdentity on Bunko’s own answers', () => {
   it('returns authenticated with permissions on a 200 authenticated:true', async () => {
     const { impl } = mockFetch({ 'https://host/login/api/me': bunko('login-me-basic') });
@@ -509,9 +519,11 @@ describeContract('fetchServerIdentity on Bunko’s own answers', () => {
         canWriteProgress: true,
         canAddFiles: true,
         canModifyDelete: false,
-        metadata: { scope: 'owned', ownedSeries: [] }
+        metadata: { scope: 'owned', ownedSeries: [] },
+        curated: { scope: 'owned' }
       },
-      endpoint: 'https://host/login/api/me'
+      endpoint: 'https://host/login/api/me',
+      ...BUNKO_08
     });
   });
 
@@ -519,7 +531,7 @@ describeContract('fetchServerIdentity on Bunko’s own answers', () => {
     const { impl } = mockFetch({ 'https://host/login/api/me': bunko('login-me-anonymous') });
 
     const result = await fetchServerIdentity('https://host', undefined, undefined, impl);
-    expect(result).toEqual({ kind: 'anonymous' });
+    expect(result).toEqual({ kind: 'anonymous', ...BUNKO_08 });
   });
 
   it('returns invalid-credentials for Bunko’s 401 to a wrong password', async () => {
