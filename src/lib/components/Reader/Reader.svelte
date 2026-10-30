@@ -62,6 +62,7 @@
   import TextBoxPicker from './TextBoxPicker.svelte';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
+  import { recordPagedPageView } from '$lib/reader/paged-progress';
   import QuickActions from './QuickActions.svelte';
   import EditToolbar from './Edit/EditToolbar.svelte';
   import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
@@ -270,16 +271,7 @@
       // Set page direction BEFORE the page changes (for animations)
       pageDirection = pageClamped > page ? 'forward' : 'backward';
 
-      const { charCount } = getCharCount(pages, pageClamped);
-      updateProgress(
-        volume.volume_uuid,
-        pageClamped,
-        charCount,
-        pageClamped === pages.length || pageClamped === pages.length - 1
-      );
-
-      // Record activity for auto-timer and auto-sync
-      activityTracker.recordActivity();
+      recordPagedPageView(volume.volume_uuid, pageClamped, pages);
     }
   }
 

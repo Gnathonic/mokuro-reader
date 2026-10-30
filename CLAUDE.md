@@ -1622,6 +1622,25 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 - Fixtures report `/login/api/me`'s `version` as the sentinel `"0.0.0"`, below 0.8.0: a gate derived
   from a recorded identity (history) is OFF there. A test that needs it on sets it itself.
 
+### Interop rig driver (`src/lib/interop/rig-driver.ts`)
+
+- mokuro-bunko's rig (`cargo xtask interop rig`, `interop/e2e/rig/`) builds this reader with
+  `vite build --mode interop` and drives it through `globalThis.__mokuroInterop` (API v1: connect,
+  sync, library, progress, rename/delete, edit/Publish/layer selection, provider/control/history
+  status). `+layout.svelte` installs it only under `CLOUD_TEST_HOOKS`, and
+  `scripts/check-no-test-hooks.mjs` bans its names from the production bundle.
+- Each method calls the stores and functions the UI calls for that action (the cloud screen's
+  connect, `syncProgress`, the volume editor's rename, the card's delete, the paged page turn —
+  `reader/paged-progress.ts`, shared with `Reader.svelte` —, the editor persist path, the layer
+  picker's Publish). Add product logic to the app and call it from here, never the reverse.
+- `capabilities` names only what the branch really ships; a rig spec needing a missing one fails
+  unless bunko's `interop/pending-reader-caps.txt` lists it. Add a name with the cluster that ships it.
+- Before any page script the rig sets `globalThis.__mokuroInteropConfig` (v1: `bases`, `tokens`
+  for google and onedrive, `gapiShim`); `cloud-test-hooks.ts` reads it once at init. An injected
+  Google token replaces Google Identity Services in `token-manager.ts`, an injected OneDrive token
+  MSAL (no client id needed).
+- Local rig runs pass `--reader-dir <this worktree>`; `interop/reader.ref` must name a pushed commit.
+
 ### E2E (Playwright)
 
 - `npm run test:e2e` runs `e2e/*.spec.ts`. The config starts (or **silently reuses**) a dev server on port 5173.
