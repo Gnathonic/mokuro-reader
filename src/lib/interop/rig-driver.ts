@@ -34,7 +34,9 @@ import { deleteVolumeCompletely, importFiles } from '$lib/import';
 import { defaultNaming } from '$lib/import/image-only-review';
 import { decideCurrent, reviewSession } from '$lib/import/review-session';
 import { publishCuratedLayer, pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
-import { settleSeriesFileWrites } from '$lib/metadata/series-file-sync';
+import { catalogFileWritePending, settleCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
+import { seriesBackfillsPending, settleSeriesBackfills } from '$lib/metadata/series-backfill';
+import { seriesFileWritesPending, settleSeriesFileWrites } from '$lib/metadata/series-file-sync';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import {
@@ -423,13 +425,32 @@ async function backupVolume(
   return { cloudPath: listedArchivePath(row) };
 }
 
+/** Rounds `settleSeriesWrites` goes before it calls the writes endless. */
+const SETTLE_ROUNDS = 10;
+
 /**
- * Every `series.json` write queued (the 2 s debounce cut short) or in flight,
- * done: what the syncs before it asked to write has been written, so a spec
- * counts its PUTs without waiting out a timer.
+ * Every metadata write the app has queued, done: what the syncs before it
+ * asked to write has been written (or refused at its gate), so a spec counts
+ * its PUTs without waiting out a timer. A listing's background work (the
+ * spelling adoption, then the backfills behind it) queues `series.json`
+ * writes after the listing and its sync resolved, and those writes queue
+ * `catalog.json`: each is waited out in that order, its debounce cut short,
+ * and again while any of it queued more.
  */
-function settleSeriesWrites(): Promise<void> {
-  return settleSeriesFileWrites();
+async function settleSeriesWrites(): Promise<void> {
+  for (let round = 0; round < SETTLE_ROUNDS; round++) {
+    await unifiedCloudManager.whenListingWorkSettled();
+    await settleSeriesBackfills();
+    await settleSeriesFileWrites();
+    await settleCatalogFileWrites();
+    const pending =
+      unifiedCloudManager.listingWorkPending() ||
+      seriesBackfillsPending() ||
+      seriesFileWritesPending() ||
+      catalogFileWritePending();
+    if (!pending) return;
+  }
+  throw new Error(`metadata writes are still being queued after ${SETTLE_ROUNDS} rounds`);
 }
 
 /** The catalog card's click: the series page, by the title the card navigates with. */

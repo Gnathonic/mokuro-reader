@@ -234,7 +234,9 @@ import {
   _resetSeriesBackfillForTests,
   backfillNewlyLinkedSeries,
   backfillSeriesEntries,
-  maybeScheduleSeriesHealWrite
+  maybeScheduleSeriesHealWrite,
+  seriesBackfillsPending,
+  settleSeriesBackfills
 } from './series-backfill';
 import { buildSeriesFile, parseSeriesFile, stringifySeriesFile } from './series-file';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
@@ -592,6 +594,36 @@ describe('re-entrancy', () => {
     resolveIndex(seriesFile([]));
     await Promise.all([first, second]);
     expect(getCloudVolumesBySeries).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('settleSeriesBackfills (the rig driver)', () => {
+  it('waits out every pass in flight, a pass started meanwhile included', async () => {
+    getCloudVolumesBySeries.mockReturnValue([cloudFile('One Piece/Volume 01.cbz', 100)]);
+    // Each pass's first index read is held; a pass that publishes reads it again.
+    const indexes: Array<(file: SeriesFile) => void> = [];
+    const held = () => new Promise<SeriesFile>((resolve) => indexes.push(resolve));
+    refreshSeriesIndexForSeries
+      .mockImplementationOnce(held)
+      .mockImplementationOnce(held)
+      .mockResolvedValue(seriesFile([]));
+    expect(seriesBackfillsPending()).toBe(false);
+    const first = backfillSeriesEntries('One Piece');
+    expect(seriesBackfillsPending()).toBe(true);
+
+    let settled = false;
+    const settle = settleSeriesBackfills().then(() => (settled = true));
+    await vi.waitFor(() => expect(indexes).toHaveLength(1));
+    // Another pass starts before the first is done, and outlives it.
+    void backfillSeriesEntries('Berserk');
+    await vi.waitFor(() => expect(indexes).toHaveLength(2));
+    indexes[0](seriesFile([]));
+    await first;
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(settled).toBe(false);
+    indexes[1](seriesFile([]));
+    await settle;
+    expect(seriesBackfillsPending()).toBe(false);
   });
 });
 

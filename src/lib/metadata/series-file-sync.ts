@@ -761,15 +761,22 @@ export async function flushSeriesFileWrites(): Promise<void> {
 }
 
 /**
- * Run every queued write now and wait out every write in flight, until none of
- * either is left. For the rig driver: "the syncs after X wrote series.json N
- * times" can only be counted once nothing they queued is still pending.
+ * Run every queued write now and wait out every write in flight (and a
+ * reconcile pass still deciding what to queue), until none is left. For the
+ * rig driver: "the syncs after X wrote series.json N times" can only be
+ * counted once nothing they queued is still pending.
  */
 export async function settleSeriesFileWrites(): Promise<void> {
-  while (timers.size > 0 || inFlightWrites.size > 0) {
+  while (seriesFileWritesPending()) {
+    if (reconcileInFlight) await reconcileInFlight;
     await flushSeriesFileWrites();
     await Promise.all([...inFlightWrites.values()]);
   }
+}
+
+/** A write is queued or running, or a reconcile pass may still queue one. */
+export function seriesFileWritesPending(): boolean {
+  return timers.size > 0 || inFlightWrites.size > 0 || reconcileInFlight !== null;
 }
 
 let teardown: (() => void) | null = null;

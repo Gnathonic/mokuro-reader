@@ -4981,6 +4981,85 @@ describe('the series-index refresh is retained for the post-sync resolution', ()
   });
 });
 
+describe("a listing's background work settles as a whole (the rig driver's settle)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getActiveProvider.mockReturnValue({ type: 'webdav', getStatus: () => ({ isReadOnly: false }) });
+    getAllFiles.mockReturnValue([
+      { provider: 'webdav', fileId: '1', path: 'S/V.cbz', size: 1, modifiedTime: '' }
+    ]);
+  });
+
+  const turns = async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  };
+
+  it('resolves at once when no listing started any', async () => {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.listingWorkPending()).toBe(false);
+    await expect(unifiedCloudManager.whenListingWorkSettled()).resolves.toBeUndefined();
+  });
+
+  it('waits for the backfill that runs behind the spelling adoption', async () => {
+    // The reconcile schedules the series.json writes a sync's caller never sees:
+    // they must be queued before anyone settles the writes.
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    let adopted!: () => void;
+    let reconciled!: () => void;
+    adoptCloudSeriesSpellings.mockReturnValueOnce(
+      new Promise<unknown[]>((resolve) => (adopted = () => resolve([])))
+    );
+    reconcileMissingMetadataFiles.mockReturnValueOnce(
+      new Promise<void>((resolve) => (reconciled = resolve))
+    );
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+
+    let settled = false;
+    expect(unifiedCloudManager.listingWorkPending()).toBe(true);
+    const waiting = unifiedCloudManager.whenListingWorkSettled().then(() => (settled = true));
+    await turns();
+    expect(settled).toBe(false);
+    adopted();
+    await vi.waitFor(() => expect(reconcileMissingMetadataFiles).toHaveBeenCalled());
+    await turns();
+    expect(settled).toBe(false);
+    reconciled();
+    await waiting;
+    expect(settled).toBe(true);
+    expect(unifiedCloudManager.listingWorkPending()).toBe(false);
+  });
+
+  it('waits for the work a later listing started meanwhile', async () => {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    let first!: () => void;
+    let second!: () => void;
+    refreshSeriesIndexes
+      .mockReturnValueOnce(new Promise<void>((resolve) => (first = resolve)))
+      .mockReturnValueOnce(new Promise<void>((resolve) => (second = resolve)));
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+
+    let settled = false;
+    const waiting = unifiedCloudManager.whenListingWorkSettled().then(() => (settled = true));
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+    first();
+    await turns();
+    expect(settled).toBe(false);
+    second();
+    await waiting;
+    expect(settled).toBe(true);
+  });
+
+  it('never rejects, even when the work does', async () => {
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    reconcileMissingMetadataFiles.mockRejectedValueOnce(new Error('boom'));
+    refreshCatalogIndex.mockRejectedValueOnce(new Error('boom'));
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+    await expect(unifiedCloudManager.whenListingWorkSettled()).resolves.toBeUndefined();
+    warn.mockRestore();
+  });
+});
+
 describe('syncProgress starts progress resolution behind its result', () => {
   beforeEach(() => {
     vi.clearAllMocks();

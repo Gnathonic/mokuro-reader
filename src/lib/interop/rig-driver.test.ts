@@ -65,7 +65,11 @@ vi.mock('$lib/util/sync/unified-cloud-manager', async () => {
       }),
       deleteManagedVolume: vi.fn(async () => {
         h.calls.push('deleteManagedVolume');
-      })
+      }),
+      whenListingWorkSettled: vi.fn(async () => {
+        h.calls.push('whenListingWorkSettled');
+      }),
+      listingWorkPending: vi.fn(() => false)
     }
   };
 });
@@ -87,7 +91,22 @@ vi.mock('$lib/metadata/layer-sync', () => ({
   unpublishCuratedLayer: vi.fn()
 }));
 vi.mock('$lib/metadata/series-file-sync', () => ({
-  settleSeriesFileWrites: vi.fn(async () => {})
+  settleSeriesFileWrites: vi.fn(async () => {
+    h.calls.push('settleSeriesFileWrites');
+  }),
+  seriesFileWritesPending: vi.fn(() => false)
+}));
+vi.mock('$lib/metadata/catalog-file-sync', () => ({
+  settleCatalogFileWrites: vi.fn(async () => {
+    h.calls.push('settleCatalogFileWrites');
+  }),
+  catalogFileWritePending: vi.fn(() => false)
+}));
+vi.mock('$lib/metadata/series-backfill', () => ({
+  settleSeriesBackfills: vi.fn(async () => {
+    h.calls.push('settleSeriesBackfills');
+  }),
+  seriesBackfillsPending: vi.fn(() => false)
 }));
 vi.mock('$lib/metadata/spine-offsets', async () => ({
   ...(await vi.importActual<typeof import('$lib/metadata/spine-offsets')>(
@@ -208,7 +227,7 @@ import {
 import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { publishCuratedLayer, pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
 import { flushSpineOffsetWrites, scheduleSpineOffsetWrite } from '$lib/metadata/spine-offsets';
-import { settleSeriesFileWrites } from '$lib/metadata/series-file-sync';
+import { seriesFileWritesPending } from '$lib/metadata/series-file-sync';
 import { historySyncAllowed } from '$lib/reading-history/history-sync';
 import { recordPagedPageView } from '$lib/reader/paged-progress';
 import { updateVolumeSetting, volumes as volumeDataStore } from '$lib/settings/volume-data';
@@ -500,9 +519,29 @@ describe('idle()', () => {
 });
 
 describe('settleSeriesWrites()', () => {
-  it('runs every queued series.json write and waits out those in flight', async () => {
+  it("waits out the listings' work, then the backfills, then runs the series.json and catalog.json writes", async () => {
+    // A listing's backfill queues series.json writes after the listing (and
+    // the sync) resolved; those writes queue catalog.json behind them.
     await install().settleSeriesWrites();
-    expect(settleSeriesFileWrites).toHaveBeenCalledTimes(1);
+    expect(h.calls).toEqual([
+      'whenListingWorkSettled',
+      'settleSeriesBackfills',
+      'settleSeriesFileWrites',
+      'settleCatalogFileWrites'
+    ]);
+  });
+
+  it('goes round again while settling queued more', async () => {
+    vi.mocked(seriesFileWritesPending).mockReturnValueOnce(true);
+    await install().settleSeriesWrites();
+    expect(h.calls.filter((c) => c === 'whenListingWorkSettled')).toHaveLength(2);
+    expect(h.calls.filter((c) => c === 'settleSeriesFileWrites')).toHaveLength(2);
+  });
+
+  it('gives up, saying so, while writes keep being queued', async () => {
+    vi.mocked(unifiedCloudManager.listingWorkPending).mockReturnValue(true);
+    await expect(install().settleSeriesWrites()).rejects.toThrow(/still being queued/);
+    vi.mocked(unifiedCloudManager.listingWorkPending).mockReturnValue(false);
   });
 });
 

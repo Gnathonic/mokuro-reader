@@ -739,6 +739,20 @@ export function backfillNewlyLinkedSeries(seriesTitle: string): Promise<void> {
   return schedule(seriesTitle, false);
 }
 
+/** A backfill pass is running (it may still schedule a `series.json` write). */
+export function seriesBackfillsPending(): boolean {
+  return inFlight.size > 0;
+}
+
+/**
+ * Settles once no backfill pass is running, including passes started
+ * meanwhile. For the interop rig's driver, which counts the metadata writes
+ * the passes schedule. Never rejects (a pass logs its own failure).
+ */
+export async function settleSeriesBackfills(): Promise<void> {
+  while (inFlight.size > 0) await Promise.all([...inFlight.values()]);
+}
+
 /** Test hook: forget in-flight backfill passes and the pass-concurrency bookkeeping. */
 export function _resetSeriesBackfillForTests(): void {
   inFlight.clear();
