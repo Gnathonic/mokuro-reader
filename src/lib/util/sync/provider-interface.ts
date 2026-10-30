@@ -553,8 +553,9 @@ export interface SyncProvider {
    * status update. Providers whose permissions can change server-side mid-session
    * (mokuro-bunko: `ownedSeries` grows as this account uploads) implement this so
    * the UI's gates track reality without a reconnect. Must fail quietly.
+   * `maxAgeMs`: skip it while the last answer is younger than that.
    */
-  refreshIdentity?(): Promise<void>;
+  refreshIdentity?(options?: { maxAgeMs?: number }): Promise<void>;
 
   /**
    * Optionally remove a directory ONLY if the provider confirms (server-side)

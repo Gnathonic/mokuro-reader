@@ -1660,6 +1660,27 @@ describe('syncProvider — one sync per provider at a time', () => {
     }
   });
 
+  // An upgraded or rolled-back bunko changes what it keeps per user; the
+  // per-user files this sync writes must follow what it keeps NOW.
+  it('re-reads the server identity before the per-user files, if it is not fresh', async () => {
+    const steps = holdSteps();
+    try {
+      const order: string[] = [];
+      const refreshIdentity = vi.fn(async () => {
+        order.push('identity');
+      });
+      vi.mocked(svc.syncVolumeData).mockImplementation(async () => {
+        order.push('volume-data');
+      });
+      const webdav = { ...provider('webdav'), refreshIdentity } as unknown as SyncProvider;
+      await svc.syncProvider(webdav);
+      expect(order).toEqual(['identity', 'volume-data']);
+      expect(refreshIdentity).toHaveBeenCalledWith({ maxAgeMs: 5 * 60_000 });
+    } finally {
+      steps.restore();
+    }
+  });
+
   it('does not hold up a different provider', async () => {
     const steps = holdSteps();
     try {

@@ -164,6 +164,12 @@ export interface CloudVolumeDataFile {
  * authenticated cloud providers. Works with the SyncProvider interface,
  * making it provider-agnostic.
  */
+/**
+ * How old the server's identity may be before a sync asks again
+ * (`refreshIdentity`): one request per five minutes of syncing, at most.
+ */
+const IDENTITY_MAX_AGE_MS = 5 * 60_000;
+
 interface SyncFlight {
   running: Promise<ProviderSyncResult>;
   followUp?: {
@@ -389,6 +395,10 @@ class UnifiedSyncService {
           throw new Error(`${provider.name} is not authenticated`);
         }
       }
+
+      // What the server keeps per user can change under an open tab (a bunko
+      // upgrade or rollback); the per-user files below follow it. Fails quietly.
+      await provider.refreshIdentity?.({ maxAgeMs: IDENTITY_MAX_AGE_MS });
 
       // Sync volume data (read progress + series-level reading state)
       console.log('🔄 Syncing volume data...');

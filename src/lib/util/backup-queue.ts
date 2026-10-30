@@ -13,6 +13,8 @@ import {
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
 import { stampLayersSynced, type LayerUploadSnapshot } from '$lib/metadata/layer-sync';
+import { personalLayerAccount } from '$lib/catalog/mokuro-hash';
+import { uploadVolumeFiles } from './volume-upload-order';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import {
   cancelScheduledSeriesFileWrite,
@@ -620,8 +622,9 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // layer wherever the server would share it (`layerStaysLocal`).
           serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true,
           editLayerSync: provider!.getStatus?.().editLayerSync,
-          // Another account's personal layer never goes into this one's overlay.
-          accountScope: provider!.getStatus?.().accountScope
+          // Another account's personal layer never goes into this one's overlay
+          // (only a bunko keeping one per account has two behind one path).
+          accountScope: personalLayerAccount(provider!.getStatus?.() ?? {})
         };
       },
       onProgress: (data) => {
@@ -675,39 +678,42 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             const archiveBytes = new Uint8Array(data.data);
             const archiveBlob = new Blob([archiveBytes], { type: 'application/x-cbz' });
 
-            if (item.sidecarOptions.includeSidecars && data.sidecars) {
+            const sidecars = item.sidecarOptions.includeSidecars ? data.sidecars : undefined;
+            if (sidecars?.mokuro || sidecars?.thumbnail || sidecars?.layers?.length) {
               getBackupUiBridge().updateProgress(processId, 'Uploading sidecars...', 100);
-              const sidecars: Array<{ filename: string; blob: Blob }> = [];
-              if (data.sidecars.mokuro) sidecars.push(data.sidecars.mokuro);
-              for (const layer of data.sidecars.layers ?? []) sidecars.push(layer);
-              if (data.sidecars.thumbnail) sidecars.push(data.sidecars.thumbnail);
-              for (const sidecar of sidecars) {
-                const sidecarPath = `${item.seriesTitle}/${sidecar.filename}`;
-                const sent = await provider!.uploadFile(sidecarPath, sidecar.blob);
-                if (sidecar === data.sidecars.mokuro) {
-                  await recordUploadedPrimarySidecarBlob(
+            }
+            // The Worker's order: an account's `edit` layer after its archive.
+            const { archive: uploaded, layers: sentLayers } = await uploadVolumeFiles(
+              sidecars,
+              {
+                sidecar: (sidecar) =>
+                  provider!.uploadFile(`${item.seriesTitle}/${sidecar.filename}`, sidecar.blob),
+                archive: () => {
+                  getBackupUiBridge().updateProgress(processId, 'Uploading archive...', 0);
+                  return provider!.uploadFile(
+                    archivePath,
+                    archiveBlob,
+                    undefined,
+                    (loaded, total) => {
+                      if (total > 0) {
+                        getBackupUiBridge().updateProgress(
+                          processId,
+                          'Uploading archive...',
+                          Math.round((loaded / total) * 100)
+                        );
+                      }
+                    }
+                  );
+                }
+              },
+              {
+                onPrimary: (sidecar, sent) =>
+                  recordUploadedPrimarySidecarBlob(
                     item.volumeUuid,
                     provider!.type,
                     sidecar.blob,
                     sent
-                  );
-                }
-              }
-            }
-
-            getBackupUiBridge().updateProgress(processId, 'Uploading archive...', 0);
-            const uploaded = await provider!.uploadFile(
-              archivePath,
-              archiveBlob,
-              undefined,
-              (loaded, total) => {
-                if (total > 0) {
-                  getBackupUiBridge().updateProgress(
-                    processId,
-                    'Uploading archive...',
-                    Math.round((loaded / total) * 100)
-                  );
-                }
+                  )
               }
             );
 
@@ -739,12 +745,12 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               void stampLayersSynced(
                 item.volumeUuid,
                 provider!.type,
-                (data.sidecars?.layers ?? []).map((layer) => ({
+                sentLayers.map((layer) => ({
                   layerId: layer.layerId,
                   updatedAt: layer.updatedAt,
                   size: layer.blob.size
                 })),
-                provider!.getStatus?.().accountScope
+                personalLayerAccount(provider!.getStatus?.() ?? {})
               );
             }
 
@@ -858,7 +864,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               item.volumeUuid,
               provider!.type,
               data.layerSnapshots ?? [],
-              provider!.getStatus?.().accountScope
+              personalLayerAccount(provider!.getStatus?.() ?? {})
             );
           }
           // The primary sidecar the worker sent: its hash is this volume's now,
