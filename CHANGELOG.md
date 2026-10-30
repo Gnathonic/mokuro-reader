@@ -7,6 +7,7 @@
 - A full MEGA account no longer deletes your synced progress
 - MEGA moves emptied duplicate folders to the Rubbish Bin
 - OneDrive asks you to reconnect when its sign-in lapses
+- MEGA asks you to reconnect when its session ends
 
 ## [1.10.0] - 2026-10-02
 

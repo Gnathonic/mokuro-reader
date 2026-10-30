@@ -5,6 +5,8 @@ vi.mock('./mega-cache', () => ({ megaCache: { fetch: vi.fn() } }));
 vi.mock('../../cache-manager', () => ({
   cacheManager: { clearAll: vi.fn(), registerCache: vi.fn() }
 }));
+const updateStatus = vi.hoisted(() => vi.fn());
+vi.mock('../../provider-manager', () => ({ providerManager: { updateStatus } }));
 
 // Controllable megajs Storage mock.
 const storageState = vi.hoisted(() => ({
@@ -378,6 +380,9 @@ describe('MegaProvider.reinitialize() — session-safe refresh', () => {
     expect(close).not.toHaveBeenCalled();
     expect(provider.getStatus().needsAttention).toBe(true);
     expect(localStorage.getItem('mega_session')).toBeNull();
+    // Published: the navbar's banner and the cloud screen read the provider
+    // manager's status, which moves only when asked.
+    await vi.waitFor(() => expect(updateStatus).toHaveBeenCalled());
   });
 });
 
