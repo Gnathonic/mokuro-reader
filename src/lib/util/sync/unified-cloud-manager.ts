@@ -1209,12 +1209,18 @@ class UnifiedCloudManager {
       const knownBases = new Set(
         volumes.map((v) => normalizeCloudPath(`${oldFolderTitle}/${v.volumeTitle}`))
       );
+      // A layer file (`<Volume>.<id>.mokuro`) strips to `<Volume>.<id>`, which
+      // names no volume: placed by the folder's archives, as the per-volume
+      // rename places it, it is its volume's, never a cloud-only one.
+      const knownLayerFiles = new Set(
+        volumes.flatMap((v) => layerFilesOfVolume(existingFiles, v.volumeTitle).map((l) => l.file))
+      );
       const cloudOnlyBases = [
         ...new Set(
           existingFiles
             // The series' own sidecar belongs to no volume — it is rewritten at
             // the new title below, so it must not read as a cloud-only volume.
-            .filter((file) => !isSeriesFilePath(file.path))
+            .filter((file) => !isSeriesFilePath(file.path) && !knownLayerFiles.has(file))
             .map((file) => stripManagedFileExtension(normalizeCloudPath(file.path)))
             .filter((base) => !knownBases.has(base))
         )
