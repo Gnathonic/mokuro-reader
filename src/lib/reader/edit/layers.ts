@@ -81,10 +81,11 @@ const SERVED_ENGINE_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /**
  * The engine that produced a layer file, when a SERVER produced it. bunko
  * stamps every layer sidecar it generates with a top-level
- * `ocr_engine: { id, … }`, and nothing this app writes carries one — a pushed
- * edit layer is pure mokuro format. So the stamp, not the file's name, tells a
- * server's OCR from a person's edits: the name is whatever the server's admin
- * called that generation, and no closed list of ids can know it.
+ * `ocr_engine: { id, … }`, and no LAYER file this app writes carries one (a
+ * pushed edit layer carries `edited`; only a primary carries a block, and only
+ * one it installed — `ocr-provenance.ts`). So the stamp, not the file's name,
+ * tells a server's OCR from a person's edits: the name is whatever the
+ * server's admin called that generation, and no closed list of ids can know it.
  */
 export function servedEngineOf(json: unknown): string | undefined {
   if (!json || typeof json !== 'object') return undefined;

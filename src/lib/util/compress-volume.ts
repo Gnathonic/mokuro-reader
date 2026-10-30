@@ -12,10 +12,11 @@ import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
 import { mainSidecarPagesForCloud } from '$lib/catalog/main-sidecar';
 import { layerStaysLocal, type LayerTarget } from '$lib/catalog/mokuro-hash';
+import { editBaseSeal } from '$lib/catalog/ocr-provenance';
 import { isPersonalLayerId } from '$lib/reader/edit/layer-names';
 import {
   buildLayerMokuroMetadata,
-  buildMokuroMetadata,
+  buildPrimaryMokuroMetadata,
   type MokuroMetadata
 } from './mokuro-metadata';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
@@ -264,9 +265,14 @@ export async function generateVolumeSidecarsFromDb(
         pages === volumeOcr?.pages
           ? volume
           : { ...volume, character_count: buildPageCharCounts(pages).totalChars };
-      const metadata = buildMokuroMetadata(counted, pages, {
+      // `ocr_engine` rides along whenever these pages are an installed file's
+      // (a rename keeps it; the `original` snapshot of an edited volume does
+      // too). Pages that are the EDITED primary itself — an export, Local
+      // Folder, a rename's fallback — say so with `edited` instead.
+      const metadata = await buildPrimaryMokuroMetadata(counted, pages, {
         seriesTitle,
-        volumeTitle
+        volumeTitle,
+        markEdited: pages === volumeOcr?.pages
       });
       sidecars.mokuro = {
         filename: `${volumeTitle}.mokuro`,
@@ -316,6 +322,10 @@ async function buildLayerSidecarsFromDb(
   // Metadata and pages in one read transaction: `updatedAt` below must be the
   // stamp of exactly the pages serialized (`stampLayersSynced` compares it).
   const layers = await listLayersWithPages(db, volume.volume_uuid);
+  // One base for every edit-kind file of the volume (`edited.base_seal`).
+  const baseSeal = layers.some((layer) => layer.kind === 'edit')
+    ? await editBaseSeal(db, volume)
+    : null;
   return (
     layers
       // An untouched upgrade layer (`updated-ocr`: the cloud's own primary,
@@ -341,7 +351,10 @@ async function buildLayerSidecarsFromDb(
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {
         const { totalChars } = buildPageCharCounts(layer.pages);
-        const metadata = buildLayerMokuroMetadata(volume, layer, totalChars, titles);
+        const metadata = buildLayerMokuroMetadata(volume, layer, totalChars, {
+          ...titles,
+          baseSeal
+        });
         return {
           layerId: layer.layer_id,
           filename: layerSidecarName(titles.volumeTitle, layer.layer_id),
@@ -421,9 +434,10 @@ export async function compressVolumeFromDb(
 
   // Build mokuro metadata
   const isImageOnly = volume.mokuro_version === '';
+  // The archive holds the primary as this device has it: an edited one says so.
   const metadata: MokuroMetadata | null = isImageOnly
     ? null
-    : buildMokuroMetadata(volume, volumeOcr?.pages || []);
+    : await buildPrimaryMokuroMetadata(volume, volumeOcr?.pages || [], { markEdited: true });
 
   // Get list of files, excluding placeholders
   const filenames = Object.keys(volumeFiles.files);

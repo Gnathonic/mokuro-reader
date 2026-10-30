@@ -89,6 +89,19 @@ export interface VolumeMetadata {
   mokuro_sha256_cloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
 
   /**
+   * The provenance blocks (`ocr_engine`, or an EDITED file's `edited`) of the
+   * files this volume's primary was installed or learned from, each with a
+   * digest of THAT file's pages
+   * (`$lib/catalog/ocr-provenance`), newest first, at most 4. Every primary
+   * install records its file's block (or clears the list); the OCR upgrade
+   * also learns one when a file only re-serializes OCR the volume has
+   * (`recorded`) or is filed as the `updated-ocr` layer (`layered`). A
+   * regenerated primary carries a block only while its pages reproduce that
+   * entry's digest — the reader never mints one. Not indexed (no schema version).
+   */
+  ocr_provenance?: import('$lib/catalog/ocr-provenance').OcrProvenance[];
+
+  /**
    * Edited volumes only: the newest cloud primary OCR (by `mokuro_sha256`) the
    * upgrade pass filed as the `updated-ocr` LAYER instead of installing over
    * the user's edits. Lets the next pass skip that same file without a

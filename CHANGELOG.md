@@ -14,6 +14,8 @@
 - Duplicate-folder cleanup leaves it to mokuro-bunko when it merges them
 - MEGA catches mokuro-bunko changes made while you were offline
 - Cloud folders run by mokuro-bunko 0.8 sync history and positions
+- Renamed volumes keep their OCR engine or corrected mark
+- Exported or uploaded OCR you corrected is marked as corrected
 
 ### Fixed
 

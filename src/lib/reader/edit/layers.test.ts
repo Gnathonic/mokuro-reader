@@ -435,7 +435,13 @@ describe('the editor’s edit layer and bunko’s pre-upgrade layers (D4)', () =
     await db.volumes.update('v1', { mokuro_sha256: sha });
     const layer = await createLayer('v1', { name: 'Fixes', pages: [pg('直'), pg('す', 'q.png')] });
     const json = JSON.parse(await (await buildLayerExportFile('v1', layer.layer_id)).text());
-    expect(json.edited).toEqual({ by: 'mokuro-reader', at: layer.updated_at, base_sha256: sha });
+    // The export path names no base seal (bunko reads base_sha256 then).
+    expect(json.edited).toEqual({
+      by: 'mokuro-reader',
+      at: layer.updated_at,
+      base_sha256: sha,
+      base_seal: null
+    });
     expect(json.ocr_engine).toBeUndefined();
   });
 

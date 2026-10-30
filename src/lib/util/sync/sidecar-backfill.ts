@@ -962,7 +962,7 @@ async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
   const { archiveStem, wantsMokuro, wantsCover } = gap;
 
   // Serialize through the SAME builder the backup and export paths use
-  // (`buildVolumeSidecarsFromData` → `buildMokuroMetadata`): an image-only
+  // (`buildVolumeSidecarsFromData` → `buildPrimaryMokuroMetadata`): an image-only
   // volume or one whose OCR rows are missing yields `mokuroFile: null` there,
   // so an empty `.mokuro` can never be invented here.
   const sidecars = await feed.loadSidecars();

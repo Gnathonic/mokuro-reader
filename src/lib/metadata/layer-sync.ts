@@ -33,6 +33,7 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerIdStaysLocal, layerStaysLocal, type LayerTarget } from '$lib/catalog/mokuro-hash';
 import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
+import { editBaseSeal } from '$lib/catalog/ocr-provenance';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
 import {
@@ -997,7 +998,9 @@ async function pushOne(
     const layer = await getLayerWithPages(db, planned.volume_uuid, planned.layer_id);
     if (!layer) return false; // deleted since the plan
     const { totalChars } = buildPageCharCounts(layer.pages);
-    const meta = buildLayerMokuroMetadata(row, layer, totalChars);
+    // Only an edit-kind file names its base (the `edited` block).
+    const baseSeal = layer.kind === 'edit' ? await editBaseSeal(db, row) : null;
+    const meta = buildLayerMokuroMetadata(row, layer, totalChars, { baseSeal });
     const blob = new Blob([JSON.stringify(meta)], { type: 'application/json' });
     const path = `${folderTitle}/${layerSidecarName(stem, layer.layer_id)}`;
     const uploaded = await provider.uploadFile(path, blob);

@@ -2,7 +2,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { db } from '$lib/catalog/db';
 import { BlobReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import { compressVolume } from './compress-volume';
-import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
+import { buildPrimaryMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
 import { backupQueue } from './backup-queue';
 import { progressTrackerStore } from './progress-tracker';
 import {
@@ -102,7 +102,7 @@ export async function prepareVolumeData(volumeOrUuid: VolumeMetadata | string): 
   // Create mokuro metadata only for volumes that had mokuro data
   const metadata: MokuroMetadata | null = isImageOnly
     ? null
-    : buildMokuroMetadata(volume, volumeOcr.pages);
+    : await buildPrimaryMokuroMetadata(volume, volumeOcr.pages, { markEdited: true });
 
   // Get set of placeholder page paths to exclude from export
   const placeholderPaths = new Set(volume.missing_page_paths || []);
@@ -190,7 +190,9 @@ async function addVolumeToArchive(zipWriter: ZipWriter<Blob>, volume: VolumeMeta
   }
 
   // Mokuro sidecar at the archive root (ZIP and CBZ), built by the shared writer
-  const mokuroData = buildMokuroMetadata(volume, volumeOcr.pages);
+  const mokuroData = await buildPrimaryMokuroMetadata(volume, volumeOcr.pages, {
+    markEdited: true
+  });
 
   // Add mokuro data file in the root directory (for both ZIP and CBZ)
   return [
@@ -242,7 +244,9 @@ async function addVolumeToArchiveWithProgress(
 
   // Add mokuro file if not image-only
   if (!isImageOnly) {
-    const mokuroData = buildMokuroMetadata(volume, volumeOcr.pages);
+    const mokuroData = await buildPrimaryMokuroMetadata(volume, volumeOcr.pages, {
+      markEdited: true
+    });
     await zipWriter.add(
       `${volume.volume_title}.mokuro`,
       new TextReader(JSON.stringify(mokuroData))
