@@ -6,9 +6,12 @@ import { onNextUserGesture } from '$lib/util/user-gesture';
 import { CLOUD_TEST_HOOKS, cloudTestToken } from '../../cloud-test-hooks';
 
 /**
- * The interop rig's stand-in for a GIS token client: a request answers at once
- * with the token the rig injected (`cloudTestToken('google')`, read per request
- * so a re-minted one is what a re-auth gets). Reached only through a
+ * The interop rig's stand-in for a GIS token client: a request answers with the
+ * token the rig injected (`cloudTestToken('google')`, read when it answers so a
+ * re-minted one is what a re-auth gets). Like GIS it answers after the request
+ * returns, never inside it, so the manager's `isRefreshing` covers a re-auth in
+ * flight: answered inside the call, every 401 of a burst asked again and the
+ * later ones read as refusals of the token just granted. Reached only through a
  * `CLOUD_TEST_HOOKS` guard, so a production build drops it.
  *
  * It cannot mint, so a silent re-auth for the token the manager already holds
@@ -28,6 +31,10 @@ class InjectedTokenClient {
   ) {}
 
   requestAccessToken(options?: { prompt?: string }): void {
+    setTimeout(() => this.answer(options), 0);
+  }
+
+  private answer(options?: { prompt?: string }): void {
     const token = cloudTestToken('google');
     const value = token?.access_token;
     if (!token || value === this.refused) return this.callback({ error: 'access_denied' });

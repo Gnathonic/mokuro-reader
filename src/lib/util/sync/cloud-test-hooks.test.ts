@@ -124,8 +124,11 @@ describe('an injected Google token', () => {
     tokenManager.requestNewToken(true);
     let token = '';
     tokenManager.token.subscribe((t) => (token = t))();
+    // As GIS: the answer comes after the request returns, never inside it.
+    expect(token).toBe('');
+    await vi.waitFor(() => expect(setToken).toHaveBeenCalledWith({ access_token: 'g-token' }));
+    tokenManager.token.subscribe((t) => (token = t))();
     expect(token).toBe('g-token');
-    expect(setToken).toHaveBeenCalledWith({ access_token: 'g-token' });
     expect(tokenManager.isAuthenticated()).toBe(true);
     expect(tokenManager.getTimeUntilExpiry()).toBeGreaterThan(3500 * 1000);
   });
@@ -138,6 +141,7 @@ describe('an injected Google token', () => {
     const { tokenManager } = await import('./providers/google-drive/token-manager');
     await tokenManager.initTokenClient();
     tokenManager.requestNewToken(true);
+    await vi.waitFor(() => expect(current(tokenManager.token)).toBe('g-token'));
     return { hooks, tokenManager };
   }
 
@@ -155,8 +159,10 @@ describe('an injected Google token', () => {
     expect(postReauth.rounds).toBe(1);
     expect(current(tokenManager.token)).toBe('');
 
-    // The grant stays gone: a later re-auth is refused at once, with no sync.
+    // The grant stays gone: a later re-auth is refused, with no sync (its answer,
+    // queued first, runs before this test's own next task).
     tokenManager.reAuthenticate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(current(tokenManager.needsAttention)).toBe(true);
     expect(current(tokenManager.token)).toBe('');
     expect(postReauth.rounds).toBe(1);
@@ -181,7 +187,7 @@ describe('an injected Google token', () => {
     hooks.setCloudTestToken('google', { access_token: 'g-token-2', expires_in: 3600 });
     postReauth.rejects = false;
     tokenManager.requestNewToken(true);
-    expect(current(tokenManager.token)).toBe('g-token-2');
+    await vi.waitFor(() => expect(current(tokenManager.token)).toBe('g-token-2'));
     expect(current(tokenManager.needsAttention)).toBe(false);
   });
 
@@ -193,6 +199,7 @@ describe('an injected Google token', () => {
     const { tokenManager } = await import('./providers/google-drive/token-manager');
     await tokenManager.initTokenClient();
     tokenManager.requestNewToken(true);
+    await vi.waitFor(() => expect(tokenManager.isAuthenticated()).toBe(true));
     await tokenManager.logout();
     expect(fetchSpy.mock.calls.map((c) => String(c[0]))).not.toContainEqual(
       expect.stringContaining('googleapis.com')
