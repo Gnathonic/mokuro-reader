@@ -1431,7 +1431,11 @@ month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
   #27): the WebDAV provider sets `ProviderStatus.historySync` only when BOTH
   hold — the version's numeric core ≥ 0.8.0 (a `0.8.0-beta.N` counts as 0.8.0;
   missing or unparseable = no) AND `per_user_files` contains `history/`
-  (`bunko-version.ts`). On a cloud-direct folder (Drive/OneDrive/MEGA/plain
+  (`bunko-version.ts`). These gates (with `positionsSync` and
+  `editLayerSync`) follow the server, not the connect: every sync re-reads the
+  identity once it is 5 min old (`refreshIdentity({ maxAgeMs })`, before the
+  per-user files), so a bunko upgraded or rolled back under an open tab is
+  followed without a reload. On a cloud-direct folder (Drive/OneDrive/MEGA/plain
   WebDAV) the fresh lease holder's marker decides the same way, from its
   `bunko_version` and `per_user_files` (`withCloudBunkoStatus`); no fresh
   holder = plain storage. `historySyncAllowed(status)` (`history-sync.ts`)
