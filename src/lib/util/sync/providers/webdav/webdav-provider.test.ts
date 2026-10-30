@@ -544,6 +544,97 @@ describe('WebDAVProvider write-failure policy', () => {
   });
 });
 
+// A server that stops taking the password mid-session (changed elsewhere, an app
+// password revoked) refuses the reads first: a sync downloads volume-data.json before
+// it writes anything. Those reads must ask for a new sign-in as a refused write does,
+// or an idle device fails every sync with a retryable "download failed" forever.
+describe('WebDAVProvider read-failure policy', () => {
+  const VOLUME_DATA = {
+    provider: 'webdav' as const,
+    fileId: '/mokuro-reader/volume-data.json',
+    path: 'volume-data.json',
+    modifiedTime: '2026-10-29T00:00:00.000Z',
+    size: 2
+  };
+
+  async function connected(hasPassword: boolean): Promise<WebDAVProvider> {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({
+      serverUrl: 'https://host',
+      username: hasPassword ? 'alice' : undefined,
+      password: hasPassword ? 'pw' : undefined
+    });
+    return provider;
+  }
+
+  it('a download refused 401 with a password-backed session asks for a new sign-in', async () => {
+    const provider = await connected(true);
+    mockCore.downloadFile.mockRejectedValue(new Error('WebDAV download failed: 401 Unauthorized'));
+
+    await expect(provider.downloadFile(VOLUME_DATA)).rejects.toMatchObject({
+      code: 'AUTH_FAILED',
+      webdavErrorType: 'auth',
+      isAuthError: true,
+      isNetworkError: false
+    });
+    expect(provider.getStatus().needsAttention).toBe(true);
+    expect(provider.isReadOnly).toBe(false);
+    // password cleared, URL + username kept for the pre-filled form
+    expect(localStorage.getItem('webdav_password')).toBeNull();
+    expect(localStorage.getItem('webdav_server_url')).toBe('https://host');
+    expect(localStorage.getItem('webdav_username')).toBe('alice');
+  });
+
+  it('a listing refused 401 with a password-backed session asks for a new sign-in', async () => {
+    const provider = await connected(true);
+    mockClient.getDirectoryContents.mockRejectedValue(
+      Object.assign(new Error('Invalid response: 401 Unauthorized'), { status: 401 })
+    );
+
+    await expect(provider.listCloudVolumes()).rejects.toMatchObject({
+      code: 'AUTH_FAILED',
+      isAuthError: true
+    });
+    expect(provider.getStatus().needsAttention).toBe(true);
+  });
+
+  it('a control file refused 401 with a password-backed session asks for a new sign-in', async () => {
+    const provider = await connected(true);
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }));
+
+    await expect(provider.readControlFile('volume-data.json')).rejects.toMatchObject({
+      code: 'AUTH_FAILED',
+      isAuthError: true
+    });
+    expect(provider.getStatus().needsAttention).toBe(true);
+  });
+
+  it('a credential-less session keeps a refused download a download failure', async () => {
+    const provider = await connected(false);
+    mockCore.downloadFile.mockRejectedValue(new Error('WebDAV download failed: 401 Unauthorized'));
+
+    await expect(provider.downloadFile(VOLUME_DATA)).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED'
+    });
+    expect(provider.getStatus().needsAttention).toBe(false);
+  });
+
+  it('any other refused download stays a retryable download failure', async () => {
+    const provider = await connected(true);
+    mockCore.downloadFile.mockRejectedValue(
+      new Error('WebDAV download failed: 503 Service Unavailable')
+    );
+
+    await expect(provider.downloadFile(VOLUME_DATA)).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      isNetworkError: true
+    });
+    expect(provider.getStatus().needsAttention).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+  });
+});
+
 describe('WebDAVProvider renameFile idempotency & typed NOT_FOUND', () => {
   async function loggedInProvider(): Promise<WebDAVProvider> {
     const provider = await freshProvider();

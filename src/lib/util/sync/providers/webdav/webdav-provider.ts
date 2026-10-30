@@ -1323,6 +1323,8 @@ export class WebDAVProvider implements SyncProvider {
       console.log(`✅ Listed ${allFiles.length} files from WebDAV (recursive)`);
       return allFiles;
     } catch (error) {
+      const refused = this.refusedReadAuth(error);
+      if (refused) throw refused;
       throw new ProviderError(
         `Failed to list cloud volumes: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'webdav',
@@ -1493,6 +1495,29 @@ export class WebDAVProvider implements SyncProvider {
   }
 
   /**
+   * A read refused 401 in a password-backed session: the server no longer takes the
+   * password (changed elsewhere, an app password revoked). The same auth-failed
+   * flow as a refused write: a sync reads before it writes, so an idle device would
+   * otherwise fail every sync with a retryable read error and never ask for a new
+   * sign-in. A transient re-issue failure says nothing about the password, and a
+   * credential-less session has none to reject. Null when it is not that.
+   */
+  private refusedReadAuth(error: unknown): ProviderError | null {
+    if (!this._hasPassword || isTransientAuthRefreshError(error)) return null;
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isUnauthorized(error) && classifyWriteError(message) !== 'auth') return null;
+    this.markAuthFailed();
+    return new ProviderError(
+      'Authentication failed - please sign in again',
+      'webdav',
+      'AUTH_FAILED',
+      true,
+      false,
+      'auth'
+    );
+  }
+
+  /**
    * Central policy for failed write operations:
    * - 401 with a password-backed session: credentials were rejected -> clear
    *   the stored password and prompt re-login (NOT a read-only server)
@@ -1561,6 +1586,8 @@ export class WebDAVProvider implements SyncProvider {
       console.log(`✅ Downloaded ${file.path} from WebDAV`);
       return blob;
     } catch (error) {
+      const refused = this.refusedReadAuth(error);
+      if (refused) throw refused;
       throw new ProviderError(
         `Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'webdav',
@@ -1608,14 +1635,20 @@ export class WebDAVProvider implements SyncProvider {
     };
 
     let { response, sent } = await request();
-    if (response.status === 401 && bearerOf(sent) && (await this.reissueAfterUnauthorized(sent))) {
-      ({ response, sent } = await request()); // once, under the re-issued header
+    let reissue: ReissueVerdict | null = null;
+    if (response.status === 401 && bearerOf(sent)) {
+      reissue = await this.reissueVerdict(sent);
+      if (reissue === 'retry') ({ response, sent } = await request()); // once, under the re-issued header
     }
 
     if (response.status === 304 && conditional) return 'not-modified';
     if (response.status === 404) {
       this.controlReads.delete(name);
       return null;
+    }
+    if (response.status === 401 && reissue !== 'transient') {
+      const refused = this.refusedReadAuth({ status: 401 });
+      if (refused) throw refused;
     }
     if (response.status === 401 || response.status === 403) {
       throw new ProviderError(
