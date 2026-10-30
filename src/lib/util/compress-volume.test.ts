@@ -354,6 +354,30 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
     });
   });
 
+  it("never uploads a server's own OCR, edited here, beside a backup to that server", async () => {
+    // Pulled from bunko with its engine stamp, then edited in place (the edit
+    // began before the provider said it compiles its metadata).
+    await putLayerWithPages(db, {
+      volume_uuid: 'volume-uuid',
+      layer_id: 'hayai',
+      name: 'Hayai',
+      kind: 'ocr',
+      engine: 'hayai',
+      created_at: '2026-09-16T00:00:00.000Z',
+      updated_at: '2026-09-17T00:00:00.000Z',
+      cloud: { provider: 'webdav', synced_at: '2026-09-16T00:00:00.000Z' },
+      pages: []
+    });
+    const ids = async (target: Parameters<typeof generateVolumeSidecarsFromDb>[2]) =>
+      (await generateVolumeSidecarsFromDb('volume-uuid', undefined, target)).layers?.map(
+        (l) => l.layerId
+      );
+    expect(
+      await ids({ serverCompilesMetadata: true, editLayerSync: 'push', cloud: true })
+    ).toBeUndefined();
+    expect(await ids({ cloud: true })).toEqual(['hayai']);
+  });
+
   it("never uploads the editor's original snapshot to a server that compiles its metadata", async () => {
     await putLayerWithPages(db, {
       volume_uuid: 'volume-uuid',

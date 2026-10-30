@@ -99,6 +99,27 @@ describe('layerStaysLocal', () => {
     expect(layerStaysLocal(row('edit'), { serverCompilesMetadata: true })).toBe(false);
   });
 
+  it("a server's own OCR, edited here anyway, never goes up to that server", () => {
+    // Pulled with an engine stamp: on bunko an edit forks into `edit`
+    // (`forksOnEdit`), but one begun before the provider said it was bunko
+    // edits the row in place, and must not overwrite the model output.
+    const cloud = { provider: 'webdav', synced_at: 't0' };
+    const hayai = {
+      layer_id: 'hayai',
+      kind: 'ocr' as const,
+      engine: 'hayai',
+      cloud,
+      updated_at: 't1'
+    };
+    expect(layerStaysLocal(hayai, BUNKO_08)).toBe(true);
+    expect(layerStaysLocal(hayai, BUNKO_07)).toBe(true);
+    // Plain storage: the user's own file, edited in place.
+    expect(layerStaysLocal(hayai, PLAIN)).toBe(false);
+    // An OCR layer no cloud vouches for is this device's own run.
+    expect(layerStaysLocal({ ...hayai, cloud: undefined }, BUNKO_08)).toBe(false);
+    expect(layerStaysLocal({ ...hayai, engine: undefined }, BUNKO_08)).toBe(false);
+  });
+
   it('an untouched upgrade layer stays local everywhere', () => {
     const untouched = { layer_id: 'updated-ocr', source_at: 't1', updated_at: 't1' };
     for (const target of [PLAIN, BUNKO_08, BUNKO_07]) {
