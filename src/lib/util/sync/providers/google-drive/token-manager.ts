@@ -6,18 +6,48 @@ import { onNextUserGesture } from '$lib/util/user-gesture';
 import { CLOUD_TEST_HOOKS, cloudTestToken } from '../../cloud-test-hooks';
 
 /**
- * The interop rig's stand-in for a GIS token client: every request answers at
- * once with the token the rig injected (`cloudTestToken('google')`, read per
- * request so a re-minted one is what a re-auth gets). Reached only through a
+ * The interop rig's stand-in for a GIS token client: a request answers at once
+ * with the token the rig injected (`cloudTestToken('google')`, read per request
+ * so a re-minted one is what a re-auth gets). Reached only through a
  * `CLOUD_TEST_HOOKS` guard, so a production build drops it.
+ *
+ * It cannot mint, so a silent re-auth for the token the manager already holds
+ * (the API just rejected it) hands that same string back ONCE: enough for a
+ * one-off 401. Rejected again before a sync has worked with it, the grant is
+ * gone: `access_denied`, as GIS answers, and the string stays refused until the
+ * rig sets another. Handing it back every time looped re-auth, sync, 401
+ * forever and never left the banner up.
  */
-function injectedTokenClient(callback: (response: any) => void) {
-  return {
-    requestAccessToken: () => {
-      const token = cloudTestToken('google');
-      callback(token ? { ...token } : { error: 'access_denied' });
+class InjectedTokenClient {
+  private regranted: string | null = null;
+  private refused: string | null = null;
+
+  constructor(
+    private readonly callback: (response: any) => void,
+    private readonly held: () => string
+  ) {}
+
+  requestAccessToken(options?: { prompt?: string }): void {
+    const token = cloudTestToken('google');
+    const value = token?.access_token;
+    if (!token || value === this.refused) return this.callback({ error: 'access_denied' });
+    if (value === this.held() && options?.prompt !== 'consent') {
+      if (this.regranted === value) {
+        this.refused = value;
+        this.regranted = null;
+        return this.callback({ error: 'access_denied' });
+      }
+      this.regranted = value;
+    } else {
+      this.regranted = null;
     }
-  };
+    this.callback({ ...token });
+  }
+
+  /** A sync worked with `token`: its next 401 is a one-off again. */
+  worked(token: string): void {
+    if (this.regranted === token) this.regranted = null;
+  }
 }
 
 class TokenManager {
@@ -28,6 +58,7 @@ class TokenManager {
   private isRefreshing = false;
   private gestureRetryCancel: (() => void) | null = null;
   private pendingPostReauthSync = false;
+  private injectedClient: InjectedTokenClient | null = null;
 
   constructor() {
     if (browser) {
@@ -277,7 +308,8 @@ class TokenManager {
         import('../../unified-cloud-manager').then(async ({ unifiedCloudManager }) => {
           try {
             await unifiedCloudManager.fetchAllCloudVolumes();
-            await unifiedCloudManager.syncProgress({ silent: true });
+            const result = await unifiedCloudManager.syncProgress({ silent: true });
+            if (result.succeeded > 0) this.injectedClient?.worked(access_token);
             console.log('✅ Post-reauth sync completed');
           } catch (error) {
             console.warn('Post-reauth sync failed:', error);
@@ -291,7 +323,11 @@ class TokenManager {
     const injected = CLOUD_TEST_HOOKS ? cloudTestToken('google') : null;
     let tokenClient: any;
     if (injected) {
-      tokenClient = injectedTokenClient((response) => this.onTokenResponse(response));
+      this.injectedClient = new InjectedTokenClient(
+        (response) => this.onTokenResponse(response),
+        () => this.getCurrentToken()
+      );
+      tokenClient = this.injectedClient;
     } else {
       // Wait for google Identity Services to be available
       await this.waitForGoogleIdentity();

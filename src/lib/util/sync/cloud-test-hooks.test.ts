@@ -8,6 +8,27 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
 
+/**
+ * The sync a re-auth starts (`pendingPostReauthSync`). `rejects`: the API still
+ * answers 401, so the listing hits `handleAuthError`, which re-auths again.
+ */
+const postReauth = vi.hoisted(() => ({ rounds: 0, synced: 0, rejects: true }));
+vi.mock('./unified-cloud-manager', () => ({
+  unifiedCloudManager: {
+    fetchAllCloudVolumes: async () => {
+      postReauth.rounds++;
+      if (!postReauth.rejects) return;
+      const { tokenManager } = await import('./providers/google-drive/token-manager');
+      tokenManager.reAuthenticate();
+      throw new Error('Authentication expired. Re-authentication in progress...');
+    },
+    syncProgress: async () => {
+      postReauth.synced++;
+      return { totalProviders: 1, succeeded: 1, failed: 0, results: [] };
+    }
+  }
+}));
+
 type Global = Record<string, unknown>;
 
 async function freshHooks() {
@@ -16,6 +37,9 @@ async function freshHooks() {
 }
 
 afterEach(() => {
+  postReauth.rounds = 0;
+  postReauth.synced = 0;
+  postReauth.rejects = true;
   delete (globalThis as Global).__mokuroInteropConfig;
   delete (globalThis as Global).gapi;
   delete (globalThis as Global).google;
@@ -104,6 +128,61 @@ describe('an injected Google token', () => {
     expect(setToken).toHaveBeenCalledWith({ access_token: 'g-token' });
     expect(tokenManager.isAuthenticated()).toBe(true);
     expect(tokenManager.getTimeUntilExpiry()).toBeGreaterThan(3500 * 1000);
+  });
+
+  /** Signed in with an injected token, as the rig's connectDrive does. */
+  async function signedIn() {
+    const hooks = await freshHooks();
+    hooks.setCloudTestToken('google', { access_token: 'g-token', expires_in: 3600 });
+    (globalThis as Global).gapi = { client: { setToken: vi.fn() } };
+    const { tokenManager } = await import('./providers/google-drive/token-manager');
+    await tokenManager.initTokenClient();
+    tokenManager.requestNewToken(true);
+    return { hooks, tokenManager };
+  }
+
+  function current(store: { subscribe: (cb: (v: any) => void) => () => void }) {
+    let value: any;
+    store.subscribe((v) => (value = v))();
+    return value;
+  }
+
+  it('a token the API keeps rejecting ends at the banner, not in a re-auth loop', async () => {
+    const { tokenManager } = await signedIn();
+    // The first 401 (a revoked grant): re-auth, whose sync is refused again.
+    tokenManager.reAuthenticate();
+    await vi.waitFor(() => expect(current(tokenManager.needsAttention)).toBe(true));
+    expect(postReauth.rounds).toBe(1);
+    expect(current(tokenManager.token)).toBe('');
+
+    // The grant stays gone: a later re-auth is refused at once, with no sync.
+    tokenManager.reAuthenticate();
+    expect(current(tokenManager.needsAttention)).toBe(true);
+    expect(current(tokenManager.token)).toBe('');
+    expect(postReauth.rounds).toBe(1);
+  });
+
+  it('a one-off 401 re-grants the token, again after each sync that worked', async () => {
+    const { tokenManager } = await signedIn();
+    postReauth.rejects = false;
+    for (const round of [1, 2]) {
+      tokenManager.reAuthenticate();
+      await vi.waitFor(() => expect(postReauth.synced).toBe(round));
+      expect(current(tokenManager.token)).toBe('g-token');
+      expect(current(tokenManager.needsAttention)).toBe(false);
+    }
+  });
+
+  it('a token the rig mints after a revocation signs in again', async () => {
+    const { hooks, tokenManager } = await signedIn();
+    tokenManager.reAuthenticate();
+    await vi.waitFor(() => expect(current(tokenManager.needsAttention)).toBe(true));
+
+    hooks.setCloudTestToken('google', { access_token: 'g-token-2', expires_in: 3600 });
+    postReauth.rejects = false;
+    tokenManager.requestNewToken(true);
+    expect(current(tokenManager.token)).toBe('g-token-2');
+    expect(current(tokenManager.needsAttention)).toBe(false);
   });
 
   it('never calls Google to revoke it on logout', async () => {

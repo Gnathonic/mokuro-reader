@@ -1639,6 +1639,12 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   for google and onedrive, `gapiShim`); `cloud-test-hooks.ts` reads it once at init. An injected
   Google token replaces Google Identity Services in `token-manager.ts`, an injected OneDrive token
   MSAL (no client id needed).
+- The injected Google client cannot mint: a silent re-auth for the token already held gets the
+  same string back ONCE (a one-off 401 refreshes), and a second rejection before a sync worked
+  with it is `access_denied` — token cleared, banner up — until the rig sets another token
+  (`__mokuroCloudTestHooks.setCloudTestToken('google', …)`). So a revoked-token spec just revokes
+  in cloudsim; a refresh spec that EXPIRES the token sets a newly minted one first, as GIS would
+  hand out.
 - Local rig runs pass `--reader-dir <this worktree>`; `interop/reader.ref` must name a pushed commit.
 
 ### E2E (Playwright)

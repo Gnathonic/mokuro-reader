@@ -256,4 +256,35 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
       await signIn();
     }
   });
+
+  it('a revoked token re-auths once, then leaves the banner up instead of looping', async () => {
+    const attention = () => {
+      let v = false;
+      tokenManager.needsAttention.subscribe((x) => (v = x))();
+      return v;
+    };
+    const reauth = vi.spyOn(tokenManager, 'reAuthenticate');
+    try {
+      await sim.revoke(accessToken);
+      await sim.clearLog();
+      // The first 401 re-grants the same token (a one-off would now work)...
+      await expect(provider.readControlFile('catalog.json')).rejects.toBeInstanceOf(ProviderError);
+      expect(attention()).toBe(false);
+      // ...the second is a gone grant: refused, token cleared, banner up.
+      await expect(provider.readControlFile('catalog.json')).rejects.toBeInstanceOf(ProviderError);
+      await vi.waitFor(() => expect(attention()).toBe(true));
+      expect(reauth).toHaveBeenCalledTimes(2);
+      let token = 'unset';
+      tokenManager.token.subscribe((t) => (token = t))();
+      expect(token).toBe('');
+      // Nothing keeps calling the simulator behind the banner.
+      const calls = (await sim.log()).length;
+      tokenManager.reAuthenticate();
+      expect(attention()).toBe(true);
+      expect((await sim.log()).length).toBe(calls);
+    } finally {
+      reauth.mockRestore();
+      await signIn();
+    }
+  });
 });
