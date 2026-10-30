@@ -85,6 +85,9 @@ vi.mock('$lib/metadata/layer-sync', () => ({
   deleteCloudLayerFile: vi.fn(),
   unpublishCuratedLayer: vi.fn()
 }));
+vi.mock('$lib/metadata/series-file-sync', () => ({
+  settleSeriesFileWrites: vi.fn(async () => {})
+}));
 vi.mock('$lib/metadata/spine-offsets', async () => ({
   ...(await vi.importActual<typeof import('$lib/metadata/spine-offsets')>(
     '$lib/metadata/spine-offsets'
@@ -204,6 +207,7 @@ import {
 import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { publishCuratedLayer, pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
 import { flushSpineOffsetWrites, scheduleSpineOffsetWrite } from '$lib/metadata/spine-offsets';
+import { settleSeriesFileWrites } from '$lib/metadata/series-file-sync';
 import { historySyncAllowed } from '$lib/reading-history/history-sync';
 import { recordPagedPageView } from '$lib/reader/paged-progress';
 import { updateVolumeSetting, volumes as volumeDataStore } from '$lib/settings/volume-data';
@@ -255,7 +259,9 @@ const V1_METHODS = [
   'idle',
   // ...and the shared suite.
   'importVolume',
-  'backupVolume'
+  'backupVolume',
+  // ...and the spine offset scenario (S8).
+  'settleSeriesWrites'
 ];
 
 /** The download worker's end: the volume is installed (or not), then leaves the queue. */
@@ -468,6 +474,13 @@ describe('idle()', () => {
     fetching().set(false);
     await idle;
     expect(done).toBe(true);
+  });
+});
+
+describe('settleSeriesWrites()', () => {
+  it('runs every queued series.json write and waits out those in flight', async () => {
+    await install().settleSeriesWrites();
+    expect(settleSeriesFileWrites).toHaveBeenCalledTimes(1);
   });
 });
 

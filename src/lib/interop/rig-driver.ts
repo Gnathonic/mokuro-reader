@@ -34,6 +34,7 @@ import { deleteVolumeCompletely, importFiles } from '$lib/import';
 import { defaultNaming } from '$lib/import/image-only-review';
 import { decideCurrent, reviewSession } from '$lib/import/review-session';
 import { publishCuratedLayer, pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
+import { settleSeriesFileWrites } from '$lib/metadata/series-file-sync';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import {
@@ -390,6 +391,15 @@ async function backupVolume(
   return { cloudPath: listedArchivePath(row) };
 }
 
+/**
+ * Every `series.json` write queued (the 2 s debounce cut short) or in flight,
+ * done: what the syncs before it asked to write has been written, so a spec
+ * counts its PUTs without waiting out a timer.
+ */
+function settleSeriesWrites(): Promise<void> {
+  return settleSeriesFileWrites();
+}
+
 /** The catalog card's click: the series page, by the title the card navigates with. */
 async function showSeries(series: string): Promise<void> {
   nav.toSeries(series);
@@ -644,7 +654,9 @@ export function createRigDriver() {
     idle,
     // ...and for the shared suite.
     importVolume,
-    backupVolume
+    backupVolume,
+    // ...and for the spine offset scenario (S8).
+    settleSeriesWrites
   };
 }
 

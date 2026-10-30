@@ -760,6 +760,18 @@ export async function flushSeriesFileWrites(): Promise<void> {
   await Promise.all(keys.map((key) => runWrite(key)));
 }
 
+/**
+ * Run every queued write now and wait out every write in flight, until none of
+ * either is left. For the rig driver: "the syncs after X wrote series.json N
+ * times" can only be counted once nothing they queued is still pending.
+ */
+export async function settleSeriesFileWrites(): Promise<void> {
+  while (timers.size > 0 || inFlightWrites.size > 0) {
+    await flushSeriesFileWrites();
+    await Promise.all([...inFlightWrites.values()]);
+  }
+}
+
 let teardown: (() => void) | null = null;
 
 /**

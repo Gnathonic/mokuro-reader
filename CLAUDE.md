@@ -1661,6 +1661,9 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   to the end of its run (`backupQueueSettled`, `util/backup-queue.ts`: the upload, then the run's
   listing and its `series.json`/`catalog.json` writes), answering `{ cloudPath }` or the
   upload's failure.
+- `settleSeriesWrites()` (the spine offset scenario) runs every queued `series.json` write now
+  and waits out those in flight (`settleSeriesFileWrites`, `metadata/series-file-sync.ts`), so a
+  spec counts the writes a sync caused without waiting out the 2 s debounce.
 - An interop build reaches no host off the machine but the ones the config names: the rig
   refuses every other request and FAILS the spec that made it (only `apis.google.com/js/api.js`
   and `accounts.google.com/gsi/client`, which `app.html` loads, are answered, empty). So
