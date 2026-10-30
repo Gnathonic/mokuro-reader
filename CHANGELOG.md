@@ -32,6 +32,7 @@
 - mokuro-bunko: renaming a volume no longer duplicates OCR layers
 - mokuro-bunko: server OCR status shows right after connecting
 - WebDAV asks you to sign in again when your password stops working
+- A full MEGA account no longer deletes your synced progress
 
 ## [1.10.0] - 2026-10-02
 

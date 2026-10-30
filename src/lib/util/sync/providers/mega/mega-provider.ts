@@ -1367,22 +1367,12 @@ export class MegaProvider implements SyncProvider {
           targetFolder = this.current(targetFolder);
           const children = await this.listFolder(targetFolder);
 
-          // Replace semantics: delete EVERY same-name copy (MEGA allows
-          // duplicate names, so racing uploads can leave several). Do NOT
-          // remove them from storage.files manually — the sc stream delivers
-          // the delete and megajs applies it. A copy can also be a ghost —
-          // deleted server-side but never evicted from storage.files by
-          // megajs — so a server "already gone" answer means converged, not
-          // failed.
+          // Replace semantics: EVERY same-name copy goes (MEGA allows duplicate
+          // names, so racing uploads can leave several) — but only once the new
+          // one landed (below): a failed upload (a full account) must not cost
+          // the cloud its only copy. MEGA keeps both meanwhile, and a reader
+          // listing them merges or takes the newest.
           const existingFiles = children.filter((f: any) => f.name === fileName && !f.directory);
-          for (const existingFile of existingFiles) {
-            await new Promise<void>((resolve, reject) => {
-              existingFile.delete(true, (error: Error | null) => {
-                if (error && !isMegaNotFoundError(error)) reject(error);
-                else resolve();
-              });
-            });
-          }
 
           // Upload new file. The completed node's `timestamp` is the SERVER's
           // epoch-seconds stamp — the same field `listCloudVolumes` maps to
@@ -1427,6 +1417,19 @@ export class MegaProvider implements SyncProvider {
               });
             }
           });
+          // Do NOT remove the old copies from storage.files manually — the sc
+          // stream delivers the delete and megajs applies it. A copy can also be
+          // a ghost — deleted server-side but never evicted from storage.files
+          // by megajs — so a server "already gone" answer means converged, not
+          // failed.
+          for (const existingFile of existingFiles) {
+            await new Promise<void>((resolve, reject) => {
+              existingFile.delete(true, (error: Error | null) => {
+                if (error && !isMegaNotFoundError(error)) reject(error);
+                else resolve();
+              });
+            });
+          }
           return uploadResult;
         },
         `Upload ${path} to MEGA`,
