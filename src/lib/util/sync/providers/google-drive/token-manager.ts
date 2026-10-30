@@ -3,6 +3,22 @@ import { browser } from '$app/environment';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { showSnackbar } from '$lib/util/snackbar';
 import { onNextUserGesture } from '$lib/util/user-gesture';
+import { CLOUD_TEST_HOOKS, cloudTestToken } from '../../cloud-test-hooks';
+
+/**
+ * The interop rig's stand-in for a GIS token client: every request answers at
+ * once with the token the rig injected (`cloudTestToken('google')`, read per
+ * request so a re-minted one is what a re-auth gets). Reached only through a
+ * `CLOUD_TEST_HOOKS` guard, so a production build drops it.
+ */
+function injectedTokenClient(callback: (response: any) => void) {
+  return {
+    requestAccessToken: () => {
+      const token = cloudTestToken('google');
+      callback(token ? { ...token } : { error: 'access_denied' });
+    }
+  };
+}
 
 class TokenManager {
   private tokenStore = writable<string>('');
@@ -209,91 +225,95 @@ class TokenManager {
     console.log('✅ Google Identity Services loaded');
   }
 
-  async initTokenClient(): Promise<void> {
-    // Wait for google Identity Services to be available
-    await this.waitForGoogleIdentity();
+  /** A token client's answer: a token, or an OAuth error. */
+  private onTokenResponse(response: any): void {
+    if (response?.error) {
+      console.error('Token client error:', response.error, response.error_description);
 
-    const tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_DRIVE_CONFIG.CLIENT_ID,
-      scope: GOOGLE_DRIVE_CONFIG.SCOPES,
-      callback: (response: any) => {
-        if (response?.error) {
-          console.error('Token client error:', response.error, response.error_description);
-
-          // Handle specific error cases
-          if (response.error === 'access_denied') {
-            // User denied access OR permissions were revoked server-side by user/Google
-            // Clear auth history to force full consent screen on next attempt
-            this.clearToken(false);
-            this.needsAttentionStore.set(true);
-            showSnackbar(
-              'Google Drive access was denied. Please sign in again to grant permissions.'
-            );
-          } else if (response.error === 'popup_closed') {
-            // User closed the popup - don't clear anything, they might retry
-            // Preserve all state so they can try again immediately
-            showSnackbar('Sign-in cancelled. Please try again when ready.');
-          } else if (
-            response.error === 'popup_failed_to_open' ||
-            response.error === 'popup_blocked'
-          ) {
-            // Popup was blocked (no user activation). Retry inside the next
-            // real click/tap, where blockers always allow it.
-            console.log('Popup was blocked by browser — arming gesture retry');
-            this.armGestureRetry();
-          } else {
-            // Other errors (network issues, etc.) - keep auth history but clear token
-            // Next sign-in will use minimal prompt since permissions weren't explicitly denied
-            this.clearToken(true);
-            this.needsAttentionStore.set(true);
-            showSnackbar('Authentication failed. Please try signing in again.');
-          }
-
-          this.isRefreshing = false;
-          return;
-        }
-
-        const { access_token, expires_in } = response;
-        if (access_token) {
-          this.setToken(access_token, expires_in);
-          gapi.client.setToken({ access_token });
-
-          // Update provider manager to trigger reactive updates (dynamic import to avoid circular dependency)
-          import('../../provider-manager').then(({ providerManager }) => {
-            providerManager.updateStatus();
-          });
-
-          // After a RE-auth (not initial login — CloudView owns that flow),
-          // pull cloud state immediately. Without this, nothing syncs until
-          // the user turns pages, whose fresher timestamps would then win the
-          // newest-wins merge and clobber progress made on another device.
-          if (this.pendingPostReauthSync) {
-            this.pendingPostReauthSync = false;
-            import('../../unified-cloud-manager').then(async ({ unifiedCloudManager }) => {
-              try {
-                await unifiedCloudManager.fetchAllCloudVolumes();
-                await unifiedCloudManager.syncProgress({ silent: true });
-                console.log('✅ Post-reauth sync completed');
-              } catch (error) {
-                console.warn('Post-reauth sync failed:', error);
-              }
-            });
-          }
-        }
-      },
-      // GIS reports NON-OAuth failures here, not in `callback` — in particular
-      // popup_failed_to_open when the blocker eats a background-triggered
-      // popup. Without this handler, blocked auto re-auth failed silently.
-      error_callback: (error: { type?: string; message?: string }) => {
-        console.warn('Token client non-OAuth error:', error?.type, error?.message);
-        if (error?.type === 'popup_failed_to_open') {
-          this.armGestureRetry();
-        } else if (error?.type === 'popup_closed') {
-          showSnackbar('Sign-in cancelled. Please try again when ready.');
-        }
-        this.isRefreshing = false;
+      // Handle specific error cases
+      if (response.error === 'access_denied') {
+        // User denied access OR permissions were revoked server-side by user/Google
+        // Clear auth history to force full consent screen on next attempt
+        this.clearToken(false);
+        this.needsAttentionStore.set(true);
+        showSnackbar('Google Drive access was denied. Please sign in again to grant permissions.');
+      } else if (response.error === 'popup_closed') {
+        // User closed the popup - don't clear anything, they might retry
+        // Preserve all state so they can try again immediately
+        showSnackbar('Sign-in cancelled. Please try again when ready.');
+      } else if (response.error === 'popup_failed_to_open' || response.error === 'popup_blocked') {
+        // Popup was blocked (no user activation). Retry inside the next
+        // real click/tap, where blockers always allow it.
+        console.log('Popup was blocked by browser — arming gesture retry');
+        this.armGestureRetry();
+      } else {
+        // Other errors (network issues, etc.) - keep auth history but clear token
+        // Next sign-in will use minimal prompt since permissions weren't explicitly denied
+        this.clearToken(true);
+        this.needsAttentionStore.set(true);
+        showSnackbar('Authentication failed. Please try signing in again.');
       }
-    });
+
+      this.isRefreshing = false;
+      return;
+    }
+
+    const { access_token, expires_in } = response;
+    if (access_token) {
+      this.setToken(access_token, expires_in);
+      gapi.client.setToken({ access_token });
+
+      // Update provider manager to trigger reactive updates (dynamic import to avoid circular dependency)
+      import('../../provider-manager').then(({ providerManager }) => {
+        providerManager.updateStatus();
+      });
+
+      // After a RE-auth (not initial login — CloudView owns that flow),
+      // pull cloud state immediately. Without this, nothing syncs until
+      // the user turns pages, whose fresher timestamps would then win the
+      // newest-wins merge and clobber progress made on another device.
+      if (this.pendingPostReauthSync) {
+        this.pendingPostReauthSync = false;
+        import('../../unified-cloud-manager').then(async ({ unifiedCloudManager }) => {
+          try {
+            await unifiedCloudManager.fetchAllCloudVolumes();
+            await unifiedCloudManager.syncProgress({ silent: true });
+            console.log('✅ Post-reauth sync completed');
+          } catch (error) {
+            console.warn('Post-reauth sync failed:', error);
+          }
+        });
+      }
+    }
+  }
+
+  async initTokenClient(): Promise<void> {
+    const injected = CLOUD_TEST_HOOKS ? cloudTestToken('google') : null;
+    let tokenClient: any;
+    if (injected) {
+      tokenClient = injectedTokenClient((response) => this.onTokenResponse(response));
+    } else {
+      // Wait for google Identity Services to be available
+      await this.waitForGoogleIdentity();
+
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_DRIVE_CONFIG.CLIENT_ID,
+        scope: GOOGLE_DRIVE_CONFIG.SCOPES,
+        callback: (response: any) => this.onTokenResponse(response),
+        // GIS reports NON-OAuth failures here, not in `callback` — in particular
+        // popup_failed_to_open when the blocker eats a background-triggered
+        // popup. Without this handler, blocked auto re-auth failed silently.
+        error_callback: (error: { type?: string; message?: string }) => {
+          console.warn('Token client non-OAuth error:', error?.type, error?.message);
+          if (error?.type === 'popup_failed_to_open') {
+            this.armGestureRetry();
+          } else if (error?.type === 'popup_closed') {
+            showSnackbar('Sign-in cancelled. Please try again when ready.');
+          }
+          this.isRefreshing = false;
+        }
+      });
+    }
 
     this.tokenClientStore.set(tokenClient);
 
@@ -351,8 +371,10 @@ class TokenManager {
     }
 
     const currentToken = this.getCurrentToken();
+    // An injected token is the simulator's: there is nothing at Google to revoke.
+    const injected = CLOUD_TEST_HOOKS ? cloudTestToken('google') : null;
 
-    if (currentToken) {
+    if (currentToken && !injected) {
       await this.revokeToken(currentToken);
     }
 
