@@ -8,6 +8,9 @@
  * a seeded server); the reader's tests parse those instead of hand-written
  * JSON. The reader records the requests it sends (`recordRequest`) into
  * `interop/contract/reader/*.json`, which Bunko replays (`contract_replay`).
+ * Two rule files both sides run as vectors sit beside them: the content seal
+ * (`seal/*.json`, `sealVectors`) and sidecar names rule v1
+ * (`sidecar-names.json`, `sidecarNameVectors`).
  *
  * The fixtures are read from a Bunko checkout, never copied into this repo:
  * `BUNKO_REPO` (CI), else a sibling `mokuro-webdav-library` checkout. Without
@@ -17,7 +20,7 @@
  * Test-only: never import this from app code.
  */
 import { describe } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 
 /** The reader repo's root (this file is `src/lib/interop/contract.ts`). */
@@ -127,6 +130,26 @@ export function describeContract(name: string, fn: () => void): void {
   describe.skipIf(!hasContract())(name, fn);
 }
 
+/**
+ * `describeContract` for tests of one contract file or folder (`rel`, under
+ * `interop/contract/`) that a Bunko checkout from before it lacks: skipped
+ * with a warning there, a failure with `BUNKO_CONTRACT_REQUIRED=1` — the rule
+ * for a missing checkout.
+ */
+export function describeContractFile(rel: string, name: string, fn: () => void): void {
+  requireContract();
+  warnMissingContract();
+  const dir = contractDir();
+  const present = !!dir && existsSync(join(dir, rel));
+  if (dir && !present) {
+    if (process.env.BUNKO_CONTRACT_REQUIRED === '1') {
+      throw new Error(`BUNKO_CONTRACT_REQUIRED=1 but ${dir} has no ${rel}`);
+    }
+    console.warn(`[contract] ${dir} has no ${rel} (an older Bunko): "${name}" is SKIPPED.`);
+  }
+  describe.skipIf(!present)(name, fn);
+}
+
 function readJson(path: string): any {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
@@ -174,6 +197,61 @@ export function loadBunkoFixture(name: string, opts: { now?: number } = {}): Fix
   const dir = contractDir();
   if (!dir) throw new Error(`no Bunko contract to load ${name} from (see describeContract)`);
   return rebase(readJson(join(dir, 'bunko', `${name}.json`)), opts.now ?? Date.now());
+}
+
+/** One `interop/contract/seal/<name>.json` (Bunko's README, "Seal vectors"). */
+export interface SealVector {
+  /** The file's stem (`runner-output`). */
+  name: string;
+  description: string;
+  /** The sidecar's exact text: Python's float spellings and key order survive it. */
+  document: string;
+  /** The JCS text seal v1 hashes for it, or null when no seal can be made. */
+  seal_input: string | null;
+  /** What sealing the document sets (also when its own seal no longer checks), or null. */
+  seal: string | null;
+  /** Its block's own seal is a well-formed v1 seal that checks. */
+  is_sealed: boolean;
+}
+
+/**
+ * Every seal vector Bunko blessed, by name; none without them (a test file
+ * reads them while vitest collects it, under `describeContractFile('seal')`).
+ */
+export function sealVectors(): SealVector[] {
+  const dir = contractDir();
+  const seal = dir && join(dir, 'seal');
+  if (!seal || !existsSync(seal)) return [];
+  return readdirSync(seal)
+    .filter((f) => f.endsWith('.json'))
+    .sort()
+    .map((f) => ({ name: f.slice(0, -'.json'.length), ...readJson(join(seal, f)) }));
+}
+
+/** `interop/contract/sidecar-names.json`: sidecar names rule v1, as vectors (README). */
+export interface SidecarNameVectors {
+  rule: number;
+  classify: Array<{
+    name: string;
+    folder: string[];
+    expect:
+      | { kind: 'primary'; stem: string; gz: boolean }
+      | { kind: 'layer'; stem: string; layer: string; gz: boolean }
+      | { kind: 'orphan' };
+    why: string;
+  }>;
+  layer_class: Array<{
+    id: string;
+    class: 'personal' | 'curated' | 'server-keepsake' | 'reserved' | 'other';
+  }>;
+  sweep: Array<{ archive: string; folder: string[]; expect: string[]; why: string }>;
+}
+
+/** The vectors, or null without them (read while vitest collects, as `sealVectors`). */
+export function sidecarNameVectors(): SidecarNameVectors | null {
+  const dir = contractDir();
+  const file = dir && join(dir, 'sidecar-names.json');
+  return file && existsSync(file) ? readJson(file) : null;
 }
 
 /**

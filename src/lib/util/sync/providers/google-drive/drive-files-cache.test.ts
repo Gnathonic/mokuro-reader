@@ -32,7 +32,7 @@ import { googleDriveProvider } from './google-drive-provider';
 import { driveFilesCache } from './drive-files-cache';
 import { CACHE_MUTATION_COALESCE_MS } from '../../coalesced-cache-store';
 import { COLD_START_GRACE_S, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
-import { activeBunkoMarker } from '$lib/catalog/__fixtures__/bunko-marker-active';
+import { servedMarker } from '$lib/catalog/__fixtures__/bunko-marker';
 
 describe('driveFilesCache', () => {
   beforeEach(() => {
@@ -615,7 +615,7 @@ describe('driveFilesCache dedup refetch', () => {
  * aside while that holder is FRESH, and takes over again once it is not.
  */
 describe('driveFilesCache dedup under a cloud-direct Bunko', () => {
-  const marker = activeBunkoMarker();
+  const marker = servedMarker(Date.parse('2026-10-29T12:00:00.000Z'));
   /** Bunko's clock at its last heartbeat: a cold read then sees a fresh holder. */
   const heartbeat = Date.parse(marker.heartbeat_at);
   let now = heartbeat;

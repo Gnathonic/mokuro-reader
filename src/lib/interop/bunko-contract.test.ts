@@ -4,7 +4,8 @@
  * its `contract_export` test), fed through the reader's real parsing code. A
  * field Bunko renames or drops fails here, in the reader's own terms.
  *
- * The seed: `reader` (uploader), `viewer` (no write rights), `admin`; series
+ * The seed: `reader` (uploader), `viewer` (no write rights), `admin`,
+ * `progress` (registered: progress, history and its own corrections); series
  * `Contract Series` (Volume 01 with OCR, Volume 02 without) and `日本語シリーズ`
  * (`第1巻`, with OCR).
  */
@@ -48,6 +49,7 @@ import {
   type Fixture
 } from './contract';
 import { fetchServerIdentity } from '$lib/util/sync/providers/webdav/identity';
+import { bunkoSupportsHistory } from '$lib/util/sync/providers/webdav/bunko-version';
 import { requestBunkoToken, revokeBunkoToken } from '$lib/util/sync/providers/webdav/bunko-token';
 import { loadVolumeManifest, parseVolumeManifest } from '$lib/import/deep-link-manifest';
 import { parseQueueFile } from '$lib/catalog/server-ocr-queue';
@@ -64,6 +66,12 @@ import {
   uploadFileWithClient
 } from '$lib/util/sync/providers/webdav/webdav-upload';
 import { classifyWriteError } from '$lib/util/sync/providers/webdav/webdav-errors';
+import { webdavCore } from '$lib/util/sync/core/providers/webdav-core';
+import { ProviderError } from '$lib/util/sync/provider-interface';
+import { canPublishCurated } from '$lib/util/sync/account-capabilities';
+import { layerSidecarName } from '$lib/util/sync/syncable-file';
+import { CURATED_LAYER_ID, EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
+import { parseHistoryPath } from '$lib/reading-history/paths';
 
 const SERVER = 'https://bunko.example';
 const NOW = Date.parse('2026-10-28T12:00:00Z');
@@ -84,6 +92,18 @@ afterEach(() => {
   fetchHandler.impl = null;
 });
 
+/**
+ * What every `/login/api/me` of a 0.8 Bunko reports beside the account. The
+ * version is the fixtures' sentinel: it sits below 0.8.0 on purpose, so a
+ * history gate derived from a recorded identity is OFF (C19) — a test that
+ * needs it on sets it itself.
+ */
+const BUNKO_08 = {
+  serverVersion: '0.0.0',
+  perUserFiles: ['volume-data.json', 'profiles.json', 'goals.json', 'positions.json', 'history/'],
+  perUserLayers: ['edit']
+};
+
 describeContract('identity (`/login/api/me`) as Bunko answers it', () => {
   const identify = (name: string, user?: string, pw?: string, token?: string) =>
     fetchServerIdentity(SERVER, user, pw, fixtureFetch([fx(name)]).fetch, token);
@@ -98,10 +118,36 @@ describeContract('identity (`/login/api/me`) as Bunko answers it', () => {
         canWriteProgress: true,
         canAddFiles: true,
         canModifyDelete: false,
-        metadata: { scope: 'owned', ownedSeries: [] }
+        metadata: { scope: 'owned', ownedSeries: [] },
+        curated: { scope: 'owned' }
       },
-      endpoint: `${SERVER}/login/api/me`
+      endpoint: `${SERVER}/login/api/me`,
+      ...BUNKO_08
     });
+  });
+
+  it('a registered account may write progress only, and publish no corrections', async () => {
+    const result = await identify('login-me-registered', 'progress', password('progress'));
+    expect(result).toEqual({
+      kind: 'authenticated',
+      username: 'progress',
+      role: 'registered',
+      permissions: {
+        canWriteProgress: true,
+        canAddFiles: false,
+        canModifyDelete: false,
+        metadata: { scope: 'none' },
+        curated: { scope: 'none' }
+      },
+      endpoint: `${SERVER}/login/api/me`,
+      ...BUNKO_08
+    });
+  });
+
+  it('the sentinel version never turns the history gate on', () => {
+    expect(bunkoSupportsHistory(BUNKO_08.serverVersion, BUNKO_08.perUserFiles)).toBe(false);
+    // The gate itself, on a real 0.8 version: the list Bunko reports carries `history/`.
+    expect(bunkoSupportsHistory('0.8.0-beta.1', BUNKO_08.perUserFiles)).toBe(true);
   });
 
   it('a bearer token signs in as the same account', async () => {
@@ -128,7 +174,7 @@ describeContract('identity (`/login/api/me`) as Bunko answers it', () => {
   });
 
   it('no credentials is anonymous, a wrong password is invalid', async () => {
-    expect(await identify('login-me-anonymous')).toEqual({ kind: 'anonymous' });
+    expect(await identify('login-me-anonymous')).toEqual({ kind: 'anonymous', ...BUNKO_08 });
     expect(await identify('login-me-bad-password', 'reader', 'not-the-password')).toEqual({
       kind: 'invalid-credentials'
     });
@@ -659,5 +705,231 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     const vol = files.find((f: { path: string }) => f.path === 'Contract Series/Volume 01.cbz');
     expect(vol.size).toBeGreaterThan(0);
     expect(vol.fileId).toBe('/mokuro-reader/Contract Series/Volume 01.cbz');
+  });
+});
+
+/** The upload every WebDAV write goes through (main thread and Workers alike), as `user`. */
+const credentialsOf = (user: string) => ({
+  webdavUrl: SERVER,
+  webdavUsername: user,
+  webdavPassword: password(user),
+  // Bunko stages and verifies PUTs (`X-Mokuro-Put: verified`): no delete first.
+  webdavPutVerified: true
+});
+const uploadAs = (user: string, path: string, blob: Blob) => {
+  const parts = path.split('/');
+  const filename = parts.pop()!;
+  return webdavCore.uploadFile({
+    seriesTitle: parts.join('/'),
+    filename,
+    blob,
+    credentials: credentialsOf(user)
+  });
+};
+/** A fixture's request path, relative to the library (`mokuro-reader/`). */
+const libraryPath = (f: Fixture) =>
+  decodeURIComponent(f.request.path!).replace(/^\/mokuro-reader\//, '');
+
+describeContract('a registered account as Bunko reports it', () => {
+  let provider: any;
+
+  beforeAll(async () => {
+    localStorage.clear();
+    fetchHandler.impl = fixtureFetch([
+      fx('propfind-server-root-depth1'),
+      fx('propfind-library-depth0'),
+      fx('login-me-registered'),
+      fx('login-token-issue'),
+      fx('options-library')
+    ]).fetch;
+    const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+    provider = new WebDAVProvider();
+    await provider.whenReady();
+    await provider.login({
+      serverUrl: SERVER,
+      username: 'progress',
+      password: password('progress')
+    });
+    // Its uploads through the real WebDAV core, not this file's stub.
+    provider.cloudCore = webdavCore;
+  });
+
+  beforeEach(() => {
+    xhrAnswers = [];
+    vi.stubGlobal('XMLHttpRequest', FixtureXhr);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('signs in writable: positions and corrections per account, no Publish', () => {
+    const status = provider.getStatus();
+    expect(status).toMatchObject({
+      isAuthenticated: true,
+      isReadOnly: false,
+      serverCompilesMetadata: true,
+      positionsSync: true,
+      editLayerSync: 'push',
+      curatedPublish: 'none',
+      canAddFiles: false,
+      canModifyDelete: false
+    });
+    // The sentinel version is below 0.8.0: off here, whatever Bunko keeps (C19).
+    expect(status.historySync).toBe(false);
+    expect(canPublishCurated(status, 'Contract Series')).toBe(false);
+  });
+
+  it('its listing carries its own history tree beside the library', async () => {
+    fetchHandler.impl = fixtureFetch([
+      fx('propfind-library-depth0'),
+      fx('history-propfind-reader-root-infinity')
+    ]).fetch;
+    const files = await provider.listCloudVolumes();
+    expect(
+      files
+        .filter((f: { path: string }) => parseHistoryPath(f.path))
+        .map((f: { path: string; size: number }) => [f.path, f.size])
+    ).toEqual([['history/0f6c-dev/2026-10.events', 25]]);
+    expect(files.some((f: { path: string }) => f.path === 'Contract Series/Volume 01.cbz')).toBe(
+      true
+    );
+  });
+
+  it('another account’s listing of the same library carries none of it', async () => {
+    fetchHandler.impl = fixtureFetch([
+      fx('propfind-library-depth0'),
+      fx('history-propfind-other-user')
+    ]).fetch;
+    const files = await provider.listCloudVolumes();
+    expect(files.length).toBeGreaterThan(0);
+    expect(files.filter((f: { path: string }) => f.path.startsWith('history/'))).toEqual([]);
+  });
+
+  it('a device folder listed one level deep holds its segment', async () => {
+    const f = fx('history-propfind-depth1');
+    fetchHandler.impl = fixtureFetch([f]).fetch;
+    // What the recursive listing (no Depth: infinity) reads for each folder.
+    const contents = await provider.client.getDirectoryContents(f.request.path);
+    expect(
+      contents.map((c: { type: string; filename: string; size: number }) => [
+        c.type,
+        c.filename.replace('/mokuro-reader/', ''),
+        c.size
+      ])
+    ).toEqual([['file', 'history/0f6c-dev/2026-10.events', 25]]);
+  });
+
+  it('a refused curated publish is that file’s refusal, never a read-only server', async () => {
+    const f = fx('curated-put-refused');
+    fetchHandler.impl = fixtureFetch([fx('propfind-library-depth0')]).fetch;
+    xhrAnswers = [f];
+    const path = libraryPath(f);
+    expect(path).toBe(`Contract Series/${layerSidecarName('Volume 01', CURATED_LAYER_ID)}`);
+    const err = await provider
+      .uploadFile(path, new Blob([JSON.stringify(f.request.body)]))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err).toMatchObject({ code: 'PERMISSION_DENIED', webdavErrorType: 'permission' });
+    expect(provider.getStatus().isReadOnly).toBe(false);
+  });
+});
+
+describeContract('reading history uploads as Bunko answers them', () => {
+  beforeEach(() => {
+    xhrAnswers = [];
+    vi.stubGlobal('XMLHttpRequest', FixtureXhr);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  /**
+   * Bunko's answer `f` to the same request at `path`. The reader names a
+   * collection with its trailing slash (`/mokuro-reader/history/`), Bunko's
+   * export did not; whether Bunko takes the reader's spelling is the
+   * `history-mkcol` record's to show (`reader-requests.test.ts`).
+   */
+  const at = (f: Fixture, path: string): Fixture => ({ ...f, request: { ...f.request, path } });
+  const HISTORY = '/mokuro-reader/history/';
+  const DEVICE = '/mokuro-reader/history/0f6c-dev/';
+  const mkcols = (calls: ReturnType<typeof fixtureFetch>['calls']) =>
+    calls.filter((c) => c.method === 'MKCOL').map((c) => new URL(c.url).pathname);
+
+  it('Bunko’s segment path is one the reader reads as a month of a device', () => {
+    expect(parseHistoryPath(libraryPath(fx('history-put')))).toEqual({
+      device: '0f6c-dev',
+      kind: 'month',
+      month: '2026-10'
+    });
+  });
+
+  it('a first upload makes history/ and the device folder, then stores the segment, verified', async () => {
+    const put = fx('history-put');
+    const path = libraryPath(put);
+    const answers = fixtureFetch([
+      fx('propfind-library-depth0'),
+      at(fx('history-mkcol'), HISTORY),
+      at(fx('history-mkcol'), DEVICE)
+    ]);
+    fetchHandler.impl = answers.fetch;
+    xhrAnswers = [put];
+    const result = await uploadAs('progress', path, new Blob([put.request.body_text!]));
+    expect(result).toEqual({
+      fileId: `/mokuro-reader/${path}`,
+      serverDigestVerified: 'sha-256'
+    });
+    // Both answered by the fixtures above, at exactly these paths.
+    expect(mkcols(answers.calls)).toEqual([HISTORY, DEVICE]);
+  });
+
+  it('a history folder another device just made (405) does not stop the upload', async () => {
+    const put = fx('history-put');
+    expect(fx('history-mkcol-exists').status).toBe(405);
+    const answers = fixtureFetch([
+      fx('propfind-library-depth0'),
+      at(fx('history-mkcol-exists'), HISTORY),
+      at(fx('history-mkcol'), DEVICE)
+    ]);
+    fetchHandler.impl = answers.fetch;
+    xhrAnswers = [put];
+    const result = await uploadAs('progress', libraryPath(put), new Blob([put.request.body_text!]));
+    expect(result.serverDigestVerified).toBe('sha-256');
+    expect(mkcols(answers.calls)).toEqual([HISTORY, DEVICE]);
+  });
+});
+
+describeContract('corrections as Bunko answers them', () => {
+  beforeEach(() => {
+    xhrAnswers = [];
+    vi.stubGlobal('XMLHttpRequest', FixtureXhr);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('an account’s own edit layer is stored and verified under the reader’s name for it', async () => {
+    const f = fx('personal-put');
+    const path = libraryPath(f);
+    expect(path).toBe(`Contract Series/${layerSidecarName('Volume 01', EDIT_LAYER_ID)}`);
+    // Bunko took it as corrections: an `edited` block, no `ocr_engine`.
+    expect(f.request.body).toHaveProperty('edited.by', 'mokuro-reader');
+    expect(f.request.body).not.toHaveProperty('ocr_engine');
+    fetchHandler.impl = fixtureFetch([fx('propfind-library-depth0')]).fetch;
+    xhrAnswers = [f];
+    const result = await uploadAs('progress', path, blobFor(f));
+    expect(result).toEqual({
+      fileId: `/mokuro-reader/${path}`,
+      serverDigestVerified: 'sha-256'
+    });
+  });
+
+  it('another account’s edit layer is a plain 404 to this one, not retried', async () => {
+    const f = fx('personal-get-other-user');
+    const answers = fixtureFetch([f]);
+    fetchHandler.impl = answers.fetch;
+    const err = await webdavCore
+      .downloadFile({
+        fileId: decodeURIComponent(f.request.path!),
+        credentials: credentialsOf('reader'),
+        onProgress: () => {}
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('404');
+    expect(answers.calls.filter((c) => c.method === 'GET')).toHaveLength(1);
   });
 });

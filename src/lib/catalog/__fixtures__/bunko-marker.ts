@@ -6,8 +6,9 @@
 import { bunkoBody } from '$lib/interop/contract';
 
 /**
- * `marker-active`'s body as exported (sentinel times and ids). `bunko-contract.test.ts`
- * checks it still equals the fixture whenever a Bunko checkout is there.
+ * `marker-active`'s body as exported (sentinel times and ids), in its key order.
+ * `bunko-contract.test.ts` checks it still equals the fixture whenever a Bunko
+ * checkout is there.
  */
 export const MARKER_SNAPSHOT = {
   version: 1,
@@ -24,10 +25,16 @@ export const MARKER_SNAPSHOT = {
   compiles: ['series.json', 'catalog.json'],
   ocr: true,
   queue: '.mokuro-queue.json',
-  took_over_from: null as string | null
+  dedup: true,
+  curated: true,
+  took_over_from: null as string | null,
+  per_user_files: ['volume-data.json', 'profiles.json', 'goals.json', 'positions.json', 'history/']
 };
 
-/** The marker Bunko writes, its times rebased onto `now`. */
+/**
+ * The marker Bunko writes, its times rebased onto `now`. A 0.8 marker, with
+ * `dedup`, `curated` and `per_user_files`: a test of a 0.7 marker deletes them.
+ */
 export function servedMarker(now: number): typeof MARKER_SNAPSHOT {
   return bunkoBody('marker-active', MARKER_SNAPSHOT, now);
 }

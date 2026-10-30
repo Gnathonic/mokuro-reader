@@ -284,9 +284,10 @@ describe('series-metadata.json stays retired', () => {
   });
 
   // Sidecar names rule v1 — the same rule as mokuro-bunko's
-  // `bunko_core::sidecar_names`. These are the vectors of its contract file
-  // (`interop/contract/sidecar-names.json`), encoded by hand until the reader
-  // reads that file directly.
+  // `bunko_core::sidecar_names`. These are vectors of its contract file
+  // (`interop/contract/sidecar-names.json`), encoded by hand so they run
+  // without a Bunko checkout; `$lib/interop/sidecar-names.contract.test.ts`
+  // runs the file itself.
   describe('sidecar names rule v1', () => {
     const NFC = 'V\u00f3l 1'; // Vól 1, composed
     const NFD = 'Vo\u0301l 1'; // Vól 1, decomposed
