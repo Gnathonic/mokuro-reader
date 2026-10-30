@@ -564,7 +564,11 @@ So `edit` lives per account on a bunko that lists it in `per_user_layers`
 (the server serves each account its own file at the same path), stays on the
 device on any other bunko, and syncs as a normal layer file on plain storage
 and in cloud-direct folders (the folder owner's file). Hand-made ids stay
-shared library files.
+shared library files. A backup sends an `edit` (or `curated`) file only AFTER
+the volume's archive (`uploadVolumeFiles`, `volume-upload-order.ts`, Worker and
+main thread alike): bunko refuses it with 409 `no-volume` while no `<Volume>.cbz`
+is listed beside it. A refusal there fails nothing — the layer is left unstamped
+and the next listing's layer sync pushes it.
 
 **Shared layers are read-only; an edit forks into `edit`.**
 `forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
