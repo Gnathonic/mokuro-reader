@@ -114,7 +114,24 @@ vi.mock('$lib/import', () => ({
     h.calls.push('deleteVolumeCompletely');
   })
 }));
-vi.mock('$lib/util/hash-router', () => ({ nav: { toReader: vi.fn() } }));
+vi.mock('$lib/util/hash-router', () => ({ nav: { toReader: vi.fn(), toSeries: vi.fn() } }));
+/** The download queue as the cards see it; a spec plays the worker (`finishDownload`). */
+const dq = vi.hoisted(() => ({ queued: [] as Array<Record<string, unknown>> }));
+vi.mock('$lib/util/download-queue', async () => {
+  const { writable } = await import('svelte/store');
+  const store = writable<Array<{ volumeUuid: string }>>([]);
+  return {
+    downloadQueue: {
+      subscribe: store.subscribe,
+      queueVolume: vi.fn((volume: Record<string, unknown>) => {
+        if (!volume.cloudFileId) return; // as the queue: nothing to download it from
+        dq.queued.push(volume);
+        store.update((q) => [...q, { volumeUuid: volume.volume_uuid as string }]);
+      }),
+      finish: (uuid: string) => store.update((q) => q.filter((i) => i.volumeUuid !== uuid))
+    }
+  };
+});
 vi.mock('$lib/util/series-rename', () => ({
   executeRenameSeries: vi.fn(async (_old: string, next: string) => ({
     finalTitle: next,
@@ -160,6 +177,8 @@ import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { renameVolumeInCloud, updateVolumeInDb } from '$lib/util/volume-editor';
+import { downloadQueue } from '$lib/util/download-queue';
+import { queueStatusStore } from '$lib/catalog/server-ocr-pending';
 import { RIG_CAPABILITIES, install } from './rig-driver';
 
 const statusStore = activeProviderStatus as unknown as Writable<Record<string, unknown> | null>;
@@ -185,8 +204,20 @@ const V1_METHODS = [
   'selectLayer',
   'providerStatus',
   'controlState',
-  'historyStatus'
+  'historyStatus',
+  // Additions within v1 (the rig's dav and api suites).
+  'showSeries',
+  'pendingOcr'
 ];
+
+/** The download worker's end: the volume is installed (or not), then leaves the queue. */
+async function finishDownload(uuid: string, installed: boolean) {
+  if (installed) {
+    await db.volumes.update(uuid, { metadata_only: undefined });
+    await db.volume_ocr.put({ volume_uuid: uuid, pages: PAGES });
+  }
+  (downloadQueue as unknown as { finish: (u: string) => void }).finish(uuid);
+}
 
 function pg(text: string, img_path = 'p.png'): Page {
   return {
@@ -203,6 +234,8 @@ const PAGES = [pg('あい'), pg('うえ', 'q.png')];
 beforeEach(async () => {
   delete (globalThis as Record<string, unknown>).__mokuroInterop;
   h.calls.length = 0;
+  dq.queued.length = 0;
+  queueStatusStore.set({});
   vi.clearAllMocks();
   vi.mocked(providerManager.getActiveProvider).mockReturnValue(null);
   statusStore.set(null);
@@ -406,8 +439,80 @@ describe('library()', () => {
 
 describe('reading', () => {
   it('open navigates to the reader for the volume', async () => {
-    await install().open('v1');
+    expect(await install().open('v1')).toEqual({ id: 'v1' });
     expect(nav.toReader).toHaveBeenCalledWith('s1', 'v1');
+    expect(downloadQueue.queueVolume).not.toHaveBeenCalled();
+  });
+
+  it("open downloads a volume not on this device first, as the card's Download does", async () => {
+    listed('Series A/Vol 2.cbz');
+    const opening = install().open('v2');
+    await vi.waitFor(() => expect(dq.queued).toHaveLength(1));
+    // The metadata-only row, with the listed archive to download it from.
+    expect(dq.queued[0]).toMatchObject({
+      volume_uuid: 'v2',
+      cloudFileId: 'Series A/Vol 2.cbz',
+      cloudProvider: 'webdav'
+    });
+    expect(nav.toReader).not.toHaveBeenCalled();
+    await finishDownload('v2', true);
+    expect(await opening).toEqual({ id: 'v2' });
+    expect(nav.toReader).toHaveBeenCalledWith('s1', 'v2');
+  });
+
+  it('open downloads a cloud-only volume from its placeholder', async () => {
+    listed('Series B/Vol 9.cbz');
+    const id = (await install().library()).volumes.find((v) => v.series === 'Series B')!.id;
+    const opening = install().open(id);
+    await vi.waitFor(() => expect(dq.queued).toHaveLength(1));
+    expect(dq.queued[0]).toMatchObject({ volume_uuid: id, cloudFileId: 'Series B/Vol 9.cbz' });
+    // The download lands on the placeholder's uuid.
+    await db.volumes.put({
+      volume_uuid: id,
+      series_uuid: 's9',
+      series_title: 'Series B',
+      volume_title: 'Vol 9',
+      mokuro_version: '0.2.1',
+      page_count: 2,
+      character_count: 4,
+      page_char_counts: [2, 4]
+    });
+    await finishDownload(id, true);
+    expect(await opening).toEqual({ id });
+    expect(nav.toReader).toHaveBeenCalledWith('s9', id);
+  });
+
+  it('open fails, and goes nowhere, when the download did not install the volume', async () => {
+    listed('Series A/Vol 2.cbz');
+    const opening = install().open('v2');
+    await vi.waitFor(() => expect(dq.queued).toHaveLength(1));
+    await finishDownload('v2', false);
+    await expect(opening).rejects.toThrow('Vol 2 was not installed');
+    expect(nav.toReader).not.toHaveBeenCalled();
+  });
+
+  it('open refuses a volume with no cloud copy to download', async () => {
+    await expect(install().open('v2')).rejects.toThrow('nowhere to download');
+    await expect(install().open('nope')).rejects.toThrow('No volume nope');
+  });
+
+  it("showSeries is the catalog card's click: the series page by its title", async () => {
+    await install().showSeries('Series A');
+    expect(nav.toSeries).toHaveBeenCalledWith('Series A');
+  });
+
+  it("pendingOcr is what the volume's card shows of the server's queue", async () => {
+    expect(await install().pendingOcr('v2')).toBeNull();
+    queueStatusStore.set({
+      ['series a\u0000vol 2']: {
+        jobs: [{ kind: 'ocr', id: 'mokuro', state: 'queued', eta: null, progress: null }],
+        held: null
+      }
+    });
+    expect(await install().pendingOcr('v2')).toMatchObject({
+      title: 'Server OCR',
+      inline: 'Server OCR: Text queued'
+    });
   });
 
   it('setPage records a paged page turn against the primary pages', async () => {

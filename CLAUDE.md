@@ -1648,6 +1648,12 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 - The driver refuses what the UI refuses: `renameSeries` renames the catalog card's series uuid
   only (its first row's) and throws `Nothing to rename`; `setSpineOffset` skips a value the shelf
   already shows; `editFirstBlock` on `original` throws (`persistLayerPageEdit`).
+- `open(volumeId)` downloads a volume that is not on the device first, through the card's
+  Download (`downloadQueue.queueVolume`, waited out), and answers `{ id }` — the uuid the
+  download installed it under. Within v1 the rig's dav and api suites also call
+  `showSeries(series)` (the catalog card's click: the series page, so its volume cards mark
+  themselves shown for the OCR queue poller) and `pendingOcr(volumeId)` (what the card shows of
+  the server's queue, `describePendingOcr`).
 - An interop build reaches no host off the machine but the ones the config names: the rig
   refuses every other request and FAILS the spec that made it (only `apis.google.com/js/api.js`
   and `accounts.google.com/gsi/client`, which `app.html` loads, are answered, empty). So

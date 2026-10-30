@@ -16,13 +16,24 @@
 import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import { listLayerIds } from '$lib/catalog/layer-store';
-import { generatePlaceholders } from '$lib/catalog/placeholders';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import {
+  cloudFieldsForRemovedVolume,
+  generatePlaceholders,
+  indexCloudFilesByPath,
+  indexCloudFilesByUuid
+} from '$lib/catalog/placeholders';
+import {
+  describePendingOcr,
+  queueKeyForVolume,
+  serverOcrQueueStatus,
+  watchedKeyStore
+} from '$lib/catalog/server-ocr-pending';
+import { isMetadataOnly, isVolumeInstalled } from '$lib/catalog/volume-state';
 import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { deleteVolumeCompletely } from '$lib/import';
 import { publishCuratedLayer, pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import {
   clampSpineOffset,
   flushSpineOffsetWrites,
@@ -50,6 +61,7 @@ import {
   volumes as volumeDataStore
 } from '$lib/settings/volume-data';
 import type { Page, VolumeMetadata } from '$lib/types';
+import { downloadQueue } from '$lib/util/download-queue';
 import { nav } from '$lib/util/hash-router';
 import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
 import { executeRenameSeries } from '$lib/util/series-rename';
@@ -151,11 +163,13 @@ function listedArchivePath(row: VolumeMetadata): string | null {
   return listed.some((f) => f.path === path) ? path : null;
 }
 
+async function seriesIndexMap(): Promise<Map<string, SeriesIndexRecord>> {
+  return new Map((await db.series_index.toArray()).map((r) => [r.series_key, r]));
+}
+
 async function library(): Promise<{ volumes: RigVolume[] }> {
   const rows = await db.volumes.toArray();
-  const indexMap = new Map<string, SeriesIndexRecord>(
-    (await db.series_index.toArray()).map((r) => [r.series_key, r])
-  );
+  const indexMap = await seriesIndexMap();
   const placeholders = generatePlaceholders(get(unifiedCloudManager.cloudFiles), rows, indexMap);
   const out: RigVolume[] = [];
   for (const row of rows) {
@@ -182,9 +196,98 @@ async function library(): Promise<{ volumes: RigVolume[] }> {
   return { volumes: out };
 }
 
-async function open(volumeId: string): Promise<void> {
-  const row = await requireRow(volumeId);
-  nav.toReader(row.series_uuid, volumeId);
+/**
+ * A volume as its catalog card holds it, ready for the card's Download: a
+ * metadata-only row decorated with its listed archive, or a cloud-only volume's
+ * placeholder (the same join `volumesWithPlaceholders` makes). Null when this
+ * device has no such volume.
+ */
+async function cardVolume(volumeId: string): Promise<VolumeMetadata | null> {
+  const files = get(unifiedCloudManager.cloudFiles);
+  const indexMap = await seriesIndexMap();
+  const row = await db.volumes.get(volumeId);
+  if (row) {
+    if (!isMetadataOnly(row)) return row;
+    const fields = cloudFieldsForRemovedVolume(
+      indexCloudFilesByPath(files),
+      row,
+      undefined,
+      indexCloudFilesByUuid(files, indexMap)
+    );
+    return { ...row, ...fields };
+  }
+  const rows = await db.volumes.toArray();
+  return (
+    generatePlaceholders(files, rows, indexMap).find((p) => p.volume_uuid === volumeId) ?? null
+  );
+}
+
+/** The card's Download, to the end: resolves once the volume left the queue. */
+async function download(volume: VolumeMetadata): Promise<void> {
+  if (!volume.cloudFileId) {
+    throw new Error(`${volume.volume_title} has nowhere to download it from`);
+  }
+  const queued = (q: { volumeUuid: string }[]) =>
+    q.some((i) => i.volumeUuid === volume.volume_uuid);
+  downloadQueue.queueVolume(volume); // adds it synchronously, or refuses it
+  if (!queued(get(downloadQueue))) {
+    throw new Error(`${volume.volume_title} could not be queued for download`);
+  }
+  await new Promise<void>((resolve) => {
+    const unsubscribe = downloadQueue.subscribe((q) => {
+      if (queued(q)) return;
+      resolve();
+      queueMicrotask(() => unsubscribe());
+    });
+  });
+}
+
+/**
+ * The reader for a volume. One not on this device is downloaded first, as its
+ * card's Download does (the card opens nothing by itself); the volume opened is
+ * answered, by the uuid the download installed it under.
+ */
+async function open(volumeId: string): Promise<{ id: string }> {
+  let row: VolumeMetadata | null = (await db.volumes.get(volumeId)) ?? null;
+  if (!row || !isVolumeInstalled(row)) {
+    const volume = await cardVolume(volumeId);
+    if (!volume) throw new Error(`No volume ${volumeId} on this device`);
+    await download(volume);
+    row = await installedAs(volume);
+    if (!row) throw new Error(`${volume.volume_title} was not installed by its download`);
+  }
+  nav.toReader(row.series_uuid, row.volume_uuid);
+  return { id: row.volume_uuid };
+}
+
+/** The row a download installed: the placeholder's uuid, else the same titles. */
+async function installedAs(volume: VolumeMetadata): Promise<VolumeMetadata | null> {
+  const byUuid = await db.volumes.get(volume.volume_uuid);
+  if (byUuid && isVolumeInstalled(byUuid)) return byUuid;
+  const series = normalizeSeriesKey(volume.series_title);
+  const title = normalizeVolumeTitleKey(volume.volume_title);
+  const rows = await db.volumes.toArray();
+  return (
+    rows.find(
+      (r) =>
+        isVolumeInstalled(r) &&
+        normalizeSeriesKey(r.series_title) === series &&
+        normalizeVolumeTitleKey(r.volume_title) === title
+    ) ?? null
+  );
+}
+
+/** The catalog card's click: the series page, by the title the card navigates with. */
+async function showSeries(series: string): Promise<void> {
+  nav.toSeries(series);
+}
+
+/** What the volume's card shows of the server's OCR queue (`describePendingOcr`), or null. */
+async function pendingOcr(volumeId: string) {
+  const volume = (await db.volumes.get(volumeId)) ?? (await cardVolume(volumeId));
+  if (!volume) throw new Error(`No volume ${volumeId} on this device`);
+  const key = queueKeyForVolume(volume, get(watchedKeyStore));
+  return plain(describePendingOcr(get(serverOcrQueueStatus)[key], Date.now()));
 }
 
 /** The reader's page turn (paged mode), against the volume's primary pages. */
@@ -420,7 +523,10 @@ export function createRigDriver() {
     selectLayer,
     providerStatus,
     controlState,
-    historyStatus
+    historyStatus,
+    // Within v1, added for the rig's dav and api suites.
+    showSeries,
+    pendingOcr
   };
 }
 
