@@ -45,6 +45,7 @@ vi.mock('$lib/util/compress-volume', () => ({
 }));
 
 const localVolumes = vi.fn(async (): Promise<unknown[]> => []);
+const volumesUpdate = vi.fn(async (_uuid: string, _changes: object) => 1);
 /**
  * The layer METADATA rows (`volume_ocr_layers`) on this device. A layer FILE in a listing is
  * only swept (deleted/moved) with its volume when one of these rows carries a
@@ -73,6 +74,7 @@ vi.mock('$lib/catalog/db', () => ({
       // here to rebuild its sidecar from) apart from a DB inconsistency.
       get: async (uuid: string) =>
         ((await localVolumes()) as { volume_uuid?: string }[]).find((v) => v.volume_uuid === uuid),
+      update: (uuid: string, changes: object) => volumesUpdate(uuid, changes),
       // `volumesForFoldedSeriesTitle`'s two indexed reads (the heal preview's
       // row source), derived from the SAME `localVolumes` fixture the scan
       // reads — so preview and write see one truth here, as in production.
@@ -387,6 +389,110 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.deleteFile).toHaveBeenCalledWith(files[1]);
     // upload + 2 moves + delete
     expect(changed).toBe(4);
+  });
+
+  // An edited volume's `original` is the OCR it was edited on. Once the server
+  // upgraded its main (filed here as `updated-ocr`, `updated_ocr_sha256`),
+  // rebuilding the main from that snapshot would put the older OCR back over
+  // the newer for every account.
+  it('an edited volume whose cloud main moved on keeps that main: retitled, never rebuilt', async () => {
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(
+        async () =>
+          new Blob([
+            JSON.stringify({
+              version: '0.2.1',
+              title: 'Old Series',
+              title_uuid: 's1',
+              volume: 'Volume 1',
+              volume_uuid: 'uuid-1',
+              ocr_engine: { id: 'hayai', revision: 3 },
+              pages: [{ blocks: [{ lines: ['しんしい'] }] }]
+            })
+          ])
+      )
+    });
+    const files = oldSeriesFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_title: 'Old Series',
+        volume_title: 'Volume 1',
+        ocr_edited_at: '2026-10-01T00:00:00.000Z',
+        mokuro_sha256: 'a'.repeat(64),
+        updated_ocr_sha256: 'b'.repeat(64)
+      }
+    ]);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{"stale":true}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume(
+      'Old Series',
+      'Volume 1',
+      'New Series',
+      'Volume X',
+      'uuid-1'
+    );
+
+    expect(provider.downloadFile).toHaveBeenCalledWith(files[1]);
+    const [path, blob] = provider.uploadFile.mock.calls[0] as unknown as [string, Blob];
+    expect(path).toBe('New Series/Volume X.mokuro');
+    const sent = JSON.parse(await blob.text());
+    // The cloud's own pages and provenance, under the new names.
+    expect(sent).toEqual({
+      version: '0.2.1',
+      title: 'New Series',
+      title_uuid: 's1',
+      volume: 'Volume X',
+      volume_uuid: 'uuid-1',
+      ocr_engine: { id: 'hayai', revision: 3 },
+      pages: [{ blocks: [{ lines: ['しんしい'] }] }]
+    });
+    // That file is the one `updated-ocr` holds: no upgrade pass fetches it again.
+    const { sha256Hex } = await import('$lib/catalog/mokuro-hash');
+    expect(volumesUpdate).toHaveBeenCalledWith('uuid-1', {
+      updated_ocr_sha256: await sha256Hex(blob)
+    });
+    expect(provider.deleteFile).toHaveBeenCalledWith(files[1]);
+    localVolumes.mockResolvedValue([]);
+  });
+
+  it('an edited volume whose cloud main cannot be read is not renamed', async () => {
+    const provider = makeRenameProvider({
+      downloadFile: vi.fn(async () => {
+        throw new Error('503');
+      })
+    });
+    const files = oldSeriesFiles();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_title: 'Old Series',
+        volume_title: 'Volume 1',
+        ocr_edited_at: '2026-10-01T00:00:00.000Z',
+        updated_ocr_sha256: 'b'.repeat(64)
+      }
+    ]);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{"stale":true}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
+    ).rejects.toThrow();
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+    localVolumes.mockResolvedValue([]);
   });
 
   it('a volume\u2019s OCR layer files are managed with it, and a dotted sibling volume is not', async () => {

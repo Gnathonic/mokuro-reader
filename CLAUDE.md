@@ -481,7 +481,12 @@ sidecar: the backfill no longer re-uploads an edited volume's listed `.mokuro`,
 and every cloud write of a main sidecar (a first backup, the backfill of a
 missing one, a rename's regeneration) is built from the `original` snapshot
 when the row is edited (`catalog/main-sidecar.ts`) — a missing snapshot means
-no main sidecar (a rename falls back to the primary). Exports keep the primary.
+no main sidecar (a rename falls back to the primary). Except where the cloud's
+main moved on past that snapshot: an edited row with `updated_ocr_sha256` (the
+upgrade filed a newer main as `updated-ocr`) is renamed with the LISTED main,
+downloaded and given only the new `title`/`volume` (`retitledCloudMain`; pages
+and provenance as the cloud has them, unreadable = no rename) — rebuilt from
+`original` it would put the older OCR back for every account. Exports keep the primary.
 A layer made by name never takes a RESERVED id (`isReservedLayerId`,
 `layer-names.ts` — bunko's set: `original`, `gcv`, `updated-ocr`, `edit`,
 `curated`, the `tr-`, `pre-upgrade` and `previous-ocr` prefixes, and
