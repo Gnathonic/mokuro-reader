@@ -21,6 +21,7 @@
   import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
   import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '$lib/reader/edit/layer-kind';
   import { runLayerAction, type LayerAction } from '$lib/components/Reader/Layers/layer-actions';
+  import { isCuratedLayerId } from '$lib/reader/edit/layer-names';
   import { beforeLayerMutation } from '$lib/reader/edit/reader-edit-rules';
   import { db } from '$lib/catalog/db';
   import type { Page } from '$lib/types';
@@ -320,7 +321,8 @@
               aria-label="Export layer"
               onclick={() => layerAction('export')}>Export</Button
             >
-            {#if currentLayer !== ORIGINAL_LAYER_ID}
+            <!-- Never on the shared layer: Unpublish (the layer menu) removes it. -->
+            {#if currentLayer !== ORIGINAL_LAYER_ID && !isCuratedLayerId(currentLayer)}
               <Button
                 size="xs"
                 color="red"

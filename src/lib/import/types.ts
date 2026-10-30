@@ -258,6 +258,11 @@ export interface ProcessedMetadata {
    * `VolumeMetadata.mokuro_sha256_cloud`.
    */
   mokuroCloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
+  /**
+   * The primary file's `ocr_engine` block and the digest of its pages
+   * (`$lib/catalog/ocr-provenance`); absent when the file carries no block.
+   */
+  ocrProvenance?: import('$lib/catalog/ocr-provenance').OcrProvenance;
 }
 
 /**

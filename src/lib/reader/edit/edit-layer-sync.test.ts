@@ -45,6 +45,7 @@ import {
 import { persistPageEdit } from './edit-persist';
 import { promoteLayer, createLayer } from './layers';
 import { mainSidecarPagesForCloud } from './edit-persist';
+import { contentDigest, provenanceFromParsed } from '$lib/catalog/ocr-provenance';
 
 const SHA = 'cd'.repeat(32);
 
@@ -115,6 +116,48 @@ function uploadedPaths(): string[] {
 }
 
 describe('an OCR edit goes up as the edit layer, never as the main sidecar', () => {
+  it('names the seal of the generated main the edits were made on (edited.base_seal)', async () => {
+    const pages = (await db.volume_ocr.get('v1'))!.pages;
+    const seal = (await contentDigest({ id: 'hayai-nova', revision: 2 }, pages))!;
+    const engine = { id: 'hayai-nova', revision: 2, seal };
+    await db.volumes.update('v1', {
+      ocr_provenance: [(await provenanceFromParsed(engine, pages))!]
+    });
+
+    await persistPageEdit('v1', 1, pg('直した', 'q.png'));
+    await syncLayersFromListing(listing(), 'webdav');
+
+    const call = uploadFile.mock.calls.find((c) => c[0] === 'Series/Vol 1.edit.mokuro')!;
+    const json = JSON.parse(await (call[1] as Blob).text());
+    expect(json.edited).toMatchObject({ base_sha256: SHA, base_seal: seal });
+    expect(json.ocr_engine).toBeUndefined();
+    // The original snapshot is a layer file: never carries the block either.
+    const originalCall = uploadFile.mock.calls.find(
+      (c) => c[0] === 'Series/Vol 1.original.mokuro'
+    )!;
+    expect(JSON.parse(await (originalCall[1] as Blob).text()).ocr_engine).toBeUndefined();
+  });
+
+  it('no base_seal when the base block carries a seal its pages no longer check', async () => {
+    // bunko's edited-line vector: a line corrected, the seal kept. The reader's
+    // digest still matches its own record of the file, but the seal is stale.
+    const pages = (await db.volume_ocr.get('v1'))!.pages;
+    const sealedOver = structuredClone(pages);
+    sealedOver[0].blocks = [];
+    const stale = (await contentDigest({ id: 'hayai-nova', revision: 2 }, sealedOver))!;
+    const engine = { id: 'hayai-nova', revision: 2, seal: stale };
+    await db.volumes.update('v1', {
+      ocr_provenance: [(await provenanceFromParsed(engine, pages))!]
+    });
+
+    await persistPageEdit('v1', 1, pg('直した', 'q.png'));
+    await syncLayersFromListing(listing(), 'webdav');
+
+    const call = uploadFile.mock.calls.find((c) => c[0] === 'Series/Vol 1.edit.mokuro')!;
+    const json = JSON.parse(await (call[1] as Blob).text());
+    expect(json.edited).toMatchObject({ base_sha256: SHA, base_seal: null });
+  });
+
   it('pushes <Vol>.edit.mokuro with the edited block and no ocr_engine', async () => {
     await persistPageEdit('v1', 1, pg('直した', 'q.png'));
     await syncLayersFromListing(listing(), 'webdav');
@@ -131,7 +174,13 @@ describe('an OCR edit goes up as the edit layer, never as the main sidecar', () 
     )!;
     expect(JSON.parse(await (originalCall[1] as Blob).text()).edited).toBeUndefined();
     const edit = await getLayerWithPages(db, 'v1', 'edit');
-    expect(json.edited).toEqual({ by: 'mokuro-reader', at: edit!.updated_at, base_sha256: SHA });
+    expect(json.edited).toEqual({
+      by: 'mokuro-reader',
+      at: edit!.updated_at,
+      base_sha256: SHA,
+      // A 0.7.x base (no block recorded): no seal to name.
+      base_seal: null
+    });
     expect(json.ocr_engine).toBeUndefined();
     expect(json.pages[1].blocks[0].lines).toEqual(['直した']);
     expect(json.pages[0].blocks[0].lines).toEqual(['あい']);
@@ -147,6 +196,28 @@ describe('an OCR edit goes up as the edit layer, never as the main sidecar', () 
     vi.useRealTimers();
     await vi.waitFor(() => expect(uploadedPaths()).toContain('Series/Vol 1.edit.mokuro'));
     expect(uploadedPaths()).not.toContain('Series/Vol 1.mokuro');
+  });
+
+  it('on a 0.7.x bunko (edit layers shared there) nothing goes up, scheduled push included', async () => {
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getStatus: () => ({
+        isReadOnly: false,
+        serverCompilesMetadata: true,
+        editLayerSync: 'local'
+      }),
+      uploadFile,
+      downloadFile: vi.fn(),
+      deleteFile: vi.fn()
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await persistPageEdit('v1', 0, pg('一'));
+    await vi.advanceTimersByTimeAsync(LAYER_PUSH_DEBOUNCE_MS + 10);
+    vi.useRealTimers();
+    // Joins the run the timer started (single-flight), so it has finished.
+    await syncLayersFromListing(listing(), 'webdav');
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeDefined();
+    expect(uploadFile).not.toHaveBeenCalled();
   });
 
   it('a promoted layer stays local: nothing goes up as the main sidecar, and the main is model output', async () => {
@@ -233,5 +304,57 @@ describe('the one-time edit-layer migration', () => {
     // Done once: a later edited primary is not migrated again by it.
     await db.volume_ocr.put({ volume_uuid: 'v1', pages: [pg('後'), pg('うえ', 'q.png')] });
     expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
+  });
+
+  function bunko(editLayerSync: 'push' | 'local') {
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getStatus: () => ({
+        isReadOnly: false,
+        canAddFiles: true,
+        serverCompilesMetadata: true,
+        editLayerSync,
+        curatedPublish: 'all'
+      }),
+      uploadFile,
+      downloadFile: vi.fn(),
+      deleteFile: vi.fn()
+    });
+  }
+
+  it('on a 0.7.x bunko the migrated edit row stays on the device, run after run', async () => {
+    await legacyEdited();
+    bunko('local');
+    await syncLayersFromListing(listing(), 'webdav');
+    await syncLayersFromListing(listing(), 'webdav');
+    expect((await getLayerWithPages(db, 'v1', 'edit'))?.pages[0].blocks[0].lines).toEqual([
+      'なおし'
+    ]);
+    // Neither the corrections nor the primary they sit in go up wholesale.
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it("on a 0.8 bunko it goes into the account's own overlay: one PUT, no curated", async () => {
+    await legacyEdited();
+    bunko('push');
+    await syncLayersFromListing(listing(), 'webdav');
+    await syncLayersFromListing(listing(), 'webdav');
+    expect(uploadedPaths()).toEqual(['Series/Vol 1.edit.mokuro']);
+  });
+
+  it('a primary promoted from the shared curated layer is not "your corrections"', async () => {
+    await legacyEdited();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'curated',
+      name: 'Shared corrections',
+      kind: 'edit',
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+      cloud: { provider: 'webdav', size: 5, synced_at: '2026-09-01T00:00:00.000Z' },
+      pages: [pg('なおし'), pg('うえ', 'q.png')]
+    });
+    expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
   });
 });

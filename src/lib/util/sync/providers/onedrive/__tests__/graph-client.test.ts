@@ -262,6 +262,35 @@ describe('graph-client', () => {
       expect(err.isAuthError).toBe(false);
     });
 
+    it('types a 507 insufficientStorage as QUOTA_EXCEEDED, never retryable', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 507,
+        statusText: 'Insufficient Storage',
+        text: async () =>
+          JSON.stringify({ error: { code: 'insufficientStorage', message: 'Insufficient Space' } })
+      } as Response);
+
+      const err = await createFolder('TOKEN', 'mokuro-reader', 'S').catch((e) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect(err.code).toBe('QUOTA_EXCEEDED');
+      expect(err.isNetworkError).toBe(false);
+      expect(err.isAuthError).toBe(false);
+    });
+
+    it('types a quotaLimitReached body as QUOTA_EXCEEDED whatever the status', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () => JSON.stringify({ error: { code: 'quotaLimitReached', message: 'full' } })
+      } as Response);
+
+      const err = await createUploadSession('TOKEN', 'mokuro-reader/v.cbz').catch((e) => e);
+      expect(err.code).toBe('QUOTA_EXCEEDED');
+      expect(err.isNetworkError).toBe(false);
+    });
+
     it('keeps the Graph <status> message shape for not-found sniffing', async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: false,

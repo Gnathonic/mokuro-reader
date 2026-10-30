@@ -255,6 +255,29 @@ describe('saveVolume', () => {
     expect(written.updated_ocr_sha256).toBeUndefined();
   });
 
+  it('records the installed file’s OCR provenance as a one-entry list', async () => {
+    const p = { engine: { id: 'hayai-nova', revision: 2 }, digest: `v1:${'d'.repeat(64)}` };
+    await saveVolume(
+      createProcessedVolume({
+        metadata: { ...createProcessedVolume().metadata, ocrProvenance: p }
+      })
+    );
+    const added = (db.volumes.add as any).mock.calls[0][0];
+    expect(added.ocr_provenance).toEqual([p]);
+  });
+
+  it('a reinstall from a file without a block clears ocr_provenance', async () => {
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      ocr_provenance: [{ engine: { id: 'hayai-nova' }, digest: `v1:${'e'.repeat(64)}` }]
+    });
+    const saved = await saveVolume(createProcessedVolume());
+    const written = (db.volumes.put as any).mock.calls[0][0];
+    expect(written).not.toHaveProperty('ocr_provenance');
+    expect(saved.metadata).not.toHaveProperty('ocr_provenance');
+  });
+
   it('still rejects a genuinely installed duplicate', async () => {
     (db.volumes.get as any).mockResolvedValue({ volume_uuid: 'test-volume-uuid' });
 

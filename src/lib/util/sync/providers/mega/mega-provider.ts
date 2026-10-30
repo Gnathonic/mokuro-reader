@@ -27,6 +27,7 @@ import {
   type ListedControlNode
 } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { isHistoryFileName, isHistoryFilePath } from '$lib/reading-history/paths';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import {
   isMfaRequiredError,
@@ -1143,8 +1144,9 @@ export class MegaProvider implements SyncProvider {
         const isCbz = isCbzFile(name);
         const isSidecar = isSidecarFile(name);
         const isJson = isRootConfigFile(name);
+        const isHistory = isHistoryFileName(name);
 
-        if (!isCbz && !isSidecar && !isJson) continue;
+        if (!isCbz && !isSidecar && !isJson && !isHistory) continue;
 
         // Deleted (still in storage.files) or in the Rubbish Bin — including a
         // whole mokuro-reader folder moved there, which the walk below would
@@ -1183,6 +1185,9 @@ export class MegaProvider implements SyncProvider {
             pathParts.push(name);
             path = pathParts.join('/');
           }
+          // A history name only counts at history/<device>/<file>: a stray
+          // `device.json` in a series folder is not ours.
+          if (isHistory && !isCbz && !isSidecar && !isHistoryFilePath(path)) continue;
 
           // Get file metadata
           const fileId = (file as any).nodeId || (file as any).id || '';

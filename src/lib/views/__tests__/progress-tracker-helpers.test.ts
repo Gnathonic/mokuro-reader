@@ -319,7 +319,7 @@ describe('sortEntries', () => {
     pagesReadInPeriod: 0,
     pagesToGoal: null as number | null,
     daysUntilDeadline: null as number | null,
-    lastProgressUpdate: 0,
+    lastReadAt: 0,
     hasDeadline: false
   };
 
@@ -364,6 +364,34 @@ describe('sortEntries', () => {
       { ...base, volumeId: 'close', remainingPages: 4 }
     ];
     expect(sortEntries(entries, 'fewest-pages').map((e) => e.volumeId)).toEqual(['close', 'far']);
+  });
+});
+
+describe('last read order', () => {
+  it('entries sort by lastReadAt from the times map, not the merge stamp', () => {
+    const entries = createEntriesWithSortData(
+      [
+        ['restamped', vol({ lastProgressUpdate: '2026-10-18T12:00:00.000Z' })],
+        ['read', vol({ lastProgressUpdate: '2026-10-01T00:00:00.000Z' })],
+        ['old', vol({ lastProgressUpdate: '2026-09-01T00:00:00.000Z' })]
+      ],
+      {},
+      {},
+      'daily',
+      0,
+      new Map([
+        ['restamped', { at: Date.parse('2026-09-15T00:00:00.000Z'), since: 0 }],
+        ['read', { at: Date.parse('2026-10-02T00:00:00.000Z'), since: 0 }]
+      ])
+    );
+    expect(entries.find((e) => e.volumeId === 'old')?.lastReadAt).toBe(
+      Date.parse('2026-09-01T00:00:00.000Z')
+    );
+    expect(sortEntries(entries, 'last-read').map((e) => e.volumeId)).toEqual([
+      'read',
+      'restamped',
+      'old'
+    ]);
   });
 });
 

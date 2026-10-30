@@ -111,6 +111,84 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - Uses OAuth2 implicit flow (access tokens only, ~1 hour expiry)
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
+- Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
+  `error.errors[0].reason`: a 403 is a full account (`storageQuotaExceeded`/`quotaExceeded` →
+  `QUOTA_EXCEEDED`, never retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`,
+  like any 429 — whatever its reason: retried by `withDriveRetry` after Retry-After, capped
+  60 s, 4 attempts), or — only otherwise — an auth failure that may re-authenticate. 5xx are
+  retried too, except on a request that CREATES a file or folder (`rateLimitOnly`): Drive can
+  answer a 5xx after committing it, and a retry would make a duplicate. Messages carry
+  `[reason]` so a worker's serialized error is still recognisable. OneDrive's equivalent is
+  `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
+  `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
+
+**Duplicate folders** (`folder-deduplicator.ts`, Drive and MEGA):
+
+- **Write root.** Of several `mokuro-reader` folders, one directly in My Drive /
+  the Cloud Drive first, then the oldest, then the smaller id (code-unit
+  compare) — `pickReaderFolder` (`drive-files-cache.ts`), `findMokuroFolder`
+  (MEGA). Every root is read; only same-parent roots merge, so a nested
+  `Backup/mokuro-reader` is never merged into the top-level one. Drive learns
+  which roots are top-level from a `'root' in parents` query, never
+  `files.get('root')` (a 404 under the app's `drive.file` scope); dedup
+  confirms a root as the write root only when it is the cache's same pick.
+- **Groups** are an exact name under one parent, within the library only
+  (`listFolders` keeps `mokuro-reader` folders and their descendants). The
+  kept folder is the oldest, then the smaller id (`compareByAge`).
+- **Same name on merge.** Folders, or a file beside a folder, move in and keep
+  the name twice; so do `dedupKeepsEveryCopy` files (volume-data.json,
+  goals.json, positions.json, and bunko's control files `.mokuro-bunko.json` /
+  `.mokuro-queue.json`, exact names). Any other file: the strictly newer write
+  wins, a tie keeps the canonical copy, the loser goes to the TRASH.
+- **Folder removal.** `deleteFolder` re-lists the duplicate on the server and
+  removes it (Drive: to the trash) only when empty; a folder still holding
+  anything is kept for the next pass, and a second refusal ends the run.
+  "Empty" on Drive means empty AS THE APP SEES IT: under `drive.file` the
+  re-list misses files the app did not create (dropped in through the Drive
+  web UI, written by another client), and those go to the trash with the
+  folder. Recoverable from the trash, but not a "never deletes files" promise.
+- **Bunko merges, the reader steps aside.** Before each pass
+  (`runDeduplication`, `mega-cache.ts` / `drive-files-cache.ts`) the cache
+  re-reads the marker (`refreshCloudBunkoMarker`) and skips the pass while
+  `cloudBunkoMergesDuplicates` — a fresh lease holder with `dedup: true`
+  merges with the same rules, and two mergers would only race each other's
+  moves. A stale or released holder hands the job back on the next fetch.
+  Drive pins its write root for the session and only its OWN merge
+  re-points it (`onRootFolderConfirmed`), so every listing also re-points a
+  pinned root at the cache's pick (`adoptListedReaderFolder`): a root that
+  Bunko or another device merged away and trashed is not written to again.
+
+**mokuro-bunko specifics** (the WebDAV provider against a bunko server):
+
+- **Write access.** A server known to be bunko — `PUT_VERIFIED` recorded for
+  the base URL, or an OPTIONS answering `X-Mokuro-Put: verified` — skips the
+  generic OPTIONS `Allow` verdict in `checkWritePermissions`: bunko decides
+  each request itself and its `Allow` is advisory (older versions list no PUT
+  or MKCOL on collections). A real refusal still demotes through
+  `handleWriteFailure`.
+- **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
+  a `serverCompilesMetadata` provider every listing runs
+  `adoptCloudSeriesSpellings` (`util/sync/cloud-spelling-adoption.ts`): a local
+  series title with NO folder of its own, EXACTLY ONE folder folding onto it
+  (`normalizeVolumeTitleKey`), and at least one of its volumes listed there as a
+  `.cbz` takes the folder's spelling as a LOCAL-ONLY rename
+  (`commitLocalSeriesRename`, the local half of `executeRenameSeries`: rows,
+  stats, `series_metadata`, series reading state). The write-side listing
+  passes (`reconcileMissingMetadataFiles`, the sidecar backfill, layer sync)
+  wait for it in `refreshSeriesIndexesInBackground`; the index/catalog refreshes
+  do not. Backup enqueue (`resolveCloudFolderTitle`) and
+  `existsInCloud`/`getCloudFile` (exact path, then the folded fallback of
+  `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so nothing
+  uploads into the losing folder. Those backstops are NOT gated on bunko: like
+  every other folder lookup (rename, delete, `series.json`) they run on every
+  provider, so on plain storage too a title with no exact folder backs up into,
+  counts as backed up in, and is deleted from (the series removal dialog's
+  "also delete" and `deleteSeriesFromCloudByTitle` resolve alike) the ONE
+  folder folding onto it, naturally first when several do. An exact folder
+  always wins, and plain storage never ADOPTS: its rows keep their spelling.
+  The folded lookups read `listingFolderIndex`, built once per cache revision
+  (`CoalescedCacheStore.revision`, replaced by every add/remove/install), so a
+  per-volume caller costs O(1), not a pass over the listing.
 
 ### Svelte 5 Reactive Performance
 
@@ -195,6 +273,7 @@ interface VolumeMetadata {
   mokuro_sha256?: string; // hash of the .mokuro bytes the installed primary came from — see "OCR upgrades"
   mokuro_sha256_cloud?: { provider: string; size: number; modified?: number }; // where that file is KNOWN to be stored
   updated_ocr_sha256?: string; // edited volumes: newest cloud OCR filed as the `updated-ocr` layer
+  ocr_provenance?: (({ engine: object } | { edited: object }) & { digest: string })[]; // installed files' blocks — see "Provenance blocks"
 }
 
 interface VolumeOCR {
@@ -312,8 +391,59 @@ Mokuro generates a `.mokuro` JSON file with this structure:
 
 Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and OCR text lines.
 
-The app writes `.mokuro` files in this pure upstream format — no reader-specific
-keys. Series-level data lives beside them in `series.json`.
+The app writes `.mokuro` files in this upstream format plus two reader
+extensions (`chars`, `spine_width`) and at most ONE provenance block (below).
+Series-level data lives beside them in `series.json`.
+
+#### Provenance blocks (`ocr_engine` / `edited`)
+
+A `.mokuro` says where its text came from with a top-level block — never both
+(bunko's `docs/design/sidecar-provenance.md` is the normative description):
+
+- **`ocr_engine`** (GENERATED): written by a server (mokuro-bunko) that ran an
+  engine — `id`, an integer `revision` (absent = 1; same id, higher revision =
+  newer output that replaces the old), `created`, recipe details, and `seal`.
+  The reader NEVER mints one. Every primary install (`processVolume` — local
+  import, cloud download, deep link — and the image-only upgrade) stores the
+  file's block verbatim in `VolumeMetadata.ocr_provenance` together with a
+  seal v1 digest of THAT FILE's pages (taken before the import remaps any
+  `img_path`); a reinstall from a file without one clears the list. What is
+  recorded follows bunko's precedence (`provenanceOfFile`): a file with an
+  `edited` object records THAT block (any `ocr_engine` left in it is
+  ignored), one with `preserved` records nothing, else its `ocr_engine`. A primary
+  the reader regenerates — a rename's new main, a backup, the sidecar
+  backfill, an export, an archive's embedded copy, an edited volume's cloud
+  main from its `original` snapshot — carries the block exactly when the pages
+  written reproduce an entry's digest (`buildPrimaryMokuroMetadata` →
+  `carriedProvenance`, `catalog/ocr-provenance.ts`; the newest matching entry
+  wins), so the block survives reader renames (names are outside the seal)
+  and drops off the moment a page is edited. A layer file never carries one.
+- **`edited`** (EDITED): `by` (`"mokuro-reader"`), `at`, `base_sha256` and
+  `base_seal` — on every `edit`-kind layer file (`buildLayerMokuroMetadata`)
+  and on a primary written from the EDITED primary row itself (exports, Local
+  Folder, archives, a rename's fallback when the snapshot is missing) when no
+  block can be carried. A primary installed from an EDITED main (another
+  device's export or fallback rename) carries THAT file's `edited` block
+  verbatim the same way an `ocr_engine` is carried — dropping it would turn a
+  person's text into LEGACY OCR a bunko upgrade replaces. `base_sha256` is the
+  row's `mokuro_sha256`; `base_seal` is the seal of the sealed main the edits
+  sit on (`editBaseSeal`: the `original` snapshot's pages for an edited
+  primary, else the primary's — and only when that seal checks over those
+  pages, never a stale one),
+  computed for layer-sync pushes, Publish of the shared `curated` layer
+  (`publishCuratedLayer`) and the Worker's layer sidecars (backup, rename,
+  Worker exports); null from the main-thread layer exports
+  (`buildLayerExportFile`, `loadVolumeLayerFiles`), on an edited primary's own
+  `edited` block, and for an unsealed base.
+
+**Seal v1** = `"v1:"` + hex sha256 of the RFC 8785 (JCS) text of
+`{"ocr_engine": <block minus seal and content_sha256>, "pages": <pages>}` —
+keys sorted by UTF-16 code units, numbers as `JSON.stringify` spells them, no
+whitespace; a non-finite number means no seal (`canonicalJson`,
+`contentDigest`). Title, volume, uuids, `chars`, `spine_width`, `version`,
+`edited` and key order are outside it. The cross-language vectors live in
+bunko's `interop/contract/seal/*.json`; `runner-output` is hand-copied into
+`catalog/__fixtures__/seal-vector.ts` until the contract suite reads them all.
 
 ### OCR editor and layers
 
@@ -343,20 +473,140 @@ page by page, so pages edited in the layer itself survive). Layer-sync pushes
 it as `<Volume>.edit.mokuro` (`scheduleLayerPush`, debounced, from the cached
 listing). Every layer file of kind `edit` carries a top-level
 `"edited": {"by": "mokuro-reader", "at": <layer updated_at>, "base_sha256":
-<row mokuro_sha256 or null>}` block (`buildLayerMokuroMetadata`, the one
-serializer for pushes, backup layer sidecars and exports); nothing the app
-writes carries `ocr_engine`. An edit or a promotion NEVER re-uploads the main
+<row mokuro_sha256 or null>, "base_seal": <seal or null>}` block
+(`buildLayerMokuroMetadata`, the one serializer for pushes, backup layer
+sidecars and exports); no layer file the app writes carries `ocr_engine` (see
+"Provenance blocks"). An edit or a promotion NEVER re-uploads the main
 sidecar: the backfill no longer re-uploads an edited volume's listed `.mokuro`,
 and every cloud write of a main sidecar (a first backup, the backfill of a
 missing one, a rename's regeneration) is built from the `original` snapshot
 when the row is edited (`catalog/main-sidecar.ts`) — a missing snapshot means
 no main sidecar (a rename falls back to the primary). Exports keep the primary.
-`edit` is a reserved slug like `original`. Edits made before this change live
+A layer made by name never takes a RESERVED id (`isReservedLayerId`,
+`layer-names.ts` — bunko's set: `original`, `gcv`, `updated-ocr`, `edit`,
+`curated`, the `tr-`, `pre-upgrade` and `previous-ocr` prefixes, and
+`edit-<n>`/`curated-<n>`): `slugifyLayerId` turns such a slug (or one with no
+letter) into `layer-<slug>` before de-duplicating with `-<n>` ("Edit" →
+`layer-edit`, "2024" → `layer-2024`). Edits made before this change live
 only in the primary: `migrateEditedPrimariesToEditLayers` (once per device,
 rows stamped before `edit-layer:epoch`) copies such a primary into an `edit`
 layer when it differs from its `original`. bunko's `pre-upgrade[-N]` layer (the
 main sidecar it replaced on an upgrade) is labelled "Before upgrade (may
-contain your corrections)" (`layer-names.ts`).
+contain your corrections)" (`layer-names.ts`). Three id families are
+CORRECTIONS by id (`isCorrectionsLayerId`): an account's own `edit`/`edit-<n>`
+("Your corrections [n]", `isPersonalLayerId` — bunko 0.8 keeps them per
+account), the library's shared `curated` ("Shared corrections",
+`isCuratedLayerId`, published by accounts with the rights), and `pre-upgrade*`
+(`isServerKeepsakeLayerId`). They are filed kind `edit` whatever `ocr_engine`
+stamp their file carries, and a pull never re-files one as `ocr`.
+Two capabilities say what this server does with them
+(`ProviderStatus`): `editLayerSync` is `push` when bunko's identity lists
+`edit` in `per_user_layers` (it keeps `edit`/`edit-<n>` per account), `local`
+on any other bunko (0.7.x, or one known only by its verified PUTs — there the
+file would land in the SHARED library and replace every account's
+corrections), and absent on plain storage and cloud-direct (the user's own
+file: push). `curatedPublish` is the identity's `permissions.curated.scope`
+(`all` / `owned` / `none`), or `all` from a fresh cloud marker that keeps a
+curated layer; `canPublishCurated(status, seriesTitle)` reads it (`owned` =
+a series in `metadataPermissions.ownedSeries`; absent = no).
+
+**What stays local** is one predicate, `layerStaysLocal(layer, target)`
+(`mokuro-hash.ts`; `target` = `{ serverCompilesMetadata, editLayerSync }`,
+threaded through layer-sync's plan, the backup's layer sidecars and the
+worker message): an untouched upgrade layer everywhere; `curated` everywhere
+(it goes up only by an explicit Publish — not by sync, backup or export);
+`edit`/`edit-<n>` where `editLayerSync` is `local`; and `original` and
+`pre-upgrade*` on a server that compiles its metadata. Its id half,
+`layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
+IS is somebody else's file, so neither a local delete, its tombstone nor the
+`.gz`-sibling tidy ever removes its cloud copy (the delete reports
+`'kept-shared'`, and the user is told the shared copy stays). Writability is per layer (`canPushLayer`): a personal
+id on a `push` bunko needs only `isReadOnly !== true` (a `registered` account
+writes its own overlay), anything else also needs `canAddFiles`. A personal
+row records the provider's `accountScope` in `cloud.account` (push, pull,
+`stampLayersSynced`): a row of another account on this device is never
+pushed — by sync or by a backup's layer sidecars (`account` in
+`generateVolumeSidecarsFromDb`) — and is replaced by this account's listed file
+only while it holds no unsynced edit. Its delete never touches the file at its
+path (that is the ACTIVE account's overlay): the tombstone carries the row's
+account (`PendingLayerDelete.account`), and only that account's listings
+retry, hide or spend it. A 403 on a reserved layer file (`isReservedLayerSidecarPath`)
+is that file's refusal (`PERMISSION_DENIED`, remembered by layer-sync), never
+a read-only demotion of the WebDAV provider.
+
+**Layer ids at a glance** (reserved: `isReservedLayerId`). "Local" is
+`layerStaysLocal` — never pushed by layer-sync, never a backup sidecar, never
+exported or embedded:
+
+| Id                                | What it is                                                         | Written by         | Local?                           |
+| --------------------------------- | ------------------------------------------------------------------ | ------------------ | -------------------------------- |
+| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                    |
+| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched                  |
+| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local` |
+| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                           |
+| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                         |
+| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | no                               |
+
+So `edit` lives per account on a bunko that lists it in `per_user_layers`
+(the server serves each account its own file at the same path), stays on the
+device on any other bunko, and syncs as a normal layer file on plain storage
+and in cloud-direct folders (the folder owner's file). Hand-made ids stay
+shared library files.
+
+**Shared layers are read-only; an edit forks into `edit`.**
+`forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
+and on a server that compiles its metadata also for `pre-upgrade*` and for
+server-stamped OCR rows (kind `ocr` with an `engine` and a `cloud` stamp) —
+on a shared library those are the one copy everyone reads. Edit mode on such a
+layer (`E`, quick actions, context menu) calls `forkIntoEditLayer`: it makes
+`edit` from the displayed layer's pages when there is none (no cloud stamp, so
+the push rule decides where it goes), switches the display to `edit` and
+opens the editor there ("Editing your corrections — the shared layer stays as
+it is"). An existing `edit` layer is never overwritten by a fork — nor one
+only LISTED so far (pushed from another device, not pulled here yet): the
+fork pulls that first (`pullOwnEditLayerBeforeFork`), since a fresh copy
+would be newer and replace it on the next sync. The layer
+menu's **Copy to your corrections** (`copyIntoEditLayer`, after a confirm)
+replaces its pages on purpose. A layer SWAP from inside the editor (L, the
+toolbar strip) onto such a layer does not fork — the editor closes and says to
+press E — or L could never cycle past it. `persistLayerPageEdit` and
+`upsertLayerPages` refuse `curated` outright (`assertPagesWritable`); its name
+stays renamable (a display name is local). Edits on the primary are unchanged
+(primary + `edit`, above).
+
+**Publish / Unpublish** (`layer-sync.ts`). Shown only when
+`canPublishCurated(status, series)` (the picker: Publish on `edit`, Unpublish
+on `curated`; the badges read "Yours" and "Shared"). `publishCuratedLayer`
+uploads the `edit` layer's own serialization (with its `edited` block) to
+`<folder>/<stem>.curated.mokuro`, spelled as the LISTING spells the folder and
+archive — the only code that writes `curated` — then writes the local
+`curated` row with the same pages and the upload's stamp, so the next listing
+neither pulls nor pushes it; a 403 is `'refused'` and writes nothing.
+`unpublishCuratedLayer` deletes every listed copy, then the row; a 403 changes
+nothing (`'refused'`), any other failure leaves a tombstone flagged
+`unpublish`, the only tombstone whose retry may delete a `curated` file (and
+only for an account that may publish that series). It carries the stamp of
+the copy it meant (`file`): a listed `curated` that moved since is another
+editor's newer publish — the tombstone is spent and that file pulled, never
+deleted. Delete is never offered on
+`curated` (it could only hide the shared file here); the settings panel hides it
+too.
+
+**Migration guard on shared servers.** The one-time
+`migrateEditedPrimariesToEditLayers` stays local and additive and uploads
+nothing itself: the `edit` row it makes goes where the push rule sends it —
+nowhere on a 0.7.x bunko, the account's overlay on 0.8, the folder on plain
+storage. It skips a primary equal to the `curated` layer's pages (a promoted
+curated is not "your corrections"). And a personal row that stays local with
+unsynced edits (`keepsLocalEdits`) is never pulled over: on a 0.7.x bunko the
+listed `<Volume>.edit.mokuro` is the SHARED file, another account's work.
+
+mokuro-bunko must, for all of this: list `edit` in `/login/api/me`'s
+`per_user_layers` only when it keeps that file per account; report
+`permissions.curated.scope` (`all` / `owned` / `none`) for the signed-in role;
+answer a client PUT of `curated` without the right, or of `pre-upgrade*`, with
+403; and (cloud-direct) write `curated: true` into the marker when the folder's
+owner may publish.
 
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings
@@ -375,8 +625,20 @@ Cloud layer sidecars are named `<Volume Title>.<layer-id>.mokuro[.gz]`
 `classifyMokuroSidecar` (`src/lib/util/sync/syncable-file.ts`) tells a listed
 `.mokuro` apart from a layer file the same way it always disambiguated dotted
 volume titles — by checking which stems have a `.cbz` in the same folder
-listing — and `src/lib/metadata/layer-sync.ts` syncs layers for rows that
-already exist locally (installed or metadata-only), newest-wins, no merge. A
+listing — under **sidecar names rule v1**, which mokuro-bunko shares
+(`bunko_core::sidecar_names`; the rule is spelled out above `LAYER_ID_RE`):
+suffixes in any ASCII case, only `.cbz` defines stems, stems fold NFC +
+lowercase (`foldStem`), a primary wins over a layer reading, the id is matched
+AS WRITTEN (`Vol 1.GCV.mokuro` is an orphan — never a layer, and never taken
+for `Vol 1`'s primary inside an archive or an import, `miscasedLayerStem`;
+all-digit ids are valid), a sweep takes the exactly-spelled archive's layers
+first (measured against the volume's OWN archive as the listing spells it, so a
+caller's DB spelling — composed, another case — still finds them), a leading UTF-8 BOM is
+tolerated on read, and every id the reader mints contains a letter
+(`slugifyLayerId`). The vectors both sides test against live in bunko's
+`interop/contract/sidecar-names.json` (hand-copied into `syncable-file.test.ts`
+for now) — and `src/lib/metadata/layer-sync.ts`
+syncs layers for rows that already exist locally (installed or metadata-only), newest-wins, no merge. A
 layer with no local record is filed by inferring its kind from the id alone:
 `original` stays `original`, `tr-<lang>` is a `translation`, a known engine id
 (`gcv`, `hayai`, `paddle-manga`, `ppocr-manga`, `mokuro-fp16`, `mokuro`) is
@@ -401,8 +663,20 @@ everything that removes or moves a layer works from all listed copies
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
 
+A volume rename (`renameVolumeFiles`) writes in a fixed order: PUT the
+regenerated main at the new name, move the layers, move the cover, move the
+`.cbz` LAST, and only then delete the stale main — so a server that OCRs the
+archives it finds (mokuro-bunko) never sees the archive at its new name
+without its main and layers and queues no job there (whose output would land
+as `<stem>.<layer>_1.mokuro`).
+
 `.mokuro` files themselves stay upstream format regardless of which layer
-produced them (plus the `edited` block on `edit`-kind layers, above). A `gcv` or `tr-<lang>` layer from the removed
+produced them, plus the provenance blocks above. A layer that carries an
+`ocr_engine` (`servedEngineOf`) is a server's OCR and is filed as `ocr` whatever
+its id — including the `<Volume>.<primary generation>.mokuro` bunko writes beside
+an EDITED main when the recipe beneath the edit is outdated (it never replaces
+an edited main) — except the CORRECTIONS ids above, which stay `edit`. A `gcv`
+or `tr-<lang>` layer from the removed
 experimental client-side OCR/translation engines still lists, displays and
 deletes like any other layer — `KNOWN_ENGINE_IDS` (`reader/edit/layers.ts`)
 and `isTranslationLayerId` (`layer-kind.ts`) keep classifying those ids
@@ -427,8 +701,16 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `bunko_version`, all optional (absent = '' / [] / false; a list with a
   non-string entry reads as []). They reach `cloudBunko.holder` from the
   top-ranked FRESH marker only; records stored before v2 load with those
-  defaults. Nothing gates on them yet. `cloudBunkoMergesDuplicates(scope)` is
-  the holder's `dedup`. Read the marker through `refreshCloudBunkoMarker`:
+  defaults. The fold also sets the per-user gates from the holder:
+  `historySync` = `bunko_version` core ≥ 0.8.0 AND `per_user_files` has
+  `history/` (`bunkoSupportsHistory`), `positionsSync` = `per_user_files` has
+  `positions.json`. A gate the provider set itself (a bunko server's `/me`)
+  wins; with no fresh holder both stay undefined, so the folder is judged as
+  plain storage. A holder's `curated` makes `curatedPublish` `all` (the cloud
+  folder's owner may publish the shared layer).
+  `cloudBunkoMergesDuplicates(scope)` is the holder's `dedup`, and gates the
+  reader's own folder dedup (see Duplicate folders). Read the marker through
+  `refreshCloudBunkoMarker`:
   one If-None-Match etag per scope, shared by every caller, and one read in
   flight per scope that concurrent callers await. The etag moves only after
   its nodes are recorded (else a second caller is answered not-modified
@@ -443,7 +725,9 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `pullCompletedVolume`. Cloud uploads are watched while a marker is fresh.
 - Folder dedup keeps EVERY copy of both control files when duplicate roots
   merge (`dedupKeepsEveryCopy`, beside the merged root files): trashing the
-  older one would pull a marker or queue out from under a running Bunko.
+  older one would pull a marker or queue out from under a running Bunko. A
+  guard in front of both trash calls moves a control file instead, should
+  that rule ever miss one.
 - MEGA feeds control-file listeners from sc events AND from full tree loads
   (`refreshTree`, incl. the sc outage recovery): a load that changes a
   control file's handle set notifies that name. `endSession()` (logout and
@@ -473,6 +757,13 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   `updated-ocr` layer adopts its `source_sha256` (attestation cleared);
   promoting any other layer leaves it. A reinstall's `put` replaces it.
   Unindexed fields: no Dexie version.
+- **Provenance learned.** `VolumeMetadata.ocr_provenance` (newest first, ≤ 4,
+  deduplicated by digest — `addProvenance`) is set by every primary install and
+  by the image-only upgrade, and the hash-driven pass APPENDS the downloaded
+  file's block (`ocr_engine`, or `edited`) on `upgraded`, `recorded` (another device's rename: same
+  pages, new bytes) and `layered` (so promoting `updated-ocr` later still
+  finds its block). Nothing is learned on `kept`, `mismatch` or `skipped`. See
+  "Provenance blocks".
 - **When.** After a listing refreshed `series.json` copies (`series-index-sync.ts`,
   for the refreshed series) and on series open (`series-open.ts`, that
   series). Single-flight (a request mid-run merges into ONE follow-up),
@@ -609,6 +900,13 @@ Rules:
   `facts_updated_at`. An absent value means "no opinion" and inherits whatever
   the other side already published; a local `0` suppresses the published value
   at build time and is omitted from the file (build → parse stays an identity).
+  The one exception is the PUT body to a `serverCompilesMetadata` provider,
+  which reads an absent key as "keep yours": a deliberate local reset of a
+  non-zero server `spine_offset` goes up as an explicit `0`
+  (`withServerIndexClears`); the cached copy never holds it. bunko (≥ 0.8)
+  reads a present `0`/`null` as "clear" and an absent key as "inherit"; older
+  servers read the `0` as absent, so the reset only lands there once they
+  update. A plain-storage file never carries a `0`.
   Inheritance is a JOIN, never an adoption: `series_metadata` stores only what
   this user edited, and a published alignment reaches the shelf from the cached
   `series_index` copy (`getSpineOffsets` returns `record ?? published`, per key)
@@ -648,7 +946,9 @@ Rules:
   `store.ts`, funnelling into the same per-series debounce so one patch
   touching both costs one write), after a series' backup uploads finish, on
   series rename (written at the new title, old deleted) and removed with the
-  series folder. Gated on a writable connected provider and ≥1 backed-up
+  series folder — on a `serverCompilesMetadata` provider the client never
+  DELETEs a `series.json` (the server refuses it and retires orphans itself);
+  it only drops the cached index. Gated on a writable connected provider and ≥1 backed-up
   volume; read-only providers skip silently. There is no UI button. Facts or
   offsets arriving _from_ a sidecar never schedule a write (no ping-pong).
 - **Backfill.** Every cloud listing also reconciles: a folder with at least one
@@ -678,7 +978,10 @@ Rules:
   `writeSeriesFile` PUTs only when the built file's facts or offsets differ
   from the server's copy (`seriesFileCarriesServerRequest`): a placeholder's
   measurement, a download's recorded hash, a backup's drain or a delete's
-  maintenance never cost a PUT there.
+  maintenance never cost a PUT there. bunko retires `<Series>/series.json`
+  itself when the folder loses its last `.cbz`; the reader's cleanup never
+  DELETEs it there (an emptied folder, a series rename) and only drops its
+  cached index.
 
 ### Root `catalog.json`
 
@@ -739,17 +1042,54 @@ Rules:
 
 ### What syncs where
 
-| Data                                                        | File                                      | Merge key                              |
-| ----------------------------------------------------------- | ----------------------------------------- | -------------------------------------- |
-| Read progress, per-volume settings                          | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume        |
-| Series reading state (`read_count`, re-read mute, tracking) | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`         |
-| Settings profiles                                           | `profiles.json`                           | `lastUpdated` per profile              |
-| Series facts (link, titles, synonyms, tag, unit)            | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp         |
-| Shelf alignment (`spine_offset`, per-volume `offset`)       | `<Series>/series.json` (index fields)     | local wins, else the published value   |
-| Primary OCR identity (`mokuro_sha256`)                      | `<Series>/series.json` (index field)      | rides with its file's `mokuro_*` stamp |
-| Volume completion date (`completedAt`)                      | `volume-data.json` (volume uuid keys)     | rides the whole-entry volume merge     |
-| Reading goals, custom goals, closed-period snapshots        | `goals.json`                              | `lastUpdated` per key; snapshots union |
-| Per-volume reading deadlines                                | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
+| Data                                                               | File                                      | Merge key                              |
+| ------------------------------------------------------------------ | ----------------------------------------- | -------------------------------------- |
+| Read progress, per-volume settings                                 | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume        |
+| Series reading state (`read_count`, re-read mute, tracking)        | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`         |
+| Settings profiles                                                  | `profiles.json`                           | `lastUpdated` per profile              |
+| Series facts (link, titles, synonyms, tag, unit)                   | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp         |
+| Shelf alignment (`spine_offset`, per-volume `offset`)              | `<Series>/series.json` (index fields)     | local wins, else the published value   |
+| Primary OCR identity (`mokuro_sha256`)                             | `<Series>/series.json` (index field)      | rides with its file's `mokuro_*` stamp |
+| Volume completion date (`completedAt`)                             | `volume-data.json` (volume uuid keys)     | rides the whole-entry volume merge     |
+| Reading goals, custom goals, closed-period snapshots               | `goals.json`                              | `lastUpdated` per key; snapshots union |
+| Per-volume reading deadlines                                       | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
+| Idle cutoff (automatic / manual override, `k`), long-pause default | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
+| Pre-history reading snapshot (`legacyStats`)                       | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
+| Device names, class corrections, merges                            | `volume-data.json` → `tracking.devices`   | `lastUpdated` per device id            |
+| Newest reading position (30 days)                                  | `positions.json`                          | newest `t` per volume                  |
+
+`positions.json` (`src/lib/positions/`) is the newest position per volume at a
+FIXED path, so a device that was just picked up can learn where the user
+stopped without the full listing: it is checked when the reader opens (≤ 1 s),
+rides every sync right after the volume data, and is pushed 3 s after page
+turns settle (at once when the tab is hidden). Opening a page never stamps a
+position, and an adopted position keeps the other device's stamp. Not
+authoritative: history and `volume-data.json` still carry every position.
+mokuro-bunko gets it only when it lists it in `per_user_files`
+(`ProviderStatus.positionsSync`; no version floor, unlike `historySync`) — a
+bunko server through its identity, a cloud-direct folder through the lease
+holder's marker (`withCloudBunkoStatus`); before that the path is a shared
+library file, and the client neither reads nor writes it. Sync merges every listed copy (newest `t` per volume), so it is
+in `MERGED_ACROSS_COPIES` (`syncable-file.ts`) with `volume-data.json` and
+`goals.json`: the folder dedup moves a duplicate copy in beside the other
+instead of trashing it.
+
+**Look-up visits claim nothing** (`reading-history/visits.ts`, live side
+`positions/visit.ts`). A visit is one device's run of page views of one volume,
+split on a gap over 10 min; it is a look-up when it has ≥ 2 views, ends on its
+first view's pages, and read at most 2 other pages (≥ 3 s each, not skip-fast).
+On coming home the record is put back as it was when the reader opened — its
+own stamp when nothing of the visit was uploaded, else 1 ms above the newest
+upload (`positions/escapes.ts`, reported before each PUT starts) — unless the
+page on screen would move, or another device's position landed during the
+visit (even while the reader was closed between two opens of it). After a
+restore a newer position elsewhere is an offer, never a silent move. A
+completion is held only while the visit could still be a look-up, and a
+restore drops it; offers, characters read and speed samples ignore look-up
+views. "Last read" (smart sort, progress tracker) comes from history
+(`reading-history/last-read.ts`): the newest reading view, else a
+`lastProgressUpdate` from before the volume's first event (reading history
+never saw), else 0 — a re-stamp never moves a series.
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no
@@ -854,10 +1194,232 @@ IndexedDB rw transaction as the write (`appendEvent`), so two tabs never
 collide. Kinds: `page` (one per reader VIEW — whole pages on screen, raw
 uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
 tab has no view), `adjust` (volume editor time/chars edits), `restart`
-("restart series"), `forget` (delete stats). Record through `recordEvent`,
-which never throws and loads the DB module lazily (`volume-data.ts` imports
-it; many suites mock `dexie` bare). Phase 1 only writes: nothing reads the
-events yet, and `recentPageTurns`/`timeReadInMinutes` still drive every stat.
+("restart series"), `forget` (delete stats), `position` (an answer to a
+cross-device position offer — see below), `resolve` (an answer about a long
+pause — see below). Record through `recordEvent` (`recordView` for a view and
+its answer in one transaction, `recordResolve` for a later answer), which
+never throw and load the DB module lazily (`volume-data.ts` imports it; many
+suites mock `dexie` bare).
+
+**Page turns come from history (phase 2b).** `updateProgress` no longer writes
+`recentPageTurns`. The stats still read `PageTurn[]`, but the public `volumes`
+store serves turns PROJECTED from every device's events (`project-turns.ts`,
+`turns-store.ts` — loaded once on start, then updated per recorded/imported
+event): a native view is a turn at its start; a converted legacy turn counts
+only when no native view of that volume covers it (±2 s), so phase-1 reading
+recorded both ways counts once; a `forget` hides that volume's earlier events.
+`volumesWithTrash` records keep only their own UNCONVERTED turns — never write
+projected turns back into a record (that is why the speed store's 2-tuple
+write-back is gone). Until history loads, or for a volume it has nothing for,
+the record's own turns are served, so no stat goes empty.
+
+The cut-over (`cut-over.ts`) runs on start and inside every progress sync
+between the merge and the upload: a record's turns become legacy events
+(`device = 'legacy:' + volume`, `seq` = turn time — identical on every
+device), committed BEFORE exactly those turns are stripped; if IndexedDB
+fails the turns stay in the file. `archivedReads` become `restart` events
+but stay in the record. Each device uploads the legacy events it holds as
+`history/<device>/legacy.events`; imports union by key.
+
+Progress syncs are batched while reading (`activity-tracker.ts`: 5 s debounce,
+at most one per 3 min) and flushed when the reader closes, the tab hides or
+the page goes away.
+
+**Stats on events (phase 3a).** Time read, characters read, speed and time
+left come from history — one clock (`stats-engine.ts`, pure; `stats-store.ts`
+keeps it current, re-preparing only volumes whose events changed). Rules that
+must hold:
+
+- A view counts its raw dwell up to its CAP: `clamp(k × chars_visible × pace,
+60 s, 30 min)`, pace = median ms/char of the newest 500 views (≥ 30 needed,
+  else 5 min), or the synced manual override. Over the cap the reader ASKS
+  (phase 3b, below); unanswered, it counts TYPICAL time (`expected`, at least
+  the floor), provisionally.
+- A view faster than 1500 cpm is a SKIP: its time counts, never its speed; a
+  page only skip views showed is skimmed, not read (`skippedChars`, shown apart).
+  Per pass (split at `restart`) a page's characters count once.
+- Converted legacy turns: page chars = the next turn's cumulative minus this
+  one's; over the cap they count nothing (the old idle rule).
+- Reading from before history is a per-volume SNAPSHOT in the synced record,
+  `legacyStats {time_ms, chars, before}`: the old minute counter and lifetime
+  characters, frozen at `before` (`freezeLegacyBaselines`, at start and after
+  each sync — no events needed). Figures = `max(old, history before the
+freeze) + history after` (`figuresFor`, via the engine's per-volume
+  timeline): another device's pre-freeze events arriving later EXPLAIN the old
+  figure, never add to it; an unfrozen record shows `max(old, history)`. Raw
+  totals are clamped only after that, so an editor edit below the old figure
+  works. Merge keeps the later snapshot; a forget drops it, and after one only
+  a copy carrying that `forgotAt` may hold one.
+- Per page turn the store counts only the changed volume: counts keep their
+  pace until it moves > 2%, and the pace / recent speed take volumes newest
+  first (`estimatePace`, `recentSpeed`) — never sort the whole library there.
+- `timeReadInMinutes` is frozen: parsed, never written. The volume editor
+  edits the derived time and records the difference as an `adjust` event (no
+  record stamp). The reader timer is that figure plus the open view counted by
+  the same rule (`countedDwell`: up to its cap, or as a standing long-pause
+  default counts it); clicking it ends the view until the next page.
+- Recent speed = the newest 8 h of counted reading, by time (no per-volume
+  window); under 30 min, completed volumes' BASELINES fill in. A series' own
+  speed (≥ 60 min of its reading) drives its time left (`series-speeds.ts`,
+  one shared map — never group the catalog per card).
+- The idle cutoff is NOT a profile setting: `tracking.idle` in
+  `volume-data.json` (`tracking-data.ts`), per key newest-wins with the
+  series section's clamp + forfeit-on-bogus and raw upload comparison.
+
+**Long pauses (phase 3b).** A view that reaches its cap is ASKED about, never
+guessed: `pause-watch.ts` arms one timer at `since + cap` (re-armed when the
+pace, `k` or the override moves) and `LongPausePrompt.svelte` asks, non-modal,
+above the page — never inside `Timer.svelte`, whose markup hides with the HUD.
+Rules that must hold:
+
+- An answer is a `resolve` event (`volume`, `target: [device, seq]`, `count`
+  = `full` | `typical` | `none`), kind 5 inside segment format 1. `volume` is
+  the target's, so everything keyed by volume (turns store, codec, index)
+  handles it unchanged. The latest answer per target wins in event order
+  (t, device, seq) on every device; nothing is ever edited.
+- A live answer SPLITS the view: the view so far and its `resolve` go in ONE
+  rw transaction (`recordView` → `appendView`), and a continuation view of the
+  same pages opens at the answer (`ViewTracker.split`). Nothing waits for a
+  later event, so a page turn or close loses no answer; the continuation earns
+  no new characters (a page counts once per pass).
+- `countedDwell` is the one rule for engine and live timer: `full` = the raw
+  dwell, `none` = 0, `typical` or unanswered-over-cap = typical. Live, an
+  unanswered view STOPS at its cap while the prompt asks; a view that just
+  ended adds `endedViewMs` (what the stats will count) until the stats move,
+  so the timer is exact both ways — no dip on a page turn, and no kept
+  minutes after "Don't count" (it used to only ever rise). An answer
+  applies under any later cap, and only to TIME — reads and skips are
+  unchanged (`none` keeps the pages read and gives no speed sample).
+- "Still reading" = `full` plus `widenedK`: `k` fits this view × 1.5, up to a
+  half step, at most 20 and never past where the ceiling caps it; it never
+  shrinks. `null` (nothing changes) under a manual override, without a pace,
+  or when this page's CURRENT cap is held at the floor (`k × expected ≤
+floor`: its time reflects the floor, not pace — fitting `k` to one tap on a
+  one-bubble page raised every other page's cap ~5.5×). `k` shares
+  `tracking.idle`'s stamp with the override; Settings shows the widening with
+  a Reset.
+- Two minutes past the cap the prompt shows how long the page has been open:
+  count all / typical / none. Unanswered (turn, hide, pause click, close) the
+  pause counts typical and is listed PROVISIONAL on the reading-speed page
+  (`pause-review.ts`, `LongPausesCard.svelte`), where any answer can change.
+- "Always do this" appears once 3 pauses are answered — DERIVED from the
+  answers across every volume and device, never stored. The standing default
+  is `tracking.pauses` (its own key and stamp), written as a view's answer
+  when the view ENDS, only for views that reached the cap while it was set —
+  never backwards over the review list.
+- Converted `legacy:` views are never prompted; over the cap they still count
+  nothing, and a `resolve` aimed at one is ignored.
+- `e2e/long-pauses.spec.ts` drives all of it on Playwright's page clock
+  (`clock.install()` before the app loads, then `fastForward`).
+
+**Position across devices (phase 2c).** The position stays the newest page
+event; `planPosition` (`position-offer.ts`, pure) decides when OTHER reading is
+offered instead of silently losing to it. Rules that must hold:
+
+- The signal is what the NEWEST device (owner of the newest native view) saw.
+  Another device's FINAL view is offered unless the newest device viewed that
+  page after it, or the view's pages already include the current progress.
+  A view's page is its `first_page` (a spread's position). Final, never
+  furthest: peek-ahead-then-back resumes where the reader stopped.
+- A restart wins. It is FOLLOWED once ANY device views page ≤ 1 after it; an
+  unfollowed restart from another device, with newer reading on the newest
+  device, is re-applied (`applyMissedRestart` archives the pass, then zeroes
+  it) and that reading — as it stood when the reset was recorded — is offered.
+  The reset waits while that volume is open in the reader.
+- Answers are `position` events (`jump`/`stay`/`reset`, `through` = the offered
+  reading's time): nothing at or before an answered `through` is offered again
+  on any device, whatever stale copy arrives. Marking a volume read/unread
+  records a `stay` (`settlePositionOffers`). A `forget` hides earlier events;
+  converted `legacy:` events never drive offers.
+- Jump (`jumpToPosition`) is not a page view and fires no completion notice.
+- Cadence (`position-store.ts`, localStorage `position-offer:shown`): the reader
+  banner shows an offer at most once a session, in at most 2 sessions; then the
+  volume card shows a chip (`PositionOfferChip.svelte`) until answered.
+- `positionPlanFor` is memoised per volume on its events version
+  (`volumeEventsVersion`) and progress — the chip mounts once per card.
+
+**Devices (phase 4).** A device is a raw id with a facts row (`devices`, from
+its `device.json`) or a native event; `legacy:` ids are never devices
+(`isDeviceId`, `paths.ts`). What the user chooses about a device lives ONLY in
+`volume-data.json` → `tracking.devices[<id>]` (`DeviceLabel {name?, class?,
+merged_into?, lastUpdated}`, `tracking-data.ts`) — never in `device.json`,
+`pickFacts` or the history DB. Rules that must hold:
+
+- One stamp per entry, newest `lastUpdated` wins, a tie keeps local, with the
+  clamp + forfeit-on-bogus of the other `tracking` keys (bogus ids are
+  `devices/<id>` in the one bogus set). The entry is replaced whole, so a
+  cleared name or an unmerge wins by its stamp. The multi-copy fold filters per
+  device id (`foldableTracking`): a bogus copy must never wipe other devices'
+  labels.
+- Labels (`devices.ts`, pure): a user name verbatim, else `<Class> · <OS> ·
+<browser>` (`generatedLabel`). Generated labels that collide over ALL known
+  raw ids (merged ones too) get ` (since Mar 2026)` from first-seen (UTC month,
+  so every device agrees), then ` 2`, ` 3` by first-seen and id. "This device"
+  is a badge on the group holding `resolveDevice(own)`, never in the label. The
+  UUID is never shown.
+- `merged_into` applies ONLY where reading is grouped by device: `resolveDevice`
+  follows it with a visited set, and a cycle leaves every member unmerged;
+  `mergeDevice` into a cycle member first takes it off the cycle.
+  Events are never re-keyed — volume/series/total figures, resolve targets and
+  `planPosition` use raw ids, so a merge or unmerge never recounts. Merging does
+  not carry the source's name.
+- Never show another device's `facts.last_seen`: `exportOwnFacts` leaves it out
+  of the upload signature, so it is stale by design. "Last read" is the group's
+  newest event.
+- Per-device stats come from the engine's `byDevice` (raw id; every `legacy:`
+  view under one key; characters to the first crediting view's device),
+  grouped by `resolveDevice` in `deviceStats` (`device-stats.ts`; also
+  `devices`, `knownDevices`, `deviceFacts`) — a label change regroups, never
+  recounts. "Before history" = legacy views + the pre-history baseline, so rows
+  sum to the page's totals; volume-editor `adjust`s are an "Edits" row. Both
+  hidden at zero, neither renamable. Speed shows only with ≥ 30 min of samples.
+- One edit component (`DeviceNameField.svelte`), three entry points: the
+  "Devices" block on `#/cloud` (`DevicesSettings.svelte`, once ≥ 2 raw ids are
+  known, so an unmerge stays reachable), inline rename in the reading-speed
+  page's per-device card (`DeviceStatsCard.svelte`, ≥ 2 groups with native
+  events) and `SecondDeviceBanner.svelte` under that page's heading (same rule,
+  this device unnamed, `localStorage` `device-banner:dismissed` unset — per
+  browser). The banner stays as "Saved." after naming until closed (no layout
+  motion). A single-device user sees none of them.
+- The position offer names the offering device by its label ("on Pixel 8");
+  a device this one knows nothing about keeps "on another device".
+- `e2e/devices.spec.ts` drives all of it: two browser contexts plus a third
+  device planted on the WebDAV stub (`device.json` + an encoded month).
+
+**Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
+month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
+`segment-codec.ts`; a reader refuses a `format` it does not know), plus
+`history/<device>/device.json` (its facts), and imports every other device's
+(`history-sync.ts`, run at the end of every `syncProvider` by
+`syncReadingHistory`, lazily imported). Rules that must hold:
+
+- History is recognised by its FULL path (`reading-history/paths.ts`):
+  `isSyncableFile` must be given the path relative to the mokuro folder, never a
+  bare basename. Drive lists the account flat and walks parents to build it
+  (`drive-history-path.ts`); its cache groups by the FIRST segment like every
+  other provider. OneDrive creates nested folders one segment at a time.
+- Import is idempotent by `[device, seq]` in one transaction with the file's
+  stamp (`history_files`, Dexie v2); a file that fails to download, decode or
+  match its path (device/month) records nothing and is retried next listing.
+  Size/mtime only decide whether to download.
+- Upload marks are per provider (`history_meta` `uploaded:<provider>:<month>`):
+  a new provider gets every month. The current month goes up at most every
+  5 min unless the sync is manual (non-silent); closed months always go up.
+- Best-effort: history paths are in `isBestEffortMetadataPath` (a rejected
+  write never demotes WebDAV), and the pass never fails the sync. Read-only
+  providers get no uploads (imports still run). mokuro-bunko gets history only
+  from **0.8.0**, which maps `history/` per user, lists it in `per_user_files`
+  and is the first to report its `version` in `/login/api/me` (bunko issue
+  #27): the WebDAV provider sets `ProviderStatus.historySync` only when BOTH
+  hold — the version's numeric core ≥ 0.8.0 (a `0.8.0-beta.N` counts as 0.8.0;
+  missing or unparseable = no) AND `per_user_files` contains `history/`
+  (`bunko-version.ts`). On a cloud-direct folder (Drive/OneDrive/MEGA/plain
+  WebDAV) the fresh lease holder's marker decides the same way, from its
+  `bunko_version` and `per_user_files` (`withCloudBunkoStatus`); no fresh
+  holder = plain storage. `historySyncAllowed(status)` (`history-sync.ts`)
+  gates EVERYTHING. Otherwise `history/` lands in the shared library, so neither
+  upload nor import runs there, and the file keeps carrying page turns
+  (`attachProjectedTurns`).
 
 ### Settings Architecture
 

@@ -3,7 +3,9 @@ import {
   isMokuroCloudAttestation,
   isMokuroSha256,
   isUntouchedUpgradeLayer,
-  sha256Hex
+  layerStaysLocal,
+  sha256Hex,
+  type LayerTarget
 } from './mokuro-hash';
 
 describe('sha256Hex', () => {
@@ -59,5 +61,42 @@ describe('isUntouchedUpgradeLayer', () => {
   it('also holds for a previous-ocr keepsake with no source hash (a legacy primary had none)', () => {
     expect(isUntouchedUpgradeLayer({ source_at: 't1', updated_at: 't1' })).toBe(true);
     expect(isUntouchedUpgradeLayer({ source_at: 't1', updated_at: 't2' })).toBe(false);
+  });
+});
+
+describe('layerStaysLocal', () => {
+  const PLAIN: LayerTarget = { serverCompilesMetadata: false };
+  const BUNKO_08: LayerTarget = { serverCompilesMetadata: true, editLayerSync: 'push' };
+  const BUNKO_07: LayerTarget = { serverCompilesMetadata: true, editLayerSync: 'local' };
+  const row = (layer_id: string) => ({ layer_id, updated_at: 't1' });
+
+  it.each([
+    // id, plain storage, bunko 0.8 (per-account edit), bunko 0.7 (shared edit)
+    ['curated', true, true, true],
+    ['edit', false, false, true],
+    ['edit-2', false, false, true],
+    ['pre-upgrade', false, true, true],
+    ['pre-upgrade-3', false, true, true],
+    ['original', false, true, true],
+    ['my-fixes', false, false, false],
+    ['hayai-nova', false, false, false],
+    ['curated-2', false, false, false],
+    ['editorial', false, false, false]
+  ])('%s: plain %s, bunko 0.8 %s, bunko 0.7 %s', (id, plain, bunko08, bunko07) => {
+    expect(layerStaysLocal(row(id), PLAIN)).toBe(plain);
+    expect(layerStaysLocal(row(id), BUNKO_08)).toBe(bunko08);
+    expect(layerStaysLocal(row(id), BUNKO_07)).toBe(bunko07);
+  });
+
+  it('a personal layer on storage that reports no gate (Drive, cloud-direct) goes up', () => {
+    expect(layerStaysLocal(row('edit'), { serverCompilesMetadata: true })).toBe(false);
+  });
+
+  it('an untouched upgrade layer stays local everywhere', () => {
+    const untouched = { layer_id: 'updated-ocr', source_at: 't1', updated_at: 't1' };
+    for (const target of [PLAIN, BUNKO_08, BUNKO_07]) {
+      expect(layerStaysLocal(untouched, target)).toBe(true);
+    }
+    expect(layerStaysLocal({ ...untouched, updated_at: 't2' }, PLAIN)).toBe(false);
   });
 });

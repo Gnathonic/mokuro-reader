@@ -26,7 +26,11 @@ export interface VolumeRecordLike {
   timeReadInMinutes?: number;
   recentPageTurns?: Turn[];
   forgotAt?: string;
+  archivedReads?: Array<{ at: number }>;
+  legacyStats?: LegacyStatsLike;
 }
+
+type LegacyStatsLike = { time_ms: number; chars: number; before: number };
 
 const turnKey = (turn: Turn) => `${turn[0]}|${turn[1]}`;
 
@@ -34,10 +38,32 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
   const horizon = laterStamp(winner.forgotAt, loser.forgotAt);
   const winnerTurns = afterHorizon(winner.recentPageTurns ?? [], horizon);
   const loserTurns = afterHorizon(loser.recentPageTurns ?? [], horizon);
-  if (!horizon && winnerTurns.length === 0 && loserTurns.length === 0) return winner;
+  // A forget hides the reading from before history too: after one, only a
+  // copy that already knows of it (its own horizon) may carry a snapshot.
+  const keepsSnapshot = (side: T) => !horizon || side.forgotAt === horizon;
+  const legacyStats = mergeLegacyStats(
+    keepsSnapshot(winner) ? winner.legacyStats : undefined,
+    keepsSnapshot(loser) ? loser.legacyStats : undefined
+  );
+  const legacyChanged = !sameSnapshot(legacyStats, winner.legacyStats);
+  if (
+    !horizon &&
+    winnerTurns.length === 0 &&
+    loserTurns.length === 0 &&
+    !legacyChanged &&
+    !unionArchivedReads(winner.archivedReads, loser.archivedReads)
+  ) {
+    return winner;
+  }
 
   const record: T = { ...winner, recentPageTurns: unionTurns(winnerTurns, loserTurns) };
+  if (legacyStats) record.legacyStats = legacyStats;
+  else delete record.legacyStats;
   if (horizon) record.forgotAt = horizon;
+  // Restarts are user actions that must survive whichever copy wins: a pass
+  // archived on the older copy (another device restarted the series) is kept.
+  const archived = unionArchivedReads(winner.archivedReads, loser.archivedReads);
+  if (archived) record.archivedReads = archived as T['archivedReads'];
 
   const winnerKeys = new Set(winnerTurns.map(turnKey));
   const loserKeys = new Set(loserTurns.map(turnKey));
@@ -57,8 +83,10 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
 export function applyForgetHorizon<T extends VolumeRecordLike>(record: T, forgotAt: string): T {
   const horizon = laterStamp(record.forgotAt, forgotAt);
   if (!horizon) return record;
+  // Forgotten stats include the reading from before history.
+  const { legacyStats: _forgotten, ...rest } = record;
   return {
-    ...record,
+    ...(rest as T),
     forgotAt: horizon,
     recentPageTurns: afterHorizon(record.recentPageTurns ?? [], horizon)
   };
@@ -86,4 +114,42 @@ function unionTurns(a: Turn[], b: Turn[]): Turn[] {
     if (!seen || (seen.length < 3 && turn.length >= 3)) byKey.set(key, turn);
   }
   return [...byKey.values()].sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+}
+
+/** Both sides' archived passes by `at`, in time order; undefined when the loser adds none. */
+function unionArchivedReads<R extends { at: number }>(
+  winner: R[] | undefined,
+  loser: R[] | undefined
+): R[] | undefined {
+  if (!loser || loser.length === 0) return undefined;
+  const byAt = new Map<number, R>();
+  for (const read of winner ?? []) byAt.set(read.at, read);
+  let added = false;
+  for (const read of loser) {
+    if (!byAt.has(read.at)) {
+      byAt.set(read.at, read);
+      added = true;
+    }
+  }
+  return added ? [...byAt.values()].sort((a, b) => a.at - b.at) : undefined;
+}
+
+/**
+ * Two devices' pre-history snapshots: the LATER freeze wins (it saw more of
+ * the old counter), then the larger figures — the same result whichever copy
+ * won the merge.
+ */
+export function mergeLegacyStats(
+  a: LegacyStatsLike | undefined,
+  b: LegacyStatsLike | undefined
+): LegacyStatsLike | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  const order = b.before - a.before || b.time_ms - a.time_ms || b.chars - a.chars;
+  return order > 0 ? b : a;
+}
+
+function sameSnapshot(a: LegacyStatsLike | undefined, b: LegacyStatsLike | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.before === b.before && a.time_ms === b.time_ms && a.chars === b.chars;
 }

@@ -4,6 +4,12 @@ import { requireCredentialString } from '../cloud-provider-core-types';
 import { ONEDRIVE_CONFIG, graphBase } from '../../providers/onedrive/constants';
 import { parseNextExpectedRange } from '../../providers/onedrive/upload-session';
 import { CLOUD_TEST_HOOKS, credentialBase } from '../../cloud-test-hooks';
+import {
+  GraphQuotaError,
+  graphErrorCode,
+  isGraphQuotaFailure,
+  isGraphRetryableStatus
+} from '../../providers/onedrive/graph-errors';
 
 function encodePath(path: string): string {
   return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
@@ -17,10 +23,6 @@ const SESSION_TIMEOUT_MS = 30 * 1000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
 }
 
 function retryAfterMs(response: Response): number | undefined {
@@ -166,8 +168,15 @@ export const onedriveCore: CloudProviderCore = {
           ({ uploadUrl } = (await sessionResponse.json()) as { uploadUrl: string });
           break;
         }
+        const body = await sessionResponse.text().catch(() => '');
+        const code = graphErrorCode(body);
+        // A full drive stays full: fail now, with a message the provider
+        // (and a worker's caller) recognises.
+        if (isGraphQuotaFailure(sessionResponse.status, code)) {
+          throw new GraphQuotaError(sessionResponse.status, code);
+        }
         sessionError = `${sessionResponse.status} ${sessionResponse.statusText}`;
-        if (!isRetryableStatus(sessionResponse.status)) {
+        if (!isGraphRetryableStatus(sessionResponse.status)) {
           throw new Error(`Failed to create OneDrive upload session: ${sessionError}`);
         }
         if (sessionAttempt >= MAX_CHUNK_ATTEMPTS) {
@@ -180,6 +189,7 @@ export const onedriveCore: CloudProviderCore = {
             Math.min(RETRY_BASE_DELAY_MS * 2 ** (sessionAttempt - 1), RETRY_MAX_DELAY_MS)
         );
       } catch (error) {
+        if (error instanceof GraphQuotaError) throw error;
         if (error instanceof Error && error.message.startsWith('Failed to create')) throw error;
         sessionError = error instanceof Error ? error.message : 'network error';
         if (sessionAttempt >= MAX_CHUNK_ATTEMPTS) {
@@ -260,8 +270,12 @@ export const onedriveCore: CloudProviderCore = {
       }
 
       const waitMs = retryAfterMs(chunkResponse);
-      await chunkResponse.text().catch(() => '');
-      if (!isRetryableStatus(chunkResponse.status)) {
+      const body = await chunkResponse.text().catch(() => '');
+      const code = graphErrorCode(body);
+      if (isGraphQuotaFailure(chunkResponse.status, code)) {
+        throw new GraphQuotaError(chunkResponse.status, code);
+      }
+      if (!isGraphRetryableStatus(chunkResponse.status)) {
         // A definitive 4xx (other than 408/429) means Graph rejected the
         // request outright — no ambiguity to resolve, unlike a dropped
         // connection or exhausted retries against a transient status.

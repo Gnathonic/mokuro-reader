@@ -146,6 +146,10 @@ interface CompressFromDbMessage {
    * editor's `original` snapshot is never uploaded there (`layerStaysLocal`).
    */
   serverCompilesMetadata?: boolean;
+  /** The target's `ProviderStatus.editLayerSync`: `local` keeps the `edit` layer off it. */
+  editLayerSync?: 'push' | 'local';
+  /** The target's `accountScope`: another account's `edit` layer is not uploaded. */
+  accountScope?: string;
 }
 
 /**
@@ -1007,6 +1011,8 @@ ctx.addEventListener('message', async (event) => {
         if (message.includeSidecars === true) {
           const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
             serverCompilesMetadata: message.serverCompilesMetadata === true,
+            editLayerSync: message.editLayerSync,
+            account: message.accountScope,
             cloud: true
           });
           const sidecarsToUpload: Array<{ filename: string; blob: Blob }> = [];

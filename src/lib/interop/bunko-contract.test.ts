@@ -616,24 +616,27 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     expect(localStorage.getItem('webdav_put_verified')).toBe(SERVER);
   });
 
-  it('the privilege probe finds no ACL, and the OPTIONS fallback reads Bunko’s Allow', async () => {
+  it('a known Bunko skips the write verdict, and Bunko’s OPTIONS makes it known', async () => {
+    // Known as Bunko (`X-Mokuro-Put: verified`, above): no probe at all. Bunko
+    // decides each request itself and its Allow is advisory.
+    const known = fixtureFetch([]);
+    fetchHandler.impl = known.fetch;
+    expect(await provider.checkWritePermissions(SERVER)).toBe(true);
+    expect(known.calls).toEqual([]);
+
+    // Not known yet: the privilege probe finds no ACL, and the OPTIONS fallback
+    // reads Bunko's `X-Mokuro-Put: verified` before its Allow, so the verdict
+    // is writable whatever that Allow lists (older Bunkos list no PUT or MKCOL
+    // on a collection), and the server is known from then on.
+    localStorage.removeItem('webdav_put_verified');
     const answers = fixtureFetch([fx('propfind-root-depth0-privileges'), fx('options-library')]);
     fetchHandler.impl = answers.fetch;
-    const allow = fx('options-library').headers!.allow;
-    expect(allow).toBeTruthy();
-    // Bunko's Allow on the library folder names no PUT or MKCOL (a collection takes
-    // neither), so this generic-WebDAV fallback calls it read-only. It runs only when
-    // the identity endpoint did not answer for the account.
-    expect(await provider.checkWritePermissions(SERVER)).toBe(
-      ['PUT', 'DELETE', 'MKCOL'].every((m) =>
-        allow
-          .split(',')
-          .map((x: string) => x.trim())
-          .includes(m)
-      )
-    );
+    expect(fx('options-library').headers!.allow).toBeTruthy();
+    expect(fx('options-library').headers!['x-mokuro-put']).toBe('verified');
+    expect(await provider.checkWritePermissions(SERVER)).toBe(true);
     expect(answers.calls.map((c) => c.method)).toEqual(['PROPFIND', 'OPTIONS']);
     expect(answers.calls[1].url).toBe(`${SERVER}/mokuro-reader/`);
+    expect(localStorage.getItem('webdav_put_verified')).toBe(SERVER);
   });
 
   it('the Depth: infinity listing yields every volume, sidecar and metadata file', async () => {

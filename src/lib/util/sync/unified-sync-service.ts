@@ -15,11 +15,23 @@ import {
   type SeriesReadingStates,
   type VolumeData
 } from '$lib/settings';
+import {
+  TRACKING_SECTION_KEY,
+  detectBogusTrackingKeys,
+  foldableTracking,
+  mergeTrackingSections,
+  parseTrackingSection,
+  setTrackingStates,
+  trackingState,
+  type TrackingState
+} from '$lib/settings/tracking-data';
 import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
+import { isHistoryFilePath } from '$lib/reading-history/paths';
+import { noteUploaded, watchedEscapes } from '$lib/positions/escapes';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
 import {
@@ -137,6 +149,12 @@ export interface CloudVolumeDataFile {
    * Drives FORFEIT-ON-BOGUS in `syncVolumeData`'s cloud-vs-local merge.
    */
   bogusSeriesKeys?: ReadonlySet<string>;
+  /** The `tracking` section (idle cutoff), parsed; same rules as `series`. */
+  tracking?: TrackingState;
+  /** The `tracking` section as the surviving copy holds it (see `rawSeries`). */
+  rawTracking?: unknown;
+  /** Tracking keys whose raw stamp needed clamping, in any readable copy. */
+  bogusTrackingKeys?: ReadonlySet<string>;
 }
 
 /**
@@ -146,9 +164,33 @@ export interface CloudVolumeDataFile {
  * authenticated cloud providers. Works with the SyncProvider interface,
  * making it provider-agnostic.
  */
+interface SyncFlight {
+  running: Promise<ProviderSyncResult>;
+  followUp?: {
+    silent: boolean;
+    promise: Promise<ProviderSyncResult>;
+    resolve: (result: ProviderSyncResult) => void;
+    reject: (error: unknown) => void;
+  };
+}
+
 class UnifiedSyncService {
   private isSyncingStore = writable<boolean>(false);
   private syncLock = false;
+  /** Syncs (or `syncAllProviders` runs) in progress; `isSyncing` is "any". */
+  private activeSyncs = 0;
+  /** The sync running per provider type, and the one queued behind it. */
+  private flights = new Map<string, SyncFlight>();
+
+  private beginSyncing(): void {
+    this.activeSyncs++;
+    this.isSyncingStore.set(true);
+  }
+
+  private endSyncing(): void {
+    this.activeSyncs = Math.max(0, this.activeSyncs - 1);
+    if (this.activeSyncs === 0) this.isSyncingStore.set(false);
+  }
 
   get isSyncing() {
     return this.isSyncingStore;
@@ -176,7 +218,7 @@ class UnifiedSyncService {
     }
 
     this.syncLock = true;
-    this.isSyncingStore.set(true);
+    this.beginSyncing();
 
     // Filter to only authenticated providers
     const authenticatedProviders = providers.filter((p) => p.isAuthenticated());
@@ -187,7 +229,7 @@ class UnifiedSyncService {
         showSnackbar('No cloud providers connected');
       }
       this.syncLock = false;
-      this.isSyncingStore.set(false);
+      this.endSyncing();
       return {
         totalProviders: 0,
         succeeded: 0,
@@ -280,20 +322,59 @@ class UnifiedSyncService {
         setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
       }
       this.syncLock = false;
-      this.isSyncingStore.set(false);
+      this.endSyncing();
     }
   }
 
   /**
-   * Sync with a single provider
+   * Sync with a single provider. One at a time per provider: two overlapping
+   * syncs each download the config files, merge and upload, and the second
+   * can read a file the first is rewriting (a Local Folder `File` goes
+   * unreadable mid-read). A request made while one runs waits for it, and
+   * every such request shares ONE follow-up sync — silent only if all were.
    */
-  async syncProvider(
-    provider: SyncProvider,
-    options: SyncOptions = {}
-  ): Promise<ProviderSyncResult> {
-    // Set syncing state
-    this.isSyncingStore.set(true);
+  syncProvider(provider: SyncProvider, options: SyncOptions = {}): Promise<ProviderSyncResult> {
+    const flight = this.flights.get(provider.type);
+    if (!flight) return this.startFlight(provider, options, false);
+    if (flight.followUp) {
+      if (!options.silent) flight.followUp.silent = false;
+      return flight.followUp.promise;
+    }
+    let resolve!: (result: ProviderSyncResult) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<ProviderSyncResult>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    flight.followUp = { silent: !!options.silent, promise, resolve, reject };
+    return promise;
+  }
 
+  /** Run a sync and, when it ends, the follow-up queued behind it — with no gap a third could slip into. */
+  private startFlight(
+    provider: SyncProvider,
+    options: SyncOptions,
+    continuing: boolean
+  ): Promise<ProviderSyncResult> {
+    if (!continuing) this.beginSyncing();
+    const flight: SyncFlight = { running: undefined as unknown as Promise<ProviderSyncResult> };
+    this.flights.set(provider.type, flight);
+    flight.running = this.runProviderSync(provider, options).finally(() => {
+      const next = flight.followUp;
+      if (next) {
+        this.startFlight(provider, { silent: next.silent }, true).then(next.resolve, next.reject);
+      } else {
+        this.flights.delete(provider.type);
+        this.endSyncing();
+      }
+    });
+    return flight.running;
+  }
+
+  private async runProviderSync(
+    provider: SyncProvider,
+    options: SyncOptions
+  ): Promise<ProviderSyncResult> {
     try {
       console.log(`🔄 Syncing with ${provider.name}...`);
       console.log('🔄 Sync options:', options);
@@ -314,6 +395,10 @@ class UnifiedSyncService {
       await this.syncVolumeData(provider);
       console.log('✅ Volume data synced');
 
+      // The fixed-address position index, right after the volume data it
+      // mirrors. Best-effort: it never fails the sync.
+      await this.syncPositionsFile(provider);
+
       // Profiles get the same treatment: read → merge (newest `lastUpdated` per
       // profile, tombstones honoured) → push. It used to be a button nobody
       // pressed, which is how devices ended up with divergent settings.
@@ -328,6 +413,9 @@ class UnifiedSyncService {
       console.log('🔄 Syncing goals...');
       await this.syncGoals(provider);
       console.log('✅ Goals synced');
+
+      // Reading history last: best-effort, it never fails the sync above.
+      await this.syncReadingHistory(provider, options);
 
       console.log(`✅ ${provider.name} sync complete`);
       return {
@@ -348,9 +436,6 @@ class UnifiedSyncService {
         success: false,
         error: errorMessage
       };
-    } finally {
-      // Clear syncing state
-      this.isSyncingStore.set(false);
     }
   }
 
@@ -435,7 +520,9 @@ class UnifiedSyncService {
             return {
               volumes: parseVolumesFromJson(JSON.stringify(data)),
               series: parseSeriesSection(data?.[SERIES_SECTION_KEY]),
-              rawSeries: data?.[SERIES_SECTION_KEY]
+              rawSeries: data?.[SERIES_SECTION_KEY],
+              tracking: parseTrackingSection(data?.[TRACKING_SECTION_KEY]),
+              rawTracking: data?.[TRACKING_SECTION_KEY]
             };
           })
         );
@@ -474,6 +561,24 @@ class UnifiedSyncService {
         );
         const bogusSeriesKeys = new Set<string>();
         for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
+
+        // The tracking section folds the same way as the series section below:
+        // newest per key (`devices`: per device id), and a copy's bogus entry
+        // never beats another copy's honest one (`foldableTracking`).
+        const trackingCopies = readable.map((entry) => ({
+          tracking: entry.result.value.tracking ?? {},
+          bogus: detectBogusTrackingKeys(entry.result.value.rawTracking)
+        }));
+        const bogusTrackingKeys = new Set<string>();
+        for (const copy of trackingCopies) for (const key of copy.bogus) bogusTrackingKeys.add(key);
+        let mergedTracking: TrackingState = {};
+        trackingCopies.forEach((copy, i) => {
+          mergedTracking = mergeTrackingSections(
+            mergedTracking,
+            foldableTracking(trackingCopies, i),
+            copy.bogus
+          );
+        });
 
         // Merge all readable copies volume by volume (`mergeVolumePair`)
         const merged: Record<string, VolumeData> = {};
@@ -536,7 +641,10 @@ class UnifiedSyncService {
           volumes: merged,
           series: mergedSeries,
           rawSeries: readable[0].result.value.rawSeries,
-          bogusSeriesKeys
+          bogusSeriesKeys,
+          tracking: mergedTracking,
+          rawTracking: readable[0].result.value.rawTracking,
+          bogusTrackingKeys
         };
       }
 
@@ -544,11 +652,15 @@ class UnifiedSyncService {
       const blob = await provider.downloadFile(volumeDataFiles[0]);
       const data = await this.blobToJson(blob);
       const rawSeries = data?.[SERIES_SECTION_KEY];
+      const rawTracking = data?.[TRACKING_SECTION_KEY];
       return {
         volumes: parseVolumesFromJson(JSON.stringify(data)),
         series: parseSeriesSection(rawSeries),
         rawSeries,
-        bogusSeriesKeys: detectBogusSeriesKeys(rawSeries)
+        bogusSeriesKeys: detectBogusSeriesKeys(rawSeries),
+        tracking: parseTrackingSection(rawTracking),
+        rawTracking,
+        bogusTrackingKeys: detectBogusTrackingKeys(rawTracking)
       };
     } catch (error) {
       // File not found is not an error
@@ -602,10 +714,18 @@ class UnifiedSyncService {
    * series-level state produces byte-identical files to before this existed —
    * no spurious upload, no mtime churn on every other device.
    */
-  private composeVolumeDataFile(volumes: any, series: SeriesReadingStates): any {
-    return Object.keys(series).length > 0
-      ? { ...volumes, [SERIES_SECTION_KEY]: series }
-      : { ...volumes };
+  private composeVolumeDataFile(
+    volumes: any,
+    series: SeriesReadingStates,
+    tracking: unknown = {}
+  ): any {
+    const file: Record<string, unknown> = { ...volumes };
+    if (Object.keys(series).length > 0) file[SERIES_SECTION_KEY] = series;
+    // Same rule for the tracking section: absent until the user sets something.
+    if (tracking && typeof tracking === 'object' && Object.keys(tracking).length > 0) {
+      file[TRACKING_SECTION_KEY] = tracking;
+    }
+    return file;
   }
 
   /**
@@ -631,6 +751,11 @@ class UnifiedSyncService {
       cloud?.series ?? {},
       cloud?.bogusSeriesKeys ?? new Set()
     );
+    const mergedTracking = mergeTrackingSections(
+      get(trackingState),
+      cloud?.tracking ?? {},
+      cloud?.bogusTrackingKeys ?? new Set()
+    );
 
     // Step 4: Purge tombstones older than 30 days
     const purgedVolumes = this.purgeTombstones(mergedVolumes);
@@ -638,6 +763,16 @@ class UnifiedSyncService {
     // Step 5: Update local storage (including tombstones)
     volumesWithTrash.set(purgedVolumes);
     setSeriesReadingStates(mergedSeries);
+    setTrackingStates(mergedTracking);
+
+    // Step 5b: page turns the merge brought back (an older client, a device
+    // that has not converted yet) become reading-history events and leave the
+    // records — but only where history itself can sync. The file keeps
+    // carrying turns (every turn history projects) until this provider holds
+    // them as history: on mokuro-bunko and read-only providers always, and
+    // elsewhere until the converted turns are confirmed uploaded (the history
+    // pass runs after this upload, so that is the next sync).
+    const finalVolumes = await this.volumesForUpload(provider);
 
     // Step 6: Upload if anything differs from what the cloud actually holds.
     //
@@ -646,13 +781,21 @@ class UnifiedSyncService {
     // sanitized value looks like a match and never heals. `stableStringify`
     // sorts keys, so two devices whose maps hold identical state in different
     // insertion orders stop re-uploading the same bytes at each other.
-    const nextFile = this.composeVolumeDataFile(purgedVolumes, mergedSeries);
+    const nextFile = this.composeVolumeDataFile(finalVolumes, mergedSeries, mergedTracking);
     const cloudFile = this.composeVolumeDataFile(
       cloud?.volumes ?? {},
-      (cloud?.rawSeries as SeriesReadingStates) ?? {}
+      (cloud?.rawSeries as SeriesReadingStates) ?? {},
+      cloud?.rawTracking ?? {}
     );
 
     if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
+      // A look-up visit's stamps leave the device now: its restore must beat
+      // them (`positions/visit.ts`) — reported before the PUT, which may still
+      // be in flight when the reader comes home.
+      for (const volume of watchedEscapes()) {
+        const stamp = finalVolumes[volume]?.lastProgressUpdate;
+        if (stamp) noteUploaded(volume, Date.parse(stamp));
+      }
       await this.uploadVolumeDataFile(provider, nextFile);
     }
   }
@@ -675,6 +818,16 @@ class UnifiedSyncService {
    * and a `get`-only path silently ignores every copy but one — losing whatever
    * only the other copies held.
    */
+  /** `positions.json` (`$lib/positions`), loaded lazily like the history modules. */
+  private async syncPositionsFile(provider: SyncProvider): Promise<void> {
+    try {
+      const { syncPositions } = await import('$lib/positions/positions-sync');
+      await syncPositions(provider);
+    } catch (error) {
+      console.warn('[positions] sync step failed:', error);
+    }
+  }
+
   private findGoalsFiles(provider: SyncProvider): CloudFileMetadata[] {
     const cache = cacheManager.getCache(provider.type);
     if (!cache) return [];
@@ -904,6 +1057,64 @@ class UnifiedSyncService {
     // re-upload the same bytes at each other forever.
     if (stableStringify(purgedProfiles) !== stableStringify(cloudProfiles || {})) {
       await this.uploadProfilesFile(provider, purgedProfiles);
+    }
+  }
+
+  /**
+   * Convert and strip page turns still held in volume records (phase 2b).
+   * Best-effort: on failure the turns simply stay in the file, as before.
+   * Loaded lazily, like the history pass.
+   */
+  private async volumesForUpload(provider: SyncProvider): Promise<any> {
+    const status = provider.getStatus?.() ?? ({} as Partial<ReturnType<SyncProvider['getStatus']>>);
+    try {
+      const [cutOver, historySync, historyDbModule] = await Promise.all([
+        import('$lib/reading-history/cut-over'),
+        import('$lib/reading-history/history-sync'),
+        import('$lib/reading-history/history-db')
+      ]);
+      const historySyncs = historySync.historySyncAllowed(status) && !status.isReadOnly;
+      if (historySyncs) await cutOver.cutOverLegacyTurns();
+      const records = get(volumesWithTrash);
+      const carried =
+        historySyncs &&
+        (await historySync.legacyCarriedBy(provider.type, historyDbModule.historyDb()));
+      return carried ? records : await cutOver.attachProjectedTurns(records);
+    } catch (error) {
+      console.warn('Page-turn cut-over failed (turns stay in volume-data.json):', error);
+      return get(volumesWithTrash);
+    }
+  }
+
+  /**
+   * Reading history (spec: Storage → Cloud): upload this device's months,
+   * import every other device's. Best-effort — it is this device's copy of
+   * data it keeps locally, so a failure logs and the next sync retries; it
+   * never fails the progress sync. Loaded lazily: the history database module
+   * must not be evaluated by suites that mock `dexie`.
+   */
+  private async syncReadingHistory(
+    provider: SyncProvider,
+    options: SyncOptions = {}
+  ): Promise<void> {
+    try {
+      const cache = cacheManager.getCache(provider.type);
+      if (!cache?.isLoaded?.() || cache.isFetching?.()) return;
+      const listing = cache.getAllFiles().filter((f) => isHistoryFilePath(f.path));
+      const [{ syncHistory }, { historyDb }] = await Promise.all([
+        import('$lib/reading-history/history-sync'),
+        import('$lib/reading-history/history-db')
+      ]);
+      const result = await syncHistory(provider, listing, historyDb(), {
+        force: !options.silent,
+        onUploaded: (path, bytes, uploaded) =>
+          cache.add?.(path, uploadCacheEntry(provider.type, path, bytes, uploaded))
+      });
+      if (result.imported || result.uploaded.length || result.failed.length) {
+        console.log('📚 Reading history:', result);
+      }
+    } catch (error) {
+      console.warn('Reading history sync failed (will retry next sync):', error);
     }
   }
 

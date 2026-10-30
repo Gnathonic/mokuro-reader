@@ -6,6 +6,14 @@ import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import type { DriveFileMetadata } from '../../provider-interface';
 import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
+import { compareByAge } from '../../folder-deduplicator';
+import type { DriveFile } from './constants';
+import { HISTORY_FOLDER, isHistoryFileName } from '$lib/reading-history/paths';
+import { driveHistoryPath } from './drive-history-path';
+import {
+  cloudBunkoMergesDuplicates,
+  refreshCloudBunkoMarker
+} from '$lib/catalog/cloud-bunko-marker';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -85,6 +93,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   private fetchingFlag = false;
   private lastFetchTime: number | null = null;
   private readerFolderId: string | null = null;
+  /** My Drive's own folder id, learnt once per session (see topLevelTest). */
+  private myDriveRootId: string | null = null;
+  private topLevelPromise: Promise<((f: DriveFile) => boolean) | null> | null = null;
   private fetchPromise: Promise<void> | null = null;
   /**
    * How many times IN A ROW a dedup-triggered refetch has re-entered
@@ -168,7 +179,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         // This filters out viewer-only shared files while keeping shared files with edit access that user owns
         const allItems = await driveApiClient.listFiles(
           `'me' in owners and trashed=false`,
-          'files(id,name,mimeType,modifiedTime,size,parents,description)'
+          'files(id,name,mimeType,modifiedTime,size,parents,description,createdTime)'
         );
         console.log('Found items:', allItems);
 
@@ -177,8 +188,12 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         const cbzFiles: any[] = [];
         const sidecarFiles: any[] = [];
         const rootConfigFiles: any[] = [];
+        const historyFiles: any[] = [];
         const folderNames = new Map<string, string>();
+        // id -> name + parent, for paths deeper than one folder (history/<device>/…)
+        const folders = new Map<string, { name: string; parent?: string }>();
         const foundFolderNames: string[] = [];
+        const readerFolders: DriveFile[] = [];
 
         for (const item of allItems) {
           const ext =
@@ -189,15 +204,17 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
           if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
             folderNames.set(item.id, item.name);
+            folders.set(item.id, { name: item.name, parent: item.parents?.[0] });
             foundFolderNames.push(item.name);
 
-            // Capture mokuro-reader folder ID
             if (item.name === GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER) {
-              this.readerFolderId = item.id;
-              console.log('Found mokuro-reader folder ID:', item.id);
+              readerFolders.push(item);
             }
           } else if (item.name.endsWith('.cbz')) {
             cbzFiles.push(item);
+          } else if (isHistoryFileName(item.name)) {
+            // Reading history: placed by its full path below, never by parent name.
+            historyFiles.push(item);
           } else if (isSidecarFile(item.name)) {
             // .mokuro / .mokuro.gz / cover images AND the per-series index
             // `<Series>/series.json`. Hand-rolling this test is what made
@@ -294,9 +311,32 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           }
         }
 
+        // Reading history, two folders deep: mokuro-reader/history/<device>/<file>.
+        // Cached under `history`, the first segment, like every other provider.
+        for (const file of historyFiles) {
+          const path = driveHistoryPath(file, folders, GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER);
+          if (!path) continue;
+          const metadata: DriveFileMetadata = {
+            provider: 'google-drive',
+            fileId: file.id,
+            name: file.name,
+            modifiedTime: file.modifiedTime || new Date().toISOString(),
+            size: file.size ? parseInt(file.size) : 0,
+            path,
+            description: file.description,
+            parentId: file.parents?.[0]
+          };
+          const existing = cacheMap.get(HISTORY_FOLDER);
+          if (existing) existing.push(metadata);
+          else cacheMap.set(HISTORY_FOLDER, [metadata]);
+        }
+
         console.log(
           `Cached ${cbzFiles.length} .cbz files, ${sidecarFiles.length} sidecar files and ${rootConfigFiles.length} root config file(s)`
         );
+        // Chosen before the swap below, and kept only if the account is still
+        // this one: the choice may ask Drive for My Drive's id.
+        const readerFolderId = await this.pickReaderFolder(readerFolders);
         // IDENTITY IS A SIGNAL, so do not spend it on a listing that did not
         // change. `catalog/index.ts`'s `volumesWithPlaceholders` decides
         // whether to re-mint EVERY placeholder object by comparing the
@@ -325,6 +365,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         if (this.cacheGeneration !== startedAtGeneration) {
           console.log('Drive files cache was cleared mid-fetch; discarding this listing');
           return;
+        }
+        if (readerFolderId) {
+          this.readerFolderId = readerFolderId;
+          console.log('Found mokuro-reader folder ID:', readerFolderId);
         }
         const replayed = (this.mutationsDuringFetch ?? []).reduce(
           (map, fn) => fn(map),
@@ -402,6 +446,57 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
     // Cache is loaded but no folder found - it needs to be created
     return null;
+  }
+
+  /**
+   * THE library folder among every live `mokuro-reader` folder (duplicates,
+   * or one the user moved): one directly in My Drive first, then the oldest,
+   * then the smaller id — the folder FolderDeduplicator keeps when it merges
+   * the top-level ones, so writes never go to the copy the next merge
+   * empties. A nested root is never merged away; it is the write root only
+   * when there is no top-level one. The provider's dedup confirms a root only
+   * when it is this same choice, so the two never disagree.
+   */
+  async pickReaderFolder(folders: DriveFile[]): Promise<string | null> {
+    if (folders.length <= 1) return folders[0]?.id ?? null;
+    const atTop = await this.topLevelTest();
+    const rank = (f: DriveFile) => (atTop?.(f) ? 0 : 1);
+    return [...folders].sort((a, b) => rank(a) - rank(b) || compareByAge(a, b))[0].id;
+  }
+
+  /**
+   * Is a folder directly in My Drive? Not `files.get('root')`: under the
+   * app's drive.file scope that is a 404 (rclone hit the same). The `'root'`
+   * alias does work in a query, so ask for the top-level `mokuro-reader`
+   * folders; their parent is My Drive's id, remembered for the session. Null
+   * when the query fails (ordered by age alone, asked again next time).
+   */
+  private async topLevelTest(): Promise<((f: DriveFile) => boolean) | null> {
+    const known = this.myDriveRootId;
+    if (known) return (f) => f.parents?.[0] === known;
+    if (!this.topLevelPromise) {
+      const generation = this.cacheGeneration;
+      this.topLevelPromise = driveApiClient
+        .listFiles(
+          `'root' in parents and name='${GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+          'files(id,parents)'
+        )
+        .then((top: DriveFile[]) => {
+          const id = top.find((f) => f.parents?.[0])?.parents?.[0];
+          // An answer for an account signed out meanwhile is not this one's.
+          if (id && this.cacheGeneration === generation) this.myDriveRootId = id;
+          const ids = new Set(top.map((f) => f.id));
+          return (f: DriveFile) => ids.has(f.id) || (!!id && f.parents?.[0] === id);
+        })
+        .catch((error: unknown) => {
+          console.warn('[DriveCache] Could not list the top-level mokuro-reader folders:', error);
+          return null;
+        })
+        .finally(() => {
+          this.topLevelPromise = null;
+        });
+    }
+    return this.topLevelPromise;
   }
 
   /**
@@ -595,6 +690,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     this.cacheLoadedStore.set(false);
     this.lastFetchTime = null;
     this.readerFolderId = null;
+    this.myDriveRootId = null;
+    this.topLevelPromise = null;
     this.fetchPromise = null;
   }
 
@@ -670,6 +767,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     return this.getAllDriveFiles();
   }
 
+  revision(): object {
+    return this.cache.revision();
+  }
+
   /**
    * Fetch fresh data from Google Drive and populate cache
    */
@@ -711,7 +812,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     // Parse path to get series and volume title
     const parts = path.split('/');
     if (parts.length >= 2) {
-      const seriesTitle = parts.slice(0, -1).join('/');
+      // Grouped by the FIRST segment, which is what `has`/`get`/`getAll` look
+      // up. For every two-segment path (`<Series>/<file>`) that is the folder;
+      // reading history (`history/<device>/<file>`) is the one deeper path.
+      const seriesTitle = parts[0];
       const volumeTitle = parts[parts.length - 1]?.replace('.cbz', '') || '';
       this.addDriveFile(seriesTitle, volumeTitle, metadata);
       return;
@@ -780,8 +884,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * being CREATED between passes — `findOrCreateFolder` creates a folder
    * whenever its lookup misses, and Drive's file index is eventually
    * consistent, so a write landing during a dedup pass can mint the very
-   * duplicate the next pass merges. That is an unbounded refetch engine, and
-   * it exists on no other provider: WebDAV and MEGA run no dedup at all.
+   * duplicate the next pass merges. That is an unbounded refetch engine
+   * (MEGA's dedup, added later, bounds its refetch the same way; WebDAV runs
+   * no dedup).
    *
    * So the chain is now DEPTH-BOUNDED. Convergence is unaffected (one refetch
    * is all a converged dedup ever needed); a pathological account gives up on
@@ -794,6 +899,19 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     Promise.all([import('../../folder-deduplicator'), import('./google-drive-provider')])
       .then(async ([{ folderDeduplicator }, { googleDriveProvider }]) => {
         if (!googleDriveProvider.isAuthenticated()) {
+          return;
+        }
+
+        // Before any merge: the merge below confirms its root itself, but a
+        // root merged away elsewhere (or by the Bunko this skips for) is only
+        // ever noticed here, as a listing that picks another one.
+        if (this.readerFolderId) googleDriveProvider.adoptListedReaderFolder(this.readerFolderId);
+
+        // A fresh Bunko lease holder that merges duplicates does it with the
+        // same rule; a second merger on the same folders only races its moves.
+        await refreshCloudBunkoMarker(googleDriveProvider);
+        if (cloudBunkoMergesDuplicates(googleDriveProvider.type)) {
+          console.log('[Dedup] a cloud-direct Bunko merges duplicates here; skipping');
           return;
         }
 

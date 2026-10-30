@@ -246,6 +246,7 @@ import { buildVolumeSidecarsFromData, loadVolumeSidecars } from '$lib/util/volum
 // production) and the real main schema, for the byte-identity three-way below.
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
 import { CatalogDexieV3 } from '$lib/catalog/db-v3';
+import { provenanceFromParsed, type OcrProvenance } from '$lib/catalog/ocr-provenance';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -926,6 +927,7 @@ function processedVolumeFixture(
     volumeTitle?: string;
     thumbnail?: Blob | null;
     mokuroVersion?: string;
+    ocrProvenance?: OcrProvenance;
   } = {}
 ): ProcessedVolume {
   return {
@@ -944,7 +946,8 @@ function processedVolumeFixture(
       thumbnailWidth: 4,
       thumbnailHeight: 4,
       sourceType: 'cloud',
-      spineWidth: 12
+      spineWidth: 12,
+      ...(overrides.ocrProvenance ? { ocrProvenance: overrides.ocrProvenance } : {})
     },
     ocrData: {
       volume_uuid: uuid,
@@ -1031,9 +1034,51 @@ describe('sidecar backfill — the import feed (in-memory upload at download com
     // Teeth (permanent negative control): serializing the UNSTRIPPED pipeline
     // pages — `cumulativeChars` still present — would NOT match. If this ever
     // starts matching, the equality above has gone vacuous.
-    const unstripped = buildVolumeSidecarsFromData(saved.metadata, processed.ocrData.pages);
+    const unstripped = await buildVolumeSidecarsFromData(saved.metadata, processed.ocrData.pages);
     const unstrippedBytes = new Uint8Array(await unstripped.mokuroFile!.arrayBuffer());
     expect(unstrippedBytes).not.toEqual(dbBytes);
+  });
+
+  it('a volume installed from a stamped file: every feed writes the same bytes, block included', async () => {
+    const engine = { id: 'hayai-nova', revision: 2, seal: 'v1:' + '0'.repeat(64) };
+    // The digest of the pages as stored (what the FILE's pages were).
+    const filePages = processedVolumeFixture().ocrData.pages.map(
+      ({ cumulativeChars: _c, ...p }) => p
+    );
+    const ocrProvenance = (await provenanceFromParsed(engine, filePages))!;
+    const saved = await saveVolume(processedVolumeFixture('imp-1', { ocrProvenance }), {
+      preserveTitles: true
+    });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+
+    const mokuroCall = cloud.uploadFile.mock.calls.find((call) =>
+      (call[0] as string).endsWith('.mokuro')
+    );
+    const importedText = await (mokuroCall![1] as File).text();
+    // The import-time upload carries the block it was installed with.
+    expect(JSON.parse(importedText).ocr_engine).toEqual(engine);
+
+    const fromDb = await loadVolumeSidecars('imp-1');
+    expect(await fromDb.mokuroFile!.text()).toBe(importedText);
+    const forCloud = await loadVolumeSidecars('imp-1', { forCloud: true });
+    expect(await forCloud.mokuroFile!.text()).toBe(importedText);
+
+    const workerSide = new CatalogDexieV3();
+    try {
+      await workerSide.volumes.put((await db.volumes.get('imp-1'))!);
+      await workerSide.volume_ocr.put((await db.volume_ocr.get('imp-1'))!);
+      const workerSidecars = await generateVolumeSidecarsFromDb('imp-1', undefined, {
+        cloud: true
+      });
+      expect(await workerSidecars.mokuro!.blob.text()).toBe(importedText);
+    } finally {
+      await workerSide.volumes.clear();
+      await workerSide.volume_ocr.clear();
+      workerSide.close();
+    }
   });
 
   it('uploads both sidecars from memory with ZERO IndexedDB operations', async () => {

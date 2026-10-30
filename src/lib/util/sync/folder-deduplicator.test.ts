@@ -1,4 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+/** Breaks the keep-both rule for the control files, to test the guard behind it alone. */
+const keepRule = vi.hoisted(() => ({ dropControlFiles: false }));
+vi.mock('./syncable-file', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./syncable-file')>();
+  return {
+    ...real,
+    dedupKeepsEveryCopy: (name: string) =>
+      keepRule.dropControlFiles ? real.syncMergesEveryCopy(name) : real.dedupKeepsEveryCopy(name)
+  };
+});
+
 import { folderDeduplicator, type FolderOperations } from './folder-deduplicator';
 
 // The merge rule over an in-memory drive: what each copy of a file becomes
@@ -75,6 +87,10 @@ const file = (id: string, parentId: string, name: string, modifiedTime?: string)
 });
 
 describe('FolderDeduplicator: same-named files when duplicate folders merge', () => {
+  afterEach(() => {
+    keepRule.dropControlFiles = false;
+  });
+
   it("keeps the duplicate folder's copy when it is the newer one, and trashes the older", async () => {
     const drive = twoRoots([
       file('OLD', 'KEEP', 'profiles.json', at(10)),
@@ -151,6 +167,18 @@ describe('FolderDeduplicator: same-named files when duplicate folders merge', ()
     expect(drive.trashed()).toEqual([]);
   });
 
+  it('keeps BOTH copies of positions.json: positions sync folds every copy into one', async () => {
+    const drive = twoRoots([
+      file('PK', 'KEEP', 'positions.json', at(20)),
+      file('PD', 'DUP', 'positions.json', at(10))
+    ]);
+
+    await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+    expect(drive.filesIn('KEEP')).toEqual(['positions.json#PD', 'positions.json#PK']);
+    expect(drive.trashed()).toEqual([]);
+  });
+
   it('moves a file in beside a folder of the same name instead of trashing either', async () => {
     const drive = twoRoots([
       { id: 'FOLDER', name: 'Notes', parentId: 'KEEP', isFolder: true, createdTime: at(1) },
@@ -180,5 +208,72 @@ describe('FolderDeduplicator: same-named files when duplicate folders merge', ()
     expect(result.groupsMerged).toBe(2);
     expect(drive.filesIn('SK')).toEqual(['Ippo 01.cbz#V1', 'Ippo 02.cbz#V2', 'series.json#J2']);
     expect(drive.trashed()).toEqual(['J1']);
+  });
+
+  it('never trashes a Bunko control file, even if the keep-both rule missed it', async () => {
+    // The guard in front of every trash call, on its own: a newer duplicate
+    // copy (MD) and an older one (QD) are both moved in instead.
+    keepRule.dropControlFiles = true;
+    const drive = twoRoots([
+      file('MK', 'KEEP', '.mokuro-bunko.json', at(10)),
+      file('MD', 'DUP', '.mokuro-bunko.json', at(20)),
+      file('QK', 'KEEP', '.mokuro-queue.json', at(20)),
+      file('QD', 'DUP', '.mokuro-queue.json', at(10)),
+      file('PK', 'KEEP', 'profiles.json', at(10)),
+      file('PD', 'DUP', 'profiles.json', at(20))
+    ]);
+
+    await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+    expect(drive.filesIn('KEEP')).toEqual([
+      '.mokuro-bunko.json#MD',
+      '.mokuro-bunko.json#MK',
+      '.mokuro-queue.json#QD',
+      '.mokuro-queue.json#QK',
+      'profiles.json#PD'
+    ]);
+    // Only the ordinary file's older copy went: the rule itself still works.
+    expect(drive.trashed()).toEqual(['PK']);
+  });
+});
+
+describe('FolderDeduplicator: which folder of a group is kept', () => {
+  it('keeps the smaller id when the creation times are equal, whatever the listing order', async () => {
+    for (const order of [
+      ['B', 'A'],
+      ['A', 'B']
+    ]) {
+      const drive = memoryDrive([
+        ...order.map((id) => ({
+          id,
+          name: 'mokuro-reader',
+          parentId: 'DRIVE',
+          isFolder: true,
+          createdTime: at(0)
+        })),
+        file('FA', 'A', 'a.cbz', at(1)),
+        file('FB', 'B', 'b.cbz', at(1))
+      ]);
+
+      await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+      expect(drive.filesIn('A')).toEqual(['a.cbz#FA', 'b.cbz#FB']);
+      expect(drive.filesIn('B')).toEqual([]);
+    }
+  });
+
+  it('never merges two roots under different parents', async () => {
+    const drive = memoryDrive([
+      { id: 'TOP', name: 'mokuro-reader', parentId: 'DRIVE', isFolder: true, createdTime: at(5) },
+      { id: 'NEST', name: 'mokuro-reader', parentId: 'BACKUP', isFolder: true, createdTime: at(0) },
+      file('F1', 'TOP', 'a.cbz', at(6)),
+      file('F2', 'NEST', 'b.cbz', at(1))
+    ]);
+
+    const result = await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+    expect(result.groupsMerged).toBe(0);
+    expect(drive.filesIn('TOP')).toEqual(['a.cbz#F1']);
+    expect(drive.filesIn('NEST')).toEqual(['b.cbz#F2']);
   });
 });

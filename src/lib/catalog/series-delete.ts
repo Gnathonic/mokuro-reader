@@ -79,8 +79,12 @@ export async function deleteSeriesFromCloudByTitle(seriesTitle: string): Promise
   const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
   const providerDisplayName = unifiedCloudManager.getActiveProvider()?.name || 'cloud';
 
-  // O(1) lookup in the cached listing: nothing backed up means nothing to delete.
-  if (unifiedCloudManager.getCloudVolumesBySeries(seriesTitle).length === 0) {
+  // Nothing backed up means nothing to delete. The folder as the CLOUD spells it,
+  // the same resolution `existsInCloud` (which offered this delete) and
+  // `deleteSeriesFolder` (which performs it) use: a server that merged
+  // `one piece/` into `One Piece/` must not answer "No volumes found".
+  const folderTitle = unifiedCloudManager.resolveCloudFolderTitle(seriesTitle);
+  if (unifiedCloudManager.getCloudVolumesBySeries(folderTitle).length === 0) {
     showSnackbar(`No volumes found in ${providerDisplayName}`);
     return;
   }

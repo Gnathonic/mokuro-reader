@@ -126,9 +126,9 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
     expect(downloads).toHaveLength(1);
   });
 
-  // GAP (reader): the Drive provider has no storage-full error; a quota 403 is a
-  // plain UPLOAD_FAILED. Passes while the gap is there; flips when it is fixed.
-  it.fails('a 403 storageQuotaExceeded on upload surfaces as a quota error', async () => {
+  // A quota 403 is a full account (drive-http.ts), never an auth failure or a
+  // plain UPLOAD_FAILED.
+  it('a 403 storageQuotaExceeded on upload surfaces as a quota error', async () => {
     await sim.fault({
       provider: 'google',
       method: 'POST',
@@ -144,9 +144,8 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
     expect((err as ProviderError).code).toBe('QUOTA_EXCEEDED');
   });
 
-  // GAP (reader): the Drive provider retries nothing, so a 429 fails the call even
-  // with Retry-After. Passes while the gap is there; flips when it is fixed.
-  it.fails('a 429 with Retry-After is retried after the wait and the call succeeds', async () => {
+  // A rate limit is retried after Retry-After (withDriveRetry).
+  it('a 429 with Retry-After is retried after the wait and the call succeeds', async () => {
     await sim.clearLog();
     await sim.fault({
       provider: 'google',

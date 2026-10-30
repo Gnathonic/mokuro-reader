@@ -53,21 +53,24 @@ export function createForegroundSync(deps: ForegroundSyncDeps) {
   return { request, listen };
 }
 
+/** A provider is connected, its listing has loaded and its token is usable. */
+export function syncReady(): boolean {
+  const provider = unifiedCloudManager.getActiveProvider();
+  if (!provider) return false;
+  // Before the listing has loaded, sync cannot see the cloud's
+  // volume-data.json and would upload this device's copy over it.
+  const cache = cacheManager.getCache(provider.type);
+  if (!cache?.isLoaded() || cache.isFetching()) return false;
+  // An expired Drive token waits for re-authentication, as at startup.
+  if (provider.type === 'google-drive') {
+    const msLeft = tokenManager.getTimeUntilExpiry();
+    if (msLeft !== null && msLeft <= 0) return false;
+  }
+  return true;
+}
+
 export const foregroundSync = createForegroundSync({
-  isReady: () => {
-    const provider = unifiedCloudManager.getActiveProvider();
-    if (!provider) return false;
-    // Before the listing has loaded, sync cannot see the cloud's
-    // volume-data.json and would upload this device's copy over it.
-    const cache = cacheManager.getCache(provider.type);
-    if (!cache?.isLoaded() || cache.isFetching()) return false;
-    // An expired Drive token waits for re-authentication, as at startup.
-    if (provider.type === 'google-drive') {
-      const msLeft = tokenManager.getTimeUntilExpiry();
-      if (msLeft !== null && msLeft <= 0) return false;
-    }
-    return true;
-  },
+  isReady: syncReady,
   isSyncing: () => get(unifiedCloudManager.isSyncing),
   sync: async () => (await unifiedCloudManager.syncProgress({ silent: true })).failed === 0
 });
