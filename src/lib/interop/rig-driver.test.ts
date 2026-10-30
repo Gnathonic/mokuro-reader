@@ -48,6 +48,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', async () => {
   return {
     unifiedCloudManager: {
       cloudFiles: writable(new Map()),
+      getAllCloudVolumes: vi.fn(() => []),
       isSyncing: writable(false),
       isFetching: writable(false),
       fetchAllCloudVolumes: vi.fn(async () => {
@@ -299,6 +300,7 @@ beforeEach(async () => {
   statusStore.set(null);
   (volumeDataStore as ReturnType<typeof writable>).set({});
   (unifiedCloudManager.cloudFiles as ReturnType<typeof writable>).set(new Map());
+  vi.mocked(unifiedCloudManager.getAllCloudVolumes).mockReturnValue([]);
   (unifiedCloudManager.isSyncing as ReturnType<typeof writable>).set(false);
   (unifiedCloudManager.isFetching as ReturnType<typeof writable>).set(false);
   await Promise.all([
@@ -338,6 +340,14 @@ afterEach(() => {
   delete (globalThis as Record<string, unknown>).__mokuroInterop;
 });
 
+/** The cache's state (what it holds now), without publishing it to `cloudFiles`. */
+function cached(...paths: string[]) {
+  vi.mocked(unifiedCloudManager.getAllCloudVolumes).mockReturnValue(
+    paths.map((path) => ({ path, provider: 'webdav', fileId: path, modifiedTime: '', size: 0 }))
+  );
+}
+
+/** The listing, held by the cache and published by `cloudFiles`. */
 function listed(...paths: string[]) {
   const map = new Map<string, unknown[]>();
   for (const path of paths) {
@@ -345,6 +355,7 @@ function listed(...paths: string[]) {
     map.set(folder, [...(map.get(folder) ?? []), { path, provider: 'webdav', fileId: path }]);
   }
   (unifiedCloudManager.cloudFiles as ReturnType<typeof writable>).set(map);
+  cached(...paths);
 }
 
 describe('install()', () => {
@@ -888,6 +899,22 @@ describe('renames and deletes', () => {
     expect(await install().deleteVolume('v1')).toEqual({ cloud: 'deleted' });
     expect(unifiedCloudManager.deleteManagedVolume).toHaveBeenCalledWith('Series A', 'Vol 1', 'v1');
     expect(h.calls).toEqual(['deleteManagedVolume', 'deleteVolumeCompletely', 'deleteVolumeStats']);
+  });
+
+  it('reads the listing the cache holds now, not its lagged emission', async () => {
+    // A rename's moves reach the cache at once; `cloudFiles` publishes them on
+    // the coalesced trailing edge (CACHE_MUTATION_COALESCE_MS) after.
+    vi.mocked(providerManager.getActiveProvider).mockReturnValue(
+      provider as unknown as SyncProvider
+    );
+    listed('Series A/Vol 0.cbz');
+    cached('Series A/Vol 1.cbz', 'history/dev-a/2026-10.events');
+    const { volumes } = await install().library();
+    expect(volumes.map((v) => [v.title, v.cloudPath])).toEqual([
+      ['Vol 1', 'Series A/Vol 1.cbz'],
+      ['Vol 2', null]
+    ]);
+    expect(await install().deleteVolume('v1')).toEqual({ cloud: 'deleted' });
   });
 
   it('deleteVolume skips the cloud when the account may not delete there', async () => {

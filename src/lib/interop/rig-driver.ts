@@ -45,6 +45,7 @@ import {
   scheduleSpineOffsetWrite
 } from '$lib/metadata/spine-offsets';
 import { historyDb } from '$lib/reading-history/history-db';
+import { HISTORY_FOLDER } from '$lib/reading-history/paths';
 import { historySyncAllowed } from '$lib/reading-history/history-sync';
 import { persistPageEdit } from '$lib/reader/edit/edit-persist';
 import { setBlockLines } from '$lib/reader/edit/edit-ops';
@@ -74,7 +75,10 @@ import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
 import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
 import type { ProviderStatus, ProviderType } from '$lib/util/sync/provider-interface';
 import { providerManager } from '$lib/util/sync/provider-manager';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import {
+  unifiedCloudManager,
+  type CloudVolumeWithProvider
+} from '$lib/util/sync/unified-cloud-manager';
 import { uploadFailures } from '$lib/util/upload-failures';
 import { renameVolumeInCloud, updateVolumeInDb, updateVolumeStats } from '$lib/util/volume-editor';
 
@@ -182,10 +186,30 @@ function providerStatus(): ProviderStatus | null {
   return plain(get(activeProviderStatus));
 }
 
+/**
+ * The listing as the provider cache holds it NOW, in `cloudFiles`' shape (by
+ * folder, history left out, each file tagged with its provider). Not
+ * `get(cloudFiles)`: that store publishes the cache's incremental updates (a
+ * rename's moves, an upload) up to `CACHE_MUTATION_COALESCE_MS` late, so a
+ * method called right after a rename would still see the old names, where
+ * the UI, a human's click later, sees the new ones.
+ */
+function listingNow(): Map<string, CloudVolumeWithProvider[]> {
+  // The active cache is the active provider's (cacheManager), so its files are that provider's.
+  const type = providerManager.getActiveProvider()?.type;
+  const map = new Map<string, CloudVolumeWithProvider[]>();
+  for (const file of unifiedCloudManager.getAllCloudVolumes() as CloudVolumeWithProvider[]) {
+    const folder = file.path.split('/')[0];
+    if (!folder || folder === HISTORY_FOLDER) continue;
+    map.set(folder, [...(map.get(folder) ?? []), type ? { ...file, provider: type } : file]);
+  }
+  return map;
+}
+
 /** The listed archive of a row, by the rule the volume card uses. */
 function listedArchivePath(row: VolumeMetadata): string | null {
   const path = `${row.series_title}/${row.volume_title}.cbz`;
-  const listed = get(unifiedCloudManager.cloudFiles).get(row.series_title) ?? [];
+  const listed = listingNow().get(row.series_title) ?? [];
   return listed.some((f) => f.path === path) ? path : null;
 }
 
@@ -196,7 +220,7 @@ async function seriesIndexMap(): Promise<Map<string, SeriesIndexRecord>> {
 async function library(): Promise<{ volumes: RigVolume[] }> {
   const rows = await db.volumes.toArray();
   const indexMap = await seriesIndexMap();
-  const placeholders = generatePlaceholders(get(unifiedCloudManager.cloudFiles), rows, indexMap);
+  const placeholders = generatePlaceholders(listingNow(), rows, indexMap);
   const out: RigVolume[] = [];
   for (const row of rows) {
     out.push({
@@ -229,7 +253,7 @@ async function library(): Promise<{ volumes: RigVolume[] }> {
  * device has no such volume.
  */
 async function cardVolume(volumeId: string): Promise<VolumeMetadata | null> {
-  const files = get(unifiedCloudManager.cloudFiles);
+  const files = listingNow();
   const indexMap = await seriesIndexMap();
   const decorated = (row: VolumeMetadata): VolumeMetadata => {
     if (!isMetadataOnly(row)) return row;
