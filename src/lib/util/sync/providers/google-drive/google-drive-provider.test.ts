@@ -240,6 +240,19 @@ describe('GoogleDriveProvider login() account-switch scoping', () => {
   });
 });
 
+describe('GoogleDriveProvider login() with the token already there', () => {
+  it('resolves when the token client answered before login() starts waiting', async () => {
+    // A token client that answers synchronously (the interop rig's injected
+    // token) has set the token by the time login() subscribes, so the store
+    // calls back from INSIDE subscribe(), before its unsubscribe exists.
+    vi.mocked(tokenManager.token.subscribe).mockImplementationOnce((cb) => {
+      cb('ALREADY-SET');
+      return () => {};
+    });
+    await expect(googleDriveProvider.login()).resolves.toBeUndefined();
+  });
+});
+
 describe('GoogleDriveProvider login() releases the in-flight folder-resolution mutex', () => {
   beforeEach(() => {
     (googleDriveProvider as unknown as { readerFolderId: string | null }).readerFolderId = null;
