@@ -64,6 +64,7 @@ import type { Page, VolumeMetadata } from '$lib/types';
 import { downloadQueue } from '$lib/util/download-queue';
 import { nav } from '$lib/util/hash-router';
 import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
+import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { executeRenameSeries } from '$lib/util/series-rename';
 import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
 import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
@@ -237,8 +238,15 @@ async function cardVolume(volumeId: string): Promise<VolumeMetadata | null> {
     return { ...row, ...fields };
   }
   const rows = await db.volumes.toArray();
+  const placeholders = generatePlaceholders(files, rows, indexMap);
   return (
-    generatePlaceholders(files, rows, indexMap).find((p) => p.volume_uuid === volumeId) ?? null
+    placeholders.find((p) => p.volume_uuid === volumeId) ??
+    // Listed before its series index arrived (in the background, after a
+    // listing): the card then carried the id its path gives, the index's since.
+    placeholders.find(
+      (p) => generateDeterministicUUID(`${p.series_title}/${p.volume_title}`) === volumeId
+    ) ??
+    null
   );
 }
 

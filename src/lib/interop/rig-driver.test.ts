@@ -251,6 +251,7 @@ beforeEach(async () => {
     db.volumes.clear(),
     db.volume_ocr.clear(),
     db.series_metadata.clear(),
+    db.series_index.clear(),
     clearAllLayers(db)
   ]);
   await db.volumes.bulkPut([
@@ -513,6 +514,59 @@ describe('reading', () => {
     await finishDownload(id, true);
     expect(await opening).toEqual({ id });
     expect(nav.toReader).toHaveBeenCalledWith('s9', id);
+  });
+
+  // The series.json index lands in the background after a listing: a volume the
+  // spec listed before it came carries the id its path gave, and its placeholder now
+  // carries the real one. The card the user saw still downloads.
+  it('open downloads a cloud-only volume listed before its series index arrived', async () => {
+    listed('Series B/Vol 9.cbz');
+    const listedId = (await install().library()).volumes.find((v) => v.series === 'Series B')!.id;
+    await db.series_index.put({
+      series_key: 'series b',
+      series_title: 'Series B',
+      file: {
+        version: 2,
+        series_title: 'Series B',
+        external_ids: {},
+        titles: {},
+        synonyms: [],
+        updated_at: '2026-10-29T00:00:00.000Z',
+        volumes: [
+          {
+            volume_uuid: 'real-9',
+            volume_title: 'Vol 9',
+            page_count: 2,
+            character_count: 4,
+            mokuro_version: '0.2.1'
+          }
+        ]
+      },
+      source: { provider: 'webdav', path: 'Series B/series.json', size: 1, modifiedTime: '' },
+      fetched_at: '2026-10-29T00:00:00.000Z'
+    } as never);
+    expect((await install().library()).volumes.find((v) => v.series === 'Series B')!.id).toBe(
+      'real-9'
+    );
+
+    const opening = install().open(listedId);
+    await vi.waitFor(() => expect(dq.queued).toHaveLength(1));
+    expect(dq.queued[0]).toMatchObject({
+      volume_uuid: 'real-9',
+      cloudFileId: 'Series B/Vol 9.cbz'
+    });
+    await db.volumes.put({
+      volume_uuid: 'real-9',
+      series_uuid: 's9',
+      series_title: 'Series B',
+      volume_title: 'Vol 9',
+      mokuro_version: '0.2.1',
+      page_count: 2,
+      character_count: 4,
+      page_char_counts: [2, 4]
+    });
+    await finishDownload('real-9', true);
+    expect(await opening).toEqual({ id: 'real-9' });
   });
 
   it('open fails, and goes nowhere, when the download did not install the volume', async () => {
