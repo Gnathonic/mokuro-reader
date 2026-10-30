@@ -413,6 +413,17 @@ describe('connect', () => {
     expect(JSON.parse(JSON.stringify(result))).toEqual(result);
   });
 
+  it('publishes the status after the listing where the cloud screen does: not for WebDAV', async () => {
+    const driver = install();
+    await driver.connectWebDAV({ url: 'http://127.0.0.1:9/dav' });
+    expect(providerManager.updateStatus).not.toHaveBeenCalled();
+    for (const connect of [driver.connectMega, driver.connectDrive, driver.connectOneDrive]) {
+      vi.mocked(providerManager.updateStatus).mockClear();
+      await connect({ email: 'a@example.test', password: 'pw' });
+      expect(providerManager.updateStatus).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('connectMega passes the account; connectDrive and connectOneDrive pass none', async () => {
     const driver = install();
     await driver.connectMega({ email: 'a@example.test', password: 'pw' });
@@ -1029,6 +1040,13 @@ describe('status', () => {
     expect(install().providerStatus()).toBeNull();
     statusStore.set({ isAuthenticated: true, isReadOnly: false });
     expect(install().providerStatus()).toEqual({ isAuthenticated: true, isReadOnly: false });
+  });
+
+  it('providerStatus reads what the app last published, publishing nothing itself', () => {
+    // The banner and the read-only gates read the store: a provider change the
+    // app never published is one the user never sees, and a spec must not either.
+    install().providerStatus();
+    expect(providerManager.updateStatus).not.toHaveBeenCalled();
   });
 
   it('controlState reads the marker store for the connected provider', () => {

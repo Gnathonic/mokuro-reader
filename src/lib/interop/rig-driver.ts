@@ -136,13 +136,17 @@ async function requireRow(volumeId: string): Promise<VolumeMetadata> {
   return row;
 }
 
-/** The cloud screen's connect: login, make it THE provider, list, then the post-login sync. */
+/**
+ * The cloud screen's connect: login, make it THE provider, list, then the
+ * post-login sync. Its handlers publish the status once the listing is in,
+ * except the WebDAV login's, which leaves that to the provider: so here too.
+ */
 async function connect(type: ProviderType, credentials?: Record<string, unknown>) {
   const provider = await providerManager.getOrLoadProvider(type);
   await provider.login(credentials);
   await providerManager.setCurrentProvider(provider);
   await unifiedCloudManager.fetchAllCloudVolumes();
-  providerManager.updateStatus();
+  if (type !== 'webdav') providerManager.updateStatus();
   const synced = await sync();
   return { status: providerStatus(), sync: synced };
 }
@@ -181,8 +185,12 @@ async function idle(): Promise<void> {
   });
 }
 
+/**
+ * The connected provider's status as the app last published it: what the
+ * banner and the read-only gates show. Never refreshed here, so a change the
+ * app does not publish is one a spec does not see either.
+ */
 function providerStatus(): ProviderStatus | null {
-  providerManager.updateStatus();
   return plain(get(activeProviderStatus));
 }
 
