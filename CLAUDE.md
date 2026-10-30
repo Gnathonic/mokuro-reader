@@ -1593,8 +1593,16 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 - The reader's tests parse mokuro-bunko's own answers (`interop/contract/bunko/*.json`), record the
   requests the reader sends (`reader/*.json`, which bunko replays), and run its seal and sidecar-name
   vectors. They read a bunko checkout: `BUNKO_REPO=<checkout>`, else a sibling `mokuro-webdav-library`
-  found by looking around — which may be on an older branch than the one you are pairing with, so name
-  it. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into a failure.
+  found by looking around. A sibling counts only when it holds every file of `CONTRACT_BASELINE`
+  (`contract.ts`, the newest contract files the tests read — add one there when a test starts reading
+  a new fixture): one on an older branch is ignored with a warning and the tests run on the reader's
+  snapshots, instead of failing ordinary unit tests on fixtures it never had. It may still be on
+  another branch than the one you are pairing with, so name it. `BUNKO_REPO` is used as named,
+  however old. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into
+  a failure.
+- CI checks out bunko at `vars.BUNKO_REF` (default `0.8/remote-storage`) with
+  `BUNKO_CONTRACT_REQUIRED=1`, so a reader branch whose tests read a newer contract fails CI until that
+  bunko branch carries it: push bunko's contract FIRST, then the reader branch that reads it.
 - `BUNKO_REPO=<checkout> READER_BLESS=1 npx vitest run src/lib/interop` rewrites the records, in that
   checkout only. A changed request lands in bunko FIRST (commit the records there, run its
   `contract_replay`), then in the reader.
