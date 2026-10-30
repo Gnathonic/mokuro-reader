@@ -121,6 +121,17 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   `[reason]` so a worker's serialized error is still recognisable. OneDrive's equivalent is
   `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
   `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
+- A 401 re-authenticates only when it refused the token held NOW: `handleAuthError` gets the
+  token the request carried, and a refusal of one a re-auth has since replaced asks for
+  nothing (a second sign-in popup for nothing, or a cleared token that works).
+
+**Provider status is published, never polled.** The navbar's reconnect banner, the cloud
+screen and every read-only gate read `providerManager.status`, which moves only when
+something calls `providerManager.updateStatus()`. A provider that changes its own
+`needsAttention`/`isReadOnly`/session state must publish it (WebDAV's
+`notifyStatusChanged`, OneDrive's `setNeedsAttention`, MEGA's `markSessionExpired`); the
+interop rig's `providerStatus()` reads the store as published, so a flag kept to itself
+fails the rig as the user would miss it.
 
 **Duplicate folders** (`folder-deduplicator.ts`, Drive and MEGA):
 
