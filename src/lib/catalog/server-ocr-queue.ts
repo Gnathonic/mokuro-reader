@@ -37,8 +37,9 @@ import {
  * - Polls only while a volume of interest could be pending: volumes this
  *   device uploaded there, deep-link imports whose manifest had pending jobs
  *   (both "watched", persisted), and volumes the catalog is showing.
- * - Started by an upload or a deep-link import (at once), by app start and by
- *   the tab becoming visible (one poll); then every `next_check_after` s
+ * - Started by an upload or a deep-link import (at once), by app start or a
+ *   WebDAV login to a bunko server, and by the tab becoming visible (one
+ *   poll); then every `next_check_after` s
  *   (floor 30 s) with `If-None-Match`; stops when no volume of interest is in
  *   the file. Errors back off 60 s → 10 min. Paused while the tab is hidden.
  * - A volume of interest that leaves the file is done: its new sidecars are
@@ -1406,7 +1407,21 @@ export async function ensureCloudPoller(): Promise<QueuePoller | null> {
 
 let providerFollow: (() => void) | null = null;
 
-/** Log in / switch / log out after start: keep the cloud poller on the connected provider. */
+/**
+ * The connected bunko SERVER's poller, given its first look when it is new. App
+ * start makes it for the account connected then; a WebDAV login later in the
+ * session needs it too, or a series opened after connecting shows no status
+ * until the app restarts.
+ */
+async function ensureServerPoller(): Promise<void> {
+  const connected = await connectedBunkoQueueUrl();
+  if (!connected) return;
+  const known = pollers.has(connected);
+  const poller = pollerFor(connected, 'webdav', 'webdav');
+  if (!known) poller.trigger('start');
+}
+
+/** Log in / switch / log out after start: keep the pollers on the connected provider. */
 async function followActiveProvider(): Promise<void> {
   if (providerFollow) return;
   const { providerManager } = await import('$lib/util/sync/provider-manager');
@@ -1419,7 +1434,8 @@ async function followActiveProvider(): Promise<void> {
     const type = status.hasAnyAuthenticated ? status.currentProviderType : null;
     if (type === lastType) return;
     lastType = type;
-    void ensureCloudPoller();
+    // In turn: the cloud check steps aside for a bunko server, which this then polls.
+    void ensureCloudPoller().then(() => (type === 'webdav' ? ensureServerPoller() : undefined));
   });
   providerFollow = unsubscribe;
 }

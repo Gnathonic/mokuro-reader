@@ -17,13 +17,22 @@ vi.mock('$lib/catalog/cloud-ocr-upgrade', () => ({ upgradeOcrFromSidecarBlob }))
 const importFetchedLayers = vi.hoisted(() => vi.fn());
 vi.mock('$lib/metadata/layer-sync', () => ({ importFetchedLayers }));
 const getActiveProvider = vi.hoisted(() => vi.fn(() => null as unknown));
-vi.mock('$lib/util/sync/provider-manager', () => ({
-  providerManager: { getActiveProvider: () => getActiveProvider() }
-}));
+vi.mock('$lib/util/sync/provider-manager', async () => {
+  const { writable } = await import('svelte/store');
+  return {
+    providerManager: {
+      getActiveProvider: () => getActiveProvider(),
+      // As a login / logout after start moves it.
+      status: writable({ hasAnyAuthenticated: false, currentProviderType: null as string | null })
+    }
+  };
+});
 
 import { db } from '$lib/catalog/db';
+import { providerManager } from '$lib/util/sync/provider-manager';
 import { clearAllLayers } from '$lib/catalog/layer-store';
 import { queueFixture } from './__fixtures__/mokuro-queue';
+import type { Writable } from 'svelte/store';
 import { markVolumeShown, serverOcrQueueStatus, volumeQueueKey } from './server-ocr-pending';
 import {
   LEGACY_RECHECK_KEY,
@@ -42,6 +51,10 @@ import {
   watchedEntries
 } from './server-ocr-queue';
 
+const statusFeed = providerManager.status as unknown as Writable<{
+  hasAnyAuthenticated: boolean;
+  currentProviderType: string | null;
+}>;
 const QUEUE = 'https://bunko.example/mokuro-reader/.mokuro-queue.json';
 const NOW = Date.parse('2026-09-28T15:00:00Z');
 const KEY1 = volumeQueueKey('Dr Stone', 'Dr Stone 01');
@@ -700,6 +713,78 @@ describe('startServerOcrQueue (app start)', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     off2();
+  });
+});
+
+describe('a WebDAV login after app start', () => {
+  const CONNECTED = 'http://127.0.0.1:8090/mokuro-reader/.mokuro-queue.json';
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const bunkoServer = {
+    type: 'webdav',
+    getWorkerUploadCredentials: async () => ({
+      webdavUrl: 'http://127.0.0.1:8090',
+      webdavUsername: 'reader',
+      webdavPassword: 'pw',
+      webdavPutVerified: true
+    })
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW });
+    resetServerOcrQueueForTest();
+    localStorage.clear();
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+    getActiveProvider.mockReturnValue(null);
+    fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ ...queueFixture(NOW), volumes: [], next_check_after: null }),
+          { status: 200, headers: { ETag: '"e"' } }
+        )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    resetServerOcrQueueForTest();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    getActiveProvider.mockReturnValue(null);
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+  });
+
+  it('polls the bunko server it connected to, at once', async () => {
+    await startServerOcrQueue();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).not.toHaveBeenCalled(); // nothing connected at start
+
+    getActiveProvider.mockReturnValue(bunkoServer);
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([CONNECTED]));
+  });
+
+  it('does not poll again a server it already polled at start', async () => {
+    getActiveProvider.mockReturnValue(bunkoServer);
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await startServerOcrQueue();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(1_000); // the login's own look would land by now
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll a WebDAV server that is not bunko', async () => {
+    await startServerOcrQueue();
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getWorkerUploadCredentials: async () => ({
+        webdavUrl: 'https://nextcloud.example/dav',
+        webdavPassword: 'pw',
+        webdavPutVerified: false
+      })
+    });
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

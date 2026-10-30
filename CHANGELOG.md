@@ -30,6 +30,7 @@
 - mokuro-bunko: resetting a shelf's alignment now sticks
 - OCR layer files found on decomposed-name storage
 - mokuro-bunko: renaming a volume no longer duplicates OCR layers
+- mokuro-bunko: server OCR status shows right after connecting
 
 ## [1.10.0] - 2026-10-02
 
