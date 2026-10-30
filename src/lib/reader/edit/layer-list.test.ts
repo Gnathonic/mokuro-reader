@@ -45,6 +45,22 @@ describe('summarizeLayers', () => {
     });
     expect(Object.keys(out[0]).sort()).toEqual(['kind', 'layer_id', 'name', 'updated_at']);
   });
+
+  it('says which provider a synced layer came from (`forksOnEdit` asks), and nothing more of it', () => {
+    const [out] = summarizeLayers([
+      {
+        volume_uuid: 'v',
+        layer_id: 'hayai',
+        name: 'Hayai',
+        kind: 'ocr',
+        engine: 'hayai',
+        created_at: 'x',
+        updated_at: 'x',
+        cloud: { provider: 'webdav', size: 5, modified: 9, synced_at: 'x' }
+      }
+    ]);
+    expect(out.cloud).toEqual({ provider: 'webdav' });
+  });
 });
 
 describe('nextLayerId', () => {

@@ -1080,3 +1080,89 @@ describe('WebDAVProvider getStatus().positionsSync (per-user positions.json)', (
     expect(provider.getStatus().positionsSync).toBeUndefined();
   });
 });
+
+describe('WebDAVProvider getStatus().editLayerSync / curatedPublish (bunko 0.8 layers)', () => {
+  it('a bunko listing `edit` in per_user_layers keeps edit layers per account -> push', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      serverVersion: '0.8.0',
+      perUserLayers: ['edit']
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().editLayerSync).toBe('push');
+  });
+
+  it('a 0.7.3 bunko (no per_user_layers) would share them with every account -> local', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ ...authenticatedIdentity(), serverVersion: '0.7.3' });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().editLayerSync).toBe('local');
+
+    const other = await freshProvider();
+    identityMock.mockResolvedValue({ ...authenticatedIdentity(), perUserLayers: ['notes'] });
+    await other.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(other.getStatus().editLayerSync).toBe('local');
+  });
+
+  it('anonymous bunko follows its per_user_layers too', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous', perUserLayers: ['edit'] });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().editLayerSync).toBe('push');
+
+    const old = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous' });
+    await old.login({ serverUrl: 'https://host' });
+    expect(old.getStatus().editLayerSync).toBe('local');
+  });
+
+  it('a bunko known only by its verified PUTs (identity failed) -> local', async () => {
+    localStorage.setItem('webdav_put_verified', 'https://host');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host/', username: 'u', password: 'pw' });
+    expect(provider.getStatus().editLayerSync).toBe('local');
+  });
+
+  it('a plain WebDAV server -> undefined (its edit layer is the user’s own file)', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().editLayerSync).toBeUndefined();
+    expect(provider.getStatus().curatedPublish).toBeUndefined();
+  });
+
+  it.each(['all', 'owned', 'none'] as const)(
+    'curatedPublish is the identity’s curated scope (%s)',
+    async (scope) => {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({
+        ...authenticatedIdentity(),
+        permissions: { ...REGISTERED_PERMS, curated: { scope } }
+      });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      expect(provider.getStatus().curatedPublish).toBe(scope);
+    }
+  );
+
+  it('a bunko that reports no curated scope -> undefined', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().curatedPublish).toBeUndefined();
+  });
+
+  it('logout forgets both', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      permissions: { ...REGISTERED_PERMS, curated: { scope: 'all' as const } },
+      perUserLayers: ['edit']
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    await provider.logout();
+    expect(provider.getStatus().editLayerSync).toBeUndefined();
+    expect(provider.getStatus().curatedPublish).toBeUndefined();
+  });
+});

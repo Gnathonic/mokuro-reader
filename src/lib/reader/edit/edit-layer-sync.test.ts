@@ -149,6 +149,28 @@ describe('an OCR edit goes up as the edit layer, never as the main sidecar', () 
     expect(uploadedPaths()).not.toContain('Series/Vol 1.mokuro');
   });
 
+  it('on a 0.7.x bunko (edit layers shared there) nothing goes up, scheduled push included', async () => {
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getStatus: () => ({
+        isReadOnly: false,
+        serverCompilesMetadata: true,
+        editLayerSync: 'local'
+      }),
+      uploadFile,
+      downloadFile: vi.fn(),
+      deleteFile: vi.fn()
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await persistPageEdit('v1', 0, pg('一'));
+    await vi.advanceTimersByTimeAsync(LAYER_PUSH_DEBOUNCE_MS + 10);
+    vi.useRealTimers();
+    // Joins the run the timer started (single-flight), so it has finished.
+    await syncLayersFromListing(listing(), 'webdav');
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeDefined();
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
   it('a promoted layer stays local: nothing goes up as the main sidecar, and the main is model output', async () => {
     await createLayer('v1', { name: 'Better', kind: 'ocr', pages: [pg('良'), pg('い', 'q.png')] });
     await promoteLayer('v1', 'better');
@@ -233,5 +255,57 @@ describe('the one-time edit-layer migration', () => {
     // Done once: a later edited primary is not migrated again by it.
     await db.volume_ocr.put({ volume_uuid: 'v1', pages: [pg('後'), pg('うえ', 'q.png')] });
     expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
+  });
+
+  function bunko(editLayerSync: 'push' | 'local') {
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getStatus: () => ({
+        isReadOnly: false,
+        canAddFiles: true,
+        serverCompilesMetadata: true,
+        editLayerSync,
+        curatedPublish: 'all'
+      }),
+      uploadFile,
+      downloadFile: vi.fn(),
+      deleteFile: vi.fn()
+    });
+  }
+
+  it('on a 0.7.x bunko the migrated edit row stays on the device, run after run', async () => {
+    await legacyEdited();
+    bunko('local');
+    await syncLayersFromListing(listing(), 'webdav');
+    await syncLayersFromListing(listing(), 'webdav');
+    expect((await getLayerWithPages(db, 'v1', 'edit'))?.pages[0].blocks[0].lines).toEqual([
+      'なおし'
+    ]);
+    // Neither the corrections nor the primary they sit in go up wholesale.
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it("on a 0.8 bunko it goes into the account's own overlay: one PUT, no curated", async () => {
+    await legacyEdited();
+    bunko('push');
+    await syncLayersFromListing(listing(), 'webdav');
+    await syncLayersFromListing(listing(), 'webdav');
+    expect(uploadedPaths()).toEqual(['Series/Vol 1.edit.mokuro']);
+  });
+
+  it('a primary promoted from the shared curated layer is not "your corrections"', async () => {
+    await legacyEdited();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'curated',
+      name: 'Shared corrections',
+      kind: 'edit',
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+      cloud: { provider: 'webdav', size: 5, synced_at: '2026-09-01T00:00:00.000Z' },
+      pages: [pg('なおし'), pg('うえ', 'q.png')]
+    });
+    expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
   });
 });

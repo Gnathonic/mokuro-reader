@@ -16,6 +16,7 @@
 import { db } from '$lib/catalog/db';
 import {
   deleteLayerRows,
+  getLayerMeta,
   getLayerPages,
   getLayerWithPages,
   layerTables,
@@ -29,8 +30,16 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
 import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
-import { layerNameForId, titleCasedLayerId } from './layer-names';
-import { EDIT_LAYER_ID, ORIGINAL_LAYER_ID, noteLayerEdited } from './edit-persist';
+import {
+  EDIT_LAYER_ID,
+  isCuratedLayerId,
+  isPersonalLayerId,
+  isReservedLayerId,
+  isServerKeepsakeLayerId,
+  layerNameForId,
+  titleCasedLayerId
+} from './layer-names';
+import { ORIGINAL_LAYER_ID, noteLayerEdited } from './edit-persist';
 import { editLayerEpoch } from './edit-layer-epoch';
 import {
   TRANSLATION_PROMOTE_BLOCKED,
@@ -86,22 +95,40 @@ export function servedEngineOf(json: unknown): string | undefined {
 }
 
 /**
+ * A layer of corrections by its id alone: the shared `curated`, an account's
+ * `edit`/`edit-<n>`, or bunko's `pre-upgrade` keepsake. No server stamp makes
+ * one of them a generation (`layerKindForId`, `layer-sync`'s re-filing).
+ */
+export function isCorrectionsLayerId(layerId: string): boolean {
+  return (
+    isCuratedLayerId(layerId) || isPersonalLayerId(layerId) || isServerKeepsakeLayerId(layerId)
+  );
+}
+
+/**
  * The kind a layer file with no local row is filed under: from the engine
  * stamp it carried (`servedEngineOf`) when it had one, else from its id alone.
  */
 export function layerKindForId(layerId: string, servedEngine?: string): VolumeOcrLayerKind {
   if (layerId === ORIGINAL_LAYER_ID) return 'original';
   if (isTranslationLayerId(layerId)) return 'translation';
+  // Corrections whatever the file claims: the shared `curated` layer, an
+  // account's own `edit`, bunko's `pre-upgrade` copy of a main that may hold
+  // edits. What may write them is read from the id (`layerStaysLocal`).
+  if (isCorrectionsLayerId(layerId)) return 'edit';
   if (servedEngine || KNOWN_ENGINE_IDS.has(layerId)) return 'ocr';
   return 'edit';
 }
 
 /**
- * A display name → a unique `layer_id` slug (never the reserved `original` or
- * `edit`, and always with a letter in it — sidecar names rule v1 #8).
+ * A display name → a unique `layer_id` slug. Never a reserved id or family
+ * (`isReservedLayerId`) and always with a letter in it (sidecar names rule v1
+ * #8): such a slug becomes `layer-<slug>` — a `-<n>` alone would never
+ * leave `edit-<n>`, `pre-upgrade…` or `previous-ocr…` — then de-duplicates.
  */
 export function slugifyLayerId(name: string, taken: Iterable<string>): string {
   const used = new Set(taken);
+  const prefixed = (slug: string) => `layer-${slug}`.slice(0, MAX_SLUG).replace(/-+$/g, '');
   let base = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -111,23 +138,34 @@ export function slugifyLayerId(name: string, taken: Iterable<string>): string {
   if (!base) base = 'layer';
   // An all-digit id is valid in a listing, but bunko's listing-free paths
   // need a letter to tell `Vol 1.2024.mokuro` from the primary of `Vol 1.2024`.
-  if (!/[a-z]/.test(base)) base = `layer-${base}`.slice(0, MAX_SLUG).replace(/-+$/g, '');
+  if (!/[a-z]/.test(base) || isReservedLayerId(base)) base = prefixed(base);
   let candidate = base;
   let n = 2;
-  while (
-    candidate === ORIGINAL_LAYER_ID ||
-    // Reserved for the editor's corrections (`persistPageEdit`).
-    candidate === EDIT_LAYER_ID ||
-    used.has(candidate) ||
-    !LAYER_ID_RE.test(candidate)
-  ) {
+  while (used.has(candidate) || !LAYER_ID_RE.test(candidate) || isReservedLayerId(candidate)) {
     candidate = `${base.slice(0, MAX_SLUG - 3)}-${n++}`;
+    // `tr` is free but `tr-2` is a translation id: step out the same way.
+    if (isReservedLayerId(candidate)) {
+      base = prefixed(base);
+      candidate = base;
+      n = 2;
+    }
   }
   return candidate;
 }
 
 function assertEditable(layerId: string): void {
   if (layerId === ORIGINAL_LAYER_ID) throw new Error('The original layer is read-only');
+}
+
+/**
+ * May this layer's PAGES be written here? Never the `original` snapshot, and
+ * never the shared `curated` layer: only Publish writes that (`layer-sync`),
+ * and an in-place edit would be pulled over by the next listing anyway. Its
+ * name stays the user's to change: a display name is local.
+ */
+function assertPagesWritable(layerId: string): void {
+  assertEditable(layerId);
+  if (isCuratedLayerId(layerId)) throw new Error('The shared corrections layer is read-only');
 }
 
 function byOriginalThenCreated(a: VolumeOcrLayer, b: VolumeOcrLayer): number {
@@ -206,13 +244,72 @@ export async function persistLayerPageEdit(
   pageIndex: number,
   page: Page
 ): Promise<void> {
-  assertEditable(layerId);
+  assertPagesWritable(layerId);
   await db.transaction('rw', layerTables(db), async () => {
     const row = await getLayerWithPages(db, volumeUuid, layerId);
     if (!row) throw new Error(`Layer ${layerId} not found`);
     const pages = row.pages.slice();
     pages[pageIndex] = page;
     await putLayerWithPages(db, { ...row, pages, updated_at: new Date().toISOString() });
+  });
+  noteLayerEdited();
+}
+
+/**
+ * An edit of a layer that must stay as it is (`forksOnEdit`) goes into the
+ * account's own `edit` layer: made here from `sourceLayerId`'s pages when
+ * there is none, with no cloud stamp, so the next sync pushes it wherever
+ * personal layers go up (`layerNeedsPush`). An existing `edit` layer holds
+ * corrections of its own and is never overwritten (`copyIntoEditLayer` does
+ * that, on the user's word) — nor is one only listed in the cloud so far: the
+ * caller pulls that first (`pullOwnEditLayerBeforeFork`, `layer-sync.ts`).
+ */
+export async function forkIntoEditLayer(
+  volumeUuid: string,
+  sourceLayerId: string
+): Promise<{ created: boolean }> {
+  const created = await db.transaction('rw', layerTables(db), async () => {
+    if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return false;
+    const source = await getLayerPages(db, volumeUuid, sourceLayerId);
+    if (!source) throw new Error(`Layer ${sourceLayerId} not found`);
+    const now = new Date().toISOString();
+    await putLayerWithPages(db, {
+      volume_uuid: volumeUuid,
+      layer_id: EDIT_LAYER_ID,
+      name: layerNameForId(EDIT_LAYER_ID),
+      kind: 'edit',
+      created_at: now,
+      updated_at: now,
+      pages: structuredClone(source)
+    });
+    return true;
+  });
+  return { created };
+}
+
+/**
+ * "Copy to your corrections": `sourceLayerId`'s pages REPLACE the `edit`
+ * layer's (made when there is none). The row keeps its name, creation and
+ * cloud stamp, so the replacement is an edit since its last sync and goes up
+ * like any other. The caller has the user's confirmation.
+ */
+export async function copyIntoEditLayer(volumeUuid: string, sourceLayerId: string): Promise<void> {
+  await db.transaction('rw', layerTables(db), async () => {
+    const source = await getLayerPages(db, volumeUuid, sourceLayerId);
+    if (!source) throw new Error(`Layer ${sourceLayerId} not found`);
+    const existing = await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID);
+    const now = new Date().toISOString();
+    await putLayerWithPages(db, {
+      ...(existing ?? {
+        volume_uuid: volumeUuid,
+        layer_id: EDIT_LAYER_ID,
+        name: layerNameForId(EDIT_LAYER_ID),
+        kind: 'edit' as const,
+        created_at: now
+      }),
+      updated_at: now,
+      pages: structuredClone(source)
+    });
   });
   noteLayerEdited();
 }
@@ -367,7 +464,7 @@ export async function upsertLayerPages(
   layerId: string,
   opts: UpsertLayerPagesOptions
 ): Promise<VolumeOcrLayerWithPages | null> {
-  assertEditable(layerId);
+  assertPagesWritable(layerId);
   const now = new Date().toISOString();
   return db.transaction('rw', [db.volumes, ...layerTables(db)], async () => {
     const volume = await db.volumes.get(volumeUuid);

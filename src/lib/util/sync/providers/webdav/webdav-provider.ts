@@ -34,7 +34,11 @@ import {
 } from '$lib/util/worker-auth-refresh';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
 import { CANNOT_RENAME_MESSAGE } from '../../account-capabilities';
-import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
+import {
+  isBestEffortMetadataPath,
+  isReservedLayerSidecarPath,
+  isSyncableFile
+} from '../../syncable-file';
 import { controlSetEtag } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { bunkoSupportsHistory } from './bunko-version';
@@ -158,6 +162,23 @@ const MOKURO_FOLDER = '/mokuro-reader';
 const VOLUME_DATA_FILE = '/mokuro-reader/volume-data.json';
 const PROFILES_FILE = '/mokuro-reader/profiles.json';
 
+/**
+ * A 403 on a reserved layer file (`isReservedLayerSidecarPath`): bunko refuses
+ * some of those by design (its `pre-upgrade` keepsake, `curated` without the
+ * rights, a 0.7.x `edit`), so the refusal is that file's alone — reported as
+ * one (layer-sync stops asking), never as a read-only server.
+ */
+function reservedLayerRefusal(path: string): ProviderError {
+  return new ProviderError(
+    `The server refused the layer file ${path}`,
+    'webdav',
+    'PERMISSION_DENIED',
+    false,
+    false,
+    'permission'
+  );
+}
+
 export class WebDAVProvider implements SyncProvider {
   readonly type = 'webdav' as const;
   readonly name = 'WebDAV';
@@ -192,6 +213,8 @@ export class WebDAVProvider implements SyncProvider {
   private _serverVersion: string | undefined;
   /** Root files bunko reports keeping per account (`per_user_files`); undefined = not reported. */
   private _perUserFiles: string[] | undefined;
+  /** Layer ids bunko reports keeping per account (`per_user_layers`); undefined = not reported. */
+  private _perUserLayers: string[] | undefined;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
   /** Per control-file name: the last read's set etag and the server's raw ETag for its one node. */
@@ -635,6 +658,15 @@ export class WebDAVProvider implements SyncProvider {
       positionsSync: this._serverCompilesMetadata
         ? (this._perUserFiles?.includes('positions.json') ?? false)
         : undefined,
+      // The edit layer goes up only to a bunko that keeps it per account; any
+      // other bunko would publish it to every account. Plain WebDAV: the
+      // user's own file.
+      editLayerSync: this._serverCompilesMetadata
+        ? this._perUserLayers?.includes('edit')
+          ? 'push'
+          : 'local'
+        : undefined,
+      curatedPublish: this._capabilities?.curated?.scope,
       metadataPermissions: this._capabilities?.metadata,
       canModifyDelete: this._capabilities?.canModifyDelete,
       canAddFiles: this._capabilities?.canAddFiles,
@@ -750,6 +782,7 @@ export class WebDAVProvider implements SyncProvider {
           this._serverCompilesMetadata = true;
           this._serverVersion = identity.serverVersion;
           this._perUserFiles = identity.perUserFiles;
+          this._perUserLayers = identity.perUserLayers;
           this._isReadOnly = !(
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
           );
@@ -773,6 +806,7 @@ export class WebDAVProvider implements SyncProvider {
           this._serverCompilesMetadata = true;
           this._serverVersion = identity.serverVersion;
           this._perUserFiles = identity.perUserFiles;
+          this._perUserLayers = identity.perUserLayers;
           break;
 
         case 'unsupported':
@@ -804,6 +838,7 @@ export class WebDAVProvider implements SyncProvider {
           // A bunko recognised only by its verified PUTs reported no version.
           this._serverVersion = undefined;
           this._perUserFiles = undefined;
+          this._perUserLayers = undefined;
           break;
       }
 
@@ -913,6 +948,7 @@ export class WebDAVProvider implements SyncProvider {
     this._serverCompilesMetadata = false;
     this._serverVersion = undefined;
     this._perUserFiles = undefined;
+    this._perUserLayers = undefined;
     this.controlReads.clear();
     this._hasPassword = false;
     this._needsAttention = false; // Deliberate logout - nothing to flag
@@ -1376,6 +1412,9 @@ export class WebDAVProvider implements SyncProvider {
       // here would hide backup and upload for a perfectly writable account.
       if (!isBestEffortMetadataPath(path)) {
         const kind = classifyWriteError(errorMessage);
+        if (kind === 'permission' && isReservedLayerSidecarPath(path)) {
+          throw reservedLayerRefusal(path);
+        }
         if (kind !== 'other') {
           this.handleWriteFailure(kind, 'Write permission denied - server is read-only');
         }
@@ -1643,6 +1682,9 @@ export class WebDAVProvider implements SyncProvider {
       // so an unguarded demotion here would flip the provider read-only silently.
       if (!isBestEffortMetadataPath(file.path)) {
         const kind = classifyWriteError(errorMessage);
+        if (kind === 'permission' && isReservedLayerSidecarPath(file.path)) {
+          throw reservedLayerRefusal(file.path);
+        }
         if (kind !== 'other') {
           this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
         }

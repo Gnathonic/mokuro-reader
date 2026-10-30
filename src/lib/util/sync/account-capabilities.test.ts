@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   accountCanAddFiles,
   accountCanModifyDelete,
+  canPublishCurated,
   renameRefusalMessage
 } from './account-capabilities';
 import { ProviderError } from './provider-interface';
@@ -30,5 +31,31 @@ describe('account capabilities', () => {
     );
     expect(renameRefusalMessage(new ProviderError('x', 'webdav', 'RENAME_FAILED'))).toBeNull();
     expect(renameRefusalMessage(new Error('Failed to fetch'))).toBeNull();
+  });
+});
+
+describe('canPublishCurated', () => {
+  const owned = { scope: 'owned' as const, ownedSeries: ['One Piece', 'Pokémon'.normalize('NFD')] };
+
+  it.each([
+    ['all', undefined, 'Anything', true],
+    ['owned', owned, 'One Piece', true],
+    ['owned', owned, 'one piece', true],
+    // The folder name may come back decomposed: folded like the metadata gate.
+    ['owned', owned, 'Pokémon'.normalize('NFC'), true],
+    ['owned', owned, 'Naruto', false],
+    ['owned', undefined, 'One Piece', false],
+    ['owned', { scope: 'owned' as const }, 'One Piece', false],
+    ['none', owned, 'One Piece', false],
+    [undefined, owned, 'One Piece', false]
+  ] as const)('scope %s, metadata %j, series %s -> %s', (scope, metadata, series, expected) => {
+    expect(
+      canPublishCurated({ curatedPublish: scope, metadataPermissions: metadata }, series)
+    ).toBe(expected);
+  });
+
+  it('no status (no provider) cannot publish', () => {
+    expect(canPublishCurated(null, 'One Piece')).toBe(false);
+    expect(canPublishCurated(undefined, 'One Piece')).toBe(false);
   });
 });

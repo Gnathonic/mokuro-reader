@@ -629,6 +629,20 @@ describe('export-for-download sidecars', () => {
       expect(message.serverCompilesMetadata).toBe(true);
     });
 
+    it('passes the edit-layer gate, so a 0.7.x bunko gets no edit layer file', async () => {
+      const message = await backupMessage('edit-local-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        getStatus: () => ({
+          isReadOnly: false,
+          serverCompilesMetadata: true,
+          editLayerSync: 'local'
+        })
+      });
+      expect(message.editLayerSync).toBe('local');
+    });
+
     it('…and not for plain storage', async () => {
       const message = await backupMessage('plain-webdav', {
         type: 'webdav',
@@ -686,16 +700,21 @@ describe('export-for-download sidecars', () => {
     // The stamp is handed what was SERIALIZED (id, the row's updated_at at
     // that moment, the uploaded byte count) — never left to re-read the row,
     // which may have been edited while the upload ran.
-    expect(stampLayersSynced).toHaveBeenCalledWith('layers-upload-uuid', 'filesystem', [
-      { layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }
-    ]);
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'layers-upload-uuid',
+      'filesystem',
+      [{ layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }],
+      undefined
+    );
   });
 
   it('a worker-driven upload stamps from the snapshot the worker sends back', async () => {
     const provider = {
       type: 'webdav',
       uploadConcurrencyLimit: 2,
-      supportsWorkerUpload: true
+      supportsWorkerUpload: true,
+      // The account a personal layer's file belongs to (bunko keeps one per account).
+      getStatus: () => ({ isReadOnly: false, accountScope: 'webdav:https://host|alice' })
     } as never;
     getActiveProvider.mockReturnValue(provider);
     queueVolumeForBackup(volume({ volume_uuid: 'layers-worker-uuid' }), provider, {
@@ -708,7 +727,12 @@ describe('export-for-download sidecars', () => {
       { type: 'complete', fileId: 'remote-file-id', size: 123, layerSnapshots },
       vi.fn()
     );
-    expect(stampLayersSynced).toHaveBeenCalledWith('layers-worker-uuid', 'webdav', layerSnapshots);
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'layers-worker-uuid',
+      'webdav',
+      layerSnapshots,
+      'webdav:https://host|alice'
+    );
   });
 
   // The primary `.mokuro` the worker uploaded: its hash becomes the volume's,

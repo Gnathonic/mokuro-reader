@@ -494,11 +494,15 @@ export function cloudBunkoStatus(scope: string): CloudBunkoStatus | undefined {
 
 /**
  * A provider's own status with the marker folded in:
- * `serverCompilesMetadata = reported || anyMarkerFresh`, and the per-user
- * gates from the lease HOLDER's rules — `historySync` needs bunko 0.8.0+ AND
- * `history/` per user, `positionsSync` needs `positions.json` per user. A
- * verdict the provider set itself (a bunko server's `/me`) wins; with no fresh
- * holder both stay undefined, so the folder is judged as plain storage.
+ * `serverCompilesMetadata = reported || anyMarkerFresh`; the per-user gates
+ * from the lease HOLDER's rules — `historySync` needs bunko 0.8.0+ AND
+ * `history/` per user, `positionsSync` needs `positions.json` per user; and
+ * `curatedPublish` `all` while the fresh holder keeps a curated layer — a
+ * cloud-direct reader is the folder's owner. A history/positions verdict the
+ * provider set itself (a bunko server's `/me`) wins; with no fresh holder both
+ * stay undefined, so the folder is judged as plain storage. `editLayerSync`
+ * stays as reported (absent = push: the edit layer in the owner's own cloud is
+ * the owner's file).
  */
 export function withCloudBunkoStatus<T extends ProviderStatus>(scope: string, status: T): T {
   const marker = cloudBunkoStatus(scope);
@@ -513,7 +517,8 @@ export function withCloudBunkoStatus<T extends ProviderStatus>(scope: string, st
       (holder ? bunkoSupportsHistory(holder.bunkoVersion, holder.perUserFiles) : undefined),
     positionsSync:
       status.positionsSync ??
-      (holder ? holder.perUserFiles.includes(POSITIONS_FILE_NAME) : undefined)
+      (holder ? holder.perUserFiles.includes(POSITIONS_FILE_NAME) : undefined),
+    ...(holder?.curated ? { curatedPublish: 'all' as const } : {})
   };
 }
 

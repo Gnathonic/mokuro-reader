@@ -14,7 +14,7 @@
  * This module must stay dependency-free (no Svelte / $app imports).
  */
 import { webdavAuthorization } from '../../core/providers/webdav-authorization';
-import type { SeriesMetadataPermissions } from '../../provider-interface';
+import type { CuratedScope, SeriesMetadataPermissions } from '../../provider-interface';
 
 export interface ServerPermissions {
   canWriteProgress: boolean;
@@ -25,6 +25,12 @@ export interface ServerPermissions {
    * restriction — an older bunko that doesn't report the field, or a plain WebDAV server.
    */
   metadata?: SeriesMetadataPermissions;
+  /**
+   * Who may publish the shared `curated` layer (bunko >= 0.8): `all` any
+   * volume, `owned` the volumes this account uploaded, `none` never. Absent =
+   * not reported (an older bunko keeps no curated layer).
+   */
+  curated?: { scope: CuratedScope };
 }
 
 export type IdentityResult =
@@ -39,10 +45,16 @@ export type IdentityResult =
       serverVersion?: string;
       /** Root files the server keeps per account (`per_user_files`), when it reports them. */
       perUserFiles?: string[];
+      /**
+       * Layer ids the server keeps per account (`per_user_layers`, bunko >= 0.8:
+       * `edit` covers `edit` and `edit-<n>`). Absent = it keeps them shared.
+       */
+      perUserLayers?: string[];
     }
   | { kind: 'invalid-credentials' }
   | { kind: 'rate-limited' } // recognizable 429
-  | { kind: 'anonymous'; serverVersion?: string; perUserFiles?: string[] } // 200 authenticated:false when NO creds were sent
+  // 200 authenticated:false when NO creds were sent
+  | { kind: 'anonymous'; serverVersion?: string; perUserFiles?: string[]; perUserLayers?: string[] }
   | { kind: 'unsupported' }; // anything unrecognizable -> generic WebDAV server
 
 const REQUEST_TIMEOUT_MS = 10000;
@@ -85,7 +97,18 @@ function normalizePermissions(value: unknown): ServerPermissions | null {
   };
   const metadata = normalizeMetadataPermissions(p.metadata);
   if (metadata) permissions.metadata = metadata;
+  // Anything but one of the three scopes = not reported.
+  const curated = p.curated as { scope?: unknown } | null | undefined;
+  const scope = curated && typeof curated === 'object' ? curated.scope : undefined;
+  if (scope === 'all' || scope === 'owned' || scope === 'none') permissions.curated = { scope };
   return permissions;
+}
+
+/** A top-level string-array field, or nothing: anything else is "not reported". */
+function stringList(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((f) => typeof f === 'string')
+    ? (value as string[])
+    : undefined;
 }
 
 /** Terminal result for this candidate, or null to advance to the next one. */
@@ -100,12 +123,13 @@ function interpretResponse(
   // bunko >= 0.8.0 reports its version; older servers simply omit it.
   const version =
     typeof record?.version === 'string' && record.version ? { serverVersion: record.version } : {};
-  // Root files the server keeps per account; anything but a string array = not reported.
-  const perUser = record?.per_user_files;
-  const perUserFiles =
-    Array.isArray(perUser) && perUser.every((f) => typeof f === 'string')
-      ? { perUserFiles: perUser as string[] }
-      : {};
+  // Root files and layer ids the server keeps per account.
+  const files = stringList(record?.per_user_files);
+  const layers = stringList(record?.per_user_layers);
+  const perUser = {
+    ...(files ? { perUserFiles: files } : {}),
+    ...(layers ? { perUserLayers: layers } : {})
+  };
 
   if (status === 200) {
     // A non-JSON 200 (reverse proxy default page, SPA fallback serving the app
@@ -122,7 +146,7 @@ function interpretResponse(
           role: typeof record?.role === 'string' ? record.role : '',
           permissions,
           ...version,
-          ...perUserFiles
+          ...perUser
         };
       }
       // 200 "authenticated" without a permissions object is not the contract shape
@@ -131,7 +155,7 @@ function interpretResponse(
     if (authenticated === false) {
       return credsSent
         ? { kind: 'invalid-credentials' }
-        : { kind: 'anonymous', ...version, ...perUserFiles };
+        : { kind: 'anonymous', ...version, ...perUser };
     }
     // H1: 200 without a boolean `authenticated` field = old mokuro-bunko
     // (<= 0.1.3 returned {username, role, created_at}) or some other server.

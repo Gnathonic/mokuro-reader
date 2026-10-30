@@ -2,8 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- mokuro-bunko: publish your OCR fixes as shared corrections
+
 ### Changed
 
+- Editing shared OCR now edits your own copy
+- mokuro-bunko: your OCR fixes no longer reach other accounts
 - Duplicate-folder cleanup never removes mokuro-bunko's own files
 - Duplicate-folder cleanup leaves it to mokuro-bunko when it merges them
 - MEGA catches mokuro-bunko changes made while you were offline

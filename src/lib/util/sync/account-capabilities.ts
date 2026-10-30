@@ -12,11 +12,14 @@
  * Pure, dependency-free: takes a `ProviderStatus` (or nothing).
  */
 import { ProviderError, type ProviderStatus } from './provider-interface';
+import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 
 type Capabilities = Pick<ProviderStatus, 'canAddFiles' | 'canModifyDelete'>;
 
 export const CANNOT_ADD_FILES_MESSAGE = "This account can't add files on this server";
 export const CANNOT_RENAME_MESSAGE = "This account can't rename on this server";
+export const CANNOT_PUBLISH_CURATED_MESSAGE =
+  "This account can't publish shared corrections for this volume";
 
 /** May this account upload archives, sidecars and layer files, and create folders? */
 export function accountCanAddFiles(status: Capabilities | null | undefined): boolean {
@@ -26,6 +29,30 @@ export function accountCanAddFiles(status: Capabilities | null | undefined): boo
 /** May this account move/rename existing server files? */
 export function accountCanModifyDelete(status: Capabilities | null | undefined): boolean {
   return status?.canModifyDelete !== false;
+}
+
+/**
+ * May this account publish `seriesTitle`'s volumes to the shared `curated`
+ * layer? `all` anywhere; `owned` only in a series this account owns — bunko
+ * grants it per uploaded VOLUME, approximated here by the series folder
+ * (`metadataPermissions.ownedSeries`, folded like the metadata gate), so a
+ * 403 on the PUT is final. Anything else, including no curated layer, no.
+ */
+export function canPublishCurated(
+  status: Pick<ProviderStatus, 'curatedPublish' | 'metadataPermissions'> | null | undefined,
+  seriesTitle: string
+): boolean {
+  switch (status?.curatedPublish) {
+    case 'all':
+      return true;
+    case 'owned': {
+      const key = normalizeVolumeTitleKey(seriesTitle);
+      const owned = status.metadataPermissions?.ownedSeries ?? [];
+      return owned.some((title) => normalizeVolumeTitleKey(title) === key);
+    }
+    default:
+      return false;
+  }
 }
 
 /**

@@ -289,6 +289,69 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
     ).toEqual(['updated-ocr']);
   });
 
+  describe('the personal and shared correction layers (bunko 0.8)', () => {
+    async function seedLayers() {
+      for (const layer_id of ['edit', 'curated', 'fix']) {
+        await putLayerWithPages(db, {
+          volume_uuid: 'volume-uuid',
+          layer_id,
+          name: layer_id,
+          kind: 'edit',
+          created_at: '2026-09-16T00:00:00.000Z',
+          updated_at: '2026-09-16T00:00:00.000Z',
+          pages: []
+        });
+      }
+    }
+    const ids = async (target?: Parameters<typeof generateVolumeSidecarsFromDb>[2]) =>
+      (await generateVolumeSidecarsFromDb('volume-uuid', undefined, target)).layers?.map(
+        (l) => l.layerId
+      );
+
+    it('a backup to a 0.7.x bunko (edit layers shared there) writes neither edit nor curated', async () => {
+      await seedLayers();
+      expect(
+        await ids({ serverCompilesMetadata: true, editLayerSync: 'local', cloud: true })
+      ).toEqual(['fix']);
+    });
+
+    it('a bunko keeping edit layers per account gets the edit layer, never curated', async () => {
+      await seedLayers();
+      expect(
+        await ids({ serverCompilesMetadata: true, editLayerSync: 'push', cloud: true })
+      ).toEqual(['edit', 'fix']);
+    });
+
+    it('plain storage (Drive) gets the edit layer but not curated: that only goes up by Publish', async () => {
+      await seedLayers();
+      expect(await ids({ cloud: true })).toEqual(['edit', 'fix']);
+    });
+
+    it("a backup under account B never uploads A's edit layer into B's overlay", async () => {
+      await seedLayers();
+      await putLayerWithPages(db, {
+        volume_uuid: 'volume-uuid',
+        layer_id: 'edit',
+        name: 'edit',
+        kind: 'edit',
+        created_at: '2026-09-16T00:00:00.000Z',
+        updated_at: '2026-09-17T00:00:00.000Z',
+        cloud: {
+          provider: 'webdav',
+          account: 'webdav:https://host|alice',
+          synced_at: '2026-09-16T00:00:00.000Z'
+        },
+        pages: []
+      });
+      const target = { serverCompilesMetadata: true, editLayerSync: 'push', cloud: true } as const;
+      expect(await ids({ ...target, account: 'webdav:https://host|bob' })).toEqual(['fix']);
+      expect(await ids({ ...target, account: 'webdav:https://host|alice' })).toEqual([
+        'edit',
+        'fix'
+      ]);
+    });
+  });
+
   it("never uploads the editor's original snapshot to a server that compiles its metadata", async () => {
     await putLayerWithPages(db, {
       volume_uuid: 'volume-uuid',

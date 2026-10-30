@@ -214,8 +214,17 @@ export interface VolumeOcrLayer {
    * The cloud copy this row was last synced with (`layer-sync.ts`): the
    * listing's size / mtime (epoch s; absent when the server gave none) and
    * when the sync happened. `updated_at > cloud.synced_at` = edited since.
+   * `account` (personal `edit` layers only): the provider's `accountScope`
+   * the file belongs to — bunko serves each account its own copy at one path,
+   * so a row of another account is never pushed (`layer-sync.ts`).
    */
-  cloud?: { provider: string; size?: number; modified?: number; synced_at: string };
+  cloud?: {
+    provider: string;
+    account?: string;
+    size?: number;
+    modified?: number;
+    synced_at: string;
+  };
   /**
    * Set (equal to `updated_at`) on a row attached from INSIDE a downloaded
    * archive: a snapshot of what the cloud held, not an edit, so any real cloud

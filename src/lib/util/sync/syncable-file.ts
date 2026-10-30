@@ -27,6 +27,7 @@ import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
 import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
 import { isHistoryFilePath } from '$lib/reading-history/paths';
 import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
+import { isReservedLayerId } from '$lib/reader/edit/layer-names';
 
 const ROOT_CONFIG_FILENAMES = new Set([
   'volume-data.json',
@@ -229,6 +230,19 @@ export function splitLayerSidecarName(
   const layerId = stripped.base.slice(dot + 1);
   if (!LAYER_ID_RE.test(layerId)) return null;
   return { stem, layerId, gz: stripped.gz };
+}
+
+/**
+ * Is `path` a layer file whose id is reserved (`isReservedLayerId`)? bunko
+ * refuses a write of some of those by design — its own `pre-upgrade`, the
+ * `curated` layer to an account without the rights, a shared `edit` — so a
+ * 403 there says nothing about the account's other writes (`webdav-provider`
+ * keeps the provider read-write). Listing-free, so `Vol 1.edit.mokuro` counts
+ * even when it is the primary of a volume titled `Vol 1.edit`.
+ */
+export function isReservedLayerSidecarPath(path: string): boolean {
+  const split = splitLayerSidecarName(path.split('/').pop() ?? path);
+  return !!split && isReservedLayerId(split.layerId);
 }
 
 /**
