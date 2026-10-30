@@ -3,12 +3,13 @@
  * (`interop/contract/sidecar-names.json`; Bunko's `bunko_core::sidecar_names`
  * runs the same file): what a listed `.mokuro` is beside the archives of its
  * folder, and which layer ids Bunko keeps per account, shares as curated, or
- * writes only itself. The reader's hand copy (`syncable-file.test.ts`) runs
+ * writes only itself — and that the reader never pushes one it refuses. The reader's hand copy (`syncable-file.test.ts`) runs
  * without a Bunko checkout; this runs Bunko's own.
  */
 import { expect, it } from 'vitest';
 import { describeContractFile, sidecarNameVectors } from './contract';
 import { cbzStemsOf, classifyMokuroSidecar } from '$lib/util/sync/syncable-file';
+import { layerIdStaysLocal } from '$lib/catalog/mokuro-hash';
 import {
   isCuratedLayerId,
   isPersonalLayerId,
@@ -39,7 +40,17 @@ describeContractFile('sidecar-names.json', 'sidecar names rule v1 as Bunko state
   it.each(vectors?.layer_class ?? [])('layer id $id is $class', ({ id, class: cls }) => {
     expect(isPersonalLayerId(id)).toBe(cls === 'personal');
     expect(isCuratedLayerId(id)).toBe(cls === 'curated');
-    expect(isServerKeepsakeLayerId(id)).toBe(cls === 'server-keepsake');
+    // The reader's server keepsakes are Bunko's, plus the Reserved ids that are
+    // its copies (a case merge's `curated-<n>`, the rest of `pre-upgrade…`).
+    if (cls === 'server-keepsake') expect(isServerKeepsakeLayerId(id)).toBe(true);
+    if (isServerKeepsakeLayerId(id)) expect(['server-keepsake', 'reserved']).toContain(cls);
+    // What Bunko refuses a client PUT of (or shares as curated) is never pushed
+    // to it, and its cloud copy never deleted from here; an account's own goes up.
+    const bunko = { serverCompilesMetadata: true, editLayerSync: 'push' as const };
+    if (cls === 'curated' || cls === 'server-keepsake' || cls === 'reserved') {
+      expect(layerIdStaysLocal(id, bunko)).toBe(true);
+    }
+    if (cls === 'personal') expect(layerIdStaysLocal(id, bunko)).toBe(false);
     // An id Bunko gives a meaning of its own is one the reader never mints by
     // name (`slugifyLayerId`). The reader reserves more than these (`gcv`,
     // `tr-*`, … are `other` to Bunko), so only this direction holds.

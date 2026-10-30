@@ -16,6 +16,8 @@ describe('forksOnEdit: which layers an edit leaves alone and copies into `edit`'
   it('on bunko: its pre-upgrade keepsakes and the OCR layers a server stamped', () => {
     expect(forksOnEdit({ layer_id: 'pre-upgrade', kind: 'edit', cloud: CLOUD }, BUNKO)).toBe(true);
     expect(forksOnEdit({ layer_id: 'pre-upgrade-2', kind: 'edit' }, BUNKO)).toBe(true);
+    // A case merge's keepsake of a second curated file: as shared as curated itself.
+    expect(forksOnEdit({ layer_id: 'curated-2', kind: 'edit', cloud: CLOUD }, BUNKO)).toBe(true);
     const hayai = { layer_id: 'hayai', kind: 'ocr' as const, engine: 'hayai', cloud: CLOUD };
     expect(forksOnEdit(hayai, BUNKO)).toBe(true);
   });
@@ -25,6 +27,7 @@ describe('forksOnEdit: which layers an edit leaves alone and copies into `edit`'
     expect(forksOnEdit(hayai, DRIVE)).toBe(false);
     expect(forksOnEdit(hayai, null)).toBe(false);
     expect(forksOnEdit({ layer_id: 'pre-upgrade', kind: 'edit', cloud: CLOUD }, DRIVE)).toBe(false);
+    expect(forksOnEdit({ layer_id: 'curated-2', kind: 'edit', cloud: CLOUD }, DRIVE)).toBe(false);
   });
 
   it('never a layer of this device’s own, a hand-made one, or the account’s own edit', () => {
@@ -58,6 +61,7 @@ describe('layerRowActions: what the layer menu offers on a row', () => {
   it('Copy to your corrections on every layer an edit forks from', () => {
     expect(at('curated', false).copyToEdit).toBe(true);
     expect(at('pre-upgrade', false).copyToEdit).toBe(true);
+    expect(at('curated-2', false).copyToEdit).toBe(true);
     expect(at('fix', true).copyToEdit).toBe(false);
     expect(at('edit', true).copyToEdit).toBe(false);
   });

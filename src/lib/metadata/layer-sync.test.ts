@@ -28,6 +28,7 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
 }));
 
 import { db } from '$lib/catalog/db';
+import { forksOnEdit } from '$lib/reader/edit/layer-kind';
 import { contentDigest, provenanceFromParsed } from '$lib/catalog/ocr-provenance';
 import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
 import {
@@ -1860,6 +1861,53 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     editLayerSync = 'push';
     await syncLayersFromListing(files(), 'webdav');
     expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it("bunko's curated-<n> (a case merge's keepsake) is corrections it alone writes: never pushed, never deleted from here", async () => {
+    // bunko classes `curated-<n>` Reserved: a client PUT is a 403, and a DELETE by
+    // a ModifyDelete account would remove the keepsake for every account.
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    canAddFiles = true;
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.curated-2.mokuro')];
+    // A stamp naming an engine, as a curated file carries: still filed as corrections.
+    const stamped = JSON.stringify({
+      ...JSON.parse(mokuroJson('かな')),
+      ocr_engine: { id: 'hayai-nova', detector: 'ctd', generator: 'mokuro-bunko 0.8.0' }
+    });
+    downloadFile.mockResolvedValue(new Blob([stamped]));
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    const pulled = await getLayerWithPages(db, 'v1', 'curated-2');
+    expect(pulled).toMatchObject({ kind: 'edit' });
+    expect(pulled!.engine).toBeUndefined();
+    expect(forksOnEdit(pulled!, { serverCompilesMetadata: true })).toBe(true);
+
+    // Even a row edited here (an older reader edited it in place) stays local.
+    await putLayerWithPages(db, { ...pulled!, updated_at: '2099-01-01T00:00:00.000Z' });
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+
+    expect(await deleteCloudLayerFile('v1', 'curated-2')).toBe('kept-shared');
+    await deleteLayerRows(db, 'v1', 'curated-2');
+    downloadFile.mockClear();
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    expect(deleteFile).not.toHaveBeenCalled();
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('an edited previous-ocr keepsake is never pushed to bunko (it reserves the id), but syncs on plain storage', async () => {
+    await seedRow();
+    await seedLayer('previous-ocr', { kind: 'ocr' });
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    canAddFiles = true;
+    await syncLayersFromListing(files(), 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+
+    serverCompilesMetadata = false;
+    await syncLayersFromListing(files(), 'webdav');
+    expect(uploaded()).toEqual(['Series/Vol 1.previous-ocr.mokuro']);
   });
 
   it('a read-only account pushes nothing, edit layer included', async () => {

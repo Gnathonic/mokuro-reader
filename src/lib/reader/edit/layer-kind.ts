@@ -5,7 +5,7 @@
  * Dexie to do it.
  */
 import type { VolumeOcrLayerKind } from '$lib/types';
-import { EDIT_LAYER_ID, isCuratedLayerId, isPreUpgradeLayerId } from './layer-names';
+import { EDIT_LAYER_ID, isCuratedLayerId, isServerKeepsakeLayerId } from './layer-names';
 
 const TRANSLATION_ID_RE = /^tr-[a-z0-9-]+$/;
 
@@ -41,8 +41,8 @@ export const TRANSLATION_PROMOTE_BLOCKED =
  * Does an edit of this layer go into the account's own `edit` layer instead
  * (bunko design 0.8 D4: human corrections live in their own file)? Always for
  * the shared `curated` layer: it is written by Publish alone. On a server that
- * compiles its metadata (mokuro-bunko) also for its `pre-upgrade` keepsakes
- * and for the OCR a server stamped (an `ocr` row with an engine that a cloud
+ * compiles its metadata (mokuro-bunko) also for its keepsakes (`pre-upgrade…`,
+ * a case merge's `curated-<n>`) and for the OCR a server stamped (an `ocr` row with an engine that a cloud
  * vouches for): on a shared library those are the one copy every account
  * reads. On plain storage they are the user's own files, edited in place.
  */
@@ -52,7 +52,7 @@ export function forksOnEdit(
 ): boolean {
   if (isCuratedLayerId(layer.layer_id)) return true;
   if (status?.serverCompilesMetadata !== true) return false;
-  if (isPreUpgradeLayerId(layer.layer_id)) return true;
+  if (isServerKeepsakeLayerId(layer.layer_id)) return true;
   return layer.kind === 'ocr' && !!layer.engine && !!layer.cloud;
 }
 

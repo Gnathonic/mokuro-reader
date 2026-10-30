@@ -77,10 +77,17 @@ describe('layerStaysLocal', () => {
     ['edit-2', false, false, true],
     ['pre-upgrade', false, true, true],
     ['pre-upgrade-3', false, true, true],
+    // What bunko reserves and refuses a client PUT of (its `layer_class`
+    // Reserved): a case merge's `curated-<n>`, the rest of the pre-upgrade
+    // family, and this reader's own previous-ocr keepsake once edited.
+    ['curated-2', false, true, true],
+    ['pre-upgrade-x', false, true, true],
+    ['previous-ocr', false, true, true],
+    ['previous-ocr-2', false, true, true],
     ['original', false, true, true],
     ['my-fixes', false, false, false],
     ['hayai-nova', false, false, false],
-    ['curated-2', false, false, false],
+    ['curated-x', false, false, false],
     ['editorial', false, false, false]
   ])('%s: plain %s, bunko 0.8 %s, bunko 0.7 %s', (id, plain, bunko08, bunko07) => {
     expect(layerStaysLocal(row(id), PLAIN)).toBe(plain);
