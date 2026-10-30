@@ -52,8 +52,27 @@ export function isPreUpgradeLayerId(layerId: string): boolean {
   return PRE_UPGRADE_RE.test(layerId);
 }
 
-/** A layer only the server writes (bunko answers a client PUT with 403). */
-export const isServerKeepsakeLayerId = isPreUpgradeLayerId;
+/** `curated-<n>`: bunko's keepsake of a second, different `curated` file a case merge found. */
+const CURATED_KEEPSAKE_RE = /^curated-\d+$/;
+
+/**
+ * A layer only the server writes (bunko answers a client PUT with 403): its
+ * `pre-upgrade` keepsakes and the rest of that family, and the `curated-<n>`
+ * a case merge keeps. Its sidecar names rule v1 `layer_class` ServerKeepsake,
+ * plus the Reserved ids that are a server's copies.
+ */
+export function isServerKeepsakeLayerId(layerId: string): boolean {
+  return layerId.startsWith('pre-upgrade') || CURATED_KEEPSAKE_RE.test(layerId);
+}
+
+/**
+ * The reader's own `previous-ocr` keepsakes (`cloud-ocr-upgrade.ts`): bunko
+ * reserves the family (`layer_class` Reserved), so even an edited one is
+ * refused there.
+ */
+export function isDeviceKeepsakeLayerId(layerId: string): boolean {
+  return layerId.startsWith('previous-ocr');
+}
 
 /**
  * Ids bunko reserves (its `RESERVED_NAMES` / `RESERVED_PREFIXES`, plus the

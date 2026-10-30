@@ -496,8 +496,9 @@ contain your corrections)" (`layer-names.ts`). Three id families are
 CORRECTIONS by id (`isCorrectionsLayerId`): an account's own `edit`/`edit-<n>`
 ("Your corrections [n]", `isPersonalLayerId` — bunko 0.8 keeps them per
 account), the library's shared `curated` ("Shared corrections",
-`isCuratedLayerId`, published by accounts with the rights), and `pre-upgrade*`
-(`isServerKeepsakeLayerId`). They are filed kind `edit` whatever `ocr_engine`
+`isCuratedLayerId`, published by accounts with the rights), and bunko's
+keepsakes — `pre-upgrade*` and a case merge's `curated-<n>`, its copy of a
+second, different `curated` (`isServerKeepsakeLayerId`). They are filed kind `edit` whatever `ocr_engine`
 stamp their file carries, and a pull never re-files one as `ocr`.
 Two capabilities say what this server does with them
 (`ProviderStatus`): `editLayerSync` is `push` when bunko's identity lists
@@ -515,8 +516,11 @@ a series in `metadataPermissions.ownedSeries`; absent = no).
 threaded through layer-sync's plan, the backup's layer sidecars and the
 worker message): an untouched upgrade layer everywhere; `curated` everywhere
 (it goes up only by an explicit Publish — not by sync, backup or export);
-`edit`/`edit-<n>` where `editLayerSync` is `local`; and `original` and
-`pre-upgrade*` on a server that compiles its metadata. Its id half,
+`edit`/`edit-<n>` where `editLayerSync` is `local`; and on a server that
+compiles its metadata `original`, bunko's keepsakes (`pre-upgrade*`,
+`curated-<n>`) and `previous-ocr*` even once edited — every id bunko classes
+ServerKeepsake or Reserved (sidecar names rule v1 `layer_class`), whose PUT it
+refuses. Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
 IS is somebody else's file, so neither a local delete, its tombstone nor the
 `.gz`-sibling tidy ever removes its cloud copy (the delete reports
@@ -538,14 +542,15 @@ a read-only demotion of the WebDAV provider.
 `layerStaysLocal` — never pushed by layer-sync, never a backup sidecar, never
 exported or embedded:
 
-| Id                                | What it is                                                         | Written by         | Local?                           |
-| --------------------------------- | ------------------------------------------------------------------ | ------------------ | -------------------------------- |
-| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                    |
-| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched                  |
-| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local` |
-| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                           |
-| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                         |
-| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | no                               |
+| Id                                | What it is                                                         | Written by         | Local?                                           |
+| --------------------------------- | ------------------------------------------------------------------ | ------------------ | ------------------------------------------------ |
+| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                                    |
+| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched; `previous-ocr*` always on bunko |
+| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local`                 |
+| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                                           |
+| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                                         |
+| `curated-<n>`                     | bunko's copy of a second `curated` a case merge found              | bunko only         | on bunko                                         |
+| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | no                                               |
 
 So `edit` lives per account on a bunko that lists it in `per_user_layers`
 (the server serves each account its own file at the same path), stays on the
@@ -555,8 +560,8 @@ shared library files.
 
 **Shared layers are read-only; an edit forks into `edit`.**
 `forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
-and on a server that compiles its metadata also for `pre-upgrade*` and for
-server-stamped OCR rows (kind `ocr` with an `engine` and a `cloud` stamp) —
+and on a server that compiles its metadata also for bunko's keepsakes
+(`pre-upgrade*`, `curated-<n>`) and for server-stamped OCR rows (kind `ocr` with an `engine` and a `cloud` stamp) —
 on a shared library those are the one copy everyone reads. Edit mode on such a
 layer (`E`, quick actions, context menu) calls `forkIntoEditLayer`: it makes
 `edit` from the displayed layer's pages when there is none (no cloud stamp, so
@@ -604,8 +609,8 @@ listed `<Volume>.edit.mokuro` is the SHARED file, another account's work.
 mokuro-bunko must, for all of this: list `edit` in `/login/api/me`'s
 `per_user_layers` only when it keeps that file per account; report
 `permissions.curated.scope` (`all` / `owned` / `none`) for the signed-in role;
-answer a client PUT of `curated` without the right, or of `pre-upgrade*`, with
-403; and (cloud-direct) write `curated: true` into the marker when the folder's
+answer a client PUT of `curated` without the right, or of `pre-upgrade*`,
+`curated-<n>` or `previous-ocr*`, with 403; and (cloud-direct) write `curated: true` into the marker when the folder's
 owner may publish.
 
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
