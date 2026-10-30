@@ -4,12 +4,17 @@
 
 ### Added
 
+- Reading history syncs across your devices
+- Reading stats per device, under names you choose
+- Volumes open where your other device stopped
+- "Still reading?" after a long pause
 - mokuro-bunko: publish your OCR fixes as shared corrections
 
 ### Changed
 
 - Editing shared OCR now edits your own copy
 - mokuro-bunko: your OCR fixes no longer reach other accounts
+- mokuro-bunko before 0.8: OCR fixes stay on this device
 - Duplicate-folder cleanup never removes mokuro-bunko's own files
 - Duplicate-folder cleanup leaves it to mokuro-bunko when it merges them
 - MEGA catches mokuro-bunko changes made while you were offline
@@ -38,6 +43,7 @@
 - OneDrive asks you to reconnect when its sign-in lapses
 - MEGA asks you to reconnect when its session ends
 - Google Drive asks you to sign in again only once
+- Renaming a corrected volume keeps the server's newer OCR
 
 ## [1.10.0] - 2026-10-02
 

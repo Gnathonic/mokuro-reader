@@ -1172,6 +1172,101 @@ describe('WebDAVProvider getStatus().positionsSync (per-user positions.json)', (
   });
 });
 
+// bunko can be upgraded or rolled back while a tab stays open; the gates must
+// follow what the server keeps per user NOW, or a rolled-back 0.7.x would take
+// history, positions and edit layers into its SHARED library.
+describe('WebDAVProvider refreshIdentity() (the server changed under an open session)', () => {
+  const V08 = {
+    ...authenticatedIdentity(),
+    serverVersion: '0.8.0',
+    perUserFiles: ['volume-data.json', 'positions.json', 'history/'],
+    perUserLayers: ['edit']
+  };
+  const V073 = { ...authenticatedIdentity(), serverVersion: '0.7.3' };
+  const gates = (provider: WebDAVProvider) => {
+    const { historySync, positionsSync, editLayerSync } = provider.getStatus();
+    return { historySync, positionsSync, editLayerSync };
+  };
+
+  it('a rollback to 0.7.3 turns history, positions and edit-layer sync off', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(gates(provider)).toEqual({
+      historySync: true,
+      positionsSync: true,
+      editLayerSync: 'push'
+    });
+
+    identityMock.mockResolvedValue(V073);
+    await provider.refreshIdentity();
+    expect(gates(provider)).toEqual({
+      historySync: false,
+      positionsSync: false,
+      editLayerSync: 'local'
+    });
+  });
+
+  it('an upgrade to 0.8 turns them on without a reload', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V073);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    identityMock.mockResolvedValue(V08);
+    await provider.refreshIdentity();
+    expect(gates(provider)).toEqual({
+      historySync: true,
+      positionsSync: true,
+      editLayerSync: 'push'
+    });
+  });
+
+  it('an anonymous session follows the server too', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous', perUserLayers: ['edit'] });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().editLayerSync).toBe('push');
+    identityMock.mockResolvedValue({ kind: 'anonymous', serverVersion: '0.7.3' });
+    await provider.refreshIdentity();
+    expect(provider.getStatus().editLayerSync).toBe('local');
+    expect(provider.isReadOnly).toBe(true);
+  });
+
+  it('maxAgeMs skips an identity fresher than that, and asks once it is older', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue(V08);
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      identityMock.mockClear();
+      identityMock.mockResolvedValue(V073);
+
+      now.mockReturnValue(1_000_000 + 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).not.toHaveBeenCalled();
+
+      now.mockReturnValue(1_000_000 + 6 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+      expect(provider.getStatus().editLayerSync).toBe('local');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('a failed refresh keeps what the server said last', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.refreshIdentity();
+    expect(gates(provider)).toEqual({
+      historySync: true,
+      positionsSync: true,
+      editLayerSync: 'push'
+    });
+  });
+});
+
 describe('WebDAVProvider getStatus().editLayerSync / curatedPublish (bunko 0.8 layers)', () => {
   it('a bunko listing `edit` in per_user_layers keeps edit layers per account -> push', async () => {
     const provider = await freshProvider();

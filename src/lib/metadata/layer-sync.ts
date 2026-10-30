@@ -29,9 +29,15 @@ import {
   isPreUpgradeLayerId
 } from '$lib/reader/edit/layer-names';
 import { editLayerEpoch } from '$lib/reader/edit/edit-layer-epoch';
+import { isCloudModelOutput } from '$lib/reader/edit/layer-kind';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
-import { layerIdStaysLocal, layerStaysLocal, type LayerTarget } from '$lib/catalog/mokuro-hash';
+import {
+  layerIdStaysLocal,
+  layerStaysLocal,
+  personalLayerAccount,
+  type LayerTarget
+} from '$lib/catalog/mokuro-hash';
 import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { editBaseSeal } from '$lib/catalog/ocr-provenance';
 import { cacheManager } from '$lib/util/sync/cache-manager';
@@ -591,7 +597,7 @@ export function canPushLayer(
 interface PushGate {
   status: ProviderStatus;
   target: LayerTarget;
-  /** The provider's `accountScope`, stamped on (and compared with) personal rows. */
+  /** `personalLayerAccount`: stamped on (and compared with) personal rows. */
   account?: string;
   /**
    * Volumes whose `curated` file an Unpublish still has to delete
@@ -608,7 +614,7 @@ function pushGateOf(provider: SyncProvider): PushGate {
       serverCompilesMetadata: status.serverCompilesMetadata === true,
       editLayerSync: status.editLayerSync
     },
-    account: status.accountScope,
+    account: personalLayerAccount(status),
     unpublishing: new Map(
       readPendingDeletes()
         .filter((e) => e.unpublish && isCuratedLayerId(e.layer_id))
@@ -662,21 +668,23 @@ function unpublishedFileMoved(
 }
 
 /**
- * The account's own corrections, held back from a server that would share
- * them (`editLayerSync` 'local', a 0.7.x bunko), with edits the cloud has not
- * seen. They never go up there, so they are ALWAYS edited since sync — and the
- * listed `<Volume>.edit.mokuro` on such a server is the library's shared file,
- * another account's corrections. Newest-wins would replace this account's
- * edits with them; they are kept instead.
+ * Corrections that never go up to this server, with edits the cloud has not
+ * seen — they are ALWAYS edited since sync, so newest-wins would replace them
+ * with no copy kept; they are kept instead:
+ *
+ * - the account's own, held back from a server that would share them
+ *   (`editLayerSync` 'local', a 0.7.x bunko), where the listed
+ *   `<Volume>.edit.mokuro` is the library's shared file, another account's;
+ * - a server's own OCR edited in place on a bunko (`isCloudModelOutput`): an
+ *   edit there forks into `edit`, but one begun before the provider said it
+ *   compiles its metadata (signing in, offline, a cloud-direct marker not read
+ *   yet) reached the row, and bunko rewrites such a layer in place when its
+ *   engine moves on.
  */
 function keepsLocalEdits(row: VolumeOcrLayer | undefined, target: LayerTarget): boolean {
-  return (
-    !!row &&
-    isPersonalLayerId(row.layer_id) &&
-    layerIdStaysLocal(row.layer_id, target) &&
-    !isPassiveSnapshot(row) &&
-    editedSinceSync(row)
-  );
+  if (!row || isPassiveSnapshot(row) || !editedSinceSync(row)) return false;
+  if (isPersonalLayerId(row.layer_id)) return layerIdStaysLocal(row.layer_id, target);
+  return target.serverCompilesMetadata && isCloudModelOutput(row);
 }
 
 /** Same key every "which row is this cloud file" question uses. */
@@ -844,7 +852,7 @@ async function pullOne(
   if (!pulled) return false;
   const stored = await storePulledLayer(row, listed.layerId, pulled, existing, {
     provider: provider.type,
-    account: provider.getStatus().accountScope,
+    account: personalLayerAccount(provider.getStatus()),
     stamp: stampOf(listed.file),
     label: listed.file.path
   });
@@ -1501,16 +1509,24 @@ export async function pullLayersForVolume(
         rowKey(l.stem) === titleKey &&
         (!only || only.includes(l.layerId))
     );
-    const tombstoned = pendingDeletesFor(providerType, provider.getStatus().accountScope).get(
-      volumeUuid
-    );
+    const tombstoned = pendingDeletesFor(
+      providerType,
+      personalLayerAccount(provider.getStatus())
+    ).get(volumeUuid);
     let pulled = 0;
     await runPool(mine, MAX_CONCURRENT_LAYER_TRANSFERS, async (listed) => {
       const existing = await getLayerMeta(db, volumeUuid, listed.layerId);
       // Deleted here and not re-created: a fresh download must not bring it back.
       if (!existing && tombstoned?.has(listed.layerId)) return;
       if (keepsLocalEdits(existing, pushGateOf(provider).target)) return;
-      if (!layerNeedsPull(existing, listed.file, providerType, provider.getStatus().accountScope)) {
+      if (
+        !layerNeedsPull(
+          existing,
+          listed.file,
+          providerType,
+          personalLayerAccount(provider.getStatus())
+        )
+      ) {
         return;
       }
       if (await pullOne(provider, listed, row, existing)) pulled++;
@@ -1706,7 +1722,8 @@ export async function deleteLayerFileInCloud(
     if (layer.cloud && layer.cloud.provider !== provider.type) return 'unconfirmed';
     // Another account's personal layer: the listed file at that path is the
     // ACTIVE account's own overlay, not the copy this row was synced with.
-    if (syncedForOtherAccount(layer, provider.getStatus().accountScope)) return 'unconfirmed';
+    if (syncedForOtherAccount(layer, personalLayerAccount(provider.getStatus())))
+      return 'unconfirmed';
     const listing = listingFromCache(provider.type);
     const listed = listedLayerOf(listing, row, layer.layer_id);
     if (!listed) {
@@ -1798,7 +1815,8 @@ export async function deleteCloudLayerFile(
     if (!row || !layer) return 'gone';
     const active = providerManager.getActiveProvider();
     provider = layer.cloud?.provider ?? active?.type;
-    account = accountStamp(layerId, layer.cloud?.account ?? active?.getStatus().accountScope);
+    const scope = active ? personalLayerAccount(active.getStatus()) : undefined;
+    account = accountStamp(layerId, layer.cloud?.account ?? scope);
     const outcome = await deleteLayerFileInCloud(row, layer);
     if (outcome === 'gone') clearPendingLayerDelete(volumeUuid, layerId);
     else

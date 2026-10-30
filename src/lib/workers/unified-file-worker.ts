@@ -30,6 +30,7 @@ import {
   type WorkerAuthRefresher
 } from '$lib/util/worker-auth-refresh';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
+import { uploadVolumeFiles } from '$lib/util/volume-upload-order';
 import { mayBeImageType } from '$lib/util/image-content-type';
 
 // Define the worker context
@@ -148,7 +149,7 @@ interface CompressFromDbMessage {
   serverCompilesMetadata?: boolean;
   /** The target's `ProviderStatus.editLayerSync`: `local` keeps the `edit` layer off it. */
   editLayerSync?: 'push' | 'local';
-  /** The target's `accountScope`: another account's `edit` layer is not uploaded. */
+  /** `personalLayerAccount` of the target: another account's `edit` layer is not uploaded. */
   accountScope?: string;
 }
 
@@ -1008,87 +1009,94 @@ ctx.addEventListener('message', async (event) => {
             mimeType: sidecarBlob.type || 'application/octet-stream'
           });
 
-        if (message.includeSidecars === true) {
-          const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
-            serverCompilesMetadata: message.serverCompilesMetadata === true,
-            editLayerSync: message.editLayerSync,
-            account: message.accountScope,
-            cloud: true
-          });
-          const sidecarsToUpload: Array<{ filename: string; blob: Blob }> = [];
-          if (generatedSidecars.mokuro) {
-            sidecarsToUpload.push(generatedSidecars.mokuro);
-          }
-          // Layers after the primary, before the archive (same idempotent overwrite).
-          for (const layer of generatedSidecars.layers ?? []) {
-            sidecarsToUpload.push(layer);
-          }
-          layerSnapshots = generatedSidecars.layers?.map((layer) => ({
-            layerId: layer.layerId,
-            updatedAt: layer.updatedAt,
-            size: layer.blob.size
-          }));
-          if (generatedSidecars.thumbnail) {
-            sidecarsToUpload.push(generatedSidecars.thumbnail);
-          }
-
-          if (sidecarsToUpload.length > 0) {
-            const sidecarProgressMessage: UploadProgressMessage = {
-              type: 'progress',
-              phase: 'sidecars',
-              progress: 100
-            };
-
-            ctx.postMessage(sidecarProgressMessage);
-            for (const sidecar of sidecarsToUpload) {
-              console.log(`Worker: Uploading sidecar ${sidecar.filename}...`);
-              const uploadedSidecar = await uploadSidecar(sidecar.filename, sidecar.blob);
-              if (sidecar === generatedSidecars.mokuro) {
-                const sha256 = await sha256Hex(sidecar.blob);
-                if (sha256) {
-                  mokuroSidecar = {
-                    sha256,
-                    size: sidecar.blob.size,
-                    ...(uploadedSidecar?.modifiedTime
-                      ? { modifiedTime: uploadedSidecar.modifiedTime }
-                      : {})
-                  };
-                }
-              }
-              ctx.postMessage(sidecarProgressMessage);
-            }
-          }
+        const generatedSidecars =
+          message.includeSidecars === true
+            ? await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
+                serverCompilesMetadata: message.serverCompilesMetadata === true,
+                editLayerSync: message.editLayerSync,
+                account: message.accountScope,
+                cloud: true
+              })
+            : undefined;
+        const sidecarProgressMessage: UploadProgressMessage = {
+          type: 'progress',
+          phase: 'sidecars',
+          progress: 100
+        };
+        if (
+          generatedSidecars &&
+          (generatedSidecars.mokuro ||
+            generatedSidecars.thumbnail ||
+            generatedSidecars.layers?.length)
+        ) {
+          ctx.postMessage(sidecarProgressMessage);
         }
 
-        ctx.postMessage({
-          type: 'progress',
-          phase: 'uploading',
-          progress: 0
-        } satisfies UploadProgressMessage);
-
-        const uploaded = await cloudProvider.uploadFile({
-          seriesTitle,
-          filename,
-          blob: cbzBlob,
-          credentials,
-          mimeType: 'application/x-cbz',
-          onProgress: (loaded, total) => {
-            const progressMessage: UploadProgressMessage = {
-              type: 'progress',
-              phase: 'uploading',
-              progress: total > 0 ? (loaded / total) * 100 : 0
-            };
-            ctx.postMessage(progressMessage);
+        // An account's `edit` layer goes up after the archive it is anchored on
+        // (`uploadVolumeFiles`); the rest before it (same idempotent overwrite).
+        const { archive: uploaded, layers: sentLayers } = await uploadVolumeFiles(
+          generatedSidecars,
+          {
+            sidecar: (sidecar) => {
+              console.log(`Worker: Uploading sidecar ${sidecar.filename}...`);
+              return uploadSidecar(sidecar.filename, sidecar.blob);
+            },
+            archive: () => {
+              ctx.postMessage({
+                type: 'progress',
+                phase: 'uploading',
+                progress: 0
+              } satisfies UploadProgressMessage);
+              return cloudProvider.uploadFile({
+                seriesTitle,
+                filename,
+                blob: cbzBlob,
+                credentials,
+                mimeType: 'application/x-cbz',
+                onProgress: (loaded, total) => {
+                  const progressMessage: UploadProgressMessage = {
+                    type: 'progress',
+                    phase: 'uploading',
+                    progress: total > 0 ? (loaded / total) * 100 : 0
+                  };
+                  ctx.postMessage(progressMessage);
+                },
+                onRetry: (retry) => {
+                  ctx.postMessage({
+                    type: 'progress',
+                    phase: 'retrying',
+                    progress: 0,
+                    retry
+                  } satisfies UploadProgressMessage);
+                }
+              });
+            }
           },
-          onRetry: (retry) => {
-            ctx.postMessage({
-              type: 'progress',
-              phase: 'retrying',
-              progress: 0,
-              retry
-            } satisfies UploadProgressMessage);
+          {
+            onPrimary: async (sidecar, uploadedSidecar) => {
+              const sha256 = await sha256Hex(sidecar.blob);
+              if (sha256) {
+                mokuroSidecar = {
+                  sha256,
+                  size: sidecar.blob.size,
+                  ...(uploadedSidecar?.modifiedTime
+                    ? { modifiedTime: uploadedSidecar.modifiedTime }
+                    : {})
+                };
+              }
+            },
+            onSidecar: () => ctx.postMessage(sidecarProgressMessage)
           }
-        });
+        );
+        // Only what went up: a layer refused after the archive is pushed by
+        // the next listing's layer sync instead.
+        layerSnapshots = generatedSidecars?.layers
+          ? sentLayers.map((layer) => ({
+              layerId: layer.layerId,
+              updatedAt: layer.updatedAt,
+              size: layer.blob.size
+            }))
+          : undefined;
 
         const completeMessage: UploadCompleteMessage = {
           type: 'complete',
