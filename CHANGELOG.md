@@ -9,6 +9,7 @@
 - OneDrive asks you to reconnect when its sign-in lapses
 - MEGA asks you to reconnect when its session ends
 - Series with OCR layers in the cloud can be renamed
+- WebDAV asks you to sign in again when your password stops working
 
 ## [1.10.0] - 2026-10-02
 
