@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('$app/environment', () => ({ browser: true }));
+const updateStatus = vi.hoisted(() => vi.fn());
+vi.mock('../../../provider-manager', () => ({ providerManager: { updateStatus } }));
 
 // Capture-order log shared between the msal mock and assertions.
 const calls: string[] = [];
@@ -88,6 +90,29 @@ describe('OneDriveTokenManager', () => {
     mgr.markNeedsAttention();
     mgr.needsAttention.subscribe((v) => (value = v))();
     expect(value).toBe(true);
+  });
+
+  // The banner and the cloud screen read the provider manager's published
+  // status: a refusal the token manager keeps to itself never reaches them.
+  it('a token Graph refused publishes the reconnect state', async () => {
+    const mgr = await freshManager();
+    mgr.markNeedsAttention();
+    await vi.waitFor(() => expect(updateStatus).toHaveBeenCalled());
+  });
+
+  it('a silent refresh MSAL refuses publishes the reconnect state; a token again clears it', async () => {
+    localStorage.setItem('onedrive_has_authenticated', 'true');
+    const mgr = await freshManager();
+    await mgr.initialize();
+    fakeInstance.acquireTokenSilent.mockRejectedValueOnce(new FakeInteractionRequiredAuthError());
+    await expect(mgr.getAccessToken()).rejects.toBeInstanceOf(FakeInteractionRequiredAuthError);
+    await vi.waitFor(() => expect(updateStatus).toHaveBeenCalledTimes(1));
+    await expect(mgr.getAccessToken()).resolves.toBe('tok');
+    await vi.waitFor(() => expect(updateStatus).toHaveBeenCalledTimes(2));
+    // A token with nothing to clear publishes nothing.
+    await mgr.getAccessToken();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(updateStatus).toHaveBeenCalledTimes(2);
   });
 
   it('no longer exposes the dead hasPendingRedirect helper', async () => {
