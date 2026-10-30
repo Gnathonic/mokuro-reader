@@ -10,6 +10,10 @@ import { compareByAge } from '../../folder-deduplicator';
 import type { DriveFile } from './constants';
 import { HISTORY_FOLDER, isHistoryFileName } from '$lib/reading-history/paths';
 import { driveHistoryPath } from './drive-history-path';
+import {
+  cloudBunkoMergesDuplicates,
+  refreshCloudBunkoMarker
+} from '$lib/catalog/cloud-bunko-marker';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -880,8 +884,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * being CREATED between passes — `findOrCreateFolder` creates a folder
    * whenever its lookup misses, and Drive's file index is eventually
    * consistent, so a write landing during a dedup pass can mint the very
-   * duplicate the next pass merges. That is an unbounded refetch engine, and
-   * it exists on no other provider: WebDAV and MEGA run no dedup at all.
+   * duplicate the next pass merges. That is an unbounded refetch engine
+   * (MEGA's dedup, added later, bounds its refetch the same way; WebDAV runs
+   * no dedup).
    *
    * So the chain is now DEPTH-BOUNDED. Convergence is unaffected (one refetch
    * is all a converged dedup ever needed); a pathological account gives up on
@@ -894,6 +899,19 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     Promise.all([import('../../folder-deduplicator'), import('./google-drive-provider')])
       .then(async ([{ folderDeduplicator }, { googleDriveProvider }]) => {
         if (!googleDriveProvider.isAuthenticated()) {
+          return;
+        }
+
+        // Before any merge: the merge below confirms its root itself, but a
+        // root merged away elsewhere (or by the Bunko this skips for) is only
+        // ever noticed here, as a listing that picks another one.
+        if (this.readerFolderId) googleDriveProvider.adoptListedReaderFolder(this.readerFolderId);
+
+        // A fresh Bunko lease holder that merges duplicates does it with the
+        // same rule; a second merger on the same folders only races its moves.
+        await refreshCloudBunkoMarker(googleDriveProvider);
+        if (cloudBunkoMergesDuplicates(googleDriveProvider.type)) {
+          console.log('[Dedup] a cloud-direct Bunko merges duplicates here; skipping');
           return;
         }
 

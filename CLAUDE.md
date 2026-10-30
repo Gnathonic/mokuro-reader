@@ -147,6 +147,16 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   re-list misses files the app did not create (dropped in through the Drive
   web UI, written by another client), and those go to the trash with the
   folder. Recoverable from the trash, but not a "never deletes files" promise.
+- **Bunko merges, the reader steps aside.** Before each pass
+  (`runDeduplication`, `mega-cache.ts` / `drive-files-cache.ts`) the cache
+  re-reads the marker (`refreshCloudBunkoMarker`) and skips the pass while
+  `cloudBunkoMergesDuplicates` — a fresh lease holder with `dedup: true`
+  merges with the same rules, and two mergers would only race each other's
+  moves. A stale or released holder hands the job back on the next fetch.
+  Drive pins its write root for the session and only its OWN merge
+  re-points it (`onRootFolderConfirmed`), so every listing also re-points a
+  pinned root at the cache's pick (`adoptListedReaderFolder`): a root that
+  Bunko or another device merged away and trashed is not written to again.
 
 **mokuro-bunko specifics** (the WebDAV provider against a bunko server):
 
@@ -519,7 +529,9 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `history/` (`bunkoSupportsHistory`), `positionsSync` = `per_user_files` has
   `positions.json`. A gate the provider set itself (a bunko server's `/me`)
   wins; with no fresh holder both stay undefined, so the folder is judged as
-  plain storage. `cloudBunkoMergesDuplicates(scope)` is the holder's `dedup`. Read the marker through `refreshCloudBunkoMarker`:
+  plain storage. `cloudBunkoMergesDuplicates(scope)` is the holder's `dedup`,
+  and gates the reader's own folder dedup (see Duplicate folders). Read the
+  marker through `refreshCloudBunkoMarker`:
   one If-None-Match etag per scope, shared by every caller, and one read in
   flight per scope that concurrent callers await. The etag moves only after
   its nodes are recorded (else a second caller is answered not-modified
@@ -534,7 +546,9 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `pullCompletedVolume`. Cloud uploads are watched while a marker is fresh.
 - Folder dedup keeps EVERY copy of both control files when duplicate roots
   merge (`dedupKeepsEveryCopy`, beside the merged root files): trashing the
-  older one would pull a marker or queue out from under a running Bunko.
+  older one would pull a marker or queue out from under a running Bunko. A
+  guard in front of both trash calls moves a control file instead, should
+  that rule ever miss one.
 - MEGA feeds control-file listeners from sc events AND from full tree loads
   (`refreshTree`, incl. the sc outage recovery): a load that changes a
   control file's handle set notifies that name. `endSession()` (logout and
