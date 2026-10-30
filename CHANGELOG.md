@@ -33,6 +33,7 @@
 - mokuro-bunko: server OCR status shows right after connecting
 - WebDAV asks you to sign in again when your password stops working
 - A full MEGA account no longer deletes your synced progress
+- Series with OCR layers in the cloud can be renamed
 
 ## [1.10.0] - 2026-10-02
 
