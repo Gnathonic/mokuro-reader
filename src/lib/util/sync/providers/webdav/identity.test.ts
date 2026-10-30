@@ -308,6 +308,182 @@ describe('fetchServerIdentity', () => {
     // No creds were sent, so authenticated:false means anonymous (not invalid creds)
     expect(result).toEqual({ kind: 'anonymous' });
   });
+
+  describe('server version (bunko reports it from 0.8.0)', () => {
+    it('carries the reported version on an authenticated identity', async () => {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, {
+          authenticated: true,
+          username: 'alice',
+          role: 'registered',
+          permissions: PERMS,
+          version: '0.8.0'
+        })
+      });
+      const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+      expect(result).toMatchObject({ kind: 'authenticated', serverVersion: '0.8.0' });
+    });
+
+    it('carries it on an anonymous identity too', async () => {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, { authenticated: false, version: '0.8.1' })
+      });
+      expect(await fetchServerIdentity('https://host', undefined, undefined, impl)).toEqual({
+        kind: 'anonymous',
+        serverVersion: '0.8.1'
+      });
+    });
+
+    it('leaves it absent when an older bunko does not report one', async () => {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, {
+          authenticated: true,
+          username: 'alice',
+          role: 'registered',
+          permissions: PERMS
+        })
+      });
+      const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+      expect(result).not.toHaveProperty('serverVersion');
+    });
+  });
+});
+
+describe('per-user files (bunko keeps these per account)', () => {
+  it('carries per_user_files on an authenticated identity', async () => {
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, {
+        authenticated: true,
+        username: 'alice',
+        role: 'registered',
+        permissions: PERMS,
+        per_user_files: ['volume-data.json', 'positions.json']
+      })
+    });
+    const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+    expect(result).toMatchObject({
+      kind: 'authenticated',
+      perUserFiles: ['volume-data.json', 'positions.json']
+    });
+  });
+
+  it('carries it on an anonymous identity too', async () => {
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, {
+        authenticated: false,
+        per_user_files: ['positions.json']
+      })
+    });
+    expect(await fetchServerIdentity('https://host', undefined, undefined, impl)).toEqual({
+      kind: 'anonymous',
+      perUserFiles: ['positions.json']
+    });
+  });
+
+  it('anything but an array of strings leaves it absent', async () => {
+    for (const bad of ['x', 42, [1, 'positions.json'], null]) {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, {
+          authenticated: true,
+          username: 'alice',
+          role: 'registered',
+          permissions: PERMS,
+          per_user_files: bad
+        })
+      });
+      const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+      expect(result).not.toHaveProperty('perUserFiles');
+    }
+  });
+});
+
+describe('per-account layers and the curated scope (bunko 0.8)', () => {
+  /** The signed-in `/login/api/me` body bunko 0.8 serves, in bunko's key order. */
+  const signedIn = (
+    extra: Record<string, unknown> = {},
+    curated: unknown = { scope: 'owned' }
+  ) => ({
+    authenticated: true,
+    username: 'alice',
+    role: 'uploader',
+    created_at: '2026-10-01T00:00:00Z',
+    permissions: { ...PERMS, canAddFiles: true, curated },
+    per_user_files: ['volume-data.json', 'positions.json', 'history/'],
+    per_user_layers: ['edit'],
+    version: '0.0.0',
+    ...extra
+  });
+
+  it('carries per_user_layers and permissions.curated on an authenticated identity', async () => {
+    const { impl } = mockFetch({ 'https://host/login/api/me': jsonResponse(200, signedIn()) });
+    const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+    expect(result).toMatchObject({
+      kind: 'authenticated',
+      perUserLayers: ['edit'],
+      permissions: { canAddFiles: true, curated: { scope: 'owned' } }
+    });
+  });
+
+  it.each(['all', 'owned', 'none'])('parses curated scope %s', async (scope) => {
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, signedIn({}, { scope }))
+    });
+    const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+    expect(result).toMatchObject({ permissions: { curated: { scope } } });
+  });
+
+  it('carries per_user_layers on an anonymous identity too', async () => {
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, {
+        authenticated: false,
+        role: 'anonymous',
+        permissions: { ...PERMS, canWriteProgress: false, curated: { scope: 'none' } },
+        per_user_files: ['positions.json'],
+        per_user_layers: ['edit'],
+        version: '0.0.0'
+      })
+    });
+    expect(await fetchServerIdentity('https://host', undefined, undefined, impl)).toEqual({
+      kind: 'anonymous',
+      serverVersion: '0.0.0',
+      perUserFiles: ['positions.json'],
+      perUserLayers: ['edit']
+    });
+  });
+
+  it('a 0.7.x body (neither key) leaves both absent', async () => {
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, {
+        authenticated: true,
+        username: 'alice',
+        role: 'registered',
+        permissions: PERMS
+      })
+    });
+    const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+    expect(result).not.toHaveProperty('perUserLayers');
+    expect(result).toMatchObject({ kind: 'authenticated' });
+    expect((result as { permissions: object }).permissions).not.toHaveProperty('curated');
+  });
+
+  it('garbage leaves each absent, without failing the identity', async () => {
+    for (const bad of ['edit', 42, [1, 'edit'], null, {}]) {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, signedIn({ per_user_layers: bad }))
+      });
+      const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+      expect(result).toMatchObject({ kind: 'authenticated' });
+      expect(result).not.toHaveProperty('perUserLayers');
+    }
+    for (const bad of ['all', { scope: 'everything' }, { scope: 1 }, null, []]) {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, signedIn({}, bad))
+      });
+      const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+      expect(result).toMatchObject({ kind: 'authenticated' });
+      expect((result as { permissions: object }).permissions).not.toHaveProperty('curated');
+    }
+  });
 });
 
 /** What Bunko answers (its contract fixtures), served at `https://host/login/api/me`. */

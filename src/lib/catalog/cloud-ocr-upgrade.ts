@@ -24,6 +24,7 @@ import {
 } from './mokuro-hash';
 export { isUntouchedUpgradeLayer };
 import { firstImageSizeMismatch, fitPagesToVolume, sameOcrPages } from './ocr-upgrade-pages';
+import { addProvenance, provenanceOfFile, type OcrProvenance } from './ocr-provenance';
 
 /**
  * Upgrading an installed volume's OCR from the cloud's `.mokuro`/`.mokuro.gz`
@@ -185,6 +186,7 @@ export async function upgradeOcrFromSidecarBlob(
   );
   const pages = Array.isArray(parsed.pages) ? parsed.pages : [];
   const { totalChars, cumulative } = buildPageCharCounts(pages);
+  const provenance = await provenanceOfFile(parsed, pages);
 
   // The row is re-read INSIDE the write transaction: the snapshot this task was
   // enqueued with predates a download and a parse, and an edit that commits
@@ -211,7 +213,9 @@ export async function upgradeOcrFromSidecarBlob(
       page_char_counts: cumulative,
       // The primary now IS these bytes (`mokuro_sha256` = its base revision).
       mokuro_sha256: sha256,
-      mokuro_sha256_cloud: sha256 ? cloud : undefined
+      mokuro_sha256_cloud: sha256 ? cloud : undefined,
+      // The primary is this file now: its block or none (like the hash).
+      ocr_provenance: provenance ? [provenance] : undefined
     });
     return current;
   });
@@ -345,6 +349,8 @@ export interface CloudPrimaryOcr {
   sha256: string;
   /** The listed file the bytes came from (see `MokuroCloudAttestation`). */
   cloud?: MokuroCloudAttestation;
+  /** The file's `ocr_engine` and the digest of its pages, when it carried one. */
+  provenance?: OcrProvenance;
 }
 
 /**
@@ -397,9 +403,16 @@ export async function applyCloudPrimaryOcr(
     }
 
     const pages = fitPagesToVolume(ocr.pages, local.pages);
+    // The file's block is learned whenever its pages land somewhere on this
+    // volume (primary or `updated-ocr`): a later primary rebuilt from those
+    // pages — a rename, a promote — can then carry it (`ocr-provenance.ts`).
+    const learned = ocr.provenance
+      ? { ocr_provenance: addProvenance(current.ocr_provenance, ocr.provenance) }
+      : {};
     const base = {
       mokuro_sha256: ocr.sha256,
-      mokuro_sha256_cloud: ocr.cloud
+      mokuro_sha256_cloud: ocr.cloud,
+      ...learned
     };
 
     // The OCR this volume already has, arriving as different bytes (a
@@ -439,7 +452,7 @@ export async function applyCloudPrimaryOcr(
         source_at: now,
         pages
       });
-      await db.volumes.update(volumeUuid, { updated_ocr_sha256: ocr.sha256 });
+      await db.volumes.update(volumeUuid, { updated_ocr_sha256: ocr.sha256, ...learned });
       return 'layered';
     }
 

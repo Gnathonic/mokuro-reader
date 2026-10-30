@@ -3,7 +3,7 @@ import { getLayerMeta, layerTables, putLayerWithPages } from '$lib/catalog/layer
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
-import { splitLayerSidecarName } from '$lib/util/sync/syncable-file';
+import { foldStem, miscasedLayerStem, splitLayerSidecarName } from '$lib/util/sync/syncable-file';
 import { layerKindForId, layerNameForId, servedEngineOf } from './layers';
 
 /**
@@ -66,7 +66,7 @@ export function extractLayerEntries(entries: LayerFileEntry[]): {
   const note = (dir: string, stem: string) => {
     let set = stemsByDir.get(dir);
     if (!set) stemsByDir.set(dir, (set = new Set()));
-    set.add(stem.toLowerCase());
+    set.add(foldStem(stem));
   };
   for (const entry of entries) {
     const name = basename(entry.path);
@@ -75,7 +75,9 @@ export function extractLayerEntries(entries: LayerFileEntry[]): {
     // A file that itself reads as `<stem>.<id>.mokuro` is a CANDIDATE layer,
     // never evidence of a volume `<stem>.<id>` — that evidence must come from
     // an archive, an image folder, or a plain `.mokuro`.
-    if (stem && !splitLayerSidecarName(name)) note(dir, stem);
+    if (stem && !splitLayerSidecarName(name) && miscasedLayerStem(name) === null) {
+      note(dir, stem);
+    }
     if (stem && !/\.mokuro(\.gz)?$/i.test(name)) note(dir, stem);
     // An image folder named `<stem>` counts as a source of `<stem>`.
     if (dir) note(dirname(dir), basename(dir));
@@ -86,19 +88,30 @@ export function extractLayerEntries(entries: LayerFileEntry[]): {
   const standalone: ExtractedLayerEntry[] = [];
   for (const entry of entries) {
     const name = basename(entry.path);
+    const dir = dirname(entry.path);
+    const siblings = stemsByDir.get(dir);
     const split = splitLayerSidecarName(name);
     if (!split) {
+      // `Vol 1.GCV.mokuro` beside `Vol 1` is a rule-v1 orphan. Kept, it could
+      // win the pairing as Vol 1's `.mokuro` over the real one, so it is
+      // dropped — unless `Vol 1.GCV` is itself a volume here.
+      const miscased = miscasedLayerStem(name);
+      if (
+        miscased !== null &&
+        !siblings?.has(foldStem(sourceStemOf(name)!)) &&
+        siblings?.has(foldStem(miscased))
+      ) {
+        continue;
+      }
       kept.push(entry);
       continue;
     }
-    const dir = dirname(entry.path);
-    const siblings = stemsByDir.get(dir);
-    const fullBase = sourceStemOf(name)!.toLowerCase();
+    const fullBase = foldStem(sourceStemOf(name)!);
     const extracted: ExtractedLayerEntry = { ...entry, ...split, dir };
     if (siblings?.has(fullBase)) {
       // `<stem>.<id>` is itself a volume here (`Vol 1.5.cbz` beside `Vol 1.5.mokuro`).
       kept.push(entry);
-    } else if (siblings?.has(split.stem.toLowerCase())) {
+    } else if (siblings?.has(foldStem(split.stem))) {
       layers.push(extracted);
     } else {
       standalone.push(extracted);

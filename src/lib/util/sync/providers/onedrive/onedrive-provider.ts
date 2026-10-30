@@ -26,6 +26,19 @@ import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { isSyncableFile } from '../../syncable-file';
 import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { GRAPH_QUOTA_MESSAGE } from './graph-errors';
+
+/** Worth retrying later; a full drive (507) is not, so it is excluded. */
+const RETRYABLE_MESSAGE = /network|timed out|\b429\b|\b5(?!07)\d\d\b/i;
+
+/** Typed, and worded so the user can act on it (same wording as MEGA's). */
+function oneDriveFullError(): ProviderError {
+  return new ProviderError(
+    'OneDrive storage is full — free up space or upgrade your plan',
+    'onedrive',
+    'QUOTA_EXCEEDED'
+  );
+}
 
 export class OneDriveProvider implements SyncProvider {
   readonly type = 'onedrive' as const;
@@ -205,7 +218,22 @@ export class OneDriveProvider implements SyncProvider {
     const promise = (async () => {
       try {
         await this.ensureMokuroFolder();
-        return await this.createFolderTolerant(ONEDRIVE_CONFIG.MOKURO_FOLDER, seriesTitle);
+        // One folder per segment: Graph refuses a `/` in an item name, and
+        // reading history lives two levels deep (history/<device>).
+        let parent: string = ONEDRIVE_CONFIG.MOKURO_FOLDER;
+        let id = '';
+        for (const segment of seriesTitle.split('/')) {
+          const here = `${parent}/${segment}`;
+          const existingSegment = await getItemByPath(
+            await onedriveTokenManager.getAccessToken(),
+            here
+          );
+          id = existingSegment
+            ? existingSegment.id
+            : await this.createFolderTolerant(parent, segment);
+          parent = here;
+        }
+        return id;
       } finally {
         this.seriesFolderPromises.delete(seriesTitle);
       }
@@ -344,12 +372,13 @@ export class OneDriveProvider implements SyncProvider {
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       const message = error instanceof Error ? error.message : 'Unknown error';
+      if (GRAPH_QUOTA_MESSAGE.test(message)) throw oneDriveFullError();
       throw new ProviderError(
         `OneDrive upload failed: ${message}`,
         'onedrive',
         'UPLOAD_FAILED',
         /\b401\b/.test(message),
-        /network|timed out|\b429\b|\b5\d\d\b/i.test(message)
+        RETRYABLE_MESSAGE.test(message)
       );
     }
     console.log(`✅ Uploaded ${path} to OneDrive`);
@@ -374,12 +403,13 @@ export class OneDriveProvider implements SyncProvider {
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       const message = error instanceof Error ? error.message : 'Unknown error';
+      if (GRAPH_QUOTA_MESSAGE.test(message)) throw oneDriveFullError();
       throw new ProviderError(
         `OneDrive download failed: ${message}`,
         'onedrive',
         'DOWNLOAD_FAILED',
         /\b401\b/.test(message),
-        /network|timed out|\b429\b|\b5\d\d\b/i.test(message)
+        RETRYABLE_MESSAGE.test(message)
       );
     }
     return new Blob([buffer], { type: 'application/zip' });

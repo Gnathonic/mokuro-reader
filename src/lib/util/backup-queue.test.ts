@@ -16,6 +16,7 @@ const {
   scheduleSeriesFileWrite,
   cancelScheduledSeriesFileWrite,
   getActiveProvider,
+  resolveCloudFolderTitle,
   capturedTasks,
   addTaskMock
 } = vi.hoisted(() => {
@@ -54,6 +55,7 @@ const {
     // below, but the live-scheduling tests need a real provider to reach
     // `processBackup`'s upload-success path.
     getActiveProvider: vi.fn(() => null as unknown),
+    resolveCloudFolderTitle: vi.fn((title: string) => title),
     capturedTasks,
     addTaskMock: vi.fn((task: Record<string, any>) => {
       capturedTasks.push(task);
@@ -67,6 +69,8 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     writeSeriesFile,
     refreshSeriesIndexesInBackground,
     getDefaultProvider: () => null,
+    // Identity, as the real one is for a series the cloud does not hold.
+    resolveCloudFolderTitle: (title: string) => resolveCloudFolderTitle(title),
     // Queueing a volume kicks off `processQueue` in the background. Without
     // this the drain throws asynchronously, which vitest reports as an
     // unhandled rejection and turns into a non-zero exit while every test
@@ -332,6 +336,25 @@ describe('queueing a volume that is not installed', () => {
     expect(backupQueue.isVolumeInBackupQueue('a')).toBe(false);
     expect(backupQueue.isVolumeInBackupQueue('b')).toBe(false);
     expect(bridge.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues into the cloud's spelling of the series folder", () => {
+    // A server that merged `one piece/` into `One Piece/`: uploading under the
+    // local spelling would re-create the folder it just merged away.
+    resolveCloudFolderTitle.mockImplementation((title: string) =>
+      title === 'one piece' ? 'One Piece' : title
+    );
+    let items: Array<{ volumeUuid: string; seriesTitle: string }> = [];
+    const unsubscribe = backupQueue.subscribe((q) => (items = q));
+
+    queueVolumeForBackup(
+      volume({ volume_uuid: 'spelled-uuid', series_title: 'one piece' }),
+      provider
+    );
+
+    expect(items.find((item) => item.volumeUuid === 'spelled-uuid')?.seriesTitle).toBe('One Piece');
+    unsubscribe();
+    resolveCloudFolderTitle.mockImplementation((title: string) => title);
   });
 
   it('does not export a metadata-only volume', () => {
@@ -606,6 +629,20 @@ describe('export-for-download sidecars', () => {
       expect(message.serverCompilesMetadata).toBe(true);
     });
 
+    it('passes the edit-layer gate, so a 0.7.x bunko gets no edit layer file', async () => {
+      const message = await backupMessage('edit-local-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        getStatus: () => ({
+          isReadOnly: false,
+          serverCompilesMetadata: true,
+          editLayerSync: 'local'
+        })
+      });
+      expect(message.editLayerSync).toBe('local');
+    });
+
     it('…and not for plain storage', async () => {
       const message = await backupMessage('plain-webdav', {
         type: 'webdav',
@@ -663,16 +700,21 @@ describe('export-for-download sidecars', () => {
     // The stamp is handed what was SERIALIZED (id, the row's updated_at at
     // that moment, the uploaded byte count) — never left to re-read the row,
     // which may have been edited while the upload ran.
-    expect(stampLayersSynced).toHaveBeenCalledWith('layers-upload-uuid', 'filesystem', [
-      { layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }
-    ]);
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'layers-upload-uuid',
+      'filesystem',
+      [{ layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }],
+      undefined
+    );
   });
 
   it('a worker-driven upload stamps from the snapshot the worker sends back', async () => {
     const provider = {
       type: 'webdav',
       uploadConcurrencyLimit: 2,
-      supportsWorkerUpload: true
+      supportsWorkerUpload: true,
+      // The account a personal layer's file belongs to (bunko keeps one per account).
+      getStatus: () => ({ isReadOnly: false, accountScope: 'webdav:https://host|alice' })
     } as never;
     getActiveProvider.mockReturnValue(provider);
     queueVolumeForBackup(volume({ volume_uuid: 'layers-worker-uuid' }), provider, {
@@ -685,7 +727,12 @@ describe('export-for-download sidecars', () => {
       { type: 'complete', fileId: 'remote-file-id', size: 123, layerSnapshots },
       vi.fn()
     );
-    expect(stampLayersSynced).toHaveBeenCalledWith('layers-worker-uuid', 'webdav', layerSnapshots);
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'layers-worker-uuid',
+      'webdav',
+      layerSnapshots,
+      'webdav:https://host|alice'
+    );
   });
 
   // The primary `.mokuro` the worker uploaded: its hash becomes the volume's,

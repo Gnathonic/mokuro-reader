@@ -37,7 +37,7 @@ import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
-import { splitLayerSidecarName } from './sync/syncable-file';
+import { foldStem, miscasedLayerStem, splitLayerSidecarName } from './sync/syncable-file';
 import { attachLayerToVolume, readLayerFile } from '$lib/reader/edit/layer-import';
 import { pullLayersForVolume } from '$lib/metadata/layer-sync';
 import {
@@ -354,7 +354,9 @@ async function entriesToDecompressedVolume(
       // listing (`Vol 1.5.mokuro` in `Vol 1.5.cbz` splits to a stem that is
       // not the archive's, so it stays the primary).
       const layer = classifyArchiveMokuroEntry(normalizedFilename, getBaseStem(basePath));
-      if (layer) {
+      if (layer && 'orphan' in layer) {
+        continue;
+      } else if (layer) {
         layerFiles.push({ layerId: layer.layerId, file: decoded });
       } else {
         // The listed sidecars come after the archive's entries, so the cloud's
@@ -403,17 +405,20 @@ async function entriesToDecompressedVolume(
 
 /**
  * Is a `.mokuro` entry of an archive an OCR layer of THAT archive's volume?
- * Only when it splits as `<archive stem>.<id>`; any other `.mokuro` is the
- * primary (or a stray the pairing already tolerates). Exported for tests.
+ * Only when it splits as `<archive stem>.<id>`. `<archive stem>.<ID>` (an id
+ * miscased) is an orphan, skipped; any other `.mokuro` is the primary (or a
+ * stray the pairing already tolerates). Exported for tests.
  */
 export function classifyArchiveMokuroEntry(
   entryName: string,
   archiveStem: string
-): { layerId: string } | null {
+): { layerId: string } | { orphan: true } | null {
   const name = entryName.split('/').pop() ?? entryName;
+  const archive = foldStem(archiveStem);
   const split = splitLayerSidecarName(name);
-  if (!split) return null;
-  return split.stem.toLowerCase() === archiveStem.toLowerCase() ? { layerId: split.layerId } : null;
+  if (split) return foldStem(split.stem) === archive ? { layerId: split.layerId } : null;
+  const miscased = miscasedLayerStem(name);
+  return miscased !== null && foldStem(miscased) === archive ? { orphan: true } : null;
 }
 
 /**

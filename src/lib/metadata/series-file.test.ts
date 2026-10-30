@@ -14,6 +14,7 @@ import {
   seriesFileHealDifference,
   stringifySeriesFile,
   volumeToIndexEntry,
+  withServerIndexClears,
   type SeriesFile,
   type SeriesFileVolume
 } from './series-file';
@@ -2484,5 +2485,49 @@ describe('seriesFileCarriesServerRequest (what a bunko PUT would ask for)', () =
       })
     ).toBe(false);
     expect(seriesFileCarriesServerRequest(undefined, base)).toBe(true);
+  });
+});
+
+describe('withServerIndexClears (an explicit spine_offset reset for a compiling server)', () => {
+  const built: SeriesFile = {
+    version: 2,
+    series_title: 'S',
+    external_ids: {},
+    titles: {},
+    synonyms: [],
+    updated_at: '2026-01-01T00:00:00.000Z',
+    volumes: []
+  };
+  const meta = (extra: Partial<SeriesMetadata> = {}): SeriesMetadata => ({
+    ...createEmptySeriesMetadata('S'),
+    ...extra
+  });
+
+  it('a deliberate local reset over a published offset sends an explicit 0', () => {
+    const body = withServerIndexClears(
+      built,
+      { ...built, spine_offset: -40 },
+      meta({ spine_offset: 0 })
+    );
+    expect(body.spine_offset).toBe(0);
+    expect(stringifySeriesFile(body)).toContain('"spine_offset":0');
+  });
+
+  it('no local opinion inherits the published value: unchanged', () => {
+    const existing = { ...built, spine_offset: -40 };
+    expect(withServerIndexClears(built, existing, meta())).toBe(built);
+    expect(withServerIndexClears(built, existing, undefined)).toBe(built);
+  });
+
+  it('a reset with nothing published to clear: unchanged', () => {
+    expect(withServerIndexClears(built, built, meta({ spine_offset: 0 }))).toBe(built);
+    expect(withServerIndexClears(built, undefined, meta({ spine_offset: 0 }))).toBe(built);
+  });
+
+  it('a real local offset already rides the file: unchanged', () => {
+    const file = { ...built, spine_offset: 12 };
+    expect(
+      withServerIndexClears(file, { ...built, spine_offset: -40 }, meta({ spine_offset: 12 }))
+    ).toBe(file);
   });
 });

@@ -102,3 +102,51 @@ describe('LayerPicker — keyboard escape hatch', () => {
     expect(onClose).toHaveBeenCalled();
   });
 });
+
+describe('LayerPicker — personal and shared corrections', () => {
+  const corrections = [
+    { layer_id: 'edit', name: 'Your corrections', kind: 'edit' as const, updated_at: 'x' },
+    { layer_id: 'curated', name: 'Shared corrections', kind: 'edit' as const, updated_at: 'x' }
+  ];
+
+  it('badges them Yours and Shared, and offers Publish / Unpublish to an account with the right', async () => {
+    const onAction = vi.fn();
+    const { getByLabelText, getByText, queryByLabelText } = render(LayerPicker, {
+      props: {
+        layers: corrections,
+        current: null,
+        canPublish: true,
+        onSelect: vi.fn(),
+        onAction,
+        onClose: vi.fn()
+      }
+    });
+    expect(getByText('Yours')).toBeTruthy();
+    expect(getByText('Shared')).toBeTruthy();
+    await fireEvent.click(getByLabelText('Publish layer Your corrections'));
+    expect(onAction).toHaveBeenCalledWith('publish', 'edit');
+    await fireEvent.click(getByLabelText('Unpublish layer Shared corrections'));
+    expect(onAction).toHaveBeenCalledWith('unpublish', 'curated');
+    // Never Delete on the shared layer; Copy to your corrections instead.
+    expect(queryByLabelText('Delete layer Shared corrections')).toBeNull();
+    await fireEvent.click(getByLabelText('Copy layer Shared corrections to your corrections'));
+    expect(onAction).toHaveBeenCalledWith('copy-to-edit', 'curated');
+    expect(queryByLabelText('Publish layer Shared corrections')).toBeNull();
+  });
+
+  it('hides Publish and Unpublish without the right', () => {
+    const { queryByLabelText } = render(LayerPicker, {
+      props: {
+        layers: corrections,
+        current: null,
+        onSelect: vi.fn(),
+        onAction: vi.fn(),
+        onClose: vi.fn()
+      }
+    });
+    expect(queryByLabelText('Publish layer Your corrections')).toBeNull();
+    expect(queryByLabelText('Unpublish layer Shared corrections')).toBeNull();
+    expect(queryByLabelText('Delete layer Shared corrections')).toBeNull();
+    expect(queryByLabelText('Delete layer Your corrections')).toBeTruthy();
+  });
+});

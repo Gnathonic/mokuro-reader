@@ -1,0 +1,78 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('$app/environment', () => ({ browser: true }));
+const syncProgress = vi.hoisted(() => vi.fn(async () => ({})));
+vi.mock('./sync/unified-cloud-manager', () => ({
+  unifiedCloudManager: { getActiveProvider: vi.fn(() => ({ type: 'webdav' })), syncProgress }
+}));
+
+import { ActivityTracker } from './activity-tracker';
+
+let tracker: ActivityTracker;
+beforeEach(() => {
+  vi.useFakeTimers();
+  syncProgress.mockClear();
+  tracker = new ActivityTracker();
+});
+afterEach(() => {
+  tracker.destroy();
+  vi.useRealTimers();
+});
+
+describe('progress sync batching', () => {
+  it('reading a page every 30 s for 10 minutes syncs a handful of times, not every page', async () => {
+    for (let elapsed = 0; elapsed < 10 * 60_000; elapsed += 30_000) {
+      tracker.recordActivity();
+      await vi.advanceTimersByTimeAsync(30_000);
+    }
+    expect(syncProgress.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(syncProgress.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it('a pending change still goes up once the interval has passed, with no further activity', async () => {
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(syncProgress).toHaveBeenCalledTimes(1);
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(syncProgress).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(syncProgress).toHaveBeenCalledTimes(2);
+  });
+
+  it('flush() sends a pending change now, then waits for new activity', async () => {
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(6_000);
+    tracker.recordActivity();
+    tracker.flush();
+    expect(syncProgress).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(syncProgress).toHaveBeenCalledTimes(2);
+  });
+
+  it('flush() with nothing pending does nothing', () => {
+    tracker.flush();
+    expect(syncProgress).not.toHaveBeenCalled();
+  });
+
+  it('activity before a provider is connected does not hold back the first real sync', async () => {
+    const { unifiedCloudManager } = await import('./sync/unified-cloud-manager');
+    vi.mocked(unifiedCloudManager.getActiveProvider).mockReturnValueOnce(null as never);
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(syncProgress).not.toHaveBeenCalled();
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(syncProgress).toHaveBeenCalledTimes(1);
+  });
+
+  it('a clock set back never pushes the next sync beyond the interval', async () => {
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(6_000);
+    vi.setSystemTime(Date.now() + 24 * 3600_000); // last sync now looks a day in the future
+    vi.setSystemTime(Date.now() - 48 * 3600_000);
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(3 * 60_000 + 6_000);
+    expect(syncProgress).toHaveBeenCalledTimes(2);
+  });
+});

@@ -13,6 +13,7 @@ import {
   extractVolumeInfo
 } from '../processing';
 import type { DecompressedVolume } from '../types';
+import { RUNNER_OUTPUT_DOCUMENT, RUNNER_OUTPUT_SEAL } from '$lib/catalog/__fixtures__/seal-vector';
 
 // Mock thumbnail generation since we can't use canvas in tests
 vi.mock('$lib/catalog/thumbnails', () => ({
@@ -119,6 +120,24 @@ describe('parseMokuroFile', () => {
     const result = await parseMokuroFile(mokuroFile);
 
     expect(result.version).toBe('0.3.0');
+  });
+
+  it('accepts a file with a leading UTF-8 BOM (rule v1 #7: tolerated on read)', async () => {
+    const body = JSON.stringify({
+      version: '0.2.1',
+      title: 'BOM Series',
+      title_uuid: 's',
+      volume: 'BOM Volume',
+      volume_uuid: 'v',
+      pages: []
+    });
+    const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(body)]);
+    const file = new File([bytes], 'bom.mokuro', { type: 'application/json' });
+
+    const result = await parseMokuroFile(file);
+
+    expect(result.series).toBe('BOM Series');
+    expect(result.volume).toBe('BOM Volume');
   });
 
   it('throws on invalid JSON', async () => {
@@ -508,5 +527,92 @@ describe('processVolume', () => {
 
     expect(localResult.metadata.sourceType).toBe('local');
     expect(cloudResult.metadata.sourceType).toBe('cloud');
+  });
+});
+
+describe('OCR provenance (ocr_engine)', () => {
+  function vectorFile(text = RUNNER_OUTPUT_DOCUMENT): File {
+    return Object.assign(new Blob([text], { type: 'application/json' }), {
+      name: 'vector.mokuro',
+      lastModified: Date.now()
+    }) as unknown as File;
+  }
+
+  it('parseMokuroFile keeps a Bunko-shaped ocr_engine block verbatim', async () => {
+    const parsed = await parseMokuroFile(vectorFile());
+    expect(parsed.ocrEngine).toEqual(JSON.parse(RUNNER_OUTPUT_DOCUMENT).ocr_engine);
+  });
+
+  it('parseMokuroFile ignores a block that is not a plain object', async () => {
+    const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+    doc.ocr_engine = ['hayai-nova'];
+    expect((await parseMokuroFile(vectorFile(JSON.stringify(doc)))).ocrEngine).toBeUndefined();
+    expect((await parseMokuroFile(createMokuroFile())).ocrEngine).toBeUndefined();
+  });
+
+  it('records the block with the digest of the file pages (the vector’s seal)', async () => {
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(),
+        imageFiles: createImageFiles(['001.jpg', '002.jpg'])
+      })
+    );
+    expect(result.metadata.ocrProvenance).toEqual({
+      engine: JSON.parse(RUNNER_OUTPUT_DOCUMENT).ocr_engine,
+      digest: RUNNER_OUTPUT_SEAL
+    });
+  });
+
+  it('computes the digest from the FILE pages when the import remaps img_path', async () => {
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(),
+        imageFiles: createImageFiles(['images/001.png', 'images/002.png'])
+      })
+    );
+    expect(result.ocrData.pages[0].img_path).not.toBe('001.jpg');
+    expect(result.metadata.ocrProvenance?.digest).toBe(RUNNER_OUTPUT_SEAL);
+  });
+
+  it('an EDITED file (with an ocr_engine left in) records its `edited` block, not the engine', async () => {
+    const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+    const edited = { by: 'mokuro-reader', at: '2026-10-01T00:00:00.000Z', base_sha256: null };
+    doc.edited = edited;
+    const parsed = await parseMokuroFile(vectorFile(JSON.stringify(doc)));
+    expect(parsed.edited).toEqual(edited);
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(JSON.stringify(doc)),
+        imageFiles: createImageFiles(['001.jpg', '002.jpg'])
+      })
+    );
+    expect(result.metadata.ocrProvenance?.edited).toEqual(edited);
+    expect(result.metadata.ocrProvenance && 'engine' in result.metadata.ocrProvenance).toBe(false);
+  });
+
+  it('a PRESERVED file records nothing', async () => {
+    const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+    doc.preserved = { by: 'mokuro-bunko', reason: 'generation-upgrade' };
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(JSON.stringify(doc)),
+        imageFiles: createImageFiles(['001.jpg', '002.jpg'])
+      })
+    );
+    expect(result.metadata.ocrProvenance).toBeUndefined();
+  });
+
+  it('records nothing for a file without a block, or an image-only volume', async () => {
+    expect(
+      (await processVolume(createDecompressedVolume())).metadata.ocrProvenance
+    ).toBeUndefined();
+    const imageOnly = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: null,
+        basePath: 'My Manga/Volume 01',
+        imageFiles: createImageFiles(['001.jpg'])
+      })
+    );
+    expect(imageOnly.metadata.ocrProvenance).toBeUndefined();
   });
 });

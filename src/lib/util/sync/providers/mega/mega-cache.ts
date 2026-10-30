@@ -3,6 +3,10 @@ import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import { megaProvider } from './mega-provider';
+import {
+  cloudBunkoMergesDuplicates,
+  refreshCloudBunkoMarker
+} from '$lib/catalog/cloud-bunko-marker';
 
 /** Dedup-triggered refetches in a row before the cache stops asking (see runDeduplication). */
 const MAX_DEDUP_REFETCHES = 2;
@@ -110,6 +114,15 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
       .then(async ({ folderDeduplicator }) => {
         if (!megaProvider.isAuthenticated()) return;
 
+        // A fresh Bunko lease holder that merges duplicates does it with the
+        // same rule; a second merger on the same folders only races its moves.
+        await refreshCloudBunkoMarker(megaProvider);
+        if (cloudBunkoMergesDuplicates(megaProvider.type)) {
+          console.log('[Dedup] a cloud-direct Bunko merges duplicates here; skipping');
+          this.dedupRefetches = 0;
+          return;
+        }
+
         const ops = megaProvider.getFolderOperations();
         const result = await folderDeduplicator.deduplicateAll('mega', ops);
 
@@ -179,6 +192,10 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
       result.push(...files);
     }
     return result;
+  }
+
+  revision(): object {
+    return this.cache.revision();
   }
 
   clear(): void {

@@ -30,6 +30,8 @@
   } from '$lib/settings';
   import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import RereadPromptModal from './RereadPromptModal.svelte';
+  import PositionOfferBanner from './PositionOfferBanner.svelte';
+  import LongPausePrompt from './LongPausePrompt.svelte';
   import { shouldOfferReread } from '$lib/metadata/reread';
   import { getSeriesMetadataForTitle } from '$lib/metadata/store';
   import { getSeriesReadingState } from '$lib/settings/series-data';
@@ -72,7 +74,12 @@
     primaryLayerName,
     type LayerSummary
   } from '$lib/reader/edit/layer-list';
-  import { loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
+  import { forkIntoEditLayer, loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
+  import { pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
+  import { forksOnEdit } from '$lib/reader/edit/layer-kind';
+  import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
+  import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
+  import { canPublishCurated } from '$lib/util/sync/account-capabilities';
   import { layerNamePrompt, runLayerAction, type LayerAction } from './Layers/layer-actions';
   import LayerNameModal from './Layers/LayerNameModal.svelte';
   import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
@@ -91,13 +98,24 @@
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache, matchFilesToPages } from '$lib/reader/image-cache';
   import { cancelInkPrefetch, prefetchPageInk } from '$lib/reader/ink-color';
-  import { ViewTracker } from '$lib/reading-history/view-tracker';
+  import { ViewTracker, viewKey } from '$lib/reading-history/view-tracker';
+  import { endedView, endedViewMs, liveView, readingPaused } from '$lib/reading-history/live-view';
   import {
     describeView,
     rangeScopeKey,
     type ContinuousRange
   } from '$lib/reading-history/describe-view';
-  import { recordEvent } from '$lib/reading-history/record';
+  import { recordView } from '$lib/reading-history/record';
+  import { PauseWatch, livePause } from '$lib/reading-history/pause-watch';
+  import { answerPause } from '$lib/reading-history/pause-answer';
+  import { readingStats } from '$lib/reading-history/stats-store';
+  import type { PauseCount } from '$lib/reading-history/types';
+  import {
+    idleSettings,
+    pauseDefault,
+    setPauseDefault,
+    widenIdleK
+  } from '$lib/settings/tracking-data';
   import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
   import '$lib/styles/page-transitions.css';
 
@@ -475,9 +493,6 @@
   }
 
   onMount(() => {
-    // Set the timeout duration from settings
-    activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
-
     // Enter fullscreen on initial load if defaultFullscreen setting is enabled
     if ($settings.defaultFullscreen && !document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch((err) => {
@@ -511,6 +526,10 @@
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pagehide', onPageHide);
       viewTracker.close(Date.now());
+      // The prompt store is module-level: never let it reach the next volume.
+      pauseWatch.dispose();
+      livePause.set(null);
+      readingPaused.set(false);
       stopFlushOnPageHide();
       // Stop activity tracker when component unmounts
       activityTracker.stop();
@@ -518,11 +537,6 @@
       document.documentElement.style.overflow = '';
       window.removeEventListener('offset-spreads', onOffsetSpreads);
     };
-  });
-
-  // Update timeout duration when settings change
-  $effect(() => {
-    activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
   });
 
   // The paged viewport re-applies its base whenever the displayed content,
@@ -631,9 +645,52 @@
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
-  // Reading history: one `page` event per view, emitted when the view ends.
+  // Reading history: one `page` event per view, emitted when the view ends,
+  // with its long-pause answer (if any) in the same transaction.
   // Hidden tab = no view, so a backgrounded reader never accrues dwell.
-  const viewTracker = new ViewTracker((payload, t) => void recordEvent(payload, t));
+  const viewTracker = new ViewTracker(
+    (payload, t, answer) => {
+      const { pace, idle } = get(readingStats);
+      endedView.set({
+        volume: payload.volume,
+        ms: endedViewMs(payload, answer?.count ?? null, pace, idle)
+      });
+      void recordView(payload, t, answer);
+    },
+    (open) => {
+      liveView.set(open);
+      // A new view (or none): a prompt about the last one is moot.
+      if (!open || open.since !== get(livePause)?.since) livePause.set(null);
+    }
+  );
+  // At the open view's cap a standing default answers silently (written when
+  // the view ends); otherwise the "Still reading?" prompt asks. When the pause
+  // no longer stands (view gone, or the cap grew past the time so far), the
+  // prompt goes and a preset is withdrawn — re-applied if the cap is reached
+  // again.
+  const pauseWatch = new PauseWatch(
+    (pause) => {
+      const preset = get(pauseDefault);
+      if (preset) viewTracker.setAnswer(preset);
+      else livePause.set(pause);
+    },
+    () => {
+      livePause.set(null);
+      viewTracker.setAnswer(null);
+    }
+  );
+
+  function onPauseAnswer(count: PauseCount, opts: { stillReading: boolean; always: boolean }) {
+    const pause = get(livePause);
+    const open = get(liveView);
+    if (!pause || !open || open.since !== pause.since) return;
+    answerPause(pause, count, opts, get(readingStats).pace, get(idleSettings), {
+      split: (now, answer) => viewTracker.split(now, answer),
+      widenIdleK,
+      setPauseDefault,
+      notify: (message) => showSnackbar(message)
+    });
+  }
   let pageHidden = $state(typeof document !== 'undefined' && document.visibilityState === 'hidden');
   let continuousRange = $state<ContinuousRange | null>(null);
   let pageCharCumulative = $derived(buildPageCharCounts(pages).cumulative);
@@ -658,7 +715,19 @@
   let editSession = $state<EditSession | null>(null);
   let editHasOriginal = $state(false);
 
-  function enterEditMode(focus?: LineRef) {
+  /** The displayed layer, when an edit of it must go into `edit` instead (`forksOnEdit`). */
+  let forkingLayer = $derived.by(() => {
+    if (!activeLayerId) return null;
+    const layer = layers.find((l) => l.layer_id === activeLayerId);
+    return layer && forksOnEdit(layer, $activeProviderStatus) ? layer : null;
+  });
+
+  /**
+   * `fork: false` — the entry is a layer SWAP from inside the editor (L, the
+   * toolbar strip), not the user asking to edit this layer: cycling onto a
+   * shared layer must not bounce straight to `edit`, or L could never pass it.
+   */
+  function enterEditMode(focus?: LineRef, opts: { fork?: boolean } = {}) {
     if (!volume || !volumeData || $settings.continuousScroll) return;
     if (editingBlocked) {
       showSnackbar('The original layer is read-only — pick another layer or create a copy');
@@ -669,6 +738,14 @@
       if (focus) {
         editSession.select(focus.pageIndex, focus.blockIndex);
         editSession.pendingFocus = focus;
+      }
+      return;
+    }
+    if (forkingLayer) {
+      if (opts.fork === false) {
+        showSnackbar('Shared layers are read-only — press E to edit your own copy');
+      } else {
+        void forkIntoEditAndEdit(forkingLayer.layer_id, focus);
       }
       return;
     }
@@ -723,6 +800,30 @@
         });
     }
     overlaysVisible = true;
+  }
+
+  /**
+   * Editing a shared layer: copy it into the account's own `edit`
+   * layer — or keep the one there is — and edit THAT. The shared layer stays
+   * as everyone reads it. A focus (the context menu's line) carries over only
+   * into a fresh copy, whose blocks are the source's.
+   */
+  async function forkIntoEditAndEdit(sourceLayerId: string, focus?: LineRef) {
+    if (!volume) return;
+    const uuid = volume.volume_uuid;
+    try {
+      await settleEditsBeforeLayerMutation('new');
+      // The account's overlay from another device, listed but not pulled yet,
+      // is the copy to edit — a fresh fork would replace it on the next sync.
+      await pullOwnEditLayerBeforeFork(uuid);
+      const { created } = await forkIntoEditLayer(uuid, sourceLayerId);
+      if (volume?.volume_uuid !== uuid) return;
+      reenterEditOnLayer = { layer: EDIT_LAYER_ID, focus: created ? focus : undefined };
+      updateVolumeSetting(uuid, 'ocrLayer', EDIT_LAYER_ID);
+      showSnackbar('Editing your corrections — the shared layer stays as it is');
+    } catch (error) {
+      showSnackbar(error instanceof Error ? error.message : String(error));
+    }
   }
 
   // Publish the state for the settings toggle; honour outside requests
@@ -788,13 +889,13 @@
     reenterEditOnLayer = wasEditing ? { layer: layerId } : null;
     updateVolumeSetting(volume.volume_uuid, 'ocrLayer', layerId ?? undefined);
   }
-  let reenterEditOnLayer = $state<{ layer: string | null } | null>(null);
+  let reenterEditOnLayer = $state<{ layer: string | null; focus?: LineRef } | null>(null);
   $effect(() => {
     const pending = reenterEditOnLayer;
     if (!pending || editSession || layerLoading) return;
     if (activeLayerId !== pending.layer) return;
     reenterEditOnLayer = null;
-    enterEditMode();
+    enterEditMode(pending.focus, { fork: false });
   });
 
   // Announce layer switches the same way the other reader shortcuts (T, N,
@@ -1187,7 +1288,22 @@
   );
 
   $effect(() => {
-    viewTracker.setView(pageHidden ? null : currentView, Date.now());
+    viewTracker.setView(pageHidden || $readingPaused ? null : currentView, Date.now());
+  });
+
+  // Re-arm the cap watch on every view, pace or cutoff change (an effect, not
+  // a $derived: it sets a timer).
+  $effect(() => {
+    pauseWatch.update($liveView, $readingStats.pace, $readingStats.idle);
+  });
+
+  // A paused timer resumes with the next page: any new view is reading again.
+  let lastViewKey = '';
+  $effect(() => {
+    const key = currentView ? viewKey(currentView) : '';
+    if (key === lastViewKey) return;
+    lastViewKey = key;
+    readingPaused.set(false);
   });
 
   function handleVisibleRange(first: number, last: number) {
@@ -1589,6 +1705,8 @@
     {layers}
     currentLayer={activeLayerId}
     primaryLayerName={primaryName}
+    canPublishLayers={canPublishCurated($activeProviderStatus, volume.series_title)}
+    layerStatus={$activeProviderStatus}
     onSelectLayer={selectLayer}
     onLayerAction={runLayerActionFromReader}
     bind:layersOpen={layerPickerOpen}
@@ -1667,6 +1785,14 @@
         <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
       {/key}
     </button>
+  {/if}
+  {#if volume && pages?.length}
+    <PositionOfferBanner
+      volumeId={volume.volume_uuid}
+      pageCount={pages.length}
+      currentPage={page}
+    />
+    <LongPausePrompt onAnswer={onPauseAnswer} />
   {/if}
   {#if notificationMessage}
     {#key notificationKey}

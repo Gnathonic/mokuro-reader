@@ -4,9 +4,16 @@
  * `series.json` carries per volume and `VolumeMetadata.mokuro_sha256` records
  * for the installed primary OCR — see CLAUDE.md, "OCR upgrades".
  *
- * Pure and dependency-free so a Worker (the backup upload, the sidecar
- * backfill's deferred feed) can hash exactly the bytes it uploads.
+ * Pure (its one import, the layer ids of `layer-names.ts`, is too) so a
+ * Worker (the backup upload, the sidecar backfill's deferred feed) can hash
+ * exactly the bytes it uploads.
  */
+
+import {
+  isCuratedLayerId,
+  isPersonalLayerId,
+  isServerKeepsakeLayerId
+} from '$lib/reader/edit/layer-names';
 
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
@@ -104,20 +111,45 @@ export function isUntouchedUpgradeLayer(
 /** The OCR editor's read-only pre-edit snapshot (`edit-persist.ts`'s `ORIGINAL_LAYER_ID`). */
 const ORIGINAL_LAYER = 'original';
 
+/** Where a layer would go: what `layerStaysLocal` needs to know of the provider. */
+export interface LayerTarget {
+  /** The server compiles its own metadata (mokuro-bunko, `ProviderStatus`). */
+  serverCompilesMetadata: boolean;
+  /** `ProviderStatus.editLayerSync`: may the account's `edit` layer go up there? */
+  editLayerSync?: 'push' | 'local';
+}
+
 /**
  * Must this layer stay OFF this provider (never pushed, never uploaded beside
- * a backup)? An untouched upgrade layer, everywhere (`isUntouchedUpgradeLayer`).
- * And the editor's `original` snapshot on a provider that compiles the
- * metadata itself (mokuro-bunko, `serverCompilesMetadata`): there a primary
- * edit stays local — the shared primary is never replaced by it — so the
- * snapshot of what the edit sits on means nothing to the server, and on a
- * shared library it would be published, as a reserved layer, to every user.
- * Plain storage keeps it: there it is this user's own Revert base.
+ * a backup)? An untouched upgrade layer, everywhere (`isUntouchedUpgradeLayer`),
+ * and whatever `layerIdStaysLocal` says of its id.
  */
 export function layerStaysLocal(
   layer: { layer_id: string; source_at?: string; updated_at?: string },
-  serverCompilesMetadata: boolean
+  target: LayerTarget
 ): boolean {
   if (isUntouchedUpgradeLayer(layer)) return true;
-  return serverCompilesMetadata && layer.layer_id === ORIGINAL_LAYER;
+  return layerIdStaysLocal(layer.layer_id, target);
+}
+
+/**
+ * The id half of `layerStaysLocal` — what a layer IS, whatever happened to it,
+ * so it also says whether its cloud file is this device's to delete:
+ *
+ * - `curated`, everywhere: the library's shared corrections go up only by an
+ *   explicit Publish, never by sync or backup.
+ * - an account's own `edit`/`edit-<n>` where `editLayerSync` is `local`: a
+ *   bunko that does not keep it per account would publish it to every account.
+ * - on a provider that compiles its metadata (bunko): the editor's `original`
+ *   snapshot — a primary edit stays local there, so the snapshot of what it
+ *   sits on means nothing to the server, and on a shared library it would be
+ *   published, as a reserved layer, to every user — and bunko's own
+ *   `pre-upgrade` keepsake, which only the server writes (a PUT is refused).
+ *   Plain storage keeps `original`: there it is this user's own Revert base.
+ */
+export function layerIdStaysLocal(layerId: string, target: LayerTarget): boolean {
+  if (isCuratedLayerId(layerId)) return true;
+  if (isPersonalLayerId(layerId)) return target.editLayerSync === 'local';
+  if (!target.serverCompilesMetadata) return false;
+  return layerId === ORIGINAL_LAYER || isServerKeepsakeLayerId(layerId);
 }

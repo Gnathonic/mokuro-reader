@@ -8,15 +8,23 @@
   import type { LayerSummary } from '$lib/reader/edit/layer-list';
   import { LAYER_KIND_LABEL } from '$lib/reader/edit/layers';
   import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
-  import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '$lib/reader/edit/layer-kind';
+  import {
+    TRANSLATION_PROMOTE_BLOCKED,
+    isTranslationLayer,
+    layerRowActions
+  } from '$lib/reader/edit/layer-kind';
+  import { isCuratedLayerId, isPersonalLayerId } from '$lib/reader/edit/layer-names';
   import type { LayerAction } from './layer-actions';
   import {
     ArrowUpOutline,
+    CloseCircleOutline,
     CloseOutline,
     DownloadOutline,
     EditOutline,
+    FileCopyOutline,
     PlusOutline,
-    TrashBinOutline
+    TrashBinOutline,
+    UploadOutline
   } from 'flowbite-svelte-icons';
 
   interface Props {
@@ -24,11 +32,31 @@
     current: string | null;
     /** Label of the primary row (`mokuro <version>`); "Primary" stays as its badge. */
     primaryName?: string;
+    /** May the account publish this volume's shared corrections (`canPublishCurated`)? */
+    canPublish?: boolean;
+    /** The connected provider's status: which layers an edit forks from (`forksOnEdit`). */
+    status?: { serverCompilesMetadata?: boolean } | null;
     onSelect: (layerId: string | null) => void;
     onAction: (action: LayerAction, layerId: string | null) => void;
     onClose: () => void;
   }
-  let { layers, current, primaryName = 'Primary', onSelect, onAction, onClose }: Props = $props();
+  let {
+    layers,
+    current,
+    primaryName = 'Primary',
+    canPublish = false,
+    status = null,
+    onSelect,
+    onAction,
+    onClose
+  }: Props = $props();
+
+  /** `curated` is the library's; `edit`/`edit-<n>` the account's own. Else the kind. */
+  function badgeOf(layer: LayerSummary): string {
+    if (isCuratedLayerId(layer.layer_id)) return 'Shared';
+    if (isPersonalLayerId(layer.layer_id)) return 'Yours';
+    return LAYER_KIND_LABEL[layer.kind];
+  }
 
   const row =
     'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-gray-600 aria-checked:bg-gray-600';
@@ -71,6 +99,7 @@
     </button>
   </div>
   {#each layers as layer (layer.layer_id)}
+    {@const actions = layerRowActions(layer, { canPublish, status })}
     <div class="flex items-center">
       <button
         role="radio"
@@ -79,7 +108,7 @@
         onclick={() => onSelect(layer.layer_id)}
       >
         <span class="flex-1 truncate">{layer.name}</span>
-        <span class="rounded bg-gray-800 px-1 text-[10px]">{LAYER_KIND_LABEL[layer.kind]}</span>
+        <span class="rounded bg-gray-800 px-1 text-[10px]">{badgeOf(layer)}</span>
       </button>
       <div class="flex shrink-0">
         {#if layer.layer_id !== ORIGINAL_LAYER_ID}
@@ -100,13 +129,39 @@
             ><ArrowUpOutline size="sm" /></button
           >
         {/if}
+        {#if actions.publish}
+          <button
+            class={icon}
+            aria-label={`Publish layer ${layer.name}`}
+            title="Publish as the shared corrections"
+            onclick={() => onAction('publish', layer.layer_id)}><UploadOutline size="sm" /></button
+          >
+        {/if}
+        {#if actions.unpublish}
+          <button
+            class={icon}
+            aria-label={`Unpublish layer ${layer.name}`}
+            title="Remove the shared corrections for everyone"
+            onclick={() => onAction('unpublish', layer.layer_id)}
+            ><CloseCircleOutline size="sm" /></button
+          >
+        {/if}
+        {#if actions.copyToEdit}
+          <button
+            class={icon}
+            aria-label={`Copy layer ${layer.name} to your corrections`}
+            title="Copy to your corrections"
+            onclick={() => onAction('copy-to-edit', layer.layer_id)}
+            ><FileCopyOutline size="sm" /></button
+          >
+        {/if}
         <button
           class={icon}
           aria-label={`Export layer ${layer.name}`}
           title="Export as .mokuro"
           onclick={() => onAction('export', layer.layer_id)}><DownloadOutline size="sm" /></button
         >
-        {#if layer.layer_id !== ORIGINAL_LAYER_ID}
+        {#if actions.delete}
           <button
             class={icon}
             aria-label={`Delete layer ${layer.name}`}

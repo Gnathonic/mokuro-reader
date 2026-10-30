@@ -214,7 +214,13 @@ export function queueVolumeForBackup(
 
   const queueItem: BackupQueueItem = {
     volumeUuid: volume.volume_uuid,
-    seriesTitle: volume.series_title,
+    // The folder the cloud already holds for this series, in ITS spelling:
+    // a server that merged `one piece/` into `One Piece/` would otherwise be
+    // handed the losing folder again. The exact title when the cloud has it
+    // (or has no such series). Not gated on bunko: on plain storage too, a
+    // title with no exact folder joins the folder folding onto it instead of
+    // minting a second spelling beside it.
+    seriesTitle: unifiedCloudManager.resolveCloudFolderTitle(volume.series_title),
     volumeTitle: volume.volume_title,
     provider: targetProvider.type,
     uploadConcurrencyLimit: targetProvider.uploadConcurrencyLimit,
@@ -610,8 +616,12 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           embedMokuroInArchive: false,
           downloadFilename: `${item.volumeTitle}.cbz`,
           includeSidecars: item.sidecarOptions.includeSidecars,
-          // bunko: the editor's `original` snapshot stays local (`layerStaysLocal`).
-          serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true
+          // bunko: the editor's `original` snapshot stays local, and the `edit`
+          // layer wherever the server would share it (`layerStaysLocal`).
+          serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true,
+          editLayerSync: provider!.getStatus?.().editLayerSync,
+          // Another account's personal layer never goes into this one's overlay.
+          accountScope: provider!.getStatus?.().accountScope
         };
       },
       onProgress: (data) => {
@@ -733,7 +743,8 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
                   layerId: layer.layerId,
                   updatedAt: layer.updatedAt,
                   size: layer.blob.size
-                }))
+                })),
+                provider!.getStatus?.().accountScope
               );
             }
 
@@ -843,7 +854,12 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // the rows as synced so the next listing does not push them again —
           // against the snapshot it uploaded, so an edit made meanwhile survives.
           if (item.sidecarOptions.includeSidecars) {
-            void stampLayersSynced(item.volumeUuid, provider!.type, data.layerSnapshots ?? []);
+            void stampLayersSynced(
+              item.volumeUuid,
+              provider!.type,
+              data.layerSnapshots ?? [],
+              provider!.getStatus?.().accountScope
+            );
           }
           // The primary sidecar the worker sent: its hash is this volume's now,
           // and one this device can vouch for in `series.json`. Before the

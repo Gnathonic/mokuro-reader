@@ -20,6 +20,8 @@
   import { renameRefusalMessage } from '$lib/util/sync/account-capabilities';
   import type { VolumeMetadata } from '$lib/types';
   import { VolumeData } from '$lib/settings/volume-data';
+  import { get } from 'svelte/store';
+  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
   import { IMAGE_MIME_TYPES } from '$lib/import/types';
 
@@ -40,6 +42,8 @@
   // Reading stats
   let progress = $state(0);
   let timeReadInMinutes = $state(0);
+  /** Time read as the stats showed it when the editor opened: a save records the difference. */
+  let loadedMinutes = 0;
 
   // Time display as hh:mm
   let timeHours = $state(0);
@@ -145,7 +149,8 @@
       characterCount = await calculateVolumeCharacterCount(volumeUuid);
 
       progress = data.stats.progress || 0;
-      timeReadInMinutes = data.stats.timeReadInMinutes || 0;
+      timeReadInMinutes = figuresFor(get(readingStats), volumeUuid, data.stats).minutes;
+      loadedMinutes = timeReadInMinutes;
       updateTimeFromMinutes(timeReadInMinutes);
 
       isNewSeries = false;
@@ -296,7 +301,7 @@
       updateVolumeStats(volumeUuid, {
         progress,
         chars,
-        timeReadInMinutes,
+        timeRead: { from: loadedMinutes, to: timeReadInMinutes },
         series_uuid: finalSeriesUuid,
         series_title: finalSeriesTitle,
         volume_title: volumeTitle

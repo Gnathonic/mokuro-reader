@@ -2,10 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- mokuro-bunko: publish your OCR fixes as shared corrections
+
 ### Changed
 
+- Editing shared OCR now edits your own copy
+- mokuro-bunko: your OCR fixes no longer reach other accounts
 - Duplicate-folder cleanup never removes mokuro-bunko's own files
+- Duplicate-folder cleanup leaves it to mokuro-bunko when it merges them
 - MEGA catches mokuro-bunko changes made while you were offline
+- Cloud folders run by mokuro-bunko 0.8 sync history and positions
+- Renamed volumes keep their OCR engine or corrected mark
+- Exported or uploaded OCR you corrected is marked as corrected
+
+### Fixed
+
+- Google Drive trashes duplicate folders only once they are empty
+- Google Drive leaves your own same-named folders alone
+- A full Google Drive no longer signs you out
+- Google Drive rate limits wait and retry instead of failing
+- A full Google Drive or OneDrive says so plainly
+- mokuro-bunko no longer connects read-only on a flaky connection
+- mokuro-bunko series differing only in case stay merged
+- Backups join a cloud folder differing only in case
+- mokuro-bunko: resetting a shelf's alignment now sticks
+- OCR layer files found on decomposed-name storage
+- mokuro-bunko: renaming a volume no longer duplicates OCR layers
 
 ## [1.10.0] - 2026-10-02
 

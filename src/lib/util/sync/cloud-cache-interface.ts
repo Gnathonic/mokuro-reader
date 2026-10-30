@@ -118,6 +118,13 @@ export interface CloudCache<T = any> {
   getAllFiles(): T[];
 
   /**
+   * A token that changes whenever the cached contents do (see
+   * `CoalescedCacheStore.revision`). Optional: a cache without one is simply
+   * never memoised over.
+   */
+  revision?(): object;
+
+  /**
    * Fetch fresh data from cloud provider and populate cache
    */
   fetch(): Promise<void>;

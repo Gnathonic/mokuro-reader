@@ -23,6 +23,8 @@ export interface LayerSummary {
   kind: VolumeOcrLayerKind;
   engine?: string;
   updated_at: string;
+  /** The provider the layer was last synced with: a cloud vouches for it (`forksOnEdit`). */
+  cloud?: { provider: string };
 }
 
 export function summarizeLayers(rows: VolumeOcrLayer[]): LayerSummary[] {
@@ -32,12 +34,13 @@ export function summarizeLayers(rows: VolumeOcrLayer[]): LayerSummary[] {
       if (b.layer_id === ORIGINAL_LAYER_ID) return 1;
       return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0;
     })
-    .map(({ layer_id, name, kind, engine, updated_at }) => ({
+    .map(({ layer_id, name, kind, engine, updated_at, cloud }) => ({
       layer_id,
       name,
       kind,
       ...(engine ? { engine } : {}),
-      updated_at
+      updated_at,
+      ...(cloud ? { cloud: { provider: cloud.provider } } : {})
     }));
 }
 
