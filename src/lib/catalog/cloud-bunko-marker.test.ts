@@ -20,6 +20,7 @@ import {
   clearCloudBunkoMarkers,
   type MarkerNodeRecord
 } from './cloud-bunko-marker';
+import { positionsReadAllowed, positionsWriteAllowed } from '$lib/positions/positions-capability';
 
 const T0 = Date.parse('2026-10-12T10:00:00Z');
 const TTL = 900;
@@ -450,6 +451,122 @@ describe('the holder carries the marker v2 keys', () => {
       per_user_files: ['history/'],
       dedup: true
     });
+  });
+});
+
+describe('withCloudBunkoStatus: per-user gates from the holder', () => {
+  // Gates are always derived from explicit versions here, never from a
+  // contract fixture: those report '0.0.0' (a replay sets its gate itself).
+  const ALL = ['goals.json', 'profiles.json', 'volume-data.json', 'positions.json', 'history/'];
+  const base: ProviderStatus = {
+    isAuthenticated: true,
+    hasStoredCredentials: true,
+    needsAttention: false,
+    statusMessage: 'ok'
+  };
+
+  async function holder(over: Record<string, unknown>) {
+    await ingestMarkerRead('google-drive', read({ id: 'n1', etag: 'v1', body: marker(over) }));
+  }
+
+  it.each([
+    ['0.8.0', ALL, true, true],
+    ['0.8.0-beta.1', ALL, true, true],
+    ['0.9.2', ['history/'], true, false],
+    ['0.8.0', ['positions.json'], false, true],
+    ['0.8.0', [], false, false],
+    ['0.7.3', ALL, false, true],
+    // The contract sentinel (README "Sentinels": bunko_version is normalized
+    // too) is below 0.8.0: a replayed blessed marker folds history OFF even
+    // though it lists history/, so a replay must inject its version (C19).
+    ['0.0.0', ALL, false, true],
+    ['', ALL, false, true]
+  ])(
+    'holder %j listing %j: historySync %s, positionsSync %s',
+    async (version, files, history, positions) => {
+      await holder({ bunko_version: version, per_user_files: files });
+      const status = withCloudBunkoStatus('google-drive', base);
+      expect(status.historySync).toBe(history);
+      expect(status.positionsSync).toBe(positions);
+    }
+  );
+
+  it('a holder whose marker has no per_user_files (pre-0.8 shape) allows neither', async () => {
+    await holder({ bunko_version: '0.8.0' });
+    const status = withCloudBunkoStatus('google-drive', base);
+    expect(status.historySync).toBe(false);
+    expect(status.positionsSync).toBe(false);
+    expect(positionsReadAllowed(status)).toBe(false);
+  });
+
+  it('only the top-ranked fresh holder counts', async () => {
+    await ingestMarkerRead(
+      'google-drive',
+      read(
+        {
+          id: 'low',
+          etag: '1',
+          body: marker({ instance_id: 'bbb', epoch: 2, per_user_files: ALL })
+        },
+        { id: 'top', etag: '1', body: marker({ instance_id: 'ccc', epoch: 4 }) }
+      )
+    );
+    const status = withCloudBunkoStatus('google-drive', base);
+    expect(status.historySync).toBe(false);
+    expect(status.positionsSync).toBe(false);
+  });
+
+  it('no fresh holder (stale or released): both left undefined, plain storage rules apply', async () => {
+    await holder({ per_user_files: ALL });
+    await ingestMarkerRead(
+      'google-drive',
+      read({ id: 'n1', etag: 'v2', body: marker({ per_user_files: ALL }) })
+    );
+    vi.setSystemTime(T0 + 2 * TTL * 1000);
+    const stale = withCloudBunkoStatus('google-drive', base);
+    expect(stale.cloudBunko?.holder).toBeNull();
+    expect(stale.historySync).toBeUndefined();
+    expect(stale.positionsSync).toBeUndefined();
+    expect(stale.serverCompilesMetadata).toBe(false);
+    expect(positionsWriteAllowed(stale)).toBe(true);
+
+    vi.setSystemTime(T0);
+    resetCloudBunkoMarkersForTest();
+    localStorage.clear();
+    await holder({ per_user_files: ALL, state: 'released' });
+    const released = withCloudBunkoStatus('google-drive', base);
+    expect(released.historySync).toBeUndefined();
+    expect(released.positionsSync).toBeUndefined();
+  });
+
+  it("the provider's own verdict wins (a WebDAV bunko server's /me)", async () => {
+    await holder({ per_user_files: ALL });
+    const off = withCloudBunkoStatus('google-drive', {
+      ...base,
+      historySync: false,
+      positionsSync: false
+    });
+    expect(off.historySync).toBe(false);
+    expect(off.positionsSync).toBe(false);
+
+    resetCloudBunkoMarkersForTest();
+    localStorage.clear();
+    await holder({ bunko_version: '0.7.3', per_user_files: [] });
+    const on = withCloudBunkoStatus('google-drive', {
+      ...base,
+      historySync: true,
+      positionsSync: true
+    });
+    expect(on.historySync).toBe(true);
+    expect(on.positionsSync).toBe(true);
+  });
+
+  it('a marker-folded status reads and writes positions.json', async () => {
+    await holder({ per_user_files: ALL });
+    const status = withCloudBunkoStatus('google-drive', base);
+    expect(status.serverCompilesMetadata).toBe(true);
+    expect(positionsReadAllowed(status)).toBe(true);
+    expect(positionsWriteAllowed(status)).toBe(true);
   });
 });
 

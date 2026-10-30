@@ -41,6 +41,8 @@ import type {
   SyncProvider
 } from '$lib/util/sync/provider-interface';
 import { BUNKO_MARKER_NAME } from '$lib/util/sync/syncable-file';
+import { bunkoSupportsHistory } from '$lib/util/sync/providers/webdav/bunko-version';
+import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
 
 /** Files a marker may say Bunko compiles. */
 export const COMPILED_METADATA_FILES = ['series.json', 'catalog.json'] as const;
@@ -492,15 +494,26 @@ export function cloudBunkoStatus(scope: string): CloudBunkoStatus | undefined {
 
 /**
  * A provider's own status with the marker folded in:
- * `serverCompilesMetadata = reported || anyMarkerFresh`.
+ * `serverCompilesMetadata = reported || anyMarkerFresh`, and the per-user
+ * gates from the lease HOLDER's rules — `historySync` needs bunko 0.8.0+ AND
+ * `history/` per user, `positionsSync` needs `positions.json` per user. A
+ * verdict the provider set itself (a bunko server's `/me`) wins; with no fresh
+ * holder both stay undefined, so the folder is judged as plain storage.
  */
 export function withCloudBunkoStatus<T extends ProviderStatus>(scope: string, status: T): T {
   const marker = cloudBunkoStatus(scope);
   if (!marker) return status;
+  const holder = marker.holder;
   return {
     ...status,
     cloudBunko: marker,
-    serverCompilesMetadata: status.serverCompilesMetadata === true || marker.fresh
+    serverCompilesMetadata: status.serverCompilesMetadata === true || marker.fresh,
+    historySync:
+      status.historySync ??
+      (holder ? bunkoSupportsHistory(holder.bunkoVersion, holder.perUserFiles) : undefined),
+    positionsSync:
+      status.positionsSync ??
+      (holder ? holder.perUserFiles.includes(POSITIONS_FILE_NAME) : undefined)
   };
 }
 

@@ -6,6 +6,7 @@
 
 - Duplicate-folder cleanup never removes mokuro-bunko's own files
 - MEGA catches mokuro-bunko changes made while you were offline
+- Cloud folders run by mokuro-bunko 0.8 sync history and positions
 
 ### Fixed
 
