@@ -210,8 +210,8 @@ export async function generateVolumeSidecarsFromDb(
     /** The target's `ProviderStatus.editLayerSync`: see `layerStaysLocal`. */
     editLayerSync?: 'push' | 'local';
     /**
-     * The target's `accountScope`: a personal layer last synced under another
-     * account is that account's overlay, never uploaded into this one's.
+     * The target's `personalLayerAccount`: a personal layer last synced under
+     * another account is that account's overlay, never uploaded into this one's.
      */
     account?: string;
     /**
@@ -316,7 +316,7 @@ async function buildLayerSidecarsFromDb(
   volume: VolumeMetadata,
   titles: { seriesTitle: string; volumeTitle: string },
   target: LayerTarget = { serverCompilesMetadata: false },
-  /** The target's `accountScope` (`generateVolumeSidecarsFromDb`). */
+  /** The target's `personalLayerAccount` (`generateVolumeSidecarsFromDb`). */
   account?: string
 ): Promise<VolumeLayerSidecarBlobData[]> {
   // Metadata and pages in one read transaction: `updatedAt` below must be the

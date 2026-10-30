@@ -6,33 +6,33 @@ Phase 5 of `2026-10-02-reading-history-event-log-design.md`. Status: draft for o
 
 Every sync-adjacent action today ends in the same place: one full listing of the cloud tree, held in
 memory by the provider's `CloudCache`, and the only map anything has of the cloud. Measured 2026-10-11
-on a production bunko library (1,074 series, 12.6k volumes, anonymous WebDAV PROPFIND):
+on a large bunko library (~1k series, ~12k volumes, anonymous WebDAV PROPFIND):
 
 |                                                      | Full listing (`Depth: infinity`)                               |
 | ---------------------------------------------------- | -------------------------------------------------------------- |
-| Entries                                              | 52,589 (51,510 files, 1,079 folders)                           |
+| Entries                                              | ~52k (~51k files, ~1k folders)                                 |
 | Wire                                                 | 1.84 MB gzip, 1.9 s (0.84 s to first byte, server-side cached) |
 | XML                                                  | 31.4 MB                                                        |
 | Parse (`webdav` library's `parseXML`, Node, desktop) | 1.6 s, 265 MB heap                                             |
 
 What the listing holds, and what already describes it:
 
-| Files                        | Count  | Already in `series.json`                               |
-| ---------------------------- | ------ | ------------------------------------------------------ |
-| primary `.mokuro`            | 12,624 | yes: `mokuro_size`, `mokuro_modified`, `mokuro_sha256` |
-| layer `.mokuro` (one engine) | 12,508 | **no**                                                 |
-| `.webp` covers               | 12,622 | yes: `cover_size`, `cover_modified`                    |
-| `.cbz`                       | 12,603 | size only (`archive_size`)                             |
-| `series.json`                | 1,074  | its own stamp is listed nowhere else                   |
+| Files                        | Count | Already in `series.json`                               |
+| ---------------------------- | ----- | ------------------------------------------------------ |
+| primary `.mokuro`            | ~12k  | yes: `mokuro_size`, `mokuro_modified`, `mokuro_sha256` |
+| layer `.mokuro` (one engine) | ~12k  | **no**                                                 |
+| `.webp` covers               | ~12k  | yes: `cover_size`, `cover_modified`                    |
+| `.cbz`                       | ~12k  | size only (`archive_size`)                             |
+| `series.json`                | ~1k   | its own stamp is listed nowhere else                   |
 
 The listing is not persisted: `CloudCache` lives in memory, so every app start pays the whole cost
 before progress can sync. Google Drive's `uploadFile` also ends in a full paged refetch (13+
-`files.list` calls on a 12.5k-file library), so the slow path hides inside ordinary writes there too.
+`files.list` calls on a ~12k-file library), so the slow path hides inside ordinary writes there too.
 
 Meanwhile the data that changes often is small and single-writer: a heavy reader's month of page events
 is ~15 KB, written only by its own device. After phase 2 and `timeReadInMinutes`' retirement,
-`volume-data.json` changes on a handful of days a month (17 real files: the busiest changed on 11 days in
-30, most on none).
+`volume-data.json` changes on a handful of days a month (in the files sampled, the busiest changed on 11
+days in 30, most on none).
 
 ## The tiers
 
@@ -59,7 +59,7 @@ answer, fast: where did I stop? That needs a file at a known path.
 ```
 
 - One entry per volume: time of the page view that set it (epoch ms), page, characters, device.
-- **Window: 30 days.** Measured on 17 real libraries: ≤ 802 B for everyone. An entry older than that
+- **Window: 30 days.** Measured on sampled libraries: ≤ 802 B for all of them. An entry older than that
   leaves the file. The position it carried is still in the events, and in `volume-data.json` while
   history does not sync.
 - **Merge:** per volume, newest view time wins. Read-merge-write: ultrafast does a conditional GET first
@@ -76,8 +76,8 @@ page, and the act of opening stamps that old page as the newest position. Every 
 back.
 
 1. **Reader open checks first.** Opening a volume starts a conditional GET of `positions.json` (its ETag
-   is known from the last read). The reader waits for it up to ~1 s (a `304` takes 0.64 s round trip
-   from a home connection to the live server) before choosing the page.
+   is known from the last read). The reader waits for it up to ~1 s (a `304` took 0.64 s round trip
+   to a remote server over a home connection) before choosing the page.
 2. **A newer remote position wins silently**: the reader opens there, with a toast naming the device
    ("Continued from Phone, p.120").
 3. **An opened page never claims the position by itself.** The page the reader opens on — before the
@@ -258,8 +258,8 @@ Local Folder. Drive and OneDrive never synthesize; their feed is authoritative.
 
 - **`catalog.json` entries** gain `series_stamp` (the `series.json` file's size and mtime, or its
   hash), `volume_count`, and a cover pointer (volume title + `cover_size`/`cover_modified`) — enough
-  for catalog cards without the listing. About +100 KB raw on 1,074 series.
-- **`series.json` volume entries** gain `layers: [{ id, size, modified }]` (removes 12.5k listing
+  for catalog cards without the listing. About +100 KB raw on ~1k series.
+- **`series.json` volume entries** gain `layers: [{ id, size, modified }]` (removes ~12k listing
   entries) and `archive_modified`.
 - Both are additive and stay inside bunko's existing field-order contract
   (`orderVolumeEntryFields`).
@@ -274,7 +274,7 @@ Local Folder. Drive and OneDrive never synthesize; their feed is authoritative.
   Drive/MEGA) moves both copies in and lets the next sync fold them.
 - Conditional GET on the per-user root files and under `history/` must answer `304` like the library
   files do. To verify, not assumed.
-- Root `Depth: 1` is 457 KB, sent uncompressed (1,074 series folders sit beside the config files). The
+- Root `Depth: 1` is 457 KB, sent uncompressed (~1k series folders sit beside the config files). The
   fast tier therefore never lists the root; it reads known paths and lists `history/`.
 
 ## `volume-data.json` after the split
