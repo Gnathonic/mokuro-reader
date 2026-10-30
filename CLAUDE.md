@@ -1672,6 +1672,12 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   other absolute addresses (the font host's preconnects, the jidoujisho icon). A new third-party
   fetch needs the same treatment, or the rig fails.
 - Local rig runs pass `--reader-dir <this worktree>`; `interop/reader.ref` must name a pushed commit.
+- CI (`.github/workflows/interop.yml`, job `rig`): PRs into `main`, `develop` and
+  `feat/cloud-bunko`, nightly for `develop` and `feat/cloud-bunko`, and on demand, only where
+  `rig-driver.ts` exists (else shown skipped). Bunko is the nightly pre-release `BUNKO_REF` maps
+  to (`0.8/remote-storage` → `nightly-0.8`, `main` → `nightly`, checked out at its `bunko_sha`),
+  built from source for any other branch. It runs `cargo xtask interop rig all --provider all`
+  with `--reader-dir` on the PR's checkout and uploads the results as `rig-<target>` on every run.
 
 ### E2E (Playwright)
 
