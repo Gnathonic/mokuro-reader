@@ -430,8 +430,9 @@ A `.mokuro` says where its text came from with a top-level block — never both
   sit on (`editBaseSeal`: the `original` snapshot's pages for an edited
   primary, else the primary's — and only when that seal checks over those
   pages, never a stale one),
-  computed for layer-sync pushes and the Worker's layer sidecars (backup,
-  rename, Worker exports); null from the main-thread layer exports
+  computed for layer-sync pushes, Publish of the shared `curated` layer
+  (`publishCuratedLayer`) and the Worker's layer sidecars (backup, rename,
+  Worker exports); null from the main-thread layer exports
   (`buildLayerExportFile`, `loadVolumeLayerFiles`), on an edited primary's own
   `edited` block, and for an unsealed base.
 

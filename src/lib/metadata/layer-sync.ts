@@ -1835,7 +1835,8 @@ export async function listedCuratedLayerFile(
  * `<folder>/<stem>.curated.mokuro` beside the archive (the listing's spelling).
  * The ONLY path that writes `curated` — sync never pushes it
  * (`layerIdStaysLocal`). The file is the edit layer's own serialization, with
- * its `edited` block (`buildLayerMokuroMetadata`). The local `curated` row then
+ * its `edited` block (`buildLayerMokuroMetadata`) and the same `base_seal` an
+ * edit push names (`editBaseSeal`). The local `curated` row then
  * takes the same pages and the upload's stamp, so the next listing neither
  * pulls it back nor sees anything to push.
  *
@@ -1858,7 +1859,8 @@ export async function publishCuratedLayer(volumeUuid: string): Promise<CuratedPu
     const place = locateVolumeInListing(listing, row);
     if (!place) return 'failed';
     const { totalChars } = buildPageCharCounts(edit.pages);
-    const meta = buildLayerMokuroMetadata(row, edit, totalChars);
+    const baseSeal = await editBaseSeal(db, row);
+    const meta = buildLayerMokuroMetadata(row, edit, totalChars, { baseSeal });
     const blob = new Blob([JSON.stringify(meta)], { type: 'application/json' });
     const path = `${place.folderTitle}/${layerSidecarName(place.stem, CURATED_LAYER_ID)}`;
     const uploaded = await provider.uploadFile(path, blob);

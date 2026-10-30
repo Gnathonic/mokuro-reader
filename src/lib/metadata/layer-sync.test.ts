@@ -28,6 +28,7 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
 }));
 
 import { db } from '$lib/catalog/db';
+import { contentDigest, provenanceFromParsed } from '$lib/catalog/ocr-provenance';
 import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
 import {
   clearAllLayers,
@@ -2188,6 +2189,23 @@ describe('Publish and Unpublish the shared curated layer', () => {
     );
     expect(downloadFile).not.toHaveBeenCalled();
     expect(uploadFile.mock.calls.map((c) => c[0])).not.toContain('Series/VOL 1.curated.mokuro');
+  });
+
+  it('the published file names the sealed main its corrections sit on, as the edit push does', async () => {
+    await seedRow();
+    const pages = (await db.volume_ocr.get('v1'))!.pages;
+    const seal = (await contentDigest({ id: 'hayai-nova', revision: 2 }, pages))!;
+    await db.volumes.update('v1', {
+      ocr_provenance: [
+        (await provenanceFromParsed({ id: 'hayai-nova', revision: 2, seal }, pages))!
+      ]
+    });
+    await seedEdit();
+    expect(await publishCuratedLayer('v1')).toBe('published');
+
+    const json = JSON.parse(await (uploadFile.mock.calls[0][1] as Blob).text());
+    expect(json.edited).toMatchObject({ by: 'mokuro-reader', base_seal: seal });
+    expect(json.ocr_engine).toBeUndefined();
   });
 
   it("a 403 is 'refused' and writes no row", async () => {
