@@ -1687,8 +1687,11 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   `feat/cloud-bunko`, nightly for `develop` and `feat/cloud-bunko`, and on demand, only where
   `rig-driver.ts` exists (else shown skipped). Bunko is the nightly pre-release `BUNKO_REF` maps
   to (`0.8/remote-storage` → `nightly-0.8`, `main` → `nightly`, checked out at its `bunko_sha`),
-  built from source for any other branch. It runs `cargo xtask interop rig all --provider all`
-  with `--reader-dir` on the PR's checkout and uploads the results as `rig-<target>` on every run.
+  built from source for any other branch. It runs Bunko's six legs as six jobs per target
+  (`local` = dav,api; each of google/microsoft/mega/rclone = bridge,direct,shared; `cloud` on
+  all; 60 min each — all 18 pairs in one job took 49 min locally), each one
+  `cargo xtask interop rig <suites> --provider <p>` with `--reader-dir` on the PR's checkout,
+  and uploads the results as `rig-<target>-<leg>` on every run.
 
 ### E2E (Playwright)
 

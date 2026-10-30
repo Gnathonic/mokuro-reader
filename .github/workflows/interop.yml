@@ -136,16 +136,29 @@ jobs:
           fi
           echo "targets=$targets" | tee -a "$GITHUB_OUTPUT"
 
+  # One job per target and leg: Bunko's own split (its interop.yml), since one job
+  # running all 18 suite/provider pairs one after another measured 49 minutes on a
+  # developer machine (shared-google and shared-mega 12 each), too close to any
+  # single timeout on a slower runner.
   rig:
-    name: Rig against Bunko (${{ matrix.name }})
+    name: Rig against Bunko (${{ matrix.target.name }}, ${{ matrix.leg.name }})
     needs: rig-refs
     if: needs.rig-refs.outputs.targets != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Bunko gives a leg 45 minutes against 2-16 measured; a leg here may also have to
+    # build Bunko from source (no nightly) and always builds the reader.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.rig-refs.outputs.targets) }}
+        target: ${{ fromJSON(needs.rig-refs.outputs.targets) }}
+        leg:
+          - { name: local, suites: 'dav,api', provider: local }
+          - { name: google, suites: 'bridge,direct,shared', provider: google }
+          - { name: microsoft, suites: 'bridge,direct,shared', provider: microsoft }
+          - { name: mega, suites: 'bridge,direct,shared', provider: mega }
+          - { name: rclone, suites: 'bridge,direct,shared', provider: rclone }
+          - { name: cloud, suites: cloud, provider: all }
     env:
       # The Bunko branch to test against; it moves to `main` once 0.8 is merged there.
       BUNKO_REF: ${{ vars.BUNKO_REF || '0.8/remote-storage' }}
@@ -153,7 +166,7 @@ jobs:
       - name: Check out the reader
         uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.ref }}
+          ref: ${{ matrix.target.ref }}
           path: reader
           persist-credentials: false
 
@@ -228,12 +241,15 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      # Every suite on every provider. The rig builds this checkout itself
+      # This leg's suites on its provider. The rig builds this checkout itself
       # (`npm ci`, `vite build --mode interop`) and downloads its pinned rclone.
-      - name: Rig
+      - name: Rig ${{ matrix.leg.suites }} on ${{ matrix.leg.provider }}
         working-directory: bunko
+        env:
+          SUITES: ${{ matrix.leg.suites }}
+          PROVIDER: ${{ matrix.leg.provider }}
         run: >-
-          cargo xtask interop rig all --provider all
+          cargo xtask interop rig "$SUITES" --provider "$PROVIDER"
           --bin "$GITHUB_WORKSPACE/bunko-bin/mokuro-bunko-testing-x86_64-linux"
           --cloudsim-bin "$GITHUB_WORKSPACE/bunko-bin/bunko-cloudsim-x86_64-linux"
           --reader-dir "$GITHUB_WORKSPACE/reader"
@@ -242,6 +258,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rig-${{ matrix.name }}
+          name: rig-${{ matrix.target.name }}-${{ matrix.leg.name }}
           path: bunko/target/interop/rig/
           if-no-files-found: ignore
