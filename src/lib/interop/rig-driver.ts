@@ -22,7 +22,14 @@ import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud
 import { deleteVolumeCompletely } from '$lib/import';
 import { publishCuratedLayer, pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
-import { flushSpineOffsetWrites, scheduleSpineOffsetWrite } from '$lib/metadata/spine-offsets';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import {
+  clampSpineOffset,
+  flushSpineOffsetWrites,
+  getSpineOffsets,
+  sameSpineOffsets,
+  scheduleSpineOffsetWrite
+} from '$lib/metadata/spine-offsets';
 import { historyDb } from '$lib/reading-history/history-db';
 import { historySyncAllowed } from '$lib/reading-history/history-sync';
 import { persistPageEdit } from '$lib/reader/edit/edit-persist';
@@ -216,9 +223,26 @@ async function renameVolume(volumeId: string, title: string): Promise<{ title: s
   return { title: safe.value };
 }
 
-/** The series editor's rename field. */
+/**
+ * The series editor's rename field, for the series the catalog card shows:
+ * the card groups rows by folded title and carries its FIRST row's title and
+ * series uuid, and the editor renames only that uuid's volumes. What the field
+ * refuses, this throws.
+ */
 async function renameSeries(series: string, title: string) {
-  const result = await executeRenameSeries(series, title.trim());
+  const key = normalizeSeriesKey(series);
+  const card = (await db.volumes.toArray()).find((r) => normalizeSeriesKey(r.series_title) === key);
+  if (!card) throw new Error('Nothing to rename');
+  const next = title.trim();
+  if (!next) throw new Error('Name cannot be empty');
+  if (next === card.series_title) {
+    return { finalTitle: card.series_title, renamedCount: 0, failures: [] };
+  }
+  const result = await executeRenameSeries(card.series_title, next, card.series_uuid);
+  // success-shaped zeros: the field reports them as a no-op, never a rename.
+  if (result.renamedCount === 0 && result.failures.length === 0) {
+    throw new Error('Nothing to rename');
+  }
   return plain(result);
 }
 
@@ -254,8 +278,22 @@ async function deleteVolume(volumeId: string): Promise<{ cloud: string; error?: 
   return error === undefined ? { cloud } : { cloud, error };
 }
 
-/** The shelf's spine nudge, written now instead of after the drag settles. */
+/**
+ * The shelf's spine nudge, written now instead of after the drag settles. As
+ * on the card, a value the shelf already shows (the record joined over the
+ * published `series.json`) is not written: it would bump the record, and the
+ * next sync would PUT `series.json` for nothing.
+ */
 async function setSpineOffset(series: string, n: number): Promise<void> {
+  // Anything still queued lands first, so "already shown" is the settled value.
+  await flushSpineOffsetWrites();
+  const key = normalizeSeriesKey(series);
+  const [record, index] = await Promise.all([
+    db.series_metadata.get(key),
+    db.series_index.get(key)
+  ]);
+  const shown = getSpineOffsets(record, index?.file);
+  if (sameSpineOffsets(shown, { ...shown, spineOffset: clampSpineOffset(n) })) return;
   const written = scheduleSpineOffsetWrite(series, { spineOffset: n });
   await flushSpineOffsetWrites();
   await written;

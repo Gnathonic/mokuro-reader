@@ -1645,6 +1645,9 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   (`__mokuroCloudTestHooks.setCloudTestToken('google', …)`). So a revoked-token spec just revokes
   in cloudsim; a refresh spec that EXPIRES the token sets a newly minted one first, as GIS would
   hand out.
+- The driver refuses what the UI refuses: `renameSeries` renames the catalog card's series uuid
+  only (its first row's) and throws `Nothing to rename`; `setSpineOffset` skips a value the shelf
+  already shows; `editFirstBlock` on `original` throws (`persistLayerPageEdit`).
 - Local rig runs pass `--reader-dir <this worktree>`; `interop/reader.ref` must name a pushed commit.
 
 ### E2E (Playwright)

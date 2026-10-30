@@ -83,7 +83,10 @@ vi.mock('$lib/metadata/layer-sync', () => ({
   deleteCloudLayerFile: vi.fn(),
   unpublishCuratedLayer: vi.fn()
 }));
-vi.mock('$lib/metadata/spine-offsets', () => ({
+vi.mock('$lib/metadata/spine-offsets', async () => ({
+  ...(await vi.importActual<typeof import('$lib/metadata/spine-offsets')>(
+    '$lib/metadata/spine-offsets'
+  )),
   scheduleSpineOffsetWrite: vi.fn(async () => undefined),
   flushSpineOffsetWrites: vi.fn(async () => {})
 }));
@@ -205,7 +208,12 @@ beforeEach(async () => {
   statusStore.set(null);
   (volumeDataStore as ReturnType<typeof writable>).set({});
   (unifiedCloudManager.cloudFiles as ReturnType<typeof writable>).set(new Map());
-  await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), clearAllLayers(db)]);
+  await Promise.all([
+    db.volumes.clear(),
+    db.volume_ocr.clear(),
+    db.series_metadata.clear(),
+    clearAllLayers(db)
+  ]);
   await db.volumes.bulkPut([
     {
       volume_uuid: 'v1',
@@ -438,13 +446,46 @@ describe('renames and deletes', () => {
     expect(updateVolumeInDb).not.toHaveBeenCalled();
   });
 
-  it('renameSeries is the series editor rename', async () => {
-    expect(await install().renameSeries('Series A', ' Series Z ')).toEqual({
+  it("renameSeries is the series editor rename, for the card's series uuid", async () => {
+    // A second series uuid under the same title (a re-import): the card is the
+    // first row's series, and the editor renames only that uuid's volumes.
+    await db.volumes.put({
+      volume_uuid: 'v3',
+      series_uuid: 's2',
+      series_title: 'Series A',
+      volume_title: 'Vol 3',
+      mokuro_version: '0.2.1',
+      page_count: 2,
+      character_count: 4,
+      page_char_counts: [2, 4]
+    });
+    expect(await install().renameSeries('series a', ' Series Z ')).toEqual({
       finalTitle: 'Series Z',
       renamedCount: 1,
       failures: []
     });
-    expect(executeRenameSeries).toHaveBeenCalledWith('Series A', 'Series Z');
+    expect(executeRenameSeries).toHaveBeenCalledWith('Series A', 'Series Z', 's1');
+  });
+
+  it('renameSeries refuses what the editor refuses: no rows, nothing renamed', async () => {
+    await expect(install().renameSeries('Nope', 'Other')).rejects.toThrow('Nothing to rename');
+    expect(executeRenameSeries).not.toHaveBeenCalled();
+
+    vi.mocked(executeRenameSeries).mockResolvedValueOnce({
+      finalTitle: 'Other',
+      renamedCount: 0,
+      failures: []
+    });
+    await expect(install().renameSeries('Series A', 'Other')).rejects.toThrow('Nothing to rename');
+  });
+
+  it('renameSeries to the same name renames nothing', async () => {
+    expect(await install().renameSeries('Series A', 'Series A ')).toEqual({
+      finalTitle: 'Series A',
+      renamedCount: 0,
+      failures: []
+    });
+    expect(executeRenameSeries).not.toHaveBeenCalled();
   });
 
   it('deleteVolume deletes the listed cloud copy before the local volume', async () => {
@@ -472,6 +513,26 @@ describe('renames and deletes', () => {
     await install().setSpineOffset('Series A', 3);
     expect(scheduleSpineOffsetWrite).toHaveBeenCalledWith('Series A', { spineOffset: 3 });
     expect(flushSpineOffsetWrites).toHaveBeenCalled();
+  });
+
+  it('setSpineOffset skips a value the shelf already shows, as the card does', async () => {
+    // No record and no published value: 0 is what is shown.
+    await install().setSpineOffset('Series A', 0);
+    expect(scheduleSpineOffsetWrite).not.toHaveBeenCalled();
+
+    await db.series_metadata.put({
+      series_key: 'series a',
+      series_title: 'Series A',
+      external_ids: {},
+      titles: {},
+      synonyms: [],
+      spine_offset: 3
+    } as never);
+    await install().setSpineOffset('Series A', 3);
+    expect(scheduleSpineOffsetWrite).not.toHaveBeenCalled();
+
+    await install().setSpineOffset('Series A', 4);
+    expect(scheduleSpineOffsetWrite).toHaveBeenCalledWith('Series A', { spineOffset: 4 });
   });
 });
 
@@ -503,6 +564,27 @@ describe('editing and layers', () => {
     expect((await getLayerPages(db, 'v1', 'edit'))?.[0].blocks[0].lines).toEqual(['わたしの']);
     expect((await getLayerPages(db, 'v1', 'curated'))?.[0].blocks[0].lines).toEqual(['あい']);
     expect((await db.volume_ocr.get('v1'))?.pages[0].blocks[0].lines).toEqual(['あい']);
+  });
+
+  it('editFirstBlock refuses the read-only original layer, as the reader does', async () => {
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'original',
+      name: 'Original',
+      kind: 'original',
+      created_at: 't',
+      updated_at: 't',
+      pages: PAGES
+    });
+    (volumeDataStore as ReturnType<typeof writable>).set({
+      v1: { progress: 1, completed: false, settings: { ocrLayer: 'original' } }
+    });
+    await expect(install().editFirstBlock('v1', 1, 'だめ')).rejects.toThrow(
+      'The original layer is read-only'
+    );
+    expect((await getLayerPages(db, 'v1', 'original'))?.[0].blocks[0].lines).toEqual(['あい']);
+    expect((await db.volume_ocr.get('v1'))?.pages[0].blocks[0].lines).toEqual(['あい']);
+    expect(updateVolumeSetting).not.toHaveBeenCalled();
   });
 
   it('publishCurated is the Publish action with its confirmation answered', async () => {
