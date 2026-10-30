@@ -29,6 +29,7 @@ import {
   isPreUpgradeLayerId
 } from '$lib/reader/edit/layer-names';
 import { editLayerEpoch } from '$lib/reader/edit/edit-layer-epoch';
+import { isCloudModelOutput } from '$lib/reader/edit/layer-kind';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import {
@@ -667,21 +668,23 @@ function unpublishedFileMoved(
 }
 
 /**
- * The account's own corrections, held back from a server that would share
- * them (`editLayerSync` 'local', a 0.7.x bunko), with edits the cloud has not
- * seen. They never go up there, so they are ALWAYS edited since sync — and the
- * listed `<Volume>.edit.mokuro` on such a server is the library's shared file,
- * another account's corrections. Newest-wins would replace this account's
- * edits with them; they are kept instead.
+ * Corrections that never go up to this server, with edits the cloud has not
+ * seen — they are ALWAYS edited since sync, so newest-wins would replace them
+ * with no copy kept; they are kept instead:
+ *
+ * - the account's own, held back from a server that would share them
+ *   (`editLayerSync` 'local', a 0.7.x bunko), where the listed
+ *   `<Volume>.edit.mokuro` is the library's shared file, another account's;
+ * - a server's own OCR edited in place on a bunko (`isCloudModelOutput`): an
+ *   edit there forks into `edit`, but one begun before the provider said it
+ *   compiles its metadata (signing in, offline, a cloud-direct marker not read
+ *   yet) reached the row, and bunko rewrites such a layer in place when its
+ *   engine moves on.
  */
 function keepsLocalEdits(row: VolumeOcrLayer | undefined, target: LayerTarget): boolean {
-  return (
-    !!row &&
-    isPersonalLayerId(row.layer_id) &&
-    layerIdStaysLocal(row.layer_id, target) &&
-    !isPassiveSnapshot(row) &&
-    editedSinceSync(row)
-  );
+  if (!row || isPassiveSnapshot(row) || !editedSinceSync(row)) return false;
+  if (isPersonalLayerId(row.layer_id)) return layerIdStaysLocal(row.layer_id, target);
+  return target.serverCompilesMetadata && isCloudModelOutput(row);
 }
 
 /** Same key every "which row is this cloud file" question uses. */

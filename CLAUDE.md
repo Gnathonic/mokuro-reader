@@ -523,9 +523,10 @@ ServerKeepsake or Reserved (sidecar names rule v1 `layer_class`), whose PUT it
 refuses — plus the server's own model output (`isCloudModelOutput`, kind `ocr`
 with an `engine` and a `cloud` stamp) even once edited: an edit forks into
 `edit` there, but one begun before the provider said it compiles its metadata
-(signing in, a cloud-direct marker not read yet) edits the row in place, and
-that edit stays on the device rather than replace what the model wrote for
-every account. Its id half,
+(signing in, offline, a cloud-direct marker not read yet) edits the row in
+place, and that edit stays on the device rather than replace what the model
+wrote for every account — nor does bunko's later rewrite of that layer replace
+it (`keepsLocalEdits`, as for an `edit` held back from a 0.7.x). Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
 IS is somebody else's file, so neither a local delete, its tombstone nor the
 `.gz`-sibling tidy ever removes its cloud copy (the delete reports

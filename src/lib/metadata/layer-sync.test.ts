@@ -1925,6 +1925,50 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     expect(uploadFile).toHaveBeenCalledTimes(1);
   });
 
+  it('…and a rewrite of that layer by bunko never replaces the corrections made in it', async () => {
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    canAddFiles = true;
+    const served = (text: string) =>
+      new Blob([
+        JSON.stringify({
+          ...JSON.parse(mokuroJson(text)),
+          ocr_engine: { id: 'hayai', detector: 'ctd', generator: 'mokuro-bunko 0.8.0' }
+        })
+      ]);
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.hayai.mokuro')];
+    downloadFile.mockResolvedValue(served('かな'));
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    const pulled = (await getLayerWithPages(db, 'v1', 'hayai'))!;
+    // Edited in place in the fork window (the provider said plain storage).
+    const syncedAt = Date.parse(pulled.cloud!.synced_at);
+    await putLayerWithPages(db, {
+      ...pulled,
+      updated_at: new Date(syncedAt + 60_000).toISOString(),
+      pages: [pg('なおし')]
+    });
+
+    // bunko re-runs the engine at a newer revision and rewrites the file in place.
+    downloadFile.mockClear();
+    downloadFile.mockResolvedValue(served('あたらしい'));
+    const rewritten = cloudFile('Series/Vol 1.hayai.mokuro', {
+      size: 333,
+      modifiedTime: new Date(syncedAt + 3_600_000).toISOString()
+    });
+    await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz'), rewritten), 'webdav');
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect((await getLayerWithPages(db, 'v1', 'hayai'))!.pages[0].blocks[0].lines).toEqual([
+      'なおし'
+    ]);
+
+    // On plain storage the same row is an ordinary layer file: newest wins.
+    serverCompilesMetadata = false;
+    editLayerSync = undefined;
+    await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz'), rewritten), 'webdav');
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+  });
+
   it('an edited previous-ocr keepsake is never pushed to bunko (it reserves the id), but syncs on plain storage', async () => {
     await seedRow();
     await seedLayer('previous-ocr', { kind: 'ocr' });
