@@ -615,6 +615,21 @@ describe('curatedPublish from the holder', () => {
     );
   });
 
+  it('never overrides a verdict the provider reported itself (a WebDAV bunko server’s /me)', async () => {
+    // As historySync and positionsSync: the server that answers this account
+    // knows its rights; a marker in the same folder only speaks for its owner.
+    await ingestMarkerRead(
+      'webdav',
+      read({ id: 'n1', etag: 'v1', body: marker({ curated: true }) })
+    );
+    for (const own of ['none', 'owned', 'all'] as const) {
+      expect(withCloudBunkoStatus('webdav', { ...base, curatedPublish: own }).curatedPublish).toBe(
+        own
+      );
+    }
+    expect(withCloudBunkoStatus('webdav', base).curatedPublish).toBe('all');
+  });
+
   it('stops once the marker is no longer fresh', async () => {
     await ingestMarkerRead('mega', read({ id: 'n1', etag: 'v1', body: marker({ curated: true }) }));
     expect(withCloudBunkoStatus('mega', base).curatedPublish).toBe('all');

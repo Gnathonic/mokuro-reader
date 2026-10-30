@@ -97,7 +97,8 @@ export function servedEngineOf(json: unknown): string | undefined {
 
 /**
  * A layer of corrections by its id alone: the shared `curated`, an account's
- * `edit`/`edit-<n>`, or bunko's `pre-upgrade` keepsake. No server stamp makes
+ * `edit`/`edit-<n>`, or one of bunko's keepsakes (`pre-upgrade…`, a case
+ * merge's `curated-<n>`). No server stamp makes
  * one of them a generation (`layerKindForId`, `layer-sync`'s re-filing).
  */
 export function isCorrectionsLayerId(layerId: string): boolean {
