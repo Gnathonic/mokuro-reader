@@ -1648,6 +1648,13 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 - The driver refuses what the UI refuses: `renameSeries` renames the catalog card's series uuid
   only (its first row's) and throws `Nothing to rename`; `setSpineOffset` skips a value the shelf
   already shows; `editFirstBlock` on `original` throws (`persistLayerPageEdit`).
+- An interop build reaches no host off the machine but the ones the config names: the rig
+  refuses every other request and FAILS the spec that made it (only `apis.google.com/js/api.js`
+  and `accounts.google.com/gsi/client`, which `app.html` loads, are answered, empty). So
+  `src/lib/interop/hermetic.ts` (`INTEROP_BUILD`, MODE interop only — Vitest keeps it off) skips
+  the Noto Sans JP web font, and `src/hooks.server.ts` serves the shell without `app.html`'s
+  other absolute addresses (the font host's preconnects, the jidoujisho icon). A new third-party
+  fetch needs the same treatment, or the rig fails.
 - Local rig runs pass `--reader-dir <this worktree>`; `interop/reader.ref` must name a pushed commit.
 
 ### E2E (Playwright)
