@@ -30,7 +30,9 @@ import {
 } from '$lib/catalog/server-ocr-pending';
 import { isMetadataOnly, isVolumeInstalled } from '$lib/catalog/volume-state';
 import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
-import { deleteVolumeCompletely } from '$lib/import';
+import { deleteVolumeCompletely, importFiles } from '$lib/import';
+import { defaultNaming } from '$lib/import/image-only-review';
+import { decideCurrent, reviewSession } from '$lib/import/review-session';
 import { publishCuratedLayer, pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
 import type { SeriesIndexRecord } from '$lib/metadata/series-index';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
@@ -61,6 +63,7 @@ import {
   volumes as volumeDataStore
 } from '$lib/settings/volume-data';
 import type { Page, VolumeMetadata } from '$lib/types';
+import { backupQueue, backupQueueSettled } from '$lib/util/backup-queue';
 import { downloadQueue } from '$lib/util/download-queue';
 import { nav } from '$lib/util/hash-router';
 import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
@@ -71,6 +74,7 @@ import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
 import type { ProviderStatus, ProviderType } from '$lib/util/sync/provider-interface';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { uploadFailures } from '$lib/util/upload-failures';
 import { renameVolumeInCloud, updateVolumeInDb, updateVolumeStats } from '$lib/util/volume-editor';
 
 export const RIG_DRIVER_API_VERSION = 1;
@@ -306,6 +310,84 @@ async function installedAs(volume: VolumeMetadata): Promise<VolumeMetadata | nul
         normalizeVolumeTitleKey(r.volume_title) === title
     ) ?? null
   );
+}
+
+function fromBase64(b64: string): Uint8Array<ArrayBuffer> {
+  const raw = atob(b64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+/** How long an import may take to install its volume. */
+const IMPORT_TIMEOUT_MS = 120_000;
+
+/**
+ * The upload modal's import of one archive (`importFiles`), picked inside its
+ * series folder: `path` is `<Series>/<Volume>.<ext>`, as a folder pick names
+ * the file. An image-only archive's review is answered as a user keeping the
+ * names does (the folder's series, the file's own name). Resolves with the
+ * volume once it is installed.
+ */
+async function importVolume(o: { path: string; base64: string }): Promise<{ id: string }> {
+  const parts = o.path.split('/');
+  if (parts.length !== 2 || !parts[0] || !/^.+\.[^.]+$/.test(parts[1])) {
+    throw new Error(`${o.path}: name the archive <Series>/<Volume>.<ext>`);
+  }
+  const [series, name] = parts;
+  const title = name.replace(/\.[^.]+$/, '');
+  const file = new File([fromBase64(o.base64)], name);
+  Object.defineProperty(file, 'webkitRelativePath', { value: o.path });
+  const answered = new Set<string>();
+  const unsubscribe = reviewSession.subscribe((state) => {
+    const head = state.pending[0];
+    if (!head || answered.has(head.group.id)) return;
+    answered.add(head.group.id);
+    // After the store update that showed it, as the dialog's click comes.
+    queueMicrotask(() => {
+      if (get(reviewSession).pending[0]?.group.id !== head.group.id) return;
+      decideCurrent({ action: 'import', naming: defaultNaming(head.group, 'folder') });
+    });
+  });
+  try {
+    const result = await importFiles([file]);
+    if (!result.success) throw new Error(result.errors.join('; ') || `${o.path} did not import`);
+    const deadline = Date.now() + IMPORT_TIMEOUT_MS;
+    const seriesKey = normalizeSeriesKey(series);
+    const titleKey = normalizeVolumeTitleKey(title);
+    for (;;) {
+      const row = (await db.volumes.toArray()).find(
+        (r) =>
+          isVolumeInstalled(r) &&
+          normalizeSeriesKey(r.series_title) === seriesKey &&
+          normalizeVolumeTitleKey(r.volume_title) === titleKey
+      );
+      if (row) return { id: row.volume_uuid };
+      if (Date.now() > deadline) throw new Error(`${o.path} was not installed by its import`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } finally {
+    unsubscribe();
+  }
+}
+
+/**
+ * The volume card's Backup (`queueVolumeForBackup`), to the end of its run:
+ * the upload, then the run's listing and its `series.json` / `catalog.json`
+ * writes. Answers where the cloud lists the archive, or why the upload failed.
+ */
+async function backupVolume(
+  volumeId: string
+): Promise<{ cloudPath: string | null; error?: string }> {
+  const row = await requireRow(volumeId);
+  backupQueue.queueVolumeForBackup(row);
+  if (!backupQueue.isVolumeInBackupQueue(volumeId)) {
+    throw new Error(`${row.volume_title} could not be queued for backup`);
+  }
+  await backupQueueSettled();
+  const failure = get(uploadFailures)[volumeId];
+  if (failure) return { cloudPath: null, error: failure.reason };
+  return { cloudPath: listedArchivePath(row) };
 }
 
 /** The catalog card's click: the series page, by the title the card navigates with. */
@@ -559,7 +641,10 @@ export function createRigDriver() {
     showSeries,
     pendingOcr,
     // ...and for the direct suite.
-    idle
+    idle,
+    // ...and for the shared suite.
+    importVolume,
+    backupVolume
   };
 }
 

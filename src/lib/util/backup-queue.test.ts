@@ -138,6 +138,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { downloadFileBlob } from './volume-sidecars';
 import {
   backupQueue,
+  backupQueueSettled,
   finishBackupRun,
   noteSeriesNeedingIndexWrite,
   queueVolumeForBackup,
@@ -464,6 +465,66 @@ describe('live per-completion series.json scheduling', () => {
 
     expect(scheduleSeriesFileWrite).toHaveBeenCalledWith('Berserk', { duringBackupRun: true });
     expect(calls).toContain('write:Berserk');
+  });
+});
+
+describe('backupQueueSettled', () => {
+  const provider = {
+    type: 'webdav',
+    uploadConcurrencyLimit: 2,
+    supportsWorkerUpload: true
+  } as never;
+
+  beforeEach(() => {
+    calls.length = 0;
+    capturedTasks.length = 0;
+    vi.clearAllMocks();
+    getActiveProvider.mockReturnValue(provider);
+  });
+
+  it('resolves at once when nothing is queued or running', async () => {
+    await expect(backupQueueSettled()).resolves.toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  it('waits for the queued upload AND the end of its run (listing, series.json, catalog.json)', async () => {
+    queueVolumeForBackup(
+      {
+        volume_uuid: 'settle-uuid',
+        series_uuid: 'series-1',
+        series_title: 'One Piece',
+        volume_title: 'Volume 3',
+        mokuro_version: '',
+        page_count: 2,
+        character_count: 0,
+        page_char_counts: []
+      },
+      provider,
+      { includeSidecars: false, embedSidecarsInArchive: false }
+    );
+    let settled = false;
+    const settling = backupQueueSettled().then(() => (settled = true));
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    // The run's listing hangs: the queue is empty once the upload is done, but
+    // the run's metadata writes have not happened yet.
+    let release: (() => void) | undefined;
+    fetchAllCloudVolumes.mockImplementationOnce(async (options?: { refreshIndexes?: boolean }) => {
+      calls.push(`fetch:${options?.refreshIndexes === false ? 'no-index-refresh' : 'default'}`);
+      await new Promise<void>((resolve) => (release = resolve));
+    });
+    const done = capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'remote-file-id', size: 123 },
+      vi.fn()
+    );
+    await vi.waitFor(() => expect(calls).toContain('fetch:no-index-refresh'));
+    expect(backupQueue.isVolumeInBackupQueue('settle-uuid')).toBe(false);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(settled).toBe(false);
+
+    release!();
+    await done;
+    await settling;
+    expect(calls).toEqual(expect.arrayContaining(['write:One Piece', 'catalog', 'refresh']));
   });
 });
 

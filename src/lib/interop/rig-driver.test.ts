@@ -114,8 +114,43 @@ vi.mock('$lib/settings/volume-data', async () => {
 vi.mock('$lib/import', () => ({
   deleteVolumeCompletely: vi.fn(async () => {
     h.calls.push('deleteVolumeCompletely');
-  })
+  }),
+  importFiles: vi.fn(async () => ({
+    success: true,
+    imported: 0,
+    failed: 0,
+    errors: [],
+    queued: 0,
+    awaitingReview: 0
+  }))
 }));
+/** The backup queue as the card's Backup sees it; a spec plays the upload (`bq.finish`). */
+const bq = vi.hoisted(() => ({
+  queued: [] as Array<Record<string, unknown>>,
+  settle: null as null | (() => void)
+}));
+vi.mock('$lib/util/backup-queue', () => ({
+  backupQueue: {
+    queueVolumeForBackup: vi.fn((volume: Record<string, unknown>) => {
+      h.calls.push('queueVolumeForBackup');
+      bq.queued.push(volume);
+    }),
+    isVolumeInBackupQueue: vi.fn((uuid: string) => bq.queued.some((v) => v.volume_uuid === uuid))
+  },
+  backupQueueSettled: vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        bq.settle = () => {
+          h.calls.push('settled');
+          resolve();
+        };
+      })
+  )
+}));
+vi.mock('$lib/util/upload-failures', async () => {
+  const { writable } = await import('svelte/store');
+  return { uploadFailures: writable<Record<string, unknown>>({}) };
+});
 vi.mock('$lib/util/hash-router', () => ({ nav: { toReader: vi.fn(), toSeries: vi.fn() } }));
 /** The download queue as the cards see it; a spec plays the worker (`finishDownload`). */
 const dq = vi.hoisted(() => ({ queued: [] as Array<Record<string, unknown>> }));
@@ -181,6 +216,12 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import { renameVolumeInCloud, updateVolumeInDb } from '$lib/util/volume-editor';
 import { downloadQueue } from '$lib/util/download-queue';
 import { queueStatusStore } from '$lib/catalog/server-ocr-pending';
+import { importFiles } from '$lib/import';
+import { getImportUiBridge } from '$lib/import/import-ui';
+import type { ReviewGroup } from '$lib/import/image-only-review';
+import { reviewSession, type GroupDecision } from '$lib/import/review-session';
+import { backupQueue } from '$lib/util/backup-queue';
+import { uploadFailures } from '$lib/util/upload-failures';
 import { RIG_CAPABILITIES, install } from './rig-driver';
 
 const statusStore = activeProviderStatus as unknown as Writable<Record<string, unknown> | null>;
@@ -211,7 +252,10 @@ const V1_METHODS = [
   'showSeries',
   'pendingOcr',
   // ...and the direct suite.
-  'idle'
+  'idle',
+  // ...and the shared suite.
+  'importVolume',
+  'backupVolume'
 ];
 
 /** The download worker's end: the volume is installed (or not), then leaves the queue. */
@@ -239,6 +283,10 @@ beforeEach(async () => {
   delete (globalThis as Record<string, unknown>).__mokuroInterop;
   h.calls.length = 0;
   dq.queued.length = 0;
+  bq.queued.length = 0;
+  bq.settle = null;
+  reviewSession.set({ pending: [], decided: 0 });
+  (uploadFailures as unknown as Writable<Record<string, unknown>>).set({});
   queueStatusStore.set({});
   vi.clearAllMocks();
   vi.mocked(providerManager.getActiveProvider).mockReturnValue(null);
@@ -468,6 +516,113 @@ describe('library()', () => {
       hasOcr: false
     });
     expect(typeof cloudOnly?.id).toBe('string');
+  });
+});
+
+describe('importing and backing up', () => {
+  /** What the upload modal's import does with an image-only archive: offer it for review. */
+  function importOffersReview(decisions: GroupDecision[]) {
+    vi.mocked(importFiles).mockImplementationOnce(async (files: File[]) => {
+      const file = files[0];
+      h.calls.push(`importFiles:${file.webkitRelativePath}:${file.name}:${file.size}`);
+      const group: ReviewGroup = {
+        id: 'g1',
+        series: 'Rig Series',
+        candidates: [{ id: 'c1', basePath: 'Rig Series/Vol 3', source: file.name }],
+        ownUuids: ['u3'],
+        matches: new Map(),
+        existingCount: 2
+      };
+      getImportUiBridge().reviewImageOnly([group], (_id, decision) => {
+        decisions.push(decision);
+        if (decision.action !== 'import') return;
+        // The queue saves the volume under the names the decision gave it.
+        void db.volumes.put({
+          volume_uuid: 'u3',
+          series_uuid: 's-rig',
+          series_title: decision.naming.series,
+          volume_title: decision.naming.mode === 'folder' ? 'Vol 3' : 'Rig Series 03',
+          mokuro_version: '',
+          page_count: 2,
+          character_count: 0,
+          page_char_counts: []
+        });
+      });
+      return { success: true, imported: 0, failed: 0, errors: [], queued: 0, awaitingReview: 1 };
+    });
+  }
+
+  it('importVolume imports the archive as picked in its series folder and keeps its names in the review', async () => {
+    const decisions: GroupDecision[] = [];
+    importOffersReview(decisions);
+    const bytes = 'PK\u0003\u0004 an archive';
+    const result = await install().importVolume({
+      path: 'Rig Series/Vol 3.cbz',
+      base64: btoa(bytes)
+    });
+    expect(result).toEqual({ id: 'u3' });
+    expect(h.calls).toContain(`importFiles:Rig Series/Vol 3.cbz:Vol 3.cbz:${bytes.length}`);
+    // The dialog's answer for keeping the names: the folder's series, the file's own name.
+    expect(decisions).toEqual([
+      {
+        action: 'import',
+        naming: { series: 'Rig Series', mode: 'folder', start: 3, overrides: {} }
+      }
+    ]);
+  });
+
+  it('importVolume refuses a path that is not <Series>/<Volume>.<ext>', async () => {
+    await expect(install().importVolume({ path: 'Vol 3.cbz', base64: '' })).rejects.toThrow(
+      /Series/
+    );
+    expect(importFiles).not.toHaveBeenCalled();
+  });
+
+  it('importVolume fails when the import does', async () => {
+    vi.mocked(importFiles).mockResolvedValueOnce({
+      success: false,
+      imported: 0,
+      failed: 1,
+      errors: ['not an archive'],
+      queued: 0,
+      awaitingReview: 0
+    });
+    await expect(
+      install().importVolume({ path: 'Rig Series/Vol 3.cbz', base64: btoa('x') })
+    ).rejects.toThrow('not an archive');
+  });
+
+  it("backupVolume is the card's Backup, to the end of the run (its metadata writes included)", async () => {
+    listed('Series A/Vol 1.cbz');
+    let done = false;
+    const backing = install()
+      .backupVolume('v1')
+      .then((r) => {
+        done = true;
+        return r;
+      });
+    await vi.waitFor(() => expect(bq.queued).toHaveLength(1));
+    expect(bq.queued[0]).toMatchObject({ volume_uuid: 'v1', volume_title: 'Vol 1' });
+    await vi.waitFor(() => expect(bq.settle).not.toBeNull());
+    expect(done).toBe(false);
+    bq.settle!();
+    expect(await backing).toEqual({ cloudPath: 'Series A/Vol 1.cbz' });
+    expect(h.calls).toEqual(['queueVolumeForBackup', 'settled']);
+  });
+
+  it('backupVolume answers why an upload failed', async () => {
+    const backing = install().backupVolume('v1');
+    await vi.waitFor(() => expect(bq.settle).not.toBeNull());
+    (uploadFailures as unknown as Writable<Record<string, unknown>>).set({
+      v1: { volume_uuid: 'v1', reason: 'Storage is full' }
+    });
+    bq.settle!();
+    expect(await backing).toEqual({ cloudPath: null, error: 'Storage is full' });
+  });
+
+  it('backupVolume refuses what the queue refuses', async () => {
+    vi.mocked(backupQueue.queueVolumeForBackup).mockImplementationOnce(() => {});
+    await expect(install().backupVolume('v1')).rejects.toThrow('could not be queued');
   });
 });
 

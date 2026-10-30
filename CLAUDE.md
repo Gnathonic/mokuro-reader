@@ -1654,6 +1654,13 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   `showSeries(series)` (the catalog card's click: the series page, so its volume cards mark
   themselves shown for the OCR queue poller) and `pendingOcr(volumeId)` (what the card shows of
   the server's queue, `describePendingOcr`).
+- The shared suite (the reader and a cloud Bunko on one folder) also calls
+  `importVolume({ path, base64 })` — the upload modal's `importFiles` of `<Series>/<Volume>.cbz`
+  as a folder pick names it, an image-only archive's review answered keeping its names
+  (`defaultNaming` in `folder` mode) — and `backupVolume(volumeId)`: the card's Backup, awaited
+  to the end of its run (`backupQueueSettled`, `util/backup-queue.ts`: the upload, then the run's
+  listing and its `series.json`/`catalog.json` writes), answering `{ cloudPath }` or the
+  upload's failure.
 - An interop build reaches no host off the machine but the ones the config names: the rig
   refuses every other request and FAILS the spec that made it (only `apis.google.com/js/api.js`
   and `accounts.google.com/gsi/client`, which `app.html` loads, are answered, empty). So

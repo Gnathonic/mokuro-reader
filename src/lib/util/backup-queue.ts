@@ -124,6 +124,9 @@ const queueStore = writable<BackupQueueItem[]>([]);
 // Track if this queue is currently using the shared pool
 let processingStarted = false;
 
+/** The end of the run in flight (`finishBackupRun` from `checkAndTerminatePool`), or null. */
+let runEnding: Promise<void> | null = null;
+
 /**
  * Is a backup/export run currently draining the queue?
  *
@@ -504,8 +507,31 @@ async function checkAndTerminatePool(): Promise<void> {
     // run's series.json files against that listing, then let the index refresh
     // read them back.
     console.log('[Backup Queue] All uploads complete, refreshing cloud cache...');
-    await finishBackupRun();
+    const ending = finishBackupRun();
+    runEnding = ending;
+    try {
+      await ending;
+    } finally {
+      if (runEnding === ending) runEnding = null;
+    }
     console.log('[Backup Queue] Cloud cache refreshed with server data');
+  }
+}
+
+/**
+ * Resolves once nothing is queued or uploading AND the last run has ended —
+ * its listing, `series.json` and `catalog.json` writes done (or skipped). An
+ * upload alone leaving the queue is not the end: the run's metadata writes
+ * come after it.
+ */
+export async function backupQueueSettled(): Promise<void> {
+  for (;;) {
+    if (runEnding) {
+      await runEnding.catch(() => {});
+      continue;
+    }
+    if (get(queueStore).length === 0 && !processingStarted) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
 }
 
