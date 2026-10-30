@@ -520,7 +520,12 @@ worker message): an untouched upgrade layer everywhere; `curated` everywhere
 compiles its metadata `original`, bunko's keepsakes (`pre-upgrade*`,
 `curated-<n>`) and `previous-ocr*` even once edited — every id bunko classes
 ServerKeepsake or Reserved (sidecar names rule v1 `layer_class`), whose PUT it
-refuses. Its id half,
+refuses — plus the server's own model output (`isCloudModelOutput`, kind `ocr`
+with an `engine` and a `cloud` stamp) even once edited: an edit forks into
+`edit` there, but one begun before the provider said it compiles its metadata
+(signing in, a cloud-direct marker not read yet) edits the row in place, and
+that edit stays on the device rather than replace what the model wrote for
+every account. Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
 IS is somebody else's file, so neither a local delete, its tombstone nor the
 `.gz`-sibling tidy ever removes its cloud copy (the delete reports
@@ -550,7 +555,7 @@ exported or embedded:
 | `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                                           |
 | `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                                         |
 | `curated-<n>`                     | bunko's copy of a second `curated` a case merge found              | bunko only         | on bunko                                         |
-| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | no                                               |
+| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | server OCR a cloud vouches for, on bunko         |
 
 So `edit` lives per account on a bunko that lists it in `per_user_layers`
 (the server serves each account its own file at the same path), stays on the
@@ -561,7 +566,7 @@ shared library files.
 **Shared layers are read-only; an edit forks into `edit`.**
 `forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
 and on a server that compiles its metadata also for bunko's keepsakes
-(`pre-upgrade*`, `curated-<n>`) and for server-stamped OCR rows (kind `ocr` with an `engine` and a `cloud` stamp) —
+(`pre-upgrade*`, `curated-<n>`) and for server-stamped OCR rows (`isCloudModelOutput`) —
 on a shared library those are the one copy everyone reads. Edit mode on such a
 layer (`E`, quick actions, context menu) calls `forkIntoEditLayer`: it makes
 `edit` from the displayed layer's pages when there is none (no cloud stamp, so

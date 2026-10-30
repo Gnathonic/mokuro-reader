@@ -4,8 +4,8 @@
  * `series.json` carries per volume and `VolumeMetadata.mokuro_sha256` records
  * for the installed primary OCR — see CLAUDE.md, "OCR upgrades".
  *
- * Pure (its one import, the layer ids of `layer-names.ts`, is too) so a
- * Worker (the backup upload, the sidecar backfill's deferred feed) can hash
+ * Pure (so are its imports: the layer ids of `layer-names.ts` and the
+ * dependency-free `layer-kind.ts`) so a Worker (the backup upload, the sidecar backfill's deferred feed) can hash
  * exactly the bytes it uploads.
  */
 
@@ -15,6 +15,8 @@ import {
   isPersonalLayerId,
   isServerKeepsakeLayerId
 } from '$lib/reader/edit/layer-names';
+import { isCloudModelOutput } from '$lib/reader/edit/layer-kind';
+import type { VolumeOcrLayerKind } from '$lib/types';
 
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
@@ -122,14 +124,27 @@ export interface LayerTarget {
 
 /**
  * Must this layer stay OFF this provider (never pushed, never uploaded beside
- * a backup)? An untouched upgrade layer, everywhere (`isUntouchedUpgradeLayer`),
- * and whatever `layerIdStaysLocal` says of its id.
+ * a backup)? An untouched upgrade layer, everywhere (`isUntouchedUpgradeLayer`);
+ * on a server that compiles its metadata, its own model output
+ * (`isCloudModelOutput`) even when edited here — an edit forks into `edit`
+ * there, but one begun before the provider said so (signing in, a
+ * cloud-direct marker not read yet) edits the row in place, and must not
+ * replace what the model wrote for every account; and whatever
+ * `layerIdStaysLocal` says of its id.
  */
 export function layerStaysLocal(
-  layer: { layer_id: string; source_at?: string; updated_at?: string },
+  layer: {
+    layer_id: string;
+    source_at?: string;
+    updated_at?: string;
+    kind?: VolumeOcrLayerKind;
+    engine?: string;
+    cloud?: unknown;
+  },
   target: LayerTarget
 ): boolean {
   if (isUntouchedUpgradeLayer(layer)) return true;
+  if (target.serverCompilesMetadata && isCloudModelOutput(layer)) return true;
   return layerIdStaysLocal(layer.layer_id, target);
 }
 

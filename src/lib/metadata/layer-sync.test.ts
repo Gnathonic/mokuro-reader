@@ -1896,6 +1896,35 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     expect(downloadFile).not.toHaveBeenCalled();
   });
 
+  it("bunko's own OCR, edited here in place before its status was known, never goes up over the model output", async () => {
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    canAddFiles = true;
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.hayai.mokuro')];
+    const stamped = JSON.stringify({
+      ...JSON.parse(mokuroJson('かな')),
+      ocr_engine: { id: 'hayai', detector: 'ctd', generator: 'mokuro-bunko 0.8.0' }
+    });
+    downloadFile.mockResolvedValue(new Blob([stamped]));
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    const pulled = await getLayerWithPages(db, 'v1', 'hayai');
+    expect(pulled).toMatchObject({ kind: 'ocr', engine: 'hayai' });
+    expect(forksOnEdit(pulled!, { serverCompilesMetadata: true })).toBe(true);
+    // The editor opened while the provider still said plain storage (signing
+    // in, or a cloud-direct marker not read yet): the row is edited in place.
+    expect(forksOnEdit(pulled!, { serverCompilesMetadata: false })).toBe(false);
+    await putLayerWithPages(db, { ...pulled!, updated_at: '2099-01-01T00:00:00.000Z' });
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+
+    // On plain storage the same row is the user's own file: it goes up.
+    serverCompilesMetadata = false;
+    editLayerSync = undefined;
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    expect(uploadFile).toHaveBeenCalledTimes(1);
+  });
+
   it('an edited previous-ocr keepsake is never pushed to bunko (it reserves the id), but syncs on plain storage', async () => {
     await seedRow();
     await seedLayer('previous-ocr', { kind: 'ocr' });
