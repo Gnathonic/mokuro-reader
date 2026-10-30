@@ -34,6 +34,7 @@
 - WebDAV asks you to sign in again when your password stops working
 - A full MEGA account no longer deletes your synced progress
 - Series with OCR layers in the cloud can be renamed
+- MEGA moves emptied duplicate folders to the Rubbish Bin
 
 ## [1.10.0] - 2026-10-02
 

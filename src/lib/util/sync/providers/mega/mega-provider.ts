@@ -2142,8 +2142,8 @@ export class MegaProvider implements SyncProvider {
         if (!folder) return;
         // The deduplicator judged it empty from THIS tree, which lags other
         // devices' uploads and packets still in flight — and a MEGA folder
-        // delete is recursive. Delete only what the server says is empty;
-        // otherwise reload, so the next pass moves what this tree missed.
+        // removal takes its contents with it. Remove only what the server says
+        // is empty; otherwise reload, so the next pass moves what this tree missed.
         const remaining = await this.serverFolderContentCount(folderId);
         if (remaining > 0) {
           // Still not empty after a reload and a second merge (another
@@ -2161,15 +2161,12 @@ export class MegaProvider implements SyncProvider {
           await this.refreshTree();
           return;
         }
-        const stateSynced = this.waitForNodeEvent(folder, 'delete');
-        await new Promise<void>((resolve, reject) => {
-          folder.delete(true, (error: Error | null) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
-        // No manual storage.files eviction: the sc packet unlinks it, which
-        // is all isLiveNode needs.
+        // The Rubbish Bin, never a permanent delete, as Drive and Bunko do: an
+        // upload that landed after the count above is still recoverable there.
+        const trash = this.storage?.trash;
+        if (!trash) throw new Error('MEGA dedup: no Rubbish Bin in the tree');
+        const stateSynced = this.waitForNodeEvent(folder, 'move');
+        await folder.moveTo(trash);
         await stateSynced;
       },
 
