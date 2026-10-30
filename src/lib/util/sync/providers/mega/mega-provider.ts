@@ -400,6 +400,11 @@ export class MegaProvider implements SyncProvider {
       localStorage.removeItem(STORAGE_KEYS.SESSION);
       // Keep active_cloud_provider so the UI still shows MEGA in a needs-attention state.
     }
+    // The navbar's banner and the cloud screen read the provider manager's
+    // status, which moves only when asked. Imported late: it imports us.
+    void import('../../provider-manager').then(({ providerManager }) =>
+      providerManager.updateStatus()
+    );
   }
 
   /** Email captured for reconnect pre-fill (mirrors WebDAV's getLastUsername). */
