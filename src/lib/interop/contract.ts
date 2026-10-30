@@ -13,9 +13,9 @@
  * (`sidecar-names.json`, `sidecarNameVectors`).
  *
  * The fixtures are read from a Bunko checkout, never copied into this repo:
- * `BUNKO_REPO` (CI), else a sibling `mokuro-webdav-library` checkout. Without
- * one the contract tests skip with a warning; `BUNKO_CONTRACT_REQUIRED=1`
- * makes that a failure.
+ * `BUNKO_REPO` (CI), else a sibling `mokuro-webdav-library` checkout that holds
+ * this contract (`CONTRACT_BASELINE`). Without one the contract tests skip
+ * with a warning; `BUNKO_CONTRACT_REQUIRED=1` makes that a failure.
  *
  * Test-only: never import this from app code.
  */
@@ -86,15 +86,60 @@ export function contractDir(): string | null {
     }
     return dir;
   }
-  for (const rel of [
-    '../mokuro-webdav-library',
-    '../../mokuro-webdav-library',
-    '../../../mokuro-webdav-library'
-  ]) {
-    const dir = join(resolve(REPO_ROOT, rel), 'interop', 'contract');
-    if (hasSeed(dir)) return dir;
+  const found = findSiblingContract(
+    [
+      '../mokuro-webdav-library',
+      '../../mokuro-webdav-library',
+      '../../../mokuro-webdav-library'
+    ].map((rel) => resolve(REPO_ROOT, rel))
+  );
+  if (found.stale.length && !warnedStale) {
+    warnedStale = true;
+    for (const dir of found.stale) {
+      const missing = CONTRACT_BASELINE.filter((rel) => !existsSync(join(dir, rel)));
+      console.warn(
+        `[contract] Ignoring ${dir}: it lacks ${missing.join(', ')} (a Bunko branch older than ` +
+          'the contract these tests read). Name a checkout with BUNKO_REPO.'
+      );
+    }
   }
-  return null;
+  return found.dir;
+}
+
+/**
+ * Paths (under `interop/contract/`) of the newest contract files the reader's
+ * tests read. A sibling checkout found by looking around is used only when it
+ * holds all of them: one on an older branch fails ordinary unit tests on
+ * fixtures and keys it never had, which is no finding about either side. Add
+ * a path here when a test starts reading a file a new Bunko contract brought.
+ */
+export const CONTRACT_BASELINE = [
+  'seal',
+  'sidecar-names.json',
+  'bunko/curated-put-refused.json',
+  'bunko/history-put.json',
+  'bunko/login-me-registered.json',
+  'bunko/personal-put.json'
+];
+
+let warnedStale = false;
+
+/**
+ * The first of `roots` whose `interop/contract` holds the baseline, and those
+ * that fell short of it (`exists` is the file test, for the helper's own test).
+ */
+export function findSiblingContract(
+  roots: string[],
+  exists: (path: string) => boolean = existsSync
+): { dir: string | null; stale: string[] } {
+  const stale: string[] = [];
+  for (const root of roots) {
+    const dir = join(root, 'interop', 'contract');
+    if (!exists(join(dir, 'seed.json'))) continue;
+    if (CONTRACT_BASELINE.every((rel) => exists(join(dir, rel)))) return { dir, stale };
+    stale.push(dir);
+  }
+  return { dir: null, stale };
 }
 
 export function hasContract(): boolean {

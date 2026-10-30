@@ -500,8 +500,9 @@ contain your corrections)" (`layer-names.ts`). Three id families are
 CORRECTIONS by id (`isCorrectionsLayerId`): an account's own `edit`/`edit-<n>`
 ("Your corrections [n]", `isPersonalLayerId` — bunko 0.8 keeps them per
 account), the library's shared `curated` ("Shared corrections",
-`isCuratedLayerId`, published by accounts with the rights), and `pre-upgrade*`
-(`isServerKeepsakeLayerId`). They are filed kind `edit` whatever `ocr_engine`
+`isCuratedLayerId`, published by accounts with the rights), and bunko's
+keepsakes — `pre-upgrade*` and a case merge's `curated-<n>`, its copy of a
+second, different `curated` (`isServerKeepsakeLayerId`). They are filed kind `edit` whatever `ocr_engine`
 stamp their file carries, and a pull never re-files one as `ocr`.
 Two capabilities say what this server does with them
 (`ProviderStatus`): `editLayerSync` is `push` when bunko's identity lists
@@ -510,7 +511,7 @@ on any other bunko (0.7.x, or one known only by its verified PUTs — there the
 file would land in the SHARED library and replace every account's
 corrections), and absent on plain storage and cloud-direct (the user's own
 file: push). `curatedPublish` is the identity's `permissions.curated.scope`
-(`all` / `owned` / `none`), or `all` from a fresh cloud marker that keeps a
+(`all` / `owned` / `none`), else `all` from a fresh cloud marker that keeps a
 curated layer; `canPublishCurated(status, seriesTitle)` reads it (`owned` =
 a series in `metadataPermissions.ownedSeries`; absent = no).
 
@@ -519,8 +520,11 @@ a series in `metadataPermissions.ownedSeries`; absent = no).
 threaded through layer-sync's plan, the backup's layer sidecars and the
 worker message): an untouched upgrade layer everywhere; `curated` everywhere
 (it goes up only by an explicit Publish — not by sync, backup or export);
-`edit`/`edit-<n>` where `editLayerSync` is `local`; and `original` and
-`pre-upgrade*` on a server that compiles its metadata. Its id half,
+`edit`/`edit-<n>` where `editLayerSync` is `local`; and on a server that
+compiles its metadata `original`, bunko's keepsakes (`pre-upgrade*`,
+`curated-<n>`) and `previous-ocr*` even once edited — every id bunko classes
+ServerKeepsake or Reserved (sidecar names rule v1 `layer_class`), whose PUT it
+refuses. Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
 IS is somebody else's file, so neither a local delete, its tombstone nor the
 `.gz`-sibling tidy ever removes its cloud copy (the delete reports
@@ -542,14 +546,15 @@ a read-only demotion of the WebDAV provider.
 `layerStaysLocal` — never pushed by layer-sync, never a backup sidecar, never
 exported or embedded:
 
-| Id                                | What it is                                                         | Written by         | Local?                           |
-| --------------------------------- | ------------------------------------------------------------------ | ------------------ | -------------------------------- |
-| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                    |
-| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched                  |
-| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local` |
-| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                           |
-| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                         |
-| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | no                               |
+| Id                                | What it is                                                         | Written by         | Local?                                           |
+| --------------------------------- | ------------------------------------------------------------------ | ------------------ | ------------------------------------------------ |
+| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                                    |
+| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched; `previous-ocr*` always on bunko |
+| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local`                 |
+| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                                           |
+| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                                         |
+| `curated-<n>`                     | bunko's copy of a second `curated` a case merge found              | bunko only         | on bunko                                         |
+| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | no                                               |
 
 So `edit` lives per account on a bunko that lists it in `per_user_layers`
 (the server serves each account its own file at the same path), stays on the
@@ -559,8 +564,8 @@ shared library files.
 
 **Shared layers are read-only; an edit forks into `edit`.**
 `forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
-and on a server that compiles its metadata also for `pre-upgrade*` and for
-server-stamped OCR rows (kind `ocr` with an `engine` and a `cloud` stamp) —
+and on a server that compiles its metadata also for bunko's keepsakes
+(`pre-upgrade*`, `curated-<n>`) and for server-stamped OCR rows (kind `ocr` with an `engine` and a `cloud` stamp) —
 on a shared library those are the one copy everyone reads. Edit mode on such a
 layer (`E`, quick actions, context menu) calls `forkIntoEditLayer`: it makes
 `edit` from the displayed layer's pages when there is none (no cloud stamp, so
@@ -608,8 +613,8 @@ listed `<Volume>.edit.mokuro` is the SHARED file, another account's work.
 mokuro-bunko must, for all of this: list `edit` in `/login/api/me`'s
 `per_user_layers` only when it keeps that file per account; report
 `permissions.curated.scope` (`all` / `owned` / `none`) for the signed-in role;
-answer a client PUT of `curated` without the right, or of `pre-upgrade*`, with
-403; and (cloud-direct) write `curated: true` into the marker when the folder's
+answer a client PUT of `curated` without the right, or of `pre-upgrade*`,
+`curated-<n>` or `previous-ocr*`, with 403; and (cloud-direct) write `curated: true` into the marker when the folder's
 owner may publish.
 
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
@@ -641,7 +646,9 @@ caller's DB spelling — composed, another case — still finds them), a leading
 tolerated on read, and every id the reader mints contains a letter
 (`slugifyLayerId`). The vectors both sides test against live in bunko's
 `interop/contract/sidecar-names.json` — `src/lib/interop/sidecar-names.contract.test.ts`
-runs its `classify` and `layer_class` vectors (the reader's sweep is no pure
+runs its `classify` and `layer_class` vectors (every id Bunko classes curated,
+server-keepsake or reserved must stay local on a bunko target, `layerIdStaysLocal`;
+the reader's sweep is no pure
 function, so `sweep` is Bunko's alone), and a hand copy in `syncable-file.test.ts`
 runs without a checkout — and `src/lib/metadata/layer-sync.ts`
 syncs layers for rows that already exist locally (installed or metadata-only), newest-wins, no merge. A
@@ -713,7 +720,8 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   `positions.json`. A gate the provider set itself (a bunko server's `/me`)
   wins; with no fresh holder both stay undefined, so the folder is judged as
   plain storage. A holder's `curated` makes `curatedPublish` `all` (the cloud
-  folder's owner may publish the shared layer).
+  folder's owner may publish the shared layer) — unless the provider reported
+  its own, which wins the same way.
   `cloudBunkoMergesDuplicates(scope)` is the holder's `dedup`, and gates the
   reader's own folder dedup (see Duplicate folders). Read the marker through
   `refreshCloudBunkoMarker`:
@@ -1593,8 +1601,16 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 - The reader's tests parse mokuro-bunko's own answers (`interop/contract/bunko/*.json`), record the
   requests the reader sends (`reader/*.json`, which bunko replays), and run its seal and sidecar-name
   vectors. They read a bunko checkout: `BUNKO_REPO=<checkout>`, else a sibling `mokuro-webdav-library`
-  found by looking around — which may be on an older branch than the one you are pairing with, so name
-  it. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into a failure.
+  found by looking around. A sibling counts only when it holds every file of `CONTRACT_BASELINE`
+  (`contract.ts`, the newest contract files the tests read — add one there when a test starts reading
+  a new fixture): one on an older branch is ignored with a warning and the tests run on the reader's
+  snapshots, instead of failing ordinary unit tests on fixtures it never had. It may still be on
+  another branch than the one you are pairing with, so name it. `BUNKO_REPO` is used as named,
+  however old. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into
+  a failure.
+- CI checks out bunko at `vars.BUNKO_REF` (default `0.8/remote-storage`) with
+  `BUNKO_CONTRACT_REQUIRED=1`, so a reader branch whose tests read a newer contract fails CI until that
+  bunko branch carries it: push bunko's contract FIRST, then the reader branch that reads it.
 - `BUNKO_REPO=<checkout> READER_BLESS=1 npx vitest run src/lib/interop` rewrites the records, in that
   checkout only. A changed request lands in bunko FIRST (commit the records there, run its
   `contract_replay`), then in the reader.
