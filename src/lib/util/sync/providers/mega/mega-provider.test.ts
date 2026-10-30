@@ -562,6 +562,35 @@ describe('MegaProvider ghost-node handling', () => {
     expect(folder.upload).toHaveBeenCalledOnce();
   });
 
+  // A full account (or any failed upload) must not cost the cloud its only copy:
+  // the old one is removed only once its replacement landed.
+  it('uploadFile removes the old copy only after the new one landed', async () => {
+    const folder = makeMokuroFolder();
+    const old = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, old });
+
+    await provider.uploadFile('volume-data.json', new Uint8Array([1]));
+
+    expect(old.delete).toHaveBeenCalledOnce();
+    expect(folder.upload.mock.invocationCallOrder[0]).toBeLessThan(
+      old.delete.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('a failed upload leaves the copy it would have replaced', async () => {
+    const folder = makeMokuroFolder();
+    folder.upload = vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
+      queueMicrotask(() => cb(new Error('EOVERQUOTA (-17): Request over quota')));
+    });
+    const old = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, old });
+
+    await expect(
+      provider.uploadFile('volume-data.json', new Uint8Array([1]))
+    ).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
+    expect(old.delete).not.toHaveBeenCalled();
+  });
+
   it('reinitialize rebuilds storage.files so server-deleted ghosts are evicted', async () => {
     const folder = makeMokuroFolder();
     const ghost = makeFile('volume-data.json', folder);

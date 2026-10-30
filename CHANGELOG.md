@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- A full MEGA account no longer deletes your synced progress
+
 ## [1.10.0] - 2026-10-02
 
 ### Added
