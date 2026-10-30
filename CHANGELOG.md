@@ -4,12 +4,17 @@
 
 ### Added
 
+- Reading history syncs across your devices
+- Reading stats per device, under names you choose
+- Volumes open where your other device stopped
+- "Still reading?" after a long pause
 - mokuro-bunko: publish your OCR fixes as shared corrections
 
 ### Changed
 
 - Editing shared OCR now edits your own copy
 - mokuro-bunko: your OCR fixes no longer reach other accounts
+- mokuro-bunko before 0.8: OCR fixes stay on this device
 - Duplicate-folder cleanup never removes mokuro-bunko's own files
 - Duplicate-folder cleanup leaves it to mokuro-bunko when it merges them
 - MEGA catches mokuro-bunko changes made while you were offline
@@ -30,6 +35,7 @@
 - mokuro-bunko: resetting a shelf's alignment now sticks
 - OCR layer files found on decomposed-name storage
 - mokuro-bunko: renaming a volume no longer duplicates OCR layers
+- Renaming a corrected volume keeps the server's newer OCR
 
 ## [1.10.0] - 2026-10-02
 

@@ -123,6 +123,26 @@ export interface LayerTarget {
 }
 
 /**
+ * The account a personal layer's (`edit`, `edit-<n>`) cloud copy belongs to,
+ * stamped on its row (`VolumeOcrLayer.cloud.account`) and compared with it:
+ * the provider's `accountScope`, but only on a bunko that keeps that layer per
+ * account (`editLayerSync` 'push') — the one place two accounts read two files
+ * at one path. Anywhere else the path IS the file, so there is nothing to tell
+ * apart, and a scope need not even be stable within one account: Google
+ * Drive's is `default` until its reader folder resolves, then that folder's
+ * id, and a stamp from before would read as another account's from then on.
+ */
+export function personalLayerAccount(status: {
+  serverCompilesMetadata?: boolean;
+  editLayerSync?: 'push' | 'local';
+  accountScope?: string;
+}): string | undefined {
+  return status.serverCompilesMetadata === true && status.editLayerSync === 'push'
+    ? status.accountScope
+    : undefined;
+}
+
+/**
  * Must this layer stay OFF this provider (never pushed, never uploaded beside
  * a backup)? An untouched upgrade layer, everywhere (`isUntouchedUpgradeLayer`);
  * on a server that compiles its metadata, its own model output

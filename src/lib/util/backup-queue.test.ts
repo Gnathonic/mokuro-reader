@@ -708,13 +708,68 @@ describe('export-for-download sidecars', () => {
     );
   });
 
+  it('a main-thread upload sends the edit layer after its archive; a refusal is not stamped', async () => {
+    const uploadFile = vi.fn(async (path: string, _blob: Blob) => {
+      if (path.endsWith('.edit.mokuro')) throw new Error('409 no-volume');
+      return 'uploaded-file-id';
+    });
+    const provider = {
+      type: 'filesystem',
+      uploadConcurrencyLimit: 1,
+      supportsWorkerUpload: false,
+      uploadFile
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'edit-upload-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    const edit = {
+      layerId: 'edit',
+      filename: 'One Piece - Volume 1.edit.mokuro',
+      blob: new Blob(['{}']),
+      updatedAt: '2026-09-16T09:00:00.000Z'
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await capturedTasks[0].onComplete(
+      {
+        type: 'complete',
+        data: new Uint8Array([1, 2, 3]),
+        filename: 'Volume 1.cbz',
+        sidecars: { ...sidecars, layers: [edit, ...sidecars.layers] }
+      },
+      vi.fn()
+    );
+    warn.mockRestore();
+    expect(uploadFile.mock.calls.map(([path]) => path)).toEqual([
+      'One Piece/One Piece - Volume 1.mokuro',
+      'One Piece/One Piece - Volume 1.gcv.mokuro',
+      'One Piece/One Piece - Volume 1.webp',
+      'One Piece/Volume 1.cbz',
+      'One Piece/One Piece - Volume 1.edit.mokuro'
+    ]);
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'edit-upload-uuid',
+      'filesystem',
+      [{ layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }],
+      undefined
+    );
+    expect(bridge.notify).toHaveBeenCalledWith('Backed up Volume 1 successfully');
+  });
+
   it('a worker-driven upload stamps from the snapshot the worker sends back', async () => {
     const provider = {
       type: 'webdav',
       uploadConcurrencyLimit: 2,
       supportsWorkerUpload: true,
       // The account a personal layer's file belongs to (bunko keeps one per account).
-      getStatus: () => ({ isReadOnly: false, accountScope: 'webdav:https://host|alice' })
+      getStatus: () => ({
+        isReadOnly: false,
+        serverCompilesMetadata: true,
+        editLayerSync: 'push',
+        accountScope: 'webdav:https://host|alice'
+      })
     } as never;
     getActiveProvider.mockReturnValue(provider);
     queueVolumeForBackup(volume({ volume_uuid: 'layers-worker-uuid' }), provider, {
@@ -732,6 +787,36 @@ describe('export-for-download sidecars', () => {
       'webdav',
       layerSnapshots,
       'webdav:https://host|alice'
+    );
+  });
+
+  // Drive's scope is `default` until its reader folder resolves, then the
+  // folder's id: a stamp would read as another account's within one account.
+  it('a backup to plain storage stamps no account on its layers', async () => {
+    const provider = {
+      type: 'google-drive',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true,
+      getStatus: () => ({ isReadOnly: false, accountScope: 'google-drive:default' })
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'layers-drive-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    const message = await capturedTasks[0].prepareData();
+    expect(message.accountScope).toBeUndefined();
+    const layerSnapshots = [{ layerId: 'edit', updatedAt: '2026-09-16T09:00:00.000Z', size: 41 }];
+    await capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'remote-file-id', size: 123, layerSnapshots },
+      vi.fn()
+    );
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'layers-drive-uuid',
+      'google-drive',
+      layerSnapshots,
+      undefined
     );
   });
 

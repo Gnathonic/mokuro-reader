@@ -1925,6 +1925,50 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     expect(uploadFile).toHaveBeenCalledTimes(1);
   });
 
+  it('…and a rewrite of that layer by bunko never replaces the corrections made in it', async () => {
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    canAddFiles = true;
+    const served = (text: string) =>
+      new Blob([
+        JSON.stringify({
+          ...JSON.parse(mokuroJson(text)),
+          ocr_engine: { id: 'hayai', detector: 'ctd', generator: 'mokuro-bunko 0.8.0' }
+        })
+      ]);
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.hayai.mokuro')];
+    downloadFile.mockResolvedValue(served('かな'));
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    const pulled = (await getLayerWithPages(db, 'v1', 'hayai'))!;
+    // Edited in place in the fork window (the provider said plain storage).
+    const syncedAt = Date.parse(pulled.cloud!.synced_at);
+    await putLayerWithPages(db, {
+      ...pulled,
+      updated_at: new Date(syncedAt + 60_000).toISOString(),
+      pages: [pg('なおし')]
+    });
+
+    // bunko re-runs the engine at a newer revision and rewrites the file in place.
+    downloadFile.mockClear();
+    downloadFile.mockResolvedValue(served('あたらしい'));
+    const rewritten = cloudFile('Series/Vol 1.hayai.mokuro', {
+      size: 333,
+      modifiedTime: new Date(syncedAt + 3_600_000).toISOString()
+    });
+    await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz'), rewritten), 'webdav');
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect((await getLayerWithPages(db, 'v1', 'hayai'))!.pages[0].blocks[0].lines).toEqual([
+      'なおし'
+    ]);
+
+    // On plain storage the same row is an ordinary layer file: newest wins.
+    serverCompilesMetadata = false;
+    editLayerSync = undefined;
+    await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz'), rewritten), 'webdav');
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+  });
+
   it('an edited previous-ocr keepsake is never pushed to bunko (it reserves the id), but syncs on plain storage', async () => {
     await seedRow();
     await seedLayer('previous-ocr', { kind: 'ocr' });
@@ -2131,6 +2175,89 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
       expect(deleteFile).not.toHaveBeenCalled();
       accountScope = ACCOUNT_A;
       await syncLayersFromListing(files, 'webdav');
+      expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual(['Series/Vol 1.edit.mokuro']);
+    });
+  });
+
+  // Google Drive's accountScope is `default` until the reader folder resolves,
+  // then that folder's id: two values within ONE account. Only a server that
+  // keeps personal layers per account has two accounts behind one path.
+  describe('a provider whose accountScope moves within one account (Google Drive)', () => {
+    const DEFAULT = 'google-drive:default';
+    const FOLDER = 'google-drive:reader-folder-id';
+    const driveFile = (path: string, over: Partial<CloudFileMetadata> = {}) =>
+      cloudFile(path, { provider: 'google-drive', ...over });
+    const driveListing = () =>
+      listing(driveFile('Series/Vol 1.cbz'), driveFile('Series/Vol 1.edit.mokuro'));
+
+    beforeEach(() => {
+      getActiveProvider.mockReturnValue(provider('google-drive'));
+    });
+
+    it('an edit pulled before the reader folder resolved still goes up after it did', async () => {
+      await seedRow();
+      accountScope = DEFAULT;
+      downloadFile.mockResolvedValue(new Blob([mokuroJson('よそ')]));
+      await syncLayersFromListing(driveListing(), 'google-drive');
+      const pulled = (await getLayerWithPages(db, 'v1', 'edit'))!;
+      expect(pulled.cloud).not.toHaveProperty('account');
+
+      // This device corrects it; an upload meanwhile resolved the folder.
+      await putLayerWithPages(db, {
+        ...pulled,
+        updated_at: new Date(Date.parse(pulled.cloud!.synced_at) + 60_000).toISOString(),
+        pages: [pg('なおし')]
+      });
+      accountScope = FOLDER;
+      downloadFile.mockClear();
+      await syncLayersFromListing(driveListing(), 'google-drive');
+      expect(uploaded()).toEqual(['Series/Vol 1.edit.mokuro']);
+      expect(downloadFile).not.toHaveBeenCalled();
+    });
+
+    it('a row an older build stamped with the earlier scope is still this account’s', async () => {
+      await seedRow();
+      await seedLayer('edit', {
+        cloud: { provider: 'google-drive', account: DEFAULT, size: 100, synced_at: T0 }
+      });
+      accountScope = FOLDER;
+      await syncLayersFromListing(
+        listing(driveFile('Series/Vol 1.cbz'), driveFile('Series/Vol 1.mokuro')),
+        'google-drive'
+      );
+      expect(uploaded()).toEqual(['Series/Vol 1.edit.mokuro']);
+    });
+
+    it('deleting such a row removes its file, so no listing pulls it back', async () => {
+      await seedRow();
+      await seedLayer('edit', {
+        updated_at: T0,
+        cloud: {
+          provider: 'google-drive',
+          account: DEFAULT,
+          size: 100,
+          modified: 1789552800,
+          synced_at: T0
+        }
+      });
+      accountScope = FOLDER;
+      cachedFiles = [driveFile('Series/Vol 1.cbz'), driveFile('Series/Vol 1.edit.mokuro')];
+      deleteFile.mockResolvedValue(undefined);
+      expect(await deleteCloudLayerFile('v1', 'edit')).toBe('gone');
+      expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual(['Series/Vol 1.edit.mokuro']);
+    });
+
+    it('a tombstone left under the earlier scope is retried under the later one', async () => {
+      await seedRow();
+      localStorage.setItem(
+        'layer-sync:pending-deletes',
+        JSON.stringify([
+          { volume_uuid: 'v1', layer_id: 'edit', provider: 'google-drive', account: DEFAULT }
+        ])
+      );
+      accountScope = FOLDER;
+      await syncLayersFromListing(driveListing(), 'google-drive');
+      expect(downloadFile).not.toHaveBeenCalled();
       expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual(['Series/Vol 1.edit.mokuro']);
     });
   });

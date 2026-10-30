@@ -4,6 +4,7 @@ import {
   isMokuroSha256,
   isUntouchedUpgradeLayer,
   layerStaysLocal,
+  personalLayerAccount,
   sha256Hex,
   type LayerTarget
 } from './mokuro-hash';
@@ -126,5 +127,20 @@ describe('layerStaysLocal', () => {
       expect(layerStaysLocal(untouched, target)).toBe(true);
     }
     expect(layerStaysLocal({ ...untouched, updated_at: 't2' }, PLAIN)).toBe(false);
+  });
+});
+
+describe('personalLayerAccount', () => {
+  it('is the accountScope only on a bunko that keeps the edit layer per account', () => {
+    const scope = { accountScope: 'webdav:https://host|alice' };
+    expect(
+      personalLayerAccount({ ...scope, serverCompilesMetadata: true, editLayerSync: 'push' })
+    ).toBe('webdav:https://host|alice');
+    expect(
+      personalLayerAccount({ ...scope, serverCompilesMetadata: true, editLayerSync: 'local' })
+    ).toBeUndefined();
+    expect(personalLayerAccount(scope)).toBeUndefined();
+    // Drive's scope moves within one account (`default`, then its folder id).
+    expect(personalLayerAccount({ accountScope: 'google-drive:default' })).toBeUndefined();
   });
 });

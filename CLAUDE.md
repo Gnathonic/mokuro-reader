@@ -481,7 +481,12 @@ sidecar: the backfill no longer re-uploads an edited volume's listed `.mokuro`,
 and every cloud write of a main sidecar (a first backup, the backfill of a
 missing one, a rename's regeneration) is built from the `original` snapshot
 when the row is edited (`catalog/main-sidecar.ts`) — a missing snapshot means
-no main sidecar (a rename falls back to the primary). Exports keep the primary.
+no main sidecar (a rename falls back to the primary). Except where the cloud's
+main moved on past that snapshot: an edited row with `updated_ocr_sha256` (the
+upgrade filed a newer main as `updated-ocr`) is renamed with the LISTED main,
+downloaded and given only the new `title`/`volume` (`retitledCloudMain`; pages
+and provenance as the cloud has them, unreadable = no rename) — rebuilt from
+`original` it would put the older OCR back for every account. Exports keep the primary.
 A layer made by name never takes a RESERVED id (`isReservedLayerId`,
 `layer-names.ts` — bunko's set: `original`, `gcv`, `updated-ocr`, `edit`,
 `curated`, the `tr-`, `pre-upgrade` and `previous-ocr` prefixes, and
@@ -523,17 +528,21 @@ ServerKeepsake or Reserved (sidecar names rule v1 `layer_class`), whose PUT it
 refuses — plus the server's own model output (`isCloudModelOutput`, kind `ocr`
 with an `engine` and a `cloud` stamp) even once edited: an edit forks into
 `edit` there, but one begun before the provider said it compiles its metadata
-(signing in, a cloud-direct marker not read yet) edits the row in place, and
-that edit stays on the device rather than replace what the model wrote for
-every account. Its id half,
+(signing in, offline, a cloud-direct marker not read yet) edits the row in
+place, and that edit stays on the device rather than replace what the model
+wrote for every account — nor does bunko's later rewrite of that layer replace
+it (`keepsLocalEdits`, as for an `edit` held back from a 0.7.x). Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
 IS is somebody else's file, so neither a local delete, its tombstone nor the
 `.gz`-sibling tidy ever removes its cloud copy (the delete reports
 `'kept-shared'`, and the user is told the shared copy stays). Writability is per layer (`canPushLayer`): a personal
 id on a `push` bunko needs only `isReadOnly !== true` (a `registered` account
 writes its own overlay), anything else also needs `canAddFiles`. A personal
-row records the provider's `accountScope` in `cloud.account` (push, pull,
-`stampLayersSynced`): a row of another account on this device is never
+row on a `push` bunko records the provider's `accountScope` in `cloud.account`
+(`personalLayerAccount`; push, pull, `stampLayersSynced`) — only there do two
+accounts read two files at one path, and elsewhere a scope need not even be
+stable within one account (Drive's is `default` until its reader folder
+resolves), so no other provider stamps or compares one: a row of another account on this device is never
 pushed — by sync or by a backup's layer sidecars (`account` in
 `generateVolumeSidecarsFromDb`) — and is replaced by this account's listed file
 only while it holds no unsynced edit. Its delete never touches the file at its
@@ -561,7 +570,11 @@ So `edit` lives per account on a bunko that lists it in `per_user_layers`
 (the server serves each account its own file at the same path), stays on the
 device on any other bunko, and syncs as a normal layer file on plain storage
 and in cloud-direct folders (the folder owner's file). Hand-made ids stay
-shared library files.
+shared library files. A backup sends an `edit` (or `curated`) file only AFTER
+the volume's archive (`uploadVolumeFiles`, `volume-upload-order.ts`, Worker and
+main thread alike): bunko refuses it with 409 `no-volume` while no `<Volume>.cbz`
+is listed beside it. A refusal there fails nothing — the layer is left unstamped
+and the next listing's layer sync pushes it.
 
 **Shared layers are read-only; an edit forks into `edit`.**
 `forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
@@ -1424,7 +1437,11 @@ month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
   #27): the WebDAV provider sets `ProviderStatus.historySync` only when BOTH
   hold — the version's numeric core ≥ 0.8.0 (a `0.8.0-beta.N` counts as 0.8.0;
   missing or unparseable = no) AND `per_user_files` contains `history/`
-  (`bunko-version.ts`). On a cloud-direct folder (Drive/OneDrive/MEGA/plain
+  (`bunko-version.ts`). These gates (with `positionsSync` and
+  `editLayerSync`) follow the server, not the connect: every sync re-reads the
+  identity once it is 5 min old (`refreshIdentity({ maxAgeMs })`, before the
+  per-user files), so a bunko upgraded or rolled back under an open tab is
+  followed without a reload. On a cloud-direct folder (Drive/OneDrive/MEGA/plain
   WebDAV) the fresh lease holder's marker decides the same way, from its
   `bunko_version` and `per_user_files` (`withCloudBunkoStatus`); no fresh
   holder = plain storage. `historySyncAllowed(status)` (`history-sync.ts`)
