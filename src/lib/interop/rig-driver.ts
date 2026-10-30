@@ -13,7 +13,7 @@
  * `vite build --mode interop`), by dynamic import, so a production build drops
  * this module; `scripts/check-no-test-hooks.mjs` bans its names from the bundle.
  */
-import { get } from 'svelte/store';
+import { derived, get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import { listLayerIds } from '$lib/catalog/layer-store';
 import {
@@ -149,6 +149,26 @@ async function sync(): Promise<{ ok: boolean; errors: string[] }> {
   if (result.totalProviders === 0) errors.push('Not connected');
   for (const r of result.results) if (!r.success) errors.push(r.error ?? 'Sync failed');
   return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Resolves once no progress sync and no cloud listing is in flight: the ones the
+ * app starts by itself (after a sign-in, when a reader opens, after a re-auth), so
+ * what a rig spec arranges next (a fault on the next write) meets its own sync.
+ */
+async function idle(): Promise<void> {
+  const busy = derived(
+    [unifiedCloudManager.isSyncing, unifiedCloudManager.isFetching],
+    ([syncing, fetching]) => syncing || fetching
+  );
+  await new Promise<void>((resolve) => {
+    // subscribe() calls back before it returns the unsubscriber.
+    const unsubscribe = busy.subscribe((b) => {
+      if (b) return;
+      resolve();
+      queueMicrotask(() => unsubscribe());
+    });
+  });
 }
 
 function providerStatus(): ProviderStatus | null {
@@ -526,7 +546,9 @@ export function createRigDriver() {
     historyStatus,
     // Within v1, added for the rig's dav and api suites.
     showSeries,
-    pendingOcr
+    pendingOcr,
+    // ...and for the direct suite.
+    idle
   };
 }
 

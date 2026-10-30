@@ -48,6 +48,8 @@ vi.mock('$lib/util/sync/unified-cloud-manager', async () => {
   return {
     unifiedCloudManager: {
       cloudFiles: writable(new Map()),
+      isSyncing: writable(false),
+      isFetching: writable(false),
       fetchAllCloudVolumes: vi.fn(async () => {
         h.calls.push('fetchAllCloudVolumes');
       }),
@@ -207,7 +209,9 @@ const V1_METHODS = [
   'historyStatus',
   // Additions within v1 (the rig's dav and api suites).
   'showSeries',
-  'pendingOcr'
+  'pendingOcr',
+  // ...and the direct suite.
+  'idle'
 ];
 
 /** The download worker's end: the volume is installed (or not), then leaves the queue. */
@@ -241,6 +245,8 @@ beforeEach(async () => {
   statusStore.set(null);
   (volumeDataStore as ReturnType<typeof writable>).set({});
   (unifiedCloudManager.cloudFiles as ReturnType<typeof writable>).set(new Map());
+  (unifiedCloudManager.isSyncing as ReturnType<typeof writable>).set(false);
+  (unifiedCloudManager.isFetching as ReturnType<typeof writable>).set(false);
   await Promise.all([
     db.volumes.clear(),
     db.volume_ocr.clear(),
@@ -386,6 +392,33 @@ describe('sync()', () => {
       results: []
     });
     expect(await install().sync()).toEqual({ ok: false, errors: ['Not connected'] });
+  });
+});
+
+describe('idle()', () => {
+  const syncing = () => unifiedCloudManager.isSyncing as ReturnType<typeof writable>;
+  const fetching = () => unifiedCloudManager.isFetching as ReturnType<typeof writable>;
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it('resolves at once when no sync and no listing is in flight', async () => {
+    await expect(install().idle()).resolves.toBeUndefined();
+  });
+
+  it('waits out a background sync and a listing, both', async () => {
+    syncing().set(true);
+    fetching().set(true);
+    let done = false;
+    const idle = install()
+      .idle()
+      .then(() => (done = true));
+    await settle();
+    expect(done).toBe(false);
+    syncing().set(false);
+    await settle();
+    expect(done).toBe(false);
+    fetching().set(false);
+    await idle;
+    expect(done).toBe(true);
   });
 });
 
