@@ -38,13 +38,28 @@ export const TRANSLATION_PROMOTE_BLOCKED =
   'A translation cannot be the primary OCR: character stats are counted from its Japanese text.';
 
 /**
+ * OCR a cloud's model wrote: an `ocr` row with an engine that a cloud vouches
+ * for (pulled, not a run on this device). On a server that compiles its
+ * metadata it is the server's to write: an edit forks into `edit`
+ * (`forksOnEdit`), and nothing of it goes up (`layerStaysLocal`, for a row an
+ * edit reached anyway).
+ */
+export function isCloudModelOutput(layer: {
+  kind?: VolumeOcrLayerKind;
+  engine?: string;
+  cloud?: unknown;
+}): boolean {
+  return layer.kind === 'ocr' && !!layer.engine && !!layer.cloud;
+}
+
+/**
  * Does an edit of this layer go into the account's own `edit` layer instead
  * (bunko design 0.8 D4: human corrections live in their own file)? Always for
  * the shared `curated` layer: it is written by Publish alone. On a server that
  * compiles its metadata (mokuro-bunko) also for its keepsakes (`pre-upgrade…`,
- * a case merge's `curated-<n>`) and for the OCR a server stamped (an `ocr` row with an engine that a cloud
- * vouches for): on a shared library those are the one copy every account
- * reads. On plain storage they are the user's own files, edited in place.
+ * a case merge's `curated-<n>`) and for the OCR a server stamped
+ * (`isCloudModelOutput`): on a shared library those are the one copy every
+ * account reads. On plain storage they are the user's own files, edited in place.
  */
 export function forksOnEdit(
   layer: { layer_id: string; kind?: VolumeOcrLayerKind; engine?: string; cloud?: unknown },
@@ -53,7 +68,7 @@ export function forksOnEdit(
   if (isCuratedLayerId(layer.layer_id)) return true;
   if (status?.serverCompilesMetadata !== true) return false;
   if (isServerKeepsakeLayerId(layer.layer_id)) return true;
-  return layer.kind === 'ocr' && !!layer.engine && !!layer.cloud;
+  return isCloudModelOutput(layer);
 }
 
 /** The per-row layer actions whose presence depends on what the layer is. */
