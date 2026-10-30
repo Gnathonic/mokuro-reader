@@ -76,15 +76,39 @@ function fromGapiError(error: unknown): unknown {
 /** Requests that CREATE a file or folder retry rate limits only: a 5xx may have created it. */
 const rateLimitOnly = (kind: DriveFailureKind) => kind === 'rate-limit';
 
+/** The token the manager holds now. */
+function heldToken(): string {
+  let token = '';
+  tokenManager.token.subscribe((value) => {
+    token = value;
+  })();
+  return token;
+}
+
 /**
  * Handle authentication errors (401/403) with auto re-auth support
  * Extracted to be reusable across api-client and provider
  *
  * @param status HTTP status code
  * @param retryOnAuth Whether to allow retry (prevents infinite loops)
+ * @param sentWith The token the refused request carried, when known
  * @throws DriveApiError with appropriate message
  */
-async function handleAuthError(status: number, retryOnAuth = true): Promise<never> {
+async function handleAuthError(
+  status: number,
+  retryOnAuth = true,
+  sentWith?: string
+): Promise<never> {
+  // A request sent before a re-auth replaced its token comes back refused
+  // after the new one is in: that refusal is the old token's. Re-authing again
+  // would be a second sign-in for nothing (a second popup), and clearing would
+  // drop the token that works.
+  const held = heldToken();
+  if (sentWith !== undefined && held !== '' && sentWith !== held) {
+    console.log('API call refused a token a re-auth has since replaced; nothing to do');
+    throw new DriveApiError('Authentication expired. Please try again.', status, false);
+  }
+
   console.log('API call failed with auth error, token may be expired');
 
   // Check if auto re-auth is enabled
@@ -181,10 +205,14 @@ class DriveApiClient {
     retryOnAuth = true,
     retryOn?: DriveRetryOptions['retryOn']
   ): Promise<T> {
+    // The token the last attempt went out with (gapi's, which a grant sets
+    // together with the manager's).
+    let sentWith: string | undefined;
     try {
       // Rate limits and 5xx are retried after Retry-After; see drive-http.ts.
       return await withDriveRetry(
         async () => {
+          sentWith = heldToken();
           try {
             return await apiCall();
           } catch (error) {
@@ -207,7 +235,7 @@ class DriveApiClient {
       // Only a real auth failure re-authenticates — a full account or a
       // rate limit answered 403 too, and re-auth cannot fix either.
       if (!isNetworkError && kind === 'auth') {
-        await handleAuthError(error.status, retryOnAuth);
+        await handleAuthError(error.status, retryOnAuth, sentWith);
       }
 
       throw new DriveApiError(
@@ -326,7 +354,7 @@ class DriveApiClient {
         if (error.kind === 'auth') {
           // Handle authentication errors using shared helper
           try {
-            await handleAuthError(xhr.status);
+            await handleAuthError(xhr.status, true, token);
           } catch (authError) {
             reject(authError);
           }
@@ -408,7 +436,7 @@ class DriveApiClient {
             const error = await driveHttpErrorFromXhr(xhr, 'Upload failed');
             if (error.kind === 'auth') {
               try {
-                await handleAuthError(xhr.status);
+                await handleAuthError(xhr.status, true, token);
               } catch (authError) {
                 reject(authError);
               }

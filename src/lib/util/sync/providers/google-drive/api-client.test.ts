@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+/** The token the manager holds now (a re-auth replaces it). */
+const tk = vi.hoisted(() => ({ value: 'TOKEN' }));
 vi.mock('./token-manager', () => ({
   tokenManager: {
     isAuthenticated: vi.fn(() => true),
     reAuthenticate: vi.fn(),
     clearToken: vi.fn(),
     initTokenClient: vi.fn(async () => {}),
-    token: { subscribe: (cb: (v: string) => void) => (cb('TOKEN'), () => {}) }
+    token: { subscribe: (cb: (v: string) => void) => (cb(tk.value), () => {}) }
   }
 }));
 vi.mock('$lib/settings/misc', async () => {
@@ -78,6 +80,8 @@ interface XhrReply {
   statusText?: string;
   response?: unknown;
   headers?: Record<string, string>;
+  /** Runs between the send and the answer (a re-auth landing meanwhile). */
+  meanwhile?: () => void;
 }
 
 /** Answers each send() with the next queued reply. */
@@ -115,6 +119,7 @@ class FakeXhr {
     this.headers = Object.fromEntries(
       Object.entries(reply.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v])
     );
+    reply.meanwhile?.();
     queueMicrotask(() => this.onload?.());
   }
 }
@@ -131,6 +136,7 @@ describe('driveApiClient failure classification', () => {
     vi.stubGlobal('XMLHttpRequest', FakeXhr);
     FakeXhr.replies = [];
     FakeXhr.sent = 0;
+    tk.value = 'TOKEN';
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
@@ -254,5 +260,41 @@ describe('driveApiClient failure classification', () => {
 
     await expect(driveApiClient.downloadFile('file-1')).rejects.toThrow(/Re-authentication/);
     expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+
+  // Requests sent with one token can come back 401 after a re-auth already
+  // replaced it: asking again would be a second sign-in for nothing (a second
+  // popup under Google's sign-in), and the token held now is not the one refused.
+  it('a call answered 401 for a token a re-auth has since replaced asks for no re-auth', async () => {
+    list.mockImplementation(async () => {
+      tk.value = 'NEWER';
+      throw { status: 401, result: {}, headers: {} };
+    });
+
+    const error = await driveApiClient.listFiles("name='x'").catch((e) => e);
+
+    expect(error.status).toBe(401);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  it('an XHR download answered 401 for a replaced token asks for no re-auth', async () => {
+    FakeXhr.replies = [
+      { status: 401, response: new Blob(['']), meanwhile: () => (tk.value = 'NEWER') }
+    ];
+
+    await expect(driveApiClient.downloadFile('file-1')).rejects.toMatchObject({ status: 401 });
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  it('an XHR upload answered 401 for a replaced token asks for no re-auth', async () => {
+    FakeXhr.replies = [{ status: 401, response: null, meanwhile: () => (tk.value = 'NEWER') }];
+
+    await expect(
+      driveApiClient.uploadFile(new Blob(['x']), { name: 'a.json', mimeType: 'application/json' })
+    ).rejects.toMatchObject({ status: 401 });
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
   });
 });
