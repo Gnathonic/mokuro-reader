@@ -148,7 +148,7 @@ interface CompressFromDbMessage {
   serverCompilesMetadata?: boolean;
   /** The target's `ProviderStatus.editLayerSync`: `local` keeps the `edit` layer off it. */
   editLayerSync?: 'push' | 'local';
-  /** The target's `accountScope`: another account's `edit` layer is not uploaded. */
+  /** `personalLayerAccount` of the target: another account's `edit` layer is not uploaded. */
   accountScope?: string;
 }
 

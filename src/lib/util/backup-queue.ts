@@ -13,6 +13,7 @@ import {
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
 import { stampLayersSynced, type LayerUploadSnapshot } from '$lib/metadata/layer-sync';
+import { personalLayerAccount } from '$lib/catalog/mokuro-hash';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import {
   cancelScheduledSeriesFileWrite,
@@ -620,8 +621,9 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // layer wherever the server would share it (`layerStaysLocal`).
           serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true,
           editLayerSync: provider!.getStatus?.().editLayerSync,
-          // Another account's personal layer never goes into this one's overlay.
-          accountScope: provider!.getStatus?.().accountScope
+          // Another account's personal layer never goes into this one's overlay
+          // (only a bunko keeping one per account has two behind one path).
+          accountScope: personalLayerAccount(provider!.getStatus?.() ?? {})
         };
       },
       onProgress: (data) => {
@@ -744,7 +746,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
                   updatedAt: layer.updatedAt,
                   size: layer.blob.size
                 })),
-                provider!.getStatus?.().accountScope
+                personalLayerAccount(provider!.getStatus?.() ?? {})
               );
             }
 
@@ -858,7 +860,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               item.volumeUuid,
               provider!.type,
               data.layerSnapshots ?? [],
-              provider!.getStatus?.().accountScope
+              personalLayerAccount(provider!.getStatus?.() ?? {})
             );
           }
           // The primary sidecar the worker sent: its hash is this volume's now,

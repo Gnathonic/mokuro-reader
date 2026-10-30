@@ -714,7 +714,12 @@ describe('export-for-download sidecars', () => {
       uploadConcurrencyLimit: 2,
       supportsWorkerUpload: true,
       // The account a personal layer's file belongs to (bunko keeps one per account).
-      getStatus: () => ({ isReadOnly: false, accountScope: 'webdav:https://host|alice' })
+      getStatus: () => ({
+        isReadOnly: false,
+        serverCompilesMetadata: true,
+        editLayerSync: 'push',
+        accountScope: 'webdav:https://host|alice'
+      })
     } as never;
     getActiveProvider.mockReturnValue(provider);
     queueVolumeForBackup(volume({ volume_uuid: 'layers-worker-uuid' }), provider, {
@@ -732,6 +737,36 @@ describe('export-for-download sidecars', () => {
       'webdav',
       layerSnapshots,
       'webdav:https://host|alice'
+    );
+  });
+
+  // Drive's scope is `default` until its reader folder resolves, then the
+  // folder's id: a stamp would read as another account's within one account.
+  it('a backup to plain storage stamps no account on its layers', async () => {
+    const provider = {
+      type: 'google-drive',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true,
+      getStatus: () => ({ isReadOnly: false, accountScope: 'google-drive:default' })
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'layers-drive-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    const message = await capturedTasks[0].prepareData();
+    expect(message.accountScope).toBeUndefined();
+    const layerSnapshots = [{ layerId: 'edit', updatedAt: '2026-09-16T09:00:00.000Z', size: 41 }];
+    await capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'remote-file-id', size: 123, layerSnapshots },
+      vi.fn()
+    );
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'layers-drive-uuid',
+      'google-drive',
+      layerSnapshots,
+      undefined
     );
   });
 
