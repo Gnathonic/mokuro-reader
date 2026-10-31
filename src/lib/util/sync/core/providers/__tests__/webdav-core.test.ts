@@ -299,6 +299,16 @@ describe('webdavCore.downloadFile and a 503 that names its wait (Retry-After)', 
     await expect(done).resolves.toHaveProperty('byteLength', 3);
   });
 
+  it('waits a named time at most twice, then falls back to the backoff', async () => {
+    const server = stubServer([busy('30')]);
+    const done = download().catch((e: unknown) => e);
+    // 30 s + 30 s named, then the backoff's own steps (1.6 s, 3.2 s, 5 s) and
+    // its 5-retry budget: about 70 s in all, never 5 x 30 s.
+    await vi.advanceTimersByTimeAsync(75_000);
+    expect(server.gets()).toBe(6);
+    expect(String(await done)).toContain('503');
+  });
+
   it('keeps the backoff for a wait over 30 s, or one it cannot read', async () => {
     for (const header of ['120', 'soon', undefined]) {
       const server = stubServer([busy(header), ok]);
