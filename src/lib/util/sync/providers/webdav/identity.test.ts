@@ -520,8 +520,9 @@ describeContract('fetchServerIdentity on Bunko’s own answers', () => {
         canWriteProgress: true,
         canAddFiles: true,
         canModifyDelete: false,
-        metadata: { scope: 'owned', ownedSeries: [] },
-        curated: { scope: 'owned' }
+        metadata: { scope: 'owned', ownedSeries: ['Contract Series'] },
+        curated: { scope: 'owned' },
+        addFiles: { scope: 'open', closedSeries: [] }
       },
       endpoint: 'https://host/login/api/me',
       ...BUNKO_08
