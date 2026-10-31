@@ -5,8 +5,8 @@ Phase 5 of `2026-10-02-reading-history-event-log-design.md`. Status: draft for o
 ## Why
 
 Every sync-adjacent action today ends in the same place: one full listing of the cloud tree, held in
-memory by the provider's `CloudCache`, and the only map anything has of the cloud. Measured 2026-10-11
-on a large bunko library (~1k series, ~12k volumes, anonymous WebDAV PROPFIND):
+memory by the provider's `CloudCache`, and the only map anything has of the cloud. Typical figures
+for a large bunko library (~1k series, ~12k volumes, anonymous WebDAV PROPFIND):
 
 |                                                      | Full listing (`Depth: infinity`)                               |
 | ---------------------------------------------------- | -------------------------------------------------------------- |
@@ -164,7 +164,7 @@ home. The series moves back when it does, on every device as the history arrives
 core is at least 0.8.0 AND its `per_user_files` lists `history/` (0.8.0 is the first to do both; a
 missing version means no). There, position also stays in
 `volume-data.json`, and ultrafast falls back to today's throttled `volume-data.json` merge-and-upload.
-The turns-only-convert-at-next-start gap (found 2026-10-11) is fixed in the same change.
+The turns-only-convert-at-next-start gap is fixed in the same change.
 `positions.json` is still written wherever the provider maps it per user (see bunko changes).
 
 ## How it fits the unified provider layer
@@ -207,7 +207,7 @@ single PUT needs no separate implementation.
 
 | Provider       | `listFolder`                                  | `downloadIfChanged`                                          | `changesSince`                                                               |
 | -------------- | --------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| WebDAV / bunko | `PROPFIND Depth: 1`/`infinity` on the subtree | `If-None-Match` (live bunko answers `304`, 0 bytes)          | —                                                                            |
+| WebDAV / bunko | `PROPFIND Depth: 1`/`infinity` on the subtree | `If-None-Match` (a bunko answers `304`, 0 bytes)             | —                                                                            |
 | Google Drive   | `files.list` with `'<folderId>' in parents`   | `files.get` metadata (`version`/`md5Checksum`), then content | `changes.list` from a stored page token                                      |
 | OneDrive       | `children` of the folder by path              | `If-None-Match` on the item's `eTag`                         | `delta` from a stored `deltaLink`                                            |
 | MEGA           | from the in-memory tree (free)                | compare node `timestamp`/`size`                              | not needed: the `sc` long-poll already patches the cache (`storage.on(...)`) |
@@ -274,7 +274,7 @@ Local Folder. Drive and OneDrive never synthesize; their feed is authoritative.
   Drive/MEGA) moves both copies in and lets the next sync fold them.
 - Conditional GET on the per-user root files and under `history/` must answer `304` like the library
   files do. To verify, not assumed.
-- Root `Depth: 1` is 457 KB, sent uncompressed (~1k series folders sit beside the config files). The
+- A root `Depth: 1` is on the order of 450 KB, sent uncompressed (~1k series folders sit beside the config files). The
   fast tier therefore never lists the root; it reads known paths and lists `history/`.
 
 ## `volume-data.json` after the split
@@ -285,7 +285,7 @@ Once history syncs, the file holds the slow-moving remainder: titles, `addedOn`,
 gets its own `updatedAt`, moved by a change to any remaining field. Whole-record newest-wins stays,
 on that stamp.
 
-Titles on volumes that have no reading are dropped (~98 KB on the largest file measured). Titles on
+Titles on volumes that have no reading are dropped (~98 KB). Titles on
 read volumes stay, since they are the only name a volume keeps after it is deleted from the cloud.
 
 ## Rollout (each step shippable)
