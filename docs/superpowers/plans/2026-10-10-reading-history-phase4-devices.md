@@ -18,7 +18,7 @@
 - Generated label `<Class> · <OS> · <Browser>`; same-label collisions get ` (since Mon YYYY)` (UTC month of first seen), then ordinal ` 2`, ` 3`.
 - No Dexie schema change, no `device.json` change.
 - Modal action buttons in `relative z-10` containers; no layout motion on status UI.
-- Never mention any public deployment domain. Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Rulings (adopted defaults; owner may revisit)
 
@@ -953,7 +953,7 @@ export const deviceLabels: Readable<Record<string, DeviceLabel>>;
 Run:
 
 ```bash
-cd /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-devices
+cd <worktrees>/feat/reading-history-devices
 grep -n "export function isDeviceId" src/lib/reading-history/paths.ts
 grep -n "DeviceLabel\|export function resolveDevice\|^import" src/lib/reading-history/devices.ts
 ```
@@ -1908,7 +1908,7 @@ Expected: 0 ESLint problems, and "All matched files use Prettier code style!".
 - [ ] **Step 13: Commit**
 
 ```bash
-cd /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-devices
+cd <worktrees>/feat/reading-history-devices
 git add src/lib/settings/tracking-data.ts src/lib/settings/tracking-data.test.ts \
   src/lib/util/sync/unified-sync-service.ts src/lib/util/sync/unified-sync-service.test.ts
 # only if Step 0 changed it:
@@ -1928,7 +1928,7 @@ EOF
 
 ### Notes for the plan author
 
-- **Verified in a scratch copy, not in the worktree.** I ran every step against a copy of the worktree at `/tmp/claude-1000/-home-nathan-Projects-mokuro-reader/6f65961f-f765-436a-a0b9-aa680120300c/scratchpad/t2verify`, where Task 1 is stubbed: `isDeviceId` in paths.ts, and `resolveDevice` with the design's cycle rule returning `id`.
+- **Verified in a scratch copy, not in the worktree.** I ran every step against a copy of the worktree at `<scratch>/`, where Task 1 is stubbed: `isDeviceId` in paths.ts, and `resolveDevice` with the design's cycle rule returning `id`.
   - Steps 2, 6 and 10 failed as stated above.
   - After all edits: 47/47 tracking-data tests, 72/72 sync tests, and 1210 tests across util/sync, settings, reading-history and Settings/Reader all pass.
   - `tsc` shows no errors in the touched files, ESLint is clean, and Prettier is clean. The test code above is the Prettier-formatted text.
@@ -3237,7 +3237,7 @@ EOF
 
 ### Notes for the plan author
 
-**How this was checked.** I ran all of the code above in a scratch copy of the worktree at `/tmp/claude-1000/-home-nathan-Projects-mokuro-reader/6f65961f-f765-436a-a0b9-aa680120300c/scratchpad/t3dev`. It used minimal stand-ins for Task 1 (`isDeviceId`, `resolveDevice`, `generatedLabel`, `labelDevices`, `KnownDevice`, `DeviceView`) and Task 2 (`DeviceLabel`, `TrackingState.devices`, `deviceLabels`).
+**How this was checked.** I ran all of the code above in a scratch copy of the worktree at `<scratch>/`. It used minimal stand-ins for Task 1 (`isDeviceId`, `resolveDevice`, `generatedLabel`, `labelDevices`, `KnownDevice`, `DeviceView`) and Task 2 (`DeviceLabel`, `TrackingState.devices`, `deviceLabels`).
 
 - Each RED message above is the one actually seen.
 - The full unit suite passed (309 files, 4732 tests).
@@ -5228,7 +5228,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Notes for the plan author
 
-**What I verified.** Nothing in the repo was edited. I ran everything above except the e2e in a scratch copy of the worktree (`/tmp/claude-1000/-home-nathan-Projects-mokuro-reader/6f65961f-f765-436a-a0b9-aa680120300c/scratchpad/t5wt`), with throwaway stand-ins for Tasks 1, 3 and 4 written to the interfaces above:
+**What I verified.** Nothing in the repo was edited. I ran everything above except the e2e in a scratch copy of the worktree (`<scratch>/`), with throwaway stand-ins for Tasks 1, 3 and 4 written to the interfaces above:
 
 - Steps 2 and 6 produced the RED message quoted.
 - 6 files and 30 tests passed, including the existing `ReadingSpeedView.pauses` and `.orphans` suites.
@@ -5988,7 +5988,7 @@ Expected: PASS (1 test). Count failures over the whole output, not just its tail
 - [ ] **Step 14: Commit**
 
 ```bash
-git -C /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-devices add \
+git -C <worktrees>/feat/reading-history-devices add \
   src/lib/reading-history/position-offer.ts \
   src/lib/reading-history/position-offer.test.ts \
   src/lib/components/Reader/PositionOfferBanner.svelte \
@@ -5996,7 +5996,7 @@ git -C /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-device
   src/lib/components/PositionOfferChip.svelte \
   src/lib/components/__tests__/PositionOfferChip.test.ts \
   e2e/position-offer.spec.ts
-git -C /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-devices commit -m "$(cat <<'EOF'
+git -C <worktrees>/feat/reading-history-devices commit -m "$(cat <<'EOF'
 feat(history): position offers name the other device by its label
 
 The banner says "on Pixel 8" (or the generated label) instead of "on another
