@@ -570,6 +570,10 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   sidecars with Last-Modified and no Cache-Control, so the default mode gave
   an old sidecar heuristic freshness and the browser kept returning the OLD
   bytes after a server re-OCR.
+- **A short 503 is waited out.** Every WebDAV request (`webdav-retry-after.ts`,
+  main thread and workers alike) re-sends a 503 whose `Retry-After` is at most
+  30 s, at most twice — bunko's lease fence and a file changed behind its index
+  answer so and applied nothing.
 - **mokuro-bunko** computes `mokuro_sha256` itself when it compiles
   `series.json` (it must hash the primary's JSON after gunzip, emit it after
   `mokuro_modified`, and move it whenever the sidecar changes). Old servers
