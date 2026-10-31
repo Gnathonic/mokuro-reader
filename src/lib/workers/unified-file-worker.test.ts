@@ -115,4 +115,21 @@ describe('unified-file-worker compress-from-db backup', () => {
       { layerId: 'gcv', updatedAt: 't-gcv', size: layer('gcv').blob.size }
     ]);
   });
+
+  it('a layer the server refuses (403) before the archive does not fail the backup', async () => {
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    uploadFile.mockImplementation(async ({ filename }: { filename: string }) => {
+      if (filename === 'Vol 1.gcv.mokuro') {
+        throw Object.assign(new Error('WebDAV upload failed: 403 Forbidden'), { status: 403 });
+      }
+      return { fileId: `id:${filename}` };
+    });
+    const done = await backup();
+    expect(done.type).toBe('complete');
+    expect(sentNames()).toContain('Vol 1.cbz');
+    expect(done.layerSnapshots).toEqual([
+      { layerId: 'edit', updatedAt: 't-edit', size: layer('edit').blob.size }
+    ]);
+    vi.mocked(console.debug).mockRestore();
+  });
 });
