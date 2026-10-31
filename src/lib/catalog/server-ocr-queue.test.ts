@@ -869,6 +869,40 @@ describe('the queue under a bunko bearer token', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('a 503 + Retry-After is sent again after the wait, and composes with the 401 re-issue', async () => {
+    const auths: string[] = [];
+    const answers = [
+      () => new Response('', { status: 401 }),
+      () => new Response('', { status: 503, headers: { 'Retry-After': '2' } }),
+      () => new Response('x', { status: 200 })
+    ];
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      auths.push((init?.headers as Record<string, string>).Authorization);
+      return answers.shift()!();
+    });
+    const done = fetchWithQueueAuth(
+      `${SERVER}/mokuro-reader/S/V.mokuro`,
+      { headers: { Authorization: 'Bearer old' } },
+      CONNECTED,
+      'webdav',
+      fetchMock
+    );
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await done).status).toBe(200);
+    expect(auths).toEqual(['Bearer old', 'Bearer new', 'Bearer new']);
+  });
+
+  it('a 503 without a usable Retry-After is answered as is', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response('', { status: 503, headers: { 'Retry-After': '600' } })
+    );
+    const res = await fetchWithQueueAuth(`${SERVER}/x`, {}, CONNECTED, 'none', fetchMock);
+    expect(res.status).toBe(503);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('a 401 under Basic or on an anonymous queue is not retried', async () => {
     const fetchMock = vi.fn(async () => new Response('', { status: 401 }));
     await fetchWithQueueAuth(

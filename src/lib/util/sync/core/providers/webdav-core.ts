@@ -15,6 +15,12 @@ import { requireCredentialString } from '../cloud-provider-core-types';
 import { webdavAuthOptions } from './webdav-auth';
 import { authFromCredentials, bearerOf, webdavAuthHeaders } from './webdav-authorization';
 import { isTransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
+import {
+  RETRY_AFTER_MAX_RETRIES,
+  retryAfterDelayMs,
+  withRetryAfter,
+  wrapWebdavClient
+} from '$lib/util/sync/providers/webdav/webdav-retry-after';
 
 /** Did this failure carry an HTTP 401 (webdav lib errors and `WebdavUploadError` both set `status`)? */
 function isUnauthorized(error: unknown): boolean {
@@ -73,6 +79,8 @@ export const webdavCore: CloudProviderCore = {
     let errorRetries = 0;
     let partialResumeRetries = 0;
     let lastRetryResetOffset = 0;
+    // Server-named 503 waits taken; never reset by progress (one request's bound).
+    let namedWaits = 0;
 
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -155,10 +163,17 @@ export const webdavCore: CloudProviderCore = {
           if (isRetryableStatus(response.status) && errorRetries < MAX_ERROR_RETRIES) {
             errorRetries += 1;
             const jitter = Math.floor(Math.random() * 150);
-            const delay = Math.min(
-              MAX_RETRY_DELAY_MS,
-              BASE_RETRY_DELAY_MS * 2 ** (errorRetries - 1) + jitter
-            );
+            // A short wait the server named (503 + Retry-After) replaces the
+            // backoff step, at most RETRY_AFTER_MAX_RETRIES times; the retry
+            // budget stays this loop's own.
+            const named =
+              namedWaits < RETRY_AFTER_MAX_RETRIES
+                ? retryAfterDelayMs(response.status, response.headers.get('Retry-After'))
+                : null;
+            if (named !== null) namedWaits += 1;
+            const delay =
+              named ??
+              Math.min(MAX_RETRY_DELAY_MS, BASE_RETRY_DELAY_MS * 2 ** (errorRetries - 1) + jitter);
             await sleep(delay);
             continue;
           }
@@ -268,9 +283,12 @@ export const webdavCore: CloudProviderCore = {
   }): Promise<UploadFileResult> {
     const serverUrl = requireCredentialString(credentials, 'webdavUrl', 'WebDAV URL');
     const auth = authFromCredentials(credentials);
-    const client = createClient(
-      serverUrl,
-      webdavAuthOptions(auth.username ?? '', auth.password ?? '', {}, auth.token)
+    // Its folder checks and delete-before-PUT wait out a short 503 too.
+    const client = wrapWebdavClient(
+      createClient(
+        serverUrl,
+        webdavAuthOptions(auth.username ?? '', auth.password ?? '', {}, auth.token)
+      )
     );
     try {
       return await uploadWithClient(client);
@@ -314,7 +332,9 @@ export const webdavCore: CloudProviderCore = {
       // stays provisional until the next real listing replaces it.
       // An archive PUT is retried with backoff on a transient failure (network,
       // timeout, 5xx, a server `retry: true`, a size mismatch); a small sidecar
-      // or progress file gets one attempt — its callers have their own recovery.
+      // or progress file gets one attempt — its callers have their own recovery —
+      // but for a 503 that named a short wait: the server did not apply it, and
+      // the body is a Blob, read afresh by every send.
       const isArchive = /\.cbz$/i.test(filename);
       // A whole-body digest, computed ONCE (the body does not change between
       // attempts), only for a server that advertised verified PUTs: a cross-origin
@@ -324,7 +344,9 @@ export const webdavCore: CloudProviderCore = {
         credentials.webdavPutVerified === true ? await contentDigestOf(blob) : null;
       const putOptions = contentDigest ? { contentDigest } : undefined;
       const attempt = () => uploadFileWithClient(client, filePath, blob, onProgress, putOptions);
-      const put = isArchive ? await uploadWithRetry(attempt, { onRetry }) : await attempt();
+      const put = isArchive
+        ? await uploadWithRetry(attempt, { onRetry })
+        : await withRetryAfter(attempt);
       if (put.digestVerified) {
         console.log(`[WebDAV] ${filename}: verified end to end (${put.digestVerified})`);
       }

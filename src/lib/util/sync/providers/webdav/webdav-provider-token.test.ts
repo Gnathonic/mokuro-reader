@@ -374,6 +374,63 @@ describe('a 401 under the token: re-issue once, retry once', () => {
   });
 });
 
+describe('a 401 re-issue and a 503 + Retry-After retry compose', () => {
+  function busy() {
+    return Object.assign(new Error('Invalid response: 503 Service Unavailable'), {
+      status: 503,
+      response: new Response(null, { status: 503, headers: { 'Retry-After': '1' } })
+    });
+  }
+
+  it('a 401 re-issue followed by a 503 is retried under the fresh token', async () => {
+    tokenAnswers = [issue(), issue()];
+    const provider = await connected();
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    let n = 0;
+    mockClient.exists.mockReset().mockImplementation(async () => {
+      sent.push(clientHeaders.current.Authorization);
+      n += 1;
+      if (n === 1) throw unauthorizedError();
+      if (n === 2) throw busy();
+      return true;
+    });
+    try {
+      const done = provider.listCloudVolumes();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(done).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sent.slice(0, 3)).toEqual(['Bearer tok-1', 'Bearer tok-2', 'Bearer tok-2']);
+    expect(tokenPosts()).toHaveLength(2);
+  });
+
+  it('a 503 retried into a 401 still re-issues once', async () => {
+    tokenAnswers = [issue(), issue()];
+    const provider = await connected();
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    let n = 0;
+    mockClient.exists.mockReset().mockImplementation(async () => {
+      sent.push(clientHeaders.current.Authorization);
+      n += 1;
+      if (n === 1) throw busy();
+      if (n === 2) throw unauthorizedError();
+      return true;
+    });
+    try {
+      const done = provider.listCloudVolumes();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(done).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sent.slice(0, 3)).toEqual(['Bearer tok-1', 'Bearer tok-1', 'Bearer tok-2']);
+    expect(tokenPosts()).toHaveLength(2);
+  });
+});
+
 describe('another tab replaced the token (localStorage is shared, client headers are not)', () => {
   /** The client answers 401 to anything but `accepted`. */
   function serverAccepts(accepted: string) {
