@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderError } from '../../provider-interface';
 import { fetchServerIdentity } from './identity';
+import { WebdavUploadError } from './webdav-upload';
 import { ingestMarkerRead, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
 
 const { mockClient, mockCore, createClientMock } = vi.hoisted(() => {
@@ -1566,5 +1567,182 @@ describe('WebDAVProvider and a 503 that names its wait (Retry-After)', () => {
     expect(response.status).toBe(503);
     expect(await response.text()).toBe('busy');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+// bunko 0.8 records series owners: an uploader's write into another account's
+// series, or to a file of a volume it does not control, answers 403. That is
+// that one file's refusal — never a read-only server, never a credential
+// failure — and a sign the closed-series list this session holds is stale.
+describe('WebDAVProvider: a 403 from a bunko that enforces series owners', () => {
+  const UPLOADER_PERMS = { canWriteProgress: true, canAddFiles: true, canModifyDelete: false };
+  const owners = (closedSeries: string[]) => ({
+    kind: 'authenticated' as const,
+    username: 'bob',
+    role: 'uploader',
+    serverVersion: '0.8.0',
+    permissions: {
+      ...UPLOADER_PERMS,
+      addFiles: { scope: 'open' as const, closedSeries }
+    }
+  });
+  const DETAIL = 'This file belongs to a volume another account uploaded.';
+  const refused = () =>
+    new WebdavUploadError(`WebDAV upload failed: 403 Forbidden (forbidden: ${DETAIL})`, {
+      status: 403,
+      reason: 'forbidden',
+      detail: DETAIL,
+      retryable: false
+    });
+  const cloudFile = (path: string) => ({
+    provider: 'webdav' as const,
+    fileId: `/mokuro-reader/${path}`,
+    path,
+    modifiedTime: '2026-10-01T00:00:00.000Z',
+    size: 1
+  });
+
+  let now = 1_000_000;
+  beforeEach(() => {
+    now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  async function bunko08(closedSeries: string[] = []): Promise<WebDAVProvider> {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(owners(closedSeries));
+    await provider.login({ serverUrl: 'https://host', username: 'bob', password: 'pw' });
+    localStorage.setItem('webdav_token', 'tok');
+    return provider;
+  }
+
+  it('getStatus reports where the account may add files', async () => {
+    const provider = await bunko08(['Admin Series']);
+    expect(provider.getStatus().addFilesPermissions).toEqual({
+      scope: 'open',
+      closedSeries: ['Admin Series']
+    });
+  });
+
+  it('an older bunko (no addFiles) reports none', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().addFilesPermissions).toBeUndefined();
+  });
+
+  it('refreshIdentity swaps the closed series in', async () => {
+    const provider = await bunko08([]);
+    identityMock.mockResolvedValue(owners(['Admin Series']));
+    await provider.refreshIdentity();
+    expect(provider.getStatus().addFilesPermissions?.closedSeries).toEqual(['Admin Series']);
+  });
+
+  it.each([
+    ['an archive', 'Admin Series/Volume 9.cbz'],
+    ['a primary sidecar', 'Shared/Volume 1.mokuro'],
+    ['a hand-made layer', 'Shared/Volume 1.my-fixes.mokuro'],
+    ['a cover', 'Shared/Volume 1.webp']
+  ])('a refused upload of %s is that file’s refusal, with the server’s reason', async (_, path) => {
+    const provider = await bunko08();
+    mockCore.uploadFile.mockRejectedValue(refused());
+    identityMock.mockClear();
+    now += 61_000;
+
+    const error = await provider.uploadFile(path, new Blob(['x'])).catch((e) => e);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error).toMatchObject({
+      code: 'PERMISSION_DENIED',
+      webdavErrorType: 'permission',
+      isAuthError: false,
+      isNetworkError: false
+    });
+    expect(error.message).toContain(DETAIL);
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+    expect(localStorage.getItem('webdav_token')).toBe('tok');
+    // The closed-series list this session holds may be stale: ask again.
+    await vi.waitFor(() => expect(identityMock).toHaveBeenCalledTimes(1));
+  });
+
+  // The safety of the ownership branch itself: the generic policy demotes a
+  // 403 to read-only unless /me said canWriteProgress. An addFiles-reporting
+  // identity without canWriteProgress must still get a per-file refusal.
+  it('decides before the generic policy, which would have gone read-only', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...owners([]),
+      permissions: {
+        canWriteProgress: false,
+        canAddFiles: true,
+        canModifyDelete: false,
+        addFiles: { scope: 'open' as const, closedSeries: [] }
+      }
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'bob', password: 'pw' });
+    expect(provider.isReadOnly).toBe(false);
+    mockCore.uploadFile.mockRejectedValue(refused());
+
+    const error = await provider.uploadFile('S/V.webp', new Blob(['x'])).catch((e) => e);
+    expect(error).toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(error.message).toContain(DETAIL);
+    expect(provider.isReadOnly).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+  });
+
+  it('a burst of refusals asks the identity endpoint at most once a minute', async () => {
+    const provider = await bunko08();
+    mockCore.uploadFile.mockRejectedValue(refused());
+    identityMock.mockClear();
+    await provider.uploadFile('S/V.webp', new Blob(['x'])).catch(() => {});
+    await provider.uploadFile('S/W.webp', new Blob(['x'])).catch(() => {});
+    // Login answered moments ago: nothing to catch up on yet.
+    expect(identityMock).not.toHaveBeenCalled();
+  });
+
+  it('a refused DELETE is that file’s refusal too', async () => {
+    const provider = await bunko08();
+    mockClient.deleteFile.mockRejectedValue(
+      Object.assign(new Error('Invalid response: 403 Forbidden'), { status: 403 })
+    );
+    identityMock.mockClear();
+    now += 61_000;
+
+    const error = await provider.deleteFile(cloudFile('Shared/Volume 1.cbz')).catch((e) => e);
+    expect(error).toMatchObject({ code: 'PERMISSION_DENIED', isAuthError: false });
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+    await vi.waitFor(() => expect(identityMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('a 401 still means the credentials failed', async () => {
+    const provider = await bunko08();
+    mockCore.uploadFile.mockRejectedValue(new Error('Request failed with status 401'));
+    await expect(provider.uploadFile('S/V.cbz', new Blob(['x']))).rejects.toMatchObject({
+      code: 'AUTH_FAILED'
+    });
+  });
+
+  it('an older bunko keeps the generic refusal and asks nothing', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      permissions: { ...UPLOADER_PERMS }
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    mockCore.uploadFile.mockRejectedValue(refused());
+    identityMock.mockClear();
+    now += 61_000;
+
+    const error = await provider.uploadFile('S/V.webp', new Blob(['x'])).catch((e) => e);
+    expect(error).toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(error.message).toBe(
+      'Your account does not have permission for this operation on this server'
+    );
+    expect(provider.isReadOnly).toBe(false);
+    expect(identityMock).not.toHaveBeenCalled();
   });
 });

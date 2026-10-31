@@ -659,15 +659,11 @@
       return;
     }
 
-    // Add all volumes to the backup queue
-    backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider);
-
-    // Show notification
-    const message =
-      skippedCount > 0
-        ? `Added ${volumesToBackup.length} volumes to backup queue (${skippedCount} already backed up)`
-        : `Added ${volumesToBackup.length} volumes to backup queue`;
-    showSnackbar(message);
+    // The queue gives the one notice (what it added, and what it skipped):
+    // a snackbar shown here would erase its skip notice.
+    backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider, undefined, {
+      alreadyBackedUp: skippedCount
+    });
   }
 </script>
 

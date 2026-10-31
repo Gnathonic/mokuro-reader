@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   accountCanAddFiles,
+  accountCanAddToSeries,
   accountCanModifyDelete,
+  closedSeriesNotice,
   canPublishCurated,
   renameRefusalMessage
 } from './account-capabilities';
@@ -57,5 +59,64 @@ describe('canPublishCurated', () => {
   it('no status (no provider) cannot publish', () => {
     expect(canPublishCurated(null, 'One Piece')).toBe(false);
     expect(canPublishCurated(undefined, 'One Piece')).toBe(false);
+  });
+});
+
+// bunko 0.8 closes a series another account owns to this one's uploads.
+describe('accountCanAddToSeries', () => {
+  const open = (closedSeries: string[]) => ({
+    canAddFiles: true,
+    addFilesPermissions: { scope: 'open' as const, closedSeries }
+  });
+
+  it('absent permissions (older bunko, any other provider) close nothing', () => {
+    expect(accountCanAddToSeries(undefined, 'Berserk')).toBe(true);
+    expect(accountCanAddToSeries({}, 'Berserk')).toBe(true);
+    expect(accountCanAddToSeries({ canAddFiles: true }, 'Berserk')).toBe(true);
+  });
+
+  it('a closed series is closed under any spelling that folds onto it', () => {
+    const status = open(['Dr. Stone', 'Café Series']);
+    expect(accountCanAddToSeries(status, 'Dr. Stone')).toBe(false);
+    expect(accountCanAddToSeries(status, 'dr.  STONE ')).toBe(false);
+    expect(accountCanAddToSeries(status, 'Cafe\u0301 Series')).toBe(false);
+    expect(accountCanAddToSeries(status, 'Berserk')).toBe(true);
+  });
+
+  it('an account that cannot add files cannot add to any series', () => {
+    expect(accountCanAddToSeries({ canAddFiles: false }, 'Berserk')).toBe(false);
+    expect(
+      accountCanAddToSeries(
+        { canAddFiles: false, addFilesPermissions: { scope: 'all' } },
+        'Berserk'
+      )
+    ).toBe(false);
+  });
+
+  it('scope all opens every series, none closes every one', () => {
+    expect(
+      accountCanAddToSeries({ canAddFiles: true, addFilesPermissions: { scope: 'all' } }, 'X')
+    ).toBe(true);
+    expect(
+      accountCanAddToSeries({ canAddFiles: true, addFilesPermissions: { scope: 'none' } }, 'X')
+    ).toBe(false);
+  });
+
+  it('a fresh identity (a new permissions object) is read afresh', () => {
+    expect(accountCanAddToSeries(open([]), 'Berserk')).toBe(true);
+    expect(accountCanAddToSeries(open(['Berserk']), 'Berserk')).toBe(false);
+    expect(accountCanAddToSeries(open([]), 'Berserk')).toBe(true);
+  });
+
+  it('the notice counts series and volumes', () => {
+    expect(closedSeriesNotice(1, 1)).toBe(
+      'Skipped 1 volume: its series belongs to another account on this server'
+    );
+    expect(closedSeriesNotice(2, 5)).toBe(
+      'Skipped 5 volumes in 2 series that belong to another account on this server'
+    );
+    expect(closedSeriesNotice(1, 3)).toBe(
+      'Skipped 3 volumes: their series belongs to another account on this server'
+    );
   });
 });

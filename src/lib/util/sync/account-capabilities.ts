@@ -11,7 +11,7 @@
  *
  * Pure, dependency-free: takes a `ProviderStatus` (or nothing).
  */
-import { ProviderError, type ProviderStatus } from './provider-interface';
+import { ProviderError, type AddFilesPermissions, type ProviderStatus } from './provider-interface';
 import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 
 type Capabilities = Pick<ProviderStatus, 'canAddFiles' | 'canModifyDelete'>;
@@ -26,6 +26,59 @@ export function accountCanAddFiles(status: Capabilities | null | undefined): boo
   return status?.canAddFiles !== false;
 }
 
+export const CANNOT_ADD_TO_SERIES_MESSAGE = 'This series belongs to another account on this server';
+
+/** Folded `closedSeries`, per permissions OBJECT: a fresh identity folds once, never per call. */
+const closedKeysByPermissions = new WeakMap<AddFilesPermissions, Set<string>>();
+
+function closedKeys(permissions: AddFilesPermissions): Set<string> {
+  let keys = closedKeysByPermissions.get(permissions);
+  if (!keys) {
+    keys = new Set((permissions.closedSeries ?? []).map(normalizeVolumeTitleKey));
+    closedKeysByPermissions.set(permissions, keys);
+  }
+  return keys;
+}
+
+/**
+ * May this account add files to the series FOLDER `seriesTitle`? bunko 0.8
+ * records a series' owner (its first uploader), and an uploader may add
+ * nothing to a series another account owns (`addFilesPermissions.closedSeries`,
+ * folded like every series-folder match). Absent permissions close nothing.
+ */
+export function accountCanAddToSeries(
+  status: Pick<ProviderStatus, 'canAddFiles' | 'addFilesPermissions'> | null | undefined,
+  seriesTitle: string
+): boolean {
+  if (!accountCanAddFiles(status)) return false;
+  const permissions = status?.addFilesPermissions;
+  switch (permissions?.scope) {
+    case 'none':
+      return false;
+    case 'open':
+      return !closedKeys(permissions).has(normalizeVolumeTitleKey(seriesTitle));
+    default:
+      return true;
+  }
+}
+
+/**
+ * An ownership 403 may mean this session's `closedSeries` is stale (bunko 0.8):
+ * the identity is asked again, at most this often — every volume of a shared
+ * folder can be refused, and most such refusals change nothing in `/me`.
+ */
+export const OWNERSHIP_REFRESH_MAX_AGE_MS = 60_000;
+
+/** The ONE notice a backup gives for the volumes it skipped in closed series. */
+export function closedSeriesNotice(series: number, volumes: number): string {
+  if (volumes === 1)
+    return 'Skipped 1 volume: its series belongs to another account on this server';
+  if (series === 1) {
+    return `Skipped ${volumes} volumes: their series belongs to another account on this server`;
+  }
+  return `Skipped ${volumes} volumes in ${series} series that belong to another account on this server`;
+}
+
 /** May this account move/rename existing server files? */
 export function accountCanModifyDelete(status: Capabilities | null | undefined): boolean {
   return status?.canModifyDelete !== false;
@@ -33,10 +86,12 @@ export function accountCanModifyDelete(status: Capabilities | null | undefined):
 
 /**
  * May this account publish `seriesTitle`'s volumes to the shared `curated`
- * layer? `all` anywhere; `owned` only in a series this account owns — bunko
- * grants it per uploaded VOLUME, approximated here by the series folder
- * (`metadataPermissions.ownedSeries`, folded like the metadata gate), so a
- * 403 on the PUT is final. Anything else, including no curated layer, no.
+ * layer? `all` anywhere; `owned` only in a series this account owns
+ * (`metadataPermissions.ownedSeries`, folded like the metadata gate: from
+ * bunko 0.8 the series' RECORDED owner, who controls every volume in it).
+ * bunko also lets the uploader of one volume in a shared folder publish that
+ * volume, which this gate conservatively does not offer; a 403 on the PUT is
+ * final. Anything else, including no curated layer, no.
  */
 export function canPublishCurated(
   status: Pick<ProviderStatus, 'curatedPublish' | 'metadataPermissions'> | null | undefined,

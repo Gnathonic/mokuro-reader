@@ -11,7 +11,8 @@ function readable<T>(value: T) {
 }
 
 const queueVolumeForBackup = vi.hoisted(() => vi.fn());
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
+const showSnackbar = vi.hoisted(() => vi.fn());
+vi.mock('$lib/util', () => ({ showSnackbar }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     cloudFiles: readable(new Map()),
@@ -58,6 +59,7 @@ beforeEach(() => {
   localStorage.clear();
   resetUploadFailuresForTest();
   queueVolumeForBackup.mockReset();
+  showSnackbar.mockReset();
 });
 afterEach(() => cleanup());
 
@@ -82,5 +84,22 @@ describe('BackupButton', () => {
     );
     await fireEvent.click(getByRole('button', { name: /Retry/ }));
     expect(queueVolumeForBackup).toHaveBeenCalledWith(volume);
+  });
+
+  it('announces a queued volume as added', async () => {
+    queueVolumeForBackup.mockReturnValue(true);
+    const { getByRole } = render(BackupButton, { props: { volume } });
+    await fireEvent.click(getByRole('button', { name: /Backup to WebDAV/ }));
+    expect(showSnackbar).toHaveBeenCalledWith('Added Volume 9 to backup queue');
+  });
+
+  // The snackbar has one slot: the queue's own skip notice (a series another
+  // account owns, bunko 0.8) must not be overwritten by a false "Added".
+  it('says nothing over the notice of a volume the queue skipped', async () => {
+    queueVolumeForBackup.mockReturnValue(false);
+    const { getByRole } = render(BackupButton, { props: { volume } });
+    await fireEvent.click(getByRole('button', { name: /Backup to WebDAV/ }));
+    expect(queueVolumeForBackup).toHaveBeenCalledWith(volume);
+    expect(showSnackbar).not.toHaveBeenCalled();
   });
 });
