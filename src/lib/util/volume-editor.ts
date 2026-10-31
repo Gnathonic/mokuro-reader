@@ -114,9 +114,15 @@ async function syncCoverSidecarToCloud(volumeUuid: string, thumbnailFile: File):
       coverWebP
     );
   } catch (error) {
-    // The server refused this one file (a volume another account uploaded):
-    // the cover is saved on this device, which is what the user changed.
-    if (error instanceof ProviderError && error.code === 'PERMISSION_DENIED') {
+    // A server that records series owners (bunko 0.8) refused this one file —
+    // a volume another account uploaded: the cover is saved on this device,
+    // which is what the user changed. Anywhere else a refusal may mean the
+    // server just went read-only, which the user is told about as before.
+    if (
+      error instanceof ProviderError &&
+      error.code === 'PERMISSION_DENIED' &&
+      provider.getStatus().addFilesPermissions !== undefined
+    ) {
       console.info(`[volume-editor] the server refused the cover of ${volume.volume_title}`);
       return;
     }

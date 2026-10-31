@@ -75,11 +75,25 @@ describe('a volume cover on a server that records series owners', () => {
   });
 
   it('a refusal the server answers anyway is not a failed cover change', async () => {
+    provider.state.status = {
+      canAddFiles: true,
+      addFilesPermissions: { scope: 'open', closedSeries: [] }
+    };
     uploadFile.mockRejectedValueOnce(
       new ProviderError('The server refused it', 'webdav', 'PERMISSION_DENIED', false, false)
     );
     await expect(updateVolumeCover('v1', image())).resolves.toBeUndefined();
     expect(volumes.update).toHaveBeenCalledTimes(1);
+  });
+
+  // Only a server that records owners makes a 403 one file's refusal. Anywhere
+  // else (plain WebDAV, an older bunko, a bunko whose /me never answered) the
+  // provider may just have gone read-only over it: the user is told, as before.
+  it('a refusal from a server that records no owners still fails the change, as before', async () => {
+    uploadFile.mockRejectedValueOnce(
+      new ProviderError('Server is read-only', 'webdav', 'PERMISSION_DENIED', false, false)
+    );
+    await expect(updateVolumeCover('v1', image())).rejects.toThrow('Server is read-only');
   });
 
   it('any other failure still surfaces', async () => {

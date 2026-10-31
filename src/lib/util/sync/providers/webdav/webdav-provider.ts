@@ -34,7 +34,7 @@ import {
   TransientAuthRefreshError
 } from '$lib/util/worker-auth-refresh';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
-import { CANNOT_RENAME_MESSAGE } from '../../account-capabilities';
+import { CANNOT_RENAME_MESSAGE, OWNERSHIP_REFRESH_MAX_AGE_MS } from '../../account-capabilities';
 import {
   isBestEffortMetadataPath,
   isReservedLayerSidecarPath,
@@ -185,9 +185,6 @@ function libraryFileRefusal(path: string, error: unknown): ProviderError {
 function isLibraryFilePath(path: string): boolean {
   return path.includes('/') && !path.startsWith('history/');
 }
-
-/** A refusal may mean this session's closed-series list is stale; ask again at most this often. */
-const OWNERSHIP_REFRESH_MAX_AGE_MS = 60_000;
 
 export class WebDAVProvider implements SyncProvider {
   readonly type = 'webdav' as const;
@@ -1581,16 +1578,6 @@ export class WebDAVProvider implements SyncProvider {
     return result;
   }
 
-  /**
-   * Central policy for failed write operations:
-   * - 401 with a password-backed session: credentials were rejected -> clear
-   *   the stored password and prompt re-login (NOT a read-only server)
-   * - 403 when the server told us we CAN write progress: an isolated
-   *   permission error (e.g. library upload as a registered user) -> clear
-   *   message, but do NOT demote to read-only (that would hide progress sync)
-   * - everything else (405, 403 on unknown/low capabilities, 401 on a
-   *   credential-less session): legacy behavior - mark read-only
-   */
   /** bunko >= 0.8: series owners are recorded, and a 403 may be ownership. */
   private enforcesSeriesOwners(): boolean {
     return this._capabilities?.addFiles !== undefined;
@@ -1613,6 +1600,19 @@ export class WebDAVProvider implements SyncProvider {
     return libraryFileRefusal(path, error);
   }
 
+  /**
+   * Central policy for failed write operations:
+   * - 401 with a password-backed session: credentials were rejected -> clear
+   *   the stored password and prompt re-login (NOT a read-only server)
+   * - 403 when the server told us we CAN write progress: an isolated
+   *   permission error (e.g. library upload as a registered user) -> clear
+   *   message, but do NOT demote to read-only (that would hide progress sync)
+   * - everything else (405, 403 on unknown/low capabilities, 401 on a
+   *   credential-less session): legacy behavior - mark read-only
+   * Decided BEFORE this policy, by the callers: a 403 on a reserved layer file
+   * (`reservedLayerRefusal`) and, from a bunko reporting `addFiles`, a 403 on
+   * a library file (`ownershipRefusal`) are that one file's refusal.
+   */
   private handleWriteFailure(
     kind: WriteErrorKind,
     readOnlyMessage: string,

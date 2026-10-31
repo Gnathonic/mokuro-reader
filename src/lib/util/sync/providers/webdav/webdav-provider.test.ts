@@ -1667,6 +1667,31 @@ describe('WebDAVProvider: a 403 from a bunko that enforces series owners', () =>
     await vi.waitFor(() => expect(identityMock).toHaveBeenCalledTimes(1));
   });
 
+  // The safety of the ownership branch itself: the generic policy demotes a
+  // 403 to read-only unless /me said canWriteProgress. An addFiles-reporting
+  // identity without canWriteProgress must still get a per-file refusal.
+  it('decides before the generic policy, which would have gone read-only', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...owners([]),
+      permissions: {
+        canWriteProgress: false,
+        canAddFiles: true,
+        canModifyDelete: false,
+        addFiles: { scope: 'open' as const, closedSeries: [] }
+      }
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'bob', password: 'pw' });
+    expect(provider.isReadOnly).toBe(false);
+    mockCore.uploadFile.mockRejectedValue(refused());
+
+    const error = await provider.uploadFile('S/V.webp', new Blob(['x'])).catch((e) => e);
+    expect(error).toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(error.message).toContain(DETAIL);
+    expect(provider.isReadOnly).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+  });
+
   it('a burst of refusals asks the identity endpoint at most once a minute', async () => {
     const provider = await bunko08();
     mockCore.uploadFile.mockRejectedValue(refused());

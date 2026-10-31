@@ -62,6 +62,13 @@ export function accountCanAddToSeries(
   }
 }
 
+/**
+ * An ownership 403 may mean this session's `closedSeries` is stale (bunko 0.8):
+ * the identity is asked again, at most this often — every volume of a shared
+ * folder can be refused, and most such refusals change nothing in `/me`.
+ */
+export const OWNERSHIP_REFRESH_MAX_AGE_MS = 60_000;
+
 /** The ONE notice a backup gives for the volumes it skipped in closed series. */
 export function closedSeriesNotice(series: number, volumes: number): string {
   if (volumes === 1)

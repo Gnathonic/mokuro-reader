@@ -525,15 +525,24 @@ folder. `/me` reports it as `permissions.addFiles` (`all` / `open` with
 `closedSeries` / `none`) → `ProviderStatus.addFilesPermissions`, whose
 PRESENCE says the server enforces owners (older bunko: absent, nothing
 closed); `ownedSeries` becomes the folders this account owns, which is who
-bunko takes a `series.json` update request from. Every library write asks
+bunko takes a `series.json` update request from. Three paths pre-check
 `accountCanAddToSeries(status, folderTitle)` (folded like `ownedSeries`;
-includes `accountCanAddFiles`): a backup skips a closed series' volumes with
-ONE notice (`closedSeriesNotice`, never an "Upload failed" per volume — also
-for a series that closed while queued), as do the cover sync and the sidecar
-backfill. A 403 on a library file from such a server is that file's refusal
-(`libraryFileRefusal`, `PERMISSION_DENIED` with the server's verdict detail):
-never read-only, never a credential failure, and it re-asks `/me` (throttled
-to once a minute) so a stale `closedSeries` catches up. Personal `edit`
+includes `accountCanAddFiles`) and stay quiet for a closed series: the backup
+(it skips a closed series' volumes with ONE notice, never an "Upload failed"
+per volume — also for a series that closed while queued), the cover sync and
+the sidecar backfill. The backup queue words the request's one snackbar
+itself (`queueSeriesVolumesForBackup` → "Added N … Skipped M …";
+`queueVolumeForBackup` returns false when it skipped and noticed): a caller's
+own "Added" snackbar would erase the skip notice from the single slot.
+Everything else (layer-sync's hand-made layer pushes, curated publish,
+deletes) relies on the server: a 403 on a library file from such a server is
+that file's refusal (`libraryFileRefusal`, `PERMISSION_DENIED` with the
+server's verdict detail): never read-only, never a credential failure, and
+it re-asks `/me` (throttled to once a minute, `OWNERSHIP_REFRESH_MAX_AGE_MS`,
+the backup's 403 re-ask too) so a stale `closedSeries` catches up;
+layer-sync remembers the refusal in `refusedPushes`. On a server WITHOUT
+`addFiles` a refused cover still fails the cover change (it may mean the
+server just went read-only). Personal `edit`
 layers stay writable everywhere (they are the account's own files). bunko's
 refusal texts never contain "401"/"Unauthorized": `classifyWriteError`
 matches those first and would clear the password.
