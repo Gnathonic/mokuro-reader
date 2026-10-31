@@ -157,3 +157,40 @@ describe('a refused reserved layer file', () => {
     expect(provider.getStatus().isReadOnly).toBe(true);
   });
 });
+
+describe('a 503 + Retry-After on a write', () => {
+  /** A connected provider whose (wrapped) client answers every DELETE 503 + Retry-After. */
+  function providerWithBusyDelete(): {
+    provider: WebDAVProvider;
+    deleteFile: ReturnType<typeof vi.fn>;
+  } {
+    const provider = connectedProvider();
+    const deleteFile = vi.fn(async () => {
+      throw Object.assign(new Error('Invalid response: 503 Service Unavailable'), {
+        status: 503,
+        response: new Response(null, { status: 503, headers: { 'Retry-After': '1' } })
+      });
+    });
+    const internals = provider as unknown as {
+      client: unknown;
+      wrapClient: (raw: unknown) => unknown;
+    };
+    internals.client = internals.wrapClient({ deleteFile, getHeaders: () => ({}) });
+    return { provider, deleteFile };
+  }
+
+  it('one the server never lifts fails the delete after two retries, provider still read-write', async () => {
+    vi.useFakeTimers();
+    try {
+      const { provider, deleteFile } = providerWithBusyDelete();
+      const done = provider.deleteFile(cloudFile('Dr Stone/Volume 1.cbz')).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await done).toMatchObject({ code: 'DELETE_FAILED' });
+      expect(deleteFile).toHaveBeenCalledTimes(3);
+      expect(provider.getStatus().isReadOnly).toBe(false);
+      expect(provider.getStatus().needsAttention).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
