@@ -535,18 +535,29 @@ with an `engine` and a `cloud` stamp) even once edited: an edit forks into
 (signing in, offline, a cloud-direct marker not read yet) edits the row in
 place, and that edit stays on the device rather than replace what the model
 wrote for every account — nor does bunko's later rewrite of that layer replace
-it (`keepsLocalEdits`, as for an `edit` held back from a 0.7.x). Its id half,
+it (`keepsLocalEdits`, as for an `edit` held back from a 0.7.x). Both hold while
+the status says bunko OR the row was pulled from THAT provider while it did
+(`cloud.server_compiled`, unindexed, honoured only where the target's provider
+type equals the row's `cloud.provider` — `pulledFromCompilingServer`), so a
+status that reads plain storage again (a stale cloud-direct marker, a failed
+identity probe) changes neither. An export, a file and any other provider get
+the layer as usual; a second WebDAV server is the same provider type, so a
+backup there leaves the layer out too. The limit: a row pulled while the status
+ALREADY read plain storage carries no mark, and is treated as plain storage's
+(newest wins, pushed when edited). Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
 IS is somebody else's file, so neither a local delete, its tombstone nor the
 `.gz`-sibling tidy ever removes its cloud copy (the delete reports
 `'kept-shared'`, and the user is told the shared copy stays). Writability is per layer (`canPushLayer`): a personal
 id on a `push` bunko needs only `isReadOnly !== true` (a `registered` account
 writes its own overlay), anything else also needs `canAddFiles`. A personal
-row on a `push` bunko records the provider's `accountScope` in `cloud.account`
-(`personalLayerAccount`; push, pull, `stampLayersSynced`) — only there do two
-accounts read two files at one path, and elsewhere a scope need not even be
-stable within one account (Drive's is `default` until its reader folder
-resolves), so no other provider stamps or compares one: a row of another account on this device is never
+row on a WebDAV bunko (`push` or `local` — a 0.8 whose identity probe fell back
+reads `local`, and an overlay pulled then is still this account's) records the
+provider's `accountScope` in `cloud.account` (`personalLayerAccount`; push,
+pull, `stampLayersSynced`) — only there do two accounts read two files at one
+path, and elsewhere a scope need not even be stable within one account (Drive's
+is `default` until its reader folder resolves, and a cloud-direct marker
+reports no `editLayerSync`), so no other provider stamps or compares one: a row of another account on this device is never
 pushed — by sync or by a backup's layer sidecars (`account` in
 `generateVolumeSidecarsFromDb`) — and is replaced by this account's listed file
 only while it holds no unsynced edit. Its delete never touches the file at its
@@ -560,15 +571,15 @@ a read-only demotion of the WebDAV provider.
 `layerStaysLocal` — never pushed by layer-sync, never a backup sidecar, never
 exported or embedded:
 
-| Id                                | What it is                                                         | Written by         | Local?                                           |
-| --------------------------------- | ------------------------------------------------------------------ | ------------------ | ------------------------------------------------ |
-| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                                    |
-| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched; `previous-ocr*` always on bunko |
-| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local`                 |
-| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                                           |
-| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                                         |
-| `curated-<n>`                     | bunko's copy of a second `curated` a case merge found              | bunko only         | on bunko                                         |
-| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | server OCR a cloud vouches for, on bunko         |
+| Id                                | What it is                                                         | Written by         | Local?                                                                         |
+| --------------------------------- | ------------------------------------------------------------------ | ------------------ | ------------------------------------------------------------------------------ |
+| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                                                                  |
+| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched; `previous-ocr*` always on bunko                               |
+| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local`                                               |
+| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                                                                         |
+| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                                                                       |
+| `curated-<n>`                     | bunko's copy of a second `curated` a case merge found              | bunko only         | on bunko                                                                       |
+| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | server OCR a cloud vouches for, on bunko (pulled from bunko: on that provider) |
 
 So `edit` lives per account on a bunko that lists it in `per_user_layers`
 (the server serves each account its own file at the same path), stays on the
@@ -578,7 +589,15 @@ shared library files. A backup sends an `edit` (or `curated`) file only AFTER
 the volume's archive (`uploadVolumeFiles`, `volume-upload-order.ts`, Worker and
 main thread alike): bunko refuses it with 409 `no-volume` while no `<Volume>.cbz`
 is listed beside it. A refusal there fails nothing — the layer is left unstamped
-and the next listing's layer sync pushes it.
+and the next listing's layer sync pushes it. A PRIMARY whose title ends in such an
+id (`Notes.edit.mokuro`, `X.curated.mokuro` — `primaryAnchoredOnArchive`) also
+goes up right after the archive, since bunko reads that name as a layer until
+the archive is listed; unlike a layer it is still required, so a failure there
+fails the backup with the archive already on the server. Before the archive, a LAYER the
+server refuses (403/409 or a non-auth `PERMISSION_DENIED`, `isLayerFileRefusal`)
+fails nothing either: logged at debug, left unstamped for layer sync. A 401, a
+5xx or a network failure there still fails the backup, as does any failure of
+the primary sidecar or the cover.
 
 **Shared layers are read-only; an edit forks into `edit`.**
 `forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
@@ -1446,10 +1465,17 @@ month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
   hold — the version's numeric core ≥ 0.8.0 (a `0.8.0-beta.N` counts as 0.8.0;
   missing or unparseable = no) AND `per_user_files` contains `history/`
   (`bunko-version.ts`). These gates (with `positionsSync` and
-  `editLayerSync`) follow the server, not the connect: every sync re-reads the
-  identity once it is 5 min old (`refreshIdentity({ maxAgeMs })`, before the
-  per-user files), so a bunko upgraded or rolled back under an open tab is
-  followed without a reload. On a cloud-direct folder (Drive/OneDrive/MEGA/plain
+  `editLayerSync`) follow the server, not the connect: each writer of a
+  per-user file — the progress sync, the positions push/open/foreground
+  checks (`syncPositions`), the listing- and edit-triggered layer sync, an
+  edit layer's cloud delete, the backup's worker message — first calls
+  `freshGateStatus`/`refreshGates` (`identity-gates.ts`), which re-reads the
+  identity once the last answer (any answer, a failure included) is 5 min old;
+  concurrent callers share one request. So after a bunko upgrade or rollback
+  under an open tab a writer can act on the old answer for at most 5 min, never
+  until a reload. A refresh never drops a held token on a transient answer, and
+  one that identifies bunko turns the bunko gates on (`serverCompilesMetadata`)
+  for a session that connected as plain storage. On a cloud-direct folder (Drive/OneDrive/MEGA/plain
   WebDAV) the fresh lease holder's marker decides the same way, from its
   `bunko_version` and `per_user_files` (`withCloudBunkoStatus`); no fresh
   holder = plain storage. `historySyncAllowed(status)` (`history-sync.ts`)

@@ -1162,6 +1162,121 @@ describe('WebDAVProvider refreshIdentity() (the server changed under an open ses
     }
   });
 
+  it.each([
+    ['plain WebDAV (unsupported)', { kind: 'unsupported' as const }],
+    ['invalid credentials', { kind: 'invalid-credentials' as const }],
+    ['rate limited', { kind: 'rate-limited' as const }]
+  ])('maxAgeMs throttles a %s answer too', async (_label, answer) => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({ kind: 'unsupported' });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      identityMock.mockClear();
+      identityMock.mockResolvedValue(answer);
+
+      // The connect asked a moment ago: nothing to ask yet.
+      now.mockReturnValue(1_000_000 + 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).not.toHaveBeenCalled();
+
+      now.mockReturnValue(1_000_000 + 6 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+      now.mockReturnValue(1_000_000 + 7 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('a refresh that throws is throttled as well', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue(V08);
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      identityMock.mockReset();
+      identityMock.mockRejectedValue(new Error('boom'));
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      now.mockReturnValue(1_000_000 + 6 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('concurrent refreshes share one request', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    identityMock.mockClear();
+    let answer!: (value: typeof V073) => void;
+    identityMock.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const first = provider.refreshIdentity();
+    const second = provider.refreshIdentity({ maxAgeMs: 0 });
+    answer(V073);
+    await Promise.all([first, second]);
+    expect(identityMock).toHaveBeenCalledTimes(1);
+    expect(provider.getStatus().editLayerSync).toBe('local');
+  });
+
+  it('a session that connected as plain storage (/me unreachable) becomes bunko once a refresh says so', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+    expect(gates(provider)).toEqual({
+      historySync: undefined,
+      positionsSync: undefined,
+      editLayerSync: undefined
+    });
+
+    identityMock.mockResolvedValue(V073);
+    await provider.refreshIdentity();
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+    expect(gates(provider)).toEqual({
+      historySync: false,
+      positionsSync: false,
+      editLayerSync: 'local'
+    });
+
+    // A failed refresh later never demotes it back.
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.refreshIdentity();
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it("a refresh that answers after a logout never touches the next session's gates", async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    let answer!: (value: typeof V08) => void;
+    identityMock.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    const late = provider.refreshIdentity();
+
+    // Logged out and connected to a plain WebDAV server while it hangs.
+    await provider.logout();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://plain', username: 'bob', password: 'pw2' });
+    identityMock.mockClear();
+    // The new session asks for itself rather than waiting on A's request.
+    const own = provider.refreshIdentity();
+    await vi.waitFor(() => expect(identityMock).toHaveBeenCalledTimes(1), { timeout: 500 });
+
+    answer(V08);
+    await Promise.all([late, own]);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+    expect(gates(provider)).toEqual({
+      historySync: undefined,
+      positionsSync: undefined,
+      editLayerSync: undefined
+    });
+  });
+
   it('a failed refresh keeps what the server said last', async () => {
     const provider = await freshProvider();
     identityMock.mockResolvedValue(V08);

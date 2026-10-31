@@ -35,6 +35,7 @@ import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import {
   layerIdStaysLocal,
   layerStaysLocal,
+  pulledFromCompilingServer,
   personalLayerAccount,
   type LayerTarget
 } from '$lib/catalog/mokuro-hash';
@@ -50,6 +51,7 @@ import {
   type SyncProvider
 } from '$lib/util/sync/provider-interface';
 import { providerManager } from '$lib/util/sync/provider-manager';
+import { freshGateStatus, refreshGates } from '$lib/util/sync/identity-gates';
 import {
   cbzStemsOf,
   classifyMokuroSidecar,
@@ -560,7 +562,7 @@ export function layerNeedsPush(
   // shared `curated` layer, an `edit` layer the server would share, or the
   // editor's `original` / bunko's `pre-upgrade` on a server that compiles
   // its metadata.
-  if (layerStaysLocal(row, target)) return false;
+  if (layerStaysLocal(row, { provider: providerType, ...target })) return false;
   if (syncedForOtherAccount(row, account)) return false;
   if (row.cloud && row.cloud.provider === providerType && !editedSinceSync(row)) return false;
   if (!file) return true;
@@ -612,7 +614,8 @@ function pushGateOf(provider: SyncProvider): PushGate {
     status,
     target: {
       serverCompilesMetadata: status.serverCompilesMetadata === true,
-      editLayerSync: status.editLayerSync
+      editLayerSync: status.editLayerSync,
+      provider: provider.type
     },
     account: personalLayerAccount(status),
     unpublishing: new Map(
@@ -679,12 +682,17 @@ function unpublishedFileMoved(
  *   edit there forks into `edit`, but one begun before the provider said it
  *   compiles its metadata (signing in, offline, a cloud-direct marker not read
  *   yet) reached the row, and bunko rewrites such a layer in place when its
- *   engine moves on.
+ *   engine moves on. "On a bunko" = the status says so NOW, or the row was
+ *   pulled while it did (`cloud.server_compiled`).
  */
 function keepsLocalEdits(row: VolumeOcrLayer | undefined, target: LayerTarget): boolean {
   if (!row || isPassiveSnapshot(row) || !editedSinceSync(row)) return false;
   if (isPersonalLayerId(row.layer_id)) return layerIdStaysLocal(row.layer_id, target);
-  return target.serverCompilesMetadata && isCloudModelOutput(row);
+  // The row's own record counts as much as the status: a stale cloud-direct
+  // marker or a failed identity probe reads plain storage again, and the
+  // server's rewrite would then replace the corrections with no copy kept.
+  const compiled = target.serverCompilesMetadata || pulledFromCompilingServer(row, target);
+  return compiled && isCloudModelOutput(row);
 }
 
 /** Same key every "which row is this cloud file" question uses. */
@@ -850,9 +858,11 @@ async function pullOne(
   if (isKnownMismatch(rejection)) return false;
   const pulled = await readLayerFile(provider, listed);
   if (!pulled) return false;
+  const status = provider.getStatus();
   const stored = await storePulledLayer(row, listed.layerId, pulled, existing, {
     provider: provider.type,
-    account: personalLayerAccount(provider.getStatus()),
+    account: personalLayerAccount(status),
+    serverCompiled: status.serverCompilesMetadata === true,
     stamp: stampOf(listed.file),
     label: listed.file.path
   });
@@ -880,6 +890,8 @@ async function storePulledLayer(
     provider: string;
     /** The provider's `accountScope`, stamped on a personal layer. */
     account?: string;
+    /** The provider said the server compiles its metadata (`cloud.server_compiled`). */
+    serverCompiled?: boolean;
     stamp: { size?: number; modified?: number };
     label: string;
   }
@@ -938,6 +950,7 @@ async function storePulledLayer(
     cloud: {
       provider: source.provider,
       ...accountStamp(layerId, source.account),
+      ...(source.serverCompiled ? { server_compiled: true as const } : {}),
       ...source.stamp,
       synced_at: now
     }
@@ -1237,6 +1250,10 @@ async function runSync(
   if (cloudFilesMap.size === 0) return result;
   const provider = providerManager.getActiveProvider();
   if (!provider || provider.type !== providerType) return result;
+  // Listing- and edit-triggered runs come outside the progress sync: the
+  // edit-layer gate must follow the server NOW (throttled), or a bunko rolled
+  // back under an open tab gets the account's overlay into its SHARED library.
+  await refreshGates(provider);
   const gate = pushGateOf(provider);
 
   await migrateEditedPrimariesToEditLayers();
@@ -1720,10 +1737,11 @@ export async function deleteLayerFileInCloud(
     const provider = providerManager.getActiveProvider();
     if (!provider) return 'unconfirmed';
     if (layer.cloud && layer.cloud.provider !== provider.type) return 'unconfirmed';
+    // A rolled-back bunko shares the `edit` path again: ask first (throttled).
+    const status = await freshGateStatus(provider);
     // Another account's personal layer: the listed file at that path is the
     // ACTIVE account's own overlay, not the copy this row was synced with.
-    if (syncedForOtherAccount(layer, personalLayerAccount(provider.getStatus())))
-      return 'unconfirmed';
+    if (syncedForOtherAccount(layer, personalLayerAccount(status))) return 'unconfirmed';
     const listing = listingFromCache(provider.type);
     const listed = listedLayerOf(listing, row, layer.layer_id);
     if (!listed) {
