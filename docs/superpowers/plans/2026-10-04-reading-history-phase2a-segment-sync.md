@@ -20,7 +20,6 @@
 - A history upload failure must never demote a provider to read-only, clear credentials, or fail the sync.
 - File format: small header (`format`, `device`, `month`, `first_seq`, `last_seq`, `count`) + delta-encoded rows, deflated with the built-in `CompressionStream`. No new dependency.
 - Months are UTC `YYYY-MM` of the event's `t`.
-- Never mention the third-party public deployment domain in code, comments, commits or PRs.
 
 ## Review Focus
 

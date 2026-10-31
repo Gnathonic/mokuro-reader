@@ -120,24 +120,56 @@ export interface LayerTarget {
   serverCompilesMetadata: boolean;
   /** `ProviderStatus.editLayerSync`: may the account's `edit` layer go up there? */
   editLayerSync?: 'push' | 'local';
+  /**
+   * The target's provider type (`SyncProvider.type`), when it is one: a row's
+   * `cloud.server_compiled` mark counts only there (`pulledFromCompilingServer`).
+   * Absent for an export or a file, which no server rewrites.
+   */
+  provider?: string;
+}
+
+/**
+ * Was this row's cloud copy pulled from THIS target while its provider said
+ * the server compiles its metadata (`cloud.server_compiled`)? Then it is still
+ * that server's OCR there, though the status may read plain storage again (a
+ * stale cloud-direct marker, a failed identity probe). Only on the provider it
+ * came from: an export, a file or another provider is not the server that
+ * would rewrite it, so the mark says nothing about them.
+ */
+export function pulledFromCompilingServer(
+  layer: { cloud?: unknown },
+  target: Pick<LayerTarget, 'provider'>
+): boolean {
+  const cloud = layer.cloud as { provider?: string; server_compiled?: true } | undefined;
+  return (
+    cloud?.server_compiled === true &&
+    target.provider !== undefined &&
+    cloud.provider === target.provider
+  );
 }
 
 /**
  * The account a personal layer's (`edit`, `edit-<n>`) cloud copy belongs to,
  * stamped on its row (`VolumeOcrLayer.cloud.account`) and compared with it:
- * the provider's `accountScope`, but only on a bunko that keeps that layer per
- * account (`editLayerSync` 'push') — the one place two accounts read two files
- * at one path. Anywhere else the path IS the file, so there is nothing to tell
- * apart, and a scope need not even be stable within one account: Google
- * Drive's is `default` until its reader folder resolves, then that folder's
- * id, and a stamp from before would read as another account's from then on.
+ * the provider's `accountScope`, but only on a WebDAV-connected bunko — the
+ * one place two accounts read two files at one path, and the one whose scope
+ * (server + username) is stable for an account. Only that provider reports
+ * `editLayerSync` at all; `push` or `local` alike, since a 0.8 bunko whose
+ * identity probe fell back reads `local` and an overlay pulled then is still
+ * this account's (whether it may go UP is the push gate's call, not this).
+ * Anywhere else the path IS the file, so there is nothing to tell apart, and
+ * a scope need not even be stable within one account: Google Drive's is
+ * `default` until its reader folder resolves, then that folder's id, and a
+ * stamp from before would read as another account's from then on — so a
+ * cloud-direct marker (serverCompilesMetadata, no `editLayerSync`) never
+ * stamps.
  */
 export function personalLayerAccount(status: {
   serverCompilesMetadata?: boolean;
   editLayerSync?: 'push' | 'local';
   accountScope?: string;
 }): string | undefined {
-  return status.serverCompilesMetadata === true && status.editLayerSync === 'push'
+  return status.serverCompilesMetadata === true && status.editLayerSync !== undefined
     ? status.accountScope
     : undefined;
 }
@@ -164,7 +196,10 @@ export function layerStaysLocal(
   target: LayerTarget
 ): boolean {
   if (isUntouchedUpgradeLayer(layer)) return true;
-  if (target.serverCompilesMetadata && isCloudModelOutput(layer)) return true;
+  // Or pulled from this provider while it said so: still its OCR, though the
+  // status may read plain storage again.
+  const compiled = target.serverCompilesMetadata || pulledFromCompilingServer(layer, target);
+  if (compiled && isCloudModelOutput(layer)) return true;
   return layerIdStaysLocal(layer.layer_id, target);
 }
 

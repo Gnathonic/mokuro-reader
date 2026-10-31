@@ -209,6 +209,8 @@ export async function generateVolumeSidecarsFromDb(
     serverCompilesMetadata?: boolean;
     /** The target's `ProviderStatus.editLayerSync`: see `layerStaysLocal`. */
     editLayerSync?: 'push' | 'local';
+    /** The target's provider type; absent for an export: see `LayerTarget.provider`. */
+    provider?: string;
     /**
      * The target's `personalLayerAccount`: a personal layer last synced under
      * another account is that account's overlay, never uploaded into this one's.
@@ -295,7 +297,8 @@ export async function generateVolumeSidecarsFromDb(
     { seriesTitle, volumeTitle },
     {
       serverCompilesMetadata: target.serverCompilesMetadata === true,
-      editLayerSync: target.editLayerSync
+      editLayerSync: target.editLayerSync,
+      provider: target.provider
     },
     target.account
   );

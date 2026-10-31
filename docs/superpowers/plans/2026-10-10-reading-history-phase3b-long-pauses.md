@@ -16,7 +16,6 @@
 - Every answer is a `resolve` event, so it syncs, every device applies it, and it can be changed later from the review list.
 - Legacy data converted from `recentPageTurns` is never prompted for.
 - Nothing is ever edited or deleted in the event log.
-- Never mention the third-party public deployment's domain anywhere (code, comments, commits, PRs).
 - Modal action rows carry `relative z-10`; status UIs update in place with no layout motion.
 
 ## Rulings adopted for this plan (owner may revisit)
@@ -801,7 +800,7 @@ EOF
 
 ### Notes for the plan author
 
-- **Verified, not just drafted.** I applied every edit above to a scratch copy of the worktree, not to the repo: `/tmp/claude-1000/-home-nathan-Projects-mokuro-reader/6f65961f-f765-436a-a0b9-aa680120300c/scratchpad/t1copy`.
+- **Verified, not just drafted.** I applied every edit above to a scratch copy of the worktree, not to the repo: `<scratch>/`.
   - RED counts were as stated: codec 11 failing, record 8 failing.
   - GREEN: all 217 tests in `reading-history/` passed, `svelte-check` reported 0 errors, and prettier had been applied.
   - eslint shows only the 2 existing `no-explicit-any` warnings in `segment-codec.ts` (`parsed: any`, `row: any[]`).
@@ -1510,10 +1509,10 @@ Expected: no output, meaning no type errors in `stats-engine.ts` or its test. Th
 - [ ] **Step 9: Commit**
 
 ```bash
-git -C /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-pauses add \
+git -C <worktrees>/feat/reading-history-pauses add \
   src/lib/reading-history/stats-engine.ts \
   src/lib/reading-history/stats-engine.test.ts
-git -C /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-pauses commit -m "$(cat <<'EOF'
+git -C <worktrees>/feat/reading-history-pauses commit -m "$(cat <<'EOF'
 feat(history): engine applies pause answers, lists pauses, widens k
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -5442,7 +5441,7 @@ First check that port 5199 is free, because the config silently reuses any serve
 Then run:
 
 ```bash
-cd /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-pauses
+cd <worktrees>/feat/reading-history-pauses
 E2E_PORT=5199 npx playwright test e2e/long-pauses.spec.ts
 ```
 
@@ -5467,7 +5466,7 @@ In each case, fix that task; never loosen an assertion here.
 - [ ] **Step 3: Run the neighbouring specs and lint**
 
 ```bash
-cd /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-pauses
+cd <worktrees>/feat/reading-history-pauses
 E2E_PORT=5199 npx playwright test e2e/long-pauses.spec.ts e2e/reading-stats.spec.ts e2e/history-sync.spec.ts e2e/position-offer.spec.ts
 npx prettier --check e2e/long-pauses.spec.ts && npx eslint e2e/long-pauses.spec.ts
 ```
@@ -5477,7 +5476,7 @@ Expected: every test passes; count them across the whole log, not the tail. Pret
 - [ ] **Step 4: Commit the spec**
 
 ```bash
-cd /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-pauses
+cd <worktrees>/feat/reading-history-pauses
 git add e2e/long-pauses.spec.ts
 git commit -m "$(cat <<'EOF'
 test(e2e): long pauses — prompt at the cap, split answers, review list, default, widening, sync
@@ -5652,7 +5651,7 @@ Rules that must hold:
 - [ ] **Step 7: Format and check the docs**
 
 ```bash
-cd /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-pauses
+cd <worktrees>/feat/reading-history-pauses
 npx prettier --write CLAUDE.md docs/superpowers/specs/2026-10-02-reading-history-event-log-design.md
 npx prettier --check CLAUDE.md docs/superpowers/specs/2026-10-02-reading-history-event-log-design.md
 git diff --stat
@@ -5663,7 +5662,7 @@ Expected: the check reports `All matched files use Prettier code style!`. The di
 - [ ] **Step 8: Commit the docs**
 
 ```bash
-cd /home/nathan/Projects/mokuro-reader-worktrees/feat/reading-history-pauses
+cd <worktrees>/feat/reading-history-pauses
 git add CLAUDE.md docs/superpowers/specs/2026-10-02-reading-history-event-log-design.md
 git commit -m "$(cat <<'EOF'
 docs(history): phase 3b long pauses as built — split answers, derived N, default at view end

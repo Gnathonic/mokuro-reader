@@ -19,11 +19,50 @@ function anchoredOnArchive(layerId: string): boolean {
 }
 
 /**
+ * A primary `<Title>.mokuro` whose title ends in such a layer id (`Notes.edit`,
+ * `X.curated`) reads to bunko as `<stem>.<id>.mokuro`, and is refused the
+ * same way until `<Title>.cbz` is listed (only then is it that volume's
+ * primary).
+ */
+function primaryAnchoredOnArchive(filename: string): boolean {
+  const title = filename.replace(/\.mokuro(?:\.gz)?$/i, '');
+  const dot = title.lastIndexOf('.');
+  return dot > 0 && anchoredOnArchive(title.slice(dot + 1));
+}
+
+/**
+ * The server refused THIS layer file (403 forbidden / 409 conflict, or a
+ * provider's non-auth `PERMISSION_DENIED`): bunko answers so for a layer id it
+ * reserves (its `previous-ocr`/`pre-upgrade` keepsakes, `curated-<n>`, a
+ * 0.7.x `edit`) or one it cannot anchor yet. Never a 401 (credentials), a
+ * 5xx or a network failure — those fail the backup as before. Duck-typed: the
+ * Worker sees plain upload errors carrying `status`.
+ */
+export function isLayerFileRefusal(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const { status, code, isAuthError, message } = error as {
+    status?: unknown;
+    code?: unknown;
+    isAuthError?: unknown;
+    message?: unknown;
+  };
+  if (status === 401 || isAuthError === true) return false;
+  if (status === 403 || status === 409) return true;
+  if (code === 'PERMISSION_DENIED') return true;
+  // The main-thread WebDAV provider wraps the PUT's error in its message.
+  return typeof message === 'string' && /upload failed: (?:403|409)\b/i.test(message);
+}
+
+/**
  * Primary sidecar, the other layers, the cover, the archive, then the layers
- * anchored on it. Up to the archive, a failure fails the backup (the archive
- * is never sent without its sidecars). After it, a refused layer is logged and
- * left out of `layers` — the layers this upload sent, which the caller stamps
- * synced — so the next listing's layer sync pushes it; the archive is up.
+ * anchored on it (and a primary whose title names one,
+ * `primaryAnchoredOnArchive`, right after the archive). Up to the archive, a failure fails the backup (the archive
+ * is never sent without its sidecars) — except a LAYER the server refuses
+ * (`isLayerFileRefusal`), which is somebody else's file or not one this
+ * account may write: it is logged at debug and left out. After the archive,
+ * any failed layer is left out. `layers` is what this upload sent, which the
+ * caller stamps synced; a layer left out stays unstamped, and the next
+ * listing's layer sync pushes it (or remembers the refusal).
  */
 export async function uploadVolumeFiles<A, S>(
   sidecars: VolumeSidecarBlobResult | undefined,
@@ -41,14 +80,25 @@ export async function uploadVolumeFiles<A, S>(
   const layers = sidecars?.layers ?? [];
   const before = layers.filter((layer) => !anchoredOnArchive(layer.layerId));
   const after = layers.filter((layer) => anchoredOnArchive(layer.layerId));
+  const sent: LayerSidecar[] = [];
 
-  if (sidecars?.mokuro) {
-    const sent = await upload.sidecar(sidecars.mokuro);
-    await hooks.onPrimary?.(sidecars.mokuro, sent);
+  const sendPrimary = async (mokuro: VolumeSidecarBlobData) => {
+    const primary = await upload.sidecar(mokuro);
+    await hooks.onPrimary?.(mokuro, primary);
     hooks.onSidecar?.();
-  }
+  };
+  const primaryLast = !!sidecars?.mokuro && primaryAnchoredOnArchive(sidecars.mokuro.filename);
+
+  if (sidecars?.mokuro && !primaryLast) await sendPrimary(sidecars.mokuro);
   for (const layer of before) {
-    await upload.sidecar(layer);
+    try {
+      await upload.sidecar(layer);
+    } catch (error) {
+      if (!isLayerFileRefusal(error)) throw error;
+      console.debug(`[backup] the server refused ${layer.filename}; layer sync decides:`, error);
+      continue;
+    }
+    sent.push(layer);
     hooks.onSidecar?.();
   }
   if (sidecars?.thumbnail) {
@@ -57,14 +107,19 @@ export async function uploadVolumeFiles<A, S>(
   }
 
   const archive = await upload.archive();
+  // Still required: its failure fails the backup, archive up or not.
+  if (sidecars?.mokuro && primaryLast) await sendPrimary(sidecars.mokuro);
 
-  const sent = [...before];
   for (const layer of after) {
     try {
       await upload.sidecar(layer);
       sent.push(layer);
     } catch (error) {
-      console.warn(`[backup] ${layer.filename} did not go up; layer sync retries it:`, error);
+      if (isLayerFileRefusal(error)) {
+        console.debug(`[backup] the server refused ${layer.filename}; layer sync decides:`, error);
+      } else {
+        console.warn(`[backup] ${layer.filename} did not go up; layer sync retries it:`, error);
+      }
     }
   }
   return { archive, layers: sent };

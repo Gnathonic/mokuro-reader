@@ -704,6 +704,27 @@ describe('export-for-download sidecars', () => {
       expect(message.editLayerSync).toBe('local');
     });
 
+    it('asks the identity again first, so a bunko rolled back to 0.7.x gets no edit layer', async () => {
+      let editLayerSync: 'push' | 'local' = 'push';
+      const refreshIdentity = vi.fn(async () => {
+        editLayerSync = 'local';
+      });
+      const message = await backupMessage('edit-rollback-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        refreshIdentity,
+        getStatus: () => ({
+          isReadOnly: false,
+          serverCompilesMetadata: true,
+          editLayerSync,
+          accountScope: 'webdav:https://host|alice'
+        })
+      });
+      expect(refreshIdentity).toHaveBeenCalledWith({ maxAgeMs: 5 * 60_000 });
+      expect(message.editLayerSync).toBe('local');
+    });
+
     it('…and not for plain storage', async () => {
       const message = await backupMessage('plain-webdav', {
         type: 'webdav',

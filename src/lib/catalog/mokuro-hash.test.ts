@@ -121,6 +121,28 @@ describe('layerStaysLocal', () => {
     expect(layerStaysLocal({ ...hayai, engine: undefined }, BUNKO_08)).toBe(false);
   });
 
+  it("a server's OCR pulled from bunko stays off that provider only, under a stale status too", () => {
+    // Pulled while the provider said the server compiles its metadata, then
+    // edited in place: the mark protects bunko's file from the corrections
+    // even once the status reads plain storage again, but only for the
+    // provider it came from. An export, a file and every other provider get
+    // the layer like any other.
+    const pulled = {
+      layer_id: 'gcv',
+      kind: 'ocr' as const,
+      engine: 'gcv',
+      cloud: { provider: 'webdav', server_compiled: true as const, synced_at: 't0' },
+      updated_at: 't1'
+    };
+    expect(layerStaysLocal(pulled, { serverCompilesMetadata: false, provider: 'webdav' })).toBe(
+      true
+    );
+    expect(layerStaysLocal(pulled, PLAIN)).toBe(false);
+    for (const provider of ['google-drive', 'mega', 'onedrive', 'filesystem']) {
+      expect(layerStaysLocal(pulled, { serverCompilesMetadata: false, provider })).toBe(false);
+    }
+  });
+
   it('an untouched upgrade layer stays local everywhere', () => {
     const untouched = { layer_id: 'updated-ocr', source_at: 't1', updated_at: 't1' };
     for (const target of [PLAIN, BUNKO_08, BUNKO_07]) {
@@ -136,11 +158,29 @@ describe('personalLayerAccount', () => {
     expect(
       personalLayerAccount({ ...scope, serverCompilesMetadata: true, editLayerSync: 'push' })
     ).toBe('webdav:https://host|alice');
-    expect(
-      personalLayerAccount({ ...scope, serverCompilesMetadata: true, editLayerSync: 'local' })
-    ).toBeUndefined();
     expect(personalLayerAccount(scope)).toBeUndefined();
     // Drive's scope moves within one account (`default`, then its folder id).
     expect(personalLayerAccount({ accountScope: 'google-drive:default' })).toBeUndefined();
+  });
+
+  it('is the accountScope on any WebDAV bunko, also one whose identity fell back (local)', () => {
+    // A 0.8 bunko whose /me answered 'unsupported' once reads `local`; the
+    // account behind the path is still this one, and a later 'push' session
+    // (or another account) must be able to tell its rows apart.
+    const scope = { accountScope: 'webdav:https://host|alice' };
+    expect(
+      personalLayerAccount({ ...scope, serverCompilesMetadata: true, editLayerSync: 'local' })
+    ).toBe('webdav:https://host|alice');
+  });
+
+  it('is never stamped on Drive, not even under a fresh cloud-direct bunko marker', () => {
+    // withCloudBunkoStatus makes serverCompilesMetadata true on Drive; it
+    // never reports editLayerSync there.
+    expect(
+      personalLayerAccount({ accountScope: 'google-drive:default', serverCompilesMetadata: true })
+    ).toBeUndefined();
+    expect(
+      personalLayerAccount({ accountScope: 'google-drive:folder', serverCompilesMetadata: true })
+    ).toBeUndefined();
   });
 });
