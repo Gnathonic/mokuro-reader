@@ -39,13 +39,18 @@ const cloud = vi.hoisted(() => {
     // `undefined` by default, matching a provider that cannot report an
     // account scope — `attemptKey` must fall back to `provider.type` alone in
     // that case (Finding 4's "a null scope behaves as today").
-    accountScope: undefined as string | undefined
+    accountScope: undefined as string | undefined,
+    // bunko 0.8's series-owner report; `undefined` = a server without it.
+    addFilesPermissions: undefined as { scope: 'open'; closedSeries: string[] } | undefined
   };
   const listCloudVolumes = vi.fn(async () => [...state.files]);
   const provider = {
     type: 'webdav',
     listCloudVolumes,
-    getStatus: () => ({ accountScope: state.accountScope }),
+    getStatus: () => ({
+      accountScope: state.accountScope,
+      addFilesPermissions: state.addFilesPermissions
+    }),
     // Worker-path capability, toggled per test. `undefined` (the beforeEach
     // reset) keeps every pre-existing test on the serial main-thread path —
     // the drain requires `=== true`.
@@ -308,6 +313,7 @@ beforeEach(async () => {
   await db.volume_files.clear();
   cloud.state.files.length = 0;
   cloud.state.accountScope = undefined;
+  cloud.state.addFilesPermissions = undefined;
   cloud.uploadFile.mockReset();
   cloud.uploadFile.mockImplementation(cloud.defaultUpload);
   cloud.fetchAllCloudVolumes.mockClear();
@@ -770,6 +776,23 @@ describe('sidecar backfill — convergence', () => {
 });
 
 describe('sidecar backfill — gates', () => {
+  // Today the backfill never runs against bunko (it compiles the metadata:
+  // `hasWritableNonServerProvider`); this pins the owner gate under it anyway.
+  it('a series another account owns on the server uploads nothing', async () => {
+    cloud.state.addFilesPermissions = { scope: 'open', closedSeries: ['legacy series'] };
+    await withOcr(installedVolume());
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+
+    expect(cloud.uploadFile).not.toHaveBeenCalled();
+    cloud.state.addFilesPermissions = { scope: 'open', closedSeries: ['Other Series'] };
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+  });
+
   it('a read-only provider enqueues nothing, uploads nothing, and logs nothing', async () => {
     const debugSpy = vi.spyOn(console, 'debug');
     gate.writable = false;

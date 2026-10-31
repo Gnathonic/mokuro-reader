@@ -20,6 +20,7 @@ import { downloadQueue } from '$lib/util/download-queue';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { isCbzFile } from './syncable-file';
+import { accountCanAddToSeries } from './account-capabilities';
 import type { CloudFileMetadata, ProviderType, SyncProvider } from './provider-interface';
 import { unifiedCloudManager } from './unified-cloud-manager';
 
@@ -931,6 +932,9 @@ function deriveSidecarGap(volume: VolumeMetadata): SidecarGap | null {
   // the same way every writer resolves it, so the sidecar lands beside the
   // archive whatever unicode form the folder came back in.
   const folderTitle = unifiedCloudManager.resolveCloudFolderTitle(volume.series_title);
+  // A series another account owns (bunko 0.8) refuses every file: no gap of ours.
+  const status = unifiedCloudManager.getActiveProvider()?.getStatus?.();
+  if (!accountCanAddToSeries(status, folderTitle)) return null;
   const folderListing = unifiedCloudManager.getCloudVolumesBySeries(folderTitle);
   const volumeKey = normalizeVolumeTitleKey(volume.volume_title);
   const archive = folderListing.find((file) => {

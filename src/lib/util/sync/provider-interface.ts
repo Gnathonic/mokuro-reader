@@ -176,6 +176,14 @@ export interface ProviderStatus {
    */
   canAddFiles?: boolean;
   /**
+   * Which series folders this account may add files to
+   * (`accountCanAddToSeries`): bunko >= 0.8 records series owners, and an
+   * uploader may add archives, sidecars and folders only to a series no other
+   * account owns (`closedSeries` lists those). Absent = no series is closed
+   * (older bunko, any other provider).
+   */
+  addFilesPermissions?: AddFilesPermissions;
+  /**
    * Stable, non-secret identifier for the connected account, used to scope the
    * cloud metadata cache so switching accounts cannot cross-contaminate it.
    * Shape: `<provider>:<discriminator>`. NEVER include a password or token —
@@ -248,6 +256,19 @@ export type ControlFileResult = ControlFileRead | 'not-modified' | null;
 
 /** Scope of `ProviderStatus.curatedPublish`: every volume, the account's own uploads, or none. */
 export type CuratedScope = 'all' | 'owned' | 'none';
+
+/**
+ * Scope of `ProviderStatus.addFilesPermissions`: every series, every series
+ * but the `closedSeries` other accounts own, or none.
+ */
+export type AddFilesScope = 'all' | 'open' | 'none';
+
+/** Where the server lets this account add files — see `ProviderStatus.addFilesPermissions`. */
+export interface AddFilesPermissions {
+  scope: AddFilesScope;
+  /** Series FOLDER names another account owns; present only when scope === 'open'. */
+  closedSeries?: string[];
+}
 
 /** Scope of a `metadataPermissions.scope` value — see `ProviderStatus.metadataPermissions`. */
 export type SeriesMetadataScope = 'all' | 'owned' | 'none';

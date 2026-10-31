@@ -21,6 +21,7 @@
 - Cloud folders run by mokuro-bunko 0.8 sync history and positions
 - Renamed volumes keep their OCR engine or corrected mark
 - Exported or uploaded OCR you corrected is marked as corrected
+- mokuro-bunko 0.8: backups skip another account's series, with one notice
 
 ### Fixed
 
@@ -36,6 +37,7 @@
 - OCR layer files found on decomposed-name storage
 - mokuro-bunko: renaming a volume no longer duplicates OCR layers
 - Renaming a corrected volume keeps the server's newer OCR
+- mokuro-bunko: a cover the server refuses no longer fails the change
 
 ## [1.10.0] - 2026-10-02
 
