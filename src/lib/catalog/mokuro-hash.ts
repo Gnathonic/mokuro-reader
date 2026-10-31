@@ -125,19 +125,25 @@ export interface LayerTarget {
 /**
  * The account a personal layer's (`edit`, `edit-<n>`) cloud copy belongs to,
  * stamped on its row (`VolumeOcrLayer.cloud.account`) and compared with it:
- * the provider's `accountScope`, but only on a bunko that keeps that layer per
- * account (`editLayerSync` 'push') — the one place two accounts read two files
- * at one path. Anywhere else the path IS the file, so there is nothing to tell
- * apart, and a scope need not even be stable within one account: Google
- * Drive's is `default` until its reader folder resolves, then that folder's
- * id, and a stamp from before would read as another account's from then on.
+ * the provider's `accountScope`, but only on a WebDAV-connected bunko — the
+ * one place two accounts read two files at one path, and the one whose scope
+ * (server + username) is stable for an account. Only that provider reports
+ * `editLayerSync` at all; `push` or `local` alike, since a 0.8 bunko whose
+ * identity probe fell back reads `local` and an overlay pulled then is still
+ * this account's (whether it may go UP is the push gate's call, not this).
+ * Anywhere else the path IS the file, so there is nothing to tell apart, and
+ * a scope need not even be stable within one account: Google Drive's is
+ * `default` until its reader folder resolves, then that folder's id, and a
+ * stamp from before would read as another account's from then on — so a
+ * cloud-direct marker (serverCompilesMetadata, no `editLayerSync`) never
+ * stamps.
  */
 export function personalLayerAccount(status: {
   serverCompilesMetadata?: boolean;
   editLayerSync?: 'push' | 'local';
   accountScope?: string;
 }): string | undefined {
-  return status.serverCompilesMetadata === true && status.editLayerSync === 'push'
+  return status.serverCompilesMetadata === true && status.editLayerSync !== undefined
     ? status.accountScope
     : undefined;
 }

@@ -538,11 +538,13 @@ IS is somebody else's file, so neither a local delete, its tombstone nor the
 `'kept-shared'`, and the user is told the shared copy stays). Writability is per layer (`canPushLayer`): a personal
 id on a `push` bunko needs only `isReadOnly !== true` (a `registered` account
 writes its own overlay), anything else also needs `canAddFiles`. A personal
-row on a `push` bunko records the provider's `accountScope` in `cloud.account`
-(`personalLayerAccount`; push, pull, `stampLayersSynced`) — only there do two
-accounts read two files at one path, and elsewhere a scope need not even be
-stable within one account (Drive's is `default` until its reader folder
-resolves), so no other provider stamps or compares one: a row of another account on this device is never
+row on a WebDAV bunko (`push` or `local` — a 0.8 whose identity probe fell back
+reads `local`, and an overlay pulled then is still this account's) records the
+provider's `accountScope` in `cloud.account` (`personalLayerAccount`; push,
+pull, `stampLayersSynced`) — only there do two accounts read two files at one
+path, and elsewhere a scope need not even be stable within one account (Drive's
+is `default` until its reader folder resolves, and a cloud-direct marker
+reports no `editLayerSync`), so no other provider stamps or compares one: a row of another account on this device is never
 pushed — by sync or by a backup's layer sidecars (`account` in
 `generateVolumeSidecarsFromDb`) — and is replaced by this account's listed file
 only while it holds no unsynced edit. Its delete never touches the file at its

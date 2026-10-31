@@ -2179,6 +2179,35 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     });
   });
 
+  it("an overlay pulled while the identity fell back ('local') is stamped, so another account never pushes or deletes over it", async () => {
+    // A 0.8 bunko whose /me failed at A's sign-in: status reads 'local'.
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'local';
+    accountScope = ACCOUNT_A;
+    const overlay = () =>
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro'));
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('えー')]));
+    await syncLayersFromListing(overlay(), 'webdav');
+    const pulled = (await getLayerWithPages(db, 'v1', 'edit'))!;
+    expect(pulled.cloud?.account).toBe(ACCOUNT_A);
+
+    // A corrects it (stays local under 'local'); then B signs in, identity OK.
+    await putLayerWithPages(db, {
+      ...pulled,
+      updated_at: new Date(Date.parse(pulled.cloud!.synced_at) + 60_000).toISOString(),
+      pages: [pg('なおし')]
+    });
+    editLayerSync = 'push';
+    accountScope = ACCOUNT_B;
+    downloadFile.mockClear();
+    await syncLayersFromListing(files(), 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro')];
+    expect(await deleteCloudLayerFile('v1', 'edit')).toBe('unconfirmed');
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
+
   // Google Drive's accountScope is `default` until the reader folder resolves,
   // then that folder's id: two values within ONE account. Only a server that
   // keeps personal layers per account has two accounts behind one path.
@@ -2192,6 +2221,15 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
 
     beforeEach(() => {
       getActiveProvider.mockReturnValue(provider('google-drive'));
+    });
+
+    it('a pull under a fresh cloud-direct bunko marker is not stamped either', async () => {
+      await seedRow();
+      serverCompilesMetadata = true; // withCloudBunkoStatus; no editLayerSync on Drive
+      accountScope = DEFAULT;
+      downloadFile.mockResolvedValue(new Blob([mokuroJson('よそ')]));
+      await syncLayersFromListing(driveListing(), 'google-drive');
+      expect((await getLayerWithPages(db, 'v1', 'edit'))!.cloud).not.toHaveProperty('account');
     });
 
     it('an edit pulled before the reader folder resolved still goes up after it did', async () => {
