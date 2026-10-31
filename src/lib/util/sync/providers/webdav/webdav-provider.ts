@@ -625,6 +625,10 @@ export class WebDAVProvider implements SyncProvider {
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
           );
         }
+        // The endpoint answered in bunko's contract shape: bunko, whatever the
+        // connect concluded (/me may have been unreachable then). Never
+        // cleared by a refresh — a failed one says nothing.
+        this._serverCompilesMetadata = true;
         this._serverVersion = identity.serverVersion;
         this._perUserFiles = identity.perUserFiles;
         this._perUserLayers = identity.perUserLayers;

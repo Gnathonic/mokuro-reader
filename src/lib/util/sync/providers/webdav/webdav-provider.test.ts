@@ -1224,6 +1224,32 @@ describe('WebDAVProvider refreshIdentity() (the server changed under an open ses
     expect(provider.getStatus().editLayerSync).toBe('local');
   });
 
+  it('a session that connected as plain storage (/me unreachable) becomes bunko once a refresh says so', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+    expect(gates(provider)).toEqual({
+      historySync: undefined,
+      positionsSync: undefined,
+      editLayerSync: undefined
+    });
+
+    identityMock.mockResolvedValue(V073);
+    await provider.refreshIdentity();
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+    expect(gates(provider)).toEqual({
+      historySync: false,
+      positionsSync: false,
+      editLayerSync: 'local'
+    });
+
+    // A failed refresh later never demotes it back.
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.refreshIdentity();
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
   it('a failed refresh keeps what the server said last', async () => {
     const provider = await freshProvider();
     identityMock.mockResolvedValue(V08);
