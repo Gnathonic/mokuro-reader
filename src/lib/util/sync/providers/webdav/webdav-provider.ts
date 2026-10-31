@@ -106,6 +106,10 @@ type ReissueOutcome =
  */
 type ReissueVerdict = 'retry' | 'final' | 'transient';
 
+function isUnauthorized(error: unknown): boolean {
+  return (error as { status?: number } | null)?.status === 401;
+}
+
 /** Last-resort version of a body when the server sent neither ETag nor Last-Modified. */
 async function bodyFingerprint(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
