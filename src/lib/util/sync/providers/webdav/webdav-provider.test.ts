@@ -1250,6 +1250,33 @@ describe('WebDAVProvider refreshIdentity() (the server changed under an open ses
     expect(provider.getStatus().serverCompilesMetadata).toBe(true);
   });
 
+  it("a refresh that answers after a logout never touches the next session's gates", async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    let answer!: (value: typeof V08) => void;
+    identityMock.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    const late = provider.refreshIdentity();
+
+    // Logged out and connected to a plain WebDAV server while it hangs.
+    await provider.logout();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://plain', username: 'bob', password: 'pw2' });
+    identityMock.mockClear();
+    // The new session asks for itself rather than waiting on A's request.
+    const own = provider.refreshIdentity();
+    await vi.waitFor(() => expect(identityMock).toHaveBeenCalledTimes(1), { timeout: 500 });
+
+    answer(V08);
+    await Promise.all([late, own]);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+    expect(gates(provider)).toEqual({
+      historySync: undefined,
+      positionsSync: undefined,
+      editLayerSync: undefined
+    });
+  });
+
   it('a failed refresh keeps what the server said last', async () => {
     const provider = await freshProvider();
     identityMock.mockResolvedValue(V08);

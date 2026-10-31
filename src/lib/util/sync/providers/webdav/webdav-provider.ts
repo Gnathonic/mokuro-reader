@@ -221,8 +221,18 @@ export class WebDAVProvider implements SyncProvider {
    * included, so `maxAgeMs` throttles every answer kind.
    */
   private identityAt: number | undefined;
-  /** The refresh in flight: concurrent callers share its one request. */
-  private identityRefresh: Promise<void> | null = null;
+  /**
+   * The refresh in flight: concurrent callers of the SAME session share its
+   * one request (`epoch` = the `sessionEpoch` it was asked under).
+   */
+  private identityRefresh: { epoch: number; promise: Promise<void> } | null = null;
+  /**
+   * Moves on every login and logout. An identity answer is applied only to the
+   * session that asked: a refresh still in flight when the user switched
+   * accounts or servers (two GETs, up to ~20 s) must not turn the bunko gates
+   * on, or hand one account's lists to another session.
+   */
+  private sessionEpoch = 0;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
   /** Per control-file name: the last read's set etag and the server's raw ETag for its one node. */
@@ -590,7 +600,8 @@ export class WebDAVProvider implements SyncProvider {
    */
   async refreshIdentity(options: { maxAgeMs?: number } = {}): Promise<void> {
     if (!browser || !this.client) return;
-    if (this.identityRefresh) return this.identityRefresh;
+    const epoch = this.sessionEpoch;
+    if (this.identityRefresh?.epoch === epoch) return this.identityRefresh.promise;
     if (
       options.maxAgeMs !== undefined &&
       this.identityAt !== undefined &&
@@ -600,17 +611,28 @@ export class WebDAVProvider implements SyncProvider {
     }
     const account = this.sessionAccount();
     if (!account) return;
-    this.identityRefresh = this.askIdentityAgain(account).finally(() => {
-      this.identityRefresh = null;
+    const promise = this.askIdentityAgain(account, epoch).finally(() => {
+      if (this.identityRefresh?.promise === promise) this.identityRefresh = null;
     });
-    return this.identityRefresh;
+    this.identityRefresh = { epoch, promise };
+    return promise;
   }
 
-  private async askIdentityAgain(account: {
-    serverUrl: string;
-    username: string;
-    password: string;
-  }): Promise<void> {
+  /** Forget the identity refresh state of the session that is ending. */
+  private endIdentitySession(): void {
+    this.sessionEpoch++;
+    this.identityRefresh = null;
+    this.identityAt = undefined;
+  }
+
+  private async askIdentityAgain(
+    account: {
+      serverUrl: string;
+      username: string;
+      password: string;
+    },
+    epoch: number
+  ): Promise<void> {
     try {
       const identity = await this.identify(
         account.serverUrl,
@@ -618,6 +640,9 @@ export class WebDAVProvider implements SyncProvider {
         account.password || undefined,
         { refresh: true }
       );
+      // The session that asked has ended (logout, another login): its answer
+      // describes another account, maybe another server.
+      if (epoch !== this.sessionEpoch) return;
       if (identity.kind === 'authenticated' || identity.kind === 'anonymous') {
         if (identity.kind === 'authenticated') {
           this._capabilities = identity.permissions;
@@ -638,8 +663,9 @@ export class WebDAVProvider implements SyncProvider {
       console.warn('[WebDAV] identity refresh failed (keeping last known):', error);
     } finally {
       // Every answer kind (and a failure) counts: a plain server's
-      // 'unsupported' must not cost two GETs on every sync.
-      this.identityAt = Date.now();
+      // 'unsupported' must not cost two GETs on every sync. Only for the
+      // session that asked.
+      if (epoch === this.sessionEpoch) this.identityAt = Date.now();
     }
   }
 
@@ -757,6 +783,9 @@ export class WebDAVProvider implements SyncProvider {
         'auth'
       );
     }
+
+    // A new session: a refresh the last one left in flight answers nobody.
+    this.endIdentitySession();
 
     // Normalize server URL (remove trailing slash)
     const normalizedUrl = serverUrl.replace(/\/$/, '');
@@ -1000,6 +1029,7 @@ export class WebDAVProvider implements SyncProvider {
   }
 
   async logout(): Promise<void> {
+    this.endIdentitySession();
     this.client = null;
     this.rawClient = null;
     this._supportsDepthInfinity = null; // Reset for next connection (may be different server)
