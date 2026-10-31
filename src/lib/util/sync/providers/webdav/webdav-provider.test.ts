@@ -1162,6 +1162,68 @@ describe('WebDAVProvider refreshIdentity() (the server changed under an open ses
     }
   });
 
+  it.each([
+    ['plain WebDAV (unsupported)', { kind: 'unsupported' as const }],
+    ['invalid credentials', { kind: 'invalid-credentials' as const }],
+    ['rate limited', { kind: 'rate-limited' as const }]
+  ])('maxAgeMs throttles a %s answer too', async (_label, answer) => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({ kind: 'unsupported' });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      identityMock.mockClear();
+      identityMock.mockResolvedValue(answer);
+
+      // The connect asked a moment ago: nothing to ask yet.
+      now.mockReturnValue(1_000_000 + 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).not.toHaveBeenCalled();
+
+      now.mockReturnValue(1_000_000 + 6 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+      now.mockReturnValue(1_000_000 + 7 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('a refresh that throws is throttled as well', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue(V08);
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      identityMock.mockReset();
+      identityMock.mockRejectedValue(new Error('boom'));
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      now.mockReturnValue(1_000_000 + 6 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('concurrent refreshes share one request', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    identityMock.mockClear();
+    let answer!: (value: typeof V073) => void;
+    identityMock.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const first = provider.refreshIdentity();
+    const second = provider.refreshIdentity({ maxAgeMs: 0 });
+    answer(V073);
+    await Promise.all([first, second]);
+    expect(identityMock).toHaveBeenCalledTimes(1);
+    expect(provider.getStatus().editLayerSync).toBe('local');
+  });
+
   it('a failed refresh keeps what the server said last', async () => {
     const provider = await freshProvider();
     identityMock.mockResolvedValue(V08);
