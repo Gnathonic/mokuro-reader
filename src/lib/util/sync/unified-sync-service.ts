@@ -27,6 +27,7 @@ import {
 } from '$lib/settings/tracking-data';
 import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
+import { refreshGates } from './identity-gates';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
@@ -164,11 +165,6 @@ export interface CloudVolumeDataFile {
  * authenticated cloud providers. Works with the SyncProvider interface,
  * making it provider-agnostic.
  */
-/**
- * How old the server's identity may be before a sync asks again
- * (`refreshIdentity`): one request per five minutes of syncing, at most.
- */
-const IDENTITY_MAX_AGE_MS = 5 * 60_000;
 
 interface SyncFlight {
   running: Promise<ProviderSyncResult>;
@@ -398,7 +394,7 @@ class UnifiedSyncService {
 
       // What the server keeps per user can change under an open tab (a bunko
       // upgrade or rollback); the per-user files below follow it. Fails quietly.
-      await provider.refreshIdentity?.({ maxAgeMs: IDENTITY_MAX_AGE_MS });
+      await refreshGates(provider);
 
       // Sync volume data (read progress + series-level reading state)
       console.log('🔄 Syncing volume data...');

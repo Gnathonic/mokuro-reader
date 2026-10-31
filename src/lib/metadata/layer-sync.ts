@@ -50,6 +50,7 @@ import {
   type SyncProvider
 } from '$lib/util/sync/provider-interface';
 import { providerManager } from '$lib/util/sync/provider-manager';
+import { freshGateStatus, refreshGates } from '$lib/util/sync/identity-gates';
 import {
   cbzStemsOf,
   classifyMokuroSidecar,
@@ -1237,6 +1238,10 @@ async function runSync(
   if (cloudFilesMap.size === 0) return result;
   const provider = providerManager.getActiveProvider();
   if (!provider || provider.type !== providerType) return result;
+  // Listing- and edit-triggered runs come outside the progress sync: the
+  // edit-layer gate must follow the server NOW (throttled), or a bunko rolled
+  // back under an open tab gets the account's overlay into its SHARED library.
+  await refreshGates(provider);
   const gate = pushGateOf(provider);
 
   await migrateEditedPrimariesToEditLayers();
@@ -1720,10 +1725,11 @@ export async function deleteLayerFileInCloud(
     const provider = providerManager.getActiveProvider();
     if (!provider) return 'unconfirmed';
     if (layer.cloud && layer.cloud.provider !== provider.type) return 'unconfirmed';
+    // A rolled-back bunko shares the `edit` path again: ask first (throttled).
+    const status = await freshGateStatus(provider);
     // Another account's personal layer: the listed file at that path is the
     // ACTIVE account's own overlay, not the copy this row was synced with.
-    if (syncedForOtherAccount(layer, personalLayerAccount(provider.getStatus())))
-      return 'unconfirmed';
+    if (syncedForOtherAccount(layer, personalLayerAccount(status))) return 'unconfirmed';
     const listing = listingFromCache(provider.type);
     const listed = listedLayerOf(listing, row, layer.layer_id);
     if (!listed) {

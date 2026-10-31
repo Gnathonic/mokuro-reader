@@ -14,6 +14,7 @@ import {
 import { downloadFileBlob } from './volume-sidecars';
 import { stampLayersSynced, type LayerUploadSnapshot } from '$lib/metadata/layer-sync';
 import { personalLayerAccount } from '$lib/catalog/mokuro-hash';
+import { freshGateStatus } from '$lib/util/sync/identity-gates';
 import { uploadVolumeFiles } from './volume-upload-order';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import {
@@ -605,6 +606,10 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
 
         // Worker-driven cloud upload (Google Drive, MEGA, WebDAV)
         const credentials = await getUploadWorkerCredentials(provider!, item.seriesTitle);
+        // The layer gates below follow the server NOW (throttled): a bunko
+        // rolled back under an open tab would share the `edit` layer.
+        const status =
+          typeof provider!.getStatus === 'function' ? await freshGateStatus(provider!) : undefined;
 
         return {
           mode: 'compress-from-db',
@@ -620,11 +625,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           includeSidecars: item.sidecarOptions.includeSidecars,
           // bunko: the editor's `original` snapshot stays local, and the `edit`
           // layer wherever the server would share it (`layerStaysLocal`).
-          serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true,
-          editLayerSync: provider!.getStatus?.().editLayerSync,
+          serverCompilesMetadata: status?.serverCompilesMetadata === true,
+          editLayerSync: status?.editLayerSync,
           // Another account's personal layer never goes into this one's overlay
           // (only a bunko keeping one per account has two behind one path).
-          accountScope: personalLayerAccount(provider!.getStatus?.() ?? {})
+          accountScope: personalLayerAccount(status ?? {})
         };
       },
       onProgress: (data) => {

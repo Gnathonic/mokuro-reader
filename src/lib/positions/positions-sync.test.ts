@@ -390,6 +390,36 @@ describe('the position push', () => {
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
   });
 
+  // The page-turn push runs outside the progress sync: it must ask the server
+  // again (throttled) before it writes, or a bunko rolled back to 0.7.3 under
+  // an open tab gets positions.json into its SHARED library.
+  it('after a bunko rollback, the page-turn push asks the identity again and does not PUT', async () => {
+    stubCache([]);
+    const status: Partial<ProviderStatus> = { serverCompilesMetadata: true, positionsSync: true };
+    const provider = makeProvider(async () => fileBlob({}), status);
+    const refreshIdentity = vi.fn(async () => {
+      status.positionsSync = false; // the server answers as 0.7.3 now
+    });
+    Object.assign(provider, {
+      getStatus: () => ({
+        isAuthenticated: true,
+        hasStoredCredentials: true,
+        needsAttention: false,
+        statusMessage: '',
+        ...status
+      }),
+      refreshIdentity
+    });
+    stops.push(initPositionPush());
+    updateProgress('v', 41, 4100, false);
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(() => expect(refreshIdentity).toHaveBeenCalled());
+    expect(refreshIdentity).toHaveBeenCalledWith({ maxAgeMs: 5 * 60_000 });
+    await flushPositionPush();
+    expect(blindUploadFile).not.toHaveBeenCalled();
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+  });
+
   it('not ready: the push does nothing and keeps the turn marked', async () => {
     stubCache([]);
     makeProvider(async () => fileBlob({}));

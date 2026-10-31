@@ -107,10 +107,12 @@ let serverCompilesMetadata = false;
 let editLayerSync: 'push' | 'local' | undefined = undefined;
 let accountScope: string | undefined = undefined;
 let curatedPublish: 'all' | 'owned' | 'none' | undefined = undefined;
+let refreshIdentity: ((options?: { maxAgeMs?: number }) => Promise<void>) | undefined = undefined;
 
 function provider(type = 'webdav') {
   return {
     type,
+    refreshIdentity: (options?: { maxAgeMs?: number }) => refreshIdentity?.(options),
     getStatus: () => ({
       isReadOnly: readOnly,
       canAddFiles,
@@ -153,6 +155,7 @@ beforeEach(async () => {
   editLayerSync = undefined;
   accountScope = undefined;
   curatedPublish = undefined;
+  refreshIdentity = undefined;
   localStorage.clear();
   getActiveProvider.mockReturnValue(provider());
   uploadFile.mockResolvedValue({
@@ -2177,6 +2180,49 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
       await syncLayersFromListing(files, 'webdav');
       expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual(['Series/Vol 1.edit.mokuro']);
     });
+  });
+
+  // The listing- and edit-triggered layer sync runs outside the progress
+  // sync: it asks the server again (throttled) before it pushes, or a bunko
+  // rolled back to 0.7.3 under an open tab gets the account's edit layer into
+  // its SHARED library.
+  it('after a bunko rollback, a layer push asks the identity again and sends no edit layer', async () => {
+    await seedRow();
+    await seedLayer('edit');
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    accountScope = ACCOUNT_A;
+    const refresh = vi.fn(async () => {
+      editLayerSync = 'local';
+    });
+    refreshIdentity = refresh;
+    await syncLayersFromListing(files(), 'webdav');
+    expect(refresh).toHaveBeenCalledWith({ maxAgeMs: 5 * 60_000 });
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('after a bunko rollback, deleting the edit layer leaves the now-shared file alone', async () => {
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    accountScope = ACCOUNT_A;
+    canAddFiles = true;
+    await seedLayer('edit', {
+      updated_at: T0,
+      cloud: {
+        provider: 'webdav',
+        account: ACCOUNT_A,
+        size: 100,
+        modified: 1789552800,
+        synced_at: T0
+      }
+    });
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro')];
+    refreshIdentity = async () => {
+      editLayerSync = 'local';
+    };
+    expect(await deleteCloudLayerFile('v1', 'edit')).toBe('kept-shared');
+    expect(deleteFile).not.toHaveBeenCalled();
   });
 
   it("an overlay pulled while the identity fell back ('local') is stamped, so another account never pushes or deletes over it", async () => {
