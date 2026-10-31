@@ -298,6 +298,66 @@ describe('uploadWithRetry', () => {
   });
 });
 
+describe('a 503 PUT that names its wait (Retry-After)', () => {
+  const put = () =>
+    uploadFileWithClient(client, '/mokuro-reader/S/V.mokuro', new Blob(['x'])).then(
+      () => {
+        throw new Error('the PUT settled');
+      },
+      (e: unknown) => e as WebdavUploadError
+    );
+
+  it('carries the wait the server named, in ms', async () => {
+    answers = [{ status: 503, headers: { 'Retry-After': '7' } }];
+    expect((await put()).retryAfterMs).toBe(7_000);
+  });
+
+  it('names none for a 503 without one, one over 30 s, or another status', async () => {
+    answers = [
+      { status: 503 },
+      { status: 503, headers: { 'Retry-After': '31' } },
+      { status: 500, headers: { 'Retry-After': '1' } }
+    ];
+    for (let i = 0; i < 3; i++) expect((await put()).retryAfterMs).toBeUndefined();
+  });
+
+  it('uploadWithRetry waits that long instead of its step delay', async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    let n = 0;
+    const attempt = vi.fn(async () => {
+      if (n++ === 0) {
+        throw new WebdavUploadError('WebDAV upload failed: 503', {
+          status: 503,
+          reason: 'http-503',
+          detail: 'busy',
+          retryable: true,
+          retryAfterMs: 2_000
+        });
+      }
+      return 'ok';
+    });
+    await expect(uploadWithRetry(attempt, { sleep })).resolves.toBe('ok');
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([2_000]);
+  });
+});
+
+describe('uploadWithRetry and a 503 that keeps naming its wait', () => {
+  it('waits a named time at most twice, then takes its own step', async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    const attempt = vi.fn(async () => {
+      throw new WebdavUploadError('WebDAV upload failed: 503', {
+        status: 503,
+        reason: 'http-503',
+        detail: 'busy',
+        retryable: true,
+        retryAfterMs: 2_000
+      });
+    });
+    await expect(uploadWithRetry(attempt, { sleep })).rejects.toThrow('503');
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([2_000, 2_000, UPLOAD_RETRY_DELAYS_MS[2]]);
+  });
+});
+
 describe('X-Mokuro-Put on a PUT response', () => {
   it('reports a server that stages and verifies its PUTs', async () => {
     answers = [{ status: 201, headers: { 'X-Mokuro-Put': 'verified' } }];
