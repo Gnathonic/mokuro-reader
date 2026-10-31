@@ -35,6 +35,7 @@ import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import {
   layerIdStaysLocal,
   layerStaysLocal,
+  pulledFromCompilingServer,
   personalLayerAccount,
   type LayerTarget
 } from '$lib/catalog/mokuro-hash';
@@ -561,7 +562,7 @@ export function layerNeedsPush(
   // shared `curated` layer, an `edit` layer the server would share, or the
   // editor's `original` / bunko's `pre-upgrade` on a server that compiles
   // its metadata.
-  if (layerStaysLocal(row, target)) return false;
+  if (layerStaysLocal(row, { provider: providerType, ...target })) return false;
   if (syncedForOtherAccount(row, account)) return false;
   if (row.cloud && row.cloud.provider === providerType && !editedSinceSync(row)) return false;
   if (!file) return true;
@@ -613,7 +614,8 @@ function pushGateOf(provider: SyncProvider): PushGate {
     status,
     target: {
       serverCompilesMetadata: status.serverCompilesMetadata === true,
-      editLayerSync: status.editLayerSync
+      editLayerSync: status.editLayerSync,
+      provider: provider.type
     },
     account: personalLayerAccount(status),
     unpublishing: new Map(
@@ -689,7 +691,7 @@ function keepsLocalEdits(row: VolumeOcrLayer | undefined, target: LayerTarget): 
   // The row's own record counts as much as the status: a stale cloud-direct
   // marker or a failed identity probe reads plain storage again, and the
   // server's rewrite would then replace the corrections with no copy kept.
-  const compiled = target.serverCompilesMetadata || row.cloud?.server_compiled === true;
+  const compiled = target.serverCompilesMetadata || pulledFromCompilingServer(row, target);
   return compiled && isCloudModelOutput(row);
 }
 

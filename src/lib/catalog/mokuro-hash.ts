@@ -120,6 +120,32 @@ export interface LayerTarget {
   serverCompilesMetadata: boolean;
   /** `ProviderStatus.editLayerSync`: may the account's `edit` layer go up there? */
   editLayerSync?: 'push' | 'local';
+  /**
+   * The target's provider type (`SyncProvider.type`), when it is one: a row's
+   * `cloud.server_compiled` mark counts only there (`pulledFromCompilingServer`).
+   * Absent for an export or a file, which no server rewrites.
+   */
+  provider?: string;
+}
+
+/**
+ * Was this row's cloud copy pulled from THIS target while its provider said
+ * the server compiles its metadata (`cloud.server_compiled`)? Then it is still
+ * that server's OCR there, though the status may read plain storage again (a
+ * stale cloud-direct marker, a failed identity probe). Only on the provider it
+ * came from: an export, a file or another provider is not the server that
+ * would rewrite it, so the mark says nothing about them.
+ */
+export function pulledFromCompilingServer(
+  layer: { cloud?: unknown },
+  target: Pick<LayerTarget, 'provider'>
+): boolean {
+  const cloud = layer.cloud as { provider?: string; server_compiled?: true } | undefined;
+  return (
+    cloud?.server_compiled === true &&
+    target.provider !== undefined &&
+    cloud.provider === target.provider
+  );
 }
 
 /**
@@ -170,12 +196,9 @@ export function layerStaysLocal(
   target: LayerTarget
 ): boolean {
   if (isUntouchedUpgradeLayer(layer)) return true;
-  // Pulled from a server that compiles its metadata (`cloud.server_compiled`):
-  // still its OCR, though the status may read plain storage again (a stale
-  // marker, a failed identity probe).
-  const compiled =
-    target.serverCompilesMetadata ||
-    (layer.cloud as { server_compiled?: true } | undefined)?.server_compiled === true;
+  // Or pulled from this provider while it said so: still its OCR, though the
+  // status may read plain storage again.
+  const compiled = target.serverCompilesMetadata || pulledFromCompilingServer(layer, target);
   if (compiled && isCloudModelOutput(layer)) return true;
   return layerIdStaysLocal(layer.layer_id, target);
 }

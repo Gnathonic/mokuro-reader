@@ -532,11 +532,15 @@ with an `engine` and a `cloud` stamp) even once edited: an edit forks into
 place, and that edit stays on the device rather than replace what the model
 wrote for every account — nor does bunko's later rewrite of that layer replace
 it (`keepsLocalEdits`, as for an `edit` held back from a 0.7.x). Both hold while
-the status says bunko OR the row was pulled while it did (`cloud.server_compiled`,
-unindexed), so a status that reads plain storage again (a stale cloud-direct
-marker, a failed identity probe) changes neither. The limit: a row pulled while
-the status ALREADY read plain storage carries no mark, and is treated as plain
-storage's (newest wins, pushed when edited). Its id half,
+the status says bunko OR the row was pulled from THAT provider while it did
+(`cloud.server_compiled`, unindexed, honoured only where the target's provider
+type equals the row's `cloud.provider` — `pulledFromCompilingServer`), so a
+status that reads plain storage again (a stale cloud-direct marker, a failed
+identity probe) changes neither. An export, a file and any other provider get
+the layer as usual; a second WebDAV server is the same provider type, so a
+backup there leaves the layer out too. The limit: a row pulled while the status
+ALREADY read plain storage carries no mark, and is treated as plain storage's
+(newest wins, pushed when edited). Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
 IS is somebody else's file, so neither a local delete, its tombstone nor the
 `.gz`-sibling tidy ever removes its cloud copy (the delete reports
@@ -563,15 +567,15 @@ a read-only demotion of the WebDAV provider.
 `layerStaysLocal` — never pushed by layer-sync, never a backup sidecar, never
 exported or embedded:
 
-| Id                                | What it is                                                         | Written by         | Local?                                           |
-| --------------------------------- | ------------------------------------------------------------------ | ------------------ | ------------------------------------------------ |
-| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                                    |
-| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched; `previous-ocr*` always on bunko |
-| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local`                 |
-| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                                           |
-| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                                         |
-| `curated-<n>`                     | bunko's copy of a second `curated` a case merge found              | bunko only         | on bunko                                         |
-| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | server OCR a cloud vouches for, on bunko         |
+| Id                                | What it is                                                         | Written by         | Local?                                                                         |
+| --------------------------------- | ------------------------------------------------------------------ | ------------------ | ------------------------------------------------------------------------------ |
+| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                                                                  |
+| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched; `previous-ocr*` always on bunko                               |
+| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local`                                               |
+| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                                                                         |
+| `pre-upgrade[-n]`                 | bunko's copy of a main it upgraded                                 | bunko only         | on bunko                                                                       |
+| `curated-<n>`                     | bunko's copy of a second `curated` a case merge found              | bunko only         | on bunko                                                                       |
+| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | server OCR a cloud vouches for, on bunko (pulled from bunko: on that provider) |
 
 So `edit` lives per account on a bunko that lists it in `per_user_layers`
 (the server serves each account its own file at the same path), stays on the

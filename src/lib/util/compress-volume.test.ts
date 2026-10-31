@@ -378,6 +378,32 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
     expect(await ids({ cloud: true })).toEqual(['hayai']);
   });
 
+  it("keeps a server's OCR pulled from bunko in exports and backups to other providers", async () => {
+    // Pulled from a 0.8 bunko (the row remembers the server compiled its
+    // metadata, `cloud.server_compiled`), then edited in place. Only a backup
+    // to the provider it came from leaves it out, stale status or not.
+    await putLayerWithPages(db, {
+      volume_uuid: 'volume-uuid',
+      layer_id: 'gcv',
+      name: 'GCV',
+      kind: 'ocr',
+      engine: 'gcv',
+      created_at: '2026-09-16T00:00:00.000Z',
+      updated_at: '2026-09-17T00:00:00.000Z',
+      cloud: { provider: 'webdav', server_compiled: true, synced_at: '2026-09-16T00:00:00.000Z' },
+      pages: []
+    });
+    const ids = async (target?: Parameters<typeof generateVolumeSidecarsFromDb>[2]) =>
+      (await generateVolumeSidecarsFromDb('volume-uuid', undefined, target)).layers?.map(
+        (l) => l.layerId
+      );
+    // An export (no target) and a Drive backup.
+    expect(await ids()).toEqual(['gcv']);
+    expect(await ids({ cloud: true, provider: 'google-drive' })).toEqual(['gcv']);
+    // The bunko it came from, its status reading plain storage again.
+    expect(await ids({ cloud: true, provider: 'webdav' })).toBeUndefined();
+  });
+
   it("never uploads the editor's original snapshot to a server that compiles its metadata", async () => {
     await putLayerWithPages(db, {
       volume_uuid: 'volume-uuid',

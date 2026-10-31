@@ -103,6 +103,17 @@ describe('unified-file-worker compress-from-db backup', () => {
     ]);
   });
 
+  it('builds the layer sidecars for the provider it uploads to', async () => {
+    // A server OCR pulled from bunko is kept off that provider by its
+    // `cloud.server_compiled` mark, which only counts on the provider named.
+    await backup();
+    expect(generateVolumeSidecarsFromDb).toHaveBeenCalledWith(
+      'v1',
+      undefined,
+      expect.objectContaining({ provider: 'webdav', cloud: true })
+    );
+  });
+
   it('reports only the layers that went up: a refused edit layer stays unstamped', async () => {
     uploadFile.mockImplementation(async ({ filename }: { filename: string }) => {
       if (filename === 'Vol 1.edit.mokuro') throw new Error('409 no-volume');
