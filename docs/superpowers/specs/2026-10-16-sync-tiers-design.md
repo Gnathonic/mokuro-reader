@@ -8,12 +8,12 @@ Every sync-adjacent action today ends in the same place: one full listing of the
 memory by the provider's `CloudCache`, and the only map anything has of the cloud. Typical figures
 for a large bunko library (~1k series, ~12k volumes, anonymous WebDAV PROPFIND):
 
-|                                                      | Full listing (`Depth: infinity`)                               |
-| ---------------------------------------------------- | -------------------------------------------------------------- |
-| Entries                                              | ~52k (~51k files, ~1k folders)                                 |
-| Wire                                                 | 1.84 MB gzip, 1.9 s (0.84 s to first byte, server-side cached) |
-| XML                                                  | 31.4 MB                                                        |
-| Parse (`webdav` library's `parseXML`, Node, desktop) | 1.6 s, 265 MB heap                                             |
+|                                                      | Full listing (`Depth: infinity`) |
+| ---------------------------------------------------- | -------------------------------- |
+| Entries                                              | ~52k (~51k files, ~1k folders)   |
+| Wire                                                 | ~2 MB gzip, ~2 s                 |
+| XML                                                  | 31.4 MB                          |
+| Parse (`webdav` library's `parseXML`, Node, desktop) | 1.6 s, 265 MB heap               |
 
 What the listing holds, and what already describes it:
 
@@ -76,8 +76,8 @@ page, and the act of opening stamps that old page as the newest position. Every 
 back.
 
 1. **Reader open checks first.** Opening a volume starts a conditional GET of `positions.json` (its ETag
-   is known from the last read). The reader waits for it up to ~1 s (a `304` took 0.64 s round trip
-   to a remote server over a home connection) before choosing the page.
+   is known from the last read). The reader waits for it up to ~1 s (a `304` round trip is well
+   under a second) before choosing the page.
 2. **A newer remote position wins silently**: the reader opens there, with a toast naming the device
    ("Continued from Phone, p.120").
 3. **An opened page never claims the position by itself.** The page the reader opens on — before the
