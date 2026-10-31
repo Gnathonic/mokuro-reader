@@ -25,7 +25,6 @@
 - **Recent speed** = the last N active hours across all volumes and devices, by time. No volume-granular window, so there is no cliff.
 - **Time left** uses the series' own speed once it has enough data, else the recent speed.
 - Legacy (converted) data is never prompted for; over the cap it counts as typical.
-- Never mention the third-party public bunko deployment's domain anywhere (memory rule).
 - `$derived` runs per component instance: the engine never runs inside a component. Components read memoised store values (CLAUDE.md "Svelte 5 Reactive Performance").
 
 ## Review Focus
