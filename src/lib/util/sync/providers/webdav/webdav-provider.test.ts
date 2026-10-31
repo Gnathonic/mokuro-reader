@@ -957,6 +957,34 @@ describe('WebDAVProvider.readControlFile()', () => {
     });
   });
 
+  // bunko's lease fence answers the marker itself 503 + Retry-After while it
+  // confirms its claim; the read waits that out like every other WebDAV request.
+  it('waits out a 503 that names a short Retry-After, then reads the marker', async () => {
+    const provider = await plainConnected();
+    vi.useFakeTimers();
+    try {
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('busy', { status: 503, headers: { 'Retry-After': '2' } })
+        )
+        .mockResolvedValueOnce(
+          new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v1"' } })
+        );
+
+      const done = provider.readControlFile(MARKER);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = (await done) as any;
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(String(fetchMock.mock.calls[1][0])).toBe(URL_OF_MARKER);
+      expect(result.nodes[0].etag).toBe('"v1"');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a fresh marker makes serverCompilesMetadata true on a plain WebDAV (false before)', async () => {
     const provider = await plainConnected();
     expect(provider.getStatus().serverCompilesMetadata).toBeFalsy();

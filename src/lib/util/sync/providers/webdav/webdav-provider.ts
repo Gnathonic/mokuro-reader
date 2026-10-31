@@ -1678,7 +1678,12 @@ export class WebDAVProvider implements SyncProvider {
       const headers: Record<string, string> = webdavAuthHeaders(this.sessionAuth());
       if (conditional) headers['If-None-Match'] = previous.serverEtag;
       try {
-        const response = await fetch(url, { method: 'GET', headers, cache: 'no-store' });
+        // bunko's lease fence answers the marker itself 503 + Retry-After.
+        const response = await fetchWithRetryAfter(fetch, url, {
+          method: 'GET',
+          headers,
+          cache: 'no-store'
+        });
         return { response, sent };
       } catch (error) {
         throw new ProviderError(
