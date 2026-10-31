@@ -1014,6 +1014,7 @@ ctx.addEventListener('message', async (event) => {
             ? await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
                 serverCompilesMetadata: message.serverCompilesMetadata === true,
                 editLayerSync: message.editLayerSync,
+                provider: provider ?? undefined,
                 account: message.accountScope,
                 cloud: true
               })
