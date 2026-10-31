@@ -3,9 +3,20 @@ import type { VolumeMetadata } from '$lib/types';
 import type { WorkerTask } from './worker-pool';
 import { getBackupUiBridge } from './backup-ui';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
-import type { BackupProviderType, ServerOcrQueued, SyncProvider } from './sync/provider-interface';
+import type {
+  BackupProviderType,
+  ProviderStatus,
+  ServerOcrQueued,
+  SyncProvider
+} from './sync/provider-interface';
 import { isPseudoProvider, exportProvider } from './sync/provider-interface';
-import { accountCanAddFiles, CANNOT_ADD_FILES_MESSAGE } from './sync/account-capabilities';
+import {
+  accountCanAddFiles,
+  accountCanAddToSeries,
+  CANNOT_ADD_FILES_MESSAGE,
+  CANNOT_ADD_TO_SERIES_MESSAGE,
+  closedSeriesNotice
+} from './sync/account-capabilities';
 import {
   getFileProcessingPool,
   incrementPoolUsers,
@@ -23,6 +34,7 @@ import {
   scheduleSeriesFileWrite
 } from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
 import {
   recordUploadedPrimarySidecar,
@@ -203,6 +215,22 @@ export function queueVolumeForBackup(
     return;
   }
 
+  // The folder the cloud already holds for this series, in ITS spelling:
+  // a server that merged `one piece/` into `One Piece/` would otherwise be
+  // handed the losing folder again. The exact title when the cloud has it
+  // (or has no such series). Not gated on bunko: on plain storage too, a
+  // title with no exact folder joins the folder folding onto it instead of
+  // minting a second spelling beside it.
+  const seriesTitle = unifiedCloudManager.resolveCloudFolderTitle(volume.series_title);
+
+  // bunko 0.8: another account owns this series, so every file would be
+  // refused. (A series backup filters these out first, with one notice.)
+  if (!accountCanAddToSeries(targetProvider.getStatus?.(), seriesTitle)) {
+    console.info(`Skipping backup: another account owns '${seriesTitle}' on this server`);
+    getBackupUiBridge().notify(CANNOT_ADD_TO_SERIES_MESSAGE);
+    return;
+  }
+
   const queue = get(queueStore);
 
   // Check for duplicates by volumeUuid:provider (allows same volume to be queued for different providers)
@@ -217,13 +245,7 @@ export function queueVolumeForBackup(
 
   const queueItem: BackupQueueItem = {
     volumeUuid: volume.volume_uuid,
-    // The folder the cloud already holds for this series, in ITS spelling:
-    // a server that merged `one piece/` into `One Piece/` would otherwise be
-    // handed the losing folder again. The exact title when the cloud has it
-    // (or has no such series). Not gated on bunko: on plain storage too, a
-    // title with no exact folder joins the folder folding onto it instead of
-    // minting a second spelling beside it.
-    seriesTitle: unifiedCloudManager.resolveCloudFolderTitle(volume.series_title),
+    seriesTitle,
     volumeTitle: volume.volume_title,
     provider: targetProvider.type,
     uploadConcurrencyLimit: targetProvider.uploadConcurrencyLimit,
@@ -309,8 +331,26 @@ export function queueSeriesVolumesForBackup(
     return;
   }
 
+  // bunko 0.8: the volumes of series another account owns are skipped, with
+  // ONE notice for all of them rather than one per volume.
+  const status = targetProvider.getStatus?.();
+  const closed = volumes.filter(
+    (volume) =>
+      isVolumeInstalled(volume) &&
+      !accountCanAddToSeries(
+        status,
+        unifiedCloudManager.resolveCloudFolderTitle(volume.series_title)
+      )
+  );
+  if (closed.length > 0) {
+    const series = new Set(closed.map((volume) => normalizeVolumeTitleKey(volume.series_title)));
+    console.info(`Skipping backup of ${closed.length} volume(s) in series other accounts own`);
+    getBackupUiBridge().notify(closedSeriesNotice(series.size, closed.length));
+  }
+  const open = closed.length > 0 ? volumes.filter((volume) => !closed.includes(volume)) : volumes;
+
   // Sort alphabetically by series title first, then by volume title
-  const sorted = [...volumes].sort((a, b) => {
+  const sorted = [...open].sort((a, b) => {
     const seriesCompare = a.series_title.localeCompare(b.series_title, undefined, {
       numeric: true,
       sensitivity: 'base'
@@ -427,6 +467,38 @@ const seriesNeedingIndexWrite = new Set<string>();
  */
 let uploadedThisRun = false;
 
+/**
+ * Series whose queued volumes this run dropped because another account came
+ * to own them (bunko 0.8) — one notice per series per run, not per volume.
+ */
+const closedSeriesSkippedThisRun = new Set<string>();
+
+/**
+ * Has `seriesTitle` closed to this account (bunko 0.8 series owners)? Only
+ * that: an account that lost the right to add files at all keeps today's
+ * per-volume failures rather than a notice naming the wrong reason.
+ */
+function seriesClosed(status: ProviderStatus | undefined, seriesTitle: string): boolean {
+  return accountCanAddFiles(status) && !accountCanAddToSeries(status, seriesTitle);
+}
+
+/** A queued item whose series another account owns now: dropped, never an "Upload failed". */
+function skipClosedSeriesItem(item: BackupQueueItem, processId: string): void {
+  const key = normalizeVolumeTitleKey(item.seriesTitle);
+  if (!closedSeriesSkippedThisRun.has(key)) {
+    closedSeriesSkippedThisRun.add(key);
+    const reason = CANNOT_ADD_TO_SERIES_MESSAGE;
+    getBackupUiBridge().notify(
+      `Skipped ${item.seriesTitle}: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`
+    );
+  }
+  console.info(`[Backup] skipped ${item.volumeTitle}: another account owns ${item.seriesTitle}`);
+  queueStore.update((q) =>
+    q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
+  );
+  getBackupUiBridge().removeProgress(processId);
+}
+
 /** Note that this run uploaded a volume of `seriesTitle`. */
 export function noteSeriesNeedingIndexWrite(seriesTitle: string): void {
   uploadedThisRun = true;
@@ -473,6 +545,7 @@ async function writeSeriesIndexesForRun(): Promise<void> {
  * and starting it afterwards makes the run strictly write-then-read.
  */
 export async function finishBackupRun(): Promise<void> {
+  closedSeriesSkippedThisRun.clear();
   await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
   // That fetch IS the whole-account listing the metadata writers need. Stamping
   // it makes them reuse it, instead of every run paying for a second one.
@@ -558,6 +631,19 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
     );
   }
 
+  // The series may have closed since this item was queued (an identity
+  // refresh after another volume's 403): drop it before reserving memory.
+  if (!isExport && seriesClosed(provider!.getStatus?.(), item.seriesTitle)) {
+    skipClosedSeriesItem(item, processId);
+    await checkAndTerminatePool();
+    return;
+  }
+
+  // Set by `prepareData` when the series closed while this item waited in the
+  // pool: its throw reaches `onError` (the pool's contract), which must drop
+  // the item instead of recording an upload failure.
+  let closedWhileWaiting = false;
+
   try {
     // Create worker task with lazy data loading
     const task: WorkerTask = {
@@ -605,11 +691,16 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         }
 
         // Worker-driven cloud upload (Google Drive, MEGA, WebDAV)
-        const credentials = await getUploadWorkerCredentials(provider!, item.seriesTitle);
         // The layer gates below follow the server NOW (throttled): a bunko
-        // rolled back under an open tab would share the `edit` layer.
+        // rolled back under an open tab would share the `edit` layer. Read
+        // before the credentials, which may create the series folder.
         const status =
           typeof provider!.getStatus === 'function' ? await freshGateStatus(provider!) : undefined;
+        if (seriesClosed(status, item.seriesTitle)) {
+          closedWhileWaiting = true;
+          throw new Error(`Another account owns '${item.seriesTitle}' on this server`);
+        }
+        const credentials = await getUploadWorkerCredentials(provider!, item.seriesTitle);
 
         return {
           mode: 'compress-from-db',
@@ -917,7 +1008,22 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         }
       },
       onError: async (data) => {
+        if (closedWhileWaiting) {
+          skipClosedSeriesItem(item, processId);
+          await checkAndTerminatePool();
+          return;
+        }
         console.error(`Error backing up ${item.volumeTitle}:`, data.error);
+        // bunko 0.8 refuses uploads into a series another account owns: this
+        // session's list of those may be stale, so ask again. The volumes of
+        // the series still queued are then dropped before they upload.
+        if (
+          !isExport &&
+          /\b403\b/.test(String(data.error)) &&
+          provider!.getStatus?.().addFilesPermissions
+        ) {
+          void provider!.refreshIdentity?.();
+        }
         handleBackupError(item, processId, data.error, data.detail);
         await checkAndTerminatePool();
       }

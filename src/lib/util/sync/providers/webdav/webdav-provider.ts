@@ -19,7 +19,7 @@ import {
   webdavAuthorization,
   type WebdavAuthMaterial
 } from '../../core/providers/webdav-authorization';
-import { isVerifiedPutHeader } from './webdav-upload';
+import { isVerifiedPutHeader, WebdavUploadError } from './webdav-upload';
 import { fetchWithRetryAfter, wrapWebdavClient } from './webdav-retry-after';
 import { fetchServerIdentity, type IdentityResult, type ServerPermissions } from './identity';
 import {
@@ -159,6 +159,35 @@ function reservedLayerRefusal(path: string): ProviderError {
     'permission'
   );
 }
+
+/**
+ * A 403 on a library file from a bunko that records series owners
+ * (`permissions.addFiles` reported): another account owns the series, or the
+ * volume the file is named after. That file's refusal alone, with the
+ * server's reason when it sent one — never a read-only server, never a
+ * credential failure (`handleWriteFailure` is not reached).
+ */
+function libraryFileRefusal(path: string, error: unknown): ProviderError {
+  const detail = error instanceof WebdavUploadError && error.status === 403 ? error.detail : '';
+  return new ProviderError(
+    detail
+      ? `The server refused ${path}: ${detail}`
+      : `The server refused ${path} for this account`,
+    'webdav',
+    'PERMISSION_DENIED',
+    false,
+    false,
+    'permission'
+  );
+}
+
+/** A file in the shared library (a series folder), not a root config file or history. */
+function isLibraryFilePath(path: string): boolean {
+  return path.includes('/') && !path.startsWith('history/');
+}
+
+/** A refusal may mean this session's closed-series list is stale; ask again at most this often. */
+const OWNERSHIP_REFRESH_MAX_AGE_MS = 60_000;
 
 export class WebDAVProvider implements SyncProvider {
   readonly type = 'webdav' as const;
@@ -718,6 +747,7 @@ export class WebDAVProvider implements SyncProvider {
         : undefined,
       curatedPublish: this._capabilities?.curated?.scope,
       metadataPermissions: this._capabilities?.metadata,
+      addFilesPermissions: this._capabilities?.addFiles,
       canModifyDelete: this._capabilities?.canModifyDelete,
       canAddFiles: this._capabilities?.canAddFiles,
       // username is optional (some servers support password-only or no auth),
@@ -1472,6 +1502,8 @@ export class WebDAVProvider implements SyncProvider {
         if (kind === 'permission' && isReservedLayerSidecarPath(path)) {
           throw reservedLayerRefusal(path);
         }
+        const refusal = this.ownershipRefusal(kind, path, error);
+        if (refusal) throw refusal;
         if (kind !== 'other') {
           this.handleWriteFailure(kind, 'Write permission denied - server is read-only');
         }
@@ -1559,6 +1591,28 @@ export class WebDAVProvider implements SyncProvider {
    * - everything else (405, 403 on unknown/low capabilities, 401 on a
    *   credential-less session): legacy behavior - mark read-only
    */
+  /** bunko >= 0.8: series owners are recorded, and a 403 may be ownership. */
+  private enforcesSeriesOwners(): boolean {
+    return this._capabilities?.addFiles !== undefined;
+  }
+
+  /**
+   * A 403 on a library file from a bunko enforcing series owners: that file's
+   * refusal (`libraryFileRefusal`), and the identity is asked again (throttled)
+   * so a series that closed since login stops being offered. Null otherwise.
+   */
+  private ownershipRefusal(
+    kind: WriteErrorKind,
+    path: string,
+    error: unknown
+  ): ProviderError | null {
+    if (kind !== 'permission' || !this.enforcesSeriesOwners() || !isLibraryFilePath(path)) {
+      return null;
+    }
+    void this.refreshIdentity({ maxAgeMs: OWNERSHIP_REFRESH_MAX_AGE_MS });
+    return libraryFileRefusal(path, error);
+  }
+
   private handleWriteFailure(
     kind: WriteErrorKind,
     readOnlyMessage: string,
@@ -1747,6 +1801,8 @@ export class WebDAVProvider implements SyncProvider {
         if (kind === 'permission' && isReservedLayerSidecarPath(file.path)) {
           throw reservedLayerRefusal(file.path);
         }
+        const refusal = this.ownershipRefusal(kind, file.path, error);
+        if (refusal) throw refusal;
         if (kind !== 'other') {
           this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
         }

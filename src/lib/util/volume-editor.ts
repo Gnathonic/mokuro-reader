@@ -3,7 +3,8 @@
  */
 
 import { db } from '$lib/catalog/db';
-import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
+import { accountCanAddToSeries } from '$lib/util/sync/account-capabilities';
+import { ProviderError } from '$lib/util/sync/provider-interface';
 import { isImageExtension } from '$lib/import';
 import { naturalSort } from '$lib/util/natural-sort';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
@@ -97,19 +98,30 @@ async function syncCoverSidecarToCloud(volumeUuid: string, thumbnailFile: File):
   if (!provider || !provider.isAuthenticated()) {
     return;
   }
-  // A progress-only account cannot add the cover file: skip, quietly.
-  if (!accountCanAddFiles(provider.getStatus())) return;
 
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {
     throw new Error(`Volume ${volumeUuid} not found`);
   }
+  // A progress-only account cannot add the cover file, nor can any account
+  // in a series another one owns (bunko 0.8): skip, quietly.
+  if (!accountCanAddToSeries(provider.getStatus(), volume.series_title)) return;
 
   const coverWebP = await convertToWebP(thumbnailFile);
-  await unifiedCloudManager.uploadFile(
-    `${volume.series_title}/${volume.volume_title}.webp`,
-    coverWebP
-  );
+  try {
+    await unifiedCloudManager.uploadFile(
+      `${volume.series_title}/${volume.volume_title}.webp`,
+      coverWebP
+    );
+  } catch (error) {
+    // The server refused this one file (a volume another account uploaded):
+    // the cover is saved on this device, which is what the user changed.
+    if (error instanceof ProviderError && error.code === 'PERMISSION_DENIED') {
+      console.info(`[volume-editor] the server refused the cover of ${volume.volume_title}`);
+      return;
+    }
+    throw error;
+  }
 }
 
 /**

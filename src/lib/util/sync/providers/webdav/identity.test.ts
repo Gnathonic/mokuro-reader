@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fetchServerIdentity } from './identity';
+import { bunkoLoginMe } from './__fixtures__/bunko-login-me';
 
 type MockResponse = { status: number; body: string; contentType?: string };
 
@@ -483,4 +484,78 @@ describe('per-account layers and the curated scope (bunko 0.8)', () => {
       expect((result as { permissions: object }).permissions).not.toHaveProperty('curated');
     }
   });
+});
+
+// bunko 0.8 records who owns a series folder: an uploader may add files only
+// to series nobody else owns. `permissions.addFiles` reports it, and its
+// presence is what says the server enforces series owners at all.
+describe('permissions.addFiles (series owners, bunko 0.8)', () => {
+  async function identityWith(extra: Record<string, unknown>) {
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, {
+        authenticated: true,
+        username: 'alice',
+        role: 'uploader',
+        permissions: { ...PERMS, canAddFiles: true, ...extra }
+      })
+    });
+    const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+    if (result.kind !== 'authenticated') throw new Error(`expected authenticated: ${result.kind}`);
+    return result.permissions as unknown as Record<string, unknown>;
+  }
+
+  it('parses scope all and none', async () => {
+    expect((await identityWith({ addFiles: { scope: 'all' } })).addFiles).toEqual({
+      scope: 'all'
+    });
+    expect((await identityWith({ addFiles: { scope: 'none' } })).addFiles).toEqual({
+      scope: 'none'
+    });
+  });
+
+  it('parses scope open with its closedSeries, dropping non-strings', async () => {
+    const permissions = await identityWith({
+      addFiles: { scope: 'open', closedSeries: ['Admin Series', 7, null, 'Berserk'] }
+    });
+    expect(permissions.addFiles).toEqual({
+      scope: 'open',
+      closedSeries: ['Admin Series', 'Berserk']
+    });
+  });
+
+  it('reads a non-array closedSeries as no closed series', async () => {
+    for (const bad of [undefined, 'Admin Series', { a: 1 }, null]) {
+      const permissions = await identityWith({ addFiles: { scope: 'open', closedSeries: bad } });
+      expect(permissions.addFiles).toEqual({ scope: 'open', closedSeries: [] });
+    }
+  });
+
+  it('an unknown scope, or no object, reads as not reported', async () => {
+    for (const bad of [{ scope: 'owned' }, { scope: 1 }, 'all', null, []]) {
+      expect(await identityWith({ addFiles: bad })).not.toHaveProperty('addFiles');
+    }
+  });
+
+  it('an older bunko (no addFiles) reports none', async () => {
+    expect(await identityWith({})).not.toHaveProperty('addFiles');
+  });
+
+  it.each(['login-me-basic', 'login-me-closed-series'] as const)(
+    "bunko's %s contract body parses",
+    async (name) => {
+      const body = bunkoLoginMe(name);
+      const { impl } = mockFetch({ 'https://host/login/api/me': jsonResponse(200, body) });
+      const result = await fetchServerIdentity('https://host', 'reader', 'pw', impl);
+      const served = (body.permissions as { addFiles: { closedSeries: string[] } }).addFiles;
+      expect(result).toMatchObject({
+        kind: 'authenticated',
+        permissions: {
+          canAddFiles: true,
+          addFiles: { scope: 'open', closedSeries: served.closedSeries },
+          metadata: { scope: 'owned', ownedSeries: ['Contract Series'] }
+        }
+      });
+      if (name === 'login-me-closed-series') expect(served.closedSeries).toEqual(['Admin Series']);
+    }
+  );
 });

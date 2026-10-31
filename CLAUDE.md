@@ -516,6 +516,28 @@ file: push). `curatedPublish` is the identity's `permissions.curated.scope`
 curated layer; `canPublishCurated(status, seriesTitle)` reads it (`owned` =
 a series in `metadataPermissions.ownedSeries`; absent = no).
 
+**Series owners (bunko 0.8).** bunko records a series folder's owner (the
+account whose MKCOL created it; existing folders adopt their only uploader).
+Another account below editor may add nothing to it, and may write a file
+named after a volume (its sidecars, cover, hand-made layers, nested archives)
+only when it uploaded that volume; the owner controls everything in the
+folder. `/me` reports it as `permissions.addFiles` (`all` / `open` with
+`closedSeries` / `none`) → `ProviderStatus.addFilesPermissions`, whose
+PRESENCE says the server enforces owners (older bunko: absent, nothing
+closed); `ownedSeries` becomes the folders this account owns, which is who
+bunko takes a `series.json` update request from. Every library write asks
+`accountCanAddToSeries(status, folderTitle)` (folded like `ownedSeries`;
+includes `accountCanAddFiles`): a backup skips a closed series' volumes with
+ONE notice (`closedSeriesNotice`, never an "Upload failed" per volume — also
+for a series that closed while queued), as do the cover sync and the sidecar
+backfill. A 403 on a library file from such a server is that file's refusal
+(`libraryFileRefusal`, `PERMISSION_DENIED` with the server's verdict detail):
+never read-only, never a credential failure, and it re-asks `/me` (throttled
+to once a minute) so a stale `closedSeries` catches up. Personal `edit`
+layers stay writable everywhere (they are the account's own files). bunko's
+refusal texts never contain "401"/"Unauthorized": `classifyWriteError`
+matches those first and would clear the password.
+
 **What stays local** is one predicate, `layerStaysLocal(layer, target)`
 (`mokuro-hash.ts`; `target` = `{ serverCompilesMetadata, editLayerSync }`,
 threaded through layer-sync's plan, the backup's layer sidecars and the
@@ -546,7 +568,8 @@ IS is somebody else's file, so neither a local delete, its tombstone nor the
 `.gz`-sibling tidy ever removes its cloud copy (the delete reports
 `'kept-shared'`, and the user is told the shared copy stays). Writability is per layer (`canPushLayer`): a personal
 id on a `push` bunko needs only `isReadOnly !== true` (a `registered` account
-writes its own overlay), anything else also needs `canAddFiles`. A personal
+writes its own overlay), anything else also needs `canAddFiles` (and, on bunko
+0.8, control of the volume: its 403 is remembered in `refusedPushes`). A personal
 row on a WebDAV bunko (`push` or `local` — a 0.8 whose identity probe fell back
 reads `local`, and an overlay pulled then is still this account's) records the
 provider's `accountScope` in `cloud.account` (`personalLayerAccount`; push,
