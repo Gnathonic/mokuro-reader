@@ -10,6 +10,7 @@
 - MEGA asks you to reconnect when its session ends
 - Series with OCR layers in the cloud can be renamed
 - WebDAV asks you to sign in again when your password stops working
+- mokuro-bunko 0.8: backups with an "Edit" OCR layer no longer fail
 
 ## [1.10.0] - 2026-10-02
 
