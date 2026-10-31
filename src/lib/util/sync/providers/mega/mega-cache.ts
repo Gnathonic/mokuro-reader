@@ -58,12 +58,21 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
     }
 
     this.runningReloads = !skipReinitialize;
-    this.running = this.load(skipReinitialize);
-    return this.running;
+    this.isFetchingStore.set(true);
+    const run: Promise<void> = this.load(skipReinitialize).finally(() => {
+      if (this.running !== run) return; // cleared meanwhile: a dead account's
+      this.running = null;
+      this.isFetchingStore.set(false);
+
+      // Run folder deduplication after cache load (incremental - one pass per call).
+      // Not awaited: its own refetch joins whatever fetch is running then.
+      this.runDeduplication();
+    });
+    this.running = run;
+    return run;
   }
 
   private async load(skipReinitialize: boolean): Promise<void> {
-    this.isFetchingStore.set(true);
     // Uploads and deletes made while the tree reloads are replayed onto its map.
     const listing = this.cache.beginListing();
     try {
@@ -94,12 +103,6 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
       console.error('Failed to fetch MEGA cache:', error);
     } finally {
       listing.abandon();
-      this.running = null;
-      this.isFetchingStore.set(false);
-
-      // Run folder deduplication after cache load (incremental - one pass per call).
-      // Not awaited: its own refetch joins whatever fetch is running then.
-      this.runDeduplication();
     }
   }
 
@@ -187,6 +190,10 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   clear(): void {
     this.cache.set(new Map());
     this.loadedFlag = false;
+    // The next fetch lists the new account rather than joining the old one's.
+    this.running = null;
+    this.runningReloads = false;
+    this.isFetchingStore.set(false);
   }
 
   isFetching(): boolean {

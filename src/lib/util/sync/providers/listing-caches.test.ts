@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { get } from 'svelte/store';
 import type { CloudCache } from '../cloud-cache-interface';
 import type { CloudFileMetadata, ProviderType } from '../provider-interface';
 
@@ -117,6 +118,25 @@ describe.each([
     await fetched;
 
     expect(cache.getAll('Series/Vol 1.cbz')).toMatchObject([theirs]);
+  });
+
+  it('a fetch after a clear() lists again instead of joining the dead listing', async () => {
+    const finishDead = heldListing();
+    const dead = cache.fetch();
+    cache.clear();
+    const finish = heldListing();
+    const fetched = cache.fetch();
+    expect(h.list).toHaveBeenCalledTimes(2);
+    expect(get(cache.isFetchingState!)).toBe(true);
+
+    finish([file('volume-data.json', 'V2')]);
+    await fetched;
+    finishDead([file('volume-data.json', 'V1')]);
+    await dead;
+
+    expect(cache.getAllFiles().map((f) => f.fileId)).toEqual(['V2']);
+    expect(cache.isLoaded()).toBe(true);
+    expect(get(cache.isFetchingState!)).toBe(false);
   });
 
   it('keeps a root file uploaded while a listing was in flight', async () => {
