@@ -585,7 +585,11 @@ shared library files. A backup sends an `edit` (or `curated`) file only AFTER
 the volume's archive (`uploadVolumeFiles`, `volume-upload-order.ts`, Worker and
 main thread alike): bunko refuses it with 409 `no-volume` while no `<Volume>.cbz`
 is listed beside it. A refusal there fails nothing — the layer is left unstamped
-and the next listing's layer sync pushes it. Before the archive, a LAYER the
+and the next listing's layer sync pushes it. A PRIMARY whose title ends in such an
+id (`Notes.edit.mokuro`, `X.curated.mokuro` — `primaryAnchoredOnArchive`) also
+goes up right after the archive, since bunko reads that name as a layer until
+the archive is listed; unlike a layer it is still required, so a failure there
+fails the backup with the archive already on the server. Before the archive, a LAYER the
 server refuses (403/409 or a non-auth `PERMISSION_DENIED`, `isLayerFileRefusal`)
 fails nothing either: logged at debug, left unstamped for layer sync. A 401, a
 5xx or a network failure there still fails the backup, as does any failure of
