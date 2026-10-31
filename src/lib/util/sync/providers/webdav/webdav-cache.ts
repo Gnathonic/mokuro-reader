@@ -34,7 +34,9 @@ class WebDAVCacheManager implements CloudCache<CloudFileMetadata> {
    */
   fetch(): Promise<void> {
     // Join a listing in flight: every caller reads the cache next, and one
-    // that returned at once would read the listing from before it.
+    // that returned at once would read the listing from before it. A joined
+    // listing is as fresh as when it BEGAN: writes made since ride it via the
+    // replay, but a remote change after that waits for the next listing.
     if (this.fetchPromise) return this.fetchPromise;
     if (!webdavProvider.isAuthenticated()) {
       console.log('WebDAV not authenticated, skipping cache fetch');
