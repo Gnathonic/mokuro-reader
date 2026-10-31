@@ -91,9 +91,16 @@ export class CoalescedCacheStore<V> {
    * An INCREMENTAL mutation (post-upload add, delete, description update):
    * applied to the state immediately — synchronous readers see it before
    * this returns — and published on the coalesced trailing edge.
+   *
+   * `replay` is what an open listing re-applies to its own map (see
+   * {@link beginListing}); it defaults to `fn`. A cache passes its own when the
+   * listing may already hold a newer revision than this mutation knew.
    */
-  update(fn: (map: Map<string, V>) => Map<string, V>): void {
-    this.listing?.updates.push(fn);
+  update(
+    fn: (map: Map<string, V>) => Map<string, V>,
+    replay: (map: Map<string, V>) => Map<string, V> = fn
+  ): void {
+    this.listing?.updates.push(replay);
     this.state = fn(this.state);
     if (this.timer === null) {
       this.timer = setTimeout(() => {
@@ -128,7 +135,7 @@ export class CoalescedCacheStore<V> {
    * `volume-data.json` uploaded mid-walk, gone from the cache, is then
    * written again unread over another device's copy). Until `install`, every
    * {@link update} is recorded too, and `install` replays them onto the
-   * listing's map — in arrival order, the same functions the state ran.
+   * listing's map — in arrival order, each update's `replay`.
    *
    * A `set` meanwhile (a `clear()` at sign-out) or a newer listing supersedes
    * this one: `install` then installs nothing and answers false. `abandon`

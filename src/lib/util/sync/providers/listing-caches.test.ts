@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { CloudCache } from '../cloud-cache-interface';
-import type { CloudFileMetadata } from '../provider-interface';
+import type { CloudFileMetadata, ProviderType } from '../provider-interface';
 
 // The caches that install a provider's whole listing in one swap. Each
 // listing is held open by the test, so a write lands exactly where it does in
@@ -31,12 +31,18 @@ import { webdavCache } from './webdav/webdav-cache';
 import { filesystemCache } from './filesystem/filesystem-cache';
 import { megaCache } from './mega/mega-cache';
 
-const file = (path: string, fileId: string): CloudFileMetadata => ({
-  provider: 'onedrive',
+let provider: ProviderType = 'onedrive';
+const file = (
+  path: string,
+  fileId: string,
+  stamp: Partial<CloudFileMetadata> = {}
+): CloudFileMetadata => ({
+  provider,
   fileId,
   path,
   modifiedTime: '2026-10-30T00:00:00.000Z',
-  size: 10
+  size: 10,
+  ...stamp
 });
 
 function heldListing(): (files: CloudFileMetadata[]) => void {
@@ -50,10 +56,67 @@ describe.each([
   ['webdav', webdavCache],
   ['filesystem', filesystemCache],
   ['mega', megaCache]
-] as [string, CloudCache<CloudFileMetadata>][])('%s listing cache', (_name, cache) => {
+] as [ProviderType, CloudCache<CloudFileMetadata>][])('%s listing cache', (name, cache) => {
   beforeEach(() => {
     h.list.mockReset();
     cache.clear();
+    provider = name;
+  });
+
+  /** A first listing, finished: the cache holds these records as the server's. */
+  async function listed(files: CloudFileMetadata[]): Promise<void> {
+    h.list.mockResolvedValueOnce(files);
+    await cache.fetch();
+  }
+
+  // Ids outlive an overwrite (OneDrive keeps the item, WebDAV and Local
+  // Folder key by path): a walk that read the folder after another device
+  // wrote over this upload holds the newer revision under the same id.
+  const older = { modifiedTime: '2026-10-30T00:00:00.000Z', size: 10 };
+  const theirs = { modifiedTime: '2026-10-30T00:00:05.000Z', size: 42 };
+
+  it("keeps another device's overwrite the walk read after this upload", async () => {
+    await listed([file('volume-data.json', 'V1', older)]);
+    const finish = heldListing();
+    const fetched = cache.fetch();
+    cache.add!('volume-data.json', {
+      ...file('volume-data.json', 'V1', { size: 20, modifiedTime: '2026-10-30T00:00:03.000Z' }),
+      modifiedTimeProvisional: true
+    });
+    finish([file('volume-data.json', 'V1', theirs)]);
+    await fetched;
+
+    expect(cache.getAll('volume-data.json')).toMatchObject([theirs]);
+  });
+
+  it('takes the upload over the revision the walk read before it', async () => {
+    await listed([file('volume-data.json', 'V1', older)]);
+    const finish = heldListing();
+    const fetched = cache.fetch();
+    const mine = { size: 20, modifiedTime: '2026-10-30T00:00:03.000Z' };
+    cache.add!('volume-data.json', {
+      ...file('volume-data.json', 'V1', mine),
+      modifiedTimeProvisional: true
+    });
+    cache.add!('volume-data.json', {
+      ...file('volume-data.json', 'V1', { size: 21 }),
+      modifiedTimeProvisional: true
+    });
+    finish([file('volume-data.json', 'V1', older)]);
+    await fetched;
+
+    expect(cache.getAll('volume-data.json')).toMatchObject([{ size: 21 }]);
+  });
+
+  it('keeps a file re-created at a deleted path the walk read after the delete', async () => {
+    await listed([file('Series/Vol 1.cbz', 'C1', older)]);
+    const finish = heldListing();
+    const fetched = cache.fetch();
+    cache.removeById!('C1');
+    finish([file('Series/Vol 1.cbz', 'C1', theirs)]);
+    await fetched;
+
+    expect(cache.getAll('Series/Vol 1.cbz')).toMatchObject([theirs]);
   });
 
   it('keeps a root file uploaded while a listing was in flight', async () => {
