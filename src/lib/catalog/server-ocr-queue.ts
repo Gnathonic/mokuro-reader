@@ -1,5 +1,6 @@
 import { db } from '$lib/catalog/db';
 import { resolveBunkoLink } from '$lib/util/bunko-links';
+import { fetchWithRetryAfter } from '$lib/util/sync/providers/webdav/webdav-retry-after';
 import { getLayerMeta } from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
@@ -583,8 +584,9 @@ function originOf(url: string): string | null {
 /**
  * `fetch` for a request on behalf of a queue's account: the WebDAV session's
  * Authorization goes ONLY to the queue's own origin (a manifest may name files
- * anywhere), and a 401 under a bearer token replaces the token once — through
- * the provider's single-flight re-issue — and retries with the fresh header.
+ * anywhere), a 401 under a bearer token replaces the token once — through
+ * the provider's single-flight re-issue — and retries with the fresh header,
+ * and a short 503 + Retry-After is waited out (`fetchWithRetryAfter`).
  */
 export async function fetchWithQueueAuth(
   url: string,
@@ -597,22 +599,25 @@ export async function fetchWithQueueAuth(
     ...((init.headers as Record<string, string> | undefined) ?? {})
   };
   if (headers.Authorization && originOf(url) !== originOf(queueUrl)) delete headers.Authorization;
-  const response = await fetchImpl(url, { ...init, headers });
-  const sent = headers.Authorization;
-  if (response.status !== 401 || auth !== 'webdav' || !bearerOf(sent)) return response;
-  const provider = (await activeWebdavProvider()) as {
-    reissueAfterUnauthorized?: (stale: string) => Promise<boolean>;
-  } | null;
-  if (!provider?.reissueAfterUnauthorized || !(await provider.reissueAfterUnauthorized(sent))) {
-    return response;
-  }
-  const fresh = (await requestInitFor(queueUrl, auth))?.headers as
-    | Record<string, string>
-    | undefined;
-  const retryHeaders = { ...headers };
-  if (fresh?.Authorization) retryHeaders.Authorization = fresh.Authorization;
-  else delete retryHeaders.Authorization;
-  return fetchImpl(url, { ...init, headers: retryHeaders });
+  return fetchWithRetryAfter(fetchImpl, url, { ...init, headers }, async (sent) => {
+    if (auth !== 'webdav' || !bearerOf(sent.Authorization)) return null;
+    const provider = (await activeWebdavProvider()) as {
+      reissueAfterUnauthorized?: (stale: string) => Promise<boolean>;
+    } | null;
+    if (
+      !provider?.reissueAfterUnauthorized ||
+      !(await provider.reissueAfterUnauthorized(sent.Authorization))
+    ) {
+      return null;
+    }
+    const fresh = (await requestInitFor(queueUrl, auth))?.headers as
+      | Record<string, string>
+      | undefined;
+    const retryHeaders = { ...sent };
+    if (fresh?.Authorization) retryHeaders.Authorization = fresh.Authorization;
+    else delete retryHeaders.Authorization;
+    return retryHeaders;
+  });
 }
 
 async function fetchBlob(
