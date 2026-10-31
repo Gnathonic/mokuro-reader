@@ -2,6 +2,7 @@ import { writable } from 'svelte/store';
 import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
+import { addMutations, removeMutations } from '../../listing-mutations';
 import { megaProvider } from './mega-provider';
 
 /** Dedup-triggered refetches in a row before the cache stops asking (see runDeduplication). */
@@ -57,12 +58,23 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
     }
 
     this.runningReloads = !skipReinitialize;
-    this.running = this.load(skipReinitialize);
-    return this.running;
+    this.isFetchingStore.set(true);
+    const run: Promise<void> = this.load(skipReinitialize).finally(() => {
+      if (this.running !== run) return; // cleared meanwhile: a dead account's
+      this.running = null;
+      this.isFetchingStore.set(false);
+
+      // Run folder deduplication after cache load (incremental - one pass per call).
+      // Not awaited: its own refetch joins whatever fetch is running then.
+      this.runDeduplication();
+    });
+    this.running = run;
+    return run;
   }
 
   private async load(skipReinitialize: boolean): Promise<void> {
-    this.isFetchingStore.set(true);
+    // Uploads and deletes made while the tree reloads are replayed onto its map.
+    const listing = this.cache.beginListing();
     try {
       // Query MEGA provider (which reads from its internal storage.files cache)
       const volumes = await megaProvider.listCloudVolumes(skipReinitialize);
@@ -81,9 +93,8 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
         }
       }
 
-      // Replace entire cache atomically (clears optimistic/fake entries)
-      // This prevents duplicates from fake entries added during uploads
-      this.cache.set(cacheMap);
+      // A clear() meanwhile (sign-out): this listing is a dead account's.
+      if (!listing.install(cacheMap)) return;
       this.loadedFlag = true;
       console.log(
         `✅ MEGA cache populated with ${volumes.length} files in ${cacheMap.size} series`
@@ -91,12 +102,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
     } catch (error) {
       console.error('Failed to fetch MEGA cache:', error);
     } finally {
-      this.running = null;
-      this.isFetchingStore.set(false);
-
-      // Run folder deduplication after cache load (incremental - one pass per call).
-      // Not awaited: its own refetch joins whatever fetch is running then.
-      this.runDeduplication();
+      listing.abandon();
     }
   }
 
@@ -188,6 +194,10 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   clear(): void {
     this.cache.set(new Map());
     this.loadedFlag = false;
+    // The next fetch lists the new account rather than joining the old one's.
+    this.running = null;
+    this.runningReloads = false;
+    this.isFetchingStore.set(false);
   }
 
   isFetching(): boolean {
@@ -200,51 +210,11 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
 
   // Optional methods for cache updates
   add(path: string, metadata: CacheAddMetadata<CloudFileMetadata>): void {
-    this.cache.update((cache) => {
-      const newCache = new Map(cache);
-
-      // Extract series title from path (e.g., "SeriesTitle/VolumeTitle.cbz" -> "SeriesTitle")
-      // This matches how fetch() groups files by series title
-      const seriesTitle = path.split('/')[0];
-      const existing = newCache.get(seriesTitle);
-
-      if (existing) {
-        // Check if this file ID already exists, replace it
-        const index = existing.findIndex((f) => f.fileId === metadata.fileId);
-        if (index >= 0) {
-          // Create new array with replacement (immutable)
-          newCache.set(seriesTitle, [
-            ...existing.slice(0, index),
-            metadata,
-            ...existing.slice(index + 1)
-          ]);
-        } else {
-          // Create new array with addition (immutable)
-          newCache.set(seriesTitle, [...existing, metadata]);
-        }
-      } else {
-        newCache.set(seriesTitle, [metadata]);
-      }
-
-      return newCache;
-    });
+    this.cache.update(...addMutations(path, metadata));
   }
 
   removeById(fileId: string): void {
-    this.cache.update((cache) => {
-      const newCache = new Map(cache);
-
-      for (const [path, files] of newCache.entries()) {
-        const filtered = files.filter((f) => f.fileId !== fileId);
-        if (filtered.length === 0) {
-          newCache.delete(path);
-        } else if (filtered.length !== files.length) {
-          newCache.set(path, filtered);
-        }
-      }
-
-      return newCache;
-    });
+    this.cache.update(...removeMutations(fileId));
   }
 
   update(fileId: string, updates: Partial<CloudFileMetadata>): void {
