@@ -2,6 +2,7 @@ import { writable } from 'svelte/store';
 import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
+import { addMutations, removeMutations } from '../../listing-mutations';
 import { megaProvider } from './mega-provider';
 
 /** Dedup-triggered refetches in a row before the cache stops asking (see runDeduplication). */
@@ -202,51 +203,11 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
 
   // Optional methods for cache updates
   add(path: string, metadata: CacheAddMetadata<CloudFileMetadata>): void {
-    this.cache.update((cache) => {
-      const newCache = new Map(cache);
-
-      // Extract series title from path (e.g., "SeriesTitle/VolumeTitle.cbz" -> "SeriesTitle")
-      // This matches how fetch() groups files by series title
-      const seriesTitle = path.split('/')[0];
-      const existing = newCache.get(seriesTitle);
-
-      if (existing) {
-        // Check if this file ID already exists, replace it
-        const index = existing.findIndex((f) => f.fileId === metadata.fileId);
-        if (index >= 0) {
-          // Create new array with replacement (immutable)
-          newCache.set(seriesTitle, [
-            ...existing.slice(0, index),
-            metadata,
-            ...existing.slice(index + 1)
-          ]);
-        } else {
-          // Create new array with addition (immutable)
-          newCache.set(seriesTitle, [...existing, metadata]);
-        }
-      } else {
-        newCache.set(seriesTitle, [metadata]);
-      }
-
-      return newCache;
-    });
+    this.cache.update(...addMutations(path, metadata));
   }
 
   removeById(fileId: string): void {
-    this.cache.update((cache) => {
-      const newCache = new Map(cache);
-
-      for (const [path, files] of newCache.entries()) {
-        const filtered = files.filter((f) => f.fileId !== fileId);
-        if (filtered.length === 0) {
-          newCache.delete(path);
-        } else if (filtered.length !== files.length) {
-          newCache.set(path, filtered);
-        }
-      }
-
-      return newCache;
-    });
+    this.cache.update(...removeMutations(fileId));
   }
 
   update(fileId: string, updates: Partial<CloudFileMetadata>): void {
