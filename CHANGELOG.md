@@ -12,6 +12,7 @@
 - WebDAV asks you to sign in again when your password stops working
 - mokuro-bunko 0.8: backups with an "Edit" OCR layer no longer fail
 - WebDAV retries a request a busy server asks to repeat
+- Progress synced while the library refreshes is no longer lost
 
 ## [1.10.0] - 2026-10-02
 
