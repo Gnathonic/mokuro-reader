@@ -12,7 +12,6 @@
 
 ## Global Constraints
 
-- Never write the string `mokuro.moe` anywhere (code, comments, commits, docs).
 - No Dexie schema version bump: the new `CloudCover` fields are non-indexed.
 - `cloudPath` and the `cloudThumbnail*` fields stay listing decorations on in-memory copies; never persist them on a `volumes` row.
 - Every path stays best-effort: nothing in parts A or B may reject into a view, a sync result, or a store subscriber.
