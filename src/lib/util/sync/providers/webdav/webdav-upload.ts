@@ -6,7 +6,7 @@
 import type { WebDAVClient } from 'webdav';
 import type { ServerOcrQueued } from '$lib/util/sync/provider-interface';
 import { resolveBunkoLink } from '$lib/util/bunko-links';
-import { retryAfterDelayMs } from './webdav-retry-after';
+import { RETRY_AFTER_MAX_RETRIES, retryAfterDelayMs } from './webdav-retry-after';
 
 /** What one PUT established. */
 export interface WebdavPutResult {
@@ -208,7 +208,7 @@ export interface UploadRetryInfo {
  * Run `attempt` until it settles, retrying only a `WebdavUploadError` that is
  * `retryable` (network, timeout, 5xx but 507, a server `retry: true`, a size
  * mismatch), with backoff — or, for a 503 that named a short wait, after that
- * wait instead of the step's. Anything else — a refusal the server means, or
+ * wait instead of the step's (at most `RETRY_AFTER_MAX_RETRIES` times). Anything else — a refusal the server means, or
  * an error nobody classified — rejects at once. The last error is the one thrown.
  */
 export async function uploadWithRetry<T>(
@@ -222,6 +222,7 @@ export async function uploadWithRetry<T>(
   const delays = options.delaysMs ?? UPLOAD_RETRY_DELAYS_MS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const attempts = delays.length + 1;
+  let namedWaits = 0;
   for (let i = 0; ; i++) {
     try {
       return await attempt();
@@ -229,7 +230,12 @@ export async function uploadWithRetry<T>(
       if (!(error instanceof WebdavUploadError) || !error.retryable || i >= delays.length) {
         throw error;
       }
-      const delayMs = error.retryAfterMs ?? delays[i];
+      const named =
+        error.retryAfterMs !== undefined && namedWaits < RETRY_AFTER_MAX_RETRIES
+          ? error.retryAfterMs
+          : undefined;
+      if (named !== undefined) namedWaits += 1;
+      const delayMs = named ?? delays[i];
       console.warn(
         `[WebDAV] Upload attempt ${i + 1}/${attempts} failed (${error.detail}); retrying in ${Math.round(delayMs / 1000)} s`
       );

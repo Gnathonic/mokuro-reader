@@ -16,6 +16,7 @@ import { webdavAuthOptions } from './webdav-auth';
 import { authFromCredentials, bearerOf, webdavAuthHeaders } from './webdav-authorization';
 import { isTransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
 import {
+  RETRY_AFTER_MAX_RETRIES,
   retryAfterDelayMs,
   withRetryAfter,
   wrapWebdavClient
@@ -78,6 +79,8 @@ export const webdavCore: CloudProviderCore = {
     let errorRetries = 0;
     let partialResumeRetries = 0;
     let lastRetryResetOffset = 0;
+    // Server-named 503 waits taken; never reset by progress (one request's bound).
+    let namedWaits = 0;
 
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -161,9 +164,15 @@ export const webdavCore: CloudProviderCore = {
             errorRetries += 1;
             const jitter = Math.floor(Math.random() * 150);
             // A short wait the server named (503 + Retry-After) replaces the
-            // backoff step; the retry budget stays this loop's own.
+            // backoff step, at most RETRY_AFTER_MAX_RETRIES times; the retry
+            // budget stays this loop's own.
+            const named =
+              namedWaits < RETRY_AFTER_MAX_RETRIES
+                ? retryAfterDelayMs(response.status, response.headers.get('Retry-After'))
+                : null;
+            if (named !== null) namedWaits += 1;
             const delay =
-              retryAfterDelayMs(response.status, response.headers.get('Retry-After')) ??
+              named ??
               Math.min(MAX_RETRY_DELAY_MS, BASE_RETRY_DELAY_MS * 2 ** (errorRetries - 1) + jitter);
             await sleep(delay);
             continue;

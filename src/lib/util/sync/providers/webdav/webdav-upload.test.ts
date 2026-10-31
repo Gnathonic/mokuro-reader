@@ -319,6 +319,23 @@ describe('a 503 PUT that names its wait (Retry-After)', () => {
   });
 });
 
+describe('uploadWithRetry and a 503 that keeps naming its wait', () => {
+  it('waits a named time at most twice, then takes its own step', async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    const attempt = vi.fn(async () => {
+      throw new WebdavUploadError('WebDAV upload failed: 503', {
+        status: 503,
+        reason: 'http-503',
+        detail: 'busy',
+        retryable: true,
+        retryAfterMs: 2_000
+      });
+    });
+    await expect(uploadWithRetry(attempt, { sleep })).rejects.toThrow('503');
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([2_000, 2_000, UPLOAD_RETRY_DELAYS_MS[2]]);
+  });
+});
+
 describe('X-Mokuro-Put on a PUT response', () => {
   it('reports a server that stages and verifies its PUTs', async () => {
     answers = [{ status: 201, headers: { 'X-Mokuro-Put': 'verified' } }];
