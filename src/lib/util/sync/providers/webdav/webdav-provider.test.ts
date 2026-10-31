@@ -44,6 +44,7 @@ vi.mock('../../cache-manager', () => ({
 vi.mock('./webdav-cache', () => ({ webdavCache: {} }));
 
 import { WebDAVProvider } from './webdav-provider';
+import { fetchWithRetryAfter } from './webdav-retry-after';
 
 const identityMock = vi.mocked(fetchServerIdentity);
 const fetchMock = vi.fn();
@@ -1059,7 +1060,27 @@ describe('WebDAVProvider and a 503 that names its wait (Retry-After)', () => {
     void done.then(() => (settled = true));
     await vi.advanceTimersByTimeAsync(10_000);
     expect(settled).toBe(true);
-    expect(await done).toBeInstanceOf(Error);
+    // The server said busy, not unreachable: the 503 is what the user is told.
+    const error = (await done) as ProviderError;
+    expect(error.message).toContain('503');
+    expect(error.webdavErrorType).not.toBe('connection');
     expect(mockClient.getDirectoryContents).toHaveBeenCalledTimes(1);
+  });
+
+  it('fetchWithRetryAfter: an abort ends the wait and returns the 503 it got', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(
+      async () => new Response('busy', { status: 503, headers: { 'Retry-After': '30' } })
+    );
+    const controller = new AbortController();
+    const done = fetchWithRetryAfter(fetchImpl as unknown as typeof fetch, 'https://host/x', {
+      signal: controller.signal
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    controller.abort();
+    const response = await done;
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe('busy');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
