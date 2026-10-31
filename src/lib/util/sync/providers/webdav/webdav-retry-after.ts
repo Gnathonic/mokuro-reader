@@ -22,7 +22,8 @@ export const RETRY_AFTER_MAX_RETRIES = 2;
  * The wait a response asks for, in ms: only a 503, only a readable
  * `Retry-After` (delay-seconds, or an HTTP-date — RFC 9110 allows both and
  * generic servers and proxies send dates), only up to `RETRY_AFTER_MAX_MS`.
- * Null otherwise.
+ * Null otherwise. Deliberately not Drive's `parseRetryAfter` (`drive-http.ts`):
+ * that one caps a long wait and always retries; here a long wait means "don't".
  */
 export function retryAfterDelayMs(
   status: number | undefined,
@@ -118,9 +119,11 @@ export interface RetryAfterOptions {
  * Run a request that throws on failure (`webdav` client calls, XHR uploads),
  * re-running it after a short server-named 503 wait, at most
  * `RETRY_AFTER_MAX_RETRIES` times, and after one 401 re-issue — in either
- * order. Re-running a MOVE or COPY is safe here: a 503 means the server did
- * not apply it, and with `overwrite: false` a server that did anyway answers
- * the second one 412, never a double move.
+ * order. An abort during the wait throws the 503 it was waiting out: that is
+ * the server's answer (login's timeout must not read as "unreachable").
+ * Re-running a MOVE or COPY is safe here: a 503 means the server did not apply
+ * it, and a server that did anyway fails the second one (source gone, or
+ * `overwrite: false` against the copy) — never a double move or copy.
  */
 export async function withRetryAfter<T>(
   run: () => Promise<T>,
@@ -141,7 +144,11 @@ export async function withRetryAfter<T>(
       const wait = options.replayable === false ? null : retryAfterOfError(error);
       if (wait === null || retries >= RETRY_AFTER_MAX_RETRIES) throw error;
       retries += 1;
-      await waitForRetry(wait, options.signal);
+      try {
+        await waitForRetry(wait, options.signal);
+      } catch {
+        throw error;
+      }
     }
   }
 }
@@ -149,8 +156,9 @@ export async function withRetryAfter<T>(
 /**
  * `fetch` that sends a request again after a short server-named 503 wait (at
  * most `RETRY_AFTER_MAX_RETRIES` times) and, given `onUnauthorized`, once with
- * the headers it returns after a 401. The last response is returned as is.
- * A body that cannot be re-read (a stream) is sent once.
+ * the headers it returns after a 401. The last response is returned as is —
+ * also when an abort ends a wait. A body that cannot be re-read (a stream) is
+ * sent once.
  */
 export async function fetchWithRetryAfter(
   fetchImpl: typeof fetch,
@@ -174,8 +182,12 @@ export async function fetchWithRetryAfter(
     const wait = retryAfterDelayMs(response.status, headerOf(response, 'Retry-After'));
     if (wait === null || !replayable || retries >= RETRY_AFTER_MAX_RETRIES) return response;
     retries += 1;
+    try {
+      await waitForRetry(wait, init.signal);
+    } catch {
+      return response;
+    }
     void response.body?.cancel().catch(() => {});
-    await waitForRetry(wait, init.signal);
   }
 }
 
