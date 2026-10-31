@@ -41,8 +41,7 @@ nothing" and "Last read is not the merge key". Built on the position-file plan
 - Last read = newest view end (`t + dwell_ms`) over legacy views and native views outside look-up
   visits, after the `forget` horizon; `0` when the volume has page events but none count; no events →
   `Date.parse(lastProgressUpdate)`.
-- No change to any wire format (events, `volume-data.json`, `positions.json`). No mention of the public
-  bunko deployment's domain. e2e with `E2E_PORT=<free port>`, zero failures beyond the two
+- No change to any wire format (events, `volume-data.json`, `positions.json`). e2e with `E2E_PORT=<free port>`, zero failures beyond the two
   `line-grid.spec.ts` tests that fail on develop. Commit trailer
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. No pushes.
 

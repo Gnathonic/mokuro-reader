@@ -1215,7 +1215,7 @@ function connectedProvider(): WebDAVProvider {
 beforeEach(() => {
   uploadFile.mockReset();
   localStorage.clear();
-  localStorage.setItem('webdav_server_url', 'https://mokuro.moe');
+  localStorage.setItem('webdav_server_url', 'https://dav.example');
 });
 
 describe('best-effort metadata writes', () => {

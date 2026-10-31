@@ -39,8 +39,7 @@ changes". Background: "Position across devices" in
 - Do not change the `historySync` gate in this plan.
 - Out of scope (later rollout steps of the spec): the segment push on page turns, the bunko-before-history
   turns-convert-at-next-start fix, conditional GETs (`downloadIfChanged`), the persisted listing cache.
-- Never mention the public bunko deployment's domain in code, comments, commits or PRs.
-- Work in `/home/nathan/Projects/mokuro-reader-worktrees/feat/sync-tiers`. e2e with `E2E_PORT=<free port>`;
+- Work in `<worktrees>/feat/sync-tiers`. e2e with `E2E_PORT=<free port>`;
   zero failures expected.
 - Commit trailer: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. No pushes.
 
@@ -560,7 +559,7 @@ test('opening and closing without turning writes no position', async ({ browser 
 
 ### Task 9: mokuro-bunko — keep `positions.json` per user and say so
 
-**Repo:** `/home/nathan/Projects/mokuro-webdav-library`, new worktree
+**Repo:** `<bunko-repo>`, new worktree
 `../mokuro-webdav-library-worktrees/feat-positions-per-user` off `0.8/remote-storage`.
 
 **Files:**
