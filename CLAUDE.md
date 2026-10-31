@@ -353,7 +353,13 @@ A backup sends a layer whose id mokuro-bunko 0.8 anchors on the archive
 the `.cbz` (`uploadVolumeFiles`, `volume-upload-order.ts`, Worker and main
 thread alike): bunko refuses it with 409 `no-volume` while no `<Volume>.cbz` is
 listed beside it. A refusal there fails nothing — the layer is left unstamped
-and the next listing's layer sync pushes it.
+and the next listing's layer sync pushes it. Before the archive, a LAYER the
+server refuses (403/409 or a non-auth `PERMISSION_DENIED`, `isLayerFileRefusal`
+— bunko 0.8 answers 403 for an edited `previous-ocr*`, `pre-upgrade*` or
+`curated-<n>` whatever the order) fails nothing either: logged at debug, left
+unstamped for layer sync, which remembers the refusal. A 401, a 5xx or a
+network failure there still fails the backup, as does any failure of the
+primary sidecar or the cover.
 `classifyMokuroSidecar` (`src/lib/util/sync/syncable-file.ts`) tells a listed
 `.mokuro` apart from a layer file the same way it always disambiguated dotted
 volume titles — by checking which stems have a `.cbz` in the same folder
