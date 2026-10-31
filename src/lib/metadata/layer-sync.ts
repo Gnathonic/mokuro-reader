@@ -680,12 +680,17 @@ function unpublishedFileMoved(
  *   edit there forks into `edit`, but one begun before the provider said it
  *   compiles its metadata (signing in, offline, a cloud-direct marker not read
  *   yet) reached the row, and bunko rewrites such a layer in place when its
- *   engine moves on.
+ *   engine moves on. "On a bunko" = the status says so NOW, or the row was
+ *   pulled while it did (`cloud.server_compiled`).
  */
 function keepsLocalEdits(row: VolumeOcrLayer | undefined, target: LayerTarget): boolean {
   if (!row || isPassiveSnapshot(row) || !editedSinceSync(row)) return false;
   if (isPersonalLayerId(row.layer_id)) return layerIdStaysLocal(row.layer_id, target);
-  return target.serverCompilesMetadata && isCloudModelOutput(row);
+  // The row's own record counts as much as the status: a stale cloud-direct
+  // marker or a failed identity probe reads plain storage again, and the
+  // server's rewrite would then replace the corrections with no copy kept.
+  const compiled = target.serverCompilesMetadata || row.cloud?.server_compiled === true;
+  return compiled && isCloudModelOutput(row);
 }
 
 /** Same key every "which row is this cloud file" question uses. */
@@ -851,9 +856,11 @@ async function pullOne(
   if (isKnownMismatch(rejection)) return false;
   const pulled = await readLayerFile(provider, listed);
   if (!pulled) return false;
+  const status = provider.getStatus();
   const stored = await storePulledLayer(row, listed.layerId, pulled, existing, {
     provider: provider.type,
-    account: personalLayerAccount(provider.getStatus()),
+    account: personalLayerAccount(status),
+    serverCompiled: status.serverCompilesMetadata === true,
     stamp: stampOf(listed.file),
     label: listed.file.path
   });
@@ -881,6 +888,8 @@ async function storePulledLayer(
     provider: string;
     /** The provider's `accountScope`, stamped on a personal layer. */
     account?: string;
+    /** The provider said the server compiles its metadata (`cloud.server_compiled`). */
+    serverCompiled?: boolean;
     stamp: { size?: number; modified?: number };
     label: string;
   }
@@ -939,6 +948,7 @@ async function storePulledLayer(
     cloud: {
       provider: source.provider,
       ...accountStamp(layerId, source.account),
+      ...(source.serverCompiled ? { server_compiled: true as const } : {}),
       ...source.stamp,
       synced_at: now
     }

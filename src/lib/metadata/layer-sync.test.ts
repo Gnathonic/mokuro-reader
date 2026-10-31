@@ -1921,9 +1921,25 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     await syncLayersFromListing(listing(...cachedFiles), 'webdav');
     expect(uploadFile).not.toHaveBeenCalled();
 
-    // On plain storage the same row is the user's own file: it goes up.
+    // The status reads plain storage again (stale marker, failed probe): the
+    // row was pulled from a bunko (`cloud.server_compiled`), so still not.
     serverCompilesMetadata = false;
     editLayerSync = undefined;
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('a server OCR row pulled from plain storage and edited is the user’s own file: it goes up', async () => {
+    await seedRow();
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.hayai.mokuro')];
+    const stamped = JSON.stringify({
+      ...JSON.parse(mokuroJson('かな')),
+      ocr_engine: { id: 'hayai', detector: 'ctd', generator: 'mokuro-bunko 0.8.0' }
+    });
+    downloadFile.mockResolvedValue(new Blob([stamped]));
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    const pulled = await getLayerWithPages(db, 'v1', 'hayai');
+    await putLayerWithPages(db, { ...pulled!, updated_at: '2099-01-01T00:00:00.000Z' });
     await syncLayersFromListing(listing(...cachedFiles), 'webdav');
     expect(uploadFile).toHaveBeenCalledTimes(1);
   });
@@ -1965,9 +1981,50 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
       'なおし'
     ]);
 
-    // On plain storage the same row is an ordinary layer file: newest wins.
+    // The status reads plain storage again (a stale cloud-direct marker, /me
+    // 'unsupported'): the row remembers it came from a server that compiles
+    // its metadata, and the corrections still stay.
     serverCompilesMetadata = false;
     editLayerSync = undefined;
+    await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz'), rewritten), 'webdav');
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect((await getLayerWithPages(db, 'v1', 'hayai'))!.pages[0].blocks[0].lines).toEqual([
+      'なおし'
+    ]);
+    // Nor do the corrections go up over the server's file for every account,
+    // the cloud copy unchanged since the pull and all.
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('…while a server OCR row pulled from plain storage is an ordinary layer file: newest wins', async () => {
+    await seedRow();
+    const served = (text: string) =>
+      new Blob([
+        JSON.stringify({
+          ...JSON.parse(mokuroJson(text)),
+          ocr_engine: { id: 'hayai', detector: 'ctd', generator: 'mokuro-bunko 0.8.0' }
+        })
+      ]);
+    downloadFile.mockResolvedValue(served('かな'));
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.hayai.mokuro')),
+      'webdav'
+    );
+    const pulled = (await getLayerWithPages(db, 'v1', 'hayai'))!;
+    expect(pulled.cloud).not.toHaveProperty('server_compiled');
+    const syncedAt = Date.parse(pulled.cloud!.synced_at);
+    await putLayerWithPages(db, {
+      ...pulled,
+      updated_at: new Date(syncedAt + 60_000).toISOString(),
+      pages: [pg('なおし')]
+    });
+    downloadFile.mockClear();
+    downloadFile.mockResolvedValue(served('あたらしい'));
+    const rewritten = cloudFile('Series/Vol 1.hayai.mokuro', {
+      size: 333,
+      modifiedTime: new Date(syncedAt + 3_600_000).toISOString()
+    });
     await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz'), rewritten), 'webdav');
     expect(downloadFile).toHaveBeenCalledTimes(1);
   });

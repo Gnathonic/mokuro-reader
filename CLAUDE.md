@@ -531,7 +531,12 @@ with an `engine` and a `cloud` stamp) even once edited: an edit forks into
 (signing in, offline, a cloud-direct marker not read yet) edits the row in
 place, and that edit stays on the device rather than replace what the model
 wrote for every account — nor does bunko's later rewrite of that layer replace
-it (`keepsLocalEdits`, as for an `edit` held back from a 0.7.x). Its id half,
+it (`keepsLocalEdits`, as for an `edit` held back from a 0.7.x). Both hold while
+the status says bunko OR the row was pulled while it did (`cloud.server_compiled`,
+unindexed), so a status that reads plain storage again (a stale cloud-direct
+marker, a failed identity probe) changes neither. The limit: a row pulled while
+the status ALREADY read plain storage carries no mark, and is treated as plain
+storage's (newest wins, pushed when edited). Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
 IS is somebody else's file, so neither a local delete, its tombstone nor the
 `.gz`-sibling tidy ever removes its cloud copy (the delete reports

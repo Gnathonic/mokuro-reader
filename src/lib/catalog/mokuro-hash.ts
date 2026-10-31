@@ -170,7 +170,13 @@ export function layerStaysLocal(
   target: LayerTarget
 ): boolean {
   if (isUntouchedUpgradeLayer(layer)) return true;
-  if (target.serverCompilesMetadata && isCloudModelOutput(layer)) return true;
+  // Pulled from a server that compiles its metadata (`cloud.server_compiled`):
+  // still its OCR, though the status may read plain storage again (a stale
+  // marker, a failed identity probe).
+  const compiled =
+    target.serverCompilesMetadata ||
+    (layer.cloud as { server_compiled?: true } | undefined)?.server_compiled === true;
+  if (compiled && isCloudModelOutput(layer)) return true;
   return layerIdStaysLocal(layer.layer_id, target);
 }
 

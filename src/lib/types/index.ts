@@ -230,10 +230,15 @@ export interface VolumeOcrLayer {
    * `account` (personal `edit` layers only): the provider's `accountScope`
    * the file belongs to — bunko serves each account its own copy at one path,
    * so a row of another account is never pushed (`layer-sync.ts`).
+   * `server_compiled`: the copy was pulled while the provider said the server
+   * compiles its metadata (bunko) — a server's OCR edited in place here then
+   * stays kept against its rewrite even if the status later reads plain
+   * storage (a stale marker, a failed identity probe). Unindexed.
    */
   cloud?: {
     provider: string;
     account?: string;
+    server_compiled?: true;
     size?: number;
     modified?: number;
     synced_at: string;
