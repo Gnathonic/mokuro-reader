@@ -19,6 +19,18 @@ function anchoredOnArchive(layerId: string): boolean {
 }
 
 /**
+ * A primary `<Title>.mokuro` whose title ends in such a layer id (`Notes.edit`,
+ * `X.curated`) reads to bunko as `<stem>.<id>.mokuro`, and is refused the
+ * same way until `<Title>.cbz` is listed (only then is it that volume's
+ * primary).
+ */
+function primaryAnchoredOnArchive(filename: string): boolean {
+  const title = filename.replace(/\.mokuro(?:\.gz)?$/i, '');
+  const dot = title.lastIndexOf('.');
+  return dot > 0 && anchoredOnArchive(title.slice(dot + 1));
+}
+
+/**
  * The server refused THIS layer file (403 forbidden / 409 conflict, or a
  * provider's non-auth `PERMISSION_DENIED`): bunko answers so for a layer id it
  * reserves (its `previous-ocr`/`pre-upgrade` keepsakes, `curated-<n>`, a
@@ -43,7 +55,8 @@ export function isLayerFileRefusal(error: unknown): boolean {
 
 /**
  * Primary sidecar, the other layers, the cover, the archive, then the layers
- * anchored on it. Up to the archive, a failure fails the backup (the archive
+ * anchored on it (and a primary whose title names one,
+ * `primaryAnchoredOnArchive`, right after the archive). Up to the archive, a failure fails the backup (the archive
  * is never sent without its sidecars) — except a LAYER the server refuses
  * (`isLayerFileRefusal`), which is somebody else's file or not one this
  * account may write: it is logged at debug and left out. After the archive,
@@ -69,11 +82,14 @@ export async function uploadVolumeFiles<A, S>(
   const after = layers.filter((layer) => anchoredOnArchive(layer.layerId));
   const sent: LayerSidecar[] = [];
 
-  if (sidecars?.mokuro) {
-    const primary = await upload.sidecar(sidecars.mokuro);
-    await hooks.onPrimary?.(sidecars.mokuro, primary);
+  const sendPrimary = async (mokuro: VolumeSidecarBlobData) => {
+    const primary = await upload.sidecar(mokuro);
+    await hooks.onPrimary?.(mokuro, primary);
     hooks.onSidecar?.();
-  }
+  };
+  const primaryLast = !!sidecars?.mokuro && primaryAnchoredOnArchive(sidecars.mokuro.filename);
+
+  if (sidecars?.mokuro && !primaryLast) await sendPrimary(sidecars.mokuro);
   for (const layer of before) {
     try {
       await upload.sidecar(layer);
@@ -91,6 +107,8 @@ export async function uploadVolumeFiles<A, S>(
   }
 
   const archive = await upload.archive();
+  // Still required: its failure fails the backup, archive up or not.
+  if (sidecars?.mokuro && primaryLast) await sendPrimary(sidecars.mokuro);
 
   for (const layer of after) {
     try {
