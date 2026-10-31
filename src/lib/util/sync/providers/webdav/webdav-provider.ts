@@ -215,8 +215,24 @@ export class WebDAVProvider implements SyncProvider {
   private _perUserFiles: string[] | undefined;
   /** Layer ids bunko reports keeping per account (`per_user_layers`); undefined = not reported. */
   private _perUserLayers: string[] | undefined;
-  /** When the identity endpoint last answered (login or `refreshIdentity`). */
+  /**
+   * When the identity endpoint was last asked (login or `refreshIdentity`),
+   * whatever it answered — a plain server's 'unsupported' and a failed request
+   * included, so `maxAgeMs` throttles every answer kind.
+   */
   private identityAt: number | undefined;
+  /**
+   * The refresh in flight: concurrent callers of the SAME session share its
+   * one request (`epoch` = the `sessionEpoch` it was asked under).
+   */
+  private identityRefresh: { epoch: number; promise: Promise<void> } | null = null;
+  /**
+   * Moves on every login and logout. An identity answer is applied only to the
+   * session that asked: a refresh still in flight when the user switched
+   * accounts or servers (two GETs, up to ~20 s) must not turn the bunko gates
+   * on, or hand one account's lists to another session.
+   */
+  private sessionEpoch = 0;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
   /** Per control-file name: the last read's set etag and the server's raw ETag for its one node. */
@@ -513,7 +529,8 @@ export class WebDAVProvider implements SyncProvider {
   private async identify(
     serverUrl: string,
     username: string | undefined,
-    password: string | undefined
+    password: string | undefined,
+    options: { refresh?: boolean } = {}
   ): Promise<IdentityResult> {
     const token = this.sessionAuth().token;
     if (!token) return fetchServerIdentity(serverUrl, username, password);
@@ -523,6 +540,9 @@ export class WebDAVProvider implements SyncProvider {
         this.sessionAuth().token !== token ? 'replaced' : await this.reissueSingleFlight();
       if (outcome === 'refused') return identity;
       if (outcome === 'rate-limited') return { kind: 'rate-limited' };
+      // A refresh keeps the token through an unreachable re-issue, as any
+      // request does (`reissueVerdict` 'transient'): no answer, not a verdict.
+      if (outcome === 'unreachable' && options.refresh) return { kind: 'unsupported' };
       if (outcome === 'unavailable' || outcome === 'unreachable') this.dropToken();
       // The client follows whatever the session holds now (a new token, one
       // another tab stored, or Basic after the drop above).
@@ -531,6 +551,10 @@ export class WebDAVProvider implements SyncProvider {
       return fetchServerIdentity(serverUrl, username, password, undefined, fresh);
     }
     if (identity.kind === 'unsupported') {
+      // On a refresh this is most likely a transient failure (both candidates
+      // timed out or answered 5xx): keep the token and the last answer; the
+      // next connect asks the question below afresh.
+      if (options.refresh) return identity;
       // The token went to a server that no longer speaks bunko's identity
       // contract: drop it and ask again with Basic, as any other server.
       this.dropToken();
@@ -568,13 +592,16 @@ export class WebDAVProvider implements SyncProvider {
    * itself: an upgrade or a rollback while a tab stays open changes what it
    * keeps per user (`version`, `per_user_files`, `per_user_layers`), and the
    * history/positions/edit-layer gates must follow — a 0.7.x files all three
-   * into its SHARED library. Called after the backup queue drains; fails
-   * quietly — the last answer stays.
+   * into its SHARED library. Called after the backup queue drains and, with
+   * `maxAgeMs`, before per-user files are written. Fails quietly — the last
+   * answer stays, and a held token is never dropped on a transient answer.
+   * One request in flight at a time (concurrent callers share it), and
+   * `maxAgeMs` counts every answer, a failure included.
    */
   async refreshIdentity(options: { maxAgeMs?: number } = {}): Promise<void> {
     if (!browser || !this.client) return;
-    const account = this.sessionAccount();
-    if (!account) return;
+    const epoch = this.sessionEpoch;
+    if (this.identityRefresh?.epoch === epoch) return this.identityRefresh.promise;
     if (
       options.maxAgeMs !== undefined &&
       this.identityAt !== undefined &&
@@ -582,12 +609,40 @@ export class WebDAVProvider implements SyncProvider {
     ) {
       return;
     }
+    const account = this.sessionAccount();
+    if (!account) return;
+    const promise = this.askIdentityAgain(account, epoch).finally(() => {
+      if (this.identityRefresh?.promise === promise) this.identityRefresh = null;
+    });
+    this.identityRefresh = { epoch, promise };
+    return promise;
+  }
+
+  /** Forget the identity refresh state of the session that is ending. */
+  private endIdentitySession(): void {
+    this.sessionEpoch++;
+    this.identityRefresh = null;
+    this.identityAt = undefined;
+  }
+
+  private async askIdentityAgain(
+    account: {
+      serverUrl: string;
+      username: string;
+      password: string;
+    },
+    epoch: number
+  ): Promise<void> {
     try {
       const identity = await this.identify(
         account.serverUrl,
         account.username || undefined,
-        account.password || undefined
+        account.password || undefined,
+        { refresh: true }
       );
+      // The session that asked has ended (logout, another login): its answer
+      // describes another account, maybe another server.
+      if (epoch !== this.sessionEpoch) return;
       if (identity.kind === 'authenticated' || identity.kind === 'anonymous') {
         if (identity.kind === 'authenticated') {
           this._capabilities = identity.permissions;
@@ -595,14 +650,22 @@ export class WebDAVProvider implements SyncProvider {
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
           );
         }
+        // The endpoint answered in bunko's contract shape: bunko, whatever the
+        // connect concluded (/me may have been unreachable then). Never
+        // cleared by a refresh — a failed one says nothing.
+        this._serverCompilesMetadata = true;
         this._serverVersion = identity.serverVersion;
         this._perUserFiles = identity.perUserFiles;
         this._perUserLayers = identity.perUserLayers;
-        this.identityAt = Date.now();
         this.notifyStatusChanged();
       }
     } catch (error) {
       console.warn('[WebDAV] identity refresh failed (keeping last known):', error);
+    } finally {
+      // Every answer kind (and a failure) counts: a plain server's
+      // 'unsupported' must not cost two GETs on every sync. Only for the
+      // session that asked.
+      if (epoch === this.sessionEpoch) this.identityAt = Date.now();
     }
   }
 
@@ -720,6 +783,9 @@ export class WebDAVProvider implements SyncProvider {
         'auth'
       );
     }
+
+    // A new session: a refresh the last one left in flight answers nobody.
+    this.endIdentitySession();
 
     // Normalize server URL (remove trailing slash)
     const normalizedUrl = serverUrl.replace(/\/$/, '');
@@ -860,6 +926,7 @@ export class WebDAVProvider implements SyncProvider {
           this._serverVersion = undefined;
           this._perUserFiles = undefined;
           this._perUserLayers = undefined;
+          this.identityAt = Date.now();
           break;
       }
 
@@ -962,6 +1029,7 @@ export class WebDAVProvider implements SyncProvider {
   }
 
   async logout(): Promise<void> {
+    this.endIdentitySession();
     this.client = null;
     this.rawClient = null;
     this._supportsDepthInfinity = null; // Reset for next connection (may be different server)

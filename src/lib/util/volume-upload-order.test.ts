@@ -86,6 +86,160 @@ describe('uploadVolumeFiles', () => {
     expect(onPrimary).toHaveBeenCalledWith(mokuro, { modifiedTime: 'm1' });
   });
 
+  describe('a layer the server refuses (403/409) never fails the backup', () => {
+    const httpError = (status: number) =>
+      Object.assign(new Error(`WebDAV upload failed: ${status}`), { status });
+    const permissionDenied = () =>
+      Object.assign(new Error('The server refused the layer file'), {
+        name: 'ProviderError',
+        code: 'PERMISSION_DENIED',
+        isAuthError: false
+      });
+
+    for (const [label, refusal] of [
+      ['403', () => httpError(403)],
+      ['409', () => httpError(409)],
+      ['PERMISSION_DENIED', permissionDenied]
+    ] as const) {
+      it(`a layer sent before the archive, refused ${label}: archive sent, layer unstamped`, async () => {
+        const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+        const order: string[] = [];
+        const result = await uploadVolumeFiles(
+          {
+            mokuro: file('Vol 1.mokuro'),
+            layers: [layer('previous-ocr'), layer('gcv')],
+            thumbnail: file('Vol 1.webp')
+          },
+          {
+            sidecar: async (f) => {
+              if (f.filename.includes('.previous-ocr.')) throw refusal();
+              order.push(f.filename);
+              return {};
+            },
+            archive: async () => {
+              order.push('Vol 1.cbz');
+              return 'ok';
+            }
+          }
+        );
+        expect(result.archive).toBe('ok');
+        expect(order).toEqual(['Vol 1.mokuro', 'Vol 1.gcv.mokuro', 'Vol 1.webp', 'Vol 1.cbz']);
+        expect(result.layers.map((l) => l.layerId)).toEqual(['gcv']);
+        expect(debug).toHaveBeenCalled();
+        debug.mockRestore();
+      });
+    }
+
+    for (const [label, failure] of [
+      ['401', () => Object.assign(new Error('401'), { status: 401 })],
+      ['503', () => Object.assign(new Error('503'), { status: 503 })],
+      ['a network error', () => new Error('network')],
+      [
+        'an auth ProviderError',
+        () =>
+          Object.assign(new Error('auth'), {
+            name: 'ProviderError',
+            code: 'PERMISSION_DENIED',
+            isAuthError: true
+          })
+      ]
+    ] as const) {
+      it(`a layer before the archive failing with ${label} still fails the backup`, async () => {
+        const archive = vi.fn(async () => 'ok');
+        await expect(
+          uploadVolumeFiles(
+            { layers: [layer('gcv')] },
+            {
+              sidecar: async () => {
+                throw failure();
+              },
+              archive
+            }
+          )
+        ).rejects.toThrow();
+        expect(archive).not.toHaveBeenCalled();
+      });
+    }
+
+    it('the primary sidecar refused 403 still fails the backup (only layers are optional)', async () => {
+      const archive = vi.fn(async () => 'ok');
+      await expect(
+        uploadVolumeFiles(
+          { mokuro: file('Vol 1.mokuro') },
+          {
+            sidecar: async () => {
+              throw httpError(403);
+            },
+            archive
+          }
+        )
+      ).rejects.toThrow();
+      expect(archive).not.toHaveBeenCalled();
+    });
+
+    it('an edit layer refused 403 after the archive is logged at debug only', async () => {
+      const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = await uploadVolumeFiles(
+        { layers: [layer('edit')] },
+        {
+          sidecar: async () => {
+            throw httpError(403);
+          },
+          archive: async () => 'ok'
+        }
+      );
+      expect(result.layers).toEqual([]);
+      expect(debug).toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+      debug.mockRestore();
+      warn.mockRestore();
+    });
+  });
+
+  it('a primary whose title bunko would read as an edit/curated layer goes up after the archive', async () => {
+    for (const title of ['Notes.edit', 'Notes.edit-2', 'X.curated']) {
+      const order: string[] = [];
+      const onPrimary = vi.fn();
+      await uploadVolumeFiles(
+        { mokuro: file(`${title}.mokuro`), thumbnail: file(`${title}.webp`) },
+        {
+          sidecar: async (f) => {
+            order.push(f.filename);
+            return {};
+          },
+          archive: async () => {
+            order.push(`${title}.cbz`);
+            return 'ok';
+          }
+        },
+        { onPrimary }
+      );
+      // `<Title>.mokuro` reads as `<stem>.<id>.mokuro` to bunko, refused
+      // 409 no-volume while no `<Title>.cbz` is listed.
+      expect(order).toEqual([`${title}.webp`, `${title}.cbz`, `${title}.mokuro`]);
+      expect(onPrimary).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('a dotted title that names no anchored layer keeps the primary first', async () => {
+    const order: string[] = [];
+    await uploadVolumeFiles(
+      { mokuro: file('Vol. 1.mokuro') },
+      {
+        sidecar: async (f) => {
+          order.push(f.filename);
+          return {};
+        },
+        archive: async () => {
+          order.push('Vol. 1.cbz');
+          return 'ok';
+        }
+      }
+    );
+    expect(order).toEqual(['Vol. 1.mokuro', 'Vol. 1.cbz']);
+  });
+
   it('no sidecars: only the archive', async () => {
     const sidecar = vi.fn();
     const result = await uploadVolumeFiles(undefined, { sidecar, archive: async () => 1 });

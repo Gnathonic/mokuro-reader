@@ -107,10 +107,12 @@ let serverCompilesMetadata = false;
 let editLayerSync: 'push' | 'local' | undefined = undefined;
 let accountScope: string | undefined = undefined;
 let curatedPublish: 'all' | 'owned' | 'none' | undefined = undefined;
+let refreshIdentity: ((options?: { maxAgeMs?: number }) => Promise<void>) | undefined = undefined;
 
 function provider(type = 'webdav') {
   return {
     type,
+    refreshIdentity: (options?: { maxAgeMs?: number }) => refreshIdentity?.(options),
     getStatus: () => ({
       isReadOnly: readOnly,
       canAddFiles,
@@ -153,6 +155,7 @@ beforeEach(async () => {
   editLayerSync = undefined;
   accountScope = undefined;
   curatedPublish = undefined;
+  refreshIdentity = undefined;
   localStorage.clear();
   getActiveProvider.mockReturnValue(provider());
   uploadFile.mockResolvedValue({
@@ -1918,9 +1921,25 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     await syncLayersFromListing(listing(...cachedFiles), 'webdav');
     expect(uploadFile).not.toHaveBeenCalled();
 
-    // On plain storage the same row is the user's own file: it goes up.
+    // The status reads plain storage again (stale marker, failed probe): the
+    // row was pulled from a bunko (`cloud.server_compiled`), so still not.
     serverCompilesMetadata = false;
     editLayerSync = undefined;
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('a server OCR row pulled from plain storage and edited is the user’s own file: it goes up', async () => {
+    await seedRow();
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.hayai.mokuro')];
+    const stamped = JSON.stringify({
+      ...JSON.parse(mokuroJson('かな')),
+      ocr_engine: { id: 'hayai', detector: 'ctd', generator: 'mokuro-bunko 0.8.0' }
+    });
+    downloadFile.mockResolvedValue(new Blob([stamped]));
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    const pulled = await getLayerWithPages(db, 'v1', 'hayai');
+    await putLayerWithPages(db, { ...pulled!, updated_at: '2099-01-01T00:00:00.000Z' });
     await syncLayersFromListing(listing(...cachedFiles), 'webdav');
     expect(uploadFile).toHaveBeenCalledTimes(1);
   });
@@ -1962,9 +1981,50 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
       'なおし'
     ]);
 
-    // On plain storage the same row is an ordinary layer file: newest wins.
+    // The status reads plain storage again (a stale cloud-direct marker, /me
+    // 'unsupported'): the row remembers it came from a server that compiles
+    // its metadata, and the corrections still stay.
     serverCompilesMetadata = false;
     editLayerSync = undefined;
+    await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz'), rewritten), 'webdav');
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect((await getLayerWithPages(db, 'v1', 'hayai'))!.pages[0].blocks[0].lines).toEqual([
+      'なおし'
+    ]);
+    // Nor do the corrections go up over the server's file for every account,
+    // the cloud copy unchanged since the pull and all.
+    await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('…while a server OCR row pulled from plain storage is an ordinary layer file: newest wins', async () => {
+    await seedRow();
+    const served = (text: string) =>
+      new Blob([
+        JSON.stringify({
+          ...JSON.parse(mokuroJson(text)),
+          ocr_engine: { id: 'hayai', detector: 'ctd', generator: 'mokuro-bunko 0.8.0' }
+        })
+      ]);
+    downloadFile.mockResolvedValue(served('かな'));
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.hayai.mokuro')),
+      'webdav'
+    );
+    const pulled = (await getLayerWithPages(db, 'v1', 'hayai'))!;
+    expect(pulled.cloud).not.toHaveProperty('server_compiled');
+    const syncedAt = Date.parse(pulled.cloud!.synced_at);
+    await putLayerWithPages(db, {
+      ...pulled,
+      updated_at: new Date(syncedAt + 60_000).toISOString(),
+      pages: [pg('なおし')]
+    });
+    downloadFile.mockClear();
+    downloadFile.mockResolvedValue(served('あたらしい'));
+    const rewritten = cloudFile('Series/Vol 1.hayai.mokuro', {
+      size: 333,
+      modifiedTime: new Date(syncedAt + 3_600_000).toISOString()
+    });
     await syncLayersFromListing(listing(cloudFile('Series/Vol 1.cbz'), rewritten), 'webdav');
     expect(downloadFile).toHaveBeenCalledTimes(1);
   });
@@ -2179,6 +2239,78 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     });
   });
 
+  // The listing- and edit-triggered layer sync runs outside the progress
+  // sync: it asks the server again (throttled) before it pushes, or a bunko
+  // rolled back to 0.7.3 under an open tab gets the account's edit layer into
+  // its SHARED library.
+  it('after a bunko rollback, a layer push asks the identity again and sends no edit layer', async () => {
+    await seedRow();
+    await seedLayer('edit');
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    accountScope = ACCOUNT_A;
+    const refresh = vi.fn(async () => {
+      editLayerSync = 'local';
+    });
+    refreshIdentity = refresh;
+    await syncLayersFromListing(files(), 'webdav');
+    expect(refresh).toHaveBeenCalledWith({ maxAgeMs: 5 * 60_000 });
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('after a bunko rollback, deleting the edit layer leaves the now-shared file alone', async () => {
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    accountScope = ACCOUNT_A;
+    canAddFiles = true;
+    await seedLayer('edit', {
+      updated_at: T0,
+      cloud: {
+        provider: 'webdav',
+        account: ACCOUNT_A,
+        size: 100,
+        modified: 1789552800,
+        synced_at: T0
+      }
+    });
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro')];
+    refreshIdentity = async () => {
+      editLayerSync = 'local';
+    };
+    expect(await deleteCloudLayerFile('v1', 'edit')).toBe('kept-shared');
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
+
+  it("an overlay pulled while the identity fell back ('local') is stamped, so another account never pushes or deletes over it", async () => {
+    // A 0.8 bunko whose /me failed at A's sign-in: status reads 'local'.
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'local';
+    accountScope = ACCOUNT_A;
+    const overlay = () =>
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro'));
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('えー')]));
+    await syncLayersFromListing(overlay(), 'webdav');
+    const pulled = (await getLayerWithPages(db, 'v1', 'edit'))!;
+    expect(pulled.cloud?.account).toBe(ACCOUNT_A);
+
+    // A corrects it (stays local under 'local'); then B signs in, identity OK.
+    await putLayerWithPages(db, {
+      ...pulled,
+      updated_at: new Date(Date.parse(pulled.cloud!.synced_at) + 60_000).toISOString(),
+      pages: [pg('なおし')]
+    });
+    editLayerSync = 'push';
+    accountScope = ACCOUNT_B;
+    downloadFile.mockClear();
+    await syncLayersFromListing(files(), 'webdav');
+    expect(uploadFile).not.toHaveBeenCalled();
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro')];
+    expect(await deleteCloudLayerFile('v1', 'edit')).toBe('unconfirmed');
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
+
   // Google Drive's accountScope is `default` until the reader folder resolves,
   // then that folder's id: two values within ONE account. Only a server that
   // keeps personal layers per account has two accounts behind one path.
@@ -2192,6 +2324,15 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
 
     beforeEach(() => {
       getActiveProvider.mockReturnValue(provider('google-drive'));
+    });
+
+    it('a pull under a fresh cloud-direct bunko marker is not stamped either', async () => {
+      await seedRow();
+      serverCompilesMetadata = true; // withCloudBunkoStatus; no editLayerSync on Drive
+      accountScope = DEFAULT;
+      downloadFile.mockResolvedValue(new Blob([mokuroJson('よそ')]));
+      await syncLayersFromListing(driveListing(), 'google-drive');
+      expect((await getLayerWithPages(db, 'v1', 'edit'))!.cloud).not.toHaveProperty('account');
     });
 
     it('an edit pulled before the reader folder resolved still goes up after it did', async () => {
