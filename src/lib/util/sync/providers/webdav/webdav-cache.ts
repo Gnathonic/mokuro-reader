@@ -15,7 +15,8 @@ class WebDAVCacheManager implements CloudCache<CloudFileMetadata> {
   // subscribers get incremental mutations coalesced — see CoalescedCacheStore.
   private cache = new CoalescedCacheStore<CloudFileMetadata[]>();
   private isFetchingStore = writable<boolean>(false);
-  private fetchingFlag = false;
+  /** The listing in flight; every fetch() meanwhile joins it. */
+  private fetchPromise: Promise<void> | null = null;
   private loadedFlag = false;
 
   get store() {
@@ -30,21 +31,29 @@ class WebDAVCacheManager implements CloudCache<CloudFileMetadata> {
   /**
    * Fetch cloud volumes from WebDAV provider
    */
-  async fetch(): Promise<void> {
-    if (this.fetchingFlag) {
-      console.log('WebDAV cache fetch already in progress');
-      return;
-    }
-
+  fetch(): Promise<void> {
+    // Join a listing in flight: every caller reads the cache next, and one
+    // that returned at once would read the listing from before it.
+    if (this.fetchPromise) return this.fetchPromise;
     if (!webdavProvider.isAuthenticated()) {
       console.log('WebDAV not authenticated, skipping cache fetch');
-      return;
+      return Promise.resolve();
     }
 
-    this.fetchingFlag = true;
     this.isFetchingStore.set(true);
+    const run: Promise<void> = this.load().finally(() => {
+      if (this.fetchPromise !== run) return; // cleared meanwhile
+      this.fetchPromise = null;
+      this.isFetchingStore.set(false);
+    });
+    this.fetchPromise = run;
+    return run;
+  }
+
+  private async load(): Promise<void> {
+    // Uploads and deletes made while the walk runs are replayed onto its map.
+    const listing = this.cache.beginListing();
     try {
-      // Query WebDAV provider
       const volumes = await webdavProvider.listCloudVolumes();
 
       // Group by series title (extracted from path: "SeriesTitle/VolumeTitle.cbz")
@@ -61,8 +70,8 @@ class WebDAVCacheManager implements CloudCache<CloudFileMetadata> {
         }
       }
 
-      // Replace entire cache atomically
-      this.cache.set(cacheMap);
+      // A clear() meanwhile (sign-out): this listing is a dead account's.
+      if (!listing.install(cacheMap)) return;
       this.loadedFlag = true;
       console.log(
         `✅ WebDAV cache populated with ${volumes.length} files in ${cacheMap.size} series`
@@ -70,8 +79,7 @@ class WebDAVCacheManager implements CloudCache<CloudFileMetadata> {
     } catch (error) {
       console.error('Failed to fetch WebDAV cache:', error);
     } finally {
-      this.fetchingFlag = false;
-      this.isFetchingStore.set(false);
+      listing.abandon();
     }
   }
 
@@ -125,10 +133,12 @@ class WebDAVCacheManager implements CloudCache<CloudFileMetadata> {
   clear(): void {
     this.cache.set(new Map());
     this.loadedFlag = false;
+    this.fetchPromise = null;
+    this.isFetchingStore.set(false);
   }
 
   isFetching(): boolean {
-    return this.fetchingFlag;
+    return this.fetchPromise !== null;
   }
 
   isLoaded(): boolean {

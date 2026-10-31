@@ -63,6 +63,8 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
 
   private async load(skipReinitialize: boolean): Promise<void> {
     this.isFetchingStore.set(true);
+    // Uploads and deletes made while the tree reloads are replayed onto its map.
+    const listing = this.cache.beginListing();
     try {
       // Query MEGA provider (which reads from its internal storage.files cache)
       const volumes = await megaProvider.listCloudVolumes(skipReinitialize);
@@ -81,9 +83,8 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
         }
       }
 
-      // Replace entire cache atomically (clears optimistic/fake entries)
-      // This prevents duplicates from fake entries added during uploads
-      this.cache.set(cacheMap);
+      // A clear() meanwhile (sign-out): this listing is a dead account's.
+      if (!listing.install(cacheMap)) return;
       this.loadedFlag = true;
       console.log(
         `✅ MEGA cache populated with ${volumes.length} files in ${cacheMap.size} series`
@@ -91,6 +92,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
     } catch (error) {
       console.error('Failed to fetch MEGA cache:', error);
     } finally {
+      listing.abandon();
       this.running = null;
       this.isFetchingStore.set(false);
 
