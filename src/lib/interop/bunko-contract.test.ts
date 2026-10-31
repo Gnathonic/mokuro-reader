@@ -108,7 +108,7 @@ describeContract('identity (`/login/api/me`) as Bunko answers it', () => {
   const identify = (name: string, user?: string, pw?: string, token?: string) =>
     fetchServerIdentity(SERVER, user, pw, fixtureFetch([fx(name)]).fetch, token);
 
-  it('an uploader may write progress and add files, and owns no series yet', async () => {
+  it('an uploader may write progress and add files, and owns the series it made', async () => {
     const result = await identify('login-me-basic', 'reader', password('reader'));
     expect(result).toEqual({
       kind: 'authenticated',
@@ -118,8 +118,9 @@ describeContract('identity (`/login/api/me`) as Bunko answers it', () => {
         canWriteProgress: true,
         canAddFiles: true,
         canModifyDelete: false,
-        metadata: { scope: 'owned', ownedSeries: [] },
-        curated: { scope: 'owned' }
+        metadata: { scope: 'owned', ownedSeries: ['Contract Series'] },
+        curated: { scope: 'owned' },
+        addFiles: { scope: 'open', closedSeries: [] }
       },
       endpoint: `${SERVER}/login/api/me`,
       ...BUNKO_08
@@ -137,7 +138,8 @@ describeContract('identity (`/login/api/me`) as Bunko answers it', () => {
         canAddFiles: false,
         canModifyDelete: false,
         metadata: { scope: 'none' },
-        curated: { scope: 'none' }
+        curated: { scope: 'none' },
+        addFiles: { scope: 'none' }
       },
       endpoint: `${SERVER}/login/api/me`,
       ...BUNKO_08
