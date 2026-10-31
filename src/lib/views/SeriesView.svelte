@@ -503,10 +503,8 @@
       return;
     }
 
-    // Add volumes to backup queue
+    // The queue gives the one notice (what it added, and what it skipped).
     backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider);
-
-    showSnackbar(`Added ${volumesToBackup.length} volume(s) to backup queue`);
   }
 
   async function downloadAllPlaceholders() {

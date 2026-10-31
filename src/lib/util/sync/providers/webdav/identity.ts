@@ -14,7 +14,11 @@
  * This module must stay dependency-free (no Svelte / $app imports).
  */
 import { webdavAuthorization } from '../../core/providers/webdav-authorization';
-import type { CuratedScope, SeriesMetadataPermissions } from '../../provider-interface';
+import type {
+  AddFilesPermissions,
+  CuratedScope,
+  SeriesMetadataPermissions
+} from '../../provider-interface';
 
 export interface ServerPermissions {
   canWriteProgress: boolean;
@@ -31,6 +35,13 @@ export interface ServerPermissions {
    * not reported (an older bunko keeps no curated layer).
    */
   curated?: { scope: CuratedScope };
+  /**
+   * Where this account may add files (bunko >= 0.8 records series owners):
+   * `all` anywhere, `open` every series but `closedSeries` (owned by other
+   * accounts), `none` nowhere. Its PRESENCE says the server enforces series
+   * owners; absent = an older bunko, where no series is closed.
+   */
+  addFiles?: AddFilesPermissions;
 }
 
 export type IdentityResult =
@@ -87,6 +98,18 @@ function normalizeMetadataPermissions(value: unknown): SeriesMetadataPermissions
   return { scope: 'owned', ownedSeries };
 }
 
+/** Like the metadata scope: `open` with no (or a non-array) `closedSeries` closes nothing. */
+function normalizeAddFilesPermissions(value: unknown): AddFilesPermissions | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const a = value as Record<string, unknown>;
+  if (a.scope !== 'all' && a.scope !== 'open' && a.scope !== 'none') return undefined;
+  if (a.scope !== 'open') return { scope: a.scope };
+  const closedSeries = Array.isArray(a.closedSeries)
+    ? a.closedSeries.filter((s): s is string => typeof s === 'string')
+    : [];
+  return { scope: 'open', closedSeries };
+}
+
 function normalizePermissions(value: unknown): ServerPermissions | null {
   if (!value || typeof value !== 'object') return null;
   const p = value as Record<string, unknown>;
@@ -101,6 +124,8 @@ function normalizePermissions(value: unknown): ServerPermissions | null {
   const curated = p.curated as { scope?: unknown } | null | undefined;
   const scope = curated && typeof curated === 'object' ? curated.scope : undefined;
   if (scope === 'all' || scope === 'owned' || scope === 'none') permissions.curated = { scope };
+  const addFiles = normalizeAddFilesPermissions(p.addFiles);
+  if (addFiles) permissions.addFiles = addFiles;
   return permissions;
 }
 

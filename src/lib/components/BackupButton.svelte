@@ -125,9 +125,10 @@
       return;
     }
 
-    // Add to backup queue
-    backupQueue.queueVolumeForBackup(volume);
-    showSnackbar(`Added ${volume.volume_title} to backup queue`);
+    // A skipped volume already got the queue's own notice (one snackbar slot).
+    if (backupQueue.queueVolumeForBackup(volume)) {
+      showSnackbar(`Added ${volume.volume_title} to backup queue`);
+    }
   }
 
   async function handleDelete(e: MouseEvent) {

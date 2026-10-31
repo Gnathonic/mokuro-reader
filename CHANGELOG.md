@@ -21,6 +21,7 @@
 - Cloud folders run by mokuro-bunko 0.8 sync history and positions
 - Renamed volumes keep their OCR engine or corrected mark
 - Exported or uploaded OCR you corrected is marked as corrected
+- mokuro-bunko 0.8: backups skip another account's series, with one notice
 
 ### Fixed
 
@@ -44,6 +45,7 @@
 - MEGA asks you to reconnect when its session ends
 - Google Drive asks you to sign in again only once
 - Renaming a corrected volume keeps the server's newer OCR
+- mokuro-bunko: a cover the server refuses no longer fails the change
 
 ## [1.10.0] - 2026-10-02
 
