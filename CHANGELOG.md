@@ -32,6 +32,7 @@
 - Google Drive rate limits wait and retry instead of failing
 - A full Google Drive or OneDrive says so plainly
 - mokuro-bunko no longer connects read-only on a flaky connection
+- WebDAV servers that allow writes no longer connect read-only
 - mokuro-bunko series differing only in case stay merged
 - Backups join a cloud folder differing only in case
 - mokuro-bunko: resetting a shelf's alignment now sticks

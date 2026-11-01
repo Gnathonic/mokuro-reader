@@ -930,8 +930,8 @@ export class WebDAVProvider implements SyncProvider {
 
         case 'unsupported':
         default:
-          // Generic WebDAV server (or older mokuro-bunko): keep the existing
-          // heuristics byte-for-byte (copyparty/nextcloud/nginx compatibility)
+          // Generic WebDAV server (or older mokuro-bunko): write access is read
+          // from the library folder's Allow (checkWritePermissions)
           this._capabilities = null;
 
           // Ensure mokuro folder exists
