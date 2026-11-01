@@ -666,7 +666,7 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
 
   it('a known Bunko skips the write verdict, and Bunko’s OPTIONS makes it known', async () => {
     // Known as Bunko (`X-Mokuro-Put: verified`, above): no probe at all. Bunko
-    // decides each request itself and its Allow is advisory.
+    // decides each request itself, so its Allow does not speak for the account.
     const known = fixtureFetch([]);
     fetchHandler.impl = known.fetch;
     expect(await provider.checkWritePermissions(SERVER)).toBe(true);
@@ -674,13 +674,20 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
 
     // Not known yet: the privilege probe finds no ACL, and the OPTIONS fallback
     // reads Bunko's `X-Mokuro-Put: verified` before its Allow, so the verdict
-    // is writable whatever that Allow lists (older Bunkos list no PUT or MKCOL
-    // on a collection), and the server is known from then on.
+    // is writable and the server is known from then on.
     localStorage.removeItem('webdav_put_verified');
     const answers = fixtureFetch([fx('propfind-root-depth0-privileges'), fx('options-library')]);
     fetchHandler.impl = answers.fetch;
-    expect(fx('options-library').headers!.allow).toBeTruthy();
+    const allow = fx('options-library').headers!.allow;
+    expect(allow).toBeTruthy();
     expect(fx('options-library').headers!['x-mokuro-put']).toBe('verified');
+    // The generic reading of that Allow agrees: the library folder is a
+    // collection, and its Allow names a collection write method (DELETE, MOVE,
+    // PROPPATCH; PUT and MKCOL only where the account may write, from 0.8).
+    const { allowHeaderPermitsCollectionWrite } = await import(
+      '$lib/util/sync/providers/webdav/webdav-provider'
+    );
+    expect(allowHeaderPermitsCollectionWrite(allow)).toBe(true);
     expect(await provider.checkWritePermissions(SERVER)).toBe(true);
     expect(answers.calls.map((c) => c.method)).toEqual(['PROPFIND', 'OPTIONS']);
     expect(answers.calls[1].url).toBe(`${SERVER}/mokuro-reader/`);
@@ -933,5 +940,57 @@ describeContract('corrections as Bunko answers them', () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toContain('404');
     expect(answers.calls.filter((c) => c.method === 'GET')).toHaveLength(1);
+  });
+});
+
+describeContract('who may write is what `/login/api/me` says, never the WebDAV fallback', () => {
+  // Every answer the fallback would read is on offer: the privilege PROPFIND finds no
+  // ACL and Bunko's OPTIONS Allow reads as writable. Reaching it would show as a
+  // PROPFIND on the library folder, and would wrongly make a read-only account writable.
+  const fallbackAnswers = () => [
+    fx('propfind-server-root-depth1'),
+    fx('propfind-root-depth0-privileges'),
+    fx('options-library')
+  ];
+  const fallbackRan = (calls: ReturnType<typeof fixtureFetch>['calls']) =>
+    calls.some((c) => c.method === 'PROPFIND' && c.url === `${SERVER}/mokuro-reader/`);
+
+  async function connect(meFixture: string, user?: string) {
+    localStorage.clear();
+    const answers = fixtureFetch([...fallbackAnswers(), fx(meFixture)]);
+    fetchHandler.impl = answers.fetch;
+    const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+    const provider = new WebDAVProvider();
+    await provider.whenReady();
+    const login = provider.login(
+      user ? { serverUrl: SERVER, username: user, password: password(user) } : { serverUrl: SERVER }
+    );
+    return { provider, login, calls: answers.calls };
+  }
+
+  it('an account without write rights is read-only', async () => {
+    const { provider, login, calls } = await connect('login-me-viewer', 'viewer');
+    await login;
+    expect(provider.isReadOnly).toBe(true);
+    expect(provider.getStatus().canAddFiles).toBe(false);
+    expect(fallbackRan(calls)).toBe(false);
+    expect(calls.some((c) => c.method === 'OPTIONS')).toBe(false);
+  });
+
+  it('an anonymous visitor is read-only', async () => {
+    const { provider, login, calls } = await connect('login-me-anonymous');
+    await login;
+    expect(provider.isAuthenticated()).toBe(true);
+    expect(provider.isReadOnly).toBe(true);
+    expect(fallbackRan(calls)).toBe(false);
+    expect(calls.some((c) => c.method === 'OPTIONS')).toBe(false);
+  });
+
+  it('a rate-limited answer fails the sign-in as retryable instead of guessing', async () => {
+    const { provider, login, calls } = await connect('login-me-rate-limited', 'reader');
+    await expect(login).rejects.toMatchObject({ code: 'AUTH_FAILED', isNetworkError: true });
+    expect(provider.isAuthenticated()).toBe(false);
+    expect(fallbackRan(calls)).toBe(false);
+    expect(calls.some((c) => c.method === 'OPTIONS')).toBe(false);
   });
 });
