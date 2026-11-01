@@ -3,7 +3,12 @@ import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { driveApiBase, driveUploadBase } from '../../providers/google-drive/constants';
 import { CLOUD_TEST_HOOKS, credentialBase } from '../../cloud-test-hooks';
-import { driveHttpErrorFromResponse, driveHttpErrorFromXhr, withDriveRetry } from './drive-http';
+import {
+  driveHttpErrorFromResponse,
+  driveHttpErrorFromXhr,
+  driveRefusal,
+  withDriveRetry
+} from './drive-http';
 
 export const googleDriveCore: CloudProviderCore = {
   async downloadFile({ fileId, credentials, onProgress }): Promise<ArrayBuffer> {
@@ -17,15 +22,17 @@ export const googleDriveCore: CloudProviderCore = {
       ? credentialBase(credentials, 'driveApi', driveApiBase())
       : driveApiBase();
 
-    // Rate limits (429, or a 403 naming one) and 5xx are retried after
-    // Retry-After; a full account or a real auth failure is not.
+    // Each request retries rate limits (429, or a 403 naming one) and 5xx
+    // on its own; a full account or a real auth failure is not retried.
     const sizeResponse = await withDriveRetry(async () => {
       const response = await fetch(`${api}/drive/v3/files/${fileId}?fields=size`, {
         headers: {
           Authorization: `Bearer ${accessToken}`
         }
       });
-      if (!response.ok) throw await driveHttpErrorFromResponse(response, 'Failed to get file size');
+      if (!response.ok) {
+        throw driveRefusal(await driveHttpErrorFromResponse(response, 'Failed to get file size'));
+      }
       return response;
     });
 
@@ -53,7 +60,15 @@ export const googleDriveCore: CloudProviderCore = {
             if (xhr.status >= 200 && xhr.status < 300) {
               resolve(xhr.response as ArrayBuffer);
             } else {
-              reject(await driveHttpErrorFromXhr(xhr, 'HTTP error'));
+              reject(
+                driveRefusal(
+                  await driveHttpErrorFromXhr(
+                    xhr,
+                    'HTTP error',
+                    `HTTP error ${xhr.status}: ${xhr.statusText}`
+                  )
+                )
+              );
             }
           };
 
@@ -99,57 +114,66 @@ export const googleDriveCore: CloudProviderCore = {
       ? `${upload}/drive/v3/files/${existingFileId}?uploadType=resumable&${responseFields}`
       : `${upload}/drive/v3/files?uploadType=resumable&${responseFields}`;
 
-    // Session init carries no file data and creates nothing until the PUT
-    // completes, so every retryable failure may be asked again.
-    const initResponse = await withDriveRetry(async () => {
-      const response = await fetch(uploadBase, {
-        method: existingFileId ? 'PATCH' : 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(metadata)
-      });
-      if (!response.ok) throw await driveHttpErrorFromResponse(response, 'Upload init failed');
-      return response;
-    });
-
-    const uploadUrl = initResponse.headers.get('Location');
-    if (!uploadUrl) {
-      throw new Error('No upload URL returned');
-    }
-
-    return await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('PUT', uploadUrl);
-      xhr.setRequestHeader('Content-Type', uploadMimeType);
-
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable && onProgress) {
-          onProgress(event.loaded, event.total);
+    // Each attempt is a fresh session (a session only becomes a file once its
+    // PUT completes), so a rate limit on either step starts the upload over.
+    // A 5xx is retried only before the PUT: Drive may have kept a file whose
+    // PUT it answered with one. A full account fails at once, as the
+    // storage-full error.
+    let putSent = false;
+    return await withDriveRetry(
+      async () => {
+        putSent = false;
+        const initResponse = await fetch(uploadBase, {
+          method: existingFileId ? 'PATCH' : 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(metadata)
+        });
+        if (!initResponse.ok) {
+          throw driveRefusal(await driveHttpErrorFromResponse(initResponse, 'Upload init failed'));
         }
-      };
 
-      xhr.onload = async () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          const result = JSON.parse(xhr.responseText);
-          // Drive serializes `size` as a string in the file resource.
-          const size = Number(result.size);
-          resolve({
-            fileId: result.id,
-            modifiedTime: typeof result.modifiedTime === 'string' ? result.modifiedTime : undefined,
-            size: Number.isFinite(size) ? size : undefined
-          });
-        } else {
-          // Classified (a full account must not read as a network blip) but
-          // not retried here: the body was already sent once.
-          reject(await driveHttpErrorFromXhr(xhr, 'Upload failed'));
+        const uploadUrl = initResponse.headers.get('Location');
+        if (!uploadUrl) {
+          throw new Error('No upload URL returned');
         }
-      };
 
-      xhr.onerror = () => reject(new Error('Network error during upload'));
-      xhr.ontimeout = () => reject(new Error('Upload timed out'));
-      xhr.send(blob);
-    });
+        putSent = true;
+        return await new Promise<UploadFileResult>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('PUT', uploadUrl);
+          xhr.setRequestHeader('Content-Type', uploadMimeType);
+
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable && onProgress) {
+              onProgress(event.loaded, event.total);
+            }
+          };
+
+          xhr.onload = async () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              const result = JSON.parse(xhr.responseText);
+              // Drive serializes `size` as a string in the file resource.
+              const size = Number(result.size);
+              resolve({
+                fileId: result.id,
+                modifiedTime:
+                  typeof result.modifiedTime === 'string' ? result.modifiedTime : undefined,
+                size: Number.isFinite(size) ? size : undefined
+              });
+            } else {
+              reject(driveRefusal(await driveHttpErrorFromXhr(xhr, 'Upload failed')));
+            }
+          };
+
+          xhr.onerror = () => reject(new Error('Network error during upload'));
+          xhr.ontimeout = () => reject(new Error('Upload timed out'));
+          xhr.send(blob);
+        });
+      },
+      { retryOn: (kind) => kind === 'rate-limit' || (kind === 'transient' && !putSent) }
+    );
   }
 };

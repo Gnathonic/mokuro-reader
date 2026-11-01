@@ -36,7 +36,12 @@ import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
-import { isDriveQuotaError } from '../../core/providers/drive-http';
+import {
+  driveFailureOf,
+  isDriveRateLimit,
+  isQuotaExceededError,
+  withDriveRetry
+} from '../../core/providers/drive-http';
 
 /** How long a resolved list of `mokuro-reader` root ids is trusted by `readControlFile`. */
 const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
@@ -368,8 +373,9 @@ class GoogleDriveProvider implements SyncProvider {
       if (error instanceof ProviderError) throw error;
       // api-client surfaces 401/403 as a DriveApiError carrying `status`
       // (after its own auto re-auth / token clearing).
+      // A 403 rate limit that outlasted the retries is no auth failure.
       const status = (error as { status?: number } | null)?.status;
-      const isAuth = status === 401 || status === 403;
+      const isAuth = status === 401 || (status === 403 && !isDriveRateLimit(driveFailureOf(error)));
       const isNetwork =
         (error as { isNetworkError?: boolean } | null)?.isNetworkError === true || status === 0;
       throw new ProviderError(
@@ -630,14 +636,9 @@ class GoogleDriveProvider implements SyncProvider {
       console.log(`✅ Uploaded ${fileName} to Google Drive (${uploaded.fileId})`);
       return uploaded;
     } catch (error) {
-      // Typed, and worded so the user can act on it — not a network blip to retry.
-      if (isDriveQuotaError(error)) {
-        throw new ProviderError(
-          'Google Drive storage is full — free up space or upgrade your plan',
-          'google-drive',
-          'QUOTA_EXCEEDED'
-        );
-      }
+      // A full drive keeps its own code and message (the transports throw
+      // the storage-full error), for the UI to show as is.
+      if (isQuotaExceededError(error)) throw error;
       throw new ProviderError(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
@@ -1180,9 +1181,11 @@ class GoogleDriveProvider implements SyncProvider {
     await this.ensureInitialized();
 
     try {
-      const response = await gapi.client.drive.about.get({
-        fields: 'storageQuota'
-      });
+      const response = await withDriveRetry(() =>
+        gapi.client.drive.about.get({
+          fields: 'storageQuota'
+        })
+      );
 
       const quota = response.result.storageQuota;
       if (!quota) {

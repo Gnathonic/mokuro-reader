@@ -164,9 +164,10 @@ describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () =>
     expect(files.some((f) => f.path === 'mokuro-reader/Series A/Vol 3.mokuro')).toBe(true);
   });
 
-  // A 507 (storage full, which waiting does not fix) is never retried: one
-  // createUploadSession, then QUOTA_EXCEEDED (graph-errors.ts). Retry-After: 0
-  // keeps it quick should a retry ever come back.
+  // A 507 (storage full) is not transient like the other 5xx: waiting does not
+  // free storage, so it fails at once as the reader's storage-full error — one
+  // createUploadSession (graph-errors.ts). (Retry-After: 0 would keep any wrong
+  // retries quick.)
   it('a 507 insufficientStorage fails at once as a quota error', async () => {
     await sim.clearLog();
     await sim.fault({

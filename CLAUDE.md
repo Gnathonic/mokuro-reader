@@ -112,15 +112,20 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
-  `error.errors[0].reason`: a 403 is a full account (`storageQuotaExceeded`/`quotaExceeded` →
-  `QUOTA_EXCEEDED`, never retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`,
-  like any 429 — whatever its reason: retried by `withDriveRetry` after Retry-After, capped
-  60 s, 4 attempts), or — only otherwise — an auth failure that may re-authenticate. 5xx are
-  retried too, except on a request that CREATES a file or folder (`rateLimitOnly`): Drive can
-  answer a 5xx after committing it, and a retry would make a duplicate. Messages carry
-  `[reason]` so a worker's serialized error is still recognisable. OneDrive's equivalent is
-  `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
-  `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
+  `error.errors[0].reason`: a 403 is a full account (`storageQuotaExceeded`/`quotaExceeded`,
+  never retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`, like any 429 —
+  whatever its reason), or — only otherwise — an auth failure that may re-authenticate.
+  `withDriveRetry` retries ONE request at a time (each gapi call, so a paged listing resumes at
+  its page; each XHR/fetch) on the policy every cloud core shares (`core/http-retry.ts`: 5
+  tries, Retry-After capped 20 s, else backoff with jitter). 5xx are retried too, except on a
+  request that CREATES a file or folder (`rateLimitOnly`): Drive can answer a 5xx after
+  committing it, and a retry would make a duplicate. A resumable upload's attempt is a fresh
+  session, so a rate limit on the PUT starts over; a 5xx there does not. A full account is
+  thrown as the storage-full `QUOTA_EXCEEDED` ProviderError where the answer is read
+  (`driveRefusal`), so a worker's message-only error already says it plainly; the provider
+  passes it through. OneDrive's equivalent is `providers/onedrive/graph-errors.ts`: 507 / a
+  refusal naming `insufficientStorage` / `quotaLimitReached` → `oneDriveStorageFullError()`,
+  excluded from the ≥ 500 retry.
 - A 401 re-authenticates only when it refused the token held NOW: `handleAuthError` gets the
   token the request carried, and a refusal of one a re-auth has since replaced asks for
   nothing (a second sign-in popup for nothing, or a cleared token that works).
@@ -173,11 +178,16 @@ fails the rig as the user would miss it.
 
 **mokuro-bunko specifics** (the WebDAV provider against a bunko server):
 
-- **Write access.** A server known to be bunko — `PUT_VERIFIED` recorded for
-  the base URL, or an OPTIONS answering `X-Mokuro-Put: verified` — skips the
-  generic OPTIONS `Allow` verdict in `checkWritePermissions`: bunko decides
-  each request itself and its `Allow` is advisory (older versions list no PUT
-  or MKCOL on collections). A real refusal still demotes through
+- **Write access.** `/login/api/me` decides who may write; any answer from it
+  (anonymous and rate limited included) settles it. Only when it gives none
+  does `checkWritePermissions` guess, and a server known to be bunko —
+  `PUT_VERIFIED` recorded for the base URL, or an OPTIONS answering
+  `X-Mokuro-Put: verified` — skips even that: bunko decides each request
+  itself and its `Allow` is advisory. A generic server's guess reads the
+  library folder as a collection: DAV:write/all/bind/unbind in its privilege
+  set, else any of `COLLECTION_WRITE_METHODS` (PUT, MKCOL, DELETE, MOVE,
+  PROPPATCH) in its `Allow` — a collection never lists PUT and lists MKCOL
+  only while unmapped (RFC 4918). A real refusal still demotes through
   `handleWriteFailure`.
 - **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
   a `serverCompilesMetadata` provider every listing runs
