@@ -79,7 +79,7 @@
   import { forksOnEdit } from '$lib/reader/edit/layer-kind';
   import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
   import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
-  import { canPublishCurated } from '$lib/util/sync/account-capabilities';
+  import { canPublishCuratedVolume } from '$lib/util/sync/account-capabilities';
   import { layerNamePrompt, runLayerAction, type LayerAction } from './Layers/layer-actions';
   import LayerNameModal from './Layers/LayerNameModal.svelte';
   import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
@@ -1705,7 +1705,7 @@
     {layers}
     currentLayer={activeLayerId}
     primaryLayerName={primaryName}
-    canPublishLayers={canPublishCurated($activeProviderStatus, volume.series_title)}
+    canPublishLayers={canPublishCuratedVolume($activeProviderStatus, volume)}
     layerStatus={$activeProviderStatus}
     onSelectLayer={selectLayer}
     onLayerAction={runLayerActionFromReader}

@@ -17,6 +17,7 @@ import { webdavAuthorization } from '../../core/providers/webdav-authorization';
 import type {
   AddFilesPermissions,
   CuratedScope,
+  CuratedVolume,
   SeriesMetadataPermissions
 } from '../../provider-interface';
 
@@ -31,10 +32,12 @@ export interface ServerPermissions {
   metadata?: SeriesMetadataPermissions;
   /**
    * Who may publish the shared `curated` layer (bunko >= 0.8): `all` any
-   * volume, `owned` the volumes this account uploaded, `none` never. Absent =
-   * not reported (an older bunko keeps no curated layer).
+   * volume, `owned` the volumes this account controls, `none` never. Absent =
+   * not reported (an older bunko keeps no curated layer). `volumes` (only under
+   * `owned`): its uploads in series folders it does not own; absent = not
+   * reported, so only `metadata.ownedSeries`.
    */
-  curated?: { scope: CuratedScope };
+  curated?: { scope: CuratedScope; volumes?: CuratedVolume[] };
   /**
    * Where this account may add files (bunko >= 0.8 records series owners):
    * `all` anywhere, `open` every series but `closedSeries` (owned by other
@@ -110,6 +113,25 @@ function normalizeAddFilesPermissions(value: unknown): AddFilesPermissions | und
   return { scope: 'open', closedSeries };
 }
 
+/**
+ * `curated`, or nothing: anything but one of the three scopes = not reported.
+ * A non-array `volumes` is not reported either (an older bunko: the owned
+ * series only), and an entry without both strings is dropped.
+ */
+function normalizeCuratedPermissions(value: unknown): ServerPermissions['curated'] {
+  if (!value || typeof value !== 'object') return undefined;
+  const c = value as Record<string, unknown>;
+  if (c.scope !== 'all' && c.scope !== 'owned' && c.scope !== 'none') return undefined;
+  if (c.scope !== 'owned' || !Array.isArray(c.volumes)) return { scope: c.scope };
+  const volumes = c.volumes.flatMap((v: unknown) => {
+    const e = v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+    return typeof e?.series === 'string' && typeof e.volume === 'string'
+      ? [{ series: e.series, volume: e.volume }]
+      : [];
+  });
+  return { scope: 'owned', volumes };
+}
+
 function normalizePermissions(value: unknown): ServerPermissions | null {
   if (!value || typeof value !== 'object') return null;
   const p = value as Record<string, unknown>;
@@ -120,10 +142,8 @@ function normalizePermissions(value: unknown): ServerPermissions | null {
   };
   const metadata = normalizeMetadataPermissions(p.metadata);
   if (metadata) permissions.metadata = metadata;
-  // Anything but one of the three scopes = not reported.
-  const curated = p.curated as { scope?: unknown } | null | undefined;
-  const scope = curated && typeof curated === 'object' ? curated.scope : undefined;
-  if (scope === 'all' || scope === 'owned' || scope === 'none') permissions.curated = { scope };
+  const curated = normalizeCuratedPermissions(p.curated);
+  if (curated) permissions.curated = curated;
   const addFiles = normalizeAddFilesPermissions(p.addFiles);
   if (addFiles) permissions.addFiles = addFiles;
   return permissions;

@@ -1160,6 +1160,26 @@ describe('WebDAVProvider refreshIdentity() (the server changed under an open ses
     });
   });
 
+  it('the curated scope and its per-volume list follow the server (an upload adds a volume)', async () => {
+    const provider = await freshProvider();
+    const curated = (volumes?: { series: string; volume: string }[]) => ({
+      ...V08,
+      permissions: {
+        ...REGISTERED_PERMS,
+        canAddFiles: true,
+        curated: { scope: 'owned' as const, ...(volumes ? { volumes } : {}) }
+      }
+    });
+    identityMock.mockResolvedValue(curated());
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().curatedPublish).toBe('owned');
+    expect(provider.getStatus().curatedVolumes).toBeUndefined();
+
+    identityMock.mockResolvedValue(curated([{ series: 'Shared', volume: 'Vol 2' }]));
+    await provider.refreshIdentity();
+    expect(provider.getStatus().curatedVolumes).toEqual([{ series: 'Shared', volume: 'Vol 2' }]);
+  });
+
   it('an anonymous session follows the server too', async () => {
     const provider = await freshProvider();
     identityMock.mockResolvedValue({ kind: 'anonymous', perUserLayers: ['edit'] });
