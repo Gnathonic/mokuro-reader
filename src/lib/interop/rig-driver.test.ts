@@ -695,7 +695,7 @@ describe('importing and backing up', () => {
   });
 
   it('backupVolume refuses what the queue refuses', async () => {
-    vi.mocked(backupQueue.queueVolumeForBackup).mockImplementationOnce(() => {});
+    vi.mocked(backupQueue.queueVolumeForBackup).mockImplementationOnce(() => false);
     await expect(install().backupVolume('v1')).rejects.toThrow('could not be queued');
   });
 });
