@@ -22,6 +22,7 @@
 - Renamed volumes keep their OCR engine or corrected mark
 - Exported or uploaded OCR you corrected is marked as corrected
 - mokuro-bunko 0.8: backups skip another account's series, with one notice
+- mokuro-bunko 0.8: publish corrections to your own uploads in shared series
 
 ### Fixed
 

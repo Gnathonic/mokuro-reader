@@ -156,8 +156,10 @@ fails the rig as the user would miss it.
   anything is kept for the next pass, and a second refusal ends the run.
   "Empty" on Drive means empty AS THE APP SEES IT: under `drive.file` the
   re-list misses files the app did not create (dropped in through the Drive
-  web UI, written by another client), and those go to the trash with the
-  folder. Recoverable from the trash, but not a "never deletes files" promise.
+  web UI, written by another client), and those go to Drive's trash with the
+  folder, where Drive keeps them for 30 days. Recoverable from the trash, but
+  not a "never deletes files" promise. Bunko's merge (below) has the same
+  blind spot and does the same; both sides document it (owner decision, 0.8).
 - **Bunko merges, the reader steps aside.** Before each pass
   (`runDeduplication`, `mega-cache.ts` / `drive-files-cache.ts`) the cache
   re-reads the marker (`refreshCloudBunkoMarker`) and skips the pass while
@@ -528,8 +530,16 @@ file would land in the SHARED library and replace every account's
 corrections), and absent on plain storage and cloud-direct (the user's own
 file: push). `curatedPublish` is the identity's `permissions.curated.scope`
 (`all` / `owned` / `none`), else `all` from a fresh cloud marker that keeps a
-curated layer; `canPublishCurated(status, seriesTitle)` reads it (`owned` =
-a series in `metadataPermissions.ownedSeries`; absent = no).
+curated layer; `canPublishCurated(status, seriesTitle, volumeTitle)` reads it
+PER VOLUME (`owned` = a series in `metadataPermissions.ownedSeries`, or — in a
+SHARED folder — a volume this account uploaded, `curatedVolumes`; absent = no).
+`curatedVolumes` is bunko 0.8's `permissions.curated.volumes` (only under
+`owned`): `{ series, volume }` = the series folder as listed and the archive
+stem, every listed archive the account controls in folders it does NOT own
+(the folders it owns are `ownedSeries`). Both sides fold with
+`normalizeVolumeTitleKey`, so a local `volume_title` matches its listed stem.
+An older bunko sends no list: only owned series, exactly as before. bunko
+stays the judge: a 403 on the publish is final.
 
 **Series owners (bunko 0.8).** bunko records a series folder's owner (the
 account whose MKCOL created it; existing folders adopt their only uploader).
@@ -584,7 +594,9 @@ type equals the row's `cloud.provider` — `pulledFromCompilingServer`), so a
 status that reads plain storage again (a stale cloud-direct marker, a failed
 identity probe) changes neither. An export, a file and any other provider get
 the layer as usual; a second WebDAV server is the same provider type, so a
-backup there leaves the layer out too. The limit: a row pulled while the status
+backup there leaves the layer out too — a known limit accepted for 0.8.0
+(R8): the protection matches on provider TYPE, never on the server, so a
+second WebDAV server counts as the same provider. The other limit: a row pulled while the status
 ALREADY read plain storage carries no mark, and is treated as plain storage's
 (newest wins, pushed when edited). Its id half,
 `layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
@@ -664,7 +676,7 @@ stays renamable (a display name is local). Edits on the primary are unchanged
 (primary + `edit`, above).
 
 **Publish / Unpublish** (`layer-sync.ts`). Shown only when
-`canPublishCurated(status, series)` (the picker: Publish on `edit`, Unpublish
+`canPublishCurated(status, series, volume)` (per volume; the picker: Publish on `edit`, Unpublish
 on `curated`; the badges read "Yours" and "Shared"). `publishCuratedLayer`
 uploads the `edit` layer's own serialization (with its `edited` block) to
 `<folder>/<stem>.curated.mokuro`, spelled as the LISTING spells the folder and
@@ -674,7 +686,7 @@ neither pulls nor pushes it; a 403 is `'refused'` and writes nothing.
 `unpublishCuratedLayer` deletes every listed copy, then the row; a 403 changes
 nothing (`'refused'`), any other failure leaves a tombstone flagged
 `unpublish`, the only tombstone whose retry may delete a `curated` file (and
-only for an account that may publish that series). It carries the stamp of
+only for an account that may publish that volume). It carries the stamp of
 the copy it meant (`file`): a listed `curated` that moved since is another
 editor's newer publish — the tombstone is spent and that file pulled, never
 deleted. Delete is never offered on
@@ -692,7 +704,8 @@ listed `<Volume>.edit.mokuro` is the SHARED file, another account's work.
 
 mokuro-bunko must, for all of this: list `edit` in `/login/api/me`'s
 `per_user_layers` only when it keeps that file per account; report
-`permissions.curated.scope` (`all` / `owned` / `none`) for the signed-in role;
+`permissions.curated.scope` (`all` / `owned` / `none`) for the signed-in role,
+with `volumes` (its uploads in folders it does not own) under `owned`;
 answer a client PUT of `curated` without the right, or of `pre-upgrade*`,
 `curated-<n>` or `previous-ocr*`, with 403; and (cloud-direct) write `curated: true` into the marker when the folder's
 owner may publish.
