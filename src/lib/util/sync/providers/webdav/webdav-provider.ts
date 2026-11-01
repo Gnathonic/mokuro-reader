@@ -1116,7 +1116,11 @@ export class WebDAVProvider implements SyncProvider {
             text.includes(':write/>') ||
             text.includes('<D:all') ||
             text.includes('<all') ||
-            text.includes(':all/>');
+            text.includes(':all/>') ||
+            // The folder is a collection: adding and removing its members is
+            // DAV:bind / DAV:unbind (RFC 3744 §3.9-3.10), which an account may
+            // hold without the DAV:write aggregate and still upload into it.
+            /<(?:[\w-]+:)?(?:un)?bind\s*\/?>/.test(text);
 
           const hasReadPrivilege =
             text.includes('<D:read') || text.includes('<read') || text.includes(':read/>');

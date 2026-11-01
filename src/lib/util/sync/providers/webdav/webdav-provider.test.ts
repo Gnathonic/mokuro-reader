@@ -339,6 +339,35 @@ describe('WebDAVProvider write-permission fallback (OPTIONS Allow on the library
   });
 });
 
+describe('WebDAVProvider write-permission probe (PROPFIND current-user-privilege-set)', () => {
+  const privileges = (...names: string[]) =>
+    `<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:"><D:response>` +
+    `<D:href>/mokuro-reader/</D:href><D:propstat><D:prop><D:current-user-privilege-set>` +
+    names.map((n) => `<D:privilege><D:${n}/></D:privilege>`).join('') +
+    `</D:current-user-privilege-set></D:prop><D:status>HTTP/1.1 200 OK</D:status>` +
+    `</D:propstat></D:response></D:multistatus>`;
+  const check = async (...names: string[]) => {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+      init?.method === 'PROPFIND'
+        ? new Response(privileges(...names), { status: 207 })
+        : new Response('', { status: 404 })
+    );
+    const provider = await freshProvider();
+    return (provider as any).checkWritePermissions('https://host') as Promise<boolean>;
+  };
+
+  it('read alone is read-only; write or all is writable', async () => {
+    expect(await check('read', 'read-current-user-privilege-set')).toBe(false);
+    expect(await check('read', 'write')).toBe(true);
+    expect(await check('all')).toBe(true);
+  });
+
+  it('bind or unbind on the folder (add or remove members) is writable', async () => {
+    expect(await check('read', 'bind')).toBe(true);
+    expect(await check('read', 'unbind')).toBe(true);
+  });
+});
+
 describe('WebDAVProvider getStatus().accountScope', () => {
   it('is undefined before any connection', async () => {
     const provider = await freshProvider();
