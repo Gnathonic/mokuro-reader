@@ -1,5 +1,16 @@
 import { GOOGLE_DRIVE_CONFIG, driveApiBase, driveUploadBase, type DriveFile } from './constants';
 import { tokenManager } from './token-manager';
+import {
+  driveErrorReason,
+  driveFailureOf,
+  driveStorageFullError,
+  isDriveRateLimit,
+  isDriveStorageFull,
+  isQuotaExceededError,
+  withDriveRetry,
+  type DriveFailure
+} from './drive-retry';
+import { parseRetryAfterMs } from '../../core/http-retry';
 
 /**
  * Escapes special characters in file/folder names for use in Google Drive API queries.
@@ -23,10 +34,43 @@ class DriveApiError extends Error {
   constructor(
     message: string,
     public readonly status?: number,
-    public readonly isNetworkError = false
+    public readonly isNetworkError = false,
+    /** Drive's `error.errors[0].reason`, when the response carried one. */
+    public readonly reason?: string,
+    /** The response's `Retry-After`, in ms. */
+    public readonly retryAfterMs?: number
   ) {
     super(message);
     this.name = 'DriveApiError';
+  }
+}
+
+/**
+ * What a finished XHR that did not succeed means, in the order that matters:
+ * a full drive (the storage-full error), a rate limit (a DriveApiError that
+ * `withDriveRetry` retries, never the re-auth path — it is a 403 too), or null
+ * for everything else (the caller's own 401/403 and HTTP-error handling).
+ */
+function xhrRefusal(xhr: XMLHttpRequest, body: unknown, message: string): Error | null {
+  const failure: DriveFailure = {
+    status: xhr.status,
+    reason: driveErrorReason(body),
+    retryAfterMs: parseRetryAfterMs(xhr.getResponseHeader('Retry-After'))
+  };
+  if (isDriveStorageFull(failure)) return driveStorageFullError();
+  if (isDriveRateLimit(failure)) {
+    return new DriveApiError(message, failure.status, false, failure.reason, failure.retryAfterMs);
+  }
+  return null;
+}
+
+/** The text of a `blob` XHR's (error) body; '' when unreadable. */
+async function blobText(body: unknown): Promise<string> {
+  if (!(body instanceof Blob)) return '';
+  try {
+    return await body.text();
+  } catch {
+    return '';
   }
 }
 
@@ -130,12 +174,27 @@ class DriveApiClient {
     });
   }
 
+  /** One gapi request, its rate limits retried (`withDriveRetry`). */
+  private request<T>(call: () => Promise<T>): Promise<T> {
+    return withDriveRetry(call);
+  }
+
   private async handleApiCall<T>(apiCall: () => Promise<T>, retryOnAuth = true): Promise<T> {
     try {
       return await apiCall();
     } catch (error: any) {
       console.error('Drive API error caught:', error);
       console.error('Error details - status:', error.status, 'message:', error.message);
+      if (isQuotaExceededError(error)) throw error;
+
+      // A full drive and a rate limit Drive kept answering after the retries
+      // are 403s too, but nothing a sign-in fixes: never the re-auth path.
+      const failure = driveFailureOf(error);
+      if (isDriveStorageFull(failure)) throw driveStorageFullError();
+      const message: string = error.message || error.result?.error?.message || 'Unknown API error';
+      if (isDriveRateLimit(failure)) {
+        throw new DriveApiError(message, failure?.status, false, failure?.reason);
+      }
 
       const isNetworkError =
         error.message?.toLowerCase().includes('network') ||
@@ -147,7 +206,7 @@ class DriveApiClient {
         await handleAuthError(error.status, retryOnAuth);
       }
 
-      throw new DriveApiError(error.message || 'Unknown API error', error.status, isNetworkError);
+      throw new DriveApiError(message, error.status, isNetworkError, failure?.reason);
     }
   }
 
@@ -157,12 +216,14 @@ class DriveApiClient {
       let pageToken: string | undefined = undefined;
 
       do {
-        const { result } = await gapi.client.drive.files.list({
-          q: query,
-          fields: `nextPageToken, ${fields}`,
-          pageSize: 1000,
-          pageToken
-        });
+        const { result } = await this.request(() =>
+          gapi.client.drive.files.list({
+            q: query,
+            fields: `nextPageToken, ${fields}`,
+            pageSize: 1000,
+            pageToken
+          })
+        );
 
         if (result.files) {
           allFiles.push(...(result.files as DriveFile[]));
@@ -186,10 +247,12 @@ class DriveApiClient {
         resource.parents = [parentId];
       }
 
-      const { result } = await gapi.client.drive.files.create({
-        resource,
-        fields: 'id'
-      });
+      const { result } = await this.request(() =>
+        gapi.client.drive.files.create({
+          resource,
+          fields: 'id'
+        })
+      );
 
       return result.id || '';
     });
@@ -221,7 +284,17 @@ class DriveApiClient {
       }
     }
 
-    // Download file with XMLHttpRequest for progress tracking
+    // Download file with XMLHttpRequest for progress tracking; rate limits
+    // are retried (`withDriveRetry`).
+    return withDriveRetry(() => this.downloadOnce(fileId, token, totalSize, onProgress));
+  }
+
+  private downloadOnce(
+    fileId: string,
+    token: string,
+    totalSize: number,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<Blob> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('GET', `${driveApiBase()}/drive/v3/files/${fileId}?alt=media`);
@@ -237,6 +310,18 @@ class DriveApiClient {
       xhr.onload = async () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve(xhr.response as Blob);
+          return;
+        }
+        const refusal =
+          xhr.status === 403 || xhr.status === 429
+            ? xhrRefusal(
+                xhr,
+                await blobText(xhr.response),
+                `HTTP error ${xhr.status}: ${xhr.statusText}`
+              )
+            : null;
+        if (refusal) {
+          reject(refusal);
         } else if (xhr.status === 401 || xhr.status === 403) {
           // Handle authentication errors using shared helper
           try {
@@ -278,6 +363,17 @@ class DriveApiClient {
       throw new DriveApiError('No valid token available');
     }
 
+    // Rate limits are retried (`withDriveRetry`); the same form is sent again.
+    return withDriveRetry(() => this.uploadOnce(form, url, token, fileId, onProgress));
+  }
+
+  private uploadOnce(
+    form: FormData,
+    url: string,
+    token: string,
+    fileId?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<{ id: string }> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open(fileId ? 'PATCH' : 'POST', url);
@@ -312,6 +408,11 @@ class DriveApiClient {
           } catch {
             reject(new DriveApiError('Upload response parsing failed', xhr.status));
           }
+          return;
+        }
+        const refusal = xhrRefusal(xhr, xhr.response, `Upload failed: ${xhr.statusText}`);
+        if (refusal) {
+          reject(refusal);
         } else if (xhr.status === 401 || xhr.status === 403) {
           try {
             await handleAuthError(xhr.status);
@@ -333,9 +434,11 @@ class DriveApiClient {
 
   async deleteFile(fileId: string): Promise<void> {
     return this.handleApiCall(async () => {
-      await gapi.client.drive.files.delete({
-        fileId
-      });
+      await this.request(() =>
+        gapi.client.drive.files.delete({
+          fileId
+        })
+      );
     });
   }
 
@@ -345,13 +448,15 @@ class DriveApiClient {
    */
   async moveFile(fileId: string, newParentId: string, oldParentId: string): Promise<void> {
     return this.handleApiCall(async () => {
-      await gapi.client.drive.files.update({
-        fileId,
-        addParents: newParentId,
-        removeParents: oldParentId,
-        fields: 'id,parents',
-        resource: {} // Empty resource required by gapi types
-      });
+      await this.request(() =>
+        gapi.client.drive.files.update({
+          fileId,
+          addParents: newParentId,
+          removeParents: oldParentId,
+          fields: 'id,parents',
+          resource: {} // Empty resource required by gapi types
+        })
+      );
     });
   }
 
@@ -368,13 +473,15 @@ class DriveApiClient {
     }
   ): Promise<DriveFile> {
     return this.handleApiCall(async () => {
-      const { result } = await gapi.client.drive.files.update({
-        fileId,
-        resource,
-        addParents: options?.addParents,
-        removeParents: options?.removeParents,
-        fields: options?.fields || 'id,name,parents,modifiedTime,size,description'
-      });
+      const { result } = await this.request(() =>
+        gapi.client.drive.files.update({
+          fileId,
+          resource,
+          addParents: options?.addParents,
+          removeParents: options?.removeParents,
+          fields: options?.fields || 'id,name,parents,modifiedTime,size,description'
+        })
+      );
       return result as DriveFile;
     });
   }
@@ -386,10 +493,12 @@ class DriveApiClient {
    */
   async getFileMetadata(fileId: string, fields: string): Promise<any> {
     return this.handleApiCall(async () => {
-      const { result } = await gapi.client.drive.files.get({
-        fileId,
-        fields
-      });
+      const { result } = await this.request(() =>
+        gapi.client.drive.files.get({
+          fileId,
+          fields
+        })
+      );
       return result;
     });
   }
@@ -400,11 +509,13 @@ class DriveApiClient {
    */
   async updateFileDescription(fileId: string, description: string): Promise<void> {
     return this.handleApiCall(async () => {
-      await gapi.client.drive.files.update({
-        fileId,
-        resource: { description },
-        fields: 'id,description'
-      });
+      await this.request(() =>
+        gapi.client.drive.files.update({
+          fileId,
+          resource: { description },
+          fields: 'id,description'
+        })
+      );
     });
   }
 

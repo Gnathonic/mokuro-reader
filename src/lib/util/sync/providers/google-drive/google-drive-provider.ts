@@ -20,6 +20,12 @@ import {
   GOOGLE_DRIVE_CONFIG,
   type DriveFile
 } from '$lib/util/sync/providers/google-drive/constants';
+import {
+  driveFailureOf,
+  isDriveRateLimit,
+  isQuotaExceededError,
+  withDriveRetry
+} from '$lib/util/sync/providers/google-drive/drive-retry';
 import { findFile } from '$lib/util/backup';
 import { cacheManager } from '../../cache-manager';
 import { providerManager } from '../../provider-manager';
@@ -354,8 +360,9 @@ class GoogleDriveProvider implements SyncProvider {
       if (error instanceof ProviderError) throw error;
       // api-client surfaces 401/403 as a DriveApiError carrying `status`
       // (after its own auto re-auth / token clearing).
+      // A 403 rate limit that outlasted the retries is no auth failure.
       const status = (error as { status?: number } | null)?.status;
-      const isAuth = status === 401 || status === 403;
+      const isAuth = status === 401 || (status === 403 && !isDriveRateLimit(driveFailureOf(error)));
       const isNetwork =
         (error as { isNetworkError?: boolean } | null)?.isNetworkError === true || status === 0;
       throw new ProviderError(
@@ -593,6 +600,8 @@ class GoogleDriveProvider implements SyncProvider {
       console.log(`✅ Uploaded ${fileName} to Google Drive (${uploaded.fileId})`);
       return uploaded;
     } catch (error) {
+      // A full drive keeps its own code and message, for the UI to show as is.
+      if (isQuotaExceededError(error)) throw error;
       throw new ProviderError(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
@@ -1135,9 +1144,11 @@ class GoogleDriveProvider implements SyncProvider {
     await this.ensureInitialized();
 
     try {
-      const response = await gapi.client.drive.about.get({
-        fields: 'storageQuota'
-      });
+      const response = await withDriveRetry(() =>
+        gapi.client.drive.about.get({
+          fields: 'storageQuota'
+        })
+      );
 
       const quota = response.result.storageQuota;
       if (!quota) {

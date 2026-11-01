@@ -57,6 +57,8 @@ import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
 import { providerManager } from '../../provider-manager';
+import { ProviderError } from '../../provider-interface';
+import { driveStorageFullError } from './drive-retry';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const JSON_MIME = 'application/json';
@@ -463,6 +465,24 @@ describe('GoogleDriveProvider uploads — the blind path skips the whole-account
     expect(coreUpload).toHaveBeenCalledTimes(1);
     expect(result.fileId).toBe('uploaded-1');
     expect(driveFilesCache.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a full drive keeps its QUOTA_EXCEEDED code and message, not UPLOAD_FAILED', async () => {
+    coreUpload.mockRejectedValueOnce(driveStorageFullError());
+    const error = await googleDriveProvider
+      .uploadFile('volume-data.json', new Blob(['abc']))
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).code).toBe('QUOTA_EXCEEDED');
+    expect((error as ProviderError).message).toBe(driveStorageFullError().message);
+  });
+
+  it('any other upload failure is still UPLOAD_FAILED', async () => {
+    coreUpload.mockRejectedValueOnce(new Error('Upload init failed: 500 Internal'));
+    const error = await googleDriveProvider
+      .uploadFile('volume-data.json', new Blob(['abc']))
+      .catch((e: unknown) => e);
+    expect((error as ProviderError).code).toBe('UPLOAD_FAILED');
   });
 
   it('blindUploadFile performs the SAME upload with NO refetch', async () => {
