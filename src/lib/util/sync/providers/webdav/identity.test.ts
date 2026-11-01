@@ -617,12 +617,26 @@ describe('permissions.addFiles (series owners, bunko 0.8)', () => {
         }
       });
       if (name === 'login-me-closed-series') expect(served.closedSeries).toEqual(['Admin Series']);
-      // The curated scope, and the per-volume list when the server serves one,
-      // read back exactly as served.
-      const curated = (body.permissions as { curated: unknown }).curated;
-      expect((result as { permissions: { curated?: unknown } }).permissions.curated).toEqual(
-        curated
-      );
+      // The curated scope reads back as served, and so does each per-volume
+      // entry's folder + archive stem. Keys an entry gains later are dropped
+      // on purpose, so the entries are compared on those two fields only.
+      const curated = (body.permissions as { curated: { scope: string; volumes?: unknown } })
+        .curated;
+      const parsed = (result as { permissions: { curated?: { scope: string; volumes?: unknown } } })
+        .permissions.curated;
+      expect(parsed?.scope).toBe(curated.scope);
+      if (curated.volumes === undefined) {
+        expect(parsed).not.toHaveProperty('volumes');
+      } else {
+        const entries = curated.volumes as { series: unknown; volume: unknown }[];
+        for (const { series, volume } of entries) {
+          expect(typeof series).toBe('string');
+          expect(typeof volume).toBe('string');
+          // The archive STEM: the .cbz name without .cbz.
+          expect(volume as string).not.toMatch(/\.cbz$/i);
+        }
+        expect(parsed?.volumes).toEqual(entries.map(({ series, volume }) => ({ series, volume })));
+      }
     }
   );
 });
