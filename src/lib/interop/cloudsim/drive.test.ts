@@ -126,8 +126,9 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
     expect(downloads).toHaveLength(1);
   });
 
-  // A quota 403 is a full account (drive-http.ts), never an auth failure or a
-  // plain UPLOAD_FAILED.
+  // A full drive is the reader's storage-full error (the code MEGA uses), not a
+  // plain UPLOAD_FAILED or an auth failure, and nothing is retried: waiting
+  // frees no storage (drive-http.ts).
   it('a 403 storageQuotaExceeded on upload surfaces as a quota error', async () => {
     await sim.fault({
       provider: 'google',
@@ -144,7 +145,8 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
     expect((err as ProviderError).code).toBe('QUOTA_EXCEEDED');
   });
 
-  // A rate limit is retried after Retry-After (withDriveRetry).
+  // Drive's rate limits are retried on the shared policy, after Retry-After
+  // (withDriveRetry).
   it('a 429 with Retry-After is retried after the wait and the call succeeds', async () => {
     await sim.clearLog();
     await sim.fault({
@@ -163,6 +165,44 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
       // The provider is usable again either way.
       expect((await listed()).length).toBeGreaterThan(0);
     }
+  });
+
+  it('a 403 userRateLimitExceeded on a worker upload is retried, never taken for an expired session', async () => {
+    const { googleDriveCore } = await import('$lib/util/sync/core/providers/google-drive-core');
+    const up = {
+      ...(await provider.getWorkerUploadCredentials()),
+      ...(await provider.prepareUploadTarget('Series A'))
+    };
+    await sim.clearLog();
+    await sim.fault({
+      provider: 'google',
+      method: 'POST',
+      path_has: '/upload/drive/v3/files',
+      status: 403,
+      reason: 'userRateLimitExceeded',
+      retry_after: 0
+    });
+    const reauth = vi.spyOn(tokenManager, 'reAuthenticate').mockImplementation(() => {});
+    try {
+      const done = await googleDriveCore.uploadFile({
+        seriesTitle: 'Series A',
+        filename: 'Vol 7.mokuro',
+        blob: new Blob(['{"v":7}']),
+        credentials: up,
+        mimeType: 'application/json'
+      });
+      expect(done.fileId).toBeTruthy();
+      expect(reauth).not.toHaveBeenCalled();
+    } finally {
+      reauth.mockRestore();
+    }
+    const inits = (await sim.log()).filter(
+      (e) => e.method === 'POST' && e.path.includes('/upload/drive/v3/files')
+    );
+    expect(inits.map((e) => e.status).slice(0, 1)).toEqual([403]);
+    expect(inits.length).toBeGreaterThanOrEqual(2);
+    const files = await sim.files('google');
+    expect(files.some((f) => f.path === 'mokuro-reader/Series A/Vol 7.mokuro')).toBe(true);
   });
 
   it('a worker transfer reaches the simulator with the bases from its credentials', async () => {

@@ -253,6 +253,22 @@ describe('GoogleDriveProvider.readControlFile()', () => {
     expect(error.isAuthError).toBe(true);
   });
 
+  it('a 403 rate limit that outlasted the retries is not an auth failure', async () => {
+    vi.mocked(driveApiClient.listFiles).mockRejectedValue(
+      Object.assign(new Error('User rate limit exceeded'), {
+        name: 'DriveApiError',
+        status: 403,
+        reason: 'userRateLimitExceeded'
+      })
+    );
+
+    const error = await googleDriveProvider.readControlFile(BUNKO_MARKER_NAME).catch((e) => e);
+
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error.isAuthError).toBe(false);
+    expect(error.code).toBe('CONTROL_READ_FAILED');
+  });
+
   it('wraps other failures as non-auth ProviderErrors', async () => {
     vi.mocked(driveApiClient.listFiles).mockRejectedValue(
       Object.assign(new Error('Backend Error'), { status: 500 })

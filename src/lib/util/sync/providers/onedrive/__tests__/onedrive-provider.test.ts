@@ -30,6 +30,7 @@ vi.mock('../graph-client', () => ({
 import { OneDriveProvider } from '../onedrive-provider';
 import { getItemByPath, listChildren, createFolder, deleteItem } from '../graph-client';
 import { ProviderError } from '../../../provider-interface';
+import { oneDriveStorageFullError } from '../graph-errors';
 
 describe('OneDriveProvider.listCloudVolumes', () => {
   let provider: OneDriveProvider;
@@ -159,31 +160,24 @@ describe('upload failure classification', () => {
     });
   });
 
-  function providerWithCoreFailure(message: string): OneDriveProvider {
+  function providerWithCoreFailure(failure: string | Error): OneDriveProvider {
+    const error = typeof failure === 'string' ? new Error(failure) : failure;
     const provider = new OneDriveProvider();
     (provider as unknown as { cloudCore: unknown }).cloudCore = {
-      uploadFile: vi.fn().mockRejectedValue(new Error(message)),
-      downloadFile: vi.fn().mockRejectedValue(new Error(message))
+      uploadFile: vi.fn().mockRejectedValue(error),
+      downloadFile: vi.fn().mockRejectedValue(error)
     };
     return provider;
   }
 
-  it('a full drive (worker message) becomes QUOTA_EXCEEDED, not a retryable 5xx', async () => {
-    const provider = providerWithCoreFailure(
-      'Failed to create OneDrive upload session: OneDrive storage full (507 insufficientStorage)'
-    );
+  it('a full drive (the core’s storage-full error) stays QUOTA_EXCEEDED, not a retryable 5xx', async () => {
+    const provider = providerWithCoreFailure(oneDriveStorageFullError());
 
     const err = await provider.uploadFile('volume-data.json', new Blob(['x'])).catch((e) => e);
     expect(err).toBeInstanceOf(ProviderError);
     expect(err.code).toBe('QUOTA_EXCEEDED');
     expect(err.isNetworkError).toBe(false);
     expect(err.message).toMatch(/storage is full/);
-  });
-
-  it('a quotaLimitReached message is a full drive too', async () => {
-    const provider = providerWithCoreFailure('OneDrive storage full (403 quotaLimitReached)');
-    const err = await provider.uploadFile('volume-data.json', new Blob(['x'])).catch((e) => e);
-    expect(err.code).toBe('QUOTA_EXCEEDED');
   });
 
   it('other 5xx failures stay retryable UPLOAD_FAILED', async () => {

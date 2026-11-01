@@ -59,6 +59,8 @@ import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
 import { providerManager } from '../../provider-manager';
+import { ProviderError } from '../../provider-interface';
+import { driveStorageFullError } from '../../core/providers/drive-http';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const JSON_MIME = 'application/json';
@@ -491,20 +493,25 @@ describe('GoogleDriveProvider uploads — the blind path skips the whole-account
     expect(driveFilesCache.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('a full Drive account surfaces as QUOTA_EXCEEDED, not a retryable network failure', async () => {
-    // A worker hands back only the message; the bracketed reason is enough.
-    coreUpload.mockRejectedValueOnce(
-      new Error('Upload init failed: 403 Forbidden [storageQuotaExceeded]')
-    );
-
+  it('a full drive keeps its QUOTA_EXCEEDED code and message, not UPLOAD_FAILED', async () => {
+    coreUpload.mockRejectedValueOnce(driveStorageFullError());
     const error = await googleDriveProvider
       .uploadFile('volume-data.json', new Blob(['abc']))
-      .catch((e) => e);
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).code).toBe('QUOTA_EXCEEDED');
+    expect((error as ProviderError).message).toBe(driveStorageFullError().message);
+    // Not a network blip to retry, not an expired session.
+    expect((error as ProviderError).isNetworkError).toBe(false);
+    expect((error as ProviderError).isAuthError).toBe(false);
+  });
 
-    expect(error.code).toBe('QUOTA_EXCEEDED');
-    expect(error.isNetworkError).toBe(false);
-    expect(error.isAuthError).toBe(false);
-    expect(error.message).toMatch(/storage is full/);
+  it('any other upload failure is still UPLOAD_FAILED', async () => {
+    coreUpload.mockRejectedValueOnce(new Error('Upload init failed: 500 Internal'));
+    const error = await googleDriveProvider
+      .uploadFile('volume-data.json', new Blob(['abc']))
+      .catch((e: unknown) => e);
+    expect((error as ProviderError).code).toBe('UPLOAD_FAILED');
   });
 
   it('a rate limit that outlasted its retries stays a retryable UPLOAD_FAILED', async () => {

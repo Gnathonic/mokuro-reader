@@ -112,15 +112,20 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
-  `error.errors[0].reason`: a 403 is a full account (`storageQuotaExceeded`/`quotaExceeded` →
-  `QUOTA_EXCEEDED`, never retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`,
-  like any 429 — whatever its reason: retried by `withDriveRetry` after Retry-After, capped
-  60 s, 4 attempts), or — only otherwise — an auth failure that may re-authenticate. 5xx are
-  retried too, except on a request that CREATES a file or folder (`rateLimitOnly`): Drive can
-  answer a 5xx after committing it, and a retry would make a duplicate. Messages carry
-  `[reason]` so a worker's serialized error is still recognisable. OneDrive's equivalent is
-  `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
-  `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
+  `error.errors[0].reason`: a 403 is a full account (`storageQuotaExceeded`/`quotaExceeded`,
+  never retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`, like any 429 —
+  whatever its reason), or — only otherwise — an auth failure that may re-authenticate.
+  `withDriveRetry` retries ONE request at a time (each gapi call, so a paged listing resumes at
+  its page; each XHR/fetch) on the policy every cloud core shares (`core/http-retry.ts`: 5
+  tries, Retry-After capped 20 s, else backoff with jitter). 5xx are retried too, except on a
+  request that CREATES a file or folder (`rateLimitOnly`): Drive can answer a 5xx after
+  committing it, and a retry would make a duplicate. A resumable upload's attempt is a fresh
+  session, so a rate limit on the PUT starts over; a 5xx there does not. A full account is
+  thrown as the storage-full `QUOTA_EXCEEDED` ProviderError where the answer is read
+  (`driveRefusal`), so a worker's message-only error already says it plainly; the provider
+  passes it through. OneDrive's equivalent is `providers/onedrive/graph-errors.ts`: 507 / a
+  refusal naming `insufficientStorage` / `quotaLimitReached` → `oneDriveStorageFullError()`,
+  excluded from the ≥ 500 retry.
 
 **Duplicate folders** (`folder-deduplicator.ts`, Drive and MEGA):
 

@@ -1,36 +1,30 @@
-import type { UploadFileResult } from '$lib/util/sync/provider-interface';
+import { ProviderError, type UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { ONEDRIVE_CONFIG, graphBase } from '../../providers/onedrive/constants';
 import { parseNextExpectedRange } from '../../providers/onedrive/upload-session';
 import { CLOUD_TEST_HOOKS, credentialBase } from '../../cloud-test-hooks';
 import {
-  GraphQuotaError,
+  MAX_RETRY_ATTEMPTS,
+  backoffDelayMs,
+  retryAfterMs,
+  retryDelayMs,
+  sleep
+} from '../http-retry';
+import {
   graphErrorCode,
   isGraphQuotaFailure,
-  isGraphRetryableStatus
+  isGraphRetryableStatus,
+  oneDriveStorageFullError
 } from '../../providers/onedrive/graph-errors';
 
 function encodePath(path: string): string {
   return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
 }
 
-const MAX_CHUNK_ATTEMPTS = 5;
-const RETRY_BASE_DELAY_MS = 400;
-const RETRY_MAX_DELAY_MS = 5000;
+const MAX_CHUNK_ATTEMPTS = MAX_RETRY_ATTEMPTS;
 const CHUNK_TIMEOUT_MS = 5 * 60 * 1000;
 const SESSION_TIMEOUT_MS = 30 * 1000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function retryAfterMs(response: Response): number | undefined {
-  const header = response.headers?.get('Retry-After');
-  if (!header) return undefined;
-  const seconds = Number(header);
-  return Number.isFinite(seconds) ? Math.min(seconds * 1000, RETRY_MAX_DELAY_MS * 4) : undefined;
-}
 
 /**
  * Ask the upload session where to resume (Graph tracks received ranges
@@ -168,15 +162,12 @@ export const onedriveCore: CloudProviderCore = {
           ({ uploadUrl } = (await sessionResponse.json()) as { uploadUrl: string });
           break;
         }
-        const body = await sessionResponse.text().catch(() => '');
-        const code = graphErrorCode(body);
-        // A full drive stays full: fail now, with a message the provider
-        // (and a worker's caller) recognises.
-        if (isGraphQuotaFailure(sessionResponse.status, code)) {
-          throw new GraphQuotaError(sessionResponse.status, code);
-        }
         sessionError = `${sessionResponse.status} ${sessionResponse.statusText}`;
         if (!isGraphRetryableStatus(sessionResponse.status)) {
+          // A full drive (507, or a refusal naming a quota code) stays full:
+          // fail now with the storage-full error, never retried.
+          const code = graphErrorCode(await sessionResponse.text().catch(() => ''));
+          if (isGraphQuotaFailure(sessionResponse.status, code)) throw oneDriveStorageFullError();
           throw new Error(`Failed to create OneDrive upload session: ${sessionError}`);
         }
         if (sessionAttempt >= MAX_CHUNK_ATTEMPTS) {
@@ -184,12 +175,9 @@ export const onedriveCore: CloudProviderCore = {
             `Failed to create OneDrive upload session after ${MAX_CHUNK_ATTEMPTS} attempts: ${sessionError}`
           );
         }
-        await sleep(
-          retryAfterMs(sessionResponse) ??
-            Math.min(RETRY_BASE_DELAY_MS * 2 ** (sessionAttempt - 1), RETRY_MAX_DELAY_MS)
-        );
+        await sleep(retryDelayMs(sessionAttempt, retryAfterMs(sessionResponse)));
       } catch (error) {
-        if (error instanceof GraphQuotaError) throw error;
+        if (error instanceof ProviderError) throw error;
         if (error instanceof Error && error.message.startsWith('Failed to create')) throw error;
         sessionError = error instanceof Error ? error.message : 'network error';
         if (sessionAttempt >= MAX_CHUNK_ATTEMPTS) {
@@ -197,7 +185,7 @@ export const onedriveCore: CloudProviderCore = {
             `Failed to create OneDrive upload session after ${MAX_CHUNK_ATTEMPTS} attempts: ${sessionError}`
           );
         }
-        await sleep(Math.min(RETRY_BASE_DELAY_MS * 2 ** (sessionAttempt - 1), RETRY_MAX_DELAY_MS));
+        await sleep(backoffDelayMs(sessionAttempt));
       }
     }
 
@@ -218,7 +206,7 @@ export const onedriveCore: CloudProviderCore = {
         }
         throw new Error(`OneDrive upload failed after ${MAX_CHUNK_ATTEMPTS} attempts: ${reason}`);
       }
-      await sleep(waitMs ?? Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS));
+      await sleep(retryDelayMs(attempt, waitMs));
       // Trust Graph's record of received bytes over our own counter.
       const resume = await queryResumeOffset(uploadUrl!);
       if (resume !== null) offset = resume;
@@ -271,11 +259,10 @@ export const onedriveCore: CloudProviderCore = {
 
       const waitMs = retryAfterMs(chunkResponse);
       const body = await chunkResponse.text().catch(() => '');
-      const code = graphErrorCode(body);
-      if (isGraphQuotaFailure(chunkResponse.status, code)) {
-        throw new GraphQuotaError(chunkResponse.status, code);
-      }
       if (!isGraphRetryableStatus(chunkResponse.status)) {
+        if (isGraphQuotaFailure(chunkResponse.status, graphErrorCode(body))) {
+          throw oneDriveStorageFullError();
+        }
         // A definitive 4xx (other than 408/429) means Graph rejected the
         // request outright — no ambiguity to resolve, unlike a dropped
         // connection or exhausted retries against a transient status.

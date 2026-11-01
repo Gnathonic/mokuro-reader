@@ -5,6 +5,7 @@
  * A full drive answers 507 (insufficientStorage), or names quotaLimitReached
  * in the body. Neither clears by waiting, so neither is retried like a 5xx.
  */
+import { ProviderError } from '../../provider-interface';
 
 const QUOTA_CODES = new Set(['insufficientStorage', 'quotaLimitReached']);
 
@@ -38,17 +39,15 @@ export function isGraphRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || (status >= 500 && status !== 507);
 }
 
-/** The worker message for a full drive; the provider matches it by pattern. */
-export function graphQuotaMessage(status: number, code?: string): string {
-  return `OneDrive storage full (${status} ${code ?? 'insufficientStorage'})`;
-}
-
-/** What a serialized worker message names a full drive by. */
-export const GRAPH_QUOTA_MESSAGE = /\b507\b|insufficientStorage|quotaLimitReached/;
-
-export class GraphQuotaError extends Error {
-  constructor(status: number, code?: string) {
-    super(graphQuotaMessage(status, code));
-    this.name = 'GraphQuotaError';
-  }
+/**
+ * The storage-full error, thrown where the refusal is read (the upload core,
+ * main thread or worker) so the upload-failed notice shows it as is (the
+ * code and wording MEGA uses).
+ */
+export function oneDriveStorageFullError(): ProviderError {
+  return new ProviderError(
+    'OneDrive storage is full — free up space or upgrade your plan',
+    'onedrive',
+    'QUOTA_EXCEEDED'
+  );
 }
