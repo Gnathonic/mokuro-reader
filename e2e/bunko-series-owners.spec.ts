@@ -202,6 +202,12 @@ function put(api: APIRequestContext, who: Account, path: string, data: Buffer | 
 }
 
 /** The names a PROPFIND (Depth 1) of `folder` lists, the folder itself excluded. */
+/** The names a client put there: bunko compiles `series.json` on its own schedule,
+ * so it can appear between two listings without anyone writing. */
+function withoutCompiled(names: string[]): string[] {
+  return names.filter((name) => name !== 'series.json');
+}
+
 async function listFolder(api: APIRequestContext, who: Account, folder: string) {
   const response = await api.fetch(davUrl(`${folder}/`), {
     method: 'PROPFIND',
@@ -426,7 +432,7 @@ test.describe('bunko 0.8 series owners (real server)', () => {
     expect(bMe.permissions.addFiles?.scope).toBe('open');
     expect(bMe.permissions.addFiles?.closedSeries).toContain(OWNED);
     expect(bMe.permissions.metadata?.ownedSeries ?? []).not.toContain(OWNED);
-    const ownedBefore = await listFolder(request, a, OWNED);
+    const ownedBefore = withoutCompiled(await listFolder(request, a, OWNED));
 
     const seen = recordRequests(context);
     await gotoApp(page);
@@ -459,7 +465,7 @@ test.describe('bunko 0.8 series owners (real server)', () => {
       )
     );
     expect(writes(seen, OWNED)).toEqual([]);
-    expect(await listFolder(request, a, OWNED)).toEqual(ownedBefore);
+    expect(withoutCompiled(await listFolder(request, a, OWNED))).toEqual(ownedBefore);
     expect((await listFolder(request, a, OWNED)).filter((n) => n.includes(`${OWNED} 02`))).toEqual(
       []
     );
