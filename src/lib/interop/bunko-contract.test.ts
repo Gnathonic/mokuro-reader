@@ -654,3 +654,55 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     expect(vol.fileId).toBe('/mokuro-reader/Contract Series/Volume 01.cbz');
   });
 });
+
+describeContract('who may write is what `/login/api/me` says, never the WebDAV fallback', () => {
+  // Every answer the fallback would read is on offer: the privilege PROPFIND finds no
+  // ACL and Bunko's OPTIONS Allow reads as writable. Reaching it would show as a
+  // PROPFIND on the library folder, and would wrongly make a read-only account writable.
+  const fallbackAnswers = () => [
+    fx('propfind-server-root-depth1'),
+    fx('propfind-root-depth0-privileges'),
+    fx('options-library')
+  ];
+  const fallbackRan = (calls: ReturnType<typeof fixtureFetch>['calls']) =>
+    calls.some((c) => c.method === 'PROPFIND' && c.url === `${SERVER}/mokuro-reader/`);
+
+  async function connect(meFixture: string, user?: string) {
+    localStorage.clear();
+    const answers = fixtureFetch([...fallbackAnswers(), fx(meFixture)]);
+    fetchHandler.impl = answers.fetch;
+    const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+    const provider = new WebDAVProvider();
+    await provider.whenReady();
+    const login = provider.login(
+      user ? { serverUrl: SERVER, username: user, password: password(user) } : { serverUrl: SERVER }
+    );
+    return { provider, login, calls: answers.calls };
+  }
+
+  it('an account without write rights is read-only', async () => {
+    const { provider, login, calls } = await connect('login-me-viewer', 'viewer');
+    await login;
+    expect(provider.isReadOnly).toBe(true);
+    expect(provider.getStatus().canAddFiles).toBe(false);
+    expect(fallbackRan(calls)).toBe(false);
+    expect(calls.some((c) => c.method === 'OPTIONS')).toBe(false);
+  });
+
+  it('an anonymous visitor is read-only', async () => {
+    const { provider, login, calls } = await connect('login-me-anonymous');
+    await login;
+    expect(provider.isAuthenticated()).toBe(true);
+    expect(provider.isReadOnly).toBe(true);
+    expect(fallbackRan(calls)).toBe(false);
+    expect(calls.some((c) => c.method === 'OPTIONS')).toBe(false);
+  });
+
+  it('a rate-limited answer fails the sign-in as retryable instead of guessing', async () => {
+    const { provider, login, calls } = await connect('login-me-rate-limited', 'reader');
+    await expect(login).rejects.toMatchObject({ code: 'AUTH_FAILED', isNetworkError: true });
+    expect(provider.isAuthenticated()).toBe(false);
+    expect(fallbackRan(calls)).toBe(false);
+    expect(calls.some((c) => c.method === 'OPTIONS')).toBe(false);
+  });
+});

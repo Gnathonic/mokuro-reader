@@ -166,6 +166,30 @@ describe('WebDAVProvider login()', () => {
     });
 
     expect(localStorage.getItem('webdav_password')).toBeNull();
+    // A rate-limited answer is not turned into a guess: no permission heuristics ran.
+    expect(provider.isAuthenticated()).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('an authenticated account without write rights is read-only, whatever Allow says', async () => {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+      init?.method === 'OPTIONS'
+        ? new Response('', { status: 200, headers: { Allow: 'GET, PUT, DELETE, MKCOL' } })
+        : new Response('', { status: 404 })
+    );
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      permissions: { canWriteProgress: false, canAddFiles: false, canModifyDelete: false }
+    });
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.isReadOnly).toBe(true);
+    // Neither the privilege PROPFIND nor the OPTIONS fallback ran.
+    expect(
+      fetchMock.mock.calls.some((c) => c[1]?.method === 'PROPFIND' || c[1]?.method === 'OPTIONS')
+    ).toBe(false);
   });
 
   it('keeps the legacy heuristics path for unsupported (generic) servers', async () => {
