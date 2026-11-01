@@ -11,7 +11,12 @@
  *
  * Pure, dependency-free: takes a `ProviderStatus` (or nothing).
  */
-import { ProviderError, type AddFilesPermissions, type ProviderStatus } from './provider-interface';
+import {
+  ProviderError,
+  type AddFilesPermissions,
+  type CuratedVolume,
+  type ProviderStatus
+} from './provider-interface';
 import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 
 type Capabilities = Pick<ProviderStatus, 'canAddFiles' | 'canModifyDelete'>;
@@ -84,18 +89,41 @@ export function accountCanModifyDelete(status: Capabilities | null | undefined):
   return status?.canModifyDelete !== false;
 }
 
+/** One folded key per listed archive: series folder and stem, each folded like a title. */
+function curatedVolumeKey(seriesTitle: string, volumeTitle: string): string {
+  return `${normalizeVolumeTitleKey(seriesTitle)}\u0000${normalizeVolumeTitleKey(volumeTitle)}`;
+}
+
+/** Folded `curatedVolumes`, per list OBJECT: a fresh identity folds once, never per call. */
+const curatedKeysByList = new WeakMap<CuratedVolume[], Set<string>>();
+
+function curatedVolumeKeys(volumes: CuratedVolume[]): Set<string> {
+  let keys = curatedKeysByList.get(volumes);
+  if (!keys) {
+    keys = new Set(volumes.map((v) => curatedVolumeKey(v.series, v.volume)));
+    curatedKeysByList.set(volumes, keys);
+  }
+  return keys;
+}
+
 /**
- * May this account publish `seriesTitle`'s volumes to the shared `curated`
- * layer? `all` anywhere; `owned` only in a series this account owns
- * (`metadataPermissions.ownedSeries`, folded like the metadata gate: from
- * bunko 0.8 the series' RECORDED owner, who controls every volume in it).
- * bunko also lets the uploader of one volume in a shared folder publish that
- * volume, which this gate conservatively does not offer; a 403 on the PUT is
- * final. Anything else, including no curated layer, no.
+ * May this account publish the volume `volumeTitle` of `seriesTitle` to the
+ * shared `curated` layer? `all` anywhere; `owned` in a series this account
+ * owns (`metadataPermissions.ownedSeries`, folded like the metadata gate: from
+ * bunko 0.8 the series' RECORDED owner, who controls every volume in it), and
+ * in a SHARED folder the volumes it uploaded (`curatedVolumes`: folder name +
+ * archive stem, both folded; a local volume title folds onto its listed stem).
+ * An older bunko lists no volumes: the owned series only. bunko stays the
+ * judge — a 403 on the PUT is final. Anything else, including no curated
+ * layer, no.
  */
 export function canPublishCurated(
-  status: Pick<ProviderStatus, 'curatedPublish' | 'metadataPermissions'> | null | undefined,
-  seriesTitle: string
+  status:
+    | Pick<ProviderStatus, 'curatedPublish' | 'metadataPermissions' | 'curatedVolumes'>
+    | null
+    | undefined,
+  seriesTitle: string,
+  volumeTitle?: string
 ): boolean {
   switch (status?.curatedPublish) {
     case 'all':
@@ -103,7 +131,13 @@ export function canPublishCurated(
     case 'owned': {
       const key = normalizeVolumeTitleKey(seriesTitle);
       const owned = status.metadataPermissions?.ownedSeries ?? [];
-      return owned.some((title) => normalizeVolumeTitleKey(title) === key);
+      if (owned.some((title) => normalizeVolumeTitleKey(title) === key)) return true;
+      const volumes = status.curatedVolumes;
+      return (
+        volumeTitle !== undefined &&
+        !!volumes?.length &&
+        curatedVolumeKeys(volumes).has(curatedVolumeKey(seriesTitle, volumeTitle))
+      );
     }
     default:
       return false;

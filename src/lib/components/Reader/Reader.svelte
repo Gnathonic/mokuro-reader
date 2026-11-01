@@ -1705,7 +1705,11 @@
     {layers}
     currentLayer={activeLayerId}
     primaryLayerName={primaryName}
-    canPublishLayers={canPublishCurated($activeProviderStatus, volume.series_title)}
+    canPublishLayers={canPublishCurated(
+      $activeProviderStatus,
+      volume.series_title,
+      volume.volume_title
+    )}
     layerStatus={$activeProviderStatus}
     onSelectLayer={selectLayer}
     onLayerAction={runLayerActionFromReader}

@@ -60,6 +60,52 @@ describe('canPublishCurated', () => {
     expect(canPublishCurated(null, 'One Piece')).toBe(false);
     expect(canPublishCurated(undefined, 'One Piece')).toBe(false);
   });
+
+  // bunko 0.8: in a SHARED folder, the uploader of a volume may publish that volume.
+  describe('per volume (curated.volumes)', () => {
+    const status = {
+      curatedPublish: 'owned' as const,
+      metadataPermissions: { scope: 'owned' as const, ownedSeries: ['One Piece'] },
+      curatedVolumes: [
+        { series: 'Shared Series', volume: 'VOL 2' },
+        { series: 'Café'.normalize('NFD'), volume: 'Tome 1' }
+      ]
+    };
+
+    it.each([
+      ['Shared Series', 'VOL 2', true],
+      // Folded like every series-folder and archive-stem match.
+      ['shared series', 'Vol 2', true],
+      ['Café'.normalize('NFC'), 'tome 1', true],
+      // Another volume of the shared folder: somebody else's upload.
+      ['Shared Series', 'VOL 3', false],
+      // The same stem in another folder is another archive.
+      ['Other Series', 'VOL 2', false],
+      // An owned folder still covers every volume in it.
+      ['One Piece', 'Anything', true]
+    ])('series %s, volume %s -> %s', (series, volume, expected) => {
+      expect(canPublishCurated(status, series, volume)).toBe(expected);
+    });
+
+    it('needs the volume: a series alone matches no listed volume', () => {
+      expect(canPublishCurated(status, 'Shared Series')).toBe(false);
+    });
+
+    it('only under scope owned: none never, all always', () => {
+      expect(
+        canPublishCurated({ ...status, curatedPublish: 'none' }, 'Shared Series', 'VOL 2')
+      ).toBe(false);
+      expect(
+        canPublishCurated({ ...status, curatedPublish: 'all' }, 'Shared Series', 'VOL 3')
+      ).toBe(true);
+    });
+
+    it('an older bunko (no volumes) offers only the owned series, as before', () => {
+      const older = { ...status, curatedVolumes: undefined };
+      expect(canPublishCurated(older, 'Shared Series', 'VOL 2')).toBe(false);
+      expect(canPublishCurated(older, 'One Piece', 'VOL 2')).toBe(true);
+    });
+  });
 });
 
 // bunko 0.8 closes a series another account owns to this one's uploads.

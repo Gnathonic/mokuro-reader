@@ -84,7 +84,7 @@ export interface LayerRowActions {
 
 /**
  * The layer menu's id-dependent actions (picker and settings panel alike).
- * Publish/Unpublish need the right to publish this volume's series
+ * Publish/Unpublish need the right to publish this volume
  * (`canPublishCurated`, `canPublish`). Delete is never offered on `curated`:
  * this device may not delete the shared file (`layerIdStaysLocal`), so a
  * Delete would only hide it here — Unpublish is the deliberate way.
