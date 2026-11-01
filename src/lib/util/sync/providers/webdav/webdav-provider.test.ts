@@ -45,7 +45,7 @@ vi.mock('../../cache-manager', () => ({
 }));
 vi.mock('./webdav-cache', () => ({ webdavCache: {} }));
 
-import { WebDAVProvider } from './webdav-provider';
+import { WebDAVProvider, allowHeaderPermitsCollectionWrite } from './webdav-provider';
 import { fetchWithRetryAfter } from './webdav-retry-after';
 
 const identityMock = vi.mocked(fetchServerIdentity);
@@ -169,6 +169,30 @@ describe('WebDAVProvider login()', () => {
     });
 
     expect(localStorage.getItem('webdav_password')).toBeNull();
+    // A rate-limited answer is not turned into a guess: no permission heuristics ran.
+    expect(provider.isAuthenticated()).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('an authenticated account without write rights is read-only, whatever Allow says', async () => {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+      init?.method === 'OPTIONS'
+        ? new Response('', { status: 200, headers: { Allow: 'GET, PUT, DELETE, MKCOL' } })
+        : new Response('', { status: 404 })
+    );
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      permissions: { canWriteProgress: false, canAddFiles: false, canModifyDelete: false }
+    });
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.isReadOnly).toBe(true);
+    // Neither the privilege PROPFIND nor the OPTIONS fallback ran.
+    expect(
+      fetchMock.mock.calls.some((c) => c[1]?.method === 'PROPFIND' || c[1]?.method === 'OPTIONS')
+    ).toBe(false);
   });
 
   it('keeps the legacy heuristics path for unsupported (generic) servers', async () => {
@@ -258,6 +282,92 @@ describe('WebDAVProvider login()', () => {
 
     expect(identityMock).not.toHaveBeenCalled();
     expect(provider.isAuthenticated()).toBe(false);
+  });
+});
+
+describe('WebDAVProvider write-permission fallback (OPTIONS Allow on the library folder)', () => {
+  // The PROPFIND privilege probe finds nothing (404), so the OPTIONS Allow decides.
+  function allowAnswer(allow: string | null) {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'OPTIONS') {
+        return new Response('', { status: 200, headers: allow === null ? {} : { Allow: allow } });
+      }
+      return new Response('', { status: 404 });
+    });
+  }
+  const check = async (allow: string | null) => {
+    allowAnswer(allow);
+    const provider = await freshProvider();
+    return (provider as any).checkWritePermissions('https://host') as Promise<boolean>;
+  };
+
+  it('reads an Allow of only read methods as read-only', async () => {
+    expect(await check('OPTIONS, GET, HEAD, PROPFIND')).toBe(false);
+    // COPY only reads its source, and LOCK/UNLOCK come with class 2: still read-only.
+    expect(await check('OPTIONS, GET, HEAD, PROPFIND, COPY, LOCK, UNLOCK')).toBe(false);
+  });
+
+  it('reads a collection Allow without PUT or MKCOL (as Bunko sends) as writable', async () => {
+    expect(
+      await check('OPTIONS, HEAD, GET, PROPFIND, DELETE, COPY, MOVE, PROPPATCH, LOCK, UNLOCK')
+    ).toBe(true);
+  });
+
+  it('reads a generic server’s Allow with PUT and MKCOL as writable', async () => {
+    expect(await check('OPTIONS, GET, HEAD, POST, PUT, DELETE, MKCOL, PROPFIND')).toBe(true);
+  });
+
+  it('keeps assuming write access when Allow is absent or empty', async () => {
+    expect(await check(null)).toBe(true);
+    expect(await check('  ')).toBe(true);
+    expect(await check(' , ')).toBe(true);
+  });
+
+  it('any single collection write method is enough, in any case', () => {
+    for (const m of ['put', 'MKCOL', 'Delete', 'MOVE', 'PROPPATCH']) {
+      expect(allowHeaderPermitsCollectionWrite(`GET, ${m}`)).toBe(true);
+    }
+    expect(allowHeaderPermitsCollectionWrite('GET, HEAD')).toBe(false);
+    expect(allowHeaderPermitsCollectionWrite(null)).toBeNull();
+  });
+
+  it('a generic server whose Allow lists only read methods connects read-only', async () => {
+    allowAnswer('OPTIONS, GET, HEAD, PROPFIND');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    expect(provider.isReadOnly).toBe(true);
+  });
+});
+
+describe('WebDAVProvider write-permission probe (PROPFIND current-user-privilege-set)', () => {
+  const privileges = (...names: string[]) =>
+    `<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:"><D:response>` +
+    `<D:href>/mokuro-reader/</D:href><D:propstat><D:prop><D:current-user-privilege-set>` +
+    names.map((n) => `<D:privilege><D:${n}/></D:privilege>`).join('') +
+    `</D:current-user-privilege-set></D:prop><D:status>HTTP/1.1 200 OK</D:status>` +
+    `</D:propstat></D:response></D:multistatus>`;
+  const check = async (...names: string[]) => {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+      init?.method === 'PROPFIND'
+        ? new Response(privileges(...names), { status: 207 })
+        : new Response('', { status: 404 })
+    );
+    const provider = await freshProvider();
+    return (provider as any).checkWritePermissions('https://host') as Promise<boolean>;
+  };
+
+  it('read alone is read-only; write or all is writable', async () => {
+    expect(await check('read', 'read-current-user-privilege-set')).toBe(false);
+    expect(await check('read', 'write')).toBe(true);
+    expect(await check('all')).toBe(true);
+  });
+
+  it('bind or unbind on the folder (add or remove members) is writable', async () => {
+    expect(await check('read', 'bind')).toBe(true);
+    expect(await check('read', 'unbind')).toBe(true);
   });
 });
 
@@ -915,6 +1025,9 @@ describe('WebDAVProvider Allow verdict on a known mokuro-bunko', () => {
   // its permissions are decided per request, so Allow must not demote it.
   const BUNKO_COLLECTION_ALLOW =
     'OPTIONS, HEAD, GET, PROPFIND, DELETE, COPY, MOVE, PROPPATCH, LOCK, UNLOCK';
+  // No collection write method at all: the generic verdict reads it as read-only,
+  // so only a skipped verdict can leave the account writable.
+  const READ_ONLY_ALLOW = 'OPTIONS, HEAD, GET, PROPFIND, COPY, LOCK, UNLOCK';
 
   function optionsAnswer(allow: string, put: string | null) {
     fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
@@ -929,7 +1042,7 @@ describe('WebDAVProvider Allow verdict on a known mokuro-bunko', () => {
   }
 
   it('an OPTIONS answering X-Mokuro-Put: verified skips the Allow verdict', async () => {
-    optionsAnswer(BUNKO_COLLECTION_ALLOW, 'verified');
+    optionsAnswer(READ_ONLY_ALLOW, 'verified');
     const provider = await freshProvider();
     identityMock.mockResolvedValue({ kind: 'unsupported' });
 
@@ -954,8 +1067,8 @@ describe('WebDAVProvider Allow verdict on a known mokuro-bunko', () => {
     expect(provider.getStatus().serverCompilesMetadata).toBe(true);
   });
 
-  it('a generic server whose Allow lacks PUT is still read-only', async () => {
-    optionsAnswer(BUNKO_COLLECTION_ALLOW, null);
+  it('a generic server whose Allow lists no write method is still read-only', async () => {
+    optionsAnswer(READ_ONLY_ALLOW, null);
     const provider = await freshProvider();
     identityMock.mockResolvedValue({ kind: 'unsupported' });
 

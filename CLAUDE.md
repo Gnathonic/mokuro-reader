@@ -162,11 +162,16 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 
 **mokuro-bunko specifics** (the WebDAV provider against a bunko server):
 
-- **Write access.** A server known to be bunko — `PUT_VERIFIED` recorded for
-  the base URL, or an OPTIONS answering `X-Mokuro-Put: verified` — skips the
-  generic OPTIONS `Allow` verdict in `checkWritePermissions`: bunko decides
-  each request itself and its `Allow` is advisory (older versions list no PUT
-  or MKCOL on collections). A real refusal still demotes through
+- **Write access.** `/login/api/me` decides who may write; any answer from it
+  (anonymous and rate limited included) settles it. Only when it gives none
+  does `checkWritePermissions` guess, and a server known to be bunko —
+  `PUT_VERIFIED` recorded for the base URL, or an OPTIONS answering
+  `X-Mokuro-Put: verified` — skips even that: bunko decides each request
+  itself and its `Allow` is advisory. A generic server's guess reads the
+  library folder as a collection: DAV:write/all/bind/unbind in its privilege
+  set, else any of `COLLECTION_WRITE_METHODS` (PUT, MKCOL, DELETE, MOVE,
+  PROPPATCH) in its `Allow` — a collection never lists PUT and lists MKCOL
+  only while unmapped (RFC 4918). A real refusal still demotes through
   `handleWriteFailure`.
 - **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
   a `serverCompilesMetadata` provider every listing runs
