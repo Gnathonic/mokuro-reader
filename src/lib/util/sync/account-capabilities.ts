@@ -145,6 +145,17 @@ export function canPublishCurated(
 }
 
 /**
+ * `canPublishCurated` for a volume row: takes the row whole, so a caller can
+ * never ask by series alone and drop a shared-folder upload's Publish.
+ */
+export function canPublishCuratedVolume(
+  status: Parameters<typeof canPublishCurated>[0],
+  volume: { series_title: string; volume_title: string }
+): boolean {
+  return canPublishCurated(status, volume.series_title, volume.volume_title);
+}
+
+/**
  * The user-facing reason a rename was refused by the ACCOUNT's permissions
  * (read-only provider, no modify/delete role, a 403 on the MOVE), or null for
  * anything else (network, conflicts...) — which keeps its generic message.

@@ -5,6 +5,7 @@ import {
   accountCanModifyDelete,
   closedSeriesNotice,
   canPublishCurated,
+  canPublishCuratedVolume,
   renameRefusalMessage
 } from './account-capabilities';
 import { ProviderError } from './provider-interface';
@@ -104,6 +105,16 @@ describe('canPublishCurated', () => {
       const older = { ...status, curatedVolumes: undefined };
       expect(canPublishCurated(older, 'Shared Series', 'VOL 2')).toBe(false);
       expect(canPublishCurated(older, 'One Piece', 'VOL 2')).toBe(true);
+    });
+
+    // The reader's layer picker asks with the open volume's row: its series AND
+    // volume title, so a shared-folder upload keeps its Publish button.
+    it('canPublishCuratedVolume asks with the row: series and volume title', () => {
+      const row = (series_title: string, volume_title: string) => ({ series_title, volume_title });
+      expect(canPublishCuratedVolume(status, row('shared series', 'Vol 2'))).toBe(true);
+      expect(canPublishCuratedVolume(status, row('Shared Series', 'VOL 3'))).toBe(false);
+      expect(canPublishCuratedVolume(status, row('One Piece', 'Anything'))).toBe(true);
+      expect(canPublishCuratedVolume(null, row('Shared Series', 'VOL 2'))).toBe(false);
     });
   });
 });
