@@ -626,9 +626,13 @@ function pushGateOf(provider: SyncProvider): PushGate {
   };
 }
 
-/** May this account publish (and so unpublish) the shared `curated` layer of `seriesTitle`? */
-function canPublishHere(status: ProviderStatus, seriesTitle: string): boolean {
-  return status.isReadOnly !== true && canPublishCurated(status, seriesTitle);
+/**
+ * May this account publish (and so unpublish) the shared `curated` layer of
+ * the volume `volumeTitle` in `seriesTitle`? Per volume: bunko 0.8 lets an
+ * uploader publish its own uploads in a shared folder.
+ */
+function canPublishHere(status: ProviderStatus, seriesTitle: string, volumeTitle: string): boolean {
+  return status.isReadOnly !== true && canPublishCurated(status, seriesTitle, volumeTitle);
 }
 
 /**
@@ -636,15 +640,15 @@ function canPublishHere(status: ProviderStatus, seriesTitle: string): boolean {
  * a layer that stays local by what it IS (`layerIdStaysLocal` — the shared
  * `curated`, an `edit` the server shares, bunko's own keepsakes) is somebody
  * else's file, whatever the account's rights. The one exception is the retry
- * of an Unpublish, by an account that may publish that series' `curated`.
+ * of an Unpublish, by an account that may publish that volume's `curated`.
  */
 function canDeleteLayer(
   gate: PushGate,
   layerId: string,
-  unpublish?: { volumeUuid: string; seriesTitle: string }
+  unpublish?: { volumeUuid: string; seriesTitle: string; volumeTitle: string }
 ): boolean {
   if (isCuratedLayerId(layerId) && unpublish && gate.unpublishing.has(unpublish.volumeUuid)) {
-    return canPublishHere(gate.status, unpublish.seriesTitle);
+    return canPublishHere(gate.status, unpublish.seriesTitle, unpublish.volumeTitle);
   }
   return canPushLayer(gate.status, layerId) && !layerIdStaysLocal(layerId, gate.target);
 }
@@ -1195,7 +1199,11 @@ async function planFolder(
         // Deleted here: never pulled back; removed as soon as the cloud allows
         // (and only a file this device could have pushed: `canDeleteLayer`).
         if (
-          canDeleteLayer(gate, layerId, { volumeUuid: row.volume_uuid, seriesTitle: folderTitle })
+          canDeleteLayer(gate, layerId, {
+            volumeUuid: row.volume_uuid,
+            seriesTitle: folderTitle,
+            volumeTitle: file.stem
+          })
         ) {
           transfers.push({ kind: 'delete', listed: file, volumeUuid: row.volume_uuid });
         }
@@ -1876,8 +1884,8 @@ export async function listedCuratedLayerFile(
  * takes the same pages and the upload's stamp, so the next listing neither
  * pulls it back nor sees anything to push.
  *
- * 'refused': the account may not publish this series (`canPublishCurated`;
- * an `owned` scope is approximated per series, so the server's 403 is final).
+ * 'refused': the account may not publish this volume (`canPublishCurated`,
+ * per volume; the server stays the judge, so its 403 is final).
  * 'failed': nothing to publish, no listing that places the volume, or the
  * upload failed. Nothing is written locally unless it went up. Never rejects.
  */
@@ -1890,7 +1898,7 @@ export async function publishCuratedLayer(volumeUuid: string): Promise<CuratedPu
       getLayerWithPages(db, volumeUuid, EDIT_LAYER_ID)
     ]);
     if (!row || !edit) return 'failed';
-    if (!canPublishHere(provider.getStatus(), row.series_title)) return 'refused';
+    if (!canPublishHere(provider.getStatus(), row.series_title, row.volume_title)) return 'refused';
     const listing = listingFromCache(provider.type);
     const place = locateVolumeInListing(listing, row);
     if (!place) return 'failed';
@@ -1964,7 +1972,9 @@ export async function unpublishCuratedLayer(volumeUuid: string): Promise<Curated
     ]);
     if (!row) return 'gone';
     if (curated?.cloud) file = { size: curated.cloud.size, modified: curated.cloud.modified };
-    if (provider && !canPublishHere(provider.getStatus(), row.series_title)) return 'refused';
+    if (provider && !canPublishHere(provider.getStatus(), row.series_title, row.volume_title)) {
+      return 'refused';
+    }
     let outcome: CuratedUnpublishOutcome;
     if (!provider) {
       outcome = tombstone();
