@@ -43,7 +43,7 @@ vi.mock('../../cache-manager', () => ({
 }));
 vi.mock('./webdav-cache', () => ({ webdavCache: {} }));
 
-import { WebDAVProvider } from './webdav-provider';
+import { WebDAVProvider, allowHeaderPermitsCollectionWrite } from './webdav-provider';
 
 const identityMock = vi.mocked(fetchServerIdentity);
 const fetchMock = vi.fn();
@@ -279,6 +279,63 @@ describe('WebDAVProvider login()', () => {
 
     expect(identityMock).not.toHaveBeenCalled();
     expect(provider.isAuthenticated()).toBe(false);
+  });
+});
+
+describe('WebDAVProvider write-permission fallback (OPTIONS Allow on the library folder)', () => {
+  // The PROPFIND privilege probe finds nothing (404), so the OPTIONS Allow decides.
+  function allowAnswer(allow: string | null) {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'OPTIONS') {
+        return new Response('', { status: 200, headers: allow === null ? {} : { Allow: allow } });
+      }
+      return new Response('', { status: 404 });
+    });
+  }
+  const check = async (allow: string | null) => {
+    allowAnswer(allow);
+    const provider = await freshProvider();
+    return (provider as any).checkWritePermissions('https://host') as Promise<boolean>;
+  };
+
+  it('reads an Allow of only read methods as read-only', async () => {
+    expect(await check('OPTIONS, GET, HEAD, PROPFIND')).toBe(false);
+    // COPY only reads its source, and LOCK/UNLOCK come with class 2: still read-only.
+    expect(await check('OPTIONS, GET, HEAD, PROPFIND, COPY, LOCK, UNLOCK')).toBe(false);
+  });
+
+  it('reads a collection Allow without PUT or MKCOL (as Bunko sends) as writable', async () => {
+    expect(
+      await check('OPTIONS, HEAD, GET, PROPFIND, DELETE, COPY, MOVE, PROPPATCH, LOCK, UNLOCK')
+    ).toBe(true);
+  });
+
+  it('reads a generic server’s Allow with PUT and MKCOL as writable', async () => {
+    expect(await check('OPTIONS, GET, HEAD, POST, PUT, DELETE, MKCOL, PROPFIND')).toBe(true);
+  });
+
+  it('keeps assuming write access when Allow is absent or empty', async () => {
+    expect(await check(null)).toBe(true);
+    expect(await check('  ')).toBe(true);
+    expect(await check(' , ')).toBe(true);
+  });
+
+  it('any single collection write method is enough, in any case', () => {
+    for (const m of ['put', 'MKCOL', 'Delete', 'MOVE', 'PROPPATCH']) {
+      expect(allowHeaderPermitsCollectionWrite(`GET, ${m}`)).toBe(true);
+    }
+    expect(allowHeaderPermitsCollectionWrite('GET, HEAD')).toBe(false);
+    expect(allowHeaderPermitsCollectionWrite(null)).toBeNull();
+  });
+
+  it('a generic server whose Allow lists only read methods connects read-only', async () => {
+    allowAnswer('OPTIONS, GET, HEAD, PROPFIND');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    expect(provider.isReadOnly).toBe(true);
   });
 });
 

@@ -612,22 +612,20 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     expect(localStorage.getItem('webdav_put_verified')).toBe(SERVER);
   });
 
-  it('the privilege probe finds no ACL, and the OPTIONS fallback reads Bunko’s Allow', async () => {
+  it('the privilege probe finds no ACL, and the OPTIONS fallback reads Bunko’s Allow as writable', async () => {
     const answers = fixtureFetch([fx('propfind-root-depth0-privileges'), fx('options-library')]);
     fetchHandler.impl = answers.fetch;
     const allow = fx('options-library').headers!.allow;
     expect(allow).toBeTruthy();
-    // Bunko's Allow on the library folder names no PUT or MKCOL (a collection takes
-    // neither), so this generic-WebDAV fallback calls it read-only. It runs only when
-    // the identity endpoint did not answer for the account.
-    expect(await provider.checkWritePermissions(SERVER)).toBe(
-      ['PUT', 'DELETE', 'MKCOL'].every((m) =>
-        allow
-          .split(',')
-          .map((x: string) => x.trim())
-          .includes(m)
-      )
+    // The library folder is a collection: its Allow names no PUT (files are PUT to
+    // member URLs) and no MKCOL (the URL is mapped), but DELETE, MOVE and PROPPATCH,
+    // so this generic-WebDAV fallback must call it writable. It runs only when the
+    // identity endpoint gave no answer.
+    const { allowHeaderPermitsCollectionWrite } = await import(
+      '$lib/util/sync/providers/webdav/webdav-provider'
     );
+    expect(allowHeaderPermitsCollectionWrite(allow)).toBe(true);
+    expect(await provider.checkWritePermissions(SERVER)).toBe(true);
     expect(answers.calls.map((c) => c.method)).toEqual(['PROPFIND', 'OPTIONS']);
     expect(answers.calls[1].url).toBe(`${SERVER}/mokuro-reader/`);
   });
