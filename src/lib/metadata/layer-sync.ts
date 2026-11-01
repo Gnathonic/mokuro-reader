@@ -640,7 +640,7 @@ function canPublishHere(status: ProviderStatus, seriesTitle: string, volumeTitle
  * a layer that stays local by what it IS (`layerIdStaysLocal` — the shared
  * `curated`, an `edit` the server shares, bunko's own keepsakes) is somebody
  * else's file, whatever the account's rights. The one exception is the retry
- * of an Unpublish, by an account that may publish that series' `curated`.
+ * of an Unpublish, by an account that may publish that volume's `curated`.
  */
 function canDeleteLayer(
   gate: PushGate,
