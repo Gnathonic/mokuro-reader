@@ -119,7 +119,7 @@ describeContract('identity (`/login/api/me`) as Bunko answers it', () => {
         canAddFiles: true,
         canModifyDelete: false,
         metadata: { scope: 'owned', ownedSeries: ['Contract Series'] },
-        curated: { scope: 'owned' },
+        curated: { scope: 'owned', volumes: [] },
         addFiles: { scope: 'open', closedSeries: [] }
       },
       endpoint: `${SERVER}/login/api/me`,
