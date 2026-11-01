@@ -743,6 +743,7 @@ export class WebDAVProvider implements SyncProvider {
           : 'local'
         : undefined,
       curatedPublish: this._capabilities?.curated?.scope,
+      curatedVolumes: this._capabilities?.curated?.volumes,
       metadataPermissions: this._capabilities?.metadata,
       addFilesPermissions: this._capabilities?.addFiles,
       canModifyDelete: this._capabilities?.canModifyDelete,

@@ -107,6 +107,7 @@ let serverCompilesMetadata = false;
 let editLayerSync: 'push' | 'local' | undefined = undefined;
 let accountScope: string | undefined = undefined;
 let curatedPublish: 'all' | 'owned' | 'none' | undefined = undefined;
+let curatedVolumes: { series: string; volume: string }[] | undefined = undefined;
 let refreshIdentity: ((options?: { maxAgeMs?: number }) => Promise<void>) | undefined = undefined;
 
 function provider(type = 'webdav') {
@@ -119,7 +120,8 @@ function provider(type = 'webdav') {
       serverCompilesMetadata,
       editLayerSync,
       accountScope,
-      curatedPublish
+      curatedPublish,
+      curatedVolumes
     }),
     downloadFile,
     uploadFile,
@@ -155,6 +157,7 @@ beforeEach(async () => {
   editLayerSync = undefined;
   accountScope = undefined;
   curatedPublish = undefined;
+  curatedVolumes = undefined;
   refreshIdentity = undefined;
   localStorage.clear();
   getActiveProvider.mockReturnValue(provider());
@@ -2585,6 +2588,65 @@ describe('Publish and Unpublish the shared curated layer', () => {
     curatedPublish = undefined;
     expect(await publishCuratedLayer('v1')).toBe('refused');
     expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  // bunko 0.8: in a shared folder, an uploader controls its own uploads.
+  describe('per volume under scope owned (curated.volumes)', () => {
+    beforeEach(() => {
+      curatedPublish = 'owned';
+    });
+
+    it('publishes a volume this account uploaded to a shared folder', async () => {
+      curatedVolumes = [{ series: 'Series', volume: 'VOL 1' }];
+      await seedRow();
+      await seedEdit();
+      expect(await publishCuratedLayer('v1')).toBe('published');
+      expect(uploadFile.mock.calls[0][0]).toBe('Series/VOL 1.curated.mokuro');
+    });
+
+    it("refuses another account's volume of the same folder, without a request", async () => {
+      curatedVolumes = [{ series: 'Series', volume: 'VOL 2' }];
+      await seedRow();
+      await seedEdit();
+      expect(await publishCuratedLayer('v1')).toBe('refused');
+      expect(uploadFile).not.toHaveBeenCalled();
+    });
+
+    it('an older bunko (no volumes) refuses a folder it does not own, as before', async () => {
+      await seedRow();
+      await seedEdit();
+      expect(await publishCuratedLayer('v1')).toBe('refused');
+      expect(uploadFile).not.toHaveBeenCalled();
+    });
+
+    it('unpublishes only a volume it controls, and its retry follows the same rule', async () => {
+      curatedVolumes = [{ series: 'Series', volume: 'VOL 1' }];
+      await seedRow();
+      await seedEdit();
+      await publishCuratedLayer('v1');
+      cachedFiles.push(cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }));
+      deleteFile.mockRejectedValueOnce(new Error('offline'));
+      expect(await unpublishCuratedLayer('v1')).toBe('unconfirmed');
+
+      // The retry: refused while the volume is not listed as this account's...
+      deleteFile.mockReset();
+      deleteFile.mockResolvedValue(undefined);
+      curatedVolumes = [{ series: 'Series', volume: 'VOL 2' }];
+      await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+      expect(deleteFile).not.toHaveBeenCalled();
+      // ...and sent once it is.
+      curatedVolumes = [{ series: 'Series', volume: 'VOL 1' }];
+      await syncLayersFromListing(listing(...cachedFiles), 'webdav');
+      expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual(['Series/VOL 1.curated.mokuro']);
+    });
+
+    it("refuses to unpublish another account's volume", async () => {
+      curatedVolumes = [{ series: 'Series', volume: 'VOL 2' }];
+      await seedRow();
+      cachedFiles.push(cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }));
+      expect(await unpublishCuratedLayer('v1')).toBe('refused');
+      expect(deleteFile).not.toHaveBeenCalled();
+    });
   });
 
   it('listedCuratedLayerFile finds the published file of the volume', async () => {
