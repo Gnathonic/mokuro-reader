@@ -432,6 +432,67 @@ describe('per-account layers and the curated scope (bunko 0.8)', () => {
     expect(result).toMatchObject({ permissions: { curated: { scope } } });
   });
 
+  it('carries curated.volumes (the uploads this account controls in shared folders)', async () => {
+    const volumes = [
+      { series: 'Shared Series', volume: 'VOL 2' },
+      { series: 'Other', volume: 'Tome 1' }
+    ];
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, signedIn({}, { scope: 'owned', volumes }))
+    });
+    const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+    expect(result).toMatchObject({ permissions: { curated: { scope: 'owned', volumes } } });
+  });
+
+  it('an empty curated.volumes stays an empty list', async () => {
+    const { impl } = mockFetch({
+      'https://host/login/api/me': jsonResponse(200, signedIn({}, { scope: 'owned', volumes: [] }))
+    });
+    const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+    expect((result as { permissions: object }).permissions).toHaveProperty('curated', {
+      scope: 'owned',
+      volumes: []
+    });
+  });
+
+  it('curated.volumes: absent or garbage is not reported, malformed entries are dropped', async () => {
+    const parsed = async (curated: unknown) => {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, signedIn({}, curated))
+      });
+      const result = await fetchServerIdentity('https://host', 'alice', 'pw', impl);
+      return (result as { permissions: { curated?: unknown } }).permissions.curated;
+    };
+    // An older bunko: the scope alone, exactly as before.
+    expect(await parsed({ scope: 'owned' })).toEqual({ scope: 'owned' });
+    for (const bad of ['Vol 1', 42, null, { series: 'S', volume: 'V' }]) {
+      expect(await parsed({ scope: 'owned', volumes: bad })).toEqual({ scope: 'owned' });
+    }
+    expect(
+      await parsed({
+        scope: 'owned',
+        volumes: [
+          { series: 'S', volume: 'V' },
+          { series: 'S' },
+          { series: 1, volume: 'V' },
+          'S/V',
+          null,
+          { series: 'T', volume: 'W', extra: true }
+        ]
+      })
+    ).toEqual({
+      scope: 'owned',
+      volumes: [
+        { series: 'S', volume: 'V' },
+        { series: 'T', volume: 'W' }
+      ]
+    });
+    // Present only under scope owned: anything else ignores it.
+    for (const scope of ['all', 'none']) {
+      expect(await parsed({ scope, volumes: [{ series: 'S', volume: 'V' }] })).toEqual({ scope });
+    }
+  });
+
   it('carries per_user_layers on an anonymous identity too', async () => {
     const { impl } = mockFetch({
       'https://host/login/api/me': jsonResponse(200, {
@@ -556,6 +617,12 @@ describe('permissions.addFiles (series owners, bunko 0.8)', () => {
         }
       });
       if (name === 'login-me-closed-series') expect(served.closedSeries).toEqual(['Admin Series']);
+      // The curated scope, and the per-volume list when the server serves one,
+      // read back exactly as served.
+      const curated = (body.permissions as { curated: unknown }).curated;
+      expect((result as { permissions: { curated?: unknown } }).permissions.curated).toEqual(
+        curated
+      );
     }
   );
 });

@@ -155,6 +155,13 @@ export interface ProviderStatus {
    */
   curatedPublish?: CuratedScope;
   /**
+   * Under `curatedPublish` `owned`: the archives this account uploaded in
+   * series folders it does NOT own (bunko >= 0.8 `permissions.curated.volumes`),
+   * whose curated layer it may publish too. Absent = not reported (an older
+   * bunko): only the owned series.
+   */
+  curatedVolumes?: CuratedVolume[];
+  /**
    * Per-series metadata (names/links/tag/unit/spine offsets) edit scope, as reported by a
    * provider capable of restricting it (currently mokuro-bunko's identity endpoint, via
    * WebDAV). Absent = no restriction — an older server that doesn't report the field, or
@@ -256,6 +263,12 @@ export type ControlFileResult = ControlFileRead | 'not-modified' | null;
 
 /** Scope of `ProviderStatus.curatedPublish`: every volume, the account's own uploads, or none. */
 export type CuratedScope = 'all' | 'owned' | 'none';
+
+/** One listed archive: its series FOLDER name and its stem (the `.cbz` name without `.cbz`). */
+export interface CuratedVolume {
+  series: string;
+  volume: string;
+}
 
 /**
  * Scope of `ProviderStatus.addFilesPermissions`: every series, every series

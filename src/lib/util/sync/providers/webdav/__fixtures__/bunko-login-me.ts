@@ -33,7 +33,8 @@ function uploaderBody(closedSeries: string[]) {
       canAddFiles: true,
       canModifyDelete: false,
       metadata: { scope: 'owned', ownedSeries: ['Contract Series'] },
-      curated: { scope: 'owned' },
+      // Its one series is its own: no shared-folder uploads to list.
+      curated: { scope: 'owned', volumes: [] },
       addFiles: { scope: 'open', closedSeries }
     },
     ...PER_USER
