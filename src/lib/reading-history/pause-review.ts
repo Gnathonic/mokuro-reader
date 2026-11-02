@@ -1,5 +1,5 @@
 import { derived, type Readable } from 'svelte/store';
-import type { Pause, VolumeTotals } from './stats-engine';
+import { pauseKey, type Pause, type VolumeTotals } from './stats-engine';
 import { readingStats } from './stats-store';
 
 /**
@@ -33,10 +33,8 @@ type TitleSource = { series_title?: string; volume_title?: string };
  */
 const rowsOf = new WeakMap<Pick<VolumeTotals, 'pauses'>, ReviewPause[]>();
 
-/** A pause's identity: its page event's `[device, seq]`. */
-export function pauseKey(p: Pick<Pause, 'device' | 'seq'>): string {
-  return `${p.device}\u0000${p.seq}`;
-}
+/** A pause's identity: its page event's `[device, seq]` (the engine's key for a `resolve`). */
+export { pauseKey };
 
 export function reviewPauses(
   byVolume: ReadonlyMap<string, Pick<VolumeTotals, 'pauses'>>

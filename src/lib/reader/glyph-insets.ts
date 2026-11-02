@@ -108,10 +108,17 @@ function pairOf(ch: string, vertical: boolean): Pair {
   return KANJI;
 }
 
-/** Marks that ride on their base and joiners: not a character of their own
- * (the same set `spacingUnits` leaves uncounted). */
-function rides(ch: string): boolean {
+/**
+ * Does this character ride on a base (no cell, no spacing of its own)? Marks
+ * that ride on their base and joiners: not a character of their own. The ONE
+ * definition the insets and the spacing grid (`splitUnits`, `line-grid.ts`)
+ * cut a string by, so the first glyph the insets look at is the first unit the
+ * grid measures.
+ */
+export function ridesOnBase(ch: string): boolean {
   const code = ch.codePointAt(0) ?? 0;
+  // zero-width space/joiners, word joiner, variation selectors — by code
+  // point, since a character class holding them reads as a combined sequence
   return (
     (code >= 0x200b && code <= 0x200d) ||
     code === 0x2060 ||
@@ -129,7 +136,7 @@ const IDEOGRAPHIC_SPACE = '\u3000';
  * it, and the quad starts at the ink after it.
  */
 export function inkInsets(text: string, vertical: boolean): InkInsets {
-  const chars = Array.from(text ?? '').filter((ch) => !rides(ch));
+  const chars = Array.from(text ?? '').filter((ch) => !ridesOnBase(ch));
   let first = 0;
   let last = chars.length - 1;
   while (first <= last && chars[first] === IDEOGRAPHIC_SPACE) first++;

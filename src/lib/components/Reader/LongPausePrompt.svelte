@@ -7,7 +7,7 @@
 
 <script lang="ts">
   import { AWAY_AFTER_MS, livePause, type LivePause } from '$lib/reading-history/pause-watch';
-  import { readingStats } from '$lib/reading-history/stats-store';
+  import { pauseReview } from '$lib/reading-history/pause-review';
   import type { PauseCount } from '$lib/reading-history/types';
 
   /**
@@ -42,15 +42,9 @@
     return () => clearInterval(id);
   });
 
-  // Counted only while a prompt is up: one pass over the listed pauses.
-  let answered = $derived.by(() => {
-    if (!pause) return 0;
-    let n = 0;
-    for (const totals of $readingStats.byVolume.values()) {
-      for (const p of totals.pauses) if (p.answer !== null) n++;
-    }
-    return n;
-  });
+  // The review list's count (every answered pause, any volume, any device);
+  // read only while a prompt is up, so the list is first derived at the first prompt.
+  let answered = $derived(pause ? $pauseReview.answered : 0);
 
   let away = $derived(pause !== null && now - (pause.since + pause.cap) > AWAY_AFTER_MS);
   let elapsed = $derived(pause ? minutes(now - pause.since) : '');

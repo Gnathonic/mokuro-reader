@@ -123,6 +123,7 @@ export async function planArchiveListing(
 
   const layerSplit = extractLayerEntries(fileEntries);
   const { pairings, warnings } = await pairMokuroWithSources(layerSplit.entries);
+  warnings.push(...layerSplit.skipped);
   const mokuroPairings = pairings.filter((p) => !p.imageOnly);
   const imageOnlyPairings = pairings.filter((p) => p.imageOnly);
 

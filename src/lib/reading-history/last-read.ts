@@ -1,4 +1,5 @@
 import { readable, type Readable } from 'svelte/store';
+import { stampMs } from '$lib/util/volume-helpers';
 import { getVolumeEvents, historyVolumes, onHistoryChanged } from './turns-store';
 import type { ReadingEvent } from './types';
 import { eventKey, lookupVisits } from './visits';
@@ -80,8 +81,7 @@ export function lastReadTime(
 ): number {
   const fromHistory = times.get(volume);
   if (fromHistory && fromHistory.at > 0) return fromHistory.at;
-  const parsed = Date.parse(record?.lastProgressUpdate ?? '');
-  const stamp = Number.isNaN(parsed) ? 0 : parsed;
+  const stamp = stampMs(record?.lastProgressUpdate);
   if (!fromHistory) return stamp;
   return stamp < fromHistory.since ? stamp : 0;
 }

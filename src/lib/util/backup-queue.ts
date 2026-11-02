@@ -42,6 +42,7 @@ import {
   recordUploadedPrimarySidecarBlob
 } from '$lib/catalog/mokuro-upload-record';
 import { clearUploadFailure, recordUploadFailure } from './upload-failures';
+import { isStorageFullFailure, storageFullMessage } from './sync/core/storage-full';
 import { getUploadWorkerCredentials, prepareSeriesUploadTarget } from './upload-worker-credentials';
 
 export interface SidecarOptions {
@@ -477,10 +478,18 @@ function handleBackupError(
   item: BackupQueueItem,
   processId: string,
   errorMessage: string,
-  detail?: string
+  detail?: string,
+  kind?: string
 ): void {
-  const reason = detail?.trim() || errorMessage;
   const isCloud = !isPseudoProvider(item.provider);
+  // A worker hands back text, not the provider's typed QUOTA_EXCEEDED: give a
+  // full account the same actionable wording the main-thread upload raises.
+  // The rest of the queue still runs; whether a full account should pause it
+  // is a separate decision.
+  const reason =
+    isCloud && isStorageFullFailure({ kind, error: errorMessage })
+      ? storageFullMessage(item.provider)
+      : detail?.trim() || errorMessage;
   const ui = getBackupUiBridge();
   if (isCloud) {
     recordUploadFailure({
@@ -838,7 +847,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             if (sidecars?.mokuro || sidecars?.thumbnail || sidecars?.layers?.length) {
               getBackupUiBridge().updateProgress(processId, 'Uploading sidecars...', 100);
             }
-            // The Worker's order: an account's `edit` layer after its archive.
+            // The Worker's order: a layer bunko anchors on the archive goes after it.
             const { archive: uploaded, layers: sentLayers } = await uploadVolumeFiles(
               sidecars,
               {
@@ -1084,7 +1093,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         ) {
           void provider!.refreshIdentity?.({ maxAgeMs: OWNERSHIP_REFRESH_MAX_AGE_MS });
         }
-        handleBackupError(item, processId, data.error, data.detail);
+        handleBackupError(item, processId, data.error, data.detail, data.kind);
         await checkAndTerminatePool();
       }
     };

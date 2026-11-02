@@ -76,7 +76,9 @@ describe('googleDriveCore', () => {
   describe('uploadFile', () => {
     it('retries a 429 session init after its Retry-After', async () => {
       vi.mocked(fetch)
-        .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '0' } }))
+        .mockResolvedValueOnce(
+          new Response('{}', { status: 429, headers: { 'Retry-After': '0.001' } })
+        )
         .mockResolvedValueOnce(initOk());
       FakeXhr.replies = [{ status: 200, response: JSON.stringify({ id: 'new-id', size: '1' }) }];
 
@@ -90,6 +92,31 @@ describe('googleDriveCore', () => {
       expect(result.fileId).toBe('new-id');
       expect(fetch).toHaveBeenCalledTimes(2);
     });
+
+    it('tells the caller about each session-init wait, so the tray is not frozen at 0 %', async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(
+          new Response('{}', { status: 429, headers: { 'Retry-After': '0.001' } })
+        )
+        .mockResolvedValueOnce(new Response('', { status: 503 }))
+        .mockResolvedValueOnce(initOk());
+      FakeXhr.replies = [{ status: 200, response: JSON.stringify({ id: 'new-id', size: '1' }) }];
+      const onRetry = vi.fn();
+
+      await googleDriveCore.uploadFile({
+        seriesTitle: 'S',
+        filename: 'v.cbz',
+        blob: new Blob(['x']),
+        credentials,
+        onRetry
+      });
+
+      expect(onRetry.mock.calls).toEqual([
+        [{ attempt: 2, attempts: 4, delayMs: 1, reason: 'rate limited' }],
+        [{ attempt: 3, attempts: 4, delayMs: expect.any(Number), reason: 'HTTP 503' }]
+      ]);
+      expect(onRetry.mock.calls[1][0].delayMs).toBeGreaterThan(0);
+    }, 10_000);
 
     it('fails a full account at once, naming the reason in the message', async () => {
       vi.mocked(fetch).mockResolvedValue(
@@ -115,7 +142,7 @@ describe('googleDriveCore', () => {
           status: 429,
           statusText: 'Too Many Requests',
           response: '',
-          headers: { 'Retry-After': '0' }
+          headers: { 'Retry-After': '0.001' }
         }
       ];
 
@@ -137,14 +164,14 @@ describe('googleDriveCore', () => {
             JSON.stringify({ error: { errors: [{ reason: 'userRateLimitExceeded' }] } }),
             {
               status: 403,
-              headers: { 'Retry-After': '0' }
+              headers: { 'Retry-After': '0.001' }
             }
           )
         )
         .mockResolvedValueOnce(new Response(JSON.stringify({ size: '4' }), { status: 200 }));
       const payload = new Uint8Array([1, 2, 3, 4]).buffer;
       FakeXhr.replies = [
-        { status: 503, response: new ArrayBuffer(0), headers: { 'Retry-After': '0' } },
+        { status: 503, response: new ArrayBuffer(0), headers: { 'Retry-After': '0.001' } },
         { status: 200, response: payload }
       ];
 

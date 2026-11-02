@@ -30,6 +30,7 @@ vi.mock('../graph-client', () => ({
 import { OneDriveProvider } from '../onedrive-provider';
 import { getItemByPath, listChildren, createFolder, deleteItem } from '../graph-client';
 import { ProviderError } from '../../../provider-interface';
+import { GraphQuotaError } from '../graph-errors';
 
 describe('OneDriveProvider.listCloudVolumes', () => {
   let provider: OneDriveProvider;
@@ -159,14 +160,33 @@ describe('upload failure classification', () => {
     });
   });
 
-  function providerWithCoreFailure(message: string): OneDriveProvider {
+  function providerWithCoreFailure(failure: string | Error): OneDriveProvider {
+    const error = typeof failure === 'string' ? new Error(failure) : failure;
     const provider = new OneDriveProvider();
     (provider as unknown as { cloudCore: unknown }).cloudCore = {
-      uploadFile: vi.fn().mockRejectedValue(new Error(message)),
-      downloadFile: vi.fn().mockRejectedValue(new Error(message))
+      uploadFile: vi.fn().mockRejectedValue(error),
+      downloadFile: vi.fn().mockRejectedValue(error)
     };
     return provider;
   }
+
+  it("the core's own GraphQuotaError becomes QUOTA_EXCEEDED, by instance rather than by text", async () => {
+    // The main-thread core throws the typed error itself; its message is
+    // incidental here.
+    const error = new GraphQuotaError(507, 'insufficientStorage');
+    error.message = 'session refused';
+    const provider = providerWithCoreFailure(error);
+
+    const upload = await provider.uploadFile('volume-data.json', new Blob(['x'])).catch((e) => e);
+    expect(upload).toBeInstanceOf(ProviderError);
+    expect(upload.code).toBe('QUOTA_EXCEEDED');
+    expect(upload.message).toMatch(/storage is full/);
+
+    const download = await provider
+      .downloadFile({ fileId: 'f', name: 'v.cbz', path: 'S/v.cbz' } as never)
+      .catch((e) => e);
+    expect(download.code).toBe('QUOTA_EXCEEDED');
+  });
 
   it('a full drive (worker message) becomes QUOTA_EXCEEDED, not a retryable 5xx', async () => {
     const provider = providerWithCoreFailure(

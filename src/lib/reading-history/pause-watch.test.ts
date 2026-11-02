@@ -205,6 +205,42 @@ describe('PauseWatch', () => {
     expect(onCap.mock.calls[1][0].cap).toBe(15 * MIN);
   });
 
+  it('re-arms when only the typical time changes, so the prompt shows the current one', () => {
+    const { watch, onCap } = setup();
+    // Under an override the cap is fixed; a pace change moves typical alone.
+    const idle: IdleSettings = { k: 3, overrideMs: 5 * MIN };
+    watch.update(open(T0), PACE, idle);
+    vi.advanceTimersByTime(2 * MIN);
+    watch.update(open(T0), PACE * 2, idle);
+    vi.advanceTimersByTime(3 * MIN);
+    expect(onCap).toHaveBeenCalledTimes(1);
+    expect(onCap.mock.calls[0][0]).toMatchObject({ cap: 5 * MIN, typical: 200_000 });
+  });
+
+  it('refreshes a fired pause whose cap or typical changed but is still behind', () => {
+    const onCap = vi.fn<(p: LivePause) => void>();
+    const onClear = vi.fn<() => void>();
+    const onRefresh = vi.fn<(p: LivePause) => void>();
+    const watch = new PauseWatch(onCap, onClear, onRefresh);
+    watch.update(open(T0), PACE, IDLE);
+    vi.advanceTimersByTime(7 * MIN);
+    expect(onCap).toHaveBeenCalledTimes(1);
+    // Cap 5 min → 400 s: still behind, the prompt's "stopped at" copy must follow.
+    watch.update(open(T0), PACE, { k: 4, overrideMs: null });
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(onRefresh.mock.calls[0][0]).toMatchObject({ since: T0, cap: 400_000 });
+    // Typical alone (override holds the cap at 6 min, behind us): refreshed too.
+    watch.update(open(T0), PACE * 2, { k: 4, overrideMs: 6 * MIN });
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+    expect(onRefresh.mock.calls[1][0]).toMatchObject({ cap: 6 * MIN, typical: 200_000 });
+    // Nothing changed: no refresh.
+    watch.update(open(T0), PACE * 2, { k: 4, overrideMs: 6 * MIN });
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(60 * MIN);
+    expect(onCap).toHaveBeenCalledTimes(1);
+    expect(onClear).not.toHaveBeenCalled();
+  });
+
   it('stops for good on dispose', () => {
     const { watch, onCap, onClear } = setup();
     watch.update(open(T0), PACE, IDLE);
