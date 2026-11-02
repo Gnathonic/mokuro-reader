@@ -23,6 +23,7 @@ import {
   flushReadingStats,
   initReadingStats,
   readingStats,
+  readingStatsReady,
   recentReadingSpeed,
   seriesReadingSpeed,
   seriesSpeed
@@ -159,6 +160,29 @@ describe('recomputation', () => {
     };
     await record([adjust]);
     expect(figuresFor(get(readingStats), 'v1').minutes).toBe(3);
+  });
+});
+
+describe('readingStatsReady', () => {
+  it('settles only once history has been counted, flushing a pending pass', async () => {
+    // A reader of a volume's figures (the volume editor) must not see the
+    // empty byVolume map the 500 ms debounce leaves before the first flush.
+    _resetReadingStatsForTests();
+    await db.reading_events.bulkAdd([view('v1', 0, 1, 300, 4 * MIN)]);
+    _resetHistoryTurns();
+    const loading = loadHistoryTurns(db);
+    initReadingStats();
+    expect(get(readingStats).ready).toBe(false);
+    const ready = readingStatsReady();
+    await loading;
+    await ready;
+    expect(get(readingStats).ready).toBe(true);
+    expect(figuresFor(get(readingStats), 'v1').minutes).toBe(4);
+  });
+
+  it('resolves at once when the stats are already counted', async () => {
+    expect(get(readingStats).ready).toBe(true);
+    await expect(readingStatsReady()).resolves.toBeUndefined();
   });
 });
 

@@ -163,6 +163,21 @@ export function flushReadingStats(): void {
   state.set({ ready: true, pace, idle, byVolume, recent: recentSpeed(byVolume.values()) });
 }
 
+/**
+ * Settles once history has loaded and been counted at least once — flushing
+ * a pending pass instead of waiting out its debounce. For a reader that acts
+ * on a volume's figures (the volume editor records the DIFFERENCE from the
+ * time it showed): before the first flush `byVolume` is empty and the figure
+ * is the baseline alone.
+ */
+export async function readingStatsReady(): Promise<void> {
+  if (get(state).ready) return;
+  await historyTurnsReady();
+  if (get(state).ready) return;
+  pending = 'all';
+  flushReadingStats();
+}
+
 /** The record fields the pre-history snapshot is taken from. */
 export type BaselineSource = {
   legacyStats?: LegacyStats;
