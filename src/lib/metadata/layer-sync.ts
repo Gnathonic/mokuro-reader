@@ -1687,26 +1687,24 @@ async function deleteOneCopy(
  * Delete EVERY listed copy of a layer (`.mokuro` and `.mokuro.gz`) — the one
  * order every delete of a listed layer takes (a layer delete, a tombstone's
  * retry, an Unpublish). The `.gz` copies go first and the plain file — the one
- * every reader takes while it is listed — last, and the first copy the server
- * refuses (403) stops it: the plain file is then still there, so what anyone
- * reads did not change. Plain first, a refused `.gz` would become the layer
- * for everyone. Any other failure spares nothing (each copy removed is one
- * less to retry). `'gone'` only when every copy went: one survivor is enough
- * for the next listing to read the layer back, so the caller must keep its
- * tombstone.
+ * every reader takes while it is listed — last, and the first copy that
+ * cannot be deleted stops it, whatever the reason (`'refused'` for a 403,
+ * else `'failed'`): the plain file is then still there, so what anyone reads
+ * did not change. Going on, a `.gz` that stayed would be read in the plain
+ * file's place by everyone. `'gone'` only when every copy went: anything
+ * else leaves a copy for the next listing to read the layer back from, so
+ * the caller keeps its tombstone and the retry finishes the job.
  */
 async function deleteListedLayerCopies(
   provider: SyncProvider,
   listed: ListedLayerFile
 ): Promise<CopyDeleteOutcome> {
   const copies = [...listed.copies].sort((a, b) => Number(b.gz) - Number(a.gz));
-  let outcome: CopyDeleteOutcome = 'gone';
   for (const copy of copies) {
     const one = await deleteOneCopy(provider, copy.file);
-    if (one === 'refused') return 'refused';
-    if (one === 'failed') outcome = 'failed';
+    if (one !== 'gone') return one;
   }
-  return outcome;
+  return 'gone';
 }
 
 /** `deleteListedLayerCopies` went all the way: no copy is left to read the layer back. */
@@ -1975,7 +1973,7 @@ export type CuratedUnpublishOutcome =
 /**
  * Unpublish: remove the library's shared corrections for everyone — every
  * listed copy (`.mokuro` and `.mokuro.gz`, `deleteListedLayerCopies`: `.gz`
- * first, the plain file last, stopping at the first 403), then the local
+ * first, the plain file last, stopping at the first copy that fails), then the local
  * row. A refusal leaves the plain file there, so nothing anyone reads changed
  * — the row stays and no tombstone is left (`'refused'`), since a retry would
  * be refused the same way. Any other failure still removes the row and

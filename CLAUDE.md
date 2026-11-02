@@ -718,10 +718,11 @@ archive — the only code that writes `curated` — then writes the local
 neither pulls nor pushes it; a 403 is `'refused'` and writes nothing.
 `unpublishCuratedLayer` deletes every listed copy — the `.gz` ones first, the
 plain file (the one every reader takes while it is listed) last, the same
-`deleteListedLayerCopies` its tombstone's retry uses — then the row; the first 403 stops it with the plain file still there, so nothing anyone
-reads changed (`'refused'`: row kept, no tombstone; plain first, a refused
-`.gz` would have become the shared layer). Any other failure leaves a
-tombstone flagged `unpublish`, naming the provider the `curated` row was
+`deleteListedLayerCopies` its tombstone's retry uses — then the row. The
+first copy that fails stops it, with the plain file still there: a 403 means
+nothing anyone reads changed (`'refused'`: row kept, no tombstone; plain
+first, a refused `.gz` would have become the shared layer); any other failure
+removes the row and leaves a tombstone flagged `unpublish`, naming the provider the `curated` row was
 synced with (else the active one; with neither, `'failed'` and nothing
 changes — a provider-less tombstone would apply to every provider), the
 only tombstone whose retry may delete a `curated` file (and only for an
@@ -806,8 +807,8 @@ everything that removes or moves a layer works from all listed copies
 (`ListedLayerFile.copies`): a delete reports `'gone'` only when every copy went
 (else the tombstone stays), and takes them in one order
 (`deleteListedLayerCopies`: `.gz` first, the plain file last, stopping at the
-first 403, so a refusal never leaves an older `.gz` read in the plain file's
-place), a push removes the `.gz` it superseded
+first copy that fails — a 403 or any other error — so a failure never leaves
+an older `.gz` read in the plain file's place), a push removes the `.gz` it superseded
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
 
