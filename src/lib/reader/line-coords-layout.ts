@@ -399,13 +399,19 @@ export function pitchInput(
   };
 }
 
-/** A run's advance and its end units', em, at `size` (`RunAdvance`). */
-export function runAdvance(text: string, measure: TextMeasurer, size?: number): RunAdvance {
-  const units = splitUnits(text);
+/** A run's advance and its end units', em, at `size` (`RunAdvance`); `units`
+ * is the text cut once by `splitUnits`, so every run of a line is cut alike. */
+export function runAdvance(
+  text: string,
+  units: string[],
+  measure: TextMeasurer,
+  size?: number
+): RunAdvance {
   return {
     total: measure(text, size),
     first: units.length ? measure(units[0], size) : 0,
-    last: units.length ? measure(units[units.length - 1], size) : 0
+    last: units.length ? measure(units[units.length - 1], size) : 0,
+    count: units.length
   };
 }
 
@@ -421,13 +427,14 @@ export function lineGridSpacing(
   fontSize: number,
   measure: TextMeasurer
 ): GridSpacing | null {
-  const model = runAdvance(text, measure);
+  const units = splitUnits(text);
   return gridSpacing({
     pitch,
-    advanceEm: model.total,
     fontSize,
-    count: spacingUnits(text),
-    run: { model, rendered: runAdvance(text, measure, fontSize) }
+    run: {
+      model: runAdvance(text, units, measure),
+      rendered: runAdvance(text, units, measure, fontSize)
+    }
   });
 }
 

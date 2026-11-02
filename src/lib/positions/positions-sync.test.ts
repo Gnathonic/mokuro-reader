@@ -87,8 +87,17 @@ function listed(fileId: string): CloudFileMetadata {
 const fileBlob = (positions: Record<string, unknown[]>) =>
   ({ text: async () => JSON.stringify({ version: 1, positions }) }) as unknown as Blob;
 
-function stubCache(files: CloudFileMetadata[]) {
-  const cache = { getAll: vi.fn(() => files), add: vi.fn() };
+function stubCache(
+  files: CloudFileMetadata[],
+  state: { loaded?: boolean; fetching?: boolean } = {}
+) {
+  const cache = {
+    getAll: vi.fn(() => files),
+    add: vi.fn(),
+    removeById: vi.fn(),
+    isLoaded: () => state.loaded ?? true,
+    isFetching: () => state.fetching ?? false
+  };
   getCache.mockReturnValue(cache);
   return cache;
 }
@@ -101,6 +110,7 @@ function makeProvider(
     type: 'webdav',
     name: 'WebDAV',
     downloadFile: vi.fn(download),
+    deleteFile: vi.fn(async (_file: CloudFileMetadata) => {}),
     getStatus: () => ({
       isAuthenticated: true,
       hasStoredCredentials: true,
@@ -163,6 +173,24 @@ describe('syncPositions', () => {
     expect((await syncPositions(provider)).uploaded).toBe(true);
   });
 
+  it('listing not loaded or still fetching: not-ready, no GET and no PUT', async () => {
+    // The full sync's step has callers the readiness gate does not cover; an
+    // unloaded cache looks like "no copy" and the upload would replace the
+    // cloud file with this device's entries alone.
+    updateProgress('v', 41, 4100, false);
+    for (const state of [{ loaded: false }, { fetching: true }]) {
+      stubCache([], state);
+      const provider = makeProvider(async () => fileBlob({}));
+      expect(await syncPositions(provider)).toMatchObject({
+        skipped: 'not-ready',
+        uploaded: false
+      });
+      expect(provider.downloadFile).not.toHaveBeenCalled();
+    }
+    expect(blindUploadFile).not.toHaveBeenCalled();
+    expect(changedVolumes()).toEqual(['v']);
+  });
+
   it('read-only plain provider: adopts, never uploads', async () => {
     stubCache([listed('a')]);
     updateProgress('w', 3, 30, false);
@@ -188,6 +216,42 @@ describe('syncPositions', () => {
     // The surviving content differs from the merge, so the copies converge.
     expect(outcome.uploaded).toBe(true);
     expect(Object.keys((await uploadedFile()).positions)).toEqual(['x', 'y']);
+  });
+
+  it('two listed copies (Drive): the upload lands on one, the other is deleted', async () => {
+    // Drive's upload replaces whichever same-name file its query lists first;
+    // left alone, the write could land on the copy nobody compares against and
+    // every run would upload again. A delete of a copy already gone is fine.
+    const cache = stubCache([listed('a'), listed('b'), listed('ghost')]);
+    const provider = makeProvider(async (file) => {
+      if (file.fileId === 'ghost') throw new ProviderError('File not found', 'webdav', 'NOT_FOUND');
+      return file.fileId === 'a'
+        ? fileBlob({ x: [now - 5000, 10, 100, 'phone'] })
+        : fileBlob({ y: [now - 4000, 20, 200, 'phone'] });
+    });
+    blindUploadFile.mockResolvedValueOnce('b');
+    vi.mocked(provider.deleteFile).mockImplementation(async (file) => {
+      if (file.fileId === 'ghost') throw new ProviderError('File not found', 'webdav', 'NOT_FOUND');
+    });
+    expect((await syncPositions(provider)).uploaded).toBe(true);
+    const deleted = vi.mocked(provider.deleteFile).mock.calls.map((c) => c[0].fileId);
+    expect(deleted.sort()).toEqual(['a', 'ghost']);
+    expect(cache.removeById.mock.calls.map((c) => c[0]).sort()).toEqual(['a', 'ghost']);
+
+    // The survivor holds the merge: the next run has nothing to upload.
+    const sent = await (blindUploadFile.mock.calls[0][1] as Blob).text();
+    stubCache([listed('b')]);
+    const again = makeProvider(async () => ({ text: async () => sent }) as unknown as Blob);
+    expect((await syncPositions(again)).uploaded).toBe(false);
+    expect(again.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('one listed copy: nothing is deleted after the upload', async () => {
+    stubCache([listed('a')]);
+    updateProgress('v', 41, 4100, false);
+    const provider = makeProvider(async () => fileBlob({}));
+    expect((await syncPositions(provider)).uploaded).toBe(true);
+    expect(provider.deleteFile).not.toHaveBeenCalled();
   });
 
   it('adopts a newer remote position with its stamp; toasts only for the open volume', async () => {

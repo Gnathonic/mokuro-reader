@@ -1,15 +1,11 @@
 import { get } from 'svelte/store';
 import { migratePageTurnData } from '$lib/settings/reading-speed';
-import {
-  VolumeData,
-  projectedTurnsOf,
-  volumesWithTrash,
-  type PageTurn
-} from '$lib/settings/volume-data';
+import { VolumeData, projectedTurnsOf, volumesWithTrash } from '$lib/settings/volume-data';
+import { turnKey } from '$lib/util/sync/volume-record-merge';
 import type { HistoryDexie } from './history-db';
 import { convertLegacyRecord } from './legacy';
 import { notifyEventsRecorded } from './record';
-import { flushHistoryTurns, historyTurnsLoaded } from './turns-store';
+import { flushHistoryTurns, historyTurnsLoaded, nativeCoverageOf } from './turns-store';
 import type { ReadingEvent } from './types';
 
 /**
@@ -23,10 +19,17 @@ import type { ReadingEvent } from './types';
  *
  * Safe by order: nothing is stripped unless the projection is loaded; a turn
  * is stripped only after its event is committed AND projected, and
- * only the exact turns that were converted (one that arrived meanwhile stays).
+ * only the exact turns that were converted (one that arrived meanwhile stays,
+ * as does a same-millisecond twin the conversion did not keep).
  * If the history database cannot be written, nothing is stripped and the file
  * keeps its turns as before. `archivedReads` are recorded as `restart` events
  * but stay in the record — goal counting reads them.
+ *
+ * The spec's coverage rule applies here as well as in the projection: a turn
+ * a native view of the volume already covers is that view's own reading (a
+ * phase-1 device recorded both; or an older client's file carried this
+ * device's views as turns and the merge brought them back) — it is stripped,
+ * since the native event is its record, but never stored as a legacy event.
  */
 export async function cutOverLegacyTurns(
   db?: HistoryDexie
@@ -52,12 +55,19 @@ export async function cutOverLegacyTurns(
     // One event per key: a turn and an archived read on the same millisecond
     // share `[legacy:<volume>, t]`; a duplicate would abort the whole batch.
     const seen = new Set<number>();
+    const keys = new Set<string>();
+    const covered = nativeCoverageOf(volume);
     for (const event of convertLegacyRecord(volume, { ...record, recentPageTurns: upgraded })) {
       if (seen.has(event.seq)) continue;
       seen.add(event.seq);
+      if (event.kind === 'page') {
+        // Converted or covered: either way history now stands for this turn.
+        keys.add(turnKey([event.t, event.first_page]));
+        if (covered(event.t)) continue;
+      }
       events.push(event);
     }
-    converted.set(volume, new Set(record.recentPageTurns.map(turnKey)));
+    converted.set(volume, keys);
   }
 
   let added: ReadingEvent[] = [];
@@ -94,20 +104,23 @@ export async function cutOverLegacyTurns(
   return { volumes: stripped, events: added.length };
 }
 
-function turnKey(turn: PageTurn | number[]): string {
-  return `${turn[0]}|${turn[1]}`;
-}
-
 /**
  * The records as they go into `volume-data.json` while the cloud does not (yet)
  * hold their turns as history: each live record carries its own turns plus
- * every turn history projects for it. Used when the provider cannot carry
- * history at all (mokuro-bunko, read-only) — turns keep travelling in the file
- * exactly as before the cut-over — and until this device's converted turns are
- * confirmed uploaded. Never written back into the store.
+ * the turns history projects for it. Never written back into the store.
+ *
+ * Which turns depends on whether the provider syncs history. Where it does
+ * (`historySyncs`), only the CONVERTED turns ride — until this device's
+ * `legacy.events` is confirmed uploaded, the file is their only cloud copy.
+ * Native views travel as this device's own months; put into the file too,
+ * they would come back through the merge as turns and be converted into
+ * legacy events. Where it cannot carry history at all (mokuro-bunko < 0.8,
+ * read-only), the file is the only copy that reaches other devices, so every
+ * projected turn rides exactly as before the cut-over.
  */
 export async function attachProjectedTurns(
-  records: Record<string, VolumeData>
+  records: Record<string, VolumeData>,
+  { historySyncs }: { historySyncs: boolean }
 ): Promise<Record<string, VolumeData>> {
   const out: Record<string, VolumeData> = {};
   for (const [volume, record] of Object.entries(records)) {
@@ -115,15 +128,11 @@ export async function attachProjectedTurns(
       out[volume] = record;
       continue;
     }
-    const projected = projectedTurnsOf(volume, record);
-    if (projected === record.recentPageTurns || projected.length === 0) {
-      out[volume] = record;
-      continue;
-    }
-    const byKey = new Map<string, PageTurn>();
-    for (const turn of [...record.recentPageTurns, ...projected]) byKey.set(turnKey(turn), turn);
-    const turns = [...byKey.values()].sort((a, b) => a[0] - b[0]);
-    out[volume] = new VolumeData({ ...record, recentPageTurns: turns });
+    const turns = projectedTurnsOf(volume, record, { legacyOnly: historySyncs });
+    out[volume] =
+      turns === record.recentPageTurns
+        ? record
+        : new VolumeData({ ...record, recentPageTurns: turns });
   }
   return out;
 }

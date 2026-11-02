@@ -1,5 +1,5 @@
 import { browser } from '$app/environment';
-import { writable, type Readable } from 'svelte/store';
+import { get, writable, type Readable } from 'svelte/store';
 import type {
   PublicClientApplication,
   AccountInfo,
@@ -28,6 +28,20 @@ class OneDriveTokenManager {
 
   get needsAttention(): Readable<boolean> {
     return this.needsAttentionStore;
+  }
+
+  /**
+   * Set the reconnect flag, and publish a change: the navbar's banner and the
+   * cloud screen read the provider manager's status, which only moves when
+   * asked, so a flag kept here alone never reached them.
+   */
+  private setNeedsAttention(value: boolean): void {
+    if (get(this.needsAttentionStore) === value) return;
+    this.needsAttentionStore.set(value);
+    // Imported late: the provider manager imports the providers.
+    void import('../../provider-manager').then(({ providerManager }) =>
+      providerManager.updateStatus()
+    );
   }
 
   private initPromise: Promise<void> | null = null;
@@ -205,11 +219,11 @@ class OneDriveTokenManager {
     try {
       const result = await this.instance.acquireTokenSilent(request);
       this.tokenStore.set(result.accessToken);
-      this.needsAttentionStore.set(false);
+      this.setNeedsAttention(false);
       return result.accessToken;
     } catch (error) {
       if (error instanceof this.msal.InteractionRequiredAuthError) {
-        this.needsAttentionStore.set(true);
+        this.setNeedsAttention(true);
       }
       throw error;
     }
@@ -217,7 +231,7 @@ class OneDriveTokenManager {
 
   /** Flag the session as needing user re-authentication (e.g. Graph 401). */
   markNeedsAttention(): void {
-    this.needsAttentionStore.set(true);
+    this.setNeedsAttention(true);
   }
 
   /**

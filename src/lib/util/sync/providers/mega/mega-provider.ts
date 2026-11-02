@@ -400,6 +400,11 @@ export class MegaProvider implements SyncProvider {
       localStorage.removeItem(STORAGE_KEYS.SESSION);
       // Keep active_cloud_provider so the UI still shows MEGA in a needs-attention state.
     }
+    // The navbar's banner and the cloud screen read the provider manager's
+    // status, which moves only when asked. Imported late: it imports us.
+    void import('../../provider-manager').then(({ providerManager }) =>
+      providerManager.updateStatus()
+    );
   }
 
   /** Email captured for reconnect pre-fill (mirrors WebDAV's getLastUsername). */
@@ -1367,22 +1372,12 @@ export class MegaProvider implements SyncProvider {
           targetFolder = this.current(targetFolder);
           const children = await this.listFolder(targetFolder);
 
-          // Replace semantics: delete EVERY same-name copy (MEGA allows
-          // duplicate names, so racing uploads can leave several). Do NOT
-          // remove them from storage.files manually — the sc stream delivers
-          // the delete and megajs applies it. A copy can also be a ghost —
-          // deleted server-side but never evicted from storage.files by
-          // megajs — so a server "already gone" answer means converged, not
-          // failed.
+          // Replace semantics: EVERY same-name copy goes (MEGA allows duplicate
+          // names, so racing uploads can leave several) — but only once the new
+          // one landed (below): a failed upload (a full account) must not cost
+          // the cloud its only copy. MEGA keeps both meanwhile, and a reader
+          // listing them merges or takes the newest.
           const existingFiles = children.filter((f: any) => f.name === fileName && !f.directory);
-          for (const existingFile of existingFiles) {
-            await new Promise<void>((resolve, reject) => {
-              existingFile.delete(true, (error: Error | null) => {
-                if (error && !isMegaNotFoundError(error)) reject(error);
-                else resolve();
-              });
-            });
-          }
 
           // Upload new file. The completed node's `timestamp` is the SERVER's
           // epoch-seconds stamp — the same field `listCloudVolumes` maps to
@@ -1427,6 +1422,19 @@ export class MegaProvider implements SyncProvider {
               });
             }
           });
+          // Do NOT remove the old copies from storage.files manually — the sc
+          // stream delivers the delete and megajs applies it. A copy can also be
+          // a ghost — deleted server-side but never evicted from storage.files
+          // by megajs — so a server "already gone" answer means converged, not
+          // failed.
+          for (const existingFile of existingFiles) {
+            await new Promise<void>((resolve, reject) => {
+              existingFile.delete(true, (error: Error | null) => {
+                if (error && !isMegaNotFoundError(error)) reject(error);
+                else resolve();
+              });
+            });
+          }
           return uploadResult;
         },
         `Upload ${path} to MEGA`,
@@ -2134,21 +2142,24 @@ export class MegaProvider implements SyncProvider {
         await stateSynced;
       },
 
-      deleteFolder: async (folderId): Promise<void> => {
+      deleteFolder: async (folderId): Promise<boolean> => {
         const folder = this.findNodeById(folderId);
-        if (!folder) return;
+        // Already gone from this tree (another device removed it): nothing
+        // left to count as this run's removal.
+        if (!folder) return false;
         // The deduplicator judged it empty from THIS tree, which lags other
         // devices' uploads and packets still in flight — and a MEGA folder
-        // delete is recursive. Delete only what the server says is empty;
-        // otherwise reload, so the next pass moves what this tree missed.
+        // removal takes its contents with it. Remove only what the server says
+        // is empty; otherwise reload, so the next pass moves what this tree missed.
         const remaining = await this.serverFolderContentCount(folderId);
         if (remaining > 0) {
           // Still not empty after a reload and a second merge (another
-          // device keeps writing there): stop this run rather than reload
-          // the whole tree on each of the deduplicator's passes.
+          // device keeps writing there): give this group up for the run
+          // rather than reload the whole tree on each of the deduplicator's
+          // passes.
           if (keptOnce.has(folderId)) {
             throw new Error(
-              `MEGA dedup: duplicate folder ${folderId} still holds ${remaining} node(s) after a reload; stopping`
+              `MEGA dedup: duplicate folder ${folderId} still holds ${remaining} node(s) after a reload; giving up on it this run`
             );
           }
           keptOnce.add(folderId);
@@ -2156,18 +2167,16 @@ export class MegaProvider implements SyncProvider {
             `[MEGA] duplicate folder ${folderId} kept: server still reports ${remaining} node(s)`
           );
           await this.refreshTree();
-          return;
+          return false;
         }
-        const stateSynced = this.waitForNodeEvent(folder, 'delete');
-        await new Promise<void>((resolve, reject) => {
-          folder.delete(true, (error: Error | null) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
-        // No manual storage.files eviction: the sc packet unlinks it, which
-        // is all isLiveNode needs.
+        // The Rubbish Bin, never a permanent delete, as Drive and Bunko do: an
+        // upload that landed after the count above is still recoverable there.
+        const trash = this.storage?.trash;
+        if (!trash) throw new Error('MEGA dedup: no Rubbish Bin in the tree');
+        const stateSynced = this.waitForNodeEvent(folder, 'move');
+        await folder.moveTo(trash);
         await stateSynced;
+        return true;
       },
 
       trashFile: async (fileId): Promise<void> => {

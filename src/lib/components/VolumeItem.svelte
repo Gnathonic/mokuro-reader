@@ -238,13 +238,15 @@
   // Check if cloud cache is still loading (fetching with no files yet)
   let isCloudLoading = $derived(isFetchingCloud && totalCloudFiles === 0);
 
-  // Check if this volume is backed up to cloud
+  // Is this volume backed up? The ONE selector every backup surface asks
+  // (see BackupButton): the same folded resolution the backup queue uploads
+  // into, so a volume the cloud holds under its own spelling of the folder
+  // reads as backed up here too. `cloudFiles` is read for the dependency only.
   let cloudFile = $derived.by(() => {
-    const path = `${volume.series_title}/${volume.volume_title}.cbz`;
-    const seriesFiles = cloudFiles.get(volume.series_title) || [];
-    return seriesFiles.find((f) => f.path === path);
+    void cloudFiles;
+    return unifiedCloudManager.getCloudFile(volume.series_title, volume.volume_title);
   });
-  let isBackedUp = $derived(cloudFile !== undefined);
+  let isBackedUp = $derived(cloudFile !== null);
 
   // Time statistics
   let timeReadMinutes = $derived(figuresFor($readingStats, volume_uuid, volumeData).minutes);

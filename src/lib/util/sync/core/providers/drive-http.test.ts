@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   DriveHttpError,
   classifyDriveFailure,
+  driveErrorDomain,
   driveErrorReason,
   driveFailureOf,
   driveHttpErrorFromResponse,
@@ -43,12 +44,22 @@ describe('driveErrorReason', () => {
     expect(driveErrorReason({ error: { errors: [] } })).toBeUndefined();
     expect(driveErrorReason({ error: { errors: [{ reason: 7 }] } })).toBeUndefined();
   });
+
+  it('reads the domain beside the reason', () => {
+    expect(driveErrorDomain(QUOTA_BODY)).toBe('usageLimits');
+    expect(driveErrorDomain(JSON.stringify(QUOTA_BODY))).toBe('usageLimits');
+    expect(driveErrorDomain({ error: { errors: [{ reason: 'forbidden' }] } })).toBeUndefined();
+    expect(driveErrorDomain('nope')).toBeUndefined();
+  });
 });
 
 describe('classifyDriveFailure', () => {
   it.each([
+    // Drive's ONE storage-full reason (handle-errors guide).
     [403, 'storageQuotaExceeded', 'quota'],
-    [403, 'quotaExceeded', 'quota'],
+    // `quotaExceeded` is an API usage quota in Google's other APIs — it
+    // resets, so it is waited out like any other rate limit, never "full".
+    [403, 'quotaExceeded', 'rate-limit'],
     [429, undefined, 'rate-limit'],
     [429, 'rateLimitExceeded', 'rate-limit'],
     // A per-minute usage limit can carry the generic reason: every 429 waits.
@@ -56,13 +67,29 @@ describe('classifyDriveFailure', () => {
     [429, 'storageQuotaExceeded', 'rate-limit'],
     [403, 'userRateLimitExceeded', 'rate-limit'],
     [403, 'rateLimitExceeded', 'rate-limit'],
+    [403, 'dailyLimitExceeded', 'rate-limit'],
+    // domain `global`, not `usageLimits` — classified by reason, never by domain.
+    [403, 'sharingRateLimitExceeded', 'rate-limit'],
+    // Limits neither waiting nor a re-auth can lift: fail with the message.
+    [403, 'activeItemCreationLimitExceeded', 'limit'],
+    [403, 'numChildrenInNonRootLimitExceeded', 'limit'],
+    [403, 'myDriveHierarchyDepthLimitExceeded', 'limit'],
     [500, undefined, 'transient'],
     [502, undefined, 'transient'],
     [503, undefined, 'transient'],
     [504, undefined, 'transient'],
     [401, undefined, 'auth'],
+    [401, 'authError', 'auth'],
+    // Auth is an allow-list: a 403 re-authenticates only when its reason is
+    // absent or one a fresh token can fix.
     [403, undefined, 'auth'],
-    [403, 'insufficientFilePermissions', 'auth'],
+    [403, 'authError', 'auth'],
+    [403, 'insufficientPermissions', 'auth'],
+    [403, 'forbidden', 'auth'],
+    // Any other 403 reason is a refusal a re-auth cannot change.
+    [403, 'insufficientFilePermissions', 'other'],
+    [403, 'appNotAuthorizedToFile', 'other'],
+    [403, 'domainPolicy', 'other'],
     [404, 'notFound', 'other'],
     [400, undefined, 'other']
   ] as const)('%i %s -> %s', (status, reason, kind) => {
@@ -74,14 +101,19 @@ describe('classifyDriveFailure', () => {
 describe('Retry-After as Drive sends it', () => {
   it('reads delta-seconds', () => {
     expect(parseRetryAfterMs('7')).toBe(7000);
-    expect(parseRetryAfterMs('0')).toBe(0);
+    expect(parseRetryAfterMs('0.5')).toBe(500);
   });
 
   it('reads an HTTP-date relative to now', () => {
     const now = Date.parse('2026-10-29T12:00:00Z');
     expect(parseRetryAfterMs('Thu, 29 Oct 2026 12:00:10 GMT', now)).toBe(10_000);
-    // A date already past means "now", not a negative wait.
-    expect(parseRetryAfterMs('Thu, 29 Oct 2026 11:00:00 GMT', now)).toBe(0);
+  });
+
+  it('treats a zero or past value as absent, so the backoff applies instead of a 0 ms wait', () => {
+    const now = Date.parse('2026-10-29T12:00:00Z');
+    expect(parseRetryAfterMs('0')).toBeUndefined();
+    expect(parseRetryAfterMs('Thu, 29 Oct 2026 11:00:00 GMT', now)).toBeUndefined();
+    expect(parseRetryAfterMs('Thu, 29 Oct 2026 12:00:00 GMT', now)).toBeUndefined();
   });
 
   it('caps a long wait at the shared policy’s cap', () => {
@@ -113,6 +145,14 @@ describe('DriveHttpError', () => {
     expect(error.kind).toBe('other');
   });
 
+  it('carries the error domain when the body named one', async () => {
+    const response = new Response(JSON.stringify(QUOTA_BODY), { status: 403 });
+    const error = await driveHttpErrorFromResponse(response, 'Upload init failed');
+    expect(error.domain).toBe('usageLimits');
+    expect(new DriveHttpError(403, 'forbidden').domain).toBeUndefined();
+    expect(new DriveHttpError(403, 'forbidden', { domain: 'global' }).domain).toBe('global');
+  });
+
   it('is built from a fetch Response, reading the body reason and Retry-After', async () => {
     const response = new Response(
       JSON.stringify({ error: { errors: [{ reason: 'rateLimitExceeded' }] } }),
@@ -133,12 +173,15 @@ describe('DriveHttpError', () => {
 
 describe('driveRefusal', () => {
   it('a full account is the storage-full error; anything else stays as it is', () => {
-    const full = driveRefusal(new DriveHttpError(403, 'quotaExceeded'));
+    const full = driveRefusal(new DriveHttpError(403, 'storageQuotaExceeded'));
     expect(full).toBeInstanceOf(ProviderError);
     expect((full as ProviderError).code).toBe('QUOTA_EXCEEDED');
-    // A 429 naming `quotaExceeded` is a rate limit, not a full account.
-    const rate = new DriveHttpError(429, 'quotaExceeded');
+    // A 429 naming `storageQuotaExceeded` is a rate limit, not a full account.
+    const rate = new DriveHttpError(429, 'storageQuotaExceeded');
     expect(driveRefusal(rate)).toBe(rate);
+    // An API usage quota is not a full account.
+    const usage = new DriveHttpError(403, 'quotaExceeded');
+    expect(driveRefusal(usage)).toBe(usage);
     const limited = new DriveHttpError(403, 'userRateLimitExceeded');
     expect(driveRefusal(limited)).toBe(limited);
   });
@@ -190,10 +233,42 @@ describe('withDriveRetry', () => {
     await expect(withDriveRetry(fn, { sleep })).resolves.toBe('ok');
   });
 
+  it('falls back to the backoff when Retry-After was 0, instead of retrying back to back', async () => {
+    const { waits, sleep } = noSleep();
+    const fn = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new DriveHttpError(429, undefined, { retryAfterMs: 0 }))
+      .mockResolvedValueOnce('ok');
+    await expect(withDriveRetry(fn, { sleep, random: () => 0.5 })).resolves.toBe('ok');
+    expect(waits).toEqual([RETRY_BASE_DELAY_MS + Math.floor(0.5 * RETRY_JITTER_MS)]);
+  });
+
+  it('reports each wait with the attempt about to be made', async () => {
+    const { sleep } = noSleep();
+    const onWait = vi.fn();
+    const fn = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new DriveHttpError(429, undefined, { retryAfterMs: 5000 }))
+      .mockRejectedValueOnce(new DriveHttpError(503))
+      .mockResolvedValueOnce('ok');
+    await expect(withDriveRetry(fn, { sleep, random: () => 0.5, onWait })).resolves.toBe('ok');
+    expect(onWait.mock.calls).toEqual([
+      [5000, expect.objectContaining({ status: 429, kind: 'rate-limit' }), 2, MAX_RETRY_ATTEMPTS],
+      [
+        RETRY_BASE_DELAY_MS * 2 + Math.floor(0.5 * RETRY_JITTER_MS),
+        expect.objectContaining({ status: 503, kind: 'transient' }),
+        3,
+        MAX_RETRY_ATTEMPTS
+      ]
+    ]);
+  });
+
   it.each([
     ['quota', new DriveHttpError(403, 'storageQuotaExceeded')],
+    ['a Drive limit', new DriveHttpError(403, 'numChildrenInNonRootLimitExceeded')],
     ['auth', new DriveHttpError(401)],
-    ['other 403', new DriveHttpError(403)],
+    ['a bare 403', new DriveHttpError(403)],
+    ['a refused 403', new DriveHttpError(403, 'insufficientFilePermissions')],
     ['a non-HTTP error', new TypeError('Failed to fetch')]
   ])('does not retry %s', async (_label, error) => {
     const { sleep } = noSleep();
@@ -265,10 +340,13 @@ describe('Drive failure classification', () => {
     expect(isDriveRateLimit({ status: 500 })).toBe(false);
   });
 
-  it('a 403 storageQuotaExceeded or quotaExceeded is a full drive', () => {
+  it('only a 403 storageQuotaExceeded is a full drive', () => {
     expect(isDriveStorageFull({ status: 403, reason: 'storageQuotaExceeded' })).toBe(true);
-    expect(isDriveStorageFull({ status: 403, reason: 'quotaExceeded' })).toBe(true);
+    // An API usage quota resets: a rate limit, never "full".
+    expect(isDriveStorageFull({ status: 403, reason: 'quotaExceeded' })).toBe(false);
+    expect(isDriveRateLimit({ status: 403, reason: 'quotaExceeded' })).toBe(true);
     expect(isDriveStorageFull({ status: 403, reason: 'rateLimitExceeded' })).toBe(false);
+    expect(isDriveStorageFull({ status: 429, reason: 'storageQuotaExceeded' })).toBe(false);
     expect(isDriveStorageFull({ status: 429 })).toBe(false);
   });
 
@@ -284,7 +362,8 @@ describe('Drive failure classification', () => {
     expect(driveFailureOf(gapiError(403, 'rateLimitExceeded', { 'retry-after': '2' }))).toEqual({
       status: 403,
       reason: 'rateLimitExceeded',
-      retryAfterMs: 2000
+      retryAfterMs: 2000,
+      domain: 'usageLimits'
     });
     expect(driveFailureOf(gapiError(429, 'x', { 'Retry-After': '1' }))?.retryAfterMs).toBe(1000);
     expect(driveFailureOf(new DriveHttpError(429, undefined, { retryAfterMs: 300 }))).toEqual({

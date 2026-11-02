@@ -1,7 +1,7 @@
 import { get, writable, type Readable } from 'svelte/store';
 import type { PageTurn } from '$lib/settings/volume-data';
 import type { HistoryDexie } from './history-db';
-import { projectVolume } from './project-turns';
+import { nativeCoverage, projectVolume } from './project-turns';
 import { onEventsRecorded } from './record';
 import type { ReadingEvent } from './types';
 
@@ -21,7 +21,12 @@ const eventsByVolume = new Map<string, Map<string, ReadingEvent>>();
 let loaded = false;
 /** Events that arrive while the initial read is in flight; applied after it. */
 let arrivedWhileLoading: ReadingEvent[] | null = null;
+/** Volumes with new events since the last flush, and the subset whose turns changed. */
 let pendingVolumes: Set<string> | null = null;
+let pendingProjections = new Set<string>();
+
+/** Only these kinds shape the projection; the others decide position offers. */
+const shapesTurns = (event: ReadingEvent) => event.kind === 'page' || event.kind === 'forget';
 
 let resolveReady!: () => void;
 let ready = new Promise<void>((resolve) => (resolveReady = resolve));
@@ -51,6 +56,14 @@ export function getVolumeEvents(volume: string): ReadingEvent[] {
   return [...(eventsByVolume.get(volume)?.values() ?? [])];
 }
 
+/** Does any kept event of the volume satisfy `test`? No copy of the events. */
+export function someVolumeEvent(volume: string, test: (event: ReadingEvent) => boolean): boolean {
+  const events = eventsByVolume.get(volume);
+  if (!events) return false;
+  for (const event of events.values()) if (test(event)) return true;
+  return false;
+}
+
 type ChangeListener = (volumes: Set<string> | 'all') => void;
 const changeListeners = new Set<ChangeListener>();
 
@@ -73,6 +86,28 @@ function announce(volumes: Set<string> | 'all'): void {
 /** The volume's projected turns; `undefined` until loaded, or when it has none. */
 export function getHistoryTurns(volume: string): PageTurn[] | undefined {
   return loaded ? get(store).get(volume) : undefined;
+}
+
+/**
+ * The volume's turns projected from its LEGACY events alone (native views
+ * covering them still hide them); `undefined` until loaded, or when it has
+ * none. Computed on request — it is read once per sync, not per emission.
+ */
+export function getHistoryLegacyTurns(volume: string): PageTurn[] | undefined {
+  if (!loaded) return undefined;
+  const events = eventsByVolume.get(volume);
+  if (!events) return undefined;
+  const turns = projectVolume([...events.values()], { legacyOnly: true });
+  return turns.length > 0 ? turns : undefined;
+}
+
+/**
+ * Whether a native view of the volume covers a time (the spec's coverage
+ * rule), over the events loaded so far. Always `false` before the load.
+ */
+export function nativeCoverageOf(volume: string): (t: number) => boolean {
+  const events = loaded ? eventsByVolume.get(volume) : undefined;
+  return events ? nativeCoverage([...events.values()]) : () => false;
 }
 
 /** Full (re)load from the database — on start, and after a big import. */
@@ -126,6 +161,7 @@ onEventsRecorded((events) => {
   for (const event of events) {
     keep(event);
     pendingVolumes.add(event.volume);
+    if (shapesTurns(event)) pendingProjections.add(event.volume);
   }
   if (first) queueMicrotask(flushPending);
 });
@@ -142,18 +178,24 @@ export function flushHistoryTurns(): void {
 
 function flushPending(): void {
   const touched = pendingVolumes;
+  const reproject = pendingProjections;
   pendingVolumes = null;
+  pendingProjections = new Set();
   if (!touched || touched.size === 0) return;
-  store.update((current) => {
-    const next = new Map(current);
-    for (const volume of touched) {
-      const events = eventsByVolume.get(volume);
-      const turns = events ? projectVolume([...events.values()]) : [];
-      if (turns.length > 0) next.set(volume, turns);
-      else next.delete(volume);
-    }
-    return next;
-  });
+  // A `restart`/`position` event changes no turn: the version bump and the
+  // announcement are enough, and no subscriber sees a new Map for nothing.
+  if (reproject.size > 0) {
+    store.update((current) => {
+      const next = new Map(current);
+      for (const volume of reproject) {
+        const events = eventsByVolume.get(volume);
+        const turns = events ? projectVolume([...events.values()]) : [];
+        if (turns.length > 0) next.set(volume, turns);
+        else next.delete(volume);
+      }
+      return next;
+    });
+  }
   announce(touched);
 }
 
@@ -170,6 +212,7 @@ export function _resetHistoryTurns(): void {
   loaded = false;
   arrivedWhileLoading = null;
   pendingVolumes = null;
+  pendingProjections = new Set();
   ready = new Promise<void>((resolve) => (resolveReady = resolve));
   store.set(new Map());
 }

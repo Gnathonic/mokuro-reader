@@ -25,7 +25,9 @@ export function sleep(ms: number): Promise<void> {
 
 /**
  * A `Retry-After` value (delta-seconds or an HTTP date) in ms, capped at
- * {@link RETRY_AFTER_MAX_MS}. Undefined when absent or unreadable.
+ * {@link RETRY_AFTER_MAX_MS}. Undefined when absent or unreadable — and for
+ * zero or a date already past, which are "no advice": the caller backs off
+ * instead of re-sending at once to a server that just said no.
  */
 export function parseRetryAfterMs(
   value: string | null | undefined,
@@ -45,7 +47,8 @@ export function parseRetryAfterMs(
     if (!Number.isFinite(at)) return undefined;
     ms = at - now;
   }
-  return Math.min(Math.max(0, ms), RETRY_AFTER_MAX_MS);
+  if (!(ms > 0)) return undefined;
+  return Math.min(ms, RETRY_AFTER_MAX_MS);
 }
 
 /** The `Retry-After` of a fetch Response, in ms (see {@link parseRetryAfterMs}). */
@@ -66,7 +69,14 @@ export function backoffDelayMs(attempt: number, random: () => number = Math.rand
   return exponential + Math.floor(random() * RETRY_JITTER_MS);
 }
 
-/** The server's `Retry-After` when it gave one, else backoff. */
-export function retryDelayMs(attempt: number, retryAfter?: number): number {
-  return retryAfter ?? backoffDelayMs(attempt);
+/**
+ * The server's `Retry-After` when it gave a positive one, else backoff. A
+ * wait of 0 is no advice (see {@link parseRetryAfterMs}), whoever measured it.
+ */
+export function retryDelayMs(
+  attempt: number,
+  retryAfter?: number,
+  random: () => number = Math.random
+): number {
+  return retryAfter !== undefined && retryAfter > 0 ? retryAfter : backoffDelayMs(attempt, random);
 }

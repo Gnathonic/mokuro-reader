@@ -178,6 +178,12 @@ describe('upload failure classification', () => {
     expect(err.code).toBe('QUOTA_EXCEEDED');
     expect(err.isNetworkError).toBe(false);
     expect(err.message).toMatch(/storage is full/);
+
+    // A download through the same core passes it through the same way.
+    const download = await provider
+      .downloadFile({ fileId: 'f', name: 'v.cbz', path: 'S/v.cbz' } as never)
+      .catch((e) => e);
+    expect(download.code).toBe('QUOTA_EXCEEDED');
   });
 
   it('other 5xx failures stay retryable UPLOAD_FAILED', async () => {

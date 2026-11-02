@@ -1,11 +1,10 @@
-import { get } from 'svelte/store';
 import { parseMokuroFile } from '$lib/import/processing';
 import type { SeriesFileVolume } from '$lib/metadata/series-file';
 import { getSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import { groupSeriesSidecarFiles } from '$lib/metadata/cloud-sidecar-stamps';
 import type { Page, VolumeMetadata } from '$lib/types';
-import { currentView } from '$lib/util/hash-router';
+import { isVolumeOpen } from '$lib/util/hash-router';
 import { showSnackbar } from '$lib/util/snackbar';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import type {
@@ -130,12 +129,6 @@ function noteVerdict(volumeUuid: string, sha256: string): void {
 }
 
 // ---- planning ----
-
-/** Is this volume on screen right now (reader or its text view)? */
-function isVolumeOpen(volumeUuid: string): boolean {
-  const view = get(currentView) as { type?: string; volumeId?: string };
-  return (view.type === 'reader' || view.type === 'volume-text') && view.volumeId === volumeUuid;
-}
 
 function normalizeCloudPath(path: string): string {
   return path.replace(/^\/+|\/+$/g, '');

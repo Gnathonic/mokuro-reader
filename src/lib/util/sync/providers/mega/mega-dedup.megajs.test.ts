@@ -78,6 +78,17 @@ describe('merging duplicate mokuro-reader roots', () => {
     expect(await listed(provider)).toEqual(before);
   });
 
+  it('an emptied duplicate root goes to the Rubbish Bin, not away, as on Drive and in Bunko', async () => {
+    const roots = await fiveRootAccount();
+    const provider = await restoredProvider();
+
+    await folderDeduplicator.deduplicateAll('mega', provider.getFolderOperations());
+    await server.flush();
+
+    for (const root of roots.slice(1)) expect(inTrash(root), root).toBe(true);
+    expect(inTrash(roots[0])).toBe(false);
+  });
+
   it('an interrupted merge lists the whole library at every step and finishes on the next run', async () => {
     await fiveRootAccount();
     const provider = await restoredProvider();

@@ -35,23 +35,32 @@ function primaryAnchoredOnArchive(filename: string): boolean {
  * provider's non-auth `PERMISSION_DENIED`): bunko answers so for a layer id it
  * reserves (a case merge's `curated-<n>`, a 0.7.x `edit`), a library file this
  * account may not write (another account's series or volume), or one it cannot
- * anchor yet. Never a 401 (credentials), a
- * 5xx or a network failure — those fail the backup as before. Duck-typed: the
- * Worker sees plain upload errors carrying `status`.
+ * anchor yet. Never a 401 (credentials), a 5xx or a network failure — those
+ * fail the backup as before.
+ *
+ * Decided on the numeric `status` the error CARRIES, never on its message.
+ * Every upload path types its failures: the WebDAV core throws a
+ * `WebdavUploadError` (`status`, plus bunko's verdict `reason` — `no-volume`,
+ * a reserved id — which the caller's log line carries), Drive a
+ * `DriveHttpError` (`status` + `kind`), the main-thread providers a
+ * `ProviderError` (`code`). Matching "403" in a message once took the Drive
+ * core's `Upload failed: 403 Forbidden` — a rate limit or a full account, in
+ * a transient wrapper — for a refusal and silently dropped the layer. A
+ * Drive failure whose `kind` names a rate limit, quota, transient or auth
+ * cause is not a refusal either, whatever status it rode in on.
  */
 export function isLayerFileRefusal(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
-  const { status, code, isAuthError, message } = error as {
+  const { status, code, isAuthError, kind } = error as {
     status?: unknown;
     code?: unknown;
     isAuthError?: unknown;
-    message?: unknown;
+    kind?: unknown;
   };
   if (status === 401 || isAuthError === true) return false;
+  if (typeof kind === 'string' && kind !== 'other') return false;
   if (status === 403 || status === 409) return true;
-  if (code === 'PERMISSION_DENIED') return true;
-  // The main-thread WebDAV provider wraps the PUT's error in its message.
-  return typeof message === 'string' && /upload failed: (?:403|409)\b/i.test(message);
+  return code === 'PERMISSION_DENIED';
 }
 
 /**

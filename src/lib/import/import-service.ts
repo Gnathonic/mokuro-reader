@@ -1355,6 +1355,12 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
     const layerSplit = extractLayerEntries(picked);
     stashLayerEntries(layerSplit.layers);
     const entries = layerSplit.entries;
+    // A rule-v1 orphan (`Vol 1.GCV.mokuro`) is dropped before pairing, and the
+    // user is told why — left in, it was a generic "orphaned mokuro file".
+    for (const note of layerSplit.skipped) {
+      console.warn('[Import]', note);
+      getImportUiBridge().notify(note);
+    }
     let attachedLayers = 0;
     for (const layer of layerSplit.standalone) {
       const attached = await attachLayerFile(layer.file, { path: layer.path });
@@ -1378,7 +1384,9 @@ async function runImportFiles(files: File[], options?: ImportOptions): Promise<I
     }
 
     if (pairingResult.pairings.length === 0) {
-      if (attachedLayers === 0) getImportUiBridge().notify('No importable volumes found');
+      if (attachedLayers === 0 && layerSplit.skipped.length === 0) {
+        getImportUiBridge().notify('No importable volumes found');
+      }
       return result;
     }
     const batch = ++lastBatch;

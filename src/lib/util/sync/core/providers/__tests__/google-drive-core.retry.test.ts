@@ -296,12 +296,26 @@ describe('googleDriveCore.uploadFile', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('a 403 quotaExceeded on the media PUT is the same storage-full error', async () => {
+  it('a 403 storageQuotaExceeded on the media PUT is the same storage-full error', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(initOk());
-    xhrAnswers = [{ status: 403, body: errorBody('quotaExceeded') }];
+    xhrAnswers = [{ status: 403, body: errorBody('storageQuotaExceeded') }];
     const err = await googleDriveCore.uploadFile(UPLOAD_ARGS).catch((e: unknown) => e);
     expect((err as ProviderError).code).toBe('QUOTA_EXCEEDED');
     expect(xhrSent).toHaveLength(1);
+  });
+
+  it('a 403 quotaExceeded on the media PUT is an API usage quota: the session resumes', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(initOk()).mockResolvedValueOnce(resumeAt(0));
+    xhrAnswers = [
+      { status: 403, body: errorBody('quotaExceeded') },
+      { status: 200, body: JSON.stringify({ id: 'new-id' }) }
+    ];
+
+    const done = googleDriveCore.uploadFile(UPLOAD_ARGS);
+    await vi.runAllTimersAsync();
+    await expect(done).resolves.toMatchObject({ fileId: 'new-id' });
+    expect(initCalls()).toHaveLength(1);
+    expect(xhrSent).toHaveLength(2);
   });
 
   it('a 403 insufficientPermissions is not retried', async () => {

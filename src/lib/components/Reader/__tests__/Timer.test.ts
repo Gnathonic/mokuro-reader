@@ -137,3 +137,29 @@ describe('Timer past the cap (phase 3b)', () => {
     expect(getByRole('button').textContent).toMatch(/Minutes read: 3/);
   });
 });
+
+describe('Timer across visits (phase 3b)', () => {
+  // Leaving the reader ends its view: `endedView` holds it, the stats count
+  // it. A Timer mounted later for the same volume (reopened, or A → B → A)
+  // must not add that visit's view a second time on top of the counted figure.
+  it('ignores the ended view already in the store when it mounts', async () => {
+    countedMs.value = 8 * MIN; // the stats already include the 3 min view below
+    endedView.set({ volume: 'v1', ms: 3 * MIN });
+    const { getByRole } = render(Timer, { props: { volumeId: 'v1' } });
+    await tick();
+    expect(getByRole('button').textContent).toMatch(/Minutes read: 8/);
+  });
+
+  it('still adds a view that ends after it mounts', async () => {
+    countedMs.value = 8 * MIN;
+    endedView.set({ volume: 'v1', ms: 3 * MIN });
+    const { getByRole } = render(Timer, { props: { volumeId: 'v1' } });
+    await tick();
+    await ended(2 * MIN, false); // this visit's own page turn, not yet counted
+    expect(getByRole('button').textContent).toMatch(/Minutes read: 10/);
+    countedMs.value = 10 * MIN; // counted: not added twice
+    (readingStats as unknown as Writable<object>).update((s) => ({ ...s }));
+    await tick();
+    expect(getByRole('button').textContent).toMatch(/Minutes read: 10/);
+  });
+});
