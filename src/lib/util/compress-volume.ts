@@ -269,9 +269,9 @@ async function buildLayerSidecarsFromDb(
   return (
     layers
       // An untouched upgrade layer (`updated-ocr`: the cloud's own primary,
-      // mirrored for an edited volume; `previous-ocr`: the local primary an
-      // upgrade replaced) is never written out as a layer file — not beside a
-      // cloud archive, and not into one (this also serves Local Folder). Nor
+      // mirrored for an edited volume) is never written out as a layer file —
+      // not beside a cloud archive, and not into one (this also serves Local
+      // Folder). Nor
       // the editor's `original` snapshot to a server that compiles its own
       // metadata (`layerStaysLocal`).
       .filter((layer) => !layerStaysLocal(layer, serverCompilesMetadata))

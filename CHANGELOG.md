@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- OCR upgrades no longer keep a "Previous OCR" layer
+
 ## [1.10.0] - 2026-10-02
 
 ### Added

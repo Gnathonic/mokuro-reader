@@ -470,8 +470,8 @@ export function layerNeedsPush(
 ): boolean {
   // The cloud's own primary sidecar, mirrored for an edited volume by the OCR
   // upgrade (pushing it would publish the primary a second time as a layer),
-  // the local primary an upgrade replaced (a device-local keepsake), or the
-  // editor's `original` snapshot on a server that keeps primary edits local.
+  // or the editor's `original` snapshot on a server that keeps primary edits
+  // local.
   if (layerStaysLocal(row, serverCompilesMetadata)) return false;
   if (row.cloud && row.cloud.provider === providerType && !editedSinceSync(row)) return false;
   if (!file) return true;

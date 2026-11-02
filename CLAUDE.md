@@ -434,21 +434,14 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   the primary is replaced wholesale on the volume's OWN image names
   (`fitPagesToVolume`), with `mokuro_version`, `character_count`,
   `page_char_counts` and the hash.
-- **Provenance of an unedited primary.** Replaced either way (the owner wants
-  pre-existing OCR upgraded), but what is kept depends on where it came from.
-  Attested as THIS cloud's file (`mokuro_sha256` + a `mokuro_sha256_cloud`
-  naming the current provider) → it is only an older revision of the cloud's
-  own file: replaced outright. Anything else — a local re-import after
-  re-running mokuro, an archive's EMBEDDED `.mokuro`, a legacy row with no
-  hash, an attestation for another provider — may be OCR the cloud never had:
-  first kept as the local `previous-ocr` layer ("Previous OCR", kind `ocr`,
-  `source_sha256` = the replaced hash when there was one, `source_at` =
-  `updated_at`). While untouched it follows the same rules as an untouched
-  `updated-ocr` (`isUntouchedUpgradeLayer`, `mokuro-hash.ts`): never pushed
-  (`layerNeedsPush`), never exported or embedded (`compress-volume.ts`,
-  `volume-sidecars.ts`), and a later replacement overwrites it in place. Once
-  the user edits it, it is theirs: the next keepsake goes under
-  `previous-ocr-2`, `-3`, ….
+- **Provenance of an unedited primary.** Does not matter: it is replaced
+  outright, whether it is attested as THIS cloud's file or came from anywhere
+  else (a local re-import, an archive's EMBEDDED `.mokuro`, a legacy row with
+  no hash, another provider's attestation). Nothing of it is kept. v1.10.0
+  kept such a primary as a device-local "Previous OCR" layer (`previous-ocr`,
+  `previous-ocr-<n>`); every start deletes the untouched ones, both rows,
+  chosen from metadata alone (`deleteRetiredPreviousOcrLayers`,
+  `layer-store.ts`) — edited ones stay as ordinary layers.
 - **A replacement drops the snapshots it made stale.** An unedited row can
   still hold an `original` layer (the pre-edit snapshot of the OLD OCR, from
   layer-sync or a reinstall) and an untouched `updated-ocr`; after the swap,
