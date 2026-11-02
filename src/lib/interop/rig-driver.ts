@@ -71,6 +71,7 @@ import { backupQueue, backupQueueSettled } from '$lib/util/backup-queue';
 import { downloadQueue } from '$lib/util/download-queue';
 import { nav } from '$lib/util/hash-router';
 import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
+import { waitFor } from '$lib/util/store-wait';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { executeRenameSeries } from '$lib/util/series-rename';
 import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
@@ -177,14 +178,7 @@ async function idle(): Promise<void> {
     [unifiedCloudManager.isSyncing, unifiedCloudManager.isFetching],
     ([syncing, fetching]) => syncing || fetching
   );
-  await new Promise<void>((resolve) => {
-    // subscribe() calls back before it returns the unsubscriber.
-    const unsubscribe = busy.subscribe((b) => {
-      if (b) return;
-      resolve();
-      queueMicrotask(() => unsubscribe());
-    });
-  });
+  await waitFor(busy, (b) => !b);
 }
 
 /**
@@ -312,13 +306,7 @@ async function download(volume: VolumeMetadata): Promise<void> {
   if (!queued(get(downloadQueue))) {
     throw new Error(`${volume.volume_title} could not be queued for download`);
   }
-  await new Promise<void>((resolve) => {
-    const unsubscribe = downloadQueue.subscribe((q) => {
-      if (queued(q)) return;
-      resolve();
-      queueMicrotask(() => unsubscribe());
-    });
-  });
+  await waitFor(downloadQueue, (q) => !queued(q));
 }
 
 /**

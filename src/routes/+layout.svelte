@@ -51,7 +51,11 @@
 
   // The interop rig's driver (`__mokuroInterop`), in a hooked build only: the
   // constant is false in production, so the import and its chunk are dropped.
-  if (CLOUD_TEST_HOOKS && browser) import('$lib/interop/rig-driver').then((m) => m.install());
+  if (CLOUD_TEST_HOOKS && browser) {
+    import('$lib/interop/rig-driver')
+      .then((m) => m.install())
+      .catch((error) => console.error('[interop] rig driver failed to load', error));
+  }
 
   // Migration state
   let migrationNeeded: 1 | 2 | null = $state(null);

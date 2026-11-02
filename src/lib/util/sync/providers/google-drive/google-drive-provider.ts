@@ -13,6 +13,7 @@ import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file'
 import { isHistoryFileName } from '$lib/reading-history/paths';
 import { driveHistoryPath } from './drive-history-path';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
+import { waitFor } from '$lib/util/store-wait';
 import {
   driveApiClient,
   escapeNameForDriveQuery
@@ -237,25 +238,11 @@ class GoogleDriveProvider implements SyncProvider {
       // Request OAuth token with full consent screen (initial login)
       tokenManager.requestNewToken(true);
 
-      // Wait for token to be set
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Login timeout'));
-        }, 60000); // 60 second timeout
-
-        // A store calls back from INSIDE subscribe() with its current value,
-        // before `unsubscribe` is assigned: a token that is already set (a
-        // token client that answered synchronously) unsubscribes after it.
-        let unsubscribe: (() => void) | null = null;
-        let done = false;
-        unsubscribe = tokenManager.token.subscribe((token) => {
-          if (!token || done) return;
-          done = true;
-          clearTimeout(timeout);
-          unsubscribe?.();
-          resolve();
-        });
-        if (done) unsubscribe();
+      // Wait for the token to be set — possibly already (a token client that
+      // answered synchronously): `waitFor` takes the current value too.
+      await waitFor(tokenManager.token, (token) => !!token, {
+        timeoutMs: 60_000,
+        timeoutMessage: 'Login timeout'
       });
 
       // Set the active provider key for lazy loading on next startup
