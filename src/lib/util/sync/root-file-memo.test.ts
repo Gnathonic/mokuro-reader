@@ -166,13 +166,45 @@ describe('readRootFile', () => {
     expect(noStat.downloadFile).toHaveBeenCalledWith(listed('/v'));
   });
 
-  it('is cleared with the listing (logout, provider switch, cache clear)', async () => {
+  it('clearRootFileMemo forgets every file (its wiring: cache-manager.test.ts)', async () => {
     const server = fakeServer();
     server.write('/v', '{"a":1}');
     await readRootFile(server.provider, listed('/v'));
     clearRootFileMemo();
     await readRootFile(server.provider, listed('/v'));
     expect(server.downloadFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('is bounded to 16 files, evicting the least recently read; a hit makes a file newest', async () => {
+    const server = fakeServer();
+    const ids = Array.from({ length: 17 }, (_, i) => `/copy-${i}`);
+    for (const id of ids) server.write(id, `{"id":"${id}"}`);
+
+    // Memoize the first 16, then touch /copy-0 so /copy-1 is now the oldest.
+    for (const id of ids.slice(0, 16)) await readRootFile(server.provider, listed(id));
+    expect(rootFileMemoSize()).toBe(16);
+    await readRootFile(server.provider, listed('/copy-0'));
+    expect(server.downloadFile).toHaveBeenCalledTimes(16); // a hit, not a download
+
+    // The 17th evicts exactly one entry: the least recently READ one.
+    await readRootFile(server.provider, listed('/copy-16'));
+    expect(rootFileMemoSize()).toBe(16);
+    expect(server.downloadFile).toHaveBeenCalledTimes(17);
+
+    // /copy-0 survived its age because it was read again …
+    await readRootFile(server.provider, listed('/copy-0'));
+    expect(server.downloadFile).toHaveBeenCalledTimes(17);
+    // … and every other survivor is still a hit.
+    for (const id of ids.slice(2)) await readRootFile(server.provider, listed(id));
+    expect(server.downloadFile).toHaveBeenCalledTimes(17);
+
+    // /copy-1 was the one evicted: reading it downloads again.
+    await readRootFile(server.provider, listed('/copy-1'));
+    expect(server.downloadFile).toHaveBeenCalledTimes(18);
+    expect(server.downloadFile).toHaveBeenLastCalledWith(listed('/copy-1'), undefined, {
+      knownSize: server.files.get('/copy-1')!.stamp.size
+    });
+    expect(rootFileMemoSize()).toBe(16);
   });
 });
 
