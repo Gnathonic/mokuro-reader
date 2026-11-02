@@ -445,6 +445,28 @@ describe('UnifiedCloudManager rename operations', () => {
     ]);
   });
 
+  it('a layer spelled like NEITHER of two folded-alike archives has ONE owner, whatever the listing order', async () => {
+    const file = (path: string): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: 't',
+      size: 1
+    });
+    let files = [file('S/Vol 3.cbz'), file('S/VOL 3.cbz'), file('S/vol 3.hayai.mokuro')];
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const managed = (volume: string) =>
+      unifiedCloudManager.getManagedCloudFilesForVolume('S', volume).map((f) => f.path);
+    // The same owner layer sync files it under (`layerOwnerArchive`): the
+    // naturalSort-first of the archives that fold alike — never both volumes.
+    expect(managed('VOL 3')).toEqual(['S/VOL 3.cbz', 'S/vol 3.hayai.mokuro']);
+    expect(managed('Vol 3')).toEqual(['S/Vol 3.cbz']);
+    files = [...files].reverse();
+    expect(managed('VOL 3')).toEqual(['S/VOL 3.cbz', 'S/vol 3.hayai.mokuro']);
+    expect(managed('Vol 3')).toEqual(['S/Vol 3.cbz']);
+  });
+
   it('a rename MOVES the layer files to the new name and never deletes them', async () => {
     const cache = loadedCache();
     const provider = makeRenameProvider();

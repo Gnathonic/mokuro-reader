@@ -33,10 +33,11 @@ import { providerManager } from '$lib/util/sync/provider-manager';
 import {
   cbzStemsOf,
   classifyMokuroSidecar,
-  foldStem,
   isCbzFile,
+  layerOwnerArchive,
   layerSidecarName
 } from '$lib/util/sync/syncable-file';
+import { naturalSort } from '$lib/util/natural-sort';
 import { isoToEpochSeconds } from './cloud-sidecar-stamps';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 
@@ -99,19 +100,6 @@ export interface ListedLayerFile {
   copies: Array<{ file: CloudFileMetadata; gz: boolean }>;
 }
 
-/** The archive stems of a folder, keyed folded (`foldStem`) → spelled as listed. */
-function archiveStemsOf(files: CloudFileMetadata[]): Map<string, string> {
-  const spelled = new Map<string, string>();
-  for (const file of files) {
-    const name = basename(file.path);
-    if (isCbzFile(name)) {
-      const stem = name.slice(0, -4);
-      spelled.set(foldStem(stem), stem);
-    }
-  }
-  return spelled;
-}
-
 /**
  * Every layer file in a listing, classified per folder by archive presence
  * (see `classifyMokuroSidecar`). Files nested deeper than `<Series>/<file>`
@@ -127,8 +115,7 @@ export function collectLayerFiles(
     const oneDeep = files.filter((f) => normalizeCloudPath(f.path).split('/').length === 2);
     if (oneDeep.length === 0) continue;
     const folderTitle = normalizeCloudPath(oneDeep[0].path).split('/')[0];
-    const stems = archiveStemsOf(oneDeep);
-    // Every spelling, not just the one `stems` keeps per folded key.
+    // Every archive spelling: two archives that fold alike are two volumes.
     const archiveSpellings = new Set(
       oneDeep
         .map((f) => basename(f.path))
@@ -140,11 +127,11 @@ export function collectLayerFiles(
     for (const file of oneDeep) {
       const cls = classifyMokuroSidecar(basename(file.path), cbzStems);
       if (cls.kind !== 'layer') continue;
-      // The archive spelled exactly like the layer's stem owns it before one
-      // that only folds alike (sidecar names rule v1 #6).
-      const stem = archiveSpellings.has(cls.stem)
-        ? cls.stem
-        : (stems.get(foldStem(cls.stem)) ?? cls.stem);
+      // ONE owner per layer file, the same one `unified-cloud-manager.ts`
+      // sweeps it with: the archive spelled exactly like the stem, else the
+      // naturalSort-first of those that fold alike (rule v1 #6) — never the
+      // archive the listing happened to return last.
+      const stem = layerOwnerArchive(cls.stem, archiveSpellings) ?? cls.stem;
       const key = `${stem}\u0000${cls.layerId}`;
       const existing = seen.get(key);
       const copies = [...(existing?.copies ?? []), { file, gz: cls.gz }];
@@ -506,6 +493,53 @@ function providerIsWritable(provider: SyncProvider): boolean {
 /** Same key every "which row is this cloud file" question uses. */
 function rowKey(volumeTitle: string): string {
   return normalizeVolumeTitleKey(volumeTitle);
+}
+
+/**
+ * The archive a local row is the volume OF, among a folder's archive stems as
+ * listed: spelled exactly like the row's title, else the naturalSort-first of
+ * those whose title folds alike — the pick `getManagedCloudFilesForVolume`
+ * makes. Two archives that fold alike (`Vol 1.cbz` and `vol 1.cbz`, on
+ * case-sensitive storage) are two volumes that `rowsInFolder` folds onto ONE
+ * row; the row owns the layers of exactly one of them.
+ */
+function ownArchiveOfRow(volumeTitle: string, archiveStems: Iterable<string>): string | undefined {
+  const key = rowKey(volumeTitle);
+  let best: string | undefined;
+  for (const stem of archiveStems) {
+    if (stem === volumeTitle) return stem;
+    if (rowKey(stem) !== key) continue;
+    if (best === undefined || naturalSort(stem, best) < 0) best = stem;
+  }
+  return best;
+}
+
+/** A folder's archive stems as listed (`Vol 1` of `Series/Vol 1.cbz`), every spelling. */
+function archiveSpellingsOf(files: CloudFileMetadata[]): string[] {
+  const out: string[] = [];
+  for (const file of files) {
+    const name = basename(file.path);
+    if (isCbzFile(name)) out.push(name.slice(0, -4));
+  }
+  return out;
+}
+
+/**
+ * A row's own archive stem in a cached listing (`ownArchiveOfRow` over the
+ * folder that folds to the row's series), or undefined when the listing shows
+ * no archive for it — an unloaded or stale cache shows nothing for every file.
+ */
+function ownArchiveInListing(
+  listing: Map<string, CloudFileMetadata[]>,
+  row: Pick<VolumeMetadata, 'series_title' | 'volume_title'>
+): string | undefined {
+  const seriesKey = normalizeSeriesKey(row.series_title);
+  for (const [folder, files] of listing) {
+    if (normalizeSeriesKey(folder) !== seriesKey) continue;
+    const own = ownArchiveOfRow(row.volume_title, archiveSpellingsOf(files));
+    if (own !== undefined) return own;
+  }
+  return undefined;
 }
 
 /**
@@ -929,18 +963,30 @@ async function planFolder(
     }
     return [];
   }
-  const archives = archiveStemsOf(files);
+  const archives = archiveSpellingsOf(files);
   const transfers: Transfer[] = [];
+  // A listed layer belongs to a row only when its owner archive (as
+  // `collectLayerFiles` resolved it) IS the row's own archive. Two archives
+  // that fold alike are two volumes on one local row: the other spelling's
+  // layers are neither pulled onto this row nor deleted with its tombstones,
+  // so a deleted layer cannot come back carrying the other archive's text.
+  const ownArchives = new Map<string, string | undefined>();
+  const rowByArchive = new Map<string, VolumeMetadata>();
+  for (const row of rows.values()) {
+    const own = ownArchiveOfRow(row.volume_title, archives);
+    ownArchives.set(row.volume_uuid, own);
+    if (own !== undefined) rowByArchive.set(own, row);
+  }
   const listedByRow = new Map<string, Map<string, ListedLayerFile>>();
   for (const listed of layerFiles) {
-    const row = rows.get(rowKey(listed.stem));
+    const row = rowByArchive.get(listed.stem);
     if (!row) continue;
     let perRow = listedByRow.get(row.volume_uuid);
     if (!perRow) listedByRow.set(row.volume_uuid, (perRow = new Map()));
     perRow.set(listed.layerId, listed);
   }
   for (const row of rows.values()) {
-    const archiveStem = archives.get(rowKey(row.volume_title));
+    const archiveStem = ownArchives.get(row.volume_uuid);
     const local = localByVolume.get(row.volume_uuid) ?? [];
     await refileKnownEngineRows(local);
     const localById = new Map(local.map((l) => [l.layer_id, l]));
@@ -1135,9 +1181,9 @@ export async function pullLayersForVolume(
     if (!provider || provider.type !== providerType) return 0;
     const listing = listingFromCache(providerType);
     const seriesKey = normalizeSeriesKey(row.series_title);
-    const titleKey = rowKey(row.volume_title);
+    const own = ownArchiveInListing(listing, row);
     const mine = collectLayerFiles(listing).filter(
-      (l) => normalizeSeriesKey(l.folderTitle) === seriesKey && rowKey(l.stem) === titleKey
+      (l) => normalizeSeriesKey(l.folderTitle) === seriesKey && l.stem === own
     );
     const tombstoned = pendingDeletesFor(providerType).get(volumeUuid);
     let pulled = 0;
@@ -1281,23 +1327,20 @@ export async function deleteLayerFileInCloud(
     if (!provider) return 'unconfirmed';
     if (layer.cloud && layer.cloud.provider !== provider.type) return 'unconfirmed';
     const seriesKey = normalizeSeriesKey(row.series_title);
-    const titleKey = rowKey(row.volume_title);
     const listing = listingFromCache(provider.type);
+    // The row's OWN archive, as `planFolder` picks it: a same-id layer of an
+    // archive that merely folds alike is another volume's file.
+    const own = ownArchiveInListing(listing, row);
     const listed = collectLayerFiles(listing).find(
       (l) =>
         normalizeSeriesKey(l.folderTitle) === seriesKey &&
-        rowKey(l.stem) === titleKey &&
+        l.stem === own &&
         l.layerId === layer.layer_id
     );
     if (!listed) {
       // "Not listed" is only proof from a cache that covers this volume — an
       // unloaded or stale cache shows nothing for every file.
-      const covered = [...listing.entries()].some(
-        ([folder, files]) =>
-          normalizeSeriesKey(folder) === seriesKey &&
-          [...archiveStemsOf(files).values()].some((stem) => rowKey(stem) === titleKey)
-      );
-      return covered ? 'gone' : 'unconfirmed';
+      return own !== undefined ? 'gone' : 'unconfirmed';
     }
     if (!providerIsWritable(provider)) return 'unconfirmed';
     return (await deleteListedLayerFile(provider, listed)) ? 'gone' : 'unconfirmed';

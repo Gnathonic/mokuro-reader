@@ -79,7 +79,7 @@ import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/s
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 import { syncLayersFromListing } from '$lib/metadata/layer-sync';
 import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
-import { cbzStemsOf, classifyMokuroSidecar, isCbzFile } from './syncable-file';
+import { cbzStemsOf, classifyMokuroSidecar, isCbzFile, layerOwnerArchive } from './syncable-file';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
@@ -108,17 +108,20 @@ function layerFilesOfVolume(
   // which may differ from the listing (decomposed, another case); measured
   // against that, the volume's own layers would read as another archive's and
   // a rename would delete them as "the stale .mokuro". Same pick as
-  // `getManagedCloudFilesForVolume`: exact first, else the first folded match.
+  // `getManagedCloudFilesForVolume` and layer sync's `ownArchiveOfRow`: exact
+  // first, else the naturalSort-first folded match.
   const own = spelled.has(volumeBaseName)
     ? volumeBaseName
     : [...spelled].filter((stem) => normalizeVolumeTitleKey(stem) === key).sort(naturalSort)[0];
   const out: Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> = [];
+  if (own === undefined) return [];
   for (const file of folderFiles) {
     const cls = classifyMokuroSidecar(basenameOfPath(file.path), stems);
     if (cls.kind !== 'layer') continue;
-    if (cls.stem !== volumeBaseName && cls.stem !== own) {
-      if (spelled.has(cls.stem) || normalizeVolumeTitleKey(cls.stem) !== key) continue;
-    }
+    // The ONE archive that owns this layer file — the rule layer sync files
+    // it under (`layerOwnerArchive`), so a layer spelled like neither of two
+    // folded-alike archives is exactly one volume's, whatever the listing order.
+    if (layerOwnerArchive(cls.stem, spelled) !== own) continue;
     out.push({ file, layerId: cls.layerId, gz: cls.gz });
   }
   return out;
