@@ -305,6 +305,9 @@ describe('WebDAVProvider write-permission fallback (OPTIONS Allow on the library
     expect(await check('OPTIONS, GET, HEAD, PROPFIND')).toBe(false);
     // COPY only reads its source, and LOCK/UNLOCK come with class 2: still read-only.
     expect(await check('OPTIONS, GET, HEAD, PROPFIND, COPY, LOCK, UNLOCK')).toBe(false);
+    // PROPPATCH changes only properties: a server lets a read-only account
+    // keep dead properties, and no upload can follow from it.
+    expect(await check('GET, HEAD, PROPFIND, PROPPATCH')).toBe(false);
   });
 
   it('reads a collection Allow without PUT or MKCOL (as Bunko sends) as writable', async () => {
@@ -324,10 +327,11 @@ describe('WebDAVProvider write-permission fallback (OPTIONS Allow on the library
   });
 
   it('any single collection write method is enough, in any case', () => {
-    for (const m of ['put', 'MKCOL', 'Delete', 'MOVE', 'PROPPATCH']) {
+    for (const m of ['put', 'MKCOL', 'Delete', 'MOVE']) {
       expect(allowHeaderPermitsCollectionWrite(`GET, ${m}`)).toBe(true);
     }
     expect(allowHeaderPermitsCollectionWrite('GET, HEAD')).toBe(false);
+    expect(allowHeaderPermitsCollectionWrite('GET, PROPPATCH')).toBe(false);
     expect(allowHeaderPermitsCollectionWrite(null)).toBeNull();
   });
 
@@ -368,6 +372,14 @@ describe('WebDAVProvider write-permission probe (PROPFIND current-user-privilege
   it('bind or unbind on the folder (add or remove members) is writable', async () => {
     expect(await check('read', 'bind')).toBe(true);
     expect(await check('read', 'unbind')).toBe(true);
+  });
+
+  it('write-content is writable; privileges that only share a prefix with write are not', async () => {
+    expect(await check('read', 'write-content')).toBe(true);
+    // Properties and the ACL are no upload (RFC 3744 §3.3, §3.8).
+    expect(await check('read', 'write-properties')).toBe(false);
+    expect(await check('read', 'write-acl')).toBe(false);
+    expect(await check('read', 'write-properties', 'write-acl')).toBe(false);
   });
 });
 

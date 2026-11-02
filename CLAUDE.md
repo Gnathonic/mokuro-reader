@@ -201,11 +201,12 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   `PUT_VERIFIED` recorded for the base URL, or an OPTIONS answering
   `X-Mokuro-Put: verified` — skips even that: bunko decides each request
   itself and its `Allow` is advisory. A generic server's guess reads the
-  library folder as a collection: DAV:write/all/bind/unbind in its privilege
-  set, else any of `COLLECTION_WRITE_METHODS` (PUT, MKCOL, DELETE, MOVE,
-  PROPPATCH) in its `Allow` — a collection never lists PUT and lists MKCOL
-  only while unmapped (RFC 4918). A real refusal still demotes through
-  `handleWriteFailure`.
+  library folder as a collection: DAV:write/write-content/all/bind/unbind in
+  its privilege set (whole names: write-properties and write-acl upload
+  nothing), else any of `COLLECTION_WRITE_METHODS` (PUT, MKCOL, DELETE, MOVE)
+  in its `Allow` — a collection never lists PUT and lists MKCOL only while
+  unmapped (RFC 4918), and PROPPATCH changes only properties, so it does not
+  count. A real refusal still demotes through `handleWriteFailure`.
 - **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
   a `serverCompilesMetadata` provider every listing runs
   `adoptCloudSeriesSpellings` (`util/sync/cloud-spelling-adoption.ts`): a local
