@@ -208,6 +208,35 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   every add/remove/install) and holding the archive records themselves, so a
   per-volume caller — hit or miss — costs O(1), not a pass over the listing.
 
+**Duplicate folders** (`folder-deduplicator.ts`, Drive and MEGA):
+
+- **Write root.** Of several `mokuro-reader` folders, one directly in My Drive /
+  the Cloud Drive first, then the oldest, then the smaller id (code-unit
+  compare) — `pickReaderFolder` (`drive-files-cache.ts`), `findMokuroFolder`
+  (MEGA). Every root is read; only same-parent roots merge, so a nested
+  `Backup/mokuro-reader` is never merged into the top-level one. Drive learns
+  which roots are top-level from a `'root' in parents` query, never
+  `files.get('root')` (a 404 under the app's `drive.file` scope); dedup
+  confirms a root as the write root only when it is the cache's same pick.
+- **Groups** are an exact name under one parent, within the library only
+  (`listFolders` keeps `mokuro-reader` folders and their descendants). The
+  kept folder is the oldest, then the smaller id (`compareByAge`).
+- **Same name on merge.** Folders, or a file beside a folder, move in and keep
+  the name twice; so do `dedupKeepsEveryCopy` files (volume-data.json,
+  goals.json, and bunko's control files `.mokuro-bunko.json` /
+  `.mokuro-queue.json`, exact names). Any other file: the strictly newer write
+  wins, a tie keeps the canonical copy, the loser goes to the TRASH.
+- **Folder removal.** `deleteFolder` asks the server whether the duplicate
+  still holds anything (Drive: a one-child query, not a listing) and removes
+  it (Drive: to the trash) only when empty, resolving whether it did so the
+  count is of real removals; a folder still holding anything is kept for the
+  next pass, and a second refusal throws, which gives up on that GROUP for
+  the rest of the run while the other groups still merge.
+  "Empty" on Drive means empty AS THE APP SEES IT: under `drive.file` the
+  re-list misses files the app did not create (dropped in through the Drive
+  web UI, written by another client), and those go to the trash with the
+  folder. Recoverable from the trash, but not a "never deletes files" promise.
+
 ### Svelte 5 Reactive Performance
 
 - `$derived` and `$derived.by()` run for EVERY component instance

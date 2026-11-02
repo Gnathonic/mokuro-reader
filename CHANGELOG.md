@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Google Drive trashes duplicate folders only once they are empty
+- Google Drive leaves your own same-named folders alone
 - mokuro-bunko: resetting a shelf's alignment now sticks
 - OCR layer files found on decomposed-name storage
 - mokuro-bunko: renaming a volume no longer duplicates OCR layers
