@@ -1514,6 +1514,60 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
+  /**
+   * The quick tier's listing of one subtree (`<mokuro folder>/<folder>`), by
+   * the same strategy and entry shape as `listCloudVolumes`: one
+   * `Depth: infinity` PROPFIND where the server allows it, else a walk.
+   */
+  async listFolder(
+    folder: string
+  ): Promise<import('../../provider-interface').CloudFileMetadata[]> {
+    if (!this.isAuthenticated() || !this.client) {
+      throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
+    }
+    const client = this.client;
+    const base = `${MOKURO_FOLDER}/${folder.replace(/^\/+|\/+$/g, '')}`;
+    type Item = { type: string; filename: string; lastmod: string; size: number };
+    const out: import('../../provider-interface').CloudFileMetadata[] = [];
+    const take = (item: Item) => {
+      if (item.type !== 'file') return;
+      const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
+      if (!isSyncableFile(relativePath)) return;
+      out.push({
+        provider: 'webdav',
+        fileId: item.filename,
+        path: relativePath,
+        modifiedTime: item.lastmod || new Date().toISOString(),
+        size: item.size || 0
+      });
+    };
+    const walk = async (path: string): Promise<void> => {
+      for (const item of (await client.getDirectoryContents(path)) as Item[]) {
+        if (item.type === 'directory') await walk(item.filename);
+        else take(item);
+      }
+    };
+    try {
+      if (this._supportsDepthInfinity !== false) {
+        try {
+          const items = (await client.getDirectoryContents(base, { deep: true })) as Item[];
+          items.forEach(take);
+          return out;
+        } catch (error) {
+          if ((error as { status?: number })?.status === 404) return [];
+          out.length = 0; // fall back to the walk
+        }
+      }
+      await walk(base);
+      return out;
+    } catch (error) {
+      if ((error as { status?: number })?.status === 404) return [];
+      const refused = this.refusedReadAuth(error);
+      if (refused) throw refused;
+      throw error;
+    }
+  }
+
   /** The cold probe's read: `<mokuro folder>/<name>` by path, no listing. */
   async readRootFileCopies(name: string): Promise<Blob[]> {
     try {

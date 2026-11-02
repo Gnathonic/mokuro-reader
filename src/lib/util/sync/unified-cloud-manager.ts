@@ -409,7 +409,7 @@ class UnifiedCloudManager {
    * moved it, leaving a ghost series in the catalog that no cleanup owns.
    */
   async fetchAllCloudVolumes(options?: { refreshIndexes?: boolean }): Promise<void> {
-    this.startColdPositionsProbe();
+    this.startQuickSync();
     await cacheManager.fetchAll();
     if (options?.refreshIndexes === false) return;
     this.refreshSeriesIndexesInBackground();
@@ -417,23 +417,23 @@ class UnifiedCloudManager {
 
   /**
    * The first listing of a session is the slow part of every cold start, and
-   * nothing that reads the listing can run until it lands. `positions.json`
-   * exists to answer "where did I stop?" before that: read it by path now,
-   * beside the listing (`probePositions`, read-only). Only when nothing is
+   * nothing that reads the listing can run until it lands. The QUICK tier
+   * (`quick-sync.ts`) fetches progress, positions and other devices' history
+   * by known path now, beside the listing, read-only. Only when nothing is
    * loaded yet — a warm cache's re-listing has the ordinary sync for that.
    * Every caller lists after its login finished, so the provider's per-user
    * gates are settled. Fire-and-forget; never fails the listing.
    */
-  private startColdPositionsProbe(): void {
+  private startQuickSync(): void {
     try {
       const provider = this.getActiveProvider();
       if (!provider?.readRootFileCopies) return;
       if (cacheManager.getCache(provider.type)?.isLoaded()) return;
-      void import('$lib/positions/positions-sync')
-        .then(({ probePositions }) => probePositions(provider))
-        .catch((error) => console.warn('[positions] cold probe failed:', error));
+      void import('./quick-sync')
+        .then(({ runQuickSync }) => runQuickSync(provider))
+        .catch((error) => console.warn('[quick-sync] could not start:', error));
     } catch (error) {
-      console.warn('[positions] cold probe failed:', error);
+      console.warn('[quick-sync] could not start:', error);
     }
   }
 

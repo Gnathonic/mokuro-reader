@@ -262,27 +262,7 @@ export class OneDriveProvider implements SyncProvider {
       return results;
     }
 
-    const walk = async (path: string): Promise<void> => {
-      const children = await listChildren(token, path);
-      for (const item of children) {
-        const childPath = path ? `${path}/${item.name}` : item.name;
-        if (item.folder) {
-          await walk(childPath);
-        } else if (item.file) {
-          const relative = childPath.replace(`${ONEDRIVE_CONFIG.MOKURO_FOLDER}/`, '');
-          if (!isSyncableFile(relative)) continue;
-          results.push({
-            provider: 'onedrive',
-            fileId: item.id,
-            path: relative,
-            modifiedTime: item.lastModifiedDateTime ?? new Date().toISOString(),
-            size: item.size ?? 0
-          });
-        }
-      }
-    };
-
-    await walk(ONEDRIVE_CONFIG.MOKURO_FOLDER);
+    await this.walkInto(token, ONEDRIVE_CONFIG.MOKURO_FOLDER, results);
     console.log(`✅ Listed ${results.length} files from OneDrive`);
     return results;
   }
@@ -333,6 +313,41 @@ export class OneDriveProvider implements SyncProvider {
     }
     console.log(`✅ Uploaded ${path} to OneDrive`);
     return uploaded;
+  }
+
+  /** Every syncable file below `path`, as listing entries (relative to the mokuro folder). */
+  private async walkInto(token: string, path: string, results: CloudFileMetadata[]): Promise<void> {
+    const children = await listChildren(token, path);
+    for (const item of children) {
+      const childPath = path ? `${path}/${item.name}` : item.name;
+      if (item.folder) {
+        await this.walkInto(token, childPath, results);
+      } else if (item.file) {
+        const relative = childPath.replace(`${ONEDRIVE_CONFIG.MOKURO_FOLDER}/`, '');
+        if (!isSyncableFile(relative)) continue;
+        results.push({
+          provider: 'onedrive',
+          fileId: item.id,
+          path: relative,
+          modifiedTime: item.lastModifiedDateTime ?? new Date().toISOString(),
+          size: item.size ?? 0
+        });
+      }
+    }
+  }
+
+  /** The quick tier's listing of one subtree — the listing's own walk, from there. */
+  async listFolder(folder: string): Promise<CloudFileMetadata[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
+    }
+    const token = await onedriveTokenManager.getAccessToken();
+    const path = `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${folder.replace(/^\/+|\/+$/g, '')}`;
+    const root = await getItemByPath(token, path);
+    if (!root?.folder) return [];
+    const results: CloudFileMetadata[] = [];
+    await this.walkInto(token, path, results);
+    return results;
   }
 
   /** The cold probe's read: the item by path, then its content — no walk. */

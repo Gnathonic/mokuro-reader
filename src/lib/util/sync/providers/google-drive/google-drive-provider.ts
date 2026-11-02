@@ -8,7 +8,7 @@ import type {
   UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
-import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
+import { isCbzFile, isSidecarFile, isRootConfigFile, isSyncableFile } from '../../syncable-file';
 import { isHistoryFileName } from '$lib/reading-history/paths';
 import { driveHistoryPath } from './drive-history-path';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
@@ -531,6 +531,58 @@ class GoogleDriveProvider implements SyncProvider {
     }
   }
 
+  private quickReaderIds: { at: number; ids: Promise<string[]> } | null = null;
+
+  /**
+   * Every live reader folder's id this account OWNS (duplicates included, as
+   * the listing sees them — it lists `'me' in owners` only). The quick tier's
+   * three reads start together: one lookup serves them all (30 s), a failed
+   * one is not kept.
+   */
+  private quickReaderFolderIds(): Promise<string[]> {
+    if (this.quickReaderIds && Date.now() - this.quickReaderIds.at < 30_000) {
+      return this.quickReaderIds.ids;
+    }
+    const ids = (async () => {
+      await this.ensureInitialized();
+      const folders = await driveApiClient.listFiles(
+        `name='${escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER)}' and ` +
+          `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false and 'me' in owners`,
+        'files(id)'
+      );
+      return folders.map((folder) => folder.id);
+    })();
+    const entry = { at: Date.now(), ids };
+    this.quickReaderIds = entry;
+    ids.catch(() => {
+      if (this.quickReaderIds === entry) this.quickReaderIds = null;
+    });
+    return ids;
+  }
+
+  /**
+   * `files.list` over children of `parentIds`, chunked so the query stays
+   * short. Owned files only — the full listing's own filter (`'me' in owners`),
+   * so a folder someone shared can never feed the quick tier what the listing
+   * would refuse.
+   */
+  private async childrenOf(parentIds: string[], clause: string, fields: string) {
+    const out: DriveFile[] = [];
+    for (let i = 0; i < parentIds.length; i += 40) {
+      const parents = parentIds
+        .slice(i, i + 40)
+        .map((id) => `'${id}' in parents`)
+        .join(' or ');
+      out.push(
+        ...(await driveApiClient.listFiles(
+          `(${parents}) and trashed=false and 'me' in owners${clause}`,
+          fields
+        ))
+      );
+    }
+    return out;
+  }
+
   /**
    * The cold probe's read, no listing: every reader folder (duplicates
    * included, as the listing would), then the file of that name in any of
@@ -540,17 +592,12 @@ class GoogleDriveProvider implements SyncProvider {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
     }
-    await this.ensureInitialized();
-    const folders = await driveApiClient.listFiles(
-      `name='${escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER)}' and ` +
-        `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
-      'files(id)'
-    );
-    if (folders.length === 0) return [];
-    const parents = folders.map((folder) => `'${folder.id}' in parents`).join(' or ');
-    const files = await driveApiClient.listFiles(
-      `name='${escapeNameForDriveQuery(name)}' and trashed=false and ` +
-        `mimeType!='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and (${parents})`,
+    const readers = await this.quickReaderFolderIds();
+    if (readers.length === 0) return [];
+    const files = await this.childrenOf(
+      readers,
+      ` and name='${escapeNameForDriveQuery(name)}' and ` +
+        `mimeType!='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}'`,
       'files(id, name)'
     );
     return Promise.all(
@@ -564,6 +611,56 @@ class GoogleDriveProvider implements SyncProvider {
         })
       )
     );
+  }
+
+  /**
+   * The quick tier's listing of `<reader>/<folder>/…` without the account-wide
+   * listing: one `files.list` per folder level (reader folders, the folder,
+   * then each level below), entries shaped exactly as the Drive files cache
+   * shapes them (`drive-files-cache.ts`), so stamps recorded from them hold.
+   */
+  async listFolder(folder: string): Promise<CloudFileMetadata[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+    const FOLDER = GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER;
+    const fields = 'files(id,name,mimeType,modifiedTime,size,parents,description)';
+    const readers = await this.quickReaderFolderIds();
+    if (readers.length === 0) return [];
+    const tops = await this.childrenOf(
+      readers,
+      ` and name='${escapeNameForDriveQuery(folder)}' and mimeType='${FOLDER}'`,
+      'files(id,name)'
+    );
+    const out: DriveFileMetadata[] = [];
+    // folder id -> its path below the reader root
+    let level = new Map<string, string>(tops.map((top) => [top.id, folder]));
+    for (let depth = 0; level.size > 0 && depth < 8; depth++) {
+      const next = new Map<string, string>();
+      const items = await this.childrenOf([...level.keys()], '', fields);
+      for (const item of items) {
+        const parentId = item.parents?.find((id) => level.has(id));
+        if (!parentId) continue;
+        const path = `${level.get(parentId)}/${item.name}`;
+        if (item.mimeType === FOLDER) {
+          next.set(item.id, path);
+          continue;
+        }
+        if (!isSyncableFile(path)) continue;
+        out.push({
+          provider: 'google-drive',
+          fileId: item.id,
+          name: item.name,
+          modifiedTime: item.modifiedTime || new Date().toISOString(),
+          size: item.size ? parseInt(String(item.size)) : 0,
+          path,
+          description: item.description,
+          parentId
+        });
+      }
+      level = next;
+    }
+    return out;
   }
 
   async downloadFile(

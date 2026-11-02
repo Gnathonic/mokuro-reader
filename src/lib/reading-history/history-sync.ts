@@ -98,6 +98,28 @@ export async function syncHistory(
 }
 
 /**
+ * The quick tier's half of `syncHistory`: IMPORT only, from a listing of
+ * `history/` alone (`SyncProvider.listFolder`), before the full listing has
+ * loaded. Exports wait for the full sync — they decide what to upload from
+ * the listing of every file this device already wrote.
+ */
+export async function importHistory(
+  provider: SyncProvider,
+  listing: CloudFileMetadata[],
+  db: HistoryDexie
+): Promise<number> {
+  if (!historySyncAllowed(provider.getStatus())) return 0;
+  const own = await getOrCreateDeviceId(db);
+  const warned = new Set<string>();
+  const warnOnce = (kind: string, ...details: unknown[]) => {
+    if (warned.has(kind)) return;
+    warned.add(kind);
+    console.warn(`[reading-history] ${kind}`, ...details);
+  };
+  return importOthers(provider, listing, db, own, warnOnce);
+}
+
+/**
  * Has this provider received every converted turn this device holds (the
  * `legacy.events` upload mark covers the local legacy count)? Until it has,
  * `volume-data.json` keeps carrying turns — stripping them would leave the

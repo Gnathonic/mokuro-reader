@@ -421,6 +421,17 @@ export interface SyncProvider {
   readRootFileCopies?(name: string): Promise<Blob[]>;
 
   /**
+   * Every syncable file under ONE folder of the reader root (e.g. `history`),
+   * listed WITHOUT walking the library, as the same entries the full listing
+   * would hold for them (same `path`, `size`, `modifiedTime`, `fileId`) —
+   * stamps recorded from these must still match after the full listing.
+   * [] = no such folder. The quick tier lists `history/` this way.
+   *
+   * READ-ONLY by contract, like `readRootFileCopies`. OPTIONAL.
+   */
+  listFolder?(folder: string): Promise<CloudFileMetadata[]>;
+
+  /**
    * Upload WITHOUT any post-upload refresh work — the write-and-forget path
    * for callers that do not need to read the result back (the sidecar
    * backfill: it converges through the targeted cache add the unified layer
