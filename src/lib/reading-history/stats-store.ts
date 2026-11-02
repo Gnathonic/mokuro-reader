@@ -193,6 +193,24 @@ function snapshotOf(
 }
 
 /**
+ * What a snapshot holds beyond the events from before its freeze: the old
+ * counter's reading that history does not explain (a skim counts as
+ * explained — it was in the old lifetime count, and it is not re-read).
+ */
+function unexplained(
+  snapshot: LegacyStats,
+  totals: VolumeTotals | undefined
+): { timeMs: number; chars: number } {
+  const explained = totals
+    ? totalsBefore(totals, snapshot.before)
+    : { timeMs: 0, readChars: 0, skippedChars: 0 };
+  return {
+    timeMs: Math.max(0, snapshot.time_ms - explained.timeMs),
+    chars: Math.max(0, snapshot.chars - explained.readChars - explained.skippedChars)
+  };
+}
+
+/**
  * A volume's time and characters: its history, plus whatever of the
  * pre-history snapshot the events from before its freeze do not explain.
  * Clamped only here, after the snapshot is added, so an editor edit below
@@ -208,11 +226,9 @@ export function figuresFor(
   let chars = totals?.readChars ?? 0;
   const snapshot = snapshotOf(record, !baselinesFrozen);
   if (snapshot) {
-    const explained = totals
-      ? totalsBefore(totals, snapshot.before)
-      : { timeMs: 0, readChars: 0, skippedChars: 0 };
-    timeMs += Math.max(0, snapshot.time_ms - explained.timeMs);
-    chars += Math.max(0, snapshot.chars - explained.readChars - explained.skippedChars);
+    const rest = unexplained(snapshot, totals);
+    timeMs += rest.timeMs;
+    chars += rest.chars;
   }
   timeMs = Math.max(0, timeMs);
   return {
@@ -265,8 +281,9 @@ export function seriesReadingSpeed(
 /**
  * The reading speed estimates use: the newest 8 hours of counted reading
  * across every volume and device. With under half an hour of it, completed
- * volumes' pre-history reading (their baselines) fills in — never their event
- * time, which the samples already hold.
+ * volumes' pre-history reading (their baselines) fills in — only the part
+ * their events from before the freeze do not explain (`unexplained`, as in
+ * `figuresFor`): the samples already hold that event time.
  */
 export function recentReadingSpeed(
   stats: ReadingStatsState,
@@ -278,11 +295,14 @@ export function recentReadingSpeed(
   for (const totals of stats.byVolume.values()) if (totals.samples.length > 0) used++;
 
   if (minutes < RECENT_MIN_MINUTES) {
-    const completed = Object.values(records)
-      .filter(
-        (r) => r.completed && r.legacyStats && r.legacyStats.time_ms > 0 && r.legacyStats.chars > 0
-      )
-      .map((r) => ({ at: r.lastProgressUpdate, ...r.legacyStats! }))
+    const completed = Object.entries(records)
+      .flatMap(([id, r]) => {
+        if (!r.completed || !r.legacyStats) return [];
+        const rest = unexplained(r.legacyStats, stats.byVolume.get(id));
+        return rest.timeMs > 0 && rest.chars > 0
+          ? [{ at: r.lastProgressUpdate, time_ms: rest.timeMs, chars: rest.chars }]
+          : [];
+      })
       .filter((r) => (r.chars / r.time_ms) * 60_000 <= 1000)
       .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
     for (const r of completed) {

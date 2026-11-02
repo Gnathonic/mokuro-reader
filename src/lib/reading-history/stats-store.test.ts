@@ -273,6 +273,41 @@ describe('speed', () => {
     expect(speed).toMatchObject({ charsPerMinute: 200, isPersonalized: true });
   });
 
+  it("the fill-in adds only what a completed volume's pre-freeze events do not explain", async () => {
+    // 4 min of events at 250 cpm from before the freeze are already in the
+    // recent samples; the snapshot (20 min, 4000 chars = 200 cpm) covers
+    // them. Adding the whole snapshot on top counted that reading twice.
+    await record([view('old', 0, 1, 1000, 4 * MIN)]);
+    const records = {
+      old: new VolumeData({
+        completed: true,
+        chars: 4000,
+        lastProgressUpdate: '2026-01-01T00:00:00.000Z',
+        legacyStats: { time_ms: 20 * MIN, chars: 4000, before: 5 * MIN }
+      })
+    };
+    expect(recentReadingSpeed(get(readingStats), records)).toMatchObject({
+      charsPerMinute: 200,
+      sessionsUsed: 2
+    });
+  });
+
+  it('a completed volume whose events explain its whole snapshot adds nothing', async () => {
+    await record([view('old', 0, 1, 1000, 4 * MIN)]);
+    const records = {
+      old: new VolumeData({
+        completed: true,
+        chars: 1000,
+        lastProgressUpdate: '2026-01-01T00:00:00.000Z',
+        legacyStats: { time_ms: 4 * MIN, chars: 1000, before: 5 * MIN }
+      })
+    };
+    expect(recentReadingSpeed(get(readingStats), records)).toMatchObject({
+      charsPerMinute: 250,
+      sessionsUsed: 1
+    });
+  });
+
   it('is the default with no data at all', () => {
     expect(recentReadingSpeed(get(readingStats), {})).toMatchObject({
       charsPerMinute: 100,
