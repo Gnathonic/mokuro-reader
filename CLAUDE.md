@@ -1752,6 +1752,9 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 - `BUNKO_REPO=<checkout> READER_BLESS=1 npx vitest run src/lib/interop` rewrites the records, in that
   checkout only. A changed request lands in bunko FIRST (commit the records there, run its
   `contract_replay`), then in the reader.
+- `fixtureFetch` answers a request from the fixtures it was given by method, path, query and
+  `Depth`; when several match, the request's auth, then its body, narrow them, and any still tied
+  throw "ambiguous fixtures" naming them — hand it only the fixtures the test means.
 - Fixtures report `/login/api/me`'s `version` as the sentinel `"0.0.0"`, below 0.8.0: a gate derived
   from a recorded identity (history) is OFF there. A test that needs it on sets it itself.
 

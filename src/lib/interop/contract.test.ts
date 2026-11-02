@@ -11,9 +11,13 @@ import {
   CONTRACT_BASELINE,
   contractDir,
   findSiblingContract,
+  fixtureFetch,
   rebase,
-  recordRequest
+  recordRequest,
+  type Fixture,
+  type Seed
 } from './contract';
+import { basicAuthHeader } from '$lib/util/base64';
 
 /** A file test over a fake checkout holding `files` under `<root>/interop/contract/`. */
 function holding(root: string, files: string[]) {
@@ -117,6 +121,78 @@ describe('the contract helper', () => {
       http: 'Wed, 28 Oct 2026 12:34:56 GMT',
       s: Math.floor(now / 1000),
       millis: now
+    });
+  });
+
+  describe('fixtureFetch picks one fixture per request', () => {
+    const seed: Seed = {
+      users: [
+        { username: 'reader', password: 'pw-reader', role: 'reader' },
+        { username: 'progress', password: 'pw-progress', role: 'registered' }
+      ],
+      library: []
+    };
+    const named = (name: string, fx: Fixture): Fixture =>
+      Object.defineProperty(fx, 'name', { value: name, enumerable: false });
+    const listing = (name: string, auth: string, status: number) =>
+      named(name, {
+        request: { method: 'PROPFIND', path: '/lib/', auth, headers: { depth: 'infinity' } },
+        status,
+        body_text: name
+      });
+    const URL_ = 'https://bunko.invalid/lib/';
+    const propfind = (auth: string) => ({
+      method: 'PROPFIND',
+      headers: { Depth: 'infinity', Authorization: auth }
+    });
+
+    it('narrows same-path fixtures by the account the request signs in as', async () => {
+      const { fetch } = fixtureFetch(
+        [listing('as-reader', 'basic:reader', 207), listing('as-progress', 'basic:progress', 207)],
+        { seed }
+      );
+      const progress = await fetch(URL_, propfind(basicAuthHeader('progress', 'pw-progress')));
+      expect(await progress.text()).toBe('as-progress');
+      const reader = await fetch(URL_, propfind(basicAuthHeader('reader', 'pw-reader')));
+      expect(await reader.text()).toBe('as-reader');
+    });
+
+    it('narrows same-path fixtures by the body sent', async () => {
+      const put = (name: string, body?: unknown): Fixture =>
+        named(name, {
+          request: { method: 'PUT', path: '/lib/f.json', auth: 'basic:reader', body },
+          status: 201,
+          body_text: name
+        });
+      const { fetch } = fixtureFetch([put('a', { v: 1 }), put('b', { v: 2 }), put('empty')], {
+        seed
+      });
+      const auth = { Authorization: basicAuthHeader('reader', 'pw-reader') };
+      const send = (body?: string) =>
+        fetch('https://bunko.invalid/lib/f.json', {
+          method: 'PUT',
+          headers: auth,
+          body
+        });
+      expect(await (await send('{"v":2}')).text()).toBe('b');
+      expect(await (await send('{"v":1}')).text()).toBe('a');
+      expect(await (await send()).text()).toBe('empty');
+    });
+
+    it('throws "ambiguous fixtures", naming them, when auth and body cannot tell', async () => {
+      const { fetch } = fixtureFetch(
+        [listing('first', 'basic:reader', 207), listing('second', 'basic:reader', 429)],
+        { seed }
+      );
+      await expect(fetch(URL_, propfind(basicAuthHeader('reader', 'pw-reader')))).rejects.toThrow(
+        /ambiguous fixtures.*first.*second/s
+      );
+    });
+
+    it('a single match answers as before, whatever the auth', async () => {
+      const { fetch } = fixtureFetch([listing('only', 'basic:progress', 207)], { seed });
+      const res = await fetch(URL_, propfind(basicAuthHeader('reader', 'pw-reader')));
+      expect(await res.text()).toBe('only');
     });
   });
 });

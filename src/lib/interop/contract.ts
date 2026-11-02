@@ -51,6 +51,8 @@ export interface ContractRequest {
 
 /** One `interop/contract/bunko/<name>.json`. */
 export interface Fixture {
+  /** Its file's stem, set (not enumerable) by `loadBunkoFixture`; names it in errors. */
+  readonly name?: string;
   request: ContractRequest;
   status?: number;
   headers?: Record<string, string>;
@@ -257,7 +259,8 @@ export function rebase<T>(value: T, now: number): T {
 export function loadBunkoFixture(name: string, opts: { now?: number } = {}): Fixture {
   const dir = contractDir();
   if (!dir) throw new Error(`no Bunko contract to load ${name} from (see describeContract)`);
-  return rebase(readJson(join(dir, 'bunko', `${name}.json`)), opts.now ?? Date.now());
+  const fx = rebase(readJson(join(dir, 'bunko', `${name}.json`)), opts.now ?? Date.now());
+  return Object.defineProperty(fx, 'name', { value: name, enumerable: false });
 }
 
 /** One `interop/contract/seal/<name>.json` (Bunko's README, "Seal vectors"). */
@@ -376,12 +379,47 @@ function headerOf(init: RequestInit | undefined, name: string): string | null {
   return hit ? hit[1] : null;
 }
 
+function fixtureLabel(fx: Fixture): string {
+  return fx.name ?? `${fx.request.method ?? 'GET'} ${fx.request.path} (${fx.request.auth ?? '?'})`;
+}
+
+/** Does the fixture's recorded request body equal the one sent (a non-string one never does)? */
+function sameBody(r: ContractRequest, sent: BodyInit | null | undefined, seed: Seed): boolean {
+  if (sent == null) return r.body === undefined && r.body_text === undefined && !r.body_cbz;
+  if (typeof sent !== 'string') return false;
+  if (r.body !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(sent);
+    } catch {
+      return false;
+    }
+    return (
+      JSON.stringify(sortKeys(hidePasswords(parsed, seed))) === JSON.stringify(sortKeys(r.body))
+    );
+  }
+  return r.body_text !== undefined && r.body_text === sent.replace(/\r\n/g, '\n');
+}
+
+/** Has the fixture's request a body, and has the sent one? */
+function bodyPresence(r: ContractRequest, sent: BodyInit | null | undefined): boolean {
+  const recorded = r.body !== undefined || r.body_text !== undefined || !!r.body_cbz;
+  return recorded === (sent != null);
+}
+
 /**
  * A `fetch` that answers like the seeded Bunko did: a request matches a
  * fixture by method, path and query (and `Depth` for PROPFIND); anything else
- * is a 404. `calls` records what was asked.
+ * is a 404. When several match, the request's auth (as `authOf` names it,
+ * `tokens` naming bearer tokens' users), then its body (equal, else merely
+ * present or absent alike) narrow them down; still more than one throws
+ * "ambiguous fixtures" rather than answer with whichever came first. `calls`
+ * records what was asked.
  */
-export function fixtureFetch(fixtures: Fixture[]) {
+export function fixtureFetch(
+  fixtures: Fixture[],
+  opts: { tokens?: Record<string, string>; seed?: Seed } = {}
+) {
   const calls: Array<{ method: string; url: string; init?: RequestInit }> = [];
   const impl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(
@@ -390,7 +428,7 @@ export function fixtureFetch(fixtures: Fixture[]) {
     const method = (init?.method ?? 'GET').toUpperCase();
     calls.push({ method, url: url.toString(), init });
     const depth = headerOf(init, 'depth');
-    const hit = fixtures.find((fx) => {
+    let hits = fixtures.filter((fx) => {
       const r = fx.request;
       if ((r.method ?? 'GET').toUpperCase() !== method) return false;
       if (r.path !== url.pathname + url.search) return false;
@@ -400,7 +438,28 @@ export function fixtureFetch(fixtures: Fixture[]) {
       }
       return true;
     });
-    return hit ? fixtureResponse(hit) : new Response('not in the contract', { status: 404 });
+    if (hits.length > 1) {
+      const seed = opts.seed ?? loadSeed();
+      const auth = authOf(headerOf(init, 'authorization'), opts.tokens ?? {}, seed);
+      // Each narrowing applies only when it leaves a candidate: one that rules
+      // them all out tells nothing about which was meant.
+      const narrow = (keep: (fx: Fixture) => boolean) => {
+        const kept = hits.filter(keep);
+        if (kept.length) hits = kept;
+      };
+      narrow((fx) => fx.request.auth === auth);
+      if (hits.length > 1) narrow((fx) => sameBody(fx.request, init?.body, seed));
+      if (hits.length > 1) narrow((fx) => bodyPresence(fx.request, init?.body));
+      if (hits.length > 1) {
+        throw new Error(
+          `ambiguous fixtures for ${method} ${url.pathname}${url.search} (auth ${auth}): ` +
+            `${hits.map(fixtureLabel).join(', ')} — pass only the one this request means`
+        );
+      }
+    }
+    return hits.length
+      ? fixtureResponse(hits[0])
+      : new Response('not in the contract', { status: 404 });
   };
   return { fetch: impl as typeof fetch, calls };
 }
