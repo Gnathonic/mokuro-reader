@@ -129,6 +129,11 @@ export interface SpeedEstimate {
 
 type PageEvent = Extract<ReadingEvent, { kind: 'page' }>;
 
+/** A view's identity across devices: its page event's `[device, seq]` — what a `resolve` targets. */
+export function pauseKey(p: { device: string; seq: number }): string {
+  return `${p.device}\u0000${p.seq}`;
+}
+
 const byTime = (a: ReadingEvent, b: ReadingEvent) =>
   a.t - b.t || a.device.localeCompare(b.device) || a.seq - b.seq;
 
@@ -141,7 +146,8 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   // set for a view is the latest — the same on every device.
   const answers = new Map<string, PauseCount>();
   for (const e of live) {
-    if (e.kind === 'resolve') answers.set(`${e.target[0]}\u0000${e.target[1]}`, e.count);
+    if (e.kind === 'resolve')
+      answers.set(pauseKey({ device: e.target[0], seq: e.target[1] }), e.count);
   }
 
   const native = live.filter(
@@ -192,8 +198,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
       pages,
       device: e.device,
       seq: e.seq,
-      answer:
-        legacy || answers.size === 0 ? null : (answers.get(`${e.device}\u0000${e.seq}`) ?? null)
+      answer: legacy || answers.size === 0 ? null : (answers.get(pauseKey(e)) ?? null)
     });
   }
   const paceTail: PreparedVolume['paceTail'] = [];
