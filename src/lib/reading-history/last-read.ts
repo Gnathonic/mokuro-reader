@@ -1,5 +1,6 @@
 import { readable, type Readable } from 'svelte/store';
 import { stampMs } from '$lib/util/volume-helpers';
+import { remoteReads, uncoveredRemoteRead, type RemoteRead } from './remote-reads';
 import { getVolumeEvents, historyVolumes, onHistoryChanged } from './turns-store';
 import type { ReadingEvent } from './types';
 import { eventKey, lookupVisits } from './visits';
@@ -10,7 +11,9 @@ import { eventKey, lookupVisits } from './visits';
  * `positions.json`, so any write that must win a merge moves it — a look-up's
  * restore, a cover toggle, a stat edit. Recency is the newest end of a view
  * that was reading instead: legacy (converted) views, and native views outside
- * look-up visits, after the volume's `forget` horizon.
+ * look-up visits, after the volume's `forget` horizon — plus another device's
+ * reading this device adopted before that device's events arrived
+ * (`remote-reads.ts`).
  */
 
 export interface LastRead {
@@ -18,6 +21,11 @@ export interface LastRead {
   at: number;
   /** The volume's oldest page event: history knows nothing from before it. */
   since: number;
+  /**
+   * Another device's adopted read that its own events do not cover yet
+   * (`uncoveredRemoteRead`); 0 or absent = none.
+   */
+  remote?: number;
 }
 
 /** null = no page events. */
@@ -41,22 +49,42 @@ export function lastReadFromEvents(events: ReadingEvent[]): LastRead | null {
 
 /**
  * Every volume with page events → its last read. Rebuilt per volume when its
- * events change, never on a record write.
+ * events change or a remote read of it is noted, never on a record write.
  */
 export const lastReadTimes: Readable<ReadonlyMap<string, LastRead>> = readable<
   ReadonlyMap<string, LastRead>
 >(new Map(), (set) => {
   let times = new Map<string, LastRead>();
+  let remote: ReadonlyMap<string, RemoteRead> = new Map();
   const rebuild = (volumes: Iterable<string>) => {
     for (const volume of volumes) {
-      const at = lastReadFromEvents(getVolumeEvents(volume));
-      if (at === null) times.delete(volume);
-      else times.set(volume, at);
+      const events = getVolumeEvents(volume);
+      const at = lastReadFromEvents(events);
+      if (at === null) {
+        times.delete(volume);
+        continue;
+      }
+      const read = uncoveredRemoteRead(remote.get(volume), events);
+      times.set(volume, read > 0 ? { ...at, remote: read } : at);
     }
   };
+  let started = false;
+  const stopRemote = remoteReads.subscribe((next) => {
+    const prev = remote;
+    remote = next;
+    if (!started) return;
+    const changed = new Set<string>();
+    for (const [volume, read] of next) if (prev.get(volume) !== read) changed.add(volume);
+    for (const volume of prev.keys()) if (!next.has(volume)) changed.add(volume);
+    if (changed.size === 0) return;
+    times = new Map(times);
+    rebuild(changed);
+    set(times);
+  });
+  started = true;
   rebuild(historyVolumes());
   set(times);
-  return onHistoryChanged((volumes) => {
+  const stopHistory = onHistoryChanged((volumes) => {
     if (volumes === 'all') {
       times = new Map();
       rebuild(historyVolumes());
@@ -66,13 +94,19 @@ export const lastReadTimes: Readable<ReadonlyMap<string, LastRead>> = readable<
     }
     set(times);
   });
+  return () => {
+    stopRemote();
+    stopHistory();
+  };
 });
 
 /**
  * History's last read when it saw reading. Otherwise the record's stamp — but
  * with events present, only a stamp from before them: that is reading history
  * never saw (read before history existed), while a later one is a re-stamp
- * (a look-up's restore, a cover toggle), never a read.
+ * (a look-up's restore, a cover toggle), never a read. Either way, another
+ * device's adopted read that history does not hold yet counts (`remote`):
+ * it IS reading, and its events may come only with the slow sync, or never.
  */
 export function lastReadTime(
   volume: string,
@@ -80,10 +114,11 @@ export function lastReadTime(
   times: ReadonlyMap<string, LastRead>
 ): number {
   const fromHistory = times.get(volume);
-  if (fromHistory && fromHistory.at > 0) return fromHistory.at;
+  if (!fromHistory) return stampMs(record?.lastProgressUpdate);
+  const remote = fromHistory.remote ?? 0;
+  if (fromHistory.at > 0) return Math.max(fromHistory.at, remote);
   const stamp = stampMs(record?.lastProgressUpdate);
-  if (!fromHistory) return stamp;
-  return stamp < fromHistory.since ? stamp : 0;
+  return Math.max(stamp < fromHistory.since ? stamp : 0, remote);
 }
 
 /** Smart sort's recency: the newest last read over the series' volumes past page 1. */

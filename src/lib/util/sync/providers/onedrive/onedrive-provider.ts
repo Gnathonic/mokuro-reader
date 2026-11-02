@@ -335,6 +335,25 @@ export class OneDriveProvider implements SyncProvider {
     return uploaded;
   }
 
+  /** The cold probe's read: the item by path, then its content — no walk. */
+  async readRootFileCopies(name: string): Promise<Blob[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
+    }
+    const token = await onedriveTokenManager.getAccessToken();
+    const item = await getItemByPath(token, `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${name}`);
+    if (!item || !item.file) return [];
+    return [
+      await this.downloadFile({
+        provider: 'onedrive',
+        fileId: item.id,
+        path: name,
+        modifiedTime: item.lastModifiedDateTime ?? '',
+        size: item.size ?? 0
+      })
+    ];
+  }
+
   async downloadFile(
     file: CloudFileMetadata,
     onProgress?: (loaded: number, total: number) => void

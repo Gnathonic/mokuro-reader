@@ -30,6 +30,8 @@ import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { isHistoryFilePath } from '$lib/reading-history/paths';
 import { noteUploaded, watchedEscapes } from '$lib/positions/escapes';
+import { historySyncAllowed } from '$lib/reading-history/history-capability';
+import { noteMergedRemoteReads } from '$lib/reading-history/remote-reads';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
 import {
@@ -712,6 +714,14 @@ class UnifiedSyncService {
 
     // Step 4: Purge tombstones older than 30 days
     const purgedVolumes = this.purgeTombstones(mergedVolumes);
+
+    // Where history does not sync, this merge is the ONLY carrier of another
+    // device's reading: smart sort counts what it brought as reading
+    // (`remote-reads.ts`), since local history would otherwise outrank it.
+    const status = provider.getStatus?.();
+    if (status && !historySyncAllowed(status)) {
+      noteMergedRemoteReads(localVolumes, purgedVolumes);
+    }
 
     // Step 5: Update local storage (including tombstones)
     volumesWithTrash.set(purgedVolumes);

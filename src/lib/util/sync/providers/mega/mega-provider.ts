@@ -1251,6 +1251,36 @@ export class MegaProvider implements SyncProvider {
     }
   }
 
+  /**
+   * The cold probe's read: the file of that name directly inside any live
+   * reader folder of the tree the session already holds — no reload.
+   */
+  async readRootFileCopies(name: string): Promise<Blob[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+    const nodes = Object.values(this.storage?.files || {}) as any[];
+    const copies = nodes.filter(
+      (node) =>
+        node.name === name &&
+        !node.directory &&
+        node.parent?.name === MOKURO_FOLDER &&
+        node.parent?.directory &&
+        this.isLiveNode(node)
+    );
+    return Promise.all(
+      copies.map((node) =>
+        this.downloadFile({
+          provider: 'mega',
+          fileId: node.nodeId ?? node.id,
+          path: name,
+          modifiedTime: '',
+          size: node.size ?? 0
+        })
+      )
+    );
+  }
+
   async downloadFile(
     file: CloudFileMetadata,
     onProgress?: (loaded: number, total: number) => void

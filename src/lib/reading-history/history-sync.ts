@@ -1,8 +1,8 @@
+import { historySyncAllowed } from './history-capability';
 import Dexie from 'dexie';
 import { sourceStampChanged } from '$lib/metadata/series-index';
 import type {
   CloudFileMetadata,
-  ProviderStatus,
   SyncProvider,
   UploadFileResult
 } from '$lib/util/sync/provider-interface';
@@ -119,17 +119,7 @@ function legacyEvents(db: HistoryDexie) {
     .between([LEGACY_DEVICE_PREFIX, Dexie.minKey], ['legacy;', Dexie.minKey]);
 }
 
-/**
- * Can this provider carry reading history at all? An explicit `historySync`
- * decides (the WebDAV provider sets it from the bunko version); otherwise a
- * server that compiles its own metadata (bunko, version unknown) cannot, and
- * plain storage can.
- */
-export function historySyncAllowed(
-  status: Pick<ProviderStatus, 'historySync' | 'serverCompilesMetadata'>
-): boolean {
-  return status.historySync ?? !status.serverCompilesMetadata;
-}
+export { historySyncAllowed };
 
 type WarnOnce = (kind: string, ...details: unknown[]) => void;
 

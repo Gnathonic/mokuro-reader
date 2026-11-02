@@ -22,7 +22,11 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 const syncReady = vi.fn(() => true);
-vi.mock('$lib/util/sync/foreground-sync', () => ({ syncReady: () => syncReady() }));
+const providerTokenValid = vi.fn(() => true);
+vi.mock('$lib/util/sync/foreground-sync', () => ({
+  syncReady: () => syncReady(),
+  providerTokenValid: () => providerTokenValid()
+}));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 vi.mock('$lib/reading-history/history-db', () => ({ historyDb: () => ({}) }));
 vi.mock('$lib/reading-history/record', async (importOriginal) => ({
@@ -70,8 +74,10 @@ import {
   flushPositionPush,
   requestPositionCheck,
   initPositionPush,
+  probePositions,
   syncPositions
 } from './positions-sync';
+import { _resetRemoteReadsForTests, remoteReads } from '$lib/reading-history/remote-reads';
 
 const now = Date.parse('2026-10-16T12:00:00.000Z');
 
@@ -141,6 +147,8 @@ beforeEach(() => {
   _resetPositionsSyncForTests();
   _resetEscapesForTests();
   syncReady.mockReturnValue(true);
+  providerTokenValid.mockReturnValue(true);
+  _resetRemoteReadsForTests();
   stops.push(initPositionTracking());
 });
 afterEach(() => {
@@ -545,5 +553,147 @@ describe('the reader-open check', () => {
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.waitFor(() => expect(provider.downloadFile).toHaveBeenCalledTimes(1));
+  });
+});
+
+/** A provider that can read `positions.json` by path (no listing). */
+function makeProbingProvider(
+  copies: () => Promise<Blob[]>,
+  status: Partial<ProviderStatus> = {}
+): SyncProvider & { readRootFileCopies: ReturnType<typeof vi.fn> } {
+  const provider = makeProvider(async () => {
+    throw new Error('the probe never downloads through the listing');
+  }, status) as SyncProvider & { readRootFileCopies: ReturnType<typeof vi.fn> };
+  provider.readRootFileCopies = vi.fn(copies);
+  (provider as unknown as { isAuthenticated: () => boolean }).isAuthenticated = () => true;
+  return provider;
+}
+
+describe('the cold probe (before the listing has loaded)', () => {
+  it('probePositions adopts by path and writes nothing, keeping own turns marked', async () => {
+    stubCache([], { loaded: false });
+    updateProgress('w', 3, 30, false);
+    const provider = makeProbingProvider(async () => [
+      fileBlob({ v: [now - 1000, 120, 12000, 'phone'] })
+    ]);
+    const outcome = await probePositions(provider);
+    expect(outcome).toMatchObject({ adopted: ['v'], uploaded: false, probe: true });
+    expect(provider.readRootFileCopies).toHaveBeenCalledWith('positions.json');
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+    expect(get(volumesWithTrash).v.progress).toBe(120);
+    expect(blindUploadFile).not.toHaveBeenCalled();
+    // The full sync pushes them once the listing shows every copy.
+    expect(changedVolumes()).toEqual(['w']);
+  });
+
+  it('merges every copy the provider found', async () => {
+    stubCache([], { loaded: false });
+    const provider = makeProbingProvider(async () => [
+      fileBlob({ v: [now - 1000, 120, 12000, 'phone'] }),
+      fileBlob({ v: [now - 500, 130, 13000, 'tablet'], w: [now - 9000, 4, 40, 'phone'] })
+    ]);
+    expect((await probePositions(provider)).adopted.sort()).toEqual(['v', 'w']);
+    expect(get(volumesWithTrash).v.progress).toBe(130);
+  });
+
+  it('no file: adopts nothing, no error', async () => {
+    stubCache([], { loaded: false });
+    const provider = makeProbingProvider(async () => []);
+    expect(await probePositions(provider)).toMatchObject({ adopted: [], uploaded: false });
+  });
+
+  it('old bunko: not even the probe reads the shared path', async () => {
+    stubCache([], { loaded: false });
+    const provider = makeProbingProvider(async () => [fileBlob({})], {
+      serverCompilesMetadata: true
+    });
+    expect((await probePositions(provider)).skipped).toBe('not-allowed');
+    expect(provider.readRootFileCopies).not.toHaveBeenCalled();
+  });
+
+  it('an expired Drive token: no probe', async () => {
+    stubCache([], { loaded: false });
+    providerTokenValid.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => [fileBlob({})]);
+    expect((await probePositions(provider)).skipped).toBe('not-ready');
+    expect(provider.readRootFileCopies).not.toHaveBeenCalled();
+  });
+
+  it('the reader-open check probes while the first listing runs, and toasts', async () => {
+    stubCache([], { loaded: false, fetching: true });
+    syncReady.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => [
+      fileBlob({ v: [now - 1000, 120, 12000, 'phone'] })
+    ]);
+    await checkPositionsOnOpen('v');
+    expect(provider.readRootFileCopies).toHaveBeenCalledTimes(1);
+    expect(get(volumesWithTrash).v.progress).toBe(120);
+    expect(showSnackbar).toHaveBeenCalledWith('Continued from Pixel, p.120');
+  });
+
+  it('no listing under way (e.g. login not finished): the open check does not probe', async () => {
+    stubCache([], { loaded: false, fetching: false });
+    syncReady.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => [fileBlob({})]);
+    await checkPositionsOnOpen('v');
+    expect(provider.readRootFileCopies).not.toHaveBeenCalled();
+  });
+
+  it('a probe in flight answers the open check: no second wait', async () => {
+    stubCache([], { loaded: false, fetching: true });
+    syncReady.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return [fileBlob({ v: [now - 1000, 120, 12000, 'phone'] })];
+    });
+    void probePositions(provider);
+    await vi.advanceTimersByTimeAsync(100);
+    let done = false;
+    const check = checkPositionsOnOpen('v').then(() => (done = true));
+    await vi.advanceTimersByTimeAsync(200);
+    await check;
+    expect(done).toBe(true);
+    expect(get(volumesWithTrash).v.progress).toBe(120);
+    // The open was noted before the first probe's download landed: it toasts.
+    expect(showSnackbar).toHaveBeenCalledWith('Continued from Pixel, p.120');
+  });
+
+  it('the focus check probes while the first listing runs', async () => {
+    stubCache([], { loaded: false, fetching: true });
+    syncReady.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => [fileBlob({})]);
+    requestPositionCheck(now);
+    await vi.waitFor(() => expect(provider.readRootFileCopies).toHaveBeenCalledTimes(1));
+  });
+
+  it('once the listing is in, the ordinary path runs (listed copies, push)', async () => {
+    stubCache([listed('a')]);
+    updateProgress('w', 3, 30, false);
+    const provider = makeProbingProvider(async () => [fileBlob({})]);
+    (provider.downloadFile as ReturnType<typeof vi.fn>).mockImplementation(async () =>
+      fileBlob({})
+    );
+    const outcome = await syncPositions(provider);
+    expect(outcome.uploaded).toBe(true);
+    expect(outcome.probe).toBeUndefined();
+    expect(provider.readRootFileCopies).not.toHaveBeenCalled();
+  });
+});
+
+describe('adopted positions are reads for smart sort', () => {
+  it('an adoption notes the reading device and its stamp', async () => {
+    stubCache([listed('a')]);
+    const remoteAt = now - 1000;
+    const provider = makeProvider(async () => fileBlob({ v: [remoteAt, 120, 12000, 'phone'] }));
+    await syncPositions(provider);
+    expect(get(remoteReads).get('v')).toEqual({ at: remoteAt, device: 'phone' });
+  });
+
+  it('an entry not adopted (older than local) notes nothing', async () => {
+    stubCache([listed('a')]);
+    updateProgress('v', 41, 4100, false);
+    const provider = makeProvider(async () => fileBlob({ v: [now - 60_000, 120, 12000, 'phone'] }));
+    await syncPositions(provider);
+    expect(get(remoteReads).has('v')).toBe(false);
   });
 });

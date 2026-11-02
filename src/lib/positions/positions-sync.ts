@@ -3,6 +3,12 @@
  * other devices, write this device's own. Runs inside every full sync, as a
  * debounced push after page turns, and as a check when the reader opens.
  *
+ * Before the listing has loaded — a cold start, the window the file exists
+ * for — it runs as the COLD PROBE instead: the provider reads the file by its
+ * known path (`readRootFileCopies`, no listing), and the probe only ADOPTS.
+ * The write waits for the listing, which is the only thing that can show
+ * every copy the upload must not clobber.
+ *
  * Never fatal: every failure is logged and reported as an outcome, so the
  * surrounding sync (or the reader's open) carries on. The file is not
  * authoritative — the history events and `volume-data.json` still carry
@@ -24,7 +30,7 @@ import { showSnackbar } from '$lib/util/snackbar';
 import { isVolumeComplete, stampMs } from '$lib/util/volume-helpers';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
-import { syncReady } from '$lib/util/sync/foreground-sync';
+import { providerTokenValid, syncReady } from '$lib/util/sync/foreground-sync';
 import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import {
@@ -36,6 +42,7 @@ import {
   type PositionsMap
 } from './positions-file';
 import { positionsReadAllowed, positionsWriteAllowed } from './positions-capability';
+import { noteRemoteRead } from '$lib/reading-history/remote-reads';
 import { noteUploaded } from './escapes';
 import { clearChanged, ownChangedEntries } from './positions-local';
 import { reconcilePositions, type LocalPosition } from './positions-reconcile';
@@ -47,6 +54,8 @@ export interface PositionsSyncOutcome {
   deferred: string[];
   uploaded: boolean;
   skipped?: 'not-allowed' | 'not-ready';
+  /** Ran before the listing: read by path, adopted, wrote nothing. */
+  probe?: boolean;
 }
 
 const PUSH_DEBOUNCE_MS = 3000;
@@ -134,7 +143,103 @@ async function removeOtherCopies(
   }
 }
 
-async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
+/** Adopt what the plan says; fills `outcome.adopted` / `deferred`. */
+async function applyAdoptions(
+  plan: ReturnType<typeof reconcilePositions>,
+  outcome: PositionsSyncOutcome
+): Promise<void> {
+  for (const { volume, entry, toast } of plan.adopt) {
+    // Only the open volume's completion is judged here: a catalog row read
+    // (thumbnail and all) per entry would eat the reader's 1000 ms wait on a
+    // device picked up with a full file. A closed volume keeps its flag;
+    // volume-data.json brings the other device's `completed` with it.
+    const open = volume === openReader()?.volume;
+    const row = open ? await db.volumes.get(volume).catch(() => undefined) : undefined;
+    const completed = row?.page_count ? isVolumeComplete(entry.page, row.page_count) : undefined;
+    if (!adoptPosition(volume, entry.page, entry.chars, completed, entry.t)) continue;
+    outcome.adopted.push(volume);
+    // The other device's page turn: smart sort counts it as reading until
+    // that device's own history events arrive and judge it.
+    noteRemoteRead(volume, entry.t, entry.device);
+    // Adopted before any turn here: the visit's home is the new page.
+    if (open) rehomeVisit(volume);
+    if (toast) {
+      const name = deviceLabel(entry.device);
+      showSnackbar(`Continued from ${name ?? 'another device'}, p.${entry.page}`);
+    }
+  }
+  outcome.deferred = plan.deferred;
+}
+
+/** Every readable copy, merged; `unreadable` = a copy failed for another reason than not-found. */
+async function readCopies(
+  reads: Array<() => Promise<Blob>>
+): Promise<{ readable: unknown[]; unreadable: boolean }> {
+  const downloads = await Promise.allSettled(reads.map(async (read) => readJson(await read())));
+  const unreadable = downloads.some(
+    (result) => result.status === 'rejected' && !isNotFound(result.reason)
+  );
+  const readable = downloads
+    .filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
+    .map((r) => r.value);
+  return { readable, unreadable };
+}
+
+async function planFromCopies(readable: unknown[]) {
+  const now = Date.now();
+  let cloud: PositionsMap = {};
+  for (const raw of readable) cloud = mergePositions(cloud, parsePositionsFile(raw, now));
+  const cloudContent = readable.length ? positionsContent(readable[0]) : '';
+  const ownDevice = await getOrCreateDeviceId(historyDb());
+  const own = ownChangedEntries(ownDevice);
+  const result = reconcilePositions({
+    cloud,
+    cloudContent,
+    local: localPosition,
+    own,
+    ownDevice,
+    open: openReader(),
+    now
+  });
+  return { plan: result, own };
+}
+
+/**
+ * The cold probe: before the listing, read the file by path and adopt. Never
+ * writes, never clears this device's changed marks — the full sync's run,
+ * once the listing is in, pushes them against every listed copy.
+ */
+async function runProbe(
+  provider: SyncProvider,
+  outcome: PositionsSyncOutcome
+): Promise<PositionsSyncOutcome> {
+  if (!provider.readRootFileCopies) return { ...outcome, skipped: 'not-ready' };
+  if (!provider.isAuthenticated() || !providerTokenValid(provider)) {
+    return { ...outcome, skipped: 'not-ready' };
+  }
+  const copies = await provider.readRootFileCopies(POSITIONS_FILE_NAME);
+  const readable = await Promise.all(copies.map(readJson));
+  const { plan: result } = await planFromCopies(readable);
+  await applyAdoptions(result, outcome);
+  return { ...outcome, probe: true };
+}
+
+/**
+ * May the probe run now? Only while a listing is under way: listings start
+ * after a login has finished, so the provider's per-user gates (bunko's
+ * `positionsSync`) are settled — mid-login a bunko still reads as plain
+ * WebDAV, and the path would be the SHARED library file.
+ */
+function probeReady(provider: SyncProvider): boolean {
+  if (!provider.readRootFileCopies || !provider.isAuthenticated()) return false;
+  if (!providerTokenValid(provider)) return false;
+  return cacheManager.getCache(provider.type)?.isFetching() ?? false;
+}
+
+async function runSync(
+  provider: SyncProvider,
+  mode: 'auto' | 'probe' = 'auto'
+): Promise<PositionsSyncOutcome> {
   const outcome: PositionsSyncOutcome = { adopted: [], deferred: [], uploaded: false };
   try {
     const status = provider.getStatus();
@@ -145,62 +250,26 @@ async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
     // The full sync's step runs for callers the `syncReady()` gate does not
     // cover (the activity tracker, the nav bar, the cloud view, Drive's
     // login). Before the listing has loaded the cache shows no copy, and the
-    // upload would replace the cloud file with this device's entries alone.
+    // upload would replace the cloud file with this device's entries alone:
+    // then it is the read-only probe, or nothing.
     const cache = cacheManager.getCache(provider.type);
-    if (!cache?.isLoaded() || cache.isFetching()) return { ...outcome, skipped: 'not-ready' };
+    if (!cache?.isLoaded() || cache.isFetching()) {
+      if (mode === 'probe' || probeReady(provider)) return await runProbe(provider, outcome);
+      return { ...outcome, skipped: 'not-ready' };
+    }
 
     const files: CloudFileMetadata[] = cache.getAll(POSITIONS_FILE_NAME) ?? [];
     // A listed copy can be a ghost (deleted, still cached): not-found copies are
     // ignored. Any other failure means a copy we could not see — adopt from the
     // rest, but do not overwrite what we could not read.
-    const downloads = await Promise.allSettled(
-      files.map(async (file) => readJson(await provider.downloadFile(file)))
+    const { readable, unreadable } = await readCopies(
+      files.map((file) => () => provider.downloadFile(file))
     );
-    const unreadable = downloads.some(
-      (result) => result.status === 'rejected' && !isNotFound(result.reason)
-    );
-    const readable = downloads
-      .filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
-      .map((r) => r.value);
-
-    const now = Date.now();
-    let cloud: PositionsMap = {};
-    for (const raw of readable) cloud = mergePositions(cloud, parsePositionsFile(raw, now));
-    const cloudContent = readable.length ? positionsContent(readable[0]) : '';
-
-    const ownDevice = await getOrCreateDeviceId(historyDb());
-    const own = ownChangedEntries(ownDevice);
-    const plan = reconcilePositions({
-      cloud,
-      cloudContent,
-      local: localPosition,
-      own,
-      ownDevice,
-      open: openReader(),
-      now
-    });
-
-    for (const { volume, entry, toast } of plan.adopt) {
-      // Only the open volume's completion is judged here: a catalog row read
-      // (thumbnail and all) per entry would eat the reader's 1000 ms wait on a
-      // device picked up with a full file. A closed volume keeps its flag;
-      // volume-data.json brings the other device's `completed` with it.
-      const open = volume === openReader()?.volume;
-      const row = open ? await db.volumes.get(volume).catch(() => undefined) : undefined;
-      const completed = row?.page_count ? isVolumeComplete(entry.page, row.page_count) : undefined;
-      if (!adoptPosition(volume, entry.page, entry.chars, completed, entry.t)) continue;
-      outcome.adopted.push(volume);
-      // Adopted before any turn here: the visit's home is the new page.
-      if (open) rehomeVisit(volume);
-      if (toast) {
-        const name = deviceLabel(entry.device);
-        showSnackbar(`Continued from ${name ?? 'another device'}, p.${entry.page}`);
-      }
-    }
-    outcome.deferred = plan.deferred;
+    const { plan: result, own } = await planFromCopies(readable);
+    await applyAdoptions(result, outcome);
 
     if (unreadable) return outcome;
-    if (!plan.upload) {
+    if (!result.upload) {
       // The cloud already holds these positions (or newer): nothing to push.
       clearChanged(own);
       return outcome;
@@ -209,7 +278,7 @@ async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
     // These stamps leave the device now — reported BEFORE the upload, so a
     // look-up that comes home while the PUT is in flight still beats them.
     for (const [volume, entry] of Object.entries(own)) noteUploaded(volume, entry.t);
-    const landedOn = await upload(provider, plan.next);
+    const landedOn = await upload(provider, result.next);
     outcome.uploaded = true;
     clearChanged(own);
     await removeOtherCopies(provider, files, landedOn);
@@ -244,6 +313,20 @@ export function syncPositions(provider: SyncProvider): Promise<PositionsSyncOutc
   return followUp;
 }
 
+/**
+ * The cold probe, at the start of a listing that has nothing loaded yet
+ * (`fetchAllCloudVolumes`): the listing is the slow part of every sync, and
+ * the file exists so a device just picked up knows where it stopped before
+ * the user can open a book. A run already in flight answers instead.
+ */
+export function probePositions(provider: SyncProvider): Promise<PositionsSyncOutcome> {
+  if (running) return running;
+  running = runSync(provider, 'probe').finally(() => {
+    running = null;
+  });
+  return running;
+}
+
 /** Push this device's changed positions now, when a provider is ready. */
 export async function flushPositionPush(): Promise<void> {
   const provider = unifiedCloudManager.getActiveProvider();
@@ -264,10 +347,17 @@ export function checkPositionsOnOpen(
   noteReaderOpened(volume);
   try {
     const provider = unifiedCloudManager.getActiveProvider();
-    if (!provider || !syncReady()) return Promise.resolve();
+    // Before the listing has loaded, the probe answers (by path, read-only).
+    if (!provider || !(syncReady() || probeReady(provider))) return Promise.resolve();
+    // A run already in flight (the probe a cold start began) may answer first:
+    // its reconcile reads the open reader when its download lands, so it sees
+    // this open. The follow-up still runs and catches anything it missed.
+    const inFlight = running;
+    const next = syncPositions(provider);
+    const answer = inFlight ? Promise.race([inFlight, next]) : next;
     return new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, wait);
-      void syncPositions(provider).finally(() => {
+      void answer.finally(() => {
         clearTimeout(timer);
         resolve();
       });
@@ -285,7 +375,7 @@ let lastFocusCheck = -Infinity;
 export function requestPositionCheck(now: number = Date.now()): void {
   if (now - lastFocusCheck < FOCUS_CHECK_INTERVAL_MS) return;
   const provider = unifiedCloudManager.getActiveProvider();
-  if (!provider || !syncReady()) return;
+  if (!provider || !(syncReady() || probeReady(provider))) return;
   lastFocusCheck = now;
   void syncPositions(provider);
 }
