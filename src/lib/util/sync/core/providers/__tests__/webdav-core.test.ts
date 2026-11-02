@@ -219,3 +219,168 @@ describe('webdavCore.uploadFile Content-Digest', () => {
     ).resolves.toEqual({ fileId: '/mokuro-reader/S/V.cbz', serverDigestVerified: 'sha-256' });
   });
 });
+
+/** A `webdav`-library failure: the status, and the Response it came from. */
+function davError(status: number, headers: Record<string, string> = {}) {
+  return Object.assign(new Error(`Invalid response: ${status}`), {
+    status,
+    response: new Response(null, { status, headers })
+  });
+}
+
+/** A 503 PUT failure that named its wait (`retryAfterMs`, read off the response). */
+function busyFor(ms: number | undefined) {
+  return new WebdavUploadError('WebDAV upload failed: 503', {
+    status: 503,
+    reason: 'http-503',
+    detail: '503 Service Unavailable',
+    retryable: true,
+    retryAfterMs: ms
+  });
+}
+
+describe('webdavCore.downloadFile and a 503 that names its wait (Retry-After)', () => {
+  /** HEAD answers 200 (3 bytes); each GET takes the next answer, the last one repeating. */
+  function stubServer(gets: Array<() => Response>) {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'HEAD') {
+        return new Response(null, { status: 200, headers: { 'Content-Length': '3' } });
+      }
+      const next = gets.length > 1 ? gets.shift()! : gets[0];
+      return next();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return {
+      gets: () => fetchMock.mock.calls.filter((c) => c[1]?.method !== 'HEAD').length
+    };
+  }
+  const ok = () =>
+    new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'Content-Length': '3' } });
+  const busy = (retryAfter?: string) => () =>
+    new Response('', {
+      status: 503,
+      headers: retryAfter === undefined ? {} : { 'Retry-After': retryAfter }
+    });
+  const download = () =>
+    webdavCore.downloadFile({
+      fileId: '/mokuro-reader/S/V.mokuro',
+      credentials,
+      onProgress: () => {}
+    });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('waits the seconds the server asked, not the backoff', async () => {
+    const server = stubServer([busy('3'), ok]);
+    const done = download();
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(server.gets()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(done).resolves.toHaveProperty('byteLength', 3);
+    expect(server.gets()).toBe(2);
+  });
+
+  it('takes the HTTP-date form too', async () => {
+    const server = stubServer([busy(new Date(Date.now() + 4_000).toUTCString()), ok]);
+    const done = download();
+    await vi.advanceTimersByTimeAsync(2_900);
+    expect(server.gets()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_100);
+    await expect(done).resolves.toHaveProperty('byteLength', 3);
+    expect(server.gets()).toBe(2);
+  });
+
+  it('waits at least a second for a Retry-After of 0', async () => {
+    const server = stubServer([busy('0'), ok]);
+    const done = download();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(server.gets()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(done).resolves.toHaveProperty('byteLength', 3);
+  });
+
+  it('waits a named time at most twice, then falls back to the backoff', async () => {
+    const server = stubServer([busy('30')]);
+    const done = download().catch((e: unknown) => e);
+    // 30 s + 30 s named, then the backoff's own steps (1.6 s, 3.2 s, 5 s) and
+    // its 5-retry budget: about 70 s in all, never 5 x 30 s.
+    await vi.advanceTimersByTimeAsync(75_000);
+    expect(server.gets()).toBe(6);
+    expect(String(await done)).toContain('503');
+  });
+
+  it('keeps the backoff for a wait over 30 s, or one it cannot read', async () => {
+    for (const header of ['120', 'soon', undefined]) {
+      const server = stubServer([busy(header), ok]);
+      const done = download();
+      await vi.advanceTimersByTimeAsync(600); // the first backoff step: 400 ms + jitter
+      await expect(done).resolves.toHaveProperty('byteLength', 3);
+      expect(server.gets()).toBe(2);
+    }
+  });
+});
+
+describe('webdavCore.uploadFile and a 503 that names its wait (Retry-After)', () => {
+  it('an archive PUT waits the server-named time instead of its step delay', async () => {
+    uploadFileWithClient
+      .mockRejectedValueOnce(busyFor(2_000))
+      .mockResolvedValueOnce({ path: '/mokuro-reader/S/V.cbz' });
+    const done = webdavCore.uploadFile({
+      seriesTitle: 'S',
+      filename: 'V.cbz',
+      blob: new Blob(['x']),
+      credentials
+    });
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(uploadFileWithClient).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(done).resolves.toEqual({ fileId: '/mokuro-reader/S/V.cbz' });
+    expect(uploadFileWithClient).toHaveBeenCalledTimes(2);
+  });
+
+  it('a sidecar PUT is re-sent after the wait (the same Blob), at most twice', async () => {
+    const blob = new Blob(['x']);
+    uploadFileWithClient.mockRejectedValue(busyFor(1_000));
+    const done = webdavCore
+      .uploadFile({ seriesTitle: 'S', filename: 'V.mokuro', blob, credentials })
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await done).toBeInstanceOf(WebdavUploadError);
+    expect(uploadFileWithClient).toHaveBeenCalledTimes(3);
+    for (const call of uploadFileWithClient.mock.calls) expect(call[2]).toBe(blob);
+  });
+
+  it('a sidecar PUT recovers from one 503 + Retry-After', async () => {
+    uploadFileWithClient
+      .mockRejectedValueOnce(busyFor(1_000))
+      .mockResolvedValueOnce({ path: '/mokuro-reader/S/V.mokuro' });
+    const done = webdavCore.uploadFile({
+      seriesTitle: 'S',
+      filename: 'V.mokuro',
+      blob: new Blob(['x']),
+      credentials
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(done).resolves.toEqual({ fileId: '/mokuro-reader/S/V.mokuro' });
+  });
+
+  it('the DELETE before a PUT is retried too, before the PUT goes', async () => {
+    davClient.exists.mockReset().mockResolvedValue(true);
+    davClient.deleteFile
+      .mockReset()
+      .mockRejectedValueOnce(davError(503, { 'Retry-After': '1' }))
+      .mockResolvedValue(undefined);
+    uploadFileWithClient.mockResolvedValue({ path: '/mokuro-reader/S/V.cbz' });
+    const done = webdavCore.uploadFile({
+      seriesTitle: 'S',
+      filename: 'V.cbz',
+      blob: new Blob(['x']),
+      credentials
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await done;
+    expect(davClient.deleteFile).toHaveBeenCalledTimes(2);
+    const lastDelete = davClient.deleteFile.mock.invocationCallOrder.at(-1)!;
+    expect(lastDelete).toBeLessThan(uploadFileWithClient.mock.invocationCallOrder[0]);
+  });
+});

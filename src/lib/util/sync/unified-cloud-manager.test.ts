@@ -1400,6 +1400,93 @@ describe('UnifiedCloudManager rename operations', () => {
     localVolumes.mockResolvedValue([]);
   });
 
+  it('a layer file left by a failed archive PUT names no cloud-only volume: the series renames and the layer moves', async () => {
+    // This backup's own upload order: the sidecars first, the archive last.
+    // With the archive PUT failed the folder holds `Volume 1.mokuro`,
+    // `Volume 1.gcv.mokuro` and the cover, and no `Volume 1.cbz` — so by
+    // archive presence alone the layer file is an orphan, and stripped it
+    // names a phantom volume "Volume 1.gcv" the gate would refuse over. Its
+    // stem names a LOCAL volume of the series; that is what places it.
+    const cache = loadedCache();
+    const file = (fileId: string, path: string, size: number): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId,
+      path,
+      modifiedTime: 't',
+      size
+    });
+    const primary = file('mok-1', 'Old Series/Volume 1.mokuro', 10);
+    const gcv = file('gcv-1', 'Old Series/Volume 1.gcv.mokuro', 9);
+    const cover = file('thumb-1', 'Old Series/Volume 1.webp', 5);
+    const existing = [primary, gcv, cover];
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) =>
+      existing.filter((f) => f.path.startsWith(`${s}/`))
+    );
+    getCache.mockReturnValue(cache);
+    // The layer row is on this device but UNSTAMPED: `stampLayersSynced` runs
+    // once the archive is up, and it never was.
+    layerRows.mockResolvedValue([{ volume_uuid: 'uuid-1', layer_id: 'gcv' }]);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{"title":"New Series"}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
+
+    expect(result.failures).toEqual([]);
+    expect(result.renamedVolumeUuids).toEqual(['uuid-1']);
+    expect(provider.uploadFile).toHaveBeenCalledWith(
+      'New Series/Volume 1.mokuro',
+      expect.any(Blob),
+      undefined,
+      undefined
+    );
+    expect(provider.renameFile).toHaveBeenCalledWith(cover, 'New Series/Volume 1.webp');
+    // The layer is not left behind in the old folder.
+    expect(provider.renameFile).toHaveBeenCalledWith(gcv, 'New Series/Volume 1.gcv.mokuro');
+    // Only the stale primary is deleted.
+    expect(provider.deleteFile).toHaveBeenCalledTimes(1);
+    expect(provider.deleteFile).toHaveBeenCalledWith(primary);
+  });
+
+  it('a layer-shaped file whose stem names NO local volume still refuses the series rename', async () => {
+    const cache = loadedCache();
+    const existing: CloudFileMetadata[] = [
+      ...oldSeriesFiles(),
+      {
+        provider: 'webdav',
+        fileId: 'gcv-2',
+        path: 'Old Series/Volume 2.gcv.mokuro',
+        modifiedTime: 't',
+        size: 9
+      }
+    ];
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) =>
+      existing.filter((f) => f.path.startsWith(`${s}/`))
+    );
+    getCache.mockReturnValue(cache);
+    layerRows.mockResolvedValue([{ volume_uuid: 'uuid-1', layer_id: 'gcv' }]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+        { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+      ])
+    ).rejects.toMatchObject({
+      code: 'CLOUD_ONLY_VOLUMES',
+      message: expect.stringContaining('Volume 2.gcv')
+    });
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.renameFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
   it('renames an image-only volume that is not on this device (no sidecar to rewrite)', async () => {
     const cache = loadedCache();
     const existing: CloudFileMetadata[] = [
@@ -1530,6 +1617,94 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(provider.uploadFile).not.toHaveBeenCalled();
     expect(provider.renameFile).not.toHaveBeenCalled();
     expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it("renames a series whose volumes have OCR layer files: a layer is its volume's, not a cloud-only volume", async () => {
+    // `Volume 1.edit.mokuro` strips to `Volume 1.edit`, which names no local
+    // volume; the gate must place it by the folder's archives as every other
+    // site does, or an edited volume makes its whole series unrenamable.
+    const cache = loadedCache();
+    const file = (fileId: string, path: string): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId,
+      path,
+      modifiedTime: 't',
+      size: 10
+    });
+    const existing = [
+      file('cbz-1', 'Old Series/Volume 1.cbz'),
+      file('mok-1', 'Old Series/Volume 1.mokuro'),
+      file('edit-1', 'Old Series/Volume 1.edit.mokuro'),
+      file('cbz-2', 'Old Series/Volume 2.cbz'),
+      file('mok-2', 'Old Series/Volume 2.mokuro'),
+      file('gcv-2', 'Old Series/Volume 2.gcv.mokuro.gz')
+    ];
+    // This device synced both layers: they are the volumes' to move.
+    layerRows.mockResolvedValue([
+      stampedLayer('uuid-1', 'edit', existing[2]),
+      stampedLayer('uuid-2', 'gcv', existing[5])
+    ]);
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) =>
+      existing.filter((f) => f.path.startsWith(`${s}/`))
+    );
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'x.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' },
+      { volumeUuid: 'uuid-2', volumeTitle: 'Volume 2' }
+    ]);
+
+    expect(result).toMatchObject({ renamedVolumeUuids: ['uuid-1', 'uuid-2'], failures: [] });
+    // Each layer moved with its volume.
+    expect(provider.renameFile).toHaveBeenCalledWith(
+      existing[2],
+      'New Series/Volume 1.edit.mokuro'
+    );
+    expect(provider.renameFile).toHaveBeenCalledWith(
+      existing[5],
+      'New Series/Volume 2.gcv.mokuro.gz'
+    );
+  });
+
+  it('still refuses a series rename over a cloud-only volume that has layer files', async () => {
+    const cache = loadedCache();
+    const file = (fileId: string, path: string): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId,
+      path,
+      modifiedTime: 't',
+      size: 10
+    });
+    const existing = [
+      file('cbz-1', 'Old Series/Volume 1.cbz'),
+      file('mok-1', 'Old Series/Volume 1.mokuro'),
+      file('cbz-2', 'Old Series/Volume 2.cbz'),
+      file('edit-2', 'Old Series/Volume 2.edit.mokuro')
+    ];
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) =>
+      existing.filter((f) => f.path.startsWith(`${s}/`))
+    );
+    getCache.mockReturnValue(cache);
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'x.mokuro', blob: new Blob(['{}']) }
+    });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await expect(
+      unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+        { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' } // Volume 2 is cloud-only
+      ])
+    ).rejects.toMatchObject({ code: 'CLOUD_ONLY_VOLUMES' });
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.renameFile).not.toHaveBeenCalled();
   });
 
   it('continues past a failed volume and reports per-volume outcomes', async () => {

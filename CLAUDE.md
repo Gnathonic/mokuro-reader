@@ -208,6 +208,35 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   every add/remove/install) and holding the archive records themselves, so a
   per-volume caller — hit or miss — costs O(1), not a pass over the listing.
 
+**Duplicate folders** (`folder-deduplicator.ts`, Drive and MEGA):
+
+- **Write root.** Of several `mokuro-reader` folders, one directly in My Drive /
+  the Cloud Drive first, then the oldest, then the smaller id (code-unit
+  compare) — `pickReaderFolder` (`drive-files-cache.ts`), `findMokuroFolder`
+  (MEGA). Every root is read; only same-parent roots merge, so a nested
+  `Backup/mokuro-reader` is never merged into the top-level one. Drive learns
+  which roots are top-level from a `'root' in parents` query, never
+  `files.get('root')` (a 404 under the app's `drive.file` scope); dedup
+  confirms a root as the write root only when it is the cache's same pick.
+- **Groups** are an exact name under one parent, within the library only
+  (`listFolders` keeps `mokuro-reader` folders and their descendants). The
+  kept folder is the oldest, then the smaller id (`compareByAge`).
+- **Same name on merge.** Folders, or a file beside a folder, move in and keep
+  the name twice; so do `dedupKeepsEveryCopy` files (volume-data.json,
+  goals.json, and bunko's control files `.mokuro-bunko.json` /
+  `.mokuro-queue.json`, exact names). Any other file: the strictly newer write
+  wins, a tie keeps the canonical copy, the loser goes to the TRASH.
+- **Folder removal.** `deleteFolder` asks the server whether the duplicate
+  still holds anything (Drive: a one-child query, not a listing) and removes
+  it (Drive: to the trash) only when empty, resolving whether it did so the
+  count is of real removals; a folder still holding anything is kept for the
+  next pass, and a second refusal throws, which gives up on that GROUP for
+  the rest of the run while the other groups still merge.
+  "Empty" on Drive means empty AS THE APP SEES IT: under `drive.file` the
+  re-list misses files the app did not create (dropped in through the Drive
+  web UI, written by another client), and those go to the trash with the
+  folder. Recoverable from the trash, but not a "never deletes files" promise.
+
 ### Svelte 5 Reactive Performance
 
 - `$derived` and `$derived.by()` run for EVERY component instance
@@ -444,6 +473,18 @@ modal).
 
 Cloud layer sidecars are named `<Volume Title>.<layer-id>.mokuro[.gz]`
 (`layer-id` matching `[a-z0-9-]{1,32}`) beside the volume's archive.
+A backup sends a layer whose id mokuro-bunko 0.8 anchors on the archive
+(`edit`, `edit-<n>`, `curated` — a layer named "Edit" slugs to one) only AFTER
+the `.cbz` (`uploadVolumeFiles`, `volume-upload-order.ts`, Worker and main
+thread alike): bunko refuses it with 409 `no-volume` while no `<Volume>.cbz` is
+listed beside it. A refusal there fails nothing — the layer is left unstamped
+and the next listing's layer sync pushes it. Before the archive, a LAYER the
+server refuses (403/409 or a non-auth `PERMISSION_DENIED`, `isLayerFileRefusal`
+— bunko 0.8 answers 403 for an edited `previous-ocr*`, `pre-upgrade*` or
+`curated-<n>` whatever the order) fails nothing either: logged at debug, left
+unstamped for layer sync, which remembers the refusal. A 401, a 5xx or a
+network failure there still fails the backup, as does any failure of the
+primary sidecar or the cover.
 `classifyMokuroSidecar` (`src/lib/util/sync/syncable-file.ts`) tells a listed
 `.mokuro` apart from a layer file the same way it always disambiguated dotted
 volume titles — by checking which stems have a `.cbz` in the same folder
@@ -599,6 +640,9 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   sidecars with Last-Modified and no Cache-Control, so the default mode gave
   an old sidecar heuristic freshness and the browser kept returning the OLD
   bytes after a server re-OCR.
+- **A short 503 is waited out.** Every WebDAV request (`webdav-retry-after.ts`,
+  main thread and workers alike) re-sends a 503 whose `Retry-After` is at most
+  30 s, at most twice — a server shedding load answers so and applied nothing.
 - **mokuro-bunko** computes `mokuro_sha256` itself when it compiles
   `series.json` (it must hash the primary's JSON after gunzip, emit it after
   `mokuro_modified`, and move it whenever the sidecar changes). Old servers

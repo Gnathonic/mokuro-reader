@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderError } from '../../provider-interface';
 import { fetchServerIdentity } from './identity';
 
@@ -9,6 +9,7 @@ const { mockClient, mockCore, createClientMock } = vi.hoisted(() => {
     createDirectory: vi.fn(),
     deleteFile: vi.fn(),
     moveFile: vi.fn(),
+    putFileContents: vi.fn(),
     stat: vi.fn(),
     getQuota: vi.fn(),
     getHeaders: vi.fn(() => ({})),
@@ -43,6 +44,7 @@ vi.mock('../../cache-manager', () => ({
 vi.mock('./webdav-cache', () => ({ webdavCache: {} }));
 
 import { WebDAVProvider } from './webdav-provider';
+import { fetchWithRetryAfter } from './webdav-retry-after';
 
 const identityMock = vi.mocked(fetchServerIdentity);
 const fetchMock = vi.fn();
@@ -542,6 +544,86 @@ describe('WebDAVProvider write-failure policy', () => {
   });
 });
 
+// A server that stops taking the password mid-session (changed elsewhere, an app
+// password revoked) refuses the reads first: a sync downloads volume-data.json before
+// it writes anything. Those reads must ask for a new sign-in as a refused write does,
+// or an idle device fails every sync with a retryable "download failed" forever.
+describe('WebDAVProvider read-failure policy', () => {
+  const VOLUME_DATA = {
+    provider: 'webdav' as const,
+    fileId: '/mokuro-reader/volume-data.json',
+    path: 'volume-data.json',
+    modifiedTime: '2026-10-29T00:00:00.000Z',
+    size: 2
+  };
+
+  async function connected(hasPassword: boolean): Promise<WebDAVProvider> {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({
+      serverUrl: 'https://host',
+      username: hasPassword ? 'alice' : undefined,
+      password: hasPassword ? 'pw' : undefined
+    });
+    return provider;
+  }
+
+  it('a download refused 401 with a password-backed session asks for a new sign-in', async () => {
+    const provider = await connected(true);
+    mockCore.downloadFile.mockRejectedValue(new Error('WebDAV download failed: 401 Unauthorized'));
+
+    await expect(provider.downloadFile(VOLUME_DATA)).rejects.toMatchObject({
+      code: 'AUTH_FAILED',
+      webdavErrorType: 'auth',
+      isAuthError: true,
+      isNetworkError: false
+    });
+    expect(provider.getStatus().needsAttention).toBe(true);
+    expect(provider.isReadOnly).toBe(false);
+    // password cleared, URL + username kept for the pre-filled form
+    expect(localStorage.getItem('webdav_password')).toBeNull();
+    expect(localStorage.getItem('webdav_server_url')).toBe('https://host');
+    expect(localStorage.getItem('webdav_username')).toBe('alice');
+  });
+
+  it('a listing refused 401 with a password-backed session asks for a new sign-in', async () => {
+    const provider = await connected(true);
+    mockClient.getDirectoryContents.mockRejectedValue(
+      Object.assign(new Error('Invalid response: 401 Unauthorized'), { status: 401 })
+    );
+
+    await expect(provider.listCloudVolumes()).rejects.toMatchObject({
+      code: 'AUTH_FAILED',
+      isAuthError: true
+    });
+    expect(provider.getStatus().needsAttention).toBe(true);
+  });
+
+  it('a credential-less session keeps a refused download a download failure', async () => {
+    const provider = await connected(false);
+    mockCore.downloadFile.mockRejectedValue(new Error('WebDAV download failed: 401 Unauthorized'));
+
+    await expect(provider.downloadFile(VOLUME_DATA)).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED'
+    });
+    expect(provider.getStatus().needsAttention).toBe(false);
+  });
+
+  it('any other refused download stays a retryable download failure', async () => {
+    const provider = await connected(true);
+    mockCore.downloadFile.mockRejectedValue(
+      new Error('WebDAV download failed: 503 Service Unavailable')
+    );
+
+    await expect(provider.downloadFile(VOLUME_DATA)).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      isNetworkError: true
+    });
+    expect(provider.getStatus().needsAttention).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+  });
+});
+
 describe('WebDAVProvider renameFile idempotency & typed NOT_FOUND', () => {
   async function loggedInProvider(): Promise<WebDAVProvider> {
     const provider = await freshProvider();
@@ -716,6 +798,167 @@ describe('WebDAVProvider staged, verified PUTs (X-Mokuro-Put)', () => {
     await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
     provider.notePutVerified();
     expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
+  });
+});
+/** A `webdav`-library failure: the status, and the Response it came from. */
+function davError(status: number, headers: Record<string, string> = {}) {
+  return Object.assign(new Error(`Invalid response: ${status} Service Unavailable`), {
+    status,
+    response: new Response(null, { status, headers })
+  });
+}
+
+describe('WebDAVProvider and a 503 that names its wait (Retry-After)', () => {
+  async function connected(): Promise<WebDAVProvider> {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    vi.useFakeTimers();
+    return provider;
+  }
+
+  afterEach(() => vi.useRealTimers());
+
+  function volumeFile(name: string) {
+    return {
+      provider: 'webdav' as const,
+      fileId: `/mokuro-reader/Series/${name}`,
+      path: `Series/${name}`,
+      modifiedTime: 't',
+      size: 10
+    };
+  }
+
+  it('a volume delete recovers from one 503 + Retry-After on one of its files', async () => {
+    const provider = await connected();
+    // The rig's case: the lease fence (or a file changed behind the index)
+    // answered one DELETE 503 + Retry-After; the server did not apply it.
+    mockClient.deleteFile.mockReset().mockImplementation(async (path: string) => {
+      if (path.endsWith('.mokuro') && mockClient.deleteFile.mock.calls.length === 2) {
+        throw davError(503, { 'Retry-After': '1' });
+      }
+    });
+    const files = [
+      'Vol 1 renamed.webp',
+      'Vol 1 renamed.mokuro',
+      'Vol 1 renamed.edit.mokuro',
+      'Vol 1 renamed.tr-en.mokuro',
+      'Vol 1 renamed.cbz'
+    ].map(volumeFile);
+    const done = (async () => {
+      for (const file of files) await provider.deleteFile(file);
+    })();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mockClient.deleteFile).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(done).resolves.toBeUndefined();
+    expect(mockClient.deleteFile.mock.calls.map((c) => c[0])).toEqual([
+      '/mokuro-reader/Series/Vol 1 renamed.webp',
+      '/mokuro-reader/Series/Vol 1 renamed.mokuro',
+      '/mokuro-reader/Series/Vol 1 renamed.mokuro',
+      '/mokuro-reader/Series/Vol 1 renamed.edit.mokuro',
+      '/mokuro-reader/Series/Vol 1 renamed.tr-en.mokuro',
+      '/mokuro-reader/Series/Vol 1 renamed.cbz'
+    ]);
+    expect(provider.getStatus().isReadOnly).toBe(false);
+  });
+
+  it('retries at most twice, then fails as before', async () => {
+    const provider = await connected();
+    mockClient.deleteFile.mockReset().mockRejectedValue(davError(503, { 'Retry-After': '1' }));
+    const done = provider.deleteFile(volumeFile('V.cbz')).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await done).toMatchObject({ code: 'DELETE_FAILED' });
+    expect(mockClient.deleteFile).toHaveBeenCalledTimes(3);
+  });
+
+  it('a 503 without a readable Retry-After, or one over 30 s, is not retried', async () => {
+    const provider = await connected();
+    for (const headers of [{}, { 'Retry-After': '31' }, { 'Retry-After': 'later' }] as Array<
+      Record<string, string>
+    >) {
+      mockClient.deleteFile.mockReset().mockRejectedValue(davError(503, headers));
+      await expect(provider.deleteFile(volumeFile('V.cbz'))).rejects.toMatchObject({
+        code: 'DELETE_FAILED'
+      });
+      expect(mockClient.deleteFile).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('a MOVE refused 503 + Retry-After is sent again (a 503 is not applied)', async () => {
+    const provider = await connected();
+    mockClient.exists.mockImplementation(
+      async (path: string) => !path.startsWith('/mokuro-reader/New')
+    );
+    mockClient.moveFile
+      .mockReset()
+      .mockRejectedValueOnce(davError(503, { 'Retry-After': '2' }))
+      .mockResolvedValue(undefined);
+    const done = provider.renameFile(volumeFile('V.cbz'), 'New/V.cbz');
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(done).resolves.toMatchObject({ path: 'New/V.cbz' });
+    expect(mockClient.moveFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-sends a PUT body it can read again, never a stream', async () => {
+    const provider = await connected();
+    const client = (provider as unknown as { client: typeof mockClient }).client;
+    mockClient.putFileContents
+      .mockReset()
+      .mockRejectedValueOnce(davError(503, { 'Retry-After': '1' }))
+      .mockResolvedValue(true);
+    const done = client.putFileContents('/mokuro-reader/x.json', '{}');
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(done).resolves.toBe(true);
+    expect(mockClient.putFileContents.mock.calls.map((c) => c[1])).toEqual(['{}', '{}']);
+
+    mockClient.putFileContents
+      .mockReset()
+      .mockRejectedValueOnce(davError(503, { 'Retry-After': '1' }))
+      .mockResolvedValue(true);
+    const stream = new ReadableStream();
+    await expect(client.putFileContents('/mokuro-reader/x.json', stream)).rejects.toMatchObject({
+      status: 503
+    });
+    expect(mockClient.putFileContents).toHaveBeenCalledTimes(1);
+  });
+
+  it("an abort stops the wait: login's 10 s connection timeout still ends it", async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    vi.useFakeTimers();
+    mockClient.getDirectoryContents
+      .mockReset()
+      .mockRejectedValue(davError(503, { 'Retry-After': '30' }));
+    const done = provider
+      .login({ serverUrl: 'https://host', username: 'alice', password: 'pw' })
+      .catch((e: unknown) => e);
+    let settled = false;
+    void done.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(settled).toBe(true);
+    // The server said busy, not unreachable: the 503 is what the user is told.
+    const error = (await done) as ProviderError;
+    expect(error.message).toContain('503');
+    expect(error.webdavErrorType).not.toBe('connection');
+    expect(mockClient.getDirectoryContents).toHaveBeenCalledTimes(1);
+  });
+
+  it('fetchWithRetryAfter: an abort ends the wait and returns the 503 it got', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(
+      async () => new Response('busy', { status: 503, headers: { 'Retry-After': '30' } })
+    );
+    const controller = new AbortController();
+    const done = fetchWithRetryAfter(fetchImpl as unknown as typeof fetch, 'https://host/x', {
+      signal: controller.signal
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    controller.abort();
+    const response = await done;
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe('busy');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -9,6 +9,8 @@ import {
   classifyMokuroSidecar,
   layerSidecarName,
   cbzStemsOf,
+  isBunkoControlFile,
+  dedupKeepsEveryCopy,
   foldStem,
   layerOwnerArchive,
   miscasedLayerStem
@@ -112,6 +114,37 @@ describe('isBestEffortMetadataPath', () => {
     expect(isBestEffortMetadataPath('positions.json')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/Volume 1.cbz')).toBe(false);
     expect(isBestEffortMetadataPath('Dr Stone/catalog.json')).toBe(false);
+  });
+});
+
+describe('bunko control files', () => {
+  it('names exactly the queue and the marker, case-sensitively', () => {
+    expect(isBunkoControlFile('.mokuro-bunko.json')).toBe(true);
+    expect(isBunkoControlFile('.mokuro-queue.json')).toBe(true);
+    expect(isBunkoControlFile('.MOKURO-BUNKO.JSON')).toBe(false);
+    expect(isBunkoControlFile('mokuro-bunko.json')).toBe(false);
+    expect(isBunkoControlFile('.mokuro-queue.json.bak')).toBe(false);
+  });
+
+  it('are never listed as syncable', () => {
+    expect(isSyncableFile('.mokuro-bunko.json')).toBe(false);
+    expect(isSyncableFile('.mokuro-queue.json')).toBe(false);
+  });
+});
+
+describe('dedupKeepsEveryCopy', () => {
+  it('covers the files sync folds across copies and the bunko control files', () => {
+    expect(dedupKeepsEveryCopy('volume-data.json')).toBe(true);
+    expect(dedupKeepsEveryCopy('Goals.json')).toBe(true);
+    expect(dedupKeepsEveryCopy('.mokuro-bunko.json')).toBe(true);
+    expect(dedupKeepsEveryCopy('.mokuro-queue.json')).toBe(true);
+  });
+
+  it('leaves every other file to the newer-copy rule', () => {
+    expect(dedupKeepsEveryCopy('profiles.json')).toBe(false);
+    expect(dedupKeepsEveryCopy('series.json')).toBe(false);
+    expect(dedupKeepsEveryCopy('Vol 1.mokuro')).toBe(false);
+    expect(dedupKeepsEveryCopy('.MOKURO-BUNKO.JSON')).toBe(false);
   });
 });
 
