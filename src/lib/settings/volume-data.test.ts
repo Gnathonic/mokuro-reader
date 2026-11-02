@@ -695,6 +695,31 @@ describe('position stamps (positions.json)', () => {
     });
   });
 
+  it('the same page with other chars (an adopted figure) stamps nothing and keeps the stored chars', () => {
+    // The page input set to the page already shown, or the scroll reader's
+    // edge nav at the last page: this device turned nothing, so it must not
+    // become the newest reader just because its own count of the characters
+    // up to that page differs from the one the other device stored.
+    updateProgress('v', 40, 4000, false);
+    const remote = Date.parse(get(volumesWithTrash).v.lastProgressUpdate!) + 1000;
+    expect(adoptPosition('v', 60, 18_000, false, remote)).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    const seen: string[] = [];
+    const stop = registerPositionListener((v) => seen.push(v));
+    updateProgress('v', 60, 6000, false);
+    stop();
+    expect(get(volumesWithTrash).v).toMatchObject({
+      progress: 60,
+      chars: 18_000,
+      lastProgressUpdate: new Date(remote).toISOString()
+    });
+    expect(seen).toEqual([]);
+    // Completing on that page IS a change.
+    updateProgress('v', 60, 6000, true);
+    expect(get(volumesWithTrash).v.completed).toBe(true);
+    expect(get(volumesWithTrash).v.lastProgressUpdate).not.toBe(new Date(remote).toISOString());
+  });
+
   it('adoptPosition creates a record for a volume this device never opened', () => {
     expect(adoptPosition('n', 7, 70, undefined, 1000)).toBe(true);
     expect(get(volumesWithTrash).n).toMatchObject({ progress: 7, chars: 70 });

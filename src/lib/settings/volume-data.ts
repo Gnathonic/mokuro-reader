@@ -808,10 +808,16 @@ export function updateProgress(
     // not a position change: stamping it would make an opened-but-unread
     // device the "newest" position and drag the device that actually read on
     // back to it at the next sync — the device-swap bug.
+    //
+    // Judged on the page and the flag ONLY. The chars are this device's own
+    // count up to that page, and an adopted position (`adoptPosition`) stores
+    // the other device's count, so a same-page report — the page input set to
+    // the page shown, the scroll reader's edge nav at the last page — would
+    // otherwise re-stamp the record over the real reader's without a turn.
+    // On an unchanged page the stored chars stay.
     if (
       prev[volume] &&
       progress === currentVolume.progress &&
-      (chars ?? currentVolume.chars) === currentVolume.chars &&
       completed === currentVolume.completed
     ) {
       return prev;
