@@ -93,6 +93,31 @@ describe('googleDriveCore', () => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
+    it('tells the caller about each session-init wait, so the tray is not frozen at 0 %', async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(
+          new Response('{}', { status: 429, headers: { 'Retry-After': '0.001' } })
+        )
+        .mockResolvedValueOnce(new Response('', { status: 503 }))
+        .mockResolvedValueOnce(initOk());
+      FakeXhr.replies = [{ status: 200, response: JSON.stringify({ id: 'new-id', size: '1' }) }];
+      const onRetry = vi.fn();
+
+      await googleDriveCore.uploadFile({
+        seriesTitle: 'S',
+        filename: 'v.cbz',
+        blob: new Blob(['x']),
+        credentials,
+        onRetry
+      });
+
+      expect(onRetry.mock.calls).toEqual([
+        [{ attempt: 2, attempts: 4, delayMs: 1, reason: 'rate limited' }],
+        [{ attempt: 3, attempts: 4, delayMs: expect.any(Number), reason: 'HTTP 503' }]
+      ]);
+      expect(onRetry.mock.calls[1][0].delayMs).toBeGreaterThan(0);
+    }, 10_000);
+
     it('fails a full account at once, naming the reason in the message', async () => {
       vi.mocked(fetch).mockResolvedValue(
         new Response(QUOTA_BODY, { status: 403, statusText: 'Forbidden' })
