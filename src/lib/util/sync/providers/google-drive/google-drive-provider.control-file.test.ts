@@ -352,6 +352,36 @@ describe('GoogleDriveProvider.readControlFile()', () => {
     expect(error.isAuthError).toBe(true);
   });
 
+  it.each([
+    ['quota', 403],
+    ['rate-limit', 403],
+    ['other', 401]
+  ])(
+    'trusts the classified kind over the status: a %s failure (%i) is not an auth error',
+    async (kind, status) => {
+      vi.mocked(driveApiClient.listFiles).mockRejectedValue(
+        Object.assign(new Error(`[${kind}] refused`), { name: 'DriveApiError', status, kind })
+      );
+
+      const error = await googleDriveProvider.readControlFile(BUNKO_MARKER_NAME).catch((e) => e);
+
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(error.isAuthError).toBe(false);
+      expect(error.code).toBe('CONTROL_READ_FAILED');
+    }
+  );
+
+  it('a 403 classified as auth is an auth error', async () => {
+    vi.mocked(driveApiClient.listFiles).mockRejectedValue(
+      Object.assign(new Error('forbidden'), { name: 'DriveApiError', status: 403, kind: 'auth' })
+    );
+
+    const error = await googleDriveProvider.readControlFile(BUNKO_MARKER_NAME).catch((e) => e);
+
+    expect(error.isAuthError).toBe(true);
+    expect(error.code).toBe('AUTH_EXPIRED');
+  });
+
   it('wraps other failures as non-auth ProviderErrors', async () => {
     vi.mocked(driveApiClient.listFiles).mockRejectedValue(
       Object.assign(new Error('Backend Error'), { status: 500 })

@@ -35,7 +35,7 @@ import {
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
-import { isDriveQuotaError } from '../../core/providers/drive-http';
+import { isDriveQuotaError, type DriveFailureKind } from '../../core/providers/drive-http';
 
 /** How long a resolved list of `mokuro-reader` root ids is trusted by `readControlFile`. */
 const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
@@ -383,10 +383,13 @@ class GoogleDriveProvider implements SyncProvider {
       );
     } catch (error) {
       if (error instanceof ProviderError) throw error;
-      // api-client surfaces 401/403 as a DriveApiError carrying `status`
-      // (after its own auto re-auth / token clearing).
-      const status = (error as { status?: number } | null)?.status;
-      const isAuth = status === 401 || status === 403;
+      // api-client surfaces failures as a DriveApiError / DriveHttpError
+      // carrying `status` and, when classified, `kind` (after its own auto
+      // re-auth / token clearing). A classified kind wins: a full account or
+      // a rate limit answers 403 too, and is no auth failure. Only an
+      // unclassified error falls back to the status.
+      const { status, kind } = (error ?? {}) as { status?: number; kind?: DriveFailureKind };
+      const isAuth = kind ? kind === 'auth' : status === 401 || status === 403;
       const isNetwork =
         (error as { isNetworkError?: boolean } | null)?.isNetworkError === true || status === 0;
       throw new ProviderError(
