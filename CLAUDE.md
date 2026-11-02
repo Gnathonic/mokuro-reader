@@ -165,6 +165,11 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   which roots are top-level from a `'root' in parents` query, never
   `files.get('root')` (a 404 under the app's `drive.file` scope); dedup
   confirms a root as the write root only when it is the cache's same pick.
+  Bunko's control files are read from EVERY live root too, nested ones
+  included (Drive: the cache's listed reader folders,
+  `getListedReaderFolderIds`, else one folder query with no parent clause;
+  MEGA: any parent named `mokuro-reader`) — a nested write root holds the
+  marker when there is no top-level one.
 - **Groups** are an exact name under one parent, within the library only
   (`listFolders` keeps `mokuro-reader` folders and their descendants). The
   kept folder is the oldest, then the smaller id (`compareByAge`).
@@ -514,7 +519,13 @@ design 0.8 D4: the main `<Volume>.mokuro` is model output). `persistPageEdit`
 still writes the primary row — the local view every consumer reads — and, in
 the same transaction, the page into the `edit` layer (`EDIT_LAYER_ID`,
 "Your corrections"; created from the pre-edit primary on the first save, then
-page by page, so pages edited in the layer itself survive). Layer-sync pushes
+page by page, so pages edited in the layer itself survive). Before that first
+save can happen, opening the editor on the primary of a volume with no `edit`
+row pulls the account's own listed `<Volume>.edit.mokuro` (the same
+`pullOwnEditLayerBeforeEdit` a fork uses): a row minted from the primary would
+be newer and replace another device's corrections on the next push. A listed
+overlay that could not be fetched (`'failed'`) opens nothing ("Couldn't fetch
+your corrections…"), for a fork too. Layer-sync pushes
 it as `<Volume>.edit.mokuro` (`scheduleLayerPush`, debounced, from the cached
 listing). Every layer file of kind `edit` carries a top-level
 `"edited": {"by": "mokuro-reader", "at": <layer updated_at>, "base_sha256":
@@ -539,7 +550,8 @@ letter) into `layer-<slug>` before de-duplicating with `-<n>` ("Edit" →
 `layer-edit`, "2024" → `layer-2024`). Edits made before this change live
 only in the primary: `migrateEditedPrimariesToEditLayers` (once per device,
 rows stamped before `edit-layer:epoch`) copies such a primary into an `edit`
-layer when it differs from its `original`. Three id families are
+layer when it differs from every layer it has (not its `original`, nor a
+layer it was promoted from). Three id families are
 CORRECTIONS by id (`isCorrectionsLayerId`): an account's own `edit`/`edit-<n>`
 ("Your corrections [n]", `isPersonalLayerId` — bunko 0.8 keeps them per
 account), the library's shared `curated` ("Shared corrections",
@@ -587,8 +599,10 @@ includes `accountCanAddFiles`) and stay quiet for a closed series: the backup
 per volume — also for a series that closed while queued), the cover sync and
 the sidecar backfill. The backup queue words the request's one snackbar
 itself (`queueSeriesVolumesForBackup` → "Added N … Skipped M …";
-`queueVolumeForBackup` returns false when it skipped and noticed): a caller's
-own "Added" snackbar would erase the skip notice from the single slot.
+`queueVolumeForBackup` returns `'refused'` when it skipped and noticed): a
+caller's own "Added" snackbar would erase the skip notice from the single slot.
+Only `'added'` counts as added — `'already-queued'` (a second Backup press while
+the first is still queued) is named as such, never re-announced as added.
 Everything else (layer-sync's hand-made layer pushes, curated publish,
 deletes) relies on the server: a 403 on a library file from such a server is
 that file's refusal (`libraryFileRefusal`, `PERMISSION_DENIED` with the
@@ -700,7 +714,7 @@ the push rule decides where it goes), switches the display to `edit` and
 opens the editor there ("Editing your corrections — the shared layer stays as
 it is"). An existing `edit` layer is never overwritten by a fork — nor one
 only LISTED so far (pushed from another device, not pulled here yet): the
-fork pulls that first (`pullOwnEditLayerBeforeFork`), since a fresh copy
+fork pulls that first (`pullOwnEditLayerBeforeEdit`), since a fresh copy
 would be newer and replace it on the next sync. The layer
 menu's **Copy to your corrections** (`copyIntoEditLayer`, after a confirm)
 replaces its pages on purpose. A layer SWAP from inside the editor (L, the
@@ -718,10 +732,17 @@ uploads the `edit` layer's own serialization (with its `edited` block) to
 archive — the only code that writes `curated` — then writes the local
 `curated` row with the same pages and the upload's stamp, so the next listing
 neither pulls nor pushes it; a 403 is `'refused'` and writes nothing.
-`unpublishCuratedLayer` deletes every listed copy, then the row; a 403 changes
-nothing (`'refused'`), any other failure leaves a tombstone flagged
-`unpublish`, the only tombstone whose retry may delete a `curated` file (and
-only for an account that may publish that volume). It carries the stamp of
+`unpublishCuratedLayer` deletes every listed copy — the `.gz` ones first, the
+plain file (the one every reader takes while it is listed) last, the same
+`deleteListedLayerCopies` its tombstone's retry uses — then the row. The
+first copy that fails stops it, with the plain file still there: a 403 means
+nothing anyone reads changed (`'refused'`: row kept, no tombstone; plain
+first, a refused `.gz` would have become the shared layer); any other failure
+removes the row and leaves a tombstone flagged `unpublish`, naming the provider the `curated` row was
+synced with (else the active one; with neither, `'failed'` and nothing
+changes — a provider-less tombstone would apply to every provider), the
+only tombstone whose retry may delete a `curated` file (and only for an
+account that may publish that volume). It carries the stamp of
 the copy it meant (`file`): a listed `curated` that moved since is another
 editor's newer publish — the tombstone is spent and that file pulled, never
 deleted. Delete is never offered on
@@ -732,8 +753,11 @@ too.
 `migrateEditedPrimariesToEditLayers` stays local and additive and uploads
 nothing itself: the `edit` row it makes goes where the push rule sends it —
 nowhere on a 0.7.x bunko, the account's overlay on 0.8, the folder on plain
-storage. It skips a primary equal to the `curated` layer's pages (a promoted
-curated is not "your corrections"). And a personal row that stays local with
+storage. It skips a primary equal to ANY of the volume's layers (read one at a
+time through `layer-store.ts`, that volume only): `promoteLayer` stamps
+`ocr_edited_at` like a hand edit and keeps its source, so a pre-epoch promotion
+of `curated`, an engine layer or `updated-ocr` would otherwise go up as the
+account's own corrections. And a personal row that stays local with
 unsynced edits (`keepsLocalEdits`) is never pulled over: on a 0.7.x bunko the
 listed `<Volume>.edit.mokuro` is the SHARED file, another account's work.
 
@@ -801,7 +825,10 @@ A layer can be listed as BOTH `.mokuro` and `.mokuro.gz` (an engine wrote the
 `.gz`, a client pushed the plain name over it). The plain file wins every read;
 everything that removes or moves a layer works from all listed copies
 (`ListedLayerFile.copies`): a delete reports `'gone'` only when every copy went
-(else the tombstone stays), a push removes the `.gz` it superseded
+(else the tombstone stays), and takes them in one order
+(`deleteListedLayerCopies`: `.gz` first, the plain file last, stopping at the
+first copy that fails — a 403 or any other error — so a failure never leaves
+an older `.gz` read in the plain file's place), a push removes the `.gz` it superseded
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
 
@@ -858,6 +885,13 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   flight per scope that concurrent callers await. The etag moves only after
   its nodes are recorded (else a second caller is answered not-modified
   against records that are not there yet); a clear voids a read in flight.
+  A read never forgets a live Bunko on the strength of one poll (else
+  `serverCompilesMetadata` drops for an interval and the reader produces
+  catalog/series files and dedups under it): nodes present but none a
+  marker (a half-written rewrite) count as not-modified, an unreadable node
+  beside readable ones keeps its last record, and a read with NO node keeps
+  the still-fresh records UNSTAMPED, so they go stale at 2 × ttl — the scope
+  is forgotten only once nothing kept is fresh.
 - `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
   queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
   `instance_id` names the top-ranked fresh marker. The cloud poller keeps

@@ -313,12 +313,71 @@ describe('the marker store', () => {
     expect(cloudBunkoStatus('google-drive')?.holder?.instanceId).toBe('ccc');
   });
 
-  it('a node that is not JSON says nothing; no node forgets the scope', async () => {
+  it('a node that is not JSON says nothing', async () => {
     await ingestMarkerRead('google-drive', read({ id: 'n1', etag: 'v1', body: '{"version":' }));
     expect(markerRecords('google-drive')).toEqual([]);
     expect(cloudBunkoStatus('google-drive')).toBeUndefined();
     await ingestMarkerRead('google-drive', read({ id: 'n1', etag: 'v1', body: marker() }));
     expect(cloudBunkoStatus('google-drive')?.fresh).toBe(true);
+  });
+
+  it('a half-written marker keeps what was known (read as not-modified)', async () => {
+    await ingestMarkerRead('google-drive', read({ id: 'n1', etag: 'v1', body: marker() }));
+    await ingestMarkerRead('google-drive', read({ id: 'n1', etag: 'v2', body: marker() }));
+    const before = markerRecords('google-drive');
+    expect(before[0].changedAt).toBe(T0);
+    vi.setSystemTime(T0 + 60_000);
+    await ingestMarkerRead('google-drive', read({ id: 'n1', etag: 'v3', body: '{"version":' }));
+    // Not forgotten, and not stamped as moved: it still ages from T0.
+    expect(markerRecords('google-drive')).toEqual(before);
+    expect(cloudBunkoStatus('google-drive')?.fresh).toBe(true);
+    vi.setSystemTime(T0 + 2 * TTL * 1000);
+    expect(cloudBunkoStatus('google-drive')?.fresh).toBe(false);
+  });
+
+  it('a half-written node beside a readable one keeps its own record', async () => {
+    await ingestMarkerRead(
+      'google-drive',
+      read(
+        { id: 'a', etag: '1', body: marker({ instance_id: 'aaa', epoch: 4 }) },
+        { id: 'b', etag: '1', body: marker({ instance_id: 'bbb', epoch: 2 }) }
+      )
+    );
+    await ingestMarkerRead(
+      'google-drive',
+      read(
+        { id: 'a', etag: '2', body: '{"version":' },
+        { id: 'b', etag: '1', body: marker({ instance_id: 'bbb', epoch: 2 }) }
+      )
+    );
+    expect(markerRecords('google-drive').map((r) => r.id)).toEqual(['b', 'a']);
+    expect(cloudBunkoHolder('google-drive')?.instance_id).toBe('aaa');
+  });
+
+  it('no marker node keeps the fresh records, unstamped, so they age to stale', async () => {
+    await ingestMarkerRead('google-drive', read({ id: 'n1', etag: 'v1', body: marker() }));
+    await ingestMarkerRead('google-drive', read({ id: 'n1', etag: 'v2', body: marker() }));
+    vi.setSystemTime(T0 + 60_000);
+    // A listing that briefly misses the node (a rewrite in flight, an
+    // eventually-consistent listing) must not drop the scope for a poll.
+    await ingestMarkerRead('google-drive', null);
+    expect(cloudBunkoStatus('google-drive')?.fresh).toBe(true);
+    expect(markerRecords('google-drive')[0].changedAt).toBe(T0);
+    await ingestMarkerRead('google-drive', { etag: '', nodes: [] });
+    expect(cloudBunkoStatus('google-drive')?.fresh).toBe(true);
+    vi.setSystemTime(T0 + 2 * TTL * 1000);
+    expect(cloudBunkoStatus('google-drive')?.fresh).toBe(false);
+    // Once nothing kept is fresh, a further empty read forgets the scope.
+    await ingestMarkerRead('google-drive', null);
+    expect(cloudBunkoStatus('google-drive')).toBeUndefined();
+  });
+
+  it('no marker node drops a released record at once', async () => {
+    await ingestMarkerRead('google-drive', read({ id: 'n1', etag: 'v1', body: marker() }));
+    await ingestMarkerRead(
+      'google-drive',
+      read({ id: 'n1', etag: 'v2', body: marker({ state: 'released' }) })
+    );
     await ingestMarkerRead('google-drive', null);
     expect(cloudBunkoStatus('google-drive')).toBeUndefined();
   });
@@ -662,7 +721,7 @@ describe('refreshCloudBunkoMarker', () => {
     });
   });
 
-  it('no marker forgets the scope and its etag', async () => {
+  it('no marker keeps the fresh records but forgets the etag', async () => {
     const files: { current: ControlFileResult } = {
       current: read({ id: 'n1', etag: 'v1', body: marker() })
     };
@@ -670,7 +729,8 @@ describe('refreshCloudBunkoMarker', () => {
     await refreshCloudBunkoMarker(p.provider);
     files.current = null;
     await refreshCloudBunkoMarker(p.provider);
-    expect(cloudBunkoStatus('google-drive')).toBeUndefined();
+    // Still fresh: one empty read is no proof Bunko stopped (it ages out instead).
+    expect(cloudBunkoStatus('google-drive')?.fresh).toBe(true);
     files.current = read({ id: 'n1', etag: 'v1', body: marker() });
     await refreshCloudBunkoMarker(p.provider);
     expect(p.readControlFile).toHaveBeenLastCalledWith('.mokuro-bunko.json', {

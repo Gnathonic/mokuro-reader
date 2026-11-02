@@ -93,6 +93,12 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   private fetchingFlag = false;
   private lastFetchTime: number | null = null;
   private readerFolderId: string | null = null;
+  /**
+   * Every live `mokuro-reader` folder the last whole-account listing found
+   * (top-level and nested alike), plus any this session created; null until
+   * a listing completes. `readControlFile` reads Bunko's marker from all of them.
+   */
+  private readerFolderIds: string[] | null = null;
   /** My Drive's own folder id, learnt once per session (see topLevelTest). */
   private myDriveRootId: string | null = null;
   private topLevelPromise: Promise<((f: DriveFile) => boolean) | null> | null = null;
@@ -370,6 +376,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           this.readerFolderId = readerFolderId;
           console.log('Found mokuro-reader folder ID:', readerFolderId);
         }
+        this.readerFolderIds = readerFolders.map((f) => f.id);
         const replayed = (this.mutationsDuringFetch ?? []).reduce(
           (map, fn) => fn(map),
           cacheMap as Map<string, DriveFileMetadata[]>
@@ -504,6 +511,18 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    */
   setReaderFolderId(folderId: string): void {
     this.readerFolderId = folderId;
+    if (this.readerFolderIds && !this.readerFolderIds.includes(folderId)) {
+      this.readerFolderIds = [...this.readerFolderIds, folderId];
+    }
+  }
+
+  /**
+   * The ids of every live `mokuro-reader` folder from the last whole-account
+   * listing — not only the write root: Bunko may hold the library in any of
+   * them. Null when no listing has completed for this account.
+   */
+  getListedReaderFolderIds(): string[] | null {
+    return this.readerFolderIds ? [...this.readerFolderIds] : null;
   }
 
   /**
@@ -690,6 +709,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     this.cacheLoadedStore.set(false);
     this.lastFetchTime = null;
     this.readerFolderId = null;
+    this.readerFolderIds = null;
     this.myDriveRootId = null;
     this.topLevelPromise = null;
     this.fetchPromise = null;

@@ -39,6 +39,7 @@ import {
   LAYER_PUSH_DEBOUNCE_MS,
   cancelScheduledLayerPushForTest,
   migrateEditedPrimariesToEditLayers,
+  pullOwnEditLayerBeforeEdit,
   resetEditLayerMigrationForTest,
   syncLayersFromListing
 } from '$lib/metadata/layer-sync';
@@ -185,6 +186,49 @@ describe('an OCR edit goes up as the edit layer, never as the main sidecar', () 
     expect(json.pages[1].blocks[0].lines).toEqual(['直した']);
     expect(json.pages[0].blocks[0].lines).toEqual(['あい']);
     expect(uploadedPaths()).not.toContain('Series/Vol 1.mokuro');
+  });
+
+  it("a first primary edit keeps the account's corrections from another device", async () => {
+    // Device A corrected page 0 and pushed `<Vol>.edit.mokuro`; this device
+    // has no `edit` row yet and edits page 1 of its primary.
+    const other = JSON.stringify({
+      version: '0.2.1',
+      title: 'Series',
+      title_uuid: 's1',
+      volume: 'Vol 1',
+      volume_uuid: 'v1',
+      pages: [pg('あなた'), pg('うえ', 'q.png')],
+      chars: 5
+    });
+    cachedFiles = [
+      cloudFile('Series/Vol 1.cbz'),
+      cloudFile('Series/Vol 1.mokuro'),
+      { ...cloudFile('Series/Vol 1.edit.mokuro'), size: 55 }
+    ];
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getStatus: () => ({ isReadOnly: false, serverCompilesMetadata: false }),
+      uploadFile,
+      downloadFile: vi.fn(async () => new Blob([other])),
+      deleteFile: vi.fn()
+    });
+
+    // What the reader does before it opens the editor on the primary. The
+    // clock is pinned: an edit stamped in the same millisecond as the pull's
+    // `synced_at` would not count as edited since sync, and nothing would go up.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-16T11:00:00.000Z'));
+    expect(await pullOwnEditLayerBeforeEdit('v1')).toBe('pulled');
+    vi.setSystemTime(new Date('2026-09-16T11:01:00.000Z'));
+    await persistPageEdit('v1', 1, pg('直した', 'q.png'));
+    vi.useRealTimers();
+    await syncLayersFromListing(listing(), 'webdav');
+
+    const call = uploadFile.mock.calls.find((c) => c[0] === 'Series/Vol 1.edit.mokuro')!;
+    const json = JSON.parse(await (call[1] as Blob).text());
+    // A's page 0 survives; this device's page 1 joins it.
+    expect(json.pages[0].blocks[0].lines).toEqual(['あなた']);
+    expect(json.pages[1].blocks[0].lines).toEqual(['直した']);
   });
 
   it('schedules the push itself once the edits settle (no listing needed)', async () => {
@@ -356,5 +400,28 @@ describe('the one-time edit-layer migration', () => {
     });
     expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
     expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
+  });
+
+  // `promoteLayer` stamps `ocr_edited_at` and keeps the layer it promoted: a
+  // pre-epoch promotion reads like a hand edit by the stamp alone.
+  it.each([
+    ['an engine layer', 'paddle-manga', 'ocr'],
+    ['the OCR upgrade', 'updated-ocr', 'ocr'],
+    ['a hand-made layer', 'notes', 'edit']
+  ] as const)('a primary promoted from %s is not "your corrections"', async (_, layerId, kind) => {
+    await legacyEdited();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: layerId,
+      name: layerId,
+      kind,
+      created_at: '2026-08-01T00:00:00.000Z',
+      updated_at: '2026-08-01T00:00:00.000Z',
+      pages: [pg('なおし'), pg('うえ', 'q.png')]
+    });
+    expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
+    await syncLayersFromListing(listing(), 'webdav');
+    expect(uploadedPaths()).not.toContain('Series/Vol 1.edit.mokuro');
   });
 });

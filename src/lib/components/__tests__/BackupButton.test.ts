@@ -87,7 +87,7 @@ describe('BackupButton', () => {
   });
 
   it('announces a queued volume as added', async () => {
-    queueVolumeForBackup.mockReturnValue(true);
+    queueVolumeForBackup.mockReturnValue('added');
     const { getByRole } = render(BackupButton, { props: { volume } });
     await fireEvent.click(getByRole('button', { name: /Backup to WebDAV/ }));
     expect(showSnackbar).toHaveBeenCalledWith('Added Volume 9 to backup queue');
@@ -96,10 +96,17 @@ describe('BackupButton', () => {
   // The snackbar has one slot: the queue's own skip notice (a series another
   // account owns, bunko 0.8) must not be overwritten by a false "Added".
   it('says nothing over the notice of a volume the queue skipped', async () => {
-    queueVolumeForBackup.mockReturnValue(false);
+    queueVolumeForBackup.mockReturnValue('refused');
     const { getByRole } = render(BackupButton, { props: { volume } });
     await fireEvent.click(getByRole('button', { name: /Backup to WebDAV/ }));
     expect(queueVolumeForBackup).toHaveBeenCalledWith(volume);
     expect(showSnackbar).not.toHaveBeenCalled();
+  });
+
+  it('a volume the queue already held is not announced as added', async () => {
+    queueVolumeForBackup.mockReturnValue('already-queued');
+    const { getByRole } = render(BackupButton, { props: { volume } });
+    await fireEvent.click(getByRole('button', { name: /Backup to WebDAV/ }));
+    expect(showSnackbar).toHaveBeenCalledWith('Volume already in backup queue');
   });
 });

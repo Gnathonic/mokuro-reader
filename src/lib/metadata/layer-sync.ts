@@ -6,6 +6,7 @@ import {
   getLayerPages,
   getLayerWithPages,
   layerTables,
+  listLayerIds,
   listLayerMetasForVolumes,
   listVolumeUuidsWithLayers,
   patchLayerMeta,
@@ -36,6 +37,7 @@ import {
   layerStaysLocal,
   pulledFromCompilingServer,
   personalLayerAccount,
+  syncedForOtherAccount,
   type LayerTarget
 } from '$lib/catalog/mokuro-hash';
 import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
@@ -497,24 +499,6 @@ function isPassiveSnapshot(
 }
 
 /**
- * A personal layer (`edit`, `edit-<n>`) last synced under ANOTHER account of
- * this provider — two accounts on one device and one server, each of which
- * bunko serves its own `<Volume>.edit.mokuro` at the same path. A row stamped
- * before accounts were recorded has no `account` and counts as this one's.
- */
-function syncedForOtherAccount(
-  row: Pick<VolumeOcrLayer, 'layer_id' | 'cloud'>,
-  account: string | undefined
-): boolean {
-  return (
-    !!account &&
-    !!row.cloud?.account &&
-    row.cloud.account !== account &&
-    isPersonalLayerId(row.layer_id)
-  );
-}
-
-/**
  * Should this listed file replace the local row? No row → yes. A passive
  * snapshot → yes, whatever the mtimes say. Stamps equal → no. Cloud moved and
  * the row is untouched since its sync → yes. Both moved → the cloud copy wins
@@ -806,16 +790,24 @@ async function decodeLayerBlob(
   }
 }
 
+/** What went wrong with a pull that a caller must not mistake for "nothing there". */
+interface PullReport {
+  /** A file that needed pulling could not be downloaded (offline, a server error). */
+  failed: boolean;
+}
+
 /** Download + decode one listed layer file; null when unusable. */
 async function readLayerFile(
   provider: SyncProvider,
-  listed: ListedLayerFile
+  listed: ListedLayerFile,
+  report?: PullReport
 ): Promise<PulledLayerFile | null> {
   let blob: Blob;
   try {
     blob = await provider.downloadFile(listed.file);
   } catch (error) {
     console.warn(`[layer-sync] could not read '${listed.file.path}':`, error);
+    if (report) report.failed = true;
     return null;
   }
   return decodeLayerBlob(blob, listed.gz, listed.file.path);
@@ -841,7 +833,8 @@ async function pullOne(
   provider: SyncProvider,
   listed: ListedLayerFile,
   row: VolumeMetadata,
-  existing: VolumeOcrLayer | undefined
+  existing: VolumeOcrLayer | undefined,
+  report?: PullReport
 ): Promise<boolean> {
   // The one gate every pulled file passes on its way to becoming a row: it
   // must plausibly be a layer OF THIS VOLUME, i.e. have the volume's page
@@ -858,7 +851,7 @@ async function pullOne(
   }
   const rejection = rejectionOf(row, listed, provider.type);
   if (isKnownMismatch(rejection)) return false;
-  const pulled = await readLayerFile(provider, listed);
+  const pulled = await readLayerFile(provider, listed, report);
   if (!pulled) return false;
   const status = provider.getStatus();
   const stored = await storePulledLayer(row, listed.layerId, pulled, existing, {
@@ -1366,8 +1359,11 @@ let editLayerMigration: Promise<number> | null = null;
  * an edit re-uploaded the main sidecar — an `edit` layer holding that primary,
  * so the corrections reach the cloud as `<Volume>.edit.mokuro` now that the
  * main sidecar is never re-uploaded after an edit. A volume whose primary
- * still equals its `original` snapshot has nothing to carry; one that already
- * has an `edit` layer keeps it. Additive only (nothing is deleted or
+ * equals ANY of its layers has nothing to carry — its `original` snapshot
+ * (never edited), or a layer it was promoted from (`promoteLayer` stamps
+ * `ocr_edited_at` too and keeps the layer: an engine's OCR, the cloud's
+ * `updated-ocr`, the shared `curated` are not this account's corrections);
+ * one that already has an `edit` layer keeps it. Additive only (nothing is deleted or
  * changed), and the old backfill's localStorage list is dropped. Resolves the
  * number of layers made; never rejects.
  *
@@ -1427,13 +1423,19 @@ async function carryPrimaryIntoEditLayer(volumeUuid: string): Promise<boolean> {
     if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return false;
     const ocr = await db.volume_ocr.get(volumeUuid);
     if (!ocr?.pages?.length) return false;
-    const original = await getLayerPages(db, volumeUuid, 'original');
-    if (original && JSON.stringify(original) === JSON.stringify(ocr.pages)) return false;
-    // A primary promoted from the shared `curated` layer holds the library's
-    // corrections, not this account's: as an `edit` layer it would go up as
-    // the account's own copy of everyone's work.
-    const curated = await getLayerPages(db, volumeUuid, CURATED_LAYER_ID);
-    if (curated && JSON.stringify(curated) === JSON.stringify(ocr.pages)) return false;
+    // Equal to a layer = no corrections of the account's own: the untouched
+    // `original`, or a promoted layer — an engine's or the OCR upgrade's
+    // (pushed as `edit` it would publish model output as hand corrections), the
+    // shared `curated` (the account's own copy of everyone's work). A
+    // pre-epoch `promoteLayer` stamps `ocr_edited_at` like a hand edit, so the
+    // stamp alone cannot tell. One layer's pages at a time, this volume only.
+    const primary = JSON.stringify(ocr.pages);
+    for (const layerId of await listLayerIds(db, volumeUuid)) {
+      const pages = await getLayerPages(db, volumeUuid, layerId);
+      if (pages && pages.length === ocr.pages.length && JSON.stringify(pages) === primary) {
+        return false;
+      }
+    }
     // Stamped with the edit's own time, so it ranks as the edit it is.
     const at = row.ocr_edited_at;
     await putLayerWithPages(db, {
@@ -1509,7 +1511,9 @@ export async function pullLayersForVolume(
   volumeUuid: string,
   providerType: ProviderType,
   /** Only these layer ids (default: every listed layer of the volume). */
-  only?: string[]
+  only?: string[],
+  /** Set when a file that needed pulling could not be downloaded. */
+  report?: PullReport
 ): Promise<number> {
   try {
     const row = await db.volumes.get(volumeUuid);
@@ -1525,53 +1529,59 @@ export async function pullLayersForVolume(
         rowKey(l.stem) === titleKey &&
         (!only || only.includes(l.layerId))
     );
-    const tombstoned = pendingDeletesFor(
-      providerType,
-      personalLayerAccount(provider.getStatus())
-    ).get(volumeUuid);
+    // Read once for the whole volume, not per layer: it parses the pending
+    // deletes and asks the provider for its status.
+    const gate = pushGateOf(provider);
+    const tombstoned = pendingDeletesFor(providerType, gate.account).get(volumeUuid);
     let pulled = 0;
     await runPool(mine, MAX_CONCURRENT_LAYER_TRANSFERS, async (listed) => {
       const existing = await getLayerMeta(db, volumeUuid, listed.layerId);
       // Deleted here and not re-created: a fresh download must not bring it back.
       if (!existing && tombstoned?.has(listed.layerId)) return;
-      if (keepsLocalEdits(existing, pushGateOf(provider).target)) return;
-      if (
-        !layerNeedsPull(
-          existing,
-          listed.file,
-          providerType,
-          personalLayerAccount(provider.getStatus())
-        )
-      ) {
-        return;
-      }
-      if (await pullOne(provider, listed, row, existing)) pulled++;
+      if (keepsLocalEdits(existing, gate.target)) return;
+      if (!layerNeedsPull(existing, listed.file, providerType, gate.account)) return;
+      if (await pullOne(provider, listed, row, existing, report)) pulled++;
     });
     return pulled;
   } catch (error) {
     console.warn('[layer-sync] pull for volume failed:', error);
+    if (report) report.failed = true;
     return 0;
   }
 }
 
+/** `pullOwnEditLayerBeforeEdit`'s answer. */
+export type OwnEditLayerPull = 'pulled' | 'none' | 'failed';
+
 /**
- * Before a fork (`forkIntoEditLayer`) mints the account's `edit` layer from a
- * shared one: an overlay of the account's own already in the cached listing
- * (pushed from another device, not pulled here yet) is pulled first, so the
- * fork edits THAT. A fresh copy would be newer than it and replace it on the
- * next sync. Only where the account's `edit` goes up at all — elsewhere the
- * listed file is not its own. Returns whether a row was pulled. Never rejects.
+ * Before anything mints the account's `edit` layer — a fork
+ * (`forkIntoEditLayer`) from a shared layer, or the first save of an edit of
+ * the primary (`persistPageEdit` makes `edit` from the primary): an overlay of
+ * the account's own already in the cached listing (pushed from another device,
+ * not pulled here yet) is pulled first, so the edit goes into THAT. A fresh
+ * copy would be newer than it and replace it on the next sync, taking the
+ * other device's corrections with it. Only where the account's `edit` goes up
+ * at all — elsewhere the listed file is not its own.
+ *
+ * `'pulled'`: the row is here now. `'none'`: nothing to pull (no provider, a
+ * local `edit` row already, none listed, a file that is no layer of this
+ * volume). `'failed'`: a listed overlay could not be downloaded — the caller
+ * must NOT mint a fresh `edit`, or the next push replaces that file. Never
+ * rejects.
  */
-export async function pullOwnEditLayerBeforeFork(volumeUuid: string): Promise<boolean> {
+export async function pullOwnEditLayerBeforeEdit(volumeUuid: string): Promise<OwnEditLayerPull> {
   try {
     const provider = providerManager.getActiveProvider();
-    if (!provider) return false;
-    if (layerIdStaysLocal(EDIT_LAYER_ID, pushGateOf(provider).target)) return false;
-    if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return false;
-    return (await pullLayersForVolume(volumeUuid, provider.type, [EDIT_LAYER_ID])) > 0;
+    if (!provider) return 'none';
+    if (layerIdStaysLocal(EDIT_LAYER_ID, pushGateOf(provider).target)) return 'none';
+    if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return 'none';
+    const report: PullReport = { failed: false };
+    const pulled = await pullLayersForVolume(volumeUuid, provider.type, [EDIT_LAYER_ID], report);
+    if (pulled > 0) return 'pulled';
+    return report.failed ? 'failed' : 'none';
   } catch (error) {
-    console.warn('[layer-sync] could not pull the edit layer before a fork:', error);
-    return false;
+    console.warn('[layer-sync] could not pull the edit layer before an edit:', error);
+    return 'failed';
   }
 }
 
@@ -1656,32 +1666,53 @@ export async function importFetchedLayers(
  */
 export type CloudLayerDeleteOutcome = 'gone' | 'unconfirmed' | 'kept-shared';
 
-async function deleteOneCopy(provider: SyncProvider, file: CloudFileMetadata): Promise<boolean> {
+/** One copy's delete: gone, refused by the server (403), or failed otherwise. */
+type CopyDeleteOutcome = 'gone' | 'refused' | 'failed';
+
+async function deleteOneCopy(
+  provider: SyncProvider,
+  file: CloudFileMetadata
+): Promise<CopyDeleteOutcome> {
   try {
     await provider.deleteFile(file);
     cacheManager.getCache(provider.type)?.removeById?.(file.fileId);
-    return true;
+    return 'gone';
   } catch (error) {
     console.warn(`[layer-sync] could not delete '${file.path}':`, error);
-    return false;
+    return isPermissionRefusal(error) ? 'refused' : 'failed';
   }
 }
 
 /**
- * Delete EVERY listed copy of a layer (`.mokuro` and `.mokuro.gz`). True only
- * when all of them went: one survivor is enough for the next listing to read
- * the layer back, so the caller must keep its tombstone. A failed copy never
- * spares the others — each one removed is one less to retry.
+ * Delete EVERY listed copy of a layer (`.mokuro` and `.mokuro.gz`) — the one
+ * order every delete of a listed layer takes (a layer delete, a tombstone's
+ * retry, an Unpublish). The `.gz` copies go first and the plain file — the one
+ * every reader takes while it is listed — last, and the first copy that
+ * cannot be deleted stops it, whatever the reason (`'refused'` for a 403,
+ * else `'failed'`): the plain file is then still there, so what anyone reads
+ * did not change. Going on, a `.gz` that stayed would be read in the plain
+ * file's place by everyone. `'gone'` only when every copy went: anything
+ * else leaves a copy for the next listing to read the layer back from, so
+ * the caller keeps its tombstone and the retry finishes the job.
  */
+async function deleteListedLayerCopies(
+  provider: SyncProvider,
+  listed: ListedLayerFile
+): Promise<CopyDeleteOutcome> {
+  const copies = [...listed.copies].sort((a, b) => Number(b.gz) - Number(a.gz));
+  for (const copy of copies) {
+    const one = await deleteOneCopy(provider, copy.file);
+    if (one !== 'gone') return one;
+  }
+  return 'gone';
+}
+
+/** `deleteListedLayerCopies` went all the way: no copy is left to read the layer back. */
 async function deleteListedLayerFile(
   provider: SyncProvider,
   listed: ListedLayerFile
 ): Promise<boolean> {
-  let allGone = true;
-  for (const copy of listed.copies) {
-    if (!(await deleteOneCopy(provider, copy.file))) allGone = false;
-  }
-  return allGone;
+  return (await deleteListedLayerCopies(provider, listed)) === 'gone';
 }
 
 /** Where a listing keeps a volume: its folder and archive stem, as the listing spells them. */
@@ -1930,27 +1961,40 @@ export async function publishCuratedLayer(volumeUuid: string): Promise<CuratedPu
   }
 }
 
-/** What an Unpublish came to: `CloudLayerDeleteOutcome`, or refused (nothing changed). */
-export type CuratedUnpublishOutcome = Exclude<CloudLayerDeleteOutcome, 'kept-shared'> | 'refused';
+/**
+ * What an Unpublish came to: `CloudLayerDeleteOutcome`, refused (nothing
+ * changed), or failed (nothing changed: no provider to remove it from).
+ */
+export type CuratedUnpublishOutcome =
+  | Exclude<CloudLayerDeleteOutcome, 'kept-shared'>
+  | 'refused'
+  | 'failed';
 
 /**
  * Unpublish: remove the library's shared corrections for everyone — every
- * listed copy (`.mokuro` and `.mokuro.gz`), then the local row. A copy the
- * server refuses (403) changes nothing here: the row stays and no tombstone is
- * left, since a retry would be refused the same way. Any other failure still
- * removes the row and leaves an Unpublish tombstone, which hides the file and
- * is retried by later listings (`canDeleteLayer`). Never rejects.
+ * listed copy (`.mokuro` and `.mokuro.gz`, `deleteListedLayerCopies`: `.gz`
+ * first, the plain file last, stopping at the first copy that fails), then the local
+ * row. A refusal leaves the plain file there, so nothing anyone reads changed
+ * — the row stays and no tombstone is left (`'refused'`), since a retry would
+ * be refused the same way. Any other failure still removes the row and
+ * leaves an Unpublish tombstone, which hides the file and is retried by
+ * later listings (`canDeleteLayer`). The tombstone names the provider the
+ * `curated` row was synced with, else the active one; with neither there is
+ * nothing to name, and nothing is changed (`'failed'`). Never rejects.
  */
 export async function unpublishCuratedLayer(volumeUuid: string): Promise<CuratedUnpublishOutcome> {
   const provider = providerManager.getActiveProvider();
   // The copy this Unpublish means: the listed file, else the one the row was
   // synced with. A retry must not take a newer publish down with it.
   let file: PendingLayerDelete['file'];
+  // The provider holding that copy. An Unpublish tombstone without one would
+  // apply to every provider's listing (`pendingDeletesFor`).
+  let holder: string | undefined = provider?.type;
   const tombstone = (): CuratedUnpublishOutcome => {
     notePendingLayerDelete({
       volume_uuid: volumeUuid,
       layer_id: CURATED_LAYER_ID,
-      provider: provider?.type,
+      provider: holder,
       unpublish: true,
       ...(file ? { file } : {})
     });
@@ -1962,12 +2006,16 @@ export async function unpublishCuratedLayer(volumeUuid: string): Promise<Curated
       getLayerMeta(db, volumeUuid, CURATED_LAYER_ID)
     ]);
     if (!row) return 'gone';
-    if (curated?.cloud) file = { size: curated.cloud.size, modified: curated.cloud.modified };
+    if (curated?.cloud) {
+      file = { size: curated.cloud.size, modified: curated.cloud.modified };
+      holder = curated.cloud.provider;
+    }
+    if (!holder) return 'failed';
     if (provider && !canPublishHere(provider.getStatus(), row.series_title, row.volume_title)) {
       return 'refused';
     }
     let outcome: CuratedUnpublishOutcome;
-    if (!provider) {
+    if (!provider || provider.type !== holder) {
       outcome = tombstone();
     } else {
       const listing = listingFromCache(provider.type);
@@ -1976,20 +2024,9 @@ export async function unpublishCuratedLayer(volumeUuid: string): Promise<Curated
         outcome = locateVolumeInListing(listing, row) ? 'gone' : tombstone();
       } else {
         file = stampOf(listed.file);
-        let refused = false;
-        let failed = false;
-        for (const copy of listed.copies) {
-          try {
-            await provider.deleteFile(copy.file);
-            cacheManager.getCache(provider.type)?.removeById?.(copy.file.fileId);
-          } catch (error) {
-            if (isPermissionRefusal(error)) refused = true;
-            else failed = true;
-            console.warn(`[layer-sync] could not delete '${copy.file.path}':`, error);
-          }
-        }
-        if (refused) return 'refused';
-        outcome = failed ? tombstone() : 'gone';
+        const deleted = await deleteListedLayerCopies(provider, listed);
+        if (deleted === 'refused') return 'refused';
+        outcome = deleted === 'gone' ? 'gone' : tombstone();
       }
     }
     if (outcome === 'gone') clearPendingLayerDelete(volumeUuid, CURATED_LAYER_ID);
@@ -1997,6 +2034,6 @@ export async function unpublishCuratedLayer(volumeUuid: string): Promise<Curated
     return outcome;
   } catch (error) {
     console.warn('[layer-sync] could not unpublish the shared corrections:', error);
-    return tombstone();
+    return holder ? tombstone() : 'failed';
   }
 }
