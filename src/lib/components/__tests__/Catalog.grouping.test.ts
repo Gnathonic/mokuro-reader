@@ -2,30 +2,34 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-const { catalogStore, miscSettings, queueSeriesVolumes, readingVolumes } = vi.hoisted(() => {
-  function createStore<T>(initial: T) {
-    const subs = new Set<(v: T) => void>();
-    let current = initial;
+const { catalogStore, miscSettings, queueSeriesVolumes, readingVolumes, readTimes } = vi.hoisted(
+  () => {
+    function createStore<T>(initial: T) {
+      const subs = new Set<(v: T) => void>();
+      let current = initial;
+      return {
+        subscribe(fn: (v: T) => void) {
+          subs.add(fn);
+          fn(current);
+          return () => subs.delete(fn);
+        },
+        set(v: T) {
+          current = v;
+          subs.forEach((fn) => fn(current));
+        }
+      };
+    }
     return {
-      subscribe(fn: (v: T) => void) {
-        subs.add(fn);
-        fn(current);
-        return () => subs.delete(fn);
-      },
-      set(v: T) {
-        current = v;
-        subs.forEach((fn) => fn(current));
-      }
+      queueSeriesVolumes: vi.fn(),
+      catalogStore: createStore<unknown[] | null>([]),
+      miscSettings: createStore({ galleryLayout: 'list', gallerySorting: 'ASC' }),
+      // The reading record the smart sort reads completion and recency from.
+      readingVolumes: createStore<Record<string, unknown>>({}),
+      // Last read from reading history (`lastReadTimes`).
+      readTimes: createStore<ReadonlyMap<string, { at: number; since: number }>>(new Map())
     };
   }
-  return {
-    queueSeriesVolumes: vi.fn(),
-    catalogStore: createStore<unknown[] | null>([]),
-    miscSettings: createStore({ galleryLayout: 'list', gallerySorting: 'ASC' }),
-    // The reading record the smart sort reads completion and recency from.
-    readingVolumes: createStore<Record<string, unknown>>({})
-  };
-});
+);
 
 function emptyStore<T>(value: T) {
   return {
@@ -64,6 +68,10 @@ vi.mock('$lib/util/download-queue', () => ({
   }
 }));
 vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
+vi.mock('$lib/reading-history/last-read', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/reading-history/last-read')>()),
+  lastReadTimes: readTimes
+}));
 vi.mock('$lib/util/modals', () => ({ promptSeriesEditor: vi.fn() }));
 vi.mock('$lib/catalog/series-delete', () => ({ promptSeriesRemoval: vi.fn() }));
 vi.mock('$lib/util/hash-router', () => ({ nav: { toSeries: vi.fn() } }));
@@ -428,6 +436,40 @@ describe('Catalog sorts and colours a series by the SAME completion rule', () =>
       expect(firstGreen).toBeGreaterThan(-1);
       expect(rows.slice(firstGreen).every((row) => row.green)).toBe(true);
     }
+  });
+});
+
+describe('Catalog smart sort recency', () => {
+  afterEach(() => {
+    cleanup();
+    miscSettings.set({ galleryLayout: 'list', gallerySorting: 'ASC' });
+    readingVolumes.set({});
+    readTimes.set(new Map());
+  });
+
+  it('orders by last read from history, not by the merge stamp', async () => {
+    miscSettings.set({ galleryLayout: 'list', gallerySorting: 'SMART' });
+    readingVolumes.set({
+      // Re-stamped (a look-up's restore that had to beat an upload): newest stamp.
+      'a-1': { completed: false, progress: 4, lastProgressUpdate: '2026-08-20T00:00:00.000Z' },
+      'b-1': { completed: false, progress: 4, lastProgressUpdate: '2026-08-10T00:00:00.000Z' },
+      // No history: the stamp is all there is.
+      'c-1': { completed: false, progress: 4, lastProgressUpdate: '2026-08-05T00:00:00.000Z' }
+    });
+    readTimes.set(
+      new Map([
+        ['a-1', { at: Date.parse('2026-08-01T00:00:00.000Z'), since: 0 }],
+        ['b-1', { at: Date.parse('2026-08-09T00:00:00.000Z'), since: 0 }]
+      ])
+    );
+    catalogStore.set([
+      series('A', [volume('A', { volume_uuid: 'a-1' })]),
+      series('B', [volume('B', { volume_uuid: 'b-1' })]),
+      series('C', [volume('C', { volume_uuid: 'c-1' })])
+    ]);
+    const { container } = render(Catalog);
+    await tick();
+    expect(titlesIn(container, 'catalog-library')).toEqual(['B', 'C', 'A']);
   });
 });
 

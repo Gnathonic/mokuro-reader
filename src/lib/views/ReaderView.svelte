@@ -10,6 +10,9 @@
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
   import { foregroundSync } from '$lib/util/sync/foreground-sync';
+  import { checkPositionsOnOpen } from '$lib/positions/positions-sync';
+  import { noteReaderClosed } from '$lib/positions/reader-open';
+  import { endVisit, startVisit } from '$lib/positions/visit';
 
   let volumeId = $derived($routeParams.volume || '');
 
@@ -81,22 +84,43 @@
     }
   });
 
+  // The device swap: before the reader picks its page, ask positions.json
+  // (fixed address, no listing) whether another device read on. At most
+  // READER_OPEN_WAIT_MS, then the local page; a later answer still moves the
+  // page while none has been turned here. Re-run for every volume opened.
+  // The visit (look-ups claim nothing) starts from the page the check settled.
+  let positionsChecked = $state(false);
+  $effect(() => {
+    const id = volumeId;
+    if (!id) return;
+    positionsChecked = false;
+    let live = true;
+    void checkPositionsOnOpen(id).finally(() => {
+      if (!live) return;
+      startVisit(id);
+      positionsChecked = true;
+    });
+    return () => {
+      live = false;
+      noteReaderClosed(id);
+      endVisit(id);
+    };
+  });
+
   onMount(() => {
     // Pull other devices' progress before the first page turn here can make
     // this device's (possibly stale) page the newest.
     foregroundSync.request();
 
-    // Set up activity tracker timeout
-    activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
-
     return () => {
-      // Stop activity tracker when component unmounts
-      activityTracker.stop();
+      // Send a pending progress change now rather than when the batching
+      // interval allows.
+      activityTracker.flush();
     };
   });
 </script>
 
-{#if cachedVolumeSettings}
+{#if cachedVolumeSettings && positionsChecked}
   {#key volumeId}
     <Timer {volumeId} visible={$settings.showTimer && overlaysVisible} />
     <Reader volumeSettings={cachedVolumeSettings} bind:overlaysVisible />

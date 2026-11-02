@@ -9,6 +9,7 @@ import {
 } from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
+import { HISTORY_FOLDER } from '$lib/reading-history/paths';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
@@ -291,9 +292,26 @@ class UnifiedCloudManager {
         const provider = this.getActiveProvider();
         if (!provider) return new Map();
 
+        // Reading history (`history/<device>/…`) is not part of the catalog.
+        // Leaving it out — and handing back the SAME map when nothing else
+        // changed — matters: the catalog re-derives every placeholder whenever
+        // this map's identity changes, and a history upload lands in the
+        // listing cache on every sync. The signature is content, not array
+        // identity: caches update their per-folder arrays in place.
+        let signature = provider.type;
+        for (const [seriesTitle, files] of $filesMap.entries()) {
+          if (seriesTitle === HISTORY_FOLDER) continue;
+          signature += `\n${seriesTitle}`;
+          for (const f of files) {
+            signature += `\t${f.fileId}|${f.path}|${f.modifiedTime}|${f.size}|${f.description ?? ''}`;
+          }
+        }
+        if (this.lastCloudFiles?.signature === signature) return this.lastCloudFiles.map;
+
         // Add provider field to each file in the map
         const resultMap = new Map<string, CloudVolumeWithProvider[]>();
         for (const [seriesTitle, files] of $filesMap.entries()) {
+          if (seriesTitle === HISTORY_FOLDER) continue;
           resultMap.set(
             seriesTitle,
             files.map((file) => ({
@@ -302,11 +320,17 @@ class UnifiedCloudManager {
             }))
           );
         }
+        this.lastCloudFiles = { signature, map: resultMap };
         return resultMap;
       },
       new Map()
     );
   }
+
+  private lastCloudFiles: {
+    signature: string;
+    map: Map<string, CloudVolumeWithProvider[]>;
+  } | null = null;
 
   /**
    * Store indicating whether a fetch is in progress
@@ -2432,7 +2456,14 @@ class UnifiedCloudManager {
     // Synced progress may reference series this device has no rows for. THE
     // one trigger for resolving that — never a view mount — and started
     // behind the result: sync reports what it did, resolution continues.
-    if (result.success) this.startProgressResolution();
+    if (result.success) {
+      this.startProgressResolution();
+      // A record from a device still on the minute counter gets its
+      // pre-history snapshot (a no-op once each record has one).
+      void import('$lib/reading-history/stats-store')
+        .then(({ freezeLegacyBaselines }) => freezeLegacyBaselines())
+        .catch((error) => console.debug('[reading-history] baselines skipped:', error));
+    }
     return {
       totalProviders: 1,
       succeeded: result.success ? 1 : 0,

@@ -3,6 +3,17 @@
  */
 
 /**
+ * A record's ISO stamp (`lastProgressUpdate`, `forgotAt`, …) as epoch ms;
+ * 0 for a missing or unparseable one, so callers compare with `>` and never
+ * meet a NaN.
+ */
+export function stampMs(iso: string | undefined | null): number {
+  if (!iso) return 0;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/**
  * Is this volume read through?
  *
  * The reader can settle on the second-to-last page (a spread shows the last two at once),

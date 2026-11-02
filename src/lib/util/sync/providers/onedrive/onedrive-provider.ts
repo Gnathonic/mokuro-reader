@@ -198,7 +198,22 @@ export class OneDriveProvider implements SyncProvider {
     const promise = (async () => {
       try {
         await this.ensureMokuroFolder();
-        return await this.createFolderTolerant(ONEDRIVE_CONFIG.MOKURO_FOLDER, seriesTitle);
+        // One folder per segment: Graph refuses a `/` in an item name, and
+        // reading history lives two levels deep (history/<device>).
+        let parent: string = ONEDRIVE_CONFIG.MOKURO_FOLDER;
+        let id = '';
+        for (const segment of seriesTitle.split('/')) {
+          const here = `${parent}/${segment}`;
+          const existingSegment = await getItemByPath(
+            await onedriveTokenManager.getAccessToken(),
+            here
+          );
+          id = existingSegment
+            ? existingSegment.id
+            : await this.createFolderTolerant(parent, segment);
+          parent = here;
+        }
+        return id;
       } finally {
         this.seriesFolderPromises.delete(seriesTitle);
       }

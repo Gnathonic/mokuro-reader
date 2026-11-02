@@ -108,6 +108,39 @@ Where the user labels a device (recommendation; one edit component, three entry 
    banner on the stats view, "You read on 2 devices — name this one?". Never a first-run modal. A
    single-device user never sees a device anywhere.
 
+**As built (phase 4, `devices.ts` / `device-stats.ts` / `tracking-data.ts` / `DevicesSettings.svelte` /
+`DeviceStatsCard.svelte` / `SecondDeviceBanner.svelte`).** Deviations from the design above:
+
+- The label entry is `tracking.devices[<id>]` = `{name?, class?, merged_into?, lastUpdated}` —
+  `lastUpdated`, not `updated_at`, like every other `tracking` key (the bogus-stamp check reads that
+  name). One stamp per entry, newest wins, a tie keeps local; a future stamp is clamped and forfeits as in
+  `series`, detected per id (`devices/<id>` in the tracking section's one bogus set), and the multi-copy
+  fold filters per id. The entry is replaced whole, so a cleared name or an unmerge wins by its stamp; a
+  rename and a merge of the same device on two devices between syncs keep only the newer. Labels never
+  touch `device.json` or the history database.
+- A device is any id with a facts row or a native event; `legacy:` ids are never devices. Generated
+  labels still equal after the month get " 2", " 3", … by first-seen, then id; the month is UTC so
+  every device shows the same suffix. Collisions are counted over every known id, merged ones included,
+  so a device keeps one label everywhere. A device with events but no facts is "Unknown device", its
+  first-seen taken from its earliest event.
+- `merged_into` applies only where reading is grouped by device (the per-device rows and the device
+  lists), followed with a cycle guard: two devices merged into each other between syncs both show
+  unmerged, and the next merge into either takes that device off the cycle first, so it wins. Events are never re-keyed, so volume, series and total figures, long-pause answers and
+  position offers keep raw ids and do not move on a merge. Merging does not carry the source's name; the
+  group shows the target's.
+- Entry point 1 is a "Devices" block on the cloud screen (`#/cloud`); the app has no "Settings → Sync".
+  It shows once two device ids are known, so an unmerge stays reachable after everything is merged.
+  Entry points 2 and 3 show once two device groups hold native reading. "Not now" on the banner is per
+  browser (`localStorage`); naming this device ends it too — the banner stays as "Saved." with a Close
+  button until closed, so nothing vanishes under the pointer.
+- Per device: time, characters read, share of time, last read (its newest event — another device's
+  `last_seen` is stale by design, the upload signature leaves it out) and speed once ≥ 30 min of samples.
+  "Before history" holds converted legacy views plus the unexplained pre-history snapshot, so the rows
+  sum to the page's totals; volume-editor `adjust`s are their own "Edits" row, not the editing
+  device's. Both are hidden at zero and cannot be renamed. Per-class and per-layout totals are not built.
+- The position offer names the device the reading comes from ("on Pixel 8", the generated label when
+  unnamed); a device this one knows nothing about keeps "on another device".
+
 ### Events
 
 Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock) and one payload:
@@ -118,7 +151,7 @@ Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock)
 | `adjust`  | `volume`, `time_delta_ms?`, `chars_delta?`                                                                                                                                                | manual edits in the volume editor                                                                          |
 | `restart` | `volume`                                                                                                                                                                                  | `archivedReads` marker                                                                                     |
 | `forget`  | `volume`, `before`                                                                                                                                                                        | "delete stats" (`deleteVolume`: volume delete with "remove stats", and the speed page's per-volume delete) |
-| `resolve` | `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                                                                | — (the user's answer about a long pause)                                                                   |
+| `resolve` | `volume` (the target's), `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                                       | — (the user's answer about a long pause)                                                                   |
 
 - A `page` event is written when the user **leaves** a view (turn, close, tab hidden, idle), so dwell is
   known, which fixes problem 5.
@@ -231,7 +264,9 @@ device.
   - **Don't ask again:** offered only after the user has answered a few prompts (e.g. 3), not on the first
     ones. It stores a standing default (`'full'` | `'typical'` | `'none'`) in the `tracking` section; prompts
     stop and new pauses resolve to that default. Changeable in settings.
-  - Legacy data converted from `recentPageTurns` is never prompted for; it counts as typical.
+  - Legacy data converted from `recentPageTurns` is never prompted for; over its cap it counts nothing
+    (the old idle rule, kept in phase 3b: counting typical could lift history from before the freeze above
+    the frozen `legacyStats` snapshot).
 - **Skips.** A view read faster than an implausible rate (e.g. 1500 cpm) is a skip: its time and chars are
   excluded from speed, and its `chars_new` count as **skipped, not read**. "Characters read" totals exclude
   skips; the stats show a separate skipped figure (#160, #224). Existing totals drop slightly once history is
@@ -242,6 +277,37 @@ device.
 - **Devices and layouts.** Per-device, per-class and per-layout totals, speed and share of reading time,
   shown as a section of the existing reading-speed page. Comparisons should prefer like-for-like material
   (the same series, or volumes read on several devices) and always show the sample size behind them.
+
+**As built (phase 3a, `stats-engine.ts` / `stats-store.ts`).** Constants: `k` = 3, floor 60 s, ceiling
+30 min, no-data cap 5 min, skip above 1500 cpm, pace = median of the newest 500 views of ≥ 20 characters
+(≥ 30 of them). A view over its cap with no answer counts typical time (phase 3b asks about it). Reading from before history
+is kept as a per-volume snapshot in the synced record (`legacyStats`: the old minute counter and lifetime
+characters, frozen at a time `before`); stats show `max(old, history before the freeze) + history after`,
+so events recorded before the freeze but arriving later explain the old figure rather than add to it. It
+is the `adjust` conversion described under Migration, done as record state so it also syncs where history
+cannot (a bunko server unless its version core is at least 0.8.0 and its `per_user_files` lists
+`history/`). The manual override lives in `volume-data.json` → `tracking.idle`.
+
+**As built (phase 3b, `pause-watch.ts` / `LongPausePrompt.svelte` / `pause-review.ts`).** The reader arms one
+timer for the open view at `since + cap`, re-armed when the pace, `k` or the override moves, and asks in a
+non-modal prompt above the page. A `resolve` also carries its target's `volume`, so everything keyed by
+volume handles it unchanged; it is kind 5 inside segment format 1 (the codec had not shipped). A live answer
+**splits the view**: the view so far and its `resolve` are written in one transaction, and a continuation
+view of the same pages opens at the answer time. No answer waits on a later event, and the continuation
+earns no new characters. "Still reading" counts the time in full and widens `k` to fit this view × 1.5,
+rounded up to a half step, at most 20 and never past where the ceiling caps it anyway. It changes nothing
+under a manual override, without a pace yet, or on a page whose cap is held at the floor (its time says
+nothing about pace, and one tap on a one-bubble page would widen every other page's cap; the floor stays
+fixed). The live timer stops at the cap while the prompt asks, then shows what the answer counts; a view
+that just ended adds what the stats will count for it until they do (`endedView`). `k`
+keeps sharing `tracking.idle`'s stamp with the override. Two minutes past the cap the prompt shows how long
+the page has been open: count all, typical, or none. An answer applies under whatever cap holds later, and
+only to time: pages stay read and skips stay skips, and `'none'` gives no speed sample. The latest answer per
+target wins in event order (t, device, seq), the same on every device. Unanswered pauses count typical and are
+listed as provisional on the reading-speed page, where any answer can be changed. "Always do this" appears once
+3 pauses are answered, counted from the answers themselves across devices (nothing is stored). The standing
+default (`tracking.pauses`, its own key and stamp) is written as a view's answer when the view ends, and only
+for views that reached the cap while it was set, never backwards over the review list.
 
 ## Migration and compatibility
 
@@ -319,3 +385,19 @@ Built on the event log, these come for free or nearly: device ids, reset events 
 `adjust`), and order-independent merging. A stress review of doing it inside `volume-data.json` found 31
 failure scenarios (three devices, Stay undone by a stale copy, clock skew, resets with no trace in
 turns), which is why it waits for phase 2.
+
+**As built (phase 2c, `position-offer.ts`).** "The other device's final position" is decided from what
+the newest device saw, so no pair of devices is ever compared by clock alone:
+
+- The newest device is the one with the newest native page view. Another device's final view is offered
+  unless the newest device viewed that page AFTER it (a handoff, or a stale device the sync on open
+  corrected) or that view already contains the current position. Its page is the view's first page.
+- A restart is followed once any device views page 1 (or earlier) after it. An unfollowed restart from
+  another device, with the newest device reading on after it, is re-applied on this device (the pass is
+  archived, then zeroed; never under an open reader) and recorded as a `position` event with answer
+  `reset`; the newest device's reading, as it stood at that answer, is then offered.
+- Answers are `position` events `{answer: jump|stay|reset, through, page}`. Nothing at or before the
+  latest `jump`/`stay` `through` is offered again; reading from before the newest restart or reset is the
+  previous pass. A `forget` hides everything before it, and converted legacy events never drive offers.
+- The durable "dismissed up to" is that `through` — a synced event, not a per-device flag, so a stale
+  copy cannot bring an answered offer back. Marking a volume read or unread records `stay`.
