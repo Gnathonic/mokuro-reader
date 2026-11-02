@@ -4149,8 +4149,70 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
     expect(getAllFiles).toHaveBeenCalledTimes(1);
     // Misses never fall through to a whole-listing series filter.
     expect(getBySeries).not.toHaveBeenCalled();
-    // A real folded match still resolves through the full lookup.
+    // A real folded match is answered from the index too.
     expect(unifiedCloudManager.existsInCloud('one piece', 'vol 1')).toBe(true);
+    expect(getBySeries).not.toHaveBeenCalled();
+    expect(getAllFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers a folded HIT from the index: a library under a case-merged folder costs no series filter per volume', async () => {
+    const revision = {};
+    cacheRevision.mockImplementation(() => revision);
+    const archives = Array.from({ length: 200 }, (_, i) => cloudFile(`One Piece/Vol ${i + 1}.cbz`));
+    listing([...archives, ...archives.map((a) => cloudFile(a.path.replace(/\.cbz$/, '.mokuro')))]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    // The device still spells the series `one piece`: every exact path misses.
+    for (let i = 0; i < 200; i++) {
+      expect(unifiedCloudManager.getCloudFile('one piece', `Vol ${i + 1}`)).toBe(archives[i]);
+    }
+    expect(getAllFiles).toHaveBeenCalledTimes(1);
+    expect(getBySeries).not.toHaveBeenCalled();
+  });
+
+  it('a folded hit keeps the picks of the unindexed lookup', async () => {
+    const exactName = cloudFile('One Piece/Vol 1.cbz');
+    const foldedName = cloudFile('One Piece/vol 1.cbz');
+    const nested = cloudFile('One Piece/extras/Vol 2.cbz');
+    listing([foldedName, exactName, nested]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    // The exact filename inside the resolved folder wins over one that merely folds alike.
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(exactName);
+    // No exact filename: the ordered pick among those folding alike.
+    expect(unifiedCloudManager.getCloudFile('one piece', 'VOL 1')).toBe(
+      [exactName, foldedName].sort((a, b) => naturalSort(a.path, b.path))[0]
+    );
+    // An archive deeper in the folder is still the folder's.
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 2')).toBe(nested);
+    expect(getBySeries).not.toHaveBeenCalled();
+  });
+
+  it('a folded hit searches only the folder the series resolves to', async () => {
+    // Two folders fold alike: the ordered pick is the series' folder, so an
+    // archive that exists only in the other one is not this series' backup —
+    // exactly what the unindexed lookup answered.
+    const picked = ['One Piece', 'ONE  PIECE'].sort(naturalSort)[0];
+    const other = picked === 'One Piece' ? 'ONE  PIECE' : 'One Piece';
+    const inPicked = cloudFile(`${picked}/Vol 1.cbz`);
+    const inOther = cloudFile(`${other}/Vol 2.cbz`);
+    listing([inPicked, inOther]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe(picked);
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(inPicked);
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 2')).toBeNull();
+    // The other folder's own spelling still reaches its archive exactly.
+    expect(unifiedCloudManager.getCloudFile(other, 'Vol 2')).toBe(inOther);
+    expect(getBySeries).not.toHaveBeenCalled();
+  });
+
+  it('a title with a slash still takes the full lookup', async () => {
+    const archive = cloudFile('One Piece/extras/Vol 2.cbz');
+    listing([cloudFile('One Piece/Vol 1.cbz'), archive]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.getCloudFile('one piece', 'extras/Vol 2')).toBe(archive);
+    expect(getBySeries).toHaveBeenCalled();
   });
 
   it('rebuilds when the cache changes', async () => {

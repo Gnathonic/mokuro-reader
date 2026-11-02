@@ -181,8 +181,12 @@ interface ListingFolderIndex {
   firstSegments: Set<string>;
   /** Folded name → the folders holding a file directly, naturally sorted. */
   foldedFolders: Map<string, string[]>;
-  /** `<folded folder>\n<folded volume>` for every listed `.cbz`, at any depth. */
-  foldedArchives: Set<string>;
+  /**
+   * `<folded folder>\n<folded volume>` → every listed `.cbz` folding onto that
+   * pair, at any depth, in listing order. The records themselves, so a folded
+   * HIT is answered from here too (`getCloudFile`), not by a series filter.
+   */
+  foldedArchives: Map<string, CloudFileMetadata[]>;
 }
 
 function normalizeCloudPath(path: string): string {
@@ -1551,7 +1555,7 @@ class UnifiedCloudManager {
 
     const firstSegments = new Set<string>();
     const foldedFolders = new Map<string, string[]>();
-    const foldedArchives = new Set<string>();
+    const foldedArchives = new Map<string, CloudFileMetadata[]>();
     for (const file of this.getAllCloudVolumes()) {
       const slash = file.path.indexOf('/');
       if (slash >= 0) firstSegments.add(file.path.slice(0, slash));
@@ -1575,7 +1579,10 @@ class UnifiedCloudManager {
       if (path.toLowerCase().endsWith('.cbz')) {
         const base = stripManagedFileExtension(path);
         const name = base.slice(base.lastIndexOf('/') + 1);
-        foldedArchives.add(`${folderKey}\n${normalizeVolumeTitleKey(name)}`);
+        const archiveKey = `${folderKey}\n${normalizeVolumeTitleKey(name)}`;
+        const archives = foldedArchives.get(archiveKey);
+        if (archives) archives.push(file);
+        else foldedArchives.set(archiveKey, [file]);
       }
     }
     // Two folders CAN fold alike ("One Piece" beside "ONE  PIECE" on a
@@ -2341,24 +2348,43 @@ class UnifiedCloudManager {
   getCloudFile(seriesTitle: string, volumeTitle: string): CloudFileMetadata | null {
     const exact = cacheManager.get(`${seriesTitle}/${volumeTitle}.cbz`) as CloudFileMetadata | null;
     if (exact) return exact;
-    // Any archive the lookup below can return sits in a folder folding onto
-    // the series and carries a name folding onto the volume. When the index
-    // lists no such pair — every volume not backed up yet — that is the
-    // answer, without two whole-listing series filters per volume.
-    if (
-      !seriesTitle.includes('/') &&
-      !volumeTitle.includes('/') &&
-      !this.listingFolderIndex().foldedArchives.has(
-        `${normalizeVolumeTitleKey(seriesTitle)}\n${normalizeVolumeTitleKey(volumeTitle)}`
-      )
-    ) {
-      return null;
+    // A title holding a `/` names a path the index does not key by its
+    // segments; the full lookup still resolves it.
+    if (seriesTitle.includes('/') || volumeTitle.includes('/')) {
+      return (
+        this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle).find((file) =>
+          normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
+        ) ?? null
+      );
     }
-    return (
-      this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle).find((file) =>
-        normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
-      ) ?? null
+    // Any archive this lookup can return sits in a folder folding onto the
+    // series and carries a name folding onto the volume, so the index holds
+    // every candidate: a miss (every volume not backed up yet) and a hit (a
+    // whole library under a case-merged folder) both cost O(1), never a
+    // series filter over the listing per volume. The picks among the
+    // candidates are `getManagedCloudFilesForVolume`'s: the folder the cloud
+    // spells this series with, the exact filename in it, else the ordered
+    // folded pick.
+    const candidates = this.listingFolderIndex().foldedArchives.get(
+      `${normalizeVolumeTitleKey(seriesTitle)}\n${normalizeVolumeTitleKey(volumeTitle)}`
     );
+    if (!candidates) return null;
+    const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+    const inFolder = candidates.filter((file) =>
+      normalizeCloudPath(file.path).startsWith(`${folderTitle}/`)
+    );
+    if (inFolder.length === 0) return null;
+    const basePath = normalizeCloudPath(`${folderTitle}/${volumeTitle}`);
+    const exactName = inFolder.find(
+      (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
+    );
+    if (exactName) return exactName;
+    return [...inFolder].sort((a, b) =>
+      naturalSort(
+        stripManagedFileExtension(normalizeCloudPath(a.path)),
+        stripManagedFileExtension(normalizeCloudPath(b.path))
+      )
+    )[0];
   }
 
   /**
