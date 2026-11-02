@@ -223,13 +223,19 @@ class GoogleDriveProvider implements SyncProvider {
           reject(new Error('Login timeout'));
         }, 60000); // 60 second timeout
 
-        const unsubscribe = tokenManager.token.subscribe((token) => {
-          if (token) {
-            clearTimeout(timeout);
-            unsubscribe();
-            resolve();
-          }
+        // A store calls back from INSIDE subscribe() with its current value,
+        // before `unsubscribe` is assigned: a token that is already set (a
+        // token client that answered synchronously) unsubscribes after it.
+        let unsubscribe: (() => void) | null = null;
+        let done = false;
+        unsubscribe = tokenManager.token.subscribe((token) => {
+          if (!token || done) return;
+          done = true;
+          clearTimeout(timeout);
+          unsubscribe?.();
+          resolve();
         });
+        if (done) unsubscribe();
       });
 
       // Set the active provider key for lazy loading on next startup

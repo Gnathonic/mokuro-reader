@@ -40,6 +40,7 @@ import {
   type BrowserContext,
   type Page
 } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 const BUNKO = (process.env.E2E_BUNKO_URL ?? '').replace(/\/$/, '');
 const USER = process.env.E2E_BUNKO_USER ?? '';

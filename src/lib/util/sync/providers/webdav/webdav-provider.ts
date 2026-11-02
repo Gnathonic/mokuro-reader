@@ -19,6 +19,7 @@ import {
   type WebdavAuthMaterial
 } from '../../core/providers/webdav-authorization';
 import { isVerifiedPutHeader } from './webdav-upload';
+import { fetchWithRetryAfter, wrapWebdavClient } from './webdav-retry-after';
 import { fetchServerIdentity, type IdentityResult, type ServerPermissions } from './identity';
 import {
   requestBunkoToken,
@@ -72,22 +73,6 @@ export const WEBDAV_TOKEN_STORAGE_KEYS = [
 
 /** Wait this long after a rate-limited re-issue before spending the password again. */
 const REISSUE_RATE_LIMIT_COOLDOWN_MS = 60_000;
-
-/** `webdav` client methods that hit the server: a 401 under a token is retried once. */
-const CLIENT_REQUEST_METHODS = new Set([
-  'copyFile',
-  'createDirectory',
-  'customRequest',
-  'deleteFile',
-  'exists',
-  'getDAVCompliance',
-  'getDirectoryContents',
-  'getFileContents',
-  'getQuota',
-  'moveFile',
-  'putFileContents',
-  'stat'
-]);
 
 /** What a re-issue achieved (`reissueToken`). */
 type ReissueOutcome =
@@ -294,33 +279,20 @@ export class WebDAVProvider implements SyncProvider {
 
   /**
    * Wrap a `webdav` client so any request refused with 401 while a token was
-   * sent re-issues the token (single-flight) and is retried once.
+   * sent re-issues the token (single-flight) and is retried once, and a short
+   * 503 + Retry-After is waited out (`wrapWebdavClient`).
    */
   private wrapClient(raw: WebDAVClient): WebDAVClient {
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    const provider = this;
-    return new Proxy(raw, {
-      get(target, prop, receiver) {
-        const value = Reflect.get(target, prop, receiver);
-        if (typeof prop !== 'string' || !CLIENT_REQUEST_METHODS.has(prop)) return value;
-        if (typeof value !== 'function') return value;
-        return async (...args: unknown[]) => {
-          const sent = target.getHeaders().Authorization;
-          try {
-            return await value.apply(target, args);
-          } catch (error) {
-            if (!isUnauthorized(error) || !bearerOf(sent)) throw error;
-            const verdict = await provider.reissueVerdict(sent);
-            if (verdict === 'transient') throw new TransientAuthRefreshError();
-            if (verdict !== 'retry') throw error;
-            // Retry under the session's header as it is NOW: the token may have
-            // been replaced by another tab (localStorage is shared, this
-            // client's headers are not), or the session fell back to Basic.
-            target.setHeaders(webdavAuthHeaders(provider.sessionAuth()));
-            return await value.apply(target, args);
-          }
-        };
-      }
+    return wrapWebdavClient(raw, async (sent) => {
+      if (!bearerOf(sent)) return false;
+      const verdict = await this.reissueVerdict(sent);
+      if (verdict === 'transient') throw new TransientAuthRefreshError();
+      if (verdict !== 'retry') return false;
+      // Retry under the session's header as it is NOW: the token may have
+      // been replaced by another tab (localStorage is shared, this
+      // client's headers are not), or the session fell back to Basic.
+      raw.setHeaders(webdavAuthHeaders(this.sessionAuth()));
+      return true;
     });
   }
 
@@ -1059,7 +1031,7 @@ export class WebDAVProvider implements SyncProvider {
   </D:prop>
 </D:propfind>`;
 
-      const response = await fetch(url, {
+      const response = await fetchWithRetryAfter(fetch, url, {
         method: 'PROPFIND',
         headers: {
           ...headers,
@@ -1120,7 +1092,7 @@ export class WebDAVProvider implements SyncProvider {
     try {
       console.log('[WebDAV] Checking write permissions via OPTIONS for:', url);
 
-      const response = await fetch(url, {
+      const response = await fetchWithRetryAfter(fetch, url, {
         method: 'OPTIONS',
         headers: headers['Authorization'] ? { Authorization: headers['Authorization'] } : {}
       });
@@ -1270,6 +1242,8 @@ export class WebDAVProvider implements SyncProvider {
       console.log(`✅ Listed ${allFiles.length} files from WebDAV (recursive)`);
       return allFiles;
     } catch (error) {
+      const refused = this.refusedReadAuth(error);
+      if (refused) throw refused;
       throw new ProviderError(
         `Failed to list cloud volumes: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'webdav',
@@ -1437,6 +1411,29 @@ export class WebDAVProvider implements SyncProvider {
   }
 
   /**
+   * A read refused 401 in a password-backed session: the server no longer takes the
+   * password (changed elsewhere, an app password revoked). The same auth-failed
+   * flow as a refused write: a sync reads before it writes, so an idle device would
+   * otherwise fail every sync with a retryable read error and never ask for a new
+   * sign-in. A transient re-issue failure says nothing about the password, and a
+   * credential-less session has none to reject. Null when it is not that.
+   */
+  private refusedReadAuth(error: unknown): ProviderError | null {
+    if (!this._hasPassword || isTransientAuthRefreshError(error)) return null;
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isUnauthorized(error) && classifyWriteError(message) !== 'auth') return null;
+    this.markAuthFailed();
+    return new ProviderError(
+      'Authentication failed - please sign in again',
+      'webdav',
+      'AUTH_FAILED',
+      true,
+      false,
+      'auth'
+    );
+  }
+
+  /**
    * Central policy for failed write operations:
    * - 401 with a password-backed session: credentials were rejected -> clear
    *   the stored password and prompt re-login (NOT a read-only server)
@@ -1505,6 +1502,8 @@ export class WebDAVProvider implements SyncProvider {
       console.log(`✅ Downloaded ${file.path} from WebDAV`);
       return blob;
     } catch (error) {
+      const refused = this.refusedReadAuth(error);
+      if (refused) throw refused;
       throw new ProviderError(
         `Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'webdav',
@@ -1983,7 +1982,7 @@ export class WebDAVProvider implements SyncProvider {
   /** One OPTIONS on the mokuro folder, read only for `X-Mokuro-Put`. Never throws. */
   private async probeVerifiedPut(baseUrl: string): Promise<void> {
     try {
-      const response = await fetch(`${baseUrl}${MOKURO_FOLDER}/`, {
+      const response = await fetchWithRetryAfter(fetch, `${baseUrl}${MOKURO_FOLDER}/`, {
         method: 'OPTIONS',
         headers: webdavAuthHeaders(this.sessionAuth())
       });

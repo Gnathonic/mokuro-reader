@@ -119,7 +119,17 @@ export interface SyncResult {
  * `lastUpdated`.
  */
 export interface CloudVolumeDataFile {
+  /** The volume map folded across every readable copy (`mergeVolumePair`). */
   volumes: Record<string, VolumeData>;
+  /**
+   * The volume map as the copy that SURVIVES the delete sweep holds it — the
+   * one copy left for the fold to be written back over. The upload decision
+   * compares against THIS, not against `volumes`: when the fold equals what
+   * this device already had, the merged map shows nothing to write, yet a
+   * stale survivor still lacks what the deleted copies held, and that state
+   * leaves the cloud with them. Equal to `volumes` for a single listed copy.
+   */
+  survivorVolumes: Record<string, VolumeData>;
   series: SeriesReadingStates;
   /**
    * The `series` section exactly as the surviving cloud copy holds it —
@@ -153,6 +163,20 @@ export interface CloudVolumeDataFile {
   rawTracking?: unknown;
   /** Tracking keys whose raw stamp needed clamping, in any readable copy. */
   bogusTrackingKeys?: ReadonlySet<string>;
+}
+
+/**
+ * Is listed copy `a` the newer of two duplicates? By the server's
+ * `modifiedTime`, an unparseable stamp losing to a parseable one; equal
+ * stamps fall to the `fileId`, so every device keeps the same copy.
+ */
+function newerListedCopy(a: CloudFileMetadata, b: CloudFileMetadata): boolean {
+  const ta = Date.parse(a.modifiedTime);
+  const tb = Date.parse(b.modifiedTime);
+  const va = Number.isNaN(ta) ? -Infinity : ta;
+  const vb = Number.isNaN(tb) ? -Infinity : tb;
+  if (va !== vb) return va > vb;
+  return a.fileId > b.fileId;
 }
 
 /**
@@ -433,8 +457,10 @@ class UnifiedSyncService {
           volumeDataFiles.map(async (file): Promise<CloudVolumeDataFile> => {
             const blob = await provider.downloadFile(file);
             const data = await this.blobToJson(blob);
+            const volumes = parseVolumesFromJson(JSON.stringify(data));
             return {
-              volumes: parseVolumesFromJson(JSON.stringify(data)),
+              volumes,
+              survivorVolumes: volumes,
               series: parseSeriesSection(data?.[SERIES_SECTION_KEY]),
               rawSeries: data?.[SERIES_SECTION_KEY],
               tracking: parseTrackingSection(data?.[TRACKING_SECTION_KEY]),
@@ -534,9 +560,17 @@ class UnifiedSyncService {
           mergedSeries = mergeSeriesSections(mergedSeries, foldable, entryBogus);
         }
 
-        // Keep the first readable copy; delete every other listed copy.
+        // Keep the NEWEST readable copy (the server's modifiedTime; a tie
+        // falls to the fileId, so every device picks the same one); delete
+        // every other listed copy. The first LISTED copy is not it: MEGA's
+        // upload order lands the new copy before the old one is deleted, so
+        // a device listing [old, new] in that window would keep old and
+        // delete the copy every other device's fold was written to.
         // An already-gone delete target means converged, not failed.
-        const keepIndex = readable[0].index;
+        const survivor = readable.reduce((best, entry) =>
+          newerListedCopy(volumeDataFiles[entry.index], volumeDataFiles[best.index]) ? entry : best
+        );
+        const keepIndex = survivor.index;
         for (let i = 0; i < volumeDataFiles.length; i++) {
           if (i === keepIndex) continue;
           console.log(`🗑️ Deleting duplicate volume-data.json (${volumeDataFiles[i].fileId})`);
@@ -555,11 +589,12 @@ class UnifiedSyncService {
         // copy inspected — see the field doc on `CloudVolumeDataFile`.
         return {
           volumes: merged,
+          survivorVolumes: survivor.result.value.volumes,
           series: mergedSeries,
-          rawSeries: readable[0].result.value.rawSeries,
+          rawSeries: survivor.result.value.rawSeries,
           bogusSeriesKeys,
           tracking: mergedTracking,
-          rawTracking: readable[0].result.value.rawTracking,
+          rawTracking: survivor.result.value.rawTracking,
           bogusTrackingKeys
         };
       }
@@ -569,8 +604,10 @@ class UnifiedSyncService {
       const data = await this.blobToJson(blob);
       const rawSeries = data?.[SERIES_SECTION_KEY];
       const rawTracking = data?.[TRACKING_SECTION_KEY];
+      const volumes = parseVolumesFromJson(JSON.stringify(data));
       return {
-        volumes: parseVolumesFromJson(JSON.stringify(data)),
+        volumes,
+        survivorVolumes: volumes,
         series: parseSeriesSection(rawSeries),
         rawSeries,
         bogusSeriesKeys: detectBogusSeriesKeys(rawSeries),
@@ -690,16 +727,20 @@ class UnifiedSyncService {
     // pass runs after this upload, so that is the next sync).
     const finalVolumes = await this.volumesForUpload(provider);
 
-    // Step 6: Upload if anything differs from what the cloud actually holds.
+    // Step 6: Upload if anything differs from what the cloud actually holds —
+    // the copy that SURVIVED the duplicate sweep, every half of it.
     //
-    // The series half is compared against the RAW cloud section, not the parsed
-    // one (see `CloudVolumeDataFile.rawSeries`): otherwise a clamped or
+    // The volume half is compared against the survivor's OWN map, not the
+    // fold (see `CloudVolumeDataFile.survivorVolumes`): the fold can equal
+    // what this device already had while the survivor still lacks what the
+    // deleted copies held. The series half is compared against the RAW cloud
+    // section, not the parsed one (see `rawSeries`): otherwise a clamped or
     // sanitized value looks like a match and never heals. `stableStringify`
     // sorts keys, so two devices whose maps hold identical state in different
     // insertion orders stop re-uploading the same bytes at each other.
     const nextFile = this.composeVolumeDataFile(finalVolumes, mergedSeries, mergedTracking);
     const cloudFile = this.composeVolumeDataFile(
-      cloud?.volumes ?? {},
+      cloud?.survivorVolumes ?? {},
       (cloud?.rawSeries as SeriesReadingStates) ?? {},
       cloud?.rawTracking ?? {}
     );
