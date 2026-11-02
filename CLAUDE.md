@@ -112,15 +112,25 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
-  `error.errors[0].reason`: a 403 is a full account (`storageQuotaExceeded`/`quotaExceeded` →
-  `QUOTA_EXCEEDED`, never retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`,
-  like any 429 — whatever its reason: retried by `withDriveRetry` after Retry-After, capped
-  60 s, 4 attempts), or — only otherwise — an auth failure that may re-authenticate. 5xx are
-  retried too, except on a request that CREATES a file or folder (`rateLimitOnly`): Drive can
-  answer a 5xx after committing it, and a retry would make a duplicate. Messages carry
-  `[reason]` so a worker's serialized error is still recognisable. OneDrive's equivalent is
+  `error.errors[0].reason` — by NAME, never by domain (`sharingRateLimitExceeded` and the
+  item-count/depth limits are domain `global`, not `usageLimits`). A 403 is a full account
+  (`storageQuotaExceeded`, Drive's only storage-full reason → `QUOTA_EXCEEDED`, never
+  retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`/`dailyLimitExceeded`/
+  `sharingRateLimitExceeded`, and `quotaExceeded` — an API usage quota that resets, NOT
+  storage — like any 429 whatever its reason: retried by `withDriveRetry` after Retry-After,
+  capped 60 s, a zero/past value falls back to the backoff, 4 attempts), a `limit` nothing
+  lifts (`activeItemCreationLimitExceeded`, `numChildrenInNonRootLimitExceeded`,
+  `myDriveHierarchyDepthLimitExceeded`: fails with its message), or an auth failure that may
+  re-authenticate — an ALLOW-list: no reason, `authError`, `insufficientPermissions`,
+  `forbidden`; any other named 403 reason is a refusal that fails without touching the
+  token. 5xx are retried too, except on a request that CREATES a file or folder
+  (`rateLimitOnly`): Drive can answer a 5xx after committing it, and a retry would make a
+  duplicate. A paginated listing retries per page, never the pages already fetched.
+  Messages carry `[reason]` so a worker's serialized error is still recognisable; the worker
+  also posts `kind: 'quota'` on its error message, which `backup-queue.ts` turns into the
+  provider's "storage is full" wording (`core/storage-full.ts`). OneDrive's equivalent is
   `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
-  `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
+  `GraphQuotaError` → `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
 
 ### Svelte 5 Reactive Performance
 
