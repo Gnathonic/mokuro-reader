@@ -179,23 +179,35 @@ class DriveApiClient {
     });
   }
 
-  private async handleApiCall<T>(
+  /** One gapi request, retried on a rate limit or 5xx after Retry-After; see drive-http.ts. */
+  private retryingGapiCall<T>(
+    apiCall: () => Promise<T>,
+    retryOn?: DriveRetryOptions['retryOn']
+  ): Promise<T> {
+    return withDriveRetry(
+      async () => {
+        try {
+          return await apiCall();
+        } catch (error) {
+          throw fromGapiError(error);
+        }
+      },
+      { retryOn }
+    );
+  }
+
+  private handleApiCall<T>(
     apiCall: () => Promise<T>,
     retryOnAuth = true,
     retryOn?: DriveRetryOptions['retryOn']
   ): Promise<T> {
+    return this.handleApiFailure(() => this.retryingGapiCall(apiCall, retryOn), retryOnAuth);
+  }
+
+  /** Classifies a failed `operation` (its requests already retried): auth path or a typed error. */
+  private async handleApiFailure<T>(operation: () => Promise<T>, retryOnAuth = true): Promise<T> {
     try {
-      // Rate limits and 5xx are retried after Retry-After; see drive-http.ts.
-      return await withDriveRetry(
-        async () => {
-          try {
-            return await apiCall();
-          } catch (error) {
-            throw fromGapiError(error);
-          }
-        },
-        { retryOn }
-      );
+      return await operation();
     } catch (error: any) {
       console.error('Drive API error caught:', error);
       console.error('Error details - status:', error.status, 'message:', error.message);
@@ -224,17 +236,21 @@ class DriveApiClient {
   }
 
   async listFiles(query: string, fields = 'files(id, name, mimeType)'): Promise<DriveFile[]> {
-    return this.handleApiCall(async () => {
+    return this.handleApiFailure(async () => {
       const allFiles: DriveFile[] = [];
       let pageToken: string | undefined = undefined;
 
       do {
-        const { result } = await gapi.client.drive.files.list({
-          q: query,
-          fields: `nextPageToken, ${fields}`,
-          pageSize: 1000,
-          pageToken
-        });
+        // Each page is retried on its own: a 429 on page N must not re-fetch
+        // (and re-count) the pages already in hand.
+        const { result } = await this.retryingGapiCall(() =>
+          gapi.client.drive.files.list({
+            q: query,
+            fields: `nextPageToken, ${fields}`,
+            pageSize: 1000,
+            pageToken
+          })
+        );
 
         if (result.files) {
           allFiles.push(...(result.files as DriveFile[]));

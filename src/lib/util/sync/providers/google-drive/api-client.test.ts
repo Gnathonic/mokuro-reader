@@ -164,6 +164,22 @@ describe('driveApiClient failure classification', () => {
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
   });
 
+  it('a 429 on page N of a listing re-fetches page N only, not the pages before it', async () => {
+    list
+      .mockResolvedValueOnce({
+        result: { files: [{ id: 'f1', name: 'a', mimeType: 'x' }], nextPageToken: 'p2' }
+      })
+      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0.001' } })
+      .mockResolvedValueOnce({ result: { files: [{ id: 'f2', name: 'b', mimeType: 'x' }] } });
+
+    await expect(driveApiClient.listFiles("name='x'")).resolves.toEqual([
+      { id: 'f1', name: 'a', mimeType: 'x' },
+      { id: 'f2', name: 'b', mimeType: 'x' }
+    ]);
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(list.mock.calls.map(([args]) => args.pageToken)).toEqual([undefined, 'p2', 'p2']);
+  });
+
   it('retries a 403 userRateLimitExceeded instead of re-authenticating', async () => {
     list
       .mockRejectedValueOnce({
