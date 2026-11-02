@@ -26,6 +26,7 @@ import {
   recordUploadedPrimarySidecarBlob
 } from '$lib/catalog/mokuro-upload-record';
 import { clearUploadFailure, recordUploadFailure } from './upload-failures';
+import { isStorageFullFailure, storageFullMessage } from './sync/core/storage-full';
 import { getUploadWorkerCredentials, prepareSeriesUploadTarget } from './upload-worker-credentials';
 
 export interface SidecarOptions {
@@ -199,7 +200,13 @@ export function queueVolumeForBackup(
 
   const queueItem: BackupQueueItem = {
     volumeUuid: volume.volume_uuid,
-    seriesTitle: volume.series_title,
+    // The folder the cloud already holds for this series, in ITS spelling:
+    // a server that merged `one piece/` into `One Piece/` would otherwise be
+    // handed the losing folder again. The exact title when the cloud has it
+    // (or has no such series). Not gated on bunko: on plain storage too, a
+    // title with no exact folder joins the folder folding onto it instead of
+    // minting a second spelling beside it.
+    seriesTitle: unifiedCloudManager.resolveCloudFolderTitle(volume.series_title),
     volumeTitle: volume.volume_title,
     provider: targetProvider.type,
     uploadConcurrencyLimit: targetProvider.uploadConcurrencyLimit,
@@ -353,10 +360,18 @@ function handleBackupError(
   item: BackupQueueItem,
   processId: string,
   errorMessage: string,
-  detail?: string
+  detail?: string,
+  kind?: string
 ): void {
-  const reason = detail?.trim() || errorMessage;
   const isCloud = !isPseudoProvider(item.provider);
+  // A worker hands back text, not the provider's typed QUOTA_EXCEEDED: give a
+  // full account the same actionable wording the main-thread upload raises.
+  // The rest of the queue still runs; whether a full account should pause it
+  // is a separate decision.
+  const reason =
+    isCloud && isStorageFullFailure({ kind, error: errorMessage })
+      ? storageFullMessage(item.provider)
+      : detail?.trim() || errorMessage;
   const ui = getBackupUiBridge();
   if (isCloud) {
     recordUploadFailure({
@@ -876,7 +891,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       },
       onError: async (data) => {
         console.error(`Error backing up ${item.volumeTitle}:`, data.error);
-        handleBackupError(item, processId, data.error, data.detail);
+        handleBackupError(item, processId, data.error, data.detail, data.kind);
         await checkAndTerminatePool();
       }
     };

@@ -8,8 +8,9 @@
  *   and the per-series index `<Series Title>/series.json`
  * - Root config files: volume-data.json (read progress + series-level reading
  *   state), profiles.json (settings profiles) and goals.json (reading goals,
- *   closed-period snapshots and per-volume deadlines), plus catalog.json (the
- *   compiled library index)
+ *   closed-period snapshots and per-volume deadlines), positions.json (the
+ *   newest reading position per volume, at a fixed address), plus catalog.json
+ *   (the compiled library index)
  *
  * `series.json` is a sidecar of the SERIES FOLDER, not of a volume: it is the
  * only sidecar whose basename does not start with a volume title, so anything
@@ -24,20 +25,26 @@
 import { CATALOG_FILE_NAME, isCatalogFilePath } from '$lib/metadata/catalog-file';
 import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
 import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
+import { naturalSort } from '$lib/util/natural-sort';
+import { isHistoryFilePath } from '$lib/reading-history/paths';
+import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
 
 const ROOT_CONFIG_FILENAMES = new Set([
   'volume-data.json',
   'profiles.json',
   GOALS_FILE_NAME,
-  CATALOG_FILE_NAME
+  CATALOG_FILE_NAME,
+  // The fast position index: the user's own state like goals.json, not best-effort.
+  POSITIONS_FILE_NAME
 ]);
 
 /**
  * Root files whose sync downloads EVERY listed copy and folds them into one
- * (`downloadVolumeDataFile`, `downloadGoalsFile`), so two copies converge
- * losslessly at the next sync. profiles.json is not one: sync reads one copy.
+ * (`downloadVolumeDataFile`, `downloadGoalsFile`, positions sync's `runSync`),
+ * so two copies converge losslessly at the next sync — the folder dedup keeps
+ * both instead of trashing one. profiles.json is not one: sync reads one copy.
  */
-const MERGED_ACROSS_COPIES = new Set(['volume-data.json', GOALS_FILE_NAME]);
+const MERGED_ACROSS_COPIES = new Set(['volume-data.json', GOALS_FILE_NAME, POSITIONS_FILE_NAME]);
 
 // series-metadata.json is deliberately NOT listed: it was retired on 2026-08-23
 // before ever shipping (facts moved to <Series>/series.json, reading state to
@@ -98,9 +105,18 @@ export function isBunkoControlFile(basename: string): boolean {
   return basename === QUEUE_FILE_NAME || basename === BUNKO_MARKER_NAME;
 }
 
+/**
+ * Pass the path RELATIVE to the mokuro folder, not a bare basename: reading
+ * history (`history/<device>/<file>`) is recognised by its full path.
+ */
 export function isSyncableFile(path: string): boolean {
   const basename = basenameOf(path);
-  return isCbzFile(basename) || isSidecarFile(basename) || isRootConfigFile(basename);
+  return (
+    isCbzFile(basename) ||
+    isSidecarFile(basename) ||
+    isRootConfigFile(basename) ||
+    isHistoryFilePath(path)
+  );
 }
 
 /**
@@ -122,9 +138,14 @@ export function isSyncableFile(path: string): boolean {
  * personal reading goals, so there is nothing for a server to reject by design.
  * It is the user's own state, like progress and profiles, and a silently
  * dropped write there is data loss they never learn about.
+ *
+ * Reading-history segments (`history/<device>/…`) are best-effort too: they
+ * are this device's copy of data it keeps locally and re-uploads on the next
+ * sync. A rejection (a bunko server that does not map `history/` per-user yet,
+ * a read-only share) must not demote the provider.
  */
 export function isBestEffortMetadataPath(path: string): boolean {
-  return isSeriesFilePath(path) || isCatalogFilePath(path);
+  return isSeriesFilePath(path) || isCatalogFilePath(path) || isHistoryFilePath(path);
 }
 
 /**
@@ -140,6 +161,21 @@ export function isBestEffortMetadataPath(path: string): boolean {
  * pairs a `.mokuro` with a volume must go through it. {@link splitLayerSidecarName}
  * is the listing-free split for a file arriving on its own (an import, an
  * export name round-trip), where the caller matches the stem itself.
+ *
+ * Sidecar names rule v1 — mokuro-bunko classifies with the same rule
+ * (`bunko_core::sidecar_names`), so a file is the same thing on both sides:
+ * 1. `.cbz`, `.mokuro` and `.mokuro.gz` match in any ASCII case;
+ * 2. only `.cbz` archives define volume stems;
+ * 3. stems compare folded, NFC then lowercase ({@link foldStem});
+ * 4. a primary reading wins over a layer reading of the same name;
+ * 5. the id must match {@link LAYER_ID_RE} AS WRITTEN — `Vol 1.GCV.mokuro` is
+ *    an orphan, never layer `gcv` nor a primary ({@link miscasedLayerStem}) —
+ *    and an all-digit id is a valid id;
+ * 6. a sweep takes a layer with the archive spelled exactly like its stem
+ *    before one that merely folds alike (`unified-cloud-manager.ts`);
+ * 7. a leading UTF-8 BOM is tolerated on read (the text decoder drops it),
+ *    never written, and hashes cover the raw bytes;
+ * 8. ids this reader mints always contain a letter (`slugifyLayerId`).
  */
 export const LAYER_ID_RE = /^[a-z0-9-]{1,32}$/;
 
@@ -155,11 +191,19 @@ function stripMokuroExtension(basename: string): { base: string; gz: boolean } |
   return null;
 }
 
-/** Lowercased archive stems (`Vol 1.cbz` → `vol 1`) of a folder's basenames. */
+/**
+ * A volume stem as rule v1 compares it: NFC, then lowercase. A filename that
+ * went through a decomposing filesystem (NFD) is still the same volume.
+ */
+export function foldStem(stem: string): string {
+  return stem.normalize('NFC').toLowerCase();
+}
+
+/** Folded archive stems (`Vol 1.cbz` → `vol 1`) of a folder's basenames. */
 export function cbzStemsOf(basenames: Iterable<string>): Set<string> {
   const stems = new Set<string>();
   for (const name of basenames) {
-    if (isCbzFile(name)) stems.add(name.slice(0, -4).toLowerCase());
+    if (isCbzFile(name)) stems.add(foldStem(name.slice(0, -4)));
   }
   return stems;
 }
@@ -177,9 +221,28 @@ export function splitLayerSidecarName(
   const dot = stripped.base.lastIndexOf('.');
   if (dot <= 0) return null;
   const stem = stripped.base.slice(0, dot);
-  const layerId = stripped.base.slice(dot + 1).toLowerCase();
+  // As written: lowercasing here made `Vol 1.GCV.mokuro` a layer for this
+  // reader and an orphan for bunko.
+  const layerId = stripped.base.slice(dot + 1);
   if (!LAYER_ID_RE.test(layerId)) return null;
   return { stem, layerId, gz: stripped.gz };
+}
+
+/**
+ * The stem of `<stem>.<ID>.mokuro[.gz]` whose id is a layer id but for its
+ * case (`Vol 1.GCV.mokuro` → `Vol 1`), else null. Rule v1 makes such a file an
+ * ORPHAN of `<stem>` — not a layer, and not its primary either — so a pass
+ * that takes "any other `.mokuro`" as the primary must skip it, or it can
+ * outrank the real `Vol 1.mokuro`. This reader used to file it as layer `gcv`.
+ */
+export function miscasedLayerStem(basename: string): string | null {
+  const stripped = stripMokuroExtension(basename);
+  if (!stripped) return null;
+  const dot = stripped.base.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const id = stripped.base.slice(dot + 1);
+  if (LAYER_ID_RE.test(id) || !LAYER_ID_RE.test(id.toLowerCase())) return null;
+  return stripped.base.slice(0, dot);
 }
 
 /**
@@ -188,7 +251,7 @@ export function splitLayerSidecarName(
  * 2. else `<stem>.<id>` with `<stem>.cbz` present and a valid id → LAYER `<id>`
  *    of `<stem>`;
  * 3. else an ORPHAN, ignored exactly as an unmatched `.mokuro` always was.
- * `cbzStems` come from {@link cbzStemsOf} (lowercased).
+ * `cbzStems` come from {@link cbzStemsOf} (folded).
  */
 export function classifyMokuroSidecar(
   basename: string,
@@ -196,14 +259,38 @@ export function classifyMokuroSidecar(
 ): MokuroSidecarClass {
   const stripped = stripMokuroExtension(basename);
   if (!stripped) return { kind: 'orphan' };
-  if (cbzStems.has(stripped.base.toLowerCase())) {
+  if (cbzStems.has(foldStem(stripped.base))) {
     return { kind: 'primary', stem: stripped.base, gz: stripped.gz };
   }
   const split = splitLayerSidecarName(basename);
-  if (split && cbzStems.has(split.stem.toLowerCase())) {
+  if (split && cbzStems.has(foldStem(split.stem))) {
     return { kind: 'layer', stem: split.stem, layerId: split.layerId, gz: split.gz };
   }
   return { kind: 'orphan' };
+}
+
+/**
+ * The archive that OWNS a layer file whose stem is `layerStem`, among a
+ * folder's archive stems AS SPELLED (`Vol 3` of `Vol 3.cbz`): the archive
+ * spelled exactly like the stem, else the `naturalSort`-first of those that
+ * fold alike (rule v1 #6). Two archives that fold alike are two volumes, and a
+ * layer spelled like neither (`vol 3.hayai.mokuro` beside `Vol 3.cbz` and
+ * `VOL 3.cbz`) must have ONE owner on every site, whatever order the listing
+ * came in — else layer sync files it under one volume and a rename or delete
+ * of the other sweeps it. Undefined when no archive folds alike (not a layer).
+ */
+export function layerOwnerArchive(
+  layerStem: string,
+  archiveStems: Iterable<string>
+): string | undefined {
+  const folded = foldStem(layerStem);
+  let best: string | undefined;
+  for (const archive of archiveStems) {
+    if (archive === layerStem) return archive;
+    if (foldStem(archive) !== folded) continue;
+    if (best === undefined || naturalSort(archive, best) < 0) best = archive;
+  }
+  return best;
 }
 
 export function layerSidecarName(volumeTitle: string, layerId: string): string {

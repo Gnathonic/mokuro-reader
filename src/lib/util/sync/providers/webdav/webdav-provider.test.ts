@@ -718,3 +718,205 @@ describe('WebDAVProvider staged, verified PUTs (X-Mokuro-Put)', () => {
     expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
   });
 });
+
+describe('WebDAVProvider Allow verdict on a known mokuro-bunko', () => {
+  // bunko <= 0.7 answers a collection OPTIONS with no PUT or MKCOL in Allow;
+  // its permissions are decided per request, so Allow must not demote it.
+  const BUNKO_COLLECTION_ALLOW =
+    'OPTIONS, HEAD, GET, PROPFIND, DELETE, COPY, MOVE, PROPPATCH, LOCK, UNLOCK';
+
+  function optionsAnswer(allow: string, put: string | null) {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'OPTIONS') {
+        return new Response('', {
+          status: 200,
+          headers: { Allow: allow, ...(put ? { 'X-Mokuro-Put': put } : {}) }
+        });
+      }
+      return new Response('', { status: 404 });
+    });
+  }
+
+  it('an OPTIONS answering X-Mokuro-Put: verified skips the Allow verdict', async () => {
+    optionsAnswer(BUNKO_COLLECTION_ALLOW, 'verified');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it('a recorded PUT_VERIFIED skips the PROPFIND and OPTIONS probes entirely', async () => {
+    localStorage.setItem('webdav_put_verified', 'https://host');
+    optionsAnswer(BUNKO_COLLECTION_ALLOW, null);
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    const methods = fetchMock.mock.calls.map((c) => c[1]?.method);
+    expect(methods).not.toContain('PROPFIND');
+    expect(methods).not.toContain('OPTIONS');
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it('a generic server whose Allow lacks PUT is still read-only', async () => {
+    optionsAnswer(BUNKO_COLLECTION_ALLOW, null);
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    expect(provider.isReadOnly).toBe(true);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+  });
+});
+
+describe('WebDAVProvider listing of reading history', () => {
+  it('lists history/<device>/ files by relative path and ignores look-alikes elsewhere', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    const lastmod = 'Mon, 05 Oct 2026 00:00:00 GMT';
+    mockClient.getDirectoryContents.mockResolvedValue([
+      {
+        type: 'file',
+        filename: '/mokuro-reader/history/dev-a/2026-10.events',
+        basename: '2026-10.events',
+        lastmod,
+        size: 10
+      },
+      {
+        type: 'file',
+        filename: '/mokuro-reader/Series/device.json',
+        basename: 'device.json',
+        lastmod,
+        size: 5
+      },
+      {
+        type: 'file',
+        filename: '/mokuro-reader/Series/2026-10.events',
+        basename: '2026-10.events',
+        lastmod,
+        size: 5
+      }
+    ]);
+
+    const files = await provider.listCloudVolumes();
+
+    expect(files.map((f) => f.path)).toEqual(['history/dev-a/2026-10.events']);
+  });
+});
+
+describe('WebDAVProvider getStatus().historySync (per-user reading history)', () => {
+  const PER_USER = ['volume-data.json', 'profiles.json', 'goals.json', 'history/'];
+
+  it.each([
+    ['0.7.1', PER_USER, false],
+    ['0.7.3', PER_USER, false],
+    ['0.8.0', PER_USER, true],
+    ['0.8.0-beta.1', PER_USER, true],
+    ['0.8.0', ['volume-data.json', 'profiles.json', 'goals.json'], false],
+    ['0.8.0', undefined, false],
+    [undefined, PER_USER, false],
+    [undefined, undefined, false]
+  ])(
+    'bunko reporting version %s, per_user_files %j -> %s',
+    async (version, perUserFiles, expected) => {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({
+        ...authenticatedIdentity(),
+        ...(version ? { serverVersion: version } : {}),
+        ...(perUserFiles ? { perUserFiles } : {})
+      });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      expect(provider.getStatus().historySync).toBe(expected);
+    }
+  );
+
+  it('anonymous bunko follows its reported version and per-user files too', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'anonymous',
+      serverVersion: '0.8.0',
+      perUserFiles: PER_USER
+    });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().historySync).toBe(true);
+  });
+
+  it('anonymous bunko 0.7.1 does not', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'anonymous',
+      serverVersion: '0.7.1',
+      perUserFiles: PER_USER
+    });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().historySync).toBe(false);
+  });
+
+  it('a plain WebDAV server is not restricted (history files are just files there)', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().historySync).toBeUndefined();
+  });
+});
+
+describe('WebDAVProvider getStatus().positionsSync (per-user positions.json)', () => {
+  it('bunko listing positions.json in per_user_files -> true', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      perUserFiles: ['volume-data.json', 'positions.json']
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().positionsSync).toBe(true);
+  });
+
+  it('bunko not listing it, or listing nothing -> false', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ ...authenticatedIdentity(), perUserFiles: ['goals.json'] });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().positionsSync).toBe(false);
+
+    const old = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous' });
+    await old.login({ serverUrl: 'https://host' });
+    expect(old.getStatus().positionsSync).toBe(false);
+  });
+
+  // Unlike historySync, no version floor: the per-user mapping alone decides.
+  it.each([['0.7.3'], ['0.8.0'], [undefined]])(
+    'bunko reporting version %s and listing it -> true, whatever historySync says',
+    async (version) => {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({
+        ...authenticatedIdentity(),
+        ...(version ? { serverVersion: version } : {}),
+        perUserFiles: ['volume-data.json', 'positions.json']
+      });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      expect(provider.getStatus().positionsSync).toBe(true);
+      expect(provider.getStatus().historySync).toBe(false);
+    }
+  );
+
+  it('anonymous bunko listing it -> true', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous', perUserFiles: ['positions.json'] });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().positionsSync).toBe(true);
+  });
+
+  it('a plain WebDAV server -> undefined', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().positionsSync).toBeUndefined();
+  });
+});

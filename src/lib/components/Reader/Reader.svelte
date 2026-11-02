@@ -30,6 +30,8 @@
   } from '$lib/settings';
   import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import RereadPromptModal from './RereadPromptModal.svelte';
+  import PositionOfferBanner from './PositionOfferBanner.svelte';
+  import LongPausePrompt from './LongPausePrompt.svelte';
   import { shouldOfferReread } from '$lib/metadata/reread';
   import { getSeriesMetadataForTitle } from '$lib/metadata/store';
   import { getSeriesReadingState } from '$lib/settings/series-data';
@@ -91,13 +93,24 @@
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache, matchFilesToPages } from '$lib/reader/image-cache';
   import { cancelInkPrefetch, prefetchPageInk } from '$lib/reader/ink-color';
-  import { ViewTracker } from '$lib/reading-history/view-tracker';
+  import { ViewTracker, viewKey } from '$lib/reading-history/view-tracker';
+  import { endedView, endedViewMs, liveView, readingPaused } from '$lib/reading-history/live-view';
   import {
     describeView,
     rangeScopeKey,
     type ContinuousRange
   } from '$lib/reading-history/describe-view';
-  import { recordEvent } from '$lib/reading-history/record';
+  import { recordView } from '$lib/reading-history/record';
+  import { PauseWatch, livePause } from '$lib/reading-history/pause-watch';
+  import { answerPause } from '$lib/reading-history/pause-answer';
+  import { readingStats } from '$lib/reading-history/stats-store';
+  import type { PauseCount } from '$lib/reading-history/types';
+  import {
+    idleSettings,
+    pauseDefault,
+    setPauseDefault,
+    widenIdleK
+  } from '$lib/settings/tracking-data';
   import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
   import '$lib/styles/page-transitions.css';
 
@@ -475,9 +488,6 @@
   }
 
   onMount(() => {
-    // Set the timeout duration from settings
-    activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
-
     // Enter fullscreen on initial load if defaultFullscreen setting is enabled
     if ($settings.defaultFullscreen && !document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch((err) => {
@@ -511,18 +521,18 @@
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pagehide', onPageHide);
       viewTracker.close(Date.now());
+      // The live stores are module-level: never let them reach the next
+      // volume. The view just closed is recorded; a later Timer must not add
+      // it to a counted figure that already includes it.
+      endedView.set(null);
+      pauseWatch.dispose();
+      livePause.set(null);
+      readingPaused.set(false);
       stopFlushOnPageHide();
-      // Stop activity tracker when component unmounts
-      activityTracker.stop();
       // Restore overflow when leaving reader
       document.documentElement.style.overflow = '';
       window.removeEventListener('offset-spreads', onOffsetSpreads);
     };
-  });
-
-  // Update timeout duration when settings change
-  $effect(() => {
-    activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
   });
 
   // The paged viewport re-applies its base whenever the displayed content,
@@ -631,9 +641,54 @@
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
-  // Reading history: one `page` event per view, emitted when the view ends.
+  // Reading history: one `page` event per view, emitted when the view ends,
+  // with its long-pause answer (if any) in the same transaction.
   // Hidden tab = no view, so a backgrounded reader never accrues dwell.
-  const viewTracker = new ViewTracker((payload, t) => void recordEvent(payload, t));
+  const viewTracker = new ViewTracker(
+    (payload, t, answer) => {
+      const { pace, idle } = get(readingStats);
+      endedView.set({
+        volume: payload.volume,
+        ms: endedViewMs(payload, answer?.count ?? null, pace, idle)
+      });
+      void recordView(payload, t, answer);
+    },
+    (open) => {
+      liveView.set(open);
+      // A new view (or none): a prompt about the last one is moot.
+      if (!open || open.since !== get(livePause)?.since) livePause.set(null);
+    }
+  );
+  // At the open view's cap a standing default answers silently (written when
+  // the view ends); otherwise the "Still reading?" prompt asks. When the pause
+  // no longer stands (view gone, or the cap grew past the time so far), the
+  // prompt goes and a preset is withdrawn — re-applied if the cap is reached
+  // again. A cap or typical time that changed while the prompt is up (a pace
+  // change, an idle setting) refreshes what it shows.
+  const pauseWatch = new PauseWatch(
+    (pause) => {
+      const preset = get(pauseDefault);
+      if (preset) viewTracker.setAnswer(preset);
+      else livePause.set(pause);
+    },
+    () => {
+      livePause.set(null);
+      viewTracker.setAnswer(null);
+    },
+    (pause) => livePause.update((shown) => (shown ? pause : shown))
+  );
+
+  function onPauseAnswer(count: PauseCount, opts: { stillReading: boolean; always: boolean }) {
+    const pause = get(livePause);
+    const open = get(liveView);
+    if (!pause || !open || open.since !== pause.since) return;
+    answerPause(pause, count, opts, get(readingStats).pace, get(idleSettings), {
+      split: (now, answer) => viewTracker.split(now, answer),
+      widenIdleK,
+      setPauseDefault,
+      notify: (message) => showSnackbar(message)
+    });
+  }
   let pageHidden = $state(typeof document !== 'undefined' && document.visibilityState === 'hidden');
   let continuousRange = $state<ContinuousRange | null>(null);
   let pageCharCumulative = $derived(buildPageCharCounts(pages).cumulative);
@@ -1187,7 +1242,22 @@
   );
 
   $effect(() => {
-    viewTracker.setView(pageHidden ? null : currentView, Date.now());
+    viewTracker.setView(pageHidden || $readingPaused ? null : currentView, Date.now());
+  });
+
+  // Re-arm the cap watch on every view, pace or cutoff change (an effect, not
+  // a $derived: it sets a timer).
+  $effect(() => {
+    pauseWatch.update($liveView, $readingStats.pace, $readingStats.idle);
+  });
+
+  // A paused timer resumes with the next page: any new view is reading again.
+  let lastViewKey = '';
+  $effect(() => {
+    const key = currentView ? viewKey(currentView) : '';
+    if (key === lastViewKey) return;
+    lastViewKey = key;
+    readingPaused.set(false);
   });
 
   function handleVisibleRange(first: number, last: number) {
@@ -1667,6 +1737,14 @@
         <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
       {/key}
     </button>
+  {/if}
+  {#if volume && pages?.length}
+    <PositionOfferBanner
+      volumeId={volume.volume_uuid}
+      pageCount={pages.length}
+      currentPage={page}
+    />
+    <LongPausePrompt onAnswer={onPauseAnswer} />
   {/if}
   {#if notificationMessage}
     {#key notificationKey}

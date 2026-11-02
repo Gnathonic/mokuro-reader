@@ -10,11 +10,15 @@ function readable<T>(value: T) {
   };
 }
 
-const queueVolumeForBackup = vi.hoisted(() => vi.fn());
+const { queueVolumeForBackup, getCloudFile } = vi.hoisted(() => ({
+  queueVolumeForBackup: vi.fn(),
+  getCloudFile: vi.fn((_series: string, _title: string): unknown => null)
+}));
 vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     cloudFiles: readable(new Map()),
+    getCloudFile: (series: string, title: string) => getCloudFile(series, title),
     isFetching: readable(false),
     getDefaultProvider: () => ({ type: 'webdav', name: 'WebDAV' }),
     getActiveProvider: () => ({ type: 'webdav', name: 'WebDAV' }),
@@ -58,6 +62,8 @@ beforeEach(() => {
   localStorage.clear();
   resetUploadFailuresForTest();
   queueVolumeForBackup.mockReset();
+  getCloudFile.mockReset();
+  getCloudFile.mockImplementation(() => null);
 });
 afterEach(() => cleanup());
 
@@ -82,5 +88,30 @@ describe('BackupButton', () => {
     );
     await fireEvent.click(getByRole('button', { name: /Retry/ }));
     expect(queueVolumeForBackup).toHaveBeenCalledWith(volume);
+  });
+
+  it('reads a volume the cloud holds under its own spelling of the folder as backed up', () => {
+    // `cloudFiles` is keyed by the exact folder, so there is nothing under the
+    // local `one piece`. The backup queue uploads into the cloud's `One Piece/`
+    // (resolveCloudFolderTitle); the "is it backed up" check must resolve the
+    // same way — through the manager's selector — or every click re-uploads
+    // the archive over itself.
+    getCloudFile.mockImplementation((series, title) =>
+      series === 'one piece' && title === 'Volume 9'
+        ? {
+            provider: 'webdav',
+            fileId: 'f',
+            path: 'One Piece/Volume 9.cbz',
+            modifiedTime: 't',
+            size: 1
+          }
+        : null
+    );
+    const { getByText, queryByText } = render(BackupButton, {
+      props: { volume: { ...volume, series_title: 'one piece' } }
+    });
+    expect(getByText(/Delete from WebDAV/)).toBeTruthy();
+    expect(queryByText(/Backup to WebDAV/)).toBeNull();
+    expect(getCloudFile).toHaveBeenCalledWith('one piece', 'Volume 9');
   });
 });

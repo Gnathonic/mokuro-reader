@@ -40,7 +40,7 @@ vi.mock('$lib/settings', () => ({
   deleteVolume: vi.fn(),
   progress: emptyStore<Record<string, number>>({}),
   volumes: emptyStore<Record<string, unknown>>({}),
-  settings: emptyStore({ inactivityTimeoutMinutes: 5 }),
+  settings: emptyStore({}),
   markVolumeAsComplete: vi.fn(),
   markVolumeAsUnread: vi.fn()
 }));
@@ -72,7 +72,10 @@ vi.mock('$lib/util/hash-router', () => ({
 // subscribe time, so a test sets these before it renders.
 const cloudState = vi.hoisted(() => ({
   files: new Map<string, unknown[]>(),
-  authenticated: false
+  authenticated: false,
+  // What the manager's `getCloudFile` answers. Unset, the exact path in
+  // `files`; a test sets it to stand in for the folded resolution.
+  lookup: null as null | ((series: string, title: string) => unknown)
 }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
@@ -85,6 +88,12 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
         return () => {};
       }
     },
+    getCloudFile: (series: string, title: string) =>
+      cloudState.lookup
+        ? cloudState.lookup(series, title)
+        : (((cloudState.files.get(series) ?? []) as { path: string }[]).find(
+            (f) => f.path === `${series}/${title}.cbz`
+          ) ?? null),
     isFetching: emptyStore(false),
     getDefaultProvider: () => null,
     deleteManagedVolume: vi.fn(),
@@ -330,6 +339,28 @@ describe('VolumeItem hover + Delete', () => {
 
     expect(promptConfirmation).not.toHaveBeenCalled();
     expect(showSnackbar).toHaveBeenCalledWith('Volume is not backed up to cloud');
+  });
+
+  it('finds the cloud copy through the manager’s selector, not the exact path', async () => {
+    // The cloud spells the folder `One Piece`; this device still says `one piece`,
+    // so `cloudFiles` (keyed by the exact folder) has nothing under the local
+    // title. The backup queue uploads into the cloud's folder; the row's "is it
+    // backed up" must resolve the same way, or it offers a backup that
+    // re-uploads the archive over itself and refuses to delete the copy.
+    const archive = { path: 'One Piece/Vol 1.cbz', provider: 'webdav' };
+    cloudState.authenticated = true;
+    cloudState.lookup = (series, title) =>
+      series === 'one piece' && title === 'Vol 1' ? archive : null;
+    try {
+      await hover('list', { series_title: 'one piece' });
+      await fireEvent.keyDown(window, { key: 'Delete', shiftKey: true });
+
+      expect(showSnackbar).not.toHaveBeenCalledWith('Volume is not backed up to cloud');
+      expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe('Delete Vol 1 from cloud?');
+    } finally {
+      cloudState.authenticated = false;
+      cloudState.lookup = null;
+    }
   });
 });
 

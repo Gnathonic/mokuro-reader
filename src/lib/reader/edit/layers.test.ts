@@ -66,6 +66,16 @@ describe('slugifyLayerId', () => {
     expect(slugifyLayerId('', [])).toBe('layer');
     expect(slugifyLayerId('a'.repeat(40), [])).toHaveLength(24);
   });
+
+  it('a new id always carries a letter (rule v1 #8), so it never reads as a bare number', () => {
+    expect(slugifyLayerId('2024', [])).toBe('layer-2024');
+    expect(slugifyLayerId('2024', ['layer-2024'])).toBe('layer-2024-2');
+    expect(slugifyLayerId('1.5', [])).toBe('layer-1-5');
+    expect(slugifyLayerId('9'.repeat(40), [])).toHaveLength(24);
+    expect(slugifyLayerId('9'.repeat(40), [])).toMatch(/^layer-9+$/);
+    expect(slugifyLayerId('New layer', [])).toBe('new-layer');
+    expect(slugifyLayerId('Vol 2', [])).toBe('vol-2');
+  });
 });
 
 describe('layers store', () => {
