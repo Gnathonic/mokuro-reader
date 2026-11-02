@@ -2231,3 +2231,70 @@ describe('positions.json rides every sync', () => {
     }
   });
 });
+
+describe('quickMergeVolumeData — the quick tier, before any listing', () => {
+  function quickProvider(copies: unknown[]) {
+    return {
+      type: 'webdav',
+      name: 'WebDAV',
+      getStatus: () => ({ isAuthenticated: true }),
+      readRootFileCopies: vi.fn(async () =>
+        copies.map((c) =>
+          typeof c === 'string' ? ({ text: async () => c } as unknown as Blob) : jsonBlob(c)
+        )
+      ),
+      downloadFile: vi.fn(),
+      uploadFile: vi.fn(),
+      deleteFile: vi.fn()
+    } as unknown as SyncProvider & {
+      readRootFileCopies: ReturnType<typeof vi.fn>;
+      uploadFile: ReturnType<typeof vi.fn>;
+      deleteFile: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  beforeEach(() => {
+    getCache.mockReset();
+    setLocalVolumes({
+      mine: { lastProgressUpdate: '2026-01-05T00:00:00Z', progress: 9 },
+      shared: { lastProgressUpdate: '2026-01-01T00:00:00Z', progress: 40 }
+    });
+  });
+
+  it('merges a newer cloud record by path, and writes nothing', async () => {
+    const provider = quickProvider([
+      {
+        shared: { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 44 },
+        mine: { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 3 }
+      }
+    ]);
+    expect(await unifiedSyncService.quickMergeVolumeData(provider)).toBe(true);
+    expect(provider.readRootFileCopies).toHaveBeenCalledWith('volume-data.json');
+    const local = get(volumesWithTrash) as Record<string, { progress: number }>;
+    expect(local.shared.progress).toBe(44);
+    expect(local.mine.progress).toBe(9); // local is newer: kept
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+    expect(getCache).not.toHaveBeenCalled(); // no listing involved
+  });
+
+  it('folds several copies (Drive duplicates) without deleting any', async () => {
+    const provider = quickProvider([
+      { shared: { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 44 } },
+      { shared: { lastProgressUpdate: '2026-01-04T00:00:00Z', progress: 47 } },
+      'not json'
+    ]);
+    expect(await unifiedSyncService.quickMergeVolumeData(provider)).toBe(true);
+    const local = get(volumesWithTrash) as Record<string, { progress: number }>;
+    expect(local.shared.progress).toBe(47);
+    expect(provider.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('no file, or a provider that cannot read by path: nothing merged', async () => {
+    expect(await unifiedSyncService.quickMergeVolumeData(quickProvider([]))).toBe(false);
+    const noVerb = { type: 'webdav', getStatus: () => ({}) } as unknown as SyncProvider;
+    expect(await unifiedSyncService.quickMergeVolumeData(noVerb)).toBe(false);
+    const local = get(volumesWithTrash) as Record<string, { progress: number }>;
+    expect(local.shared.progress).toBe(40);
+  });
+});

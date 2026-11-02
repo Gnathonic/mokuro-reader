@@ -456,19 +456,10 @@ class UnifiedSyncService {
         // server-side but still present in a stale provider cache — so a
         // not-found copy must not discard the readable copies with it.
         const downloads = await Promise.allSettled(
-          volumeDataFiles.map(async (file): Promise<CloudVolumeDataFile> => {
-            const blob = await provider.downloadFile(file);
-            const data = await this.blobToJson(blob);
-            const volumes = parseVolumesFromJson(JSON.stringify(data));
-            return {
-              volumes,
-              survivorVolumes: volumes,
-              series: parseSeriesSection(data?.[SERIES_SECTION_KEY]),
-              rawSeries: data?.[SERIES_SECTION_KEY],
-              tracking: parseTrackingSection(data?.[TRACKING_SECTION_KEY]),
-              rawTracking: data?.[TRACKING_SECTION_KEY]
-            };
-          })
+          volumeDataFiles.map(
+            async (file): Promise<CloudVolumeDataFile> =>
+              this.parseVolumeDataCopy(await this.blobToJson(await provider.downloadFile(file)))
+          )
         );
 
         const transient = downloads.find(
@@ -494,73 +485,13 @@ class UnifiedSyncService {
           throw (downloads[0] as PromiseRejectedResult).reason;
         }
 
-        // Per-copy bogus-key detection (on each copy's OWN raw section), and
-        // the UNION across every readable copy — not only the one that ends
-        // up surviving the delete sweep below. A poisoned stamp on a copy
-        // that gets deleted is exactly as real a poison as one on the
-        // survivor; deriving this from only one copy's raw section would let
-        // it escape detection entirely once that copy is gone.
-        const perCopyBogusKeys = readable.map((entry) =>
-          detectBogusSeriesKeys(entry.result.value.rawSeries)
-        );
-        const bogusSeriesKeys = new Set<string>();
-        for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
-
-        // The tracking section folds the same way as the series section below:
-        // newest per key (`devices`: per device id), and a copy's bogus entry
-        // never beats another copy's honest one (`foldableTracking`).
-        const trackingCopies = readable.map((entry) => ({
-          tracking: entry.result.value.tracking ?? {},
-          bogus: detectBogusTrackingKeys(entry.result.value.rawTracking)
-        }));
-        const bogusTrackingKeys = new Set<string>();
-        for (const copy of trackingCopies) for (const key of copy.bogus) bogusTrackingKeys.add(key);
-        let mergedTracking: TrackingState = {};
-        trackingCopies.forEach((copy, i) => {
-          mergedTracking = mergeTrackingSections(
-            mergedTracking,
-            foldableTracking(trackingCopies, i),
-            copy.bogus
-          );
-        });
-
-        // Merge all readable copies volume by volume (`mergeVolumePair`)
-        const merged: Record<string, VolumeData> = {};
-        let mergedSeries: SeriesReadingStates = {};
-        for (let i = 0; i < readable.length; i++) {
-          const entry = readable[i];
-          for (const [volumeId, volumeData] of Object.entries(entry.result.value.volumes)) {
-            const existing = merged[volumeId];
-            // Same rules as the local/cloud merge: newest position, both
-            // copies' reading.
-            merged[volumeId] = existing
-              ? this.mergeVolumePair(volumeId, existing, volumeData)
-              : volumeData;
-          }
-
-          // The series section folds by its own key, newest `lastUpdated`
-          // wins — except FORFEIT-ON-BOGUS applies within this cloud-vs-cloud
-          // fold too: a key THIS copy holds with a bogus (pre-clamp) stamp
-          // must not clobber an honest entry from ANOTHER copy, regardless of
-          // fold order. Such a key is excluded from this copy's contribution
-          // whenever some other readable copy holds it honestly — that other
-          // copy's own turn in this loop supplies it instead. Only when NO
-          // readable copy holds the key honestly does the bogus (clamped)
-          // value get folded in at all, as the best available answer.
-          const entryBogus = perCopyBogusKeys[i];
-          const foldable: SeriesReadingStates = {};
-          for (const [key, state] of Object.entries(entry.result.value.series)) {
-            const honestElsewhere =
-              entryBogus.has(key) &&
-              readable.some(
-                (_other, j) =>
-                  j !== i && key in readable[j].result.value.series && !perCopyBogusKeys[j].has(key)
-              );
-            if (honestElsewhere) continue;
-            foldable[key] = state;
-          }
-          mergedSeries = mergeSeriesSections(mergedSeries, foldable, entryBogus);
-        }
+        const {
+          volumes: merged,
+          series: mergedSeries,
+          tracking: mergedTracking,
+          bogusSeriesKeys,
+          bogusTrackingKeys
+        } = this.foldVolumeDataCopies(readable.map((entry) => entry.result.value));
 
         // Keep the NEWEST readable copy (the server's modifiedTime; a tie
         // falls to the fileId, so every device picks the same one); delete
@@ -603,20 +534,7 @@ class UnifiedSyncService {
 
       // Single file - download normally
       const blob = await provider.downloadFile(volumeDataFiles[0]);
-      const data = await this.blobToJson(blob);
-      const rawSeries = data?.[SERIES_SECTION_KEY];
-      const rawTracking = data?.[TRACKING_SECTION_KEY];
-      const volumes = parseVolumesFromJson(JSON.stringify(data));
-      return {
-        volumes,
-        survivorVolumes: volumes,
-        series: parseSeriesSection(rawSeries),
-        rawSeries,
-        bogusSeriesKeys: detectBogusSeriesKeys(rawSeries),
-        tracking: parseTrackingSection(rawTracking),
-        rawTracking,
-        bogusTrackingKeys: detectBogusTrackingKeys(rawTracking)
-      };
+      return this.parseVolumeDataCopy(await this.blobToJson(blob));
     } catch (error) {
       // File not found is not an error
       if (this.isFileNotFoundError(error)) {
@@ -633,6 +551,108 @@ class UnifiedSyncService {
       }
       throw error;
     }
+  }
+
+  /** One copy of `volume-data.json`, parsed; bogus keys from its OWN raw sections. */
+  private parseVolumeDataCopy(data: any): CloudVolumeDataFile {
+    const rawSeries = data?.[SERIES_SECTION_KEY];
+    const rawTracking = data?.[TRACKING_SECTION_KEY];
+    const volumes = parseVolumesFromJson(JSON.stringify(data));
+    return {
+      volumes,
+      survivorVolumes: volumes,
+      series: parseSeriesSection(rawSeries),
+      rawSeries,
+      bogusSeriesKeys: detectBogusSeriesKeys(rawSeries),
+      tracking: parseTrackingSection(rawTracking),
+      rawTracking,
+      bogusTrackingKeys: detectBogusTrackingKeys(rawTracking)
+    };
+  }
+
+  /**
+   * Several readable copies folded into one (Drive mints duplicates): the
+   * rules of the duplicate sweep, without choosing a survivor or deleting
+   * anything — the quick tier folds the copies it read the same way.
+   */
+  private foldVolumeDataCopies(copies: CloudVolumeDataFile[]): {
+    volumes: Record<string, VolumeData>;
+    series: SeriesReadingStates;
+    tracking: TrackingState;
+    bogusSeriesKeys: Set<string>;
+    bogusTrackingKeys: Set<string>;
+  } {
+    // Per-copy bogus-key detection (on each copy's OWN raw section), and
+    // the UNION across every readable copy — not only the one that ends
+    // up surviving the delete sweep below. A poisoned stamp on a copy
+    // that gets deleted is exactly as real a poison as one on the
+    // survivor; deriving this from only one copy's raw section would let
+    // it escape detection entirely once that copy is gone.
+    const perCopyBogusKeys = copies.map((copy) => detectBogusSeriesKeys(copy.rawSeries));
+    const bogusSeriesKeys = new Set<string>();
+    for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
+
+    // The tracking section folds the same way as the series section below:
+    // newest per key (`devices`: per device id), and a copy's bogus entry
+    // never beats another copy's honest one (`foldableTracking`).
+    const trackingCopies = copies.map((copy) => ({
+      tracking: copy.tracking ?? {},
+      bogus: detectBogusTrackingKeys(copy.rawTracking)
+    }));
+    const bogusTrackingKeys = new Set<string>();
+    for (const copy of trackingCopies) for (const key of copy.bogus) bogusTrackingKeys.add(key);
+    let mergedTracking: TrackingState = {};
+    trackingCopies.forEach((copy, i) => {
+      mergedTracking = mergeTrackingSections(
+        mergedTracking,
+        foldableTracking(trackingCopies, i),
+        copy.bogus
+      );
+    });
+
+    // Merge all readable copies volume by volume (`mergeVolumePair`)
+    const merged: Record<string, VolumeData> = {};
+    let mergedSeries: SeriesReadingStates = {};
+    for (let i = 0; i < copies.length; i++) {
+      const copy = copies[i];
+      for (const [volumeId, volumeData] of Object.entries(copy.volumes)) {
+        const existing = merged[volumeId];
+        // Same rules as the local/cloud merge: newest position, both
+        // copies' reading.
+        merged[volumeId] = existing
+          ? this.mergeVolumePair(volumeId, existing, volumeData)
+          : volumeData;
+      }
+
+      // The series section folds by its own key, newest `lastUpdated`
+      // wins — except FORFEIT-ON-BOGUS applies within this cloud-vs-cloud
+      // fold too: a key THIS copy holds with a bogus (pre-clamp) stamp
+      // must not clobber an honest entry from ANOTHER copy, regardless of
+      // fold order. Such a key is excluded from this copy's contribution
+      // whenever some other readable copy holds it honestly — that other
+      // copy's own turn in this loop supplies it instead. Only when NO
+      // readable copy holds the key honestly does the bogus (clamped)
+      // value get folded in at all, as the best available answer.
+      const entryBogus = perCopyBogusKeys[i];
+      const foldable: SeriesReadingStates = {};
+      for (const [key, state] of Object.entries(copy.series)) {
+        const honestElsewhere =
+          entryBogus.has(key) &&
+          copies.some(
+            (_other, j) => j !== i && key in copies[j].series && !perCopyBogusKeys[j].has(key)
+          );
+        if (honestElsewhere) continue;
+        foldable[key] = state;
+      }
+      mergedSeries = mergeSeriesSections(mergedSeries, foldable, entryBogus);
+    }
+    return {
+      volumes: merged,
+      series: mergedSeries,
+      tracking: mergedTracking,
+      bogusSeriesKeys,
+      bogusTrackingKeys
+    };
   }
 
   /**
@@ -684,12 +704,19 @@ class UnifiedSyncService {
   }
 
   /**
-   * Sync volume data (read progress) with a provider
+   * Steps 2–5 of the volume-data sync: merge a cloud copy into local state
+   * (volumes, series section, tracking section) and set the stores.
+   *
+   * SYNCHRONOUS on purpose: nothing may run between reading local state and
+   * setting the merge, or a page turn made in between would be overwritten.
+   * Shared by the full sync and the quick tier's read-only merge — the quick
+   * one is safe to run before, beside or after it: every half merges
+   * newest-wins, so applying a copy older than local changes nothing.
    */
-  private async syncVolumeData(provider: SyncProvider): Promise<void> {
-    // Step 1: Download cloud data (volumes + the series section)
-    const cloud = await this.downloadVolumeDataFile(provider);
-
+  private applyCloudVolumeData(
+    provider: SyncProvider,
+    cloud: CloudVolumeDataFile | null
+  ): { mergedSeries: SeriesReadingStates; mergedTracking: TrackingState } {
     // Step 2: Get local data (including tombstones for deletion sync)
     const localVolumes = get(volumesWithTrash);
 
@@ -727,6 +754,46 @@ class UnifiedSyncService {
     volumesWithTrash.set(purgedVolumes);
     setSeriesReadingStates(mergedSeries);
     setTrackingStates(mergedTracking);
+
+    return { mergedSeries, mergedTracking };
+  }
+
+  /**
+   * The quick tier's progress sync: every copy of `volume-data.json` read by
+   * its known path (`readRootFileCopies`, no listing) and merged into local
+   * state — READ-ONLY. The write, the duplicate sweep and the turn cut-over
+   * stay with the full sync, which needs the listing to see every copy.
+   * Resolves `true` when a file was merged.
+   */
+  async quickMergeVolumeData(provider: SyncProvider): Promise<boolean> {
+    if (!provider.readRootFileCopies) return false;
+    const blobs = await provider.readRootFileCopies('volume-data.json');
+    const copies: CloudVolumeDataFile[] = [];
+    for (const blob of blobs) {
+      try {
+        copies.push(this.parseVolumeDataCopy(await this.blobToJson(blob)));
+      } catch {
+        // an unparseable copy says nothing; the full sync deals with it
+      }
+    }
+    if (copies.length === 0) return false;
+    const cloud: CloudVolumeDataFile =
+      copies.length === 1
+        ? copies[0]
+        : { ...this.foldVolumeDataCopies(copies), survivorVolumes: {} };
+    this.applyCloudVolumeData(provider, cloud);
+    return true;
+  }
+
+  /**
+   * Sync volume data (read progress) with a provider
+   */
+  private async syncVolumeData(provider: SyncProvider): Promise<void> {
+    // Step 1: Download cloud data (volumes + the series section)
+    const cloud = await this.downloadVolumeDataFile(provider);
+
+    // Steps 2–5: merge into local state (`applyCloudVolumeData`).
+    const { mergedSeries, mergedTracking } = this.applyCloudVolumeData(provider, cloud);
 
     // Step 5b: page turns the merge brought back (an older client, a device
     // that has not converted yet) become reading-history events and leave the

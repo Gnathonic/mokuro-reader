@@ -361,6 +361,35 @@ export class FilesystemProvider implements SyncProvider {
     }
   }
 
+  /** The quick tier's listing of one subtree, entries as `listCloudVolumes` makes them. */
+  async listFolder(folder: string): Promise<CloudFileMetadata[]> {
+    const prefix = folder.replace(/^\/+|\/+$/g, '');
+    let dir: FileSystemDirectoryHandle;
+    try {
+      dir = await this.resolveDirectoryHandle(prefix, { create: false });
+    } catch (error) {
+      if ((error as { name?: string })?.name === 'NotFoundError') return [];
+      throw this.toProviderError(error, 'List', prefix);
+    }
+    try {
+      const results: CloudFileMetadata[] = [];
+      for await (const { path, fileHandle } of this.walkDirectory(dir, prefix)) {
+        if (!isSyncableFile(path)) continue;
+        const file = await fileHandle.getFile();
+        results.push({
+          provider: 'filesystem',
+          fileId: path,
+          path,
+          modifiedTime: new Date(file.lastModified).toISOString(),
+          size: file.size
+        });
+      }
+      return results;
+    } catch (error) {
+      throw this.toProviderError(error, 'List', prefix);
+    }
+  }
+
   /** The cold probe's read: the root folder's file of that name, no walk. */
   async readRootFileCopies(name: string): Promise<Blob[]> {
     try {

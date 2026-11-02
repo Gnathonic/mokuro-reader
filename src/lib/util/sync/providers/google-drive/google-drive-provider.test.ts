@@ -663,3 +663,99 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
     expect(await googleDriveProvider.findOrCreateFolder('reader-root', 'Ippo')).toBe('a-folder');
   });
 });
+
+describe('GoogleDriveProvider quick-tier reads (no account-wide listing)', () => {
+  type Query = string;
+  const files = {
+    readers: [{ id: 'r1' }, { id: 'r2' }],
+    history: [{ id: 'h1', name: 'history' }],
+    deviceFolders: [{ id: 'd1', name: 'dev-a', mimeType: FOLDER_MIME, parents: ['h1'] }],
+    segments: [
+      {
+        id: 'f1',
+        name: '2026-10.events',
+        mimeType: 'application/octet-stream',
+        modifiedTime: '2026-10-30T00:00:00.000Z',
+        size: '123',
+        parents: ['d1']
+      },
+      {
+        id: 'f2',
+        name: 'device.json',
+        mimeType: JSON_MIME,
+        modifiedTime: '2026-10-29T00:00:00.000Z',
+        size: '45',
+        parents: ['d1']
+      },
+      { id: 'x', name: 'notes.txt', mimeType: 'text/plain', parents: ['d1'] }
+    ]
+  };
+
+  beforeEach(() => {
+    (googleDriveProvider as unknown as { quickReaderIds: unknown }).quickReaderIds = null;
+    vi.mocked(tokenManager.isAuthenticated).mockReturnValue(true);
+    vi.mocked(driveApiClient.listFiles).mockReset();
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: Query) => {
+      if (query.startsWith("name='mokuro-reader'")) return files.readers as never;
+      if (query.includes("name='history'")) {
+        expect(query).toContain("'r1' in parents or 'r2' in parents");
+        return files.history as never;
+      }
+      if (query.includes("name='positions.json'")) {
+        return [{ id: 'p1' }, { id: 'p2' }] as never;
+      }
+      if (query.startsWith("('h1' in parents)")) return files.deviceFolders as never;
+      if (query.startsWith("('d1' in parents)")) return files.segments as never;
+      return [] as never;
+    });
+  });
+
+  it('listFolder walks reader → history → device folders with one query per level', async () => {
+    const { driveHistoryPath } = await import('./drive-history-path');
+    const listed = await googleDriveProvider.listFolder('history');
+    expect(listed.map((f) => f.path).sort()).toEqual([
+      'history/dev-a/2026-10.events',
+      'history/dev-a/device.json'
+    ]);
+    const segment = listed.find((f) => f.fileId === 'f1')!;
+    // The same entry the Drive files cache makes, so import stamps still match.
+    expect(segment).toMatchObject({
+      provider: 'google-drive',
+      size: 123,
+      modifiedTime: '2026-10-30T00:00:00.000Z',
+      parentId: 'd1',
+      name: '2026-10.events'
+    });
+    const folders = new Map([
+      ['d1', { name: 'dev-a', parent: 'h1' }],
+      ['h1', { name: 'history', parent: 'r1' }],
+      ['r1', { name: 'mokuro-reader' }]
+    ]);
+    expect(segment.path).toBe(driveHistoryPath(files.segments[0], folders, 'mokuro-reader'));
+    // reader folders, history, device folders, segments
+    expect(driveApiClient.listFiles).toHaveBeenCalledTimes(4);
+    for (const [query] of vi.mocked(driveApiClient.listFiles).mock.calls) {
+      expect(query).not.toContain("'me' in owners"); // never the account-wide listing
+    }
+  });
+
+  it('no reader folder → nothing, after one query', async () => {
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async () => []);
+    expect(await googleDriveProvider.listFolder('history')).toEqual([]);
+    expect(driveApiClient.listFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('readRootFileCopies reads every copy in any reader folder; the folder lookup is shared', async () => {
+    const download = vi
+      .spyOn(googleDriveProvider, 'downloadFile')
+      .mockImplementation(async (file) => new Blob([file.fileId]));
+    const blobs = await googleDriveProvider.readRootFileCopies('positions.json');
+    expect(await Promise.all(blobs.map((b) => b.text()))).toEqual(['p1', 'p2']);
+    await googleDriveProvider.listFolder('history');
+    const readerLookups = vi
+      .mocked(driveApiClient.listFiles)
+      .mock.calls.filter(([q]) => q.startsWith("name='mokuro-reader'"));
+    expect(readerLookups).toHaveLength(1);
+    download.mockRestore();
+  });
+});

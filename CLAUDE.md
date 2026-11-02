@@ -867,12 +867,18 @@ FIXED path, so a device that was just picked up can learn where the user
 stopped without the full listing: it is checked when the reader opens (≤ 1 s),
 rides every sync right after the volume data, and is pushed 3 s after page
 turns settle (at once when the tab is hidden). Before the first listing has
-loaded (a cold start) it runs as the COLD PROBE: `fetchAllCloudVolumes` starts
-it beside the listing, and the open/focus checks use it while that listing
-runs. The provider reads the file by its known path
-(`SyncProvider.readRootFileCopies`, every provider; no listing), and the probe
-only ADOPTS — the write waits for the listing, the only thing that shows every
-copy the upload must not clobber. Opening a page never stamps a
+loaded (a cold start) the QUICK tier (`util/sync/quick-sync.ts`) runs beside
+that listing: `fetchAllCloudVolumes` starts it, and it reads by known path
+with no listing — `volume-data.json` merged (`quickMergeVolumeData`),
+`positions.json` adopted (`probePositions`; the open/focus checks use the
+probe too while the listing runs), and other devices' history imported from a
+listing of `history/` alone (`SyncProvider.listFolder` + `importHistory`).
+Providers do this through `readRootFileCopies` and `listFolder` (all five;
+Drive walks reader → `history` → device folders, one `files.list` per level,
+never the account-wide listing). The quick tier is READ-ONLY: every write
+waits for the full sync, the only thing that shows every copy an upload must
+not clobber, and each half merges newest-wins or unions by id, so the full
+sync redoing it changes nothing. Opening a page never stamps a
 position, and an adopted position keeps the other device's stamp. Not
 authoritative: history and `volume-data.json` still carry every position.
 mokuro-bunko gets it only when its identity lists it in `per_user_files`
