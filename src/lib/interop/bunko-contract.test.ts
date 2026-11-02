@@ -682,8 +682,8 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     expect(allow).toBeTruthy();
     expect(fx('options-library').headers!['x-mokuro-put']).toBe('verified');
     // The generic reading of that Allow agrees: the library folder is a
-    // collection, and its Allow names a collection write method (DELETE, MOVE,
-    // PROPPATCH; PUT and MKCOL only where the account may write, from 0.8).
+    // collection, and its Allow names a collection write method (DELETE or
+    // MOVE; PUT and MKCOL only where the account may write, from 0.8).
     const { allowHeaderPermitsCollectionWrite } = await import(
       '$lib/util/sync/providers/webdav/webdav-provider'
     );

@@ -206,11 +206,12 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   `PUT_VERIFIED` recorded for the base URL, or an OPTIONS answering
   `X-Mokuro-Put: verified` — skips even that: bunko decides each request
   itself and its `Allow` is advisory. A generic server's guess reads the
-  library folder as a collection: DAV:write/all/bind/unbind in its privilege
-  set, else any of `COLLECTION_WRITE_METHODS` (PUT, MKCOL, DELETE, MOVE,
-  PROPPATCH) in its `Allow` — a collection never lists PUT and lists MKCOL
-  only while unmapped (RFC 4918). A real refusal still demotes through
-  `handleWriteFailure`.
+  library folder as a collection: DAV:write/write-content/all/bind/unbind in
+  its privilege set (whole names: write-properties and write-acl upload
+  nothing), else any of `COLLECTION_WRITE_METHODS` (PUT, MKCOL, DELETE, MOVE)
+  in its `Allow` — a collection never lists PUT and lists MKCOL only while
+  unmapped (RFC 4918), and PROPPATCH changes only properties, so it does not
+  count. A real refusal still demotes through `handleWriteFailure`.
 - **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
   a `serverCompilesMetadata` provider every listing runs
   `adoptCloudSeriesSpellings` (`util/sync/cloud-spelling-adoption.ts`): a local
@@ -1776,8 +1777,9 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   (`contract.ts`, the newest contract files the tests read — add one there when a test starts reading
   a new fixture): one on an older branch is ignored with a warning and the tests run on the reader's
   snapshots, instead of failing ordinary unit tests on fixtures it never had. It may still be on
-  another branch than the one you are pairing with, so name it. `BUNKO_REPO` is used as named,
-  however old. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into
+  another branch than the one you are pairing with, so name it. `BUNKO_REPO` is used as named, never
+  skipped: one without `seed.json`, or lacking any `CONTRACT_BASELINE` file, throws once, listing
+  what it lacks. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into
   a failure.
 - CI checks out bunko at `vars.BUNKO_REF` (default `0.8/remote-storage`) with
   `BUNKO_CONTRACT_REQUIRED=1`, so a reader branch whose tests read a newer contract fails CI until that
@@ -1785,6 +1787,9 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 - `BUNKO_REPO=<checkout> READER_BLESS=1 npx vitest run src/lib/interop` rewrites the records, in that
   checkout only. A changed request lands in bunko FIRST (commit the records there, run its
   `contract_replay`), then in the reader.
+- `fixtureFetch` answers a request from the fixtures it was given by method, path, query and
+  `Depth`; when several match, the request's auth, then its body, narrow them, and any still tied
+  throw "ambiguous fixtures" naming them — hand it only the fixtures the test means.
 - Fixtures report `/login/api/me`'s `version` as the sentinel `"0.0.0"`, below 0.8.0: a gate derived
   from a recorded identity (history) is OFF there. A test that needs it on sets it itself.
 

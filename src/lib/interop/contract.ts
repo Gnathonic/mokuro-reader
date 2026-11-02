@@ -14,14 +14,16 @@
  *
  * The fixtures are read from a Bunko checkout, never copied into this repo:
  * `BUNKO_REPO` (CI), else a sibling `mokuro-webdav-library` checkout that holds
- * this contract (`CONTRACT_BASELINE`). Without one the contract tests skip
- * with a warning; `BUNKO_CONTRACT_REQUIRED=1` makes that a failure.
+ * this contract (`CONTRACT_BASELINE`). A `BUNKO_REPO` that lacks part of the
+ * baseline is an error naming what it lacks. Without a checkout the contract
+ * tests skip with a warning; `BUNKO_CONTRACT_REQUIRED=1` makes that a failure.
  *
  * Test-only: never import this from app code.
  */
 import { describe } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
+import { basicAuthHeader } from '$lib/util/base64';
 
 /** The reader repo's root (this file is `src/lib/interop/contract.ts`). */
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
@@ -50,6 +52,8 @@ export interface ContractRequest {
 
 /** One `interop/contract/bunko/<name>.json`. */
 export interface Fixture {
+  /** Its file's stem, set (not enumerable) by `loadBunkoFixture`; names it in errors. */
+  readonly name?: string;
   request: ContractRequest;
   status?: number;
   headers?: Record<string, string>;
@@ -71,21 +75,32 @@ export interface Seed {
   }>;
 }
 
-function hasSeed(dir: string): boolean {
-  return existsSync(join(dir, 'seed.json'));
+/**
+ * The `interop/contract` of the checkout `BUNKO_REPO` names (`env`; `exists`
+ * is the file test, for the helper's own test). Asked for by name, a wrong
+ * path is a mistake, never a quiet skip; and so is an older branch, said once
+ * here with everything it lacks, not as scattered fixture errors in whichever
+ * tests read those files.
+ */
+export function namedContract(env: string, exists: (path: string) => boolean = existsSync): string {
+  const dir = join(resolve(REPO_ROOT, env), 'interop', 'contract');
+  if (!exists(join(dir, 'seed.json'))) {
+    throw new Error(`BUNKO_REPO=${env} has no interop/contract/seed.json (looked in ${dir})`);
+  }
+  const missing = missingBaseline(dir, exists);
+  if (missing.length) {
+    throw new Error(
+      `BUNKO_REPO=${env} is older than the contract these tests read: ${dir} lacks ` +
+        `${missing.join(', ')}. Check out a Bunko branch that has them.`
+    );
+  }
+  return dir;
 }
 
 /** `<bunko checkout>/interop/contract`, or null when there is none. */
 export function contractDir(): string | null {
   const env = process.env.BUNKO_REPO;
-  if (env) {
-    const dir = join(resolve(REPO_ROOT, env), 'interop', 'contract');
-    // Asked for by name: a wrong path is a mistake, never a quiet skip.
-    if (!hasSeed(dir)) {
-      throw new Error(`BUNKO_REPO=${env} has no interop/contract/seed.json (looked in ${dir})`);
-    }
-    return dir;
-  }
+  if (env) return namedContract(env);
   const found = findSiblingContract(
     [
       '../mokuro-webdav-library',
@@ -96,7 +111,7 @@ export function contractDir(): string | null {
   if (found.stale.length && !warnedStale) {
     warnedStale = true;
     for (const dir of found.stale) {
-      const missing = CONTRACT_BASELINE.filter((rel) => !existsSync(join(dir, rel)));
+      const missing = missingBaseline(dir);
       console.warn(
         `[contract] Ignoring ${dir}: it lacks ${missing.join(', ')} (a Bunko branch older than ` +
           'the contract these tests read). Name a checkout with BUNKO_REPO.'
@@ -110,8 +125,9 @@ export function contractDir(): string | null {
  * Paths (under `interop/contract/`) of the newest contract files the reader's
  * tests read. A sibling checkout found by looking around is used only when it
  * holds all of them: one on an older branch fails ordinary unit tests on
- * fixtures and keys it never had, which is no finding about either side. Add
- * a path here when a test starts reading a file a new Bunko contract brought.
+ * fixtures and keys it never had, which is no finding about either side. One
+ * named by `BUNKO_REPO` that lacks any is an error listing them. Add a path
+ * here when a test starts reading a file a new Bunko contract brought.
  */
 export const CONTRACT_BASELINE = [
   'seal',
@@ -123,6 +139,11 @@ export const CONTRACT_BASELINE = [
 ];
 
 let warnedStale = false;
+
+/** The `CONTRACT_BASELINE` entries `dir` (an `interop/contract`) lacks. */
+function missingBaseline(dir: string, exists: (path: string) => boolean = existsSync): string[] {
+  return CONTRACT_BASELINE.filter((rel) => !exists(join(dir, rel)));
+}
 
 /**
  * The first of `roots` whose `interop/contract` holds the baseline, and those
@@ -136,7 +157,7 @@ export function findSiblingContract(
   for (const root of roots) {
     const dir = join(root, 'interop', 'contract');
     if (!exists(join(dir, 'seed.json'))) continue;
-    if (CONTRACT_BASELINE.every((rel) => exists(join(dir, rel)))) return { dir, stale };
+    if (!missingBaseline(dir, exists).length) return { dir, stale };
     stale.push(dir);
   }
   return { dir: null, stale };
@@ -241,7 +262,8 @@ export function rebase<T>(value: T, now: number): T {
 export function loadBunkoFixture(name: string, opts: { now?: number } = {}): Fixture {
   const dir = contractDir();
   if (!dir) throw new Error(`no Bunko contract to load ${name} from (see describeContract)`);
-  return rebase(readJson(join(dir, 'bunko', `${name}.json`)), opts.now ?? Date.now());
+  const fx = rebase(readJson(join(dir, 'bunko', `${name}.json`)), opts.now ?? Date.now());
+  return Object.defineProperty(fx, 'name', { value: name, enumerable: false });
 }
 
 /** One `interop/contract/seal/<name>.json` (Bunko's README, "Seal vectors"). */
@@ -360,12 +382,47 @@ function headerOf(init: RequestInit | undefined, name: string): string | null {
   return hit ? hit[1] : null;
 }
 
+function fixtureLabel(fx: Fixture): string {
+  return fx.name ?? `${fx.request.method ?? 'GET'} ${fx.request.path} (${fx.request.auth ?? '?'})`;
+}
+
+/** Does the fixture's recorded request body equal the one sent (a non-string one never does)? */
+function sameBody(r: ContractRequest, sent: BodyInit | null | undefined, seed: Seed): boolean {
+  if (sent == null) return r.body === undefined && r.body_text === undefined && !r.body_cbz;
+  if (typeof sent !== 'string') return false;
+  if (r.body !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(sent);
+    } catch {
+      return false;
+    }
+    return (
+      JSON.stringify(sortKeys(hidePasswords(parsed, seed))) === JSON.stringify(sortKeys(r.body))
+    );
+  }
+  return r.body_text !== undefined && r.body_text === sent.replace(/\r\n/g, '\n');
+}
+
+/** Has the fixture's request a body, and has the sent one? */
+function bodyPresence(r: ContractRequest, sent: BodyInit | null | undefined): boolean {
+  const recorded = r.body !== undefined || r.body_text !== undefined || !!r.body_cbz;
+  return recorded === (sent != null);
+}
+
 /**
  * A `fetch` that answers like the seeded Bunko did: a request matches a
  * fixture by method, path and query (and `Depth` for PROPFIND); anything else
- * is a 404. `calls` records what was asked.
+ * is a 404. When several match, the request's auth (as `authOf` names it,
+ * `tokens` naming bearer tokens' users), then its body (equal, else merely
+ * present or absent alike) narrow them down; still more than one throws
+ * "ambiguous fixtures" rather than answer with whichever came first. `calls`
+ * records what was asked.
  */
-export function fixtureFetch(fixtures: Fixture[]) {
+export function fixtureFetch(
+  fixtures: Fixture[],
+  opts: { tokens?: Record<string, string>; seed?: Seed } = {}
+) {
   const calls: Array<{ method: string; url: string; init?: RequestInit }> = [];
   const impl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(
@@ -374,7 +431,7 @@ export function fixtureFetch(fixtures: Fixture[]) {
     const method = (init?.method ?? 'GET').toUpperCase();
     calls.push({ method, url: url.toString(), init });
     const depth = headerOf(init, 'depth');
-    const hit = fixtures.find((fx) => {
+    let hits = fixtures.filter((fx) => {
       const r = fx.request;
       if ((r.method ?? 'GET').toUpperCase() !== method) return false;
       if (r.path !== url.pathname + url.search) return false;
@@ -384,7 +441,28 @@ export function fixtureFetch(fixtures: Fixture[]) {
       }
       return true;
     });
-    return hit ? fixtureResponse(hit) : new Response('not in the contract', { status: 404 });
+    if (hits.length > 1) {
+      const seed = opts.seed ?? loadSeed();
+      const auth = authOf(headerOf(init, 'authorization'), opts.tokens ?? {}, seed);
+      // Each narrowing applies only when it leaves a candidate: one that rules
+      // them all out tells nothing about which was meant.
+      const narrow = (keep: (fx: Fixture) => boolean) => {
+        const kept = hits.filter(keep);
+        if (kept.length) hits = kept;
+      };
+      narrow((fx) => fx.request.auth === auth);
+      if (hits.length > 1) narrow((fx) => sameBody(fx.request, init?.body, seed));
+      if (hits.length > 1) narrow((fx) => bodyPresence(fx.request, init?.body));
+      if (hits.length > 1) {
+        throw new Error(
+          `ambiguous fixtures for ${method} ${url.pathname}${url.search} (auth ${auth}): ` +
+            `${hits.map(fixtureLabel).join(', ')} — pass only the one this request means`
+        );
+      }
+    }
+    return hits.length
+      ? fixtureResponse(hits[0])
+      : new Response('not in the contract', { status: 404 });
   };
   return { fetch: impl as typeof fetch, calls };
 }
@@ -432,18 +510,11 @@ function sortKeys(v: any): any {
   return v;
 }
 
-function utf8Basic(user: string, password: string): string {
-  const bytes = new TextEncoder().encode(`${user}:${password}`);
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return `Basic ${btoa(binary)}`;
-}
-
 /** `basic:<user>` / `bearer:<user>` for a seed user's header, else `raw:<value>`. */
 function authOf(value: string | null, tokens: Record<string, string>, seed: Seed): string {
   if (!value) return 'none';
   for (const u of seed.users) {
-    if (value === utf8Basic(u.username, u.password)) return `basic:${u.username}`;
+    if (value === basicAuthHeader(u.username, u.password)) return `basic:${u.username}`;
   }
   if (value.startsWith('Bearer ')) {
     const token = value.slice('Bearer '.length).trim();

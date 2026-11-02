@@ -194,15 +194,26 @@ function isLibraryFilePath(path: string): boolean {
  * RFC 4918 such a collection never lists PUT (files are PUT to member URLs;
  * PUT on a collection is undefined, §9.7.2) and lists MKCOL only while its URL
  * is unmapped (§9.3.1). So writability shows instead as the methods that
- * change the collection or its membership: DELETE (§9.6), MOVE (§9.9) and
- * PROPPATCH (§9.2). PUT and MKCOL still count, for servers that send one
- * fixed `Allow` for every URL.
+ * change the collection's membership: DELETE (§9.6) and MOVE (§9.9). PUT and
+ * MKCOL still count, for servers that send one fixed `Allow` for every URL.
  *
- * Left out on purpose: COPY only reads its source (the write lands at the
- * Destination, §9.8); LOCK/UNLOCK come with class 2 compliance and change no
- * content themselves (§9.10, §9.11); POST is not a WebDAV write.
+ * Left out on purpose: PROPPATCH changes only properties (§9.2), which a
+ * server may let a read-only account keep; COPY only reads its source (the
+ * write lands at the Destination, §9.8); LOCK/UNLOCK come with class 2
+ * compliance and change no content themselves (§9.10, §9.11); POST is not a
+ * WebDAV write.
  */
-const COLLECTION_WRITE_METHODS = ['PUT', 'MKCOL', 'DELETE', 'MOVE', 'PROPPATCH'] as const;
+const COLLECTION_WRITE_METHODS = ['PUT', 'MKCOL', 'DELETE', 'MOVE'] as const;
+
+/**
+ * Privileges (RFC 3744 §3) that let an account upload into the library
+ * folder: DAV:write, its DAV:write-content part, DAV:all, and DAV:bind /
+ * DAV:unbind (adding and removing a collection's members, §3.9-3.10, which an
+ * account may hold without the DAV:write aggregate). Matched as whole element
+ * names, any namespace prefix: DAV:write-properties and DAV:write-acl share
+ * the `write` prefix but upload nothing.
+ */
+const WRITE_PRIVILEGE_RE = /<(?:[\w-]+:)?(?:write|write-content|all|bind|unbind)\s*\/?>/;
 
 /**
  * Read a collection's `Allow` header: true when it lists any collection write
@@ -1261,17 +1272,7 @@ export class WebDAVProvider implements SyncProvider {
         } else {
           // Server supports ACL - check for actual privileges
           // Look for privilege elements like <D:write/>, <D:read/>, <D:all/>, etc.
-          const hasWritePrivilege =
-            text.includes('<D:write') ||
-            text.includes('<write') ||
-            text.includes(':write/>') ||
-            text.includes('<D:all') ||
-            text.includes('<all') ||
-            text.includes(':all/>') ||
-            // The folder is a collection: adding and removing its members is
-            // DAV:bind / DAV:unbind (RFC 3744 §3.9-3.10), which an account may
-            // hold without the DAV:write aggregate and still upload into it.
-            /<(?:[\w-]+:)?(?:un)?bind\s*\/?>/.test(text);
+          const hasWritePrivilege = WRITE_PRIVILEGE_RE.test(text);
 
           const hasReadPrivilege =
             text.includes('<D:read') || text.includes('<read') || text.includes(':read/>');
