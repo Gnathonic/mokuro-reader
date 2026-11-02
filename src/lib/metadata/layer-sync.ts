@@ -806,16 +806,24 @@ async function decodeLayerBlob(
   }
 }
 
+/** What went wrong with a pull that a caller must not mistake for "nothing there". */
+interface PullReport {
+  /** A file that needed pulling could not be downloaded (offline, a server error). */
+  failed: boolean;
+}
+
 /** Download + decode one listed layer file; null when unusable. */
 async function readLayerFile(
   provider: SyncProvider,
-  listed: ListedLayerFile
+  listed: ListedLayerFile,
+  report?: PullReport
 ): Promise<PulledLayerFile | null> {
   let blob: Blob;
   try {
     blob = await provider.downloadFile(listed.file);
   } catch (error) {
     console.warn(`[layer-sync] could not read '${listed.file.path}':`, error);
+    if (report) report.failed = true;
     return null;
   }
   return decodeLayerBlob(blob, listed.gz, listed.file.path);
@@ -841,7 +849,8 @@ async function pullOne(
   provider: SyncProvider,
   listed: ListedLayerFile,
   row: VolumeMetadata,
-  existing: VolumeOcrLayer | undefined
+  existing: VolumeOcrLayer | undefined,
+  report?: PullReport
 ): Promise<boolean> {
   // The one gate every pulled file passes on its way to becoming a row: it
   // must plausibly be a layer OF THIS VOLUME, i.e. have the volume's page
@@ -858,7 +867,7 @@ async function pullOne(
   }
   const rejection = rejectionOf(row, listed, provider.type);
   if (isKnownMismatch(rejection)) return false;
-  const pulled = await readLayerFile(provider, listed);
+  const pulled = await readLayerFile(provider, listed, report);
   if (!pulled) return false;
   const status = provider.getStatus();
   const stored = await storePulledLayer(row, listed.layerId, pulled, existing, {
@@ -1509,7 +1518,9 @@ export async function pullLayersForVolume(
   volumeUuid: string,
   providerType: ProviderType,
   /** Only these layer ids (default: every listed layer of the volume). */
-  only?: string[]
+  only?: string[],
+  /** Set when a file that needed pulling could not be downloaded. */
+  report?: PullReport
 ): Promise<number> {
   try {
     const row = await db.volumes.get(volumeUuid);
@@ -1545,33 +1556,48 @@ export async function pullLayersForVolume(
       ) {
         return;
       }
-      if (await pullOne(provider, listed, row, existing)) pulled++;
+      if (await pullOne(provider, listed, row, existing, report)) pulled++;
     });
     return pulled;
   } catch (error) {
     console.warn('[layer-sync] pull for volume failed:', error);
+    if (report) report.failed = true;
     return 0;
   }
 }
 
+/** `pullOwnEditLayerBeforeEdit`'s answer. */
+export type OwnEditLayerPull = 'pulled' | 'none' | 'failed';
+
 /**
- * Before a fork (`forkIntoEditLayer`) mints the account's `edit` layer from a
- * shared one: an overlay of the account's own already in the cached listing
- * (pushed from another device, not pulled here yet) is pulled first, so the
- * fork edits THAT. A fresh copy would be newer than it and replace it on the
- * next sync. Only where the account's `edit` goes up at all — elsewhere the
- * listed file is not its own. Returns whether a row was pulled. Never rejects.
+ * Before anything mints the account's `edit` layer — a fork
+ * (`forkIntoEditLayer`) from a shared layer, or the first save of an edit of
+ * the primary (`persistPageEdit` makes `edit` from the primary): an overlay of
+ * the account's own already in the cached listing (pushed from another device,
+ * not pulled here yet) is pulled first, so the edit goes into THAT. A fresh
+ * copy would be newer than it and replace it on the next sync, taking the
+ * other device's corrections with it. Only where the account's `edit` goes up
+ * at all — elsewhere the listed file is not its own.
+ *
+ * `'pulled'`: the row is here now. `'none'`: nothing to pull (no provider, a
+ * local `edit` row already, none listed, a file that is no layer of this
+ * volume). `'failed'`: a listed overlay could not be downloaded — the caller
+ * must NOT mint a fresh `edit`, or the next push replaces that file. Never
+ * rejects.
  */
-export async function pullOwnEditLayerBeforeFork(volumeUuid: string): Promise<boolean> {
+export async function pullOwnEditLayerBeforeEdit(volumeUuid: string): Promise<OwnEditLayerPull> {
   try {
     const provider = providerManager.getActiveProvider();
-    if (!provider) return false;
-    if (layerIdStaysLocal(EDIT_LAYER_ID, pushGateOf(provider).target)) return false;
-    if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return false;
-    return (await pullLayersForVolume(volumeUuid, provider.type, [EDIT_LAYER_ID])) > 0;
+    if (!provider) return 'none';
+    if (layerIdStaysLocal(EDIT_LAYER_ID, pushGateOf(provider).target)) return 'none';
+    if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return 'none';
+    const report: PullReport = { failed: false };
+    const pulled = await pullLayersForVolume(volumeUuid, provider.type, [EDIT_LAYER_ID], report);
+    if (pulled > 0) return 'pulled';
+    return report.failed ? 'failed' : 'none';
   } catch (error) {
-    console.warn('[layer-sync] could not pull the edit layer before a fork:', error);
-    return false;
+    console.warn('[layer-sync] could not pull the edit layer before an edit:', error);
+    return 'failed';
   }
 }
 

@@ -48,7 +48,7 @@ import {
   listedCuratedLayerFile,
   publishCuratedLayer,
   pullLayersForVolume,
-  pullOwnEditLayerBeforeFork,
+  pullOwnEditLayerBeforeEdit,
   unpublishCuratedLayer,
   stampLayersSynced,
   syncLayersFromListing
@@ -2433,7 +2433,7 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
       cloudFile('Series/Vol 1.edit.mokuro', { size: 55 })
     ];
     downloadFile.mockResolvedValue(new Blob([mokuroJson('わたし')]));
-    expect(await pullOwnEditLayerBeforeFork('v1')).toBe(true);
+    expect(await pullOwnEditLayerBeforeEdit('v1')).toBe('pulled');
     // Only the overlay: the curated row is in sync and not this helper's business.
     expect(downloadFile).toHaveBeenCalledTimes(1);
     const edit = (await getLayerWithPages(db, 'v1', 'edit'))!;
@@ -2442,7 +2442,7 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
 
     // A local edit row is the account's already: nothing is fetched.
     downloadFile.mockClear();
-    expect(await pullOwnEditLayerBeforeFork('v1')).toBe(false);
+    expect(await pullOwnEditLayerBeforeEdit('v1')).toBe('none');
     expect(downloadFile).not.toHaveBeenCalled();
   });
 
@@ -2451,11 +2451,23 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     serverCompilesMetadata = true;
     editLayerSync = 'local';
     cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro')];
-    expect(await pullOwnEditLayerBeforeFork('v1')).toBe(false);
+    expect(await pullOwnEditLayerBeforeEdit('v1')).toBe('none');
     editLayerSync = 'push';
     cachedFiles = [cloudFile('Series/Vol 1.cbz')];
-    expect(await pullOwnEditLayerBeforeFork('v1')).toBe(false);
+    expect(await pullOwnEditLayerBeforeEdit('v1')).toBe('none');
     expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  it("'failed' when the account's listed overlay could not be fetched — nothing minted", async () => {
+    await seedRow();
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro')];
+    downloadFile.mockRejectedValue(new Error('offline'));
+    expect(await pullOwnEditLayerBeforeEdit('v1')).toBe('failed');
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
+    // Bytes that are no layer at all are no transient failure: that file can
+    // never be the account's corrections, and a fresh row may replace it.
+    downloadFile.mockResolvedValue(new Blob(['not json']));
+    expect(await pullOwnEditLayerBeforeEdit('v1')).toBe('none');
   });
 
   it('never tidies the .gz beside a layer this device may not delete', async () => {

@@ -505,7 +505,13 @@ design 0.8 D4: the main `<Volume>.mokuro` is model output). `persistPageEdit`
 still writes the primary row — the local view every consumer reads — and, in
 the same transaction, the page into the `edit` layer (`EDIT_LAYER_ID`,
 "Your corrections"; created from the pre-edit primary on the first save, then
-page by page, so pages edited in the layer itself survive). Layer-sync pushes
+page by page, so pages edited in the layer itself survive). Before that first
+save can happen, opening the editor on the primary of a volume with no `edit`
+row pulls the account's own listed `<Volume>.edit.mokuro` (the same
+`pullOwnEditLayerBeforeEdit` a fork uses): a row minted from the primary would
+be newer and replace another device's corrections on the next push. A listed
+overlay that could not be fetched (`'failed'`) opens nothing ("Couldn't fetch
+your corrections…"), for a fork too. Layer-sync pushes
 it as `<Volume>.edit.mokuro` (`scheduleLayerPush`, debounced, from the cached
 listing). Every layer file of kind `edit` carries a top-level
 `"edited": {"by": "mokuro-reader", "at": <layer updated_at>, "base_sha256":
@@ -691,7 +697,7 @@ the push rule decides where it goes), switches the display to `edit` and
 opens the editor there ("Editing your corrections — the shared layer stays as
 it is"). An existing `edit` layer is never overwritten by a fork — nor one
 only LISTED so far (pushed from another device, not pulled here yet): the
-fork pulls that first (`pullOwnEditLayerBeforeFork`), since a fresh copy
+fork pulls that first (`pullOwnEditLayerBeforeEdit`), since a fresh copy
 would be newer and replace it on the next sync. The layer
 menu's **Copy to your corrections** (`copyIntoEditLayer`, after a confirm)
 replaces its pages on purpose. A layer SWAP from inside the editor (L, the

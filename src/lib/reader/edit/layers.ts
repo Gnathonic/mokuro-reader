@@ -264,7 +264,7 @@ export async function persistLayerPageEdit(
  * personal layers go up (`layerNeedsPush`). An existing `edit` layer holds
  * corrections of its own and is never overwritten (`copyIntoEditLayer` does
  * that, on the user's word) — nor is one only listed in the cloud so far: the
- * caller pulls that first (`pullOwnEditLayerBeforeFork`, `layer-sync.ts`).
+ * caller pulls that first (`pullOwnEditLayerBeforeEdit`, `layer-sync.ts`).
  */
 export async function forkIntoEditLayer(
   volumeUuid: string,
