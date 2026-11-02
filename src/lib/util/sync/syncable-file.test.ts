@@ -461,7 +461,7 @@ describe('isReservedLayerSidecarPath', () => {
   it('names a layer file whose id is reserved, in any folder, plain or gz', () => {
     expect(isReservedLayerSidecarPath('S/Vol 1.edit.mokuro')).toBe(true);
     expect(isReservedLayerSidecarPath('S/Vol 1.curated.mokuro.gz')).toBe(true);
-    expect(isReservedLayerSidecarPath('S/Vol 1.pre-upgrade-2.mokuro')).toBe(true);
+    expect(isReservedLayerSidecarPath('S/Vol 1.curated-2.mokuro')).toBe(true);
     expect(isReservedLayerSidecarPath('Vol 1.tr-en.mokuro')).toBe(true);
   });
 
@@ -469,6 +469,10 @@ describe('isReservedLayerSidecarPath', () => {
     for (const path of [
       'S/Vol 1.mokuro',
       'S/Vol 1.fix.mokuro',
+      // Ordinary hand-made ids: bunko no longer writes or reserves them.
+      'S/Vol 1.pre-upgrade.mokuro',
+      'S/Vol 1.pre-upgrade-2.mokuro',
+      'S/Vol 1.previous-ocr.mokuro',
       'S/Vol 1.EDIT.mokuro',
       'S/Vol 1.edit.cbz',
       'S/series.json',

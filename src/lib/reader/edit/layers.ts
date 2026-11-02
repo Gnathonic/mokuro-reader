@@ -97,9 +97,9 @@ export function servedEngineOf(json: unknown): string | undefined {
 
 /**
  * A layer of corrections by its id alone: the shared `curated`, an account's
- * `edit`/`edit-<n>`, or one of bunko's keepsakes (`pre-upgrade…`, a case
- * merge's `curated-<n>`). No server stamp makes
- * one of them a generation (`layerKindForId`, `layer-sync`'s re-filing).
+ * `edit`/`edit-<n>`, or bunko's keepsake (a case merge's `curated-<n>`). No
+ * server stamp makes one of them a generation (`layerKindForId`,
+ * `layer-sync`'s re-filing).
  */
 export function isCorrectionsLayerId(layerId: string): boolean {
   return (
@@ -115,8 +115,8 @@ export function layerKindForId(layerId: string, servedEngine?: string): VolumeOc
   if (layerId === ORIGINAL_LAYER_ID) return 'original';
   if (isTranslationLayerId(layerId)) return 'translation';
   // Corrections whatever the file claims: the shared `curated` layer, an
-  // account's own `edit`, bunko's `pre-upgrade` copy of a main that may hold
-  // edits. What may write them is read from the id (`layerStaysLocal`).
+  // account's own `edit`, a case merge's `curated-<n>`. What may write them is
+  // read from the id (`layerStaysLocal`).
   if (isCorrectionsLayerId(layerId)) return 'edit';
   if (servedEngine || KNOWN_ENGINE_IDS.has(layerId)) return 'ocr';
   return 'edit';
@@ -126,7 +126,7 @@ export function layerKindForId(layerId: string, servedEngine?: string): VolumeOc
  * A display name → a unique `layer_id` slug. Never a reserved id or family
  * (`isReservedLayerId`) and always with a letter in it (sidecar names rule v1
  * #8): such a slug becomes `layer-<slug>` — a `-<n>` alone would never
- * leave `edit-<n>`, `pre-upgrade…` or `previous-ocr…` — then de-duplicates.
+ * leave `edit-<n>`, `curated-<n>` or `tr-…` — then de-duplicates.
  */
 export function slugifyLayerId(name: string, taken: Iterable<string>): string {
   const used = new Set(taken);

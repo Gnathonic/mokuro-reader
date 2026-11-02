@@ -25,8 +25,7 @@ import {
   CURATED_LAYER_ID,
   EDIT_LAYER_ID,
   isCuratedLayerId,
-  isPersonalLayerId,
-  isPreUpgradeLayerId
+  isPersonalLayerId
 } from '$lib/reader/edit/layer-names';
 import { editLayerEpoch } from '$lib/reader/edit/edit-layer-epoch';
 import { isCloudModelOutput } from '$lib/reader/edit/layer-kind';
@@ -560,8 +559,8 @@ export function layerNeedsPush(
   // upgrade (pushing it would publish the primary a second time as a layer),
   // the local primary an upgrade replaced (a device-local keepsake), the
   // shared `curated` layer, an `edit` layer the server would share, or the
-  // editor's `original` / bunko's `pre-upgrade` on a server that compiles
-  // its metadata.
+  // editor's `original` / a case merge's `curated-<n>` on a server that
+  // compiles its metadata.
   if (layerStaysLocal(row, { provider: providerType, ...target })) return false;
   if (syncedForOtherAccount(row, account)) return false;
   if (row.cloud && row.cloud.provider === providerType && !editedSinceSync(row)) return false;
@@ -638,7 +637,7 @@ function canPublishHere(status: ProviderStatus, seriesTitle: string, volumeTitle
 /**
  * May this device delete `layerId`'s cloud file? Only where it could push it:
  * a layer that stays local by what it IS (`layerIdStaysLocal` — the shared
- * `curated`, an `edit` the server shares, bunko's own keepsakes) is somebody
+ * `curated`, an `edit` the server shares, bunko's own keepsake) is somebody
  * else's file, whatever the account's rights. The one exception is the retry
  * of an Unpublish, by an account that may publish that volume's `curated`.
  */
@@ -927,7 +926,7 @@ async function storePulledLayer(
   // stamp was read (or while its id was unknown) and turns out to be a server's
   // OCR is re-filed as what it is. Never a row made here by hand, never one
   // already attributed to an engine, and never a corrections layer (`curated`,
-  // `edit`, `pre-upgrade`), whatever stamp its file carries.
+  // `edit`, `curated-<n>`), whatever stamp its file carries.
   const misfiled =
     existing?.kind === 'edit' &&
     !existing.engine &&
@@ -1072,13 +1071,6 @@ async function pushOne(
  */
 async function refileKnownEngineRows(local: VolumeOcrLayer[]): Promise<void> {
   for (const layer of local) {
-    // bunko's `pre-upgrade` keepsake pulled before it had a name of its own
-    // ("Pre Upgrade"): name it for what it may hold. Never a hand-renamed row.
-    if (isPreUpgradeLayerId(layer.layer_id) && layer.name === titleCasedLayerId(layer.layer_id)) {
-      const name = layerNameForId(layer.layer_id);
-      await updateLayerMeta(db, layer.volume_uuid, layer.layer_id, { name });
-      layer.name = name;
-    }
     if (layer.kind !== 'edit' || layer.engine || !layer.cloud) continue;
     if (layerKindForId(layer.layer_id) !== 'ocr') continue;
     const renamed = layer.name !== titleCasedLayerId(layer.layer_id);
@@ -1660,7 +1652,7 @@ export async function importFetchedLayers(
  * account, the request failed, no listing to consult) — the caller must leave
  * a tombstone. `'kept-shared'`: the listed file is somebody else's by what the
  * layer is (`layerIdStaysLocal` — the shared `curated`, an `edit` the server
- * shares, bunko's `pre-upgrade`) and is never deleted from here; the tombstone
+ * shares, a case merge's `curated-<n>`) and is never deleted from here; the tombstone
  * only hides it on this device.
  */
 export type CloudLayerDeleteOutcome = 'gone' | 'unconfirmed' | 'kept-shared';

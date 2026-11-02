@@ -76,15 +76,15 @@ describe('layerStaysLocal', () => {
     ['curated', true, true, true],
     ['edit', false, false, true],
     ['edit-2', false, false, true],
-    ['pre-upgrade', false, true, true],
-    ['pre-upgrade-3', false, true, true],
-    // What bunko reserves and refuses a client PUT of (its `layer_class`
-    // Reserved): a case merge's `curated-<n>`, the rest of the pre-upgrade
-    // family, and this reader's own previous-ocr keepsake once edited.
+    // bunko's one server keepsake (sidecar names rule v1 ServerKeepsake): a
+    // case merge's `curated-<n>`, which only the server writes.
     ['curated-2', false, true, true],
-    ['pre-upgrade-x', false, true, true],
-    ['previous-ocr', false, true, true],
-    ['previous-ocr-2', false, true, true],
+    // Ordinary hand-made ids: bunko neither writes nor reserves them any more.
+    ['pre-upgrade', false, false, false],
+    ['pre-upgrade-3', false, false, false],
+    ['pre-upgrade-x', false, false, false],
+    ['previous-ocr', false, false, false],
+    ['previous-ocr-2', false, false, false],
     ['original', false, true, true],
     ['my-fixes', false, false, false],
     ['hayai-nova', false, false, false],

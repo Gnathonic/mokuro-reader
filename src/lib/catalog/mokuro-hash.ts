@@ -11,7 +11,6 @@
 
 import {
   isCuratedLayerId,
-  isDeviceKeepsakeLayerId,
   isPersonalLayerId,
   isServerKeepsakeLayerId
 } from '$lib/reader/edit/layer-names';
@@ -214,20 +213,19 @@ export function layerStaysLocal(
  * - on a provider that compiles its metadata (bunko): the editor's `original`
  *   snapshot — a primary edit stays local there, so the snapshot of what it
  *   sits on means nothing to the server, and on a shared library it would be
- *   published, as a reserved layer, to every user — bunko's own keepsakes
- *   (`pre-upgrade…`, a case merge's `curated-<n>`), which only the server
- *   writes (a PUT is refused, and a delete from here would remove the one copy
- *   every account reads), and this reader's `previous-ocr` keepsake, an id
- *   bunko reserves. Plain storage keeps `original` and an edited
- *   `previous-ocr`: there they are this user's own files.
+ *   published, as a reserved layer, to every user — and bunko's own
+ *   keepsake, a case merge's `curated-<n>`, which only the server writes (a
+ *   PUT is refused, and a delete from here would remove the one copy every
+ *   account reads). Plain storage keeps `original`: there it is this user's
+ *   own file.
+ *
+ * Any other id is a hand-made layer (`pre-upgrade…` and `previous-ocr…`
+ * included: bunko neither writes nor reserves them) and goes wherever the
+ * account may write library files.
  */
 export function layerIdStaysLocal(layerId: string, target: LayerTarget): boolean {
   if (isCuratedLayerId(layerId)) return true;
   if (isPersonalLayerId(layerId)) return target.editLayerSync === 'local';
   if (!target.serverCompilesMetadata) return false;
-  return (
-    layerId === ORIGINAL_LAYER ||
-    isServerKeepsakeLayerId(layerId) ||
-    isDeviceKeepsakeLayerId(layerId)
-  );
+  return layerId === ORIGINAL_LAYER || isServerKeepsakeLayerId(layerId);
 }

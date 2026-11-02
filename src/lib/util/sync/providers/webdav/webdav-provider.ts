@@ -145,7 +145,7 @@ const PROFILES_FILE = '/mokuro-reader/profiles.json';
 
 /**
  * A 403 on a reserved layer file (`isReservedLayerSidecarPath`): bunko refuses
- * some of those by design (its `pre-upgrade` keepsake, `curated` without the
+ * some of those by design (a case merge's `curated-<n>`, `curated` without the
  * rights, a 0.7.x `edit`), so the refusal is that file's alone — reported as
  * one (layer-sync stops asking), never as a read-only server.
  */

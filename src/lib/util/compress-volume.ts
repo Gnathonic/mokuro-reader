@@ -337,8 +337,8 @@ async function buildLayerSidecarsFromDb(
       // cloud archive, and not into one (this also serves Local Folder). Nor
       // the shared `curated` layer (only Publish writes it), an account's
       // `edit` where the server would share it, or the editor's `original`
-      // snapshot and bunko's `pre-upgrade` to a server that compiles its own
-      // metadata (`layerStaysLocal`).
+      // snapshot and a case merge's `curated-<n>` to a server that compiles
+      // its own metadata (`layerStaysLocal`).
       .filter((layer) => !layerStaysLocal(layer, target))
       // Another account's personal layer (two accounts, one device, one
       // bunko): uploading it would overwrite this account's own overlay.

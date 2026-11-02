@@ -107,12 +107,12 @@ describe('uploadVolumeFiles', () => {
         const result = await uploadVolumeFiles(
           {
             mokuro: file('Vol 1.mokuro'),
-            layers: [layer('previous-ocr'), layer('gcv')],
+            layers: [layer('curated-2'), layer('gcv')],
             thumbnail: file('Vol 1.webp')
           },
           {
             sidecar: async (f) => {
-              if (f.filename.includes('.previous-ocr.')) throw refusal();
+              if (f.filename.includes('.curated-2.')) throw refusal();
               order.push(f.filename);
               return {};
             },
