@@ -225,11 +225,9 @@ export interface VolumeOcrLayer {
    */
   passive_at?: string;
   /**
-   * Set on the layers the OCR upgrade writes (`cloud-ocr-upgrade.ts`): on
-   * `updated-ocr` (an EDITED volume's copy of the cloud's newer primary) the
-   * `mokuro_sha256` of the cloud primary sidecar these pages are; on
-   * `previous-ocr` (the local primary an upgrade replaced) that primary's own
-   * `mokuro_sha256`, when it had one.
+   * Set on the layer the OCR upgrade writes (`cloud-ocr-upgrade.ts`),
+   * `updated-ocr` (an EDITED volume's copy of the cloud's newer primary): the
+   * `mokuro_sha256` of the cloud primary sidecar these pages are.
    */
   source_sha256?: string;
   /**
