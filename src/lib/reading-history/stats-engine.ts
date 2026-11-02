@@ -22,7 +22,11 @@ import type { ReadingEvent } from './types';
  * - **Legacy turns** (converted `recentPageTurns`) count only where no native
  *   view covers them; their page characters are the difference between
  *   consecutive turns' cumulative counts (the old pair rule), and one over its
- *   cap counts nothing (the old idle rule).
+ *   cap counts nothing (the old idle rule). The old pair rule also dropped a
+ *   pair whose count FALLS (the next turn is another device's, interleaved by
+ *   a merge) or that is implausibly fast: such a turn is `unread` — its time
+ *   passed, but it says nothing about what was read, so it credits no page,
+ *   skims none and feeds no speed.
  */
 
 export const DEFAULT_K = 3;
@@ -53,7 +57,14 @@ export interface PreparedView {
   dwell: number | null;
   /** Characters on screen (`chars_visible`). */
   chars: number;
+  /** Faster than `SKIP_CPM` (native): time counts, its pages are skimmed. */
   skip: boolean;
+  /**
+   * A legacy turn that cannot say what was read: its next turn is another
+   * device's (the cumulative count falls — a seam) or it is faster than
+   * `SKIP_CPM`. Time counts; nothing is read, skimmed or sampled.
+   */
+  unread: boolean;
   legacy: boolean;
   pass: number;
   /** Pages on screen and their characters. */
@@ -119,12 +130,13 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   const legacyAll = live.filter(
     (e): e is PageEvent => e.kind === 'page' && e.device.startsWith(LEGACY_DEVICE_PREFIX)
   );
-  const legacyChars = new Map<PageEvent, number>();
+  const legacyChars = new Map<PageEvent, { chars: number; seam: boolean }>();
   for (let i = 0; i < legacyAll.length; i++) {
     const here = legacyAll[i];
     const next = legacyAll[i + 1];
     const known = here.page_chars.length > 0 && next && next.page_chars.length > 0;
-    legacyChars.set(here, known ? Math.max(0, next.chars_before - here.chars_before) : 0);
+    const delta = known ? next.chars_before - here.chars_before : 0;
+    legacyChars.set(here, { chars: Math.max(0, delta), seam: delta < 0 });
   }
 
   const views: PreparedView[] = [];
@@ -142,17 +154,20 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
     if (e.kind !== 'page') continue;
     const legacy = e.device.startsWith(LEGACY_DEVICE_PREFIX);
     if (legacy && covered(e.t)) continue;
+    const seam = legacy && (legacyChars.get(e)?.seam ?? false);
     const pages: Array<[number, number]> = legacy
-      ? [[e.first_page, legacyChars.get(e) ?? 0]]
+      ? [[e.first_page, legacyChars.get(e)?.chars ?? 0]]
       : e.page_chars.map((c, i) => [e.first_page + i, c]);
     const chars = pages.reduce((sum, [, c]) => sum + c, 0);
     const dwell = e.dwell_ms;
+    const fast = chars > 0 && dwell !== null && (dwell <= 0 || (chars / dwell) * 60_000 > SKIP_CPM);
     views.push({
       t: e.t,
       end: e.t + (dwell ?? 0),
       dwell,
       chars,
-      skip: chars > 0 && dwell !== null && (dwell <= 0 || (chars / dwell) * 60_000 > SKIP_CPM),
+      skip: fast && !legacy,
+      unread: seam || (fast && legacy),
       legacy,
       pass,
       pages
@@ -161,7 +176,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   const paceTail: PreparedVolume['paceTail'] = [];
   for (let i = views.length - 1; i >= 0 && paceTail.length < PACE_MAX_SAMPLES; i--) {
     const v = views[i];
-    if (v.skip || v.dwell === null || v.chars < PACE_MIN_CHARS) continue;
+    if (v.skip || v.unread || v.dwell === null || v.chars < PACE_MIN_CHARS) continue;
     if (v.dwell <= 0 || v.dwell > CEILING_MS) continue;
     paceTail.push([v.t, v.dwell / v.chars]);
   }
@@ -221,7 +236,7 @@ export function countVolume(
   for (const view of prepared.views) {
     const cap = viewCap(view.chars, pace, idle);
     let ms: number;
-    let reads = !view.skip;
+    let reads = !view.skip && !view.unread;
     if (view.dwell === null) ms = 0;
     else if (view.dwell <= cap) ms = view.dwell;
     else if (view.legacy) {
@@ -235,7 +250,7 @@ export function countVolume(
   }
 
   // Per pass: a page is read when any counting non-skip view showed it,
-  // skipped when only skip views did.
+  // skipped when only skip views did (an unread legacy turn does neither).
   let readChars = 0;
   let skippedChars = 0;
   const entries: Array<[t: number, ms: number, read: number, skipped: number]> = [];
