@@ -18,7 +18,8 @@
   } from '$lib/settings';
   import { volumes as catalogVolumes } from '$lib/catalog';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
-  import { getEffectiveReadingTime } from '$lib/util/reading-speed';
+  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
+  import { seriesSpeeds } from '$lib/reading-history/series-speeds';
   import type { VolumeMetadata, Page } from '$lib/types';
   import { promptConfirmation, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
@@ -43,6 +44,7 @@
   import { removeVolumeFiles, deleteVolumeCompletely } from '$lib/import';
   import { liveQuery } from 'dexie';
   import { nav, routeParams } from '$lib/util/hash-router';
+  import PositionOfferChip from './PositionOfferChip.svelte';
   import BackupButton from './BackupButton.svelte';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { PROVIDER_SHORT_LABELS } from '$lib/util/sync/provider-display';
@@ -236,20 +238,18 @@
   // Check if cloud cache is still loading (fetching with no files yet)
   let isCloudLoading = $derived(isFetchingCloud && totalCloudFiles === 0);
 
-  // Check if this volume is backed up to cloud
+  // Is this volume backed up? The ONE selector every backup surface asks
+  // (see BackupButton): the same folded resolution the backup queue uploads
+  // into, so a volume the cloud holds under its own spelling of the folder
+  // reads as backed up here too. `cloudFiles` is read for the dependency only.
   let cloudFile = $derived.by(() => {
-    const path = `${volume.series_title}/${volume.volume_title}.cbz`;
-    const seriesFiles = cloudFiles.get(volume.series_title) || [];
-    return seriesFiles.find((f) => f.path === path);
+    void cloudFiles;
+    return unifiedCloudManager.getCloudFile(volume.series_title, volume.volume_title);
   });
-  let isBackedUp = $derived(cloudFile !== undefined);
+  let isBackedUp = $derived(cloudFile !== null);
 
   // Time statistics
-  let timeReadMinutes = $derived.by(() => {
-    if (!volumeData) return 0;
-    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
-    return getEffectiveReadingTime(volumeData, idleTimeoutMs);
-  });
+  let timeReadMinutes = $derived(figuresFor($readingStats, volume_uuid, volumeData).minutes);
   let charsRead = $derived(volumeData?.chars || 0);
   let fallbackTotalChars = $state<number | undefined>(undefined);
   let totalCharsRequestId = 0;
@@ -421,8 +421,8 @@
     // Try to get reading speed from multiple sources, in order of preference:
     let charsPerMinute = 0;
 
-    // 1. Use personalized reading speed if available
-    const readingSpeed = $personalizedReadingSpeed;
+    // 1. This series' own speed once it has enough reading, else the recent speed
+    const readingSpeed = $seriesSpeeds.get(volume.series_uuid) ?? $personalizedReadingSpeed;
     if (readingSpeed.isPersonalized && readingSpeed.charsPerMinute > 0) {
       charsPerMinute = readingSpeed.charsPerMinute;
     }
@@ -816,6 +816,7 @@
               {#if isNotInstalled}
                 <Badge color="gray" class="text-xs">Not on this device</Badge>
               {/if}
+              <PositionOfferChip volumeId={volume_uuid} pageCount={liveVolume.page_count} />
             </div>
             <div class="flex flex-wrap items-center gap-x-3">
               <p>{progressDisplay}</p>

@@ -35,6 +35,7 @@ import {
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
 import { CANNOT_RENAME_MESSAGE } from '../../account-capabilities';
 import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
+import { bunkoSupportsHistory } from './bunko-version';
 
 interface WebDAVCredentials {
   serverUrl: string;
@@ -161,6 +162,10 @@ export class WebDAVProvider implements SyncProvider {
   private _capabilities: ServerPermissions | null = null;
   /** The server answered the mokuro-bunko identity endpoint: it compiles the metadata files. */
   private _serverCompilesMetadata = false;
+  /** The bunko version `/login/api/me` reported (bunko >= 0.8.0); undefined otherwise. */
+  private _serverVersion: string | undefined;
+  /** Root files bunko reports keeping per account (`per_user_files`); undefined = not reported. */
+  private _perUserFiles: string[] | undefined;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
   /** Whether the current session was established with a password */
@@ -575,6 +580,17 @@ export class WebDAVProvider implements SyncProvider {
           : 'Not configured',
       isReadOnly: this._isReadOnly,
       serverCompilesMetadata: this._serverCompilesMetadata,
+      // mokuro-bunko keeps reading history per user only from 0.8.0, and only
+      // when it lists `history/` per user; otherwise `history/` lands in the
+      // shared library. Plain WebDAV: no limit.
+      historySync: this._serverCompilesMetadata
+        ? bunkoSupportsHistory(this._serverVersion, this._perUserFiles)
+        : undefined,
+      // positions.json is per user only where bunko says so; otherwise that
+      // path is a shared library file. Plain WebDAV: no limit.
+      positionsSync: this._serverCompilesMetadata
+        ? (this._perUserFiles?.includes('positions.json') ?? false)
+        : undefined,
       metadataPermissions: this._capabilities?.metadata,
       canModifyDelete: this._capabilities?.canModifyDelete,
       canAddFiles: this._capabilities?.canAddFiles,
@@ -688,6 +704,8 @@ export class WebDAVProvider implements SyncProvider {
           // The endpoint answered in bunko's contract shape, so bunko compiles
           // series.json/catalog.json itself and this client must not.
           this._serverCompilesMetadata = true;
+          this._serverVersion = identity.serverVersion;
+          this._perUserFiles = identity.perUserFiles;
           this._isReadOnly = !(
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
           );
@@ -709,6 +727,8 @@ export class WebDAVProvider implements SyncProvider {
           };
           this._isReadOnly = true;
           this._serverCompilesMetadata = true;
+          this._serverVersion = identity.serverVersion;
+          this._perUserFiles = identity.perUserFiles;
           break;
 
         case 'unsupported':
@@ -737,6 +757,9 @@ export class WebDAVProvider implements SyncProvider {
           // to. Any other server is plain storage: this client is its producer
           // (defaulting the other way would leave a plain share with no catalog).
           this._serverCompilesMetadata = this.isKnownBunkoServer(normalizedUrl);
+          // A bunko recognised only by its verified PUTs reported no version.
+          this._serverVersion = undefined;
+          this._perUserFiles = undefined;
           break;
       }
 
@@ -844,6 +867,8 @@ export class WebDAVProvider implements SyncProvider {
     this._supportsDepthInfinity = null; // Reset for next connection (may be different server)
     this._capabilities = null;
     this._serverCompilesMetadata = false;
+    this._serverVersion = undefined;
+    this._perUserFiles = undefined;
     this._hasPassword = false;
     this._needsAttention = false; // Deliberate logout - nothing to flag
 
@@ -980,8 +1005,14 @@ export class WebDAVProvider implements SyncProvider {
    * 2. Fall back to OPTIONS request to check Allow header
    * 3. If both are inconclusive → assume write access
    * 4. Actual write operations will mark as read-only if they fail with permission errors
+   *
+   * A server known to be mokuro-bunko skips the verdict: bunko decides each
+   * request itself, and its Allow is advisory (older versions list no PUT or
+   * MKCOL on collections, which would wrongly read as read-only). A real
+   * refusal still demotes through handleWriteFailure.
    */
   private async checkWritePermissions(baseUrl: string): Promise<boolean> {
+    if (this.isKnownBunkoServer(baseUrl)) return true;
     const url = `${baseUrl}${MOKURO_FOLDER}/`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/xml',
@@ -1067,7 +1098,10 @@ export class WebDAVProvider implements SyncProvider {
       });
 
       console.log('[WebDAV] OPTIONS response status:', response.status);
-      this.noteVerifiedPutHeader(response.headers.get('X-Mokuro-Put'), baseUrl);
+      const putHeader = response.headers.get('X-Mokuro-Put');
+      this.noteVerifiedPutHeader(putHeader, baseUrl);
+      // Only mokuro-bunko sends it: its Allow is advisory (see above).
+      if (isVerifiedPutHeader(putHeader)) return true;
 
       if (!response.ok) {
         // If OPTIONS fails, assume full access (fail open for usability)
@@ -1186,11 +1220,11 @@ export class WebDAVProvider implements SyncProvider {
             // Recurse into subdirectories
             await processFolder(item.filename);
           } else {
-            // Include CBZ files, sidecars, and JSON config files
-            if (isSyncableFile(item.basename)) {
-              // Build relative path from mokuro folder
-              const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
-
+            // Include CBZ files, sidecars, JSON config files and reading
+            // history — judged by the path RELATIVE to the mokuro folder,
+            // since history is recognised by its folders, not its basename.
+            const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
+            if (isSyncableFile(relativePath)) {
               allFiles.push({
                 provider: 'webdav',
                 fileId: item.filename, // Full WebDAV path as fileId
@@ -1242,11 +1276,10 @@ export class WebDAVProvider implements SyncProvider {
 
     for (const item of contents) {
       if (item.type === 'file') {
-        // Include CBZ files, sidecars, and JSON config files
-        if (isSyncableFile(item.basename)) {
-          // Build relative path from mokuro folder
-          const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
-
+        // Include CBZ files, sidecars, JSON config files and reading history
+        // (judged by the relative path — see the recursive listing).
+        const relativePath = item.filename.replace(MOKURO_FOLDER + '/', '');
+        if (isSyncableFile(relativePath)) {
           allFiles.push({
             provider: 'webdav',
             fileId: item.filename, // Full WebDAV path as fileId

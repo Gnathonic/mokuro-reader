@@ -1,11 +1,15 @@
 import { writable } from 'svelte/store';
-import { driveApiClient } from './api-client';
+import { driveApiClient, escapeNameForDriveQuery } from './api-client';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { unifiedCloudManager } from '../../unified-cloud-manager';
 import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import type { DriveFileMetadata } from '../../provider-interface';
 import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
+import { compareByAge } from '../../folder-deduplicator';
+import type { DriveFile } from './constants';
+import { HISTORY_FOLDER, isHistoryFileName } from '$lib/reading-history/paths';
+import { driveHistoryPath } from './drive-history-path';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -29,6 +33,19 @@ type CacheMutation = (cache: Map<string, DriveFileMetadata[]>) => Map<string, Dr
  * whole-account fetch per round is not a fix for that.
  */
 const MAX_DEDUP_REFETCHES = 2;
+
+/** Which listed folders are directly in My Drive. */
+type TopLevelTest = (f: DriveFile) => boolean;
+
+/**
+ * The write root among several `mokuro-reader` folders, and whether Drive
+ * could be asked which of them are top-level. An unconfirmed pick is the
+ * best guess for this listing; dedup must not promote a root on it.
+ */
+export interface ReaderFolderPick {
+  id: string | null;
+  topLevelKnown: boolean;
+}
 
 /**
  * Everything about one cached file that a consumer can observe, as one
@@ -85,6 +102,15 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   private fetchingFlag = false;
   private lastFetchTime: number | null = null;
   private readerFolderId: string | null = null;
+  /** My Drive's own folder id, learnt once per session (see topLevelTest). */
+  private myDriveRootId: string | null = null;
+  /**
+   * Roots the query said are NOT top-level, with the parent each had then:
+   * while nothing it was asked about has moved or appeared, a "no top-level
+   * root" answer holds and the query is not repeated (see topLevelTest).
+   */
+  private notTopLevel = new Map<string, string>();
+  private topLevelPromise: Promise<TopLevelTest | null> | null = null;
   private fetchPromise: Promise<void> | null = null;
   /**
    * How many times IN A ROW a dedup-triggered refetch has re-entered
@@ -168,7 +194,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         // This filters out viewer-only shared files while keeping shared files with edit access that user owns
         const allItems = await driveApiClient.listFiles(
           `'me' in owners and trashed=false`,
-          'files(id,name,mimeType,modifiedTime,size,parents,description)'
+          'files(id,name,mimeType,modifiedTime,size,parents,description,createdTime)'
         );
         console.log('Found items:', allItems);
 
@@ -177,8 +203,12 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         const cbzFiles: any[] = [];
         const sidecarFiles: any[] = [];
         const rootConfigFiles: any[] = [];
+        const historyFiles: any[] = [];
         const folderNames = new Map<string, string>();
+        // id -> name + parent, for paths deeper than one folder (history/<device>/…)
+        const folders = new Map<string, { name: string; parent?: string }>();
         const foundFolderNames: string[] = [];
+        const readerFolders: DriveFile[] = [];
 
         for (const item of allItems) {
           const ext =
@@ -189,15 +219,17 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
           if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
             folderNames.set(item.id, item.name);
+            folders.set(item.id, { name: item.name, parent: item.parents?.[0] });
             foundFolderNames.push(item.name);
 
-            // Capture mokuro-reader folder ID
             if (item.name === GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER) {
-              this.readerFolderId = item.id;
-              console.log('Found mokuro-reader folder ID:', item.id);
+              readerFolders.push(item);
             }
           } else if (item.name.endsWith('.cbz')) {
             cbzFiles.push(item);
+          } else if (isHistoryFileName(item.name)) {
+            // Reading history: placed by its full path below, never by parent name.
+            historyFiles.push(item);
           } else if (isSidecarFile(item.name)) {
             // .mokuro / .mokuro.gz / cover images AND the per-series index
             // `<Series>/series.json`. Hand-rolling this test is what made
@@ -294,8 +326,34 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           }
         }
 
+        // Reading history, two folders deep: mokuro-reader/history/<device>/<file>.
+        // Cached under `history`, the first segment, like every other provider.
+        for (const file of historyFiles) {
+          const path = driveHistoryPath(file, folders, GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER);
+          if (!path) continue;
+          const metadata: DriveFileMetadata = {
+            provider: 'google-drive',
+            fileId: file.id,
+            name: file.name,
+            modifiedTime: file.modifiedTime || new Date().toISOString(),
+            size: file.size ? parseInt(file.size) : 0,
+            path,
+            description: file.description,
+            parentId: file.parents?.[0]
+          };
+          const existing = cacheMap.get(HISTORY_FOLDER);
+          if (existing) existing.push(metadata);
+          else cacheMap.set(HISTORY_FOLDER, [metadata]);
+        }
+
         console.log(
           `Cached ${cbzFiles.length} .cbz files, ${sidecarFiles.length} sidecar files and ${rootConfigFiles.length} root config file(s)`
+        );
+        // Chosen before the swap below, and kept only if the account is still
+        // this one: the choice may ask Drive for My Drive's id.
+        const { id: readerFolderId } = await this.pickReaderFolder(
+          readerFolders,
+          new Set(allItems.map((item) => item.id))
         );
         // IDENTITY IS A SIGNAL, so do not spend it on a listing that did not
         // change. `catalog/index.ts`'s `volumesWithPlaceholders` decides
@@ -325,6 +383,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         if (this.cacheGeneration !== startedAtGeneration) {
           console.log('Drive files cache was cleared mid-fetch; discarding this listing');
           return;
+        }
+        if (readerFolderId) {
+          this.readerFolderId = readerFolderId;
+          console.log('Found mokuro-reader folder ID:', readerFolderId);
         }
         const replayed = (this.mutationsDuringFetch ?? []).reduce(
           (map, fn) => fn(map),
@@ -402,6 +464,93 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
     // Cache is loaded but no folder found - it needs to be created
     return null;
+  }
+
+  /**
+   * THE library folder among every live `mokuro-reader` folder (duplicates,
+   * or one the user moved): one directly in My Drive first, then the oldest,
+   * then the smaller id — the folder FolderDeduplicator keeps when it merges
+   * the top-level ones, so writes never go to the copy the next merge
+   * empties. A nested root is never merged away; it is the write root only
+   * when there is no top-level one. The provider's dedup confirms a root only
+   * when it is this same choice, so the two never disagree.
+   *
+   * When Drive cannot be asked which roots are top-level, the pick is a
+   * guess, flagged `topLevelKnown: false`: the session's current write root
+   * while the listing still has it (a failed query must not move writes to
+   * an older nested root), else a root whose parent is NOT among `listedIds`
+   * — the listing never holds My Drive itself, so a parent the app can see
+   * is a folder, and the root under it is nested — then age and id.
+   */
+  async pickReaderFolder(
+    folders: DriveFile[],
+    listedIds?: ReadonlySet<string>
+  ): Promise<ReaderFolderPick> {
+    if (folders.length <= 1) return { id: folders[0]?.id ?? null, topLevelKnown: true };
+    const atTop = await this.topLevelTest(folders);
+    const byTopThenAge = (isTop: TopLevelTest) =>
+      [...folders].sort((a, b) => Number(isTop(b)) - Number(isTop(a)) || compareByAge(a, b))[0].id;
+    if (atTop) return { id: byTopThenAge(atTop), topLevelKnown: true };
+    const current = this.readerFolderId;
+    if (current && folders.some((f) => f.id === current)) {
+      return { id: current, topLevelKnown: false };
+    }
+    const parentUnseen: TopLevelTest = (f) => {
+      const parent = f.parents?.[0];
+      return !parent || !listedIds?.has(parent);
+    };
+    return { id: byTopThenAge(parentUnseen), topLevelKnown: false };
+  }
+
+  /**
+   * Is a folder directly in My Drive? Not `files.get('root')`: under the
+   * app's drive.file scope that is a 404 (rclone hit the same). The `'root'`
+   * alias does work in a query, so ask for the top-level `mokuro-reader`
+   * folders; their parent is My Drive's id, remembered for the session. An
+   * answer that names none is remembered per root asked about, with the
+   * parent it had: the same roots under the same parents get the same
+   * answer, so only a root that moved or appeared asks again. Null when the
+   * query fails (asked again next time).
+   */
+  private async topLevelTest(folders: DriveFile[]): Promise<TopLevelTest | null> {
+    const known = this.myDriveRootId;
+    if (known) return (f) => f.parents?.[0] === known;
+    if (folders.every((f) => this.notTopLevel.get(f.id) === (f.parents?.[0] ?? ''))) {
+      return () => false;
+    }
+    if (!this.topLevelPromise) {
+      const generation = this.cacheGeneration;
+      const reader = escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER);
+      const promise: Promise<TopLevelTest | null> = driveApiClient
+        .listFiles(
+          `'root' in parents and name='${reader}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+          'files(id,parents)'
+        )
+        .then((top: DriveFile[]) => {
+          const id = top.find((f) => f.parents?.[0])?.parents?.[0];
+          const ids = new Set(top.map((f) => f.id));
+          const isTop: TopLevelTest = (f) => ids.has(f.id) || (!!id && f.parents?.[0] === id);
+          // An answer for an account signed out meanwhile is not this one's.
+          if (this.cacheGeneration === generation) {
+            if (id) this.myDriveRootId = id;
+            for (const f of folders) {
+              if (!isTop(f)) this.notTopLevel.set(f.id, f.parents?.[0] ?? '');
+            }
+          }
+          return isTop;
+        })
+        .catch((error: unknown) => {
+          console.warn('[DriveCache] Could not list the top-level mokuro-reader folders:', error);
+          return null;
+        });
+      this.topLevelPromise = promise;
+      // Only this promise's own slot: a clear() meanwhile may have let a
+      // newer query take the field, and that one must not be dropped.
+      promise.finally(() => {
+        if (this.topLevelPromise === promise) this.topLevelPromise = null;
+      });
+    }
+    return this.topLevelPromise;
   }
 
   /**
@@ -595,6 +744,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     this.cacheLoadedStore.set(false);
     this.lastFetchTime = null;
     this.readerFolderId = null;
+    this.myDriveRootId = null;
+    this.notTopLevel.clear();
+    this.topLevelPromise = null;
     this.fetchPromise = null;
   }
 
@@ -670,6 +822,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     return this.getAllDriveFiles();
   }
 
+  revision(): object {
+    return this.cache.revision();
+  }
+
   /**
    * Fetch fresh data from Google Drive and populate cache
    */
@@ -711,7 +867,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     // Parse path to get series and volume title
     const parts = path.split('/');
     if (parts.length >= 2) {
-      const seriesTitle = parts.slice(0, -1).join('/');
+      // Grouped by the FIRST segment, which is what `has`/`get`/`getAll` look
+      // up. For every two-segment path (`<Series>/<file>`) that is the folder;
+      // reading history (`history/<device>/<file>`) is the one deeper path.
+      const seriesTitle = parts[0];
       const volumeTitle = parts[parts.length - 1]?.replace('.cbz', '') || '';
       this.addDriveFile(seriesTitle, volumeTitle, metadata);
       return;

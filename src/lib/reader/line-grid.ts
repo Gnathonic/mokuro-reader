@@ -26,6 +26,7 @@
  */
 
 import type { Quad } from './line-coords-layout';
+import { ridesOnBase } from './glyph-insets';
 
 /** Below this tilt a line renders upright: the detector's corner wobble is
  * not a rotation, and unrotated text is pixel-crisp. Degrees. */
@@ -157,22 +158,46 @@ export function lineFrame(quad: Quad, vertical: boolean): LineFrame | null {
 /**
  * How many times the browser applies `letter-spacing` to a string: once after
  * every typographic character. Marks that ride on their base (a decomposed
- * dakuten, a variation selector) and joiners form one unit with it.
+ * dakuten, a variation selector) and joiners form one unit with it
+ * (`ridesOnBase`, shared with the ink insets).
  */
 export function spacingUnits(text: string): number {
-  let count = 0;
+  return splitUnits(text).length;
+}
+
+/**
+ * The text cut into the units `spacingUnits` counts: a character together
+ * with the marks and joiners that ride on it. A mark with no base before it
+ * (an OCR line starting with a stray dakuten) rides on the base AFTER it, so
+ * the first unit is still the first glyph the ink insets look at; a string of
+ * nothing but marks has no unit at all.
+ */
+export function splitUnits(text: string): string[] {
+  const units: string[] = [];
+  let pending = '';
   for (const char of text) {
-    const code = char.codePointAt(0) ?? 0;
-    // zero-width space/joiners, word joiner, variation selectors — by code
-    // point, since a character class holding them reads as a combined sequence
-    const rides =
-      (code >= 0x200b && code <= 0x200d) ||
-      code === 0x2060 ||
-      (code >= 0xfe00 && code <= 0xfe0f) ||
-      /^[\p{Mn}\p{Me}]$/u.test(char);
-    if (!rides) count++;
+    if (!ridesOnBase(char)) {
+      units.push(pending + char);
+      pending = '';
+    } else if (units.length) units[units.length - 1] += char;
+    else pending += char;
   }
-  return count;
+  return units;
+}
+
+/**
+ * A run's advance as the measurer gives it, em: the whole run and its first
+ * and last unit, and how many units the run is cut into (`splitUnits`). Taken
+ * once at the measuring size the pitch model works in, and once at the size a
+ * line RENDERS at — a hinted font snaps advances to whole pixels per size, so
+ * the two differ (`gridSpacing`).
+ */
+export interface RunAdvance {
+  total: number;
+  first: number;
+  last: number;
+  /** units the browser letter-spaces (`spacingUnits`) */
+  count: number;
 }
 
 /**
@@ -367,25 +392,47 @@ export interface GridSpacing {
  * rendered one.
  *
  * Null = no grid for this line (see the clamps above): render it as before.
+ *
+ * `run.model` is the run the pitch was derived from (`ownPitch`), taken at
+ * one measuring size and scaled linearly. A HINTED font does not scale
+ * linearly: it snaps each glyph's advance to whole pixels at the size it is
+ * drawn at (a digit 0.56em at 100px, 0.55em at 40px; a kana 42px at 42.1px),
+ * so a run drawn at `fontSize` is not `advanceEm × fontSize` long and a
+ * spacing worked out from that misses the quad's end by the difference — a
+ * pixel on a line with two digits, many on a Latin translation line. Given
+ * `run` (the model's run and the same run measured AT `fontSize`), the
+ * spacing and inset are corrected so that the run the browser draws puts its
+ * first and last glyphs' CENTRES exactly where the linear model put them: the
+ * difference between the two runs, first-centre to last-centre, is shared out
+ * over the `count − 1` gaps between them, and the first glyph's own difference
+ * moves the start. With a font that scales linearly the two runs agree and
+ * nothing changes.
  */
 export function gridSpacing(args: {
   pitch: LinePitch;
-  advanceEm: number;
   fontSize: number;
-  count: number;
+  run: { model: RunAdvance; rendered: RunAdvance };
 }): GridSpacing | null {
-  const { pitch, advanceEm, fontSize, count } = args;
+  const { pitch, fontSize, run } = args;
+  // the advance and the unit count the pitch was derived from
+  const { total: advanceEm, count } = run.model;
   if (!pitch || !(pitch.pitch > 0) || !(pitch.em > 0)) return null;
   if (!(advanceEm > 0) || !(fontSize > 0) || !(count >= 1)) return null;
   let letterSpacing = pitch.pitch - pitch.em + (advanceEm * (pitch.em - fontSize)) / count;
-  if (!Number.isFinite(letterSpacing)) return null;
+  // first-centre → last-centre, em, as the model has it and as it renders
+  const between = (r: RunAdvance) => r.total - (r.first + r.last) / 2;
+  if (count >= 2) {
+    letterSpacing += ((between(run.model) - between(run.rendered)) * fontSize) / (count - 1);
+  }
+  const shift = ((run.model.first - run.rendered.first) * fontSize) / 2;
+  if (!Number.isFinite(letterSpacing) || !Number.isFinite(shift)) return null;
   const spacingEm = letterSpacing / fontSize;
   if (spacingEm < MIN_SPACING_EM || spacingEm > MAX_SPACING_EM) return null;
   if (Math.abs(spacingEm) < SPACING_EPS_EM) letterSpacing = 0;
   // Set solid at the rendered size there is no glyph-size difference to
   // split either: only the ink inset moves the run.
   const centring = letterSpacing === 0 && pitch.em === pitch.pitch ? 0 : (pitch.em - fontSize) / 2;
-  const inset = centring - pitch.lead * pitch.em;
+  const inset = centring - pitch.lead * pitch.em + shift;
   return { letterSpacing, inset: inset === 0 ? 0 : inset };
 }
 

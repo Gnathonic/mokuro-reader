@@ -59,6 +59,7 @@ export class CoalescedCacheStore<V> {
   private state: Map<string, V>;
   private published: Writable<Map<string, V>>;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private revisionToken: object = {};
   /** The listing a fetch has open, and the updates made since it began. */
   private listing: { updates: ((map: Map<string, V>) => Map<string, V>)[] } | null = null;
 
@@ -75,6 +76,16 @@ export class CoalescedCacheStore<V> {
    */
   read(): Map<string, V> {
     return this.state;
+  }
+
+  /**
+   * A token that is replaced on every {@link update} and {@link set}, at once
+   * — the STATE's identity, never the emission's. What a derivation over the
+   * whole listing memoises on (`unifiedCloudManager`'s folder index): equal
+   * tokens mean equal contents, whatever an update function did to the map.
+   */
+  revision(): object {
+    return this.revisionToken;
   }
 
   /**
@@ -102,6 +113,7 @@ export class CoalescedCacheStore<V> {
   ): void {
     this.listing?.updates.push(replay);
     this.state = fn(this.state);
+    this.revisionToken = {};
     if (this.timer === null) {
       this.timer = setTimeout(() => {
         this.timer = null;
@@ -124,6 +136,7 @@ export class CoalescedCacheStore<V> {
     this.listing = null;
     this.cancelPending();
     this.state = map;
+    this.revisionToken = {};
     this.published.set(map);
   }
 

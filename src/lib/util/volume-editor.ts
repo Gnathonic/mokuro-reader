@@ -192,7 +192,13 @@ export function updateVolumeStats(
   updates: {
     progress?: number;
     chars?: number;
-    timeReadInMinutes?: number;
+    /**
+     * Time read, in minutes: `from` is what the stats showed when the editor
+     * opened (history + baseline), `to` what the user entered. The difference
+     * is recorded as an `adjust` event; the retired minute counter is never
+     * written.
+     */
+    timeRead?: { from: number; to: number };
     completed?: boolean;
     series_uuid?: string;
     series_title?: string;
@@ -204,8 +210,8 @@ export function updateVolumeStats(
 
   volumesWithTrash.update((prev: Volumes) => {
     const currentVolume = prev[volumeUuid] || new VolumeData();
-    if (updates.timeReadInMinutes !== undefined) {
-      timeDeltaMs = (updates.timeReadInMinutes - currentVolume.timeReadInMinutes) * 60000;
+    if (updates.timeRead) {
+      timeDeltaMs = (updates.timeRead.to - updates.timeRead.from) * 60000;
     }
     // The modal re-sends `chars` as a linear estimate on every save; only a
     // real progress edit makes its chars a user edit.
@@ -220,11 +226,10 @@ export function updateVolumeStats(
     // turn does; without a fresh stamp the other device's older copy replaced
     // it. Only a real change counts: the modal re-sends every field on save
     // (chars as a linear re-estimate), and a rename on a device that missed a
-    // sync must not outrank reading done elsewhere.
+    // sync must not outrank reading done elsewhere. A time edit is history
+    // (an `adjust` event), not record state, so it needs no stamp.
     const statChanged =
       (updates.progress !== undefined && updates.progress !== currentVolume.progress) ||
-      (updates.timeReadInMinutes !== undefined &&
-        updates.timeReadInMinutes !== currentVolume.timeReadInMinutes) ||
       (updates.completed !== undefined && updates.completed !== currentVolume.completed);
 
     return {
@@ -234,9 +239,6 @@ export function updateVolumeStats(
         ...(statChanged && { lastProgressUpdate: new Date().toISOString() }),
         ...(updates.progress !== undefined && { progress: updates.progress }),
         ...(updates.chars !== undefined && { chars: updates.chars }),
-        ...(updates.timeReadInMinutes !== undefined && {
-          timeReadInMinutes: updates.timeReadInMinutes
-        }),
         ...(updates.completed !== undefined && { completed: updates.completed }),
         /*
          * Unlike `updateProgress`, a `false` here is an EXPLICIT user edit in

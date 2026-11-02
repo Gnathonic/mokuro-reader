@@ -251,6 +251,17 @@ export const routeParams = derived(currentView, ($currentView) => {
 export const isOnReader = derived(currentView, ($currentView) => $currentView.type === 'reader');
 
 /**
+ * Is this volume on screen right now (the reader or its text view)? Background
+ * passes that would write its `volumes` row ask this first: the open volume's
+ * data reloads whenever its row changes (`volumeRowSignature`), swapping every
+ * page image and moving the text under the user mid-page.
+ */
+export function isVolumeOpen(volumeUuid: string): boolean {
+  const view = get(currentView);
+  return (view.type === 'reader' || view.type === 'volume-text') && view.volumeId === volumeUuid;
+}
+
+/**
  * Initialize the router - sets up hashchange listener
  * Call this on app initialization, returns cleanup function
  */

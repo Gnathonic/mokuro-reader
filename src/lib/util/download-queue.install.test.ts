@@ -283,6 +283,54 @@ describe('OCR layers riding a downloaded archive', () => {
     expect(classifyArchiveMokuroEntry('Vol 1.5.mokuro', 'Vol 1.5')).toBeNull();
     // A layer of ANOTHER volume is not this archive's layer.
     expect(classifyArchiveMokuroEntry('Vol 2.gcv.mokuro', 'Vol 1')).toBeNull();
+    // Rule v1: a miscased id is an orphan of this archive — not a layer, and
+    // not a primary either. Inside `Vol 1.GCV.cbz` it is that volume's primary.
+    expect(classifyArchiveMokuroEntry('Vol 1.GCV.mokuro', 'Vol 1')).toEqual({ orphan: true });
+    expect(classifyArchiveMokuroEntry('Vol 1.GCV.mokuro', 'Vol 1.GCV')).toBeNull();
+  });
+
+  it('an orphaned miscased layer entry never replaces the primary, whatever the entry order', async () => {
+    vi.mocked(processVolume).mockResolvedValue(processed());
+    const data = new TextEncoder().encode('{}');
+    await processVolumeData(
+      [
+        { filename: 'Vol 1.mokuro', data },
+        { filename: 'Vol 1.GCV.mokuro', data },
+        { filename: '001.jpg', data }
+      ] as never,
+      placeholder(),
+      10
+    );
+    const decompressed = vi.mocked(processVolume).mock.lastCall![0] as {
+      mokuroFile: File | null;
+      layerFiles?: Array<{ layerId: string }>;
+    };
+    expect(decompressed.mokuroFile?.name).toBe('Vol 1.mokuro');
+    expect(decompressed.layerFiles).toBeUndefined();
+  });
+
+  it('an orphaned miscased `.mokuro.gz` entry is skipped BEFORE it is gunzipped', async () => {
+    // Classification needs only the name; gunzipping first would spend the
+    // work and, on bytes that are not gzip, fail the whole install.
+    vi.mocked(processVolume).mockClear();
+    vi.mocked(processVolume).mockResolvedValue(processed());
+    const data = new TextEncoder().encode('{}');
+    await processVolumeData(
+      [
+        { filename: 'Vol 1.mokuro', data },
+        { filename: 'Vol 1.GCV.mokuro.gz', data: new Uint8Array([1, 2, 3]) },
+        { filename: '001.jpg', data }
+      ] as never,
+      placeholder(),
+      10
+    );
+    expect(processVolume).toHaveBeenCalledTimes(1);
+    const decompressed = vi.mocked(processVolume).mock.lastCall![0] as {
+      mokuroFile: File | null;
+      layerFiles?: Array<{ layerId: string }>;
+    };
+    expect(decompressed.mokuroFile?.name).toBe('Vol 1.mokuro');
+    expect(decompressed.layerFiles).toBeUndefined();
   });
 
   it('hands the primary to the import, attaches the embedded layers after the save, then pulls the listed ones', async () => {

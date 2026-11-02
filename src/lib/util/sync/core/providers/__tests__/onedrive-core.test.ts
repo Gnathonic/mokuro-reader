@@ -233,6 +233,70 @@ describe('onedriveCore', () => {
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2); // no retry
     });
 
+    it('fails a 507 session creation at once — a full drive is never retried', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 507,
+        statusText: 'Insufficient Storage',
+        text: async () => JSON.stringify({ error: { code: 'insufficientStorage' } }),
+        headers: new Headers()
+      } as Response);
+
+      await expect(
+        onedriveCore.uploadFile({
+          seriesTitle: 'S',
+          filename: 'v.cbz',
+          blob: new Blob([new Uint8Array(10)]),
+          credentials: { accessToken: 'TOKEN' }
+        })
+      ).rejects.toThrow(/storage full \(507 insufficientStorage\)/);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
+    it('names quotaLimitReached from a session-creation body', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () => JSON.stringify({ error: { code: 'quotaLimitReached' } }),
+        headers: new Headers()
+      } as Response);
+
+      await expect(
+        onedriveCore.uploadFile({
+          seriesTitle: 'S',
+          filename: 'v.cbz',
+          blob: new Blob([new Uint8Array(10)]),
+          credentials: { accessToken: 'TOKEN' }
+        })
+      ).rejects.toThrow(/quotaLimitReached/);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails a 507 chunk at once, without retries or a completed-upload probe', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ uploadUrl: 'https://upload.example/xyz' })
+      } as Response);
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: false,
+        status: 507,
+        statusText: 'Insufficient Storage',
+        text: async () => '',
+        headers: new Headers()
+      } as Response);
+
+      await expect(
+        onedriveCore.uploadFile({
+          seriesTitle: 'S',
+          filename: 'v.cbz',
+          blob: new Blob([new Uint8Array(10)]),
+          credentials: { accessToken: 'TOKEN' }
+        })
+      ).rejects.toThrow(/storage full \(507/);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+    });
+
     it('consumes 202 response bodies (no unread streams)', async () => {
       const CHUNK = 10 * 1024 * 1024;
       vi.mocked(fetch).mockResolvedValueOnce({

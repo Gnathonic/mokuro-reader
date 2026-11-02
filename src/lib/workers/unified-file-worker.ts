@@ -32,6 +32,7 @@ import {
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
 import { uploadVolumeFiles } from '$lib/util/volume-upload-order';
 import { mayBeImageType } from '$lib/util/image-content-type';
+import { workerFailureKind, type WorkerFailureKind } from '$lib/util/sync/core/storage-full';
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -283,6 +284,12 @@ interface ErrorMessage {
   error: string;
   /** The server's one-sentence verdict, when the failure carried one (a WebDAV upload). */
   detail?: string;
+  /**
+   * `'quota'` when the account is full: only the message crosses to the main
+   * thread, and the backup queue must not show a raw `403 [reason]` for a
+   * failure the user has to act on (`storage-full.ts`).
+   */
+  kind?: WorkerFailureKind;
 }
 
 interface DecompressedEntry {
@@ -1196,6 +1203,8 @@ ctx.addEventListener('message', async (event) => {
         ? { detail: (error as { detail: string }).detail }
         : {})
     };
+    const kind = workerFailureKind(error);
+    if (kind) errorMessage.kind = kind;
     ctx.postMessage(errorMessage);
   }
 });

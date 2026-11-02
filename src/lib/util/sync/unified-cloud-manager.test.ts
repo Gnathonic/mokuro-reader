@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { naturalSort } from '$lib/util/natural-sort';
 import { unifiedSyncService } from './unified-sync-service';
 import type { CloudFileMetadata } from './provider-interface';
 
@@ -8,13 +9,18 @@ const getBySeries = vi.fn();
 const getCache = vi.fn();
 const getAllFiles = vi.fn(() => [] as unknown[]);
 const getActiveProvider = vi.fn();
+const cacheGet = vi.fn((_path: string): unknown => null);
+/** The active cache's revision token; `null` (no memo) unless a test pins one. */
+const cacheRevision = vi.fn((): object | null => null);
 
 vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: {
     fetchAll,
     getBySeries,
+    get: (path: string) => cacheGet(path),
     getCache,
     getAllFiles,
+    revision: () => cacheRevision(),
     allFiles: { subscribe: vi.fn() },
     isFetchingState: { subscribe: vi.fn() }
   }
@@ -178,8 +184,17 @@ const resolveSyncedProgress = vi.fn(async () => {});
 vi.mock('$lib/metadata/hole-patch', () => ({
   resolveSyncedProgress: () => resolveSyncedProgress()
 }));
+const sweepInstalledVolumesForSidecarBackfill = vi.fn(async (_files?: unknown) => {});
 vi.mock('$lib/util/sync/sidecar-backfill', () => ({
-  sweepInstalledVolumesForSidecarBackfill: vi.fn(async () => {})
+  sweepInstalledVolumesForSidecarBackfill: (files?: unknown) =>
+    sweepInstalledVolumesForSidecarBackfill(files)
+}));
+const adoptCloudSeriesSpellings = vi.fn(
+  async (_files?: unknown, _providerType?: string): Promise<unknown[]> => []
+);
+vi.mock('$lib/util/sync/cloud-spelling-adoption', () => ({
+  adoptCloudSeriesSpellings: (files: unknown, providerType: string) =>
+    adoptCloudSeriesSpellings(files, providerType)
 }));
 
 const refreshCatalogIndex = vi.fn(async (_map: unknown, _providerType?: string) => {});
@@ -414,6 +429,59 @@ describe('UnifiedCloudManager rename operations', () => {
     ).toEqual(['Old Series/Volume 1.5.cbz', 'Old Series/Volume 1.5.mokuro']);
   });
 
+  it('a layer file goes with the archive spelled exactly like its stem before one that only folds alike', async () => {
+    const file = (path: string): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: 't',
+      size: 1
+    });
+    const pair = [
+      file('S/Vol 01.cbz'),
+      file('S/vol 01.cbz'),
+      file('S/Vol 01.gcv.mokuro'),
+      file('S/vol 01.hayai.mokuro')
+    ];
+    let files = pair;
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const managed = (volume: string) =>
+      unifiedCloudManager.getManagedCloudFilesForVolume('S', volume).map((f) => f.path);
+    // Two archives that fold alike are two volumes: each keeps its own layers.
+    expect(managed('Vol 01')).toEqual(['S/Vol 01.cbz', 'S/Vol 01.gcv.mokuro']);
+    expect(managed('vol 01')).toEqual(['S/vol 01.cbz', 'S/vol 01.hayai.mokuro']);
+    // With no archive spelled `vol 01`, the folded match is the volume's own.
+    files = pair.filter((f) => f.path !== 'S/vol 01.cbz');
+    expect(managed('Vol 01')).toEqual([
+      'S/Vol 01.cbz',
+      'S/Vol 01.gcv.mokuro',
+      'S/vol 01.hayai.mokuro'
+    ]);
+  });
+
+  it('a layer spelled like NEITHER of two folded-alike archives has ONE owner, whatever the listing order', async () => {
+    const file = (path: string): CloudFileMetadata => ({
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: 't',
+      size: 1
+    });
+    let files = [file('S/Vol 3.cbz'), file('S/VOL 3.cbz'), file('S/vol 3.hayai.mokuro')];
+    getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const managed = (volume: string) =>
+      unifiedCloudManager.getManagedCloudFilesForVolume('S', volume).map((f) => f.path);
+    // The same owner layer sync files it under (`layerOwnerArchive`): the
+    // naturalSort-first of the archives that fold alike — never both volumes.
+    expect(managed('VOL 3')).toEqual(['S/VOL 3.cbz', 'S/vol 3.hayai.mokuro']);
+    expect(managed('Vol 3')).toEqual(['S/Vol 3.cbz']);
+    files = [...files].reverse();
+    expect(managed('VOL 3')).toEqual(['S/VOL 3.cbz', 'S/vol 3.hayai.mokuro']);
+    expect(managed('Vol 3')).toEqual(['S/Vol 3.cbz']);
+  });
+
   it('a rename MOVES the layer files to the new name and never deletes them', async () => {
     const cache = loadedCache();
     const provider = makeRenameProvider();
@@ -498,6 +566,53 @@ describe('UnifiedCloudManager rename operations', () => {
     // cbz + the one corroborated layer; nothing else moved.
     expect(provider.renameFile).toHaveBeenCalledTimes(2);
   });
+
+  // The caller passes the DB title; the cloud may spell the same volume
+  // decomposed (a decomposing filesystem) or in another case. The volume's
+  // layers are found under the CLOUD spelling, so they move with it.
+  it.each([
+    ['decomposed', 'S', 'S', 'Vól 1'.normalize('NFD'), 'Vól 1'],
+    ['case-only', 'S', 'S', 'Vol 1', 'vol 1'],
+    ['decomposed folder', 'Sé'.normalize('NFD'), 'Sé', 'Vol 1', 'Vol 1']
+  ])(
+    'a rename called with a %s spelling of the cloud title MOVES the layer, never deletes it',
+    async (_label, cloudSeries, dbSeries, cloudTitle, dbTitle) => {
+      const provider = makeRenameProvider();
+      const file = (fileId: string, path: string, size: number): CloudFileMetadata => ({
+        provider: 'webdav',
+        fileId,
+        path,
+        modifiedTime: 't',
+        size
+      });
+      const cbz = file('cbz', `${cloudSeries}/${cloudTitle}.cbz`, 100);
+      const primary = file('primary', `${cloudSeries}/${cloudTitle}.mokuro`, 10);
+      const gcv = file('gcv', `${cloudSeries}/${cloudTitle}.gcv.mokuro`, 9);
+      const files = [cbz, primary, gcv];
+      layerRows.mockResolvedValue([stampedLayer('uuid-v', 'gcv', gcv)]);
+      getActiveProvider.mockReturnValue(provider);
+      getBySeries.mockImplementation((s: string) =>
+        files.filter((f) => f.path.startsWith(`${s}/`))
+      );
+      getAllFiles.mockImplementation(() => files);
+      getCache.mockReturnValue(loadedCache());
+      generateSidecars.mockResolvedValue({
+        mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
+      });
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(
+        (
+          await unifiedCloudManager.getSweepableCloudFilesForVolume(dbSeries, dbTitle, 'uuid-v')
+        ).map((f) => f.path)
+      ).toEqual([cbz.path, primary.path, gcv.path]);
+      await unifiedCloudManager.renameVolume(dbSeries, dbTitle, dbSeries, 'Bar', 'uuid-v');
+
+      expect(provider.renameFile).toHaveBeenCalledWith(gcv, `${cloudSeries}/Bar.gcv.mokuro`);
+      expect(provider.deleteFile).not.toHaveBeenCalledWith(gcv);
+      expect(provider.deleteFile).toHaveBeenCalledWith(primary);
+    }
+  );
 
   it('a corroborated layer moves with BOTH its copies (.mokuro and the .mokuro.gz it superseded)', async () => {
     const provider = makeRenameProvider();
@@ -718,9 +833,10 @@ describe('UnifiedCloudManager rename operations', () => {
     // .mokuro and report success while the cbz is stranded or gone.
     const cache = loadedCache();
     const provider = makeRenameProvider({
-      renameFile: vi.fn(async (file: CloudFileMetadata) => {
+      renameFile: vi.fn(async (file: CloudFileMetadata, newPath: string) => {
         if (file.fileId === 'cbz-1') throw new Error('Request failed with status 404 Not Found');
-        throw new Error('unexpected');
+        // The cover moves before the archive and succeeds.
+        return { ...file, fileId: `renamed-${file.fileId}`, path: newPath };
       })
     });
     const files = oldSeriesFiles();
@@ -783,6 +899,159 @@ describe('UnifiedCloudManager rename operations', () => {
     expect(changed).toBe(2);
     expect(provider.renameFile).not.toHaveBeenCalled();
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A volume with a layer whose listing puts the archive FIRST, and a provider
+   * whose every write lands in one ordered log and moves the file in `state`,
+   * so a retry lists exactly what the previous attempt left behind.
+   */
+  function orderedRenameSetup(failMoves: { archive?: number; cover?: number } = {}) {
+    const layer: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'layer-1',
+      path: 'Old Series/Volume 1.hayai.mokuro',
+      modifiedTime: 't',
+      size: 9
+    };
+    const state: CloudFileMetadata[] = [...oldSeriesFiles(), layer];
+    const log: string[] = [];
+    let archiveFailures = failMoves.archive ?? 0;
+    let coverFailures = failMoves.cover ?? 0;
+    const provider = makeRenameProvider({
+      uploadFile: vi.fn(async (path: string) => {
+        log.push(`put ${path}`);
+        return { fileId: 'uploaded-fileid' };
+      }),
+      renameFile: vi.fn(async (file: CloudFileMetadata, newPath: string) => {
+        if (file.path.endsWith('.cbz') && archiveFailures-- > 0) {
+          throw new Error('Request failed with status 502 Bad Gateway');
+        }
+        if (file.path.endsWith('.webp') && coverFailures-- > 0) {
+          throw new Error('Request failed with status 502 Bad Gateway');
+        }
+        log.push(`move ${file.path} -> ${newPath}`);
+        const moved = { ...file, fileId: `renamed-${file.fileId}`, path: newPath };
+        state.splice(state.indexOf(file), 1, moved);
+        return moved;
+      }),
+      deleteFile: vi.fn(async (file: CloudFileMetadata) => {
+        log.push(`delete ${file.path}`);
+        state.splice(state.indexOf(file), 1);
+      })
+    });
+    layerRows.mockResolvedValue([stampedLayer('uuid-1', 'hayai', layer)]);
+    getActiveProvider.mockReturnValue(provider);
+    getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
+    getCache.mockReturnValue(loadedCache());
+    generateSidecars.mockResolvedValue({
+      mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
+    });
+    return { state, log };
+  }
+
+  it('PUTs the new main, then moves the layers, the cover, and the archive LAST; the stale main goes after everything', async () => {
+    // An interrupted rename must leave INERT leftovers. A sidecar with no
+    // archive is inert — bunko has no sweep for it — whereas an archive
+    // without its main may be treated as owing OCR by a server that acts on
+    // what it finds, so the archive moves only once every sidecar is in place.
+    const { log } = orderedRenameSetup();
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume(
+      'Old Series',
+      'Volume 1',
+      'New Series',
+      'Volume X',
+      'uuid-1'
+    );
+    expect(log).toEqual([
+      'put New Series/Volume X.mokuro',
+      'move Old Series/Volume 1.hayai.mokuro -> New Series/Volume X.hayai.mokuro',
+      'move Old Series/Volume 1.webp -> New Series/Volume X.webp',
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
+      'delete Old Series/Volume 1.mokuro'
+    ]);
+  });
+
+  it('without a uuid (no regenerated main) the stale main is MOVED first, before the layers — never after the archive', async () => {
+    const { log } = orderedRenameSetup();
+    localVolumes.mockResolvedValue([
+      { volume_uuid: 'uuid-1', series_title: 'Old Series', volume_title: 'Volume 1' }
+    ]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X');
+    expect(log).toEqual([
+      'move Old Series/Volume 1.mokuro -> New Series/Volume X.mokuro',
+      'move Old Series/Volume 1.hayai.mokuro -> New Series/Volume X.hayai.mokuro',
+      'move Old Series/Volume 1.webp -> New Series/Volume X.webp',
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz'
+    ]);
+  });
+
+  it('a retry after a failed archive move moves only the archive, then drops the stale main', async () => {
+    const { state, log } = orderedRenameSetup({ archive: 1 });
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const rename = () =>
+      unifiedCloudManager.renameVolume(
+        'Old Series',
+        'Volume 1',
+        'New Series',
+        'Volume X',
+        'uuid-1'
+      );
+    await expect(rename()).rejects.toThrow('502');
+    // The stale main survives a failed move; the archive stays at the old name.
+    expect(log.some((entry) => entry.startsWith('delete'))).toBe(false);
+    expect(state.map((f) => f.path)).toContain('Old Series/Volume 1.cbz');
+
+    log.length = 0;
+    await rename();
+    expect(log).toEqual([
+      'put New Series/Volume X.mokuro',
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
+      'delete Old Series/Volume 1.mokuro'
+    ]);
+    expect(state.map((f) => f.path).sort()).toEqual([
+      'New Series/Volume X.cbz',
+      'New Series/Volume X.hayai.mokuro',
+      'New Series/Volume X.webp'
+    ]);
+  });
+
+  it('a retry after a failed cover move moves the cover and the archive, then drops the stale main', async () => {
+    const { state, log } = orderedRenameSetup({ cover: 1 });
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const rename = () =>
+      unifiedCloudManager.renameVolume(
+        'Old Series',
+        'Volume 1',
+        'New Series',
+        'Volume X',
+        'uuid-1'
+      );
+    await expect(rename()).rejects.toThrow('502');
+    // Inert leftovers: the new main and the moved layer sit beside no archive;
+    // the archive and the stale main are still at the old name.
+    expect(log).toEqual([
+      'put New Series/Volume X.mokuro',
+      'move Old Series/Volume 1.hayai.mokuro -> New Series/Volume X.hayai.mokuro'
+    ]);
+    expect(state.map((f) => f.path)).toContain('Old Series/Volume 1.cbz');
+    expect(state.map((f) => f.path)).toContain('Old Series/Volume 1.mokuro');
+
+    log.length = 0;
+    await rename();
+    expect(log).toEqual([
+      'put New Series/Volume X.mokuro',
+      'move Old Series/Volume 1.webp -> New Series/Volume X.webp',
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
+      'delete Old Series/Volume 1.mokuro'
+    ]);
+    expect(state.map((f) => f.path).sort()).toEqual([
+      'New Series/Volume X.cbz',
+      'New Series/Volume X.hayai.mokuro',
+      'New Series/Volume X.webp'
+    ]);
   });
 
   it('refuses to rename onto an occupied name before any remote write (TARGET_EXISTS)', async () => {
@@ -1711,6 +1980,38 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
     it('another volume’s stamped row does not corroborate it either', async () => {
       const deleted = await deleteFoo([stampedLayer('uuid-other', '5', lookAlike)]);
       expect(deleted).not.toContain('S/Foo.5.mokuro');
+    });
+
+    it('is still corroborated per layer when the DB title is spelled otherwise than the cloud', async () => {
+      // The cloud spells the volume decomposed; the caller names it composed.
+      const cloud = 'Fóo'.normalize('NFD');
+      const nfdGcv = file('fóo-gcv', `S/${cloud}.gcv.mokuro`, 9);
+      const nfdLookAlike = file('fóo-5', `S/${cloud}.5.mokuro`, 11);
+      const files = [
+        file('fóo-cbz', `S/${cloud}.cbz`, 100),
+        file('fóo-mokuro', `S/${cloud}.mokuro`, 10),
+        nfdGcv,
+        nfdLookAlike
+      ];
+      const deleted: string[] = [];
+      getActiveProvider.mockReturnValue({
+        type: 'mega',
+        deleteFile: vi.fn(async (f: CloudFileMetadata) => {
+          deleted.push(f.path);
+        })
+      });
+      localVolumes.mockResolvedValue([
+        { volume_uuid: 'uuid-foo', series_title: 'S', volume_title: 'Fóo' }
+      ]);
+      layerRows.mockResolvedValue([stampedLayer('uuid-foo', 'gcv', nfdGcv)]);
+      getBySeries.mockImplementation((s: string) =>
+        files.filter((f) => f.path.startsWith(`${s}/`))
+      );
+      getCache.mockReturnValue({ removeById: vi.fn() });
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      await unifiedCloudManager.deleteManagedVolume('S', 'Fóo');
+      expect(deleted).toContain(nfdGcv.path);
+      expect(deleted).not.toContain(nfdLookAlike.path);
     });
   });
 
@@ -2669,6 +2970,82 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
       expect((await uploadedSeriesFile(provider)).volumes[0].offset).toBe(12);
     });
+
+    /** A record holding a deliberate shelf reset (spine-offsets.ts stores the 0). */
+    function resetRecord() {
+      const meta = {
+        series_key: 'one piece',
+        series_title: 'One Piece',
+        external_ids: { anilist: 21 },
+        titles: { native: 'ワンピース' },
+        synonyms: [],
+        updated_at: '2026-02-01T00:00:00.000Z',
+        facts_updated_at: PUBLISHED,
+        spine_offset: 0
+      };
+      getSeriesMetadataForTitle.mockResolvedValue(meta);
+      getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
+    }
+
+    it('a shelf reset over a published spine_offset sends an explicit 0 (and never caches it)', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+      publish({ spine_offset: -40 });
+      localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+      resetRecord();
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+      expect((await uploadedSeriesFile(provider)).spine_offset).toBe(0);
+      // The cache keeps the file as built: a 0 there would read as an opinion.
+      const cached = putSeriesIndex.mock.calls.at(-1)![0] as { file: Record<string, unknown> };
+      expect(Object.hasOwn(cached.file, 'spine_offset')).toBe(false);
+    });
+
+    it('once the server dropped the offset, the same reset is no request: skipped', async () => {
+      const provider = serverCompiled();
+      getActiveProvider.mockReturnValue(provider);
+      getCache.mockReturnValue(loadedCache());
+      getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+      publish();
+      localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+      resetRecord();
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
+      expect(provider.uploadFile).not.toHaveBeenCalled();
+    });
+  });
+
+  it('plain storage: a shelf reset never writes a 0 into the file', async () => {
+    const provider = makeRenameProvider();
+    getActiveProvider.mockReturnValue(provider);
+    getCache.mockReturnValue(loadedCache());
+    getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    getSeriesIndex.mockResolvedValue({
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      file: { ...JSON.parse(seriesFileJson([], '2026-01-01T00:00:00.000Z')), spine_offset: -40 },
+      source: { provider: 'webdav', path: 'One Piece/series.json', size: 42, modifiedTime: 't' },
+      fetched_at: '2026-08-17T00:00:00.000Z',
+      parser: 1
+    });
+    localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
+    const meta = {
+      series_key: 'one piece',
+      series_title: 'One Piece',
+      synonyms: [],
+      updated_at: '2026-02-01T00:00:00.000Z',
+      spine_offset: 0
+    };
+    getSeriesMetadataForTitle.mockResolvedValue(meta);
+    getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
+    expect(Object.hasOwn(await uploadedSeriesFile(provider), 'spine_offset')).toBe(false);
   });
 });
 
@@ -2753,6 +3130,54 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       undefined
     );
     expect(provider.deleteFile).toHaveBeenCalledWith(sidecar);
+  });
+
+  it('on a server that compiles series.json, a series rename never DELETEs the old file', async () => {
+    // The server refuses a DELETE of a compiled path and retires the orphan
+    // left in the old folder itself.
+    const provider = makeRenameProvider({
+      getStatus: vi.fn(() => ({ isReadOnly: false, serverCompilesMetadata: true }))
+    });
+    const sidecar: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: 'sj',
+      path: 'Old Series/series.json',
+      modifiedTime: 't',
+      size: 20
+    };
+    getActiveProvider.mockReturnValue(provider);
+    mutableCache([
+      {
+        provider: 'webdav',
+        fileId: 'cbz-1',
+        path: 'Old Series/Volume 1.cbz',
+        modifiedTime: 't',
+        size: 100
+      },
+      sidecar
+    ]);
+    generateSidecars.mockResolvedValue({});
+    localVolumes.mockResolvedValue([
+      {
+        volume_uuid: 'uuid-1',
+        series_uuid: 's',
+        series_title: 'Old Series',
+        volume_title: 'Volume 1',
+        mokuro_version: '0.4.11',
+        page_count: 1,
+        character_count: 1,
+        page_char_counts: [1]
+      }
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
+      { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
+    ]);
+
+    expect(result.renamedVolumeUuids).toEqual(['uuid-1']);
+    expect(provider.deleteFile).not.toHaveBeenCalledWith(sidecar);
+    expect(moveSeriesIndexKey).toHaveBeenCalledWith('Old Series', 'New Series');
   });
 
   it('carries series.json across the rename even when the catalog cache move fails', async () => {
@@ -3392,6 +3817,27 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
     await unifiedCloudManager.deleteManagedVolume('One Piece', 'Volume 1');
 
     expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
+    expect(deleteSeriesIndex).toHaveBeenCalledWith('one piece');
+  });
+
+  it('on a server that compiles series.json, the last volume leaving drops only the cached index', async () => {
+    // The server refuses a DELETE of a compiled path and retires the orphan
+    // itself; the client's DELETE would only be a refused request.
+    const provider = makeRenameProvider({
+      getStatus: vi.fn(() => ({ isReadOnly: false, serverCompilesMetadata: true }))
+    });
+    getActiveProvider.mockReturnValue(provider);
+    statefulCache([
+      file('One Piece/Volume 1.cbz', { fileId: 'cbz-1' }),
+      file('One Piece/Volume 1.mokuro', { fileId: 'mokuro-1' }),
+      file('One Piece/series.json', { fileId: 'sj' })
+    ]);
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.deleteManagedVolume('One Piece', 'Volume 1');
+
+    expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'cbz-1' }));
+    expect(provider.deleteFile).not.toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
     expect(deleteSeriesIndex).toHaveBeenCalledWith('one piece');
   });
 
@@ -4048,6 +4494,8 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     unifiedCloudManager.refreshSeriesIndexesInBackground();
+    // Behind the spelling adoption (see below), so a turn or two later.
+    await vi.waitFor(() => expect(reconcileMissingMetadataFiles).toHaveBeenCalled());
 
     // The same listing the index refreshes ride, not a second fetch.
     expect(reconcileMissingMetadataFiles).toHaveBeenCalledTimes(1);
@@ -4085,6 +4533,235 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     expect(() => unifiedCloudManager.refreshSeriesIndexesInBackground()).not.toThrow();
+  });
+
+  it('runs the write-side passes only after the spelling adoption settled', async () => {
+    // A bunko that merged `one piece/` into `One Piece/`: the backfills must
+    // see the rows already renamed, or they would upload into the losing
+    // spelling in the same cycle.
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    const files = [cloudFile('One Piece/Volume 1.cbz')];
+    getAllFiles.mockReturnValue(files);
+    let release!: () => void;
+    adoptCloudSeriesSpellings.mockReturnValueOnce(
+      new Promise<unknown[]>((resolve) => (release = () => resolve([])))
+    );
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+
+    expect(adoptCloudSeriesSpellings).toHaveBeenCalledWith(files, 'webdav');
+    // The read-only refreshes do not wait.
+    expect(refreshSeriesIndexes).toHaveBeenCalledTimes(1);
+    expect(refreshCatalogIndex).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(reconcileMissingMetadataFiles).not.toHaveBeenCalled();
+    expect(sweepInstalledVolumesForSidecarBackfill).not.toHaveBeenCalled();
+
+    release();
+    await vi.waitFor(() =>
+      expect(sweepInstalledVolumesForSidecarBackfill).toHaveBeenCalledWith(files)
+    );
+    expect(reconcileMissingMetadataFiles).toHaveBeenCalledWith(files);
+  });
+
+  it('still runs the write-side passes when the adoption fails', async () => {
+    getActiveProvider.mockReturnValue(makeRenameProvider());
+    getAllFiles.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
+    adoptCloudSeriesSpellings.mockRejectedValueOnce(new Error('boom'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    unifiedCloudManager.refreshSeriesIndexesInBackground();
+
+    await vi.waitFor(() => expect(sweepInstalledVolumesForSidecarBackfill).toHaveBeenCalled());
+    expect(reconcileMissingMetadataFiles).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('existsInCloud / getCloudFile resolve the cloud spelling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cacheGet.mockImplementation(() => null);
+  });
+
+  function cloudFile(path: string): CloudFileMetadata {
+    return {
+      provider: 'webdav',
+      fileId: path,
+      path,
+      modifiedTime: '2026-10-29T00:00:00.000Z',
+      size: 100
+    };
+  }
+
+  function listing(files: CloudFileMetadata[]) {
+    getAllFiles.mockReturnValue(files);
+    getBySeries.mockImplementation((series: string) =>
+      files.filter((file) => file.path.startsWith(`${series}/`))
+    );
+    cacheGet.mockImplementation((path: string) => files.find((f) => f.path === path) ?? null);
+  }
+
+  it('finds a volume under a case-merged folder', async () => {
+    const archive = cloudFile('One Piece/Vol 1.cbz');
+    listing([archive, cloudFile('One Piece/Vol 1.mokuro')]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(true);
+    expect(unifiedCloudManager.getCloudFile('one piece', 'vol 1')).toBe(archive);
+    expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 2')).toBe(false);
+    expect(unifiedCloudManager.getCloudFile('Berserk', 'Vol 1')).toBeNull();
+  });
+
+  it('answers the exact path first', async () => {
+    const exact = cloudFile('one piece/Vol 1.cbz');
+    listing([cloudFile('One Piece/Vol 1.cbz'), exact]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(exact);
+  });
+
+  it('never answers with a sidecar', async () => {
+    listing([cloudFile('One Piece/Vol 1.mokuro')]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(false);
+  });
+});
+
+describe('folded lookups read a per-listing index, not the whole listing per call', () => {
+  // `existsInCloud` runs once per volume in "back up all" and the removal
+  // dialog, `resolveCloudFolderTitle` once per enqueued volume. A miss used to
+  // split every listed path (and filter every series) per call: ~7 s for 1,000
+  // volumes against a 10k-file listing, on the main thread, in a click handler.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cacheGet.mockImplementation(() => null);
+    cacheRevision.mockImplementation(() => null);
+  });
+
+  function cloudFile(path: string): CloudFileMetadata {
+    return { provider: 'webdav', fileId: path, path, modifiedTime: 't', size: 1 };
+  }
+
+  function listing(files: CloudFileMetadata[]) {
+    getAllFiles.mockReturnValue(files);
+    getBySeries.mockImplementation((series: string) =>
+      files.filter((file) => file.path.startsWith(`${series}/`))
+    );
+    cacheGet.mockImplementation((path: string) => files.find((f) => f.path === path) ?? null);
+  }
+
+  it('builds the index once per cache revision', async () => {
+    const revision = {};
+    cacheRevision.mockImplementation(() => revision);
+    listing([cloudFile('One Piece/Vol 1.cbz'), cloudFile('Berserk/Vol 1.cbz')]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    for (let i = 0; i < 50; i++) {
+      expect(unifiedCloudManager.existsInCloud(`Local ${i}`, 'Vol 1')).toBe(false);
+      expect(unifiedCloudManager.existsInCloud('one piece', `Vol ${i + 2}`)).toBe(false);
+      expect(unifiedCloudManager.resolveCloudFolderTitle(`local ${i}`)).toBe(`local ${i}`);
+      expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('One Piece');
+      expect(unifiedCloudManager.resolveCloudFolderTitle('Berserk')).toBe('Berserk');
+    }
+    expect(getAllFiles).toHaveBeenCalledTimes(1);
+    // Misses never fall through to a whole-listing series filter.
+    expect(getBySeries).not.toHaveBeenCalled();
+    // A real folded match is answered from the index too.
+    expect(unifiedCloudManager.existsInCloud('one piece', 'vol 1')).toBe(true);
+    expect(getBySeries).not.toHaveBeenCalled();
+    expect(getAllFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers a folded HIT from the index: a library under a case-merged folder costs no series filter per volume', async () => {
+    const revision = {};
+    cacheRevision.mockImplementation(() => revision);
+    const archives = Array.from({ length: 200 }, (_, i) => cloudFile(`One Piece/Vol ${i + 1}.cbz`));
+    listing([...archives, ...archives.map((a) => cloudFile(a.path.replace(/\.cbz$/, '.mokuro')))]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    // The device still spells the series `one piece`: every exact path misses.
+    for (let i = 0; i < 200; i++) {
+      expect(unifiedCloudManager.getCloudFile('one piece', `Vol ${i + 1}`)).toBe(archives[i]);
+    }
+    expect(getAllFiles).toHaveBeenCalledTimes(1);
+    expect(getBySeries).not.toHaveBeenCalled();
+  });
+
+  it('a folded hit keeps the picks of the unindexed lookup', async () => {
+    const exactName = cloudFile('One Piece/Vol 1.cbz');
+    const foldedName = cloudFile('One Piece/vol 1.cbz');
+    const nested = cloudFile('One Piece/extras/Vol 2.cbz');
+    listing([foldedName, exactName, nested]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    // The exact filename inside the resolved folder wins over one that merely folds alike.
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(exactName);
+    // No exact filename: the ordered pick among those folding alike.
+    expect(unifiedCloudManager.getCloudFile('one piece', 'VOL 1')).toBe(
+      [exactName, foldedName].sort((a, b) => naturalSort(a.path, b.path))[0]
+    );
+    // An archive deeper in the folder is still the folder's.
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 2')).toBe(nested);
+    expect(getBySeries).not.toHaveBeenCalled();
+  });
+
+  it('a folded hit searches only the folder the series resolves to', async () => {
+    // Two folders fold alike: the ordered pick is the series' folder, so an
+    // archive that exists only in the other one is not this series' backup —
+    // exactly what the unindexed lookup answered.
+    const picked = ['One Piece', 'ONE  PIECE'].sort(naturalSort)[0];
+    const other = picked === 'One Piece' ? 'ONE  PIECE' : 'One Piece';
+    const inPicked = cloudFile(`${picked}/Vol 1.cbz`);
+    const inOther = cloudFile(`${other}/Vol 2.cbz`);
+    listing([inPicked, inOther]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe(picked);
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(inPicked);
+    expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 2')).toBeNull();
+    // The other folder's own spelling still reaches its archive exactly.
+    expect(unifiedCloudManager.getCloudFile(other, 'Vol 2')).toBe(inOther);
+    expect(getBySeries).not.toHaveBeenCalled();
+  });
+
+  it('a title with a slash still takes the full lookup', async () => {
+    const archive = cloudFile('One Piece/extras/Vol 2.cbz');
+    listing([cloudFile('One Piece/Vol 1.cbz'), archive]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.getCloudFile('one piece', 'extras/Vol 2')).toBe(archive);
+    expect(getBySeries).toHaveBeenCalled();
+  });
+
+  it('rebuilds when the cache changes', async () => {
+    cacheRevision.mockImplementation(() => ({ first: true }));
+    listing([cloudFile('Berserk/Vol 1.cbz')]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('one piece');
+
+    // An upload's `cache.add` is a new revision: the folder it created is
+    // visible to the very next lookup.
+    cacheRevision.mockImplementation(() => ({ second: true }));
+    listing([cloudFile('Berserk/Vol 1.cbz'), cloudFile('One Piece/Vol 1.cbz')]);
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('One Piece');
+    expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(true);
+  });
+
+  it('keeps the exact-first and ordered picks of the unindexed lookup', async () => {
+    listing([
+      cloudFile('ONE  PIECE/Vol 1.cbz'),
+      cloudFile('One Piece/Vol 2.cbz'),
+      cloudFile('one piece/Vol 3.cbz'),
+      cloudFile('Nested/sub/Vol 1.cbz')
+    ]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('one piece');
+    expect(unifiedCloudManager.resolveCloudFolderTitle('One piece')).toBe(
+      ['ONE  PIECE', 'One Piece', 'one piece'].sort(naturalSort)[0]
+    );
+    // A folder holding only deeper paths is still a folder of that exact name.
+    expect(unifiedCloudManager.resolveCloudFolderTitle('Nested')).toBe('Nested');
   });
 });
 

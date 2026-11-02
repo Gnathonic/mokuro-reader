@@ -3,7 +3,7 @@ import { getLayerMeta, layerTables, putLayerWithPages } from '$lib/catalog/layer
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
-import { splitLayerSidecarName } from '$lib/util/sync/syncable-file';
+import { foldStem, miscasedLayerStem, splitLayerSidecarName } from '$lib/util/sync/syncable-file';
 import { layerKindForId, layerNameForId, servedEngineOf } from './layers';
 
 /**
@@ -56,17 +56,23 @@ function sourceStemOf(name: string): string | null {
  * archive-presence rule the cloud listing uses, so `Vol 1.5.mokuro` beside
  * `Vol 1.5.cbz` stays a primary. Standalone layer files (no sibling) are
  * returned in `standalone` for the caller to attach to an installed volume.
+ * A `<stem>.<ID>.mokuro` whose id is a layer id but for its case is a rule-v1
+ * orphan — neither a layer nor anyone's primary — and is dropped with a
+ * message for the user in `skipped`, unless `<stem>.<ID>` is itself a volume
+ * here.
  */
 export function extractLayerEntries(entries: LayerFileEntry[]): {
   entries: LayerFileEntry[];
   layers: ExtractedLayerEntry[];
   standalone: ExtractedLayerEntry[];
+  /** User-facing notes, one per entry dropped as a rule-v1 orphan. */
+  skipped: string[];
 } {
   const stemsByDir = new Map<string, Set<string>>();
   const note = (dir: string, stem: string) => {
     let set = stemsByDir.get(dir);
     if (!set) stemsByDir.set(dir, (set = new Set()));
-    set.add(stem.toLowerCase());
+    set.add(foldStem(stem));
   };
   for (const entry of entries) {
     const name = basename(entry.path);
@@ -75,7 +81,9 @@ export function extractLayerEntries(entries: LayerFileEntry[]): {
     // A file that itself reads as `<stem>.<id>.mokuro` is a CANDIDATE layer,
     // never evidence of a volume `<stem>.<id>` — that evidence must come from
     // an archive, an image folder, or a plain `.mokuro`.
-    if (stem && !splitLayerSidecarName(name)) note(dir, stem);
+    if (stem && !splitLayerSidecarName(name) && miscasedLayerStem(name) === null) {
+      note(dir, stem);
+    }
     if (stem && !/\.mokuro(\.gz)?$/i.test(name)) note(dir, stem);
     // An image folder named `<stem>` counts as a source of `<stem>`.
     if (dir) note(dirname(dir), basename(dir));
@@ -84,27 +92,46 @@ export function extractLayerEntries(entries: LayerFileEntry[]): {
   const kept: LayerFileEntry[] = [];
   const layers: ExtractedLayerEntry[] = [];
   const standalone: ExtractedLayerEntry[] = [];
+  const skipped: string[] = [];
   for (const entry of entries) {
     const name = basename(entry.path);
+    const dir = dirname(entry.path);
+    const siblings = stemsByDir.get(dir);
     const split = splitLayerSidecarName(name);
     if (!split) {
+      // `Vol 1.GCV.mokuro` is a rule-v1 orphan: not layer `gcv` (the id is
+      // matched as written) and not a primary. Kept, it could win the pairing
+      // as Vol 1's `.mokuro` over the real one, or — alone — end as a generic
+      // "orphaned mokuro file" the user cannot act on. Dropped and reported,
+      // unless `Vol 1.GCV` is itself a volume here.
+      const miscased = miscasedLayerStem(name);
+      if (miscased !== null) {
+        const fullStem = sourceStemOf(name)!;
+        if (!siblings?.has(foldStem(fullStem))) {
+          const id = fullStem.slice(miscased.length + 1);
+          const ext = name.slice(fullStem.length);
+          skipped.push(
+            `Skipped "${entry.path}": "${id}" is not a layer id under sidecar names rule v1 ` +
+              `(ids are lowercase) — rename it "${miscased}.${id.toLowerCase()}${ext}" to import it as a layer`
+          );
+          continue;
+        }
+      }
       kept.push(entry);
       continue;
     }
-    const dir = dirname(entry.path);
-    const siblings = stemsByDir.get(dir);
-    const fullBase = sourceStemOf(name)!.toLowerCase();
+    const fullBase = foldStem(sourceStemOf(name)!);
     const extracted: ExtractedLayerEntry = { ...entry, ...split, dir };
     if (siblings?.has(fullBase)) {
       // `<stem>.<id>` is itself a volume here (`Vol 1.5.cbz` beside `Vol 1.5.mokuro`).
       kept.push(entry);
-    } else if (siblings?.has(split.stem.toLowerCase())) {
+    } else if (siblings?.has(foldStem(split.stem))) {
       layers.push(extracted);
     } else {
       standalone.push(extracted);
     }
   }
-  return { entries: kept, layers, standalone };
+  return { entries: kept, layers, standalone, skipped };
 }
 
 export interface ReadLayerFile {

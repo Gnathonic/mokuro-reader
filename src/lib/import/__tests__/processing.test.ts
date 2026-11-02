@@ -121,6 +121,24 @@ describe('parseMokuroFile', () => {
     expect(result.version).toBe('0.3.0');
   });
 
+  it('accepts a file with a leading UTF-8 BOM (rule v1 #7: tolerated on read)', async () => {
+    const body = JSON.stringify({
+      version: '0.2.1',
+      title: 'BOM Series',
+      title_uuid: 's',
+      volume: 'BOM Volume',
+      volume_uuid: 'v',
+      pages: []
+    });
+    const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(body)]);
+    const file = new File([bytes], 'bom.mokuro', { type: 'application/json' });
+
+    const result = await parseMokuroFile(file);
+
+    expect(result.series).toBe('BOM Series');
+    expect(result.volume).toBe('BOM Volume');
+  });
+
   it('throws on invalid JSON', async () => {
     const blob = new Blob(['not json'], { type: 'application/json' });
     const badFile = Object.assign(blob, {

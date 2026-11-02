@@ -1,3 +1,5 @@
+import { driveHttpErrorFromResponse, withDriveRetry } from './sync/core/providers/drive-http';
+
 type FileInfo = {
   accessToken: string;
   metadata: any;
@@ -23,11 +25,23 @@ export async function uploadFile({
   form.append('resource', new Blob([JSON.stringify(metadata)], { type }));
   form.append('file', blob);
 
-  const res = await fetch(`${FILES_API_URL}${fileId ? `/${fileId}` : ''}?uploadType=multipart`, {
-    method: fileId ? 'PATCH' : 'POST',
-    headers: new Headers({ Authorization: 'Bearer ' + accessToken }),
-    body: form
-  });
+  // A rate limit rejects the request before anything is written, so only
+  // that is retried; a full account or any other failure throws.
+  const res = await withDriveRetry(
+    async () => {
+      const response = await fetch(
+        `${FILES_API_URL}${fileId ? `/${fileId}` : ''}?uploadType=multipart`,
+        {
+          method: fileId ? 'PATCH' : 'POST',
+          headers: new Headers({ Authorization: 'Bearer ' + accessToken }),
+          body: form
+        }
+      );
+      if (!response.ok) throw await driveHttpErrorFromResponse(response, 'Upload failed');
+      return response;
+    },
+    { retryOn: (kind) => kind === 'rate-limit' }
+  );
 
   return await res.json();
 }

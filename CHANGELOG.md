@@ -13,6 +13,17 @@
 - mokuro-bunko 0.8: backups with an "Edit" OCR layer no longer fail
 - WebDAV retries a request a busy server asks to repeat
 - Progress synced while the library refreshes is no longer lost
+- Google Drive trashes duplicate folders only once they are empty
+- Google Drive leaves your own same-named folders alone
+- mokuro-bunko: resetting a shelf's alignment now sticks
+- OCR layer files found on decomposed-name storage
+- mokuro-bunko: renaming a volume no longer duplicates OCR layers
+- A full Google Drive no longer signs you out
+- Google Drive rate limits wait and retry instead of failing
+- A full Google Drive or OneDrive says so plainly
+- mokuro-bunko no longer connects read-only on a flaky connection
+- mokuro-bunko series differing only in case stay merged
+- Backups join a cloud folder differing only in case
 
 ## [1.10.0] - 2026-10-02
 
