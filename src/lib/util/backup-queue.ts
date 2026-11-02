@@ -186,21 +186,26 @@ queueStore.subscribe((queue) => {
 });
 
 /**
- * Add a single volume to the backup queue. True when the volume is in the
- * queue now (added, or already there); false when it was skipped — the queue
- * then told the user why itself, and a caller's "Added" snackbar would wipe
- * that notice out of the snackbar's one slot.
+ * What `queueVolumeForBackup` did with a volume:
+ * - `added`: queued by THIS call;
+ * - `already-queued`: it was queued for this provider already (nothing new —
+ *   announcing it as added over-reports a second Backup press);
+ * - `refused`: skipped. The queue told the user why itself, and a caller's
+ *   own snackbar would wipe that notice out of the snackbar's one slot.
  */
+export type QueueBackupResult = 'added' | 'already-queued' | 'refused';
+
+/** Add a single volume to the backup queue (see {@link QueueBackupResult}). */
 export function queueVolumeForBackup(
   volume: VolumeMetadata,
   providerInstance?: SyncProvider,
   sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: false }
-): boolean {
+): QueueBackupResult {
   // Nothing to upload for a volume whose pages are not on this device (a
   // metadata-only row, or a cloud placeholder that never was).
   if (!isVolumeInstalled(volume)) {
     console.warn('Skipping backup of a volume that is not installed:', volume.volume_title);
-    return false;
+    return 'refused';
   }
 
   // Get default provider if not specified
@@ -208,7 +213,7 @@ export function queueVolumeForBackup(
   if (!targetProvider) {
     console.warn('No cloud provider available for backup');
     getBackupUiBridge().notify('Please connect to a cloud storage provider first');
-    return false;
+    return 'refused';
   }
 
   // An account the server lets sync progress but not add files (bunko
@@ -216,7 +221,7 @@ export function queueVolumeForBackup(
   if (!accountCanAddFiles(targetProvider.getStatus?.())) {
     console.info('Skipping backup: this account cannot add files on this server');
     getBackupUiBridge().notify(CANNOT_ADD_FILES_MESSAGE);
-    return false;
+    return 'refused';
   }
 
   // The folder the cloud already holds for this series, in ITS spelling:
@@ -232,7 +237,7 @@ export function queueVolumeForBackup(
   if (!accountCanAddToSeries(targetProvider.getStatus?.(), seriesTitle)) {
     console.info(`Skipping backup: another account owns '${seriesTitle}' on this server`);
     getBackupUiBridge().notify(CANNOT_ADD_TO_SERIES_MESSAGE);
-    return false;
+    return 'refused';
   }
 
   const queue = get(queueStore);
@@ -244,7 +249,7 @@ export function queueVolumeForBackup(
 
   if (isDuplicate) {
     console.log(`Volume ${volume.volume_title} already in backup queue for ${targetProvider.type}`);
-    return true;
+    return 'already-queued';
   }
 
   const queueItem: BackupQueueItem = {
@@ -262,7 +267,7 @@ export function queueVolumeForBackup(
 
   // Always call processQueue to handle newly added items
   processQueue();
-  return true;
+  return 'added';
 }
 
 /**
@@ -310,7 +315,10 @@ export function queueVolumeForExport(
 
 /** What a series backup request did: volumes now in the queue, and those skipped as closed. */
 export interface SeriesBackupQueued {
+  /** Volumes this call added to the queue. */
   queued: number;
+  /** Volumes that were in the queue already (a second Backup press). */
+  alreadyQueued: number;
   closed: number;
 }
 
@@ -330,7 +338,7 @@ export function queueSeriesVolumesForBackup(
   sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: false },
   { alreadyBackedUp = 0 }: { alreadyBackedUp?: number } = {}
 ): SeriesBackupQueued {
-  const nothing: SeriesBackupQueued = { queued: 0, closed: 0 };
+  const nothing: SeriesBackupQueued = { queued: 0, alreadyQueued: 0, closed: 0 };
   // Get default provider if not specified
   const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
   if (!targetProvider) {
@@ -389,20 +397,35 @@ export function queueSeriesVolumesForBackup(
     });
   });
 
-  // Add each volume individually (duplicate check happens in queueVolumeForBackup)
-  const queued = sorted.filter((volume) =>
-    queueVolumeForBackup(volume, targetProvider, sidecarOptions)
-  ).length;
-
-  if (queued > 0) {
-    const added =
-      `Added ${volumeCount(queued)} to backup queue` +
-      (alreadyBackedUp > 0 ? ` (${alreadyBackedUp} already backed up)` : '');
-    getBackupUiBridge().notify(closedNotice ? `${added}. ${closedNotice}` : added);
-  } else if (closedNotice) {
-    getBackupUiBridge().notify(closedNotice);
+  // Add each volume individually (duplicate check happens in queueVolumeForBackup).
+  // Only what THIS call added counts as added: a second Backup press finds
+  // the first press's volumes still queued.
+  let queued = 0;
+  let alreadyQueued = 0;
+  for (const volume of sorted) {
+    const result = queueVolumeForBackup(volume, targetProvider, sidecarOptions);
+    if (result === 'added') queued++;
+    else if (result === 'already-queued') alreadyQueued++;
   }
-  return { queued, closed: closed.length };
+
+  let notice = '';
+  if (queued > 0) {
+    const aside = [
+      ...(alreadyBackedUp > 0 ? [`${alreadyBackedUp} already backed up`] : []),
+      ...(alreadyQueued > 0 ? [`${alreadyQueued} already queued`] : [])
+    ];
+    notice =
+      `Added ${volumeCount(queued)} to backup queue` +
+      (aside.length > 0 ? ` (${aside.join(', ')})` : '');
+  } else if (alreadyQueued > 0) {
+    notice = `${volumeCount(alreadyQueued)} already in backup queue`;
+  }
+  if (notice || closedNotice) {
+    getBackupUiBridge().notify(
+      notice && closedNotice ? `${notice}. ${closedNotice}` : notice || closedNotice
+    );
+  }
+  return { queued, alreadyQueued, closed: closed.length };
 }
 
 /**

@@ -165,6 +165,11 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   which roots are top-level from a `'root' in parents` query, never
   `files.get('root')` (a 404 under the app's `drive.file` scope); dedup
   confirms a root as the write root only when it is the cache's same pick.
+  Bunko's control files are read from EVERY live root too, nested ones
+  included (Drive: the cache's listed reader folders,
+  `getListedReaderFolderIds`, else one folder query with no parent clause;
+  MEGA: any parent named `mokuro-reader`) — a nested write root holds the
+  marker when there is no top-level one.
 - **Groups** are an exact name under one parent, within the library only
   (`listFolders` keeps `mokuro-reader` folders and their descendants). The
   kept folder is the oldest, then the smaller id (`compareByAge`).
@@ -585,8 +590,10 @@ includes `accountCanAddFiles`) and stay quiet for a closed series: the backup
 per volume — also for a series that closed while queued), the cover sync and
 the sidecar backfill. The backup queue words the request's one snackbar
 itself (`queueSeriesVolumesForBackup` → "Added N … Skipped M …";
-`queueVolumeForBackup` returns false when it skipped and noticed): a caller's
-own "Added" snackbar would erase the skip notice from the single slot.
+`queueVolumeForBackup` returns `'refused'` when it skipped and noticed): a
+caller's own "Added" snackbar would erase the skip notice from the single slot.
+Only `'added'` counts as added — `'already-queued'` (a second Backup press while
+the first is still queued) is named as such, never re-announced as added.
 Everything else (layer-sync's hand-made layer pushes, curated publish,
 deletes) relies on the server: a 403 on a library file from such a server is
 that file's refusal (`libraryFileRefusal`, `PERMISSION_DENIED` with the
@@ -865,6 +872,13 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   flight per scope that concurrent callers await. The etag moves only after
   its nodes are recorded (else a second caller is answered not-modified
   against records that are not there yet); a clear voids a read in flight.
+  A read never forgets a live Bunko on the strength of one poll (else
+  `serverCompilesMetadata` drops for an interval and the reader produces
+  catalog/series files and dedups under it): nodes present but none a
+  marker (a half-written rewrite) count as not-modified, an unreadable node
+  beside readable ones keeps its last record, and a read with NO node keeps
+  the still-fresh records UNSTAMPED, so they go stale at 2 × ttl — the scope
+  is forgotten only once nothing kept is fresh.
 - `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
   queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
   `instance_id` names the top-ranked fresh marker. The cloud poller keeps
