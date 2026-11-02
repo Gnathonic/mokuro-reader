@@ -1033,8 +1033,14 @@ export class WebDAVProvider implements SyncProvider {
    * 2. Fall back to OPTIONS request to check Allow header
    * 3. If both are inconclusive → assume write access
    * 4. Actual write operations will mark as read-only if they fail with permission errors
+   *
+   * A server known to be mokuro-bunko skips the verdict: bunko decides each
+   * request itself, and its Allow is advisory (older versions list no PUT or
+   * MKCOL on collections, which would wrongly read as read-only). A real
+   * refusal still demotes through handleWriteFailure.
    */
   private async checkWritePermissions(baseUrl: string): Promise<boolean> {
+    if (this.isKnownBunkoServer(baseUrl)) return true;
     const url = `${baseUrl}${MOKURO_FOLDER}/`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/xml',
@@ -1120,7 +1126,10 @@ export class WebDAVProvider implements SyncProvider {
       });
 
       console.log('[WebDAV] OPTIONS response status:', response.status);
-      this.noteVerifiedPutHeader(response.headers.get('X-Mokuro-Put'), baseUrl);
+      const putHeader = response.headers.get('X-Mokuro-Put');
+      this.noteVerifiedPutHeader(putHeader, baseUrl);
+      // Only mokuro-bunko sends it: its Allow is advisory (see above).
+      if (isVerifiedPutHeader(putHeader)) return true;
 
       if (!response.ok) {
         // If OPTIONS fails, assume full access (fail open for usability)

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   currentView,
   initRouter,
+  isVolumeOpen,
   nav,
   navigateBack,
   parseHash,
@@ -93,6 +94,23 @@ describe('removed libraries routes', () => {
 describe('nav helpers', () => {
   test('nav.toMergeSeries exists and is callable', () => {
     expect(typeof nav.toMergeSeries).toBe('function');
+  });
+});
+
+describe('isVolumeOpen', () => {
+  test('is true for the volume in the reader or its text view, and for no other', () => {
+    currentView.set({ type: 'reader', seriesId: 's', volumeId: 'v1' });
+    expect(isVolumeOpen('v1')).toBe(true);
+    expect(isVolumeOpen('v2')).toBe(false);
+
+    currentView.set({ type: 'volume-text', seriesId: 's', volumeId: 'v1' });
+    expect(isVolumeOpen('v1')).toBe(true);
+
+    // The series page shows covers, not pages: a row write there reloads nothing.
+    currentView.set({ type: 'series', seriesId: 's' });
+    expect(isVolumeOpen('v1')).toBe(false);
+    currentView.set({ type: 'catalog' });
+    expect(isVolumeOpen('v1')).toBe(false);
   });
 });
 

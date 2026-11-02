@@ -145,6 +145,49 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 
+**mokuro-bunko specifics** (the WebDAV provider against a bunko server):
+
+- **Write access.** A server known to be bunko — `PUT_VERIFIED` recorded for
+  the base URL, or an OPTIONS answering `X-Mokuro-Put: verified` — skips the
+  generic OPTIONS `Allow` verdict in `checkWritePermissions`: bunko decides
+  each request itself and its `Allow` is advisory (older versions list no PUT
+  or MKCOL on collections). A real refusal still demotes through
+  `handleWriteFailure`.
+- **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
+  a `serverCompilesMetadata` provider every listing runs
+  `adoptCloudSeriesSpellings` (`util/sync/cloud-spelling-adoption.ts`): a local
+  series title with NO folder of its own, EXACTLY ONE folder folding onto it
+  (`normalizeVolumeTitleKey`), and at least one of its volumes listed there as a
+  `.cbz` takes the folder's spelling as a LOCAL-ONLY rename
+  (`commitLocalSeriesRename`, the local half of `executeRenameSeries`: rows,
+  stats, `series_metadata`, series reading state). The write-side listing
+  passes (`reconcileMissingMetadataFiles`, the sidecar backfill, layer sync)
+  wait for it in `refreshSeriesIndexesInBackground`; the index/catalog refreshes
+  do not. Backup enqueue (`resolveCloudFolderTitle`) and
+  `existsInCloud`/`getCloudFile` (exact path, then the same folder-and-file
+  picks as `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so
+  nothing uploads into the losing folder. `getCloudFile`/`existsInCloud` is
+  THE "is it backed up" selector — the series page's status and "back up
+  series", `BackupButton`, `VolumeItem` and the cloud screen all ask it; a
+  byte-exact path test beside it reads an uploaded volume as missing and
+  re-PUTs it on every click. Those backstops are NOT gated on bunko: like
+  every other folder lookup (rename, delete, `series.json`) they run on every
+  provider, so on plain storage too a title with no exact folder backs up into
+  and counts as backed up in the ONE folder folding onto it, naturally first
+  when several do. An exact folder always wins, and plain storage never
+  ADOPTS: its rows keep their spelling. A DELETE is narrower
+  (`cloudFolderOfSeries`, `catalog/series-delete.ts`): the removal dialog's
+  "also delete" and `deleteSeriesFromCloudByTitle` take a folded folder only
+  when the catalog would group it with the series (`normalizeSeriesKey` — a
+  title differing only in unicode form folds alike but is ANOTHER catalog
+  series) and it lists one of the series' own volumes. Adoption itself skips
+  a series with a volume open in the reader (`isVolumeOpen`, `hash-router.ts`,
+  the OCR upgrade's deferral) — the row write would reload the open volume —
+  and the next listing retries. The folded lookups read `listingFolderIndex`,
+  built once per cache revision (`CoalescedCacheStore.revision`, replaced by
+  every add/remove/install) and holding the archive records themselves, so a
+  per-volume caller — hit or miss — costs O(1), not a pass over the listing.
+
 ### Svelte 5 Reactive Performance
 
 - `$derived` and `$derived.by()` run for EVERY component instance

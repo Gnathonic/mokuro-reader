@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { executeRenameSeries, generateRenameSeriesPreview } from './series-rename';
+import {
+  commitLocalSeriesRename,
+  executeRenameSeries,
+  generateRenameSeriesPreview
+} from './series-rename';
 
 vi.mock('$lib/catalog/db', () => ({
   db: {
@@ -235,5 +239,37 @@ describe('Series rename cloud propagation', () => {
     // The reading state is keyed the same way and has to follow the same rename,
     // or "Read N times" and the AniList bookkeeping stay behind on the old key.
     expect(moveSeriesReadingStateKey).toHaveBeenCalledWith('Old Series', 'New Series');
+  });
+});
+
+describe('commitLocalSeriesRename — the local half, shared with cloud spelling adoption', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('moves the rows, their stats, the series metadata and the reading state', async () => {
+    const { db } = await import('$lib/catalog/db');
+    const { updateVolumeSeriesTitle } = await import('$lib/settings/volume-data');
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+
+    await commitLocalSeriesRename('one piece', 'One Piece', ['vol-1', 'vol-2'], ['vol-1', 'gone']);
+
+    expect(db.volumes.update).toHaveBeenCalledTimes(2);
+    expect(db.volumes.update).toHaveBeenCalledWith('vol-1', { series_title: 'One Piece' });
+    expect(db.volumes.update).toHaveBeenCalledWith('vol-2', { series_title: 'One Piece' });
+    expect(vi.mocked(updateVolumeSeriesTitle).mock.calls).toEqual([
+      ['vol-1', 'One Piece'],
+      ['gone', 'One Piece']
+    ]);
+    expect(moveSeriesMetadataKey).toHaveBeenCalledWith('one piece', 'One Piece');
+    expect(moveSeriesReadingStateKey).toHaveBeenCalledWith('one piece', 'One Piece');
+    // Local only: nothing in the cloud moves.
+    expect(unifiedCloudManager.renameSeries).not.toHaveBeenCalled();
+  });
+
+  it('leaves the series keys alone when no row moved', async () => {
+    await commitLocalSeriesRename('Old', 'New', [], ['stats-only']);
+    expect(moveSeriesMetadataKey).not.toHaveBeenCalled();
+    expect(moveSeriesReadingStateKey).not.toHaveBeenCalled();
   });
 });

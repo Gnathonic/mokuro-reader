@@ -42,6 +42,7 @@
   import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
   import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { getCloudFileId } from '$lib/util/cloud-fields';
+  import type { VolumeMetadata } from '$lib/types';
   import { downloadQueue } from '$lib/util/download-queue';
 
   // Calculate manga stats locally to avoid circular dependency
@@ -387,32 +388,25 @@
       return;
     }
 
-    // Build a path set from all cloud files to avoid lookup inconsistencies
-    // between different cache adapters and grouping keys.
-    const cloudPathSet = new Set<string>();
-    for (const files of cloudFiles.values()) {
-      for (const file of files) {
-        cloudPathSet.add(file.path);
-      }
-    }
+    // The ONE "is it backed up" selector every backup surface asks (BackupButton,
+    // VolumeItem, the cloud screen): the same folded resolution the backup queue
+    // uploads into, so a series the cloud spells differently reads as backed up
+    // instead of being re-uploaded on every click. `cloudFiles` is read for the
+    // dependency only — the selector reads the cache that store is derived from.
+    void cloudFiles;
+    const backedUp = (vol: VolumeMetadata) =>
+      unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title);
 
-    allBackedUp = manga.every((vol) => {
-      const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return cloudPathSet.has(path);
-    });
-
-    anyBackedUp = manga.some((vol) => {
-      const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return cloudPathSet.has(path);
-    });
+    allBackedUp = manga.every(backedUp);
+    anyBackedUp = manga.some(backedUp);
 
     console.log(
       '[Series Page] Backup status computed - allBackedUp:',
       allBackedUp,
       'anyBackedUp:',
       anyBackedUp,
-      'cloudPaths:',
-      cloudPathSet.size
+      'cloudSeries:',
+      cloudFiles.size
     );
   });
 
@@ -432,7 +426,7 @@
     }
 
     promptConfirmation(`Delete ${seriesTitle} from ${providerDisplayName}?`, async () => {
-      await deleteSeriesFromCloudByTitle(seriesTitle);
+      await deleteSeriesFromCloudByTitle(seriesTitle, allVolumes ?? []);
     });
   }
 
@@ -478,19 +472,14 @@
       return;
     }
 
-    // Filter out already backed up volumes using the same cloud path set
-    // used by the current view status calculations.
-    const cloudPathSet = new Set<string>();
-    for (const files of cloudFiles.values()) {
-      for (const file of files) {
-        cloudPathSet.add(file.path);
-      }
-    }
-
+    // Skip the volumes already backed up — by the same selector the status
+    // above and the queue's folder resolution use, so nothing is re-uploaded
+    // over itself into a folder the cloud spells differently.
     const volumesToBackup = manga.filter(
       // Metadata-only rows have no pages to upload.
       (vol) =>
-        isVolumeInstalled(vol) && !cloudPathSet.has(`${vol.series_title}/${vol.volume_title}.cbz`)
+        isVolumeInstalled(vol) &&
+        !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
     );
 
     if (volumesToBackup.length === 0) {
