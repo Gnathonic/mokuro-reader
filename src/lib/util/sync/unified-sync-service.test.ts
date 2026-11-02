@@ -55,7 +55,11 @@ vi.mock('$lib/settings/volume-data', async () => {
 });
 vi.mock('$lib/metadata/progress-tracker', () => ({ onSeriesRestarted: vi.fn() }));
 
-import { unifiedSyncService } from './unified-sync-service';
+import {
+  SYNC_FLIGHT_DEADLINE_MS,
+  unifiedSyncService,
+  type SyncOptions
+} from './unified-sync-service';
 import { restartSeries } from '$lib/metadata/reread';
 import { volumes as volumeCompletion } from '$lib/settings/volume-data';
 import type { VolumeMetadata } from '$lib/types';
@@ -1364,5 +1368,200 @@ describe('reading on two devices survives the volume merge', () => {
     const onB = svc.mergeVolumeData({ 'vol-1': B }, { 'vol-1': A })['vol-1'];
 
     expect(onA).toEqual(onB);
+  });
+});
+
+describe('syncProvider — one sync per provider at a time', () => {
+  /**
+   * Holds every sync step open until released. `runs` is the `options` each
+   * run of `runProviderSync` was started with, in order.
+   */
+  function holdSteps() {
+    const runs: SyncOptions[] = [];
+    const original = svc.runProviderSync.bind(svc);
+    const run = vi.spyOn(svc, 'runProviderSync').mockImplementation((...args: unknown[]) => {
+      const [provider, options] = args as [SyncProvider, SyncOptions];
+      runs.push(options);
+      return original(provider, options);
+    });
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => (release = resolve));
+    const volumeData = vi.spyOn(svc, 'syncVolumeData').mockImplementation(async () => {
+      await gate;
+    });
+    const rest = ['syncProfiles', 'syncGoals'].map((name) =>
+      vi.spyOn(svc, name).mockImplementation(async () => {})
+    );
+    return {
+      runs,
+      release() {
+        release();
+        gate = new Promise<void>((resolve) => (release = resolve));
+      },
+      restore() {
+        run.mockRestore();
+        volumeData.mockRestore();
+        rest.forEach((spy) => spy.mockRestore());
+      }
+    };
+  }
+
+  const provider = (type: string) =>
+    ({ type, name: type, isAuthenticated: () => true }) as unknown as SyncProvider;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('runs a sync requested mid-run after it, never beside it', async () => {
+    const steps = holdSteps();
+    try {
+      const fs = provider('filesystem');
+      const first = svc.syncProvider(fs);
+      await settle();
+      const second = svc.syncProvider(fs);
+      await settle();
+      // Overlapping, the second sync downloaded a file the first then rewrote.
+      expect(steps.runs).toHaveLength(1);
+
+      steps.release();
+      await first;
+      await settle();
+      expect(steps.runs).toHaveLength(2);
+      steps.release();
+      expect(await second).toEqual({ provider: 'filesystem', success: true });
+    } finally {
+      steps.restore();
+    }
+  });
+
+  it('folds every request made mid-run into ONE follow-up, started with no options', async () => {
+    const steps = holdSteps();
+    try {
+      const fs = provider('filesystem');
+      const first = svc.syncProvider(fs, { silent: true });
+      await settle();
+      const queued = [
+        svc.syncProvider(fs, { silent: true }),
+        svc.syncProvider(fs),
+        svc.syncProvider(fs, { silent: true })
+      ];
+      steps.release();
+      await first;
+      await settle();
+      steps.release();
+      await Promise.all(queued);
+      expect(steps.runs).toEqual([{ silent: true }, {}]);
+    } finally {
+      steps.restore();
+    }
+  });
+
+  it('keeps isSyncing up until the follow-up has finished', async () => {
+    const steps = holdSteps();
+    try {
+      const fs = provider('filesystem');
+      const first = svc.syncProvider(fs);
+      await settle();
+      const second = svc.syncProvider(fs);
+      steps.release();
+      await first;
+      await settle();
+      expect(get(svc.isSyncing)).toBe(true);
+      steps.release();
+      await second;
+      expect(get(svc.isSyncing)).toBe(false);
+    } finally {
+      steps.restore();
+    }
+  });
+
+  it('does not hold up a different provider', async () => {
+    const steps = holdSteps();
+    try {
+      const first = svc.syncProvider(provider('filesystem'));
+      await settle();
+      const other = svc.syncProvider(provider('webdav'));
+      await settle();
+      expect(steps.runs).toHaveLength(2);
+      steps.release();
+      await Promise.all([first, other]);
+    } finally {
+      steps.restore();
+    }
+  });
+
+  describe('a sync that never settles', () => {
+    // A WebDAV download is a plain fetch with no signal or timeout: one that
+    // stalls would otherwise hold the provider's flight (and `isSyncing`)
+    // until a reload, with every later request parked on a follow-up that
+    // never runs.
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      vi.useFakeTimers();
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      return () => {
+        warn.mockRestore();
+        vi.useRealTimers();
+      };
+    });
+
+    it('fails at the deadline and releases the provider; its late result is ignored', async () => {
+      const steps = holdSteps();
+      try {
+        const fs = provider('filesystem');
+        const stuck = svc.syncProvider(fs);
+        await vi.advanceTimersByTimeAsync(SYNC_FLIGHT_DEADLINE_MS - 1);
+        expect(get(svc.isSyncing)).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await stuck).toEqual({
+          provider: 'filesystem',
+          success: false,
+          error: expect.stringMatching(/timed out/)
+        });
+        expect(get(svc.isSyncing)).toBe(false);
+        expect(warn).toHaveBeenCalledTimes(1);
+
+        // The stalled run settling later changes nothing: no second release.
+        steps.release();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(svc.activeSyncs).toBe(0);
+        expect(svc.flights.size).toBe(0);
+        expect(get(svc.isSyncing)).toBe(false);
+
+        // The provider takes new requests again.
+        const next = svc.syncProvider(fs);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(steps.runs).toHaveLength(2);
+        expect(get(svc.isSyncing)).toBe(true);
+        steps.release();
+        expect(await next).toEqual({ provider: 'filesystem', success: true });
+        expect(get(svc.isSyncing)).toBe(false);
+      } finally {
+        steps.restore();
+      }
+    });
+
+    it('runs the follow-up queued during the stall once the deadline passes', async () => {
+      const steps = holdSteps();
+      try {
+        const fs = provider('filesystem');
+        const stuck = svc.syncProvider(fs);
+        await vi.advanceTimersByTimeAsync(0);
+        const queued = svc.syncProvider(fs);
+        await vi.advanceTimersByTimeAsync(SYNC_FLIGHT_DEADLINE_MS - 1);
+        expect(steps.runs).toHaveLength(1);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect((await stuck).success).toBe(false);
+        expect(steps.runs).toHaveLength(2);
+        expect(get(svc.isSyncing)).toBe(true);
+
+        steps.release();
+        expect(await queued).toEqual({ provider: 'filesystem', success: true });
+        expect(get(svc.isSyncing)).toBe(false);
+        expect(svc.activeSyncs).toBe(0);
+      } finally {
+        steps.restore();
+      }
+    });
   });
 });
