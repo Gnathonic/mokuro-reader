@@ -1966,27 +1966,42 @@ export async function publishCuratedLayer(volumeUuid: string): Promise<CuratedPu
   }
 }
 
-/** What an Unpublish came to: `CloudLayerDeleteOutcome`, or refused (nothing changed). */
-export type CuratedUnpublishOutcome = Exclude<CloudLayerDeleteOutcome, 'kept-shared'> | 'refused';
+/**
+ * What an Unpublish came to: `CloudLayerDeleteOutcome`, refused (nothing
+ * changed), or failed (nothing changed: no provider to remove it from).
+ */
+export type CuratedUnpublishOutcome =
+  | Exclude<CloudLayerDeleteOutcome, 'kept-shared'>
+  | 'refused'
+  | 'failed';
 
 /**
  * Unpublish: remove the library's shared corrections for everyone — every
- * listed copy (`.mokuro` and `.mokuro.gz`), then the local row. A copy the
- * server refuses (403) changes nothing here: the row stays and no tombstone is
- * left, since a retry would be refused the same way. Any other failure still
- * removes the row and leaves an Unpublish tombstone, which hides the file and
- * is retried by later listings (`canDeleteLayer`). Never rejects.
+ * listed copy (`.mokuro` and `.mokuro.gz`), then the local row. The `.gz`
+ * copies go first and the plain file — the one every reader takes while it
+ * is there — last, and the first copy the server refuses (403) stops it:
+ * the plain file is then still there, so nothing anyone reads changed — the
+ * row stays and no tombstone is left (`'refused'`), since a retry would be
+ * refused the same way. (Plain first, a refused `.gz` would have become the
+ * shared layer for everyone.) Any other failure still removes the row and
+ * leaves an Unpublish tombstone, which hides the file and is retried by
+ * later listings (`canDeleteLayer`). The tombstone names the provider the
+ * `curated` row was synced with, else the active one; with neither there is
+ * nothing to name, and nothing is changed (`'failed'`). Never rejects.
  */
 export async function unpublishCuratedLayer(volumeUuid: string): Promise<CuratedUnpublishOutcome> {
   const provider = providerManager.getActiveProvider();
   // The copy this Unpublish means: the listed file, else the one the row was
   // synced with. A retry must not take a newer publish down with it.
   let file: PendingLayerDelete['file'];
+  // The provider holding that copy. An Unpublish tombstone without one would
+  // apply to every provider's listing (`pendingDeletesFor`).
+  let holder: string | undefined = provider?.type;
   const tombstone = (): CuratedUnpublishOutcome => {
     notePendingLayerDelete({
       volume_uuid: volumeUuid,
       layer_id: CURATED_LAYER_ID,
-      provider: provider?.type,
+      provider: holder,
       unpublish: true,
       ...(file ? { file } : {})
     });
@@ -1998,12 +2013,16 @@ export async function unpublishCuratedLayer(volumeUuid: string): Promise<Curated
       getLayerMeta(db, volumeUuid, CURATED_LAYER_ID)
     ]);
     if (!row) return 'gone';
-    if (curated?.cloud) file = { size: curated.cloud.size, modified: curated.cloud.modified };
+    if (curated?.cloud) {
+      file = { size: curated.cloud.size, modified: curated.cloud.modified };
+      holder = curated.cloud.provider;
+    }
+    if (!holder) return 'failed';
     if (provider && !canPublishHere(provider.getStatus(), row.series_title, row.volume_title)) {
       return 'refused';
     }
     let outcome: CuratedUnpublishOutcome;
-    if (!provider) {
+    if (!provider || provider.type !== holder) {
       outcome = tombstone();
     } else {
       const listing = listingFromCache(provider.type);
@@ -2012,19 +2031,19 @@ export async function unpublishCuratedLayer(volumeUuid: string): Promise<Curated
         outcome = locateVolumeInListing(listing, row) ? 'gone' : tombstone();
       } else {
         file = stampOf(listed.file);
-        let refused = false;
         let failed = false;
-        for (const copy of listed.copies) {
+        // `.gz` first, the plain file (the one read while it is there) last.
+        const copies = [...listed.copies].sort((a, b) => Number(b.gz) - Number(a.gz));
+        for (const copy of copies) {
           try {
             await provider.deleteFile(copy.file);
             cacheManager.getCache(provider.type)?.removeById?.(copy.file.fileId);
           } catch (error) {
-            if (isPermissionRefusal(error)) refused = true;
-            else failed = true;
             console.warn(`[layer-sync] could not delete '${copy.file.path}':`, error);
+            if (isPermissionRefusal(error)) return 'refused';
+            failed = true;
           }
         }
-        if (refused) return 'refused';
         outcome = failed ? tombstone() : 'gone';
       }
     }
@@ -2033,6 +2052,6 @@ export async function unpublishCuratedLayer(volumeUuid: string): Promise<Curated
     return outcome;
   } catch (error) {
     console.warn('[layer-sync] could not unpublish the shared corrections:', error);
-    return tombstone();
+    return holder ? tombstone() : 'failed';
   }
 }

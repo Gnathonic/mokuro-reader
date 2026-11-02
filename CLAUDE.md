@@ -716,10 +716,16 @@ uploads the `edit` layer's own serialization (with its `edited` block) to
 archive — the only code that writes `curated` — then writes the local
 `curated` row with the same pages and the upload's stamp, so the next listing
 neither pulls nor pushes it; a 403 is `'refused'` and writes nothing.
-`unpublishCuratedLayer` deletes every listed copy, then the row; a 403 changes
-nothing (`'refused'`), any other failure leaves a tombstone flagged
-`unpublish`, the only tombstone whose retry may delete a `curated` file (and
-only for an account that may publish that volume). It carries the stamp of
+`unpublishCuratedLayer` deletes every listed copy — the `.gz` ones first, the
+plain file (the one every reader takes while it is listed) last — then the
+row; the first 403 stops it with the plain file still there, so nothing anyone
+reads changed (`'refused'`: row kept, no tombstone; plain first, a refused
+`.gz` would have become the shared layer). Any other failure leaves a
+tombstone flagged `unpublish`, naming the provider the `curated` row was
+synced with (else the active one; with neither, `'failed'` and nothing
+changes — a provider-less tombstone would apply to every provider), the
+only tombstone whose retry may delete a `curated` file (and only for an
+account that may publish that volume). It carries the stamp of
 the copy it meant (`file`): a listed `curated` that moved since is another
 editor's newer publish — the tombstone is spent and that file pulled, never
 deleted. Delete is never offered on

@@ -424,6 +424,12 @@ describe('Publish / Unpublish / Copy to your corrections', () => {
     const later = deps({ unpublishCuratedLayer: vi.fn(async () => 'unconfirmed') }) as unknown as D;
     await runLayerAction('unpublish', ctx('curated', later));
     expect(later.notify.mock.calls[0][0]).toMatch(/when the cloud allows it/);
+
+    const failed = deps({ unpublishCuratedLayer: vi.fn(async () => 'failed') }) as unknown as D;
+    const f = ctx('curated', failed);
+    await runLayerAction('unpublish', f);
+    expect(f.onSelectLayer).not.toHaveBeenCalled();
+    expect(failed.notify.mock.calls[0][0]).toMatch(/^Couldn't remove the shared corrections/);
   });
 
   it('copy-to-edit: confirms, settles, replaces the edit layer and shows it', async () => {

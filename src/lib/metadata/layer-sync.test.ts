@@ -2733,6 +2733,84 @@ describe('Publish and Unpublish the shared curated layer', () => {
     expect(localStorage.getItem('layer-sync:pending-deletes')).toBeNull();
   });
 
+  it('a copy refused after another was deleted never leaves the .gz as the shared layer', async () => {
+    // The plain file is this account's publish; the `.gz` an engine wrote is
+    // not its to delete. Deleting the plain first would surface the `.gz` as
+    // the curated layer for everyone — while the UI said nothing changed.
+    await seedRow();
+    await seedEdit();
+    await publishCuratedLayer('v1');
+    cachedFiles.push(
+      cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }),
+      cloudFile('Series/VOL 1.curated.mokuro.gz')
+    );
+    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    deleteFile.mockImplementation(async (f: CloudFileMetadata) => {
+      if (f.path.endsWith('.gz')) {
+        throw new ProviderError('no', 'webdav', 'PERMISSION_DENIED', false, false);
+      }
+    });
+    expect(await unpublishCuratedLayer('v1')).toBe('refused');
+    // Nothing anyone reads changed: the plain file stays, and so does the row.
+    expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual(['Series/VOL 1.curated.mokuro.gz']);
+    expect(await getLayerWithPages(db, 'v1', 'curated')).toBeDefined();
+    expect(localStorage.getItem('layer-sync:pending-deletes')).toBeNull();
+  });
+
+  it('the plain copy refused after its .gz went: still nothing anyone reads changed', async () => {
+    await seedRow();
+    await seedEdit();
+    await publishCuratedLayer('v1');
+    cachedFiles.push(
+      cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }),
+      cloudFile('Series/VOL 1.curated.mokuro.gz')
+    );
+    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    deleteFile.mockImplementation(async (f: CloudFileMetadata) => {
+      if (!f.path.endsWith('.gz')) {
+        throw new ProviderError('no', 'webdav', 'PERMISSION_DENIED', false, false);
+      }
+    });
+    expect(await unpublishCuratedLayer('v1')).toBe('refused');
+    expect(await getLayerWithPages(db, 'v1', 'curated')).toBeDefined();
+  });
+
+  it('an Unpublish tombstone names the provider the curated row was synced with', async () => {
+    await seedRow();
+    await seedEdit();
+    await publishCuratedLayer('v1');
+    // The provider went away while the confirm was up.
+    getActiveProvider.mockReturnValue(undefined);
+    expect(await unpublishCuratedLayer('v1')).toBe('unconfirmed');
+    const pending = JSON.parse(localStorage.getItem('layer-sync:pending-deletes')!);
+    expect(pending).toEqual([
+      expect.objectContaining({
+        volume_uuid: 'v1',
+        layer_id: 'curated',
+        provider: 'webdav',
+        unpublish: true
+      })
+    ]);
+  });
+
+  it('with no provider to name, an Unpublish fails and keeps the row — never a provider-less tombstone', async () => {
+    await seedRow();
+    // A curated row with no cloud stamp: nothing says which provider holds it.
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'curated',
+      name: 'Shared corrections',
+      kind: 'edit',
+      created_at: T0,
+      updated_at: T0,
+      pages: [pg('なお')]
+    });
+    getActiveProvider.mockReturnValue(undefined);
+    expect(await unpublishCuratedLayer('v1')).toBe('failed');
+    expect(await getLayerWithPages(db, 'v1', 'curated')).toBeDefined();
+    expect(localStorage.getItem('layer-sync:pending-deletes')).toBeNull();
+  });
+
   it('a curated tombstone NOT left by Unpublish never deletes the shared file', async () => {
     await seedRow();
     cachedFiles.push(cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }));

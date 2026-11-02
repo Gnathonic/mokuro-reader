@@ -250,6 +250,12 @@ export async function runLayerAction(action: LayerAction, ctx: LayerActionContex
           d.notify(CANNOT_PUBLISH_CURATED_MESSAGE);
           return;
         }
+        if (outcome === 'failed') {
+          d.notify(
+            "Couldn't remove the shared corrections. Nothing was changed; try again when connected."
+          );
+          return;
+        }
         await ctx.onSelectLayer(null);
         d.notify(
           outcome === 'gone'
