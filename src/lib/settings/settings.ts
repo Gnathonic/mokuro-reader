@@ -195,7 +195,6 @@ export type Settings = {
   pagePaperTint: number;
   /** Print effect paper age, 0 fresh … 100 old newsprint. Inked pages only. #256 */
   pagePaperAge: number;
-  inactivityTimeoutMinutes: number;
   swapWheelBehavior: boolean;
   textBoxContextMenu: boolean;
   continuousScroll: boolean;
@@ -348,7 +347,6 @@ const defaultSettings: Settings = {
   pageInkStrength: INK_STRENGTH_DEFAULT,
   pagePaperTint: PAPER_TINT_DEFAULT,
   pagePaperAge: PAPER_AGE_DEFAULT,
-  inactivityTimeoutMinutes: 5,
   swapWheelBehavior: false,
   textBoxContextMenu: true,
   continuousScroll: false,

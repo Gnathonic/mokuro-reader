@@ -155,6 +155,18 @@ describe('cache emission coalescing through the real cache stack', () => {
   const pathsIn = (map: Map<string, CloudVolumeWithProvider[]>): string[] =>
     [...map.values()].flat().map((file) => file.path);
 
+  it('a just-uploaded folder is visible to the memoised folded lookup before any emission', async () => {
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('one piece');
+
+    await unifiedCloudManager.blindUploadFile('One Piece/Vol 1.cbz', new Blob(['zip']));
+
+    // No timer advanced: the folder index is keyed on the cache's STATE, so
+    // the next backup enqueue already targets the folder this upload made.
+    expect(seen).toHaveLength(0);
+    expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('One Piece');
+    expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(true);
+  });
+
   it('collapses a serial burst of blind uploads to ONE cloudFiles emission — one subscriber re-derive per window, not per file', async () => {
     for (let vol = 1; vol <= 4; vol++) {
       await unifiedCloudManager.blindUploadFile(`Series A/Vol ${vol}.mokuro`, new Blob(['{}']));

@@ -9,6 +9,8 @@ import type {
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
+import { isHistoryFileName } from '$lib/reading-history/paths';
+import { driveHistoryPath } from './drive-history-path';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import {
   driveApiClient,
@@ -25,6 +27,7 @@ import { providerManager } from '../../provider-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
+import { isDriveQuotaError } from '../../core/providers/drive-http';
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -273,15 +276,20 @@ class GoogleDriveProvider implements SyncProvider {
       // Build folder map (folder ID -> folder name)
       const READER_FOLDER_NAME = GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER;
       const folderNames = new Map<string, string>();
+      const folders = new Map<string, { name: string; parent?: string }>();
       const cbzFiles: any[] = [];
       const sidecarFiles: any[] = [];
       const jsonFiles: any[] = [];
+      const historyFiles: any[] = [];
 
       for (const item of allItems) {
         if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
           folderNames.set(item.id, item.name);
+          folders.set(item.id, { name: item.name, parent: item.parents?.[0] });
         } else if (isCbzFile(item.name)) {
           cbzFiles.push(item);
+        } else if (isHistoryFileName(item.name)) {
+          historyFiles.push(item);
         } else if (isSidecarFile(item.name)) {
           sidecarFiles.push(item);
         } else if (isRootConfigFile(item.name)) {
@@ -358,6 +366,22 @@ class GoogleDriveProvider implements SyncProvider {
         });
       }
 
+      // Reading history: mokuro-reader/history/<device>/<file>, by its full path.
+      for (const file of historyFiles) {
+        const path = driveHistoryPath(file, folders, READER_FOLDER_NAME);
+        if (!path) continue;
+        cloudVolumes.push({
+          provider: 'google-drive',
+          fileId: file.id,
+          path,
+          modifiedTime: file.modifiedTime || new Date().toISOString(),
+          size: file.size ? parseInt(file.size) : 0,
+          description: file.description,
+          parentId: file.parents?.[0],
+          name: file.name
+        });
+      }
+
       console.log(
         `✅ Listed ${cloudVolumes.length} files from Google Drive (${cbzFiles.length} CBZ, ${sidecarFiles.length} sidecars, ${jsonFiles.length} JSON)`
       );
@@ -429,7 +453,9 @@ class GoogleDriveProvider implements SyncProvider {
           ? 'image/webp'
           : lowerFileName.endsWith('.jpg') || lowerFileName.endsWith('.jpeg')
             ? 'image/jpeg'
-            : 'application/x-cbz';
+            : lowerFileName.endsWith('.events')
+              ? 'application/octet-stream'
+              : 'application/x-cbz';
 
       // Ensure folder structure exists
       const rootFolderId = await this.ensureReaderFolder();
@@ -476,6 +502,14 @@ class GoogleDriveProvider implements SyncProvider {
       console.log(`✅ Uploaded ${fileName} to Google Drive (${uploaded.fileId})`);
       return uploaded;
     } catch (error) {
+      // Typed, and worded so the user can act on it — not a network blip to retry.
+      if (isDriveQuotaError(error)) {
+        throw new ProviderError(
+          'Google Drive storage is full — free up space or upgrade your plan',
+          'google-drive',
+          'QUOTA_EXCEEDED'
+        );
+      }
       throw new ProviderError(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',

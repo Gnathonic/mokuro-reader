@@ -9,6 +9,7 @@ import {
 } from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
+import { HISTORY_FOLDER } from '$lib/reading-history/paths';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
@@ -78,6 +79,7 @@ import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
 import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 import { syncLayersFromListing } from '$lib/metadata/layer-sync';
+import { adoptCloudSeriesSpellings } from './cloud-spelling-adoption';
 import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
 import { cbzStemsOf, classifyMokuroSidecar, isCbzFile, layerOwnerArchive } from './syncable-file';
 
@@ -190,6 +192,22 @@ export interface SeriesRenameResult {
   failures: SeriesRenameFailure[];
 }
 
+/** See `UnifiedCloudManager.listingFolderIndex`. */
+interface ListingFolderIndex {
+  /** The cache revision it was built from; `null` is never reused. */
+  revision: object | null;
+  /** The first segment of every listed path — the exact-folder test. */
+  firstSegments: Set<string>;
+  /** Folded name → the folders holding a file directly, naturally sorted. */
+  foldedFolders: Map<string, string[]>;
+  /**
+   * `<folded folder>\n<folded volume>` → every listed `.cbz` folding onto that
+   * pair, at any depth, in listing order. The records themselves, so a folded
+   * HIT is answered from here too (`getCloudFile`), not by a series filter.
+   */
+  foldedArchives: Map<string, CloudFileMetadata[]>;
+}
+
 function normalizeCloudPath(path: string): string {
   return path.replace(/^\/+|\/+$/g, '');
 }
@@ -292,9 +310,26 @@ class UnifiedCloudManager {
         const provider = this.getActiveProvider();
         if (!provider) return new Map();
 
+        // Reading history (`history/<device>/…`) is not part of the catalog.
+        // Leaving it out — and handing back the SAME map when nothing else
+        // changed — matters: the catalog re-derives every placeholder whenever
+        // this map's identity changes, and a history upload lands in the
+        // listing cache on every sync. The signature is content, not array
+        // identity: caches update their per-folder arrays in place.
+        let signature = provider.type;
+        for (const [seriesTitle, files] of $filesMap.entries()) {
+          if (seriesTitle === HISTORY_FOLDER) continue;
+          signature += `\n${seriesTitle}`;
+          for (const f of files) {
+            signature += `\t${f.fileId}|${f.path}|${f.modifiedTime}|${f.size}|${f.description ?? ''}`;
+          }
+        }
+        if (this.lastCloudFiles?.signature === signature) return this.lastCloudFiles.map;
+
         // Add provider field to each file in the map
         const resultMap = new Map<string, CloudVolumeWithProvider[]>();
         for (const [seriesTitle, files] of $filesMap.entries()) {
+          if (seriesTitle === HISTORY_FOLDER) continue;
           resultMap.set(
             seriesTitle,
             files.map((file) => ({
@@ -303,11 +338,17 @@ class UnifiedCloudManager {
             }))
           );
         }
+        this.lastCloudFiles = { signature, map: resultMap };
         return resultMap;
       },
       new Map()
     );
   }
+
+  private lastCloudFiles: {
+    signature: string;
+    map: Map<string, CloudVolumeWithProvider[]>;
+  } | null = null;
 
   /**
    * Store indicating whether a fetch is in progress
@@ -379,32 +420,47 @@ class UnifiedCloudManager {
       void Promise.resolve(refreshCatalogIndex(listing, provider.type)).catch((error) =>
         console.warn('Catalog index refresh failed:', error)
       );
-      // The refreshes above READ the metadata files; this writes the ones that
-      // were never produced. A library uploaded by an older build (or whose
-      // facts were set before it was ever connected) has folders full of
-      // archives and no `series.json`, and no other path fixes it: the backup
-      // run only publishes indexes when it actually uploads something, and the
-      // facts listener only fires on a fresh edit. The listing in hand is
-      // exactly what the backfill needs, so it rides along here — stamped
-      // first, because the writes it queues are 2 s out and would each open
-      // with a second whole-account fetch of the listing already in hand.
+      // The refreshes above READ the metadata files; everything below WRITES,
+      // so it waits until a server that merged `one piece/` into `One Piece/`
+      // has had its spelling adopted locally (`cloud-spelling-adoption.ts`, a
+      // no-op on plain storage). Run first, the backfills would upload this
+      // device's rows into the losing spelling in the same cycle. A failed
+      // adoption only costs the rename; the writes still run.
+      const adoption = Promise.resolve(adoptCloudSeriesSpellings(files, provider.type)).catch(
+        (error) => console.warn('Cloud spelling adoption failed:', error)
+      );
+      // This writes the metadata files that were never produced. A library
+      // uploaded by an older build (or whose facts were set before it was ever
+      // connected) has folders full of archives and no `series.json`, and no
+      // other path fixes it: the backup run only publishes indexes when it
+      // actually uploads something, and the facts listener only fires on a
+      // fresh edit. The listing in hand is exactly what the backfill needs, so
+      // it rides along here — stamped first, because the writes it queues are
+      // 2 s out and would each open with a second whole-account fetch of the
+      // listing already in hand.
       markListingFresh();
-      void Promise.resolve(reconcileMissingMetadataFiles(files)).catch((error) =>
-        console.warn('Metadata backfill failed:', error)
+      void adoption.then(() =>
+        Promise.resolve(reconcileMissingMetadataFiles(files)).catch((error) =>
+          console.warn('Metadata backfill failed:', error)
+        )
       );
       // The per-VOLUME counterpart of the reconcile above: archives this
       // listing shows without their `.mokuro`/cover sidecars, for volumes
       // installed locally, get them uploaded from local data. Rides the same
       // settled listing for the same reason — the writes it queues must never
       // re-fetch the listing that scheduled them (see `sidecar-backfill.ts`).
-      void Promise.resolve(sweepInstalledVolumesForSidecarBackfill(files)).catch((error) =>
-        console.warn('Volume sidecar backfill failed:', error)
+      void adoption.then(() =>
+        Promise.resolve(sweepInstalledVolumesForSidecarBackfill(files)).catch((error) =>
+          console.warn('Volume sidecar backfill failed:', error)
+        )
       );
       // OCR layers (`<Volume>.<id>.mokuro`, the shape bunko's engines write)
       // for volumes this device holds rows for: pull the ones the listing
       // shows as changed, push the ones edited here since their last sync.
-      void Promise.resolve(syncLayersFromListing(listing, provider.type)).catch((error) =>
-        console.warn('Layer sync failed:', error)
+      void adoption.then(() =>
+        Promise.resolve(syncLayersFromListing(listing, provider.type)).catch((error) =>
+          console.warn('Layer sync failed:', error)
+        )
       );
     } catch (error) {
       console.warn('Series index refresh could not start:', error);
@@ -1535,46 +1591,81 @@ class UnifiedCloudManager {
    * trigger, which carries the local composed title: the gate finds no archive,
    * the write is skipped, and the folder's facts never move again.
    *
-   * Exact match first, so the ordinary case costs one cache read and nothing
-   * else, and the answer is always the LISTING's spelling — the folder name is
-   * the path a write goes to, and is never derived. Unresolvable (a series the
-   * cloud does not hold) returns the title unchanged, so the gates downstream
-   * skip exactly as they did before.
+   * Exact match first, and the answer is always the LISTING's spelling — the
+   * folder name is the path a write goes to, and is never derived. Unresolvable
+   * (a series the cloud does not hold) returns the title unchanged, so the gates
+   * downstream skip exactly as they did before. Both halves read the memoised
+   * {@link listingFolderIndex}: this runs once per volume in a backup enqueue.
    */
   resolveCloudFolderTitle(seriesTitle: string): string {
-    if (this.getCloudVolumesBySeries(seriesTitle).length > 0) return seriesTitle;
+    const index = this.listingFolderIndex();
+    // `getBySeries(t)` is non-empty exactly when a listed path starts `t/`, i.e.
+    // has `t` as its first segment — unless `t` itself holds a `/`.
+    const exact = seriesTitle.includes('/')
+      ? this.getCloudVolumesBySeries(seriesTitle).length > 0
+      : index.firstSegments.has(seriesTitle);
+    if (exact) return seriesTitle;
 
     const key = normalizeVolumeTitleKey(seriesTitle);
     if (!key) return seriesTitle;
-    const candidates = [...this.cloudFolderNames()].filter(
-      (title) => normalizeVolumeTitleKey(title) === key
-    );
-    if (candidates.length === 0) return seriesTitle;
+    return index.foldedFolders.get(key)?.[0] ?? seriesTitle;
+  }
+
+  /** The {@link listingFolderIndex} of the cache revision it was built from. */
+  private folderIndex: ListingFolderIndex | null = null;
+
+  /**
+   * The folder-level facts the folded lookups need, derived in ONE pass over
+   * the listing and memoised on the active cache's revision (`cacheManager.
+   * revision()`, replaced by every add/remove/install — never stale by a
+   * coalesced emission). Without it, every `existsInCloud` miss and every
+   * backup enqueue split every listed path: ~7 s for 1,000 volumes against a
+   * 10k-file listing, on the main thread, inside a click handler.
+   */
+  private listingFolderIndex(): ListingFolderIndex {
+    const revision = cacheManager.revision();
+    if (revision !== null && this.folderIndex?.revision === revision) return this.folderIndex;
+
+    const firstSegments = new Set<string>();
+    const foldedFolders = new Map<string, string[]>();
+    const foldedArchives = new Map<string, CloudFileMetadata[]>();
+    for (const file of this.getAllCloudVolumes()) {
+      const slash = file.path.indexOf('/');
+      if (slash >= 0) firstSegments.add(file.path.slice(0, slash));
+
+      const path = normalizeCloudPath(file.path);
+      const parts = path.split('/');
+      if (parts.length < 2 || !parts[0]) continue;
+      const folderKey = normalizeVolumeTitleKey(parts[0]);
+      // Every folder the listing shows a file in DIRECTLY — archives, sidecars,
+      // covers alike. Wider than `cloudSeriesTitles` (which wants a `.cbz`)
+      // because the callers of `resolveCloudFolderTitle` include the clean-up
+      // paths: a folder whose last archive was just deleted still has a
+      // `series.json` to retire, and it has to be findable by the title the
+      // caller holds. Every gate downstream still asks for archives
+      // separately, so this cannot make a write happen for an empty folder.
+      if (parts.length === 2) {
+        const folders = foldedFolders.get(folderKey);
+        if (!folders) foldedFolders.set(folderKey, [parts[0]]);
+        else if (!folders.includes(parts[0])) folders.push(parts[0]);
+      }
+      if (path.toLowerCase().endsWith('.cbz')) {
+        const base = stripManagedFileExtension(path);
+        const name = base.slice(base.lastIndexOf('/') + 1);
+        const archiveKey = `${folderKey}\n${normalizeVolumeTitleKey(name)}`;
+        const archives = foldedArchives.get(archiveKey);
+        if (archives) archives.push(file);
+        else foldedArchives.set(archiveKey, [file]);
+      }
+    }
     // Two folders CAN fold alike ("One Piece" beside "ONE  PIECE" on a
     // case-sensitive backend). Neither is more correct, but the pick must be
     // stable across listings — alternating would publish half an index to each —
     // so it is ordered, not first-seen.
-    return candidates.sort(naturalSort)[0];
-  }
+    for (const folders of foldedFolders.values()) folders.sort(naturalSort);
 
-  /**
-   * Every folder the listing shows a file in — archives, sidecars, covers alike.
-   *
-   * Wider than `cloudSeriesTitles` (which wants a `.cbz`) because the callers of
-   * {@link resolveCloudFolderTitle} include the clean-up paths: a folder whose
-   * last archive was just deleted still has a `series.json` to retire, and it
-   * has to be findable by the title the caller holds. Every gate downstream
-   * still asks for archives separately, so widening this cannot make a write
-   * happen for an empty folder.
-   */
-  private cloudFolderNames(): Set<string> {
-    const folders = new Set<string>();
-    for (const file of this.getAllCloudVolumes()) {
-      const parts = normalizeCloudPath(file.path).split('/');
-      if (parts.length !== 2 || !parts[0]) continue;
-      folders.add(parts[0]);
-    }
-    return folders;
+    this.folderIndex = { revision, firstSegments, foldedFolders, foldedArchives };
+    return this.folderIndex;
   }
 
   /**
@@ -2319,16 +2410,58 @@ class UnifiedCloudManager {
    * Check if a volume exists in the current provider by path
    */
   existsInCloud(seriesTitle: string, volumeTitle: string): boolean {
-    const path = `${seriesTitle}/${volumeTitle}.cbz`;
-    return cacheManager.has(path);
+    return this.getCloudFile(seriesTitle, volumeTitle) !== null;
   }
 
   /**
-   * Get cloud file metadata by path from the current provider
+   * Get a volume's archive from the current provider's listing.
+   *
+   * The exact path first; failing that, the folder and the file are resolved
+   * the way every other lookup resolves them (`getManagedCloudFilesForVolume`):
+   * a server that merged `one piece/` into `One Piece/` must not read as "not
+   * backed up" to a device still holding the old spelling, or a backup would
+   * upload into the losing folder again.
    */
   getCloudFile(seriesTitle: string, volumeTitle: string): CloudFileMetadata | null {
-    const path = `${seriesTitle}/${volumeTitle}.cbz`;
-    return cacheManager.get(path) as CloudFileMetadata | null;
+    const exact = cacheManager.get(`${seriesTitle}/${volumeTitle}.cbz`) as CloudFileMetadata | null;
+    if (exact) return exact;
+    // A title holding a `/` names a path the index does not key by its
+    // segments; the full lookup still resolves it.
+    if (seriesTitle.includes('/') || volumeTitle.includes('/')) {
+      return (
+        this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle).find((file) =>
+          normalizeCloudPath(file.path).toLowerCase().endsWith('.cbz')
+        ) ?? null
+      );
+    }
+    // Any archive this lookup can return sits in a folder folding onto the
+    // series and carries a name folding onto the volume, so the index holds
+    // every candidate: a miss (every volume not backed up yet) and a hit (a
+    // whole library under a case-merged folder) both cost O(1), never a
+    // series filter over the listing per volume. The picks among the
+    // candidates are `getManagedCloudFilesForVolume`'s: the folder the cloud
+    // spells this series with, the exact filename in it, else the ordered
+    // folded pick.
+    const candidates = this.listingFolderIndex().foldedArchives.get(
+      `${normalizeVolumeTitleKey(seriesTitle)}\n${normalizeVolumeTitleKey(volumeTitle)}`
+    );
+    if (!candidates) return null;
+    const folderTitle = this.resolveCloudFolderTitle(seriesTitle);
+    const inFolder = candidates.filter((file) =>
+      normalizeCloudPath(file.path).startsWith(`${folderTitle}/`)
+    );
+    if (inFolder.length === 0) return null;
+    const basePath = normalizeCloudPath(`${folderTitle}/${volumeTitle}`);
+    const exactName = inFolder.find(
+      (file) => stripManagedFileExtension(normalizeCloudPath(file.path)) === basePath
+    );
+    if (exactName) return exactName;
+    return [...inFolder].sort((a, b) =>
+      naturalSort(
+        stripManagedFileExtension(normalizeCloudPath(a.path)),
+        stripManagedFileExtension(normalizeCloudPath(b.path))
+      )
+    )[0];
   }
 
   /**
@@ -2376,7 +2509,14 @@ class UnifiedCloudManager {
     // Synced progress may reference series this device has no rows for. THE
     // one trigger for resolving that — never a view mount — and started
     // behind the result: sync reports what it did, resolution continues.
-    if (result.success) this.startProgressResolution();
+    if (result.success) {
+      this.startProgressResolution();
+      // A record from a device still on the minute counter gets its
+      // pre-history snapshot (a no-op once each record has one).
+      void import('$lib/reading-history/stats-store')
+        .then(({ freezeLegacyBaselines }) => freezeLegacyBaselines())
+        .catch((error) => console.debug('[reading-history] baselines skipped:', error));
+    }
     return {
       totalProviders: 1,
       succeeded: result.success ? 1 : 0,

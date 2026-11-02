@@ -1,0 +1,218 @@
+import { get, writable, type Readable } from 'svelte/store';
+import type { PageTurn } from '$lib/settings/volume-data';
+import type { HistoryDexie } from './history-db';
+import { nativeCoverage, projectVolume } from './project-turns';
+import { onEventsRecorded } from './record';
+import type { ReadingEvent } from './types';
+
+/**
+ * Page turns projected from the merged event table (`projectTurns`), for the
+ * stats that still read `PageTurn[]` (phase 2b; phase 3 reads events
+ * directly). Loaded once; afterwards only the volumes new events touch are
+ * re-projected, at most once per microtask, so a page view costs one volume
+ * and a large import one emission.
+ *
+ * Every kind is kept: `page`/`forget` shape the projection, `restart`/
+ * `position` drive position offers, and the stats read `adjust` too.
+ */
+
+const store = writable<Map<string, PageTurn[]>>(new Map());
+const eventsByVolume = new Map<string, Map<string, ReadingEvent>>();
+let loaded = false;
+/** Events that arrive while the initial read is in flight; applied after it. */
+let arrivedWhileLoading: ReadingEvent[] | null = null;
+/** Volumes with new events since the last flush, and the subset whose turns changed. */
+let pendingVolumes: Set<string> | null = null;
+let pendingProjections = new Set<string>();
+
+/** Only these kinds shape the projection; the others decide position offers. */
+const shapesTurns = (event: ReadingEvent) => event.kind === 'page' || event.kind === 'forget';
+
+let resolveReady!: () => void;
+let ready = new Promise<void>((resolve) => (resolveReady = resolve));
+
+export const historyTurns: Readable<Map<string, PageTurn[]>> = { subscribe: store.subscribe };
+
+export function historyTurnsLoaded(): boolean {
+  return loaded;
+}
+
+/**
+ * Settles once the first load has finished — or failed, in which case the
+ * records' own turns are what there is. Anything that writes a permanent
+ * conclusion from turns (goal snapshots, completion back-dating) waits for it.
+ */
+export function historyTurnsReady(): Promise<void> {
+  return ready;
+}
+
+/** Every volume history holds events for. */
+export function historyVolumes(): string[] {
+  return [...eventsByVolume.keys()];
+}
+
+/** Every kept event of one volume (empty until loaded). */
+export function getVolumeEvents(volume: string): ReadingEvent[] {
+  return [...(eventsByVolume.get(volume)?.values() ?? [])];
+}
+
+/** Does any kept event of the volume satisfy `test`? No copy of the events. */
+export function someVolumeEvent(volume: string, test: (event: ReadingEvent) => boolean): boolean {
+  const events = eventsByVolume.get(volume);
+  if (!events) return false;
+  for (const event of events.values()) if (test(event)) return true;
+  return false;
+}
+
+type ChangeListener = (volumes: Set<string> | 'all') => void;
+const changeListeners = new Set<ChangeListener>();
+
+/** Hear which volumes' events changed: `'all'` after a full load. */
+export function onHistoryChanged(listener: ChangeListener): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
+function announce(volumes: Set<string> | 'all'): void {
+  for (const listener of changeListeners) {
+    try {
+      listener(volumes);
+    } catch (error) {
+      console.warn('[reading-history] history change listener failed:', error);
+    }
+  }
+}
+
+/** The volume's projected turns; `undefined` until loaded, or when it has none. */
+export function getHistoryTurns(volume: string): PageTurn[] | undefined {
+  return loaded ? get(store).get(volume) : undefined;
+}
+
+/**
+ * The volume's turns projected from its LEGACY events alone (native views
+ * covering them still hide them); `undefined` until loaded, or when it has
+ * none. Computed on request — it is read once per sync, not per emission.
+ */
+export function getHistoryLegacyTurns(volume: string): PageTurn[] | undefined {
+  if (!loaded) return undefined;
+  const events = eventsByVolume.get(volume);
+  if (!events) return undefined;
+  const turns = projectVolume([...events.values()], { legacyOnly: true });
+  return turns.length > 0 ? turns : undefined;
+}
+
+/**
+ * Whether a native view of the volume covers a time (the spec's coverage
+ * rule), over the events loaded so far. Always `false` before the load.
+ */
+export function nativeCoverageOf(volume: string): (t: number) => boolean {
+  const events = loaded ? eventsByVolume.get(volume) : undefined;
+  return events ? nativeCoverage([...events.values()]) : () => false;
+}
+
+/** Full (re)load from the database — on start, and after a big import. */
+export async function loadHistoryTurns(db?: HistoryDexie): Promise<void> {
+  arrivedWhileLoading = [];
+  try {
+    const target = db ?? (await import('./history-db')).historyDb();
+    const all = await target.reading_events.toArray();
+    eventsByVolume.clear();
+    // Bumped, not cleared: a memo keyed on an old version must not match.
+    for (const volume of versions.keys()) versions.set(volume, (versions.get(volume) ?? 0) + 1);
+    for (const event of all) keep(event);
+    // Committed after our read began: their notifications came here instead.
+    for (const event of arrivedWhileLoading) keep(event);
+    const next = new Map<string, PageTurn[]>();
+    for (const [volume, events] of eventsByVolume) {
+      const turns = projectVolume([...events.values()]);
+      if (turns.length > 0) next.set(volume, turns);
+    }
+    loaded = true;
+    store.set(next);
+    announce('all');
+  } finally {
+    arrivedWhileLoading = null;
+    resolveReady();
+  }
+}
+
+const versions = new Map<string, number>();
+
+/** Bumped whenever a volume's kept events change (for memoised derivations). */
+export function volumeEventsVersion(volume: string): number {
+  return versions.get(volume) ?? 0;
+}
+
+function keep(event: ReadingEvent): void {
+  let events = eventsByVolume.get(event.volume);
+  if (!events) eventsByVolume.set(event.volume, (events = new Map()));
+  events.set(`${event.device}\u0000${event.seq}`, event);
+  versions.set(event.volume, (versions.get(event.volume) ?? 0) + 1);
+}
+
+onEventsRecorded((events) => {
+  if (arrivedWhileLoading) {
+    arrivedWhileLoading.push(...events);
+    return;
+  }
+  if (!loaded) return; // never loaded: the next load reads them from the database
+  const first = pendingVolumes === null;
+  pendingVolumes ??= new Set();
+  for (const event of events) {
+    keep(event);
+    pendingVolumes.add(event.volume);
+    if (shapesTurns(event)) pendingProjections.add(event.volume);
+  }
+  if (first) queueMicrotask(flushPending);
+});
+
+/**
+ * Apply recorded events to the projection now, not at the end of the
+ * microtask — the cut-over calls this before stripping turns from records, so
+ * no store emission ever sees a record without its turns AND a projection
+ * without them.
+ */
+export function flushHistoryTurns(): void {
+  flushPending();
+}
+
+function flushPending(): void {
+  const touched = pendingVolumes;
+  const reproject = pendingProjections;
+  pendingVolumes = null;
+  pendingProjections = new Set();
+  if (!touched || touched.size === 0) return;
+  // A `restart`/`position` event changes no turn: the version bump and the
+  // announcement are enough, and no subscriber sees a new Map for nothing.
+  if (reproject.size > 0) {
+    store.update((current) => {
+      const next = new Map(current);
+      for (const volume of reproject) {
+        const events = eventsByVolume.get(volume);
+        const turns = events ? projectVolume([...events.values()]) : [];
+        if (turns.length > 0) next.set(volume, turns);
+        else next.delete(volume);
+      }
+      return next;
+    });
+  }
+  announce(touched);
+}
+
+/** Test hook: a loaded projection, without a database. */
+export function _setHistoryTurnsForTest(turns: Map<string, PageTurn[]>): void {
+  loaded = true;
+  resolveReady();
+  store.set(turns);
+}
+
+/** Test hook. */
+export function _resetHistoryTurns(): void {
+  eventsByVolume.clear();
+  loaded = false;
+  arrivedWhileLoading = null;
+  pendingVolumes = null;
+  pendingProjections = new Set();
+  ready = new Promise<void>((resolve) => (resolveReady = resolve));
+  store.set(new Map());
+}

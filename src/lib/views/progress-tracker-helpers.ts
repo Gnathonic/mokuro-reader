@@ -1,5 +1,6 @@
 import { VolumeData, calculatePagesReadInPeriod } from '$lib/settings/volume-data';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { lastReadTime, type LastRead } from '$lib/reading-history/last-read';
 import { isCompletedInPeriod, isFinished } from '$lib/goals/goal-counting';
 import { calculatePeriodPageTargetTotal } from '$lib/goals/progress-targets';
 import type { GoalPeriod, GoalSnapshot } from '$lib/goals/types';
@@ -13,7 +14,8 @@ export type TrackerEntryWithSortData = {
   pagesReadInPeriod: number;
   pagesToGoal: number | null;
   daysUntilDeadline: number | null;
-  lastProgressUpdate: number;
+  /** When the volume was last read (`lastReadTime`), not the merge stamp. */
+  lastReadAt: number;
   hasDeadline: boolean;
 };
 
@@ -36,7 +38,7 @@ function getCompletionTimestamp(
   entry: TrackerEntryWithSortData,
   completedAtMap: Record<string, string>
 ): number {
-  return getValidTimestamp(completedAtMap[entry.volumeId]) ?? entry.lastProgressUpdate;
+  return getValidTimestamp(completedAtMap[entry.volumeId]) ?? entry.lastReadAt;
 }
 
 export function formatCompletedVolumeCount(count: number): string {
@@ -61,8 +63,8 @@ export function sortByAddedDate(
       return 1;
     }
 
-    const aLastUpdate = a.lastProgressUpdate;
-    const bLastUpdate = b.lastProgressUpdate;
+    const aLastUpdate = a.lastReadAt;
+    const bLastUpdate = b.lastReadAt;
 
     if (aLastUpdate !== 0 && bLastUpdate !== 0) {
       return bLastUpdate - aLastUpdate;
@@ -98,7 +100,7 @@ export function sortByCompletionDate(
       return 1;
     }
 
-    return a.lastProgressUpdate - b.lastProgressUpdate;
+    return a.lastReadAt - b.lastReadAt;
   });
 }
 
@@ -239,7 +241,8 @@ export function createEntriesWithSortData(
   stats: Record<string, TrackerVolumeStats>,
   deadlines: Record<string, string>,
   mode: ProgressTargetMode,
-  periodStart: number
+  periodStart: number,
+  lastReadTimes: ReadonlyMap<string, LastRead> = new Map()
 ): TrackerEntryWithSortData[] {
   return entries.map(([volumeId, volumeData]) => {
     const remainingPages = stats[volumeId]?.remainingPages ?? 0;
@@ -260,7 +263,6 @@ export function createEntriesWithSortData(
     // overdue volume into one tie, so the deadline sort could not tell a volume
     // a day late from one a month late. `daysUntilDeadline` here goes negative.
     const daysUntilDeadline = deadline ? signedDaysUntil(deadline) : null;
-    const lastProgressUpdate = new Date(volumeData.lastProgressUpdate || 0).getTime();
 
     return {
       volumeId,
@@ -270,7 +272,7 @@ export function createEntriesWithSortData(
       pagesReadInPeriod,
       pagesToGoal,
       daysUntilDeadline,
-      lastProgressUpdate: Number.isNaN(lastProgressUpdate) ? 0 : lastProgressUpdate,
+      lastReadAt: lastReadTime(volumeId, volumeData, lastReadTimes),
       hasDeadline: deadline !== null
     };
   });
@@ -304,7 +306,7 @@ export function sortEntries(
   sorting: ProgressTrackerSorting
 ): TrackerEntryWithSortData[] {
   return [...entriesWithSortData].sort((a, b) => {
-    const recentFirst = b.lastProgressUpdate - a.lastProgressUpdate;
+    const recentFirst = b.lastReadAt - a.lastReadAt;
 
     switch (sorting) {
       case 'last-read':

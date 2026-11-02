@@ -2,6 +2,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { driveApiClient, escapeNameForDriveQuery } from './sync/providers/google-drive/api-client';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import type { ProviderType } from './sync/provider-interface';
+import { driveHttpErrorFromResponse, withDriveRetry } from './sync/core/providers/drive-http';
 
 /**
  * Uploads a CBZ blob to Google Drive
@@ -24,22 +25,23 @@ export async function uploadCbzToDrive(
     ...(parentFolderId && { parents: [parentFolderId] })
   };
 
-  // Step 1: Initiate resumable upload session
-  const initResponse = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(metadata)
-    }
-  );
-
-  if (!initResponse.ok) {
-    throw new Error(`Upload init failed: ${initResponse.status} ${initResponse.statusText}`);
-  }
+  // Step 1: Initiate resumable upload session (no data sent yet, so a rate
+  // limit or 5xx is retried; a full account fails at once — drive-http.ts)
+  const initResponse = await withDriveRetry(async () => {
+    const response = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(metadata)
+      }
+    );
+    if (!response.ok) throw await driveHttpErrorFromResponse(response, 'Upload init failed');
+    return response;
+  });
 
   // Step 2: Upload the actual file data
   const uploadUrl = initResponse.headers.get('Location');
@@ -56,7 +58,7 @@ export async function uploadCbzToDrive(
   });
 
   if (!uploadResponse.ok) {
-    throw new Error(`Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
+    throw await driveHttpErrorFromResponse(uploadResponse, 'Upload failed');
   }
 
   const result = await uploadResponse.json();

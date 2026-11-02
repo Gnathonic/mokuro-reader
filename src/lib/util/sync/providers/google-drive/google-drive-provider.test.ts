@@ -465,6 +465,35 @@ describe('GoogleDriveProvider uploads — the blind path skips the whole-account
     expect(driveFilesCache.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('a full Drive account surfaces as QUOTA_EXCEEDED, not a retryable network failure', async () => {
+    // A worker hands back only the message; the bracketed reason is enough.
+    coreUpload.mockRejectedValueOnce(
+      new Error('Upload init failed: 403 Forbidden [storageQuotaExceeded]')
+    );
+
+    const error = await googleDriveProvider
+      .uploadFile('volume-data.json', new Blob(['abc']))
+      .catch((e) => e);
+
+    expect(error.code).toBe('QUOTA_EXCEEDED');
+    expect(error.isNetworkError).toBe(false);
+    expect(error.isAuthError).toBe(false);
+    expect(error.message).toMatch(/storage is full/);
+  });
+
+  it('a rate limit that outlasted its retries stays a retryable UPLOAD_FAILED', async () => {
+    coreUpload.mockRejectedValueOnce(
+      new Error('Upload init failed: 403 Forbidden [userRateLimitExceeded]')
+    );
+
+    const error = await googleDriveProvider
+      .uploadFile('volume-data.json', new Blob(['abc']))
+      .catch((e) => e);
+
+    expect(error.code).toBe('UPLOAD_FAILED');
+    expect(error.isNetworkError).toBe(true);
+  });
+
   it('blindUploadFile performs the SAME upload with NO refetch', async () => {
     const result = await googleDriveProvider.blindUploadFile('volume-data.json', new Blob(['abc']));
     // Positive control: the upload genuinely ran and returned its metadata.

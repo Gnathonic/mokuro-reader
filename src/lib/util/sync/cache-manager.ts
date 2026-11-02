@@ -177,6 +177,15 @@ class CacheManager {
   }
 
   /**
+   * The active cache's revision token (see `CloudCache.revision`), or `null`
+   * when there is none to memoise on. Switching providers switches caches, so
+   * the token changes with it.
+   */
+  revision(): object | null {
+    return this.activeCache?.revision?.() ?? null;
+  }
+
+  /**
    * Fetch fresh data from the active provider
    */
   async fetchAll(): Promise<void> {

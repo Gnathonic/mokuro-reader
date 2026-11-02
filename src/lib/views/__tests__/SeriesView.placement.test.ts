@@ -4,36 +4,45 @@ import { tick } from 'svelte';
 
 // SeriesView sits on top of the whole app; everything below the placement decision is
 // stubbed. What is under test is where a volume whose pages are gone gets DRAWN.
-const { currentSeries, routeParams, providerStatus, queueSeriesVolumes, readingProgress } =
-  vi.hoisted(() => {
-    function createStore<T>(initial: T) {
-      const subs = new Set<(v: T) => void>();
-      let current = initial;
-      return {
-        subscribe(fn: (v: T) => void) {
-          subs.add(fn);
-          fn(current);
-          return () => subs.delete(fn);
-        },
-        set(v: T) {
-          current = v;
-          subs.forEach((fn) => fn(current));
-        }
-      };
-    }
+const {
+  currentSeries,
+  routeParams,
+  providerStatus,
+  queueSeriesVolumes,
+  readingProgress,
+  cloudListing,
+  existsInCloud
+} = vi.hoisted(() => {
+  function createStore<T>(initial: T) {
+    const subs = new Set<(v: T) => void>();
+    let current = initial;
     return {
-      queueSeriesVolumes: vi.fn(),
-      readingProgress: createStore<Record<string, number>>({}),
-      providerStatus: createStore({
-        hasAnyAuthenticated: false,
-        currentProviderType: null as string | null,
-        providers: {} as Record<string, unknown>,
-        needsAttention: false
-      }),
-      currentSeries: createStore<unknown[]>([]),
-      routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' })
+      subscribe(fn: (v: T) => void) {
+        subs.add(fn);
+        fn(current);
+        return () => subs.delete(fn);
+      },
+      set(v: T) {
+        current = v;
+        subs.forEach((fn) => fn(current));
+      }
     };
-  });
+  }
+  return {
+    queueSeriesVolumes: vi.fn(),
+    readingProgress: createStore<Record<string, number>>({}),
+    providerStatus: createStore({
+      hasAnyAuthenticated: false,
+      currentProviderType: null as string | null,
+      providers: {} as Record<string, unknown>,
+      needsAttention: false
+    }),
+    currentSeries: createStore<unknown[]>([]),
+    routeParams: createStore<Record<string, string | undefined>>({ manga: 'One Piece' }),
+    cloudListing: createStore<Map<string, unknown[]>>(new Map()),
+    existsInCloud: vi.fn((_series: string, _title: string) => false)
+  };
+});
 
 function emptyStore<T>(value: T) {
   return {
@@ -56,13 +65,13 @@ vi.mock('$lib/settings/settings', () => ({
   // below), and that module's own top-level `totalStats` derived store reads
   // `settings` from THIS module — so the binding must exist here too, even
   // though nothing in this suite exercises it.
-  settings: emptyStore({ inactivityTimeoutMinutes: 5 })
+  settings: emptyStore({})
 }));
 vi.mock('$lib/settings', () => ({
   deleteVolume: vi.fn(),
   volumes: emptyStore<Record<string, unknown>>({ 'uuid-1': { progress: 1 } }),
   progress: readingProgress,
-  settings: emptyStore({ inactivityTimeoutMinutes: 5 }),
+  settings: emptyStore({}),
   markVolumeAsComplete: vi.fn(),
   markVolumeAsUnread: vi.fn()
 }));
@@ -101,7 +110,7 @@ vi.mock('$lib/util/hash-router', () => ({
 }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
-    cloudFiles: emptyStore(new Map()),
+    cloudFiles: cloudListing,
     isFetching: emptyStore(false),
     getDefaultProvider: () => null,
     // `getStatus` because a VolumeItem list row now claims its own cloud cover, and
@@ -109,7 +118,8 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     getActiveProvider: () => ({ name: 'Drive', getStatus: () => ({ accountScope: null }) }),
     getAllCloudVolumes: () => [],
     getCloudVolumesBySeries: () => [],
-    existsInCloud: () => false,
+    existsInCloud: (series: string, title: string) => existsInCloud(series, title),
+    getCloudFile: () => null,
     deleteManagedVolume: vi.fn(),
     deleteFile: vi.fn()
   }
@@ -446,5 +456,63 @@ describe('SeriesView orders a cloud-only series by volume, not by page count', (
 
     expect(pageOrder(container)).toEqual(['Vol 2', 'Vol 1']);
     readingProgress.set({});
+  });
+});
+
+describe('SeriesView asks the manager whether a volume is backed up', () => {
+  // The backup queue uploads into the folder the CLOUD spells the series with
+  // (`resolveCloudFolderTitle`). A status computed from byte-exact paths read
+  // the same volumes as "not backed up" and re-uploaded them on every click;
+  // every surface asks the one selector, `existsInCloud`, instead.
+  const connected = {
+    hasAnyAuthenticated: true,
+    currentProviderType: 'google-drive' as string | null,
+    providers: {} as Record<string, unknown>,
+    needsAttention: false
+  };
+  const listing = new Map<string, unknown[]>([
+    ['ONE PIECE', [{ path: 'ONE PIECE/Vol 1.cbz', provider: 'google-drive' }]]
+  ]);
+
+  beforeEach(() => {
+    currentSeries.set([volume('Vol 1'), volume('Vol 2')]);
+    cloudListing.set(listing);
+    providerStatus.set(connected);
+  });
+  afterEach(() => {
+    cleanup();
+    existsInCloud.mockReset();
+    existsInCloud.mockImplementation(() => false);
+    cloudListing.set(new Map());
+    providerStatus.set({ ...connected, hasAnyAuthenticated: false, currentProviderType: null });
+  });
+
+  it('offers "Backup remaining" when the selector finds one volume, whatever the exact paths say', async () => {
+    existsInCloud.mockImplementation(
+      (series, title) => series === 'One Piece' && title === 'Vol 1'
+    );
+    const { container } = render(SeriesView);
+    await tick();
+
+    expect(existsInCloud).toHaveBeenCalledWith('One Piece', 'Vol 1');
+    expect(existsInCloud).toHaveBeenCalledWith('One Piece', 'Vol 2');
+    expect(container.textContent).toContain('Backup remaining');
+    expect(container.textContent).not.toContain('Backup to Drive');
+  });
+
+  it('offers no backup at all once the selector finds every volume', async () => {
+    existsInCloud.mockImplementation(() => true);
+    const { container } = render(SeriesView);
+    await tick();
+
+    expect(container.textContent).not.toContain('Backup remaining');
+    expect(container.textContent).not.toContain('Backup to Drive');
+  });
+
+  it('offers a full backup when the selector finds nothing', async () => {
+    const { container } = render(SeriesView);
+    await tick();
+
+    expect(container.textContent).toContain('Backup to Drive');
   });
 });

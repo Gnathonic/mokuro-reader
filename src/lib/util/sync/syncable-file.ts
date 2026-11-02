@@ -8,8 +8,9 @@
  *   and the per-series index `<Series Title>/series.json`
  * - Root config files: volume-data.json (read progress + series-level reading
  *   state), profiles.json (settings profiles) and goals.json (reading goals,
- *   closed-period snapshots and per-volume deadlines), plus catalog.json (the
- *   compiled library index)
+ *   closed-period snapshots and per-volume deadlines), positions.json (the
+ *   newest reading position per volume, at a fixed address), plus catalog.json
+ *   (the compiled library index)
  *
  * `series.json` is a sidecar of the SERIES FOLDER, not of a volume: it is the
  * only sidecar whose basename does not start with a volume title, so anything
@@ -25,20 +26,25 @@ import { CATALOG_FILE_NAME, isCatalogFilePath } from '$lib/metadata/catalog-file
 import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
 import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
 import { naturalSort } from '$lib/util/natural-sort';
+import { isHistoryFilePath } from '$lib/reading-history/paths';
+import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
 
 const ROOT_CONFIG_FILENAMES = new Set([
   'volume-data.json',
   'profiles.json',
   GOALS_FILE_NAME,
-  CATALOG_FILE_NAME
+  CATALOG_FILE_NAME,
+  // The fast position index: the user's own state like goals.json, not best-effort.
+  POSITIONS_FILE_NAME
 ]);
 
 /**
  * Root files whose sync downloads EVERY listed copy and folds them into one
- * (`downloadVolumeDataFile`, `downloadGoalsFile`), so two copies converge
- * losslessly at the next sync. profiles.json is not one: sync reads one copy.
+ * (`downloadVolumeDataFile`, `downloadGoalsFile`, positions sync's `runSync`),
+ * so two copies converge losslessly at the next sync — the folder dedup keeps
+ * both instead of trashing one. profiles.json is not one: sync reads one copy.
  */
-const MERGED_ACROSS_COPIES = new Set(['volume-data.json', GOALS_FILE_NAME]);
+const MERGED_ACROSS_COPIES = new Set(['volume-data.json', GOALS_FILE_NAME, POSITIONS_FILE_NAME]);
 
 // series-metadata.json is deliberately NOT listed: it was retired on 2026-08-23
 // before ever shipping (facts moved to <Series>/series.json, reading state to
@@ -74,9 +80,18 @@ export function syncMergesEveryCopy(basename: string): boolean {
   return MERGED_ACROSS_COPIES.has(basename.toLowerCase());
 }
 
+/**
+ * Pass the path RELATIVE to the mokuro folder, not a bare basename: reading
+ * history (`history/<device>/<file>`) is recognised by its full path.
+ */
 export function isSyncableFile(path: string): boolean {
   const basename = basenameOf(path);
-  return isCbzFile(basename) || isSidecarFile(basename) || isRootConfigFile(basename);
+  return (
+    isCbzFile(basename) ||
+    isSidecarFile(basename) ||
+    isRootConfigFile(basename) ||
+    isHistoryFilePath(path)
+  );
 }
 
 /**
@@ -98,9 +113,14 @@ export function isSyncableFile(path: string): boolean {
  * personal reading goals, so there is nothing for a server to reject by design.
  * It is the user's own state, like progress and profiles, and a silently
  * dropped write there is data loss they never learn about.
+ *
+ * Reading-history segments (`history/<device>/…`) are best-effort too: they
+ * are this device's copy of data it keeps locally and re-uploads on the next
+ * sync. A rejection (a bunko server that does not map `history/` per-user yet,
+ * a read-only share) must not demote the provider.
  */
 export function isBestEffortMetadataPath(path: string): boolean {
-  return isSeriesFilePath(path) || isCatalogFilePath(path);
+  return isSeriesFilePath(path) || isCatalogFilePath(path) || isHistoryFilePath(path);
 }
 
 /**

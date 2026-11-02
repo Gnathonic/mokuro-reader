@@ -12,6 +12,7 @@
  */
 import { promptConfirmation } from '$lib/util/modals';
 import { showSnackbar } from '$lib/util/snackbar';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { isMetadataOnly } from './volume-state';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -36,6 +37,50 @@ interface CloudContext {
   canDeleteFromServer: boolean;
 }
 
+/** The two titles a cloud lookup needs; real rows and placeholders both carry them. */
+type TitledVolume = Pick<VolumeMetadata, 'series_title' | 'volume_title'>;
+
+/** The subset of the cloud manager the folder question reads. */
+interface FolderLookup {
+  resolveCloudFolderTitle(seriesTitle: string): string;
+  existsInCloud(seriesTitle: string, volumeTitle: string): boolean;
+  getCloudVolumesBySeries(seriesTitle: string): unknown[];
+}
+
+/**
+ * Is `folder` — what `resolveCloudFolderTitle` answered for `seriesTitle` — this
+ * series' own? Spelled exactly like it, yes. A folder that merely FOLDS onto the title
+ * (the one a backup of this series uploads into when no exact folder exists) only when
+ * the catalog would group it with this series too, by its own key
+ * (`normalizeSeriesKey`). Two titles differing only in unicode form fold alike yet are
+ * separate catalog series: the other series' backup must never be offered for, or
+ * deleted by, this one — the exact gate used to answer "No volumes found" there.
+ */
+function folderBelongsToSeries(folder: string, seriesTitle: string): boolean {
+  return folder === seriesTitle || normalizeSeriesKey(folder) === normalizeSeriesKey(seriesTitle);
+}
+
+/**
+ * The cloud folder a delete of THIS series' backups may remove, or null when there is
+ * none. An exact folder with anything in it; a folder that only folds onto the title
+ * when it is the series' own (`folderBelongsToSeries`) AND lists at least one of the
+ * series' own volumes — the corroboration that it holds this series' backups and not a
+ * namesake's.
+ */
+export function cloudFolderOfSeries(
+  manager: FolderLookup,
+  seriesTitle: string,
+  volumes: TitledVolume[]
+): string | null {
+  const folder = manager.resolveCloudFolderTitle(seriesTitle);
+  if (!folderBelongsToSeries(folder, seriesTitle)) return null;
+  const holdsBackups =
+    folder === seriesTitle
+      ? manager.getCloudVolumesBySeries(folder).length > 0
+      : volumes.some((vol) => manager.existsInCloud(vol.series_title, vol.volume_title));
+  return holdsBackups ? folder : null;
+}
+
 async function readCloudContext(rows: VolumeMetadata[]): Promise<CloudContext> {
   const [{ unifiedCloudManager }, { providerManager }, { get }] = await Promise.all([
     import('$lib/util/sync/unified-cloud-manager'),
@@ -45,6 +90,15 @@ async function readCloudContext(rows: VolumeMetadata[]): Promise<CloudContext> {
 
   const status = get(providerManager.status);
   const { canDeleteSeriesOnServer } = await import('$lib/util/sync/metadata-permissions');
+  // Backed up = one of these volumes is listed, in a folder that is this series' own:
+  // the delete the box offers (`cloudFolderOfSeries`) resolves the folder the same way.
+  const hasCloudBackups =
+    rows.length > 0 &&
+    folderBelongsToSeries(
+      unifiedCloudManager.resolveCloudFolderTitle(rows[0].series_title),
+      rows[0].series_title
+    ) &&
+    rows.some((vol) => unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title));
   return {
     providerDisplayName: unifiedCloudManager.getActiveProvider()?.name || 'cloud',
     hasAnyProvider: status.hasAnyAuthenticated,
@@ -52,9 +106,7 @@ async function readCloudContext(rows: VolumeMetadata[]): Promise<CloudContext> {
     // not be offered a delete it cannot perform.
     isReadOnlyMode:
       status.currentProviderType === 'webdav' && status.providers['webdav']?.isReadOnly === true,
-    hasCloudBackups: rows.some((vol) =>
-      unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
-    ),
+    hasCloudBackups,
     canDeleteFromServer: rows.length > 0 && canDeleteSeriesOnServer(rows[0].series_title).allowed
   };
 }
@@ -62,9 +114,14 @@ async function readCloudContext(rows: VolumeMetadata[]): Promise<CloudContext> {
 /**
  * Delete a whole series folder from the connected provider, reporting what happened.
  * Shared by the removal dialog's "also delete from …" box and the series page's own
- * "Delete from …" menu item.
+ * "Delete from …" menu item. `volumes` are the series' volumes as the caller has them
+ * (rows or placeholders): a folder that only folds onto the title is deleted only when
+ * it lists one of them (`cloudFolderOfSeries`).
  */
-export async function deleteSeriesFromCloudByTitle(seriesTitle: string): Promise<void> {
+export async function deleteSeriesFromCloudByTitle(
+  seriesTitle: string,
+  volumes: TitledVolume[]
+): Promise<void> {
   if (!seriesTitle) return;
 
   // Server rules, checked up front so every entry point (dialog checkbox, series
@@ -79,8 +136,12 @@ export async function deleteSeriesFromCloudByTitle(seriesTitle: string): Promise
   const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
   const providerDisplayName = unifiedCloudManager.getActiveProvider()?.name || 'cloud';
 
-  // O(1) lookup in the cached listing: nothing backed up means nothing to delete.
-  if (unifiedCloudManager.getCloudVolumesBySeries(seriesTitle).length === 0) {
+  // Nothing backed up means nothing to delete. The folder as the CLOUD spells it,
+  // resolved the way the dialog's "backed up?" check (which offered this delete) and
+  // `deleteSeriesFolder` (which performs it) resolve it: a server that merged
+  // `one piece/` into `One Piece/` must not answer "No volumes found" — but a folder
+  // that is another catalog series' (`cloudFolderOfSeries`) must.
+  if (cloudFolderOfSeries(unifiedCloudManager, seriesTitle, volumes) === null) {
     showSnackbar(`No volumes found in ${providerDisplayName}`);
     return;
   }
@@ -157,7 +218,7 @@ async function raisePrompt(
     );
 
     if (deleteCloud && cloud.hasAnyProvider) {
-      await deleteSeriesFromCloudByTitle(rows[0].series_title);
+      await deleteSeriesFromCloudByTitle(rows[0].series_title, rows);
     }
 
     options.onRemoved?.();
