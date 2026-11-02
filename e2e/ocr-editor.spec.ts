@@ -234,7 +234,9 @@ test.describe('OCR editor', () => {
     await expect(rightBlock.locator('.line').first()).toHaveText(ORIGINAL_BLOCK.lines[0]);
     await page.waitForTimeout(1200);
     expect((await readOcr(page, 1)).block).toEqual(ORIGINAL_BLOCK);
-    expect(page.locator('[data-page-index="0"] .editBlock .line').first()).toHaveText(
+    // Awaited: an unawaited expect polls on after the test returns, against a page
+    // already being torn down.
+    await expect(page.locator('[data-page-index="0"] .editBlock .line').first()).toHaveText(
       ORIGINAL_BLOCK.lines[0]
     );
   });
