@@ -281,9 +281,10 @@ class FolderDeduplicator {
         } else if (item.isFolder || existing.isFolder || dedupKeepsEveryCopy(item.name)) {
           // Moved in beside the same name: two folders merge on the next
           // pass; a file next to a folder is no duplicate; sync folds every
-          // copy of volume-data.json / goals.json into one, so dropping either
-          // here would lose what only that copy held; and bunko's control
-          // files are bunko's to reconcile, never ours to trash.
+          // copy of volume-data.json / goals.json / positions.json into one,
+          // so dropping either here would lose what only that copy held; and
+          // bunko's control files are bunko's to reconcile, never ours to
+          // trash.
           console.log(`[Dedup:${provider}]   Moving (name kept twice): ${item.name}`);
           await ops.moveItem(item.id, canonical.id, duplicate.id);
           itemsMoved++;
