@@ -23,6 +23,7 @@
 - Exported or uploaded OCR you corrected is marked as corrected
 - mokuro-bunko 0.8: backups skip another account's series, with one notice
 - mokuro-bunko 0.8: publish corrections to your own uploads in shared series
+- OCR upgrades no longer keep a "Previous OCR" layer
 
 ### Fixed
 

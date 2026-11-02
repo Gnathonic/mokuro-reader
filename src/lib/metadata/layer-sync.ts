@@ -557,8 +557,7 @@ export function layerNeedsPush(
 ): boolean {
   // The cloud's own primary sidecar, mirrored for an edited volume by the OCR
   // upgrade (pushing it would publish the primary a second time as a layer),
-  // the local primary an upgrade replaced (a device-local keepsake), the
-  // shared `curated` layer, an `edit` layer the server would share, or the
+  // the shared `curated` layer, an `edit` layer the server would share, or the
   // editor's `original` / a case merge's `curated-<n>` on a server that
   // compiles its metadata.
   if (layerStaysLocal(row, { provider: providerType, ...target })) return false;

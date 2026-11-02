@@ -314,7 +314,7 @@ describe('layerNeedsPull / layerNeedsPush', () => {
     expect(layerNeedsPush(mirror, file, 'webdav')).toBe(false);
   });
 
-  it('an untouched previous-ocr keepsake (the local primary an upgrade replaced) is never pushed', () => {
+  it('a v1.10.0 previous-ocr leftover, untouched, is never pushed before the startup cleanup deletes it', () => {
     const keepsake = {
       ...mirror,
       layer_id: 'previous-ocr',

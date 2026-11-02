@@ -31,7 +31,8 @@
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
-  import { startThumbnailProcessing } from '$lib/catalog/db';
+  import { db, startThumbnailProcessing } from '$lib/catalog/db';
+  import { deleteRetiredPreviousOcrLayers } from '$lib/catalog/layer-store';
   import { historyDb } from '$lib/reading-history/history-db';
   import { loadHistoryTurns } from '$lib/reading-history/turns-store';
   import { getOrCreateDeviceId } from '$lib/reading-history/record';
@@ -169,6 +170,12 @@
         initReadingStats();
       })
       .catch((error) => console.warn('[reading-history] stats failed to start:', error));
+
+    // v1.10.0's untouched "Previous OCR" keepsakes (the OCR upgrade no longer
+    // keeps one): removed from metadata rows alone, a no-op once gone.
+    deleteRetiredPreviousOcrLayers(db).catch((error) =>
+      console.debug('[layers] previous-ocr cleanup skipped:', error)
+    );
 
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')

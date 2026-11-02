@@ -215,3 +215,49 @@ export function clearAllLayers(db: Dexie): Promise<void> {
     await pagesTable(db).clear();
   });
 }
+
+// ---- one-time cleanup ----
+
+/**
+ * The ids v1.10.0's OCR upgrade kept a replaced primary under ("Previous OCR":
+ * `previous-ocr`, then `previous-ocr-<n>` once the user had edited one). The
+ * upgrade no longer keeps one.
+ */
+const RETIRED_PREVIOUS_OCR_ID = /^previous-ocr(?:-\d+)?$/;
+
+/**
+ * Delete every `previous-ocr` / `previous-ocr-<n>` layer that is still
+ * untouched (`source_at === updated_at` — `isUntouchedUpgradeLayer` in
+ * `mokuro-hash.ts`, spelled out here because this module imports nothing at
+ * runtime), both rows. One the user edited is theirs: an ordinary layer, kept.
+ * No cloud tombstone: an untouched keepsake was never pushed.
+ *
+ * Chosen from METADATA only: the candidates by id off the metadata table's
+ * primary keys (no row read), then each candidate's metadata row — re-read
+ * inside the delete's transaction, so an edit landing meanwhile keeps its
+ * layer. The pages table is only ever deleted from. Idempotent: once the
+ * untouched ones are gone a start costs one keys-only read, plus one small
+ * metadata read per edited leftover. Resolves the number of layers deleted.
+ */
+export async function deleteRetiredPreviousOcrLayers(db: Dexie): Promise<number> {
+  const untouched = (meta: VolumeOcrLayer | undefined): meta is VolumeOcrLayer =>
+    !!meta?.source_at && meta.source_at === meta.updated_at;
+  const keys = await metaTable(db).toCollection().primaryKeys();
+  const candidates = keys.filter((key) => RETIRED_PREVIOUS_OCR_ID.test(key[1]));
+  if (candidates.length === 0) return 0;
+  // Read-only first: a library whose only leftovers are edited ones (kept for
+  // good) never opens a write transaction.
+  const metas = await metaTable(db).bulkGet(candidates);
+  const victims = candidates.filter((_, i) => untouched(metas[i]));
+  if (victims.length === 0) return 0;
+  return db.transaction('rw', layerTables(db), async () => {
+    let deleted = 0;
+    for (const key of victims) {
+      if (!untouched(await metaTable(db).get(key))) continue;
+      await metaTable(db).delete(key);
+      await pagesTable(db).delete(key);
+      deleted++;
+    }
+    return deleted;
+  });
+}
