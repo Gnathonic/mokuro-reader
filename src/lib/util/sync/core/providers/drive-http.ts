@@ -79,6 +79,13 @@ export function isDriveStorageFull(failure: DriveFailure | undefined): boolean {
 export class DriveHttpError extends Error implements DriveFailure {
   readonly kind: DriveFailureKind;
   readonly retryAfterMs?: number;
+  /**
+   * Which step of a multi-request operation answered (a resumable upload's
+   * `'init'`, `'status'` or `'put'`), for a `retryOn` that treats the steps
+   * differently. Carried by the error itself, so no caller state has to stay
+   * in step with the attempt that threw.
+   */
+  phase?: string;
 
   constructor(
     public readonly status: number,
@@ -209,8 +216,11 @@ export function driveFailureOf(error: unknown): DriveFailure | undefined {
 
 export interface DriveRetryOptions {
   attempts?: number;
-  /** Which failures are worth another attempt; default rate limits and 5xx. */
-  retryOn?: (kind: DriveFailureKind) => boolean;
+  /**
+   * Which failures are worth another attempt; default rate limits and 5xx.
+   * Gets the thrown error too (e.g. its {@link DriveHttpError.phase}).
+   */
+  retryOn?: (kind: DriveFailureKind, error: unknown) => boolean;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
 }
@@ -239,7 +249,7 @@ export async function withDriveRetry<T>(
       const failure = driveFailureOf(error);
       if (
         failure?.status === undefined ||
-        !retryOn(classifyDriveFailure(failure.status, failure.reason)) ||
+        !retryOn(classifyDriveFailure(failure.status, failure.reason), error) ||
         attempt >= attempts
       ) {
         throw error;

@@ -17,7 +17,12 @@ interface XhrAnswer {
 }
 
 let xhrAnswers: XhrAnswer[];
-let xhrSent: Array<{ method: string; url: string }>;
+let xhrSent: Array<{
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+}>;
 
 class FakeXhr {
   status = 0;
@@ -34,29 +39,40 @@ class FakeXhr {
   private method = '';
   private url = '';
   private responseHeaders: Record<string, string> = {};
+  private requestHeaders: Record<string, string> = {};
 
   open(method: string, url: string) {
     this.method = method;
     this.url = url;
   }
-  setRequestHeader() {}
+  setRequestHeader(name: string, value: string) {
+    this.requestHeaders[name] = value;
+  }
   getResponseHeader(name: string): string | null {
     const hit = Object.entries(this.responseHeaders).find(
       ([k]) => k.toLowerCase() === name.toLowerCase()
     );
     return hit ? hit[1] : null;
   }
-  send() {
-    xhrSent.push({ method: this.method, url: this.url });
+  send(body?: unknown) {
+    xhrSent.push({ method: this.method, url: this.url, headers: this.requestHeaders, body });
     const answer = xhrAnswers.shift() ?? { status: 500 };
     queueMicrotask(() => {
+      // The whole body goes out before the answer, as an upload's progress says.
+      if (body instanceof Blob) {
+        this.upload.onprogress?.({
+          lengthComputable: true,
+          loaded: body.size,
+          total: body.size
+        } as ProgressEvent);
+      }
       this.status = answer.status;
       this.statusText = answer.statusText ?? '';
       this.responseHeaders = answer.headers ?? {};
-      const body = answer.body ?? '';
-      this.responseText = body;
+      const text = answer.body ?? '';
+      this.responseText = text;
       this.response =
-        this.responseType === 'arraybuffer' ? new TextEncoder().encode(body).buffer : body;
+        this.responseType === 'arraybuffer' ? new TextEncoder().encode(text).buffer : text;
       this.onload?.();
     });
   }
@@ -73,8 +89,34 @@ function errorBody(reason: string): string {
   return JSON.stringify({ error: { errors: [{ reason }] } });
 }
 
-function initOk(): Response {
-  return new Response(null, { status: 200, headers: { Location: 'https://upload.example/s1' } });
+const SESSION = 'https://upload.example/s1';
+
+function initOk(location = SESSION): Response {
+  return new Response(null, { status: 200, headers: { Location: location } });
+}
+
+/** A session's 308 answer to a status query: Drive holds bytes 0..accepted-1. */
+function resumeAt(accepted: number, headers: Record<string, string> = {}): Response {
+  return new Response(null, {
+    status: 308,
+    headers: accepted > 0 ? { ...headers, Range: `bytes=0-${accepted - 1}` } : headers
+  });
+}
+
+type FetchCall = [string, RequestInit | undefined];
+
+function fetchCalls(): FetchCall[] {
+  return vi.mocked(fetch).mock.calls.map(([url, init]) => [String(url), init]);
+}
+
+/** The session inits (POST/PATCH to the resumable upload URL). */
+function initCalls(): FetchCall[] {
+  return fetchCalls().filter(([url]) => url.includes('uploadType=resumable'));
+}
+
+/** The status queries (a PUT to a session URI). */
+function statusQueries(): FetchCall[] {
+  return fetchCalls().filter(([, init]) => init?.method === 'PUT');
 }
 
 const UPLOAD_ARGS = {
@@ -118,8 +160,8 @@ describe('googleDriveCore.uploadFile', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it('a 403 userRateLimitExceeded on the media PUT starts over with a fresh session', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(initOk()).mockResolvedValueOnce(initOk());
+  it('a 403 userRateLimitExceeded on the media PUT resumes the same session', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(initOk()).mockResolvedValueOnce(resumeAt(0));
     xhrAnswers = [
       { status: 403, body: errorBody('userRateLimitExceeded') },
       { status: 200, body: JSON.stringify({ id: 'new-id' }) }
@@ -128,8 +170,121 @@ describe('googleDriveCore.uploadFile', () => {
     const done = googleDriveCore.uploadFile(UPLOAD_ARGS);
     await vi.runAllTimersAsync();
     await expect(done).resolves.toMatchObject({ fileId: 'new-id' });
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(xhrSent.map((r) => r.method)).toEqual(['PUT', 'PUT']);
+    // One session, asked where it stands; no second init.
+    expect(initCalls()).toHaveLength(1);
+    expect(statusQueries()).toHaveLength(1);
+    expect(xhrSent.map((r) => [r.method, r.url])).toEqual([
+      ['PUT', SESSION],
+      ['PUT', SESSION]
+    ]);
+  });
+
+  it('a 429 on the media PUT resumes from the offset Drive accepted, never re-sending it', async () => {
+    const bytes = new Uint8Array(10).map((_, i) => i + 1);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(initOk())
+      .mockResolvedValueOnce(resumeAt(6, { 'Retry-After': '1' }));
+    xhrAnswers = [
+      { status: 429, headers: { 'Retry-After': '1' }, body: errorBody('rateLimitExceeded') },
+      { status: 200, body: JSON.stringify({ id: 'new-id', size: '10' }) }
+    ];
+    const progress: Array<[number, number]> = [];
+
+    const done = googleDriveCore.uploadFile({
+      ...UPLOAD_ARGS,
+      blob: new Blob([bytes]),
+      onProgress: (loaded: number, total: number) => progress.push([loaded, total])
+    });
+    await vi.runAllTimersAsync();
+    await expect(done).resolves.toMatchObject({ fileId: 'new-id', size: 10 });
+
+    // The status query: an empty PUT to the session naming only the total.
+    const [query] = statusQueries();
+    expect(query[0]).toBe(SESSION);
+    expect(query[1]?.method).toBe('PUT');
+    expect(query[1]?.body ?? null).toBeNull();
+    expect(new Headers(query[1]?.headers).get('Content-Range')).toBe('bytes */10');
+    expect(initCalls()).toHaveLength(1);
+
+    // The resumed PUT carries bytes 6..9 only.
+    expect(xhrSent).toHaveLength(2);
+    const resumed = xhrSent[1];
+    expect(resumed.url).toBe(SESSION);
+    expect(resumed.headers['Content-Range']).toBe('bytes 6-9/10');
+    expect(resumed.body).toBeInstanceOf(Blob);
+    const sent = new Uint8Array(await (resumed.body as Blob).arrayBuffer());
+    expect(Array.from(sent)).toEqual([7, 8, 9, 10]);
+    // Progress counts the accepted bytes, not the slice alone.
+    expect(progress.at(-1)).toEqual([10, 10]);
+  });
+
+  it('a session the status query finds complete is the result, with no second PUT', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(initOk())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ id: 'done-id', modifiedTime: '2026-11-02T00:00:00Z', size: '3' }),
+          { status: 200 }
+        )
+      );
+    xhrAnswers = [{ status: 429, body: errorBody('rateLimitExceeded') }];
+
+    const done = googleDriveCore.uploadFile(UPLOAD_ARGS);
+    await vi.runAllTimersAsync();
+    await expect(done).resolves.toEqual({
+      fileId: 'done-id',
+      modifiedTime: '2026-11-02T00:00:00Z',
+      size: 3
+    });
+    expect(xhrSent).toHaveLength(1);
+    expect(initCalls()).toHaveLength(1);
+  });
+
+  it.each([404, 410])(
+    'a session the status query answers %i for starts a fresh one',
+    async (status) => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(initOk())
+        .mockResolvedValueOnce(new Response(null, { status }))
+        .mockResolvedValueOnce(initOk('https://upload.example/s2'));
+      xhrAnswers = [
+        { status: 429, body: errorBody('rateLimitExceeded') },
+        { status: 200, body: JSON.stringify({ id: 'new-id' }) }
+      ];
+
+      const done = googleDriveCore.uploadFile(UPLOAD_ARGS);
+      await vi.runAllTimersAsync();
+      await expect(done).resolves.toMatchObject({ fileId: 'new-id' });
+      expect(initCalls()).toHaveLength(2);
+      expect(xhrSent.map((r) => r.url)).toEqual([SESSION, 'https://upload.example/s2']);
+      // A fresh session takes the whole file, as the first PUT did.
+      expect(xhrSent[1].headers['Content-Range']).toBeUndefined();
+    }
+  );
+
+  it('a 5xx on the media PUT is not retried', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(initOk());
+    xhrAnswers = [
+      { status: 503, statusText: 'Service Unavailable', body: errorBody('backendError') }
+    ];
+    const settled = googleDriveCore.uploadFile(UPLOAD_ARGS).catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    const err = await settled;
+    expect((err as Error).message).toMatch(/Upload failed: 503/);
+    expect((err as { phase?: string }).phase).toBe('put');
+    expect(xhrSent).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 5xx on the session init is retried', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(driveError(503, 'backendError'))
+      .mockResolvedValueOnce(initOk());
+    xhrAnswers = [{ status: 200, body: JSON.stringify({ id: 'new-id' }) }];
+    const done = googleDriveCore.uploadFile(UPLOAD_ARGS);
+    await vi.runAllTimersAsync();
+    await expect(done).resolves.toMatchObject({ fileId: 'new-id' });
+    expect(initCalls()).toHaveLength(2);
   });
 
   it('a 403 storageQuotaExceeded on the init fails at once with QUOTA_EXCEEDED', async () => {

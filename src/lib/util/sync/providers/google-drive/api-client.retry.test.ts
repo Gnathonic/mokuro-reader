@@ -166,6 +166,29 @@ describe('gapi drive.files calls', () => {
     expect(files.create).toHaveBeenCalledTimes(1);
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
   });
+
+  // gapi rejects with no `.message`: the error's text names the status and
+  // reason, as the transport errors do, without changing the classification.
+  it('a gapi failure message names its status and [reason]', async () => {
+    files.get.mockRejectedValue(gapiError(404, 'notFound'));
+    const err = (await driveApiClient.getFileMetadata('f1', 'size').catch((e: unknown) => e)) as {
+      message: string;
+      status: number;
+      reason: string;
+      kind: string;
+    };
+    expect(err.message).toBe('notFound: 404 [notFound]');
+    expect(err).toMatchObject({ status: 404, reason: 'notFound', kind: 'other' });
+  });
+
+  it('a gapi failure without an error message still names its status', async () => {
+    files.get.mockRejectedValue({ status: 500, result: {}, headers: {} });
+    const settled = driveApiClient.getFileMetadata('f1', 'size').catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    const err = (await settled) as { message: string; kind: string };
+    expect(err.message).toBe('Drive API error: 500');
+    expect(err.kind).toBe('transient');
+  });
 });
 
 describe('XHR media download', () => {
