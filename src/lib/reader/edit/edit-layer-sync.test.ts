@@ -213,9 +213,15 @@ describe('an OCR edit goes up as the edit layer, never as the main sidecar', () 
       deleteFile: vi.fn()
     });
 
-    // What the reader does before it opens the editor on the primary.
+    // What the reader does before it opens the editor on the primary. The
+    // clock is pinned: an edit stamped in the same millisecond as the pull's
+    // `synced_at` would not count as edited since sync, and nothing would go up.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-16T11:00:00.000Z'));
     expect(await pullOwnEditLayerBeforeEdit('v1')).toBe('pulled');
+    vi.setSystemTime(new Date('2026-09-16T11:01:00.000Z'));
     await persistPageEdit('v1', 1, pg('直した', 'q.png'));
+    vi.useRealTimers();
     await syncLayersFromListing(listing(), 'webdav');
 
     const call = uploadFile.mock.calls.find((c) => c[0] === 'Series/Vol 1.edit.mokuro')!;
