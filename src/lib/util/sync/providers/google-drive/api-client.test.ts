@@ -271,36 +271,74 @@ describe('driveApiClient failure classification', () => {
 
   // Requests sent with one token can come back 401 after a re-auth already
   // replaced it: asking again would be a second sign-in for nothing (a second
-  // popup under Google's sign-in), and the token held now is not the one refused.
-  it('a call answered 401 for a token a re-auth has since replaced asks for no re-auth', async () => {
+  // popup under Google's sign-in), and the token held now is not the one
+  // refused. A 401 created nothing, so the request is sent once more with the
+  // token held now.
+  it('a call answered 401 for a token a re-auth has since replaced is retried with the held one', async () => {
+    list
+      .mockImplementationOnce(async () => {
+        tk.value = 'NEWER';
+        throw { status: 401, result: {}, headers: {} };
+      })
+      .mockResolvedValueOnce({ result: { files: [{ id: 'f1', name: 'a', mimeType: 'x' }] } });
+
+    await expect(driveApiClient.listFiles("name='x'")).resolves.toEqual([
+      { id: 'f1', name: 'a', mimeType: 'x' }
+    ]);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  it('a stale-token retry refused for the held token takes the auth path, once', async () => {
+    list
+      .mockImplementationOnce(async () => {
+        tk.value = 'NEWER';
+        throw { status: 401, result: {}, headers: {} };
+      })
+      .mockRejectedValueOnce({ status: 401, result: {}, headers: {} });
+
+    await expect(driveApiClient.listFiles("name='x'")).rejects.toThrow(/Re-authentication/);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stale-token refusal is retried only once', async () => {
+    let n = 0;
     list.mockImplementation(async () => {
-      tk.value = 'NEWER';
+      tk.value = `NEWER-${++n}`;
       throw { status: 401, result: {}, headers: {} };
     });
 
-    const error = await driveApiClient.listFiles("name='x'").catch((e) => e);
-
-    expect(error.status).toBe(401);
+    await expect(driveApiClient.listFiles("name='x'")).rejects.toMatchObject({ status: 401 });
+    expect(list).toHaveBeenCalledTimes(2);
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
     expect(tokenManager.clearToken).not.toHaveBeenCalled();
   });
 
-  it('an XHR download answered 401 for a replaced token asks for no re-auth', async () => {
+  it('an XHR download answered 401 for a replaced token is retried with the held one', async () => {
+    const payload = new Blob(['data']);
     FakeXhr.replies = [
-      { status: 401, response: new Blob(['']), meanwhile: () => (tk.value = 'NEWER') }
+      { status: 401, response: new Blob(['']), meanwhile: () => (tk.value = 'NEWER') },
+      { status: 200, response: payload }
     ];
 
-    await expect(driveApiClient.downloadFile('file-1')).rejects.toMatchObject({ status: 401 });
+    await expect(driveApiClient.downloadFile('file-1')).resolves.toBe(payload);
+    expect(FakeXhr.auth).toEqual(['Bearer TOKEN', 'Bearer NEWER']);
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
     expect(tokenManager.clearToken).not.toHaveBeenCalled();
   });
 
-  it('an XHR upload answered 401 for a replaced token asks for no re-auth', async () => {
-    FakeXhr.replies = [{ status: 401, response: null, meanwhile: () => (tk.value = 'NEWER') }];
+  it('an XHR upload answered 401 for a replaced token is retried with the held one', async () => {
+    FakeXhr.replies = [
+      { status: 401, response: null, meanwhile: () => (tk.value = 'NEWER') },
+      { status: 200, response: { id: 'new-id' } }
+    ];
 
     await expect(
       driveApiClient.uploadFile(new Blob(['x']), { name: 'a.json', mimeType: 'application/json' })
-    ).rejects.toMatchObject({ status: 401 });
+    ).resolves.toEqual({ id: 'new-id' });
+    expect(FakeXhr.auth).toEqual(['Bearer TOKEN', 'Bearer NEWER']);
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
     expect(tokenManager.clearToken).not.toHaveBeenCalled();
   });

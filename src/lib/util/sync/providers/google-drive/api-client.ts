@@ -35,7 +35,9 @@ class DriveApiError extends Error {
     public readonly status?: number,
     public readonly isNetworkError = false,
     public readonly reason?: string,
-    public readonly kind?: DriveFailureKind
+    public readonly kind?: DriveFailureKind,
+    /** Refused for a token a re-auth has since replaced (see `retryStaleTokenRefusal`). */
+    public readonly staleToken = false
   ) {
     super(message);
     this.name = 'DriveApiError';
@@ -52,12 +54,29 @@ type DriveRequest = <R>(
 ) => Promise<R>;
 
 /** The token the manager holds now. */
-function heldToken(): string {
+function getCurrentToken(): string {
   let token = '';
   tokenManager.token.subscribe((value) => {
     token = value;
   })();
   return token;
+}
+
+/**
+ * Run `run` once more when it was refused for a token a re-auth has since
+ * replaced: the token held now has not been tried, and a 401 created nothing,
+ * so even a create is safe to send again. Once only — a second refusal is
+ * the held token's own, and takes the auth path (or, if yet another re-auth
+ * replaced it meanwhile, is thrown).
+ */
+async function retryStaleTokenRefusal<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!(error instanceof DriveApiError && error.staleToken)) throw error;
+    console.log('Retrying with the token a re-auth has since put in place');
+    return run();
+  }
 }
 
 /**
@@ -77,11 +96,18 @@ async function handleAuthError(
   // A request sent before a re-auth replaced its token comes back refused
   // after the new one is in: that refusal is the old token's. Re-authing again
   // would be a second sign-in for nothing (a second popup), and clearing would
-  // drop the token that works.
-  const held = heldToken();
+  // drop the token that works; the caller sends it again with the held token.
+  const held = getCurrentToken();
   if (sentWith !== undefined && held !== '' && sentWith !== held) {
-    console.log('API call refused a token a re-auth has since replaced; nothing to do');
-    throw new DriveApiError('Authentication expired. Please try again.', status, false);
+    console.log('API call refused a token a re-auth has since replaced');
+    throw new DriveApiError(
+      'Authentication expired. Please try again.',
+      status,
+      false,
+      undefined,
+      'auth',
+      true
+    );
   }
 
   console.log('API call failed with auth error, token may be expired');
@@ -180,9 +206,18 @@ class DriveApiClient {
    * each request's rate limits and 5xx are retried on their own
    * (`withDriveRetry`), so a paged listing resumes at its page.
    */
-  private async handleApiCall<T>(
+  private handleApiCall<T>(
     apiCall: (request: DriveRequest) => Promise<T>,
     retryOnAuth = true
+  ): Promise<T> {
+    // A refusal of a replaced token runs the whole call again: a paged
+    // listing restarts at its first page, and every other call is one request.
+    return retryStaleTokenRefusal(() => this.runApiCall(apiCall, retryOnAuth));
+  }
+
+  private async runApiCall<T>(
+    apiCall: (request: DriveRequest) => Promise<T>,
+    retryOnAuth: boolean
   ): Promise<T> {
     // The token the last attempt went out with (gapi's, which a grant sets
     // together with the manager's).
@@ -190,7 +225,7 @@ class DriveApiClient {
     const request: DriveRequest = (call, retryOn) =>
       withDriveRetry(
         () => {
-          sentWith = heldToken();
+          sentWith = getCurrentToken();
           return call();
         },
         { retryOn }
@@ -289,7 +324,7 @@ class DriveApiClient {
     fileId: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<Blob> {
-    if (!this.getCurrentToken()) {
+    if (!getCurrentToken()) {
       throw new DriveApiError('No access token available', 401);
     }
 
@@ -308,8 +343,8 @@ class DriveApiClient {
     // Download file with XMLHttpRequest for progress tracking; a GET is
     // idempotent, so rate limits and 5xx are simply asked again. Each attempt
     // reads the token afresh: a re-auth can land during a backoff.
-    return withDriveRetry(() =>
-      this.downloadOnce(fileId, this.getCurrentToken(), totalSize, onProgress)
+    return retryStaleTokenRefusal(() =>
+      withDriveRetry(() => this.downloadOnce(fileId, getCurrentToken(), totalSize, onProgress))
     );
   }
 
@@ -376,76 +411,79 @@ class DriveApiClient {
     form.append('file', blob);
 
     const url = `${driveUploadBase()}/drive/v3/files${fileId ? `/${fileId}` : ''}?uploadType=multipart`;
-    if (!tokenManager.isAuthenticated() || !this.getCurrentToken()) {
+    if (!tokenManager.isAuthenticated() || !getCurrentToken()) {
       throw new DriveApiError('No valid token available');
     }
 
-    return withDriveRetry(
-      () =>
-        new Promise<{ id: string }>((resolve, reject) => {
-          // Read per attempt: a re-auth can land during a backoff, and the
-          // next attempt must go out with the token held then.
-          const token = this.getCurrentToken();
-          const xhr = new XMLHttpRequest();
-          xhr.open(fileId ? 'PATCH' : 'POST', url);
-          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-          xhr.responseType = 'json';
+    const send = () =>
+      withDriveRetry(
+        () =>
+          new Promise<{ id: string }>((resolve, reject) => {
+            // Read per attempt: a re-auth can land during a backoff, and the
+            // next attempt must go out with the token held then.
+            const token = getCurrentToken();
+            const xhr = new XMLHttpRequest();
+            xhr.open(fileId ? 'PATCH' : 'POST', url);
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            xhr.responseType = 'json';
 
-          if (onProgress) {
-            xhr.upload.onprogress = (event) => {
-              if (event.lengthComputable) {
-                onProgress(event.loaded, event.total);
-              }
-            };
-          }
+            if (onProgress) {
+              xhr.upload.onprogress = (event) => {
+                if (event.lengthComputable) {
+                  onProgress(event.loaded, event.total);
+                }
+              };
+            }
 
-          xhr.onload = async () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              const response = xhr.response;
-              if (response && typeof response === 'object' && 'id' in response) {
-                resolve(response as { id: string });
+            xhr.onload = async () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                const response = xhr.response;
+                if (response && typeof response === 'object' && 'id' in response) {
+                  resolve(response as { id: string });
+                  return;
+                }
+
+                try {
+                  const parsed = JSON.parse(xhr.responseText || '{}') as { id?: string };
+                  if (parsed.id) {
+                    resolve({ id: parsed.id });
+                  } else {
+                    reject(
+                      new DriveApiError(
+                        'Upload succeeded but response is missing file id',
+                        xhr.status
+                      )
+                    );
+                  }
+                } catch {
+                  reject(new DriveApiError('Upload response parsing failed', xhr.status));
+                }
                 return;
               }
-
-              try {
-                const parsed = JSON.parse(xhr.responseText || '{}') as { id?: string };
-                if (parsed.id) {
-                  resolve({ id: parsed.id });
-                } else {
-                  reject(
-                    new DriveApiError(
-                      'Upload succeeded but response is missing file id',
-                      xhr.status
-                    )
-                  );
+              const error = await driveHttpErrorFromXhr(xhr, 'Upload failed');
+              if (error.kind === 'auth') {
+                try {
+                  await handleAuthError(xhr.status, true, token);
+                } catch (authError) {
+                  reject(authError);
                 }
-              } catch {
-                reject(new DriveApiError('Upload response parsing failed', xhr.status));
+              } else {
+                reject(driveRefusal(error));
               }
-              return;
-            }
-            const error = await driveHttpErrorFromXhr(xhr, 'Upload failed');
-            if (error.kind === 'auth') {
-              try {
-                await handleAuthError(xhr.status, true, token);
-              } catch (authError) {
-                reject(authError);
-              }
-            } else {
-              reject(driveRefusal(error));
-            }
-          };
+            };
 
-          xhr.onerror = () => reject(new DriveApiError('Network error during upload', 0, true));
-          xhr.ontimeout = () => reject(new DriveApiError('Upload timed out', 0, true));
-          xhr.onabort = () => reject(new DriveApiError('Upload aborted', 0, true));
+            xhr.onerror = () => reject(new DriveApiError('Network error during upload', 0, true));
+            xhr.ontimeout = () => reject(new DriveApiError('Upload timed out', 0, true));
+            xhr.onabort = () => reject(new DriveApiError('Upload aborted', 0, true));
 
-          xhr.send(form);
-        }),
-      // Rate limits send the same form again. An update (PATCH) is idempotent;
-      // a create may already exist after a 5xx.
-      { retryOn: fileId ? undefined : rateLimitOnly }
-    );
+            xhr.send(form);
+          }),
+        // Rate limits send the same form again. An update (PATCH) is idempotent;
+        // a create may already exist after a 5xx.
+        { retryOn: fileId ? undefined : rateLimitOnly }
+      );
+    // A 401 for a replaced token created nothing, so even a create goes again.
+    return retryStaleTokenRefusal(send);
   }
 
   async deleteFile(fileId: string): Promise<void> {
@@ -533,14 +571,6 @@ class DriveApiClient {
         })
       );
     });
-  }
-
-  private getCurrentToken(): string {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
-    return token;
   }
 }
 
