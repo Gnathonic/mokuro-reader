@@ -200,7 +200,13 @@ export function queueVolumeForBackup(
 
   const queueItem: BackupQueueItem = {
     volumeUuid: volume.volume_uuid,
-    seriesTitle: volume.series_title,
+    // The folder the cloud already holds for this series, in ITS spelling:
+    // a server that merged `one piece/` into `One Piece/` would otherwise be
+    // handed the losing folder again. The exact title when the cloud has it
+    // (or has no such series). Not gated on bunko: on plain storage too, a
+    // title with no exact folder joins the folder folding onto it instead of
+    // minting a second spelling beside it.
+    seriesTitle: unifiedCloudManager.resolveCloudFolderTitle(volume.series_title),
     volumeTitle: volume.volume_title,
     provider: targetProvider.type,
     uploadConcurrencyLimit: targetProvider.uploadConcurrencyLimit,

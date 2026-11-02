@@ -2,6 +2,39 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## NEVER NAME A DEPLOYMENT. EVER.
+
+**This is the one rule with no exceptions and no judgement calls. No deployment
+is ever named in this repository.** That means:
+
+- nobody's public instance, and no community or third-party server;
+- none of the maintainer's own servers, NAS boxes or containers;
+- no test, staging or rehearsal host.
+
+Never write a real instance's domain, hostname, URL, IP address (public or
+LAN), machine name, container name, port mapping or admin path. Nowhere means
+nowhere:
+
+- code, comments, tests and fixtures;
+- docs, plans, specs, the README and this file;
+- the CHANGELOG, commit messages and branch names;
+- PR titles and bodies, issue comments and release notes.
+
+Use reserved names instead: `example.com`, `example.net`, `*.test`,
+`localhost`.
+
+- A user's bug report may quote their server. Leave it in their text, and never
+  repeat it in ours.
+- Before every commit and every push, check the diff, the commit messages and
+  the PR body for hostnames and IP addresses.
+- If a deployment's name turns up anywhere in the tree, removing it is the first
+  job, before anything else.
+- This rule itself names none. Keep it that way: never add a "for example" here.
+
+The only real addresses the repo carries are the app's own origins, which the
+code needs (`src/lib/consts/index.ts` switches on them), plus `localhost` and
+reserved example names.
+
 ## Project Overview
 
 Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-white/mokuro)-processed manga. It's a SvelteKit 5 application with offline support, stat tracking, and Google Drive sync capabilities.
@@ -131,6 +164,49 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   provider's "storage is full" wording (`core/storage-full.ts`). OneDrive's equivalent is
   `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
   `GraphQuotaError` → `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
+
+**mokuro-bunko specifics** (the WebDAV provider against a bunko server):
+
+- **Write access.** A server known to be bunko — `PUT_VERIFIED` recorded for
+  the base URL, or an OPTIONS answering `X-Mokuro-Put: verified` — skips the
+  generic OPTIONS `Allow` verdict in `checkWritePermissions`: bunko decides
+  each request itself and its `Allow` is advisory (older versions list no PUT
+  or MKCOL on collections). A real refusal still demotes through
+  `handleWriteFailure`.
+- **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
+  a `serverCompilesMetadata` provider every listing runs
+  `adoptCloudSeriesSpellings` (`util/sync/cloud-spelling-adoption.ts`): a local
+  series title with NO folder of its own, EXACTLY ONE folder folding onto it
+  (`normalizeVolumeTitleKey`), and at least one of its volumes listed there as a
+  `.cbz` takes the folder's spelling as a LOCAL-ONLY rename
+  (`commitLocalSeriesRename`, the local half of `executeRenameSeries`: rows,
+  stats, `series_metadata`, series reading state). The write-side listing
+  passes (`reconcileMissingMetadataFiles`, the sidecar backfill, layer sync)
+  wait for it in `refreshSeriesIndexesInBackground`; the index/catalog refreshes
+  do not. Backup enqueue (`resolveCloudFolderTitle`) and
+  `existsInCloud`/`getCloudFile` (exact path, then the same folder-and-file
+  picks as `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so
+  nothing uploads into the losing folder. `getCloudFile`/`existsInCloud` is
+  THE "is it backed up" selector — the series page's status and "back up
+  series", `BackupButton`, `VolumeItem` and the cloud screen all ask it; a
+  byte-exact path test beside it reads an uploaded volume as missing and
+  re-PUTs it on every click. Those backstops are NOT gated on bunko: like
+  every other folder lookup (rename, delete, `series.json`) they run on every
+  provider, so on plain storage too a title with no exact folder backs up into
+  and counts as backed up in the ONE folder folding onto it, naturally first
+  when several do. An exact folder always wins, and plain storage never
+  ADOPTS: its rows keep their spelling. A DELETE is narrower
+  (`cloudFolderOfSeries`, `catalog/series-delete.ts`): the removal dialog's
+  "also delete" and `deleteSeriesFromCloudByTitle` take a folded folder only
+  when the catalog would group it with the series (`normalizeSeriesKey` — a
+  title differing only in unicode form folds alike but is ANOTHER catalog
+  series) and it lists one of the series' own volumes. Adoption itself skips
+  a series with a volume open in the reader (`isVolumeOpen`, `hash-router.ts`,
+  the OCR upgrade's deferral) — the row write would reload the open volume —
+  and the next listing retries. The folded lookups read `listingFolderIndex`,
+  built once per cache revision (`CoalescedCacheStore.revision`, replaced by
+  every add/remove/install) and holding the archive records themselves, so a
+  per-volume caller — hit or miss — costs O(1), not a pass over the listing.
 
 ### Svelte 5 Reactive Performance
 
@@ -694,17 +770,53 @@ Rules:
 
 ### What syncs where
 
-| Data                                                        | File                                      | Merge key                              |
-| ----------------------------------------------------------- | ----------------------------------------- | -------------------------------------- |
-| Read progress, per-volume settings                          | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume        |
-| Series reading state (`read_count`, re-read mute, tracking) | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`         |
-| Settings profiles                                           | `profiles.json`                           | `lastUpdated` per profile              |
-| Series facts (link, titles, synonyms, tag, unit)            | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp         |
-| Shelf alignment (`spine_offset`, per-volume `offset`)       | `<Series>/series.json` (index fields)     | local wins, else the published value   |
-| Primary OCR identity (`mokuro_sha256`)                      | `<Series>/series.json` (index field)      | rides with its file's `mokuro_*` stamp |
-| Volume completion date (`completedAt`)                      | `volume-data.json` (volume uuid keys)     | rides the whole-entry volume merge     |
-| Reading goals, custom goals, closed-period snapshots        | `goals.json`                              | `lastUpdated` per key; snapshots union |
-| Per-volume reading deadlines                                | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
+| Data                                                               | File                                      | Merge key                              |
+| ------------------------------------------------------------------ | ----------------------------------------- | -------------------------------------- |
+| Read progress, per-volume settings                                 | `volume-data.json` (volume uuid keys)     | `lastProgressUpdate` per volume        |
+| Series reading state (`read_count`, re-read mute, tracking)        | `volume-data.json` → `series` section     | `lastUpdated` per `series_key`         |
+| Settings profiles                                                  | `profiles.json`                           | `lastUpdated` per profile              |
+| Series facts (link, titles, synonyms, tag, unit)                   | `<Series>/series.json` (+ `catalog.json`) | `updated_at` = the facts stamp         |
+| Shelf alignment (`spine_offset`, per-volume `offset`)              | `<Series>/series.json` (index fields)     | local wins, else the published value   |
+| Primary OCR identity (`mokuro_sha256`)                             | `<Series>/series.json` (index field)      | rides with its file's `mokuro_*` stamp |
+| Volume completion date (`completedAt`)                             | `volume-data.json` (volume uuid keys)     | rides the whole-entry volume merge     |
+| Reading goals, custom goals, closed-period snapshots               | `goals.json`                              | `lastUpdated` per key; snapshots union |
+| Per-volume reading deadlines                                       | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
+| Idle cutoff (automatic / manual override, `k`), long-pause default | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
+| Pre-history reading snapshot (`legacyStats`)                       | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
+| Device names, class corrections, merges                            | `volume-data.json` → `tracking.devices`   | `lastUpdated` per device id            |
+| Newest reading position (30 days)                                  | `positions.json`                          | newest `t` per volume                  |
+
+`positions.json` (`src/lib/positions/`) is the newest position per volume at a
+FIXED path, so a device that was just picked up can learn where the user
+stopped without the full listing: it is checked when the reader opens (≤ 1 s),
+rides every sync right after the volume data, and is pushed 3 s after page
+turns settle (at once when the tab is hidden). Opening a page never stamps a
+position, and an adopted position keeps the other device's stamp. Not
+authoritative: history and `volume-data.json` still carry every position.
+mokuro-bunko gets it only when its identity lists it in `per_user_files`
+(`ProviderStatus.positionsSync`; no version floor, unlike `historySync`);
+before that the path is a shared library file, and the client neither reads
+nor writes it. Sync merges every listed copy (newest `t` per volume), so it is
+in `MERGED_ACROSS_COPIES` (`syncable-file.ts`) with `volume-data.json` and
+`goals.json`: the folder dedup moves a duplicate copy in beside the other
+instead of trashing it.
+
+**Look-up visits claim nothing** (`reading-history/visits.ts`, live side
+`positions/visit.ts`). A visit is one device's run of page views of one volume,
+split on a gap over 10 min; it is a look-up when it has ≥ 2 views, ends on its
+first view's pages, and read at most 2 other pages (≥ 3 s each, not skip-fast).
+On coming home the record is put back as it was when the reader opened — its
+own stamp when nothing of the visit was uploaded, else 1 ms above the newest
+upload (`positions/escapes.ts`, reported before each PUT starts) — unless the
+page on screen would move, or another device's position landed during the
+visit (even while the reader was closed between two opens of it). After a
+restore a newer position elsewhere is an offer, never a silent move. A
+completion is held only while the visit could still be a look-up, and a
+restore drops it; offers, characters read and speed samples ignore look-up
+views. "Last read" (smart sort, progress tracker) comes from history
+(`reading-history/last-read.ts`): the newest reading view, else a
+`lastProgressUpdate` from before the volume's first event (reading history
+never saw), else 0 — a re-stamp never moves a series.
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no
@@ -809,10 +921,229 @@ IndexedDB rw transaction as the write (`appendEvent`), so two tabs never
 collide. Kinds: `page` (one per reader VIEW — whole pages on screen, raw
 uncapped `dwell_ms`, emitted when the view ends via `ViewTracker`; a hidden
 tab has no view), `adjust` (volume editor time/chars edits), `restart`
-("restart series"), `forget` (delete stats). Record through `recordEvent`,
-which never throws and loads the DB module lazily (`volume-data.ts` imports
-it; many suites mock `dexie` bare). Phase 1 only writes: nothing reads the
-events yet, and `recentPageTurns`/`timeReadInMinutes` still drive every stat.
+("restart series"), `forget` (delete stats), `position` (an answer to a
+cross-device position offer — see below), `resolve` (an answer about a long
+pause — see below). Record through `recordEvent` (`recordView` for a view and
+its answer in one transaction, `recordResolve` for a later answer), which
+never throw and load the DB module lazily (`volume-data.ts` imports it; many
+suites mock `dexie` bare).
+
+**Page turns come from history (phase 2b).** `updateProgress` no longer writes
+`recentPageTurns`. The stats still read `PageTurn[]`, but the public `volumes`
+store serves turns PROJECTED from every device's events (`project-turns.ts`,
+`turns-store.ts` — loaded once on start, then updated per recorded/imported
+event): a native view is a turn at its start; a converted legacy turn counts
+only when no native view of that volume covers it (±2 s), so phase-1 reading
+recorded both ways counts once; a `forget` hides that volume's earlier events.
+`volumesWithTrash` records keep only their own UNCONVERTED turns — never write
+projected turns back into a record (that is why the speed store's 2-tuple
+write-back is gone). Until history loads, or for a volume it has nothing for,
+the record's own turns are served, so no stat goes empty.
+
+The cut-over (`cut-over.ts`) runs on start and inside every progress sync
+between the merge and the upload: a record's turns become legacy events
+(`device = 'legacy:' + volume`, `seq` = turn time — identical on every
+device), committed BEFORE exactly those turns are stripped; if IndexedDB
+fails the turns stay in the file. `archivedReads` become `restart` events
+but stay in the record. Each device uploads the legacy events it holds as
+`history/<device>/legacy.events`; imports union by key.
+
+Progress syncs are batched while reading (`activity-tracker.ts`: 5 s debounce,
+at most one per 3 min) and flushed when the reader closes, the tab hides or
+the page goes away.
+
+**Stats on events (phase 3a).** Time read, characters read, speed and time
+left come from history — one clock (`stats-engine.ts`, pure; `stats-store.ts`
+keeps it current, re-preparing only volumes whose events changed). Rules that
+must hold:
+
+- A view counts its raw dwell up to its CAP: `clamp(k × chars_visible × pace,
+60 s, 30 min)`, pace = median ms/char of the newest 500 views (≥ 30 needed,
+  else 5 min), or the synced manual override. Over the cap the reader ASKS
+  (phase 3b, below); unanswered, it counts TYPICAL time (`expected`, at least
+  the floor), provisionally.
+- A view faster than 1500 cpm is a SKIP: its time counts, never its speed; a
+  page only skip views showed is skimmed, not read (`skippedChars`, shown apart).
+  Per pass (split at `restart`) a page's characters count once.
+- Converted legacy turns: page chars = the next turn's cumulative minus this
+  one's; over the cap they count nothing (the old idle rule).
+- Reading from before history is a per-volume SNAPSHOT in the synced record,
+  `legacyStats {time_ms, chars, before}`: the old minute counter and lifetime
+  characters, frozen at `before` (`freezeLegacyBaselines`, at start and after
+  each sync — no events needed). Figures = `max(old, history before the
+freeze) + history after` (`figuresFor`, via the engine's per-volume
+  timeline): another device's pre-freeze events arriving later EXPLAIN the old
+  figure, never add to it; an unfrozen record shows `max(old, history)`. Raw
+  totals are clamped only after that, so an editor edit below the old figure
+  works. Merge keeps the later snapshot; a forget drops it, and after one only
+  a copy carrying that `forgotAt` may hold one.
+- Per page turn the store counts only the changed volume: counts keep their
+  pace until it moves > 2%, and the pace / recent speed take volumes newest
+  first (`estimatePace`, `recentSpeed`) — never sort the whole library there.
+- `timeReadInMinutes` is frozen: parsed, never written. The volume editor
+  edits the derived time and records the difference as an `adjust` event (no
+  record stamp). The reader timer is that figure plus the open view counted by
+  the same rule (`countedDwell`: up to its cap, or as a standing long-pause
+  default counts it); clicking it ends the view until the next page.
+- Recent speed = the newest 8 h of counted reading, by time (no per-volume
+  window); under 30 min, completed volumes' BASELINES fill in. A series' own
+  speed (≥ 60 min of its reading) drives its time left (`series-speeds.ts`,
+  one shared map — never group the catalog per card).
+- The idle cutoff is NOT a profile setting: `tracking.idle` in
+  `volume-data.json` (`tracking-data.ts`), per key newest-wins with the
+  series section's clamp + forfeit-on-bogus and raw upload comparison.
+
+**Long pauses (phase 3b).** A view that reaches its cap is ASKED about, never
+guessed: `pause-watch.ts` arms one timer at `since + cap` (re-armed when the
+pace, `k` or the override moves) and `LongPausePrompt.svelte` asks, non-modal,
+above the page — never inside `Timer.svelte`, whose markup hides with the HUD.
+Rules that must hold:
+
+- An answer is a `resolve` event (`volume`, `target: [device, seq]`, `count`
+  = `full` | `typical` | `none`), kind 5 inside segment format 1. `volume` is
+  the target's, so everything keyed by volume (turns store, codec, index)
+  handles it unchanged. The latest answer per target wins in event order
+  (t, device, seq) on every device; nothing is ever edited.
+- A live answer SPLITS the view: the view so far and its `resolve` go in ONE
+  rw transaction (`recordView` → `appendView`), and a continuation view of the
+  same pages opens at the answer (`ViewTracker.split`). Nothing waits for a
+  later event, so a page turn or close loses no answer; the continuation earns
+  no new characters (a page counts once per pass).
+- `countedDwell` is the one rule for engine and live timer: `full` = the raw
+  dwell, `none` = 0, `typical` or unanswered-over-cap = typical. Live, an
+  unanswered view STOPS at its cap while the prompt asks; a view that just
+  ended adds `endedViewMs` (what the stats will count) until the stats move,
+  so the timer is exact both ways — no dip on a page turn, and no kept
+  minutes after "Don't count" (it used to only ever rise). An answer
+  applies under any later cap, and only to TIME — reads and skips are
+  unchanged (`none` keeps the pages read and gives no speed sample).
+- "Still reading" = `full` plus `widenedK`: `k` fits this view × 1.5, up to a
+  half step, at most 20 and never past where the ceiling caps it; it never
+  shrinks. `null` (nothing changes) under a manual override, without a pace,
+  or when this page's CURRENT cap is held at the floor (`k × expected ≤
+floor`: its time reflects the floor, not pace — fitting `k` to one tap on a
+  one-bubble page raised every other page's cap ~5.5×). `k` shares
+  `tracking.idle`'s stamp with the override; Settings shows the widening with
+  a Reset.
+- Two minutes past the cap the prompt shows how long the page has been open:
+  count all / typical / none. Unanswered (turn, hide, pause click, close) the
+  pause counts typical and is listed PROVISIONAL on the reading-speed page
+  (`pause-review.ts`, `LongPausesCard.svelte`), where any answer can change.
+- "Always do this" appears once 3 pauses are answered — DERIVED from the
+  answers across every volume and device, never stored. The standing default
+  is `tracking.pauses` (its own key and stamp), written as a view's answer
+  when the view ENDS, only for views that reached the cap while it was set —
+  never backwards over the review list.
+- Converted `legacy:` views are never prompted; over the cap they still count
+  nothing, and a `resolve` aimed at one is ignored.
+- `e2e/long-pauses.spec.ts` drives all of it on Playwright's page clock
+  (`clock.install()` before the app loads, then `fastForward`).
+
+**Position across devices (phase 2c).** The position stays the newest page
+event; `planPosition` (`position-offer.ts`, pure) decides when OTHER reading is
+offered instead of silently losing to it. Rules that must hold:
+
+- The signal is what the NEWEST device (owner of the newest native view) saw.
+  Another device's FINAL view is offered unless the newest device viewed that
+  page after it, or the view's pages already include the current progress.
+  A view's page is its `first_page` (a spread's position). Final, never
+  furthest: peek-ahead-then-back resumes where the reader stopped.
+- A restart wins. It is FOLLOWED once ANY device views page ≤ 1 after it; an
+  unfollowed restart from another device, with newer reading on the newest
+  device, is re-applied (`applyMissedRestart` archives the pass, then zeroes
+  it) and that reading — as it stood when the reset was recorded — is offered.
+  The reset waits while that volume is open in the reader.
+- Answers are `position` events (`jump`/`stay`/`reset`, `through` = the offered
+  reading's time): nothing at or before an answered `through` is offered again
+  on any device, whatever stale copy arrives. Marking a volume read/unread
+  records a `stay` (`settlePositionOffers`). A `forget` hides earlier events;
+  converted `legacy:` events never drive offers.
+- Jump (`jumpToPosition`) is not a page view and fires no completion notice.
+- Cadence (`position-store.ts`, localStorage `position-offer:shown`): the reader
+  banner shows an offer at most once a session, in at most 2 sessions; then the
+  volume card shows a chip (`PositionOfferChip.svelte`) until answered.
+- `positionPlanFor` is memoised per volume on its events version
+  (`volumeEventsVersion`) and progress — the chip mounts once per card.
+
+**Devices (phase 4).** A device is a raw id with a facts row (`devices`, from
+its `device.json`) or a native event; `legacy:` ids are never devices
+(`isDeviceId`, `paths.ts`). What the user chooses about a device lives ONLY in
+`volume-data.json` → `tracking.devices[<id>]` (`DeviceLabel {name?, class?,
+merged_into?, lastUpdated}`, `tracking-data.ts`) — never in `device.json`,
+`pickFacts` or the history DB. Rules that must hold:
+
+- One stamp per entry, newest `lastUpdated` wins, a tie keeps local, with the
+  clamp + forfeit-on-bogus of the other `tracking` keys (bogus ids are
+  `devices/<id>` in the one bogus set). The entry is replaced whole, so a
+  cleared name or an unmerge wins by its stamp. The multi-copy fold filters per
+  device id (`foldableTracking`): a bogus copy must never wipe other devices'
+  labels.
+- Labels (`devices.ts`, pure): a user name verbatim, else `<Class> · <OS> ·
+<browser>` (`generatedLabel`). Generated labels that collide over ALL known
+  raw ids (merged ones too) get ` (since Mar 2026)` from first-seen (UTC month,
+  so every device agrees), then ` 2`, ` 3` by first-seen and id. "This device"
+  is a badge on the group holding `resolveDevice(own)`, never in the label. The
+  UUID is never shown.
+- `merged_into` applies ONLY where reading is grouped by device: `resolveDevice`
+  follows it with a visited set, and a cycle leaves every member unmerged;
+  `mergeDevice` into a cycle member first takes it off the cycle.
+  Events are never re-keyed — volume/series/total figures, resolve targets and
+  `planPosition` use raw ids, so a merge or unmerge never recounts. Merging does
+  not carry the source's name.
+- Never show another device's `facts.last_seen`: `exportOwnFacts` leaves it out
+  of the upload signature, so it is stale by design. "Last read" is the group's
+  newest event.
+- Per-device stats come from the engine's `byDevice` (raw id; every `legacy:`
+  view under one key; characters to the first crediting view's device),
+  grouped by `resolveDevice` in `deviceStats` (`device-stats.ts`; also
+  `devices`, `knownDevices`, `deviceFacts`) — a label change regroups, never
+  recounts. "Before history" = legacy views + the pre-history baseline, so rows
+  sum to the page's totals; volume-editor `adjust`s are an "Edits" row. Both
+  hidden at zero, neither renamable. Speed shows only with ≥ 30 min of samples.
+- One edit component (`DeviceNameField.svelte`), three entry points: the
+  "Devices" block on `#/cloud` (`DevicesSettings.svelte`, once ≥ 2 raw ids are
+  known, so an unmerge stays reachable), inline rename in the reading-speed
+  page's per-device card (`DeviceStatsCard.svelte`, ≥ 2 groups with native
+  events) and `SecondDeviceBanner.svelte` under that page's heading (same rule,
+  this device unnamed, `localStorage` `device-banner:dismissed` unset — per
+  browser). The banner stays as "Saved." after naming until closed (no layout
+  motion). A single-device user sees none of them.
+- The position offer names the offering device by its label ("on Pixel 8");
+  a device this one knows nothing about keeps "on another device".
+- `e2e/devices.spec.ts` drives all of it: two browser contexts plus a third
+  device planted on the WebDAV stub (`device.json` + an encoded month).
+
+**Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
+month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
+`segment-codec.ts`; a reader refuses a `format` it does not know), plus
+`history/<device>/device.json` (its facts), and imports every other device's
+(`history-sync.ts`, run at the end of every `syncProvider` by
+`syncReadingHistory`, lazily imported). Rules that must hold:
+
+- History is recognised by its FULL path (`reading-history/paths.ts`):
+  `isSyncableFile` must be given the path relative to the mokuro folder, never a
+  bare basename. Drive lists the account flat and walks parents to build it
+  (`drive-history-path.ts`); its cache groups by the FIRST segment like every
+  other provider. OneDrive creates nested folders one segment at a time.
+- Import is idempotent by `[device, seq]` in one transaction with the file's
+  stamp (`history_files`, Dexie v2); a file that fails to download, decode or
+  match its path (device/month) records nothing and is retried next listing.
+  Size/mtime only decide whether to download.
+- Upload marks are per provider (`history_meta` `uploaded:<provider>:<month>`):
+  a new provider gets every month. The current month goes up at most every
+  5 min unless the sync is manual (non-silent); closed months always go up.
+- Best-effort: history paths are in `isBestEffortMetadataPath` (a rejected
+  write never demotes WebDAV), and the pass never fails the sync. Read-only
+  providers get no uploads (imports still run). mokuro-bunko gets history only
+  from **0.8.0**, which maps `history/` per user, lists it in `per_user_files`
+  and is the first to report its `version` in `/login/api/me` (bunko issue
+  #27): the WebDAV provider sets `ProviderStatus.historySync` only when BOTH
+  hold — the version's numeric core ≥ 0.8.0 (a `0.8.0-beta.N` counts as 0.8.0;
+  missing or unparseable = no) AND `per_user_files` contains `history/`
+  (`bunko-version.ts`) — and `historySyncAllowed(status)` (`history-sync.ts`)
+  gates EVERYTHING. Otherwise `history/` lands in the shared library, so neither
+  upload nor import runs there, and the file keeps carrying page turns
+  (`attachProjectedTurns`).
 
 ### Settings Architecture
 

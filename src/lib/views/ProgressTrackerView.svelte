@@ -4,6 +4,7 @@
   import { Button, Card, Spinner } from 'flowbite-svelte';
   import { BookSolid, SortOutline, CogOutline } from 'flowbite-svelte-icons';
   import { volumes, VolumeData, progress } from '$lib/settings/volume-data';
+  import { lastReadTimes } from '$lib/reading-history/last-read';
   // Placeholders included: a volume read on another device and never downloaded
   // here has no catalog row, so the plain store gave it page_count 0 and the
   // tracker dropped it from every section.
@@ -182,6 +183,7 @@
     const deadlines = $volumeDeadlines;
     const mode = $miscSettings.progressTargetMode;
     const periodStart = currentPeriodStart;
+    const readTimes = $lastReadTimes;
 
     const buckets = bucketVolumes(
       volumeEntries,
@@ -192,7 +194,7 @@
     );
 
     const withSortData = (entries: [string, VolumeData][]) =>
-      createEntriesWithSortData(entries, volumeStats, deadlines, mode, periodStart);
+      createEntriesWithSortData(entries, volumeStats, deadlines, mode, periodStart, readTimes);
 
     return {
       currentlyReading: sortEntries(

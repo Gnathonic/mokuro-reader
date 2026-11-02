@@ -12,7 +12,6 @@
 
 ## Global Constraints
 
-- Never reference the domain "mokuro.moe" in code, comments, or commit messages.
 - `account_scope` must never contain a secret or credential — it is persisted to IndexedDB.
 - Stage with explicit git pathspecs only. Never `git add -A` / `git add .` — the worktree is shared.
 - Do not push. Commit locally only.

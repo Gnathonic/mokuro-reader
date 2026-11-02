@@ -105,6 +105,10 @@ class FilesystemCacheManager implements CloudCache<CloudFileMetadata> {
     return result;
   }
 
+  revision(): object {
+    return this.cache.revision();
+  }
+
   clear(): void {
     this.cache.set(new Map());
     this.loadedFlag = false;
