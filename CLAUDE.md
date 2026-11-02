@@ -447,8 +447,20 @@ Cloud layer sidecars are named `<Volume Title>.<layer-id>.mokuro[.gz]`
 `classifyMokuroSidecar` (`src/lib/util/sync/syncable-file.ts`) tells a listed
 `.mokuro` apart from a layer file the same way it always disambiguated dotted
 volume titles — by checking which stems have a `.cbz` in the same folder
-listing — and `src/lib/metadata/layer-sync.ts` syncs layers for rows that
-already exist locally (installed or metadata-only), newest-wins, no merge. A
+listing — under **sidecar names rule v1**, which mokuro-bunko shares
+(`bunko_core::sidecar_names`; the rule is spelled out above `LAYER_ID_RE`):
+suffixes in any ASCII case, only `.cbz` defines stems, stems fold NFC +
+lowercase (`foldStem`), a primary wins over a layer reading, the id is matched
+AS WRITTEN (`Vol 1.GCV.mokuro` is an orphan — never a layer, and never taken
+for `Vol 1`'s primary inside an archive or an import, `miscasedLayerStem`;
+all-digit ids are valid), a sweep takes the exactly-spelled archive's layers
+first (measured against the volume's OWN archive as the listing spells it, so a
+caller's DB spelling — composed, another case — still finds them), a leading UTF-8 BOM is
+tolerated on read, and every id the reader mints contains a letter
+(`slugifyLayerId`). The vectors both sides test against live in bunko's
+`interop/contract/sidecar-names.json` (hand-copied into `syncable-file.test.ts`
+for now) — and `src/lib/metadata/layer-sync.ts`
+syncs layers for rows that already exist locally (installed or metadata-only), newest-wins, no merge. A
 layer with no local record is filed by inferring its kind from the id alone:
 `original` stays `original`, `tr-<lang>` is a `translation`, a known engine id
 (`gcv`, `hayai`, `paddle-manga`, `ppocr-manga`, `mokuro-fp16`, `mokuro`) is
@@ -472,6 +484,16 @@ everything that removes or moves a layer works from all listed copies
 (else the tombstone stays), a push removes the `.gz` it superseded
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
+
+A volume rename (`renameVolumeFiles`) writes in a fixed order: PUT the
+regenerated main at the new name (no regenerated main — a legacy caller
+without a uuid — MOVES the stale one in its place), move the layers, move the
+cover, move the `.cbz` LAST, and only then delete the stale main. The order is
+so that an INTERRUPTED rename leaves inert leftovers: a sidecar with no
+archive beside it is inert — mokuro-bunko has no sweep for one — whereas an
+archive without its main may be treated as owing OCR by a server that acts on
+what it finds (a cloud library waits 120 s before acting on arrivals; a local
+DAV library is not known to wait). The stale main is deleted last either way.
 
 `.mokuro` files themselves stay pure upstream format regardless of which
 layer produced them. A `gcv` or `tr-<lang>` layer from the removed
@@ -640,6 +662,13 @@ Rules:
   `facts_updated_at`. An absent value means "no opinion" and inherits whatever
   the other side already published; a local `0` suppresses the published value
   at build time and is omitted from the file (build → parse stays an identity).
+  The one exception is the PUT body to a `serverCompilesMetadata` provider,
+  which reads an absent key as "keep yours": a deliberate local reset of a
+  non-zero server `spine_offset` goes up as an explicit `0`
+  (`withServerIndexClears`); the cached copy never holds it. bunko (≥ 0.8)
+  reads a present `0`/`null` as "clear" and an absent key as "inherit"; older
+  servers read the `0` as absent, so the reset only lands there once they
+  update. A plain-storage file never carries a `0`.
   Inheritance is a JOIN, never an adoption: `series_metadata` stores only what
   this user edited, and a published alignment reaches the shelf from the cached
   `series_index` copy (`getSpineOffsets` returns `record ?? published`, per key)
@@ -679,7 +708,9 @@ Rules:
   `store.ts`, funnelling into the same per-series debounce so one patch
   touching both costs one write), after a series' backup uploads finish, on
   series rename (written at the new title, old deleted) and removed with the
-  series folder. Gated on a writable connected provider and ≥1 backed-up
+  series folder — on a `serverCompilesMetadata` provider the client never
+  DELETEs a `series.json` (the server refuses it and retires orphans itself);
+  it only drops the cached index. Gated on a writable connected provider and ≥1 backed-up
   volume; read-only providers skip silently. There is no UI button. Facts or
   offsets arriving _from_ a sidecar never schedule a write (no ping-pong).
 - **Backfill.** Every cloud listing also reconciles: a folder with at least one
@@ -709,7 +740,10 @@ Rules:
   `writeSeriesFile` PUTs only when the built file's facts or offsets differ
   from the server's copy (`seriesFileCarriesServerRequest`): a placeholder's
   measurement, a download's recorded hash, a backup's drain or a delete's
-  maintenance never cost a PUT there.
+  maintenance never cost a PUT there. bunko retires `<Series>/series.json`
+  itself when the folder loses its last `.cbz`; the reader's cleanup never
+  DELETEs it there (an emptied folder, a series rename) and only drops its
+  cached index.
 
 ### Root `catalog.json`
 

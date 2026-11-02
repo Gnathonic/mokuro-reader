@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- mokuro-bunko: resetting a shelf's alignment now sticks
+- OCR layer files found on decomposed-name storage
+- mokuro-bunko: renaming a volume no longer duplicates OCR layers
 - A full Google Drive no longer signs you out
 - Google Drive rate limits wait and retry instead of failing
 - A full Google Drive or OneDrive says so plainly
