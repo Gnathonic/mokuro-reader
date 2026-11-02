@@ -4878,9 +4878,14 @@ describe('blindUploadFile — the write-and-forget upload', () => {
     getActiveProvider.mockReturnValue(provider);
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
 
-    const fileId = await unifiedCloudManager.blindUploadFile('S/V.mokuro', new Blob(['x']));
+    const uploaded = await unifiedCloudManager.blindUploadFile('S/V.mokuro', new Blob(['x']));
 
-    expect(fileId).toBe('blind-1');
+    // The whole receipt, not just the id: callers record it (positions-sync).
+    expect(uploaded).toEqual({
+      fileId: 'blind-1',
+      modifiedTime: '2026-08-27T00:00:00.000Z',
+      size: 7
+    });
     expect(provider.blindUploadFile).toHaveBeenCalledTimes(1);
     expect(provider.uploadFile).not.toHaveBeenCalled();
     // The SAME provenance-correct cache entry an ordinary upload earns: the
@@ -4904,14 +4909,44 @@ describe('blindUploadFile — the write-and-forget upload', () => {
     getActiveProvider.mockReturnValue(provider);
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
 
-    const fileId = await unifiedCloudManager.blindUploadFile('S/V.webp', new Blob(['xy']));
+    const uploaded = await unifiedCloudManager.blindUploadFile('S/V.webp', new Blob(['xy']));
 
-    expect(fileId).toBe('plain-1');
+    expect(uploaded.fileId).toBe('plain-1');
     expect(provider.uploadFile).toHaveBeenCalledTimes(1);
     // No server mtime in the response: the entry is the provisional
     // client-clock fallback, exactly as with an ordinary upload.
     expect(added[0].entry).toMatchObject({ fileId: 'plain-1', modifiedTimeProvisional: true });
     expect(added[0].entry.size).toBe(2);
+  });
+
+  it("a root file's upload seeds the read memo: the next read of it is a stat, not a download", async () => {
+    loadedCacheWithAdd();
+    const stamp = { size: 2, modifiedTime: '2026-11-02T10:00:00.000Z', revision: 'v7' };
+    const provider = {
+      type: 'google-drive',
+      getStatus: () => ({ accountScope: 'google-drive:reader-root' }),
+      uploadFile: vi.fn(),
+      blindUploadFile: vi.fn(async () => ({ fileId: 'pos-1', ...stamp })),
+      statFile: vi.fn(async () => stamp),
+      downloadFile: vi.fn(async () => new Blob(['{}']))
+    };
+    getActiveProvider.mockReturnValue(provider);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { readRootFile, clearRootFileMemo } = await import('$lib/util/sync/root-file-memo');
+    clearRootFileMemo();
+
+    await unifiedCloudManager.blindUploadFile('positions.json', new Blob(['{}']));
+    const read = await readRootFile(provider as never, {
+      provider: 'google-drive',
+      fileId: 'pos-1',
+      path: 'positions.json',
+      modifiedTime: '',
+      size: 0
+    });
+
+    expect(await read.text()).toBe('{}');
+    expect(provider.statFile).toHaveBeenCalledTimes(1);
+    expect(provider.downloadFile).not.toHaveBeenCalled();
   });
 
   it('the ordinary uploadFile never takes the blind provider path', async () => {
@@ -4924,9 +4959,9 @@ describe('blindUploadFile — the write-and-forget upload', () => {
     getActiveProvider.mockReturnValue(provider);
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
 
-    const fileId = await unifiedCloudManager.uploadFile('S/V.cbz', new Blob(['x']));
+    const uploaded = await unifiedCloudManager.uploadFile('S/V.cbz', new Blob(['x']));
 
-    expect(fileId).toBe('legacy-1');
+    expect(uploaded.fileId).toBe('legacy-1');
     expect(provider.blindUploadFile).not.toHaveBeenCalled();
   });
 });

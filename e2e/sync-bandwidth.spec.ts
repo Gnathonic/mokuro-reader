@@ -13,21 +13,27 @@ import {
 } from './helpers/positions';
 
 /**
- * BASELINE: what a page turn costs on the wire today, on a warm device with a
- * realistic library (300 read volumes in `volume-data.json`).
+ * What a page turn costs on the wire, on a warm device with a realistic
+ * library (300 read volumes in `volume-data.json`).
  *
  *   W1  turn + position push   — the `positions.json` PUT the turn arms
  *   W2  turn + full sync       — the sync the activity tracker runs after a turn
  *   W3  idle sync              — the same sync with nothing changed
  *
  * Prints `BANDWIDTH_JSON {...}` (and writes it to `$BANDWIDTH_OUT` when set),
- * so a change can prove its saving against these numbers.
+ * so a change can prove its saving against these numbers (the baseline before
+ * the sync-bandwidth work: W1 7 requests / 25 KB down, W2 17 / 60 KB, W3 6 /
+ * 57 KB — `docs/superpowers/specs/2026-11-02-sync-bandwidth-design.md`).
  *
- * The stub does not model: HTTP 304 / ETag revalidation, Content-Encoding
- * (bytes are the raw bodies), PROPFIND header overhead (request/response
- * headers are not counted), CORS preflights (counted separately, not in the
- * window totals), or any provider other than WebDAV (Drive's post-upload
- * listing, MEGA, OneDrive).
+ * Root-file reads are conditional (`root-file-memo.ts`): a PROPFIND Depth 0
+ * per file, the body only when its `getetag` moved. The stub mints a strong
+ * ETag on every write, as a real server does.
+ *
+ * The stub does not model: HTTP 304 (the reader never sends `If-None-Match`),
+ * Content-Encoding (bytes are the raw bodies), PROPFIND header overhead
+ * (request/response headers are not counted), CORS preflights (counted
+ * separately, not in the window totals), or any provider other than WebDAV
+ * (Drive's post-upload listing, MEGA, OneDrive).
  */
 
 const OUT = process.env.BANDWIDTH_OUT;
@@ -157,9 +163,21 @@ test('baseline: bytes and requests of a page-turn sync', async ({ browser }) => 
     writeFileSync(OUT, JSON.stringify(result, null, 2));
   }
 
-  // Sanity only: this is a baseline.
   expect(result.volumeDataBytes).toBeGreaterThan(SEEDED_VOLUMES * 50);
   expect(w1.byRequest[`PUT ${POSITIONS}`]?.count).toBeGreaterThanOrEqual(1);
-  expect(w2.byRequest[`GET ${VOLUME_DATA}`]?.count).toBeGreaterThanOrEqual(1);
-  expect(w3.byRequest[`GET ${VOLUME_DATA}`]?.count).toBeGreaterThanOrEqual(1);
+
+  // Budgets: no root file this device already holds is downloaded again —
+  // neither its own last write nor an unchanged copy.
+  const rootGets = (w: Window) =>
+    Object.entries(w.byRequest)
+      .filter(([key]) => /^(GET|HEAD) \/mokuro-reader\/[^/]+\.json$/.test(key))
+      .reduce((n, [, r]) => n + r.count, 0);
+  expect(rootGets(w1)).toBe(0);
+  expect(rootGets(w2)).toBe(0);
+  expect(rootGets(w3)).toBe(0);
+  expect(w1.bytesDown).toBeLessThan(5_000);
+  expect(w2.bytesDown).toBeLessThan(10_000);
+  expect(w3.bytesUp).toBe(0);
+  expect(w3.bytesDown).toBeLessThan(5_000);
+  expect(w3.requests).toBeLessThanOrEqual(4);
 });

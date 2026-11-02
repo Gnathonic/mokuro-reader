@@ -4,6 +4,7 @@ import type {
   ProviderCredentials,
   ProviderStatus,
   CloudFileMetadata,
+  FileStamp,
   StorageQuota,
   UploadPayload,
   UploadFileResult
@@ -1187,6 +1188,8 @@ export class MegaProvider implements SyncProvider {
                   const nodeSize = file?.size;
                   resolve({
                     fileId,
+                    // Every upload mints a new node: its id IS the revision.
+                    ...(fileId ? { revision: fileId } : {}),
                     modifiedTime:
                       typeof ts === 'number' && Number.isFinite(ts)
                         ? new Date(ts * 1000).toISOString()
@@ -1260,6 +1263,29 @@ export class MegaProvider implements SyncProvider {
     const prefix = `${folder.replace(/^\/+|\/+$/g, '')}/`;
     const all = await this.listCloudVolumes(true);
     return all.filter((file) => file.path.startsWith(prefix));
+  }
+
+  /**
+   * `SyncProvider.statFile` from the tree the session holds — no request: the
+   * `sc` long-poll applies every other device's change to it (and a dead poll
+   * reloads the tree). Every upload mints a new node, so the node id is the
+   * revision; a node that is gone, or no longer live, is gone.
+   */
+  async statFile(file: CloudFileMetadata): Promise<FileStamp | null> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+    const node = (Object.values(this.storage?.files || {}) as any[]).find(
+      (f) => (f.nodeId === file.fileId || f.id === file.fileId) && !f.directory
+    );
+    if (!node || !this.isLiveNode(node)) return null;
+    const ts = node.timestamp;
+    return {
+      size: node.size || 0,
+      modifiedTime:
+        typeof ts === 'number' && Number.isFinite(ts) ? new Date(ts * 1000).toISOString() : '',
+      revision: node.nodeId ?? node.id ?? file.fileId
+    };
   }
 
   /**

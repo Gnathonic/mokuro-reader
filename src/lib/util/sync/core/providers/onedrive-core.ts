@@ -82,6 +82,16 @@ interface CompletedDriveItem {
   /** The server's own modification timestamp — what listings later report. */
   lastModifiedDateTime?: string;
   size?: number;
+  /** Content change token — the receipt's revision when present. */
+  cTag?: string;
+  eTag?: string;
+}
+
+/** A driveItem's revision token: `cTag` (moves with the content only), else `eTag`. */
+export function oneDriveRevision(item: { cTag?: string; eTag?: string }): string | undefined {
+  if (typeof item.cTag === 'string' && item.cTag) return item.cTag;
+  if (typeof item.eTag === 'string' && item.eTag) return item.eTag;
+  return undefined;
 }
 
 export const onedriveCore: CloudProviderCore = {
@@ -289,7 +299,9 @@ export const onedriveCore: CloudProviderCore = {
         typeof finalItem.lastModifiedDateTime === 'string'
           ? finalItem.lastModifiedDateTime
           : undefined,
-      size: typeof finalItem.size === 'number' ? finalItem.size : undefined
+      size: typeof finalItem.size === 'number' ? finalItem.size : undefined,
+      // The same token `statFile` compares: cTag (content only), else eTag.
+      ...(oneDriveRevision(finalItem) ? { revision: oneDriveRevision(finalItem) } : {})
     };
   }
 };

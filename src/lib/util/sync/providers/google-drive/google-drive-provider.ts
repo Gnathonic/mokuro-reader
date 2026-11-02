@@ -4,6 +4,7 @@ import type {
   ProviderStatus,
   CloudFileMetadata,
   DriveFileMetadata,
+  FileStamp,
   StorageQuota,
   UploadFileResult
 } from '../../provider-interface';
@@ -511,7 +512,17 @@ class GoogleDriveProvider implements SyncProvider {
       }
 
       console.log(`✅ Uploaded ${fileName} to Google Drive (${uploaded.fileId})`);
-      return uploaded;
+      // Where the file lives, so the cache entry carries it (the response
+      // names it; the folder we wrote into and the name we gave otherwise).
+      // A description update is a second change: the upload's `version` no
+      // longer names the file's current revision.
+      const { revision, ...receipt } = uploaded;
+      return {
+        ...receipt,
+        ...(revision && !description ? { revision } : {}),
+        parentId: uploaded.parentId ?? targetFolderId,
+        name: uploaded.name ?? fileName
+      };
     } catch (error) {
       // Typed, and worded so the user can act on it — not a network blip to retry.
       if (isDriveQuotaError(error)) {
@@ -661,6 +672,42 @@ class GoogleDriveProvider implements SyncProvider {
       level = next;
     }
     return out;
+  }
+
+  /**
+   * `SyncProvider.statFile`: `files.get` with only the stamp fields (one small
+   * metadata request through the retrying client). `version` is the revision
+   * — monotonic, any change bumps it. A 404 or a trashed file is gone.
+   */
+  async statFile(file: CloudFileMetadata): Promise<FileStamp | null> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+    await this.ensureInitialized();
+    let meta: {
+      size?: string | number;
+      modifiedTime?: string;
+      version?: string | number;
+      trashed?: boolean;
+    };
+    try {
+      meta = await driveApiClient.getFileMetadata(
+        file.fileId,
+        'id,size,modifiedTime,version,md5Checksum,trashed'
+      );
+    } catch (error) {
+      if ((error as { status?: number })?.status === 404) return null;
+      throw error;
+    }
+    if (!meta || meta.trashed) return null;
+    const size = Number(meta.size);
+    return {
+      size: Number.isFinite(size) ? size : 0,
+      modifiedTime: typeof meta.modifiedTime === 'string' ? meta.modifiedTime : '',
+      ...(meta.version !== undefined && meta.version !== null
+        ? { revision: String(meta.version) }
+        : {})
+    };
   }
 
   async downloadFile(

@@ -547,11 +547,37 @@ describe('MegaProvider ghost-node handling', () => {
     expect(folder.upload).toHaveBeenCalledOnce();
     // The result carries the node's SERVER timestamp as `modifiedTime`, so
     // the upload-time cache entry needs no provisional client-clock stamp.
+    // ...and the new node's id as the revision (every upload mints one).
     expect(uploaded).toEqual({
       fileId: 'fresh-node',
+      revision: 'fresh-node',
       modifiedTime: new Date(1_780_000_000 * 1000).toISOString(),
       size: 3
     });
+  });
+
+  it('statFile reads the node the session holds (no request): the node id is the revision', async () => {
+    const folder = makeMokuroFolder();
+    const node = makeFile('volume-data.json', folder);
+    Object.assign(node, { nodeId: 'node-1', timestamp: 1_780_000_000, size: 9 });
+    const provider = await loginWithTree({ root: folder, node });
+    const listed = {
+      provider: 'mega' as const,
+      fileId: 'node-1',
+      path: 'volume-data.json',
+      modifiedTime: '',
+      size: 0
+    };
+
+    expect(await provider.statFile(listed)).toEqual({
+      size: 9,
+      modifiedTime: new Date(1_780_000_000 * 1000).toISOString(),
+      revision: 'node-1'
+    });
+    // An unknown id, or a node no longer in its folder, is gone.
+    expect(await provider.statFile({ ...listed, fileId: 'other' })).toBeNull();
+    folder.children.splice(folder.children.indexOf(node), 1);
+    expect(await provider.statFile(listed)).toBeNull();
   });
 
   it('uploadFile replaces every same-name copy, not just the first', async () => {

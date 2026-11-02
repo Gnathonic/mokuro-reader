@@ -1,5 +1,5 @@
 import type { Readable } from 'svelte/store';
-import type { CloudFileMetadata, ProviderType } from './provider-interface';
+import type { CloudFileMetadata, ProviderType, UploadFileResult } from './provider-interface';
 
 /**
  * Cloud Cache Interface
@@ -54,9 +54,12 @@ export function uploadCacheEntry(
   providerType: ProviderType,
   path: string,
   uploadedBytes: number,
-  uploaded: { fileId: string; modifiedTime?: string; size?: number },
+  uploaded: Pick<
+    UploadFileResult,
+    'fileId' | 'modifiedTime' | 'size' | 'revision' | 'parentId' | 'name'
+  >,
   description?: string
-): CacheAddMetadata<CloudFileMetadata> {
+): CacheAddMetadata<CloudFileMetadata & { parentId?: string; name?: string }> {
   return {
     provider: providerType,
     fileId: uploaded.fileId,
@@ -64,7 +67,13 @@ export function uploadCacheEntry(
     modifiedTime: uploaded.modifiedTime ?? new Date().toISOString(),
     modifiedTimeProvisional: !uploaded.modifiedTime,
     size: uploaded.size ?? uploadedBytes,
-    description
+    description,
+    // The receipt's change token, and on Drive where the file now lives
+    // (`deleteSeriesFolder` reads `parentId`; `renameFile` falls back to a
+    // folder lookup without it). Absent fields stay absent.
+    ...(uploaded.revision ? { revision: uploaded.revision } : {}),
+    ...(uploaded.parentId ? { parentId: uploaded.parentId } : {}),
+    ...(uploaded.name ? { name: uploaded.name } : {})
   };
 }
 

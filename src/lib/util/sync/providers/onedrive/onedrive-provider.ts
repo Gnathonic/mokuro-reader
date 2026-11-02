@@ -4,6 +4,7 @@ import type {
   ProviderCredentials,
   ProviderStatus,
   CloudFileMetadata,
+  FileStamp,
   StorageQuota,
   UploadPayload,
   UploadFileResult
@@ -17,9 +18,11 @@ import {
   deleteItem,
   getDriveQuota,
   getItemByPath,
+  getItemStamp,
   listChildren,
   patchItem
 } from './graph-client';
+import { oneDriveRevision } from '../../core/providers/onedrive-core';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { isSyncableFile } from '../../syncable-file';
 import { GRAPH_QUOTA_MESSAGE, GraphQuotaError } from './graph-errors';
@@ -367,6 +370,25 @@ export class OneDriveProvider implements SyncProvider {
         size: item.size ?? 0
       })
     ];
+  }
+
+  /**
+   * `SyncProvider.statFile`: the item by id, `$select`ed to its stamp. The
+   * revision is `cTag` (content only), else `eTag`.
+   */
+  async statFile(file: CloudFileMetadata): Promise<FileStamp | null> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
+    }
+    const token = await onedriveTokenManager.getAccessToken();
+    const item = await getItemStamp(token, file.fileId);
+    if (!item || item.folder) return null;
+    const revision = oneDriveRevision(item);
+    return {
+      size: item.size ?? 0,
+      modifiedTime: item.lastModifiedDateTime ?? '',
+      ...(revision ? { revision } : {})
+    };
   }
 
   async downloadFile(

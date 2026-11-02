@@ -2298,3 +2298,94 @@ describe('quickMergeVolumeData — the quick tier, before any listing', () => {
     expect(local.shared.progress).toBe(40);
   });
 });
+
+describe('root files are read through the memo (conditional reads)', () => {
+  /** One server-side file: stat and download read the same state; a PUT mints a new tag. */
+  function server(initial: unknown) {
+    let seq = 0;
+    let body = JSON.stringify(initial);
+    let tag = `t${seq}`;
+    const meta: CloudFileMetadata = {
+      provider: 'webdav',
+      fileId: '/mokuro-reader/volume-data.json',
+      path: 'volume-data.json',
+      modifiedTime: 'Mon, 02 Nov 2026 10:00:00 GMT',
+      size: body.length
+    };
+    const provider = {
+      type: 'webdav',
+      getStatus: () => ({
+        isAuthenticated: true,
+        hasStoredCredentials: true,
+        needsAttention: false,
+        statusMessage: '',
+        accountScope: 'webdav:https://host|alice'
+      }),
+      statFile: vi.fn(async () => ({
+        size: new Blob([body]).size,
+        modifiedTime: 'Mon, 02 Nov 2026 10:00:00 GMT',
+        revision: tag
+      })),
+      downloadFile: vi.fn(async () => new Blob([body])),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        body = await blob.text();
+        tag = `t${++seq}`;
+        return { fileId: meta.fileId, revision: tag };
+      })
+    };
+    const otherDeviceWrites = (data: unknown) => {
+      body = JSON.stringify(data);
+      tag = `t${++seq}`;
+    };
+    return {
+      provider: provider as unknown as SyncProvider,
+      raw: provider,
+      meta,
+      otherDeviceWrites
+    };
+  }
+
+  beforeEach(async () => {
+    const { clearRootFileMemo } = await import('./root-file-memo');
+    clearRootFileMemo();
+    setSeriesReadingStates({});
+    setTrackingStates({});
+  });
+
+  it("an idle sync stats volume-data.json instead of downloading it; this device's own upload seeds it", async () => {
+    setLocalVolumes({ 'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 } });
+    const { provider, raw, meta, otherDeviceWrites } = server({
+      'vol-1': { lastProgressUpdate: '2026-01-01T00:00:00Z', progress: 3 }
+    });
+    stubCache([meta]);
+
+    // First sync: downloads (nothing memoized), merges, uploads the newer local state.
+    await svc.syncVolumeData(provider);
+    expect(raw.downloadFile).toHaveBeenCalledTimes(1);
+    expect(raw.uploadFile).toHaveBeenCalledTimes(1);
+
+    // Second sync: the server still holds what this device wrote — a stat only.
+    await svc.syncVolumeData(provider);
+    expect(raw.downloadFile).toHaveBeenCalledTimes(1);
+    expect(raw.uploadFile).toHaveBeenCalledTimes(1);
+
+    // Another device writes: the stamp moves, the next sync downloads and adopts.
+    otherDeviceWrites({ 'vol-1': { lastProgressUpdate: '2026-01-09T00:00:00Z', progress: 9 } });
+    await svc.syncVolumeData(provider);
+    expect(raw.downloadFile).toHaveBeenCalledTimes(2);
+    expect((get(volumesWithTrash) as Record<string, { progress: number }>)['vol-1'].progress).toBe(
+      9
+    );
+  });
+
+  it('a file gone from the server is the not-found path (one listing refresh), not a download', async () => {
+    setLocalVolumes({});
+    const { provider, raw, meta } = server({});
+    raw.statFile.mockResolvedValue(null as never);
+    const cache = stubCache([meta]);
+
+    expect(await svc.downloadVolumeDataFile(provider)).toBeNull();
+    expect(cache.fetch).toHaveBeenCalledTimes(1);
+    expect(raw.downloadFile).not.toHaveBeenCalled();
+  });
+});

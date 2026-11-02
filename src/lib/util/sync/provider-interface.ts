@@ -238,6 +238,40 @@ export interface UploadFileResult {
   modifiedTime?: string;
   /** Server-reported size in bytes, when the upload response carried one. */
   size?: number;
+  /**
+   * The server's change token for the file just written, when the upload
+   * response carried one — the same token `statFile` reports as
+   * {@link FileStamp.revision} (Drive `version`, OneDrive `cTag` else `eTag`,
+   * a WebDAV `ETag`, a MEGA node id). Provider-opaque: compare, never parse.
+   */
+  revision?: string;
+  /** Google Drive: the folder the file was written into. */
+  parentId?: string;
+  /** Google Drive: the file's name as Drive holds it. */
+  name?: string;
+}
+
+/**
+ * The server's current stamp of ONE known file, read without its body
+ * (`SyncProvider.statFile`). `size` and `modifiedTime` are always filled;
+ * `revision` is the strongest provider-opaque change token the provider has
+ * (see {@link UploadFileResult.revision}) and is compared before them.
+ */
+export interface FileStamp {
+  size: number;
+  /** Server modification time; compare through `Date.parse` (WebDAV gives RFC 1123). */
+  modifiedTime: string;
+  revision?: string;
+}
+
+/** Hints for `SyncProvider.downloadFile`. */
+export interface DownloadOptions {
+  /**
+   * The file's size as the server reported it just now (a `statFile` taken
+   * before this download): a provider may skip its own size probe (WebDAV's
+   * HEAD). Never a listing's size, which can be hours old.
+   */
+  knownSize?: number;
 }
 
 /**
@@ -267,6 +301,12 @@ export interface CloudFileMetadata {
   modifiedTimeProvisional?: boolean;
   /** File size in bytes */
   size: number;
+  /**
+   * The provider's change token for this revision of the file, when the
+   * listing or upload response carried one (see {@link FileStamp.revision}).
+   * Optional and never a substitute for `size` + `modifiedTime`.
+   */
+  revision?: string;
   /** Optional description/metadata */
   description?: string;
 }
@@ -456,14 +496,26 @@ export interface SyncProvider {
   ): Promise<UploadFileResult>;
 
   /**
+   * The server's CURRENT stamp of one known file, without its body — one
+   * small metadata request (MEGA and Local Folder: none). `null` = the file
+   * is gone. Lets `readRootFile` (`root-file-memo.ts`) skip downloading a
+   * root file this device already holds the bytes of. Must never send a
+   * request header a plain server's CORS allow-list could refuse (WebDAV:
+   * a PROPFIND Depth 0, no `If-None-Match`). OPTIONAL.
+   */
+  statFile?(file: CloudFileMetadata): Promise<FileStamp | null>;
+
+  /**
    * Download a file from cloud storage
    * @param file Cloud file metadata (provider extracts internal ID)
    * @param onProgress Optional progress callback (loaded, total)
+   * @param options Optional hints (see {@link DownloadOptions})
    * @returns File data as Blob
    */
   downloadFile(
     file: CloudFileMetadata,
-    onProgress?: (loaded: number, total: number) => void
+    onProgress?: (loaded: number, total: number) => void,
+    options?: DownloadOptions
   ): Promise<Blob>;
 
   /**

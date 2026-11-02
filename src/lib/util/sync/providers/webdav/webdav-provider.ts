@@ -5,6 +5,8 @@ import type {
   ProviderStatus,
   StorageQuota,
   CloudFileMetadata,
+  DownloadOptions,
+  FileStamp,
   UploadFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
@@ -19,6 +21,7 @@ import {
   type WebdavAuthMaterial
 } from '../../core/providers/webdav-authorization';
 import { isVerifiedPutHeader } from './webdav-upload';
+import { isMemoRootFile } from '../../root-file-memo';
 import { fetchWithRetryAfter, wrapWebdavClient } from './webdav-retry-after';
 import { fetchServerIdentity, type IdentityResult, type ServerPermissions } from './identity';
 import {
@@ -158,6 +161,17 @@ export class WebDAVProvider implements SyncProvider {
   private initPromise: Promise<void>;
   private _isReadOnly: boolean = false;
   private _supportsDepthInfinity: boolean | null = null; // null = unknown, will probe on first use
+  /**
+   * The reader folder exists on this connection (`ensureMokuroFolder` saw or
+   * made it): every upload and listing asked again with a PROPFIND otherwise.
+   * Per session — reset whenever the client is made or dropped.
+   */
+  private mokuroFolderReady = false;
+  /**
+   * A stat on this connection came back without `getetag`: this server gives
+   * no change tokens, so a receipt stat after a PUT would buy nothing.
+   */
+  private statsCarryNoEtag = false;
   /** Server-reported permissions (mokuro-bunko identity endpoint); null = unknown/generic server */
   private _capabilities: ServerPermissions | null = null;
   /** The server answered the mokuro-bunko identity endpoint: it compiles the metadata files. */
@@ -656,6 +670,8 @@ export class WebDAVProvider implements SyncProvider {
         webdavAuthOptions(username, password, {}, this.sessionAuth().token)
       );
       this.client = this.wrapClient(this.rawClient);
+      this.mokuroFolderReady = false;
+      this.statsCarryNoEtag = false;
 
       // Test connection with timeout (Issue #206 Lesson #3)
       const controller = new AbortController();
@@ -786,6 +802,7 @@ export class WebDAVProvider implements SyncProvider {
     } catch (error) {
       this.client = null;
       this.rawClient = null;
+      this.mokuroFolderReady = false;
 
       // AUTH_FAILED from the identity check is already fully classified and
       // must not be re-wrapped as generic LOGIN_FAILED. Every other error
@@ -864,6 +881,7 @@ export class WebDAVProvider implements SyncProvider {
   async logout(): Promise<void> {
     this.client = null;
     this.rawClient = null;
+    this.mokuroFolderReady = false;
     this._supportsDepthInfinity = null; // Reset for next connection (may be different server)
     this._capabilities = null;
     this._serverCompilesMetadata = false;
@@ -979,6 +997,7 @@ export class WebDAVProvider implements SyncProvider {
 
   private async ensureMokuroFolder(): Promise<void> {
     if (!this.client) return;
+    if (this.mokuroFolderReady) return;
 
     try {
       const exists = await this.client.exists(MOKURO_FOLDER);
@@ -987,6 +1006,7 @@ export class WebDAVProvider implements SyncProvider {
         await this.client.createDirectory(MOKURO_FOLDER);
         console.log('Created mokuro-reader folder in WebDAV');
       }
+      this.mokuroFolderReady = true;
     } catch (error) {
       throw new ProviderError(
         `Failed to ensure mokuro folder exists: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -1213,6 +1233,7 @@ export class WebDAVProvider implements SyncProvider {
           basename: string;
           lastmod: string;
           size: number;
+          etag?: string | null;
         }>;
 
         for (const item of contents) {
@@ -1230,7 +1251,8 @@ export class WebDAVProvider implements SyncProvider {
                 fileId: item.filename, // Full WebDAV path as fileId
                 path: relativePath,
                 modifiedTime: item.lastmod || new Date().toISOString(),
-                size: item.size || 0
+                size: item.size || 0,
+                ...etagFields(item.etag)
               });
             }
           }
@@ -1270,6 +1292,7 @@ export class WebDAVProvider implements SyncProvider {
       basename: string;
       lastmod: string;
       size: number;
+      etag?: string | null;
     }>;
 
     const allFiles: import('../../provider-interface').CloudFileMetadata[] = [];
@@ -1285,7 +1308,8 @@ export class WebDAVProvider implements SyncProvider {
             fileId: item.filename, // Full WebDAV path as fileId
             path: relativePath,
             modifiedTime: item.lastmod || new Date().toISOString(),
-            size: item.size || 0
+            size: item.size || 0,
+            ...etagFields(item.etag)
           });
         }
       }
@@ -1323,8 +1347,17 @@ export class WebDAVProvider implements SyncProvider {
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
       if (uploaded.serverPutVerified) this.notePutVerified();
+      // A ROOT file's receipt is worth one PROPFIND when the PUT gave no
+      // ETag: without it this device re-downloads its own write at the next
+      // sync (`root-file-memo.ts`). Never for archives or sidecars — a bulk
+      // backup must not pay a round trip per file.
+      if (!uploaded.revision && !this.statsCarryNoEtag && isMemoRootFile(path)) {
+        return { ...uploaded, ...(await this.receiptStamp(uploaded.fileId)) };
+      }
       return uploaded;
     } catch (error) {
+      // The folder may be what failed: ask again next time.
+      this.mokuroFolderReady = false;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
       // Compiled metadata files are best-effort: a server that compiles them
@@ -1484,7 +1517,8 @@ export class WebDAVProvider implements SyncProvider {
 
   async downloadFile(
     file: import('../../provider-interface').CloudFileMetadata,
-    onProgress?: (loaded: number, total: number) => void
+    onProgress?: (loaded: number, total: number) => void,
+    options?: DownloadOptions
   ): Promise<Blob> {
     if (!this.isAuthenticated() || !this.client) {
       throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
@@ -1496,7 +1530,8 @@ export class WebDAVProvider implements SyncProvider {
         fileId: file.fileId,
         credentials,
         onProgress: onProgress || (() => {}),
-        refreshAuth: (stale) => this.refreshedWorkerCredentials(stale)
+        refreshAuth: (stale) => this.refreshedWorkerCredentials(stale),
+        ...(options?.knownSize ? { expectedSize: options.knownSize } : {})
       });
       const blob = new Blob([arrayBuffer], { type: 'application/zip' });
       console.log(`✅ Downloaded ${file.path} from WebDAV`);
@@ -1527,7 +1562,13 @@ export class WebDAVProvider implements SyncProvider {
     }
     const client = this.client;
     const base = `${MOKURO_FOLDER}/${folder.replace(/^\/+|\/+$/g, '')}`;
-    type Item = { type: string; filename: string; lastmod: string; size: number };
+    type Item = {
+      type: string;
+      filename: string;
+      lastmod: string;
+      size: number;
+      etag?: string | null;
+    };
     const out: import('../../provider-interface').CloudFileMetadata[] = [];
     const take = (item: Item) => {
       if (item.type !== 'file') return;
@@ -1538,7 +1579,8 @@ export class WebDAVProvider implements SyncProvider {
         fileId: item.filename,
         path: relativePath,
         modifiedTime: item.lastmod || new Date().toISOString(),
-        size: item.size || 0
+        size: item.size || 0,
+        ...etagFields(item.etag)
       });
     };
     const walk = async (path: string): Promise<void> => {
@@ -1565,6 +1607,59 @@ export class WebDAVProvider implements SyncProvider {
       const refused = this.refusedReadAuth(error);
       if (refused) throw refused;
       throw error;
+    }
+  }
+
+  /**
+   * `SyncProvider.statFile`: one PROPFIND Depth 0 of the file (`client.stat`)
+   * — headers every WebDAV CORS allow-list already admits, never an
+   * `If-None-Match`. `getetag` is the revision.
+   */
+  async statFile(file: CloudFileMetadata): Promise<FileStamp | null> {
+    if (!this.isAuthenticated() || !this.client) {
+      throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
+    }
+    try {
+      const stat = (await this.client.stat(file.fileId)) as {
+        type: string;
+        lastmod: string;
+        size: number;
+        etag?: string | null;
+      };
+      if (stat.type !== 'file') return null;
+      if (!stat.etag) this.statsCarryNoEtag = true;
+      return {
+        size: stat.size || 0,
+        modifiedTime: stat.lastmod,
+        ...(stat.etag ? { revision: stat.etag } : {})
+      };
+    } catch (error) {
+      if ((error as { status?: number })?.status === 404) return null;
+      const refused = this.refusedReadAuth(error);
+      if (refused) throw refused;
+      throw error;
+    }
+  }
+
+  /** A just-written file's server stamp, as receipt fields; {} when the stat fails. */
+  private async receiptStamp(fileId: string): Promise<Partial<UploadFileResult>> {
+    try {
+      const stamp = await this.statFile({
+        provider: 'webdav',
+        fileId,
+        path: fileId,
+        modifiedTime: '',
+        size: 0
+      });
+      if (!stamp) return {};
+      // The listing's own `getlastmodified` string, as listings store it.
+      return {
+        size: stamp.size,
+        ...(stamp.modifiedTime ? { modifiedTime: stamp.modifiedTime } : {}),
+        ...(stamp.revision ? { revision: stamp.revision } : {})
+      };
+    } catch {
+      return {};
     }
   }
 
@@ -2079,6 +2174,11 @@ export const webdavProvider = new WebDAVProvider();
 
 // Workers never re-issue a token themselves: a 401 in any of them comes here.
 registerWorkerAuthRefresher('webdav', (stale) => webdavProvider.refreshedWorkerCredentials(stale));
+
+/** A listed `getetag`, as entry fields (`etag`, and the stamp's `revision`). */
+function etagFields(etag: string | null | undefined): { etag?: string; revision?: string } {
+  return typeof etag === 'string' && etag ? { etag, revision: etag } : {};
+}
 
 // Self-register cache when module is loaded (same pattern as MEGA provider)
 import { cacheManager } from '../../cache-manager';

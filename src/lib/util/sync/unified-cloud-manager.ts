@@ -5,12 +5,14 @@ import {
   type SyncProvider,
   type CloudFileMetadata,
   type ProviderType,
+  type UploadFileResult,
   type UploadPayload
 } from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
 import { HISTORY_FOLDER } from '$lib/reading-history/paths';
 import { uploadCacheEntry } from './cloud-cache-interface';
+import { noteRootFileUpload } from './root-file-memo';
 import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
 import { isMetadataOnly } from '$lib/catalog/volume-state';
@@ -566,7 +568,7 @@ class UnifiedCloudManager {
     blob: UploadPayload,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     return this.performUpload(path, blob, description, onProgress, false);
   }
 
@@ -598,7 +600,7 @@ class UnifiedCloudManager {
     blob: UploadPayload,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     return this.performUpload(path, blob, description, onProgress, true);
   }
 
@@ -608,7 +610,7 @@ class UnifiedCloudManager {
     description: string | undefined,
     onProgress: ((loaded: number, total: number) => void) | undefined,
     blind: boolean
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     const provider = this.getActiveProvider();
     if (!provider) {
       throw new Error('No cloud provider authenticated');
@@ -630,8 +632,10 @@ class UnifiedCloudManager {
     // reported, marked provisional otherwise) — see `uploadCacheEntry`.
     const cache = cacheManager.getCache(provider.type);
     cache?.add?.(path, uploadCacheEntry(provider.type, path, uploadSize, uploaded, description));
+    // A root file's own write seeds the read memo from the same receipt.
+    await noteRootFileUpload(provider, path, blob, uploaded);
 
-    return uploaded.fileId;
+    return uploaded;
   }
 
   /**

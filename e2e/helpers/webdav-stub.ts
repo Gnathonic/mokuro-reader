@@ -14,6 +14,19 @@ interface StubEntry {
   dir: boolean;
   body: Buffer;
   mtime: string;
+  /**
+   * A strong entity tag, quoted, minted on every write the way a real server
+   * derives one from its stored mtime and size (`"<mtime>-<size>"`): sent as
+   * `ETag` on GET / HEAD / PUT and as `getetag` in PROPFIND.
+   */
+  etag: string;
+}
+
+/** Writes so far, so two writes within one millisecond still get distinct tags. */
+let writeSeq = 0;
+function mintEtag(size: number): string {
+  writeSeq++;
+  return `"${Date.now()}.${writeSeq}-${size}"`;
 }
 
 /** A tiny in-memory WebDAV server behind `page.route` that logs every request. */
@@ -38,13 +51,14 @@ export class WebDavStub {
     this.files.set(this.norm(path), {
       dir: true,
       body: Buffer.alloc(0),
-      mtime: new Date().toUTCString()
+      mtime: new Date().toUTCString(),
+      etag: mintEtag(0)
     });
   }
   file(path: string, body: Buffer, mtime: string) {
     const p = this.norm(path);
     this.dir(p.slice(0, p.lastIndexOf('/')) || '/');
-    this.files.set(p, { dir: false, body, mtime });
+    this.files.set(p, { dir: false, body, mtime, etag: mintEtag(Buffer.byteLength(body)) });
   }
   norm(path: string): string {
     const decoded = decodeURIComponent(path).replace(/\/+$/, '');
@@ -66,6 +80,7 @@ export class WebDavStub {
         `<d:resourcetype>${e.dir ? '<d:collection/>' : ''}</d:resourcetype>` +
         `<d:getcontentlength>${e.dir ? 0 : Buffer.byteLength(e.body)}</d:getcontentlength>` +
         `<d:getlastmodified>${e.mtime}</d:getlastmodified>` +
+        `<d:getetag>${esc(e.etag)}</d:getetag>` +
         `<d:getcontenttype>${e.dir ? 'httpd/unix-directory' : 'application/octet-stream'}</d:getcontenttype>` +
         `<d:displayname>${esc(p.split('/').pop() ?? '')}</d:displayname>` +
         `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
@@ -133,7 +148,8 @@ export class WebDavStub {
         if (!current || current.dir) return reply(404);
         return reply(200, method === 'GET' ? current.body : Buffer.alloc(0), {
           'Content-Type': 'application/octet-stream',
-          'Content-Length': String(Buffer.byteLength(current.body))
+          'Content-Length': String(Buffer.byteLength(current.body)),
+          ETag: current.etag
         });
       }
       case 'MKCOL': {
@@ -142,7 +158,7 @@ export class WebDavStub {
       }
       case 'PUT': {
         this.file(path, request.postDataBuffer() ?? Buffer.alloc(0), new Date().toUTCString());
-        return reply(201);
+        return reply(201, '', { ETag: this.files.get(path)!.etag });
       }
       case 'DELETE': {
         if (!entry) return reply(404);

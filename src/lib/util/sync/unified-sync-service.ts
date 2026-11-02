@@ -28,6 +28,7 @@ import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
+import { noteRootFileUpload, readRootFile } from './root-file-memo';
 import { isHistoryFilePath } from '$lib/reading-history/paths';
 import { noteUploaded, watchedEscapes } from '$lib/positions/escapes';
 import { historySyncAllowed } from '$lib/reading-history/history-capability';
@@ -458,7 +459,7 @@ class UnifiedSyncService {
         const downloads = await Promise.allSettled(
           volumeDataFiles.map(
             async (file): Promise<CloudVolumeDataFile> =>
-              this.parseVolumeDataCopy(await this.blobToJson(await provider.downloadFile(file)))
+              this.parseVolumeDataCopy(await this.blobToJson(await readRootFile(provider, file)))
           )
         );
 
@@ -532,8 +533,8 @@ class UnifiedSyncService {
         };
       }
 
-      // Single file - download normally
-      const blob = await provider.downloadFile(volumeDataFiles[0]);
+      // Single file - read normally (a stat when this device holds its bytes)
+      const blob = await readRootFile(provider, volumeDataFiles[0]);
       return this.parseVolumeDataCopy(await this.blobToJson(blob));
     } catch (error) {
       // File not found is not an error
@@ -681,6 +682,9 @@ class UnifiedSyncService {
     cacheManager
       .getCache(provider.type)
       ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
+    // And the read memo, so the next sync stats this copy instead of
+    // downloading the bytes it just sent.
+    await noteRootFileUpload(provider, path, blob, uploaded);
   }
 
   /**
@@ -876,7 +880,7 @@ class UnifiedSyncService {
     // provider cache — so a not-found copy must not discard the readable ones.
     const downloads = await Promise.allSettled(
       files.map(async (file) => {
-        const blob = await provider.downloadFile(file);
+        const blob = await readRootFile(provider, file);
         return (await this.blobToJson(blob)) as unknown;
       })
     );
@@ -936,6 +940,7 @@ class UnifiedSyncService {
         GOALS_FILE_NAME,
         uploadCacheEntry(provider.type, GOALS_FILE_NAME, blob.size, uploaded)
       );
+    await noteRootFileUpload(provider, GOALS_FILE_NAME, blob, uploaded);
   }
 
   /** The local half of `goals.json`, tombstones included. */
@@ -1015,7 +1020,7 @@ class UnifiedSyncService {
       }
 
       console.log('⬇️ Downloading profiles.json from cloud...');
-      const blob = await provider.downloadFile(profilesFile);
+      const blob = await readRootFile(provider, profilesFile);
       console.log('⬇️ Downloaded blob, converting to JSON...');
       const json = await this.blobToJson(blob);
       console.log('✅ Successfully parsed profiles JSON:', json);
@@ -1053,10 +1058,11 @@ class UnifiedSyncService {
     const path = 'profiles.json';
     const uploaded = await provider.uploadFile(path, blob);
     // Same targeted add as `uploadVolumeDataFile` — `findProfilesFiles` reads
-    // the cache too.
+    // the cache too — and the same read memo.
     cacheManager
       .getCache(provider.type)
       ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
+    await noteRootFileUpload(provider, path, blob, uploaded);
   }
 
   /**

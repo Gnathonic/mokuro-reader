@@ -145,12 +145,15 @@ test('device swap lands on the newest position, not the last one written', async
   await sync(tablet);
 
   // The phone's push stalls on its read of the file: it reads to p.44 FIRST,
-  // but its merge lands only after the tablet's newer p.47 is up.
+  // but its merge lands only after the tablet's newer p.47 is up. The read
+  // starts with the file's stamp (a PROPFIND: the phone holds the bytes it
+  // last saw) and downloads only when that moved — whichever comes first is
+  // held, so the server answers it with what it holds once released.
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
   let held = false;
   await phone.route(`**${POSITIONS}`, async (route) => {
-    if (route.request().method() === 'GET') {
+    if (!held && ['GET', 'PROPFIND'].includes(route.request().method())) {
       held = true;
       await gate;
     }

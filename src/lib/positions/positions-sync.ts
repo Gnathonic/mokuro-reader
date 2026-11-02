@@ -30,6 +30,7 @@ import { showSnackbar } from '$lib/util/snackbar';
 import { isVolumeComplete, stampMs } from '$lib/util/volume-helpers';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
+import { noteRootFileUpload, readRootFile } from '$lib/util/sync/root-file-memo';
 import { providerTokenValid, syncReady } from '$lib/util/sync/foreground-sync';
 import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -102,18 +103,21 @@ async function upload(provider: SyncProvider, next: PositionsMap): Promise<strin
   });
   // The blind path skips the post-upload re-listing (Drive refetches the whole
   // tree after every upload). It writes to the ACTIVE provider, so a sync of
-  // any other provider takes the ordinary upload.
-  const fileId =
-    unifiedCloudManager.getActiveProvider()?.type === provider.type
-      ? await unifiedCloudManager.blindUploadFile(POSITIONS_FILE_NAME, blob)
-      : (await provider.uploadFile(POSITIONS_FILE_NAME, blob)).fileId;
+  // any other provider takes the ordinary upload. The manager records the
+  // upload's receipt in the cache and the read memo itself; the other path
+  // records the same receipt here.
+  if (unifiedCloudManager.getActiveProvider()?.type === provider.type) {
+    return (await unifiedCloudManager.blindUploadFile(POSITIONS_FILE_NAME, blob)).fileId;
+  }
+  const uploaded = await provider.uploadFile(POSITIONS_FILE_NAME, blob);
   cacheManager
     .getCache(provider.type)
     ?.add?.(
       POSITIONS_FILE_NAME,
-      uploadCacheEntry(provider.type, POSITIONS_FILE_NAME, blob.size, { fileId })
+      uploadCacheEntry(provider.type, POSITIONS_FILE_NAME, blob.size, uploaded)
     );
-  return fileId;
+  await noteRootFileUpload(provider, POSITIONS_FILE_NAME, blob, uploaded);
+  return uploaded.fileId;
 }
 
 /**
@@ -263,7 +267,7 @@ async function runSync(
     // ignored. Any other failure means a copy we could not see — adopt from the
     // rest, but do not overwrite what we could not read.
     const { readable, unreadable } = await readCopies(
-      files.map((file) => () => provider.downloadFile(file))
+      files.map((file) => () => readRootFile(provider, file))
     );
     const { plan: result, own } = await planFromCopies(readable);
     await applyAdoptions(result, outcome);

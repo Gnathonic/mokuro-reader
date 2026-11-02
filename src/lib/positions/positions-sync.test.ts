@@ -13,7 +13,7 @@ const getCache = vi.fn();
 vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: { getCache: (...args: unknown[]) => getCache(...args) }
 }));
-const blindUploadFile = vi.fn(async (_path: string, _blob: Blob) => 'uploaded-id');
+const blindUploadFile = vi.fn(async (_path: string, _blob: Blob) => ({ fileId: 'uploaded-id' }));
 const getActiveProvider = vi.fn();
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
@@ -237,7 +237,7 @@ describe('syncPositions', () => {
         ? fileBlob({ x: [now - 5000, 10, 100, 'phone'] })
         : fileBlob({ y: [now - 4000, 20, 200, 'phone'] });
     });
-    blindUploadFile.mockResolvedValueOnce('b');
+    blindUploadFile.mockResolvedValueOnce({ fileId: 'b' });
     vi.mocked(provider.deleteFile).mockImplementation(async (file) => {
       if (file.fileId === 'ghost') throw new ProviderError('File not found', 'webdav', 'NOT_FOUND');
     });
@@ -327,10 +327,9 @@ describe('syncPositions', () => {
       4100,
       'me'
     ]);
-    expect(cache.add).toHaveBeenCalledWith(
-      'positions.json',
-      expect.objectContaining({ fileId: 'uploaded-id', path: 'positions.json' })
-    );
+    // The manager's blind upload records the receipt in the cache itself; a
+    // second, client-clock entry here would overwrite the server's stamp.
+    expect(cache.add).not.toHaveBeenCalled();
     expect(changedVolumes()).toEqual([]);
 
     // The cloud now holds what went up.
@@ -339,6 +338,32 @@ describe('syncPositions', () => {
     const again = makeProvider(async () => ({ text: async () => sent }) as unknown as Blob);
     expect((await syncPositions(again)).uploaded).toBe(false);
     expect(blindUploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('a provider other than the active one: its own upload receipt goes into the cache', async () => {
+    const cache = stubCache([]);
+    updateProgress('v', 41, 4100, false);
+    const provider = makeProvider(async () => fileBlob({}));
+    getActiveProvider.mockReturnValue(null);
+    const uploadFile = vi.fn(async (_path: string, blob: Blob) => ({
+      fileId: 'other-id',
+      modifiedTime: '2026-11-02T10:00:00.000Z',
+      size: blob.size,
+      revision: 'r1'
+    }));
+    (provider as unknown as { uploadFile: typeof uploadFile }).uploadFile = uploadFile;
+    expect((await syncPositions(provider)).uploaded).toBe(true);
+    expect(blindUploadFile).not.toHaveBeenCalled();
+    expect(cache.add).toHaveBeenCalledTimes(1);
+    expect(cache.add).toHaveBeenCalledWith(
+      'positions.json',
+      expect.objectContaining({
+        fileId: 'other-id',
+        modifiedTime: '2026-11-02T10:00:00.000Z',
+        modifiedTimeProvisional: false,
+        revision: 'r1'
+      })
+    );
   });
 
   it('an upload reports each own stamp as escaped, for the volumes a visit watches', async () => {
@@ -361,7 +386,7 @@ describe('syncPositions', () => {
     let duringUpload = -1;
     blindUploadFile.mockImplementationOnce(async () => {
       duringUpload = newestUploaded('v');
-      return 'uploaded-id';
+      return { fileId: 'uploaded-id' };
     });
     const provider = makeProvider(async () => fileBlob({}));
     await syncPositions(provider);

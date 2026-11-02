@@ -1,6 +1,7 @@
 import { derived, writable, type Readable } from 'svelte/store';
 import type { CloudCache } from './cloud-cache-interface';
 import type { CloudFileMetadata, ProviderType } from './provider-interface';
+import { clearRootFileMemo } from './root-file-memo';
 
 /**
  * Cache Manager
@@ -70,6 +71,7 @@ class CacheManager {
     if (this.activeCache && this.activeProviderType !== provider) {
       console.log(`Clearing cache for ${this.activeProviderType} when switching to ${provider}`);
       this.activeCache.clear();
+      clearRootFileMemo();
     }
 
     this.activeProviderType = provider;
@@ -201,6 +203,8 @@ class CacheManager {
     if (this.activeCache) {
       this.activeCache.clear();
     }
+    // Logout and every cache clear: the root-file memo goes with the listing.
+    clearRootFileMemo();
     this.activeCache = null;
     this.activeProviderType = null;
     this.activeCacheStore.set(null);
