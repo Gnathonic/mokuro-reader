@@ -110,7 +110,97 @@ describe('position store', () => {
     await vi.waitFor(() => expect(get(volumesWithTrash).v.progress).toBe(0));
     const answers = (await db.reading_events.toArray()).filter((e) => e.kind === 'position');
     expect(answers).toHaveLength(1);
+    expect(answers[0]).toMatchObject({ answer: 'reset', through: 5_000 });
+    // The missed pass is archived under the reading's own stamp, the same on
+    // every device that re-applies this restart.
+    expect(get(volumesWithTrash).v.archivedReads).toEqual([
+      { at: 11_000, pages: 61, chars: 610, completed: false }
+    ]);
     expect(positionPlanFor('v').offer).toMatchObject({ page: 61, ownDevice: true });
+  });
+
+  it('re-applies the restart when this device read on after another device reset it (rule 3)', async () => {
+    volumesWithTrash.set({ v: new VolumeData({ progress: 62, chars: 620 }) });
+    const restart: ReadingEvent = {
+      device: 'phone',
+      seq: ++seq,
+      t: 5_000,
+      kind: 'restart',
+      volume: 'v'
+    };
+    const reset: ReadingEvent = {
+      device: 'phone',
+      seq: ++seq,
+      t: 12_000,
+      kind: 'position',
+      volume: 'v',
+      answer: 'reset',
+      through: 5_000,
+      page: 0
+    };
+    await store([
+      view('phone', 0, 200),
+      restart,
+      view(own, 10_000, 60),
+      view(own, 11_000, 61),
+      reset,
+      view(own, 13_000, 62)
+    ]);
+    await vi.waitFor(() => expect(get(volumesWithTrash).v.progress).toBe(0));
+    expect(get(volumesWithTrash).v.archivedReads).toEqual([
+      { at: 13_000, pages: 62, chars: 620, completed: false }
+    ]);
+    const answers = (await db.reading_events.toArray()).filter(
+      (e) => e.kind === 'position' && e.device === own
+    );
+    expect(answers).toHaveLength(1);
+    expect(positionPlanFor('v')).toMatchObject({ offer: { page: 62, at: 13_000 } });
+    expect(positionPlanFor('v').reset).toBeUndefined();
+  });
+
+  it('after an applied reset, a volume sitting on the offered page gets no offer', async () => {
+    volumesWithTrash.set({ v: new VolumeData({ progress: 61, chars: 610 }) });
+    const restart: ReadingEvent = {
+      device: 'phone',
+      seq: ++seq,
+      t: 5_000,
+      kind: 'restart',
+      volume: 'v'
+    };
+    const reset: ReadingEvent = {
+      device: 'phone',
+      seq: ++seq,
+      t: 12_000,
+      kind: 'position',
+      volume: 'v',
+      answer: 'reset',
+      through: 5_000,
+      page: 0
+    };
+    await store([
+      view('phone', 0, 200),
+      restart,
+      view(own, 10_000, 60),
+      view(own, 11_000, 61),
+      reset
+    ]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(positionPlanFor('v')).toEqual({});
+    expect(get(volumesWithTrash).v.progress).toBe(61);
+  });
+
+  it('an answer clears the prompt bookkeeping for that volume', async () => {
+    volumesWithTrash.set({ v: new VolumeData({ progress: 41 }) });
+    await store([view('phone', 0, 120), view(own, 10_000, 41)]);
+    const offer = positionPlanFor('v').offer!;
+    markPrompted('v', offer);
+    expect(JSON.parse(window.localStorage.getItem('position-offer:shown') ?? '{}')).toHaveProperty(
+      'v'
+    );
+    await answerPosition('v', offer, 'stay', 200, db);
+    expect(
+      JSON.parse(window.localStorage.getItem('position-offer:shown') ?? '{}')
+    ).not.toHaveProperty('v');
   });
 
   it('prompts at most once a session, in at most two sessions', () => {

@@ -62,11 +62,11 @@ export interface DeviceView {
 }
 
 /** Labels arrive from a synced file: never read an inherited key (`constructor`). */
-function labelOf(
-  labels: Readonly<Record<string, DeviceLabel>>,
+export function ownLabel(
+  labels: Readonly<Record<string, DeviceLabel>> | undefined,
   id: string
 ): DeviceLabel | undefined {
-  return Object.prototype.hasOwnProperty.call(labels, id) ? labels[id] : undefined;
+  return labels && Object.hasOwn(labels, id) ? labels[id] : undefined;
 }
 
 /**
@@ -80,7 +80,7 @@ export function resolveDevice(id: string, labels: Readonly<Record<string, Device
   const seen = new Set([id]);
   let at = id;
   for (;;) {
-    const next = labelOf(labels, at)?.merged_into;
+    const next = ownLabel(labels, at)?.merged_into;
     if (next === undefined || !isDeviceId(next)) return at;
     if (seen.has(next)) return id;
     seen.add(next);
@@ -169,7 +169,7 @@ export function labelDevices(
 
   const generated = new Map<string, string>();
   for (const device of devices) {
-    generated.set(device.id, generatedLabel(device.facts, labelOf(labels, device.id)?.class));
+    generated.set(device.id, generatedLabel(device.facts, ownLabel(labels, device.id)?.class));
   }
   for (const group of collisions(devices, (d) => generated.get(d.id)!)) {
     for (const device of group) {
@@ -192,7 +192,7 @@ export function labelDevices(
   const ownGroup = resolveDevice(own, labels);
   const views = new Map<string, DeviceView>();
   for (const device of devices) {
-    const label = labelOf(labels, device.id);
+    const label = ownLabel(labels, device.id);
     const name = label?.name?.trim();
     const detectedClass = device.facts?.class ?? 'unknown';
     const group = canonical.get(device.id)!;

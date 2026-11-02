@@ -27,8 +27,20 @@
 
 ### Fixed
 
+- A full MEGA account no longer deletes your synced progress
+- MEGA moves emptied duplicate folders to the Rubbish Bin
+- OneDrive asks you to reconnect when its sign-in lapses
+- MEGA asks you to reconnect when its session ends
+- Series with OCR layers in the cloud can be renamed
+- WebDAV asks you to sign in again when your password stops working
+- mokuro-bunko 0.8: backups with an "Edit" OCR layer no longer fail
+- WebDAV retries a request a busy server asks to repeat
+- Progress synced while the library refreshes is no longer lost
 - Google Drive trashes duplicate folders only once they are empty
 - Google Drive leaves your own same-named folders alone
+- mokuro-bunko: resetting a shelf's alignment now sticks
+- OCR layer files found on decomposed-name storage
+- mokuro-bunko: renaming a volume no longer duplicates OCR layers
 - A full Google Drive no longer signs you out
 - Google Drive rate limits wait and retry instead of failing
 - A full Google Drive or OneDrive says so plainly
@@ -36,9 +48,6 @@
 - WebDAV servers that allow writes no longer connect read-only
 - mokuro-bunko series differing only in case stay merged
 - Backups join a cloud folder differing only in case
-- mokuro-bunko: resetting a shelf's alignment now sticks
-- OCR layer files found on decomposed-name storage
-- mokuro-bunko: renaming a volume no longer duplicates OCR layers
 - Renaming a corrected volume keeps the server's newer OCR
 - mokuro-bunko: a cover the server refuses no longer fails the change
 

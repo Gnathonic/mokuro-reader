@@ -5,6 +5,8 @@ vi.mock('./mega-cache', () => ({ megaCache: { fetch: vi.fn() } }));
 vi.mock('../../cache-manager', () => ({
   cacheManager: { clearAll: vi.fn(), registerCache: vi.fn() }
 }));
+const updateStatus = vi.hoisted(() => vi.fn());
+vi.mock('../../provider-manager', () => ({ providerManager: { updateStatus } }));
 
 // Controllable megajs Storage mock.
 const storageState = vi.hoisted(() => ({
@@ -380,6 +382,9 @@ describe('MegaProvider.reinitialize() — session-safe refresh', () => {
     expect(close).not.toHaveBeenCalled();
     expect(provider.getStatus().needsAttention).toBe(true);
     expect(localStorage.getItem('mega_session')).toBeNull();
+    // Published: the navbar's banner and the cloud screen read the provider
+    // manager's status, which moves only when asked.
+    await vi.waitFor(() => expect(updateStatus).toHaveBeenCalled());
   });
 });
 
@@ -562,6 +567,35 @@ describe('MegaProvider ghost-node handling', () => {
     expect(dupe1.delete).toHaveBeenCalledOnce();
     expect(dupe2.delete).toHaveBeenCalledOnce();
     expect(folder.upload).toHaveBeenCalledOnce();
+  });
+
+  // A full account (or any failed upload) must not cost the cloud its only copy:
+  // the old one is removed only once its replacement landed.
+  it('uploadFile removes the old copy only after the new one landed', async () => {
+    const folder = makeMokuroFolder();
+    const old = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, old });
+
+    await provider.uploadFile('volume-data.json', new Uint8Array([1]));
+
+    expect(old.delete).toHaveBeenCalledOnce();
+    expect(folder.upload.mock.invocationCallOrder[0]).toBeLessThan(
+      old.delete.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('a failed upload leaves the copy it would have replaced', async () => {
+    const folder = makeMokuroFolder();
+    folder.upload = vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
+      queueMicrotask(() => cb(new Error('EOVERQUOTA (-17): Request over quota')));
+    });
+    const old = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, old });
+
+    await expect(
+      provider.uploadFile('volume-data.json', new Uint8Array([1]))
+    ).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
+    expect(old.delete).not.toHaveBeenCalled();
   });
 
   it('reinitialize rebuilds storage.files so server-deleted ghosts are evicted', async () => {

@@ -96,7 +96,7 @@ describe('extractLayerEntries', () => {
   });
 
   it('drops a miscased layer name beside its volume (a rule-v1 orphan); a volume of that name keeps it', () => {
-    const { entries, layers, standalone } = extractLayerEntries([
+    const { entries, layers, standalone, skipped } = extractLayerEntries([
       entry('S/Vol 1.mokuro'),
       entry('S/Vol 1.cbz'),
       entry('S/Vol 1.GCV.mokuro'),
@@ -111,6 +111,24 @@ describe('extractLayerEntries', () => {
     ]);
     expect(layers).toEqual([]);
     expect(standalone).toEqual([]);
+    expect(skipped).toEqual([expect.stringContaining('S/Vol 1.GCV.mokuro')]);
+  });
+
+  it('a miscased layer file with no sibling is dropped and reported too — never a generic orphan', () => {
+    // develop attached `Vol 1.GCV.mokuro` as layer `gcv`; rule v1 makes it an
+    // orphan, and kept for pairing it only ends as "Orphaned mokuro file".
+    const { entries, layers, standalone, skipped } = extractLayerEntries([
+      entry('S/Vol 1.GCV.mokuro'),
+      entry('Vol 2.Tr-EN.mokuro.gz'),
+      entry('S/Vol 9.mokuro')
+    ]);
+    expect(entries.map((e) => e.path)).toEqual(['S/Vol 9.mokuro']);
+    expect(layers).toEqual([]);
+    expect(standalone).toEqual([]);
+    expect(skipped).toEqual([
+      expect.stringMatching(/S\/Vol 1\.GCV\.mokuro.*rule v1/),
+      expect.stringMatching(/Vol 2\.Tr-EN\.mokuro\.gz.*rule v1/)
+    ]);
   });
 });
 

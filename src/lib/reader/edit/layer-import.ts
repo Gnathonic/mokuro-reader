@@ -56,11 +56,17 @@ function sourceStemOf(name: string): string | null {
  * archive-presence rule the cloud listing uses, so `Vol 1.5.mokuro` beside
  * `Vol 1.5.cbz` stays a primary. Standalone layer files (no sibling) are
  * returned in `standalone` for the caller to attach to an installed volume.
+ * A `<stem>.<ID>.mokuro` whose id is a layer id but for its case is a rule-v1
+ * orphan — neither a layer nor anyone's primary — and is dropped with a
+ * message for the user in `skipped`, unless `<stem>.<ID>` is itself a volume
+ * here.
  */
 export function extractLayerEntries(entries: LayerFileEntry[]): {
   entries: LayerFileEntry[];
   layers: ExtractedLayerEntry[];
   standalone: ExtractedLayerEntry[];
+  /** User-facing notes, one per entry dropped as a rule-v1 orphan. */
+  skipped: string[];
 } {
   const stemsByDir = new Map<string, Set<string>>();
   const note = (dir: string, stem: string) => {
@@ -86,22 +92,30 @@ export function extractLayerEntries(entries: LayerFileEntry[]): {
   const kept: LayerFileEntry[] = [];
   const layers: ExtractedLayerEntry[] = [];
   const standalone: ExtractedLayerEntry[] = [];
+  const skipped: string[] = [];
   for (const entry of entries) {
     const name = basename(entry.path);
     const dir = dirname(entry.path);
     const siblings = stemsByDir.get(dir);
     const split = splitLayerSidecarName(name);
     if (!split) {
-      // `Vol 1.GCV.mokuro` beside `Vol 1` is a rule-v1 orphan. Kept, it could
-      // win the pairing as Vol 1's `.mokuro` over the real one, so it is
-      // dropped — unless `Vol 1.GCV` is itself a volume here.
+      // `Vol 1.GCV.mokuro` is a rule-v1 orphan: not layer `gcv` (the id is
+      // matched as written) and not a primary. Kept, it could win the pairing
+      // as Vol 1's `.mokuro` over the real one, or — alone — end as a generic
+      // "orphaned mokuro file" the user cannot act on. Dropped and reported,
+      // unless `Vol 1.GCV` is itself a volume here.
       const miscased = miscasedLayerStem(name);
-      if (
-        miscased !== null &&
-        !siblings?.has(foldStem(sourceStemOf(name)!)) &&
-        siblings?.has(foldStem(miscased))
-      ) {
-        continue;
+      if (miscased !== null) {
+        const fullStem = sourceStemOf(name)!;
+        if (!siblings?.has(foldStem(fullStem))) {
+          const id = fullStem.slice(miscased.length + 1);
+          const ext = name.slice(fullStem.length);
+          skipped.push(
+            `Skipped "${entry.path}": "${id}" is not a layer id under sidecar names rule v1 ` +
+              `(ids are lowercase) — rename it "${miscased}.${id.toLowerCase()}${ext}" to import it as a layer`
+          );
+          continue;
+        }
       }
       kept.push(entry);
       continue;
@@ -117,7 +131,7 @@ export function extractLayerEntries(entries: LayerFileEntry[]): {
       standalone.push(extracted);
     }
   }
-  return { entries: kept, layers, standalone };
+  return { entries: kept, layers, standalone, skipped };
 }
 
 export interface ReadLayerFile {

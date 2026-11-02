@@ -116,6 +116,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     getActiveProvider,
     cloudFiles: emptyStore(new Map()),
+    getCloudFile: () => null,
     isFetching: emptyStore(false),
     getDefaultProvider: () => null,
     deleteManagedVolume: vi.fn(),

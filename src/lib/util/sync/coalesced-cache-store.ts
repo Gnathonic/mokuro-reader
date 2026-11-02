@@ -144,9 +144,9 @@ export class CoalescedCacheStore<V> {
    * Open a full listing, for a fetch that walks the provider and then swaps
    * its map in. The walk reads each folder at some moment before the swap, so
    * an upload or delete this app makes after that moment is in the state but
-   * not in the listing, and a plain {@link set} would erase it (a
-   * `positions.json` pushed mid-walk, gone from the cache, is then pushed
-   * again unread over another device's copy). Until `install`, every
+   * not in the listing, and a plain {@link set} would erase it (a first
+   * `volume-data.json` uploaded mid-walk, gone from the cache, is then
+   * written again unread over another device's copy). Until `install`, every
    * {@link update} is recorded too, and `install` replays them onto the
    * listing's map — in arrival order, each update's `replay`.
    *

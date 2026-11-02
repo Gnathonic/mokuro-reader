@@ -60,8 +60,9 @@ const uploadButton = (page: Page) => page.locator('nav div.md\\:order-2 > button
 const review = (page: Page) => page.locator('[data-testid="image-only-review"]');
 const stepLabel = (page: Page) => review(page).locator('[data-testid="review-step"]');
 /**
- * The review opens once the picked archives are scanned: CPU-bound work that takes
- * 9 s with one suite on the machine and 13-23 s with two, past `expect`'s 5 s.
+ * The per-assertion wait for the review dialog to open after each pick, once the
+ * archives are scanned (CPU-bound, past `expect`'s 5 s). The whole test took 9 s
+ * alone and 13-23 s with two suites on the machine; 20 s is not the scan's duration.
  */
 const SCANNED = { timeout: 20_000 };
 const seriesField = (page: Page) => review(page).locator('[data-testid="review-series"]');

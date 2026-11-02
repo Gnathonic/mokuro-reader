@@ -30,6 +30,12 @@ vi.mock('./provider-manager', () => ({
   providerManager: { getActiveProvider: () => getActiveProvider() }
 }));
 
+/** The volume on screen (reader or text view), if any — what `isVolumeOpen` answers. */
+const openVolume = vi.hoisted(() => ({ uuid: null as string | null }));
+vi.mock('$lib/util/hash-router', () => ({
+  isVolumeOpen: (uuid: string) => uuid === openVolume.uuid
+}));
+
 const commitLocalSeriesRename = vi.fn(async (..._args: unknown[]) => {});
 const generateRenameSeriesPreview = vi.fn(async (_from: string, _to: string) => ({
   indexedDbChanges: [] as unknown[],
@@ -107,22 +113,27 @@ describe('planCloudSpellingAdoptions', () => {
     ).toEqual([]);
   });
 
-  it('never plans for placeholders or for titles already spelled right', () => {
+  it('never plans for a title already spelled like its folder', () => {
+    expect(
+      planCloudSpellingAdoptions([row('u2', 'One Piece', 'Vol 1')], [file('One Piece/Vol 1.cbz')])
+    ).toEqual([]);
+  });
+
+  it('a metadata-only row is renamed with its series — its title is what the catalog shows', () => {
+    const removed = { ...row('u1', 'one piece', 'Vol 1'), metadata_only: true as const };
     expect(
       planCloudSpellingAdoptions(
-        [
-          { ...row('u1', 'one piece', 'Vol 1'), isPlaceholder: true },
-          row('u2', 'One Piece', 'Vol 1')
-        ],
+        [removed, row('u2', 'one piece', 'Vol 2')],
         [file('One Piece/Vol 1.cbz')]
       )
-    ).toEqual([]);
+    ).toEqual([{ from: 'one piece', to: 'One Piece', volumeUuids: ['u1', 'u2'] }]);
   });
 });
 
 describe('adoptCloudSeriesSpellings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    openVolume.uuid = null;
     localRows.mockResolvedValue([row('u1', 'one piece', 'Vol 1'), row('u9', 'Other', 'Vol 1')]);
     generateRenameSeriesPreview.mockResolvedValue({
       indexedDbChanges: [],
@@ -177,5 +188,51 @@ describe('adoptCloudSeriesSpellings', () => {
     const plans = await adoptCloudSeriesSpellings(listing, 'webdav');
     expect(plans).toEqual([]);
     expect(commitLocalSeriesRename).not.toHaveBeenCalled();
+  });
+
+  it('defers a series with a volume open in the reader; the next listing retries it', async () => {
+    // The rename writes every row of the series, and the open volume's data
+    // reloads on any change to its row — every page image swapped under the
+    // user. The OCR upgrade defers for the same reason.
+    getActiveProvider.mockReturnValue(provider(true));
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    openVolume.uuid = 'u1';
+
+    expect(await adoptCloudSeriesSpellings(listing, 'webdav')).toEqual([]);
+    expect(commitLocalSeriesRename).not.toHaveBeenCalled();
+    expect(generateRenameSeriesPreview).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenCalledWith("[cloud-spelling] 'one piece' deferred: a volume is open");
+
+    // Back in the catalog, the same listing adopts.
+    openVolume.uuid = null;
+    expect(await adoptCloudSeriesSpellings(listing, 'webdav')).toEqual([
+      { from: 'one piece', to: 'One Piece', volumeUuids: ['u1'] }
+    ]);
+    expect(commitLocalSeriesRename).toHaveBeenCalledTimes(1);
+    debug.mockRestore();
+  });
+
+  it('an open volume of ANOTHER series holds nothing back', async () => {
+    getActiveProvider.mockReturnValue(provider(true));
+    localRows.mockResolvedValue([
+      row('u1', 'one piece', 'Vol 1'),
+      row('u2', 'berserk', 'Vol 1'),
+      row('u9', 'Other', 'Vol 1')
+    ]);
+    const files = [...listing, file('Berserk/Vol 1.cbz')];
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    openVolume.uuid = 'u2';
+
+    expect(await adoptCloudSeriesSpellings(files, 'webdav')).toEqual([
+      { from: 'one piece', to: 'One Piece', volumeUuids: ['u1'] }
+    ]);
+    expect(commitLocalSeriesRename).toHaveBeenCalledTimes(1);
+    expect(commitLocalSeriesRename).toHaveBeenCalledWith(
+      'one piece',
+      'One Piece',
+      ['u1'],
+      ['u1', 'stats-only']
+    );
+    debug.mockRestore();
   });
 });

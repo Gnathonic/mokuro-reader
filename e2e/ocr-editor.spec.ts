@@ -227,13 +227,11 @@ test.describe('OCR editor', () => {
 
     // Persist, then revert: the right page returns to its original, and the
     // left page's row was never written.
-    await page.waitForTimeout(1200);
-    expect((await readOcr(page, 1)).block!.lines).toEqual(['さしす']);
+    await expect.poll(async () => (await readOcr(page, 1)).block!.lines).toEqual(['さしす']);
     expect((await readOcr(page, 0)).block).toEqual(ORIGINAL_BLOCK);
     await page.getByLabel('Revert page').click();
     await expect(rightBlock.locator('.line').first()).toHaveText(ORIGINAL_BLOCK.lines[0]);
-    await page.waitForTimeout(1200);
-    expect((await readOcr(page, 1)).block).toEqual(ORIGINAL_BLOCK);
+    await expect.poll(async () => (await readOcr(page, 1)).block).toEqual(ORIGINAL_BLOCK);
     // Awaited: an unawaited expect polls on after the test returns, against a page
     // already being torn down.
     await expect(page.locator('[data-page-index="0"] .editBlock .line').first()).toHaveText(

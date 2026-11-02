@@ -1,7 +1,17 @@
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
-import { driveHttpErrorFromResponse, driveHttpErrorFromXhr, withDriveRetry } from './drive-http';
+import {
+  driveHttpErrorFromResponse,
+  driveHttpErrorFromXhr,
+  withDriveRetry,
+  type DriveHttpError
+} from './drive-http';
+
+/** Why the attempt failed, in the few words the tray's "retrying" line has room for. */
+function retryReason(error: DriveHttpError): string {
+  return error.kind === 'rate-limit' ? 'rate limited' : `HTTP ${error.status}`;
+}
 
 export const googleDriveCore: CloudProviderCore = {
   async downloadFile({ fileId, credentials, onProgress }): Promise<ArrayBuffer> {
@@ -65,7 +75,8 @@ export const googleDriveCore: CloudProviderCore = {
     credentials,
     mimeType,
     existingFileId,
-    onProgress
+    onProgress,
+    onRetry
   }): Promise<UploadFileResult> {
     const accessToken = requireCredentialString(
       credentials,
@@ -94,19 +105,26 @@ export const googleDriveCore: CloudProviderCore = {
       : `https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&${responseFields}`;
 
     // Session init carries no file data and creates nothing until the PUT
-    // completes, so every retryable failure may be asked again.
-    const initResponse = await withDriveRetry(async () => {
-      const response = await fetch(uploadBase, {
-        method: existingFileId ? 'PATCH' : 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(metadata)
-      });
-      if (!response.ok) throw await driveHttpErrorFromResponse(response, 'Upload init failed');
-      return response;
-    });
+    // completes, so every retryable failure may be asked again. Each wait
+    // (up to 3 × 60 s) is reported, or the tray sits at 0 % for minutes.
+    const initResponse = await withDriveRetry(
+      async () => {
+        const response = await fetch(uploadBase, {
+          method: existingFileId ? 'PATCH' : 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(metadata)
+        });
+        if (!response.ok) throw await driveHttpErrorFromResponse(response, 'Upload init failed');
+        return response;
+      },
+      {
+        onWait: (delayMs, error, attempt, attempts) =>
+          onRetry?.({ attempt, attempts, delayMs, reason: retryReason(error) })
+      }
+    );
 
     const uploadUrl = initResponse.headers.get('Location');
     if (!uploadUrl) {

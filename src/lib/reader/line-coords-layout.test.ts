@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   layoutLines as layoutLinesImpl,
   heuristicMeasurer,
+  lineGridSpacing,
+  runAdvance,
   type LayoutBlock,
   type TextMeasurer
 } from './line-coords-layout';
 import { inkInsets } from './glyph-insets';
+import { splitUnits, type LinePitch } from './line-grid';
 import fixturePage from './__fixtures__/ocr-page.json';
 
 // Every block the tests below lay out is recorded, so the golden test at the
@@ -974,6 +977,37 @@ describe('golden: replayed layouts', () => {
 // The uniform grid and rotation (line-grid.ts). These call layoutLinesImpl
 // directly, so they stay out of the replay above and carry a golden of their
 // own.
+describe('runAdvance and lineGridSpacing', () => {
+  /** Marks ride on a base and take no advance of their own; everything else is
+   * one em — and the measurer remembers every string it was asked about. */
+  const recording = () => {
+    const asked: string[] = [];
+    const measure: TextMeasurer = (text) => {
+      asked.push(text);
+      return Array.from(text).filter((ch) => !/^\p{Mn}$/u.test(ch)).length;
+    };
+    return { asked, measure };
+  };
+
+  it('a leading mark rides on the first base: the first unit measured is the base, not the mark', () => {
+    const { asked, measure } = recording();
+    const text = '\u3099かき';
+    const run = runAdvance(text, splitUnits(text), measure);
+    expect(run).toEqual({ total: 2, first: 1, last: 1, count: 2 });
+    expect(asked).toContain('\u3099か');
+    expect(asked).not.toContain('\u3099');
+  });
+
+  it('spaces a line with a leading mark exactly like the line without it', () => {
+    const { measure } = recording();
+    const pitch: LinePitch = { pitch: 50, em: 50, lead: 0.11, trail: 0.1 };
+    const bare = lineGridSpacing(pitch, 'かき', 40, measure)!;
+    expect(bare.letterSpacing).toBe(10); // 2 glyphs: 2 × (50 − 40) / 2
+    expect(lineGridSpacing(pitch, '\u3099かき', 40, measure)).toEqual(bare);
+    expect(lineGridSpacing(pitch, '\u3099\u3099', 40, measure)).toBeNull();
+  });
+});
+
 describe('layoutLines on the fixed-pitch grid', () => {
   const column = (x0: number, x1: number, y0: number, y1: number) => [
     [x0, y0],
