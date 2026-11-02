@@ -20,7 +20,12 @@ const eventsByVolume = new Map<string, Map<string, ReadingEvent>>();
 let loaded = false;
 /** Events that arrive while the initial read is in flight; applied after it. */
 let arrivedWhileLoading: ReadingEvent[] | null = null;
+/** Volumes with new events since the last flush, and the subset whose turns changed. */
 let pendingVolumes: Set<string> | null = null;
+let pendingProjections = new Set<string>();
+
+/** Only these kinds shape the projection; the others decide position offers. */
+const shapesTurns = (event: ReadingEvent) => event.kind === 'page' || event.kind === 'forget';
 
 let resolveReady!: () => void;
 let ready = new Promise<void>((resolve) => (resolveReady = resolve));
@@ -48,6 +53,14 @@ export function historyVolumes(): string[] {
 /** Every kept event of one volume (empty until loaded). */
 export function getVolumeEvents(volume: string): ReadingEvent[] {
   return [...(eventsByVolume.get(volume)?.values() ?? [])];
+}
+
+/** Does any kept event of the volume satisfy `test`? No copy of the events. */
+export function someVolumeEvent(volume: string, test: (event: ReadingEvent) => boolean): boolean {
+  const events = eventsByVolume.get(volume);
+  if (!events) return false;
+  for (const event of events.values()) if (test(event)) return true;
+  return false;
 }
 
 type ChangeListener = (volumes: Set<string> | 'all') => void;
@@ -128,6 +141,7 @@ onEventsRecorded((events) => {
   for (const event of events) {
     keep(event);
     pendingVolumes.add(event.volume);
+    if (shapesTurns(event)) pendingProjections.add(event.volume);
   }
   if (first) queueMicrotask(flushPending);
 });
@@ -144,18 +158,24 @@ export function flushHistoryTurns(): void {
 
 function flushPending(): void {
   const touched = pendingVolumes;
+  const reproject = pendingProjections;
   pendingVolumes = null;
+  pendingProjections = new Set();
   if (!touched || touched.size === 0) return;
-  store.update((current) => {
-    const next = new Map(current);
-    for (const volume of touched) {
-      const events = eventsByVolume.get(volume);
-      const turns = events ? projectVolume([...events.values()]) : [];
-      if (turns.length > 0) next.set(volume, turns);
-      else next.delete(volume);
-    }
-    return next;
-  });
+  // A `restart`/`position` event changes no turn: the version bump and the
+  // announcement are enough, and no subscriber sees a new Map for nothing.
+  if (reproject.size > 0) {
+    store.update((current) => {
+      const next = new Map(current);
+      for (const volume of reproject) {
+        const events = eventsByVolume.get(volume);
+        const turns = events ? projectVolume([...events.values()]) : [];
+        if (turns.length > 0) next.set(volume, turns);
+        else next.delete(volume);
+      }
+      return next;
+    });
+  }
   announce(touched);
 }
 
@@ -172,6 +192,7 @@ export function _resetHistoryTurns(): void {
   loaded = false;
   arrivedWhileLoading = null;
   pendingVolumes = null;
+  pendingProjections = new Set();
   ready = new Promise<void>((resolve) => (resolveReady = resolve));
   store.set(new Map());
 }
