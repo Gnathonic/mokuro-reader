@@ -23,6 +23,7 @@
 import { describe } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
+import { basicAuthHeader } from '$lib/util/base64';
 
 /** The reader repo's root (this file is `src/lib/interop/contract.ts`). */
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
@@ -507,18 +508,11 @@ function sortKeys(v: any): any {
   return v;
 }
 
-function utf8Basic(user: string, password: string): string {
-  const bytes = new TextEncoder().encode(`${user}:${password}`);
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return `Basic ${btoa(binary)}`;
-}
-
 /** `basic:<user>` / `bearer:<user>` for a seed user's header, else `raw:<value>`. */
 function authOf(value: string | null, tokens: Record<string, string>, seed: Seed): string {
   if (!value) return 'none';
   for (const u of seed.users) {
-    if (value === utf8Basic(u.username, u.password)) return `basic:${u.username}`;
+    if (value === basicAuthHeader(u.username, u.password)) return `basic:${u.username}`;
   }
   if (value.startsWith('Bearer ')) {
     const token = value.slice('Bearer '.length).trim();

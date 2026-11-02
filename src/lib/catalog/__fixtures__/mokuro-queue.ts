@@ -65,7 +65,15 @@ export function servedQueueFile(now: number): QueueFixtureDoc {
 export function queueFixture(now: number): QueueFixtureDoc {
   const at = (min: number) => new Date(now + min * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const served = servedQueueFile(now);
-  const entry = served.volumes[0];
+  // Every variation below is an edit of Bunko's first volume and its first
+  // job: name the fixture that lost them instead of a TypeError further down.
+  const entry = served.volumes?.[0];
+  if (!entry?.jobs?.[0]) {
+    throw new Error(
+      "Bunko's queue-file-http fixture has no volume with a job to vary " +
+        `(volumes: ${JSON.stringify(served.volumes)})`
+    );
+  }
   const job = (patch: Partial<QueueJobDoc>) => edit(entry.jobs[0], patch);
   const volume = (n: string, jobs: QueueJobDoc[]) =>
     edit(entry, {
