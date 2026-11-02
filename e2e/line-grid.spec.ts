@@ -991,7 +991,22 @@ test.describe('line grid — viewer', () => {
     const solid = findBlock(original, FILE_SOLID_OVER).lines[0];
     const capped = 40 / 0.95;
     expect(solid.fontSize).toBeCloseTo(capped, 2);
-    expect(solid.letterSpacing).toBeCloseTo(40 - capped, 1);
+    // Every glyph steps the print's 40px: the spacing is what the glyph's
+    // advance AS DRAWN leaves of it. Not `40 − capped`: a hinted font snaps
+    // advances to whole px per size (a kana is 42px wide at 42.1px), and the
+    // spacing is worked out from the run measured at the size it renders at.
+    const drawn = solid.glyphs[0].h - solid.letterSpacing;
+    expect(solid.letterSpacing).toBeCloseTo(40 - drawn, 1);
+    solid.glyphs.slice(1).forEach((glyph, k) => {
+      expect(glyph.y - solid.glyphs[k].y, `solid glyph ${k} → ${k + 1} step`).toBeCloseTo(40, 1);
+    });
+    console.log(
+      `[line-grid] original, solid overstated: ${capped.toFixed(3)}px glyphs drawn ${drawn.toFixed(3)}px wide, ` +
+        `letter-spacing ${solid.letterSpacing.toFixed(3)}px, steps [${solid.glyphs
+          .slice(1)
+          .map((g, k) => (g.y - solid.glyphs[k].y).toFixed(3))
+          .join(' ')}]`
+    );
     expect(solid.transform).not.toContain('rotate');
     const solidErrors = solid.glyphs.map((glyph, k) =>
       distance(
