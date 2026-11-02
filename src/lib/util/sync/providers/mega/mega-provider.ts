@@ -1426,14 +1426,24 @@ export class MegaProvider implements SyncProvider {
           // stream delivers the delete and megajs applies it. A copy can also be
           // a ghost — deleted server-side but never evicted from storage.files
           // by megajs — so a server "already gone" answer means converged, not
-          // failed.
+          // failed. Any other refusal is not the upload's either: the new copy
+          // landed, and a leftover old one is a duplicate a listing merges (or
+          // takes the newest of) and the next upload removes. Thrown, it would
+          // fail the caller's upload — whose retry only uploads a third copy.
           for (const existingFile of existingFiles) {
-            await new Promise<void>((resolve, reject) => {
-              existingFile.delete(true, (error: Error | null) => {
-                if (error && !isMegaNotFoundError(error)) reject(error);
-                else resolve();
+            try {
+              await new Promise<void>((resolve, reject) => {
+                existingFile.delete(true, (error: Error | null) => {
+                  if (error && !isMegaNotFoundError(error)) reject(error);
+                  else resolve();
+                });
               });
-            });
+            } catch (error) {
+              console.warn(
+                `MEGA kept an old copy of ${fileName} after the upload:`,
+                error instanceof Error ? error.message : String(error)
+              );
+            }
           }
           return uploadResult;
         },
