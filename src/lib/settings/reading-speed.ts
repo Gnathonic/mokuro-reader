@@ -1,7 +1,7 @@
 import { derived } from 'svelte/store';
-import { volumes, VolumeData } from './volume-data';
-import { settings } from './settings';
-import { calculateReadingSpeed, type ReadingSpeedResult } from '$lib/util/reading-speed';
+import { VolumeData, volumesWithTrash } from './volume-data';
+import type { ReadingSpeedResult } from '$lib/util/reading-speed';
+import { readingStats, recentReadingSpeed } from '$lib/reading-history/stats-store';
 import { db } from '$lib/catalog/db';
 import type { Page } from '$lib/types';
 import type { PageTurn } from './volume-data';
@@ -93,30 +93,12 @@ export async function migratePageTurnData(
 }
 
 /**
- * Personalized reading speed derived from hybrid approach:
- * - Prioritizes up to 4 hours of recent page-level session data
- * - Fills remaining time (up to 8 hours total) with completed volume data
- *
- * Character counts are stored in page turns, so no IndexedDB pages needed.
+ * The reading speed estimates use (time left, estimated reading time): the
+ * newest 8 hours of counted reading across every volume and device, from
+ * reading history (`recentReadingSpeed`), with completed volumes' pre-history
+ * reading filling in while there is little of it.
  */
 export const personalizedReadingSpeed = derived<
-  [typeof volumes, typeof settings],
+  [typeof readingStats, typeof volumesWithTrash],
   ReadingSpeedResult
->(
-  [volumes, settings],
-  ([$volumes, $settings], set) => {
-    const idleTimeoutMinutes = $settings.inactivityTimeoutMinutes;
-
-    // No write-back migration any more: `$volumes` turns are projected from
-    // reading history (phase 2b) and must never be written into the stored
-    // records. Legacy 2-tuples are upgraded when they are converted instead.
-    set(calculateReadingSpeed($volumes, idleTimeoutMinutes));
-  },
-  // Initial value
-  {
-    charsPerMinute: 100,
-    isPersonalized: false,
-    confidence: 'none' as const,
-    sessionsUsed: 0
-  }
-);
+>([readingStats, volumesWithTrash], ([$stats, $records]) => recentReadingSpeed($stats, $records));

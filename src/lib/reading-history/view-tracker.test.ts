@@ -74,3 +74,19 @@ describe('ViewTracker', () => {
     expect(emitted[0].payload.dwell_ms).toBe(0);
   });
 });
+
+describe('ViewTracker onChange', () => {
+  it('reports each open view with its start, and null when nothing is open', () => {
+    const changes: Array<{ first: number; since: number } | null> = [];
+    const tracker = new ViewTracker(
+      () => {},
+      (open) => changes.push(open && { first: open.view.first_page, since: open.since })
+    );
+    tracker.setView(view(1), 1000);
+    tracker.setView(view(1), 1500); // same view: no change
+    tracker.setView(view(2), 2000);
+    tracker.setView(null, 3000);
+    tracker.close(4000); // already closed: no change
+    expect(changes).toEqual([{ first: 1, since: 1000 }, { first: 2, since: 2000 }, null]);
+  });
+});

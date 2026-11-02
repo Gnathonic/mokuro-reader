@@ -7,9 +7,10 @@
     type SettingsKey,
     updateSetting
   } from '$lib/settings';
-  import { Toggle, Range, Label } from 'flowbite-svelte';
+  import { Toggle } from 'flowbite-svelte';
   import ScheduledFilterCard from './ScheduledFilterCard.svelte';
   import PageAdjustCard from './PageAdjustCard.svelte';
+  import IdleCutoffSetting from './IdleCutoffSetting.svelte';
   import { editModeActive, requestEditMode } from '$lib/reader/edit/edit-mode';
 
   let isContinuous = $derived($settings.continuousScroll);
@@ -125,18 +126,4 @@
 <!-- Page brightness / contrast — the images only, never the OCR text -->
 <PageAdjustCard />
 
-<div class="mt-4">
-  <Label class="mb-2 text-gray-900 dark:text-white">
-    Inactivity timeout: {$settings.inactivityTimeoutMinutes} minutes
-    <span class="ml-2 text-xs text-gray-500 dark:text-gray-400"
-      >(Auto-stop timer and sync after inactivity)</span
-    >
-  </Label>
-  <Range
-    min="1"
-    max="30"
-    value={$settings.inactivityTimeoutMinutes}
-    onchange={(e) =>
-      updateSetting('inactivityTimeoutMinutes', Number((e.target as HTMLInputElement).value))}
-  />
-</div>
+<IdleCutoffSetting />
