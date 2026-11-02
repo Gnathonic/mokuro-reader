@@ -265,19 +265,19 @@ describe('runLayerAction', () => {
   // left a tombstone, so the row still goes now — but the user is told the
   // cloud half is outstanding instead of a plain "deleted".
   // A layer whose cloud file is somebody else's (a shared edit layer on a
-  // 0.7.x bunko, the server's pre-upgrade keepsake) is never deleted from here:
+  // 0.7.x bunko, a case merge's curated-<n> keepsake) is never deleted from here:
   // promising a later cloud removal would be a lie.
   it('delete of a layer whose cloud copy is shared says the shared copy stays', async () => {
     const d = deps({ deleteCloudLayerFile: vi.fn(async () => 'kept-shared') });
     await runLayerAction('delete', {
       volumeUuid: 'v',
-      layerId: 'pre-upgrade',
+      layerId: 'curated-2',
       displayedPages: [],
       onSelectLayer: vi.fn(),
       deps: d
     });
     const m = d as Record<string, ReturnType<typeof vi.fn>>;
-    expect(m.deleteLayer).toHaveBeenCalledWith('v', 'pre-upgrade');
+    expect(m.deleteLayer).toHaveBeenCalledWith('v', 'curated-2');
     expect(m.notify).toHaveBeenCalledWith(
       'Layer deleted on this device. The shared copy stays on the server.'
     );

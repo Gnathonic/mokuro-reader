@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   CURATED_LAYER_ID,
   isCuratedLayerId,
-  isDeviceKeepsakeLayerId,
   isPersonalLayerId,
   isReservedLayerId,
   isServerKeepsakeLayerId,
@@ -39,25 +38,29 @@ describe('layer roles by id', () => {
     }
   });
 
-  it('a server keepsake = what bunko writes alone: the pre-upgrade family and curated-<n>', () => {
-    // bunko `layer_class`: ServerKeepsake, or Reserved for a copy only it makes
-    // (a case merge keeps a second, different `curated` as `curated-<n>`).
-    for (const id of ['pre-upgrade', 'pre-upgrade-3', 'pre-upgrade-x', 'pre-upgradex']) {
-      expect(isServerKeepsakeLayerId(id)).toBe(true);
-    }
+  it('a server keepsake = what bunko writes alone: a case merge’s curated-<n>, nothing else', () => {
+    // bunko sidecar names rule v1 `layer_class` ServerKeepsake.
     for (const id of ['curated-2', 'curated-10']) expect(isServerKeepsakeLayerId(id)).toBe(true);
-    for (const id of ['curated', 'curated-x', 'previous-ocr', 'edit-2', 'upgrade']) {
+    // `pre-upgrade…` and `previous-ocr…` are ordinary hand-made ids now (bunko
+    // no longer writes or reserves them).
+    for (const id of [
+      'curated',
+      'curated-x',
+      'pre-upgrade',
+      'pre-upgrade-3',
+      'previous-ocr',
+      'previous-ocr-2',
+      'edit-2',
+      'upgrade'
+    ]) {
       expect(isServerKeepsakeLayerId(id)).toBe(false);
     }
   });
 
-  it('a device keepsake = the reader’s own previous-ocr family', () => {
-    for (const id of ['previous-ocr', 'previous-ocr-2', 'previous-ocrx']) {
-      expect(isDeviceKeepsakeLayerId(id)).toBe(true);
-    }
-    for (const id of ['previous', 'ocr', 'pre-upgrade']) {
-      expect(isDeviceKeepsakeLayerId(id)).toBe(false);
-    }
+  it('pre-upgrade and previous-ocr are named like any other id', () => {
+    expect(layerNameForId('pre-upgrade')).toBe('Pre Upgrade');
+    expect(layerNameForId('pre-upgrade-2')).toBe('Pre Upgrade 2');
+    expect(layerNameForId('previous-ocr')).toBe('Previous Ocr');
   });
 });
 
@@ -72,12 +75,7 @@ describe('isReservedLayerId (bunko’s reserved set)', () => {
     'curated',
     'curated-2',
     'tr-en',
-    'tr-',
-    'pre-upgrade',
-    'pre-upgrade-2',
-    'pre-upgraded',
-    'previous-ocr',
-    'previous-ocr-3'
+    'tr-'
   ])('%s is reserved', (id) => {
     expect(isReservedLayerId(id)).toBe(true);
   });
@@ -93,6 +91,12 @@ describe('isReservedLayerId (bunko’s reserved set)', () => {
     'trans',
     'pre',
     'previous',
+    // No longer reserved by bunko: ordinary hand-made ids.
+    'pre-upgrade',
+    'pre-upgrade-2',
+    'pre-upgraded',
+    'previous-ocr',
+    'previous-ocr-3',
     'updated-ocr-2',
     'gcv-2',
     'original-2',

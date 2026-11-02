@@ -56,8 +56,8 @@ export function isCloudModelOutput(layer: {
  * Does an edit of this layer go into the account's own `edit` layer instead
  * (bunko design 0.8 D4: human corrections live in their own file)? Always for
  * the shared `curated` layer: it is written by Publish alone. On a server that
- * compiles its metadata (mokuro-bunko) also for its keepsakes (`pre-upgrade…`,
- * a case merge's `curated-<n>`) and for the OCR a server stamped
+ * compiles its metadata (mokuro-bunko) also for its keepsake (a case merge's
+ * `curated-<n>`) and for the OCR a server stamped
  * (`isCloudModelOutput`): on a shared library those are the one copy every
  * account reads. On plain storage they are the user's own files, edited in place.
  */

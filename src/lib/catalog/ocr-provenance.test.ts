@@ -191,7 +191,7 @@ describe('addProvenance', () => {
   });
 });
 
-describe('provenanceOfFile (bunko precedence: edited, preserved, ocr_engine)', () => {
+describe('provenanceOfFile (bunko precedence: edited, ocr_engine, legacy)', () => {
   const EDITED = {
     by: 'mokuro-reader',
     at: '2026-10-01T00:00:00.000Z',
@@ -216,12 +216,37 @@ describe('provenanceOfFile (bunko precedence: edited, preserved, ocr_engine)', (
     expect(isOcrProvenance(p)).toBe(true);
   });
 
-  it('a PRESERVED file records nothing: its leftover recipe is nobody’s', async () => {
+  // `preserved` (a 0.8 pre-release keepsake block) is no longer part of the
+  // precedence: a file still carrying one is read by its other blocks.
+  it('a stray `preserved` block changes nothing: the `ocr_engine` still counts', async () => {
     const doc = runnerOutput();
     const preserved = { by: 'mokuro-bunko', reason: 'generation-upgrade' };
-    expect(await provenanceOfFile({ ocrEngine: doc.ocr_engine, preserved }, doc.pages)).toBe(
-      undefined
-    );
+    const blocks = { ocrEngine: doc.ocr_engine, preserved } as Parameters<
+      typeof provenanceOfFile
+    >[0];
+    expect(await provenanceOfFile(blocks, doc.pages)).toEqual({
+      engine: doc.ocr_engine,
+      digest: RUNNER_OUTPUT_SEAL
+    });
+  });
+
+  it('a stray `preserved` block beside `edited` changes nothing: the file is EDITED', async () => {
+    const doc = runnerOutput();
+    const preserved = { by: 'mokuro-bunko', reason: 'generation-upgrade' };
+    const blocks = { ocrEngine: doc.ocr_engine, edited: EDITED, preserved } as Parameters<
+      typeof provenanceOfFile
+    >[0];
+    const p = await provenanceOfFile(blocks, doc.pages);
+    expect(p?.edited).toEqual(EDITED);
+    expect(p && 'engine' in p).toBe(false);
+  });
+
+  it('a stray `preserved` block alone is legacy OCR: nothing is recorded', async () => {
+    const doc = runnerOutput();
+    const preserved = { by: 'mokuro-bunko', reason: 'generation-upgrade' };
+    expect(
+      await provenanceOfFile({ preserved } as Parameters<typeof provenanceOfFile>[0], doc.pages)
+    ).toBeUndefined();
   });
 
   it('an `edited` that is not an object does not count', async () => {

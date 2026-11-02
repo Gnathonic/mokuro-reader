@@ -84,8 +84,6 @@ describe('slugifyLayerId', () => {
   it('steps out of every reserved id and family with a layer- prefix', () => {
     expect(slugifyLayerId('Edit', [])).toBe('layer-edit');
     expect(slugifyLayerId('Curated', [])).toBe('layer-curated');
-    expect(slugifyLayerId('Pre upgrade', [])).toBe('layer-pre-upgrade');
-    expect(slugifyLayerId('Previous OCR', [])).toBe('layer-previous-ocr');
     expect(slugifyLayerId('Updated OCR', [])).toBe('layer-updated-ocr');
     expect(slugifyLayerId('gcv', [])).toBe('layer-gcv');
     expect(slugifyLayerId('Edit 2', [])).toBe('layer-edit-2');
@@ -99,6 +97,9 @@ describe('slugifyLayerId', () => {
     // Not reserved: kept as they are.
     expect(slugifyLayerId('Editorial', [])).toBe('editorial');
     expect(slugifyLayerId('Edit X', [])).toBe('edit-x');
+    // Ordinary hand-made ids now: bunko no longer writes or reserves them.
+    expect(slugifyLayerId('Pre upgrade', [])).toBe('pre-upgrade');
+    expect(slugifyLayerId('Previous OCR', [])).toBe('previous-ocr');
   });
 
   it('never returns a reserved id, whatever the name', () => {
@@ -429,7 +430,7 @@ describe('upsertLayerPages', () => {
   });
 });
 
-describe('the editor’s edit layer and bunko’s pre-upgrade layers (D4)', () => {
+describe('the editor’s edit layer (D4)', () => {
   it('an edit-kind layer file carries the edited block (base = the main sidecar hash), no ocr_engine', async () => {
     const sha = 'ab'.repeat(32);
     await db.volumes.update('v1', { mokuro_sha256: sha });
@@ -456,11 +457,10 @@ describe('the editor’s edit layer and bunko’s pre-upgrade layers (D4)', () =
     expect(slugifyLayerId('original', [])).toBe('layer-original');
   });
 
-  it('names the edit layer and labels pre-upgrade layers', () => {
+  it('names the edit layer; a pre-upgrade layer is named like any other id', () => {
     expect(layerNameForId('edit')).toBe('Your corrections');
-    expect(layerNameForId('pre-upgrade')).toBe('Before upgrade (may contain your corrections)');
-    expect(layerNameForId('pre-upgrade-2')).toBe('Before upgrade 2 (may contain your corrections)');
-    expect(layerNameForId('pre-upgraded')).toBe('Pre Upgraded');
+    expect(layerNameForId('pre-upgrade')).toBe('Pre Upgrade');
+    expect(layerNameForId('pre-upgrade-2')).toBe('Pre Upgrade 2');
   });
 });
 
@@ -487,11 +487,18 @@ describe('layerKindForId / layerNameForId', () => {
 
   it('files the shared, personal and keepsake layers as corrections, stamp or not', () => {
     // A stamp on these never makes them a server's OCR: curated is published
-    // corrections, edit-<n> a person's, pre-upgrade bunko's copy of a main
-    // that may hold corrections. Their role is read from the id.
-    for (const id of ['curated', 'edit', 'edit-2', 'pre-upgrade', 'pre-upgrade-2']) {
+    // corrections, edit-<n> a person's, curated-<n> a case merge's copy of a
+    // second curated. Their role is read from the id.
+    for (const id of ['curated', 'edit', 'edit-2', 'curated-2']) {
       expect(layerKindForId(id)).toBe('edit');
       expect(layerKindForId(id, 'hayai-nova')).toBe('edit');
+    }
+  });
+
+  it('files pre-upgrade / previous-ocr like any other hand-made id: by the stamp it carries', () => {
+    for (const id of ['pre-upgrade', 'pre-upgrade-2', 'previous-ocr', 'previous-ocr-2']) {
+      expect(layerKindForId(id)).toBe('edit');
+      expect(layerKindForId(id, 'hayai-nova')).toBe('ocr');
     }
   });
 
