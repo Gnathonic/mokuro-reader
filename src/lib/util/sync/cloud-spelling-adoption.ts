@@ -37,10 +37,13 @@ export interface CloudSpellingAdoption {
   volumeUuids: string[];
 }
 
-type AdoptionRow = Pick<
-  VolumeMetadata,
-  'volume_uuid' | 'series_title' | 'volume_title' | 'isPlaceholder'
->;
+/**
+ * A `volumes` row. Rows are never placeholders — a placeholder is a cloud
+ * listing with no row at all (`catalog/volume-state.ts`) — so there is no
+ * state to test here; installed and metadata-only rows alike carry the title
+ * the adoption renames.
+ */
+type AdoptionRow = Pick<VolumeMetadata, 'volume_uuid' | 'series_title' | 'volume_title'>;
 
 /** Top-level folders holding at least one `.cbz` → their folded archive stems. */
 function cloudSeriesFolders(files: CloudFileMetadata[]): Map<string, Set<string>> {
@@ -88,12 +91,12 @@ export function planCloudSpellingAdoptions(
   files: CloudFileMetadata[]
 ): CloudSpellingAdoption[] {
   const folders = cloudSeriesFolders(files);
-  const real = rows.filter((row) => !row.isPlaceholder && row.series_title);
-  const candidates = candidateTitles(new Set(real.map((row) => row.series_title)), folders);
+  const titled = rows.filter((row) => row.series_title);
+  const candidates = candidateTitles(new Set(titled.map((row) => row.series_title)), folders);
 
   const plans: CloudSpellingAdoption[] = [];
   for (const [from, to] of candidates) {
-    const seriesRows = real.filter((row) => row.series_title === from);
+    const seriesRows = titled.filter((row) => row.series_title === from);
     const stems = folders.get(to)!;
     if (!seriesRows.some((row) => stems.has(normalizeVolumeTitleKey(row.volume_title)))) continue;
     plans.push({ from, to, volumeUuids: seriesRows.map((row) => row.volume_uuid) });

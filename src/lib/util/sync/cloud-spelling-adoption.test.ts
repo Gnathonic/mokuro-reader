@@ -113,16 +113,20 @@ describe('planCloudSpellingAdoptions', () => {
     ).toEqual([]);
   });
 
-  it('never plans for placeholders or for titles already spelled right', () => {
+  it('never plans for a title already spelled like its folder', () => {
+    expect(
+      planCloudSpellingAdoptions([row('u2', 'One Piece', 'Vol 1')], [file('One Piece/Vol 1.cbz')])
+    ).toEqual([]);
+  });
+
+  it('a metadata-only row is renamed with its series — its title is what the catalog shows', () => {
+    const removed = { ...row('u1', 'one piece', 'Vol 1'), metadata_only: true as const };
     expect(
       planCloudSpellingAdoptions(
-        [
-          { ...row('u1', 'one piece', 'Vol 1'), isPlaceholder: true },
-          row('u2', 'One Piece', 'Vol 1')
-        ],
+        [removed, row('u2', 'one piece', 'Vol 2')],
         [file('One Piece/Vol 1.cbz')]
       )
-    ).toEqual([]);
+    ).toEqual([{ from: 'one piece', to: 'One Piece', volumeUuids: ['u1', 'u2'] }]);
   });
 });
 
