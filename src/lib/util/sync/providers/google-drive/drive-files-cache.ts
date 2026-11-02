@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import { driveApiClient } from './api-client';
+import { driveApiClient, escapeNameForDriveQuery } from './api-client';
 import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { unifiedCloudManager } from '../../unified-cloud-manager';
 import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
@@ -31,6 +31,19 @@ type CacheMutation = (cache: Map<string, DriveFileMetadata[]>) => Map<string, Dr
  * whole-account fetch per round is not a fix for that.
  */
 const MAX_DEDUP_REFETCHES = 2;
+
+/** Which listed folders are directly in My Drive. */
+type TopLevelTest = (f: DriveFile) => boolean;
+
+/**
+ * The write root among several `mokuro-reader` folders, and whether Drive
+ * could be asked which of them are top-level. An unconfirmed pick is the
+ * best guess for this listing; dedup must not promote a root on it.
+ */
+export interface ReaderFolderPick {
+  id: string | null;
+  topLevelKnown: boolean;
+}
 
 /**
  * Everything about one cached file that a consumer can observe, as one
@@ -89,7 +102,13 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   private readerFolderId: string | null = null;
   /** My Drive's own folder id, learnt once per session (see topLevelTest). */
   private myDriveRootId: string | null = null;
-  private topLevelPromise: Promise<((f: DriveFile) => boolean) | null> | null = null;
+  /**
+   * Roots the query said are NOT top-level, with the parent each had then:
+   * while nothing it was asked about has moved or appeared, a "no top-level
+   * root" answer holds and the query is not repeated (see topLevelTest).
+   */
+  private notTopLevel = new Map<string, string>();
+  private topLevelPromise: Promise<TopLevelTest | null> | null = null;
   private fetchPromise: Promise<void> | null = null;
   /**
    * How many times IN A ROW a dedup-triggered refetch has re-entered
@@ -303,7 +322,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         );
         // Chosen before the swap below, and kept only if the account is still
         // this one: the choice may ask Drive for My Drive's id.
-        const readerFolderId = await this.pickReaderFolder(readerFolders);
+        const { id: readerFolderId } = await this.pickReaderFolder(
+          readerFolders,
+          new Set(allItems.map((item) => item.id))
+        );
         // IDENTITY IS A SIGNAL, so do not spend it on a listing that did not
         // change. `catalog/index.ts`'s `volumesWithPlaceholders` decides
         // whether to re-mint EVERY placeholder object by comparing the
@@ -423,45 +445,81 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * empties. A nested root is never merged away; it is the write root only
    * when there is no top-level one. The provider's dedup confirms a root only
    * when it is this same choice, so the two never disagree.
+   *
+   * When Drive cannot be asked which roots are top-level, the pick is a
+   * guess, flagged `topLevelKnown: false`: the session's current write root
+   * while the listing still has it (a failed query must not move writes to
+   * an older nested root), else a root whose parent is NOT among `listedIds`
+   * — the listing never holds My Drive itself, so a parent the app can see
+   * is a folder, and the root under it is nested — then age and id.
    */
-  async pickReaderFolder(folders: DriveFile[]): Promise<string | null> {
-    if (folders.length <= 1) return folders[0]?.id ?? null;
-    const atTop = await this.topLevelTest();
-    const rank = (f: DriveFile) => (atTop?.(f) ? 0 : 1);
-    return [...folders].sort((a, b) => rank(a) - rank(b) || compareByAge(a, b))[0].id;
+  async pickReaderFolder(
+    folders: DriveFile[],
+    listedIds?: ReadonlySet<string>
+  ): Promise<ReaderFolderPick> {
+    if (folders.length <= 1) return { id: folders[0]?.id ?? null, topLevelKnown: true };
+    const atTop = await this.topLevelTest(folders);
+    const byTopThenAge = (isTop: TopLevelTest) =>
+      [...folders].sort((a, b) => Number(isTop(b)) - Number(isTop(a)) || compareByAge(a, b))[0].id;
+    if (atTop) return { id: byTopThenAge(atTop), topLevelKnown: true };
+    const current = this.readerFolderId;
+    if (current && folders.some((f) => f.id === current)) {
+      return { id: current, topLevelKnown: false };
+    }
+    const parentUnseen: TopLevelTest = (f) => {
+      const parent = f.parents?.[0];
+      return !parent || !listedIds?.has(parent);
+    };
+    return { id: byTopThenAge(parentUnseen), topLevelKnown: false };
   }
 
   /**
    * Is a folder directly in My Drive? Not `files.get('root')`: under the
    * app's drive.file scope that is a 404 (rclone hit the same). The `'root'`
    * alias does work in a query, so ask for the top-level `mokuro-reader`
-   * folders; their parent is My Drive's id, remembered for the session. Null
-   * when the query fails (ordered by age alone, asked again next time).
+   * folders; their parent is My Drive's id, remembered for the session. An
+   * answer that names none is remembered per root asked about, with the
+   * parent it had: the same roots under the same parents get the same
+   * answer, so only a root that moved or appeared asks again. Null when the
+   * query fails (asked again next time).
    */
-  private async topLevelTest(): Promise<((f: DriveFile) => boolean) | null> {
+  private async topLevelTest(folders: DriveFile[]): Promise<TopLevelTest | null> {
     const known = this.myDriveRootId;
     if (known) return (f) => f.parents?.[0] === known;
+    if (folders.every((f) => this.notTopLevel.get(f.id) === (f.parents?.[0] ?? ''))) {
+      return () => false;
+    }
     if (!this.topLevelPromise) {
       const generation = this.cacheGeneration;
-      this.topLevelPromise = driveApiClient
+      const reader = escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER);
+      const promise: Promise<TopLevelTest | null> = driveApiClient
         .listFiles(
-          `'root' in parents and name='${GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+          `'root' in parents and name='${reader}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
           'files(id,parents)'
         )
         .then((top: DriveFile[]) => {
           const id = top.find((f) => f.parents?.[0])?.parents?.[0];
-          // An answer for an account signed out meanwhile is not this one's.
-          if (id && this.cacheGeneration === generation) this.myDriveRootId = id;
           const ids = new Set(top.map((f) => f.id));
-          return (f: DriveFile) => ids.has(f.id) || (!!id && f.parents?.[0] === id);
+          const isTop: TopLevelTest = (f) => ids.has(f.id) || (!!id && f.parents?.[0] === id);
+          // An answer for an account signed out meanwhile is not this one's.
+          if (this.cacheGeneration === generation) {
+            if (id) this.myDriveRootId = id;
+            for (const f of folders) {
+              if (!isTop(f)) this.notTopLevel.set(f.id, f.parents?.[0] ?? '');
+            }
+          }
+          return isTop;
         })
         .catch((error: unknown) => {
           console.warn('[DriveCache] Could not list the top-level mokuro-reader folders:', error);
           return null;
-        })
-        .finally(() => {
-          this.topLevelPromise = null;
         });
+      this.topLevelPromise = promise;
+      // Only this promise's own slot: a clear() meanwhile may have let a
+      // newer query take the field, and that one must not be dropped.
+      promise.finally(() => {
+        if (this.topLevelPromise === promise) this.topLevelPromise = null;
+      });
     }
     return this.topLevelPromise;
   }
@@ -658,6 +716,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     this.lastFetchTime = null;
     this.readerFolderId = null;
     this.myDriveRootId = null;
+    this.notTopLevel.clear();
     this.topLevelPromise = null;
     this.fetchPromise = null;
   }

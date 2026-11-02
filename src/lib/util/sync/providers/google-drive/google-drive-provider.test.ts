@@ -31,7 +31,7 @@ vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
   driveFilesCache: {
     getReaderFolderId: vi.fn(async () => 'reader-root'),
     setReaderFolderId: vi.fn(),
-    pickReaderFolder: vi.fn(async () => null),
+    pickReaderFolder: vi.fn(async () => ({ id: null, topLevelKnown: true })),
     getDriveFilesBySeries: vi.fn(() => []),
     removeById: vi.fn(),
     clear: vi.fn(),
@@ -550,7 +550,10 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
       folder('NESTED', 'mokuro-reader', 'BACKUP'),
       folder('NESTED_SERIES', 'Ippo', 'NESTED')
     ]);
-    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce('TOP');
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce({
+      id: 'TOP',
+      topLevelKnown: true
+    });
     const ops = googleDriveProvider.getFolderOperations();
     await ops.listFolders();
 
@@ -575,12 +578,37 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
       folder('NESTED_A', 'mokuro-reader', 'BACKUP'),
       folder('NESTED_B', 'mokuro-reader', 'BACKUP')
     ]);
-    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce('NESTED_A');
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce({
+      id: 'NESTED_A',
+      topLevelKnown: true
+    });
     const ops = googleDriveProvider.getFolderOperations();
     await ops.listFolders();
 
     ops.onRootFolderConfirmed?.('NESTED_A');
     expect(driveFilesCache.setReaderFolderId).toHaveBeenCalledWith('NESTED_A');
+  });
+
+  it('confirms NO root when the cache could not tell which roots are top-level', async () => {
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      folder('TOP', 'mokuro-reader', 'MY_DRIVE'),
+      folder('NESTED', 'mokuro-reader', 'BACKUP')
+    ]);
+    // The query failed: the pick is a guess, and a guess must not move writes.
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce({
+      id: 'NESTED',
+      topLevelKnown: false
+    });
+    const ops = googleDriveProvider.getFolderOperations();
+    await ops.listFolders();
+
+    // The ids of everything listed ride along, for the fallback ranking.
+    expect(vi.mocked(driveFilesCache.pickReaderFolder).mock.calls[0][1]).toEqual(
+      new Set(['TOP', 'NESTED'])
+    );
+    ops.onRootFolderConfirmed?.('NESTED');
+    ops.onRootFolderConfirmed?.('TOP');
+    expect(driveFilesCache.setReaderFolderId).not.toHaveBeenCalled();
   });
 
   it('breaks a creation-time tie by id when several folders share a name', async () => {

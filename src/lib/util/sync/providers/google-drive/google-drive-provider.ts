@@ -1224,9 +1224,11 @@ class GoogleDriveProvider implements SyncProvider {
     // Duplicates this run already kept once because the server still listed
     // children in them (see deleteFolder).
     const keptOnce = new Set<string>();
-    // The write root the cache picks from the last listFolders' roots; null
-    // before any listing, which confirms any root as before.
-    let writeRoot: string | null = null;
+    // May a merged root group's canonical become the write root? From the
+    // cache's pick over the last listFolders' roots: only that same folder,
+    // and no folder at all while Drive could not be asked which roots are
+    // top-level. Before any listing, any root, as before.
+    let confirmable = (_folderId: string): boolean => true;
     return {
       rootFolderName: READER,
 
@@ -1254,9 +1256,11 @@ class GoogleDriveProvider implements SyncProvider {
         };
         const library = items.filter(inLibrary);
 
-        writeRoot = await driveFilesCache.pickReaderFolder(
-          library.filter((item) => item.name === READER)
+        const pick = await driveFilesCache.pickReaderFolder(
+          library.filter((item) => item.name === READER),
+          new Set(items.map((item) => item.id))
         );
+        confirmable = pick.topLevelKnown ? (folderId) => folderId === pick.id : () => false;
 
         return library.map((item) => ({
           id: item.id,
@@ -1317,8 +1321,8 @@ class GoogleDriveProvider implements SyncProvider {
       onRootFolderConfirmed: (folderId: string): void => {
         // A merged group of nested roots (`Backup/mokuro-reader` twice) has a
         // canonical folder too: it is read, never the write root while the
-        // cache's choice (top-level first) is another folder.
-        if (writeRoot && folderId !== writeRoot) return;
+        // cache's choice (top-level first) is another folder, or unsure.
+        if (!confirmable(folderId)) return;
         this.setReaderFolderId(folderId);
         driveFilesCache.setReaderFolderId(folderId);
       }
