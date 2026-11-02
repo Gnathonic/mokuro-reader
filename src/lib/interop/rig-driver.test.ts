@@ -694,6 +694,33 @@ describe('importing and backing up', () => {
     expect(await backing).toEqual({ cloudPath: null, error: 'Storage is full' });
   });
 
+  // A failure from an earlier run stays recorded until an upload succeeds: a
+  // run that neither uploads nor fails (a series closed while queued) must not
+  // answer with it.
+  it('backupVolume does not answer with a failure an earlier run recorded', async () => {
+    listed('Series A/Vol 1.cbz');
+    const failures = uploadFailures as unknown as Writable<Record<string, unknown>>;
+    failures.set({
+      v1: { volume_uuid: 'v1', reason: 'Storage is full', at: '2026-11-01T00:00:00Z' }
+    });
+    const backing = install().backupVolume('v1');
+    await vi.waitFor(() => expect(bq.settle).not.toBeNull());
+    bq.settle!();
+    expect(await backing).toEqual({ cloudPath: 'Series A/Vol 1.cbz' });
+  });
+
+  it('backupVolume answers a failure this run recorded over an earlier one', async () => {
+    const failures = uploadFailures as unknown as Writable<Record<string, unknown>>;
+    failures.set({ v1: { volume_uuid: 'v1', reason: 'Old', at: '2026-11-01T00:00:00Z' } });
+    const backing = install().backupVolume('v1');
+    await vi.waitFor(() => expect(bq.settle).not.toBeNull());
+    failures.set({
+      v1: { volume_uuid: 'v1', reason: 'Storage is full', at: '2026-11-02T00:00:00Z' }
+    });
+    bq.settle!();
+    expect(await backing).toEqual({ cloudPath: null, error: 'Storage is full' });
+  });
+
   it('backupVolume refuses what the queue refuses', async () => {
     vi.mocked(backupQueue.queueVolumeForBackup).mockImplementationOnce(() => false);
     await expect(install().backupVolume('v1')).rejects.toThrow('could not be queued');

@@ -415,13 +415,19 @@ async function backupVolume(
   volumeId: string
 ): Promise<{ cloudPath: string | null; error?: string }> {
   const row = await requireRow(volumeId);
+  // A failure stays recorded until an upload of the volume succeeds, and a run
+  // can end neither way (a series closed while queued): only one this run
+  // recorded is its answer.
+  const earlier = get(uploadFailures)[volumeId];
   backupQueue.queueVolumeForBackup(row);
   if (!backupQueue.isVolumeInBackupQueue(volumeId)) {
     throw new Error(`${row.volume_title} could not be queued for backup`);
   }
   await backupQueueSettled();
   const failure = get(uploadFailures)[volumeId];
-  if (failure) return { cloudPath: null, error: failure.reason };
+  if (failure && (!earlier || failure.at !== earlier.at)) {
+    return { cloudPath: null, error: failure.reason };
+  }
   return { cloudPath: listedArchivePath(row) };
 }
 
