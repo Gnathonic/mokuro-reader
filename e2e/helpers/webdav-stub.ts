@@ -19,7 +19,14 @@ interface StubEntry {
 /** A tiny in-memory WebDAV server behind `page.route` that logs every request. */
 export class WebDavStub {
   files = new Map<string, StubEntry>();
-  log: Array<{ method: string; path: string }> = [];
+  /**
+   * Every request (OPTIONS preflights excepted — see `preflights`). `reqBytes` is
+   * the request body and `resBytes` the response body, as sent on the wire
+   * (before any Content-Encoding the browser would have applied: none here).
+   */
+  log: Array<{ method: string; path: string; reqBytes: number; resBytes: number }> = [];
+  /** CORS preflights answered (not in `log`; they carry no body). */
+  preflights = 0;
   /** Hold a GET of this path (normalized) for this many ms — a slow server. */
   delays = new Map<string, number>();
 
@@ -81,20 +88,31 @@ export class WebDavStub {
       'Access-Control-Allow-Headers': '*',
       'Access-Control-Expose-Headers': '*'
     };
+    let entryLog: (typeof this.log)[number] | undefined;
     const reply = (
       status: number,
       body: string | Buffer = '',
       headers: Record<string, string> = {}
-    ) => route.fulfill({ status, body, headers: { ...cors, ...headers } });
+    ) => {
+      if (entryLog) entryLog.resBytes = Buffer.byteLength(body);
+      return route.fulfill({ status, body, headers: { ...cors, ...headers } });
+    };
 
     if (url.pathname.endsWith('/login/api/me')) return reply(404, 'not bunko');
     if (method === 'OPTIONS') {
+      this.preflights++;
       return reply(200, '', {
         DAV: '1,2',
         Allow: 'OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, MOVE, COPY, PROPFIND'
       });
     }
-    this.log.push({ method, path });
+    entryLog = {
+      method,
+      path,
+      reqBytes: request.postDataBuffer()?.length ?? 0,
+      resBytes: 0
+    };
+    this.log.push(entryLog);
     const entry = this.files.get(path);
     switch (method) {
       case 'PROPFIND': {
