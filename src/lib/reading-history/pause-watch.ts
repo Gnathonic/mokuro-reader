@@ -60,10 +60,14 @@ export class PauseWatch {
    * @param onCap the open view reached its cap (once per view).
    * @param onClear a pause that fired no longer stands: its view ended,
    *   another opened, or the cap grew past the time so far.
+   * @param onRefresh a pause that fired still stands, but its cap or typical
+   *   time changed (a pace change under an override or a clamped cap, an idle
+   *   setting): what the prompt shows must follow.
    */
   constructor(
     private readonly onCap: (p: LivePause) => void,
     private readonly onClear: () => void = () => {},
+    private readonly onRefresh: (p: LivePause) => void = () => {},
     private readonly timers: WatchTimers = globalTimers,
     private readonly now: () => number = () => Date.now()
   ) {}
@@ -77,13 +81,17 @@ export class PauseWatch {
     const prev = this.current;
     const sameView =
       prev !== null && next !== null && prev.volume === next.volume && prev.since === next.since;
-    if (sameView && prev.cap === next.cap) return;
+    if (sameView && prev.cap === next.cap && prev.typical === next.typical) return;
     this.current = next;
 
     if (sameView && this.fired) {
-      // Asked once per view: a new cap still behind us changes nothing; one
-      // that moved past the time so far withdraws the prompt and waits again.
-      if (next.since + next.cap <= this.now()) return;
+      // Asked once per view: a new cap still behind us keeps the prompt up
+      // with the new figures; one that moved past the time so far withdraws
+      // the prompt and waits again.
+      if (next.since + next.cap <= this.now()) {
+        this.onRefresh(next);
+        return;
+      }
       this.fired = false;
       this.onClear();
       this.arm(next);

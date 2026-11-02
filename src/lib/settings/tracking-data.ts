@@ -2,7 +2,7 @@ import { browser } from '$app/environment';
 import { derived, get, writable, type Readable } from 'svelte/store';
 import { FUTURE_TOLERANCE_MS, isRecord, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 import { DEFAULT_K, K_MAX, type IdleSettings } from '$lib/reading-history/stats-engine';
-import { isDeviceClass, resolveDevice } from '$lib/reading-history/devices';
+import { isDeviceClass, ownLabel, resolveDevice } from '$lib/reading-history/devices';
 import { isDeviceId } from '$lib/reading-history/paths';
 import type { DeviceClass, DeviceLabel, PauseCount } from '$lib/reading-history/types';
 
@@ -63,14 +63,6 @@ const ENTRY_KEYS: readonly EntryKey[] = ['idle', 'pauses'];
 export const DEVICE_BOGUS_PREFIX = 'devices/';
 export const DEVICE_NAME_MAX = 40;
 const NO_LABELS: Record<string, DeviceLabel> = Object.freeze({}) as Record<string, DeviceLabel>;
-
-/** Labels arrive from a synced file: never read an inherited key (`constructor`). */
-function ownLabel(
-  labels: Readonly<Record<string, DeviceLabel>> | undefined,
-  id: string
-): DeviceLabel | undefined {
-  return labels && Object.hasOwn(labels, id) ? labels[id] : undefined;
-}
 
 const K_RANGE = [1, K_MAX] as const;
 const OVERRIDE_RANGE = [1, 60] as const;

@@ -10,6 +10,7 @@
 
 import { get } from 'svelte/store';
 import { registerPositionListener, volumesWithTrash } from '$lib/settings/volume-data';
+import { stampMs } from '$lib/util/volume-helpers';
 import type { PositionsMap } from './positions-file';
 
 const STORAGE_KEY = 'positions:changed';
@@ -21,10 +22,11 @@ const STORAGE_KEY = 'positions:changed';
  */
 let changed: Map<string, number> | null = null;
 
+/** The record's stamp; 0 for a missing or deleted record. */
 function stampOf(volume: string): number {
   const record = get(volumesWithTrash)[volume];
-  if (!record || record.deletedOn) return NaN;
-  return Date.parse(record.lastProgressUpdate);
+  if (!record || record.deletedOn) return 0;
+  return stampMs(record.lastProgressUpdate);
 }
 
 function load(): Map<string, number> {
@@ -74,7 +76,7 @@ export function ownChangedEntries(device: string): PositionsMap {
   for (const [volume, marked] of load()) {
     const record = records[volume];
     if (!record || record.deletedOn) continue;
-    const t = Date.parse(record.lastProgressUpdate);
+    const t = stampMs(record.lastProgressUpdate);
     // Moved since by another device's position: not ours to label.
     if (!(t > 0) || t !== marked) continue;
     out[volume] = { t, page: record.progress, chars: record.chars, device };

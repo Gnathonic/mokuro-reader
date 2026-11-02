@@ -13,8 +13,10 @@ import { AWAY_AFTER_MS, livePause } from '$lib/reading-history/pause-watch';
 import LongPausePrompt, { DONT_ASK_AFTER, REFRESH_MS } from '../LongPausePrompt.svelte';
 
 type Answer = 'full' | 'typical' | 'none' | null;
+/** The fields the review list orders and keys pauses by, plus the answer the prompt counts. */
+type PauseRow = { t: number; device: string; seq: number; answer: Answer };
 const stats = readingStats as unknown as Writable<{
-  byVolume: Map<string, { pauses: Array<{ answer: Answer }> }>;
+  byVolume: Map<string, { pauses: PauseRow[] }>;
 }>;
 
 const MIN = 60_000;
@@ -23,10 +25,14 @@ const onAnswer = vi.fn();
 
 /** `n` answered pauses (plus one provisional, which must not count). */
 function answeredPauses(n: number) {
-  const pauses: Array<{ answer: Answer }> = Array.from({ length: n }, () => ({
+  const pauses: PauseRow[] = Array.from({ length: n }, (_, i) => ({
+    t: i,
+    device: 'dev',
+    seq: i,
     answer: 'typical'
   }));
-  stats.set({ byVolume: new Map([['v1', { pauses: [...pauses, { answer: null }] }]]) });
+  const open: PauseRow = { t: n, device: 'dev', seq: n, answer: null };
+  stats.set({ byVolume: new Map([['v1', { pauses: [...pauses, open] }]]) });
 }
 /** The open view's `since` when its 4 min cap passed `ago` ms before `now`. */
 const sinceFor = (ago: number, now = Date.now()) => now - CAP - ago;

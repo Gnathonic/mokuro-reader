@@ -10,24 +10,46 @@
  * cloud core shares (`core/http-retry.ts`).
  */
 import { ProviderError } from '../../provider-interface';
-import { MAX_RETRY_ATTEMPTS, backoffDelayMs, parseRetryAfterMs, sleep } from '../http-retry';
+import { MAX_RETRY_ATTEMPTS, parseRetryAfterMs, retryDelayMs, sleep } from '../http-retry';
 
-export type DriveFailureKind = 'quota' | 'rate-limit' | 'transient' | 'auth' | 'other';
+/**
+ * - `quota`: the account is full (`storageQuotaExceeded`, Drive's ONE such
+ *   reason). Never retried, surfaced as "storage is full".
+ * - `rate-limit`: waits it out. Every 429, and the 403 usage limits —
+ *   including `quotaExceeded`, which in Google's APIs is an API usage quota
+ *   that resets, not storage, and `sharingRateLimitExceeded`, whose domain is
+ *   `global` (reasons are matched by name; the domain never decides).
+ * - `limit`: a Drive limit neither waiting nor a re-auth lifts (an item
+ *   count, a folder depth). Fails at once with its message.
+ * - `auth`: a fresh token may help. An allow-list — a 403 whose reason is
+ *   absent, `authError`, `insufficientPermissions` or `forbidden` — so a
+ *   refusal Drive meant (`insufficientFilePermissions`, `domainPolicy`, …)
+ *   no longer starts a re-auth or clears a valid token.
+ */
+export type DriveFailureKind = 'quota' | 'rate-limit' | 'transient' | 'auth' | 'limit' | 'other';
 
-/** Reasons Drive gives when the account's storage is full. */
-export const DRIVE_STORAGE_FULL_REASONS: readonly string[] = [
-  'storageQuotaExceeded',
-  'quotaExceeded'
-];
+/** The reason Drive gives when the account's storage is full — its only one. */
+export const DRIVE_STORAGE_FULL_REASONS: readonly string[] = ['storageQuotaExceeded'];
 /** Drive answers a rate limit as a 429, or as a 403 with one of these reasons. */
 export const DRIVE_RATE_LIMIT_REASONS: readonly string[] = [
   'userRateLimitExceeded',
-  'rateLimitExceeded'
+  'rateLimitExceeded',
+  'dailyLimitExceeded',
+  'sharingRateLimitExceeded',
+  'quotaExceeded'
 ];
+/** 403 reasons for a Drive limit that neither waiting nor a re-auth lifts. */
+export const DRIVE_LIMIT_REASONS: readonly string[] = [
+  'activeItemCreationLimitExceeded',
+  'numChildrenInNonRootLimitExceeded',
+  'myDriveHierarchyDepthLimitExceeded'
+];
+/** The 403 reasons a fresh token can fix (with a 403 that names none). */
+const AUTH_REASONS: readonly string[] = ['authError', 'insufficientPermissions', 'forbidden'];
 const TRANSIENT_STATUSES = new Set([500, 502, 503, 504]);
 
-/** `error.errors[0].reason` of a Drive error body, parsed or as JSON text. */
-export function driveErrorReason(body: unknown): string | undefined {
+/** `error.errors[0]` of a Drive error body, parsed or as JSON text. */
+function driveErrorEntry(body: unknown): Record<string, unknown> | undefined {
   let parsed = body;
   if (typeof body === 'string') {
     try {
@@ -36,9 +58,20 @@ export function driveErrorReason(body: unknown): string | undefined {
       return undefined;
     }
   }
-  const reason = (parsed as { error?: { errors?: Array<{ reason?: unknown }> } } | null)?.error
-    ?.errors?.[0]?.reason;
+  const entry = (parsed as { error?: { errors?: unknown[] } } | null)?.error?.errors?.[0];
+  return entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
+}
+
+/** `error.errors[0].reason` of a Drive error body, parsed or as JSON text. */
+export function driveErrorReason(body: unknown): string | undefined {
+  const reason = driveErrorEntry(body)?.reason;
   return typeof reason === 'string' ? reason : undefined;
+}
+
+/** `error.errors[0].domain` of a Drive error body (`usageLimits`, `global`, …). */
+export function driveErrorDomain(body: unknown): string | undefined {
+  const domain = driveErrorEntry(body)?.domain;
+  return typeof domain === 'string' ? domain : undefined;
 }
 
 export function classifyDriveFailure(status: number, reason?: string): DriveFailureKind {
@@ -46,10 +79,15 @@ export function classifyDriveFailure(status: number, reason?: string): DriveFail
   // (per-minute usage limits do): it clears in seconds, a full account never.
   if (status === 429) return 'rate-limit';
   if (reason && DRIVE_STORAGE_FULL_REASONS.includes(reason)) return 'quota';
-  if (status === 403 && reason && DRIVE_RATE_LIMIT_REASONS.includes(reason)) return 'rate-limit';
+  if (status === 403) {
+    if (reason && DRIVE_RATE_LIMIT_REASONS.includes(reason)) return 'rate-limit';
+    if (reason && DRIVE_LIMIT_REASONS.includes(reason)) return 'limit';
+    // Re-auth only for what a fresh token can fix; every other named reason
+    // is a refusal, failed with its message.
+    return !reason || AUTH_REASONS.includes(reason) ? 'auth' : 'other';
+  }
   if (TRANSIENT_STATUSES.has(status)) return 'transient';
-  // Any other 403 keeps the old auth handling.
-  if (status === 401 || status === 403) return 'auth';
+  if (status === 401) return 'auth';
   return 'other';
 }
 
@@ -60,6 +98,8 @@ export interface DriveFailure {
   reason?: string;
   /** The server's `Retry-After`, in ms. */
   retryAfterMs?: number;
+  /** `error.errors[0].domain` (`usageLimits`, `global`, …), for logs; classification is by reason. */
+  domain?: string;
 }
 
 export function isDriveRateLimit(failure: DriveFailure | undefined): boolean {
@@ -86,11 +126,19 @@ export class DriveHttpError extends Error implements DriveFailure {
    * in step with the attempt that threw.
    */
   phase?: string;
+  /** The body's `error.errors[0].domain`, for logs; classification is by reason. */
+  readonly domain?: string;
 
   constructor(
     public readonly status: number,
     public readonly reason?: string,
-    options: { context?: string; statusText?: string; message?: string; retryAfterMs?: number } = {}
+    options: {
+      context?: string;
+      statusText?: string;
+      message?: string;
+      retryAfterMs?: number;
+      domain?: string;
+    } = {}
   ) {
     // `message` keeps a transport's own wording; the bracketed reason rides
     // along either way, so a worker's message-only error still names it.
@@ -102,6 +150,7 @@ export class DriveHttpError extends Error implements DriveFailure {
     this.name = 'DriveHttpError';
     this.kind = classifyDriveFailure(status, reason);
     this.retryAfterMs = options.retryAfterMs;
+    this.domain = options.domain;
   }
 }
 
@@ -137,7 +186,8 @@ export async function driveHttpErrorFromResponse(
   return new DriveHttpError(response.status, driveErrorReason(text), {
     context,
     statusText: response.statusText,
-    retryAfterMs: parseRetryAfterMs(response.headers?.get?.('Retry-After'))
+    retryAfterMs: parseRetryAfterMs(response.headers?.get?.('Retry-After')),
+    domain: driveErrorDomain(text)
   });
 }
 
@@ -172,7 +222,8 @@ export async function driveHttpErrorFromXhr(
     context,
     message,
     statusText: xhr.statusText,
-    retryAfterMs: parseRetryAfterMs(xhr.getResponseHeader('Retry-After'))
+    retryAfterMs: parseRetryAfterMs(xhr.getResponseHeader('Retry-After')),
+    domain: driveErrorDomain(body)
   });
 }
 
@@ -201,6 +252,7 @@ export function driveFailureOf(error: unknown): DriveFailure | undefined {
     result?: unknown;
     body?: unknown;
     headers?: unknown;
+    domain?: unknown;
   };
   if (typeof e.status !== 'number') return undefined;
   const reason =
@@ -211,7 +263,17 @@ export function driveFailureOf(error: unknown): DriveFailure | undefined {
     typeof e.retryAfterMs === 'number'
       ? e.retryAfterMs
       : parseRetryAfterMs(headerValue(e.headers, 'Retry-After'));
-  return { status: e.status, reason, retryAfterMs };
+  const domain =
+    typeof e.domain === 'string'
+      ? e.domain
+      : (driveErrorDomain(e.result) ?? driveErrorDomain(e.body));
+  return { status: e.status, reason, retryAfterMs, ...(domain ? { domain } : {}) };
+}
+
+/** A failure `withDriveRetry` is about to retry: its status and kind are known. */
+export interface DriveRetryFailure extends DriveFailure {
+  status: number;
+  kind: DriveFailureKind;
 }
 
 export interface DriveRetryOptions {
@@ -223,6 +285,11 @@ export interface DriveRetryOptions {
   retryOn?: (kind: DriveFailureKind, error: unknown) => boolean;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /**
+   * About to wait `ms` before `attempt` (2 = the first retry) of `attempts`
+   * — so an upload's tray line can say "retrying" instead of sitting at 0 %.
+   */
+  onWait?: (ms: number, failure: DriveRetryFailure, attempt: number, attempts: number) => void;
 }
 
 const defaultRetryOn = (kind: DriveFailureKind) => kind === 'rate-limit' || kind === 'transient';
@@ -230,10 +297,10 @@ const defaultRetryOn = (kind: DriveFailureKind) => kind === 'rate-limit' || kind
 /**
  * Run ONE Drive request, retrying a rate-limited or transient failure on the
  * shared policy: up to {@link MAX_RETRY_ATTEMPTS} tries, the server's
- * Retry-After when it gave one, else backoff with jitter. Only failures that
- * carry an HTTP status are retried (see {@link driveFailureOf}); anything
- * else — a full account, an auth failure, the last retryable failure —
- * propagates as it came.
+ * Retry-After when it gave a positive one (0 is no advice), else backoff with
+ * jitter. Only failures that carry an HTTP status are retried (see
+ * {@link driveFailureOf}); anything else — a full account, a Drive limit, an
+ * auth failure, the last retryable failure — propagates as it came.
  */
 export async function withDriveRetry<T>(
   fn: () => Promise<T>,
@@ -247,14 +314,12 @@ export async function withDriveRetry<T>(
       return await fn();
     } catch (error) {
       const failure = driveFailureOf(error);
-      if (
-        failure?.status === undefined ||
-        !retryOn(classifyDriveFailure(failure.status, failure.reason), error) ||
-        attempt >= attempts
-      ) {
-        throw error;
-      }
-      await wait(failure.retryAfterMs ?? backoffDelayMs(attempt, options.random));
+      if (failure?.status === undefined) throw error;
+      const kind = classifyDriveFailure(failure.status, failure.reason);
+      if (!retryOn(kind, error) || attempt >= attempts) throw error;
+      const ms = retryDelayMs(attempt, failure.retryAfterMs, options.random);
+      options.onWait?.(ms, { ...failure, status: failure.status, kind }, attempt + 1, attempts);
+      await wait(ms);
     }
   }
 }

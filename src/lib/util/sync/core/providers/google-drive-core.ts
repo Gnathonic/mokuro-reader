@@ -8,8 +8,14 @@ import {
   driveHttpErrorFromResponse,
   driveHttpErrorFromXhr,
   driveRefusal,
-  withDriveRetry
+  withDriveRetry,
+  type DriveRetryFailure
 } from './drive-http';
+
+/** Why the attempt failed, in the few words the tray's "retrying" line has room for. */
+function retryReason(failure: DriveRetryFailure): string {
+  return failure.kind === 'rate-limit' ? 'rate limited' : `HTTP ${failure.status}`;
+}
 
 /** A failed step's {@link DriveHttpError.phase}, tagged where its answer is read. */
 function inPhase(error: Error, phase: 'init' | 'status' | 'put'): Error {
@@ -212,7 +218,8 @@ export const googleDriveCore: CloudProviderCore = {
     credentials,
     mimeType,
     existingFileId,
-    onProgress
+    onProgress,
+    onRetry
   }): Promise<UploadFileResult> {
     const accessToken = requireCredentialString(
       credentials,
@@ -249,7 +256,8 @@ export const googleDriveCore: CloudProviderCore = {
     // or nothing, when it turns out complete; only a session Drive no longer
     // knows starts over. A 5xx is retried only before the PUT (on the init or
     // the status query): Drive may have kept a file whose PUT it answered with
-    // one. A full account fails at once, as the storage-full error.
+    // one. A full account fails at once, as the storage-full error. Each wait
+    // is reported, or the tray sits at 0 % for the whole of it.
     let sessionUri: string | null = null;
     let offset = 0;
     return await withDriveRetry(
@@ -268,7 +276,9 @@ export const googleDriveCore: CloudProviderCore = {
       },
       {
         retryOn: (kind, error) =>
-          kind === 'rate-limit' || (kind === 'transient' && phaseOf(error) !== 'put')
+          kind === 'rate-limit' || (kind === 'transient' && phaseOf(error) !== 'put'),
+        onWait: (delayMs, failure, attempt, attempts) =>
+          onRetry?.({ attempt, attempts, delayMs, reason: retryReason(failure) })
       }
     );
   }

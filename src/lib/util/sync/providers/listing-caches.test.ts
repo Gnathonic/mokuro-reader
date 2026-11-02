@@ -77,36 +77,36 @@ describe.each([
   const theirs = { modifiedTime: '2026-10-30T00:00:05.000Z', size: 42 };
 
   it("keeps another device's overwrite the walk read after this upload", async () => {
-    await listed([file('positions.json', 'P1', older)]);
+    await listed([file('volume-data.json', 'V1', older)]);
     const finish = heldListing();
     const fetched = cache.fetch();
-    cache.add!('positions.json', {
-      ...file('positions.json', 'P1', { size: 20, modifiedTime: '2026-10-30T00:00:03.000Z' }),
+    cache.add!('volume-data.json', {
+      ...file('volume-data.json', 'V1', { size: 20, modifiedTime: '2026-10-30T00:00:03.000Z' }),
       modifiedTimeProvisional: true
     });
-    finish([file('positions.json', 'P1', theirs)]);
+    finish([file('volume-data.json', 'V1', theirs)]);
     await fetched;
 
-    expect(cache.getAll('positions.json')).toMatchObject([theirs]);
+    expect(cache.getAll('volume-data.json')).toMatchObject([theirs]);
   });
 
   it('takes the upload over the revision the walk read before it', async () => {
-    await listed([file('positions.json', 'P1', older)]);
+    await listed([file('volume-data.json', 'V1', older)]);
     const finish = heldListing();
     const fetched = cache.fetch();
     const mine = { size: 20, modifiedTime: '2026-10-30T00:00:03.000Z' };
-    cache.add!('positions.json', {
-      ...file('positions.json', 'P1', mine),
+    cache.add!('volume-data.json', {
+      ...file('volume-data.json', 'V1', mine),
       modifiedTimeProvisional: true
     });
-    cache.add!('positions.json', {
-      ...file('positions.json', 'P1', { size: 21 }),
+    cache.add!('volume-data.json', {
+      ...file('volume-data.json', 'V1', { size: 21 }),
       modifiedTimeProvisional: true
     });
-    finish([file('positions.json', 'P1', older)]);
+    finish([file('volume-data.json', 'V1', older)]);
     await fetched;
 
-    expect(cache.getAll('positions.json')).toMatchObject([{ size: 21 }]);
+    expect(cache.getAll('volume-data.json')).toMatchObject([{ size: 21 }]);
   });
 
   it('keeps a file re-created at a deleted path the walk read after the delete', async () => {
@@ -140,18 +140,19 @@ describe.each([
   });
 
   it('keeps a root file uploaded while a listing was in flight', async () => {
-    // The walk read the root before the first positions.json went up.
+    // The walk read the root before the first volume-data.json went up: a
+    // sync after the swap would find no cloud copy and write over it unread.
     const finish = heldListing();
     const fetched = cache.fetch();
-    cache.add!('positions.json', {
-      ...file('positions.json', 'P1'),
+    cache.add!('volume-data.json', {
+      ...file('volume-data.json', 'V1'),
       modifiedTimeProvisional: true
     });
-    finish([file('volume-data.json', 'V1'), file('Series/Vol 1.cbz', 'C1')]);
+    finish([file('profiles.json', 'R1'), file('Series/Vol 1.cbz', 'C1')]);
     await fetched;
 
-    expect(cache.getAll('positions.json').map((f) => f.fileId)).toEqual(['P1']);
-    expect(cache.get('volume-data.json')?.fileId).toBe('V1');
+    expect(cache.getAll('volume-data.json').map((f) => f.fileId)).toEqual(['V1']);
+    expect(cache.get('profiles.json')?.fileId).toBe('R1');
   });
 
   it('keeps a delete made while a listing was in flight', async () => {
@@ -174,9 +175,9 @@ describe.each([
     await Promise.resolve();
     expect(joined, 'resolved before the listing it joined').toBe(false);
 
-    finish([file('positions.json', 'P1')]);
+    finish([file('volume-data.json', 'V1')]);
     await Promise.all([first, second]);
-    expect(cache.get('positions.json')?.fileId).toBe('P1');
+    expect(cache.get('volume-data.json')?.fileId).toBe('V1');
     expect(h.list).toHaveBeenCalledTimes(1);
   });
 

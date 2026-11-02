@@ -233,10 +233,19 @@ class DriveApiClient {
     try {
       return await apiCall(request);
     } catch (error: any) {
-      console.error('Drive API error caught:', error);
-      console.error('Error details - status:', error.status, 'message:', error.message);
-
       const failure = driveFailureOf(error);
+      console.error('Drive API error caught:', error);
+      console.error(
+        'Error details - status:',
+        error.status,
+        'reason:',
+        failure?.reason,
+        'domain:',
+        failure?.domain,
+        'message:',
+        error.message
+      );
+
       const kind: DriveFailureKind | undefined =
         failure?.status !== undefined
           ? classifyDriveFailure(failure.status, failure.reason)
@@ -248,9 +257,9 @@ class DriveApiClient {
         error.message?.toLowerCase().includes('offline') ||
         error.status === 0;
 
-      // Only a real auth failure re-authenticates — a full account or a
-      // rate limit that outlasted its retries answered 403 too, and re-auth
-      // cannot fix either.
+      // Only a real auth failure re-authenticates — a full account, a rate
+      // limit that outlasted its retries, a Drive limit and a refusal Drive
+      // meant all answer 403 too, and re-auth fixes none of them.
       if (!isNetworkError && kind === 'auth') {
         await handleAuthError(error.status, retryOnAuth, sentWith);
       }
@@ -272,6 +281,8 @@ class DriveApiClient {
       let pageToken: string | undefined = undefined;
 
       do {
+        // Each page is retried on its own: a 429 on page N must not re-fetch
+        // (and re-count) the pages already in hand.
         const { result } = await request(() =>
           gapi.client.drive.files.list({
             q: query,
@@ -289,6 +300,24 @@ class DriveApiClient {
       } while (pageToken);
 
       return allFiles;
+    });
+  }
+
+  /**
+   * Does the server list anything live in a folder? One request for ONE
+   * child — a yes/no question; `listFiles` would page the whole folder.
+   * Ids never need escaping.
+   */
+  async folderHasChildren(folderId: string): Promise<boolean> {
+    return this.handleApiCall(async (request) => {
+      const { result } = await request(() =>
+        gapi.client.drive.files.list({
+          q: `'${folderId}' in parents and trashed=false`,
+          fields: 'files(id)',
+          pageSize: 1
+        })
+      );
+      return (result.files?.length ?? 0) > 0;
     });
   }
 

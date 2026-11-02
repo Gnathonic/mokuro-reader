@@ -23,6 +23,7 @@ import {
   flushReadingStats,
   initReadingStats,
   readingStats,
+  readingStatsReady,
   recentReadingSpeed,
   seriesReadingSpeed,
   seriesSpeed,
@@ -184,6 +185,29 @@ describe('recomputation', () => {
   });
 });
 
+describe('readingStatsReady', () => {
+  it('settles only once history has been counted, flushing a pending pass', async () => {
+    // A reader of a volume's figures (the volume editor) must not see the
+    // empty byVolume map the 500 ms debounce leaves before the first flush.
+    _resetReadingStatsForTests();
+    await db.reading_events.bulkAdd([view('v1', 0, 1, 300, 4 * MIN)]);
+    _resetHistoryTurns();
+    const loading = loadHistoryTurns(db);
+    initReadingStats();
+    expect(get(readingStats).ready).toBe(false);
+    const ready = readingStatsReady();
+    await loading;
+    await ready;
+    expect(get(readingStats).ready).toBe(true);
+    expect(figuresFor(get(readingStats), 'v1').minutes).toBe(4);
+  });
+
+  it('resolves at once when the stats are already counted', async () => {
+    expect(get(readingStats).ready).toBe(true);
+    await expect(readingStatsReady()).resolves.toBeUndefined();
+  });
+});
+
 describe('freezeLegacyBaselines', () => {
   it('snapshots an old completed volume with no events at its old totals', () => {
     setRecords({
@@ -245,6 +269,22 @@ describe('freezeLegacyBaselines', () => {
     });
   });
 
+  it('leaves the volumes store untouched when no record needs a snapshot', () => {
+    // It runs at every start and after every sync: a no-op pass that still
+    // "updated" the store re-emitted the whole map and rewrote localStorage.
+    setRecords({
+      done: { progress: 3, chars: 900, legacyStats: { time_ms: MIN, chars: 900, before: 1 } },
+      blank: { progress: 0, chars: 0 }
+    });
+    const seen = vi.fn();
+    const unsubscribe = volumesWithTrash.subscribe(seen);
+    seen.mockClear();
+    expect(freezeLegacyBaselines()).toBe(0);
+    expect(freezeLegacyBaselines()).toBe(0);
+    expect(seen).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
   it('includes archived passes in the old characters', () => {
     setRecords({
       v: {
@@ -277,6 +317,41 @@ describe('speed', () => {
     };
     const speed = recentReadingSpeed(get(readingStats), records);
     expect(speed).toMatchObject({ charsPerMinute: 200, isPersonalized: true });
+  });
+
+  it("the fill-in adds only what a completed volume's pre-freeze events do not explain", async () => {
+    // 4 min of events at 250 cpm from before the freeze are already in the
+    // recent samples; the snapshot (20 min, 4000 chars = 200 cpm) covers
+    // them. Adding the whole snapshot on top counted that reading twice.
+    await record([view('old', 0, 1, 1000, 4 * MIN)]);
+    const records = {
+      old: new VolumeData({
+        completed: true,
+        chars: 4000,
+        lastProgressUpdate: '2026-01-01T00:00:00.000Z',
+        legacyStats: { time_ms: 20 * MIN, chars: 4000, before: 5 * MIN }
+      })
+    };
+    expect(recentReadingSpeed(get(readingStats), records)).toMatchObject({
+      charsPerMinute: 200,
+      sessionsUsed: 2
+    });
+  });
+
+  it('a completed volume whose events explain its whole snapshot adds nothing', async () => {
+    await record([view('old', 0, 1, 1000, 4 * MIN)]);
+    const records = {
+      old: new VolumeData({
+        completed: true,
+        chars: 1000,
+        lastProgressUpdate: '2026-01-01T00:00:00.000Z',
+        legacyStats: { time_ms: 4 * MIN, chars: 1000, before: 5 * MIN }
+      })
+    };
+    expect(recentReadingSpeed(get(readingStats), records)).toMatchObject({
+      charsPerMinute: 250,
+      sessionsUsed: 1
+    });
   });
 
   it('is the default with no data at all', () => {

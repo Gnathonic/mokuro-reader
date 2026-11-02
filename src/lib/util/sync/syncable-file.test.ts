@@ -15,6 +15,7 @@ import {
   dedupKeepsEveryCopy,
   foldStem,
   isReservedLayerSidecarPath,
+  layerOwnerArchive,
   miscasedLayerStem
 } from './syncable-file';
 
@@ -391,6 +392,17 @@ describe('series-metadata.json stays retired', () => {
       expect(got.stem).toBe(want.stem);
       expect(got.gz).toBe(want.gz);
       if (got.kind === 'layer') expect(got.layerId).toBe(want.layer);
+    });
+
+    it('layerOwnerArchive: the exactly-spelled archive, else the naturalSort-first of those that fold alike — whatever the listing order', () => {
+      const archives = ['Vol 3', 'vol 3', 'VOL 3', 'Vol 4'];
+      expect(layerOwnerArchive('vol 3', archives)).toBe('vol 3');
+      expect(layerOwnerArchive('Vol 3', archives)).toBe('Vol 3');
+      // Spelled like NEITHER archive: one owner, independent of order.
+      expect(layerOwnerArchive('vOl 3', archives)).toBe('VOL 3');
+      expect(layerOwnerArchive('vOl 3', [...archives].reverse())).toBe('VOL 3');
+      expect(layerOwnerArchive(NFD, [NFC])).toBe(NFC);
+      expect(layerOwnerArchive('Vol 5', archives)).toBeUndefined();
     });
 
     it('foldStem is NFC then Unicode lowercase', () => {

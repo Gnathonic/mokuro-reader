@@ -345,18 +345,19 @@ async function entriesToDecompressedVolume(
     const extension = normalizedFilename.toLowerCase().split('.').pop() || '';
 
     if (normalizedFilename.endsWith('.mokuro') || normalizedFilename.endsWith('.mokuro.gz')) {
+      // `<archive stem>.<id>.mokuro` inside the archive is an OCR LAYER of this
+      // volume, never its primary — same archive-presence rule as the cloud
+      // listing (`Vol 1.5.mokuro` in `Vol 1.5.cbz` splits to a stem that is
+      // not the archive's, so it stays the primary). Classified by NAME before
+      // any decoding: a rule-v1 orphan is skipped without being gunzipped
+      // (bytes that are not gzip would otherwise fail the whole install).
+      const layer = classifyArchiveMokuroEntry(normalizedFilename, getBaseStem(basePath));
+      if (layer && 'orphan' in layer) continue;
       const decoded = normalizedFilename.endsWith('.gz')
         ? await parseMokuroGzEntry(entry, normalizedFilename)
         : new File([entry.data], normalizedFilename, { type: 'application/json' });
       if (!decoded) continue;
-      // `<archive stem>.<id>.mokuro` inside the archive is an OCR LAYER of this
-      // volume, never its primary — same archive-presence rule as the cloud
-      // listing (`Vol 1.5.mokuro` in `Vol 1.5.cbz` splits to a stem that is
-      // not the archive's, so it stays the primary).
-      const layer = classifyArchiveMokuroEntry(normalizedFilename, getBaseStem(basePath));
-      if (layer && 'orphan' in layer) {
-        continue;
-      } else if (layer) {
+      if (layer) {
         layerFiles.push({ layerId: layer.layerId, file: decoded });
       } else {
         // The listed sidecars come after the archive's entries, so the cloud's

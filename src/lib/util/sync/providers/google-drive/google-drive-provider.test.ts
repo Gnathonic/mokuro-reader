@@ -17,6 +17,7 @@ vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
   driveApiClient: {
     initialize: vi.fn(async () => {}),
     listFiles: vi.fn(async () => []),
+    folderHasChildren: vi.fn(async () => false),
     deleteFile: vi.fn(async () => {}),
     createFolder: vi.fn(async () => 'created-folder'),
     updateFileMetadata: vi.fn(async () => ({}))
@@ -30,7 +31,7 @@ vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
   driveFilesCache: {
     getReaderFolderId: vi.fn(async () => 'reader-root'),
     setReaderFolderId: vi.fn(),
-    pickReaderFolder: vi.fn(async () => null),
+    pickReaderFolder: vi.fn(async () => ({ id: null, topLevelKnown: true })),
     getDriveFilesBySeries: vi.fn(() => []),
     removeById: vi.fn(),
     clear: vi.fn(),
@@ -586,31 +587,27 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
   });
 
   it('does not trash a duplicate folder the server still lists children for', async () => {
-    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: string) =>
-      query === "'DUP' in parents and trashed=false"
-        ? [{ id: 'straggler', name: 'Vol 9.cbz', mimeType: 'application/zip' }]
-        : []
-    );
+    vi.mocked(driveApiClient.folderHasChildren).mockResolvedValue(true);
     const ops = googleDriveProvider.getFolderOperations();
 
-    await ops.deleteFolder('DUP');
+    // Kept, and reported as kept: the deduplicator must not count it.
+    await expect(ops.deleteFolder('DUP')).resolves.toBe(false);
 
-    expect(driveApiClient.listFiles).toHaveBeenCalledWith(
-      "'DUP' in parents and trashed=false",
-      'files(id)'
-    );
+    // The server is asked whether ANYTHING is left, not for the whole listing.
+    expect(driveApiClient.folderHasChildren).toHaveBeenCalledWith('DUP');
+    expect(driveApiClient.listFiles).not.toHaveBeenCalled();
     expect(driveApiClient.updateFileMetadata).not.toHaveBeenCalled();
     expect(driveApiClient.deleteFile).not.toHaveBeenCalled();
 
-    // Kept once already this run and still not empty: stop rather than loop.
+    // Kept once already this run and still not empty: give up on it rather than loop.
     await expect(ops.deleteFolder('DUP')).rejects.toThrow(/still holds/);
     expect(driveApiClient.updateFileMetadata).not.toHaveBeenCalled();
   });
 
   it('trashes an empty duplicate folder, never deletes it', async () => {
-    vi.mocked(driveApiClient.listFiles).mockResolvedValue([]);
+    vi.mocked(driveApiClient.folderHasChildren).mockResolvedValue(false);
 
-    await googleDriveProvider.getFolderOperations().deleteFolder('DUP');
+    await expect(googleDriveProvider.getFolderOperations().deleteFolder('DUP')).resolves.toBe(true);
 
     expect(driveApiClient.updateFileMetadata).toHaveBeenCalledWith(
       'DUP',
@@ -626,7 +623,10 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
       folder('NESTED', 'mokuro-reader', 'BACKUP'),
       folder('NESTED_SERIES', 'Ippo', 'NESTED')
     ]);
-    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce('TOP');
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce({
+      id: 'TOP',
+      topLevelKnown: true
+    });
     const ops = googleDriveProvider.getFolderOperations();
     await ops.listFolders();
 
@@ -651,12 +651,37 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
       folder('NESTED_A', 'mokuro-reader', 'BACKUP'),
       folder('NESTED_B', 'mokuro-reader', 'BACKUP')
     ]);
-    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce('NESTED_A');
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce({
+      id: 'NESTED_A',
+      topLevelKnown: true
+    });
     const ops = googleDriveProvider.getFolderOperations();
     await ops.listFolders();
 
     ops.onRootFolderConfirmed?.('NESTED_A');
     expect(driveFilesCache.setReaderFolderId).toHaveBeenCalledWith('NESTED_A');
+  });
+
+  it('confirms NO root when the cache could not tell which roots are top-level', async () => {
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      folder('TOP', 'mokuro-reader', 'MY_DRIVE'),
+      folder('NESTED', 'mokuro-reader', 'BACKUP')
+    ]);
+    // The query failed: the pick is a guess, and a guess must not move writes.
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce({
+      id: 'NESTED',
+      topLevelKnown: false
+    });
+    const ops = googleDriveProvider.getFolderOperations();
+    await ops.listFolders();
+
+    // The ids of everything listed ride along, for the fallback ranking.
+    expect(vi.mocked(driveFilesCache.pickReaderFolder).mock.calls[0][1]).toEqual(
+      new Set(['TOP', 'NESTED'])
+    );
+    ops.onRootFolderConfirmed?.('NESTED');
+    ops.onRootFolderConfirmed?.('TOP');
+    expect(driveFilesCache.setReaderFolderId).not.toHaveBeenCalled();
   });
 
   it('breaks a creation-time tie by id when several folders share a name', async () => {

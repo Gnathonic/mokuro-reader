@@ -44,9 +44,12 @@ export interface FolderOperations {
    * Remove a duplicate folder the merge just emptied. The merge judged it
    * empty from a listing a moment old, so a provider re-checks with the
    * server first and leaves a folder that still holds anything for the next
-   * pass: a folder removal takes its contents with it.
+   * pass: a folder removal takes its contents with it. Resolves true when
+   * the folder is gone, false when it was kept for the next pass; a throw
+   * (a provider giving up on a folder that keeps filling) gives up on that
+   * folder's group for the rest of the run.
    */
-  deleteFolder(folderId: string): Promise<void>;
+  deleteFolder(folderId: string): Promise<boolean>;
 
   /**
    * Move a superseded copy of a file to the provider's trash. Never a
@@ -100,6 +103,11 @@ export function compareByAge(
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
+/** A duplicate group's key: the exact name under one parent. */
+function groupKey(folder: FolderInfo): string {
+  return `${folder.parentId || 'root'}:${folder.name}`;
+}
+
 /**
  * Generic folder deduplicator that works with any provider
  *
@@ -144,6 +152,8 @@ class FolderDeduplicator {
     // Cap pass count to prevent runaway loops if a provider keeps reporting duplicates
     // (e.g., move/delete silently failing). Real-world depth is small.
     const MAX_PASSES = 20;
+    // Groups a merge failed on this run, by parent and name (see the loop).
+    const skipped = new Set<string>();
 
     try {
       for (let pass = 1; pass <= MAX_PASSES; pass++) {
@@ -163,11 +173,22 @@ class FolderDeduplicator {
         );
 
         for (const group of duplicateGroups) {
-          const mergeResult = await this.mergeGroup(provider, ops, group);
-          result.groupsMerged++;
-          result.foldersDeleted += mergeResult.foldersDeleted;
-          result.itemsMoved += mergeResult.itemsMoved;
+          const key = groupKey(group[0]);
+          if (skipped.has(key)) continue;
+          try {
+            const mergeResult = await this.mergeGroup(provider, ops, group);
+            result.groupsMerged++;
+            result.foldersDeleted += mergeResult.foldersDeleted;
+            result.itemsMoved += mergeResult.itemsMoved;
+          } catch (error) {
+            // One group that cannot finish (a duplicate another device keeps
+            // writing into) is not a reason to leave the others for the next
+            // run; it is skipped for the rest of this one.
+            console.warn(`[Dedup:${provider}] Giving up on "${key}" for this run:`, error);
+            skipped.add(key);
+          }
         }
+        if (duplicateGroups.every((group) => skipped.has(groupKey(group[0])))) break;
 
         if (pass === MAX_PASSES) {
           console.warn(
@@ -201,7 +222,7 @@ class FolderDeduplicator {
     const byKey = new Map<string, FolderInfo[]>();
 
     for (const folder of folders) {
-      const key = `${folder.parentId || 'root'}:${folder.name}`;
+      const key = groupKey(folder);
       const existing = byKey.get(key);
       if (existing) {
         existing.push(folder);
@@ -287,10 +308,12 @@ class FolderDeduplicator {
         }
       }
 
-      // Delete the now-empty duplicate folder
-      console.log(`[Dedup:${provider}] Deleting empty folder: ${duplicate.id}`);
-      await ops.deleteFolder(duplicate.id);
-      foldersDeleted++;
+      // Remove the now-empty duplicate folder; a provider that finds it not
+      // empty after all keeps it for the next pass.
+      if (await ops.deleteFolder(duplicate.id)) {
+        console.log(`[Dedup:${provider}] Deleted empty folder: ${duplicate.id}`);
+        foldersDeleted++;
+      }
     }
 
     // Notify provider if this was the root folder
