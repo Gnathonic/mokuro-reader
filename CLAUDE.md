@@ -150,7 +150,7 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   whatever its reason), or — only otherwise — an auth failure that may re-authenticate.
   `withDriveRetry` retries ONE request at a time (each gapi call, so a paged listing resumes at
   its page; each XHR/fetch) on the policy every cloud core shares (`core/http-retry.ts`: 5
-  tries, Retry-After capped 20 s, else backoff with jitter). 5xx are retried too, except on a
+  tries, Retry-After capped 32 s, else backoff with jitter). 5xx are retried too, except on a
   request that CREATES a file or folder (`rateLimitOnly`): Drive can answer a 5xx after
   committing it, and a retry would make a duplicate. A resumable upload keeps ONE session
   (`google-drive-core.ts`): a retry after a rate-limited PUT asks the session where it stands
