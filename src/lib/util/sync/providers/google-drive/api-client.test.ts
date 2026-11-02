@@ -88,6 +88,8 @@ interface XhrReply {
 class FakeXhr {
   static replies: XhrReply[] = [];
   static sent = 0;
+  /** The Authorization header of every send, in order. */
+  static auth: string[] = [];
   status = 0;
   statusText = '';
   response: unknown = null;
@@ -99,8 +101,11 @@ class FakeXhr {
   onabort?: () => void;
   onprogress?: () => void;
   private headers: Record<string, string> = {};
+  private authorization = '';
   open() {}
-  setRequestHeader() {}
+  setRequestHeader(name: string, value: string) {
+    if (name.toLowerCase() === 'authorization') this.authorization = value;
+  }
   getResponseHeader(name: string) {
     return this.headers[name.toLowerCase()] ?? null;
   }
@@ -112,6 +117,7 @@ class FakeXhr {
   }
   send() {
     FakeXhr.sent++;
+    FakeXhr.auth.push(this.authorization);
     const reply = FakeXhr.replies.shift()!;
     this.status = reply.status;
     this.statusText = reply.statusText ?? '';
@@ -136,6 +142,7 @@ describe('driveApiClient failure classification', () => {
     vi.stubGlobal('XMLHttpRequest', FakeXhr);
     FakeXhr.replies = [];
     FakeXhr.sent = 0;
+    FakeXhr.auth = [];
     tk.value = 'TOKEN';
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -296,5 +303,35 @@ describe('driveApiClient failure classification', () => {
     ).rejects.toMatchObject({ status: 401 });
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
     expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  // A re-auth can land while a request waits out a rate limit's backoff: the
+  // next attempt must carry the token held THEN, or it is refused for the old one.
+  it('an XHR upload retried after a re-auth sends the token held now', async () => {
+    FakeXhr.replies = [
+      { status: 429, headers: { 'Retry-After': '0' }, meanwhile: () => (tk.value = 'NEWER') },
+      { status: 200, response: { id: 'new-id' } }
+    ];
+
+    await expect(
+      driveApiClient.uploadFile(new Blob(['x']), { name: 'a.json', mimeType: 'application/json' })
+    ).resolves.toEqual({ id: 'new-id' });
+    expect(FakeXhr.auth).toEqual(['Bearer TOKEN', 'Bearer NEWER']);
+  });
+
+  it('an XHR download retried after a re-auth sends the token held now', async () => {
+    const payload = new Blob(['data']);
+    FakeXhr.replies = [
+      {
+        status: 503,
+        response: new Blob(['']),
+        headers: { 'Retry-After': '0' },
+        meanwhile: () => (tk.value = 'NEWER')
+      },
+      { status: 200, response: payload }
+    ];
+
+    await expect(driveApiClient.downloadFile('file-1')).resolves.toBe(payload);
+    expect(FakeXhr.auth).toEqual(['Bearer TOKEN', 'Bearer NEWER']);
   });
 });

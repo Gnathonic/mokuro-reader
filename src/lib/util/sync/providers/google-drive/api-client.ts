@@ -289,9 +289,7 @@ class DriveApiClient {
     fileId: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<Blob> {
-    // Get current access token
-    const token = this.getCurrentToken();
-    if (!token) {
+    if (!this.getCurrentToken()) {
       throw new DriveApiError('No access token available', 401);
     }
 
@@ -308,8 +306,11 @@ class DriveApiClient {
     }
 
     // Download file with XMLHttpRequest for progress tracking; a GET is
-    // idempotent, so rate limits and 5xx are simply asked again.
-    return withDriveRetry(() => this.downloadOnce(fileId, token, totalSize, onProgress));
+    // idempotent, so rate limits and 5xx are simply asked again. Each attempt
+    // reads the token afresh: a re-auth can land during a backoff.
+    return withDriveRetry(() =>
+      this.downloadOnce(fileId, this.getCurrentToken(), totalSize, onProgress)
+    );
   }
 
   private downloadOnce(
@@ -375,15 +376,16 @@ class DriveApiClient {
     form.append('file', blob);
 
     const url = `${driveUploadBase()}/drive/v3/files${fileId ? `/${fileId}` : ''}?uploadType=multipart`;
-    const token = tokenManager.isAuthenticated() ? this.getCurrentToken() : null;
-
-    if (!token) {
+    if (!tokenManager.isAuthenticated() || !this.getCurrentToken()) {
       throw new DriveApiError('No valid token available');
     }
 
     return withDriveRetry(
       () =>
         new Promise<{ id: string }>((resolve, reject) => {
+          // Read per attempt: a re-auth can land during a backoff, and the
+          // next attempt must go out with the token held then.
+          const token = this.getCurrentToken();
           const xhr = new XMLHttpRequest();
           xhr.open(fileId ? 'PATCH' : 'POST', url);
           xhr.setRequestHeader('Authorization', `Bearer ${token}`);
