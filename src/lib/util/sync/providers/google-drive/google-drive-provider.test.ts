@@ -735,7 +735,9 @@ describe('GoogleDriveProvider quick-tier reads (no account-wide listing)', () =>
     // reader folders, history, device folders, segments
     expect(driveApiClient.listFiles).toHaveBeenCalledTimes(4);
     for (const [query] of vi.mocked(driveApiClient.listFiles).mock.calls) {
-      expect(query).not.toContain("'me' in owners"); // never the account-wide listing
+      // Owned files only, like the full listing — but never its account-wide query.
+      expect(query).toContain("'me' in owners");
+      expect(query).not.toBe("'me' in owners and trashed=false");
     }
   });
 

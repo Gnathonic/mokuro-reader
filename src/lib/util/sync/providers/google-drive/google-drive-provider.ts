@@ -534,9 +534,10 @@ class GoogleDriveProvider implements SyncProvider {
   private quickReaderIds: { at: number; ids: Promise<string[]> } | null = null;
 
   /**
-   * Every live reader folder's id (duplicates included, as the listing sees
-   * them). The quick tier's three reads start together: one lookup serves
-   * them all (30 s), a failed one is not kept.
+   * Every live reader folder's id this account OWNS (duplicates included, as
+   * the listing sees them — it lists `'me' in owners` only). The quick tier's
+   * three reads start together: one lookup serves them all (30 s), a failed
+   * one is not kept.
    */
   private quickReaderFolderIds(): Promise<string[]> {
     if (this.quickReaderIds && Date.now() - this.quickReaderIds.at < 30_000) {
@@ -546,7 +547,7 @@ class GoogleDriveProvider implements SyncProvider {
       await this.ensureInitialized();
       const folders = await driveApiClient.listFiles(
         `name='${escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER)}' and ` +
-          `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+          `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false and 'me' in owners`,
         'files(id)'
       );
       return folders.map((folder) => folder.id);
@@ -559,7 +560,12 @@ class GoogleDriveProvider implements SyncProvider {
     return ids;
   }
 
-  /** `files.list` over children of `parentIds`, chunked so the query stays short. */
+  /**
+   * `files.list` over children of `parentIds`, chunked so the query stays
+   * short. Owned files only — the full listing's own filter (`'me' in owners`),
+   * so a folder someone shared can never feed the quick tier what the listing
+   * would refuse.
+   */
   private async childrenOf(parentIds: string[], clause: string, fields: string) {
     const out: DriveFile[] = [];
     for (let i = 0; i < parentIds.length; i += 40) {
@@ -568,7 +574,10 @@ class GoogleDriveProvider implements SyncProvider {
         .map((id) => `'${id}' in parents`)
         .join(' or ');
       out.push(
-        ...(await driveApiClient.listFiles(`(${parents}) and trashed=false${clause}`, fields))
+        ...(await driveApiClient.listFiles(
+          `(${parents}) and trashed=false and 'me' in owners${clause}`,
+          fields
+        ))
       );
     }
     return out;
