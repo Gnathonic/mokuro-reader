@@ -6,6 +6,7 @@ import {
   getLayerPages,
   getLayerWithPages,
   layerTables,
+  listLayerIds,
   listLayerMetasForVolumes,
   listVolumeUuidsWithLayers,
   patchLayerMeta,
@@ -1375,8 +1376,11 @@ let editLayerMigration: Promise<number> | null = null;
  * an edit re-uploaded the main sidecar — an `edit` layer holding that primary,
  * so the corrections reach the cloud as `<Volume>.edit.mokuro` now that the
  * main sidecar is never re-uploaded after an edit. A volume whose primary
- * still equals its `original` snapshot has nothing to carry; one that already
- * has an `edit` layer keeps it. Additive only (nothing is deleted or
+ * equals ANY of its layers has nothing to carry — its `original` snapshot
+ * (never edited), or a layer it was promoted from (`promoteLayer` stamps
+ * `ocr_edited_at` too and keeps the layer: an engine's OCR, the cloud's
+ * `updated-ocr`, the shared `curated` are not this account's corrections);
+ * one that already has an `edit` layer keeps it. Additive only (nothing is deleted or
  * changed), and the old backfill's localStorage list is dropped. Resolves the
  * number of layers made; never rejects.
  *
@@ -1436,13 +1440,19 @@ async function carryPrimaryIntoEditLayer(volumeUuid: string): Promise<boolean> {
     if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return false;
     const ocr = await db.volume_ocr.get(volumeUuid);
     if (!ocr?.pages?.length) return false;
-    const original = await getLayerPages(db, volumeUuid, 'original');
-    if (original && JSON.stringify(original) === JSON.stringify(ocr.pages)) return false;
-    // A primary promoted from the shared `curated` layer holds the library's
-    // corrections, not this account's: as an `edit` layer it would go up as
-    // the account's own copy of everyone's work.
-    const curated = await getLayerPages(db, volumeUuid, CURATED_LAYER_ID);
-    if (curated && JSON.stringify(curated) === JSON.stringify(ocr.pages)) return false;
+    // Equal to a layer = no corrections of the account's own: the untouched
+    // `original`, or a promoted layer — an engine's or the OCR upgrade's
+    // (pushed as `edit` it would publish model output as hand corrections), the
+    // shared `curated` (the account's own copy of everyone's work). A
+    // pre-epoch `promoteLayer` stamps `ocr_edited_at` like a hand edit, so the
+    // stamp alone cannot tell. One layer's pages at a time, this volume only.
+    const primary = JSON.stringify(ocr.pages);
+    for (const layerId of await listLayerIds(db, volumeUuid)) {
+      const pages = await getLayerPages(db, volumeUuid, layerId);
+      if (pages && pages.length === ocr.pages.length && JSON.stringify(pages) === primary) {
+        return false;
+      }
+    }
     // Stamped with the edit's own time, so it ranks as the edit it is.
     const at = row.ocr_edited_at;
     await putLayerWithPages(db, {

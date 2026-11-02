@@ -536,7 +536,8 @@ letter) into `layer-<slug>` before de-duplicating with `-<n>` ("Edit" →
 `layer-edit`, "2024" → `layer-2024`). Edits made before this change live
 only in the primary: `migrateEditedPrimariesToEditLayers` (once per device,
 rows stamped before `edit-layer:epoch`) copies such a primary into an `edit`
-layer when it differs from its `original`. Three id families are
+layer when it differs from every layer it has (not its `original`, nor a
+layer it was promoted from). Three id families are
 CORRECTIONS by id (`isCorrectionsLayerId`): an account's own `edit`/`edit-<n>`
 ("Your corrections [n]", `isPersonalLayerId` — bunko 0.8 keeps them per
 account), the library's shared `curated` ("Shared corrections",
@@ -729,8 +730,11 @@ too.
 `migrateEditedPrimariesToEditLayers` stays local and additive and uploads
 nothing itself: the `edit` row it makes goes where the push rule sends it —
 nowhere on a 0.7.x bunko, the account's overlay on 0.8, the folder on plain
-storage. It skips a primary equal to the `curated` layer's pages (a promoted
-curated is not "your corrections"). And a personal row that stays local with
+storage. It skips a primary equal to ANY of the volume's layers (read one at a
+time through `layer-store.ts`, that volume only): `promoteLayer` stamps
+`ocr_edited_at` like a hand edit and keeps its source, so a pre-epoch promotion
+of `curated`, an engine layer or `updated-ocr` would otherwise go up as the
+account's own corrections. And a personal row that stays local with
 unsynced edits (`keepsLocalEdits`) is never pulled over: on a 0.7.x bunko the
 listed `<Volume>.edit.mokuro` is the SHARED file, another account's work.
 

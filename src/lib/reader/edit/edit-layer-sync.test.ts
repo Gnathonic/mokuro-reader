@@ -395,4 +395,27 @@ describe('the one-time edit-layer migration', () => {
     expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
     expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
   });
+
+  // `promoteLayer` stamps `ocr_edited_at` and keeps the layer it promoted: a
+  // pre-epoch promotion reads like a hand edit by the stamp alone.
+  it.each([
+    ['an engine layer', 'paddle-manga', 'ocr'],
+    ['the OCR upgrade', 'updated-ocr', 'ocr'],
+    ['a hand-made layer', 'notes', 'edit']
+  ] as const)('a primary promoted from %s is not "your corrections"', async (_, layerId, kind) => {
+    await legacyEdited();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: layerId,
+      name: layerId,
+      kind,
+      created_at: '2026-08-01T00:00:00.000Z',
+      updated_at: '2026-08-01T00:00:00.000Z',
+      pages: [pg('なおし'), pg('うえ', 'q.png')]
+    });
+    expect(await migrateEditedPrimariesToEditLayers()).toBe(0);
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
+    await syncLayersFromListing(listing(), 'webdav');
+    expect(uploadedPaths()).not.toContain('Series/Vol 1.edit.mokuro');
+  });
 });
