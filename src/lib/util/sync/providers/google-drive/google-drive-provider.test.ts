@@ -17,8 +17,10 @@ vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
   driveApiClient: {
     initialize: vi.fn(async () => {}),
     listFiles: vi.fn(async () => []),
+    folderHasChildren: vi.fn(async () => false),
     deleteFile: vi.fn(async () => {}),
-    createFolder: vi.fn(async () => 'created-folder')
+    createFolder: vi.fn(async () => 'created-folder'),
+    updateFileMetadata: vi.fn(async () => ({}))
   },
   // The REAL escape, not a stand-in: the point of routing the folder queries
   // through the shared helper is that they get exactly this behaviour, and a
@@ -29,6 +31,7 @@ vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
   driveFilesCache: {
     getReaderFolderId: vi.fn(async () => 'reader-root'),
     setReaderFolderId: vi.fn(),
+    pickReaderFolder: vi.fn(async () => ({ id: null, topLevelKnown: true })),
     getDriveFilesBySeries: vi.fn(() => []),
     removeById: vi.fn(),
     clear: vi.fn(),
@@ -465,6 +468,35 @@ describe('GoogleDriveProvider uploads — the blind path skips the whole-account
     expect(driveFilesCache.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('a full Drive account surfaces as QUOTA_EXCEEDED, not a retryable network failure', async () => {
+    // A worker hands back only the message; the bracketed reason is enough.
+    coreUpload.mockRejectedValueOnce(
+      new Error('Upload init failed: 403 Forbidden [storageQuotaExceeded]')
+    );
+
+    const error = await googleDriveProvider
+      .uploadFile('volume-data.json', new Blob(['abc']))
+      .catch((e) => e);
+
+    expect(error.code).toBe('QUOTA_EXCEEDED');
+    expect(error.isNetworkError).toBe(false);
+    expect(error.isAuthError).toBe(false);
+    expect(error.message).toMatch(/storage is full/);
+  });
+
+  it('a rate limit that outlasted its retries stays a retryable UPLOAD_FAILED', async () => {
+    coreUpload.mockRejectedValueOnce(
+      new Error('Upload init failed: 403 Forbidden [userRateLimitExceeded]')
+    );
+
+    const error = await googleDriveProvider
+      .uploadFile('volume-data.json', new Blob(['abc']))
+      .catch((e) => e);
+
+    expect(error.code).toBe('UPLOAD_FAILED');
+    expect(error.isNetworkError).toBe(true);
+  });
+
   it('blindUploadFile performs the SAME upload with NO refetch', async () => {
     const result = await googleDriveProvider.blindUploadFile('volume-data.json', new Blob(['abc']));
     // Positive control: the upload genuinely ran and returned its metadata.
@@ -472,5 +504,149 @@ describe('GoogleDriveProvider uploads — the blind path skips the whole-account
     expect(result).toMatchObject({ fileId: 'uploaded-1', size: 3 });
     // The point: not one listing request rides a blind upload.
     expect(driveFilesCache.fetch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Parity with MEGA's dedup (#308): Drive's folder listing sees every folder
+ * the app can reach, so the deduplicator must only ever be handed the library
+ * (`mokuro-reader` folders and what is inside them), a duplicate folder goes
+ * to the trash only once the SERVER lists it empty, and only a top-level root
+ * may become the write root.
+ */
+describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
+  const folder = (id: string, name: string, parent?: string, createdTime?: string) => ({
+    id,
+    name,
+    mimeType: FOLDER_MIME,
+    parents: parent ? [parent] : undefined,
+    createdTime
+  });
+
+  it('lists only library folders: roots anywhere, and their descendants', async () => {
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      folder('TOP', 'mokuro-reader', 'MY_DRIVE'),
+      folder('SERIES', 'Ippo', 'TOP'),
+      folder('BACKUP', 'Backup', 'MY_DRIVE'),
+      folder('NESTED', 'mokuro-reader', 'BACKUP'),
+      folder('NESTED_SERIES', 'Ippo', 'NESTED'),
+      // A same-named pair of the user's own, outside the library.
+      folder('STUFF', 'Stuff', 'MY_DRIVE'),
+      folder('PHOTOS_1', 'Photos', 'STUFF'),
+      folder('PHOTOS_2', 'Photos', 'STUFF')
+    ]);
+
+    const folders = await googleDriveProvider.getFolderOperations().listFolders();
+
+    expect(folders.map((f) => f.id).sort()).toEqual(['NESTED', 'NESTED_SERIES', 'SERIES', 'TOP']);
+    expect(folders.find((f) => f.id === 'NESTED')?.parentId).toBe('BACKUP');
+  });
+
+  it('does not trash a duplicate folder the server still lists children for', async () => {
+    vi.mocked(driveApiClient.folderHasChildren).mockResolvedValue(true);
+    const ops = googleDriveProvider.getFolderOperations();
+
+    // Kept, and reported as kept: the deduplicator must not count it.
+    await expect(ops.deleteFolder('DUP')).resolves.toBe(false);
+
+    // The server is asked whether ANYTHING is left, not for the whole listing.
+    expect(driveApiClient.folderHasChildren).toHaveBeenCalledWith('DUP');
+    expect(driveApiClient.listFiles).not.toHaveBeenCalled();
+    expect(driveApiClient.updateFileMetadata).not.toHaveBeenCalled();
+    expect(driveApiClient.deleteFile).not.toHaveBeenCalled();
+
+    // Kept once already this run and still not empty: give up on it rather than loop.
+    await expect(ops.deleteFolder('DUP')).rejects.toThrow(/still holds/);
+    expect(driveApiClient.updateFileMetadata).not.toHaveBeenCalled();
+  });
+
+  it('trashes an empty duplicate folder, never deletes it', async () => {
+    vi.mocked(driveApiClient.folderHasChildren).mockResolvedValue(false);
+
+    await expect(googleDriveProvider.getFolderOperations().deleteFolder('DUP')).resolves.toBe(true);
+
+    expect(driveApiClient.updateFileMetadata).toHaveBeenCalledWith(
+      'DUP',
+      { trashed: true },
+      { fields: 'id' }
+    );
+    expect(driveApiClient.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('only confirms the root the cache picks as the write root (top-level first)', async () => {
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      folder('TOP', 'mokuro-reader', 'MY_DRIVE'),
+      folder('NESTED', 'mokuro-reader', 'BACKUP'),
+      folder('NESTED_SERIES', 'Ippo', 'NESTED')
+    ]);
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce({
+      id: 'TOP',
+      topLevelKnown: true
+    });
+    const ops = googleDriveProvider.getFolderOperations();
+    await ops.listFolders();
+
+    // The same rule the cache's listing uses, over the roots only.
+    expect(
+      vi
+        .mocked(driveFilesCache.pickReaderFolder)
+        .mock.calls[0][0].map((f) => f.id)
+        .sort()
+    ).toEqual(['NESTED', 'TOP']);
+
+    // A merged group of nested roots has a canonical too: read, never written to.
+    ops.onRootFolderConfirmed?.('NESTED');
+    expect(driveFilesCache.setReaderFolderId).not.toHaveBeenCalled();
+
+    ops.onRootFolderConfirmed?.('TOP');
+    expect(driveFilesCache.setReaderFolderId).toHaveBeenCalledWith('TOP');
+  });
+
+  it('confirms a nested root when the cache picks it (no top-level root)', async () => {
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      folder('NESTED_A', 'mokuro-reader', 'BACKUP'),
+      folder('NESTED_B', 'mokuro-reader', 'BACKUP')
+    ]);
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce({
+      id: 'NESTED_A',
+      topLevelKnown: true
+    });
+    const ops = googleDriveProvider.getFolderOperations();
+    await ops.listFolders();
+
+    ops.onRootFolderConfirmed?.('NESTED_A');
+    expect(driveFilesCache.setReaderFolderId).toHaveBeenCalledWith('NESTED_A');
+  });
+
+  it('confirms NO root when the cache could not tell which roots are top-level', async () => {
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      folder('TOP', 'mokuro-reader', 'MY_DRIVE'),
+      folder('NESTED', 'mokuro-reader', 'BACKUP')
+    ]);
+    // The query failed: the pick is a guess, and a guess must not move writes.
+    vi.mocked(driveFilesCache.pickReaderFolder).mockResolvedValueOnce({
+      id: 'NESTED',
+      topLevelKnown: false
+    });
+    const ops = googleDriveProvider.getFolderOperations();
+    await ops.listFolders();
+
+    // The ids of everything listed ride along, for the fallback ranking.
+    expect(vi.mocked(driveFilesCache.pickReaderFolder).mock.calls[0][1]).toEqual(
+      new Set(['TOP', 'NESTED'])
+    );
+    ops.onRootFolderConfirmed?.('NESTED');
+    ops.onRootFolderConfirmed?.('TOP');
+    expect(driveFilesCache.setReaderFolderId).not.toHaveBeenCalled();
+  });
+
+  it('breaks a creation-time tie by id when several folders share a name', async () => {
+    const same = '2026-01-01T00:00:00.000Z';
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      folder('b-folder', 'Ippo', 'reader-root', same),
+      folder('a-folder', 'Ippo', 'reader-root', same)
+    ]);
+
+    expect(await googleDriveProvider.findOrCreateFolder('reader-root', 'Ippo')).toBe('a-folder');
   });
 });

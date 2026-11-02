@@ -1,6 +1,17 @@
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
+import {
+  driveHttpErrorFromResponse,
+  driveHttpErrorFromXhr,
+  withDriveRetry,
+  type DriveHttpError
+} from './drive-http';
+
+/** Why the attempt failed, in the few words the tray's "retrying" line has room for. */
+function retryReason(error: DriveHttpError): string {
+  return error.kind === 'rate-limit' ? 'rate limited' : `HTTP ${error.status}`;
+}
 
 export const googleDriveCore: CloudProviderCore = {
   async downloadFile({ fileId, credentials, onProgress }): Promise<ArrayBuffer> {
@@ -10,46 +21,52 @@ export const googleDriveCore: CloudProviderCore = {
       'Google Drive access token'
     );
 
-    const sizeResponse = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${fileId}?fields=size`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`
+    // Rate limits (429, or a 403 naming one) and 5xx are retried after
+    // Retry-After; a full account or a real auth failure is not.
+    const sizeResponse = await withDriveRetry(async () => {
+      const response = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${fileId}?fields=size`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`
+          }
         }
-      }
-    );
-
-    if (!sizeResponse.ok) {
-      throw new Error(`Failed to get file size: ${sizeResponse.statusText}`);
-    }
+      );
+      if (!response.ok) throw await driveHttpErrorFromResponse(response, 'Failed to get file size');
+      return response;
+    });
 
     const sizeData = await sizeResponse.json();
     const totalSize = parseInt(sizeData.size, 10);
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
-    xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
-    xhr.responseType = 'arraybuffer';
+    // A GET is idempotent: a rejected attempt is simply asked again.
+    return await withDriveRetry(
+      () =>
+        new Promise<ArrayBuffer>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+          xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+          xhr.responseType = 'arraybuffer';
 
-    return await new Promise((resolve, reject) => {
-      xhr.onprogress = (event) => {
-        onProgress(event.loaded, totalSize);
-      };
+          xhr.onprogress = (event) => {
+            onProgress(event.loaded, totalSize);
+          };
 
-      xhr.onerror = () => reject(new Error('Network error during download'));
-      xhr.ontimeout = () => reject(new Error('Download timed out'));
-      xhr.onabort = () => reject(new Error('Download aborted'));
+          xhr.onerror = () => reject(new Error('Network error during download'));
+          xhr.ontimeout = () => reject(new Error('Download timed out'));
+          xhr.onabort = () => reject(new Error('Download aborted'));
 
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(xhr.response as ArrayBuffer);
-        } else {
-          reject(new Error(`HTTP error ${xhr.status}: ${xhr.statusText}`));
-        }
-      };
+          xhr.onload = async () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve(xhr.response as ArrayBuffer);
+            } else {
+              reject(await driveHttpErrorFromXhr(xhr, 'HTTP error'));
+            }
+          };
 
-      xhr.send();
-    });
+          xhr.send();
+        })
+    );
   },
 
   async uploadFile({
@@ -58,7 +75,8 @@ export const googleDriveCore: CloudProviderCore = {
     credentials,
     mimeType,
     existingFileId,
-    onProgress
+    onProgress,
+    onRetry
   }): Promise<UploadFileResult> {
     const accessToken = requireCredentialString(
       credentials,
@@ -86,18 +104,27 @@ export const googleDriveCore: CloudProviderCore = {
       ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=resumable&${responseFields}`
       : `https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&${responseFields}`;
 
-    const initResponse = await fetch(uploadBase, {
-      method: existingFileId ? 'PATCH' : 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
+    // Session init carries no file data and creates nothing until the PUT
+    // completes, so every retryable failure may be asked again. Each wait
+    // (up to 3 × 60 s) is reported, or the tray sits at 0 % for minutes.
+    const initResponse = await withDriveRetry(
+      async () => {
+        const response = await fetch(uploadBase, {
+          method: existingFileId ? 'PATCH' : 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(metadata)
+        });
+        if (!response.ok) throw await driveHttpErrorFromResponse(response, 'Upload init failed');
+        return response;
       },
-      body: JSON.stringify(metadata)
-    });
-
-    if (!initResponse.ok) {
-      throw new Error(`Upload init failed: ${initResponse.status} ${initResponse.statusText}`);
-    }
+      {
+        onWait: (delayMs, error, attempt, attempts) =>
+          onRetry?.({ attempt, attempts, delayMs, reason: retryReason(error) })
+      }
+    );
 
     const uploadUrl = initResponse.headers.get('Location');
     if (!uploadUrl) {
@@ -126,7 +153,9 @@ export const googleDriveCore: CloudProviderCore = {
             size: Number.isFinite(size) ? size : undefined
           });
         } else {
-          reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+          // Classified (a full account must not read as a network blip) but
+          // not retried here: the body was already sent once.
+          reject(await driveHttpErrorFromXhr(xhr, 'Upload failed'));
         }
       };
 

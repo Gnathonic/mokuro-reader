@@ -6,6 +6,7 @@ import {
 } from './volume-record-merge';
 
 type Rec = VolumeRecordLike & {
+  archivedReads?: Array<{ at: number; pages: number; chars: number; completed: boolean }>;
   progress?: number;
   chars?: number;
   completed?: boolean;
@@ -146,6 +147,42 @@ describe('mergeLiveVolumeRecords', () => {
     expect(record.timeReadInMinutes).toBeUndefined();
   });
 
+  it('archived passes from before a forget never come back from a stale copy', () => {
+    const fresh = {
+      progress: 2,
+      forgotAt: new Date(5000).toISOString(),
+      recentPageTurns: [[6000, 2, 20]]
+    };
+    const stale = {
+      progress: 40,
+      archivedReads: [
+        { at: 100, pages: 10, chars: 1, completed: true },
+        { at: 5000, pages: 20, chars: 2, completed: true },
+        { at: 7000, pages: 30, chars: 3, completed: true }
+      ],
+      recentPageTurns: [...synced]
+    } as Rec;
+
+    const record = mergeLiveVolumeRecords(fresh, stale);
+
+    // Only the pass archived after the forget survives.
+    expect(record.archivedReads).toEqual([{ at: 7000, pages: 30, chars: 3, completed: true }]);
+  });
+
+  it("the winner's own archived passes up to the loser's horizon go too", () => {
+    const stale = {
+      progress: 41,
+      archivedReads: [{ at: 100, pages: 10, chars: 1, completed: true }],
+      recentPageTurns: [...synced, [9000, 41, 1]]
+    } as Rec;
+    const fresh = { progress: 2, forgotAt: new Date(2500).toISOString(), recentPageTurns: [] };
+
+    const record = mergeLiveVolumeRecords(stale, fresh);
+
+    expect(record.archivedReads).toEqual([]);
+    expect(record.forgotAt).toBe(new Date(2500).toISOString());
+  });
+
   it('keeps the later horizon when the stale copy is the winner', () => {
     const fresh = { progress: 2, forgotAt: new Date(2500).toISOString(), recentPageTurns: [] };
     const stale = { progress: 41, recentPageTurns: [...synced, [9000, 41, 1]] };
@@ -174,6 +211,23 @@ describe('applyForgetHorizon', () => {
     expect(record.forgotAt).toBe(new Date(2000).toISOString());
   });
 
+  it('drops archived passes up to the horizon', () => {
+    const record = applyForgetHorizon(
+      {
+        progress: 41,
+        recentPageTurns: [],
+        archivedReads: [
+          { at: 1000, pages: 10, chars: 1, completed: true },
+          { at: 2000, pages: 20, chars: 2, completed: true },
+          { at: 3000, pages: 30, chars: 3, completed: true }
+        ]
+      } as Rec,
+      new Date(2000).toISOString()
+    );
+
+    expect(record.archivedReads).toEqual([{ at: 3000, pages: 30, chars: 3, completed: true }]);
+  });
+
   it('never moves an existing later horizon back', () => {
     const record = applyForgetHorizon(
       { progress: 1, forgotAt: new Date(8000).toISOString(), recentPageTurns: [[9000, 1, 1]] },
@@ -181,5 +235,78 @@ describe('applyForgetHorizon', () => {
     );
 
     expect(record.forgotAt).toBe(new Date(8000).toISOString());
+  });
+
+  it("keeps both sides' archived reads (a restart on the older copy survives)", () => {
+    const winner = {
+      progress: 60,
+      archivedReads: [{ at: 100, pages: 10, chars: 1, completed: true }],
+      recentPageTurns: []
+    };
+    const loser = {
+      progress: 0,
+      archivedReads: [
+        { at: 100, pages: 10, chars: 1, completed: true },
+        { at: 500, pages: 200, chars: 9, completed: true }
+      ],
+      recentPageTurns: []
+    } as Rec;
+    expect(mergeLiveVolumeRecords(winner as Rec, loser).archivedReads?.map((r) => r.at)).toEqual([
+      100, 500
+    ]);
+  });
+});
+
+describe('legacyStats (the pre-event snapshot)', () => {
+  const older = { time_ms: 600_000, chars: 900, before: 1000 };
+  const newer = { time_ms: 300_000, chars: 1200, before: 2000 };
+
+  it("keeps the winning copy's snapshot, whichever freeze came later", () => {
+    // The winner is the newer-stamped record (the old counter's last write
+    // wins), so an editor reset on the device that read last stays a reset.
+    expect(
+      mergeLiveVolumeRecords({ legacyStats: older }, { legacyStats: newer }).legacyStats
+    ).toEqual(older);
+    expect(
+      mergeLiveVolumeRecords({ legacyStats: newer }, { legacyStats: older }).legacyStats
+    ).toEqual(newer);
+  });
+
+  it('a stale device that upgrades later cannot erase minutes only the other counter held', () => {
+    // The laptop read last (150 min, frozen at T1); the phone missed those
+    // syncs and froze its stale 100 min at T2 > T1. The later freeze saw LESS
+    // of the counter, not more: the laptop's record wins the merge, and so
+    // does its snapshot — on both devices.
+    const laptop = {
+      progress: 60,
+      lastProgressUpdate: '2026-10-03T20:00:00.000Z',
+      legacyStats: { time_ms: 150 * 60_000, chars: 6000, before: Date.parse('2026-10-04T00:00Z') }
+    };
+    const phone = {
+      progress: 40,
+      lastProgressUpdate: '2026-10-01T20:00:00.000Z',
+      legacyStats: { time_ms: 100 * 60_000, chars: 4000, before: Date.parse('2026-10-05T00:00Z') }
+    };
+    expect(mergeLiveVolumeRecords(laptop, phone).legacyStats).toEqual(laptop.legacyStats);
+  });
+
+  it('carries the loser snapshot onto a winner without one', () => {
+    expect(mergeLiveVolumeRecords({ progress: 3 }, { legacyStats: older }).legacyStats).toEqual(
+      older
+    );
+  });
+
+  it('is dropped by a forget', () => {
+    expect(
+      applyForgetHorizon({ legacyStats: older }, '2026-01-01T00:00:00.000Z').legacyStats
+    ).toBeUndefined();
+  });
+
+  it('a stale live copy cannot bring a forgotten snapshot back', () => {
+    const forgot = '2026-05-01T00:00:00.000Z';
+    const reread = { progress: 2, forgotAt: forgot };
+    const stale = { progress: 40, legacyStats: older };
+    expect(mergeLiveVolumeRecords(reread, stale).legacyStats).toBeUndefined();
+    expect(mergeLiveVolumeRecords(stale, reread).legacyStats).toBeUndefined();
   });
 });

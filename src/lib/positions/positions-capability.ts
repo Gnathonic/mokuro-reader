@@ -1,0 +1,18 @@
+/**
+ * Who may read and write `positions.json`.
+ *
+ * On plain storage the file is the user's own, like `volume-data.json`. On
+ * mokuro-bunko every path under the mokuro folder is the SHARED library unless
+ * the server maps it per account, so the client touches it only once bunko
+ * says it keeps it per user (`positionsSync`, from `per_user_files`).
+ */
+
+import type { ProviderStatus } from '$lib/util/sync/provider-interface';
+
+export function positionsReadAllowed(status: ProviderStatus): boolean {
+  return status.positionsSync ?? !status.serverCompilesMetadata;
+}
+
+export function positionsWriteAllowed(status: ProviderStatus): boolean {
+  return positionsReadAllowed(status) && !status.isReadOnly;
+}
