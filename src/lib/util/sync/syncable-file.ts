@@ -234,8 +234,8 @@ export function splitLayerSidecarName(
 
 /**
  * Is `path` a layer file whose id is reserved (`isReservedLayerId`)? bunko
- * refuses a write of some of those by design — its own `pre-upgrade`, the
- * `curated` layer to an account without the rights, a shared `edit` — so a
+ * refuses a write of some of those by design — a case merge's `curated-<n>`,
+ * the `curated` layer to an account without the rights, a shared `edit` — so a
  * 403 there says nothing about the account's other writes (`webdav-provider`
  * keeps the provider read-write). Listing-free, so `Vol 1.edit.mokuro` counts
  * even when it is the primary of a volume titled `Vol 1.edit`.

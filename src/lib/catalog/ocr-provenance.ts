@@ -15,7 +15,7 @@
  * (`VolumeMetadata.ocr_provenance`), and writes the block back onto a primary
  * it regenerates only when the pages written digest the same — so a carried
  * block is always true of the file it rides on. The block is the one bunko's
- * precedence reads (`edited`, then `preserved`, then `ocr_engine`): an
+ * precedence reads (`edited`, then `ocr_engine`, else legacy): an
  * installed EDITED main keeps its `edited` block through a rename here, or a
  * reader on another device would turn a person's text back into LEGACY OCR
  * that a server upgrade replaces.
@@ -165,13 +165,13 @@ export async function provenanceFromParsed(
 /**
  * The entry an installed file gives, by bunko's precedence: an `edited` object
  * makes it EDITED (any `ocr_engine` left beside it is ignored, as bunko does —
- * carrying it alone would pass a person's text off as model output); a
- * `preserved` object makes it nobody's recipe, so nothing is recorded; else
- * its `ocr_engine` (`provenanceFromParsed`). Every primary install goes
- * through here.
+ * carrying it alone would pass a person's text off as model output); else
+ * its `ocr_engine` (`provenanceFromParsed`); else nothing (legacy OCR). Any
+ * other block a file carries is not part of the precedence and is ignored.
+ * Every primary install goes through here.
  */
 export async function provenanceOfFile(
-  blocks: { ocrEngine?: unknown; edited?: unknown; preserved?: unknown },
+  blocks: { ocrEngine?: unknown; edited?: unknown },
   pages: unknown[]
 ): Promise<OcrProvenance | undefined> {
   if (!Array.isArray(pages)) return undefined;
@@ -184,7 +184,6 @@ export async function provenanceOfFile(
     }
     return digest ? { edited: blocks.edited, digest } : undefined;
   }
-  if (isPlainObject(blocks.preserved)) return undefined;
   return provenanceFromParsed(blocks.ocrEngine, pages);
 }
 

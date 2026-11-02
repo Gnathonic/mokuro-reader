@@ -13,9 +13,7 @@ describe('forksOnEdit: which layers an edit leaves alone and copies into `edit`'
     expect(forksOnEdit(curated, null)).toBe(true);
   });
 
-  it('on bunko: its pre-upgrade keepsakes and the OCR layers a server stamped', () => {
-    expect(forksOnEdit({ layer_id: 'pre-upgrade', kind: 'edit', cloud: CLOUD }, BUNKO)).toBe(true);
-    expect(forksOnEdit({ layer_id: 'pre-upgrade-2', kind: 'edit' }, BUNKO)).toBe(true);
+  it('on bunko: a case merge’s curated-<n> and the OCR layers a server stamped', () => {
     // A case merge's keepsake of a second curated file: as shared as curated itself.
     expect(forksOnEdit({ layer_id: 'curated-2', kind: 'edit', cloud: CLOUD }, BUNKO)).toBe(true);
     const hayai = { layer_id: 'hayai', kind: 'ocr' as const, engine: 'hayai', cloud: CLOUD };
@@ -26,7 +24,6 @@ describe('forksOnEdit: which layers an edit leaves alone and copies into `edit`'
     const hayai = { layer_id: 'hayai', kind: 'ocr' as const, engine: 'hayai', cloud: CLOUD };
     expect(forksOnEdit(hayai, DRIVE)).toBe(false);
     expect(forksOnEdit(hayai, null)).toBe(false);
-    expect(forksOnEdit({ layer_id: 'pre-upgrade', kind: 'edit', cloud: CLOUD }, DRIVE)).toBe(false);
     expect(forksOnEdit({ layer_id: 'curated-2', kind: 'edit', cloud: CLOUD }, DRIVE)).toBe(false);
   });
 
@@ -36,6 +33,13 @@ describe('forksOnEdit: which layers an edit leaves alone and copies into `edit`'
     expect(forksOnEdit({ layer_id: 'my-fixes', kind: 'edit', cloud: CLOUD }, BUNKO)).toBe(false);
     expect(forksOnEdit({ layer_id: 'edit', kind: 'edit', cloud: CLOUD }, BUNKO)).toBe(false);
     expect(forksOnEdit({ layer_id: 'edit-2', kind: 'edit', cloud: CLOUD }, BUNKO)).toBe(false);
+  });
+
+  it('pre-upgrade / previous-ocr are hand-made layers on bunko too: edited in place', () => {
+    for (const layer_id of ['pre-upgrade', 'pre-upgrade-2', 'previous-ocr', 'previous-ocr-2']) {
+      expect(forksOnEdit({ layer_id, kind: 'edit', cloud: CLOUD }, BUNKO)).toBe(false);
+      expect(forksOnEdit({ layer_id, kind: 'edit' }, BUNKO)).toBe(false);
+    }
   });
 });
 
@@ -60,8 +64,8 @@ describe('layerRowActions: what the layer menu offers on a row', () => {
 
   it('Copy to your corrections on every layer an edit forks from', () => {
     expect(at('curated', false).copyToEdit).toBe(true);
-    expect(at('pre-upgrade', false).copyToEdit).toBe(true);
     expect(at('curated-2', false).copyToEdit).toBe(true);
+    expect(at('pre-upgrade', false).copyToEdit).toBe(false);
     expect(at('fix', true).copyToEdit).toBe(false);
     expect(at('edit', true).copyToEdit).toBe(false);
   });

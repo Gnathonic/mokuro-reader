@@ -351,6 +351,15 @@ async function layer(page: Page, uuid: string, layerId: string) {
   );
 }
 
+/** A volume's layer ids, sorted (keys only). */
+async function layerIds(page: Page, uuid: string): Promise<string[]> {
+  return page.evaluate(async (uuid) => {
+    const { db } = await import('/src/lib/catalog/db.ts');
+    const { listLayerIds } = await import('/src/lib/catalog/layer-store.ts');
+    return (await listLayerIds(db, uuid)).sort();
+  }, uuid);
+}
+
 const gets = (seen: Seen[], from: number, re: RegExp) =>
   seen.filter(
     (s) => s.seq >= from && (s.method === 'GET' || s.method === 'HEAD') && re.test(s.path)
@@ -532,9 +541,9 @@ test.describe('automatic OCR upgrade (real mokuro-bunko)', () => {
       expect(cNotices).toEqual(['Updated OCR for 1 volume']);
       // Volume 2 untouched.
       expect(rows.get(V2)).toEqual(v2Before);
-      // Volume 1's primary was attested as this cloud's own file: replaced
-      // outright, no "Previous OCR" keepsake.
-      expect(await layer(page, UUID1, 'previous-ocr')).toBeNull();
+      // Volume 1's unedited primary was replaced outright: the upgrade wrote
+      // no layer.
+      expect(await layerIds(page, UUID1)).toEqual([]);
       console.log('[evidence] (c) writes since the change:', JSON.stringify(writes(mark)));
       expect(writes(mark).filter((w) => !/\/(volume-data|profiles)\.json /.test(w))).toEqual([]);
       // Converged: another listing fetches nothing more.
