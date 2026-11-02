@@ -30,6 +30,7 @@ import {
   enrichAllOrphanedVolumes,
   isOrphanedVolumeData,
   parseVolumesFromJson,
+  projectedTurnsOf,
   registerCompletionListener,
   totalStats,
   updateProgress,
@@ -461,7 +462,7 @@ describe('page turns after the cut-over', () => {
 
   it('stats read projected turns once loaded; the stored record keeps its own', async () => {
     const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
-    volumesWithTrash.set({ v: new VolumeData({ progress: 2, recentPageTurns: [[9, 9, 90]] }) });
+    volumesWithTrash.set({ v: new VolumeData({ progress: 2 }) });
     _setHistoryTurnsForTest(
       new Map([
         [
@@ -477,7 +478,61 @@ describe('page turns after the cut-over', () => {
       [1, 1, 10],
       [2, 2, 20]
     ]);
-    expect(get(volumesWithTrash).v.recentPageTurns).toEqual([[9, 9, 90]]);
+    expect(get(volumesWithTrash).v.recentPageTurns).toEqual([]);
+  });
+
+  it("a record's unconverted turns count beside the projection (another device's, merged from the file)", async () => {
+    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    volumesWithTrash.set({
+      v: new VolumeData({
+        progress: 9,
+        recentPageTurns: [
+          [2, 2] as never, // the same turn as the projection's, without chars
+          [9, 9, 90]
+        ]
+      })
+    });
+    _setHistoryTurnsForTest(
+      new Map([
+        [
+          'v',
+          [
+            [1, 1, 10],
+            [2, 2, 20]
+          ]
+        ]
+      ])
+    );
+    expect(get(volumes).v.recentPageTurns).toEqual([
+      [1, 1, 10],
+      [2, 2, 20],
+      [9, 9, 90]
+    ]);
+    expect(projectedTurnsOf('v', get(volumesWithTrash).v)).toEqual([
+      [1, 1, 10],
+      [2, 2, 20],
+      [9, 9, 90]
+    ]);
+    expect(get(volumesWithTrash).v.recentPageTurns).toEqual([
+      [2, 2],
+      [9, 9, 90]
+    ]);
+  });
+
+  it('keeps record identity across emissions when the record holds turns too', async () => {
+    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    volumesWithTrash.set({
+      v: new VolumeData({ progress: 9, recentPageTurns: [[9, 9, 90]] }),
+      w: new VolumeData({ progress: 1 })
+    });
+    _setHistoryTurnsForTest(new Map([['v', [[1, 1, 10]] as [number, number, number][]]]));
+    const first = get(volumes).v;
+    expect(first.recentPageTurns).toEqual([
+      [1, 1, 10],
+      [9, 9, 90]
+    ]);
+    volumesWithTrash.update((all) => ({ ...all, w: new VolumeData({ progress: 2 }) }));
+    expect(get(volumes).v).toBe(first);
   });
 
   it("before history loads, or for a volume it has nothing for, the record's own turns stand", async () => {

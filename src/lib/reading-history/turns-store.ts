@@ -1,7 +1,7 @@
 import { get, writable, type Readable } from 'svelte/store';
 import type { PageTurn } from '$lib/settings/volume-data';
 import type { HistoryDexie } from './history-db';
-import { projectVolume } from './project-turns';
+import { nativeCoverage, projectVolume } from './project-turns';
 import { onEventsRecorded } from './record';
 import type { ReadingEvent } from './types';
 
@@ -44,6 +44,28 @@ export function historyTurnsReady(): Promise<void> {
 /** The volume's projected turns; `undefined` until loaded, or when it has none. */
 export function getHistoryTurns(volume: string): PageTurn[] | undefined {
   return loaded ? get(store).get(volume) : undefined;
+}
+
+/**
+ * The volume's turns projected from its LEGACY events alone (native views
+ * covering them still hide them); `undefined` until loaded, or when it has
+ * none. Computed on request — it is read once per sync, not per emission.
+ */
+export function getHistoryLegacyTurns(volume: string): PageTurn[] | undefined {
+  if (!loaded) return undefined;
+  const events = eventsByVolume.get(volume);
+  if (!events) return undefined;
+  const turns = projectVolume([...events.values()], { legacyOnly: true });
+  return turns.length > 0 ? turns : undefined;
+}
+
+/**
+ * Whether a native view of the volume covers a time (the spec's coverage
+ * rule), over the events loaded so far. Always `false` before the load.
+ */
+export function nativeCoverageOf(volume: string): (t: number) => boolean {
+  const events = loaded ? eventsByVolume.get(volume) : undefined;
+  return events ? nativeCoverage([...events.values()]) : () => false;
 }
 
 /** Full (re)load from the database — on start, and after a big import. */
