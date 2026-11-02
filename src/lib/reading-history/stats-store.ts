@@ -165,6 +165,21 @@ export function flushReadingStats(): void {
   state.set({ ready: true, pace, idle, byVolume, recent: recentSpeed(byVolume.values()) });
 }
 
+/**
+ * Settles once history has loaded and been counted at least once — flushing
+ * a pending pass instead of waiting out its debounce. For a reader that acts
+ * on a volume's figures (the volume editor records the DIFFERENCE from the
+ * time it showed): before the first flush `byVolume` is empty and the figure
+ * is the baseline alone.
+ */
+export async function readingStatsReady(): Promise<void> {
+  if (get(state).ready) return;
+  await historyTurnsReady();
+  if (get(state).ready) return;
+  pending = 'all';
+  flushReadingStats();
+}
+
 /** The record fields the pre-history snapshot is taken from. */
 export type BaselineSource = {
   legacyStats?: LegacyStats;
@@ -195,6 +210,24 @@ function snapshotOf(
 }
 
 /**
+ * What a snapshot holds beyond the events from before its freeze: the old
+ * counter's reading that history does not explain (a skim counts as
+ * explained — it was in the old lifetime count, and it is not re-read).
+ */
+function unexplained(
+  snapshot: LegacyStats,
+  totals: VolumeTotals | undefined
+): { timeMs: number; chars: number } {
+  const explained = totals
+    ? totalsBefore(totals, snapshot.before)
+    : { timeMs: 0, readChars: 0, skippedChars: 0 };
+  return {
+    timeMs: Math.max(0, snapshot.time_ms - explained.timeMs),
+    chars: Math.max(0, snapshot.chars - explained.readChars - explained.skippedChars)
+  };
+}
+
+/**
  * Whatever of a volume's pre-history snapshot the events from before its
  * freeze do not explain — never negative. It belongs to no device (the
  * device stats' "Before history" row).
@@ -206,14 +239,7 @@ export function unexplainedBaseline(
 ): { timeMs: number; chars: number } {
   const snapshot = snapshotOf(record, !baselinesFrozen);
   if (!snapshot) return { timeMs: 0, chars: 0 };
-  const totals = stats.byVolume.get(volume);
-  const explained = totals
-    ? totalsBefore(totals, snapshot.before)
-    : { timeMs: 0, readChars: 0, skippedChars: 0 };
-  return {
-    timeMs: Math.max(0, snapshot.time_ms - explained.timeMs),
-    chars: Math.max(0, snapshot.chars - explained.readChars - explained.skippedChars)
-  };
+  return unexplained(snapshot, stats.byVolume.get(volume));
 }
 
 /**
@@ -282,8 +308,9 @@ export function seriesReadingSpeed(
 /**
  * The reading speed estimates use: the newest 8 hours of counted reading
  * across every volume and device. With under half an hour of it, completed
- * volumes' pre-history reading (their baselines) fills in — never their event
- * time, which the samples already hold.
+ * volumes' pre-history reading (their baselines) fills in — only the part
+ * their events from before the freeze do not explain (`unexplained`, as in
+ * `figuresFor`): the samples already hold that event time.
  */
 export function recentReadingSpeed(
   stats: ReadingStatsState,
@@ -295,11 +322,14 @@ export function recentReadingSpeed(
   for (const totals of stats.byVolume.values()) if (totals.samples.length > 0) used++;
 
   if (minutes < RECENT_MIN_MINUTES) {
-    const completed = Object.values(records)
-      .filter(
-        (r) => r.completed && r.legacyStats && r.legacyStats.time_ms > 0 && r.legacyStats.chars > 0
-      )
-      .map((r) => ({ at: r.lastProgressUpdate, ...r.legacyStats! }))
+    const completed = Object.entries(records)
+      .flatMap(([id, r]) => {
+        if (!r.completed || !r.legacyStats) return [];
+        const rest = unexplained(r.legacyStats, stats.byVolume.get(id));
+        return rest.timeMs > 0 && rest.chars > 0
+          ? [{ at: r.lastProgressUpdate, time_ms: rest.timeMs, chars: rest.chars }]
+          : [];
+      })
       .filter((r) => (r.chars / r.time_ms) * 60_000 <= 1000)
       .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
     for (const r of completed) {
@@ -331,19 +361,19 @@ export function recentReadingSpeed(
  */
 export function freezeLegacyBaselines(now: number = Date.now()): number {
   const firstPass = !baselinesFrozen;
-  let changed = 0;
-  volumesWithTrash.update((all) => {
-    const next = { ...all };
-    for (const [id, record] of Object.entries(all)) {
-      if (record.deletedOn || record.legacyStats) continue;
-      const snapshot = snapshotOf(record, firstPass);
-      if (!snapshot) continue;
-      // Not a user action: no new stamp.
-      next[id] = new VolumeData({ ...record, legacyStats: { ...snapshot, before: now } });
-      changed++;
-    }
-    return changed > 0 ? next : all;
-  });
+  const frozen: Record<string, VolumeData> = {};
+  for (const [id, record] of Object.entries(get(volumesWithTrash))) {
+    if (record.deletedOn || record.legacyStats) continue;
+    const snapshot = snapshotOf(record, firstPass);
+    if (!snapshot) continue;
+    // Not a user action: no new stamp.
+    frozen[id] = new VolumeData({ ...record, legacyStats: { ...snapshot, before: now } });
+  }
+  const changed = Object.keys(frozen).length;
+  // Only a real change touches the store: an `update` returning the same
+  // object still notifies every subscriber and rewrites localStorage, and
+  // this runs at every start and after every sync.
+  if (changed > 0) volumesWithTrash.update((all) => ({ ...all, ...frozen }));
   baselinesFrozen = true;
   writeFlag('done');
   return changed;

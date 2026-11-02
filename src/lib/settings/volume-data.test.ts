@@ -36,6 +36,7 @@ import {
   isOrphanedVolumeData,
   parseVolumesFromJson,
   registerCompletionHold,
+  projectedTurnsOf,
   registerCompletionListener,
   releaseHeldCompletion,
   restoreVolumePosition,
@@ -448,7 +449,7 @@ describe('page turns after the cut-over', () => {
 
   it('stats read projected turns once loaded; the stored record keeps its own', async () => {
     const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
-    volumesWithTrash.set({ v: new VolumeData({ progress: 2, recentPageTurns: [[9, 9, 90]] }) });
+    volumesWithTrash.set({ v: new VolumeData({ progress: 2 }) });
     _setHistoryTurnsForTest(
       new Map([
         [
@@ -464,7 +465,61 @@ describe('page turns after the cut-over', () => {
       [1, 1, 10],
       [2, 2, 20]
     ]);
-    expect(get(volumesWithTrash).v.recentPageTurns).toEqual([[9, 9, 90]]);
+    expect(get(volumesWithTrash).v.recentPageTurns).toEqual([]);
+  });
+
+  it("a record's unconverted turns count beside the projection (another device's, merged from the file)", async () => {
+    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    volumesWithTrash.set({
+      v: new VolumeData({
+        progress: 9,
+        recentPageTurns: [
+          [2, 2] as never, // the same turn as the projection's, without chars
+          [9, 9, 90]
+        ]
+      })
+    });
+    _setHistoryTurnsForTest(
+      new Map([
+        [
+          'v',
+          [
+            [1, 1, 10],
+            [2, 2, 20]
+          ]
+        ]
+      ])
+    );
+    expect(get(volumes).v.recentPageTurns).toEqual([
+      [1, 1, 10],
+      [2, 2, 20],
+      [9, 9, 90]
+    ]);
+    expect(projectedTurnsOf('v', get(volumesWithTrash).v)).toEqual([
+      [1, 1, 10],
+      [2, 2, 20],
+      [9, 9, 90]
+    ]);
+    expect(get(volumesWithTrash).v.recentPageTurns).toEqual([
+      [2, 2],
+      [9, 9, 90]
+    ]);
+  });
+
+  it('keeps record identity across emissions when the record holds turns too', async () => {
+    const { _setHistoryTurnsForTest } = await import('$lib/reading-history/turns-store');
+    volumesWithTrash.set({
+      v: new VolumeData({ progress: 9, recentPageTurns: [[9, 9, 90]] }),
+      w: new VolumeData({ progress: 1 })
+    });
+    _setHistoryTurnsForTest(new Map([['v', [[1, 1, 10]] as [number, number, number][]]]));
+    const first = get(volumes).v;
+    expect(first.recentPageTurns).toEqual([
+      [1, 1, 10],
+      [9, 9, 90]
+    ]);
+    volumesWithTrash.update((all) => ({ ...all, w: new VolumeData({ progress: 2 }) }));
+    expect(get(volumes).v).toBe(first);
   });
 
   it("before history loads, or for a volume it has nothing for, the record's own turns stand", async () => {
@@ -556,7 +611,7 @@ describe('cross-device position writers', () => {
     stop?.();
   });
 
-  it('applyMissedRestart resets the position without archiving another pass', async () => {
+  it('applyMissedRestart resets the position and archives the missed pass at the given stamp', async () => {
     const { applyMissedRestart } = await import('./volume-data');
     volumesWithTrash.set({
       v: new VolumeData({
@@ -568,22 +623,47 @@ describe('cross-device position writers', () => {
         lastProgressUpdate: '2026-01-01T00:00:00.000Z'
       })
     });
-    applyMissedRestart('v');
+    applyMissedRestart('v', 11_000);
     const r = get(volumesWithTrash).v;
     expect(r).toMatchObject({ progress: 0, chars: 0, completed: false });
     expect(r.completedAt).toBeUndefined();
     // This device's own pass (read without seeing the restart) is archived,
-    // with its completion date, so goal credit survives.
-    expect(r.archivedReads).toHaveLength(2);
-    expect(r.archivedReads[1]).toMatchObject({
-      pages: 61,
-      chars: 610,
-      completed: true,
-      completedAt: '2026-01-01T00:00:00.000Z'
-    });
+    // with its completion date, so goal credit survives. Its stamp is the
+    // missed reading's own (not this device's clock), so every device that
+    // re-applies the same restart archives the pass under ONE key and the
+    // merge keeps it once.
+    expect(r.archivedReads).toEqual([
+      { at: 5000, pages: 200, chars: 2000, completed: true },
+      {
+        at: 11_000,
+        pages: 61,
+        chars: 610,
+        completed: true,
+        completedAt: '2026-01-01T00:00:00.000Z'
+      }
+    ]);
     expect(Date.parse(r.lastProgressUpdate)).toBeGreaterThan(
       Date.parse('2026-01-01T00:00:00.000Z')
     );
+  });
+
+  it('applyMissedRestart replaces an archive already made under the same stamp', async () => {
+    const { applyMissedRestart } = await import('./volume-data');
+    volumesWithTrash.set({
+      v: new VolumeData({
+        progress: 70,
+        chars: 700,
+        archivedReads: [
+          { at: 5000, pages: 200, chars: 2000, completed: true },
+          { at: 11_000, pages: 61, chars: 610, completed: false }
+        ]
+      })
+    });
+    applyMissedRestart('v', 11_000);
+    expect(get(volumesWithTrash).v.archivedReads).toEqual([
+      { at: 5000, pages: 200, chars: 2000, completed: true },
+      { at: 11_000, pages: 70, chars: 700, completed: false }
+    ]);
   });
 });
 
@@ -667,7 +747,7 @@ describe('position stamps (positions.json)', () => {
     const seen: string[] = [];
     const stop = registerPositionListener((v) => seen.push(v));
     jumpToPosition('v', 50, 5000, false);
-    applyMissedRestart('v');
+    applyMissedRestart('v', 11_000);
     expect(seen).toEqual(['v', 'v']);
     stop();
   });

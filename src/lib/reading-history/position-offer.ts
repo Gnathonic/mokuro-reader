@@ -20,6 +20,13 @@ import { eventKey, lookupVisits } from './visits';
  * device has viewed page 1 (or earlier) after it. When nobody has and a newer
  * device read on elsewhere, the restart is re-applied (`reset`) and that
  * reading — as it stood when the reset was applied — is offered until answered.
+ * A device that still never saw the restart and read ON after that answer
+ * wins the record back with its newer stamp, on every device: the restart is
+ * re-applied again (rule 3: a reset wins) and the reading as it now stands is
+ * offered. The missed pass is archived under the missed reading's own stamp
+ * (`reset.through`), never the applying device's clock, so every device that
+ * re-applies the same restart archives it under one key and the record merge
+ * keeps it once.
  *
  * Answers (`position` events) are history like everything else: no offer is
  * made again for reading at or before an answered `through`, on any device,
@@ -42,8 +49,12 @@ export interface PositionOffer {
 }
 
 export interface PositionPlan {
-  /** A restart the newest reading never saw: re-apply it. */
-  reset?: { at: number };
+  /**
+   * A restart the newest reading never saw: re-apply it. `at` is the restart;
+   * `through` is the missed reading's final view — the stamp its archived
+   * pass gets, identical on every device that re-applies this restart.
+   */
+  reset?: { at: number; through: number };
   offer?: PositionOffer;
 }
 
@@ -88,6 +99,8 @@ export function planPosition(
       (max, a) => (kinds.includes(a.answer) && a.through > max ? a.through : max),
       -Infinity
     );
+  const answeredAt = (kinds: PositionEvent['answer'][]) =>
+    answers.reduce((max, a) => (kinds.includes(a.answer) && a.t > max ? a.t : max), -Infinity);
   const decided = answeredThrough(['jump', 'stay']);
 
   // ---- a restart nobody followed ----
@@ -96,17 +109,31 @@ export function planPosition(
     const followed = views.some((v) => v.t > restart.t && v.first_page <= 1);
     const missedBy = views.filter((v) => v.device === newest && v.t > restart.t);
     if (!followed && missedBy.length > 0) {
-      const applied = answers.find((a) => a.answer === 'reset' && a.through >= restart.t);
-      if (!applied) {
-        // Pending: the position is about to become the start, so the reading is news.
-        const final = missedBy.at(-1)!;
-        return final.t > decided
-          ? { reset: { at: restart.t }, offer: offerOf(final) }
-          : { reset: { at: restart.t } };
+      const final = missedBy.at(-1)!;
+      const resetPlan = (): PositionPlan => {
+        // The position is about to become the start, so the reading is news.
+        const reset = { at: restart.t, through: final.t };
+        return final.t > decided ? { reset, offer: offerOf(final) } : { reset };
+      };
+      // The LATEST reset answer: several devices may each have re-applied it.
+      let applied: PositionEvent | undefined;
+      for (const a of answers) {
+        if (a.answer === 'reset' && a.through >= restart.t && (!applied || a.t > applied.t)) {
+          applied = a;
+        }
       }
-      // Applied: offer the reading as it stood then — later turns are not new offers.
-      const final = missedBy.filter((v) => v.t <= applied.t).at(-1);
-      if (final && final.t > decided) return { offer: offerOf(final) };
+      if (!applied) return resetPlan();
+      // Applied — but the newest device read ON after that (and after any
+      // answer to the offer), still without the restart: its newer stamp has
+      // won the record back from the reset. The restart wins again.
+      const cutoff = Math.max(applied.t, answeredAt(['jump', 'stay']));
+      if (final.t > cutoff) return resetPlan();
+      // Offer the reading as it stood when the reset was applied — unless the
+      // volume already sits on that page (the stale copy won the merge).
+      const stood = missedBy.filter((v) => v.t <= cutoff).at(-1);
+      if (stood && stood.t > decided && !covers(stood, record.progress)) {
+        return { offer: offerOf(stood) };
+      }
       return {};
     }
   }

@@ -1,6 +1,11 @@
 import { browser } from '$app/environment';
 import { derived, get, writable, readable } from 'svelte/store';
-import { getHistoryTurns, historyTurns } from '$lib/reading-history/turns-store';
+import {
+  getHistoryLegacyTurns,
+  getHistoryTurns,
+  historyTurns
+} from '$lib/reading-history/turns-store';
+import { unionTurns } from '$lib/util/sync/volume-record-merge';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
@@ -512,13 +517,38 @@ export const volumesWithTrash = _volumesInternal;
 // This is what UI and stats code should use
 //
 // Page turns come from reading history once it has loaded (phase 2b): the
-// projection of every device's events (`historyTurns`), not the record's own
-// `recentPageTurns` — which is only what has not been converted yet, and is
-// still served for volumes history knows nothing about (or before it loads, or
-// when IndexedDB is unavailable), so no stat ever goes empty. A record is only
+// projection of every device's events (`historyTurns`) UNITED with the record's
+// own `recentPageTurns` — which is only what has not been converted yet: turns
+// merged in from `volume-data.json` that no cut-over has run over (on a
+// provider that cannot carry history the cut-over only runs at start), served
+// at once rather than after the next restart. One turn per (time, page), so a
+// record turn and its converted event count once. The record's own turns alone
+// stand for volumes history knows nothing about (or before it loads, or when
+// IndexedDB is unavailable), so no stat ever goes empty. A record is only
 // copied when its turns differ, and the copy is reused while neither side
 // changes, so per-volume consumers keep their identity across emissions.
 const projectedCopies = new WeakMap<VolumeData, { turns: PageTurn[]; copy: VolumeData }>();
+
+/** The record's own turns plus the projected ones; the record's own array when nothing is added. */
+function turnsWith(vol: VolumeData, projected: PageTurn[] | undefined): PageTurn[] {
+  if (!projected || projected === vol.recentPageTurns) return vol.recentPageTurns;
+  return vol.recentPageTurns.length === 0 ? projected : unionTurns(vol.recentPageTurns, projected);
+}
+
+/**
+ * The record as the stats see it. Cached per (record, projection) identity,
+ * the same record back when the projection adds nothing.
+ */
+function withProjectedTurns(vol: VolumeData, projected: PageTurn[] | undefined): VolumeData {
+  if (!projected) return vol;
+  const turns = turnsWith(vol, projected);
+  if (turns === vol.recentPageTurns) return vol;
+  const cached = projectedCopies.get(vol);
+  if (cached?.turns === projected) return cached.copy;
+  const copy = new VolumeData({ ...vol, recentPageTurns: turns });
+  projectedCopies.set(vol, { turns: projected, copy });
+  return copy;
+}
 
 /**
  * Projected turns minus those before the record's own forget horizon: a
@@ -542,28 +572,27 @@ function afterForgetHorizon(
   return result;
 }
 
-/** Every device's turns for a volume, from history once loaded, else the record's own. */
-export function projectedTurnsOf(volume: string, vol: VolumeData): PageTurn[] {
-  return afterForgetHorizon(vol, getHistoryTurns(volume)) ?? vol.recentPageTurns;
+/**
+ * Every device's turns for a volume: the record's own plus those history
+ * projects for it once loaded (`legacyOnly`: from its legacy events only —
+ * what the synced file must still carry; native views travel as history).
+ */
+export function projectedTurnsOf(
+  volume: string,
+  vol: VolumeData,
+  { legacyOnly = false }: { legacyOnly?: boolean } = {}
+): PageTurn[] {
+  // Only the full projection is cached: it is what the `volumes` store serves,
+  // and a legacy-only answer under the same record would evict its copy.
+  if (legacyOnly) return turnsWith(vol, afterForgetHorizon(vol, getHistoryLegacyTurns(volume)));
+  return withProjectedTurns(vol, afterForgetHorizon(vol, getHistoryTurns(volume))).recentPageTurns;
 }
 
 export const volumes = derived([_volumesInternal, historyTurns], ([$internal, $turns]) => {
   const out: Volumes = {};
   for (const [id, vol] of Object.entries($internal)) {
     if (vol.deletedOn) continue;
-    const turns = afterForgetHorizon(vol, $turns.get(id));
-    if (!turns || turns === vol.recentPageTurns) {
-      out[id] = vol;
-      continue;
-    }
-    const cached = projectedCopies.get(vol);
-    if (cached?.turns === turns) {
-      out[id] = cached.copy;
-      continue;
-    }
-    const copy = new VolumeData({ ...vol, recentPageTurns: turns });
-    projectedCopies.set(vol, { turns, copy });
-    out[id] = copy;
+    out[id] = withProjectedTurns(vol, afterForgetHorizon(vol, $turns.get(id)));
   }
   return out;
 });
@@ -979,11 +1008,20 @@ export function adoptPosition(
 /**
  * Re-apply a restart another device made that this position never saw (phase
  * 2c: a reset wins). The pass the restart ended was archived where it happened
- * (the merge keeps both sides' `archivedReads`); THIS device's reading since,
- * done without seeing the restart, is archived here. Fresh stamp, so it wins
- * the next merge.
+ * (the merge keeps both sides' `archivedReads`); the reading since, done
+ * without seeing the restart, is archived here. Fresh `lastProgressUpdate`,
+ * so the zeroed record wins the next merge.
+ *
+ * `readThrough` — the missed reading's final view (`PositionPlan.reset.through`)
+ * — is the archive's `at`, NOT this device's clock: the merge unions archives
+ * by `at`, and more than one device re-applies the same restart (the stale
+ * device before its answer reaches anyone; the restarting device at its next
+ * sync, where the stale record still wins). Under one stamp the union keeps
+ * the pass once; under two it was counted twice in lifetime stats and goals,
+ * permanently. An archive already made under that stamp is replaced, so a
+ * second application on one device never adds a pass either.
  */
-export function applyMissedRestart(volume: string) {
+export function applyMissedRestart(volume: string, readThrough: number) {
   let restarted = false;
   _volumesInternal.update((prev) => {
     const current = prev[volume];
@@ -996,15 +1034,15 @@ export function applyMissedRestart(volume: string) {
     const archived =
       current.progress > 0 || current.completed
         ? [
-            ...current.archivedReads,
+            ...current.archivedReads.filter((read) => read.at !== readThrough),
             {
-              at: now,
+              at: readThrough,
               pages: current.progress,
               chars: current.chars,
               completed: current.completed,
               ...(current.completedAt ? { completedAt: current.completedAt } : {})
             }
-          ]
+          ].sort((a, b) => a.at - b.at)
         : current.archivedReads;
     return {
       ...prev,

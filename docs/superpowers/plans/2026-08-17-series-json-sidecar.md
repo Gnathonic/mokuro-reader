@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **External dependency:** mokuro-bunko treats every `.json` as a progress file today; keep the name `series.json` and patch bunko to partition by path (root `.json` = progress/profiles; nested `<Series>/series.json` = static series sidecar) before using this against a bunko-backed library (bunko deploy recipe: memory `project_mokuro_bunko_deploy.md`).
+- **External dependency:** mokuro-bunko treats every `.json` as a progress file today; keep the name `series.json` and patch bunko to partition by path (root `.json` = progress/profiles; nested `<Series>/series.json` = static series sidecar) before using this against a bunko-backed library.
 - Worktree `/home/nathan/Projects/mokuro-reader-worktrees/feat/series-metadata`, branch `feat/series-metadata`.
 - Path `<Series Title>/series.json`; the folder name IS the stored `series_title`, never derived. Content is **unauthoritative**: local IndexedDB always wins for installed volumes; the index only fills gaps for volumes not installed.
 - File content: `{ version: 2, series_title, external_ids, titles, synonyms, tag?, updated_at, volumes: SeriesFileVolume[] }` — never `tracking`, `read_count`, `title_preference`, `reread_prompt_suppressed`, thumbnails, or page/OCR data.

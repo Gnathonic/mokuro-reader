@@ -1,5 +1,4 @@
 import { writable, get } from 'svelte/store';
-import { progressTrackerStore } from '../progress-tracker';
 import {
   volumesWithTrash,
   profiles,
@@ -25,7 +24,6 @@ import {
   trackingState,
   type TrackingState
 } from '$lib/settings/tracking-data';
-import { showSnackbar } from '../snackbar';
 import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
@@ -158,26 +156,40 @@ export interface CloudVolumeDataFile {
 }
 
 /**
- * Unified Sync Service
+ * How long one provider sync may run before it is given up on, in ms.
  *
- * Syncs read progress, series reading state and settings profiles across all
- * authenticated cloud providers. Works with the SyncProvider interface,
- * making it provider-agnostic.
+ * A flight is released only when its run settles, and every request made in
+ * the meantime waits on it. The steps are network round-trips with no
+ * timeout of their own — a WebDAV download (`webdav-core.ts`) is a plain
+ * `fetch` with no signal — so one stalled download would otherwise hold the
+ * provider's flight for good: `isSyncing` stuck on, the NavBar button and
+ * foreground sync returning early, the activity tracker joined to a follow-up
+ * that never runs, until a reload. Five minutes is well past any honest sync
+ * (one small JSON file each way per step, three steps) on a slow link, yet
+ * bounded. A run that outlives it is reported as a failure and its late
+ * result discarded.
  */
+export const SYNC_FLIGHT_DEADLINE_MS = 5 * 60_000;
+
 interface SyncFlight {
   running: Promise<ProviderSyncResult>;
   followUp?: {
-    silent: boolean;
     promise: Promise<ProviderSyncResult>;
     resolve: (result: ProviderSyncResult) => void;
     reject: (error: unknown) => void;
   };
 }
 
+/**
+ * Unified Sync Service
+ *
+ * Syncs read progress, series reading state and settings profiles across all
+ * authenticated cloud providers. Works with the SyncProvider interface,
+ * making it provider-agnostic.
+ */
 class UnifiedSyncService {
   private isSyncingStore = writable<boolean>(false);
-  private syncLock = false;
-  /** Syncs (or `syncAllProviders` runs) in progress; `isSyncing` is "any". */
+  /** Provider syncs in progress (a running flight and its follow-up count once); `isSyncing` is "any". */
   private activeSyncs = 0;
   /** The sync running per provider type, and the one queued behind it. */
   private flights = new Map<string, SyncFlight>();
@@ -197,156 +209,24 @@ class UnifiedSyncService {
   }
 
   /**
-   * Sync with all authenticated providers
-   */
-  async syncAllProviders(
-    providers: SyncProvider[],
-    options: SyncOptions = {}
-  ): Promise<SyncResult> {
-    // Prevent concurrent syncs
-    if (this.syncLock) {
-      console.log('⏭️ Sync already in progress, skipping');
-      if (!options.silent) {
-        showSnackbar('Sync already in progress');
-      }
-      return {
-        totalProviders: 0,
-        succeeded: 0,
-        failed: 0,
-        results: []
-      };
-    }
-
-    this.syncLock = true;
-    this.beginSyncing();
-
-    // Filter to only authenticated providers
-    const authenticatedProviders = providers.filter((p) => p.isAuthenticated());
-
-    if (authenticatedProviders.length === 0) {
-      console.log('ℹ️ No authenticated providers to sync');
-      if (!options.silent) {
-        showSnackbar('No cloud providers connected');
-      }
-      this.syncLock = false;
-      this.endSyncing();
-      return {
-        totalProviders: 0,
-        succeeded: 0,
-        failed: 0,
-        results: []
-      };
-    }
-
-    const processId = 'unified-sync';
-
-    try {
-      if (!options.silent) {
-        progressTrackerStore.addProcess({
-          id: processId,
-          description: 'Syncing with cloud providers',
-          progress: 0,
-          status: `Syncing with ${authenticatedProviders.length} provider(s)...`
-        });
-      }
-
-      // Sync with all providers in parallel
-      const results = await Promise.allSettled(
-        authenticatedProviders.map((provider) => this.syncProvider(provider, options))
-      );
-
-      // Count successes and failures
-      let succeeded = 0;
-      let failed = 0;
-      const providerResults: ProviderSyncResult[] = [];
-
-      results.forEach((result, index) => {
-        const provider = authenticatedProviders[index];
-        if (result.status === 'fulfilled' && result.value.success) {
-          succeeded++;
-          providerResults.push(result.value);
-        } else {
-          failed++;
-          providerResults.push({
-            provider: provider.type,
-            success: false,
-            error:
-              result.status === 'rejected'
-                ? result.reason?.message || 'Unknown error'
-                : result.value.error
-          });
-        }
-      });
-
-      // Show completion message
-      if (!options.silent) {
-        progressTrackerStore.updateProcess(processId, {
-          progress: 100,
-          status: 'Sync complete'
-        });
-
-        if (failed === 0) {
-          showSnackbar(`Synced with ${succeeded} provider(s) successfully`);
-        } else {
-          showSnackbar(`Synced with ${succeeded} provider(s), ${failed} failed`);
-        }
-      }
-
-      return {
-        totalProviders: authenticatedProviders.length,
-        succeeded,
-        failed,
-        results: providerResults
-      };
-    } catch (error) {
-      console.error('Unified sync error:', error);
-      if (!options.silent) {
-        progressTrackerStore.updateProcess(processId, {
-          progress: 0,
-          status: 'Sync failed'
-        });
-        showSnackbar('Sync failed');
-      }
-      return {
-        totalProviders: authenticatedProviders.length,
-        succeeded: 0,
-        failed: authenticatedProviders.length,
-        results: authenticatedProviders.map((p) => ({
-          provider: p.type,
-          success: false,
-          error: 'Sync failed'
-        }))
-      };
-    } finally {
-      if (!options.silent) {
-        setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
-      }
-      this.syncLock = false;
-      this.endSyncing();
-    }
-  }
-
-  /**
    * Sync with a single provider. One at a time per provider: two overlapping
    * syncs each download the config files, merge and upload, and the second
    * can read a file the first is rewriting (a Local Folder `File` goes
    * unreadable mid-read). A request made while one runs waits for it, and
-   * every such request shares ONE follow-up sync — silent only if all were.
+   * every such request shares ONE follow-up sync, started with no options
+   * (`silent` only affects a log line here; the snackbars are the caller's).
    */
   syncProvider(provider: SyncProvider, options: SyncOptions = {}): Promise<ProviderSyncResult> {
     const flight = this.flights.get(provider.type);
     if (!flight) return this.startFlight(provider, options, false);
-    if (flight.followUp) {
-      if (!options.silent) flight.followUp.silent = false;
-      return flight.followUp.promise;
-    }
+    if (flight.followUp) return flight.followUp.promise;
     let resolve!: (result: ProviderSyncResult) => void;
     let reject!: (error: unknown) => void;
     const promise = new Promise<ProviderSyncResult>((res, rej) => {
       resolve = res;
       reject = rej;
     });
-    flight.followUp = { silent: !!options.silent, promise, resolve, reject };
+    flight.followUp = { promise, resolve, reject };
     return promise;
   }
 
@@ -359,16 +239,52 @@ class UnifiedSyncService {
     if (!continuing) this.beginSyncing();
     const flight: SyncFlight = { running: undefined as unknown as Promise<ProviderSyncResult> };
     this.flights.set(provider.type, flight);
-    flight.running = this.runProviderSync(provider, options).finally(() => {
-      const next = flight.followUp;
-      if (next) {
-        this.startFlight(provider, { silent: next.silent }, true).then(next.resolve, next.reject);
-      } else {
-        this.flights.delete(provider.type);
-        this.endSyncing();
+    flight.running = this.withDeadline(provider, this.runProviderSync(provider, options)).finally(
+      () => {
+        const next = flight.followUp;
+        if (next) {
+          this.startFlight(provider, {}, true).then(next.resolve, next.reject);
+        } else {
+          this.flights.delete(provider.type);
+          this.endSyncing();
+        }
       }
-    });
+    );
     return flight.running;
+  }
+
+  /**
+   * The run's result, or a failure once `SYNC_FLIGHT_DEADLINE_MS` has passed.
+   * After the deadline the run's own settling is discarded: the handlers
+   * below absorb it (a late rejection is handled, never unhandled) and the
+   * returned promise is already settled, so the flight is released once.
+   */
+  private withDeadline(
+    provider: SyncProvider,
+    run: Promise<ProviderSyncResult>
+  ): Promise<ProviderSyncResult> {
+    return new Promise<ProviderSyncResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        console.warn(
+          `⚠️ ${provider.name} sync still running after ${SYNC_FLIGHT_DEADLINE_MS / 60_000} min — giving up on it so the next sync can run`
+        );
+        resolve({
+          provider: provider.type,
+          success: false,
+          error: `Sync timed out after ${SYNC_FLIGHT_DEADLINE_MS / 60_000} minutes`
+        });
+      }, SYNC_FLIGHT_DEADLINE_MS);
+      run.then(
+        (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
   }
 
   private async runProviderSync(
@@ -1079,7 +995,7 @@ class UnifiedSyncService {
       const carried =
         historySyncs &&
         (await historySync.legacyCarriedBy(provider.type, historyDbModule.historyDb()));
-      return carried ? records : await cutOver.attachProjectedTurns(records);
+      return carried ? records : await cutOver.attachProjectedTurns(records, { historySyncs });
     } catch (error) {
       console.warn('Page-turn cut-over failed (turns stay in volume-data.json):', error);
       return get(volumesWithTrash);

@@ -229,6 +229,38 @@ describe('countVolume', () => {
     expect(totals.timeMs).toBe(150_000);
   });
 
+  it("skips the seam between two devices' interleaved page turns", () => {
+    // Merged turns: this device read p.1-2 at 200 cpm; ten seconds after its
+    // p.2 turn the other device's turn on p.40 lands in the same stream. That
+    // pair is not 3800 characters read in ten seconds (nor skimmed), and the
+    // gap from p.40 back to p.3 is no reading of p.40. The time passed either
+    // way: one reader, two devices.
+    const events = [
+      legacy(0, 1, 0, 60_000),
+      legacy(60_000, 2, 200, 10_000),
+      legacy(70_000, 40, 4000, 50_000),
+      legacy(120_000, 3, 400, null)
+    ];
+    const totals = countVolume(prepareVolume(events), pace, AUTO);
+    expect(totals.readChars).toBe(200);
+    expect(totals.skippedChars).toBe(0);
+    expect(totals.timeMs).toBe(120_000);
+    expect(totals.samples).toEqual([{ end: 60_000, ms: 60_000, chars: 200 }]);
+    expect(speedFromSamples(totals.samples).charsPerMinute).toBe(200);
+  });
+
+  it('a legacy turn faster than the skip rate is neither read nor skimmed (the old pair rule)', () => {
+    const events = [
+      legacy(0, 1, 0, 10_000),
+      legacy(10_000, 2, 3800, 60_000),
+      legacy(70_000, 3, 4000, null)
+    ];
+    const totals = countVolume(prepareVolume(events), pace, AUTO);
+    expect(totals.readChars).toBe(200);
+    expect(totals.skippedChars).toBe(0);
+    expect(totals.samples).toEqual([{ end: 70_000, ms: 60_000, chars: 200 }]);
+  });
+
   it('counts neither time nor chars for a legacy view over its cap (the old idle rule)', () => {
     const events = [legacy(0, 1, 0, 10 * 60 * MIN), legacy(10 * 60 * MIN, 9, 5000, null)];
     const totals = countVolume(prepareVolume(events), pace, AUTO);
