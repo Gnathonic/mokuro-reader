@@ -69,6 +69,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Gnathonic/mokuro-bunko
+          # Default moves to Bunko's main when 0.8 merges there.
           ref: ${{ vars.BUNKO_REF || '0.8/remote-storage' }}
           path: bunko
           sparse-checkout: interop/contract
