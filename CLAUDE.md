@@ -555,11 +555,16 @@ re-fetches it and swaps the new OCR in — automatically, in the background
 - **Provenance of an unedited primary.** Does not matter: it is replaced
   outright, whether it is attested as THIS cloud's file or came from anywhere
   else (a local re-import, an archive's EMBEDDED `.mokuro`, a legacy row with
-  no hash, another provider's attestation). Nothing of it is kept. v1.10.0
-  kept such a primary as a device-local "Previous OCR" layer (`previous-ocr`,
-  `previous-ocr-<n>`); every start deletes the untouched ones, both rows,
-  chosen from metadata alone (`deleteRetiredPreviousOcrLayers`,
-  `layer-store.ts`) — edited ones stay as ordinary layers.
+  no hash, another provider's attestation). Nothing of it is kept — so OCR
+  the user re-ran and imported locally is reverted to the cloud's file by the
+  next listing unless it was backed up first (owner, 2026-11-02: no keepsake
+  copies). v1.10.0 kept such a primary as a device-local "Previous OCR" layer
+  (`previous-ocr`, `previous-ocr-<n>`); the first start after the update
+  deletes the ones nobody claimed, both rows, chosen from metadata alone
+  (`deleteRetiredPreviousOcrLayers`, `layer-store.ts`, run once per browser by
+  `retirePreviousOcrLayers`). Claimed — edited, renamed, or the layer a volume
+  displays (`ocrLayer`; picking or renaming moves no stamp) — they stay as
+  ordinary layers.
 - **A replacement drops the snapshots it made stale.** An unedited row can
   still hold an `original` layer (the pre-edit snapshot of the OLD OCR, from
   layer-sync or a reinstall) and an untouched `updated-ocr`; after the swap,
