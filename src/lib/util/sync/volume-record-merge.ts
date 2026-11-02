@@ -16,8 +16,8 @@
  * volume editor is kept.
  *
  * `forgotAt` is the horizon of a "forget this volume's stats" that a later
- * read on the same volume replaced: turns up to it never come back from a
- * stale copy.
+ * read on the same volume replaced: turns and archived passes up to it never
+ * come back from a stale copy.
  */
 
 type Turn = number[];
@@ -32,7 +32,8 @@ export interface VolumeRecordLike {
 
 type LegacyStatsLike = { time_ms: number; chars: number; before: number };
 
-const turnKey = (turn: Turn) => `${turn[0]}|${turn[1]}`;
+/** A turn's identity across copies: its time and page (chars may be upgraded). */
+export const turnKey = (turn: Turn) => `${turn[0]}|${turn[1]}`;
 
 export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, loser: T): T {
   const horizon = laterStamp(winner.forgotAt, loser.forgotAt);
@@ -41,17 +42,28 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
   // A forget hides the reading from before history too: after one, only a
   // copy that already knows of it (its own horizon) may carry a snapshot.
   const keepsSnapshot = (side: T) => !horizon || side.forgotAt === horizon;
-  const legacyStats = mergeLegacyStats(
-    keepsSnapshot(winner) ? winner.legacyStats : undefined,
-    keepsSnapshot(loser) ? loser.legacyStats : undefined
-  );
+  // With a snapshot on both sides the winner's stands: it is the newest
+  // record, so its snapshot is the old counter's last write — the rule the
+  // counter itself merged by. The freeze time says only WHEN a device
+  // upgraded, not how much of the counter it had: a stale device freezing
+  // later would otherwise erase minutes only the other side's counter held.
+  const legacyStats =
+    (keepsSnapshot(winner) ? winner.legacyStats : undefined) ??
+    (keepsSnapshot(loser) ? loser.legacyStats : undefined);
   const legacyChanged = !sameSnapshot(legacyStats, winner.legacyStats);
+  // Restarts are user actions that must survive whichever copy wins: a pass
+  // archived on the older copy (another device restarted the series) is kept
+  // — unless a forget since hid it, on either side.
+  const winnerReads = readsAfterHorizon(winner.archivedReads, horizon);
+  const archived =
+    unionArchivedReads(winnerReads, readsAfterHorizon(loser.archivedReads, horizon)) ??
+    (winnerReads !== winner.archivedReads ? winnerReads : undefined);
   if (
     !horizon &&
     winnerTurns.length === 0 &&
     loserTurns.length === 0 &&
     !legacyChanged &&
-    !unionArchivedReads(winner.archivedReads, loser.archivedReads)
+    !archived
   ) {
     return winner;
   }
@@ -60,9 +72,6 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
   if (legacyStats) record.legacyStats = legacyStats;
   else delete record.legacyStats;
   if (horizon) record.forgotAt = horizon;
-  // Restarts are user actions that must survive whichever copy wins: a pass
-  // archived on the older copy (another device restarted the series) is kept.
-  const archived = unionArchivedReads(winner.archivedReads, loser.archivedReads);
   if (archived) record.archivedReads = archived as T['archivedReads'];
 
   const winnerKeys = new Set(winnerTurns.map(turnKey));
@@ -85,10 +94,12 @@ export function applyForgetHorizon<T extends VolumeRecordLike>(record: T, forgot
   if (!horizon) return record;
   // Forgotten stats include the reading from before history.
   const { legacyStats: _forgotten, ...rest } = record;
+  const archived = readsAfterHorizon(record.archivedReads, horizon);
   return {
     ...(rest as T),
     forgotAt: horizon,
-    recentPageTurns: afterHorizon(record.recentPageTurns ?? [], horizon)
+    recentPageTurns: afterHorizon(record.recentPageTurns ?? [], horizon),
+    ...(archived ? { archivedReads: archived } : {})
   };
 }
 
@@ -98,6 +109,17 @@ function afterHorizon(turns: Turn[], horizon: string | undefined): Turn[] {
   return turns.filter((turn) => turn[0] > cutoff);
 }
 
+/** The same array when nothing is hidden (so callers can tell). */
+function readsAfterHorizon<R extends { at: number }>(
+  reads: R[] | undefined,
+  horizon: string | undefined
+): R[] | undefined {
+  if (!reads || !horizon) return reads;
+  const cutoff = Date.parse(horizon);
+  const kept = reads.filter((read) => read.at > cutoff);
+  return kept.length === reads.length ? reads : kept;
+}
+
 function laterStamp(a: string | undefined, b: string | undefined): string | undefined {
   const valid = [a, b].filter((s): s is string => !!s && !Number.isNaN(Date.parse(s)));
   if (valid.length === 0) return undefined;
@@ -105,8 +127,8 @@ function laterStamp(a: string | undefined, b: string | undefined): string | unde
 }
 
 /** Both sides' turns in time order; one turn per (time, page), chars kept. */
-function unionTurns(a: Turn[], b: Turn[]): Turn[] {
-  const byKey = new Map<string, Turn>();
+export function unionTurns<T extends Turn>(a: T[], b: T[]): T[] {
+  const byKey = new Map<string, T>();
   for (const turn of [...a, ...b]) {
     const key = turnKey(turn);
     const seen = byKey.get(key);
@@ -132,21 +154,6 @@ function unionArchivedReads<R extends { at: number }>(
     }
   }
   return added ? [...byAt.values()].sort((a, b) => a.at - b.at) : undefined;
-}
-
-/**
- * Two devices' pre-history snapshots: the LATER freeze wins (it saw more of
- * the old counter), then the larger figures — the same result whichever copy
- * won the merge.
- */
-export function mergeLegacyStats(
-  a: LegacyStatsLike | undefined,
-  b: LegacyStatsLike | undefined
-): LegacyStatsLike | undefined {
-  if (!a) return b;
-  if (!b) return a;
-  const order = b.before - a.before || b.time_ms - a.time_ms || b.chars - a.chars;
-  return order > 0 ? b : a;
 }
 
 function sameSnapshot(a: LegacyStatsLike | undefined, b: LegacyStatsLike | undefined): boolean {

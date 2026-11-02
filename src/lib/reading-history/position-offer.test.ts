@@ -115,8 +115,22 @@ describe('planPosition', () => {
       ...run('laptop', 10_000, [60, 61])
     ];
     expect(planPosition(events, { progress: 61 }, 'laptop')).toEqual({
-      reset: { at: 5_000 },
+      reset: { at: 5_000, through: 11_000 },
       offer: { page: 61, chars: 620, at: 11_000, device: 'laptop', ownDevice: true }
+    });
+  });
+
+  it("the reset carries the missed reading's own stamp even when that reading was answered", () => {
+    // Every device archives the missed pass under this stamp, so two devices
+    // that each re-apply the same restart archive it once between them.
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(20_000, 11_000)
+    ];
+    expect(planPosition(events, { progress: 61 }, 'laptop')).toEqual({
+      reset: { at: 5_000, through: 11_000 }
     });
   });
 
@@ -196,25 +210,75 @@ describe('planPosition', () => {
     expect(planPosition(stale, { progress: 10 }, 'laptop').offer?.page).toBe(50);
   });
 
-  it('after a reset is applied, only the reading before it is offered — not every later turn (I2)', () => {
+  it('after a reset is applied, the reading as it stood then is offered — not every later turn (I2)', () => {
     const base = [
       ...run('phone', 0, [200]),
       restart('phone', 5_000),
       ...run('laptop', 10_000, [60, 61]),
       answer(12_000, 5_000, 'reset')
     ];
-    expect(planPosition(base, { progress: 0 }, 'laptop').offer).toMatchObject({
-      page: 61,
-      at: 11_000
+    expect(planPosition(base, { progress: 0 }, 'laptop')).toEqual({
+      offer: { page: 61, chars: 620, at: 11_000, device: 'laptop', ownDevice: true }
     });
-    // The laptop keeps reading (from its old place) before answering: still the same offer.
-    const more = [...base, ...run('laptop', 13_000, [62])];
-    expect(planPosition(more, { progress: 62 }, 'laptop').offer).toMatchObject({
-      page: 61,
-      at: 11_000
+    // Answered: nothing more.
+    expect(planPosition([...base, answer(15_000, 11_000)], { progress: 0 }, 'laptop')).toEqual({});
+  });
+
+  it('a stale device that read on after the reset was applied gets the restart again (rule 3)', () => {
+    // The laptop never saw the restart and kept reading; its newer stamp wins
+    // the record back from the reset on every device. The restart wins again,
+    // and the reading as it now stands is offered.
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(12_000, 5_000, 'reset'),
+      ...run('laptop', 13_000, [62, 63])
+    ];
+    const expected = {
+      reset: { at: 5_000, through: 14_000 },
+      offer: { page: 63, chars: 640, at: 14_000, device: 'laptop', ownDevice: true }
+    };
+    expect(planPosition(events, { progress: 63 }, 'laptop')).toEqual(expected);
+    expect(planPosition(events, { progress: 63 }, 'phone')).toEqual({
+      ...expected,
+      offer: { ...expected.offer, ownDevice: false }
     });
-    // Answered: nothing more, whatever is read later.
-    expect(planPosition([...more, answer(15_000, 11_000)], { progress: 62 }, 'laptop')).toEqual({});
+    // Re-applied (the latest reset answer counts): the offer stands, nothing resets.
+    const reapplied = [...events, answer(16_000, 5_000, 'reset')];
+    expect(planPosition(reapplied, { progress: 0 }, 'laptop')).toEqual({ offer: expected.offer });
+  });
+
+  it('after an applied reset, a jump/stay answer also bounds what counts as reading on', () => {
+    const base = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(12_000, 5_000, 'reset'),
+      ...run('laptop', 13_000, [62]),
+      answer(16_000, 11_000)
+    ];
+    // A view between the reset and the answer is not reading on: it is offered.
+    expect(planPosition(base, { progress: 0 }, 'laptop')).toEqual({
+      offer: { page: 62, chars: 630, at: 13_000, device: 'laptop', ownDevice: true }
+    });
+    // A view after the answer is.
+    const on = [...base, ...run('laptop', 17_000, [64])];
+    expect(planPosition(on, { progress: 64 }, 'laptop')).toMatchObject({
+      reset: { at: 5_000, through: 17_000 },
+      offer: { page: 64, at: 17_000 }
+    });
+  });
+
+  it('after an applied reset, no banner for the page the volume already sits on', () => {
+    // The stale device's record won the merge: it IS at that page.
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(12_000, 5_000, 'reset')
+    ];
+    expect(planPosition(events, { progress: 61 }, 'laptop')).toEqual({});
   });
 
   it('a restart after the newest view sets the floor: older reading is not offered back (I4)', () => {

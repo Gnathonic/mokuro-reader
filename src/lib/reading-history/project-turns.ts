@@ -43,24 +43,32 @@ export function projectTurns(events: ReadingEvent[]): Map<string, PageTurn[]> {
   return out;
 }
 
-/** One volume's events → its turns. Exported for incremental recomputation. */
-export function projectVolume(list: ReadingEvent[]): PageTurn[] {
+type PageEvent = Extract<ReadingEvent, { kind: 'page' }>;
+
+/**
+ * One volume's events → its turns. Exported for incremental recomputation.
+ * `legacyOnly` leaves the native views out (the coverage rule still applies):
+ * the turns `volume-data.json` must keep carrying while a provider that syncs
+ * history has not confirmed this device's `legacy.events`.
+ */
+export function projectVolume(
+  list: ReadingEvent[],
+  { legacyOnly = false }: { legacyOnly?: boolean } = {}
+): PageTurn[] {
   let horizon = -Infinity;
   for (const e of list) if (e.kind === 'forget' && e.before > horizon) horizon = e.before;
 
-  const native: Extract<ReadingEvent, { kind: 'page' }>[] = [];
-  const legacy: Extract<ReadingEvent, { kind: 'page' }>[] = [];
+  const native: PageEvent[] = [];
+  const legacy: PageEvent[] = [];
   for (const e of list) {
     if (e.kind !== 'page' || e.t < horizon) continue;
     (e.device.startsWith(LEGACY_DEVICE_PREFIX) ? legacy : native).push(e);
   }
 
   const covered = nativeCoverage(native);
-  const turns: PageTurn[] = native.map((n) => [
-    n.t,
-    n.last_page,
-    n.chars_before + sum(n.page_chars)
-  ]);
+  const turns: PageTurn[] = legacyOnly
+    ? []
+    : native.map((n) => [n.t, n.last_page, n.chars_before + sum(n.page_chars)]);
   for (const l of legacy) {
     if (covered(l.t)) continue;
     turns.push(
@@ -73,13 +81,13 @@ export function projectVolume(list: ReadingEvent[]): PageTurn[] {
 }
 
 /**
- * Whether a legacy turn at `t` is reading a native view already recorded:
- * disjoint, sorted intervals around every native view, binary-searched.
+ * Does a native view cover a time? Disjoint, sorted intervals around every
+ * native view, binary-searched. Legacy events among `events` are ignored, so
+ * a volume's whole event list can be passed.
  */
-export function nativeCoverage(
-  native: Extract<ReadingEvent, { kind: 'page' }>[]
-): (t: number) => boolean {
-  const spans = native
+export function nativeCoverage(events: ReadingEvent[]): (t: number) => boolean {
+  const spans = events
+    .filter((e): e is PageEvent => e.kind === 'page' && !e.device.startsWith(LEGACY_DEVICE_PREFIX))
     .map(
       (n) =>
         [
