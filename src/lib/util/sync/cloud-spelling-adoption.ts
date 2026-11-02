@@ -22,6 +22,7 @@
 
 import { db } from '$lib/catalog/db';
 import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+import { isVolumeOpen } from '$lib/util/hash-router';
 import type { VolumeMetadata } from '$lib/types';
 import type { CloudFileMetadata, ProviderType } from './provider-interface';
 import { providerManager } from './provider-manager';
@@ -142,6 +143,14 @@ export async function adoptCloudSeriesSpellings(
   for (const plan of plans) {
     // The provider may have changed while the rows were read.
     if (!adoptsOn(providerType)) break;
+    // Never under the reader: the row write would reload the open volume's
+    // data mid-page (`volumeRowSignature` covers the whole row — every page
+    // image swapped, an edit session moved), the same reason the OCR upgrade
+    // defers. The next listing retries the series.
+    if (plan.volumeUuids.some(isVolumeOpen)) {
+      console.debug(`[cloud-spelling] '${plan.from}' deferred: a volume is open`);
+      continue;
+    }
     // Stats ride along exactly as in a user rename, including entries for
     // volumes no longer on this device.
     const preview = await generateRenameSeriesPreview(plan.from, plan.to);
