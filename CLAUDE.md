@@ -2,6 +2,39 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## NEVER NAME A DEPLOYMENT. EVER.
+
+**This is the one rule with no exceptions and no judgement calls. No deployment
+is ever named in this repository.** That means:
+
+- nobody's public instance, and no community or third-party server;
+- none of the maintainer's own servers, NAS boxes or containers;
+- no test, staging or rehearsal host.
+
+Never write a real instance's domain, hostname, URL, IP address (public or
+LAN), machine name, container name, port mapping or admin path. Nowhere means
+nowhere:
+
+- code, comments, tests and fixtures;
+- docs, plans, specs, the README and this file;
+- the CHANGELOG, commit messages and branch names;
+- PR titles and bodies, issue comments and release notes.
+
+Use reserved names instead: `example.com`, `example.net`, `*.test`,
+`localhost`.
+
+- A user's bug report may quote their server. Leave it in their text, and never
+  repeat it in ours.
+- Before every commit and every push, check the diff, the commit messages and
+  the PR body for hostnames and IP addresses.
+- If a deployment's name turns up anywhere in the tree, removing it is the first
+  job, before anything else.
+- This rule itself names none. Keep it that way: never add a "for example" here.
+
+The only real addresses the repo carries are the app's own origins, which the
+code needs (`src/lib/consts/index.ts` switches on them), plus `localhost` and
+reserved example names.
+
 ## Project Overview
 
 Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-white/mokuro)-processed manga. It's a SvelteKit 5 application with offline support, stat tracking, and Google Drive sync capabilities.
