@@ -17,6 +17,7 @@ vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
   driveApiClient: {
     initialize: vi.fn(async () => {}),
     listFiles: vi.fn(async () => []),
+    folderHasChildren: vi.fn(async () => false),
     deleteFile: vi.fn(async () => {}),
     createFolder: vi.fn(async () => 'created-folder'),
     updateFileMetadata: vi.fn(async () => ({}))
@@ -513,31 +514,27 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
   });
 
   it('does not trash a duplicate folder the server still lists children for', async () => {
-    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: string) =>
-      query === "'DUP' in parents and trashed=false"
-        ? [{ id: 'straggler', name: 'Vol 9.cbz', mimeType: 'application/zip' }]
-        : []
-    );
+    vi.mocked(driveApiClient.folderHasChildren).mockResolvedValue(true);
     const ops = googleDriveProvider.getFolderOperations();
 
-    await ops.deleteFolder('DUP');
+    // Kept, and reported as kept: the deduplicator must not count it.
+    await expect(ops.deleteFolder('DUP')).resolves.toBe(false);
 
-    expect(driveApiClient.listFiles).toHaveBeenCalledWith(
-      "'DUP' in parents and trashed=false",
-      'files(id)'
-    );
+    // The server is asked whether ANYTHING is left, not for the whole listing.
+    expect(driveApiClient.folderHasChildren).toHaveBeenCalledWith('DUP');
+    expect(driveApiClient.listFiles).not.toHaveBeenCalled();
     expect(driveApiClient.updateFileMetadata).not.toHaveBeenCalled();
     expect(driveApiClient.deleteFile).not.toHaveBeenCalled();
 
-    // Kept once already this run and still not empty: stop rather than loop.
+    // Kept once already this run and still not empty: give up on it rather than loop.
     await expect(ops.deleteFolder('DUP')).rejects.toThrow(/still holds/);
     expect(driveApiClient.updateFileMetadata).not.toHaveBeenCalled();
   });
 
   it('trashes an empty duplicate folder, never deletes it', async () => {
-    vi.mocked(driveApiClient.listFiles).mockResolvedValue([]);
+    vi.mocked(driveApiClient.folderHasChildren).mockResolvedValue(false);
 
-    await googleDriveProvider.getFolderOperations().deleteFolder('DUP');
+    await expect(googleDriveProvider.getFolderOperations().deleteFolder('DUP')).resolves.toBe(true);
 
     expect(driveApiClient.updateFileMetadata).toHaveBeenCalledWith(
       'DUP',

@@ -130,9 +130,12 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   goals.json, and bunko's control files `.mokuro-bunko.json` /
   `.mokuro-queue.json`, exact names). Any other file: the strictly newer write
   wins, a tie keeps the canonical copy, the loser goes to the TRASH.
-- **Folder removal.** `deleteFolder` re-lists the duplicate on the server and
-  removes it (Drive: to the trash) only when empty; a folder still holding
-  anything is kept for the next pass, and a second refusal ends the run.
+- **Folder removal.** `deleteFolder` asks the server whether the duplicate
+  still holds anything (Drive: a one-child query, not a listing) and removes
+  it (Drive: to the trash) only when empty, resolving whether it did so the
+  count is of real removals; a folder still holding anything is kept for the
+  next pass, and a second refusal throws, which gives up on that GROUP for
+  the rest of the run while the other groups still merge.
   "Empty" on Drive means empty AS THE APP SEES IT: under `drive.file` the
   re-list misses files the app did not create (dropped in through the Drive
   web UI, written by another client), and those go to the trash with the

@@ -175,6 +175,22 @@ class DriveApiClient {
     });
   }
 
+  /**
+   * Does the server list anything live in a folder? One request for ONE
+   * child — a yes/no question; `listFiles` would page the whole folder.
+   * Ids never need escaping.
+   */
+  async folderHasChildren(folderId: string): Promise<boolean> {
+    return this.handleApiCall(async () => {
+      const { result } = await gapi.client.drive.files.list({
+        q: `'${folderId}' in parents and trashed=false`,
+        fields: 'files(id)',
+        pageSize: 1
+      });
+      return (result.files?.length ?? 0) > 0;
+    });
+  }
+
   async createFolder(name: string, parentId?: string): Promise<string> {
     return this.handleApiCall(async () => {
       const resource: any = {

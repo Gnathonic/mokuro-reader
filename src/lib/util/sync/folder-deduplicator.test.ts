@@ -36,6 +36,7 @@ function memoryDrive(nodes: Node[]) {
         throw new Error(`deleteFolder on a folder that still holds items: ${folderId}`);
       }
       byId.delete(folderId);
+      return true;
     },
     trashFile: async (fileId) => {
       byId.get(fileId)!.trashed = true;
@@ -221,5 +222,66 @@ describe('FolderDeduplicator: which folder of a group is kept', () => {
     expect(result.groupsMerged).toBe(0);
     expect(drive.filesIn('TOP')).toEqual(['a.cbz#F1']);
     expect(drive.filesIn('NEST')).toEqual(['b.cbz#F2']);
+  });
+});
+
+describe('FolderDeduplicator: a duplicate folder the provider keeps', () => {
+  /** A series folder in each root, with one volume each: a same-name group on pass 2. */
+  const seriesInBothRoots = (name: string, keptId: string, dupId: string): Node[] => [
+    { id: keptId, name, parentId: 'KEEP', isFolder: true, createdTime: at(1) },
+    { id: dupId, name, parentId: 'DUP', isFolder: true, createdTime: at(2) },
+    file(`${keptId}-v1`, keptId, 'v1.cbz', at(3)),
+    file(`${dupId}-v2`, dupId, 'v2.cbz', at(3))
+  ];
+
+  it('counts a folder as deleted only when the provider says it removed it', async () => {
+    const drive = twoRoots([file('F', 'DUP', 'a.cbz', at(1))]);
+    const verdicts = [false, true];
+    const ops: FolderOperations = {
+      ...drive.ops,
+      // Kept once (the server still listed something), removed on the next pass.
+      deleteFolder: async (folderId) => {
+        const removed = verdicts.shift()!;
+        if (removed) await drive.ops.deleteFolder(folderId);
+        return removed;
+      }
+    };
+
+    const result = await folderDeduplicator.deduplicateAll('mega', ops);
+
+    expect(result.foldersDeleted).toBe(1);
+    expect(result.groupsMerged).toBe(2);
+    expect(drive.filesIn('KEEP')).toEqual(['a.cbz#F']);
+  });
+
+  it('skips a group whose folder removal fails for the rest of the run, and still merges the others', async () => {
+    const drive = twoRoots([
+      ...seriesInBothRoots('Ippo', 'I1', 'I2'),
+      ...seriesInBothRoots('Trigun', 'T1', 'T2')
+    ]);
+    const refused: string[] = [];
+    const ops: FolderOperations = {
+      ...drive.ops,
+      deleteFolder: async (folderId) => {
+        if (folderId === 'I2') {
+          // What a provider throws on its second refusal: another device
+          // keeps writing into this folder.
+          refused.push(folderId);
+          throw new Error(`duplicate folder ${folderId} still holds 1 item(s); stopping`);
+        }
+        await drive.ops.deleteFolder(folderId);
+        return true;
+      }
+    };
+
+    const result = await folderDeduplicator.deduplicateAll('mega', ops);
+
+    // Pass 1 merged the roots; pass 2 gave up on Ippo but finished Trigun.
+    expect(drive.filesIn('T1')).toEqual(['v1.cbz#T1-v1', 'v2.cbz#T2-v2']);
+    expect((await ops.listFolders()).map((f) => f.id).sort()).toEqual(['I1', 'I2', 'KEEP', 'T1']);
+    // Given up once, not retried on every remaining pass.
+    expect(refused).toEqual(['I2']);
+    expect(result.foldersDeleted).toBe(2);
+    expect(result.groupsMerged).toBe(2);
   });
 });

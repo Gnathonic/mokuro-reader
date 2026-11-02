@@ -1913,9 +1913,11 @@ export class MegaProvider implements SyncProvider {
         await stateSynced;
       },
 
-      deleteFolder: async (folderId): Promise<void> => {
+      deleteFolder: async (folderId): Promise<boolean> => {
         const folder = this.findNodeById(folderId);
-        if (!folder) return;
+        // Already gone from this tree (another device removed it): nothing
+        // left to count as this run's removal.
+        if (!folder) return false;
         // The deduplicator judged it empty from THIS tree, which lags other
         // devices' uploads and packets still in flight — and a MEGA folder
         // delete is recursive. Delete only what the server says is empty;
@@ -1923,11 +1925,12 @@ export class MegaProvider implements SyncProvider {
         const remaining = await this.serverFolderContentCount(folderId);
         if (remaining > 0) {
           // Still not empty after a reload and a second merge (another
-          // device keeps writing there): stop this run rather than reload
-          // the whole tree on each of the deduplicator's passes.
+          // device keeps writing there): give this group up for the run
+          // rather than reload the whole tree on each of the deduplicator's
+          // passes.
           if (keptOnce.has(folderId)) {
             throw new Error(
-              `MEGA dedup: duplicate folder ${folderId} still holds ${remaining} node(s) after a reload; stopping`
+              `MEGA dedup: duplicate folder ${folderId} still holds ${remaining} node(s) after a reload; giving up on it this run`
             );
           }
           keptOnce.add(folderId);
@@ -1935,7 +1938,7 @@ export class MegaProvider implements SyncProvider {
             `[MEGA] duplicate folder ${folderId} kept: server still reports ${remaining} node(s)`
           );
           await this.refreshTree();
-          return;
+          return false;
         }
         const stateSynced = this.waitForNodeEvent(folder, 'delete');
         await new Promise<void>((resolve, reject) => {
@@ -1947,6 +1950,7 @@ export class MegaProvider implements SyncProvider {
         // No manual storage.files eviction: the sc packet unlinks it, which
         // is all isLiveNode needs.
         await stateSynced;
+        return true;
       },
 
       trashFile: async (fileId): Promise<void> => {

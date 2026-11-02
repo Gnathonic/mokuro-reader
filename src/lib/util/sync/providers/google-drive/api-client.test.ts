@@ -1,5 +1,36 @@
-import { describe, it, expect } from 'vitest';
-import { escapeNameForDriveQuery } from './api-client';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+
+vi.mock('./token-manager', () => ({ tokenManager: { initTokenClient: vi.fn() } }));
+
+import { driveApiClient, escapeNameForDriveQuery } from './api-client';
+
+describe('driveApiClient.folderHasChildren', () => {
+  const list = vi.fn();
+  afterEach(() => {
+    list.mockReset();
+    delete (globalThis as { gapi?: unknown }).gapi;
+  });
+  const gapiWith = (result: unknown) => {
+    list.mockResolvedValue({ result });
+    (globalThis as { gapi?: unknown }).gapi = { client: { drive: { files: { list } } } };
+  };
+
+  it('asks for ONE child, and never pages: a yes/no question, not a listing', async () => {
+    gapiWith({ files: [{ id: 'child' }], nextPageToken: 'more' });
+
+    await expect(driveApiClient.folderHasChildren('DUP')).resolves.toBe(true);
+
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ q: "'DUP' in parents and trashed=false", pageSize: 1 })
+    );
+  });
+
+  it('is false for a folder the server lists empty', async () => {
+    gapiWith({ files: [] });
+    await expect(driveApiClient.folderHasChildren('DUP')).resolves.toBe(false);
+  });
+});
 
 describe('escapeNameForDriveQuery', () => {
   it('should return string unchanged when no special characters', () => {
