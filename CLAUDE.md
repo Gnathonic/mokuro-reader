@@ -389,18 +389,15 @@ everything that removes or moves a layer works from all listed copies
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
 
-A volume rename (`renameVolumeFiles`) writes in a fixed order: move the
-`.cbz` FIRST, move the layers, move the cover, PUT the regenerated main at the
-new name, and only then delete the stale main (no regenerated main — a legacy
-caller without a uuid — moves the stale one in the PUT's place). The archive
-goes first for mokuro-bunko: a sidecar at `<new>.mokuro` or
-`<new>.<layer>.mokuro` while `<new>.cbz` does not exist yet is "governed by no
-archive" and is the folder owner's only, so an uploader renaming its own
-volume in a folder someone else owns got a 403 mid-rename; with the archive
-moved first its upload owner follows it and the sidecars after it are governed
-by it. bunko never retires a sidecar for lacking an archive, and the OCR job
-its walk could queue for a bare archive is covered by its quiet period and job
-dedupe. The stale main is deleted last either way.
+A volume rename (`renameVolumeFiles`) writes in a fixed order: PUT the
+regenerated main at the new name (no regenerated main — a legacy caller
+without a uuid — MOVES the stale one in its place), move the layers, move the
+cover, move the `.cbz` LAST, and only then delete the stale main. The order is
+so that an INTERRUPTED rename leaves inert leftovers: a sidecar with no
+archive beside it is inert — mokuro-bunko has no sweep for one — whereas an
+archive without its main may be treated as owing OCR by a server that acts on
+what it finds (a cloud library waits 120 s before acting on arrivals; a local
+DAV library is not known to wait). The stale main is deleted last either way.
 
 `.mokuro` files themselves stay pure upstream format regardless of which
 layer produced them. A `gcv` or `tr-<lang>` layer from the removed
