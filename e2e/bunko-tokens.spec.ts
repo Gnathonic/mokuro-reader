@@ -8,7 +8,10 @@
  *   E2E_BUNKO_URL      e.g. http://127.0.0.1:5197 (CORS must allow the reader's origin)
  *   E2E_BUNKO_USER     an account that may upload (role uploader or above)
  *   E2E_BUNKO_PW_FILE  file holding that account's password (never on a command line)
- *   E2E_BUNKO_DB       optional: the server's mokuro.db, to assert `auth_tokens` rows
+ *   E2E_BUNKO_DB       optional: the server's mokuro.db, to assert that account's `auth_tokens` rows
+ *
+ * The library must hold `TokenSeries/TokenSeries 01.cbz` and `TokenSeries 02.cbz`,
+ * and the server must be fresh: the test uploads `LocalSeries/Vol 1.cbz`.
  *
  * Without them that test is skipped; the stubbed Basic tests always run.
  */
@@ -58,9 +61,10 @@ function tokenRows(): Array<{ username: string; kind: string; label: string; day
       '-c',
       `import json, sqlite3, sys
 c = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
-rows = c.execute("SELECT username, kind, label, (expires_at - created_at) / 86400.0 FROM auth_tokens ORDER BY created_at").fetchall()
+rows = c.execute("SELECT username, kind, label, (expires_at - created_at) / 86400.0 FROM auth_tokens WHERE username = ? ORDER BY created_at", (sys.argv[2],)).fetchall()
 print(json.dumps([dict(username=r[0], kind=r[1], label=r[2], days=r[3]) for r in rows]))`,
-      DB
+      DB,
+      USER
     ],
     { encoding: 'utf8' }
   );

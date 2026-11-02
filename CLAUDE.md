@@ -145,41 +145,25 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
-  `error.errors[0].reason`: a 403 is a full account (`storageQuotaExceeded`/`quotaExceeded` →
-  `QUOTA_EXCEEDED`, never retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`,
-  like any 429 — whatever its reason: retried by `withDriveRetry` after Retry-After, capped
-  60 s, 4 attempts), or — only otherwise — an auth failure that may re-authenticate. 5xx are
-  retried too, except on a request that CREATES a file or folder (`rateLimitOnly`): Drive can
-  answer a 5xx after committing it, and a retry would make a duplicate. Messages carry
-  `[reason]` so a worker's serialized error is still recognisable. OneDrive's equivalent is
+  `error.errors[0].reason` — by NAME, never by domain (`sharingRateLimitExceeded` and the
+  item-count/depth limits are domain `global`, not `usageLimits`). A 403 is a full account
+  (`storageQuotaExceeded`, Drive's only storage-full reason → `QUOTA_EXCEEDED`, never
+  retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`/`dailyLimitExceeded`/
+  `sharingRateLimitExceeded`, and `quotaExceeded` — an API usage quota that resets, NOT
+  storage — like any 429 whatever its reason: retried by `withDriveRetry` after Retry-After,
+  capped 60 s, a zero/past value falls back to the backoff, 4 attempts), a `limit` nothing
+  lifts (`activeItemCreationLimitExceeded`, `numChildrenInNonRootLimitExceeded`,
+  `myDriveHierarchyDepthLimitExceeded`: fails with its message), or an auth failure that may
+  re-authenticate — an ALLOW-list: no reason, `authError`, `insufficientPermissions`,
+  `forbidden`; any other named 403 reason is a refusal that fails without touching the
+  token. 5xx are retried too, except on a request that CREATES a file or folder
+  (`rateLimitOnly`): Drive can answer a 5xx after committing it, and a retry would make a
+  duplicate. A paginated listing retries per page, never the pages already fetched.
+  Messages carry `[reason]` so a worker's serialized error is still recognisable; the worker
+  also posts `kind: 'quota'` on its error message, which `backup-queue.ts` turns into the
+  provider's "storage is full" wording (`core/storage-full.ts`). OneDrive's equivalent is
   `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
-  `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
-
-**Duplicate folders** (`folder-deduplicator.ts`, Drive and MEGA):
-
-- **Write root.** Of several `mokuro-reader` folders, one directly in My Drive /
-  the Cloud Drive first, then the oldest, then the smaller id (code-unit
-  compare) — `pickReaderFolder` (`drive-files-cache.ts`), `findMokuroFolder`
-  (MEGA). Every root is read; only same-parent roots merge, so a nested
-  `Backup/mokuro-reader` is never merged into the top-level one. Drive learns
-  which roots are top-level from a `'root' in parents` query, never
-  `files.get('root')` (a 404 under the app's `drive.file` scope); dedup
-  confirms a root as the write root only when it is the cache's same pick.
-- **Groups** are an exact name under one parent, within the library only
-  (`listFolders` keeps `mokuro-reader` folders and their descendants). The
-  kept folder is the oldest, then the smaller id (`compareByAge`).
-- **Same name on merge.** Folders, or a file beside a folder, move in and keep
-  the name twice; so do `dedupKeepsEveryCopy` files (volume-data.json,
-  goals.json, positions.json, and bunko's control files `.mokuro-bunko.json` /
-  `.mokuro-queue.json`, exact names). Any other file: the strictly newer write
-  wins, a tie keeps the canonical copy, the loser goes to the TRASH.
-- **Folder removal.** `deleteFolder` re-lists the duplicate on the server and
-  removes it (Drive: to the trash) only when empty; a folder still holding
-  anything is kept for the next pass, and a second refusal ends the run.
-  "Empty" on Drive means empty AS THE APP SEES IT: under `drive.file` the
-  re-list misses files the app did not create (dropped in through the Drive
-  web UI, written by another client), and those go to the trash with the
-  folder. Recoverable from the trash, but not a "never deletes files" promise.
+  `GraphQuotaError` → `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
 
 **mokuro-bunko specifics** (the WebDAV provider against a bunko server):
 
@@ -200,18 +184,58 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   passes (`reconcileMissingMetadataFiles`, the sidecar backfill, layer sync)
   wait for it in `refreshSeriesIndexesInBackground`; the index/catalog refreshes
   do not. Backup enqueue (`resolveCloudFolderTitle`) and
-  `existsInCloud`/`getCloudFile` (exact path, then the folded fallback of
-  `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so nothing
-  uploads into the losing folder. Those backstops are NOT gated on bunko: like
+  `existsInCloud`/`getCloudFile` (exact path, then the same folder-and-file
+  picks as `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so
+  nothing uploads into the losing folder. `getCloudFile`/`existsInCloud` is
+  THE "is it backed up" selector — the series page's status and "back up
+  series", `BackupButton`, `VolumeItem` and the cloud screen all ask it; a
+  byte-exact path test beside it reads an uploaded volume as missing and
+  re-PUTs it on every click. Those backstops are NOT gated on bunko: like
   every other folder lookup (rename, delete, `series.json`) they run on every
-  provider, so on plain storage too a title with no exact folder backs up into,
-  counts as backed up in, and is deleted from (the series removal dialog's
-  "also delete" and `deleteSeriesFromCloudByTitle` resolve alike) the ONE
-  folder folding onto it, naturally first when several do. An exact folder
-  always wins, and plain storage never ADOPTS: its rows keep their spelling.
-  The folded lookups read `listingFolderIndex`, built once per cache revision
-  (`CoalescedCacheStore.revision`, replaced by every add/remove/install), so a
-  per-volume caller costs O(1), not a pass over the listing.
+  provider, so on plain storage too a title with no exact folder backs up into
+  and counts as backed up in the ONE folder folding onto it, naturally first
+  when several do. An exact folder always wins, and plain storage never
+  ADOPTS: its rows keep their spelling. A DELETE is narrower
+  (`cloudFolderOfSeries`, `catalog/series-delete.ts`): the removal dialog's
+  "also delete" and `deleteSeriesFromCloudByTitle` take a folded folder only
+  when the catalog would group it with the series (`normalizeSeriesKey` — a
+  title differing only in unicode form folds alike but is ANOTHER catalog
+  series) and it lists one of the series' own volumes. Adoption itself skips
+  a series with a volume open in the reader (`isVolumeOpen`, `hash-router.ts`,
+  the OCR upgrade's deferral) — the row write would reload the open volume —
+  and the next listing retries. The folded lookups read `listingFolderIndex`,
+  built once per cache revision (`CoalescedCacheStore.revision`, replaced by
+  every add/remove/install) and holding the archive records themselves, so a
+  per-volume caller — hit or miss — costs O(1), not a pass over the listing.
+
+**Duplicate folders** (`folder-deduplicator.ts`, Drive and MEGA):
+
+- **Write root.** Of several `mokuro-reader` folders, one directly in My Drive /
+  the Cloud Drive first, then the oldest, then the smaller id (code-unit
+  compare) — `pickReaderFolder` (`drive-files-cache.ts`), `findMokuroFolder`
+  (MEGA). Every root is read; only same-parent roots merge, so a nested
+  `Backup/mokuro-reader` is never merged into the top-level one. Drive learns
+  which roots are top-level from a `'root' in parents` query, never
+  `files.get('root')` (a 404 under the app's `drive.file` scope); dedup
+  confirms a root as the write root only when it is the cache's same pick.
+- **Groups** are an exact name under one parent, within the library only
+  (`listFolders` keeps `mokuro-reader` folders and their descendants). The
+  kept folder is the oldest, then the smaller id (`compareByAge`).
+- **Same name on merge.** Folders, or a file beside a folder, move in and keep
+  the name twice; so do `dedupKeepsEveryCopy` files (volume-data.json,
+  goals.json, and bunko's control files `.mokuro-bunko.json` /
+  `.mokuro-queue.json`, exact names). Any other file: the strictly newer write
+  wins, a tie keeps the canonical copy, the loser goes to the TRASH.
+- **Folder removal.** `deleteFolder` asks the server whether the duplicate
+  still holds anything (Drive: a one-child query, not a listing) and removes
+  it (Drive: to the trash) only when empty, resolving whether it did so the
+  count is of real removals; a folder still holding anything is kept for the
+  next pass, and a second refusal throws, which gives up on that GROUP for
+  the rest of the run while the other groups still merge.
+  "Empty" on Drive means empty AS THE APP SEES IT: under `drive.file` the
+  re-list misses files the app did not create (dropped in through the Drive
+  web UI, written by another client), and those go to the trash with the
+  folder. Recoverable from the trash, but not a "never deletes files" promise.
 
 ### Svelte 5 Reactive Performance
 
@@ -449,6 +473,18 @@ modal).
 
 Cloud layer sidecars are named `<Volume Title>.<layer-id>.mokuro[.gz]`
 (`layer-id` matching `[a-z0-9-]{1,32}`) beside the volume's archive.
+A backup sends a layer whose id mokuro-bunko 0.8 anchors on the archive
+(`edit`, `edit-<n>`, `curated` — a layer named "Edit" slugs to one) only AFTER
+the `.cbz` (`uploadVolumeFiles`, `volume-upload-order.ts`, Worker and main
+thread alike): bunko refuses it with 409 `no-volume` while no `<Volume>.cbz` is
+listed beside it. A refusal there fails nothing — the layer is left unstamped
+and the next listing's layer sync pushes it. Before the archive, a LAYER the
+server refuses (403/409 or a non-auth `PERMISSION_DENIED`, `isLayerFileRefusal`
+— bunko 0.8 answers 403 for an edited `previous-ocr*`, `pre-upgrade*` or
+`curated-<n>` whatever the order) fails nothing either: logged at debug, left
+unstamped for layer sync, which remembers the refusal. A 401, a 5xx or a
+network failure there still fails the backup, as does any failure of the
+primary sidecar or the cover.
 `classifyMokuroSidecar` (`src/lib/util/sync/syncable-file.ts`) tells a listed
 `.mokuro` apart from a layer file the same way it always disambiguated dotted
 volume titles — by checking which stems have a `.cbz` in the same folder
@@ -491,11 +527,14 @@ everything that removes or moves a layer works from all listed copies
 corroborate per layer id so both copies ride together.
 
 A volume rename (`renameVolumeFiles`) writes in a fixed order: PUT the
-regenerated main at the new name, move the layers, move the cover, move the
-`.cbz` LAST, and only then delete the stale main — so a server that OCRs the
-archives it finds (mokuro-bunko) never sees the archive at its new name
-without its main and layers and queues no job there (whose output would land
-as `<stem>.<layer>_1.mokuro`).
+regenerated main at the new name (no regenerated main — a legacy caller
+without a uuid — MOVES the stale one in its place), move the layers, move the
+cover, move the `.cbz` LAST, and only then delete the stale main. The order is
+so that an INTERRUPTED rename leaves inert leftovers: a sidecar with no
+archive beside it is inert — mokuro-bunko has no sweep for one — whereas an
+archive without its main may be treated as owing OCR by a server that acts on
+what it finds (a cloud library waits 120 s before acting on arrivals; a local
+DAV library is not known to wait). The stale main is deleted last either way.
 
 `.mokuro` files themselves stay pure upstream format regardless of which
 layer produced them. A `gcv` or `tr-<lang>` layer from the removed
@@ -557,11 +596,16 @@ re-fetches it and swaps the new OCR in — automatically, in the background
 - **Provenance of an unedited primary.** Does not matter: it is replaced
   outright, whether it is attested as THIS cloud's file or came from anywhere
   else (a local re-import, an archive's EMBEDDED `.mokuro`, a legacy row with
-  no hash, another provider's attestation). Nothing of it is kept. v1.10.0
-  kept such a primary as a device-local "Previous OCR" layer (`previous-ocr`,
-  `previous-ocr-<n>`); every start deletes the untouched ones, both rows,
-  chosen from metadata alone (`deleteRetiredPreviousOcrLayers`,
-  `layer-store.ts`) — edited ones stay as ordinary layers.
+  no hash, another provider's attestation). Nothing of it is kept — so OCR
+  the user re-ran and imported locally is reverted to the cloud's file by the
+  next listing unless it was backed up first (owner, 2026-11-02: no keepsake
+  copies). v1.10.0 kept such a primary as a device-local "Previous OCR" layer
+  (`previous-ocr`, `previous-ocr-<n>`); the first start after the update
+  deletes the ones nobody claimed, both rows, chosen from metadata alone
+  (`deleteRetiredPreviousOcrLayers`, `layer-store.ts`, run once per browser by
+  `retirePreviousOcrLayers`). Claimed — edited, renamed, or the layer a volume
+  displays (`ocrLayer`; picking or renaming moves no stamp) — they stay as
+  ordinary layers.
 - **A replacement drops the snapshots it made stale.** An unedited row can
   still hold an `original` layer (the pre-edit snapshot of the OLD OCR, from
   layer-sync or a reinstall) and an untouched `updated-ocr`; after the swap,
@@ -598,8 +642,7 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   bytes after a server re-OCR.
 - **A short 503 is waited out.** Every WebDAV request (`webdav-retry-after.ts`,
   main thread and workers alike) re-sends a 503 whose `Retry-After` is at most
-  30 s, at most twice — bunko's lease fence and a file changed behind its index
-  answer so and applied nothing.
+  30 s, at most twice — a server shedding load answers so and applied nothing.
 - **mokuro-bunko** computes `mokuro_sha256` itself when it compiles
   `series.json` (it must hash the primary's JSON after gunzip, emit it after
   `mokuro_modified`, and move it whenever the sidecar changes). Old servers

@@ -307,6 +307,20 @@ describe('look-up visits (live)', () => {
     expect(completions).toEqual(['v']);
   });
 
+  it('finish on the last page, then the page is unloaded while visible: one completion notice', async () => {
+    // A tab killed or navigated away while visible never fires the hidden
+    // visibility change; `pagehide` is the last chance to announce.
+    setRecord(LAST_PAGE - 1);
+    startVisit('v', clock);
+    await show(LAST_PAGE - 1);
+    await show(LAST_PAGE, READ);
+    expect(completions).toEqual([]);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(completions).toEqual(['v']);
+    endVisit('v');
+    expect(completions).toEqual(['v']);
+  });
+
   it('a late adoption before any turn re-homes the visit', async () => {
     setRecord(40);
     startVisit('v', clock);

@@ -13,6 +13,7 @@ import {
 } from './file-processing-pool';
 import { downloadFileBlob } from './volume-sidecars';
 import { stampLayersSynced, type LayerUploadSnapshot } from '$lib/metadata/layer-sync';
+import { uploadVolumeFiles } from './volume-upload-order';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import {
   cancelScheduledSeriesFileWrite,
@@ -26,6 +27,7 @@ import {
   recordUploadedPrimarySidecarBlob
 } from '$lib/catalog/mokuro-upload-record';
 import { clearUploadFailure, recordUploadFailure } from './upload-failures';
+import { isStorageFullFailure, storageFullMessage } from './sync/core/storage-full';
 import { getUploadWorkerCredentials, prepareSeriesUploadTarget } from './upload-worker-credentials';
 
 export interface SidecarOptions {
@@ -359,10 +361,18 @@ function handleBackupError(
   item: BackupQueueItem,
   processId: string,
   errorMessage: string,
-  detail?: string
+  detail?: string,
+  kind?: string
 ): void {
-  const reason = detail?.trim() || errorMessage;
   const isCloud = !isPseudoProvider(item.provider);
+  // A worker hands back text, not the provider's typed QUOTA_EXCEEDED: give a
+  // full account the same actionable wording the main-thread upload raises.
+  // The rest of the queue still runs; whether a full account should pause it
+  // is a separate decision.
+  const reason =
+    isCloud && isStorageFullFailure({ kind, error: errorMessage })
+      ? storageFullMessage(item.provider)
+      : detail?.trim() || errorMessage;
   const ui = getBackupUiBridge();
   if (isCloud) {
     recordUploadFailure({
@@ -656,39 +666,42 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             const archiveBytes = new Uint8Array(data.data);
             const archiveBlob = new Blob([archiveBytes], { type: 'application/x-cbz' });
 
-            if (item.sidecarOptions.includeSidecars && data.sidecars) {
+            const sidecars = item.sidecarOptions.includeSidecars ? data.sidecars : undefined;
+            if (sidecars?.mokuro || sidecars?.thumbnail || sidecars?.layers?.length) {
               getBackupUiBridge().updateProgress(processId, 'Uploading sidecars...', 100);
-              const sidecars: Array<{ filename: string; blob: Blob }> = [];
-              if (data.sidecars.mokuro) sidecars.push(data.sidecars.mokuro);
-              for (const layer of data.sidecars.layers ?? []) sidecars.push(layer);
-              if (data.sidecars.thumbnail) sidecars.push(data.sidecars.thumbnail);
-              for (const sidecar of sidecars) {
-                const sidecarPath = `${item.seriesTitle}/${sidecar.filename}`;
-                const sent = await provider!.uploadFile(sidecarPath, sidecar.blob);
-                if (sidecar === data.sidecars.mokuro) {
-                  await recordUploadedPrimarySidecarBlob(
+            }
+            // The Worker's order: a layer bunko anchors on the archive goes after it.
+            const { archive: uploaded, layers: sentLayers } = await uploadVolumeFiles(
+              sidecars,
+              {
+                sidecar: (sidecar) =>
+                  provider!.uploadFile(`${item.seriesTitle}/${sidecar.filename}`, sidecar.blob),
+                archive: () => {
+                  getBackupUiBridge().updateProgress(processId, 'Uploading archive...', 0);
+                  return provider!.uploadFile(
+                    archivePath,
+                    archiveBlob,
+                    undefined,
+                    (loaded, total) => {
+                      if (total > 0) {
+                        getBackupUiBridge().updateProgress(
+                          processId,
+                          'Uploading archive...',
+                          Math.round((loaded / total) * 100)
+                        );
+                      }
+                    }
+                  );
+                }
+              },
+              {
+                onPrimary: (sidecar, sent) =>
+                  recordUploadedPrimarySidecarBlob(
                     item.volumeUuid,
                     provider!.type,
                     sidecar.blob,
                     sent
-                  );
-                }
-              }
-            }
-
-            getBackupUiBridge().updateProgress(processId, 'Uploading archive...', 0);
-            const uploaded = await provider!.uploadFile(
-              archivePath,
-              archiveBlob,
-              undefined,
-              (loaded, total) => {
-                if (total > 0) {
-                  getBackupUiBridge().updateProgress(
-                    processId,
-                    'Uploading archive...',
-                    Math.round((loaded / total) * 100)
-                  );
-                }
+                  )
               }
             );
 
@@ -720,7 +733,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               void stampLayersSynced(
                 item.volumeUuid,
                 provider!.type,
-                (data.sidecars?.layers ?? []).map((layer) => ({
+                sentLayers.map((layer) => ({
                   layerId: layer.layerId,
                   updatedAt: layer.updatedAt,
                   size: layer.blob.size
@@ -882,7 +895,7 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       },
       onError: async (data) => {
         console.error(`Error backing up ${item.volumeTitle}:`, data.error);
-        handleBackupError(item, processId, data.error, data.detail);
+        handleBackupError(item, processId, data.error, data.detail, data.kind);
         await checkAndTerminatePool();
       }
     };

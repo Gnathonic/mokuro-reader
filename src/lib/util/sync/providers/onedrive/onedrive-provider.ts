@@ -22,10 +22,18 @@ import {
 } from './graph-client';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { isSyncableFile } from '../../syncable-file';
-import { GRAPH_QUOTA_MESSAGE } from './graph-errors';
+import { GRAPH_QUOTA_MESSAGE, GraphQuotaError } from './graph-errors';
 
 /** Worth retrying later; a full drive (507) is not, so it is excluded. */
 const RETRYABLE_MESSAGE = /network|timed out|\b429\b|\b5(?!07)\d\d\b/i;
+
+/**
+ * The core throws its own `GraphQuotaError`; the message pattern is only a
+ * fallback for a failure that reached here as text (wrapped, or a worker's).
+ */
+function isOneDriveFull(error: unknown, message: string): boolean {
+  return error instanceof GraphQuotaError || GRAPH_QUOTA_MESSAGE.test(message);
+}
 
 /** Typed, and worded so the user can act on it (same wording as MEGA's). */
 function oneDriveFullError(): ProviderError {
@@ -314,7 +322,7 @@ export class OneDriveProvider implements SyncProvider {
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       const message = error instanceof Error ? error.message : 'Unknown error';
-      if (GRAPH_QUOTA_MESSAGE.test(message)) throw oneDriveFullError();
+      if (isOneDriveFull(error, message)) throw oneDriveFullError();
       throw new ProviderError(
         `OneDrive upload failed: ${message}`,
         'onedrive',
@@ -345,7 +353,7 @@ export class OneDriveProvider implements SyncProvider {
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       const message = error instanceof Error ? error.message : 'Unknown error';
-      if (GRAPH_QUOTA_MESSAGE.test(message)) throw oneDriveFullError();
+      if (isOneDriveFull(error, message)) throw oneDriveFullError();
       throw new ProviderError(
         `OneDrive download failed: ${message}`,
         'onedrive',

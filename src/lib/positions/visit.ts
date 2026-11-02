@@ -17,8 +17,8 @@
  *   home moves the record at once, the history write follows (`pending`).
  *
  * Completions of the open volume are held (`registerCompletionHold`) until the
- * visit ends — the reader closes, moves on, or the tab is hidden — and a
- * restore drops them.
+ * visit ends — the reader closes, moves on, or the tab is hidden or unloaded
+ * (`pagehide`) — and a restore drops them.
  */
 
 import { get } from 'svelte/store';
@@ -39,6 +39,7 @@ import {
   restoreVolumePosition,
   volumesWithTrash
 } from '$lib/settings/volume-data';
+import { stampMs } from '$lib/util/volume-helpers';
 import { newestUploaded, unwatchEscapes, watchEscapes } from './escapes';
 import { noteReaderTurned } from './reader-open';
 
@@ -73,11 +74,6 @@ let device: string | null = null;
 let visit: Visit | null = null;
 let restoring = false;
 
-function stampOf(iso: string | undefined): number {
-  const t = Date.parse(iso ?? '');
-  return Number.isNaN(t) ? 0 : t;
-}
-
 function snapshotOf(volume: string): Snapshot | null {
   const record = get(volumesWithTrash)[volume];
   if (!record || record.deletedOn) return null;
@@ -86,7 +82,7 @@ function snapshotOf(volume: string): Snapshot | null {
     chars: record.chars,
     completed: record.completed,
     completedAt: record.completedAt,
-    stamp: stampOf(record.lastProgressUpdate)
+    stamp: stampMs(record.lastProgressUpdate)
   };
 }
 
@@ -144,7 +140,7 @@ function check(volume: string): void {
   const snapshot = v.snapshot;
   const record = get(volumesWithTrash)[volume];
   if (!record || record.deletedOn) return;
-  const stamp = stampOf(record.lastProgressUpdate);
+  const stamp = stampMs(record.lastProgressUpdate);
   if (!v.own.has(stamp) || stamp === v.restoredAt) return;
   if (spoiled({ ...v, snapshot })) return;
   // The page on screen stays: a restore that moved it would scroll the reader
@@ -185,7 +181,7 @@ export function initVisitTracking(ownDevice: string): () => void {
   const stopPositions = registerPositionListener((volume) => {
     const v = visit;
     if (restoring || !v?.open || v.volume !== volume) return;
-    v.own.add(stampOf(get(volumesWithTrash)[volume]?.lastProgressUpdate));
+    v.own.add(stampMs(get(volumesWithTrash)[volume]?.lastProgressUpdate));
     // After the other listeners: the push marks the turn's stamp, and the
     // restore then leaves that mark stale instead of marking the old stamp.
     queueMicrotask(() => check(volume));
@@ -195,7 +191,7 @@ export function initVisitTracking(ownDevice: string): () => void {
     const v = visit;
     if (!v) return;
     const record = records[v.volume];
-    if (record) v.seen.add(stampOf(record.lastProgressUpdate));
+    if (record) v.seen.add(stampMs(record.lastProgressUpdate));
   });
   // A view of the visit that ends (the next view opened, or none) is owed an event.
   let shown = get(liveView);
@@ -221,10 +217,20 @@ export function initVisitTracking(ownDevice: string): () => void {
     if (v?.open && (volumes === 'all' || volumes.has(v.volume))) check(v.volume);
   });
   const stopHold = registerCompletionHold(couldBeLookup);
+  // A held completion lives in memory only. The tab going out of view or
+  // away releases it; a tab killed while visible (a crash, the OS reclaiming
+  // it) loses it, and the AniList push with it — `becameCompleted` needs the
+  // flag to rise again. Closing that too would mean persisting the held set
+  // and re-announcing it at the next start, once the restored record is
+  // known to be still completed; not done, the window is small.
+  const release = () => {
+    if (visit) releaseHeldCompletion(visit.volume);
+  };
   const onVisibility = () => {
-    if (document.visibilityState === 'hidden' && visit) releaseHeldCompletion(visit.volume);
+    if (document.visibilityState === 'hidden') release();
   };
   document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('pagehide', release);
   return () => {
     stopPositions();
     stopRecords();
@@ -232,6 +238,7 @@ export function initVisitTracking(ownDevice: string): () => void {
     stopHistory();
     stopHold();
     document.removeEventListener('visibilitychange', onVisibility);
+    window.removeEventListener('pagehide', release);
     if (device === ownDevice) device = null;
   };
 }

@@ -690,6 +690,53 @@ describe('export-for-download sidecars', () => {
     ]);
   });
 
+  it('a main-thread upload sends the edit layer after its archive; a refusal is not stamped', async () => {
+    const uploadFile = vi.fn(async (path: string, _blob: Blob) => {
+      if (path.endsWith('.edit.mokuro')) throw new Error('409 no-volume');
+      return 'uploaded-file-id';
+    });
+    const provider = {
+      type: 'filesystem',
+      uploadConcurrencyLimit: 1,
+      supportsWorkerUpload: false,
+      uploadFile
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'edit-upload-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    const edit = {
+      layerId: 'edit',
+      filename: 'One Piece - Volume 1.edit.mokuro',
+      blob: new Blob(['{}']),
+      updatedAt: '2026-09-16T09:00:00.000Z'
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await capturedTasks[0].onComplete(
+      {
+        type: 'complete',
+        data: new Uint8Array([1, 2, 3]),
+        filename: 'Volume 1.cbz',
+        sidecars: { ...sidecars, layers: [edit, ...sidecars.layers] }
+      },
+      vi.fn()
+    );
+    warn.mockRestore();
+    expect(uploadFile.mock.calls.map(([path]) => path)).toEqual([
+      'One Piece/One Piece - Volume 1.mokuro',
+      'One Piece/One Piece - Volume 1.gcv.mokuro',
+      'One Piece/One Piece - Volume 1.webp',
+      'One Piece/Volume 1.cbz',
+      'One Piece/One Piece - Volume 1.edit.mokuro'
+    ]);
+    expect(stampLayersSynced).toHaveBeenCalledWith('edit-upload-uuid', 'filesystem', [
+      { layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }
+    ]);
+    expect(bridge.notify).toHaveBeenCalledWith('Backed up Volume 1 successfully');
+  });
+
   it('a worker-driven upload stamps from the snapshot the worker sends back', async () => {
     const provider = {
       type: 'webdav',
@@ -862,6 +909,71 @@ describe('a failed upload is never silent (Addendum B)', () => {
     expect(recordUploadFailure).toHaveBeenCalledWith(
       expect.objectContaining({ reason: 'Network error during WebDAV upload' })
     );
+  });
+
+  describe('a full account, which the worker can only name by kind or by message', () => {
+    const DRIVE_FULL = 'Google Drive storage is full — free up space or upgrade your plan';
+
+    async function queuedOn(type: string, uuid: string) {
+      const cloud = { type, uploadConcurrencyLimit: 2, supportsWorkerUpload: true } as never;
+      getActiveProvider.mockReturnValue(cloud);
+      queueVolumeForBackup(volume({ volume_uuid: uuid }), cloud, {
+        includeSidecars: false,
+        embedSidecarsInArchive: false
+      });
+      await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+      return capturedTasks[0];
+    }
+
+    it("shows the provider's storage-full wording when the worker says kind quota", async () => {
+      const task = await queuedOn('google-drive', 'full-uuid');
+      await task.onError({
+        type: 'error',
+        error: 'Upload init failed: 403 Forbidden [storageQuotaExceeded]',
+        kind: 'quota'
+      });
+      expect(recordUploadFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'google-drive', reason: DRIVE_FULL })
+      );
+      expect(bridge.notifyError).toHaveBeenCalledWith(`Upload failed: Volume 9 — ${DRIVE_FULL}`);
+      expect(bridge.updateProgress).toHaveBeenCalledWith(
+        'backup-full-uuid',
+        `Upload failed: ${DRIVE_FULL}`,
+        0
+      );
+    });
+
+    it('still recognises a full Drive from the bracketed reason alone (no kind)', async () => {
+      const task = await queuedOn('google-drive', 'full-uuid-2');
+      await task.onError({
+        type: 'error',
+        error: 'Upload init failed: 403 Forbidden [storageQuotaExceeded]'
+      });
+      expect(recordUploadFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: DRIVE_FULL })
+      );
+    });
+
+    it('a 429 naming storageQuotaExceeded is a rate limit the worker gave up on, not a full account', async () => {
+      const task = await queuedOn('google-drive', 'busy-uuid');
+      const error = 'Upload init failed: 429 Too Many Requests [storageQuotaExceeded]';
+      await task.onError({ type: 'error', error });
+      expect(recordUploadFailure).toHaveBeenCalledWith(expect.objectContaining({ reason: error }));
+    });
+
+    it('names OneDrive for a full OneDrive', async () => {
+      const task = await queuedOn('onedrive', 'od-full-uuid');
+      await task.onError({
+        type: 'error',
+        error: 'OneDrive storage full (507 insufficientStorage)',
+        kind: 'quota'
+      });
+      expect(recordUploadFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: 'OneDrive storage is full — free up space or upgrade your plan'
+        })
+      );
+    });
   });
 
   it('clears the failure once the volume uploads', async () => {

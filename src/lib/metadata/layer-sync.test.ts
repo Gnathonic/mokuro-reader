@@ -195,6 +195,19 @@ describe('collectLayerFiles under sidecar names rule v1', () => {
       ['vol 3', 'hayai', 'Series/vol 3.hayai.mokuro']
     ]);
   });
+
+  it('a layer spelled like NEITHER of two folded-alike archives has ONE owner, whatever the listing order', () => {
+    const files = [
+      cloudFile('Series/Vol 3.cbz'),
+      cloudFile('Series/VOL 3.cbz'),
+      cloudFile('Series/vol 3.hayai.mokuro')
+    ];
+    const owners = (fs: CloudFileMetadata[]) =>
+      collectLayerFiles(listing(...fs)).map((f) => [f.stem, f.layerId]);
+    // naturalSort-first of the archives that fold alike ('O' < 'o'), not the one listed last.
+    expect(owners(files)).toEqual([['VOL 3', 'hayai']]);
+    expect(owners([...files].reverse())).toEqual([['VOL 3', 'hayai']]);
+  });
 });
 
 describe('layerNeedsPull / layerNeedsPush', () => {
@@ -1225,6 +1238,62 @@ describe('pending layer deletes (no resurrection)', () => {
       expect(deleteFile.mock.calls.map(([f]) => f.path).sort()).toEqual([layerPath, gzPath]);
       expect(downloadFile).not.toHaveBeenCalled();
       expect(localStorage.length).toBe(0);
+    });
+  });
+
+  // Case-sensitive storage can hold `Vol 1.cbz` AND `vol 1.cbz` — two volumes
+  // that fold onto ONE local row. The row owns only the layers of the archive
+  // spelled like its own title; the other volume's layer files are never its.
+  describe('two archives that fold alike in one folder (case-sensitive storage)', () => {
+    const otherPath = 'Series/vol 1.fix.mokuro';
+    const both = () => [
+      cloudFile('Series/Vol 1.cbz'),
+      cloudFile('Series/vol 1.cbz'),
+      cloudFile(layerPath, { size: 55 }),
+      cloudFile(otherPath, { size: 66 })
+    ];
+
+    it('a row takes only the layers of the archive spelled like its title; the other volume’s are never pulled', async () => {
+      await seedRow();
+      downloadFile.mockResolvedValue(new Blob([mokuroJson('もど')]));
+      await syncLayersFromListing(listing(...both()), 'webdav');
+      expect(downloadFile).toHaveBeenCalledTimes(1);
+      expect(downloadFile).toHaveBeenCalledWith(expect.objectContaining({ path: layerPath }));
+      expect((await getLayerWithPages(db, 'v1', 'fix'))?.cloud?.size).toBe(55);
+    });
+
+    it('an offline delete removes only the row’s own copy, and the other spelling never comes back as the layer', async () => {
+      await seedSyncedLayer();
+      cachedFiles = both();
+      getActiveProvider.mockReturnValue(null);
+      expect(await userDeletes()).toBe('unconfirmed');
+      getActiveProvider.mockReturnValue(provider());
+      downloadFile.mockResolvedValue(new Blob([mokuroJson('もど')]));
+
+      await syncLayersFromListing(listing(...both()), 'webdav');
+      expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual([layerPath]);
+      expect(downloadFile).not.toHaveBeenCalled();
+      expect(localStorage.length).toBe(0);
+
+      // The next listing shows the other volume's file alone: not ours, not pulled.
+      await syncLayersFromListing(
+        listing(
+          cloudFile('Series/Vol 1.cbz'),
+          cloudFile('Series/vol 1.cbz'),
+          cloudFile(otherPath, { size: 66 })
+        ),
+        'webdav'
+      );
+      expect(downloadFile).not.toHaveBeenCalled();
+      expect(deleteFile).toHaveBeenCalledTimes(1);
+      expect(await getLayerWithPages(db, 'v1', 'fix')).toBeUndefined();
+    });
+
+    it('an online delete removes only the row’s own copy, whatever the listing order', async () => {
+      await seedSyncedLayer();
+      cachedFiles = both().reverse();
+      expect(await userDeletes()).toBe('gone');
+      expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual([layerPath]);
     });
   });
 });

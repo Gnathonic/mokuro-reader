@@ -31,8 +31,8 @@
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
-  import { db, startThumbnailProcessing } from '$lib/catalog/db';
-  import { deleteRetiredPreviousOcrLayers } from '$lib/catalog/layer-store';
+  import { startThumbnailProcessing } from '$lib/catalog/db';
+  import { retirePreviousOcrLayers } from '$lib/catalog/retired-previous-ocr';
   import { historyDb } from '$lib/reading-history/history-db';
   import { loadHistoryTurns } from '$lib/reading-history/turns-store';
   import { getOrCreateDeviceId } from '$lib/reading-history/record';
@@ -171,9 +171,9 @@
       })
       .catch((error) => console.warn('[reading-history] stats failed to start:', error));
 
-    // v1.10.0's untouched "Previous OCR" keepsakes (the OCR upgrade no longer
-    // keeps one): removed from metadata rows alone, a no-op once gone.
-    deleteRetiredPreviousOcrLayers(db).catch((error) =>
+    // v1.10.0's "Previous OCR" keepsakes nobody claimed (the OCR upgrade no
+    // longer keeps one): removed once per browser, from metadata rows alone.
+    retirePreviousOcrLayers().catch((error) =>
       console.debug('[layers] previous-ocr cleanup skipped:', error)
     );
 

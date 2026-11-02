@@ -19,9 +19,8 @@
   import { ProviderError } from '$lib/util/sync/provider-interface';
   import { renameRefusalMessage } from '$lib/util/sync/account-capabilities';
   import type { VolumeMetadata } from '$lib/types';
-  import { VolumeData } from '$lib/settings/volume-data';
   import { get } from 'svelte/store';
-  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
+  import { figuresFor, readingStats, readingStatsReady } from '$lib/reading-history/stats-store';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
   import { IMAGE_MIME_TYPES } from '$lib/import/types';
 
@@ -149,6 +148,10 @@
       characterCount = await calculateVolumeCharacterCount(volumeUuid);
 
       progress = data.stats.progress || 0;
+      // A save records the DIFFERENCE from the time shown here, so it must be
+      // the counted figure: before the stats' first pass the history half is
+      // empty and the baseline alone would make every edit overshoot.
+      await readingStatsReady();
       timeReadInMinutes = figuresFor(get(readingStats), volumeUuid, data.stats).minutes;
       loadedMinutes = timeReadInMinutes;
       updateTimeFromMinutes(timeReadInMinutes);

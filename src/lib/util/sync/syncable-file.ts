@@ -25,6 +25,7 @@
 import { CATALOG_FILE_NAME, isCatalogFilePath } from '$lib/metadata/catalog-file';
 import { SERIES_FILE_NAME, isSeriesFilePath } from '$lib/metadata/series-file';
 import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
+import { naturalSort } from '$lib/util/natural-sort';
 import { isHistoryFilePath } from '$lib/reading-history/paths';
 import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
 
@@ -266,6 +267,30 @@ export function classifyMokuroSidecar(
     return { kind: 'layer', stem: split.stem, layerId: split.layerId, gz: split.gz };
   }
   return { kind: 'orphan' };
+}
+
+/**
+ * The archive that OWNS a layer file whose stem is `layerStem`, among a
+ * folder's archive stems AS SPELLED (`Vol 3` of `Vol 3.cbz`): the archive
+ * spelled exactly like the stem, else the `naturalSort`-first of those that
+ * fold alike (rule v1 #6). Two archives that fold alike are two volumes, and a
+ * layer spelled like neither (`vol 3.hayai.mokuro` beside `Vol 3.cbz` and
+ * `VOL 3.cbz`) must have ONE owner on every site, whatever order the listing
+ * came in — else layer sync files it under one volume and a rename or delete
+ * of the other sweeps it. Undefined when no archive folds alike (not a layer).
+ */
+export function layerOwnerArchive(
+  layerStem: string,
+  archiveStems: Iterable<string>
+): string | undefined {
+  const folded = foldStem(layerStem);
+  let best: string | undefined;
+  for (const archive of archiveStems) {
+    if (archive === layerStem) return archive;
+    if (foldStem(archive) !== folded) continue;
+    if (best === undefined || naturalSort(archive, best) < 0) best = archive;
+  }
+  return best;
 }
 
 export function layerSidecarName(volumeTitle: string, layerId: string): string {

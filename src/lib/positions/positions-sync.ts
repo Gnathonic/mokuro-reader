@@ -9,7 +9,7 @@
  * every position — which is also why it may go through the blind upload.
  */
 
-import { get, type Readable } from 'svelte/store';
+import { get } from 'svelte/store';
 import { db } from '$lib/catalog/db';
 import { devices } from '$lib/reading-history/device-stats';
 import { historyDb } from '$lib/reading-history/history-db';
@@ -21,7 +21,7 @@ import {
   volumesWithTrash
 } from '$lib/settings/volume-data';
 import { showSnackbar } from '$lib/util/snackbar';
-import { isVolumeComplete } from '$lib/util/volume-helpers';
+import { isVolumeComplete, stampMs } from '$lib/util/volume-helpers';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
 import { syncReady } from '$lib/util/sync/foreground-sync';
@@ -74,28 +74,20 @@ async function readJson(blob: Blob): Promise<unknown> {
 function localPosition(volume: string): LocalPosition | undefined {
   const record = get(volumesWithTrash)[volume];
   if (!record) return undefined;
-  const stamp = Date.parse(record.lastProgressUpdate);
-  const forgotAt = record.forgotAt ? Date.parse(record.forgotAt) : 0;
   return {
-    stamp: Number.isNaN(stamp) ? 0 : stamp,
+    stamp: stampMs(record.lastProgressUpdate),
     deleted: !!record.deletedOn,
-    forgotAt: Number.isNaN(forgotAt) ? 0 : forgotAt
+    forgotAt: stampMs(record.forgotAt)
   };
 }
 
-/** Device views for the toast's name; kept warm by `initPositionPush`. */
-let deviceViews: Readable<ReadonlyMap<string, unknown>> | null = null;
-let deviceViewsValue: ReadonlyMap<string, unknown> = new Map();
-
+/** The toast's device name. Rare (one adoption with a toast), so a read of the derived store is fine. */
 function deviceLabel(device: string): string | null {
-  const views = deviceViews ? deviceViewsValue : get(devices);
-  return offerDeviceName(
-    { device, ownDevice: false },
-    views as Parameters<typeof offerDeviceName>[1]
-  );
+  return offerDeviceName({ device, ownDevice: false }, get(devices));
 }
 
-async function upload(provider: SyncProvider, next: PositionsMap): Promise<void> {
+/** Uploads `next`; resolves to the id of the file the write landed on. */
+async function upload(provider: SyncProvider, next: PositionsMap): Promise<string> {
   const blob = new Blob([JSON.stringify(composePositionsFile(next))], {
     type: 'application/json'
   });
@@ -112,6 +104,34 @@ async function upload(provider: SyncProvider, next: PositionsMap): Promise<void>
       POSITIONS_FILE_NAME,
       uploadCacheEntry(provider.type, POSITIONS_FILE_NAME, blob.size, { fileId })
     );
+  return fileId;
+}
+
+/**
+ * After an upload over several listed copies (Drive lists same-name files;
+ * its upload replaces whichever its query returns first): remove every copy
+ * the write did not land on, so the next run compares against the one file
+ * that holds the merge instead of uploading again forever. A copy already
+ * gone (a ghost in the listing, MEGA's replace-by-delete) is converged, not
+ * failed; any other failure is logged and left to a later run.
+ */
+async function removeOtherCopies(
+  provider: SyncProvider,
+  files: CloudFileMetadata[],
+  keptId: string
+): Promise<void> {
+  if (files.length < 2) return;
+  const cache = cacheManager.getCache(provider.type);
+  for (const file of files) {
+    if (file.fileId === keptId) continue;
+    try {
+      await provider.deleteFile(file);
+      cache?.removeById?.(file.fileId);
+    } catch (error) {
+      if (isNotFound(error)) cache?.removeById?.(file.fileId);
+      else console.warn('[positions] duplicate copy not removed:', error);
+    }
+  }
 }
 
 async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
@@ -122,8 +142,14 @@ async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
     // keeps it per user: not even a read.
     if (!positionsReadAllowed(status)) return { ...outcome, skipped: 'not-allowed' };
 
-    const files: CloudFileMetadata[] =
-      cacheManager.getCache(provider.type)?.getAll(POSITIONS_FILE_NAME) ?? [];
+    // The full sync's step runs for callers the `syncReady()` gate does not
+    // cover (the activity tracker, the nav bar, the cloud view, Drive's
+    // login). Before the listing has loaded the cache shows no copy, and the
+    // upload would replace the cloud file with this device's entries alone.
+    const cache = cacheManager.getCache(provider.type);
+    if (!cache?.isLoaded() || cache.isFetching()) return { ...outcome, skipped: 'not-ready' };
+
+    const files: CloudFileMetadata[] = cache.getAll(POSITIONS_FILE_NAME) ?? [];
     // A listed copy can be a ghost (deleted, still cached): not-found copies are
     // ignored. Any other failure means a copy we could not see — adopt from the
     // rest, but do not overwrite what we could not read.
@@ -183,9 +209,10 @@ async function runSync(provider: SyncProvider): Promise<PositionsSyncOutcome> {
     // These stamps leave the device now — reported BEFORE the upload, so a
     // look-up that comes home while the PUT is in flight still beats them.
     for (const [volume, entry] of Object.entries(own)) noteUploaded(volume, entry.t);
-    await upload(provider, plan.next);
+    const landedOn = await upload(provider, plan.next);
     outcome.uploaded = true;
     clearChanged(own);
+    await removeOtherCopies(provider, files, landedOn);
     return outcome;
   } catch (error) {
     console.warn('[positions] sync failed:', error);
@@ -285,13 +312,9 @@ export function initPositionPush(): () => void {
     else if (document.visibilityState === 'visible') requestPositionCheck();
   };
   document.addEventListener('visibilitychange', onVisibility);
-  deviceViews = devices as Readable<ReadonlyMap<string, unknown>>;
-  const stopDevices = deviceViews.subscribe((value) => (deviceViewsValue = value));
   return () => {
     if (timer) clearTimeout(timer);
     stopListening();
-    stopDevices();
-    deviceViews = null;
     document.removeEventListener('visibilitychange', onVisibility);
   };
 }

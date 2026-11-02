@@ -99,6 +99,10 @@ type ReissueOutcome =
  */
 type ReissueVerdict = 'retry' | 'final' | 'transient';
 
+function isUnauthorized(error: unknown): boolean {
+  return (error as { status?: number } | null)?.status === 401;
+}
+
 /** The account a token belongs to: server URL (userinfo stripped) + username. */
 function tokenAccountKey(serverUrl: string, username: string | null | undefined): string {
   return `${stripUrlUserinfo(serverUrl.replace(/\/$/, ''))}|${username ?? ''}`;
@@ -1238,6 +1242,8 @@ export class WebDAVProvider implements SyncProvider {
       console.log(`✅ Listed ${allFiles.length} files from WebDAV (recursive)`);
       return allFiles;
     } catch (error) {
+      const refused = this.refusedReadAuth(error);
+      if (refused) throw refused;
       throw new ProviderError(
         `Failed to list cloud volumes: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'webdav',
@@ -1405,6 +1411,29 @@ export class WebDAVProvider implements SyncProvider {
   }
 
   /**
+   * A read refused 401 in a password-backed session: the server no longer takes the
+   * password (changed elsewhere, an app password revoked). The same auth-failed
+   * flow as a refused write: a sync reads before it writes, so an idle device would
+   * otherwise fail every sync with a retryable read error and never ask for a new
+   * sign-in. A transient re-issue failure says nothing about the password, and a
+   * credential-less session has none to reject. Null when it is not that.
+   */
+  private refusedReadAuth(error: unknown): ProviderError | null {
+    if (!this._hasPassword || isTransientAuthRefreshError(error)) return null;
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isUnauthorized(error) && classifyWriteError(message) !== 'auth') return null;
+    this.markAuthFailed();
+    return new ProviderError(
+      'Authentication failed - please sign in again',
+      'webdav',
+      'AUTH_FAILED',
+      true,
+      false,
+      'auth'
+    );
+  }
+
+  /**
    * Central policy for failed write operations:
    * - 401 with a password-backed session: credentials were rejected -> clear
    *   the stored password and prompt re-login (NOT a read-only server)
@@ -1473,6 +1502,8 @@ export class WebDAVProvider implements SyncProvider {
       console.log(`✅ Downloaded ${file.path} from WebDAV`);
       return blob;
     } catch (error) {
+      const refused = this.refusedReadAuth(error);
+      if (refused) throw refused;
       throw new ProviderError(
         `Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'webdav',

@@ -113,9 +113,8 @@
     foregroundSync.request();
 
     return () => {
-      // Stop activity tracker when component unmounts, and send a pending
-      // progress change now rather than when the batching interval allows.
-      activityTracker.stop();
+      // Send a pending progress change now rather than when the batching
+      // interval allows.
       activityTracker.flush();
     };
   });

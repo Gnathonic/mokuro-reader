@@ -75,13 +75,17 @@
     });
   });
 
-  // Check if this volume exists in any cloud provider (reactive to cloudFiles changes)
+  // Is this volume backed up? The ONE selector every backup surface asks —
+  // the same folded resolution the backup queue uploads into
+  // (`resolveCloudFolderTitle`), so a volume the cloud holds under its own
+  // spelling of the folder reads as backed up here too instead of being
+  // re-uploaded on every click. `cloudFiles` is read for the dependency only:
+  // the selector reads the listing cache that store is derived from.
   let cloudFile = $derived.by(() => {
-    const path = `${volume.series_title}/${volume.volume_title}.cbz`;
-    const seriesFiles = cloudFiles.get(volume.series_title) || [];
-    return seriesFiles.find((f) => f.path === path);
+    void cloudFiles;
+    return unifiedCloudManager.getCloudFile(volume.series_title, volume.volume_title);
   });
-  let isBackedUp = $derived(cloudFile !== undefined);
+  let isBackedUp = $derived(cloudFile !== null);
   let backupProvider = $derived(cloudFile?.provider);
 
   // Check if this volume is in the backup queue

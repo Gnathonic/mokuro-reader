@@ -98,7 +98,11 @@ vi.mock('$lib/positions/positions-sync', () => ({
   syncPositions: vi.fn(async () => ({ adopted: [], deferred: [], uploaded: false }))
 }));
 
-import { unifiedSyncService } from './unified-sync-service';
+import {
+  SYNC_FLIGHT_DEADLINE_MS,
+  unifiedSyncService,
+  type SyncOptions
+} from './unified-sync-service';
 import { _resetEscapesForTests, newestUploaded, watchEscapes } from '$lib/positions/escapes';
 import { restartSeries } from '$lib/metadata/reread';
 import { volumes as volumeCompletion } from '$lib/settings/volume-data';
@@ -119,14 +123,17 @@ import { setVolumeDeadlineEntries } from '$lib/goals/goal-settings';
 // owns the duplicate-merge behavior that broke MEGA sync (ghost duplicates).
 const svc = unifiedSyncService as any;
 
-function fileMeta(fileId: string): CloudFileMetadata {
+function fileMeta(fileId: string, modifiedTime = '2026-01-01T00:00:00Z'): CloudFileMetadata {
   return {
     provider: 'mega',
     fileId,
     path: 'volume-data.json',
-    modifiedTime: '2026-01-01T00:00:00Z'
+    modifiedTime
   } as unknown as CloudFileMetadata;
 }
+
+/** The copy the duplicate sweep KEEPS: newer than every `fileMeta()` default. */
+const NEWEST = '2026-01-02T00:00:00Z';
 
 const jsonBlob = (data: unknown) => ({ text: async () => JSON.stringify(data) }) as unknown as Blob;
 
@@ -233,7 +240,7 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
   });
 
   it('merges duplicates newest-lastProgressUpdate-wins and deletes the extra copy', async () => {
-    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    const [first, second] = [fileMeta('first', NEWEST), fileMeta('second')];
     stubCache([first, second]);
     const newerData = {
       'vol-1': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 9 },
@@ -249,6 +256,57 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
     expect(result.volumes['vol-2'].progress).toBe(1);
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(second);
+  });
+
+  it('keeps the copy with the newest modifiedTime, whatever the listing order, and reports its own volumes', async () => {
+    // MEGA's upload order lands the new copy before the old one is deleted. A
+    // device that lists [old, new] in that window must not keep old and delete
+    // new — the newest copy is what every other device's fold was written to.
+    const old = { ...fileMeta('old'), modifiedTime: '2026-01-01T00:00:00Z' } as CloudFileMetadata;
+    const fresh = { ...fileMeta('new'), modifiedTime: '2026-01-02T00:00:00Z' } as CloudFileMetadata;
+    stubCache([old, fresh]);
+    const oldData = { 'vol-1': { lastProgressUpdate: '2026-01-01T00:00:00Z', progress: 1 } };
+    const freshData = { 'vol-1': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 9 } };
+    const provider = makeProvider(async (file) =>
+      jsonBlob(
+        file.fileId === 'old'
+          ? {
+              ...oldData,
+              series: { berserk: { read_count: 1, lastUpdated: '2026-01-01T00:00:00Z' } }
+            }
+          : freshData
+      )
+    );
+
+    const result = await svc.downloadVolumeDataFile(provider);
+
+    expect(provider.deleteFile).toHaveBeenCalledTimes(1);
+    expect(provider.deleteFile).toHaveBeenCalledWith(old);
+    // The survivor's OWN content, for the upload decision: its volumes and
+    // its raw series section (none here), not the fold.
+    expect(result.volumes).toEqual(freshData);
+    expect(result.survivorVolumes).toEqual(freshData);
+    expect(result.rawSeries).toBeUndefined();
+  });
+
+  it('two copies with the same modifiedTime: the fileId decides, the same way on every device', async () => {
+    const a = { ...fileMeta('a'), modifiedTime: '2026-01-01T00:00:00Z' } as CloudFileMetadata;
+    const b = { ...fileMeta('b'), modifiedTime: '2026-01-01T00:00:00Z' } as CloudFileMetadata;
+    const survivors: string[] = [];
+    for (const listing of [
+      [a, b],
+      [b, a]
+    ]) {
+      stubCache(listing);
+      const provider = makeProvider(async () => jsonBlob(goodData));
+      await svc.downloadVolumeDataFile(provider);
+      const deleted = (provider.deleteFile as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c) => (c[0] as CloudFileMetadata).fileId
+      );
+      expect(deleted).toHaveLength(1);
+      survivors.push(deleted[0] === 'a' ? 'b' : 'a');
+    }
+    expect(survivors[0]).toBe(survivors[1]);
   });
 
   it('propagates transient download errors rather than treating them as missing data', async () => {
@@ -268,7 +326,7 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
     // raw section (readable[0]) would miss it entirely, and folding without
     // forfeit-awareness would let the bogus, now-clamped-to-"now" stamp
     // clobber the honest entry from the surviving copy.
-    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    const [first, second] = [fileMeta('first', NEWEST), fileMeta('second')];
     stubCache([first, second]);
     const provider = makeProvider(async (file) =>
       jsonBlob({
@@ -592,7 +650,8 @@ describe('the series section of volume-data.json', () => {
     setSeriesReadingStates({
       'one piece': { read_count: 4, lastUpdated: '2026-08-20T00:00:00.000Z' }
     });
-    stubCache([fileMeta('first'), fileMeta('second')]);
+    // `first` is the newer copy: it survives the sweep, stale entry and all.
+    stubCache([fileMeta('first', NEWEST), fileMeta('second')]);
     const uploads: Array<Record<string, any>> = [];
     const provider = {
       type: 'mega',
@@ -615,6 +674,48 @@ describe('the series section of volume-data.json', () => {
 
     expect(uploads).toHaveLength(1);
     expect(uploads[0].series['one piece'].read_count).toBe(4);
+  });
+
+  it('uploads when the surviving copy lacks volumes the fold holds, even though local already has them all', async () => {
+    // The newest copy (kept) knows vol-1 only; the older copy (deleted) also
+    // carried vol-2, which local already has. The merged map equals local, so
+    // a comparison against the MERGED map sees nothing to write — and vol-2
+    // leaves the cloud with the deleted copy. The comparison has to be against
+    // what the survivor itself holds.
+    setLocalVolumes({
+      'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+      'vol-2': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 7 }
+    });
+    setSeriesReadingStates({});
+    setTrackingStates({});
+    const old = { ...fileMeta('old'), modifiedTime: '2026-01-01T00:00:00Z' } as CloudFileMetadata;
+    const fresh = { ...fileMeta('new'), modifiedTime: '2026-01-02T00:00:00Z' } as CloudFileMetadata;
+    stubCache([old, fresh]);
+    const uploads: Array<Record<string, any>> = [];
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async (file: CloudFileMetadata) =>
+        jsonBlob(
+          file.fileId === 'old'
+            ? {
+                'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+                'vol-2': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 7 }
+              }
+            : { 'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 } }
+        )
+      ),
+      deleteFile: vi.fn(async () => {}),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+
+    await svc.syncVolumeData(provider);
+
+    expect(provider.deleteFile).toHaveBeenCalledWith(old);
+    expect(uploads).toHaveLength(1);
+    expect(Object.keys(uploads[0]).sort()).toEqual(['vol-1', 'vol-2']);
+    expect(uploads[0]['vol-2'].progress).toBe(7);
   });
 
   it('does not re-upload a file whose state matches but whose key order differs', async () => {
@@ -1430,6 +1531,59 @@ describe('reading on two devices survives the volume merge', () => {
     expect(svc.mergeVolumeData(local, cloud)['vol-1'].progress).toBe(7);
   });
 
+  it('two devices that each re-applied the same missed restart archive the pass once', () => {
+    // The phone restarted (its pass archived at the restart); the laptop read
+    // on to p.70 without seeing it. Both devices then re-applied the restart
+    // for the laptop's reading, each stamping the archive with that reading's
+    // own time, so the union is one pass — not lifetime pages doubled.
+    const restartAt = ms(MON);
+    const readThrough = ms(TUE);
+    const phone = {
+      'vol-1': {
+        progress: 0,
+        chars: 0,
+        lastProgressUpdate: '2026-10-06T10:00:00.000Z',
+        archivedReads: [
+          { at: restartAt, pages: 200, chars: 20000, completed: true },
+          { at: readThrough, pages: 70, chars: 7000, completed: false }
+        ]
+      }
+    };
+    const laptop = {
+      'vol-1': {
+        progress: 0,
+        chars: 0,
+        lastProgressUpdate: '2026-10-06T10:30:00.000Z',
+        archivedReads: [
+          { at: restartAt, pages: 200, chars: 20000, completed: true },
+          { at: readThrough, pages: 70, chars: 7000, completed: false }
+        ]
+      }
+    };
+
+    const merged = svc.mergeVolumeData(phone, laptop)['vol-1'];
+
+    expect(merged.archivedReads).toEqual(laptop['vol-1'].archivedReads);
+  });
+
+  it('a stale copy from before a forget cannot bring archived passes back', () => {
+    const T0 = '2026-10-04T10:00:00.000Z';
+    const T1 = '2026-10-05T10:00:00.000Z';
+    const T2 = '2026-10-05T11:00:00.000Z';
+    const local = { 'vol-1': { addedOn: T2, forgotAt: T1 } };
+    const cloud = {
+      'vol-1': {
+        progress: 40,
+        lastProgressUpdate: T0,
+        archivedReads: [{ at: ms(T0) - 1000, pages: 200, chars: 2000, completed: true }]
+      }
+    };
+
+    const merged = svc.mergeVolumeData(local, cloud)['vol-1'];
+
+    expect(merged.archivedReads ?? []).toEqual([]);
+  });
+
   it('two blank records settle on the same one whichever side is local', () => {
     const A = { addedOn: MON, settings: { hasCover: true } };
     const B = { addedOn: TUE, settings: { hasCover: false } };
@@ -1534,13 +1688,18 @@ describe('the cut-over rides the volume sync', () => {
     expect(uploads[0]['vol-1'].progress).toBe(3);
   });
 
-  it('keeps the turns in the file until the history copy is confirmed', async () => {
+  it('keeps the turns in the file until the history copy is confirmed — converted turns only', async () => {
     legacyCarried.value = false;
+    const { attachProjectedTurns } = await import('$lib/reading-history/cut-over');
+    vi.mocked(attachProjectedTurns).mockClear();
     seed();
     stubCache([]);
     const { uploads, provider } = capture();
     await svc.syncVolumeData(provider);
     expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+    // Native views travel as history here; put into the file they would come
+    // back through the merge as turns and be converted into legacy events.
+    expect(attachProjectedTurns).toHaveBeenCalledWith(expect.anything(), { historySyncs: true });
   });
 
   it.each([{ serverCompilesMetadata: true }, { isReadOnly: true }])(
@@ -1555,6 +1714,11 @@ describe('the cut-over rides the volume sync', () => {
       await svc.syncVolumeData(provider);
       expect(cutOverLegacyTurns).not.toHaveBeenCalled();
       expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+      // The file is the only copy that reaches other devices: every turn rides.
+      const { attachProjectedTurns } = await import('$lib/reading-history/cut-over');
+      expect(attachProjectedTurns).toHaveBeenCalledWith(expect.anything(), {
+        historySyncs: false
+      });
     }
   );
 
@@ -1572,18 +1736,26 @@ describe('the cut-over rides the volume sync', () => {
 });
 
 describe('syncProvider — one sync per provider at a time', () => {
-  /** Holds every sync step open until released, counting the runs. */
+  /**
+   * Holds every sync step open until released. `runs` is the `options` each
+   * run of `runProviderSync` was started with, in order.
+   */
   function holdSteps() {
-    const runs: Array<{ silent?: boolean }> = [];
+    const runs: SyncOptions[] = [];
+    const original = svc.runProviderSync.bind(svc);
+    const run = vi.spyOn(svc, 'runProviderSync').mockImplementation((...args: unknown[]) => {
+      const [provider, options] = args as [SyncProvider, SyncOptions];
+      runs.push(options);
+      return original(provider, options);
+    });
     let release!: () => void;
     let gate = new Promise<void>((resolve) => (release = resolve));
     const volumeData = vi.spyOn(svc, 'syncVolumeData').mockImplementation(async () => {
-      runs.push({});
       await gate;
     });
-    const rest = ['syncProfiles', 'syncGoals', 'syncReadingHistory']
-      .filter((name) => typeof svc[name] === 'function')
-      .map((name) => vi.spyOn(svc, name).mockImplementation(async () => {}));
+    const rest = ['syncProfiles', 'syncGoals'].map((name) =>
+      vi.spyOn(svc, name).mockImplementation(async () => {})
+    );
     return {
       runs,
       release() {
@@ -1591,6 +1763,7 @@ describe('syncProvider — one sync per provider at a time', () => {
         gate = new Promise<void>((resolve) => (release = resolve));
       },
       restore() {
+        run.mockRestore();
         volumeData.mockRestore();
         rest.forEach((spy) => spy.mockRestore());
       }
@@ -1623,19 +1796,23 @@ describe('syncProvider — one sync per provider at a time', () => {
     }
   });
 
-  it('folds every request made mid-run into ONE follow-up', async () => {
+  it('folds every request made mid-run into ONE follow-up, started with no options', async () => {
     const steps = holdSteps();
     try {
       const fs = provider('filesystem');
-      const first = svc.syncProvider(fs);
+      const first = svc.syncProvider(fs, { silent: true });
       await settle();
-      const queued = [svc.syncProvider(fs), svc.syncProvider(fs), svc.syncProvider(fs)];
+      const queued = [
+        svc.syncProvider(fs, { silent: true }),
+        svc.syncProvider(fs),
+        svc.syncProvider(fs, { silent: true })
+      ];
       steps.release();
       await first;
       await settle();
       steps.release();
       await Promise.all(queued);
-      expect(steps.runs).toHaveLength(2);
+      expect(steps.runs).toEqual([{ silent: true }, {}]);
     } finally {
       steps.restore();
     }
@@ -1673,9 +1850,84 @@ describe('syncProvider — one sync per provider at a time', () => {
     } finally {
       steps.restore();
     }
-    // Its webdav sync loads modules lazily on first use; a busy machine pushed
-    // that past the 5 s default (it runs in milliseconds when warm).
-  }, 30_000);
+  });
+
+  describe('a sync that never settles', () => {
+    // A WebDAV download is a plain fetch with no signal or timeout: one that
+    // stalls would otherwise hold the provider's flight (and `isSyncing`)
+    // until a reload, with every later request parked on a follow-up that
+    // never runs.
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      vi.useFakeTimers();
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      return () => {
+        warn.mockRestore();
+        vi.useRealTimers();
+      };
+    });
+
+    it('fails at the deadline and releases the provider; its late result is ignored', async () => {
+      const steps = holdSteps();
+      try {
+        const fs = provider('filesystem');
+        const stuck = svc.syncProvider(fs);
+        await vi.advanceTimersByTimeAsync(SYNC_FLIGHT_DEADLINE_MS - 1);
+        expect(get(svc.isSyncing)).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await stuck).toEqual({
+          provider: 'filesystem',
+          success: false,
+          error: expect.stringMatching(/timed out/)
+        });
+        expect(get(svc.isSyncing)).toBe(false);
+        expect(warn).toHaveBeenCalledTimes(1);
+
+        // The stalled run settling later changes nothing: no second release.
+        steps.release();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(svc.activeSyncs).toBe(0);
+        expect(svc.flights.size).toBe(0);
+        expect(get(svc.isSyncing)).toBe(false);
+
+        // The provider takes new requests again.
+        const next = svc.syncProvider(fs);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(steps.runs).toHaveLength(2);
+        expect(get(svc.isSyncing)).toBe(true);
+        steps.release();
+        expect(await next).toEqual({ provider: 'filesystem', success: true });
+        expect(get(svc.isSyncing)).toBe(false);
+      } finally {
+        steps.restore();
+      }
+    });
+
+    it('runs the follow-up queued during the stall once the deadline passes', async () => {
+      const steps = holdSteps();
+      try {
+        const fs = provider('filesystem');
+        const stuck = svc.syncProvider(fs);
+        await vi.advanceTimersByTimeAsync(0);
+        const queued = svc.syncProvider(fs);
+        await vi.advanceTimersByTimeAsync(SYNC_FLIGHT_DEADLINE_MS - 1);
+        expect(steps.runs).toHaveLength(1);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect((await stuck).success).toBe(false);
+        expect(steps.runs).toHaveLength(2);
+        expect(get(svc.isSyncing)).toBe(true);
+
+        steps.release();
+        expect(await queued).toEqual({ provider: 'filesystem', success: true });
+        expect(get(svc.isSyncing)).toBe(false);
+        expect(svc.activeSyncs).toBe(0);
+      } finally {
+        steps.restore();
+      }
+    });
+  });
 });
 
 describe('the tracking section of volume-data.json (idle cutoff)', () => {
@@ -1718,9 +1970,7 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
     await svc.syncVolumeData(p);
     expect(uploads).toHaveLength(1);
     expect(uploads[0].tracking).toEqual({ idle: { override_minutes: 12, lastUpdated: T2 } });
-    // The section's first sync pays the history cut-over's cold import; a
-    // busy machine pushed that past the 5 s default.
-  }, 30_000);
+  });
 
   it('adopts a newer cloud override and uploads nothing when they agree', async () => {
     setTrackingStates({ idle: { override_minutes: 12, lastUpdated: T1 } });
@@ -1902,7 +2152,7 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
         },
         honest: { devices: { 'dev-a': { name: 'Honest', lastUpdated: T1 } } }
       };
-      stubCache(ids.map(fileMeta));
+      stubCache(ids.map((id) => fileMeta(id)));
       const p = makeProvider(async (f) => jsonBlob(file(bodies[f.fileId])));
       const result = await svc.downloadVolumeDataFile(p);
       expect(result.tracking.devices).toEqual({
