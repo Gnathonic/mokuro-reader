@@ -426,7 +426,7 @@
     }
 
     promptConfirmation(`Delete ${seriesTitle} from ${providerDisplayName}?`, async () => {
-      await deleteSeriesFromCloudByTitle(seriesTitle);
+      await deleteSeriesFromCloudByTitle(seriesTitle, allVolumes ?? []);
     });
   }
 

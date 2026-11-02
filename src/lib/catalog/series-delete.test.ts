@@ -57,7 +57,7 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
   }
 }));
 
-import { promptSeriesRemoval } from './series-delete';
+import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from './series-delete';
 import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { VolumeMetadata } from '$lib/types';
 
@@ -184,12 +184,12 @@ describe('promptSeriesRemoval', () => {
     expect(showSnackbar).toHaveBeenCalledWith('Deleted 2 volume(s) from Drive');
   });
 
-  it('deletes a folder the cloud spells differently — the one the dialog offered', async () => {
-    // A server that merged `one piece/` into `One Piece/`, before this device
-    // adopted the spelling (or plain storage, which never adopts). The dialog's
-    // "backed up?" check and the delete path must resolve the folder the same
-    // way: offering the box and then answering "No volumes found" is a lie.
-    const listing = [{ path: 'One Piece/Vol 1.cbz' }];
+  /**
+   * The manager's folded resolution over `listing`, as `resolveCloudFolderTitle` /
+   * `existsInCloud` answer it: the exact folder, else the one folding onto the title
+   * (`normalizeVolumeTitleKey`, which also folds unicode form).
+   */
+  function foldedListing(listing: { path: string }[]) {
     getCloudVolumesBySeries.mockImplementation((series: string) =>
       listing.filter((file) => file.path.startsWith(`${series}/`))
     );
@@ -212,6 +212,14 @@ describe('promptSeriesRemoval', () => {
       currentProviderType: 'google-drive',
       providers: {}
     };
+  }
+
+  it('deletes a folder the cloud spells differently — the one the dialog offered', async () => {
+    // A server that merged `one piece/` into `One Piece/`, before this device
+    // adopted the spelling (or plain storage, which never adopts). The dialog's
+    // "backed up?" check and the delete path must resolve the folder the same
+    // way: offering the box and then answering "No volumes found" is a lie.
+    foldedListing([{ path: 'One Piece/Vol 1.cbz' }]);
 
     await promptSeriesRemoval([volume({ series_title: 'one piece' })]);
     expect(promptConfirmation.mock.calls[0][4]).toMatchObject({ label: 'Also delete from Drive?' });
@@ -220,6 +228,41 @@ describe('promptSeriesRemoval', () => {
     expect(showSnackbar).not.toHaveBeenCalledWith('No volumes found in Drive');
     expect(deleteSeriesFolder).toHaveBeenCalledWith('one piece');
     expect(showSnackbar).toHaveBeenCalledWith('Deleted 2 volume(s) from Drive');
+  });
+
+  it('never offers or deletes a folder the catalog keeps as another series (unicode form)', async () => {
+    // `Café` composed and `Café` decomposed fold alike (`normalizeVolumeTitleKey`),
+    // so the lookups resolve one onto the other's folder — but the catalog groups
+    // them apart (`normalizeSeriesKey` does not normalize form): two series, and
+    // the decomposed one's backup is not this one's to delete.
+    const nfc = 'Caf\u00e9';
+    const nfd = 'Cafe\u0301';
+    foldedListing([{ path: `${nfd}/Vol 1.cbz` }]);
+
+    await promptSeriesRemoval([volume({ series_title: nfc })]);
+    expect(promptConfirmation.mock.calls[0][4]).toBeUndefined();
+
+    await deleteSeriesFromCloudByTitle(nfc, [volume({ series_title: nfc })]);
+    expect(showSnackbar).toHaveBeenCalledWith('No volumes found in Drive');
+    expect(deleteSeriesFolder).not.toHaveBeenCalled();
+  });
+
+  it('does not delete a case-variant folder that lists none of the series’ own volumes', async () => {
+    // Same catalog series by key, but nothing of ours is in there: the folder is
+    // not corroborated as this series' backup, so the menu item answers as the
+    // exact gate did.
+    foldedListing([{ path: 'One Piece/Vol 2.cbz' }]);
+
+    await deleteSeriesFromCloudByTitle('one piece', [volume({ series_title: 'one piece' })]);
+    expect(showSnackbar).toHaveBeenCalledWith('No volumes found in Drive');
+    expect(deleteSeriesFolder).not.toHaveBeenCalled();
+  });
+
+  it('deletes an exact folder whatever it lists, as it always did', async () => {
+    foldedListing([{ path: 'One Piece/Vol 2.cbz' }]);
+
+    await deleteSeriesFromCloudByTitle('One Piece', [volume()]);
+    expect(deleteSeriesFolder).toHaveBeenCalledWith('One Piece');
   });
 
   it('leaves the cloud alone when the box is not ticked', async () => {
