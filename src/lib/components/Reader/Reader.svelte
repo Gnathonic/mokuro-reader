@@ -512,8 +512,6 @@
       viewTracker.close(Date.now());
       readingPaused.set(false);
       stopFlushOnPageHide();
-      // Stop activity tracker when component unmounts
-      activityTracker.stop();
       // Restore overflow when leaving reader
       document.documentElement.style.overflow = '';
       window.removeEventListener('offset-spreads', onOffsetSpreads);

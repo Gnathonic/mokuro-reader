@@ -8,7 +8,8 @@
   import { promptExtraction, promptSeriesEditor } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { volumes, progress, settings } from '$lib/settings';
-  import { figuresFor, readingStats, seriesReadingSpeed } from '$lib/reading-history/stats-store';
+  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
+  import { seriesSpeeds } from '$lib/reading-history/series-speeds';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
@@ -119,11 +120,9 @@
     if (charsRemaining <= 0) return null;
 
     // This series' own speed once it has enough reading, else the recent speed
-    const readingSpeed = seriesReadingSpeed(
-      $readingStats,
-      manga.map((vol) => vol.volume_uuid),
-      $personalizedReadingSpeed
-    );
+    // (computed once per stats change for every series — see series-speeds.ts)
+    const readingSpeed =
+      (manga[0] && $seriesSpeeds.get(manga[0].series_uuid)) ?? $personalizedReadingSpeed;
     if (!readingSpeed.isPersonalized || readingSpeed.charsPerMinute <= 0) {
       return null;
     }
