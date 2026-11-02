@@ -7,11 +7,14 @@
 
 /** Tries per request, the first one included. */
 export const MAX_RETRY_ATTEMPTS = 5;
-/** First backoff wait; doubles per attempt. */
-export const RETRY_BASE_DELAY_MS = 400;
-/** The longest backoff wait (before jitter). */
-export const RETRY_MAX_DELAY_MS = 5000;
-/** The longest wait a server's `Retry-After` can ask for. */
+/**
+ * First backoff wait; doubles per attempt. 1 s is where Google's Drive guidance
+ * starts its exponential backoff ("Resolve errors": 1 s, 2 s, 4 s, …).
+ */
+export const RETRY_BASE_DELAY_MS = 1000;
+/** The longest backoff wait (before jitter): every try's doubling runs uncut (1, 2, 4, 8 s). */
+export const RETRY_MAX_DELAY_MS = 8000;
+/** The longest wait a server's `Retry-After` can ask for (32 s, Google's suggested ceiling). */
 export const RETRY_AFTER_MAX_MS = RETRY_MAX_DELAY_MS * 4;
 /** Up to this much is added to a backoff wait, so parallel clients spread out. */
 export const RETRY_JITTER_MS = 250;
