@@ -165,6 +165,11 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   which roots are top-level from a `'root' in parents` query, never
   `files.get('root')` (a 404 under the app's `drive.file` scope); dedup
   confirms a root as the write root only when it is the cache's same pick.
+  Bunko's control files are read from EVERY live root too, nested ones
+  included (Drive: the cache's listed reader folders,
+  `getListedReaderFolderIds`, else one folder query with no parent clause;
+  MEGA: any parent named `mokuro-reader`) — a nested write root holds the
+  marker when there is no top-level one.
 - **Groups** are an exact name under one parent, within the library only
   (`listFolders` keeps `mokuro-reader` folders and their descendants). The
   kept folder is the oldest, then the smaller id (`compareByAge`).
