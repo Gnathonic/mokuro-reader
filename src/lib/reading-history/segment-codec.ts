@@ -1,5 +1,12 @@
 import { legacyDeviceFor } from './paths';
-import type { EventPayload, Layout, Orientation, PositionPayload, ReadingEvent } from './types';
+import type {
+  EventPayload,
+  Layout,
+  Orientation,
+  PauseCount,
+  PositionPayload,
+  ReadingEvent
+} from './types';
 
 /**
  * One month of one device's events, as stored in the cloud (spec: Storage →
@@ -13,11 +20,16 @@ import type { EventPayload, Layout, Orientation, PositionPayload, ReadingEvent }
  *   2 restart [2, dSeq, dT, vol]
  *   3 forget  [3, dSeq, dT, vol, before]
  *   4 position [4, dSeq, dT, vol, answer (0 jump, 1 stay, 2 reset), through, page]
+ *   5 resolve [5, dSeq, dT, vol, target device, target seq, count (0 full, 1 typical, 2 none)]
+ *
+ * `target device` indexes a second dictionary, `targets`, written only when
+ * the segment holds a resolve (so a segment without one keeps its bytes).
+ * Resolves live in month segments only: a legacy device never answers.
  *
  * A new event kind or field AFTER a release is a new `format`; a reader refuses
  * formats it does not know (the importer keeps the old stamp, so an updated app
  * retries). Format 1 was settled before any release read segments, `position`
- * (kind 4) included.
+ * (kind 4) and `resolve` (kind 5) included.
  */
 export const HISTORY_SEGMENT_FORMAT = 1;
 
@@ -52,6 +64,7 @@ const LAYOUTS: Array<Layout | 'unknown'> = [
 ];
 const ORIENTATIONS: Array<Orientation | 'unknown'> = ['portrait', 'landscape', 'unknown'];
 const ANSWERS: Array<PositionPayload['answer']> = ['jump', 'stay', 'reset'];
+const COUNTS: PauseCount[] = ['full', 'typical', 'none'];
 
 type Row = Array<number | number[]>;
 
@@ -66,17 +79,9 @@ export async function encodeSegment(
   const sorted = [...events].sort((a, b) =>
     legacy ? a.device.localeCompare(b.device) || a.seq - b.seq : a.seq - b.seq
   );
-  const volumes: string[] = [];
-  const volIndex = new Map<string, number>();
-  const vol = (v: string) => {
-    let i = volIndex.get(v);
-    if (i === undefined) {
-      i = volumes.length;
-      volumes.push(v);
-      volIndex.set(v, i);
-    }
-    return i;
-  };
+  const volumes = dictionary();
+  const targets = dictionary();
+  const vol = volumes.index;
 
   let prevSeq = 0;
   let prevT = 0;
@@ -117,6 +122,15 @@ export async function encodeSegment(
         return [3, ...head, vol(e.volume), e.before];
       case 'position':
         return [4, ...head, vol(e.volume), ANSWERS.indexOf(e.answer), e.through, e.page];
+      case 'resolve':
+        return [
+          5,
+          ...head,
+          vol(e.volume),
+          targets.index(e.target[0]),
+          e.target[1],
+          COUNTS.indexOf(e.count)
+        ];
     }
   });
 
@@ -129,7 +143,12 @@ export async function encodeSegment(
     count: sorted.length,
     ...(legacy && { legacy: true as const })
   };
-  const json = JSON.stringify({ ...header, volumes, rows });
+  const json = JSON.stringify({
+    ...header,
+    volumes: volumes.values,
+    ...(targets.values.length > 0 && { targets: targets.values }),
+    rows
+  });
   const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
@@ -162,6 +181,11 @@ export async function decodeSegment(
     !Number.isSafeInteger(first_seq) ||
     !Number.isSafeInteger(last_seq)
   ) {
+    throw new SegmentFormatError('malformed segment header');
+  }
+
+  const targets: string[] = parsed.targets === undefined ? [] : parsed.targets;
+  if (!Array.isArray(targets) || targets.some((d) => typeof d !== 'string')) {
     throw new SegmentFormatError('malformed segment header');
   }
 
@@ -221,6 +245,17 @@ export async function decodeSegment(
         payload = { kind: 'position', volume, answer, through: num(row[5]), page: int(row[6]) };
         break;
       }
+      case 5: {
+        if (legacy) throw new SegmentFormatError('resolve in a legacy segment');
+        const targetDevice = targets[int(row[4])];
+        if (!targetDevice) throw new SegmentFormatError('unknown target device');
+        const targetSeq = int(row[5]);
+        if (targetSeq <= 0) throw new SegmentFormatError('target seq must be positive');
+        const count = COUNTS[int(row[6])];
+        if (!count) throw new SegmentFormatError('unknown pause answer');
+        payload = { kind: 'resolve', volume, target: [targetDevice, targetSeq], count };
+        break;
+      }
       default:
         throw new SegmentFormatError(`unknown event kind ${row[0]}`);
     }
@@ -244,6 +279,24 @@ export async function decodeSegment(
     ...(legacy && { legacy: true as const })
   };
   return { header, events };
+}
+
+/** A string table for a segment's header: each distinct value once, rows hold its index. */
+function dictionary(): { values: string[]; index: (value: string) => number } {
+  const values: string[] = [];
+  const indices = new Map<string, number>();
+  return {
+    values,
+    index(value) {
+      let i = indices.get(value);
+      if (i === undefined) {
+        i = values.length;
+        values.push(value);
+        indices.set(value, i);
+      }
+      return i;
+    }
+  };
 }
 
 function num(value: unknown): number {

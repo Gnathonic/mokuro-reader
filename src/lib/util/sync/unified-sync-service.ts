@@ -16,6 +16,7 @@ import {
 } from '$lib/settings';
 import {
   TRACKING_SECTION_KEY,
+  copyTrackingEntry,
   detectBogusTrackingKeys,
   mergeTrackingSections,
   parseTrackingSection,
@@ -493,7 +494,7 @@ class UnifiedSyncService {
                   readable[j].result.value.tracking?.[key] &&
                   !perCopyBogusTracking[j].has(key)
               );
-            if (!honestElsewhere) foldable[key] = own[key];
+            if (!honestElsewhere) copyTrackingEntry(foldable, own, key);
           }
           mergedTracking = mergeTrackingSections(mergedTracking, foldable, perCopyBogusTracking[i]);
         });

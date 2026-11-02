@@ -94,3 +94,12 @@ describe('ReaderToggles — Edit OCR text', () => {
     expect(getByText(/paged mode only/i)).toBeTruthy();
   });
 });
+
+describe('ReaderToggles — long pauses', () => {
+  it('carries the long-pause setting right after the idle cutoff', () => {
+    const { getByLabelText } = render(ReaderToggles);
+    const cutoff = getByLabelText('Automatic idle cutoff');
+    const pauses = getByLabelText('When a page stays open past the cutoff');
+    expect(cutoff.compareDocumentPosition(pauses) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});

@@ -48,6 +48,14 @@ const events: ReadingEvent[] = [
   { device: DEV, seq: 10, t: T + 62000, kind: 'forget', volume: 'vol-1', before: T + 62000 }
 ];
 
+/** The JSON inside a segment, to check what the encoder wrote. */
+async function inflate(bytes: Uint8Array): Promise<Record<string, unknown>> {
+  const stream = new Blob([new Uint8Array(bytes)])
+    .stream()
+    .pipeThrough(new DecompressionStream('deflate-raw'));
+  return JSON.parse(await new Response(stream).text());
+}
+
 describe('segment codec', () => {
   it('round-trips every event kind exactly, in seq order', async () => {
     const bytes = await encodeSegment(DEV, '2026-10', [...events].reverse());
@@ -148,6 +156,49 @@ describe('segment codec', () => {
     ])('%s', async (_label, body) => {
       await expect(decodeSegment(await raw(body))).rejects.toThrow(SegmentFormatError);
     });
+
+    it.each([
+      [
+        'a resolve without a target dictionary',
+        { rows: [[5, 1, T, 0, 0, 7, 0]] },
+        /unknown target device/
+      ],
+      [
+        'an unknown target device index',
+        { targets: ['dev-b'], rows: [[5, 1, T, 0, 1, 7, 0]] },
+        /unknown target device/
+      ],
+      [
+        'an empty target device',
+        { targets: [''], rows: [[5, 1, T, 0, 0, 7, 0]] },
+        /unknown target device/
+      ],
+      [
+        'a string target device index',
+        { targets: ['dev-b'], rows: [[5, 1, T, 0, '0', 7, 0]] },
+        /malformed integer cell/
+      ],
+      [
+        'a target dictionary that is not a list of strings',
+        { targets: [7], rows: [[5, 1, T, 0, 0, 7, 0]] },
+        /malformed segment header/
+      ],
+      ['a target seq of 0', { targets: ['dev-b'], rows: [[5, 1, T, 0, 0, 0, 0]] }, /target seq/],
+      [
+        'pause answer 3',
+        { targets: ['dev-b'], rows: [[5, 1, T, 0, 0, 7, 3]] },
+        /unknown pause answer/
+      ],
+      [
+        'a resolve in a legacy segment',
+        { legacy: true, targets: ['dev-b'], rows: [[5, 1, T, 0, 0, 7, 0]] },
+        /resolve in a legacy segment/
+      ]
+    ])('%s', async (_label, body, message) => {
+      const error = await decodeSegment(await raw(body)).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SegmentFormatError);
+      expect(String((error as Error).message)).toMatch(message);
+    });
   });
 
   it('round-trips a legacy segment: per-volume legacy devices, uploader in the header', async () => {
@@ -227,5 +278,85 @@ describe('segment codec', () => {
     ];
     const { events: out } = await decodeSegment(await encodeSegment(DEV, '2026-10', answers));
     expect(out).toEqual(answers);
+  });
+
+  describe('resolve (kind 5)', () => {
+    const resolves: ReadingEvent[] = [
+      {
+        device: DEV,
+        seq: 7,
+        t: T,
+        kind: 'resolve',
+        volume: 'vol-1',
+        target: [DEV, 6],
+        count: 'full'
+      },
+      {
+        device: DEV,
+        seq: 8,
+        t: T + 1,
+        kind: 'resolve',
+        volume: 'vol-2',
+        target: ['dev-b', 41],
+        count: 'typical'
+      },
+      {
+        device: DEV,
+        seq: 9,
+        t: T + 2,
+        kind: 'resolve',
+        volume: 'vol-1',
+        target: ['dev-b', 3],
+        count: 'none'
+      }
+    ];
+
+    it('round-trips answers aimed at this device and at another (full, typical, none)', async () => {
+      const bytes = await encodeSegment(DEV, '2026-10', resolves);
+      const { header, events: out } = await decodeSegment(bytes);
+      expect(header).toEqual({
+        format: 1,
+        device: DEV,
+        month: '2026-10',
+        first_seq: 7,
+        last_seq: 9,
+        count: 3
+      });
+      expect(out).toEqual(resolves);
+    });
+
+    it('round-trips a resolve beside the page it answers', async () => {
+      const both = [...events, { ...resolves[0], seq: 11, target: [DEV, 5] as [string, number] }];
+      const { events: out } = await decodeSegment(await encodeSegment(DEV, '2026-10', both));
+      expect(out).toEqual(both);
+    });
+
+    it('writes a target dictionary only when the segment holds a resolve', async () => {
+      const plain = await inflate(await encodeSegment(DEV, '2026-10', events));
+      expect(plain).not.toHaveProperty('targets');
+      expect(Object.keys(plain)).toEqual([
+        'format',
+        'device',
+        'month',
+        'first_seq',
+        'last_seq',
+        'count',
+        'volumes',
+        'rows'
+      ]);
+      const answered = await inflate(await encodeSegment(DEV, '2026-10', resolves));
+      expect(answered.targets).toEqual([DEV, 'dev-b']);
+      expect(answered.rows).toEqual([
+        [5, 7, T, 0, 0, 6, 0],
+        [5, 1, 1, 1, 1, 41, 1],
+        [5, 1, 1, 0, 1, 3, 2]
+      ]);
+    });
+
+    it('refuses a resolve in a legacy segment', async () => {
+      await expect(encodeSegment(DEV, 'legacy', [resolves[0]], { legacy: true })).rejects.toThrow(
+        SegmentFormatError
+      );
+    });
   });
 });

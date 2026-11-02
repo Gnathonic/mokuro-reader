@@ -11,6 +11,8 @@
     type VolumeSpeedData
   } from '$lib/util/reading-speed-history';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
+  import { pauseVolumeTitle } from '$lib/reading-history/pause-review';
+  import LongPausesCard from '$lib/components/Stats/LongPausesCard.svelte';
   import {
     volumes,
     deleteVolume as deleteVolumeStats,
@@ -1210,6 +1212,9 @@
         </div>
       </Card>
     </div>
+
+    <!-- Long pauses to review (phase 3b); renders nothing when there are none -->
+    <LongPausesCard titleOf={(volume) => pauseVolumeTitle(volume, $catalogStore, $volumes)} />
 
     <!-- Achievement Badges -->
     <Card class="mb-6 w-full max-w-none p-6">

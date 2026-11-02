@@ -1,6 +1,6 @@
 import { generateUUID } from '$lib/util/uuid';
 import type { HistoryDexie } from './history-db';
-import type { EventPayload, ReadingEvent } from './types';
+import type { EventPayload, PagePayload, PauseCount, ReadingEvent } from './types';
 
 const DEVICE_ID_KEY = 'device_id';
 const NEXT_SEQ_KEY = 'next_seq';
@@ -20,21 +20,28 @@ export async function getOrCreateDeviceId(db: HistoryDexie): Promise<string> {
 }
 
 /**
- * Store one event under this device's next `seq`. The counter is read and
- * advanced in the same rw transaction as the write: IndexedDB serialises rw
- * transactions on a store across every connection, so two tabs of one device
- * can never hand out the same `seq`.
+ * This device and the first of `count` consecutive fresh seqs. Call it inside
+ * the caller's rw transaction over `history_meta` and `reading_events`: the
+ * counter is read and advanced in the same transaction as the writes, and
+ * IndexedDB serialises rw transactions on a store across every connection, so
+ * two tabs of one device can never hand out the same `seq`.
  */
+async function takeSeqs(db: HistoryDexie, count: number): Promise<{ device: string; seq: number }> {
+  const device = await getOrCreateDeviceId(db);
+  const next = await db.history_meta.get(NEXT_SEQ_KEY);
+  const seq = typeof next?.value === 'number' ? next.value : 1;
+  await db.history_meta.put({ key: NEXT_SEQ_KEY, value: seq + count });
+  return { device, seq };
+}
+
+/** Store one event under this device's next `seq`. */
 export async function appendEvent(
   db: HistoryDexie,
   payload: EventPayload,
   t: number
 ): Promise<ReadingEvent> {
   const event = await db.transaction('rw', db.history_meta, db.reading_events, async () => {
-    const device = await getOrCreateDeviceId(db);
-    const next = await db.history_meta.get(NEXT_SEQ_KEY);
-    const seq = typeof next?.value === 'number' ? next.value : 1;
-    await db.history_meta.put({ key: NEXT_SEQ_KEY, value: seq + 1 });
+    const { device, seq } = await takeSeqs(db, 1);
     const stored = { ...payload, device, seq, t } as ReadingEvent;
     await db.reading_events.add(stored);
     return stored;
@@ -42,6 +49,38 @@ export async function appendEvent(
   // After the commit: listeners only ever hear about durable events.
   notifyEventsRecorded([event]);
   return event;
+}
+
+/**
+ * Store a finished view: its `page` event under seq n and, when the user
+ * answered its long pause, a `resolve` under n+1 aimed at it. One rw
+ * transaction, so a page is never stored without the answer given for it.
+ */
+export async function appendView(
+  db: HistoryDexie,
+  page: PagePayload,
+  t: number,
+  answer: { count: PauseCount; t: number } | null
+): Promise<ReadingEvent[]> {
+  const events = await db.transaction('rw', db.history_meta, db.reading_events, async () => {
+    const { device, seq } = await takeSeqs(db, answer ? 2 : 1);
+    const stored: ReadingEvent[] = [{ ...page, device, seq, t }];
+    if (answer) {
+      stored.push({
+        kind: 'resolve',
+        volume: page.volume,
+        target: [device, seq],
+        count: answer.count,
+        device,
+        seq: seq + 1,
+        t: answer.t
+      });
+    }
+    await db.reading_events.bulkAdd(stored);
+    return stored;
+  });
+  notifyEventsRecorded(events);
+  return events;
 }
 
 type EventsListener = (events: ReadingEvent[]) => void;
@@ -82,8 +121,37 @@ export function recordEvent(
   db?: HistoryDexie
 ): Promise<ReadingEvent | null> {
   if (!db && typeof indexedDB === 'undefined') return Promise.resolve(null);
-  const target = db ? Promise.resolve(db) : import('./history-db').then((m) => m.historyDb());
-  return target.then((resolved) => appendEvent(resolved, payload, t)).catch(warnOnce);
+  return historyFor(db)
+    .then((resolved) => appendEvent(resolved, payload, t))
+    .catch(warnOnce);
+}
+
+/** `recordEvent` for a finished view and its answer (`appendView`): never throws. */
+export function recordView(
+  page: PagePayload,
+  t: number,
+  answer: { count: PauseCount; t: number } | null,
+  db?: HistoryDexie
+): Promise<ReadingEvent[] | null> {
+  if (!db && typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return historyFor(db)
+    .then((resolved) => appendView(resolved, page, t, answer))
+    .catch(warnOnce);
+}
+
+/** An answer given after the view ended (the review list): never throws. */
+export function recordResolve(
+  volume: string,
+  target: [device: string, seq: number],
+  count: PauseCount,
+  t: number = Date.now(),
+  db?: HistoryDexie
+): Promise<ReadingEvent | null> {
+  return recordEvent({ kind: 'resolve', volume, target, count }, t, db);
+}
+
+function historyFor(db?: HistoryDexie): Promise<HistoryDexie> {
+  return db ? Promise.resolve(db) : import('./history-db').then((m) => m.historyDb());
 }
 
 function warnOnce(error: unknown): null {
