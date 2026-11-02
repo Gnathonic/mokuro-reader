@@ -1497,13 +1497,18 @@ describe('the cut-over rides the volume sync', () => {
     expect(uploads[0]['vol-1'].progress).toBe(3);
   });
 
-  it('keeps the turns in the file until the history copy is confirmed', async () => {
+  it('keeps the turns in the file until the history copy is confirmed — converted turns only', async () => {
     legacyCarried.value = false;
+    const { attachProjectedTurns } = await import('$lib/reading-history/cut-over');
+    vi.mocked(attachProjectedTurns).mockClear();
     seed();
     stubCache([]);
     const { uploads, provider } = capture();
     await svc.syncVolumeData(provider);
     expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+    // Native views travel as history here; put into the file they would come
+    // back through the merge as turns and be converted into legacy events.
+    expect(attachProjectedTurns).toHaveBeenCalledWith(expect.anything(), { historySyncs: true });
   });
 
   it.each([{ serverCompilesMetadata: true }, { isReadOnly: true }])(
@@ -1518,6 +1523,11 @@ describe('the cut-over rides the volume sync', () => {
       await svc.syncVolumeData(provider);
       expect(cutOverLegacyTurns).not.toHaveBeenCalled();
       expect(uploads[0]['vol-1'].recentPageTurns).toEqual([[9, 9, 90]]);
+      // The file is the only copy that reaches other devices: every turn rides.
+      const { attachProjectedTurns } = await import('$lib/reading-history/cut-over');
+      expect(attachProjectedTurns).toHaveBeenCalledWith(expect.anything(), {
+        historySyncs: false
+      });
     }
   );
 

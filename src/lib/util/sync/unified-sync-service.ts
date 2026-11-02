@@ -939,7 +939,7 @@ class UnifiedSyncService {
       const carried =
         historySyncs &&
         (await historySync.legacyCarriedBy(provider.type, historyDbModule.historyDb()));
-      return carried ? records : await cutOver.attachProjectedTurns(records);
+      return carried ? records : await cutOver.attachProjectedTurns(records, { historySyncs });
     } catch (error) {
       console.warn('Page-turn cut-over failed (turns stay in volume-data.json):', error);
       return get(volumesWithTrash);
