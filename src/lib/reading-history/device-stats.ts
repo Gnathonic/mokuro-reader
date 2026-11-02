@@ -11,7 +11,6 @@ import type { DeviceTotals } from './stats-engine';
 import {
   figuresFor,
   readingStats,
-  unexplainedBaseline,
   type BaselineSource,
   type ReadingStatsState
 } from './stats-store';
@@ -198,7 +197,7 @@ export function deviceStatsFrom(
     if (!volume) continue;
     const totals = stats.byVolume.get(volume);
     const figures = figuresFor(stats, volume, record);
-    const baseline = unexplainedBaseline(stats, volume, record);
+    const { baseline } = figures;
     totalTimeMs += figures.timeMs;
     totalChars += figures.chars;
     before.timeMs += baseline.timeMs;

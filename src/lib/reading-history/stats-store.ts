@@ -52,6 +52,8 @@ export interface VolumeFigures {
   chars: number;
   skippedChars: number;
   lastReadAt: number | null;
+  /** The pre-history snapshot's share of the above (`unexplainedBaseline`). */
+  baseline: { timeMs: number; chars: number };
 }
 
 const RECOMPUTE_DELAY_MS = 500;
@@ -234,7 +236,8 @@ export function figuresFor(
     minutes: Math.floor(timeMs / 60_000),
     chars: Math.max(0, chars),
     skippedChars: totals?.skippedChars ?? 0,
-    lastReadAt: totals?.lastReadAt ?? null
+    lastReadAt: totals?.lastReadAt ?? null,
+    baseline
   };
 }
 
