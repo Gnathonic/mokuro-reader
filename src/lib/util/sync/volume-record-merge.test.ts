@@ -208,18 +208,33 @@ describe('legacyStats (the pre-event snapshot)', () => {
   const older = { time_ms: 600_000, chars: 900, before: 1000 };
   const newer = { time_ms: 300_000, chars: 1200, before: 2000 };
 
-  it('keeps the later snapshot, whichever side wins', () => {
-    const one = mergeLiveVolumeRecords({ legacyStats: older }, { legacyStats: newer });
-    const two = mergeLiveVolumeRecords({ legacyStats: newer }, { legacyStats: older });
-    expect(one.legacyStats).toEqual(newer);
-    expect(two.legacyStats).toEqual(newer);
+  it("keeps the winning copy's snapshot, whichever freeze came later", () => {
+    // The winner is the newer-stamped record (the old counter's last write
+    // wins), so an editor reset on the device that read last stays a reset.
+    expect(
+      mergeLiveVolumeRecords({ legacyStats: older }, { legacyStats: newer }).legacyStats
+    ).toEqual(older);
+    expect(
+      mergeLiveVolumeRecords({ legacyStats: newer }, { legacyStats: older }).legacyStats
+    ).toEqual(newer);
   });
 
-  it('breaks a tie on the freeze time by the larger figures, on either side', () => {
-    const a = { time_ms: 5, chars: 1, before: 7 };
-    const b = { time_ms: 9, chars: 1, before: 7 };
-    expect(mergeLiveVolumeRecords({ legacyStats: a }, { legacyStats: b }).legacyStats).toEqual(b);
-    expect(mergeLiveVolumeRecords({ legacyStats: b }, { legacyStats: a }).legacyStats).toEqual(b);
+  it('a stale device that upgrades later cannot erase minutes only the other counter held', () => {
+    // The laptop read last (150 min, frozen at T1); the phone missed those
+    // syncs and froze its stale 100 min at T2 > T1. The later freeze saw LESS
+    // of the counter, not more: the laptop's record wins the merge, and so
+    // does its snapshot — on both devices.
+    const laptop = {
+      progress: 60,
+      lastProgressUpdate: '2026-10-03T20:00:00.000Z',
+      legacyStats: { time_ms: 150 * 60_000, chars: 6000, before: Date.parse('2026-10-04T00:00Z') }
+    };
+    const phone = {
+      progress: 40,
+      lastProgressUpdate: '2026-10-01T20:00:00.000Z',
+      legacyStats: { time_ms: 100 * 60_000, chars: 4000, before: Date.parse('2026-10-05T00:00Z') }
+    };
+    expect(mergeLiveVolumeRecords(laptop, phone).legacyStats).toEqual(laptop.legacyStats);
   });
 
   it('carries the loser snapshot onto a winner without one', () => {

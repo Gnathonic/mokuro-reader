@@ -41,10 +41,14 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
   // A forget hides the reading from before history too: after one, only a
   // copy that already knows of it (its own horizon) may carry a snapshot.
   const keepsSnapshot = (side: T) => !horizon || side.forgotAt === horizon;
-  const legacyStats = mergeLegacyStats(
-    keepsSnapshot(winner) ? winner.legacyStats : undefined,
-    keepsSnapshot(loser) ? loser.legacyStats : undefined
-  );
+  // With a snapshot on both sides the winner's stands: it is the newest
+  // record, so its snapshot is the old counter's last write — the rule the
+  // counter itself merged by. The freeze time says only WHEN a device
+  // upgraded, not how much of the counter it had: a stale device freezing
+  // later would otherwise erase minutes only the other side's counter held.
+  const legacyStats =
+    (keepsSnapshot(winner) ? winner.legacyStats : undefined) ??
+    (keepsSnapshot(loser) ? loser.legacyStats : undefined);
   const legacyChanged = !sameSnapshot(legacyStats, winner.legacyStats);
   if (
     !horizon &&
@@ -132,21 +136,6 @@ function unionArchivedReads<R extends { at: number }>(
     }
   }
   return added ? [...byAt.values()].sort((a, b) => a.at - b.at) : undefined;
-}
-
-/**
- * Two devices' pre-history snapshots: the LATER freeze wins (it saw more of
- * the old counter), then the larger figures — the same result whichever copy
- * won the merge.
- */
-export function mergeLegacyStats(
-  a: LegacyStatsLike | undefined,
-  b: LegacyStatsLike | undefined
-): LegacyStatsLike | undefined {
-  if (!a) return b;
-  if (!b) return a;
-  const order = b.before - a.before || b.time_ms - a.time_ms || b.chars - a.chars;
-  return order > 0 ? b : a;
 }
 
 function sameSnapshot(a: LegacyStatsLike | undefined, b: LegacyStatsLike | undefined): boolean {
