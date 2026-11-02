@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { uploadVolumeFiles } from './volume-upload-order';
+import { isLayerFileRefusal, uploadVolumeFiles } from './volume-upload-order';
+import { WebdavUploadError } from './sync/providers/webdav/webdav-upload';
+import { DriveHttpError } from './sync/core/providers/drive-http';
 
 const file = (filename: string) => ({ filename, blob: new Blob([filename]) });
 const layer = (layerId: string) => ({
@@ -223,5 +225,57 @@ describe('uploadVolumeFiles', () => {
     const result = await uploadVolumeFiles(undefined, { sidecar, archive: async () => 1 });
     expect(sidecar).not.toHaveBeenCalled();
     expect(result).toEqual({ archive: 1, layers: [] });
+  });
+});
+
+describe('isLayerFileRefusal decides on the status the error carries, never on its message', () => {
+  it('a plain "Upload failed: 403 Forbidden" (the Drive worker core, rate-limited or over quota) is not one', () => {
+    expect(isLayerFileRefusal(new Error('Upload failed: 403 Forbidden'))).toBe(false);
+    expect(isLayerFileRefusal(new Error('Upload failed: 409 Conflict'))).toBe(false);
+    expect(isLayerFileRefusal(new Error('WebDAV upload failed: 403'))).toBe(false);
+  });
+
+  it('a typed 403 or 409 from the WebDAV upload core is one', () => {
+    const reserved = new WebdavUploadError('WebDAV upload failed: 403 Forbidden', {
+      status: 403,
+      reason: 'reserved-layer',
+      detail: 'the layer id is reserved',
+      retryable: false
+    });
+    const noVolume = new WebdavUploadError('WebDAV upload failed: 409 Conflict', {
+      status: 409,
+      reason: 'no-volume',
+      detail: 'no archive to anchor on',
+      retryable: false
+    });
+    expect(isLayerFileRefusal(reserved)).toBe(true);
+    expect(isLayerFileRefusal(noVolume)).toBe(true);
+  });
+
+  it('a Drive 403 that is a rate limit or a full account is not one, whatever its status', () => {
+    const rateLimited = new DriveHttpError(403, 'userRateLimitExceeded', {
+      context: 'Upload failed'
+    });
+    const full = new DriveHttpError(403, 'storageQuotaExceeded', { context: 'Upload failed' });
+    expect(rateLimited.status).toBe(403);
+    expect(isLayerFileRefusal(rateLimited)).toBe(false);
+    expect(isLayerFileRefusal(full)).toBe(false);
+  });
+
+  it('a layer failing before the archive with such a plain error fails the backup; the layer is not dropped', async () => {
+    const archive = vi.fn(async () => 'ok');
+    await expect(
+      uploadVolumeFiles(
+        { mokuro: file('Vol 1.mokuro'), layers: [layer('gcv')] },
+        {
+          sidecar: async (f) => {
+            if (f.filename.includes('.gcv.')) throw new Error('Upload failed: 403 Forbidden');
+            return {};
+          },
+          archive
+        }
+      )
+    ).rejects.toThrow('Upload failed: 403 Forbidden');
+    expect(archive).not.toHaveBeenCalled();
   });
 });
