@@ -1118,19 +1118,52 @@ describe('a series another account owns on the server', () => {
 
   it('a single volume of a closed series is not queued, with one notice', () => {
     const { provider } = serverProvider(['admin series']);
-    // false: the caller must not announce it as added over the notice.
+    // refused: the caller must not announce it as added over the notice.
     expect(queueVolumeForBackup(volume({ volume_uuid: 'closed-1' }), provider as never)).toBe(
-      false
+      'refused'
     );
     expect(backupQueue.isVolumeInBackupQueue('closed-1')).toBe(false);
     expect(bridge.notify).toHaveBeenCalledTimes(1);
     expect(bridge.notify).toHaveBeenCalledWith(NOTICE);
   });
 
-  it('a queued volume reports itself queued, also when it already was', () => {
+  it('a queued volume reports itself added, and already queued the second time', () => {
     const { provider } = serverProvider(['Berserk']);
-    expect(queueVolumeForBackup(volume({ volume_uuid: 'open-1' }), provider as never)).toBe(true);
-    expect(queueVolumeForBackup(volume({ volume_uuid: 'open-1' }), provider as never)).toBe(true);
+    expect(queueVolumeForBackup(volume({ volume_uuid: 'open-1' }), provider as never)).toBe(
+      'added'
+    );
+    expect(queueVolumeForBackup(volume({ volume_uuid: 'open-1' }), provider as never)).toBe(
+      'already-queued'
+    );
+  });
+
+  // Pressing Backup again while the first run is still queued must not
+  // announce the same volumes as added a second time.
+  it('a series backup pressed again counts only what it added', () => {
+    const { provider } = serverProvider([]);
+    const series = [
+      volume({ volume_uuid: 'again-1', series_title: 'Again' }),
+      volume({ volume_uuid: 'again-2', series_title: 'Again', volume_title: 'Volume 2' })
+    ];
+    backupQueue.queueSeriesVolumesForBackup(series, provider as never);
+    bridge.notify.mockClear();
+
+    const again = backupQueue.queueSeriesVolumesForBackup(series, provider as never);
+    expect(again).toEqual({ queued: 0, alreadyQueued: 2, closed: 0 });
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith('2 volumes already in backup queue');
+
+    bridge.notify.mockClear();
+    const more = backupQueue.queueSeriesVolumesForBackup(
+      [...series, volume({ volume_uuid: 'again-3', series_title: 'Again', volume_title: 'V3' })],
+      provider as never,
+      undefined,
+      { alreadyBackedUp: 4 }
+    );
+    expect(more).toEqual({ queued: 1, alreadyQueued: 2, closed: 0 });
+    expect(bridge.notify).toHaveBeenCalledWith(
+      'Added 1 volume to backup queue (4 already backed up, 2 already queued)'
+    );
   });
 
   // The snackbar has ONE slot: the series backup's own "Added N" used to be
@@ -1146,7 +1179,7 @@ describe('a series another account owns on the server', () => {
       ],
       provider as never
     );
-    expect(result).toEqual({ queued: 1, closed: 2 });
+    expect(result).toEqual({ queued: 1, alreadyQueued: 0, closed: 2 });
     expect(items.map((item) => item.volumeUuid)).toContain('o-1');
     expect(backupQueue.isVolumeInBackupQueue('c-1')).toBe(false);
     expect(backupQueue.isVolumeInBackupQueue('c-2')).toBe(false);
@@ -1167,7 +1200,7 @@ describe('a series another account owns on the server', () => {
       undefined,
       { alreadyBackedUp: 3 }
     );
-    expect(result).toEqual({ queued: 0, closed: 2 });
+    expect(result).toEqual({ queued: 0, alreadyQueued: 0, closed: 2 });
     expect(bridge.notify).toHaveBeenCalledTimes(1);
     expect(bridge.notify).toHaveBeenCalledWith(
       'Skipped 2 volumes: their series belongs to another account on this server'
@@ -1182,7 +1215,7 @@ describe('a series another account owns on the server', () => {
       undefined,
       { alreadyBackedUp: 1 }
     );
-    expect(result).toEqual({ queued: 2, closed: 0 });
+    expect(result).toEqual({ queued: 2, alreadyQueued: 0, closed: 0 });
     expect(backupQueue.isVolumeInBackupQueue('old-1')).toBe(true);
     expect(backupQueue.isVolumeInBackupQueue('old-2')).toBe(true);
     expect(bridge.notify).toHaveBeenCalledTimes(1);

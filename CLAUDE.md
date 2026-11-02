@@ -583,8 +583,10 @@ includes `accountCanAddFiles`) and stay quiet for a closed series: the backup
 per volume — also for a series that closed while queued), the cover sync and
 the sidecar backfill. The backup queue words the request's one snackbar
 itself (`queueSeriesVolumesForBackup` → "Added N … Skipped M …";
-`queueVolumeForBackup` returns false when it skipped and noticed): a caller's
-own "Added" snackbar would erase the skip notice from the single slot.
+`queueVolumeForBackup` returns `'refused'` when it skipped and noticed): a
+caller's own "Added" snackbar would erase the skip notice from the single slot.
+Only `'added'` counts as added — `'already-queued'` (a second Backup press while
+the first is still queued) is named as such, never re-announced as added.
 Everything else (layer-sync's hand-made layer pushes, curated publish,
 deletes) relies on the server: a 403 on a library file from such a server is
 that file's refusal (`libraryFileRefusal`, `PERMISSION_DENIED` with the
