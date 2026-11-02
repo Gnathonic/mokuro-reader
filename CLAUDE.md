@@ -152,8 +152,11 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   its page; each XHR/fetch) on the policy every cloud core shares (`core/http-retry.ts`: 5
   tries, Retry-After capped 20 s, else backoff with jitter). 5xx are retried too, except on a
   request that CREATES a file or folder (`rateLimitOnly`): Drive can answer a 5xx after
-  committing it, and a retry would make a duplicate. A resumable upload's attempt is a fresh
-  session, so a rate limit on the PUT starts over; a 5xx there does not. A full account is
+  committing it, and a retry would make a duplicate. A resumable upload keeps ONE session
+  (`google-drive-core.ts`): a retry after a rate-limited PUT asks the session where it stands
+  (an empty PUT, `Content-Range: bytes */<size>`) and sends only the bytes it lacks — nothing
+  when it answers 200/201, a fresh session only on 404/410; a 5xx on the PUT itself is still
+  not retried (the error's `phase` says which step answered). A full account is
   thrown as the storage-full `QUOTA_EXCEEDED` ProviderError where the answer is read
   (`driveRefusal`), so a worker's message-only error already says it plainly; the provider
   passes it through. OneDrive's equivalent is `providers/onedrive/graph-errors.ts`: 507 / a
