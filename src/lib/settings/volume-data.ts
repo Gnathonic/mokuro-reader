@@ -1,5 +1,11 @@
 import { browser } from '$app/environment';
 import { derived, get, writable, readable } from 'svelte/store';
+import {
+  getHistoryLegacyTurns,
+  getHistoryTurns,
+  historyTurns
+} from '$lib/reading-history/turns-store';
+import { unionTurns } from '$lib/util/sync/volume-record-merge';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
@@ -484,8 +490,86 @@ export const volumesWithTrash = _volumesInternal;
 
 // Public derived store - filters out deleted volumes (tombstones)
 // This is what UI and stats code should use
-export const volumes = derived(_volumesInternal, ($internal) => {
-  return Object.fromEntries(Object.entries($internal).filter(([_, vol]) => !vol.deletedOn));
+//
+// Page turns come from reading history once it has loaded (phase 2b): the
+// projection of every device's events (`historyTurns`) UNITED with the record's
+// own `recentPageTurns` — which is only what has not been converted yet: turns
+// merged in from `volume-data.json` that no cut-over has run over (on a
+// provider that cannot carry history the cut-over only runs at start), served
+// at once rather than after the next restart. One turn per (time, page), so a
+// record turn and its converted event count once. The record's own turns alone
+// stand for volumes history knows nothing about (or before it loads, or when
+// IndexedDB is unavailable), so no stat ever goes empty. A record is only
+// copied when its turns differ, and the copy is reused while neither side
+// changes, so per-volume consumers keep their identity across emissions.
+const projectedCopies = new WeakMap<VolumeData, { turns: PageTurn[]; copy: VolumeData }>();
+
+/** The record's own turns plus the projected ones; the record's own array when nothing is added. */
+function turnsWith(vol: VolumeData, projected: PageTurn[] | undefined): PageTurn[] {
+  if (!projected || projected === vol.recentPageTurns) return vol.recentPageTurns;
+  return vol.recentPageTurns.length === 0 ? projected : unionTurns(vol.recentPageTurns, projected);
+}
+
+/**
+ * The record as the stats see it. Cached per (record, projection) identity,
+ * the same record back when the projection adds nothing.
+ */
+function withProjectedTurns(vol: VolumeData, projected: PageTurn[] | undefined): VolumeData {
+  if (!projected) return vol;
+  const turns = turnsWith(vol, projected);
+  if (turns === vol.recentPageTurns) return vol;
+  const cached = projectedCopies.get(vol);
+  if (cached?.turns === projected) return cached.copy;
+  const copy = new VolumeData({ ...vol, recentPageTurns: turns });
+  projectedCopies.set(vol, { turns: projected, copy });
+  return copy;
+}
+
+/**
+ * Projected turns minus those before the record's own forget horizon: a
+ * "forget stats" from before reading history recorded `forget` events lives
+ * only in the record (`forgotAt`), and another device may have converted the
+ * forgotten turns into legacy events. Returns the same array when nothing is
+ * hidden, so identity caching holds.
+ */
+const horizonFiltered = new WeakMap<PageTurn[], { horizon: number; turns: PageTurn[] }>();
+function afterForgetHorizon(
+  vol: VolumeData,
+  turns: PageTurn[] | undefined
+): PageTurn[] | undefined {
+  if (!turns || !vol.forgotAt) return turns;
+  const horizon = Date.parse(vol.forgotAt);
+  const cached = horizonFiltered.get(turns);
+  if (cached?.horizon === horizon) return cached.turns;
+  const kept = turns.filter((turn) => turn[0] > horizon);
+  const result = kept.length === turns.length ? turns : kept.length > 0 ? kept : undefined;
+  if (result) horizonFiltered.set(turns, { horizon, turns: result });
+  return result;
+}
+
+/**
+ * Every device's turns for a volume: the record's own plus those history
+ * projects for it once loaded (`legacyOnly`: from its legacy events only —
+ * what the synced file must still carry; native views travel as history).
+ */
+export function projectedTurnsOf(
+  volume: string,
+  vol: VolumeData,
+  { legacyOnly = false }: { legacyOnly?: boolean } = {}
+): PageTurn[] {
+  // Only the full projection is cached: it is what the `volumes` store serves,
+  // and a legacy-only answer under the same record would evict its copy.
+  if (legacyOnly) return turnsWith(vol, afterForgetHorizon(vol, getHistoryLegacyTurns(volume)));
+  return withProjectedTurns(vol, afterForgetHorizon(vol, getHistoryTurns(volume))).recentPageTurns;
+}
+
+export const volumes = derived([_volumesInternal, historyTurns], ([$internal, $turns]) => {
+  const out: Volumes = {};
+  for (const [id, vol] of Object.entries($internal)) {
+    if (vol.deletedOn) continue;
+    out[id] = withProjectedTurns(vol, afterForgetHorizon(vol, $turns.get(id)));
+  }
+  return out;
 });
 
 export function initializeVolume(volume: string) {
@@ -604,6 +688,7 @@ function notifyCompletion(volumeUuid: string) {
  * purpose; see its doc comment for why the two must answer alike.
  */
 function startedFreshPassSince(
+  volume: string,
   volumeData: VolumeData,
   sinceIso: string | undefined,
   completingPage: number
@@ -612,7 +697,9 @@ function startedFreshPassSince(
   const since = Date.parse(sinceIso);
   if (Number.isNaN(since)) return true;
 
-  return hasFreshPassSince(volumeData.recentPageTurns, since, completingPage);
+  // Reading history's turns once loaded (every device's), else the record's own.
+  const turns = projectedTurnsOf(volume, volumeData);
+  return hasFreshPassSince(turns, since, completingPage);
 }
 
 export function updateProgress(
@@ -625,17 +712,11 @@ export function updateProgress(
   _volumesInternal.update((prev) => {
     const currentVolume = prev[volume] || new VolumeData();
     becameCompleted = completed && !currentVolume.completed;
-    const now = Date.now();
-    // One stamp shared by the page turn and the completion, so a backfill can
-    // rely on them lining up.
-    const nowIso = new Date(now).toISOString();
+    const nowIso = new Date().toISOString();
 
-    // Add new turn with cumulative character count
-    // Page turns accumulate indefinitely - idle gaps are filtered during time calculation
-    // Store cumulative chars so we can calculate reading speed even if volume is deleted from IndexedDB
-    const cumulativeChars = chars ?? currentVolume.chars;
-    const newTurn: PageTurn = [now, progress, cumulativeChars];
-    const recentPageTurns = [...currentVolume.recentPageTurns, newTurn];
+    // No page turn is written any more (phase 2b): the reader records each view
+    // as a reading-history event, which syncs per device and is projected back
+    // into turns for the stats (`volumes`).
 
     // Lazy metadata population: If metadata is missing, fetch it asynchronously
     // This ensures stats pages work even if IndexedDB is later deleted
@@ -688,12 +769,11 @@ export function updateProgress(
          */
         completedAt: completed
           ? becameCompleted &&
-            startedFreshPassSince(currentVolume, currentVolume.completedAt, progress)
+            startedFreshPassSince(volume, currentVolume, currentVolume.completedAt, progress)
             ? nowIso
             : (currentVolume.completedAt ?? nowIso)
           : currentVolume.completedAt,
-        lastProgressUpdate: nowIso,
-        recentPageTurns
+        lastProgressUpdate: nowIso
       })
     };
   });
@@ -794,9 +874,22 @@ _volumesInternal.subscribe((volumes) => {
     const serializedVolumes = volumes
       ? Object.fromEntries(Object.entries(volumes).map(([key, value]) => [key, value.toJSON()]))
       : {};
-    window.localStorage.setItem('volumes', JSON.stringify(serializedVolumes));
+    try {
+      window.localStorage.setItem('volumes', JSON.stringify(serializedVolumes));
+    } catch (error) {
+      // Quota or a blocked storage: the in-memory store and the next sync
+      // still hold the data, and a throw here would break every store update.
+      warnPersistFailureOnce(error);
+    }
   }
 });
+
+let persistFailureWarned = false;
+function warnPersistFailureOnce(error: unknown): void {
+  if (persistFailureWarned) return;
+  persistFailureWarned = true;
+  console.warn('[volume-data] could not save to localStorage:', error);
+}
 
 export const progress = derived(volumes, ($volumes) => {
   const progress: Progress = {};

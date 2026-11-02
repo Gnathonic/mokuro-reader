@@ -718,3 +718,95 @@ describe('WebDAVProvider staged, verified PUTs (X-Mokuro-Put)', () => {
     expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
   });
 });
+
+describe('WebDAVProvider listing of reading history', () => {
+  it('lists history/<device>/ files by relative path and ignores look-alikes elsewhere', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    const lastmod = 'Mon, 05 Oct 2026 00:00:00 GMT';
+    mockClient.getDirectoryContents.mockResolvedValue([
+      {
+        type: 'file',
+        filename: '/mokuro-reader/history/dev-a/2026-10.events',
+        basename: '2026-10.events',
+        lastmod,
+        size: 10
+      },
+      {
+        type: 'file',
+        filename: '/mokuro-reader/Series/device.json',
+        basename: 'device.json',
+        lastmod,
+        size: 5
+      },
+      {
+        type: 'file',
+        filename: '/mokuro-reader/Series/2026-10.events',
+        basename: '2026-10.events',
+        lastmod,
+        size: 5
+      }
+    ]);
+
+    const files = await provider.listCloudVolumes();
+
+    expect(files.map((f) => f.path)).toEqual(['history/dev-a/2026-10.events']);
+  });
+});
+
+describe('WebDAVProvider getStatus().historySync (per-user reading history)', () => {
+  const PER_USER = ['volume-data.json', 'profiles.json', 'goals.json', 'history/'];
+
+  it.each([
+    ['0.7.1', PER_USER, false],
+    ['0.7.3', PER_USER, false],
+    ['0.8.0', PER_USER, true],
+    ['0.8.0-beta.1', PER_USER, true],
+    ['0.8.0', ['volume-data.json', 'profiles.json', 'goals.json'], false],
+    ['0.8.0', undefined, false],
+    [undefined, PER_USER, false],
+    [undefined, undefined, false]
+  ])(
+    'bunko reporting version %s, per_user_files %j -> %s',
+    async (version, perUserFiles, expected) => {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({
+        ...authenticatedIdentity(),
+        ...(version ? { serverVersion: version } : {}),
+        ...(perUserFiles ? { perUserFiles } : {})
+      });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      expect(provider.getStatus().historySync).toBe(expected);
+    }
+  );
+
+  it('anonymous bunko follows its reported version and per-user files too', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'anonymous',
+      serverVersion: '0.8.0',
+      perUserFiles: PER_USER
+    });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().historySync).toBe(true);
+  });
+
+  it('anonymous bunko 0.7.1 does not', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'anonymous',
+      serverVersion: '0.7.1',
+      perUserFiles: PER_USER
+    });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().historySync).toBe(false);
+  });
+
+  it('a plain WebDAV server is not restricted (history files are just files there)', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().historySync).toBeUndefined();
+  });
+});

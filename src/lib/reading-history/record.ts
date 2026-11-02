@@ -30,15 +30,39 @@ export async function appendEvent(
   payload: EventPayload,
   t: number
 ): Promise<ReadingEvent> {
-  return db.transaction('rw', db.history_meta, db.reading_events, async () => {
+  const event = await db.transaction('rw', db.history_meta, db.reading_events, async () => {
     const device = await getOrCreateDeviceId(db);
     const next = await db.history_meta.get(NEXT_SEQ_KEY);
     const seq = typeof next?.value === 'number' ? next.value : 1;
     await db.history_meta.put({ key: NEXT_SEQ_KEY, value: seq + 1 });
-    const event = { ...payload, device, seq, t } as ReadingEvent;
-    await db.reading_events.add(event);
-    return event;
+    const stored = { ...payload, device, seq, t } as ReadingEvent;
+    await db.reading_events.add(stored);
+    return stored;
   });
+  // After the commit: listeners only ever hear about durable events.
+  notifyEventsRecorded([event]);
+  return event;
+}
+
+type EventsListener = (events: ReadingEvent[]) => void;
+const listeners = new Set<EventsListener>();
+
+/** Hear about events once they are stored (recorded here, imported, converted). */
+export function onEventsRecorded(listener: EventsListener): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/** Called after a transaction that stored events has committed. */
+export function notifyEventsRecorded(events: ReadingEvent[]): void {
+  if (events.length === 0) return;
+  for (const listener of listeners) {
+    try {
+      listener(events);
+    } catch (error) {
+      console.warn('[reading-history] events listener failed:', error);
+    }
+  }
 }
 
 let warned = false;

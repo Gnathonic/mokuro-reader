@@ -230,3 +230,20 @@ describe('series-metadata.json stays retired', () => {
     });
   });
 });
+
+describe('history files', () => {
+  const DEV = '0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e';
+  it('lists history segments and device facts by full path', () => {
+    expect(isSyncableFile(`history/${DEV}/2026-10.events`)).toBe(true);
+    expect(isSyncableFile(`history/${DEV}/device.json`)).toBe(true);
+  });
+  it('does not list a device.json or .events anywhere else', () => {
+    expect(isSyncableFile('device.json')).toBe(false);
+    expect(isSyncableFile('Series/device.json')).toBe(false);
+    expect(isSyncableFile('Series/2026-10.events')).toBe(false);
+  });
+  it('treats history writes as best-effort', () => {
+    expect(isBestEffortMetadataPath(`history/${DEV}/2026-10.events`)).toBe(true);
+    expect(isBestEffortMetadataPath('volume-data.json')).toBe(false);
+  });
+});
