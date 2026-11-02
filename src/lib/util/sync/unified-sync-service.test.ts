@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { ProviderError } from './provider-interface';
 import type { CloudFileMetadata, SyncProvider } from './provider-interface';
@@ -97,6 +97,11 @@ vi.mock('$lib/reading-history/history-sync', () => ({
 vi.mock('$lib/positions/positions-sync', () => ({
   syncPositions: vi.fn(async () => ({ adopted: [], deferred: [], uploaded: false }))
 }));
+// This device's changed-marks (the position push's queue); none unless a test sets one.
+const changedMarks = vi.hoisted(() => new Map<string, number>());
+vi.mock('$lib/positions/positions-local', () => ({
+  changedMark: (volume: string) => changedMarks.get(volume)
+}));
 
 import {
   SYNC_FLIGHT_DEADLINE_MS,
@@ -104,6 +109,9 @@ import {
   type SyncOptions
 } from './unified-sync-service';
 import { _resetEscapesForTests, newestUploaded, watchEscapes } from '$lib/positions/escapes';
+import { noteReaderClosed, noteReaderOpened } from '$lib/positions/reader-open';
+import { _resetCloudPositionsForTests, noteCloudPositions } from '$lib/positions/positions-cloud';
+import { clearVolumeDataDeferred, volumeDataDeferred } from './reading-session';
 import { restartSeries } from '$lib/metadata/reread';
 import { volumes as volumeCompletion } from '$lib/settings/volume-data';
 import type { VolumeMetadata } from '$lib/types';
@@ -2387,5 +2395,161 @@ describe('root files are read through the memo (conditional reads)', () => {
     expect(await svc.downloadVolumeDataFile(provider)).toBeNull();
     expect(cache.fetch).toHaveBeenCalledTimes(1);
     expect(raw.downloadFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('page turns while reading wait for the end of the session', () => {
+  const T0 = '2026-01-02T00:00:00.000Z';
+  const T1 = '2026-01-05T00:00:00.000Z';
+  const T1_MS = Date.parse(T1);
+  const cloudCopy = { 'vol-1': { progress: 5, chars: 50, lastProgressUpdate: T0 } };
+
+  function reader(status: Record<string, unknown> = {}) {
+    const uploads: Array<Record<string, unknown>> = [];
+    const provider = {
+      type: 'webdav',
+      getStatus: () => ({ accountScope: 'https://dav.example/', ...status }),
+      downloadFile: vi.fn(async () => jsonBlob(cloudCopy)),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+    return { provider, uploads };
+  }
+
+  function setVisibility(state: 'visible' | 'hidden') {
+    Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+  }
+
+  beforeEach(() => {
+    _resetEscapesForTests();
+    _resetCloudPositionsForTests();
+    clearVolumeDataDeferred();
+    changedMarks.clear();
+    legacyCarried.value = true;
+    setVisibility('visible');
+    setSeriesReadingStates({});
+    setTrackingStates({});
+    stubCache([fileMeta('only')]);
+    // Read on here, p.5 → p.6; the position push has it marked.
+    setLocalVolumes({ 'vol-1': { progress: 6, chars: 60, lastProgressUpdate: T1 } });
+    changedMarks.set('vol-1', T1_MS);
+    noteReaderOpened('vol-1');
+  });
+
+  afterEach(() => {
+    noteReaderClosed('vol-1');
+    setVisibility('visible');
+  });
+
+  it('in session: no upload, no escape reported; leaving the reader uploads and reports', async () => {
+    watchEscapes('vol-1');
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const { provider, uploads } = reader();
+
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(newestUploaded('vol-1')).toBe(0);
+    expect(volumeDataDeferred()).toBe(true);
+    expect(debug).toHaveBeenCalledWith(expect.stringMatching(/deferred.*1 volume/));
+
+    noteReaderClosed('vol-1');
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+    expect((uploads[0]['vol-1'] as { progress: number }).progress).toBe(6);
+    expect(newestUploaded('vol-1')).toBe(T1_MS);
+    expect(volumeDataDeferred()).toBe(false);
+    debug.mockRestore();
+  });
+
+  it('a hidden tab is not a session: uploads', async () => {
+    setVisibility('hidden');
+    const { provider } = reader();
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+    expect(volumeDataDeferred()).toBe(false);
+  });
+
+  it('a session that ends while the sync downloads: that sync uploads', async () => {
+    const { provider } = reader();
+    vi.mocked(provider.downloadFile).mockImplementationOnce(async () => {
+      noteReaderClosed('vol-1');
+      return jsonBlob(cloudCopy);
+    });
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('not on its way through positions.json (no mark, no cloud entry): uploads', async () => {
+    changedMarks.clear();
+    const { provider } = reader();
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('the cloud positions.json entry covers it, for the same account only', async () => {
+    changedMarks.clear();
+    const { provider } = reader();
+    const entry = { t: T1_MS, page: 6, chars: 60, device: 'd' };
+    noteCloudPositions(
+      { type: 'webdav', getStatus: () => ({ accountScope: 'https://other.example/' }) },
+      { 'vol-1': entry }
+    );
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+
+    setLocalVolumes({ 'vol-1': { progress: 7, chars: 70, lastProgressUpdate: T1 } });
+    noteCloudPositions(provider, { 'vol-1': { ...entry, page: 7 } });
+    vi.mocked(provider.uploadFile).mockClear();
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['history does not sync', { historySync: false }],
+    ['read-only', { isReadOnly: true }],
+    ['positions.json not writable', { positionsSync: false }]
+  ])('%s: uploads', async (_name, status) => {
+    const { provider } = reader(status);
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).toHaveBeenCalled();
+  });
+
+  it('legacy turns not yet held as history: uploads', async () => {
+    legacyCarried.value = false;
+    const { provider } = reader();
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('a change beyond the position (a title) uploads, even mid-session', async () => {
+    setLocalVolumes({
+      'vol-1': { progress: 6, chars: 60, lastProgressUpdate: T1, volume_title: 'Vol 1' }
+    });
+    const { provider } = reader();
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('a first read (no position in the cloud copy) uploads, even mid-session', async () => {
+    const { provider } = reader();
+    vi.mocked(provider.downloadFile).mockResolvedValueOnce(
+      jsonBlob({ 'vol-1': { lastProgressUpdate: T0 } })
+    );
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('nothing to upload clears a deferred upload', async () => {
+    const { provider } = reader();
+    await svc.syncVolumeData(provider);
+    expect(volumeDataDeferred()).toBe(true);
+    // Another device published the same position meanwhile.
+    vi.mocked(provider.downloadFile).mockResolvedValueOnce(
+      jsonBlob({ 'vol-1': { progress: 6, chars: 60, lastProgressUpdate: T1 } })
+    );
+    await svc.syncVolumeData(provider);
+    expect(provider.uploadFile).not.toHaveBeenCalled();
+    expect(volumeDataDeferred()).toBe(false);
   });
 });

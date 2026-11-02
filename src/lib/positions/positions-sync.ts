@@ -45,6 +45,7 @@ import {
 import { positionsReadAllowed, positionsWriteAllowed } from './positions-capability';
 import { noteRemoteRead } from '$lib/reading-history/remote-reads';
 import { noteUploaded } from './escapes';
+import { noteCloudPositions } from './positions-cloud';
 import { clearChanged, ownChangedEntries } from './positions-local';
 import { reconcilePositions, type LocalPosition } from './positions-reconcile';
 import { noteReaderOpened, openReader } from './reader-open';
@@ -205,7 +206,7 @@ async function planFromCopies(readable: unknown[]) {
     open: openReader(),
     now
   });
-  return { plan: result, own };
+  return { plan: result, own, cloud };
 }
 
 /**
@@ -223,7 +224,8 @@ async function runProbe(
   }
   const copies = await provider.readRootFileCopies(POSITIONS_FILE_NAME);
   const readable = await Promise.all(copies.map(readJson));
-  const { plan: result } = await planFromCopies(readable);
+  const { plan: result, cloud } = await planFromCopies(readable);
+  noteCloudPositions(provider, cloud);
   await applyAdoptions(result, outcome);
   return { ...outcome, probe: true };
 }
@@ -269,7 +271,10 @@ async function runSync(
     const { readable, unreadable } = await readCopies(
       files.map((file) => () => readRootFile(provider, file))
     );
-    const { plan: result, own } = await planFromCopies(readable);
+    const { plan: result, own, cloud } = await planFromCopies(readable);
+    // What the cloud holds now, for the volume-data upload decision of the
+    // next sync (`positions-cloud.ts`).
+    noteCloudPositions(provider, cloud);
     await applyAdoptions(result, outcome);
 
     if (unreadable) return outcome;
@@ -283,6 +288,7 @@ async function runSync(
     // look-up that comes home while the PUT is in flight still beats them.
     for (const [volume, entry] of Object.entries(own)) noteUploaded(volume, entry.t);
     const landedOn = await upload(provider, result.next);
+    noteCloudPositions(provider, result.next);
     outcome.uploaded = true;
     clearChanged(own);
     await removeOtherCopies(provider, files, landedOn);

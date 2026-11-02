@@ -68,6 +68,7 @@ import { clearVolumes, updateProgress, volumesWithTrash } from '$lib/settings/vo
 import { _resetEscapesForTests, newestUploaded, watchEscapes } from './escapes';
 import { _resetPositionTracking, changedVolumes, initPositionTracking } from './positions-local';
 import { noteReaderClosed, noteReaderOpened } from './reader-open';
+import { _resetCloudPositionsForTests, cloudPositionStamp } from './positions-cloud';
 import {
   _resetPositionsSyncForTests,
   checkPositionsOnOpen,
@@ -146,6 +147,7 @@ beforeEach(() => {
   _resetPositionTracking();
   _resetPositionsSyncForTests();
   _resetEscapesForTests();
+  _resetCloudPositionsForTests();
   syncReady.mockReturnValue(true);
   providerTokenValid.mockReturnValue(true);
   _resetRemoteReadsForTests();
@@ -338,6 +340,24 @@ describe('syncPositions', () => {
     const again = makeProvider(async () => ({ text: async () => sent }) as unknown as Blob);
     expect((await syncPositions(again)).uploaded).toBe(false);
     expect(blindUploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers what the cloud file holds: after a read, and after its own write', async () => {
+    stubCache([listed('a')]);
+    const scope = { accountScope: 'https://dav.example/' };
+    const read = makeProvider(async () => fileBlob({ w: [now - 1000, 3, 30, 'phone'] }), scope);
+    await syncPositions(read);
+    // The volume-data sync's deferral asks this (`volume-data-deferral.ts`).
+    expect(cloudPositionStamp(read, 'w')).toBe(now - 1000);
+    expect(cloudPositionStamp(read, 'v')).toBeUndefined();
+
+    updateProgress('v', 41, 4100, false);
+    const written = makeProvider(async () => fileBlob({ w: [now - 1000, 3, 30, 'phone'] }), scope);
+    expect((await syncPositions(written)).uploaded).toBe(true);
+    expect(cloudPositionStamp(written, 'v')).toBe(
+      Date.parse(get(volumesWithTrash).v.lastProgressUpdate)
+    );
+    expect(cloudPositionStamp(written, 'w')).toBe(now - 1000);
   });
 
   it('a provider other than the active one: its own upload receipt goes into the cache', async () => {

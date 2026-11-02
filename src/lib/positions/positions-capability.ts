@@ -9,10 +9,15 @@
 
 import type { ProviderStatus } from '$lib/util/sync/provider-interface';
 
-export function positionsReadAllowed(status: ProviderStatus): boolean {
+type PositionsGates = Pick<
+  ProviderStatus,
+  'positionsSync' | 'serverCompilesMetadata' | 'isReadOnly'
+>;
+
+export function positionsReadAllowed(status: PositionsGates): boolean {
   return status.positionsSync ?? !status.serverCompilesMetadata;
 }
 
-export function positionsWriteAllowed(status: ProviderStatus): boolean {
+export function positionsWriteAllowed(status: PositionsGates): boolean {
   return positionsReadAllowed(status) && !status.isReadOnly;
 }
