@@ -295,6 +295,29 @@ describe('lineGrid', () => {
     const grid = lineGrid(g, 'あいうえおか', perChar);
     expect(grid.letterSpacing).toBeCloseTo((300 - 40 * (1 - 0.21)) / 5 - 40, 6);
   });
+  it('spaces from the run as drawn at its whole-px size, not the 100px measure scaled', () => {
+    // a hinted font: a digit is 56px at the 100px measuring size, 22px at 40px
+    const hinted = (text: string, size = 100) => {
+      let px = 0;
+      for (const ch of text)
+        px += Math.round(((ch.codePointAt(0) ?? 0) < 0x2000 ? 0.555 : 1) * size);
+      return px / size;
+    };
+    const text = '第12話です';
+    const g = lineGeometry(rectQuad(0, 0, 40, 240), text, hinted);
+    expect(g.fontSize).toBe(40);
+    const grid = lineGrid(g, text, hinted);
+    // glyph k starts after every glyph before it AS DRAWN, plus the spacing
+    const start = (k: number) =>
+      grid.inset +
+      Array.from(text)
+        .slice(0, k)
+        .reduce((sum, ch) => sum + hinted(ch, 40) * 40 + grid.letterSpacing, 0);
+    // 第's ink (0.05em into its cell) at the quad's start, す's (0.10em short
+    // of its cell's end) at its end
+    expect(start(0) + 0.05 * 40).toBeCloseTo(0, 9);
+    expect(start(5) + 40 - 0.1 * 40).toBeCloseTo(240, 9);
+  });
   it('gives up (no spacing) on an empty line, a pathological one, and collapsible white space', () => {
     const g = lineGeometry(rectQuad(0, 0, 40, 300), 'あ', perChar);
     expect(lineGrid(g, '', perChar)).toEqual({ letterSpacing: 0, inset: 0 });

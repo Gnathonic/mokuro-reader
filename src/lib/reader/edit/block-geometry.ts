@@ -5,18 +5,17 @@
 import {
   getDefaultMeasurer,
   isMergedColumns,
+  lineGridSpacing,
   pitchInput,
   type TextMeasurer
 } from '$lib/reader/line-coords-layout';
 import {
   ANGLE_DEAD_BAND,
   griddable,
-  gridSpacing,
   lineFrame,
   linePitches,
   ownPitch,
   quadAxes,
-  spacingUnits,
   type GridSpacing,
   type LinePitch
 } from '$lib/reader/line-grid';
@@ -310,14 +309,8 @@ export function lineGrid(
   measure: TextMeasurer = getDefaultMeasurer()
 ): GridSpacing {
   if (!griddable(text) || !g.pitch) return NO_GRID;
-  return (
-    gridSpacing({
-      pitch: g.pitch,
-      advanceEm: measure(text),
-      fontSize: g.fontSize,
-      count: spacingUnits(text)
-    }) ?? NO_GRID
-  );
+  // spaced from the run as drawn at that whole-px size (`lineGridSpacing`)
+  return lineGridSpacing(g.pitch, text, g.fontSize, measure) ?? NO_GRID;
 }
 
 /** Unit vectors of a line's own frame in page space: `along` its writing axis,
