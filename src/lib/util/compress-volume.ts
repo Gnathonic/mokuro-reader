@@ -11,9 +11,8 @@ import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
 import { mainSidecarPagesForCloud } from '$lib/catalog/main-sidecar';
-import { layerStaysLocal, type LayerTarget } from '$lib/catalog/mokuro-hash';
+import { layerStaysLocal, syncedForOtherAccount, type LayerTarget } from '$lib/catalog/mokuro-hash';
 import { editBaseSeal } from '$lib/catalog/ocr-provenance';
-import { isPersonalLayerId } from '$lib/reader/edit/layer-names';
 import {
   buildLayerMokuroMetadata,
   buildPrimaryMokuroMetadata,
@@ -341,15 +340,7 @@ async function buildLayerSidecarsFromDb(
       .filter((layer) => !layerStaysLocal(layer, target))
       // Another account's personal layer (two accounts, one device, one
       // bunko): uploading it would overwrite this account's own overlay.
-      .filter(
-        (layer) =>
-          !(
-            account &&
-            layer.cloud?.account &&
-            layer.cloud.account !== account &&
-            isPersonalLayerId(layer.layer_id)
-          )
-      )
+      .filter((layer) => !syncedForOtherAccount(layer, account))
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {
         const { totalChars } = buildPageCharCounts(layer.pages);

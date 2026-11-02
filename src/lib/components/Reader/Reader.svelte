@@ -75,7 +75,7 @@
     type LayerSummary
   } from '$lib/reader/edit/layer-list';
   import { forkIntoEditLayer, loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
-  import { pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
+  import { pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
   import { forksOnEdit } from '$lib/reader/edit/layer-kind';
   import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
   import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
@@ -722,12 +722,20 @@
     return layer && forksOnEdit(layer, $activeProviderStatus) ? layer : null;
   });
 
+  /** The message when the account's own corrections are listed but could not be fetched. */
+  const OWN_EDIT_PULL_FAILED =
+    "Couldn't fetch your corrections from the cloud. Try again when connected.";
+  /** A primary entry is waiting on that fetch: a second request joins it. */
+  let primaryEditPullPending = false;
+
   /**
    * `fork: false` — the entry is a layer SWAP from inside the editor (L, the
    * toolbar strip), not the user asking to edit this layer: cycling onto a
    * shared layer must not bounce straight to `edit`, or L could never pass it.
+   * `pulled` — the account's listed `edit` overlay has been asked for already
+   * (the primary path's second pass, below).
    */
-  function enterEditMode(focus?: LineRef, opts: { fork?: boolean } = {}) {
+  function enterEditMode(focus?: LineRef, opts: { fork?: boolean; pulled?: boolean } = {}) {
     if (!volume || !volumeData || $settings.continuousScroll) return;
     if (editingBlocked) {
       showSnackbar('The original layer is read-only — pick another layer or create a copy');
@@ -750,6 +758,25 @@
       return;
     }
     const uuid = volume.volume_uuid;
+    // The first save of a primary edit makes the `edit` layer from the
+    // primary (`persistPageEdit`). The account's own overlay from another
+    // device, listed but not pulled yet, must be here first — a fresh row would
+    // be newer and replace it on the next push. Same pull as a fork; a fetch
+    // that failed opens nothing.
+    if (!activeLayerId && !opts.pulled) {
+      if (primaryEditPullPending) return;
+      primaryEditPullPending = true;
+      void pullOwnEditLayerBeforeEdit(uuid).then((pull) => {
+        primaryEditPullPending = false;
+        if (volume?.volume_uuid !== uuid || activeLayerId) return;
+        if (pull === 'failed') {
+          showSnackbar(OWN_EDIT_PULL_FAILED);
+          return;
+        }
+        enterEditMode(focus, { ...opts, pulled: true });
+      });
+      return;
+    }
     const data = volumeData;
     // Edit whatever is on screen: an alternate layer's row, or the primary.
     const layerId = activeLayerId;
@@ -815,7 +842,10 @@
       await settleEditsBeforeLayerMutation('new');
       // The account's overlay from another device, listed but not pulled yet,
       // is the copy to edit — a fresh fork would replace it on the next sync.
-      await pullOwnEditLayerBeforeFork(uuid);
+      if ((await pullOwnEditLayerBeforeEdit(uuid)) === 'failed') {
+        showSnackbar(OWN_EDIT_PULL_FAILED);
+        return;
+      }
       const { created } = await forkIntoEditLayer(uuid, sourceLayerId);
       if (volume?.volume_uuid !== uuid) return;
       reenterEditOnLayer = { layer: EDIT_LAYER_ID, focus: created ? focus : undefined };
