@@ -123,14 +123,17 @@ import { setVolumeDeadlineEntries } from '$lib/goals/goal-settings';
 // owns the duplicate-merge behavior that broke MEGA sync (ghost duplicates).
 const svc = unifiedSyncService as any;
 
-function fileMeta(fileId: string): CloudFileMetadata {
+function fileMeta(fileId: string, modifiedTime = '2026-01-01T00:00:00Z'): CloudFileMetadata {
   return {
     provider: 'mega',
     fileId,
     path: 'volume-data.json',
-    modifiedTime: '2026-01-01T00:00:00Z'
+    modifiedTime
   } as unknown as CloudFileMetadata;
 }
+
+/** The copy the duplicate sweep KEEPS: newer than every `fileMeta()` default. */
+const NEWEST = '2026-01-02T00:00:00Z';
 
 const jsonBlob = (data: unknown) => ({ text: async () => JSON.stringify(data) }) as unknown as Blob;
 
@@ -237,7 +240,7 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
   });
 
   it('merges duplicates newest-lastProgressUpdate-wins and deletes the extra copy', async () => {
-    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    const [first, second] = [fileMeta('first', NEWEST), fileMeta('second')];
     stubCache([first, second]);
     const newerData = {
       'vol-1': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 9 },
@@ -253,6 +256,57 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
     expect(result.volumes['vol-2'].progress).toBe(1);
     expect(provider.deleteFile).toHaveBeenCalledTimes(1);
     expect(provider.deleteFile).toHaveBeenCalledWith(second);
+  });
+
+  it('keeps the copy with the newest modifiedTime, whatever the listing order, and reports its own volumes', async () => {
+    // MEGA's upload order lands the new copy before the old one is deleted. A
+    // device that lists [old, new] in that window must not keep old and delete
+    // new — the newest copy is what every other device's fold was written to.
+    const old = { ...fileMeta('old'), modifiedTime: '2026-01-01T00:00:00Z' } as CloudFileMetadata;
+    const fresh = { ...fileMeta('new'), modifiedTime: '2026-01-02T00:00:00Z' } as CloudFileMetadata;
+    stubCache([old, fresh]);
+    const oldData = { 'vol-1': { lastProgressUpdate: '2026-01-01T00:00:00Z', progress: 1 } };
+    const freshData = { 'vol-1': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 9 } };
+    const provider = makeProvider(async (file) =>
+      jsonBlob(
+        file.fileId === 'old'
+          ? {
+              ...oldData,
+              series: { berserk: { read_count: 1, lastUpdated: '2026-01-01T00:00:00Z' } }
+            }
+          : freshData
+      )
+    );
+
+    const result = await svc.downloadVolumeDataFile(provider);
+
+    expect(provider.deleteFile).toHaveBeenCalledTimes(1);
+    expect(provider.deleteFile).toHaveBeenCalledWith(old);
+    // The survivor's OWN content, for the upload decision: its volumes and
+    // its raw series section (none here), not the fold.
+    expect(result.volumes).toEqual(freshData);
+    expect(result.survivorVolumes).toEqual(freshData);
+    expect(result.rawSeries).toBeUndefined();
+  });
+
+  it('two copies with the same modifiedTime: the fileId decides, the same way on every device', async () => {
+    const a = { ...fileMeta('a'), modifiedTime: '2026-01-01T00:00:00Z' } as CloudFileMetadata;
+    const b = { ...fileMeta('b'), modifiedTime: '2026-01-01T00:00:00Z' } as CloudFileMetadata;
+    const survivors: string[] = [];
+    for (const listing of [
+      [a, b],
+      [b, a]
+    ]) {
+      stubCache(listing);
+      const provider = makeProvider(async () => jsonBlob(goodData));
+      await svc.downloadVolumeDataFile(provider);
+      const deleted = (provider.deleteFile as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c) => (c[0] as CloudFileMetadata).fileId
+      );
+      expect(deleted).toHaveLength(1);
+      survivors.push(deleted[0] === 'a' ? 'b' : 'a');
+    }
+    expect(survivors[0]).toBe(survivors[1]);
   });
 
   it('propagates transient download errors rather than treating them as missing data', async () => {
@@ -272,7 +326,7 @@ describe('downloadVolumeDataFile — duplicate handling with ghost copies', () =
     // raw section (readable[0]) would miss it entirely, and folding without
     // forfeit-awareness would let the bogus, now-clamped-to-"now" stamp
     // clobber the honest entry from the surviving copy.
-    const [first, second] = [fileMeta('first'), fileMeta('second')];
+    const [first, second] = [fileMeta('first', NEWEST), fileMeta('second')];
     stubCache([first, second]);
     const provider = makeProvider(async (file) =>
       jsonBlob({
@@ -596,7 +650,8 @@ describe('the series section of volume-data.json', () => {
     setSeriesReadingStates({
       'one piece': { read_count: 4, lastUpdated: '2026-08-20T00:00:00.000Z' }
     });
-    stubCache([fileMeta('first'), fileMeta('second')]);
+    // `first` is the newer copy: it survives the sweep, stale entry and all.
+    stubCache([fileMeta('first', NEWEST), fileMeta('second')]);
     const uploads: Array<Record<string, any>> = [];
     const provider = {
       type: 'mega',
@@ -619,6 +674,48 @@ describe('the series section of volume-data.json', () => {
 
     expect(uploads).toHaveLength(1);
     expect(uploads[0].series['one piece'].read_count).toBe(4);
+  });
+
+  it('uploads when the surviving copy lacks volumes the fold holds, even though local already has them all', async () => {
+    // The newest copy (kept) knows vol-1 only; the older copy (deleted) also
+    // carried vol-2, which local already has. The merged map equals local, so
+    // a comparison against the MERGED map sees nothing to write — and vol-2
+    // leaves the cloud with the deleted copy. The comparison has to be against
+    // what the survivor itself holds.
+    setLocalVolumes({
+      'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+      'vol-2': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 7 }
+    });
+    setSeriesReadingStates({});
+    setTrackingStates({});
+    const old = { ...fileMeta('old'), modifiedTime: '2026-01-01T00:00:00Z' } as CloudFileMetadata;
+    const fresh = { ...fileMeta('new'), modifiedTime: '2026-01-02T00:00:00Z' } as CloudFileMetadata;
+    stubCache([old, fresh]);
+    const uploads: Array<Record<string, any>> = [];
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async (file: CloudFileMetadata) =>
+        jsonBlob(
+          file.fileId === 'old'
+            ? {
+                'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 },
+                'vol-2': { lastProgressUpdate: '2026-01-03T00:00:00Z', progress: 7 }
+              }
+            : { 'vol-1': { lastProgressUpdate: '2026-01-02T00:00:00Z', progress: 5 } }
+        )
+      ),
+      deleteFile: vi.fn(async () => {}),
+      uploadFile: vi.fn(async (_path: string, blob: Blob) => {
+        uploads.push(JSON.parse(await blob.text()));
+      })
+    } as unknown as SyncProvider;
+
+    await svc.syncVolumeData(provider);
+
+    expect(provider.deleteFile).toHaveBeenCalledWith(old);
+    expect(uploads).toHaveLength(1);
+    expect(Object.keys(uploads[0]).sort()).toEqual(['vol-1', 'vol-2']);
+    expect(uploads[0]['vol-2'].progress).toBe(7);
   });
 
   it('does not re-upload a file whose state matches but whose key order differs', async () => {
@@ -2055,7 +2152,7 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
         },
         honest: { devices: { 'dev-a': { name: 'Honest', lastUpdated: T1 } } }
       };
-      stubCache(ids.map(fileMeta));
+      stubCache(ids.map((id) => fileMeta(id)));
       const p = makeProvider(async (f) => jsonBlob(file(bodies[f.fileId])));
       const result = await svc.downloadVolumeDataFile(p);
       expect(result.tracking.devices).toEqual({
