@@ -717,8 +717,8 @@ archive — the only code that writes `curated` — then writes the local
 `curated` row with the same pages and the upload's stamp, so the next listing
 neither pulls nor pushes it; a 403 is `'refused'` and writes nothing.
 `unpublishCuratedLayer` deletes every listed copy — the `.gz` ones first, the
-plain file (the one every reader takes while it is listed) last — then the
-row; the first 403 stops it with the plain file still there, so nothing anyone
+plain file (the one every reader takes while it is listed) last, the same
+`deleteListedLayerCopies` its tombstone's retry uses — then the row; the first 403 stops it with the plain file still there, so nothing anyone
 reads changed (`'refused'`: row kept, no tombstone; plain first, a refused
 `.gz` would have become the shared layer). Any other failure leaves a
 tombstone flagged `unpublish`, naming the provider the `curated` row was
@@ -804,7 +804,10 @@ A layer can be listed as BOTH `.mokuro` and `.mokuro.gz` (an engine wrote the
 `.gz`, a client pushed the plain name over it). The plain file wins every read;
 everything that removes or moves a layer works from all listed copies
 (`ListedLayerFile.copies`): a delete reports `'gone'` only when every copy went
-(else the tombstone stays), a push removes the `.gz` it superseded
+(else the tombstone stays), and takes them in one order
+(`deleteListedLayerCopies`: `.gz` first, the plain file last, stopping at the
+first 403, so a refusal never leaves an older `.gz` read in the plain file's
+place), a push removes the `.gz` it superseded
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
 

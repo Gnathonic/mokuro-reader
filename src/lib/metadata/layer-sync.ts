@@ -1666,32 +1666,55 @@ export async function importFetchedLayers(
  */
 export type CloudLayerDeleteOutcome = 'gone' | 'unconfirmed' | 'kept-shared';
 
-async function deleteOneCopy(provider: SyncProvider, file: CloudFileMetadata): Promise<boolean> {
+/** One copy's delete: gone, refused by the server (403), or failed otherwise. */
+type CopyDeleteOutcome = 'gone' | 'refused' | 'failed';
+
+async function deleteOneCopy(
+  provider: SyncProvider,
+  file: CloudFileMetadata
+): Promise<CopyDeleteOutcome> {
   try {
     await provider.deleteFile(file);
     cacheManager.getCache(provider.type)?.removeById?.(file.fileId);
-    return true;
+    return 'gone';
   } catch (error) {
     console.warn(`[layer-sync] could not delete '${file.path}':`, error);
-    return false;
+    return isPermissionRefusal(error) ? 'refused' : 'failed';
   }
 }
 
 /**
- * Delete EVERY listed copy of a layer (`.mokuro` and `.mokuro.gz`). True only
- * when all of them went: one survivor is enough for the next listing to read
- * the layer back, so the caller must keep its tombstone. A failed copy never
- * spares the others — each one removed is one less to retry.
+ * Delete EVERY listed copy of a layer (`.mokuro` and `.mokuro.gz`) — the one
+ * order every delete of a listed layer takes (a layer delete, a tombstone's
+ * retry, an Unpublish). The `.gz` copies go first and the plain file — the one
+ * every reader takes while it is listed — last, and the first copy the server
+ * refuses (403) stops it: the plain file is then still there, so what anyone
+ * reads did not change. Plain first, a refused `.gz` would become the layer
+ * for everyone. Any other failure spares nothing (each copy removed is one
+ * less to retry). `'gone'` only when every copy went: one survivor is enough
+ * for the next listing to read the layer back, so the caller must keep its
+ * tombstone.
  */
+async function deleteListedLayerCopies(
+  provider: SyncProvider,
+  listed: ListedLayerFile
+): Promise<CopyDeleteOutcome> {
+  const copies = [...listed.copies].sort((a, b) => Number(b.gz) - Number(a.gz));
+  let outcome: CopyDeleteOutcome = 'gone';
+  for (const copy of copies) {
+    const one = await deleteOneCopy(provider, copy.file);
+    if (one === 'refused') return 'refused';
+    if (one === 'failed') outcome = 'failed';
+  }
+  return outcome;
+}
+
+/** `deleteListedLayerCopies` went all the way: no copy is left to read the layer back. */
 async function deleteListedLayerFile(
   provider: SyncProvider,
   listed: ListedLayerFile
 ): Promise<boolean> {
-  let allGone = true;
-  for (const copy of listed.copies) {
-    if (!(await deleteOneCopy(provider, copy.file))) allGone = false;
-  }
-  return allGone;
+  return (await deleteListedLayerCopies(provider, listed)) === 'gone';
 }
 
 /** Where a listing keeps a volume: its folder and archive stem, as the listing spells them. */
@@ -1951,13 +1974,11 @@ export type CuratedUnpublishOutcome =
 
 /**
  * Unpublish: remove the library's shared corrections for everyone — every
- * listed copy (`.mokuro` and `.mokuro.gz`), then the local row. The `.gz`
- * copies go first and the plain file — the one every reader takes while it
- * is there — last, and the first copy the server refuses (403) stops it:
- * the plain file is then still there, so nothing anyone reads changed — the
- * row stays and no tombstone is left (`'refused'`), since a retry would be
- * refused the same way. (Plain first, a refused `.gz` would have become the
- * shared layer for everyone.) Any other failure still removes the row and
+ * listed copy (`.mokuro` and `.mokuro.gz`, `deleteListedLayerCopies`: `.gz`
+ * first, the plain file last, stopping at the first 403), then the local
+ * row. A refusal leaves the plain file there, so nothing anyone reads changed
+ * — the row stays and no tombstone is left (`'refused'`), since a retry would
+ * be refused the same way. Any other failure still removes the row and
  * leaves an Unpublish tombstone, which hides the file and is retried by
  * later listings (`canDeleteLayer`). The tombstone names the provider the
  * `curated` row was synced with, else the active one; with neither there is
@@ -2005,20 +2026,9 @@ export async function unpublishCuratedLayer(volumeUuid: string): Promise<Curated
         outcome = locateVolumeInListing(listing, row) ? 'gone' : tombstone();
       } else {
         file = stampOf(listed.file);
-        let failed = false;
-        // `.gz` first, the plain file (the one read while it is there) last.
-        const copies = [...listed.copies].sort((a, b) => Number(b.gz) - Number(a.gz));
-        for (const copy of copies) {
-          try {
-            await provider.deleteFile(copy.file);
-            cacheManager.getCache(provider.type)?.removeById?.(copy.file.fileId);
-          } catch (error) {
-            console.warn(`[layer-sync] could not delete '${copy.file.path}':`, error);
-            if (isPermissionRefusal(error)) return 'refused';
-            failed = true;
-          }
-        }
-        outcome = failed ? tombstone() : 'gone';
+        const deleted = await deleteListedLayerCopies(provider, listed);
+        if (deleted === 'refused') return 'refused';
+        outcome = deleted === 'gone' ? 'gone' : tombstone();
       }
     }
     if (outcome === 'gone') clearPendingLayerDelete(volumeUuid, CURATED_LAYER_ID);

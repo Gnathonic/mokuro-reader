@@ -2719,6 +2719,39 @@ describe('Publish and Unpublish the shared curated layer', () => {
     ]);
   });
 
+  it('a retried Unpublish refused on the .gz leaves the plain file and keeps its tombstone', async () => {
+    await seedRow();
+    await seedEdit();
+    await publishCuratedLayer('v1');
+    cachedFiles.push(cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }));
+    deleteFile.mockRejectedValueOnce(new Error('offline'));
+    expect(await unpublishCuratedLayer('v1')).toBe('unconfirmed');
+
+    // The next listing shows the plain file (this account's publish) and a
+    // `.gz` an engine wrote, which the server will not let this account delete.
+    deleteFile.mockReset();
+    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    deleteFile.mockImplementation(async (f: CloudFileMetadata) => {
+      if (f.path.endsWith('.gz')) {
+        throw new ProviderError('no', 'webdav', 'PERMISSION_DENIED', false, false);
+      }
+    });
+    await syncLayersFromListing(
+      listing(
+        cloudFile('Series/VOL 1.cbz'),
+        cloudFile('Series/VOL 1.curated.mokuro', { size: 77 }),
+        cloudFile('Series/VOL 1.curated.mokuro.gz')
+      ),
+      'webdav'
+    );
+    // Plain deleted first, the refused `.gz` would be the shared layer now.
+    expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual(['Series/VOL 1.curated.mokuro.gz']);
+    expect(cacheRemove).not.toHaveBeenCalledWith('Series/VOL 1.curated.mokuro');
+    expect(JSON.parse(localStorage.getItem('layer-sync:pending-deletes')!)).toEqual([
+      expect.objectContaining({ volume_uuid: 'v1', layer_id: 'curated', unpublish: true })
+    ]);
+  });
+
   it('a refused unpublish keeps the row and leaves no tombstone', async () => {
     await seedRow();
     await seedEdit();
