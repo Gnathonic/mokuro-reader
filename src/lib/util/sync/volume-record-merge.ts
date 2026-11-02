@@ -29,7 +29,8 @@ export interface VolumeRecordLike {
   archivedReads?: Array<{ at: number }>;
 }
 
-const turnKey = (turn: Turn) => `${turn[0]}|${turn[1]}`;
+/** A turn's identity across copies: its time and page (chars may be upgraded). */
+export const turnKey = (turn: Turn) => `${turn[0]}|${turn[1]}`;
 
 export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, loser: T): T {
   const horizon = laterStamp(winner.forgotAt, loser.forgotAt);
@@ -101,8 +102,8 @@ function laterStamp(a: string | undefined, b: string | undefined): string | unde
 }
 
 /** Both sides' turns in time order; one turn per (time, page), chars kept. */
-function unionTurns(a: Turn[], b: Turn[]): Turn[] {
-  const byKey = new Map<string, Turn>();
+export function unionTurns<T extends Turn>(a: T[], b: T[]): T[] {
+  const byKey = new Map<string, T>();
   for (const turn of [...a, ...b]) {
     const key = turnKey(turn);
     const seen = byKey.get(key);
