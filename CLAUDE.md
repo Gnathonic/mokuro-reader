@@ -389,12 +389,18 @@ everything that removes or moves a layer works from all listed copies
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
 
-A volume rename (`renameVolumeFiles`) writes in a fixed order: PUT the
-regenerated main at the new name, move the layers, move the cover, move the
-`.cbz` LAST, and only then delete the stale main — so a server that OCRs the
-archives it finds (mokuro-bunko) never sees the archive at its new name
-without its main and layers and queues no job there (whose output would land
-as `<stem>.<layer>_1.mokuro`).
+A volume rename (`renameVolumeFiles`) writes in a fixed order: move the
+`.cbz` FIRST, move the layers, move the cover, PUT the regenerated main at the
+new name, and only then delete the stale main (no regenerated main — a legacy
+caller without a uuid — moves the stale one in the PUT's place). The archive
+goes first for mokuro-bunko: a sidecar at `<new>.mokuro` or
+`<new>.<layer>.mokuro` while `<new>.cbz` does not exist yet is "governed by no
+archive" and is the folder owner's only, so an uploader renaming its own
+volume in a folder someone else owns got a 403 mid-rename; with the archive
+moved first its upload owner follows it and the sidecars after it are governed
+by it. bunko never retires a sidecar for lacking an archive, and the OCR job
+its walk could queue for a bare archive is covered by its quiet period and job
+dedupe. The stale main is deleted last either way.
 
 `.mokuro` files themselves stay pure upstream format regardless of which
 layer produced them. A `gcv` or `tr-<lang>` layer from the removed

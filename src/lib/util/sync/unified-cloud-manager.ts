@@ -1018,9 +1018,10 @@ class UnifiedCloudManager {
 
     // COLLISION GATE (before any remote write): if a managed source file still
     // exists while a file already occupies its destination, this rename would
-    // land on ANOTHER volume's backup. Step 1's .mokuro upload is an overwrite
-    // on every provider, so proceeding would corrupt that volume's sidecar
-    // before the cbz move could fail with TARGET_EXISTS. A retry of a partial
+    // land on ANOTHER volume's backup. The layer and cover moves and step 2's
+    // .mokuro upload (an overwrite on every provider) would otherwise land on
+    // or corrupt that volume's files, and only the archive move is guaranteed
+    // to fail with TARGET_EXISTS on its own. A retry of a partial
     // rename does not trip this: its already-moved sources are gone from the
     // old path, so they no longer pair with the destination files.
     //
@@ -1069,7 +1070,38 @@ class UnifiedCloudManager {
       }
     }
 
-    // 1. Upload the fresh .mokuro at the new path. Idempotent (overwrite) on retry.
+    // 1. Move the archive FIRST, then the layers, then the cover. Their
+    //    content is name-agnostic. The order is for mokuro-bunko: a sidecar
+    //    PUT or MOVED to `<new>.mokuro` / `<new>.<layer>.mokuro` while
+    //    `<new>.cbz` does not exist yet is "governed by no archive" and is the
+    //    FOLDER owner's only, so an uploader renaming its own volume in a
+    //    folder someone else owns got a 403 mid-rename. With the archive moved
+    //    first its upload owner follows it and every sidecar after it is
+    //    governed by it. (bunko never retires a sidecar for lacking an archive,
+    //    and the OCR job its walk could queue for a bare archive is covered by
+    //    its quiet period and job dedupe.)
+    //    Move errors PROPAGATE — the destructive step 3 must never run after a
+    //    failed move. Retry convergence needs no error-swallowing here: a file
+    //    moved by a prior attempt is simply absent from the old path after the
+    //    fresh fetch, so it never re-enters these loops.
+    const movedByName = managedFiles.filter(
+      (file) => !isLayerFile(file) && !isMokuroSidecarPath(file.path)
+    );
+    for (const file of movedByName.filter((file) => isCbzFile(file.path))) {
+      await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
+      changed++;
+    }
+    for (const file of managedFiles) {
+      if (!isLayerFile(file)) continue;
+      await this.moveFile(provider, file, layerDestinations.get(file)!);
+      changed++;
+    }
+    for (const file of movedByName.filter((file) => !isCbzFile(file.path))) {
+      await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
+      changed++;
+    }
+
+    // 2. Upload the fresh .mokuro at the new path. Idempotent (overwrite) on retry.
     if (freshMokuroBlob) {
       await this.uploadFile(`${newBasePath}.mokuro`, freshMokuroBlob);
       changed++;
@@ -1083,32 +1115,6 @@ class UnifiedCloudManager {
           undefined
         );
       }
-    }
-
-    // 2. Move the layers, then the cover, then the archive LAST. Their content
-    //    is name-agnostic. The order is for servers that OCR what they find:
-    //    an archive at the new name with no main or layers beside it looks
-    //    like a volume that owes OCR, and mokuro-bunko's walk would queue a
-    //    job whose output collides with the layers arriving after it.
-    //    Move errors PROPAGATE — the destructive step 3 must never run after a
-    //    failed move. Retry convergence needs no error-swallowing here: a file
-    //    moved by a prior attempt is simply absent from the old path after the
-    //    fresh fetch, so it never re-enters these loops.
-    for (const file of managedFiles) {
-      if (!isLayerFile(file)) continue;
-      await this.moveFile(provider, file, layerDestinations.get(file)!);
-      changed++;
-    }
-    const movedByName = managedFiles.filter(
-      (file) => !isLayerFile(file) && !isMokuroSidecarPath(file.path)
-    );
-    const archivesLast = [
-      ...movedByName.filter((file) => !isCbzFile(file.path)),
-      ...movedByName.filter((file) => isCbzFile(file.path))
-    ];
-    for (const file of archivesLast) {
-      await this.moveFile(provider, file, `${newBasePath}${managedExtensionOf(file.path)}`);
-      changed++;
     }
 
     // 3. DESTRUCTIVE, LAST: drop the stale .mokuro now that the fresh one is up.

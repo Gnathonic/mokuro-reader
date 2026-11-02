@@ -891,7 +891,7 @@ describe('UnifiedCloudManager rename operations', () => {
    * whose every write lands in one ordered log and moves the file in `state`,
    * so a retry lists exactly what the previous attempt left behind.
    */
-  function orderedRenameSetup(failArchiveMoves = 0) {
+  function orderedRenameSetup(failMoves: { archive?: number; cover?: number } = {}) {
     const layer: CloudFileMetadata = {
       provider: 'webdav',
       fileId: 'layer-1',
@@ -901,7 +901,8 @@ describe('UnifiedCloudManager rename operations', () => {
     };
     const state: CloudFileMetadata[] = [...oldSeriesFiles(), layer];
     const log: string[] = [];
-    let archiveFailures = failArchiveMoves;
+    let archiveFailures = failMoves.archive ?? 0;
+    let coverFailures = failMoves.cover ?? 0;
     const provider = makeRenameProvider({
       uploadFile: vi.fn(async (path: string) => {
         log.push(`put ${path}`);
@@ -909,6 +910,9 @@ describe('UnifiedCloudManager rename operations', () => {
       }),
       renameFile: vi.fn(async (file: CloudFileMetadata, newPath: string) => {
         if (file.path.endsWith('.cbz') && archiveFailures-- > 0) {
+          throw new Error('Request failed with status 502 Bad Gateway');
+        }
+        if (file.path.endsWith('.webp') && coverFailures-- > 0) {
           throw new Error('Request failed with status 502 Bad Gateway');
         }
         log.push(`move ${file.path} -> ${newPath}`);
@@ -931,10 +935,12 @@ describe('UnifiedCloudManager rename operations', () => {
     return { state, log };
   }
 
-  it('moves the layers, then the cover, then the archive — after the new main and before the stale one goes', async () => {
-    // bunko walks the library for archives that owe OCR. An archive that
-    // arrives at the new name before its main and layers looks like one, and
-    // the job it queues lands beside the moved layer as `<stem>.<layer>_1`.
+  it('moves the archive, then the layers, then the cover, then PUTs the new main, and drops the stale one last', async () => {
+    // On mokuro-bunko a sidecar whose archive is not there yet is "governed by
+    // no archive" and is the FOLDER owner's only: an uploader renaming its own
+    // volume in a folder someone else owns got a 403 on `<new>.mokuro` /
+    // `<new>.<layer>.mokuro` mid-rename. With the archive moved first its
+    // upload owner follows it and every sidecar after it is governed by it.
     const { log } = orderedRenameSetup();
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     await unifiedCloudManager.renameVolume(
@@ -945,16 +951,31 @@ describe('UnifiedCloudManager rename operations', () => {
       'uuid-1'
     );
     expect(log).toEqual([
-      'put New Series/Volume X.mokuro',
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
       'move Old Series/Volume 1.hayai.mokuro -> New Series/Volume X.hayai.mokuro',
       'move Old Series/Volume 1.webp -> New Series/Volume X.webp',
-      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
+      'put New Series/Volume X.mokuro',
       'delete Old Series/Volume 1.mokuro'
     ]);
   });
 
-  it('a retry after a failed archive move moves only the archive, then drops the stale main', async () => {
-    const { state, log } = orderedRenameSetup(1);
+  it('without a uuid (no regenerated main) the stale main is MOVED, in the same place in the order', async () => {
+    const { log } = orderedRenameSetup();
+    localVolumes.mockResolvedValue([
+      { volume_uuid: 'uuid-1', series_title: 'Old Series', volume_title: 'Volume 1' }
+    ]);
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X');
+    expect(log).toEqual([
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
+      'move Old Series/Volume 1.hayai.mokuro -> New Series/Volume X.hayai.mokuro',
+      'move Old Series/Volume 1.webp -> New Series/Volume X.webp',
+      'move Old Series/Volume 1.mokuro -> New Series/Volume X.mokuro'
+    ]);
+  });
+
+  it('a failed archive move changes nothing; the retry runs the whole order', async () => {
+    const { state, log } = orderedRenameSetup({ archive: 1 });
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
     const rename = () =>
       unifiedCloudManager.renameVolume(
@@ -965,15 +986,44 @@ describe('UnifiedCloudManager rename operations', () => {
         'uuid-1'
       );
     await expect(rename()).rejects.toThrow('502');
-    // The stale main survives a failed move; the archive stays at the old name.
-    expect(log.some((entry) => entry.startsWith('delete'))).toBe(false);
+    // Nothing was written: the archive goes first and it did not go.
+    expect(log).toEqual([]);
     expect(state.map((f) => f.path)).toContain('Old Series/Volume 1.cbz');
+
+    await rename();
+    expect(log).toEqual([
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
+      'move Old Series/Volume 1.hayai.mokuro -> New Series/Volume X.hayai.mokuro',
+      'move Old Series/Volume 1.webp -> New Series/Volume X.webp',
+      'put New Series/Volume X.mokuro',
+      'delete Old Series/Volume 1.mokuro'
+    ]);
+  });
+
+  it('a retry after a failed cover move moves only the cover, then PUTs the main and drops the stale one', async () => {
+    const { state, log } = orderedRenameSetup({ cover: 1 });
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const rename = () =>
+      unifiedCloudManager.renameVolume(
+        'Old Series',
+        'Volume 1',
+        'New Series',
+        'Volume X',
+        'uuid-1'
+      );
+    await expect(rename()).rejects.toThrow('502');
+    // The stale main survives a failed move — no PUT, no delete after it.
+    expect(log).toEqual([
+      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
+      'move Old Series/Volume 1.hayai.mokuro -> New Series/Volume X.hayai.mokuro'
+    ]);
+    expect(state.map((f) => f.path)).toContain('Old Series/Volume 1.mokuro');
 
     log.length = 0;
     await rename();
     expect(log).toEqual([
+      'move Old Series/Volume 1.webp -> New Series/Volume X.webp',
       'put New Series/Volume X.mokuro',
-      'move Old Series/Volume 1.cbz -> New Series/Volume X.cbz',
       'delete Old Series/Volume 1.mokuro'
     ]);
     expect(state.map((f) => f.path).sort()).toEqual([
