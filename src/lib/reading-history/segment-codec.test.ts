@@ -191,4 +191,41 @@ describe('segment codec', () => {
       SegmentFormatError
     );
   });
+
+  it('round-trips position answers (jump, stay, reset)', async () => {
+    const answers: ReadingEvent[] = [
+      {
+        device: DEV,
+        seq: 1,
+        t: T,
+        kind: 'position',
+        volume: 'vol-1',
+        answer: 'jump',
+        through: T - 5,
+        page: 120
+      },
+      {
+        device: DEV,
+        seq: 2,
+        t: T + 1,
+        kind: 'position',
+        volume: 'vol-1',
+        answer: 'stay',
+        through: T - 4,
+        page: 41
+      },
+      {
+        device: DEV,
+        seq: 3,
+        t: T + 2,
+        kind: 'position',
+        volume: 'vol-2',
+        answer: 'reset',
+        through: T - 3,
+        page: 0
+      }
+    ];
+    const { events: out } = await decodeSegment(await encodeSegment(DEV, '2026-10', answers));
+    expect(out).toEqual(answers);
+  });
 });

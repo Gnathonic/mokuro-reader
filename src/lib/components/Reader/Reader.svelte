@@ -30,6 +30,7 @@
   } from '$lib/settings';
   import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import RereadPromptModal from './RereadPromptModal.svelte';
+  import PositionOfferBanner from './PositionOfferBanner.svelte';
   import { shouldOfferReread } from '$lib/metadata/reread';
   import { getSeriesMetadataForTitle } from '$lib/metadata/store';
   import { getSeriesReadingState } from '$lib/settings/series-data';
@@ -1667,6 +1668,13 @@
         <p class="text-left" class:hidden={!$settings.pageNum}>{pageDisplay}</p>
       {/key}
     </button>
+  {/if}
+  {#if volume && pages?.length}
+    <PositionOfferBanner
+      volumeId={volume.volume_uuid}
+      pageCount={pages.length}
+      currentPage={page}
+    />
   {/if}
   {#if notificationMessage}
     {#key notificationKey}

@@ -90,4 +90,68 @@ describe('projected turns store', () => {
       [2000, 2, 30]
     ]);
   });
+
+  it('keeps restart and position events for a volume, and says which volumes changed', async () => {
+    const { getVolumeEvents, onHistoryChanged } = await import('./turns-store');
+    await loadHistoryTurns(db);
+    const changed: Array<Set<string> | 'all'> = [];
+    const stop = onHistoryChanged((v) => changed.push(v));
+    await recordEvent({ kind: 'restart', volume: 'r' }, 1000, db);
+    await recordEvent(
+      { kind: 'position', volume: 'r', answer: 'stay', through: 5, page: 3 },
+      2000,
+      db
+    );
+    await Promise.resolve();
+    expect(
+      getVolumeEvents('r')
+        .map((e) => e.kind)
+        .sort()
+    ).toEqual(['position', 'restart']);
+    expect(changed.at(-1)).toEqual(new Set(['r']));
+    stop();
+  });
+
+  it('restart and position events bump the version and announce, but re-project nothing', async () => {
+    const { getVolumeEvents, onHistoryChanged, volumeEventsVersion } = await import(
+      './turns-store'
+    );
+    await appendEvent(db, view('v', 1), 1000);
+    await loadHistoryTurns(db);
+    const emissions: Array<Map<string, unknown>> = [];
+    const stop = historyTurns.subscribe((m) => emissions.push(m));
+    const changed: Array<Set<string> | 'all'> = [];
+    const stopChanged = onHistoryChanged((v) => changed.push(v));
+    const before = volumeEventsVersion('v');
+    const turns = getHistoryTurns('v');
+    await recordEvent({ kind: 'restart', volume: 'v' }, 2000, db);
+    await recordEvent(
+      { kind: 'position', volume: 'v', answer: 'stay', through: 5, page: 3 },
+      3000,
+      db
+    );
+    await Promise.resolve();
+    expect(volumeEventsVersion('v')).toBeGreaterThan(before);
+    expect(getVolumeEvents('v')).toHaveLength(3);
+    expect(changed).toEqual([new Set(['v']), new Set(['v'])]);
+    // No turn changed: the subscriber saw only the initial value, same Map.
+    expect(emissions).toHaveLength(1);
+    expect(getHistoryTurns('v')).toBe(turns);
+    // A page event re-projects.
+    await recordEvent(view('v', 2), 4000, db);
+    await Promise.resolve();
+    expect(emissions).toHaveLength(2);
+    expect(getHistoryTurns('v')).toHaveLength(2);
+    stop();
+    stopChanged();
+  });
+
+  it('a full load reports every volume as changed', async () => {
+    const { onHistoryChanged } = await import('./turns-store');
+    const changed: Array<Set<string> | 'all'> = [];
+    const stop = onHistoryChanged((v) => changed.push(v));
+    await loadHistoryTurns(db);
+    expect(changed).toEqual(['all']);
+    stop();
+  });
 });

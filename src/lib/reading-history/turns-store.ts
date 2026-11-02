@@ -12,8 +12,7 @@ import type { ReadingEvent } from './types';
  * re-projected, at most once per microtask, so a page view costs one volume
  * and a large import one emission.
  *
- * Only `page` and `forget` events are kept in memory: nothing else changes a
- * projection.
+ * `adjust` events are not kept in memory: nothing here reads them yet.
  */
 
 const store = writable<Map<string, PageTurn[]>>(new Map());
@@ -21,7 +20,12 @@ const eventsByVolume = new Map<string, Map<string, ReadingEvent>>();
 let loaded = false;
 /** Events that arrive while the initial read is in flight; applied after it. */
 let arrivedWhileLoading: ReadingEvent[] | null = null;
+/** Volumes with new events since the last flush, and the subset whose turns changed. */
 let pendingVolumes: Set<string> | null = null;
+let pendingProjections = new Set<string>();
+
+/** Only these kinds shape the projection; the others decide position offers. */
+const shapesTurns = (event: ReadingEvent) => event.kind === 'page' || event.kind === 'forget';
 
 let resolveReady!: () => void;
 let ready = new Promise<void>((resolve) => (resolveReady = resolve));
@@ -39,6 +43,43 @@ export function historyTurnsLoaded(): boolean {
  */
 export function historyTurnsReady(): Promise<void> {
   return ready;
+}
+
+/** Every volume history holds events for. */
+export function historyVolumes(): string[] {
+  return [...eventsByVolume.keys()];
+}
+
+/** Every kept event of one volume (empty until loaded). */
+export function getVolumeEvents(volume: string): ReadingEvent[] {
+  return [...(eventsByVolume.get(volume)?.values() ?? [])];
+}
+
+/** Does any kept event of the volume satisfy `test`? No copy of the events. */
+export function someVolumeEvent(volume: string, test: (event: ReadingEvent) => boolean): boolean {
+  const events = eventsByVolume.get(volume);
+  if (!events) return false;
+  for (const event of events.values()) if (test(event)) return true;
+  return false;
+}
+
+type ChangeListener = (volumes: Set<string> | 'all') => void;
+const changeListeners = new Set<ChangeListener>();
+
+/** Hear which volumes' events changed: `'all'` after a full load. */
+export function onHistoryChanged(listener: ChangeListener): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
+function announce(volumes: Set<string> | 'all'): void {
+  for (const listener of changeListeners) {
+    try {
+      listener(volumes);
+    } catch (error) {
+      console.warn('[reading-history] history change listener failed:', error);
+    }
+  }
 }
 
 /** The volume's projected turns; `undefined` until loaded, or when it has none. */
@@ -75,6 +116,8 @@ export async function loadHistoryTurns(db?: HistoryDexie): Promise<void> {
     const target = db ?? (await import('./history-db')).historyDb();
     const all = await target.reading_events.toArray();
     eventsByVolume.clear();
+    // Bumped, not cleared: a memo keyed on an old version must not match.
+    for (const volume of versions.keys()) versions.set(volume, (versions.get(volume) ?? 0) + 1);
     for (const event of all) keep(event);
     // Committed after our read began: their notifications came here instead.
     for (const event of arrivedWhileLoading) keep(event);
@@ -85,17 +128,28 @@ export async function loadHistoryTurns(db?: HistoryDexie): Promise<void> {
     }
     loaded = true;
     store.set(next);
+    announce('all');
   } finally {
     arrivedWhileLoading = null;
     resolveReady();
   }
 }
 
+const versions = new Map<string, number>();
+
+/** Bumped whenever a volume's kept events change (for memoised derivations). */
+export function volumeEventsVersion(volume: string): number {
+  return versions.get(volume) ?? 0;
+}
+
 function keep(event: ReadingEvent): void {
-  if (event.kind !== 'page' && event.kind !== 'forget') return;
+  // `page`/`forget` shape the projection; `restart`/`position` decide
+  // cross-device position offers (`position-offer.ts`). `adjust` is phase 3.
+  if (event.kind === 'adjust') return;
   let events = eventsByVolume.get(event.volume);
   if (!events) eventsByVolume.set(event.volume, (events = new Map()));
   events.set(`${event.device}\u0000${event.seq}`, event);
+  versions.set(event.volume, (versions.get(event.volume) ?? 0) + 1);
 }
 
 onEventsRecorded((events) => {
@@ -109,6 +163,7 @@ onEventsRecorded((events) => {
   for (const event of events) {
     keep(event);
     pendingVolumes.add(event.volume);
+    if (shapesTurns(event)) pendingProjections.add(event.volume);
   }
   if (first) queueMicrotask(flushPending);
 });
@@ -125,18 +180,25 @@ export function flushHistoryTurns(): void {
 
 function flushPending(): void {
   const touched = pendingVolumes;
+  const reproject = pendingProjections;
   pendingVolumes = null;
+  pendingProjections = new Set();
   if (!touched || touched.size === 0) return;
-  store.update((current) => {
-    const next = new Map(current);
-    for (const volume of touched) {
-      const events = eventsByVolume.get(volume);
-      const turns = events ? projectVolume([...events.values()]) : [];
-      if (turns.length > 0) next.set(volume, turns);
-      else next.delete(volume);
-    }
-    return next;
-  });
+  // A `restart`/`position` event changes no turn: the version bump and the
+  // announcement are enough, and no subscriber sees a new Map for nothing.
+  if (reproject.size > 0) {
+    store.update((current) => {
+      const next = new Map(current);
+      for (const volume of reproject) {
+        const events = eventsByVolume.get(volume);
+        const turns = events ? projectVolume([...events.values()]) : [];
+        if (turns.length > 0) next.set(volume, turns);
+        else next.delete(volume);
+      }
+      return next;
+    });
+  }
+  announce(touched);
 }
 
 /** Test hook: a loaded projection, without a database. */
@@ -152,6 +214,7 @@ export function _resetHistoryTurns(): void {
   loaded = false;
   arrivedWhileLoading = null;
   pendingVolumes = null;
+  pendingProjections = new Set();
   ready = new Promise<void>((resolve) => (resolveReady = resolve));
   store.set(new Map());
 }

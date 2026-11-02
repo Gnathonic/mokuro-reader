@@ -90,4 +90,23 @@ describe('stat edits record history events', () => {
       ['forget', 'vol-b']
     ]);
   });
+
+  it('mark unread / mark read answer any cross-device position offer up to now', async () => {
+    const { markVolumeAsUnread, markVolumeAsComplete } = await import('$lib/settings/volume-data');
+    updateProgress('vol-a', 30, 300);
+    recorded.mockClear();
+    const before = Date.now();
+    markVolumeAsUnread('vol-a');
+    markVolumeAsComplete('vol-a', 200, 2000);
+    const answers = recorded.mock.calls.map((c) => c[0]).filter((p) => p.kind === 'position');
+    expect(answers).toHaveLength(2);
+    expect(answers[0]).toMatchObject({
+      kind: 'position',
+      volume: 'vol-a',
+      answer: 'stay',
+      page: 0
+    });
+    expect((answers[0] as { through: number }).through).toBeGreaterThanOrEqual(before);
+    expect(answers[1]).toMatchObject({ answer: 'stay', page: 200 });
+  });
 });

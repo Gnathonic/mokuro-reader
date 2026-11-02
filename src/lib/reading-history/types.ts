@@ -49,7 +49,26 @@ export interface ForgetPayload {
   before: number;
 }
 
-export type EventPayload = PagePayload | AdjustPayload | RestartPayload | ForgetPayload;
+/**
+ * The answer to a cross-device position offer (phase 2c): `jump` moved here to
+ * `page`, `stay` kept the current page, `reset` re-applied a restart this
+ * position had missed. `through` is the time of the reading the answer covers;
+ * an offer is never shown again for reading at or before it, on any device.
+ */
+export interface PositionPayload {
+  kind: 'position';
+  volume: string;
+  answer: 'jump' | 'stay' | 'reset';
+  through: number;
+  page: number;
+}
+
+export type EventPayload =
+  | PagePayload
+  | AdjustPayload
+  | RestartPayload
+  | ForgetPayload
+  | PositionPayload;
 
 /** `t` = epoch ms on the recording device (for `page`: when the view opened). */
 export type ReadingEvent = { device: string; seq: number; t: number } & EventPayload;

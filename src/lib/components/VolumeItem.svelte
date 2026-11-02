@@ -43,6 +43,7 @@
   import { removeVolumeFiles, deleteVolumeCompletely } from '$lib/import';
   import { liveQuery } from 'dexie';
   import { nav, routeParams } from '$lib/util/hash-router';
+  import PositionOfferChip from './PositionOfferChip.svelte';
   import BackupButton from './BackupButton.svelte';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { PROVIDER_SHORT_LABELS } from '$lib/util/sync/provider-display';
@@ -816,6 +817,7 @@
               {#if isNotInstalled}
                 <Badge color="gray" class="text-xs">Not on this device</Badge>
               {/if}
+              <PositionOfferChip volumeId={volume_uuid} pageCount={liveVolume.page_count} />
             </div>
             <div class="flex flex-wrap items-center gap-x-3">
               <p>{progressDisplay}</p>
