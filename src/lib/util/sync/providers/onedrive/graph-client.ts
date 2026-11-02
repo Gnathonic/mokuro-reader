@@ -1,6 +1,7 @@
 import { ONEDRIVE_CONFIG } from './constants';
 import { ProviderError } from '../../provider-interface';
 import { onedriveTokenManager } from './token-manager';
+import { graphErrorCode, isGraphQuotaFailure } from './graph-errors';
 
 const BASE = ONEDRIVE_CONFIG.GRAPH_BASE_URL;
 
@@ -36,12 +37,14 @@ async function parseError(response: Response): Promise<never> {
     // refresh alone won't detect this — flag the session for reconnect.
     onedriveTokenManager.markNeedsAttention();
   }
+  // A full drive (507 or a quota code) is not a 5xx to retry.
+  const quota = isGraphQuotaFailure(response.status, graphErrorCode(text));
   throw new ProviderError(
     `Graph ${response.status} ${response.statusText}: ${text || '(no body)'}`,
     'onedrive',
-    `GRAPH_${response.status}`,
+    quota ? 'QUOTA_EXCEEDED' : `GRAPH_${response.status}`,
     response.status === 401,
-    response.status === 429 || response.status >= 500
+    !quota && (response.status === 429 || response.status >= 500)
   );
 }
 

@@ -27,6 +27,7 @@ import { providerManager } from '../../provider-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
+import { isDriveQuotaError } from '../../core/providers/drive-http';
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -501,6 +502,14 @@ class GoogleDriveProvider implements SyncProvider {
       console.log(`✅ Uploaded ${fileName} to Google Drive (${uploaded.fileId})`);
       return uploaded;
     } catch (error) {
+      // Typed, and worded so the user can act on it — not a network blip to retry.
+      if (isDriveQuotaError(error)) {
+        throw new ProviderError(
+          'Google Drive storage is full — free up space or upgrade your plan',
+          'google-drive',
+          'QUOTA_EXCEEDED'
+        );
+      }
       throw new ProviderError(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',

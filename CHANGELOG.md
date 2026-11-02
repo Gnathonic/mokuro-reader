@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- A full Google Drive no longer signs you out
+- Google Drive rate limits wait and retry instead of failing
+- A full Google Drive or OneDrive says so plainly
 - mokuro-bunko no longer connects read-only on a flaky connection
 - mokuro-bunko series differing only in case stay merged
 - Backups join a cloud folder differing only in case
