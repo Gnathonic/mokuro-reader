@@ -647,7 +647,14 @@ pushed — by sync or by a backup's layer sidecars (`account` in
 only while it holds no unsynced edit. Its delete never touches the file at its
 path (that is the ACTIVE account's overlay): the tombstone carries the row's
 account (`PendingLayerDelete.account`), and only that account's listings
-retry, hide or spend it. A 403 on a reserved layer file (`isReservedLayerSidecarPath`)
+retry, hide or spend it. **Accepted limit (owner, 2026-11-02):** signing out
+keeps the device's volumes and layers, and IndexedDB holds ONE `edit` row per
+volume, so after one account signs out and another signs in, the new account
+sees and edits the previous account's row. Those edits reach the previous
+account's overlay when it signs back in, and Publish uploads that row as
+`curated` (`publishCuratedLayer` checks permission, not whose row it is). Not
+fixed: it needs two accounts in turn in one browser.
+A 403 on a reserved layer file (`isReservedLayerSidecarPath`)
 is that file's refusal (`PERMISSION_DENIED`, remembered by layer-sync), never
 a read-only demotion of the WebDAV provider.
 
