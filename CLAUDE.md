@@ -845,6 +845,13 @@ min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
   flight per scope that concurrent callers await. The etag moves only after
   its nodes are recorded (else a second caller is answered not-modified
   against records that are not there yet); a clear voids a read in flight.
+  A read never forgets a live Bunko on the strength of one poll (else
+  `serverCompilesMetadata` drops for an interval and the reader produces
+  catalog/series files and dedups under it): nodes present but none a
+  marker (a half-written rewrite) count as not-modified, an unreadable node
+  beside readable ones keeps its last record, and a read with NO node keeps
+  the still-fresh records UNSTAMPED, so they go stale at 2 × ttl — the scope
+  is forgotten only once nothing kept is fresh.
 - `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
   queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
   `instance_id` names the top-ranked fresh marker. The cloud poller keeps
