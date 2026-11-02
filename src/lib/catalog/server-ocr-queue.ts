@@ -999,6 +999,19 @@ export function pullCompletedVolume(
 
 const pollers = new Map<string, QueuePoller>();
 
+/**
+ * The provider manager, imported lazily (it pulls in every provider) through
+ * ONE promise: every caller gets the same module, also when several ask at
+ * once (vitest 3 hands the second of two concurrent imports of a mocked
+ * module the unmocked one).
+ */
+let providerManagerImport: Promise<typeof import('$lib/util/sync/provider-manager')> | null = null;
+function providerManagerModule(): Promise<typeof import('$lib/util/sync/provider-manager')> {
+  return (providerManagerImport ??= import('$lib/util/sync/provider-manager'));
+}
+/** The SERVER pollers that read as the connected WebDAV account (`auth: 'webdav'`). */
+const webdavAuthPollers = new Set<string>();
+
 function isHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
 }
@@ -1007,7 +1020,7 @@ async function activeWebdavProvider(): Promise<{
   type?: string;
   getWorkerUploadCredentials?: () => Promise<Record<string, unknown>>;
 } | null> {
-  const { providerManager } = await import('$lib/util/sync/provider-manager');
+  const { providerManager } = await providerManagerModule();
   const provider = providerManager.getActiveProvider() as {
     type?: string;
     getWorkerUploadCredentials?: () => Promise<Record<string, unknown>>;
@@ -1024,12 +1037,14 @@ async function requestInitFor(
   if (!provider) return null;
   const credentials = await provider.getWorkerUploadCredentials!();
   const url = typeof credentials.webdavUrl === 'string' ? credentials.webdavUrl : '';
+  // A queue on another origin than the connected account's (an account since
+  // switched away from): its credentials never leave for it, and an
+  // anonymous read of an account's queue would only be refused, again at
+  // every look. Nothing to read until that account is connected again.
+  if (originOf(url) === null || originOf(url) !== originOf(queueUrl)) return null;
   // The session's header: Bearer when a token is held, else Basic, else none.
   const authorization = webdavAuthorization(authFromCredentials(credentials));
-  // The account's token or password never leaves for another origin.
-  if (!authorization || originOf(url) === null || originOf(url) !== originOf(queueUrl)) {
-    return { cache: 'no-store' };
-  }
+  if (!authorization) return { cache: 'no-store' };
   return { cache: 'no-store', headers: { Authorization: authorization } };
 }
 
@@ -1057,6 +1072,7 @@ function pollerFor(queueUrl: string, auth: WatchEntry['auth'], source: string): 
     fetch: (input, init) => fetchWithQueueAuth(String(input), init ?? {}, queueUrl, auth)
   });
   pollers.set(queueUrl, poller);
+  if (auth === 'webdav') webdavAuthPollers.add(queueUrl);
   return poller;
 }
 
@@ -1129,6 +1145,7 @@ export async function startServerOcrQueue(): Promise<void> {
   }
   const connected = await connectedBunkoQueueUrl();
   if (connected) pollerFor(connected, 'webdav', 'webdav');
+  connectedServer = connected;
   for (const p of pollers.values()) p.trigger('start');
   // The connected cloud library's queue + marker (and again after every login,
   // switch or logout): created — and given its first look — there.
@@ -1175,7 +1192,7 @@ async function relist(): Promise<void> {
 }
 
 async function activeProvider(): Promise<SyncProvider | null> {
-  const { providerManager } = await import('$lib/util/sync/provider-manager');
+  const { providerManager } = await providerManagerModule();
   return providerManager.getActiveProvider();
 }
 
@@ -1411,6 +1428,8 @@ export async function ensureCloudPoller(): Promise<QueuePoller | null> {
 }
 
 let providerFollow: (() => void) | null = null;
+/** The bunko server the pollers last followed (`ensureServerPoller`). */
+let connectedServer: string | null = null;
 
 /**
  * The connected bunko SERVER's poller, given its first look when it is new. App
@@ -1420,16 +1439,31 @@ let providerFollow: (() => void) | null = null;
  */
 async function ensureServerPoller(): Promise<void> {
   const connected = await connectedBunkoQueueUrl();
+  // A server switched or logged away from: its poller would go on reading as
+  // an account no longer connected. Stopped and its status withdrawn, unless
+  // volumes are still watched there (those wait, reading nothing, until that
+  // account is connected again — `requestInitFor`).
+  for (const id of [...webdavAuthPollers]) {
+    if (id === connected || watchedEntries().some((w) => w.queue_url === id)) continue;
+    pollers.get(id)?.stop();
+    pollers.delete(id);
+    webdavAuthPollers.delete(id);
+    publishQueueStatus(id, null);
+  }
+  // Connected (again): one look, also for a poller kept for its watched
+  // volumes, which read nothing while another account was connected.
+  const switched = connected !== connectedServer;
+  connectedServer = connected;
   if (!connected) return;
   const known = pollers.has(connected);
   const poller = pollerFor(connected, 'webdav', 'webdav');
-  if (!known) poller.trigger('start');
+  if (!known || switched) poller.trigger('start');
 }
 
 /** Log in / switch / log out after start: keep the pollers on the connected provider. */
 async function followActiveProvider(): Promise<void> {
   if (providerFollow) return;
-  const { providerManager } = await import('$lib/util/sync/provider-manager');
+  const { providerManager } = await providerManagerModule();
   if (!providerManager.status) {
     await ensureCloudPoller();
     return;
@@ -1437,10 +1471,15 @@ async function followActiveProvider(): Promise<void> {
   let lastType: string | null | undefined;
   const unsubscribe = providerManager.status.subscribe((status) => {
     const type = status.hasAnyAuthenticated ? status.currentProviderType : null;
-    if (type === lastType) return;
+    if (type === lastType) {
+      // A switch from one WebDAV server to another keeps the type.
+      if (type === 'webdav') void ensureServerPoller();
+      return;
+    }
     lastType = type;
-    // In turn: the cloud check steps aside for a bunko server, which this then polls.
-    void ensureCloudPoller().then(() => (type === 'webdav' ? ensureServerPoller() : undefined));
+    // In turn: the cloud check steps aside for a bunko server, which this then
+    // polls (or, connected elsewhere now, the last server's poller is dropped).
+    void ensureCloudPoller().then(ensureServerPoller);
   });
   providerFollow = unsubscribe;
 }
@@ -1449,6 +1488,8 @@ async function followActiveProvider(): Promise<void> {
 export function resetServerOcrQueueForTest(): void {
   for (const p of pollers.values()) p.stop();
   pollers.clear();
+  webdavAuthPollers.clear();
+  connectedServer = null;
   pulling.clear();
   statusByQueue.clear();
   queueStatusStore.set({});

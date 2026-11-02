@@ -71,6 +71,7 @@ import { backupQueue, backupQueueSettled } from '$lib/util/backup-queue';
 import { downloadQueue } from '$lib/util/download-queue';
 import { nav } from '$lib/util/hash-router';
 import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
+import { waitFor } from '$lib/util/store-wait';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { executeRenameSeries } from '$lib/util/series-rename';
 import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
@@ -177,14 +178,7 @@ async function idle(): Promise<void> {
     [unifiedCloudManager.isSyncing, unifiedCloudManager.isFetching],
     ([syncing, fetching]) => syncing || fetching
   );
-  await new Promise<void>((resolve) => {
-    // subscribe() calls back before it returns the unsubscriber.
-    const unsubscribe = busy.subscribe((b) => {
-      if (b) return;
-      resolve();
-      queueMicrotask(() => unsubscribe());
-    });
-  });
+  await waitFor(busy, (b) => !b);
 }
 
 /**
@@ -211,15 +205,23 @@ function listingNow(): Map<string, CloudVolumeWithProvider[]> {
   for (const file of unifiedCloudManager.getAllCloudVolumes() as CloudVolumeWithProvider[]) {
     const folder = file.path.split('/')[0];
     if (!folder || folder === HISTORY_FOLDER) continue;
-    map.set(folder, [...(map.get(folder) ?? []), type ? { ...file, provider: type } : file]);
+    let files = map.get(folder);
+    if (!files) map.set(folder, (files = []));
+    files.push(type ? { ...file, provider: type } : file);
   }
   return map;
 }
 
-/** The listed archive of a row, by the rule the volume card uses. */
-function listedArchivePath(row: VolumeMetadata): string | null {
+/**
+ * The listed archive of a row, by the rule the volume card uses, in `listing`
+ * (one `listingNow()` read for a whole library).
+ */
+function listedArchivePath(
+  row: VolumeMetadata,
+  listing: Map<string, CloudVolumeWithProvider[]> = listingNow()
+): string | null {
   const path = `${row.series_title}/${row.volume_title}.cbz`;
-  const listed = listingNow().get(row.series_title) ?? [];
+  const listed = listing.get(row.series_title) ?? [];
   return listed.some((f) => f.path === path) ? path : null;
 }
 
@@ -230,14 +232,15 @@ async function seriesIndexMap(): Promise<Map<string, SeriesIndexRecord>> {
 async function library(): Promise<{ volumes: RigVolume[] }> {
   const rows = await db.volumes.toArray();
   const indexMap = await seriesIndexMap();
-  const placeholders = generatePlaceholders(listingNow(), rows, indexMap);
+  const listing = listingNow();
+  const placeholders = generatePlaceholders(listing, rows, indexMap);
   const out: RigVolume[] = [];
   for (const row of rows) {
     out.push({
       id: row.volume_uuid,
       series: row.series_title,
       title: row.volume_title,
-      cloudPath: listedArchivePath(row) ?? row.cloudPath ?? null,
+      cloudPath: listedArchivePath(row, listing) ?? row.cloudPath ?? null,
       hasOcr: isVolumeInstalled(row) && !!row.mokuro_version,
       layers: (await listLayerIds(db, row.volume_uuid)).sort()
     });
@@ -303,13 +306,7 @@ async function download(volume: VolumeMetadata): Promise<void> {
   if (!queued(get(downloadQueue))) {
     throw new Error(`${volume.volume_title} could not be queued for download`);
   }
-  await new Promise<void>((resolve) => {
-    const unsubscribe = downloadQueue.subscribe((q) => {
-      if (queued(q)) return;
-      resolve();
-      queueMicrotask(() => unsubscribe());
-    });
-  });
+  await waitFor(downloadQueue, (q) => !queued(q));
 }
 
 /**
@@ -415,13 +412,19 @@ async function backupVolume(
   volumeId: string
 ): Promise<{ cloudPath: string | null; error?: string }> {
   const row = await requireRow(volumeId);
+  // A failure stays recorded until an upload of the volume succeeds, and a run
+  // can end neither way (a series closed while queued): only one this run
+  // recorded is its answer.
+  const earlier = get(uploadFailures)[volumeId];
   backupQueue.queueVolumeForBackup(row);
   if (!backupQueue.isVolumeInBackupQueue(volumeId)) {
     throw new Error(`${row.volume_title} could not be queued for backup`);
   }
   await backupQueueSettled();
   const failure = get(uploadFailures)[volumeId];
-  if (failure) return { cloudPath: null, error: failure.reason };
+  if (failure && (!earlier || failure.at !== earlier.at)) {
+    return { cloudPath: null, error: failure.reason };
+  }
   return { cloudPath: listedArchivePath(row) };
 }
 

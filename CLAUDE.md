@@ -163,8 +163,11 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   refusal naming `insufficientStorage` / `quotaLimitReached` → `oneDriveStorageFullError()`,
   excluded from the ≥ 500 retry.
 - A 401 re-authenticates only when it refused the token held NOW: `handleAuthError` gets the
-  token the request carried, and a refusal of one a re-auth has since replaced asks for
-  nothing (a second sign-in popup for nothing, or a cleared token that works).
+  token the request carried, and a refusal of one a re-auth has since replaced asks for no
+  re-auth (a second sign-in popup for nothing, or a cleared token that works); the call is
+  sent ONCE more with the held token instead (`retryStaleTokenRefusal` — a 401 created
+  nothing, so even a create is safe). Every attempt, `withDriveRetry`'s included, reads the
+  token when it goes out: a re-auth can land during a backoff.
 
 **Provider status is published, never polled.** The navbar's reconnect banner, the cloud
 screen and every read-only gate read `providerManager.status`, which moves only when
@@ -1850,7 +1853,8 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   (`defaultNaming` in `folder` mode) — and `backupVolume(volumeId)`: the card's Backup, awaited
   to the end of its run (`backupQueueSettled`, `util/backup-queue.ts`: the upload, then the run's
   listing and its `series.json`/`catalog.json` writes), answering `{ cloudPath }` or the
-  upload's failure.
+  failure THIS run recorded (`uploadFailures` keeps a volume's failure until an upload of it
+  succeeds, so one whose `at` did not move is an earlier run's).
 - `settleSeriesWrites()` (the spine offset scenario) runs every queued `series.json` write now
   and waits out those in flight (`settleSeriesFileWrites`, `metadata/series-file-sync.ts`), so a
   spec counts the writes a sync caused without waiting out the 2 s debounce.

@@ -580,6 +580,12 @@ describe('library()', () => {
     });
   });
 
+  it('reads the cache once, however many rows it lists', async () => {
+    listed('Series A/Vol 1.cbz', 'Series A/Vol 2.cbz');
+    await install().library();
+    expect(unifiedCloudManager.getAllCloudVolumes).toHaveBeenCalledTimes(1);
+  });
+
   it('includes a cloud-only volume as its placeholder', async () => {
     listed('Series B/Vol 9.cbz');
     const lib = await install().library();
@@ -689,6 +695,33 @@ describe('importing and backing up', () => {
     await vi.waitFor(() => expect(bq.settle).not.toBeNull());
     (uploadFailures as unknown as Writable<Record<string, unknown>>).set({
       v1: { volume_uuid: 'v1', reason: 'Storage is full' }
+    });
+    bq.settle!();
+    expect(await backing).toEqual({ cloudPath: null, error: 'Storage is full' });
+  });
+
+  // A failure from an earlier run stays recorded until an upload succeeds: a
+  // run that neither uploads nor fails (a series closed while queued) must not
+  // answer with it.
+  it('backupVolume does not answer with a failure an earlier run recorded', async () => {
+    listed('Series A/Vol 1.cbz');
+    const failures = uploadFailures as unknown as Writable<Record<string, unknown>>;
+    failures.set({
+      v1: { volume_uuid: 'v1', reason: 'Storage is full', at: '2026-11-01T00:00:00Z' }
+    });
+    const backing = install().backupVolume('v1');
+    await vi.waitFor(() => expect(bq.settle).not.toBeNull());
+    bq.settle!();
+    expect(await backing).toEqual({ cloudPath: 'Series A/Vol 1.cbz' });
+  });
+
+  it('backupVolume answers a failure this run recorded over an earlier one', async () => {
+    const failures = uploadFailures as unknown as Writable<Record<string, unknown>>;
+    failures.set({ v1: { volume_uuid: 'v1', reason: 'Old', at: '2026-11-01T00:00:00Z' } });
+    const backing = install().backupVolume('v1');
+    await vi.waitFor(() => expect(bq.settle).not.toBeNull());
+    failures.set({
+      v1: { volume_uuid: 'v1', reason: 'Storage is full', at: '2026-11-02T00:00:00Z' }
     });
     bq.settle!();
     expect(await backing).toEqual({ cloudPath: null, error: 'Storage is full' });

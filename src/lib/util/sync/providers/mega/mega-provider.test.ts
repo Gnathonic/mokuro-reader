@@ -584,6 +584,32 @@ describe('MegaProvider ghost-node handling', () => {
     );
   });
 
+  // The new copy landed: a refused delete of an old one leaves a duplicate a
+  // listing merges, not a failed upload (a caller's retry would upload a third).
+  it('a refused delete of an old copy after the upload still answers the upload', async () => {
+    const folder = makeMokuroFolder();
+    const stuck = makeFile(
+      'volume-data.json',
+      folder,
+      new Error('EACCESS (-11): Access violation')
+    );
+    const other = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, stuck, other });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const uploaded = await provider.uploadFile('volume-data.json', new Uint8Array([1, 2, 3]));
+
+    expect(uploaded).toMatchObject({ fileId: 'fresh-node' });
+    expect(folder.upload).toHaveBeenCalledOnce();
+    expect(stuck.delete).toHaveBeenCalledOnce();
+    expect(other.delete).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/old copy/),
+      expect.stringMatching(/EACCESS/)
+    );
+    warn.mockRestore();
+  });
+
   it('a failed upload leaves the copy it would have replaced', async () => {
     const folder = makeMokuroFolder();
     folder.upload = vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
