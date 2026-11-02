@@ -56,7 +56,7 @@ describe('isUntouchedUpgradeLayer', () => {
     expect(isUntouchedUpgradeLayer(undefined)).toBe(false);
   });
 
-  it('also holds for a previous-ocr keepsake with no source hash (a legacy primary had none)', () => {
+  it('needs no source hash, only the two stamps', () => {
     expect(isUntouchedUpgradeLayer({ source_at: 't1', updated_at: 't1' })).toBe(true);
     expect(isUntouchedUpgradeLayer({ source_at: 't1', updated_at: 't2' })).toBe(false);
   });

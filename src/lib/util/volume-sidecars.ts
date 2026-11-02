@@ -127,7 +127,7 @@ export async function loadVolumeLayerFiles(volumeUuid: string): Promise<File[]> 
   return (
     layers
       // Same rule as `compress-volume`'s layer sidecars: an untouched upgrade
-      // layer (`updated-ocr`, `previous-ocr`) is never a layer file.
+      // layer (`updated-ocr`) is never a layer file.
       .filter((layer) => !isUntouchedUpgradeLayer(layer))
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {

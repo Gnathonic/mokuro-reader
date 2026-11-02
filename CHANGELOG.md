@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- OCR upgrades no longer keep a "Previous OCR" layer
+
 ### Fixed
 
 - Google Drive trashes duplicate folders only once they are empty
