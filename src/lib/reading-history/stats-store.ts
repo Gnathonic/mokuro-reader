@@ -314,19 +314,19 @@ export function recentReadingSpeed(
  */
 export function freezeLegacyBaselines(now: number = Date.now()): number {
   const firstPass = !baselinesFrozen;
-  let changed = 0;
-  volumesWithTrash.update((all) => {
-    const next = { ...all };
-    for (const [id, record] of Object.entries(all)) {
-      if (record.deletedOn || record.legacyStats) continue;
-      const snapshot = snapshotOf(record, firstPass);
-      if (!snapshot) continue;
-      // Not a user action: no new stamp.
-      next[id] = new VolumeData({ ...record, legacyStats: { ...snapshot, before: now } });
-      changed++;
-    }
-    return changed > 0 ? next : all;
-  });
+  const frozen: Record<string, VolumeData> = {};
+  for (const [id, record] of Object.entries(get(volumesWithTrash))) {
+    if (record.deletedOn || record.legacyStats) continue;
+    const snapshot = snapshotOf(record, firstPass);
+    if (!snapshot) continue;
+    // Not a user action: no new stamp.
+    frozen[id] = new VolumeData({ ...record, legacyStats: { ...snapshot, before: now } });
+  }
+  const changed = Object.keys(frozen).length;
+  // Only a real change touches the store: an `update` returning the same
+  // object still notifies every subscriber and rewrites localStorage, and
+  // this runs at every start and after every sync.
+  if (changed > 0) volumesWithTrash.update((all) => ({ ...all, ...frozen }));
   baselinesFrozen = true;
   writeFlag('done');
   return changed;

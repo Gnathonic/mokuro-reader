@@ -223,6 +223,22 @@ describe('freezeLegacyBaselines', () => {
     });
   });
 
+  it('leaves the volumes store untouched when no record needs a snapshot', () => {
+    // It runs at every start and after every sync: a no-op pass that still
+    // "updated" the store re-emitted the whole map and rewrote localStorage.
+    setRecords({
+      done: { progress: 3, chars: 900, legacyStats: { time_ms: MIN, chars: 900, before: 1 } },
+      blank: { progress: 0, chars: 0 }
+    });
+    const seen = vi.fn();
+    const unsubscribe = volumesWithTrash.subscribe(seen);
+    seen.mockClear();
+    expect(freezeLegacyBaselines()).toBe(0);
+    expect(freezeLegacyBaselines()).toBe(0);
+    expect(seen).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
   it('includes archived passes in the old characters', () => {
     setRecords({
       v: {
