@@ -569,7 +569,7 @@ describe('cross-device position writers', () => {
     stop?.();
   });
 
-  it('applyMissedRestart resets the position without archiving another pass', async () => {
+  it('applyMissedRestart resets the position and archives the missed pass at the given stamp', async () => {
     const { applyMissedRestart } = await import('./volume-data');
     volumesWithTrash.set({
       v: new VolumeData({
@@ -581,21 +581,46 @@ describe('cross-device position writers', () => {
         lastProgressUpdate: '2026-01-01T00:00:00.000Z'
       })
     });
-    applyMissedRestart('v');
+    applyMissedRestart('v', 11_000);
     const r = get(volumesWithTrash).v;
     expect(r).toMatchObject({ progress: 0, chars: 0, completed: false });
     expect(r.completedAt).toBeUndefined();
     // This device's own pass (read without seeing the restart) is archived,
-    // with its completion date, so goal credit survives.
-    expect(r.archivedReads).toHaveLength(2);
-    expect(r.archivedReads[1]).toMatchObject({
-      pages: 61,
-      chars: 610,
-      completed: true,
-      completedAt: '2026-01-01T00:00:00.000Z'
-    });
+    // with its completion date, so goal credit survives. Its stamp is the
+    // missed reading's own (not this device's clock), so every device that
+    // re-applies the same restart archives the pass under ONE key and the
+    // merge keeps it once.
+    expect(r.archivedReads).toEqual([
+      { at: 5000, pages: 200, chars: 2000, completed: true },
+      {
+        at: 11_000,
+        pages: 61,
+        chars: 610,
+        completed: true,
+        completedAt: '2026-01-01T00:00:00.000Z'
+      }
+    ]);
     expect(Date.parse(r.lastProgressUpdate)).toBeGreaterThan(
       Date.parse('2026-01-01T00:00:00.000Z')
     );
+  });
+
+  it('applyMissedRestart replaces an archive already made under the same stamp', async () => {
+    const { applyMissedRestart } = await import('./volume-data');
+    volumesWithTrash.set({
+      v: new VolumeData({
+        progress: 70,
+        chars: 700,
+        archivedReads: [
+          { at: 5000, pages: 200, chars: 2000, completed: true },
+          { at: 11_000, pages: 61, chars: 610, completed: false }
+        ]
+      })
+    });
+    applyMissedRestart('v', 11_000);
+    expect(get(volumesWithTrash).v.archivedReads).toEqual([
+      { at: 5000, pages: 200, chars: 2000, completed: true },
+      { at: 11_000, pages: 70, chars: 700, completed: false }
+    ]);
   });
 });

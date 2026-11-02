@@ -1393,6 +1393,59 @@ describe('reading on two devices survives the volume merge', () => {
     expect(svc.mergeVolumeData(local, cloud)['vol-1'].progress).toBe(7);
   });
 
+  it('two devices that each re-applied the same missed restart archive the pass once', () => {
+    // The phone restarted (its pass archived at the restart); the laptop read
+    // on to p.70 without seeing it. Both devices then re-applied the restart
+    // for the laptop's reading, each stamping the archive with that reading's
+    // own time, so the union is one pass — not lifetime pages doubled.
+    const restartAt = ms(MON);
+    const readThrough = ms(TUE);
+    const phone = {
+      'vol-1': {
+        progress: 0,
+        chars: 0,
+        lastProgressUpdate: '2026-10-06T10:00:00.000Z',
+        archivedReads: [
+          { at: restartAt, pages: 200, chars: 20000, completed: true },
+          { at: readThrough, pages: 70, chars: 7000, completed: false }
+        ]
+      }
+    };
+    const laptop = {
+      'vol-1': {
+        progress: 0,
+        chars: 0,
+        lastProgressUpdate: '2026-10-06T10:30:00.000Z',
+        archivedReads: [
+          { at: restartAt, pages: 200, chars: 20000, completed: true },
+          { at: readThrough, pages: 70, chars: 7000, completed: false }
+        ]
+      }
+    };
+
+    const merged = svc.mergeVolumeData(phone, laptop)['vol-1'];
+
+    expect(merged.archivedReads).toEqual(laptop['vol-1'].archivedReads);
+  });
+
+  it('a stale copy from before a forget cannot bring archived passes back', () => {
+    const T0 = '2026-10-04T10:00:00.000Z';
+    const T1 = '2026-10-05T10:00:00.000Z';
+    const T2 = '2026-10-05T11:00:00.000Z';
+    const local = { 'vol-1': { addedOn: T2, forgotAt: T1 } };
+    const cloud = {
+      'vol-1': {
+        progress: 40,
+        lastProgressUpdate: T0,
+        archivedReads: [{ at: ms(T0) - 1000, pages: 200, chars: 2000, completed: true }]
+      }
+    };
+
+    const merged = svc.mergeVolumeData(local, cloud)['vol-1'];
+
+    expect(merged.archivedReads ?? []).toEqual([]);
+  });
+
   it('two blank records settle on the same one whichever side is local', () => {
     const A = { addedOn: MON, settings: { hasCover: true } };
     const B = { addedOn: TUE, settings: { hasCover: false } };

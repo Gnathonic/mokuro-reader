@@ -790,11 +790,20 @@ export function jumpToPosition(
 /**
  * Re-apply a restart another device made that this position never saw (phase
  * 2c: a reset wins). The pass the restart ended was archived where it happened
- * (the merge keeps both sides' `archivedReads`); THIS device's reading since,
- * done without seeing the restart, is archived here. Fresh stamp, so it wins
- * the next merge.
+ * (the merge keeps both sides' `archivedReads`); the reading since, done
+ * without seeing the restart, is archived here. Fresh `lastProgressUpdate`,
+ * so the zeroed record wins the next merge.
+ *
+ * `readThrough` — the missed reading's final view (`PositionPlan.reset.through`)
+ * — is the archive's `at`, NOT this device's clock: the merge unions archives
+ * by `at`, and more than one device re-applies the same restart (the stale
+ * device before its answer reaches anyone; the restarting device at its next
+ * sync, where the stale record still wins). Under one stamp the union keeps
+ * the pass once; under two it was counted twice in lifetime stats and goals,
+ * permanently. An archive already made under that stamp is replaced, so a
+ * second application on one device never adds a pass either.
  */
-export function applyMissedRestart(volume: string) {
+export function applyMissedRestart(volume: string, readThrough: number) {
   _volumesInternal.update((prev) => {
     const current = prev[volume];
     if (!current || current.deletedOn) return prev;
@@ -805,15 +814,15 @@ export function applyMissedRestart(volume: string) {
     const archived =
       current.progress > 0 || current.completed
         ? [
-            ...current.archivedReads,
+            ...current.archivedReads.filter((read) => read.at !== readThrough),
             {
-              at: now,
+              at: readThrough,
               pages: current.progress,
               chars: current.chars,
               completed: current.completed,
               ...(current.completedAt ? { completedAt: current.completedAt } : {})
             }
-          ]
+          ].sort((a, b) => a.at - b.at)
         : current.archivedReads;
     return {
       ...prev,
