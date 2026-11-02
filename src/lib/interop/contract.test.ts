@@ -1,9 +1,12 @@
 /**
  * The contract helper's own rules: a Bunko checkout named by `BUNKO_REPO` must be
- * there, one found by looking around must hold the contract the tests read, records are only ever written into one named that way, and Bunko's time
+ * there and hold the baseline, one found by looking around must hold the contract the tests read, records are only ever written into one named that way, and Bunko's time
  * sentinels rebase in the format they were written in.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   CONTRACT_BASELINE,
   contractDir,
@@ -26,6 +29,40 @@ describe('the contract helper', () => {
   it('a BUNKO_REPO without interop/contract is an error, not a quiet skip', () => {
     vi.stubEnv('BUNKO_REPO', '/nonexistent/bunko-checkout');
     expect(() => contractDir()).toThrow(/BUNKO_REPO=\/nonexistent\/bunko-checkout/);
+  });
+
+  it('a BUNKO_REPO short of the baseline fails once, naming every missing file', () => {
+    // Named by hand, an old checkout is still a mistake: say so up front, not
+    // as scattered fixture errors in whichever tests read the missing files.
+    const root = mkdtempSync(join(tmpdir(), 'contract-baseline-'));
+    try {
+      const dir = join(root, 'interop', 'contract');
+      mkdirSync(join(dir, 'bunko'), { recursive: true });
+      writeFileSync(join(dir, 'seed.json'), '{}');
+      writeFileSync(join(dir, 'sidecar-names.json'), '{}');
+      writeFileSync(join(dir, 'bunko', 'history-put.json'), '{}');
+      vi.stubEnv('BUNKO_REPO', root);
+      const missing = CONTRACT_BASELINE.filter(
+        (rel) => rel !== 'sidecar-names.json' && rel !== 'bunko/history-put.json'
+      );
+      let message = '';
+      try {
+        contractDir();
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toContain(`BUNKO_REPO=${root}`);
+      for (const rel of missing) expect(message).toContain(rel);
+      expect(message).not.toContain('sidecar-names.json');
+      expect(message).not.toContain('history-put.json');
+
+      // Complete it, and the same checkout is the contract.
+      mkdirSync(join(dir, 'seal'));
+      for (const rel of missing.filter((r) => r !== 'seal')) writeFileSync(join(dir, rel), '{}');
+      expect(contractDir()).toBe(dir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('a sibling found by looking around counts only when it holds the contract these tests read', () => {

@@ -14,8 +14,9 @@
  *
  * The fixtures are read from a Bunko checkout, never copied into this repo:
  * `BUNKO_REPO` (CI), else a sibling `mokuro-webdav-library` checkout that holds
- * this contract (`CONTRACT_BASELINE`). Without one the contract tests skip
- * with a warning; `BUNKO_CONTRACT_REQUIRED=1` makes that a failure.
+ * this contract (`CONTRACT_BASELINE`). A `BUNKO_REPO` that lacks part of the
+ * baseline is an error naming what it lacks. Without a checkout the contract
+ * tests skip with a warning; `BUNKO_CONTRACT_REQUIRED=1` makes that a failure.
  *
  * Test-only: never import this from app code.
  */
@@ -84,6 +85,15 @@ export function contractDir(): string | null {
     if (!hasSeed(dir)) {
       throw new Error(`BUNKO_REPO=${env} has no interop/contract/seed.json (looked in ${dir})`);
     }
+    // And so is an older branch: say it once here, not as scattered fixture
+    // errors in whichever tests read the files it lacks.
+    const missing = missingBaseline(dir);
+    if (missing.length) {
+      throw new Error(
+        `BUNKO_REPO=${env} is older than the contract these tests read: ${dir} lacks ` +
+          `${missing.join(', ')}. Check out a Bunko branch that has them.`
+      );
+    }
     return dir;
   }
   const found = findSiblingContract(
@@ -96,7 +106,7 @@ export function contractDir(): string | null {
   if (found.stale.length && !warnedStale) {
     warnedStale = true;
     for (const dir of found.stale) {
-      const missing = CONTRACT_BASELINE.filter((rel) => !existsSync(join(dir, rel)));
+      const missing = missingBaseline(dir);
       console.warn(
         `[contract] Ignoring ${dir}: it lacks ${missing.join(', ')} (a Bunko branch older than ` +
           'the contract these tests read). Name a checkout with BUNKO_REPO.'
@@ -110,8 +120,9 @@ export function contractDir(): string | null {
  * Paths (under `interop/contract/`) of the newest contract files the reader's
  * tests read. A sibling checkout found by looking around is used only when it
  * holds all of them: one on an older branch fails ordinary unit tests on
- * fixtures and keys it never had, which is no finding about either side. Add
- * a path here when a test starts reading a file a new Bunko contract brought.
+ * fixtures and keys it never had, which is no finding about either side. One
+ * named by `BUNKO_REPO` that lacks any is an error listing them. Add a path
+ * here when a test starts reading a file a new Bunko contract brought.
  */
 export const CONTRACT_BASELINE = [
   'seal',
@@ -123,6 +134,11 @@ export const CONTRACT_BASELINE = [
 ];
 
 let warnedStale = false;
+
+/** The `CONTRACT_BASELINE` entries `dir` (an `interop/contract`) lacks. */
+function missingBaseline(dir: string, exists: (path: string) => boolean = existsSync): string[] {
+  return CONTRACT_BASELINE.filter((rel) => !exists(join(dir, rel)));
+}
 
 /**
  * The first of `roots` whose `interop/contract` holds the baseline, and those
@@ -136,7 +152,7 @@ export function findSiblingContract(
   for (const root of roots) {
     const dir = join(root, 'interop', 'contract');
     if (!exists(join(dir, 'seed.json'))) continue;
-    if (CONTRACT_BASELINE.every((rel) => exists(join(dir, rel)))) return { dir, stale };
+    if (!missingBaseline(dir, exists).length) return { dir, stale };
     stale.push(dir);
   }
   return { dir: null, stale };

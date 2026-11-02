@@ -1742,8 +1742,9 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   (`contract.ts`, the newest contract files the tests read — add one there when a test starts reading
   a new fixture): one on an older branch is ignored with a warning and the tests run on the reader's
   snapshots, instead of failing ordinary unit tests on fixtures it never had. It may still be on
-  another branch than the one you are pairing with, so name it. `BUNKO_REPO` is used as named,
-  however old. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into
+  another branch than the one you are pairing with, so name it. `BUNKO_REPO` is used as named, never
+  skipped: one without `seed.json`, or lacking any `CONTRACT_BASELINE` file, throws once, listing
+  what it lacks. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into
   a failure.
 - CI checks out bunko at `vars.BUNKO_REF` (default `0.8/remote-storage`) with
   `BUNKO_CONTRACT_REQUIRED=1`, so a reader branch whose tests read a newer contract fails CI until that
