@@ -745,7 +745,9 @@ async function resolveAndDeliver(
           vol.cloudPath,
           result,
           { size: vol.cloudThumbnailSize, modifiedTime: vol.cloudThumbnailModifiedTime },
-          false
+          // An overwrite: the old blob sits at this key, and the cards and
+          // decodes showing it are told it changed.
+          true
         );
         return 'cache';
       }

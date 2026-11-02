@@ -161,6 +161,7 @@ vi.mock('$lib/settings/volume-data', () => ({
 import { db } from '$lib/catalog/db';
 import { _resetCoverPersistForTests } from './cover-persist';
 import { _getCloudCoversForTests, putCloudCovers } from './cloud-covers';
+import { acquireCover } from './cover-resolver';
 import {
   _resetCoverServiceForTests,
   flushPendingCoverPersists,
@@ -1171,6 +1172,8 @@ describe('promotion: a cached cover is installed onto a row the user has read, w
 
   it('a STALE cached cover with no relationship is fetched again and re-cached with the new stamp', async () => {
     await cacheCover(path, { cover_size: 5, cover_modified: 1700000000 });
+    const shown = acquireCover(path); // a card already showing the old cover
+    expect(await (await shown.ready)!.file.text()).toBe('cached');
     const outcome = await requestCover(
       indexedPlaceholder('idx-1', {
         cloudProvider: 'webdav',
@@ -1188,6 +1191,9 @@ describe('promotion: a cached cover is installed onto a row the user has read, w
     const cached = (await _getCloudCoversForTests('mega:a@b.com', [path])).get(path);
     expect(cached?.cover_size).toBe(9);
     expect(cached?.cover_modified).toBe(Date.parse('2026-01-01T00:00:00.000Z') / 1000);
+    // ...and that card now shows the new one, with no reload.
+    await vi.waitFor(async () => expect(await shown.current!.file.text()).toBe('img'));
+    shown.release();
   });
 
   it('a cached cover with no relationship whose stamp MATCHES the listing is not fetched', async () => {
