@@ -521,7 +521,10 @@
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pagehide', onPageHide);
       viewTracker.close(Date.now());
-      // The prompt store is module-level: never let it reach the next volume.
+      // The live stores are module-level: never let them reach the next
+      // volume. The view just closed is recorded; a later Timer must not add
+      // it to a counted figure that already includes it.
+      endedView.set(null);
       pauseWatch.dispose();
       livePause.set(null);
       readingPaused.set(false);
@@ -662,7 +665,8 @@
   // the view ends); otherwise the "Still reading?" prompt asks. When the pause
   // no longer stands (view gone, or the cap grew past the time so far), the
   // prompt goes and a preset is withdrawn — re-applied if the cap is reached
-  // again.
+  // again. A cap or typical time that changed while the prompt is up (a pace
+  // change, an idle setting) refreshes what it shows.
   const pauseWatch = new PauseWatch(
     (pause) => {
       const preset = get(pauseDefault);
@@ -672,7 +676,8 @@
     () => {
       livePause.set(null);
       viewTracker.setAnswer(null);
-    }
+    },
+    (pause) => livePause.update((shown) => (shown ? pause : shown))
   );
 
   function onPauseAnswer(count: PauseCount, opts: { stillReading: boolean; always: boolean }) {

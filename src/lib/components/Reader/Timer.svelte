@@ -1,12 +1,19 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import { get } from 'svelte/store';
   import { volumes } from '$lib/settings';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { currentVolume, currentVolumeCharacterCount } from '$lib/catalog';
   import { calculateVolumeTimeToFinish } from '$lib/util/reading-speed';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import { seriesSpeeds } from '$lib/reading-history/series-speeds';
-  import { endedView, liveMinutes, liveView, readingPaused } from '$lib/reading-history/live-view';
+  import {
+    endedView,
+    liveMinutes,
+    liveView,
+    readingPaused,
+    type EndedView
+  } from '$lib/reading-history/live-view';
   import { typicalDwell, viewCap } from '$lib/reading-history/stats-engine';
 
   /**
@@ -41,9 +48,17 @@
   // counted on the next pass): add what the stats WILL count for them until
   // the counted figure moves. Exact both ways — a page turn never dips, and an
   // answer that counts less than the time on screen shows at once.
+  //
+  // Only views that end AFTER this Timer mounts are pending here. Within one
+  // volume the Timer is mounted whenever a view ends, so whatever the store
+  // holds at mount is a previous visit's last view (leaving the reader closes
+  // it), already counted or on its way — adding it again showed it twice.
+  let seen: EndedView | null = get(endedView);
   let pending = $state<{ ms: number; base: number } | null>(null);
   $effect(() => {
     const ended = $endedView;
+    if (ended === seen) return;
+    seen = ended;
     if (!ended || ended.volume !== volumeId) return;
     untrack(() => {
       const base = counted;
