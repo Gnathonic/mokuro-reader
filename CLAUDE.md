@@ -131,18 +131,29 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   passes (`reconcileMissingMetadataFiles`, the sidecar backfill, layer sync)
   wait for it in `refreshSeriesIndexesInBackground`; the index/catalog refreshes
   do not. Backup enqueue (`resolveCloudFolderTitle`) and
-  `existsInCloud`/`getCloudFile` (exact path, then the folded fallback of
-  `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so nothing
-  uploads into the losing folder. Those backstops are NOT gated on bunko: like
+  `existsInCloud`/`getCloudFile` (exact path, then the same folder-and-file
+  picks as `getManagedCloudFilesForVolume`) resolve the cloud's spelling, so
+  nothing uploads into the losing folder. `getCloudFile`/`existsInCloud` is
+  THE "is it backed up" selector — the series page's status and "back up
+  series", `BackupButton`, `VolumeItem` and the cloud screen all ask it; a
+  byte-exact path test beside it reads an uploaded volume as missing and
+  re-PUTs it on every click. Those backstops are NOT gated on bunko: like
   every other folder lookup (rename, delete, `series.json`) they run on every
-  provider, so on plain storage too a title with no exact folder backs up into,
-  counts as backed up in, and is deleted from (the series removal dialog's
-  "also delete" and `deleteSeriesFromCloudByTitle` resolve alike) the ONE
-  folder folding onto it, naturally first when several do. An exact folder
-  always wins, and plain storage never ADOPTS: its rows keep their spelling.
-  The folded lookups read `listingFolderIndex`, built once per cache revision
-  (`CoalescedCacheStore.revision`, replaced by every add/remove/install), so a
-  per-volume caller costs O(1), not a pass over the listing.
+  provider, so on plain storage too a title with no exact folder backs up into
+  and counts as backed up in the ONE folder folding onto it, naturally first
+  when several do. An exact folder always wins, and plain storage never
+  ADOPTS: its rows keep their spelling. A DELETE is narrower
+  (`cloudFolderOfSeries`, `catalog/series-delete.ts`): the removal dialog's
+  "also delete" and `deleteSeriesFromCloudByTitle` take a folded folder only
+  when the catalog would group it with the series (`normalizeSeriesKey` — a
+  title differing only in unicode form folds alike but is ANOTHER catalog
+  series) and it lists one of the series' own volumes. Adoption itself skips
+  a series with a volume open in the reader (`isVolumeOpen`, `hash-router.ts`,
+  the OCR upgrade's deferral) — the row write would reload the open volume —
+  and the next listing retries. The folded lookups read `listingFolderIndex`,
+  built once per cache revision (`CoalescedCacheStore.revision`, replaced by
+  every add/remove/install) and holding the archive records themselves, so a
+  per-volume caller — hit or miss — costs O(1), not a pass over the listing.
 
 ### Svelte 5 Reactive Performance
 
