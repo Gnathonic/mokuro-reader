@@ -4,14 +4,12 @@
  * sentinels rebase in the format they were written in.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
 import {
   CONTRACT_BASELINE,
   contractDir,
   findSiblingContract,
   fixtureFetch,
+  namedContract,
   rebase,
   recordRequest,
   type Fixture,
@@ -38,35 +36,26 @@ describe('the contract helper', () => {
   it('a BUNKO_REPO short of the baseline fails once, naming every missing file', () => {
     // Named by hand, an old checkout is still a mistake: say so up front, not
     // as scattered fixture errors in whichever tests read the missing files.
-    const root = mkdtempSync(join(tmpdir(), 'contract-baseline-'));
+    const kept = ['sidecar-names.json', 'bunko/history-put.json'];
+    const missing = CONTRACT_BASELINE.filter((rel) => !kept.includes(rel));
+    let message = '';
     try {
-      const dir = join(root, 'interop', 'contract');
-      mkdirSync(join(dir, 'bunko'), { recursive: true });
-      writeFileSync(join(dir, 'seed.json'), '{}');
-      writeFileSync(join(dir, 'sidecar-names.json'), '{}');
-      writeFileSync(join(dir, 'bunko', 'history-put.json'), '{}');
-      vi.stubEnv('BUNKO_REPO', root);
-      const missing = CONTRACT_BASELINE.filter(
-        (rel) => rel !== 'sidecar-names.json' && rel !== 'bunko/history-put.json'
-      );
-      let message = '';
-      try {
-        contractDir();
-      } catch (err) {
-        message = (err as Error).message;
-      }
-      expect(message).toContain(`BUNKO_REPO=${root}`);
-      for (const rel of missing) expect(message).toContain(rel);
-      expect(message).not.toContain('sidecar-names.json');
-      expect(message).not.toContain('history-put.json');
-
-      // Complete it, and the same checkout is the contract.
-      mkdirSync(join(dir, 'seal'));
-      for (const rel of missing.filter((r) => r !== 'seal')) writeFileSync(join(dir, rel), '{}');
-      expect(contractDir()).toBe(dir);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
+      namedContract('/short', holding('/short', kept));
+    } catch (err) {
+      message = (err as Error).message;
     }
+    expect(message).toContain('BUNKO_REPO=/short');
+    expect(message).toContain(`lacks ${missing.join(', ')}.`);
+    for (const rel of kept) expect(message).not.toContain(rel);
+
+    // Complete, the same checkout is the contract.
+    expect(namedContract('/full', holding('/full', CONTRACT_BASELINE))).toBe(
+      '/full/interop/contract'
+    );
+    // And without seed.json it is no checkout at all.
+    expect(() => namedContract('/none', () => false)).toThrow(
+      /has no interop\/contract\/seed.json/
+    );
   });
 
   it('a sibling found by looking around counts only when it holds the contract these tests read', () => {

@@ -75,30 +75,32 @@ export interface Seed {
   }>;
 }
 
-function hasSeed(dir: string): boolean {
-  return existsSync(join(dir, 'seed.json'));
+/**
+ * The `interop/contract` of the checkout `BUNKO_REPO` names (`env`; `exists`
+ * is the file test, for the helper's own test). Asked for by name, a wrong
+ * path is a mistake, never a quiet skip; and so is an older branch, said once
+ * here with everything it lacks, not as scattered fixture errors in whichever
+ * tests read those files.
+ */
+export function namedContract(env: string, exists: (path: string) => boolean = existsSync): string {
+  const dir = join(resolve(REPO_ROOT, env), 'interop', 'contract');
+  if (!exists(join(dir, 'seed.json'))) {
+    throw new Error(`BUNKO_REPO=${env} has no interop/contract/seed.json (looked in ${dir})`);
+  }
+  const missing = missingBaseline(dir, exists);
+  if (missing.length) {
+    throw new Error(
+      `BUNKO_REPO=${env} is older than the contract these tests read: ${dir} lacks ` +
+        `${missing.join(', ')}. Check out a Bunko branch that has them.`
+    );
+  }
+  return dir;
 }
 
 /** `<bunko checkout>/interop/contract`, or null when there is none. */
 export function contractDir(): string | null {
   const env = process.env.BUNKO_REPO;
-  if (env) {
-    const dir = join(resolve(REPO_ROOT, env), 'interop', 'contract');
-    // Asked for by name: a wrong path is a mistake, never a quiet skip.
-    if (!hasSeed(dir)) {
-      throw new Error(`BUNKO_REPO=${env} has no interop/contract/seed.json (looked in ${dir})`);
-    }
-    // And so is an older branch: say it once here, not as scattered fixture
-    // errors in whichever tests read the files it lacks.
-    const missing = missingBaseline(dir);
-    if (missing.length) {
-      throw new Error(
-        `BUNKO_REPO=${env} is older than the contract these tests read: ${dir} lacks ` +
-          `${missing.join(', ')}. Check out a Bunko branch that has them.`
-      );
-    }
-    return dir;
-  }
+  if (env) return namedContract(env);
   const found = findSiblingContract(
     [
       '../mokuro-webdav-library',
