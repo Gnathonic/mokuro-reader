@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- OCR upgrades no longer keep a "Previous OCR" layer
+
 ### Fixed
 
 - A full MEGA account no longer deletes your synced progress
