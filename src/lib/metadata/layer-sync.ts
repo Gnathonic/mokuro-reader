@@ -37,6 +37,7 @@ import {
   layerStaysLocal,
   pulledFromCompilingServer,
   personalLayerAccount,
+  syncedForOtherAccount,
   type LayerTarget
 } from '$lib/catalog/mokuro-hash';
 import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
@@ -495,24 +496,6 @@ function isPassiveSnapshot(
   row: Pick<VolumeOcrLayer, 'cloud' | 'passive_at' | 'updated_at'>
 ): boolean {
   return !row.cloud && row.passive_at !== undefined && row.passive_at === row.updated_at;
-}
-
-/**
- * A personal layer (`edit`, `edit-<n>`) last synced under ANOTHER account of
- * this provider — two accounts on one device and one server, each of which
- * bunko serves its own `<Volume>.edit.mokuro` at the same path. A row stamped
- * before accounts were recorded has no `account` and counts as this one's.
- */
-function syncedForOtherAccount(
-  row: Pick<VolumeOcrLayer, 'layer_id' | 'cloud'>,
-  account: string | undefined
-): boolean {
-  return (
-    !!account &&
-    !!row.cloud?.account &&
-    row.cloud.account !== account &&
-    isPersonalLayerId(row.layer_id)
-  );
 }
 
 /**
@@ -1546,26 +1529,17 @@ export async function pullLayersForVolume(
         rowKey(l.stem) === titleKey &&
         (!only || only.includes(l.layerId))
     );
-    const tombstoned = pendingDeletesFor(
-      providerType,
-      personalLayerAccount(provider.getStatus())
-    ).get(volumeUuid);
+    // Read once for the whole volume, not per layer: it parses the pending
+    // deletes and asks the provider for its status.
+    const gate = pushGateOf(provider);
+    const tombstoned = pendingDeletesFor(providerType, gate.account).get(volumeUuid);
     let pulled = 0;
     await runPool(mine, MAX_CONCURRENT_LAYER_TRANSFERS, async (listed) => {
       const existing = await getLayerMeta(db, volumeUuid, listed.layerId);
       // Deleted here and not re-created: a fresh download must not bring it back.
       if (!existing && tombstoned?.has(listed.layerId)) return;
-      if (keepsLocalEdits(existing, pushGateOf(provider).target)) return;
-      if (
-        !layerNeedsPull(
-          existing,
-          listed.file,
-          providerType,
-          personalLayerAccount(provider.getStatus())
-        )
-      ) {
-        return;
-      }
+      if (keepsLocalEdits(existing, gate.target)) return;
+      if (!layerNeedsPull(existing, listed.file, providerType, gate.account)) return;
       if (await pullOne(provider, listed, row, existing, report)) pulled++;
     });
     return pulled;

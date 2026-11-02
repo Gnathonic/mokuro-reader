@@ -15,7 +15,7 @@ import {
   isServerKeepsakeLayerId
 } from '$lib/reader/edit/layer-names';
 import { isCloudModelOutput } from '$lib/reader/edit/layer-kind';
-import type { VolumeOcrLayerKind } from '$lib/types';
+import type { VolumeOcrLayer, VolumeOcrLayerKind } from '$lib/types';
 
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
@@ -166,6 +166,26 @@ export function personalLayerAccount(status: {
   return status.serverCompilesMetadata === true && status.editLayerSync !== undefined
     ? status.accountScope
     : undefined;
+}
+
+/**
+ * A personal layer (`edit`, `edit-<n>`) last synced under ANOTHER account of
+ * this provider (`account` = the active `personalLayerAccount`) — two
+ * accounts on one device and one server, each of which bunko serves its own
+ * `<Volume>.edit.mokuro` at the same path. Never pushed, nor uploaded beside a
+ * backup: it would overwrite this account's own overlay. A row stamped before
+ * accounts were recorded has no `account` and counts as this one's.
+ */
+export function syncedForOtherAccount(
+  row: Pick<VolumeOcrLayer, 'layer_id' | 'cloud'>,
+  account: string | undefined
+): boolean {
+  return (
+    !!account &&
+    !!row.cloud?.account &&
+    row.cloud.account !== account &&
+    isPersonalLayerId(row.layer_id)
+  );
 }
 
 /**
