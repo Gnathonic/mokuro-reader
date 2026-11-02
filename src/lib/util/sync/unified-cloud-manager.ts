@@ -81,12 +81,31 @@ import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 import { syncLayersFromListing } from '$lib/metadata/layer-sync';
 import { adoptCloudSeriesSpellings } from './cloud-spelling-adoption';
 import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
-import { cbzStemsOf, classifyMokuroSidecar, isCbzFile, layerOwnerArchive } from './syncable-file';
+import {
+  cbzStemsOf,
+  classifyMokuroSidecar,
+  isCbzFile,
+  layerOwnerArchive,
+  splitLayerSidecarName
+} from './syncable-file';
 
 /** A managed sidecar whose CONTENT embeds the volume's title/series. */
 function isMokuroSidecarPath(path: string): boolean {
   const lower = normalizeCloudPath(path).toLowerCase();
   return lower.endsWith('.mokuro') || lower.endsWith('.mokuro.gz');
+}
+
+/** One listed layer file of a volume, with the id a rename rebuilds its name from. */
+interface VolumeLayerFile {
+  file: CloudFileMetadata;
+  layerId: string;
+  gz: boolean;
+  /**
+   * Placed by the volume's LOCAL title, not by a listed archive — the folder
+   * lists no archive folding to the volume (see `layerFilesOfVolume`). Such a
+   * file is corroborated by a layer ROW of that id, not by a cloud stamp.
+   */
+  byLocalTitle?: true;
 }
 
 /**
@@ -95,11 +114,22 @@ function isMokuroSidecarPath(path: string): boolean {
  * other site does (`classifyMokuroSidecar`): `Vol 1.5.mokuro` is a layer of
  * `Vol 1` only when `Vol 1.5.cbz` is not listed. Returned with their ids so a
  * rename can rebuild the destination name.
+ *
+ * When NO listed archive folds to the volume, the volume's own title stands
+ * in for it. A backup sends the sidecars before the archive
+ * (`volume-upload-order.ts`), so a folder can hold `<Volume>.mokuro`,
+ * `<Volume>.<id>.mokuro` and the cover with the archive PUT failed; by archive
+ * presence alone the layer file is then an orphan — and stripped, it names a
+ * phantom volume `<Volume>.<id>` the series rename gate would refuse over,
+ * while the per-volume rename would leave it behind in the old folder. A
+ * layer-shaped file whose stem folds to the LOCAL title is that volume's,
+ * unless the listing says its whole base is another volume's primary
+ * (`<Volume>.<id>.cbz` listed).
  */
 function layerFilesOfVolume(
   folderFiles: CloudFileMetadata[],
   volumeBaseName: string
-): Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> {
+): VolumeLayerFile[] {
   const names = folderFiles.map((f) => basenameOfPath(f.path));
   const stems = cbzStemsOf(names);
   // Archive stems as spelled: a layer whose stem is EXACTLY another archive's
@@ -115,8 +145,17 @@ function layerFilesOfVolume(
   const own = spelled.has(volumeBaseName)
     ? volumeBaseName
     : [...spelled].filter((stem) => normalizeVolumeTitleKey(stem) === key).sort(naturalSort)[0];
-  const out: Array<{ file: CloudFileMetadata; layerId: string; gz: boolean }> = [];
-  if (own === undefined) return [];
+  const out: VolumeLayerFile[] = [];
+  if (own === undefined) {
+    for (const file of folderFiles) {
+      const name = basenameOfPath(file.path);
+      if (classifyMokuroSidecar(name, stems).kind === 'primary') continue;
+      const split = splitLayerSidecarName(name);
+      if (!split || normalizeVolumeTitleKey(split.stem) !== key) continue;
+      out.push({ file, layerId: split.layerId, gz: split.gz, byLocalTitle: true });
+    }
+    return out;
+  }
   for (const file of folderFiles) {
     const cls = classifyMokuroSidecar(basenameOfPath(file.path), stems);
     if (cls.kind !== 'layer') continue;
@@ -849,12 +888,21 @@ class UnifiedCloudManager {
     // them. Sweeping just that one would strand its sibling — orphaned by a
     // delete, left behind under the old title by a rename. So one vouched-for
     // copy carries every copy of the same layer id along.
+    //
+    // A layer placed by the volume's LOCAL title (no archive listed — this
+    // backup's own sidecars-then-archive order with the archive PUT failed) can
+    // carry no cloud stamp: `stampLayersSynced` runs once the archive is up.
+    // The layer ROW of that id on this device is what vouches for it; a
+    // look-alike (`Foo.5.mokuro` of a removed `Foo.5`) has no row called `5`.
     const corroboratedIds = new Set<string>();
     for (const layer of layers) {
       if (corroboratedIds.has(layer.layerId)) continue;
       for (const uuid of providerType ? uuids : []) {
         const row = await getLayerMeta(db, uuid, layer.layerId);
-        if (layerFileIsCorroborated(row, layer.file, providerType!)) {
+        const vouched = layer.byLocalTitle
+          ? row !== undefined
+          : layerFileIsCorroborated(row, layer.file, providerType!);
+        if (vouched) {
           corroboratedIds.add(layer.layerId);
           break;
         }
@@ -1315,8 +1363,9 @@ class UnifiedCloudManager {
         volumes.map((v) => normalizeCloudPath(`${oldFolderTitle}/${v.volumeTitle}`))
       );
       // A layer file (`<Volume>.<id>.mokuro`) strips to `<Volume>.<id>`, which
-      // names no volume: placed by the folder's archives, as the per-volume
-      // rename places it, it is its volume's, never a cloud-only one.
+      // names no volume: placed by the folder's archives — or, with its
+      // archive unlisted, by the LOCAL title — as the per-volume rename places
+      // it, it is its volume's, never a cloud-only one.
       const knownLayerFiles = new Set(
         volumes.flatMap((v) => layerFilesOfVolume(existingFiles, v.volumeTitle).map((l) => l.file))
       );
