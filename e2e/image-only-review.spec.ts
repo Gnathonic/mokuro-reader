@@ -59,6 +59,11 @@ function looseArchives(root: string, names: string[]): string[] {
 const uploadButton = (page: Page) => page.locator('nav div.md\\:order-2 > button').nth(3);
 const review = (page: Page) => page.locator('[data-testid="image-only-review"]');
 const stepLabel = (page: Page) => review(page).locator('[data-testid="review-step"]');
+/**
+ * The review opens once the picked archives are scanned: CPU-bound work that takes
+ * 9 s with one suite on the machine and 13-23 s with two, past `expect`'s 5 s.
+ */
+const SCANNED = { timeout: 20_000 };
 const seriesField = (page: Page) => review(page).locator('[data-testid="review-series"]');
 const names = (page: Page) => review(page).locator('[data-testid="review-volume-name"]');
 const reviewButton = (page: Page, text: string) =>
@@ -121,7 +126,7 @@ test('picked loose .cbz files are reviewed as one series and import', async ({ p
   await openApp(page);
   await pick(page, 'choose files', cbz);
 
-  await expect(stepLabel(page)).toHaveText('Series 1 of 1');
+  await expect(stepLabel(page)).toHaveText('Series 1 of 1', SCANNED);
   await expect(seriesField(page)).toHaveValue('Dorohedoro');
   await expect
     .poll(() => nameValues(page))
@@ -178,13 +183,13 @@ test("the owner's layouts: one step per series, and series 1 imports while serie
   });
 
   await pick(page, 'choose folder', library);
-  await expect(stepLabel(page)).toHaveText('Series 1 of 2');
+  await expect(stepLabel(page)).toHaveText('Series 1 of 2', SCANNED);
   // A second import while the review is open joins it.
   await importInPage(
     page,
     loose.map((p) => ({ path: basename(p), b64: readFileSync(p).toString('base64') }))
   );
-  await expect(stepLabel(page)).toHaveText('Series 1 of 3');
+  await expect(stepLabel(page)).toHaveText('Series 1 of 3', SCANNED);
 
   // Series 1: rename one volume, try both modes, start at 5.
   await expect(seriesField(page)).toHaveValue('Chained Soldier (Semi-Color)');
@@ -260,7 +265,7 @@ test.describe('at phone width', () => {
         b64: PNG_B64
       }))
     );
-    await expect(stepLabel(page)).toHaveText('Series 1 of 1');
+    await expect(stepLabel(page)).toHaveText('Series 1 of 1', SCANNED);
 
     const layout = () =>
       page.evaluate(() => {
