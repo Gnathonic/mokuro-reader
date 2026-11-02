@@ -33,7 +33,7 @@ import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud
 import { deleteVolumeCompletely, importFiles } from '$lib/import';
 import { defaultNaming } from '$lib/import/image-only-review';
 import { decideCurrent, reviewSession } from '$lib/import/review-session';
-import { publishCuratedLayer, pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
+import { publishCuratedLayer, pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
 import { catalogFileWritePending, settleCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import { seriesBackfillsPending, settleSeriesBackfills } from '$lib/metadata/series-backfill';
 import { seriesFileWritesPending, settleSeriesFileWrites } from '$lib/metadata/series-file-sync';
@@ -582,6 +582,17 @@ async function setSpineOffset(series: string, n: number): Promise<void> {
 }
 
 /**
+ * The reader's pull of the account's own `edit` overlay before a first primary
+ * edit or a fork (`pullOwnEditLayerBeforeEdit`): a fetch that failed edits
+ * nothing, as the reader opens nothing.
+ */
+async function requireOwnEditPull(volumeId: string): Promise<void> {
+  if ((await pullOwnEditLayerBeforeEdit(volumeId)) === 'failed') {
+    throw new Error(`Couldn't fetch this account's corrections of ${volumeId}`);
+  }
+}
+
+/**
  * The editor's save of a page whose first block now reads `text`, into the
  * layer the reader shows — or, when that layer is one the account may not
  * edit in place (`forksOnEdit`), into the account's own `edit` copy, as the
@@ -604,14 +615,18 @@ async function editFirstBlock(
   if (layerId) {
     const meta = (await listLayers(volumeId)).find((l) => l.layer_id === layerId);
     if (meta && forksOnEdit(meta, get(activeProviderStatus))) {
-      await pullOwnEditLayerBeforeFork(volumeId);
+      await requireOwnEditPull(volumeId);
       await forkIntoEditLayer(volumeId, layerId);
       updateVolumeSetting(volumeId, 'ocrLayer', EDIT_LAYER_ID);
       layerId = EDIT_LAYER_ID;
       pages = await loadLayerPages(volumeId, EDIT_LAYER_ID);
     }
   }
-  if (!layerId) pages = (await db.volume_ocr.get(volumeId))?.pages ?? null;
+  if (!layerId) {
+    // The reader's E on the primary pulls the account's overlay first.
+    await requireOwnEditPull(volumeId);
+    pages = (await db.volume_ocr.get(volumeId))?.pages ?? null;
+  }
   const current = pages?.[pageIndex];
   if (!current) throw new Error(`Volume ${volumeId} has no page ${page}`);
   if (current.blocks.length === 0) throw new Error(`Page ${page} has no text block to edit`);

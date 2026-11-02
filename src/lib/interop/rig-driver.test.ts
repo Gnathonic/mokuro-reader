@@ -84,7 +84,7 @@ vi.mock('$lib/catalog/cloud-bunko-marker', () => ({
 vi.mock('$lib/metadata/layer-sync', () => ({
   scheduleLayerPush: vi.fn(),
   publishCuratedLayer: vi.fn(async () => 'published'),
-  pullOwnEditLayerBeforeFork: vi.fn(async () => false),
+  pullOwnEditLayerBeforeEdit: vi.fn(async () => 'none' as const),
   listedCuratedLayerFile: vi.fn(async () => null),
   clearPendingLayerDelete: vi.fn(),
   deleteCloudLayerFile: vi.fn(),
@@ -225,7 +225,7 @@ import {
   putLayerWithPages
 } from '$lib/catalog/layer-store';
 import { cloudBunkoMergesDuplicates, cloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
-import { publishCuratedLayer, pullOwnEditLayerBeforeFork } from '$lib/metadata/layer-sync';
+import { publishCuratedLayer, pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
 import { flushSpineOffsetWrites, scheduleSpineOffsetWrite } from '$lib/metadata/spine-offsets';
 import { seriesFileWritesPending } from '$lib/metadata/series-file-sync';
 import { historySyncAllowed } from '$lib/reading-history/history-sync';
@@ -728,7 +728,7 @@ describe('importing and backing up', () => {
   });
 
   it('backupVolume refuses what the queue refuses', async () => {
-    vi.mocked(backupQueue.queueVolumeForBackup).mockImplementationOnce(() => false);
+    vi.mocked(backupQueue.queueVolumeForBackup).mockImplementationOnce(() => 'refused');
     await expect(install().backupVolume('v1')).rejects.toThrow('could not be queued');
   });
 });
@@ -1047,6 +1047,21 @@ describe('editing and layers', () => {
     expect(await listLayerIds(db, 'v1')).toEqual(expect.arrayContaining(['edit', 'original']));
   });
 
+  it('editFirstBlock on the primary pulls the account overlay first, as the reader does', async () => {
+    vi.mocked(pullOwnEditLayerBeforeEdit).mockClear();
+    await install().editFirstBlock('v1', 1, 'さきに');
+    expect(pullOwnEditLayerBeforeEdit).toHaveBeenCalledWith('v1');
+  });
+
+  it('editFirstBlock edits nothing when the overlay could not be fetched', async () => {
+    vi.mocked(pullOwnEditLayerBeforeEdit).mockResolvedValueOnce('failed');
+    await expect(install().editFirstBlock('v1', 1, 'だめ')).rejects.toThrow(
+      "Couldn't fetch this account's corrections"
+    );
+    expect((await db.volume_ocr.get('v1'))?.pages[0].blocks[0].lines).toEqual(['あい']);
+    expect(await listLayerIds(db, 'v1')).not.toContain('edit');
+  });
+
   it('editFirstBlock on a shared layer edits the account copy instead', async () => {
     await putLayerWithPages(db, {
       volume_uuid: 'v1',
@@ -1061,7 +1076,7 @@ describe('editing and layers', () => {
       v1: { progress: 1, completed: false, settings: { ocrLayer: 'curated' } }
     });
     expect(await install().editFirstBlock('v1', 1, 'わたしの')).toEqual({ layerId: 'edit' });
-    expect(pullOwnEditLayerBeforeFork).toHaveBeenCalledWith('v1');
+    expect(pullOwnEditLayerBeforeEdit).toHaveBeenCalledWith('v1');
     expect(updateVolumeSetting).toHaveBeenCalledWith('v1', 'ocrLayer', 'edit');
     expect((await getLayerPages(db, 'v1', 'edit'))?.[0].blocks[0].lines).toEqual(['わたしの']);
     expect((await getLayerPages(db, 'v1', 'curated'))?.[0].blocks[0].lines).toEqual(['あい']);
