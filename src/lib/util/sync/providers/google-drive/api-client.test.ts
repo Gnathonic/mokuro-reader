@@ -154,7 +154,7 @@ describe('driveApiClient failure classification', () => {
 
   it('retries a 429 after its Retry-After and returns the listing', async () => {
     list
-      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0' } })
+      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0.001' } })
       .mockResolvedValueOnce({ result: { files: [{ id: 'f1', name: 'a', mimeType: 'x' }] } });
 
     await expect(driveApiClient.listFiles("name='x'")).resolves.toEqual([
@@ -169,7 +169,7 @@ describe('driveApiClient failure classification', () => {
       .mockRejectedValueOnce({
         status: 403,
         body: JSON.stringify(RATE_BODY),
-        headers: { 'Retry-After': '0' }
+        headers: { 'Retry-After': '0.001' }
       })
       .mockResolvedValueOnce({ result: { files: [] } });
 
@@ -178,7 +178,21 @@ describe('driveApiClient failure classification', () => {
     expect(tokenManager.clearToken).not.toHaveBeenCalled();
   });
 
-  it('keeps the auth path for any other 403', async () => {
+  it('a 403 quotaExceeded is an API usage quota: retried, never "storage full"', async () => {
+    list
+      .mockRejectedValueOnce({
+        status: 403,
+        result: { error: { errors: [{ domain: 'usageLimits', reason: 'quotaExceeded' }] } },
+        headers: { 'Retry-After': '0.001' }
+      })
+      .mockResolvedValueOnce({ result: { files: [] } });
+
+    await expect(driveApiClient.listFiles("name='x'")).resolves.toEqual([]);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the auth path for a 403 a fresh token can fix', async () => {
     list.mockRejectedValue({
       status: 403,
       result: { error: { errors: [{ reason: 'forbidden' }] } }
@@ -186,6 +200,42 @@ describe('driveApiClient failure classification', () => {
 
     await expect(driveApiClient.listFiles("name='x'")).rejects.toThrow(/Re-authentication/);
     expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['insufficientFilePermissions', 'other'],
+    ['numChildrenInNonRootLimitExceeded', 'limit']
+  ])(
+    'a 403 %s fails at once with its message, without a re-auth or a retry',
+    async (reason, kind) => {
+      list.mockRejectedValue({
+        status: 403,
+        result: { error: { errors: [{ domain: 'global', reason }], message: 'Nope' } }
+      });
+
+      const error = await driveApiClient.listFiles("name='x'").catch((e) => e);
+
+      expect(error.kind).toBe(kind);
+      expect(error.reason).toBe(reason);
+      expect(error.message).toBe(`Nope: 403 [${reason}]`);
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+      expect(tokenManager.clearToken).not.toHaveBeenCalled();
+    }
+  );
+
+  it('a 403 sharingRateLimitExceeded (domain global) is a rate limit: retried', async () => {
+    list
+      .mockRejectedValueOnce({
+        status: 403,
+        result: { error: { errors: [{ domain: 'global', reason: 'sharingRateLimitExceeded' }] } },
+        headers: { 'Retry-After': '0.001' }
+      })
+      .mockResolvedValueOnce({ result: { files: [] } });
+
+    await expect(driveApiClient.listFiles("name='x'")).resolves.toEqual([]);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
   });
 
   it('a folder create answered 503 is not retried: Drive may have made the folder', async () => {
@@ -199,7 +249,7 @@ describe('driveApiClient failure classification', () => {
 
   it('a folder create answered 429 is retried', async () => {
     create
-      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0' } })
+      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0.001' } })
       .mockResolvedValueOnce({ result: { id: 'folder-1' } });
 
     await expect(driveApiClient.createFolder('mokuro-reader')).resolves.toBe('folder-1');
@@ -221,7 +271,7 @@ describe('driveApiClient failure classification', () => {
 
   it('an XHR upload answered 429 is retried', async () => {
     FakeXhr.replies = [
-      { status: 429, response: null, headers: { 'Retry-After': '0' } },
+      { status: 429, response: null, headers: { 'Retry-After': '0.001' } },
       { status: 200, response: { id: 'new-id' } }
     ];
 
@@ -239,7 +289,7 @@ describe('driveApiClient failure classification', () => {
         response: new Blob([
           JSON.stringify({ error: { errors: [{ reason: 'rateLimitExceeded' }] } })
         ]),
-        headers: { 'Retry-After': '0' }
+        headers: { 'Retry-After': '0.001' }
       },
       { status: 200, response: payload }
     ];

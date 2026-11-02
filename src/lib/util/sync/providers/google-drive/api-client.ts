@@ -2,6 +2,7 @@ import { GOOGLE_DRIVE_CONFIG, type DriveFile } from './constants';
 import { tokenManager } from './token-manager';
 import {
   DriveHttpError,
+  driveErrorDomain,
   driveErrorReason,
   driveHttpErrorFromXhr,
   parseRetryAfter,
@@ -66,10 +67,12 @@ function fromGapiError(error: unknown): unknown {
   } | null;
   if (!gapiError || typeof gapiError.status !== 'number' || gapiError.status === 0) return error;
   const reason = driveErrorReason(gapiError.result) ?? driveErrorReason(gapiError.body);
+  const domain = driveErrorDomain(gapiError.result) ?? driveErrorDomain(gapiError.body);
   const detail = gapiError.result?.error?.message ?? gapiError.message;
   return new DriveHttpError(gapiError.status, reason, {
     context: typeof detail === 'string' && detail ? detail : 'Drive API error',
-    retryAfterMs: parseRetryAfter(headerValue(gapiError.headers, 'retry-after'))
+    retryAfterMs: parseRetryAfter(headerValue(gapiError.headers, 'retry-after')),
+    domain
   });
 }
 
