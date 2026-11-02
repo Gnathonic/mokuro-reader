@@ -23,6 +23,12 @@ import { currentView } from '$lib/util/hash-router';
  */
 
 const ownDevice = writable<string | null>(null);
+/**
+ * This device's history id, once `initPositionOffers` has read it (`null`
+ * before). The one place the app holds it: device views mark "This device"
+ * from here rather than reading `history_meta` again.
+ */
+export const ownDeviceId: Readable<string | null> = { subscribe: ownDevice.subscribe };
 let stopListening: (() => void) | null = null;
 /**
  * Resets this session applied, by volume and the missed reading they covered.

@@ -720,6 +720,40 @@ Rules:
 | Per-volume reading deadlines                                       | `goals.json` → `volumeDeadlines`          | `lastUpdated` per volume uuid          |
 | Idle cutoff (automatic / manual override, `k`), long-pause default | `volume-data.json` → `tracking` section   | `lastUpdated` per key                  |
 | Pre-history reading snapshot (`legacyStats`)                       | `volume-data.json` (volume uuid keys)     | later `before` wins                    |
+| Device names, class corrections, merges                            | `volume-data.json` → `tracking.devices`   | `lastUpdated` per device id            |
+| Newest reading position (30 days)                                  | `positions.json`                          | newest `t` per volume                  |
+
+`positions.json` (`src/lib/positions/`) is the newest position per volume at a
+FIXED path, so a device that was just picked up can learn where the user
+stopped without the full listing: it is checked when the reader opens (≤ 1 s),
+rides every sync right after the volume data, and is pushed 3 s after page
+turns settle (at once when the tab is hidden). Opening a page never stamps a
+position, and an adopted position keeps the other device's stamp. Not
+authoritative: history and `volume-data.json` still carry every position.
+mokuro-bunko gets it only when its identity lists it in `per_user_files`
+(`ProviderStatus.positionsSync`; no version floor, unlike `historySync`);
+before that the path is a shared library file, and the client neither reads
+nor writes it. Sync merges every listed copy (newest `t` per volume), so it is
+in `MERGED_ACROSS_COPIES` (`syncable-file.ts`) with `volume-data.json` and
+`goals.json`: the folder dedup moves a duplicate copy in beside the other
+instead of trashing it.
+
+**Look-up visits claim nothing** (`reading-history/visits.ts`, live side
+`positions/visit.ts`). A visit is one device's run of page views of one volume,
+split on a gap over 10 min; it is a look-up when it has ≥ 2 views, ends on its
+first view's pages, and read at most 2 other pages (≥ 3 s each, not skip-fast).
+On coming home the record is put back as it was when the reader opened — its
+own stamp when nothing of the visit was uploaded, else 1 ms above the newest
+upload (`positions/escapes.ts`, reported before each PUT starts) — unless the
+page on screen would move, or another device's position landed during the
+visit (even while the reader was closed between two opens of it). After a
+restore a newer position elsewhere is an offer, never a silent move. A
+completion is held only while the visit could still be a look-up, and a
+restore drops it; offers, characters read and speed samples ignore look-up
+views. "Last read" (smart sort, progress tracker) comes from history
+(`reading-history/last-read.ts`): the newest reading view, else a
+`lastProgressUpdate` from before the volume's first event (reading history
+never saw), else 0 — a re-stamp never moves a series.
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no
@@ -967,6 +1001,54 @@ offered instead of silently losing to it. Rules that must hold:
   volume card shows a chip (`PositionOfferChip.svelte`) until answered.
 - `positionPlanFor` is memoised per volume on its events version
   (`volumeEventsVersion`) and progress — the chip mounts once per card.
+
+**Devices (phase 4).** A device is a raw id with a facts row (`devices`, from
+its `device.json`) or a native event; `legacy:` ids are never devices
+(`isDeviceId`, `paths.ts`). What the user chooses about a device lives ONLY in
+`volume-data.json` → `tracking.devices[<id>]` (`DeviceLabel {name?, class?,
+merged_into?, lastUpdated}`, `tracking-data.ts`) — never in `device.json`,
+`pickFacts` or the history DB. Rules that must hold:
+
+- One stamp per entry, newest `lastUpdated` wins, a tie keeps local, with the
+  clamp + forfeit-on-bogus of the other `tracking` keys (bogus ids are
+  `devices/<id>` in the one bogus set). The entry is replaced whole, so a
+  cleared name or an unmerge wins by its stamp. The multi-copy fold filters per
+  device id (`foldableTracking`): a bogus copy must never wipe other devices'
+  labels.
+- Labels (`devices.ts`, pure): a user name verbatim, else `<Class> · <OS> ·
+<browser>` (`generatedLabel`). Generated labels that collide over ALL known
+  raw ids (merged ones too) get ` (since Mar 2026)` from first-seen (UTC month,
+  so every device agrees), then ` 2`, ` 3` by first-seen and id. "This device"
+  is a badge on the group holding `resolveDevice(own)`, never in the label. The
+  UUID is never shown.
+- `merged_into` applies ONLY where reading is grouped by device: `resolveDevice`
+  follows it with a visited set, and a cycle leaves every member unmerged;
+  `mergeDevice` into a cycle member first takes it off the cycle.
+  Events are never re-keyed — volume/series/total figures, resolve targets and
+  `planPosition` use raw ids, so a merge or unmerge never recounts. Merging does
+  not carry the source's name.
+- Never show another device's `facts.last_seen`: `exportOwnFacts` leaves it out
+  of the upload signature, so it is stale by design. "Last read" is the group's
+  newest event.
+- Per-device stats come from the engine's `byDevice` (raw id; every `legacy:`
+  view under one key; characters to the first crediting view's device),
+  grouped by `resolveDevice` in `deviceStats` (`device-stats.ts`; also
+  `devices`, `knownDevices`, `deviceFacts`) — a label change regroups, never
+  recounts. "Before history" = legacy views + the pre-history baseline, so rows
+  sum to the page's totals; volume-editor `adjust`s are an "Edits" row. Both
+  hidden at zero, neither renamable. Speed shows only with ≥ 30 min of samples.
+- One edit component (`DeviceNameField.svelte`), three entry points: the
+  "Devices" block on `#/cloud` (`DevicesSettings.svelte`, once ≥ 2 raw ids are
+  known, so an unmerge stays reachable), inline rename in the reading-speed
+  page's per-device card (`DeviceStatsCard.svelte`, ≥ 2 groups with native
+  events) and `SecondDeviceBanner.svelte` under that page's heading (same rule,
+  this device unnamed, `localStorage` `device-banner:dismissed` unset — per
+  browser). The banner stays as "Saved." after naming until closed (no layout
+  motion). A single-device user sees none of them.
+- The position offer names the offering device by its label ("on Pixel 8");
+  a device this one knows nothing about keeps "on another device".
+- `e2e/devices.spec.ts` drives all of it: two browser contexts plus a third
+  device planted on the WebDAV stub (`device.json` + an encoded month).
 
 **Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
 month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —

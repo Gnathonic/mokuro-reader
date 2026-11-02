@@ -8,7 +8,7 @@ import { gotoApp } from './helpers/app';
  * The phone reads on to p.44 and syncs. The laptop, which never pulled that,
  * turns one page from its stale p.40 and syncs — its position is now the
  * newest page event (p.41). Opening the volume, its reader offers "You also
- * read to page 44 on another device"; "Go to page 44" moves there. The answer
+ * read to page 44 on Desktop · …" (the phone's label); "Go to page 44" moves there. The answer
  * is history: after a sync the phone has nothing to offer either.
  */
 
@@ -282,7 +282,9 @@ test("a stale device is offered the other device's page, and the answer syncs", 
   );
   const banner = laptop.getByTestId('position-offer');
   await expect(banner).toBeVisible({ timeout: 20000 });
-  await expect(banner).toContainText('You also read to page 44 on another device');
+  // Named by the phone's label (its device.json arrived with the laptop's sync).
+  await expect(banner).toContainText('You also read to page 44 on Desktop · ');
+  await expect(banner).not.toContainText('another device');
   await banner.getByRole('button', { name: 'Go to page 44' }).click();
   await expect(banner).toBeHidden();
   await expect.poll(() => progress(laptop), { timeout: 10000 }).toBe(44);

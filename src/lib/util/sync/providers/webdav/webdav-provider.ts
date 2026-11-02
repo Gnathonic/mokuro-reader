@@ -614,6 +614,11 @@ export class WebDAVProvider implements SyncProvider {
       historySync: this._serverCompilesMetadata
         ? bunkoSupportsHistory(this._serverVersion, this._perUserFiles)
         : undefined,
+      // positions.json is per user only where bunko says so; otherwise that
+      // path is a shared library file. Plain WebDAV: no limit.
+      positionsSync: this._serverCompilesMetadata
+        ? (this._perUserFiles?.includes('positions.json') ?? false)
+        : undefined,
       metadataPermissions: this._capabilities?.metadata,
       canModifyDelete: this._capabilities?.canModifyDelete,
       canAddFiles: this._capabilities?.canAddFiles,

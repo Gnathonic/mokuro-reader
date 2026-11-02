@@ -52,6 +52,8 @@ export interface VolumeFigures {
   chars: number;
   skippedChars: number;
   lastReadAt: number | null;
+  /** The pre-history snapshot's share of the above (`unexplainedBaseline`). */
+  baseline: { timeMs: number; chars: number };
 }
 
 const RECOMPUTE_DELAY_MS = 500;
@@ -226,6 +228,21 @@ function unexplained(
 }
 
 /**
+ * Whatever of a volume's pre-history snapshot the events from before its
+ * freeze do not explain — never negative. It belongs to no device (the
+ * device stats' "Before history" row).
+ */
+export function unexplainedBaseline(
+  stats: ReadingStatsState,
+  volume: string,
+  record?: BaselineSource
+): { timeMs: number; chars: number } {
+  const snapshot = snapshotOf(record, !baselinesFrozen);
+  if (!snapshot) return { timeMs: 0, chars: 0 };
+  return unexplained(snapshot, stats.byVolume.get(volume));
+}
+
+/**
  * A volume's time and characters: its history, plus whatever of the
  * pre-history snapshot the events from before its freeze do not explain.
  * Clamped only here, after the snapshot is added, so an editor edit below
@@ -237,21 +254,16 @@ export function figuresFor(
   record?: BaselineSource
 ): VolumeFigures {
   const totals = stats.byVolume.get(volume);
-  let timeMs = totals?.timeMs ?? 0;
-  let chars = totals?.readChars ?? 0;
-  const snapshot = snapshotOf(record, !baselinesFrozen);
-  if (snapshot) {
-    const rest = unexplained(snapshot, totals);
-    timeMs += rest.timeMs;
-    chars += rest.chars;
-  }
-  timeMs = Math.max(0, timeMs);
+  const baseline = unexplainedBaseline(stats, volume, record);
+  const timeMs = Math.max(0, (totals?.timeMs ?? 0) + baseline.timeMs);
+  const chars = (totals?.readChars ?? 0) + baseline.chars;
   return {
     timeMs,
     minutes: Math.floor(timeMs / 60_000),
     chars: Math.max(0, chars),
     skippedChars: totals?.skippedChars ?? 0,
-    lastReadAt: totals?.lastReadAt ?? null
+    lastReadAt: totals?.lastReadAt ?? null,
+    baseline
   };
 }
 

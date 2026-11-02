@@ -810,3 +810,57 @@ describe('WebDAVProvider getStatus().historySync (per-user reading history)', ()
     expect(provider.getStatus().historySync).toBeUndefined();
   });
 });
+
+describe('WebDAVProvider getStatus().positionsSync (per-user positions.json)', () => {
+  it('bunko listing positions.json in per_user_files -> true', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      perUserFiles: ['volume-data.json', 'positions.json']
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().positionsSync).toBe(true);
+  });
+
+  it('bunko not listing it, or listing nothing -> false', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ ...authenticatedIdentity(), perUserFiles: ['goals.json'] });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().positionsSync).toBe(false);
+
+    const old = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous' });
+    await old.login({ serverUrl: 'https://host' });
+    expect(old.getStatus().positionsSync).toBe(false);
+  });
+
+  // Unlike historySync, no version floor: the per-user mapping alone decides.
+  it.each([['0.7.3'], ['0.8.0'], [undefined]])(
+    'bunko reporting version %s and listing it -> true, whatever historySync says',
+    async (version) => {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({
+        ...authenticatedIdentity(),
+        ...(version ? { serverVersion: version } : {}),
+        perUserFiles: ['volume-data.json', 'positions.json']
+      });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      expect(provider.getStatus().positionsSync).toBe(true);
+      expect(provider.getStatus().historySync).toBe(false);
+    }
+  );
+
+  it('anonymous bunko listing it -> true', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous', perUserFiles: ['positions.json'] });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().positionsSync).toBe(true);
+  });
+
+  it('a plain WebDAV server -> undefined', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().positionsSync).toBeUndefined();
+  });
+});

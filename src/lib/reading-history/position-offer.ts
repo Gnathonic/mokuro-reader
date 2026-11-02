@@ -1,5 +1,7 @@
+import type { DeviceView } from './devices';
 import { LEGACY_DEVICE_PREFIX } from './paths';
 import type { ReadingEvent } from './types';
+import { eventKey, lookupVisits } from './visits';
 
 /**
  * Where a volume should be, across devices (phase 2c, spec: "Position across
@@ -30,6 +32,10 @@ import type { ReadingEvent } from './types';
  * made again for reading at or before an answered `through`, on any device,
  * and no stale copy can bring it back. A `forget` hides everything before it.
  * Converted (legacy) events never drive offers — they carry no device.
+ *
+ * Look-up visits (`visits.ts`) are not reading: their views are left out
+ * entirely, so a look-up neither makes its device the newest reader nor
+ * leaves a "stopped here" to offer.
  */
 
 export interface PositionOffer {
@@ -71,7 +77,10 @@ export function planPosition(
   for (const e of events) if (e.kind === 'forget' && e.before > horizon) horizon = e.before;
   const live = events.filter((e) => e.t >= horizon).sort(byTime);
 
-  const views = live.filter((e): e is PageEvent => e.kind === 'page' && isNative(e));
+  const { lookup } = lookupVisits(live);
+  const views = live.filter(
+    (e): e is PageEvent => e.kind === 'page' && isNative(e) && !lookup.has(eventKey(e))
+  );
   const restarts = live.filter((e): e is RestartEvent => e.kind === 'restart' && isNative(e));
   const answers = live.filter((e): e is PositionEvent => e.kind === 'position');
   const last = views.at(-1);
@@ -145,4 +154,27 @@ export function planPosition(
     if (!best || byTime(final, best) > 0) best = final;
   }
   return best ? { offer: offerOf(best) } : {};
+}
+
+/**
+ * Which device to name for where an offer's reading happened (phase 4), or
+ * null to say "another device". This is wording only. The plan above compares
+ * raw ids, so a merge never hides an offer.
+ *
+ * A merged device is named after its group, as it is shown everywhere else.
+ * The exception is a device merged into THIS one: "this device" would be the
+ * wrong name for it, so it keeps its own name. A device the list knows only
+ * by its id (no facts, no name: "Unknown device") is not named.
+ */
+export function offerDeviceName(
+  offer: Pick<PositionOffer, 'device' | 'ownDevice'>,
+  views: ReadonlyMap<string, DeviceView>
+): string | null {
+  if (offer.ownDevice) return null;
+  const view = views.get(offer.device);
+  if (!view) return null;
+  const group = views.get(view.canonical) ?? view;
+  const shown = group.isThisDevice ? view : group;
+  if (!shown.named && shown.class === 'unknown') return null;
+  return shown.label;
 }

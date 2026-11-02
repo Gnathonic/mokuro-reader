@@ -16,8 +16,8 @@ import {
 } from '$lib/settings';
 import {
   TRACKING_SECTION_KEY,
-  copyTrackingEntry,
   detectBogusTrackingKeys,
+  foldableTracking,
   mergeTrackingSections,
   parseTrackingSection,
   setTrackingStates,
@@ -29,6 +29,7 @@ import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-i
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { isHistoryFilePath } from '$lib/reading-history/paths';
+import { noteUploaded, watchedEscapes } from '$lib/positions/escapes';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
 import {
@@ -310,6 +311,10 @@ class UnifiedSyncService {
       await this.syncVolumeData(provider);
       console.log('✅ Volume data synced');
 
+      // The fixed-address position index, right after the volume data it
+      // mirrors. Best-effort: it never fails the sync.
+      await this.syncPositionsFile(provider);
+
       // Profiles get the same treatment: read → merge (newest `lastUpdated` per
       // profile, tombstones honoured) → push. It used to be a button nobody
       // pressed, which is how devices ended up with divergent settings.
@@ -474,29 +479,21 @@ class UnifiedSyncService {
         for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
 
         // The tracking section folds the same way as the series section below:
-        // newest per key, and a copy's bogus key never beats another copy's
-        // honest one.
-        const perCopyBogusTracking = readable.map((entry) =>
-          detectBogusTrackingKeys(entry.result.value.rawTracking)
-        );
+        // newest per key (`devices`: per device id), and a copy's bogus entry
+        // never beats another copy's honest one (`foldableTracking`).
+        const trackingCopies = readable.map((entry) => ({
+          tracking: entry.result.value.tracking ?? {},
+          bogus: detectBogusTrackingKeys(entry.result.value.rawTracking)
+        }));
         const bogusTrackingKeys = new Set<string>();
-        for (const keys of perCopyBogusTracking) for (const key of keys) bogusTrackingKeys.add(key);
+        for (const copy of trackingCopies) for (const key of copy.bogus) bogusTrackingKeys.add(key);
         let mergedTracking: TrackingState = {};
-        readable.forEach((entry, i) => {
-          const own = entry.result.value.tracking ?? {};
-          const foldable: TrackingState = {};
-          for (const key of Object.keys(own) as Array<keyof TrackingState>) {
-            const honestElsewhere =
-              perCopyBogusTracking[i].has(key) &&
-              readable.some(
-                (_other, j) =>
-                  j !== i &&
-                  readable[j].result.value.tracking?.[key] &&
-                  !perCopyBogusTracking[j].has(key)
-              );
-            if (!honestElsewhere) copyTrackingEntry(foldable, own, key);
-          }
-          mergedTracking = mergeTrackingSections(mergedTracking, foldable, perCopyBogusTracking[i]);
+        trackingCopies.forEach((copy, i) => {
+          mergedTracking = mergeTrackingSections(
+            mergedTracking,
+            foldableTracking(trackingCopies, i),
+            copy.bogus
+          );
         });
 
         // Merge all readable copies volume by volume (`mergeVolumePair`)
@@ -708,6 +705,13 @@ class UnifiedSyncService {
     );
 
     if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
+      // A look-up visit's stamps leave the device now: its restore must beat
+      // them (`positions/visit.ts`) — reported before the PUT, which may still
+      // be in flight when the reader comes home.
+      for (const volume of watchedEscapes()) {
+        const stamp = finalVolumes[volume]?.lastProgressUpdate;
+        if (stamp) noteUploaded(volume, Date.parse(stamp));
+      }
       await this.uploadVolumeDataFile(provider, nextFile);
     }
   }
@@ -730,6 +734,16 @@ class UnifiedSyncService {
    * and a `get`-only path silently ignores every copy but one — losing whatever
    * only the other copies held.
    */
+  /** `positions.json` (`$lib/positions`), loaded lazily like the history modules. */
+  private async syncPositionsFile(provider: SyncProvider): Promise<void> {
+    try {
+      const { syncPositions } = await import('$lib/positions/positions-sync');
+      await syncPositions(provider);
+    } catch (error) {
+      console.warn('[positions] sync step failed:', error);
+    }
+  }
+
   private findGoalsFiles(provider: SyncProvider): CloudFileMetadata[] {
     const cache = cacheManager.getCache(provider.type);
     if (!cache) return [];

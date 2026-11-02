@@ -94,11 +94,16 @@ vi.mock('$lib/reading-history/history-sync', () => ({
     s.historySync ?? !s.serverCompilesMetadata
 }));
 
+vi.mock('$lib/positions/positions-sync', () => ({
+  syncPositions: vi.fn(async () => ({ adopted: [], deferred: [], uploaded: false }))
+}));
+
 import {
   SYNC_FLIGHT_DEADLINE_MS,
   unifiedSyncService,
   type SyncOptions
 } from './unified-sync-service';
+import { _resetEscapesForTests, newestUploaded, watchEscapes } from '$lib/positions/escapes';
 import { restartSeries } from '$lib/metadata/reread';
 import { volumes as volumeCompletion } from '$lib/settings/volume-data';
 import type { VolumeMetadata } from '$lib/types';
@@ -649,6 +654,35 @@ describe('the series section of volume-data.json', () => {
     await svc.syncVolumeData(provider);
 
     expect(uploads).toEqual([]);
+  });
+
+  it('an upload reports the stamps of volumes a look-up visit watches as escaped', async () => {
+    _resetEscapesForTests();
+    watchEscapes('vol-1');
+    setLocalVolumes({
+      'vol-1': { lastProgressUpdate: '2026-01-05T00:00:00Z', progress: 6 },
+      'vol-2': { lastProgressUpdate: '2026-01-06T00:00:00Z', progress: 8 }
+    });
+    stubCache([fileMeta('only')]);
+    const provider = {
+      type: 'mega',
+      downloadFile: vi.fn(async () =>
+        jsonBlob({ 'vol-1': { progress: 5, lastProgressUpdate: '2026-01-02T00:00:00Z' } })
+      ),
+      uploadFile: vi.fn(async () => {
+        duringUpload = newestUploaded('vol-1');
+      })
+    } as unknown as SyncProvider;
+    let duringUpload = -1;
+
+    await svc.syncVolumeData(provider);
+
+    expect(provider.uploadFile).toHaveBeenCalledTimes(1);
+    // Escaped from the moment the PUT starts: a turn home mid-PUT must beat it.
+    expect(duringUpload).toBe(Date.parse('2026-01-05T00:00:00Z'));
+    expect(newestUploaded('vol-1')).toBe(Date.parse('2026-01-05T00:00:00Z'));
+    expect(newestUploaded('vol-2')).toBe(0);
+    _resetEscapesForTests();
   });
 
   it('omits the section entirely when there is no series state at all', async () => {
@@ -1943,5 +1977,160 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
       idle: { override_minutes: 4, lastUpdated: T2 },
       pauses: { default: 'none', lastUpdated: T2 }
     });
+  });
+
+  it('round-trips device labels through the file', async () => {
+    const devices = { 'dev-a': { name: 'Pixel 8', class: 'phone', lastUpdated: T2 } };
+    setTrackingStates({
+      devices: { 'dev-a': { name: 'Pixel 8', class: 'phone', lastUpdated: T2 } }
+    });
+    stubCache([fileMeta('only')]);
+    const first = provider(file(undefined));
+    await svc.syncVolumeData(first.provider);
+    expect(first.uploads).toHaveLength(1);
+    expect(first.uploads[0].tracking).toEqual({ devices });
+
+    // Another device reads that upload back: adopted, and nothing to upload.
+    setTrackingStates({});
+    stubCache([fileMeta('only')]);
+    const second = provider(first.uploads[0]);
+    await svc.syncVolumeData(second.provider);
+    expect(get(trackingState)).toEqual({ devices });
+    expect(second.uploads).toHaveLength(0);
+  });
+
+  it('merges device labels per id, never as one block', async () => {
+    setTrackingStates({ devices: { 'dev-a': { name: 'Mine', lastUpdated: T2 } } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({
+        devices: {
+          'dev-a': { name: 'Theirs', lastUpdated: T1 },
+          'dev-b': { name: 'Tablet', lastUpdated: T1 }
+        }
+      })
+    );
+    await svc.syncVolumeData(p);
+    const expected = {
+      'dev-a': { name: 'Mine', lastUpdated: T2 },
+      'dev-b': { name: 'Tablet', lastUpdated: T1 }
+    };
+    expect(get(trackingState).devices).toEqual(expected);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking.devices).toEqual(expected);
+  });
+
+  it('heals a future-stamped device label and keeps the pending local name', async () => {
+    setTrackingStates({ devices: { 'dev-a': { name: 'Mine', lastUpdated: T2 } } });
+    stubCache([fileMeta('only')]);
+    const { uploads, provider: p } = provider(
+      file({
+        devices: {
+          'dev-a': { name: 'Junk', lastUpdated: '2999-01-01T00:00:00.000Z' },
+          'dev-b': { name: 'Other', lastUpdated: T1 }
+        }
+      })
+    );
+    await svc.syncVolumeData(p);
+    expect(get(trackingState).devices?.['dev-a']).toEqual({ name: 'Mine', lastUpdated: T2 });
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].tracking.devices).toEqual({
+      'dev-a': { name: 'Mine', lastUpdated: T2 },
+      'dev-b': { name: 'Other', lastUpdated: T1 }
+    });
+  });
+
+  it.each([
+    ['poisoned copy first', ['poisoned', 'honest']],
+    ['honest copy first', ['honest', 'poisoned']]
+  ])(
+    'folds duplicate copies per device id: a bogus label never beats an honest one (%s)',
+    async (_order, ids) => {
+      const bodies: Record<string, unknown> = {
+        poisoned: {
+          devices: {
+            'dev-a': { name: 'Junk', lastUpdated: '2999-01-01T00:00:00.000Z' },
+            'dev-b': { name: 'Kept', lastUpdated: T1 }
+          }
+        },
+        honest: { devices: { 'dev-a': { name: 'Honest', lastUpdated: T1 } } }
+      };
+      stubCache(ids.map(fileMeta));
+      const p = makeProvider(async (f) => jsonBlob(file(bodies[f.fileId])));
+      const result = await svc.downloadVolumeDataFile(p);
+      expect(result.tracking.devices).toEqual({
+        'dev-a': { name: 'Honest', lastUpdated: T1 },
+        'dev-b': { name: 'Kept', lastUpdated: T1 }
+      });
+      expect([...result.bogusTrackingKeys]).toEqual(['devices/dev-a']);
+    }
+  );
+
+  it.each([
+    ['the rename is newer', 'rename', { name: 'Pixel 8', lastUpdated: T2 }],
+    ['the merge is newer', 'merge', { merged_into: 'dev-b', lastUpdated: T2 }]
+  ])(
+    'a rename here and a merge of the same device elsewhere between syncs: only the newer edit survives (%s)',
+    async (_case, winner, expected) => {
+      // Q7: one stamp per device entry, replaced whole; the older edit is lost.
+      const rename = { name: 'Pixel 8', lastUpdated: winner === 'rename' ? T2 : T1 };
+      const merge = { merged_into: 'dev-b', lastUpdated: winner === 'merge' ? T2 : T1 };
+      setTrackingStates({ devices: { 'dev-a': rename } });
+      stubCache([fileMeta('only')]);
+      const { uploads, provider: p } = provider(file({ devices: { 'dev-a': merge } }));
+      await svc.syncVolumeData(p);
+      expect(get(trackingState).devices?.['dev-a']).toEqual(expected);
+      if (winner === 'rename') {
+        expect(uploads).toHaveLength(1);
+        expect(uploads[0].tracking.devices).toEqual({ 'dev-a': expected });
+      } else {
+        expect(uploads).toHaveLength(0);
+      }
+    }
+  );
+});
+
+describe('positions.json rides every sync', () => {
+  function stubSteps(order: string[]) {
+    return ['syncVolumeData', 'syncProfiles', 'syncGoals', 'syncReadingHistory'].map((name) =>
+      vi.spyOn(svc, name).mockImplementation(async () => {
+        order.push(name);
+      })
+    );
+  }
+  const provider = {
+    type: 'mega',
+    name: 'MEGA',
+    isAuthenticated: () => true
+  } as unknown as SyncProvider;
+
+  it('runs right after the volume data', async () => {
+    const { syncPositions } = await import('$lib/positions/positions-sync');
+    const order: string[] = [];
+    vi.mocked(syncPositions).mockImplementationOnce(async () => {
+      order.push('syncPositions');
+      return { adopted: [], deferred: [], uploaded: false };
+    });
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(provider, {})).toMatchObject({ success: true });
+      expect(order.slice(0, 2)).toEqual(['syncVolumeData', 'syncPositions']);
+      expect(vi.mocked(syncPositions)).toHaveBeenCalledWith(provider);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
+
+  it('a rejecting position sync does not fail the sync', async () => {
+    const { syncPositions } = await import('$lib/positions/positions-sync');
+    vi.mocked(syncPositions).mockRejectedValueOnce(new Error('boom'));
+    const order: string[] = [];
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(provider, {})).toMatchObject({ success: true });
+      expect(order).toContain('syncGoals');
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
   });
 });

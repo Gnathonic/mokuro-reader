@@ -101,9 +101,10 @@ export function processVolumeSpeedData(
       continue;
     }
 
-    const completionDate = data.lastProgressUpdate
-      ? new Date(data.lastProgressUpdate)
-      : new Date(0);
+    // `completedAt` first: `lastProgressUpdate` is a merge key, moved by any
+    // write that must win a sync (a look-up's restore, a cover toggle).
+    const completedOn = data.completedAt ?? data.lastProgressUpdate;
+    const completionDate = completedOn ? new Date(completedOn) : new Date(0);
 
     // Filter out garbage dates (epoch tricks from before app existed)
     if (completionDate.getTime() < EARLIEST_VALID_DATE) {

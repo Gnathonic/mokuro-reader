@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { planPosition } from './position-offer';
+import { offerDeviceName, planPosition } from './position-offer';
+import type { DeviceView } from './devices';
 import type { ReadingEvent } from './types';
 
 let seq = 0;
@@ -155,6 +156,27 @@ describe('planPosition', () => {
     expect(planPosition(events, { progress: 3 }, 'laptop')).toEqual({});
   });
 
+  it('a look-up on another device makes no offer elsewhere', () => {
+    // The laptop looked up p.40 (40, a quick 41, back to 40) between the
+    // phone's reading; the phone read on. Nothing the laptop did is a place
+    // the volume "stopped".
+    const events = [
+      ...run('phone', 0, [58, 59, 60]),
+      ...run('laptop', 10_000, [40, 41, 40]),
+      ...run('phone', 20_000, [61])
+    ];
+    expect(planPosition(events, { progress: 61 }, 'phone')).toEqual({});
+  });
+
+  it('a look-up never makes its device the newest reader', () => {
+    // Without the look-up the phone is newest, and the laptop's final p.20 is offered.
+    const events = [...run('laptop', 0, [19, 20]), ...run('phone', 5000, [58, 59, 60])];
+    const lookup = run('laptop', 3_600_000, [40, 41, 40]); // an hour on: its own visit
+    const before = planPosition(events, { progress: 60 }, 'phone');
+    expect(before.offer).toMatchObject({ page: 20, device: 'laptop' });
+    expect(planPosition([...events, ...lookup], { progress: 60 }, 'phone')).toEqual(before);
+  });
+
   it('a single device never gets an offer', () => {
     expect(planPosition(run('phone', 0, [10, 50, 20]), { progress: 20 }, 'phone')).toEqual({});
   });
@@ -296,5 +318,104 @@ describe('planPosition', () => {
     const p1 = planPosition([a, b], { progress: 40 }, 'laptop');
     const p2 = planPosition([b, a], { progress: 40 }, 'laptop');
     expect(p1).toEqual(p2);
+  });
+});
+
+const dv = (id: string, label: string, extra: Partial<DeviceView> = {}): DeviceView => ({
+  id,
+  label,
+  generated: label,
+  named: false,
+  class: 'phone',
+  detectedClass: 'phone',
+  isThisDevice: false,
+  canonical: id,
+  mergedFrom: [],
+  firstSeen: '2026-03-01T00:00:00.000Z',
+  ...extra
+});
+const viewsOf = (...views: DeviceView[]) => new Map(views.map((v) => [v.id, v]));
+
+describe('offerDeviceName', () => {
+  it('names the device by its label, chosen or generated', () => {
+    expect(
+      offerDeviceName(
+        { device: 'p', ownDevice: false },
+        viewsOf(dv('p', 'Pixel 8', { named: true }))
+      )
+    ).toBe('Pixel 8');
+    expect(
+      offerDeviceName(
+        { device: 'p', ownDevice: false },
+        viewsOf(dv('p', 'Phone · Android · Chrome'))
+      )
+    ).toBe('Phone · Android · Chrome');
+  });
+
+  it('names a merged device as the group it was merged into', () => {
+    const views = viewsOf(
+      dv('old', 'Phone · Android · Chrome', { canonical: 'new' }),
+      dv('new', 'Pixel 8', { named: true, mergedFrom: ['old'] })
+    );
+    expect(offerDeviceName({ device: 'old', ownDevice: false }, views)).toBe('Pixel 8');
+  });
+
+  it('names the device itself when it was merged into this one', () => {
+    const views = viewsOf(
+      dv('tab', 'Tablet · Android · Chrome', {
+        class: 'tablet',
+        detectedClass: 'tablet',
+        canonical: 'me'
+      }),
+      dv('me', 'Laptop', { named: true, isThisDevice: true, mergedFrom: ['tab'] })
+    );
+    expect(offerDeviceName({ device: 'tab', ownDevice: false }, views)).toBe(
+      'Tablet · Android · Chrome'
+    );
+  });
+
+  it('falls back to the device itself when its merge target is not listed', () => {
+    const views = viewsOf(dv('old', 'Phone · Android · Chrome', { canonical: 'gone' }));
+    expect(offerDeviceName({ device: 'old', ownDevice: false }, views)).toBe(
+      'Phone · Android · Chrome'
+    );
+  });
+
+  it('names nothing for this device, an unlisted id, or an unnamed unknown device', () => {
+    expect(
+      offerDeviceName(
+        { device: 'me', ownDevice: true },
+        viewsOf(dv('me', 'Laptop', { named: true, isThisDevice: true }))
+      )
+    ).toBeNull();
+    expect(offerDeviceName({ device: 'nobody', ownDevice: false }, viewsOf())).toBeNull();
+    expect(
+      offerDeviceName(
+        { device: 'old', ownDevice: false },
+        viewsOf(
+          dv('old', 'Unknown device (since Mar 2026)', {
+            class: 'unknown',
+            detectedClass: 'unknown'
+          })
+        )
+      )
+    ).toBeNull();
+  });
+
+  it('names an unknown device once the user named it or set its class', () => {
+    expect(
+      offerDeviceName(
+        { device: 'old', ownDevice: false },
+        viewsOf(
+          dv('old', 'Old tablet', { named: true, class: 'unknown', detectedClass: 'unknown' })
+        )
+      )
+    ).toBe('Old tablet');
+    expect(
+      offerDeviceName(
+        { device: 'old', ownDevice: false },
+        viewsOf(dv('old', 'Tablet', { class: 'tablet', detectedClass: 'unknown' }))
+      )
+    ).toBe('Tablet');
   });
 });

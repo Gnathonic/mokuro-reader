@@ -20,6 +20,7 @@ import {
   answerPosition,
   initPositionOffers,
   markPrompted,
+  ownDeviceId,
   positionPlanFor,
   shouldPrompt
 } from './position-store';
@@ -62,6 +63,12 @@ beforeEach(async () => {
 });
 
 describe('position store', () => {
+  it("exposes this device's id once started, and none after a reset", () => {
+    expect(get(ownDeviceId)).toBe(own);
+    _resetPositionStoreForTests();
+    expect(get(ownDeviceId)).toBeNull();
+  });
+
   it('plans the offer for a volume from its events and record', async () => {
     volumesWithTrash.set({ v: new VolumeData({ progress: 41 }) });
     await store([view('phone', 0, 120), view(own, 10_000, 40), view(own, 11_000, 41)]);
