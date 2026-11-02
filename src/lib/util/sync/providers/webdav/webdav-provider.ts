@@ -1514,6 +1514,24 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
+  /** The cold probe's read: `<mokuro folder>/<name>` by path, no listing. */
+  async readRootFileCopies(name: string): Promise<Blob[]> {
+    try {
+      const blob = await this.downloadFile({
+        provider: 'webdav',
+        fileId: `${MOKURO_FOLDER}/${name}`,
+        path: name,
+        modifiedTime: '',
+        size: 0
+      });
+      return [blob];
+    } catch (error) {
+      // webdav-core reports the status in its message ("… failed: 404 …").
+      if (error instanceof Error && /\b404\b/.test(error.message)) return [];
+      throw error;
+    }
+  }
+
   async deleteFile(file: import('../../provider-interface').CloudFileMetadata): Promise<void> {
     if (!this.isAuthenticated() || !this.client) {
       throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);

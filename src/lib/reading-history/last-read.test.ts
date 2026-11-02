@@ -4,6 +4,7 @@ import type { HistoryDexie } from './history-db';
 import { lastReadFromEvents, lastReadTime, lastReadTimes, seriesLastRead } from './last-read';
 import { notifyEventsRecorded } from './record';
 import { _resetHistoryTurns, loadHistoryTurns } from './turns-store';
+import { _resetRemoteReadsForTests, noteRemoteRead } from './remote-reads';
 import type { ReadingEvent } from './types';
 
 let seq = 0;
@@ -122,5 +123,89 @@ describe('lastReadTimes', () => {
     expect(get(lastReadTimes).get('v2')?.at).toBe(2 * HOUR + 20_000);
     stop();
     expect(seen.length).toBeGreaterThan(1);
+  });
+});
+
+describe("another device's adopted reading (remote reads)", () => {
+  beforeEach(() => {
+    _resetHistoryTurns();
+    _resetRemoteReadsForTests();
+  });
+
+  async function load(events: ReadingEvent[]) {
+    const db = { reading_events: { toArray: async () => events } } as unknown as HistoryDexie;
+    await loadHistoryTurns(db);
+  }
+
+  it('lastReadTime: an uncovered remote read outranks older local history', () => {
+    const times = new Map([['a', { at: 2 * HOUR, since: 0, remote: 5 * HOUR }]]);
+    expect(lastReadTime('a', { lastProgressUpdate: iso(5 * HOUR) }, times)).toBe(5 * HOUR);
+    // Newer local reading still wins.
+    const newer = new Map([['a', { at: 7 * HOUR, since: 0, remote: 5 * HOUR }]]);
+    expect(lastReadTime('a', undefined, newer)).toBe(7 * HOUR);
+    // Only look-ups locally: the remote read still counts.
+    const lookupsOnly = new Map([['a', { at: 0, since: HOUR, remote: 5 * HOUR }]]);
+    expect(lastReadTime('a', { lastProgressUpdate: iso(5 * HOUR) }, lookupsOnly)).toBe(5 * HOUR);
+  });
+
+  it("the series moves up in smart sort when another device's position is adopted", async () => {
+    // This device read volume "vol" an hour in; the phone read it at 5 h.
+    await load([view(HOUR, 39, 20_000)]);
+    const records = { vol: { progress: 120, lastProgressUpdate: iso(5 * HOUR) } };
+    const before = seriesLastRead(['vol'], records, get(lastReadTimes));
+    expect(before).toBe(HOUR + 20_000); // develop: the adopted stamp was ignored
+    noteRemoteRead('vol', 5 * HOUR, 'phone');
+    expect(seriesLastRead(['vol'], records, get(lastReadTimes))).toBe(5 * HOUR);
+  });
+
+  it("once that device's own events arrive, history judges it (a look-up there drops back)", async () => {
+    const stop = lastReadTimes.subscribe(() => {});
+    await load([view(HOUR, 39, 20_000)]);
+    noteRemoteRead('vol', 5 * HOUR, 'phone');
+    expect(get(lastReadTimes).get('vol')?.remote).toBe(5 * HOUR);
+    // The phone's history: the 5 h stamp was a look-up that leaked its stamp.
+    notifyEventsRecorded([
+      view(5 * HOUR - 1000, 40, 20_000, { device: 'phone' }),
+      view(5 * HOUR + 21_000, 41, 800, { device: 'phone' }),
+      view(5 * HOUR + 22_000, 40, 1000, { device: 'phone' })
+    ]);
+    await Promise.resolve();
+    const times = get(lastReadTimes);
+    expect(times.get('vol')?.remote).toBeUndefined();
+    expect(lastReadTime('vol', { lastProgressUpdate: iso(5 * HOUR) }, times)).toBe(HOUR + 20_000);
+    stop();
+  });
+
+  it('earlier views of that device do not cover the stamp, however recent they started', async () => {
+    // The phone read p.38–40 seconds before its p.44 stamp; history knows
+    // nothing of p.41–44 yet.
+    await load([
+      view(5 * HOUR - 4000, 38, 5, { device: 'phone' }),
+      view(5 * HOUR - 3990, 39, 5, { device: 'phone' }),
+      view(5 * HOUR - 3980, 40, 5, { device: 'phone' }),
+      view(HOUR, 39, 20_000)
+    ]);
+    noteRemoteRead('vol', 5 * HOUR, 'phone');
+    expect(get(lastReadTimes).get('vol')?.remote).toBe(5 * HOUR);
+    // The view the turn ended (p.43, ending at the stamp) covers it.
+    notifyEventsRecorded([view(5 * HOUR - 3000, 43, 3000, { device: 'phone' })]);
+    await Promise.resolve();
+    expect(get(lastReadTimes).get('vol')?.remote).toBeUndefined();
+    expect(get(lastReadTimes).get('vol')?.at).toBe(5 * HOUR);
+  });
+
+  it('a read from an unknown device (a volume-data.json merge) stays a read', async () => {
+    await load([view(HOUR, 39, 20_000), view(6 * HOUR, 39, 20_000, { device: 'phone' })]);
+    noteRemoteRead('vol', 5 * HOUR, null);
+    expect(get(lastReadTimes).get('vol')?.remote).toBe(5 * HOUR);
+  });
+
+  it('a remote read at or before a forget does not count', async () => {
+    await load([
+      view(HOUR, 39, 20_000),
+      { device: 'dev-a', seq: ++seq, t: 6 * HOUR, kind: 'forget', volume: 'vol', before: 6 * HOUR }
+    ]);
+    noteRemoteRead('vol', 5 * HOUR, 'phone');
+    expect(get(lastReadTimes).get('vol')?.remote).toBeUndefined();
   });
 });

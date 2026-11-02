@@ -410,6 +410,17 @@ export interface SyncProvider {
   ): Promise<UploadFileResult>;
 
   /**
+   * Every copy of a ROOT file (beside `volume-data.json`), found by its known
+   * path WITHOUT the library listing; [] = no such file. The cold probe reads
+   * `positions.json` this way while the first, slow listing still runs.
+   *
+   * READ-ONLY by contract: a caller never writes from what this returns — it
+   * cannot promise to have seen every copy the way a listing does. OPTIONAL:
+   * absent = the probe waits for the listing, as before.
+   */
+  readRootFileCopies?(name: string): Promise<Blob[]>;
+
+  /**
    * Upload WITHOUT any post-upload refresh work — the write-and-forget path
    * for callers that do not need to read the result back (the sidecar
    * backfill: it converges through the targeted cache add the unified layer

@@ -531,6 +531,41 @@ class GoogleDriveProvider implements SyncProvider {
     }
   }
 
+  /**
+   * The cold probe's read, no listing: every reader folder (duplicates
+   * included, as the listing would), then the file of that name in any of
+   * them — two `files.list` calls.
+   */
+  async readRootFileCopies(name: string): Promise<Blob[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+    await this.ensureInitialized();
+    const folders = await driveApiClient.listFiles(
+      `name='${escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER)}' and ` +
+        `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false`,
+      'files(id)'
+    );
+    if (folders.length === 0) return [];
+    const parents = folders.map((folder) => `'${folder.id}' in parents`).join(' or ');
+    const files = await driveApiClient.listFiles(
+      `name='${escapeNameForDriveQuery(name)}' and trashed=false and ` +
+        `mimeType!='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and (${parents})`,
+      'files(id, name)'
+    );
+    return Promise.all(
+      files.map((file) =>
+        this.downloadFile({
+          provider: 'google-drive',
+          fileId: file.id,
+          path: name,
+          modifiedTime: '',
+          size: 0
+        })
+      )
+    );
+  }
+
   async downloadFile(
     file: CloudFileMetadata,
     onProgress?: (loaded: number, total: number) => void

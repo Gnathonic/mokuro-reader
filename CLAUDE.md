@@ -866,7 +866,13 @@ Rules:
 FIXED path, so a device that was just picked up can learn where the user
 stopped without the full listing: it is checked when the reader opens (≤ 1 s),
 rides every sync right after the volume data, and is pushed 3 s after page
-turns settle (at once when the tab is hidden). Opening a page never stamps a
+turns settle (at once when the tab is hidden). Before the first listing has
+loaded (a cold start) it runs as the COLD PROBE: `fetchAllCloudVolumes` starts
+it beside the listing, and the open/focus checks use it while that listing
+runs. The provider reads the file by its known path
+(`SyncProvider.readRootFileCopies`, every provider; no listing), and the probe
+only ADOPTS — the write waits for the listing, the only thing that shows every
+copy the upload must not clobber. Opening a page never stamps a
 position, and an adopted position keeps the other device's stamp. Not
 authoritative: history and `volume-data.json` still carry every position.
 mokuro-bunko gets it only when its identity lists it in `per_user_files`
@@ -892,7 +898,12 @@ restore drops it; offers, characters read and speed samples ignore look-up
 views. "Last read" (smart sort, progress tracker) comes from history
 (`reading-history/last-read.ts`): the newest reading view, else a
 `lastProgressUpdate` from before the volume's first event (reading history
-never saw), else 0 — a re-stamp never moves a series.
+never saw), else 0 — a re-stamp never moves a series. Another device's reading
+that arrived ahead of its events counts too (`reading-history/remote-reads.ts`):
+a position adopted from `positions.json` (with its device), or — where history
+does not sync — a record `volume-data.json`'s merge moved to a newer stamp
+(device unknown). It counts until that device's own page events reach the
+stamp; then history judges it, look-ups and all.
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no

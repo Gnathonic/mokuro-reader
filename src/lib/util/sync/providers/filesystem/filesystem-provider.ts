@@ -361,6 +361,17 @@ export class FilesystemProvider implements SyncProvider {
     }
   }
 
+  /** The cold probe's read: the root folder's file of that name, no walk. */
+  async readRootFileCopies(name: string): Promise<Blob[]> {
+    try {
+      const fileHandle = await this.requireRoot().getFileHandle(name, { create: false });
+      return [await fileHandle.getFile()];
+    } catch (error) {
+      if ((error as { name?: string })?.name === 'NotFoundError') return [];
+      throw this.toProviderError(error, 'Download', name);
+    }
+  }
+
   async deleteFile(file: CloudFileMetadata): Promise<void> {
     try {
       this.requireRoot();
