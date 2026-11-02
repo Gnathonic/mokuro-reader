@@ -39,39 +39,16 @@ export function isCuratedLayerId(layerId: string): boolean {
   return layerId === CURATED_LAYER_ID;
 }
 
-/**
- * mokuro-bunko's copy of a main sidecar it upgraded (`<Volume>.pre-upgrade.mokuro`,
- * `-2`, `-3` … for later upgrades): the OCR the volume had before, which may
- * hold corrections made in an older reader.
- */
-const PRE_UPGRADE_RE = /^pre-upgrade(?:-(\d+))?$/;
-const PRE_UPGRADE_NAME = 'Before upgrade (may contain your corrections)';
-
-/** Is this id one of bunko's `pre-upgrade` layers? */
-export function isPreUpgradeLayerId(layerId: string): boolean {
-  return PRE_UPGRADE_RE.test(layerId);
-}
-
 /** `curated-<n>`: bunko's keepsake of a second, different `curated` file a case merge found. */
 const CURATED_KEEPSAKE_RE = /^curated-\d+$/;
 
 /**
- * A layer only the server writes (bunko answers a client PUT with 403): its
- * `pre-upgrade` keepsakes and the rest of that family, and the `curated-<n>`
- * a case merge keeps. Its sidecar names rule v1 `layer_class` ServerKeepsake,
- * plus the Reserved ids that are a server's copies.
+ * A layer only the server writes (bunko answers a client PUT with 403): the
+ * `curated-<n>` a case merge keeps — its sidecar names rule v1 `layer_class`
+ * ServerKeepsake, and nothing else is.
  */
 export function isServerKeepsakeLayerId(layerId: string): boolean {
-  return layerId.startsWith('pre-upgrade') || CURATED_KEEPSAKE_RE.test(layerId);
-}
-
-/**
- * The reader's own `previous-ocr` keepsakes (`cloud-ocr-upgrade.ts`): bunko
- * reserves the family (`layer_class` Reserved), so even an edited one is
- * refused there.
- */
-export function isDeviceKeepsakeLayerId(layerId: string): boolean {
-  return layerId.startsWith('previous-ocr');
+  return CURATED_KEEPSAKE_RE.test(layerId);
 }
 
 /**
@@ -86,7 +63,7 @@ const RESERVED_NAMES: ReadonlySet<string> = new Set([
   EDIT_LAYER_ID,
   CURATED_LAYER_ID
 ]);
-const RESERVED_PREFIXES = ['tr-', 'pre-upgrade', 'previous-ocr'] as const;
+const RESERVED_PREFIXES = ['tr-'] as const;
 const RESERVED_FAMILY_RE = /^(?:edit|curated)-\d+$/;
 
 /** Is this id reserved for a layer with a meaning of its own? */
@@ -100,19 +77,12 @@ export function isReservedLayerId(layerId: string): boolean {
 
 /**
  * `paddle-manga` → "Paddle Manga"; `tr-en` → "Tr En"; `gcv` → "Gcv"; `ppocr-manga` → "PP-OCR Manga";
- * `edit` → "Your corrections"; `edit-2` → "Your corrections 2"; `curated` → "Shared corrections";
- * `pre-upgrade` → "Before upgrade (may contain your corrections)".
+ * `edit` → "Your corrections"; `edit-2` → "Your corrections 2"; `curated` → "Shared corrections".
  */
 export function layerNameForId(layerId: string): string {
   if (layerId === CURATED_LAYER_ID) return CURATED_LAYER_NAME;
   const personal = PERSONAL_RE.exec(layerId);
   if (personal) return personal[1] ? `${EDIT_LAYER_NAME} ${personal[1]}` : EDIT_LAYER_NAME;
-  const preUpgrade = PRE_UPGRADE_RE.exec(layerId);
-  if (preUpgrade) {
-    return preUpgrade[1]
-      ? `Before upgrade ${preUpgrade[1]} (may contain your corrections)`
-      : PRE_UPGRADE_NAME;
-  }
   return ENGINE_DISPLAY_NAMES[layerId] ?? titleCasedLayerId(layerId);
 }
 

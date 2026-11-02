@@ -590,8 +590,25 @@ describe('OCR provenance (ocr_engine)', () => {
     expect(result.metadata.ocrProvenance && 'engine' in result.metadata.ocrProvenance).toBe(false);
   });
 
-  it('a PRESERVED file records nothing', async () => {
+  it('a file with a stray `preserved` block is classified by its `ocr_engine`', async () => {
     const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+    doc.preserved = { by: 'mokuro-bunko', reason: 'generation-upgrade' };
+    const parsed = await parseMokuroFile(vectorFile(JSON.stringify(doc)));
+    expect('preserved' in parsed).toBe(false);
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(JSON.stringify(doc)),
+        imageFiles: createImageFiles(['001.jpg', '002.jpg'])
+      })
+    );
+    expect(result.metadata.ocrProvenance?.engine).toEqual(doc.ocr_engine);
+    expect(result.metadata.ocrProvenance?.digest).toBe(RUNNER_OUTPUT_SEAL);
+  });
+
+  it('a file with a stray `preserved` block beside `edited` is EDITED', async () => {
+    const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+    const edited = { by: 'mokuro-reader', at: '2026-10-01T00:00:00.000Z', base_sha256: null };
+    doc.edited = edited;
     doc.preserved = { by: 'mokuro-bunko', reason: 'generation-upgrade' };
     const result = await processVolume(
       createDecompressedVolume({
@@ -599,7 +616,7 @@ describe('OCR provenance (ocr_engine)', () => {
         imageFiles: createImageFiles(['001.jpg', '002.jpg'])
       })
     );
-    expect(result.metadata.ocrProvenance).toBeUndefined();
+    expect(result.metadata.ocrProvenance?.edited).toEqual(edited);
   });
 
   it('records nothing for a file without a block, or an image-only volume', async () => {

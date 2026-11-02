@@ -33,8 +33,9 @@ function primaryAnchoredOnArchive(filename: string): boolean {
 /**
  * The server refused THIS layer file (403 forbidden / 409 conflict, or a
  * provider's non-auth `PERMISSION_DENIED`): bunko answers so for a layer id it
- * reserves (its `previous-ocr`/`pre-upgrade` keepsakes, `curated-<n>`, a
- * 0.7.x `edit`) or one it cannot anchor yet. Never a 401 (credentials), a
+ * reserves (a case merge's `curated-<n>`, a 0.7.x `edit`), a library file this
+ * account may not write (another account's series or volume), or one it cannot
+ * anchor yet. Never a 401 (credentials), a
  * 5xx or a network failure — those fail the backup as before. Duck-typed: the
  * Worker sees plain upload errors carrying `status`.
  */

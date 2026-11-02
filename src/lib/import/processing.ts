@@ -50,8 +50,6 @@ export interface ParsedMokuro {
   ocrEngine?: Record<string, unknown>;
   /** The file's `edited` block (a person's text), verbatim, when it is a plain object. */
   edited?: Record<string, unknown>;
-  /** The file's `preserved` block (bunko's keepsake of a replaced main), when it is a plain object. */
-  preserved?: Record<string, unknown>;
 }
 
 /**
@@ -194,8 +192,7 @@ export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
     chars: (obj.chars as number) ?? 0,
     ...(obj.spine_width != null && { spineWidth: obj.spine_width as number }),
     ...(isPlainObject(obj.ocr_engine) ? { ocrEngine: obj.ocr_engine } : {}),
-    ...(isPlainObject(obj.edited) ? { edited: obj.edited } : {}),
-    ...(isPlainObject(obj.preserved) ? { preserved: obj.preserved } : {})
+    ...(isPlainObject(obj.edited) ? { edited: obj.edited } : {})
   };
 }
 

@@ -314,7 +314,7 @@ describe('layerNeedsPull / layerNeedsPush', () => {
     expect(layerNeedsPush(mirror, file, 'webdav')).toBe(false);
   });
 
-  it('an untouched previous-ocr keepsake (the local primary an upgrade replaced) is never pushed', () => {
+  it('a v1.10.0 previous-ocr leftover, untouched, is never pushed before the startup cleanup deletes it', () => {
     const keepsake = {
       ...mirror,
       layer_id: 'previous-ocr',
@@ -359,49 +359,17 @@ describe('syncLayersFromListing', () => {
     expect(downloadFile).toHaveBeenCalledTimes(1);
   });
 
-  it('a pulled bunko pre-upgrade layer is labelled "Before upgrade (may contain your corrections)"', async () => {
+  it('a pulled pre-upgrade layer is an ordinary hand-made layer: named from its id', async () => {
     await seedRow();
     downloadFile.mockResolvedValue(new Blob([mokuroJson('旧')]));
     await syncLayersFromListing(
       listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.pre-upgrade.mokuro')),
       'webdav'
     );
-    expect((await getLayerWithPages(db, 'v1', 'pre-upgrade'))?.name).toBe(
-      'Before upgrade (may contain your corrections)'
-    );
-  });
-
-  it('a pre-upgrade row pulled under its old title-cased name is renamed; a hand-renamed one is not', async () => {
-    await seedRow();
-    const row = (name: string, layer_id: string) => ({
-      volume_uuid: 'v1',
-      layer_id,
-      name,
-      kind: 'edit' as const,
-      created_at: '2026-09-16T09:00:00.000Z',
-      updated_at: '2026-09-16T09:00:00.000Z',
-      cloud: {
-        provider: 'webdav',
-        size: 100,
-        modified: 1789552800,
-        synced_at: '2026-09-16T10:00:00.000Z'
-      },
-      pages: [pg('旧')]
+    expect(await getLayerWithPages(db, 'v1', 'pre-upgrade')).toMatchObject({
+      kind: 'edit',
+      name: 'Pre Upgrade'
     });
-    await putLayerWithPages(db, row('Pre Upgrade', 'pre-upgrade'));
-    await putLayerWithPages(db, row('Old OCR', 'pre-upgrade-2'));
-    await syncLayersFromListing(
-      listing(
-        cloudFile('Series/Vol 1.cbz'),
-        cloudFile('Series/Vol 1.pre-upgrade.mokuro'),
-        cloudFile('Series/Vol 1.pre-upgrade-2.mokuro')
-      ),
-      'webdav'
-    );
-    expect((await getLayerWithPages(db, 'v1', 'pre-upgrade'))?.name).toBe(
-      'Before upgrade (may contain your corrections)'
-    );
-    expect((await getLayerWithPages(db, 'v1', 'pre-upgrade-2'))?.name).toBe('Old OCR');
   });
 
   it('a pulled tr-<lang> file is filed as a translation — which can never become the primary', async () => {
@@ -997,7 +965,7 @@ describe('a generation the server named itself', () => {
     expect((await getLayerWithPages(db, 'v1', 'odd'))!.kind).toBe('edit');
   });
 
-  it('files a stamped curated, personal or keepsake file as corrections, never as OCR', async () => {
+  it('files a stamped curated, personal or curated-<n> file as corrections, never as OCR', async () => {
     await seedRow();
     downloadFile.mockResolvedValue(new Blob([servedJson('かな', 'hayai-nova')]));
     await syncLayersFromListing(
@@ -1005,6 +973,7 @@ describe('a generation the server named itself', () => {
         cloudFile('Series/Vol 1.cbz'),
         cloudFile('Series/Vol 1.curated.mokuro'),
         cloudFile('Series/Vol 1.edit-2.mokuro'),
+        cloudFile('Series/Vol 1.curated-2.mokuro'),
         cloudFile('Series/Vol 1.pre-upgrade.mokuro')
       ),
       'webdav'
@@ -1018,7 +987,13 @@ describe('a generation the server named itself', () => {
       kind: 'edit',
       name: 'Your corrections 2'
     });
-    expect((await getLayerWithPages(db, 'v1', 'pre-upgrade'))!.kind).toBe('edit');
+    expect((await getLayerWithPages(db, 'v1', 'curated-2'))!.kind).toBe('edit');
+    // Not a corrections id any more: a stamped `pre-upgrade` is a server's OCR,
+    // like any other hand-made id with a stamp.
+    expect(await getLayerWithPages(db, 'v1', 'pre-upgrade')).toMatchObject({
+      kind: 'ocr',
+      engine: 'hayai-nova'
+    });
   });
 
   it('never re-files a cloud curated row as OCR when a newer stamped copy arrives', async () => {
@@ -1860,11 +1835,33 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     expect(uploadFile).not.toHaveBeenCalled();
   });
 
-  it('a server keepsake (pre-upgrade) is never pushed to bunko', async () => {
+  it('pre-upgrade / previous-ocr layers are hand-made layers on bunko: pushed like any other', async () => {
+    // bunko no longer writes or reserves either family (sidecar names rule v1:
+    // `other`), so they go up under AddFiles like `fix` does.
     await seedRow();
     await seedLayer('pre-upgrade');
+    await seedLayer('pre-upgrade-2');
+    await seedLayer('previous-ocr');
+    await seedLayer('fix');
     serverCompilesMetadata = true;
     editLayerSync = 'push';
+    canAddFiles = true;
+    await syncLayersFromListing(files(), 'webdav');
+    expect(uploaded()).toEqual([
+      'Series/Vol 1.fix.mokuro',
+      'Series/Vol 1.pre-upgrade-2.mokuro',
+      'Series/Vol 1.pre-upgrade.mokuro',
+      'Series/Vol 1.previous-ocr.mokuro'
+    ]);
+  });
+
+  it('…and, like any library file, not by a progress-only account', async () => {
+    await seedRow();
+    await seedLayer('pre-upgrade');
+    await seedLayer('previous-ocr');
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    canAddFiles = false; // registered: WriteProgress only
     await syncLayersFromListing(files(), 'webdav');
     expect(uploadFile).not.toHaveBeenCalled();
   });
@@ -2032,18 +2029,20 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     expect(downloadFile).toHaveBeenCalledTimes(1);
   });
 
-  it('an edited previous-ocr keepsake is never pushed to bunko (it reserves the id), but syncs on plain storage', async () => {
-    await seedRow();
-    await seedLayer('previous-ocr', { kind: 'ocr' });
-    serverCompilesMetadata = true;
-    editLayerSync = 'push';
-    canAddFiles = true;
-    await syncLayersFromListing(files(), 'webdav');
-    expect(uploadFile).not.toHaveBeenCalled();
-
-    serverCompilesMetadata = false;
-    await syncLayersFromListing(files(), 'webdav');
-    expect(uploaded()).toEqual(['Series/Vol 1.previous-ocr.mokuro']);
+  it('an edited previous-ocr layer syncs on bunko and plain storage alike', async () => {
+    for (const compiles of [true, false]) {
+      await seedRow();
+      await seedLayer('previous-ocr', { kind: 'ocr' });
+      serverCompilesMetadata = compiles;
+      editLayerSync = compiles ? 'push' : undefined;
+      canAddFiles = true;
+      uploadFile.mockClear();
+      await syncLayersFromListing(files(), 'webdav');
+      expect(uploaded(), `serverCompilesMetadata ${compiles}`).toEqual([
+        'Series/Vol 1.previous-ocr.mokuro'
+      ]);
+      await deleteLayerRows(db, 'v1', 'previous-ocr');
+    }
   });
 
   it('a read-only account pushes nothing, edit layer included', async () => {
@@ -2093,26 +2092,40 @@ describe('personal and shared correction layers (bunko 0.8)', () => {
     expect(downloadFile).not.toHaveBeenCalled();
   });
 
-  it("a shared edit layer (0.7.x) or the server's pre-upgrade is 'kept-shared', and stays hidden", async () => {
+  it("a shared edit layer (0.7.x) is 'kept-shared', and stays hidden", async () => {
     await seedRow();
     serverCompilesMetadata = true;
     editLayerSync = 'local';
     canAddFiles = true;
     const synced = { provider: 'webdav', size: 100, modified: 1789552800, synced_at: T0 };
     await seedLayer('edit', { updated_at: T0, cloud: synced });
-    await seedLayer('pre-upgrade', { updated_at: T0, cloud: synced });
-    cachedFiles = [
-      cloudFile('Series/Vol 1.cbz'),
-      cloudFile('Series/Vol 1.edit.mokuro'),
-      cloudFile('Series/Vol 1.pre-upgrade.mokuro')
-    ];
+    cachedFiles = [cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.edit.mokuro')];
     expect(await deleteCloudLayerFile('v1', 'edit')).toBe('kept-shared');
-    expect(await deleteCloudLayerFile('v1', 'pre-upgrade')).toBe('kept-shared');
     await deleteLayerRows(db, 'v1', 'edit');
-    await deleteLayerRows(db, 'v1', 'pre-upgrade');
     await syncLayersFromListing(listing(...cachedFiles), 'webdav');
     expect(deleteFile).not.toHaveBeenCalled();
     expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('a pre-upgrade / previous-ocr layer on bunko is deleted from the cloud like any other', async () => {
+    await seedRow();
+    serverCompilesMetadata = true;
+    editLayerSync = 'push';
+    canAddFiles = true;
+    const synced = { provider: 'webdav', size: 100, modified: 1789552800, synced_at: T0 };
+    await seedLayer('pre-upgrade', { updated_at: T0, cloud: synced });
+    await seedLayer('previous-ocr-2', { updated_at: T0, cloud: synced });
+    cachedFiles = [
+      cloudFile('Series/Vol 1.cbz'),
+      cloudFile('Series/Vol 1.pre-upgrade.mokuro'),
+      cloudFile('Series/Vol 1.previous-ocr-2.mokuro')
+    ];
+    expect(await deleteCloudLayerFile('v1', 'pre-upgrade')).toBe('gone');
+    expect(await deleteCloudLayerFile('v1', 'previous-ocr-2')).toBe('gone');
+    expect(deleteFile.mock.calls.map(([f]) => f.path)).toEqual([
+      'Series/Vol 1.pre-upgrade.mokuro',
+      'Series/Vol 1.previous-ocr-2.mokuro'
+    ]);
   });
 
   describe('two accounts on one device and one server', () => {
