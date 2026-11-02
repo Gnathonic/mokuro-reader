@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   layoutLines as layoutLinesImpl,
   heuristicMeasurer,
+  lineGridSpacing,
+  runAdvance,
   type LayoutBlock,
   type TextMeasurer
 } from './line-coords-layout';
 import { inkInsets } from './glyph-insets';
+import { splitUnits, type LinePitch } from './line-grid';
 import fixturePage from './__fixtures__/ocr-page.json';
 
 // Every block the tests below lay out is recorded, so the golden test at the
@@ -889,6 +892,31 @@ describe('createCanvasMeasurer', () => {
     });
   });
 
+  it('measures at the size asked for, memoized per (text, size)', async () => {
+    // a hinted font: whole-px advances, so the em advance depends on the size
+    let calls = 0;
+    const ctx = {
+      font: '',
+      fontKerning: 'auto',
+      measureText(t: string) {
+        calls++;
+        const size = parseFloat(this.font);
+        return { width: t.length * Math.round(0.555 * size) };
+      }
+    };
+    await withContext(ctx, async () => {
+      const { createCanvasMeasurer } = await import('./line-coords-layout');
+      const measure = createCanvasMeasurer();
+      expect(measure('12')).toBeCloseTo(1.12, 9); // 56px at 100px
+      expect(measure('12', 40)).toBeCloseTo(1.1, 9); // 22px at 40px
+      expect(measure('12', 42.37)).toBeCloseTo(48 / 42.37, 9); // the px as given, unrounded
+      expect(ctx.font).toBe("42.37px 'Noto Sans JP', sans-serif");
+      expect(measure('12')).toBeCloseTo(1.12, 9);
+      expect(measure('12', 40)).toBeCloseTo(1.1, 9);
+      expect(calls).toBe(3);
+    });
+  });
+
   it('leaves an engine without fontKerning alone', async () => {
     const ctx = { font: '', measureText: (t: string) => ({ width: t.length * 50 }) };
     await withContext(ctx, async () => {
@@ -949,6 +977,37 @@ describe('golden: replayed layouts', () => {
 // The uniform grid and rotation (line-grid.ts). These call layoutLinesImpl
 // directly, so they stay out of the replay above and carry a golden of their
 // own.
+describe('runAdvance and lineGridSpacing', () => {
+  /** Marks ride on a base and take no advance of their own; everything else is
+   * one em — and the measurer remembers every string it was asked about. */
+  const recording = () => {
+    const asked: string[] = [];
+    const measure: TextMeasurer = (text) => {
+      asked.push(text);
+      return Array.from(text).filter((ch) => !/^\p{Mn}$/u.test(ch)).length;
+    };
+    return { asked, measure };
+  };
+
+  it('a leading mark rides on the first base: the first unit measured is the base, not the mark', () => {
+    const { asked, measure } = recording();
+    const text = '\u3099かき';
+    const run = runAdvance(text, splitUnits(text), measure);
+    expect(run).toEqual({ total: 2, first: 1, last: 1, count: 2 });
+    expect(asked).toContain('\u3099か');
+    expect(asked).not.toContain('\u3099');
+  });
+
+  it('spaces a line with a leading mark exactly like the line without it', () => {
+    const { measure } = recording();
+    const pitch: LinePitch = { pitch: 50, em: 50, lead: 0.11, trail: 0.1 };
+    const bare = lineGridSpacing(pitch, 'かき', 40, measure)!;
+    expect(bare.letterSpacing).toBe(10); // 2 glyphs: 2 × (50 − 40) / 2
+    expect(lineGridSpacing(pitch, '\u3099かき', 40, measure)).toEqual(bare);
+    expect(lineGridSpacing(pitch, '\u3099\u3099', 40, measure)).toBeNull();
+  });
+});
+
 describe('layoutLines on the fixed-pitch grid', () => {
   const column = (x0: number, x1: number, y0: number, y1: number) => [
     [x0, y0],
@@ -1177,6 +1236,91 @@ describe('layoutLines on the fixed-pitch grid', () => {
     };
     expect(auto(spaced)[0]).toMatchObject({ letterSpacing: 0, inset: 0 });
     expect(auto({ ...spaced, lines: ['NO WAY'] })[0].letterSpacing).toBeGreaterThan(0);
+  });
+
+  describe('a hinted font: advances snap to whole px at the size a line is drawn at', () => {
+    // Noto Sans JP as Google Fonts serves it today: every glyph advance is
+    // rounded to whole px at the size it is drawn at. A digit (0.555em by
+    // design) is 56px at the 100px measuring size and 22px at 40px; a kana is
+    // 42px at 42.3px.
+    const design = (ch: string) => ((ch.codePointAt(0) ?? 0) < 0x2000 ? 0.555 : 1);
+    const hinted: TextMeasurer = (text, size = 100) => {
+      let px = 0;
+      for (const ch of text) px += Math.round(design(ch) * size);
+      return px / size;
+    };
+    /** Where the browser starts glyph k of an upright vertical line: every
+     * advance AS DRAWN at the line's size, plus the spacing after each. */
+    const drawnStart = (
+      l: { top: number; inset: number; letterSpacing: number; fontSize: number },
+      text: string,
+      k: number
+    ) =>
+      l.top +
+      l.inset +
+      Array.from(text)
+        .slice(0, k)
+        .reduce((sum, ch) => sum + hinted(ch, l.fontSize) * l.fontSize + l.letterSpacing, 0);
+
+    it('a mixed line’s last glyph still ends its ink where the quad ends (digits drawn narrower than measured)', () => {
+      const text = '第12話です';
+      const block: LayoutBlock = {
+        box: [100, 0, 140, 240],
+        vertical: true,
+        font_size: 40,
+        lines: [text],
+        lines_coords: [column(100, 140, 0, 240)]
+      };
+      const [l] = layoutLinesImpl(block, [text], hinted)!;
+      expect(l.fontSize).toBe(40);
+      // the premise: the measure the pitch came from is not the run drawn
+      expect(hinted(text) * 40 - hinted(text, 40) * 40).toBeCloseTo(0.8, 9);
+      // first ink (第: 0.05em into its cell) at the quad's start …
+      expect(drawnStart(l, text, 0) + 0.05 * 40).toBeCloseTo(0, 9);
+      // … last ink (す: 0.10em short of its cell's end) at its end — 0.8px
+      // short when the spacing came from the 100px measure scaled
+      expect(drawnStart(l, text, 5) + 40 - 0.1 * 40).toBeCloseTo(240, 9);
+      // the spacing is the at-size one: what the drawn run leaves of the quad
+      const drawnRun = hinted(text, 40) * 40;
+      expect(l.letterSpacing).toBeCloseTo((240 - drawnRun + 0.05 * 40 + 0.1 * 40) / 5, 9);
+    });
+
+    it('a solid line at a fractional size steps the pitch, not the glyph’s whole-px advance', () => {
+      // ten kana on 42.3px cells: the line renders at 42.3px, where each is
+      // drawn 42px wide — 0.3px short a glyph, 2.7px by the last
+      const text = 'あいうえおかきくけこ';
+      const pitch = 42.3;
+      const block: LayoutBlock = {
+        box: [0, 0, 48, 600],
+        vertical: true,
+        font_size: 42,
+        lines: [text],
+        lines_coords: [inkColumn(0, 48, 100, text, pitch)]
+      };
+      const [l] = layoutLinesImpl(block, [text], hinted)!;
+      expect(l.fontSize).toBeCloseTo(pitch, 9);
+      expect(hinted('あ', l.fontSize) * l.fontSize).toBe(42);
+      expect(l.letterSpacing).toBeCloseTo(0.3, 9);
+      for (let k = 0; k < 10; k++) {
+        const centre = drawnStart(l, text, k) + 42 / 2;
+        expect(centre).toBeCloseTo(100 + (k + 0.5) * pitch, 9);
+      }
+    });
+
+    it('changes nothing for a font that scales linearly', () => {
+      const text = '第12話です';
+      const block: LayoutBlock = {
+        box: [100, 0, 140, 240],
+        vertical: true,
+        font_size: 40,
+        lines: [text],
+        lines_coords: [column(100, 140, 0, 240)]
+      };
+      const linear: TextMeasurer = (t) => hinted(t);
+      const [l] = layoutLinesImpl(block, [text], linear)!;
+      expect(l.letterSpacing).toBeCloseTo((240 - 40 * (5.12 - 0.05 - 0.1)) / 5, 9);
+      expect(l.inset).toBeCloseTo(-0.05 * 40, 9);
+    });
   });
 });
 
