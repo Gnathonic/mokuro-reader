@@ -234,6 +234,8 @@
   // Progress tracking
   // ============================================================
 
+  // Seeded once from the page the reader opened on; updated by the tracker below.
+  // svelte-ignore state_referenced_locally
   let lastReportedPage = currentPage;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let pageElements: HTMLDivElement[] = [];
