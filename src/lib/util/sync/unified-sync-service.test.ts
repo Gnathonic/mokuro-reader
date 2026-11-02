@@ -1850,7 +1850,9 @@ describe('syncProvider — one sync per provider at a time', () => {
     } finally {
       steps.restore();
     }
-  });
+    // Its webdav sync loads modules lazily on first use; a busy machine pushed
+    // that past the 5 s default (it runs in milliseconds when warm).
+  }, 30_000);
 
   describe('a sync that never settles', () => {
     // A WebDAV download is a plain fetch with no signal or timeout: one that
@@ -1970,7 +1972,9 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
     await svc.syncVolumeData(p);
     expect(uploads).toHaveLength(1);
     expect(uploads[0].tracking).toEqual({ idle: { override_minutes: 12, lastUpdated: T2 } });
-  });
+    // The section's first sync pays the history cut-over's cold import; a
+    // busy machine pushed that past the 5 s default.
+  }, 30_000);
 
   it('adopts a newer cloud override and uploads nothing when they agree', async () => {
     setTrackingStates({ idle: { override_minutes: 12, lastUpdated: T1 } });
