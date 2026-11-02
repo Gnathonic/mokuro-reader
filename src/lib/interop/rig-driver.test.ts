@@ -580,6 +580,12 @@ describe('library()', () => {
     });
   });
 
+  it('reads the cache once, however many rows it lists', async () => {
+    listed('Series A/Vol 1.cbz', 'Series A/Vol 2.cbz');
+    await install().library();
+    expect(unifiedCloudManager.getAllCloudVolumes).toHaveBeenCalledTimes(1);
+  });
+
   it('includes a cloud-only volume as its placeholder', async () => {
     listed('Series B/Vol 9.cbz');
     const lib = await install().library();

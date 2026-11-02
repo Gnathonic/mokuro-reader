@@ -211,15 +211,23 @@ function listingNow(): Map<string, CloudVolumeWithProvider[]> {
   for (const file of unifiedCloudManager.getAllCloudVolumes() as CloudVolumeWithProvider[]) {
     const folder = file.path.split('/')[0];
     if (!folder || folder === HISTORY_FOLDER) continue;
-    map.set(folder, [...(map.get(folder) ?? []), type ? { ...file, provider: type } : file]);
+    let files = map.get(folder);
+    if (!files) map.set(folder, (files = []));
+    files.push(type ? { ...file, provider: type } : file);
   }
   return map;
 }
 
-/** The listed archive of a row, by the rule the volume card uses. */
-function listedArchivePath(row: VolumeMetadata): string | null {
+/**
+ * The listed archive of a row, by the rule the volume card uses, in `listing`
+ * (one `listingNow()` read for a whole library).
+ */
+function listedArchivePath(
+  row: VolumeMetadata,
+  listing: Map<string, CloudVolumeWithProvider[]> = listingNow()
+): string | null {
   const path = `${row.series_title}/${row.volume_title}.cbz`;
-  const listed = listingNow().get(row.series_title) ?? [];
+  const listed = listing.get(row.series_title) ?? [];
   return listed.some((f) => f.path === path) ? path : null;
 }
 
@@ -230,14 +238,15 @@ async function seriesIndexMap(): Promise<Map<string, SeriesIndexRecord>> {
 async function library(): Promise<{ volumes: RigVolume[] }> {
   const rows = await db.volumes.toArray();
   const indexMap = await seriesIndexMap();
-  const placeholders = generatePlaceholders(listingNow(), rows, indexMap);
+  const listing = listingNow();
+  const placeholders = generatePlaceholders(listing, rows, indexMap);
   const out: RigVolume[] = [];
   for (const row of rows) {
     out.push({
       id: row.volume_uuid,
       series: row.series_title,
       title: row.volume_title,
-      cloudPath: listedArchivePath(row) ?? row.cloudPath ?? null,
+      cloudPath: listedArchivePath(row, listing) ?? row.cloudPath ?? null,
       hasOcr: isVolumeInstalled(row) && !!row.mokuro_version,
       layers: (await listLayerIds(db, row.volume_uuid)).sort()
     });
