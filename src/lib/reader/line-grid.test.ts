@@ -15,7 +15,9 @@ import {
   rectOverlapArea,
   rectsCollide,
   spacingUnits,
+  splitUnits,
   type LinePitch,
+  type RunAdvance,
   type OrientedRect,
   type PitchVoter
 } from './line-grid';
@@ -239,6 +241,16 @@ describe('spacingUnits', () => {
     expect(spacingUnits('\u2764\ufe0f')).toBe(1);
     expect(spacingUnits('')).toBe(0);
   });
+
+  it('a mark with nothing before it rides on the base AFTER it; marks alone are no unit', () => {
+    // the browser spaces the same characters whether the mark leads or follows
+    expect(spacingUnits('\u3099かき')).toBe(2);
+    expect(spacingUnits('\u3099')).toBe(0);
+    expect(spacingUnits('\u3099\u3099')).toBe(0);
+    expect(splitUnits('\u3099かき')).toEqual(['\u3099か', 'き']);
+    expect(splitUnits('\u200dか\u3099')).toEqual(['\u200dか\u3099']);
+    expect(splitUnits('\u3099\ufe0f')).toEqual([]);
+  });
 });
 
 const line = (over: Partial<PitchVoter>): PitchVoter => ({
@@ -447,10 +459,21 @@ describe('linePitches', () => {
 
 describe('gridSpacing', () => {
   const solid = (pitch: number, lead = 0): LinePitch => ({ pitch, em: pitch, lead, trail: 0 });
+  /** A run of `count` units `advanceEm` long in a font that scales linearly:
+   * drawn at any size it is the model's run, so no at-size correction. */
+  const linear = (advanceEm: number, count: number) => {
+    const run: RunAdvance = {
+      total: advanceEm,
+      first: advanceEm / count,
+      last: advanceEm / count,
+      count
+    };
+    return { model: run, rendered: run };
+  };
 
   it('a loose line steps one pitch per glyph, each glyph centred in its step', () => {
     // 8 fullwidth glyphs at 40px on a 50px pitch
-    const grid = gridSpacing({ pitch: solid(50), advanceEm: 8, fontSize: 40, count: 8 })!;
+    const grid = gridSpacing({ pitch: solid(50), fontSize: 40, run: linear(8, 8) })!;
     expect(grid.letterSpacing).toBe(10);
     expect(grid.inset).toBe(5);
     for (let k = 0; k < 8; k++) {
@@ -461,11 +484,11 @@ describe('gridSpacing', () => {
 
   it('the first CELL starts before the quad: the ink of the first glyph starts at it', () => {
     // 「 inks the last third of its cell
-    const grid = gridSpacing({ pitch: solid(64, 0.65), advanceEm: 4, fontSize: 64, count: 4 })!;
+    const grid = gridSpacing({ pitch: solid(64, 0.65), fontSize: 64, run: linear(4, 4) })!;
     expect(grid.letterSpacing).toBe(0);
     expect(grid.inset).toBeCloseTo(-0.65 * 64, 9);
     // rendered smaller than the print: still centred on the print's cells
-    const small = gridSpacing({ pitch: solid(64, 0.65), advanceEm: 4, fontSize: 56, count: 4 })!;
+    const small = gridSpacing({ pitch: solid(64, 0.65), fontSize: 56, run: linear(4, 4) })!;
     expect(small.letterSpacing).toBe(8);
     for (let k = 0; k < 4; k++) {
       const glyphCentre = small.inset + k * 64 + 28;
@@ -474,7 +497,7 @@ describe('gridSpacing', () => {
   });
 
   it('a tight pitch closes the glyphs up', () => {
-    const grid = gridSpacing({ pitch: solid(36), advanceEm: 10, fontSize: 40, count: 10 })!;
+    const grid = gridSpacing({ pitch: solid(36), fontSize: 40, run: linear(10, 10) })!;
     expect(grid.letterSpacing).toBe(-4);
     expect(grid.inset).toBe(-2);
   });
@@ -483,7 +506,7 @@ describe('gridSpacing', () => {
     const pitch = ownPitch(
       line({ main: 504, cross: 77, advanceEm: 4, count: 4, lead: 0.05, trail: 0.05 })
     )!;
-    const grid = gridSpacing({ pitch, advanceEm: 4, fontSize: 77, count: 4 })!;
+    const grid = gridSpacing({ pitch, fontSize: 77, run: linear(4, 4) })!;
     expect(grid.letterSpacing).toBeCloseTo(pitch.pitch - 77, 9);
     expect(grid.inset).toBeCloseTo(-0.05 * 77, 9);
     // the last glyph's ink ends at the quad's end
@@ -493,7 +516,7 @@ describe('gridSpacing', () => {
 
   it('half-width characters keep their narrower advance; set solid, the run is advance × pitch long', () => {
     // 第12話: two digits at 0.55em
-    const grid = gridSpacing({ pitch: solid(60), advanceEm: 3.1, fontSize: 40, count: 4 })!;
+    const grid = gridSpacing({ pitch: solid(60), fontSize: 40, run: linear(3.1, 4) })!;
     expect(3.1 * 40 + 4 * grid.letterSpacing).toBeCloseTo(3.1 * 60, 9);
   });
 
@@ -502,28 +525,47 @@ describe('gridSpacing', () => {
     const input = line({ main: 5.1 * 40 + 5 * 10, cross: 40, advanceEm: 5.1, count: 6 });
     const pitch = ownPitch(input)!;
     expect(pitch.pitch).toBeCloseTo(50, 9);
-    expect(
-      gridSpacing({ pitch, advanceEm: 5.1, fontSize: 40, count: 6 })!.letterSpacing
-    ).toBeCloseTo(10, 9);
+    expect(gridSpacing({ pitch, fontSize: 40, run: linear(5.1, 6) })!.letterSpacing).toBeCloseTo(
+      10,
+      9
+    );
+  });
+
+  it('a HINTED font: the run as drawn at the size is spaced to where the model put its glyphs', () => {
+    // 第12話です set solid at 40px: digits measure 0.56em at the measuring size
+    // but draw 0.55em at 40px, so the drawn run is 0.8px short of the model's
+    // between the first and last centres — shared out over the 5 gaps
+    const model: RunAdvance = { total: 5.12, first: 1, last: 1, count: 6 };
+    const rendered: RunAdvance = { total: 5.1, first: 1, last: 1, count: 6 };
+    const grid = gridSpacing({ pitch: solid(40), fontSize: 40, run: { model, rendered } })!;
+    expect(grid.letterSpacing).toBeCloseTo(0.8 / 5, 9);
+    expect(grid.inset).toBe(0);
+    // a first glyph drawn narrower moves the start by half its difference
+    const narrowFirst = gridSpacing({
+      pitch: solid(40),
+      fontSize: 40,
+      run: { model, rendered: { ...rendered, first: 0.98 } }
+    })!;
+    expect(narrowFirst.inset).toBeCloseTo((0.02 * 40) / 2, 9);
   });
 
   it('text set at its own pitch gets no spacing at all', () => {
-    expect(gridSpacing({ pitch: solid(40), advanceEm: 8, fontSize: 40, count: 8 })).toEqual({
+    expect(gridSpacing({ pitch: solid(40), fontSize: 40, run: linear(8, 8) })).toEqual({
       letterSpacing: 0,
       inset: 0
     });
     // …float noise included
-    expect(gridSpacing({ pitch: solid(40.000001), advanceEm: 8, fontSize: 40, count: 8 })).toEqual({
+    expect(gridSpacing({ pitch: solid(40.000001), fontSize: 40, run: linear(8, 8) })).toEqual({
       letterSpacing: 0,
       inset: 0
     });
     expect(
-      gridSpacing({ pitch: solid(40.05), advanceEm: 8, fontSize: 40, count: 8 })!.letterSpacing
+      gridSpacing({ pitch: solid(40.05), fontSize: 40, run: linear(8, 8) })!.letterSpacing
     ).toBeGreaterThan(0);
   });
 
   it('a single character is centred in its cell', () => {
-    expect(gridSpacing({ pitch: solid(60), advanceEm: 1, fontSize: 40, count: 1 })).toEqual({
+    expect(gridSpacing({ pitch: solid(60), fontSize: 40, run: linear(1, 1) })).toEqual({
       letterSpacing: 20,
       inset: 10
     });
@@ -536,7 +578,7 @@ describe('gridSpacing', () => {
     expect(MIN_SPACING_EM).toBe(-0.35);
     expect(MAX_SPACING_EM).toBe(1.5);
     const at = (em: number) =>
-      gridSpacing({ pitch: solid(40 * (1 + em)), advanceEm: 10, fontSize: 40, count: 10 });
+      gridSpacing({ pitch: solid(40 * (1 + em)), fontSize: 40, run: linear(10, 10) });
     expect(at(-0.34)).not.toBeNull();
     expect(at(-0.36)).toBeNull();
     expect(at(1.49)).not.toBeNull();
@@ -544,11 +586,11 @@ describe('gridSpacing', () => {
   });
 
   it('gives up on anything it cannot divide', () => {
-    expect(gridSpacing({ pitch: solid(50), advanceEm: 0, fontSize: 40, count: 0 })).toBeNull();
-    expect(gridSpacing({ pitch: solid(50), advanceEm: 2, fontSize: 0, count: 2 })).toBeNull();
-    expect(gridSpacing({ pitch: solid(NaN), advanceEm: 2, fontSize: 40, count: 2 })).toBeNull();
-    expect(gridSpacing({ pitch: solid(50), advanceEm: NaN, fontSize: 40, count: 2 })).toBeNull();
-    expect(gridSpacing({ pitch: solid(0), advanceEm: 2, fontSize: 40, count: 2 })).toBeNull();
+    expect(gridSpacing({ pitch: solid(50), fontSize: 40, run: linear(0, 0) })).toBeNull();
+    expect(gridSpacing({ pitch: solid(50), fontSize: 0, run: linear(2, 2) })).toBeNull();
+    expect(gridSpacing({ pitch: solid(NaN), fontSize: 40, run: linear(2, 2) })).toBeNull();
+    expect(gridSpacing({ pitch: solid(50), fontSize: 40, run: linear(NaN, 2) })).toBeNull();
+    expect(gridSpacing({ pitch: solid(0), fontSize: 40, run: linear(2, 2) })).toBeNull();
   });
 });
 
