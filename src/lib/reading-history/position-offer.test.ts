@@ -1,0 +1,421 @@
+import { describe, expect, it } from 'vitest';
+import { offerDeviceName, planPosition } from './position-offer';
+import type { DeviceView } from './devices';
+import type { ReadingEvent } from './types';
+
+let seq = 0;
+const view = (device: string, t: number, page: number, last = page): ReadingEvent => ({
+  device,
+  seq: ++seq,
+  t,
+  kind: 'page',
+  volume: 'v',
+  first_page: page,
+  last_page: last,
+  page_chars: [10],
+  chars_before: page * 10,
+  dwell_ms: 1000,
+  layout: 'single',
+  orientation: 'portrait',
+  viewport: null
+});
+const restart = (device: string, t: number): ReadingEvent => ({
+  device,
+  seq: ++seq,
+  t,
+  kind: 'restart',
+  volume: 'v'
+});
+const answer = (
+  t: number,
+  through: number,
+  a: 'jump' | 'stay' | 'reset' = 'stay'
+): ReadingEvent => ({
+  device: 'phone',
+  seq: ++seq,
+  t,
+  kind: 'position',
+  volume: 'v',
+  answer: a,
+  through,
+  page: 0
+});
+const run = (device: string, start: number, pages: number[]) =>
+  pages.map((p, i) => view(device, start + i * 1000, p));
+
+describe('planPosition', () => {
+  it("the stale laptop: offers the phone's final page on every device", () => {
+    const events = [...run('phone', 0, [40, 41, 42, 120]), ...run('laptop', 10_000, [40, 41])];
+    const plan = planPosition(events, { progress: 41 }, 'laptop');
+    expect(plan).toEqual({
+      offer: { page: 120, chars: 1210, at: 3000, device: 'phone', ownDevice: false }
+    });
+    expect(planPosition(events, { progress: 41 }, 'phone').offer).toMatchObject({
+      page: 120,
+      ownDevice: true
+    });
+  });
+
+  it('a handoff (the laptop picked up where the phone stopped) offers nothing', () => {
+    const events = [...run('phone', 0, [40, 41, 120]), ...run('laptop', 10_000, [120, 121, 122])];
+    expect(planPosition(events, { progress: 122 }, 'laptop')).toEqual({});
+  });
+
+  it('a laptop the foreground sync corrected (it reached the page later) offers nothing', () => {
+    const events = [...run('phone', 0, [119, 120]), ...run('laptop', 10_000, [40, 120, 121])];
+    expect(planPosition(events, { progress: 121 }, 'laptop')).toEqual({});
+  });
+
+  it('a peek ahead and back offers where the phone stopped, not how far it peeked', () => {
+    const events = [...run('phone', 0, [118, 125, 120]), ...run('laptop', 10_000, [40, 41])];
+    expect(planPosition(events, { progress: 41 }, 'laptop').offer?.page).toBe(120);
+  });
+
+  it('a double-page spread that shows the page counts as reaching it', () => {
+    const events = [
+      ...run('phone', 0, [120]),
+      view('laptop', 10_000, 119, 120),
+      view('laptop', 11_000, 121, 122)
+    ];
+    expect(planPosition(events, { progress: 121 }, 'laptop')).toEqual({});
+  });
+
+  it('nothing when the offered page is where the volume already is', () => {
+    const events = [...run('phone', 0, [41]), ...run('laptop', 10_000, [40, 41])];
+    expect(planPosition(events, { progress: 41 }, 'laptop')).toEqual({});
+  });
+
+  it('an answer covers that reading on every device; later reading can be offered again', () => {
+    const events = [...run('phone', 0, [120]), ...run('laptop', 10_000, [40, 41])];
+    expect(planPosition([...events, answer(20_000, 0)], { progress: 41 }, 'laptop')).toEqual({});
+    const later = [
+      ...events,
+      answer(20_000, 0),
+      ...run('phone', 30_000, [130]),
+      ...run('laptop', 40_000, [42])
+    ];
+    expect(planPosition(later, { progress: 42 }, 'laptop').offer?.page).toBe(130);
+  });
+
+  it('with several other devices, the most recent final page is offered', () => {
+    const events = [
+      ...run('phone', 0, [100]),
+      ...run('tablet', 5_000, [150]),
+      ...run('laptop', 10_000, [40])
+    ];
+    expect(planPosition(events, { progress: 40 }, 'laptop').offer).toMatchObject({
+      page: 150,
+      device: 'tablet'
+    });
+  });
+
+  it('a restart the stale device never saw wins, and its reading is offered', () => {
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61])
+    ];
+    expect(planPosition(events, { progress: 61 }, 'laptop')).toEqual({
+      reset: { at: 5_000, through: 11_000 },
+      offer: { page: 61, chars: 620, at: 11_000, device: 'laptop', ownDevice: true }
+    });
+  });
+
+  it("the reset carries the missed reading's own stamp even when that reading was answered", () => {
+    // Every device archives the missed pass under this stamp, so two devices
+    // that each re-apply the same restart archive it once between them.
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(20_000, 11_000)
+    ];
+    expect(planPosition(events, { progress: 61 }, 'laptop')).toEqual({
+      reset: { at: 5_000, through: 11_000 }
+    });
+  });
+
+  it('once the reset is applied, only the offer of the missed reading remains (from the restarting device)', () => {
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(12_000, 5_000, 'reset')
+    ];
+    expect(planPosition(events, { progress: 0 }, 'phone')).toEqual({
+      offer: { page: 61, chars: 620, at: 11_000, device: 'laptop', ownDevice: false }
+    });
+  });
+
+  it('reading that started over after the restart is not a missed restart', () => {
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [1, 2, 3])
+    ];
+    expect(planPosition(events, { progress: 3 }, 'laptop')).toEqual({});
+  });
+
+  it('a look-up on another device makes no offer elsewhere', () => {
+    // The laptop looked up p.40 (40, a quick 41, back to 40) between the
+    // phone's reading; the phone read on. Nothing the laptop did is a place
+    // the volume "stopped".
+    const events = [
+      ...run('phone', 0, [58, 59, 60]),
+      ...run('laptop', 10_000, [40, 41, 40]),
+      ...run('phone', 20_000, [61])
+    ];
+    expect(planPosition(events, { progress: 61 }, 'phone')).toEqual({});
+  });
+
+  it('a look-up never makes its device the newest reader', () => {
+    // Without the look-up the phone is newest, and the laptop's final p.20 is offered.
+    const events = [...run('laptop', 0, [19, 20]), ...run('phone', 5000, [58, 59, 60])];
+    const lookup = run('laptop', 3_600_000, [40, 41, 40]); // an hour on: its own visit
+    const before = planPosition(events, { progress: 60 }, 'phone');
+    expect(before.offer).toMatchObject({ page: 20, device: 'laptop' });
+    expect(planPosition([...events, ...lookup], { progress: 60 }, 'phone')).toEqual(before);
+  });
+
+  it('a single device never gets an offer', () => {
+    expect(planPosition(run('phone', 0, [10, 50, 20]), { progress: 20 }, 'phone')).toEqual({});
+  });
+
+  it('legacy (converted) turns never drive offers', () => {
+    const legacy = { ...view('legacy:v', 0, 120), device: 'legacy:v' } as ReadingEvent;
+    expect(
+      planPosition([legacy, ...run('laptop', 10_000, [40])], { progress: 40 }, 'laptop')
+    ).toEqual({});
+  });
+
+  // ---- review fixes ----
+
+  it('a handoff after a restart is not a missed restart (C1)', () => {
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('phone', 6_000, [1, 2, 30]),
+      ...run('laptop', 20_000, [30, 31, 40])
+    ];
+    expect(planPosition(events, { progress: 40 }, 'laptop')).toEqual({});
+  });
+
+  it('converted (legacy) restarts never trigger a reset (C2)', () => {
+    const legacyRestart = {
+      device: 'legacy:v',
+      seq: ++seq,
+      t: 5_000,
+      kind: 'restart',
+      volume: 'v'
+    } as ReadingEvent;
+    const events = [legacyRestart, ...run('laptop', 10_000, [81, 82])];
+    expect(planPosition(events, { progress: 82 }, 'laptop')).toEqual({});
+  });
+
+  it('a forget hides everything recorded before it (I1)', () => {
+    const forget = {
+      device: 'phone',
+      seq: ++seq,
+      t: 8_000,
+      kind: 'forget',
+      volume: 'v',
+      before: 8_000
+    } as ReadingEvent;
+    const events = [...run('phone', 0, [120]), forget, ...run('laptop', 10_000, [3, 4])];
+    expect(planPosition(events, { progress: 4 }, 'laptop')).toEqual({});
+  });
+
+  it('a spread showing the current page is the same position; offers anchor on the first page (I2)', () => {
+    const events = [view('phone', 0, 10, 11), ...run('laptop', 10_000, [10])];
+    expect(planPosition(events, { progress: 10 }, 'laptop')).toEqual({});
+    const stale = [view('phone', 0, 50, 51), ...run('laptop', 10_000, [10])];
+    expect(planPosition(stale, { progress: 10 }, 'laptop').offer?.page).toBe(50);
+  });
+
+  it('after a reset is applied, the reading as it stood then is offered — not every later turn (I2)', () => {
+    const base = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(12_000, 5_000, 'reset')
+    ];
+    expect(planPosition(base, { progress: 0 }, 'laptop')).toEqual({
+      offer: { page: 61, chars: 620, at: 11_000, device: 'laptop', ownDevice: true }
+    });
+    // Answered: nothing more.
+    expect(planPosition([...base, answer(15_000, 11_000)], { progress: 0 }, 'laptop')).toEqual({});
+  });
+
+  it('a stale device that read on after the reset was applied gets the restart again (rule 3)', () => {
+    // The laptop never saw the restart and kept reading; its newer stamp wins
+    // the record back from the reset on every device. The restart wins again,
+    // and the reading as it now stands is offered.
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(12_000, 5_000, 'reset'),
+      ...run('laptop', 13_000, [62, 63])
+    ];
+    const expected = {
+      reset: { at: 5_000, through: 14_000 },
+      offer: { page: 63, chars: 640, at: 14_000, device: 'laptop', ownDevice: true }
+    };
+    expect(planPosition(events, { progress: 63 }, 'laptop')).toEqual(expected);
+    expect(planPosition(events, { progress: 63 }, 'phone')).toEqual({
+      ...expected,
+      offer: { ...expected.offer, ownDevice: false }
+    });
+    // Re-applied (the latest reset answer counts): the offer stands, nothing resets.
+    const reapplied = [...events, answer(16_000, 5_000, 'reset')];
+    expect(planPosition(reapplied, { progress: 0 }, 'laptop')).toEqual({ offer: expected.offer });
+  });
+
+  it('after an applied reset, a jump/stay answer also bounds what counts as reading on', () => {
+    const base = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(12_000, 5_000, 'reset'),
+      ...run('laptop', 13_000, [62]),
+      answer(16_000, 11_000)
+    ];
+    // A view between the reset and the answer is not reading on: it is offered.
+    expect(planPosition(base, { progress: 0 }, 'laptop')).toEqual({
+      offer: { page: 62, chars: 630, at: 13_000, device: 'laptop', ownDevice: true }
+    });
+    // A view after the answer is.
+    const on = [...base, ...run('laptop', 17_000, [64])];
+    expect(planPosition(on, { progress: 64 }, 'laptop')).toMatchObject({
+      reset: { at: 5_000, through: 17_000 },
+      offer: { page: 64, at: 17_000 }
+    });
+  });
+
+  it('after an applied reset, no banner for the page the volume already sits on', () => {
+    // The stale device's record won the merge: it IS at that page.
+    const events = [
+      ...run('phone', 0, [200]),
+      restart('phone', 5_000),
+      ...run('laptop', 10_000, [60, 61]),
+      answer(12_000, 5_000, 'reset')
+    ];
+    expect(planPosition(events, { progress: 61 }, 'laptop')).toEqual({});
+  });
+
+  it('a restart after the newest view sets the floor: older reading is not offered back (I4)', () => {
+    const events = [
+      ...run('phone', 0, [50]),
+      ...run('laptop', 10_000, [20]),
+      restart('laptop', 20_000)
+    ];
+    expect(planPosition(events, { progress: 0 }, 'laptop')).toEqual({});
+  });
+
+  it('equal timestamps resolve by seq, deterministically', () => {
+    const a = view('phone', 1000, 120);
+    const b = view('laptop', 1000, 40);
+    const p1 = planPosition([a, b], { progress: 40 }, 'laptop');
+    const p2 = planPosition([b, a], { progress: 40 }, 'laptop');
+    expect(p1).toEqual(p2);
+  });
+});
+
+const dv = (id: string, label: string, extra: Partial<DeviceView> = {}): DeviceView => ({
+  id,
+  label,
+  generated: label,
+  named: false,
+  class: 'phone',
+  detectedClass: 'phone',
+  isThisDevice: false,
+  canonical: id,
+  mergedFrom: [],
+  firstSeen: '2026-03-01T00:00:00.000Z',
+  ...extra
+});
+const viewsOf = (...views: DeviceView[]) => new Map(views.map((v) => [v.id, v]));
+
+describe('offerDeviceName', () => {
+  it('names the device by its label, chosen or generated', () => {
+    expect(
+      offerDeviceName(
+        { device: 'p', ownDevice: false },
+        viewsOf(dv('p', 'Pixel 8', { named: true }))
+      )
+    ).toBe('Pixel 8');
+    expect(
+      offerDeviceName(
+        { device: 'p', ownDevice: false },
+        viewsOf(dv('p', 'Phone · Android · Chrome'))
+      )
+    ).toBe('Phone · Android · Chrome');
+  });
+
+  it('names a merged device as the group it was merged into', () => {
+    const views = viewsOf(
+      dv('old', 'Phone · Android · Chrome', { canonical: 'new' }),
+      dv('new', 'Pixel 8', { named: true, mergedFrom: ['old'] })
+    );
+    expect(offerDeviceName({ device: 'old', ownDevice: false }, views)).toBe('Pixel 8');
+  });
+
+  it('names the device itself when it was merged into this one', () => {
+    const views = viewsOf(
+      dv('tab', 'Tablet · Android · Chrome', {
+        class: 'tablet',
+        detectedClass: 'tablet',
+        canonical: 'me'
+      }),
+      dv('me', 'Laptop', { named: true, isThisDevice: true, mergedFrom: ['tab'] })
+    );
+    expect(offerDeviceName({ device: 'tab', ownDevice: false }, views)).toBe(
+      'Tablet · Android · Chrome'
+    );
+  });
+
+  it('falls back to the device itself when its merge target is not listed', () => {
+    const views = viewsOf(dv('old', 'Phone · Android · Chrome', { canonical: 'gone' }));
+    expect(offerDeviceName({ device: 'old', ownDevice: false }, views)).toBe(
+      'Phone · Android · Chrome'
+    );
+  });
+
+  it('names nothing for this device, an unlisted id, or an unnamed unknown device', () => {
+    expect(
+      offerDeviceName(
+        { device: 'me', ownDevice: true },
+        viewsOf(dv('me', 'Laptop', { named: true, isThisDevice: true }))
+      )
+    ).toBeNull();
+    expect(offerDeviceName({ device: 'nobody', ownDevice: false }, viewsOf())).toBeNull();
+    expect(
+      offerDeviceName(
+        { device: 'old', ownDevice: false },
+        viewsOf(
+          dv('old', 'Unknown device (since Mar 2026)', {
+            class: 'unknown',
+            detectedClass: 'unknown'
+          })
+        )
+      )
+    ).toBeNull();
+  });
+
+  it('names an unknown device once the user named it or set its class', () => {
+    expect(
+      offerDeviceName(
+        { device: 'old', ownDevice: false },
+        viewsOf(
+          dv('old', 'Old tablet', { named: true, class: 'unknown', detectedClass: 'unknown' })
+        )
+      )
+    ).toBe('Old tablet');
+    expect(
+      offerDeviceName(
+        { device: 'old', ownDevice: false },
+        viewsOf(dv('old', 'Tablet', { class: 'tablet', detectedClass: 'unknown' }))
+      )
+    ).toBe('Tablet');
+  });
+});

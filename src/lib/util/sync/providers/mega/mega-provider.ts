@@ -13,6 +13,7 @@ import { megaCache } from './mega-cache';
 import { cacheManager } from '../../cache-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
+import { isHistoryFileName, isHistoryFilePath } from '$lib/reading-history/paths';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import {
   isMfaRequiredError,
@@ -1030,8 +1031,9 @@ export class MegaProvider implements SyncProvider {
         const isCbz = isCbzFile(name);
         const isSidecar = isSidecarFile(name);
         const isJson = isRootConfigFile(name);
+        const isHistory = isHistoryFileName(name);
 
-        if (!isCbz && !isSidecar && !isJson) continue;
+        if (!isCbz && !isSidecar && !isJson && !isHistory) continue;
 
         // Deleted (still in storage.files) or in the Rubbish Bin — including a
         // whole mokuro-reader folder moved there, which the walk below would
@@ -1070,6 +1072,9 @@ export class MegaProvider implements SyncProvider {
             pathParts.push(name);
             path = pathParts.join('/');
           }
+          // A history name only counts at history/<device>/<file>: a stray
+          // `device.json` in a series folder is not ours.
+          if (isHistory && !isCbz && !isSidecar && !isHistoryFilePath(path)) continue;
 
           // Get file metadata
           const fileId = (file as any).nodeId || (file as any).id || '';
@@ -1913,9 +1918,11 @@ export class MegaProvider implements SyncProvider {
         await stateSynced;
       },
 
-      deleteFolder: async (folderId): Promise<void> => {
+      deleteFolder: async (folderId): Promise<boolean> => {
         const folder = this.findNodeById(folderId);
-        if (!folder) return;
+        // Already gone from this tree (another device removed it): nothing
+        // left to count as this run's removal.
+        if (!folder) return false;
         // The deduplicator judged it empty from THIS tree, which lags other
         // devices' uploads and packets still in flight — and a MEGA folder
         // delete is recursive. Delete only what the server says is empty;
@@ -1923,11 +1930,12 @@ export class MegaProvider implements SyncProvider {
         const remaining = await this.serverFolderContentCount(folderId);
         if (remaining > 0) {
           // Still not empty after a reload and a second merge (another
-          // device keeps writing there): stop this run rather than reload
-          // the whole tree on each of the deduplicator's passes.
+          // device keeps writing there): give this group up for the run
+          // rather than reload the whole tree on each of the deduplicator's
+          // passes.
           if (keptOnce.has(folderId)) {
             throw new Error(
-              `MEGA dedup: duplicate folder ${folderId} still holds ${remaining} node(s) after a reload; stopping`
+              `MEGA dedup: duplicate folder ${folderId} still holds ${remaining} node(s) after a reload; giving up on it this run`
             );
           }
           keptOnce.add(folderId);
@@ -1935,7 +1943,7 @@ export class MegaProvider implements SyncProvider {
             `[MEGA] duplicate folder ${folderId} kept: server still reports ${remaining} node(s)`
           );
           await this.refreshTree();
-          return;
+          return false;
         }
         const stateSynced = this.waitForNodeEvent(folder, 'delete');
         await new Promise<void>((resolve, reject) => {
@@ -1947,6 +1955,7 @@ export class MegaProvider implements SyncProvider {
         // No manual storage.files eviction: the sc packet unlinks it, which
         // is all isLiveNode needs.
         await stateSynced;
+        return true;
       },
 
       trashFile: async (fileId): Promise<void> => {

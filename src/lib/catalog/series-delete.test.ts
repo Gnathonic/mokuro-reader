@@ -10,6 +10,7 @@ const {
   deleteSeriesFolder,
   fetchAllCloudVolumes,
   getCloudVolumesBySeries,
+  resolveCloudFolderTitle,
   providerStatus
 } = vi.hoisted(() => ({
   promptConfirmation: vi.fn(),
@@ -17,10 +18,11 @@ const {
   removeVolumeFiles: vi.fn(async () => {}),
   deleteVolumeCompletely: vi.fn(async () => {}),
   deleteVolumeStats: vi.fn(),
-  existsInCloud: vi.fn(() => false),
+  existsInCloud: vi.fn((_series: string, _title: string) => false),
   deleteSeriesFolder: vi.fn(async () => ({ succeeded: 2, failed: 0 })),
   fetchAllCloudVolumes: vi.fn(async () => {}),
-  getCloudVolumesBySeries: vi.fn(() => [] as unknown[]),
+  getCloudVolumesBySeries: vi.fn((_series: string) => [] as unknown[]),
+  resolveCloudFolderTitle: vi.fn((series: string) => series),
   providerStatus: {
     value: {
       hasAnyAuthenticated: false,
@@ -40,6 +42,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     deleteSeriesFolder,
     fetchAllCloudVolumes,
     getCloudVolumesBySeries,
+    resolveCloudFolderTitle,
     getActiveProvider: () => ({ name: 'Drive' })
   }
 }));
@@ -54,7 +57,8 @@ vi.mock('$lib/util/sync/provider-manager', () => ({
   }
 }));
 
-import { promptSeriesRemoval } from './series-delete';
+import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from './series-delete';
+import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { VolumeMetadata } from '$lib/types';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
@@ -83,6 +87,7 @@ describe('promptSeriesRemoval', () => {
     vi.clearAllMocks();
     existsInCloud.mockReturnValue(false);
     getCloudVolumesBySeries.mockReturnValue([]);
+    resolveCloudFolderTitle.mockImplementation((series: string) => series);
     providerStatus.value = {
       hasAnyAuthenticated: false,
       currentProviderType: null,
@@ -179,6 +184,87 @@ describe('promptSeriesRemoval', () => {
     expect(showSnackbar).toHaveBeenCalledWith('Deleted 2 volume(s) from Drive');
   });
 
+  /**
+   * The manager's folded resolution over `listing`, as `resolveCloudFolderTitle` /
+   * `existsInCloud` answer it: the exact folder, else the one folding onto the title
+   * (`normalizeVolumeTitleKey`, which also folds unicode form).
+   */
+  function foldedListing(listing: { path: string }[]) {
+    getCloudVolumesBySeries.mockImplementation((series: string) =>
+      listing.filter((file) => file.path.startsWith(`${series}/`))
+    );
+    resolveCloudFolderTitle.mockImplementation((series: string) =>
+      listing.some((file) => file.path.startsWith(`${series}/`))
+        ? series
+        : (listing
+            .map((file) => file.path.split('/')[0])
+            .find(
+              (folder) => normalizeVolumeTitleKey(folder) === normalizeVolumeTitleKey(series)
+            ) ?? series)
+    );
+    existsInCloud.mockImplementation((series: string, title: string) =>
+      getCloudVolumesBySeries(resolveCloudFolderTitle(series)).some((file) =>
+        (file as { path: string }).path.endsWith(`/${title}.cbz`)
+      )
+    );
+    providerStatus.value = {
+      hasAnyAuthenticated: true,
+      currentProviderType: 'google-drive',
+      providers: {}
+    };
+  }
+
+  it('deletes a folder the cloud spells differently — the one the dialog offered', async () => {
+    // A server that merged `one piece/` into `One Piece/`, before this device
+    // adopted the spelling (or plain storage, which never adopts). The dialog's
+    // "backed up?" check and the delete path must resolve the folder the same
+    // way: offering the box and then answering "No volumes found" is a lie.
+    foldedListing([{ path: 'One Piece/Vol 1.cbz' }]);
+
+    await promptSeriesRemoval([volume({ series_title: 'one piece' })]);
+    expect(promptConfirmation.mock.calls[0][4]).toMatchObject({ label: 'Also delete from Drive?' });
+    await confirm(false, true);
+
+    expect(showSnackbar).not.toHaveBeenCalledWith('No volumes found in Drive');
+    expect(deleteSeriesFolder).toHaveBeenCalledWith('one piece');
+    expect(showSnackbar).toHaveBeenCalledWith('Deleted 2 volume(s) from Drive');
+  });
+
+  it('never offers or deletes a folder the catalog keeps as another series (unicode form)', async () => {
+    // `Café` composed and `Café` decomposed fold alike (`normalizeVolumeTitleKey`),
+    // so the lookups resolve one onto the other's folder — but the catalog groups
+    // them apart (`normalizeSeriesKey` does not normalize form): two series, and
+    // the decomposed one's backup is not this one's to delete.
+    const nfc = 'Caf\u00e9';
+    const nfd = 'Cafe\u0301';
+    foldedListing([{ path: `${nfd}/Vol 1.cbz` }]);
+
+    await promptSeriesRemoval([volume({ series_title: nfc })]);
+    expect(promptConfirmation.mock.calls[0][4]).toBeUndefined();
+
+    await deleteSeriesFromCloudByTitle(nfc, [volume({ series_title: nfc })]);
+    expect(showSnackbar).toHaveBeenCalledWith('No volumes found in Drive');
+    expect(deleteSeriesFolder).not.toHaveBeenCalled();
+  });
+
+  it('does not delete a case-variant folder that lists none of the series’ own volumes', async () => {
+    // Same catalog series by key, but nothing of ours is in there: the folder is
+    // not corroborated as this series' backup, so the menu item answers as the
+    // exact gate did.
+    foldedListing([{ path: 'One Piece/Vol 2.cbz' }]);
+
+    await deleteSeriesFromCloudByTitle('one piece', [volume({ series_title: 'one piece' })]);
+    expect(showSnackbar).toHaveBeenCalledWith('No volumes found in Drive');
+    expect(deleteSeriesFolder).not.toHaveBeenCalled();
+  });
+
+  it('deletes an exact folder whatever it lists, as it always did', async () => {
+    foldedListing([{ path: 'One Piece/Vol 2.cbz' }]);
+
+    await deleteSeriesFromCloudByTitle('One Piece', [volume()]);
+    expect(deleteSeriesFolder).toHaveBeenCalledWith('One Piece');
+  });
+
   it('leaves the cloud alone when the box is not ticked', async () => {
     existsInCloud.mockReturnValue(true);
     providerStatus.value = {
@@ -224,6 +310,7 @@ describe('promptSeriesRemoval never stacks two dialogs', () => {
     vi.clearAllMocks();
     existsInCloud.mockReturnValue(false);
     getCloudVolumesBySeries.mockReturnValue([]);
+    resolveCloudFolderTitle.mockImplementation((series: string) => series);
     providerStatus.value = {
       hasAnyAuthenticated: false,
       currentProviderType: null,
