@@ -16,8 +16,8 @@
  * volume editor is kept.
  *
  * `forgotAt` is the horizon of a "forget this volume's stats" that a later
- * read on the same volume replaced: turns up to it never come back from a
- * stale copy.
+ * read on the same volume replaced: turns and archived passes up to it never
+ * come back from a stale copy.
  */
 
 type Turn = number[];
@@ -35,20 +35,19 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
   const horizon = laterStamp(winner.forgotAt, loser.forgotAt);
   const winnerTurns = afterHorizon(winner.recentPageTurns ?? [], horizon);
   const loserTurns = afterHorizon(loser.recentPageTurns ?? [], horizon);
-  if (
-    !horizon &&
-    winnerTurns.length === 0 &&
-    loserTurns.length === 0 &&
-    !unionArchivedReads(winner.archivedReads, loser.archivedReads)
-  ) {
+  // Restarts are user actions that must survive whichever copy wins: a pass
+  // archived on the older copy (another device restarted the series) is kept
+  // — unless a forget since hid it, on either side.
+  const winnerReads = readsAfterHorizon(winner.archivedReads, horizon);
+  const archived =
+    unionArchivedReads(winnerReads, readsAfterHorizon(loser.archivedReads, horizon)) ??
+    (winnerReads !== winner.archivedReads ? winnerReads : undefined);
+  if (!horizon && winnerTurns.length === 0 && loserTurns.length === 0 && !archived) {
     return winner;
   }
 
   const record: T = { ...winner, recentPageTurns: unionTurns(winnerTurns, loserTurns) };
   if (horizon) record.forgotAt = horizon;
-  // Restarts are user actions that must survive whichever copy wins: a pass
-  // archived on the older copy (another device restarted the series) is kept.
-  const archived = unionArchivedReads(winner.archivedReads, loser.archivedReads);
   if (archived) record.archivedReads = archived as T['archivedReads'];
 
   const winnerKeys = new Set(winnerTurns.map(turnKey));
@@ -69,10 +68,12 @@ export function mergeLiveVolumeRecords<T extends VolumeRecordLike>(winner: T, lo
 export function applyForgetHorizon<T extends VolumeRecordLike>(record: T, forgotAt: string): T {
   const horizon = laterStamp(record.forgotAt, forgotAt);
   if (!horizon) return record;
+  const archived = readsAfterHorizon(record.archivedReads, horizon);
   return {
     ...record,
     forgotAt: horizon,
-    recentPageTurns: afterHorizon(record.recentPageTurns ?? [], horizon)
+    recentPageTurns: afterHorizon(record.recentPageTurns ?? [], horizon),
+    ...(archived ? { archivedReads: archived } : {})
   };
 }
 
@@ -80,6 +81,17 @@ function afterHorizon(turns: Turn[], horizon: string | undefined): Turn[] {
   if (!horizon) return turns;
   const cutoff = Date.parse(horizon);
   return turns.filter((turn) => turn[0] > cutoff);
+}
+
+/** The same array when nothing is hidden (so callers can tell). */
+function readsAfterHorizon<R extends { at: number }>(
+  reads: R[] | undefined,
+  horizon: string | undefined
+): R[] | undefined {
+  if (!reads || !horizon) return reads;
+  const cutoff = Date.parse(horizon);
+  const kept = reads.filter((read) => read.at > cutoff);
+  return kept.length === reads.length ? reads : kept;
 }
 
 function laterStamp(a: string | undefined, b: string | undefined): string | undefined {

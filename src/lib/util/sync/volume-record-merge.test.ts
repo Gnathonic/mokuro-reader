@@ -147,6 +147,42 @@ describe('mergeLiveVolumeRecords', () => {
     expect(record.timeReadInMinutes).toBeUndefined();
   });
 
+  it('archived passes from before a forget never come back from a stale copy', () => {
+    const fresh = {
+      progress: 2,
+      forgotAt: new Date(5000).toISOString(),
+      recentPageTurns: [[6000, 2, 20]]
+    };
+    const stale = {
+      progress: 40,
+      archivedReads: [
+        { at: 100, pages: 10, chars: 1, completed: true },
+        { at: 5000, pages: 20, chars: 2, completed: true },
+        { at: 7000, pages: 30, chars: 3, completed: true }
+      ],
+      recentPageTurns: [...synced]
+    } as Rec;
+
+    const record = mergeLiveVolumeRecords(fresh, stale);
+
+    // Only the pass archived after the forget survives.
+    expect(record.archivedReads).toEqual([{ at: 7000, pages: 30, chars: 3, completed: true }]);
+  });
+
+  it("the winner's own archived passes up to the loser's horizon go too", () => {
+    const stale = {
+      progress: 41,
+      archivedReads: [{ at: 100, pages: 10, chars: 1, completed: true }],
+      recentPageTurns: [...synced, [9000, 41, 1]]
+    } as Rec;
+    const fresh = { progress: 2, forgotAt: new Date(2500).toISOString(), recentPageTurns: [] };
+
+    const record = mergeLiveVolumeRecords(stale, fresh);
+
+    expect(record.archivedReads).toEqual([]);
+    expect(record.forgotAt).toBe(new Date(2500).toISOString());
+  });
+
   it('keeps the later horizon when the stale copy is the winner', () => {
     const fresh = { progress: 2, forgotAt: new Date(2500).toISOString(), recentPageTurns: [] };
     const stale = { progress: 41, recentPageTurns: [...synced, [9000, 41, 1]] };
@@ -173,6 +209,23 @@ describe('applyForgetHorizon', () => {
       [9000, 41, 1]
     ]);
     expect(record.forgotAt).toBe(new Date(2000).toISOString());
+  });
+
+  it('drops archived passes up to the horizon', () => {
+    const record = applyForgetHorizon(
+      {
+        progress: 41,
+        recentPageTurns: [],
+        archivedReads: [
+          { at: 1000, pages: 10, chars: 1, completed: true },
+          { at: 2000, pages: 20, chars: 2, completed: true },
+          { at: 3000, pages: 30, chars: 3, completed: true }
+        ]
+      } as Rec,
+      new Date(2000).toISOString()
+    );
+
+    expect(record.archivedReads).toEqual([{ at: 3000, pages: 30, chars: 3, completed: true }]);
   });
 
   it('never moves an existing later horizon back', () => {
