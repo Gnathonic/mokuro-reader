@@ -19,7 +19,6 @@
 - A record's turns are stripped only after their events are durably in `mokuro_history`. If IndexedDB is unavailable, turns stay in the file as before.
 - Old app versions are not a concern, but whatever turns they still write are converted by the next new device (the merge unions them in; conversion strips them).
 - `forget` (`before`) hides that volume's events with `t < before`; `restart` changes nothing in the projection (turns never reset on restart).
-- Never mention the third-party public deployment domain.
 
 ## Review Focus
 
