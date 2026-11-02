@@ -375,36 +375,72 @@ function reannounce(): void {
   }
 }
 
+type ParsedMarkerNode = { id: string; etag: string; marker: BunkoMarker };
+
+/** One read's nodes: those that parse, and the ids of those that do not. */
+interface MarkerNodesRead {
+  parsed: ParsedMarkerNode[];
+  /** Node ids present in the read whose body is not a marker (a half-written upload). */
+  unreadable: string[];
+}
+
 async function readNodes(
   result: Exclude<ControlFileResult, 'not-modified' | null>
-): Promise<Array<{ id: string; etag: string; marker: BunkoMarker }>> {
-  const out: Array<{ id: string; etag: string; marker: BunkoMarker }> = [];
+): Promise<MarkerNodesRead> {
+  const parsed: ParsedMarkerNode[] = [];
+  const unreadable: string[] = [];
   for (const node of result.nodes) {
+    let marker: BunkoMarker | null = null;
     try {
-      const marker = parseBunkoMarker(JSON.parse(await node.blob.text()));
-      if (marker) out.push({ id: node.id, etag: node.etag, marker });
+      marker = parseBunkoMarker(JSON.parse(await node.blob.text()));
     } catch {
       // Not JSON (a half-written upload): this node says nothing.
     }
+    if (marker) parsed.push({ id: node.id, etag: node.etag, marker });
+    else unreadable.push(node.id);
   }
-  return out;
+  return { parsed, unreadable };
 }
 
-type DecodedMarkerRead = 'not-modified' | Array<{ id: string; etag: string; marker: BunkoMarker }>;
+/**
+ * - `'not-modified'`: nothing to record (the provider said so, or every node
+ *   it listed was unreadable — a half-written rewrite is no news either way);
+ * - `'absent'`: the read found no marker node at all;
+ * - else the nodes to fold in.
+ */
+type DecodedMarkerRead = 'not-modified' | 'absent' | MarkerNodesRead;
 
 async function decodeMarkerRead(result: ControlFileResult): Promise<DecodedMarkerRead> {
   if (result === 'not-modified') return result;
-  if (result === null || result.nodes.length === 0) return [];
-  return readNodes(result);
+  if (result === null || result.nodes.length === 0) return 'absent';
+  const read = await readNodes(result);
+  return read.parsed.length === 0 ? 'not-modified' : read;
 }
 
 function commitMarkerRead(scope: string, decoded: DecodedMarkerRead): void {
   if (decoded !== 'not-modified') {
     const map = load();
-    if (decoded.length === 0) {
-      if (map.delete(scope)) save();
+    const previous = map.get(scope) ?? [];
+    const now = clock();
+    if (decoded === 'absent') {
+      // One read without the node is no proof Bunko stopped: a listing can
+      // miss a node mid-rewrite, or lag behind it. Keep what is still fresh,
+      // UNSTAMPED, so it ages out at 2 × ttl like any unchanged marker; a
+      // released or stale record has nothing left to say.
+      const kept = previous.filter((r) => isMarkerFresh(r, now));
+      if (kept.length === 0) {
+        if (map.delete(scope)) save();
+      } else if (kept.length !== previous.length) {
+        map.set(scope, kept);
+        save();
+      }
     } else {
-      map.set(scope, foldMarkerNodes(map.get(scope) ?? [], decoded, clock()));
+      const folded = foldMarkerNodes(previous, decoded.parsed, now);
+      // An unreadable node keeps its last record as it was (it ages as usual).
+      const foldedIds = new Set(folded.map((r) => r.id));
+      const unreadable = new Set(decoded.unreadable);
+      const carried = previous.filter((r) => unreadable.has(r.id) && !foldedIds.has(r.id));
+      map.set(scope, [...folded, ...carried]);
       save();
     }
   }
@@ -413,8 +449,10 @@ function commitMarkerRead(scope: string, decoded: DecodedMarkerRead): void {
 
 /**
  * Record a read of the marker for `scope` (the provider type). `'not-modified'`
- * changes nothing — an unchanged marker ages towards stale — and null (no
- * marker node at all) forgets the scope.
+ * — and a read whose every node is unreadable — changes nothing: an unchanged
+ * marker ages towards stale. A read with no marker node keeps the records that
+ * are still fresh without re-stamping them (so they go stale at 2 × ttl) and
+ * forgets the scope once none is.
  */
 export async function ingestMarkerRead(scope: string, result: ControlFileResult): Promise<void> {
   commitMarkerRead(scope, await decodeMarkerRead(result));

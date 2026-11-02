@@ -23,6 +23,15 @@ function encodePath(path: string): string {
 }
 
 const MAX_CHUNK_ATTEMPTS = MAX_RETRY_ATTEMPTS;
+
+/** A refusal's body as text ('' when unreadable), which also drains it. */
+async function readBody(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch {
+    return '';
+  }
+}
 const CHUNK_TIMEOUT_MS = 5 * 60 * 1000;
 const SESSION_TIMEOUT_MS = 30 * 1000;
 
@@ -163,11 +172,12 @@ export const onedriveCore: CloudProviderCore = {
           break;
         }
         sessionError = `${sessionResponse.status} ${sessionResponse.statusText}`;
+        // Every refusal's body is read (and so drained): a full drive (507, or
+        // ANY status naming a quota code — a 429/503 can too) stays full, so it
+        // fails now with the storage-full error, before the retryable check.
+        const code = graphErrorCode(await readBody(sessionResponse));
+        if (isGraphQuotaFailure(sessionResponse.status, code)) throw oneDriveStorageFullError();
         if (!isGraphRetryableStatus(sessionResponse.status)) {
-          // A full drive (507, or a refusal naming a quota code) stays full:
-          // fail now with the storage-full error, never retried.
-          const code = graphErrorCode(await sessionResponse.text().catch(() => ''));
-          if (isGraphQuotaFailure(sessionResponse.status, code)) throw oneDriveStorageFullError();
           throw new Error(`Failed to create OneDrive upload session: ${sessionError}`);
         }
         if (sessionAttempt >= MAX_CHUNK_ATTEMPTS) {
@@ -258,11 +268,13 @@ export const onedriveCore: CloudProviderCore = {
       }
 
       const waitMs = retryAfterMs(chunkResponse);
-      const body = await chunkResponse.text().catch(() => '');
+      // A quota code fails at once whatever status carries it (see above).
+      if (
+        isGraphQuotaFailure(chunkResponse.status, graphErrorCode(await readBody(chunkResponse)))
+      ) {
+        throw oneDriveStorageFullError();
+      }
       if (!isGraphRetryableStatus(chunkResponse.status)) {
-        if (isGraphQuotaFailure(chunkResponse.status, graphErrorCode(body))) {
-          throw oneDriveStorageFullError();
-        }
         // A definitive 4xx (other than 408/429) means Graph rejected the
         // request outright — no ambiguity to resolve, unlike a dropped
         // connection or exhausted retries against a transient status.

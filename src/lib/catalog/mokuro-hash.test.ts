@@ -6,6 +6,7 @@ import {
   layerStaysLocal,
   personalLayerAccount,
   sha256Hex,
+  syncedForOtherAccount,
   type LayerTarget
 } from './mokuro-hash';
 
@@ -182,5 +183,29 @@ describe('personalLayerAccount', () => {
     expect(
       personalLayerAccount({ accountScope: 'google-drive:folder', serverCompilesMetadata: true })
     ).toBeUndefined();
+  });
+});
+
+describe('syncedForOtherAccount', () => {
+  const cloud = (account?: string) => ({
+    provider: 'webdav',
+    synced_at: 't',
+    ...(account ? { account } : {})
+  });
+
+  it('is a personal layer stamped under another account than the active one', () => {
+    expect(syncedForOtherAccount({ layer_id: 'edit', cloud: cloud('bob') }, 'alice')).toBe(true);
+    expect(syncedForOtherAccount({ layer_id: 'edit-2', cloud: cloud('bob') }, 'alice')).toBe(true);
+  });
+
+  it('never a shared layer, a row of this account, an unstamped row, or with no account', () => {
+    expect(syncedForOtherAccount({ layer_id: 'curated', cloud: cloud('bob') }, 'alice')).toBe(
+      false
+    );
+    expect(syncedForOtherAccount({ layer_id: 'edit', cloud: cloud('alice') }, 'alice')).toBe(false);
+    // Stamped before accounts were recorded: counts as this account's.
+    expect(syncedForOtherAccount({ layer_id: 'edit', cloud: cloud() }, 'alice')).toBe(false);
+    expect(syncedForOtherAccount({ layer_id: 'edit' }, 'alice')).toBe(false);
+    expect(syncedForOtherAccount({ layer_id: 'edit', cloud: cloud('bob') }, undefined)).toBe(false);
   });
 });

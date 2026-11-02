@@ -22,6 +22,7 @@ vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
 vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
   driveFilesCache: {
     getReaderFolderId: vi.fn(async () => null),
+    getListedReaderFolderIds: vi.fn((): string[] | null => null),
     setReaderFolderId: vi.fn(),
     clear: vi.fn(),
     fetch: vi.fn(async () => {})
@@ -44,6 +45,7 @@ vi.mock('../../core/cloud-provider-core-registry', () => ({
 
 import { googleDriveProvider } from './google-drive-provider';
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
+import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { ProviderError } from '../../provider-interface';
 import type { ControlFileRead } from '../../provider-interface';
@@ -69,10 +71,22 @@ function markerBody(instanceId: string, heartbeatAt = new Date().toISOString()):
   });
 }
 
-/** Route the two queries readControlFile makes: the root folders and the control-file nodes. */
-function mockDrive(opts: { roots: string[]; files: (query: string) => Listed }) {
+const FOLDER_QUERY = "mimeType='application/vnd.google-apps.folder'";
+const isFolderQuery = (query: string) => query.includes(FOLDER_QUERY);
+
+/**
+ * Route the two queries readControlFile makes: the root folders and the
+ * control-file nodes. `roots` are top-level `mokuro-reader` folders, `nested`
+ * live deeper (`Backup/mokuro-reader`): a `'root' in parents` query sees only
+ * the former, as Drive does.
+ */
+function mockDrive(opts: { roots: string[]; nested?: string[]; files: (query: string) => Listed }) {
   vi.mocked(driveApiClient.listFiles).mockImplementation((async (query: string) => {
-    if (query.includes("'root' in parents")) return opts.roots.map((id) => ({ id }));
+    if (isFolderQuery(query)) {
+      const top = opts.roots.map((id) => ({ id, parents: ['my-drive'] }));
+      if (query.includes("'root' in parents")) return top;
+      return [...top, ...(opts.nested ?? []).map((id) => ({ id, parents: ['backup'] }))];
+    }
     return opts.files(query);
   }) as never);
 }
@@ -98,12 +112,13 @@ const bodies: Record<string, string> = {
 };
 
 function folderQueries() {
-  return vi.mocked(driveApiClient.listFiles).mock.calls.filter(([q]) => q.includes("'root' in"));
+  return vi.mocked(driveApiClient.listFiles).mock.calls.filter(([q]) => isFolderQuery(q));
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(tokenManager.isAuthenticated).mockReturnValue(true);
+  vi.mocked(driveFilesCache.getListedReaderFolderIds).mockReturnValue(null);
   vi.mocked(driveApiClient.downloadFile).mockImplementation(
     async (id: string) => new Blob([bodies[id] ?? ''])
   );
@@ -134,7 +149,7 @@ describe('GoogleDriveProvider.readControlFile()', () => {
     const queries = vi.mocked(driveApiClient.listFiles).mock.calls.map(([q]) => q);
     expect(queries).toHaveLength(2); // root folders + ONE control-file query
     expect(queries[0]).toBe(
-      "name='mokuro-reader' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false"
+      "name='mokuro-reader' and mimeType='application/vnd.google-apps.folder' and 'me' in owners and trashed=false"
     );
     expect(queries[1]).toBe(
       `name='${BUNKO_MARKER_NAME}' and trashed=false and ('root-1' in parents or 'root-2' in parents)`
@@ -198,7 +213,7 @@ describe('GoogleDriveProvider.readControlFile()', () => {
     vi.setSystemTime(new Date('2026-10-12T10:00:00Z'));
     let roots = ['root-1'];
     vi.mocked(driveApiClient.listFiles).mockImplementation((async (query: string) => {
-      if (query.includes("'root' in parents")) return roots.map((id) => ({ id }));
+      if (isFolderQuery(query)) return roots.map((id) => ({ id }));
       // The file only lives in root-2: found only when the query names it.
       return query.includes("'root-2' in parents") ? [fileB()] : [];
     }) as never);
@@ -214,6 +229,90 @@ describe('GoogleDriveProvider.readControlFile()', () => {
       BUNKO_MARKER_NAME
     )) as ControlFileRead;
     expect(result.nodes.map((n) => n.id)).toEqual(['file-b']);
+  });
+
+  it('reads a NESTED library root (Backup/mokuro-reader) when it is the only one', async () => {
+    // pickReaderFolder makes a nested root the write root when no top-level
+    // one exists, so Bunko's marker lives there.
+    const nested = { ...fileA(), parents: ['nested-1'] };
+    mockDrive({
+      roots: [],
+      nested: ['nested-1'],
+      files: (q) => (q.includes("'nested-1' in parents") ? [nested] : [])
+    });
+
+    const result = (await googleDriveProvider.readControlFile(
+      BUNKO_MARKER_NAME
+    )) as ControlFileRead | null;
+
+    expect(result?.nodes.map((n) => n.id)).toEqual(['file-a']);
+  });
+
+  it('reads top-level and nested roots together, in ONE file query', async () => {
+    mockDrive({ roots: ['root-1'], nested: ['nested-1'], files: () => [fileA()] });
+
+    await googleDriveProvider.readControlFile(BUNKO_MARKER_NAME);
+
+    const queries = vi.mocked(driveApiClient.listFiles).mock.calls.map(([q]) => q);
+    expect(queries).toHaveLength(2);
+    expect(queries[1]).toBe(
+      `name='${BUNKO_MARKER_NAME}' and trashed=false and ('nested-1' in parents or 'root-1' in parents)`
+    );
+  });
+
+  it("takes the files cache's listed reader folders without a folder query", async () => {
+    vi.mocked(driveFilesCache.getListedReaderFolderIds).mockReturnValue(['root-1', 'nested-1']);
+    mockDrive({ roots: [], files: () => [fileA()] });
+
+    const result = (await googleDriveProvider.readControlFile(
+      BUNKO_MARKER_NAME
+    )) as ControlFileRead;
+
+    expect(result.nodes.map((n) => n.id)).toEqual(['file-a']);
+    expect(folderQueries()).toHaveLength(0);
+    expect(vi.mocked(driveApiClient.listFiles).mock.calls[0][0]).toContain(
+      "('nested-1' in parents or 'root-1' in parents)"
+    );
+  });
+
+  it('a stale cached set that yields no file is re-resolved from Drive, not the cache', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-12T10:00:00Z'));
+    // The cache's listing predates the nested root Bunko writes to.
+    vi.mocked(driveFilesCache.getListedReaderFolderIds).mockReturnValue(['root-1']);
+    mockDrive({
+      roots: ['root-1'],
+      nested: ['nested-1'],
+      files: (q) =>
+        q.includes("'nested-1' in parents") ? [{ ...fileA(), parents: ['nested-1'] }] : []
+    });
+    await expect(googleDriveProvider.readControlFile(BUNKO_MARKER_NAME)).resolves.toBeNull();
+    vi.setSystemTime(new Date('2026-10-12T10:01:30Z'));
+    const result = (await googleDriveProvider.readControlFile(
+      BUNKO_MARKER_NAME
+    )) as ControlFileRead;
+    expect(result.nodes.map((n) => n.id)).toEqual(['file-a']);
+    expect(folderQueries()).toHaveLength(1);
+  });
+
+  it('bounds the file query: many roots are asked in a few chunked queries', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => `root-${String(i).padStart(2, '0')}`);
+    vi.mocked(driveFilesCache.getListedReaderFolderIds).mockReturnValue(many);
+    mockDrive({
+      roots: [],
+      files: (q) =>
+        q.includes("'root-59' in parents") ? [{ ...fileB(), parents: ['root-59'] }] : []
+    });
+
+    const result = (await googleDriveProvider.readControlFile(
+      BUNKO_MARKER_NAME
+    )) as ControlFileRead;
+
+    expect(result.nodes.map((n) => n.id)).toEqual(['file-b']);
+    const fileQueries = vi.mocked(driveApiClient.listFiles).mock.calls;
+    expect(fileQueries).toHaveLength(3);
+    for (const [q] of fileQueries)
+      expect(q.split(' in parents').length - 1).toBeLessThanOrEqual(25);
   });
 
   it('rejects with an auth ProviderError when not authenticated', async () => {
@@ -267,6 +366,36 @@ describe('GoogleDriveProvider.readControlFile()', () => {
     expect(error).toBeInstanceOf(ProviderError);
     expect(error.isAuthError).toBe(false);
     expect(error.code).toBe('CONTROL_READ_FAILED');
+  });
+
+  it.each([
+    ['quota', 403],
+    ['rate-limit', 403],
+    ['other', 401]
+  ])(
+    'trusts the classified kind over the status: a %s failure (%i) is not an auth error',
+    async (kind, status) => {
+      vi.mocked(driveApiClient.listFiles).mockRejectedValue(
+        Object.assign(new Error(`[${kind}] refused`), { name: 'DriveApiError', status, kind })
+      );
+
+      const error = await googleDriveProvider.readControlFile(BUNKO_MARKER_NAME).catch((e) => e);
+
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(error.isAuthError).toBe(false);
+      expect(error.code).toBe('CONTROL_READ_FAILED');
+    }
+  );
+
+  it('a 403 classified as auth is an auth error', async () => {
+    vi.mocked(driveApiClient.listFiles).mockRejectedValue(
+      Object.assign(new Error('forbidden'), { name: 'DriveApiError', status: 403, kind: 'auth' })
+    );
+
+    const error = await googleDriveProvider.readControlFile(BUNKO_MARKER_NAME).catch((e) => e);
+
+    expect(error.isAuthError).toBe(true);
+    expect(error.code).toBe('AUTH_EXPIRED');
   });
 
   it('wraps other failures as non-auth ProviderErrors', async () => {

@@ -214,6 +214,25 @@ describe('withDriveRetry', () => {
     ).rejects.toMatchObject({ status: 503 });
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it('hands retryOn the thrown error, so a step tagged on it can decide', async () => {
+    const { sleep } = noSleep();
+    const tagged = (phase: string) => Object.assign(new DriveHttpError(503), { phase });
+    const fn = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(tagged('init'))
+      .mockRejectedValueOnce(tagged('put'));
+    const retryOn = vi.fn(
+      (kind: string, error: unknown) =>
+        kind === 'transient' && (error as DriveHttpError).phase !== 'put'
+    );
+    await expect(withDriveRetry(fn, { sleep, retryOn })).rejects.toMatchObject({
+      status: 503,
+      phase: 'put'
+    });
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(retryOn.mock.calls.map(([, e]) => (e as DriveHttpError).phase)).toEqual(['init', 'put']);
+  });
 });
 
 /** A gapi rejection, the shape `gapi.client.drive.*` (and the REST shim) reject with. */

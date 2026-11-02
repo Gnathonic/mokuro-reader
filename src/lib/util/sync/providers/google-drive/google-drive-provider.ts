@@ -40,13 +40,16 @@ import {
   driveFailureOf,
   isDriveRateLimit,
   isQuotaExceededError,
-  withDriveRetry
+  withDriveRetry,
+  type DriveFailureKind
 } from '../../core/providers/drive-http';
 
 /** How long a resolved list of `mokuro-reader` root ids is trusted by `readControlFile`. */
 const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
 /** A cached root set that yields no file is re-resolved, at most this often. */
 const CONTROL_ROOTS_RECHECK_MS = 60 * 1000;
+/** Roots named in one control-file `files.list` (`'<id>' in parents or …`). */
+const CONTROL_ROOTS_PER_QUERY = 25;
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -295,33 +298,55 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   /**
-   * Every `mokuro-reader` folder in My Drive root. A real account can hold
-   * several exact-name roots; they form ONE merged root, so a control file
-   * in any of them counts. The ids are cached for CONTROL_ROOTS_TTL_MS; an
-   * EMPTY answer is never cached (the folder may be created any moment), and
-   * `readControlFile` re-resolves when a cached set older than
-   * CONTROL_ROOTS_RECHECK_MS yields no file, so a trashed/replaced root or a
-   * newly appeared sibling root heals within a minute. Never creates a folder.
+   * Every live `mokuro-reader` folder — top-level AND nested (`Backup/
+   * mokuro-reader`): every root is read, and `pickReaderFolder` makes a
+   * nested one the write root when no top-level one exists, so Bunko's
+   * marker may live in any of them. Taken from the files cache's last
+   * listing when it has one (no request), else one folder query. The ids
+   * are cached for CONTROL_ROOTS_TTL_MS; an EMPTY answer is never cached
+   * (the folder may be created any moment), and `readControlFile`
+   * re-resolves FROM DRIVE (`force`, never the cache's possibly older
+   * listing) when a cached set older than CONTROL_ROOTS_RECHECK_MS yields no
+   * file, so a trashed/replaced root or a newly appeared one heals within a
+   * minute. Never creates a folder.
    */
   private async resolveControlRoots(force: boolean): Promise<string[]> {
     const cached = this.controlRoots;
     if (!force && cached && Date.now() - cached.at < CONTROL_ROOTS_TTL_MS) return cached.ids;
-    const folders = await driveApiClient.listFiles(
-      `name='${escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER)}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and 'root' in parents and trashed=false`,
-      'files(id)'
-    );
-    const ids = folders.map((f) => f.id).sort();
+    const listed = force ? null : driveFilesCache.getListedReaderFolderIds();
+    const ids = (
+      listed && listed.length > 0
+        ? listed
+        : (
+            await driveApiClient.listFiles(
+              `name='${escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER)}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and 'me' in owners and trashed=false`,
+              'files(id)'
+            )
+          ).map((f) => f.id)
+    ).sort();
     this.controlRoots = ids.length > 0 ? { ids, at: Date.now() } : null;
     return ids;
   }
 
-  /** The control-file nodes named `name` under any root: ONE `files.list`. */
+  /**
+   * The control-file nodes named `name` under any root: ONE `files.list` per
+   * CONTROL_ROOTS_PER_QUERY roots (in practice one), so the query string and
+   * the request count stay bounded however many roots an account holds.
+   */
   private async listControlNodes(name: string, rootIds: string[]) {
-    const parents = rootIds.map((id) => `'${escapeNameForDriveQuery(id)}' in parents`).join(' or ');
-    const files = await driveApiClient.listFiles(
-      `name='${escapeNameForDriveQuery(name)}' and trashed=false and (${parents})`,
-      'files(id,name,md5Checksum,modifiedTime,parents)'
-    );
+    const files = [];
+    for (let i = 0; i < rootIds.length; i += CONTROL_ROOTS_PER_QUERY) {
+      const parents = rootIds
+        .slice(i, i + CONTROL_ROOTS_PER_QUERY)
+        .map((id) => `'${escapeNameForDriveQuery(id)}' in parents`)
+        .join(' or ');
+      files.push(
+        ...(await driveApiClient.listFiles(
+          `name='${escapeNameForDriveQuery(name)}' and trashed=false and (${parents})`,
+          'files(id,name,md5Checksum,modifiedTime,parents)'
+        ))
+      );
+    }
     return files.map((f) => ({
       id: f.id,
       // md5Checksum is the content test; modifiedTime has no sub-second
@@ -371,11 +396,16 @@ class GoogleDriveProvider implements SyncProvider {
       );
     } catch (error) {
       if (error instanceof ProviderError) throw error;
-      // api-client surfaces 401/403 as a DriveApiError carrying `status`
-      // (after its own auto re-auth / token clearing).
-      // A 403 rate limit that outlasted the retries is no auth failure.
-      const status = (error as { status?: number } | null)?.status;
-      const isAuth = status === 401 || (status === 403 && !isDriveRateLimit(driveFailureOf(error)));
+      // api-client surfaces failures as a DriveApiError / DriveHttpError
+      // carrying `status` and, when classified, `kind` (after its own auto
+      // re-auth / token clearing). A classified kind wins: a full account or
+      // a rate limit answers 403 too, and is no auth failure. An unclassified
+      // error falls back to the status, where a 403 rate limit that outlasted
+      // the retries is still no auth failure.
+      const { status, kind } = (error ?? {}) as { status?: number; kind?: DriveFailureKind };
+      const isAuth = kind
+        ? kind === 'auth'
+        : status === 401 || (status === 403 && !isDriveRateLimit(driveFailureOf(error)));
       const isNetwork =
         (error as { isNetworkError?: boolean } | null)?.isNetworkError === true || status === 0;
       throw new ProviderError(

@@ -220,13 +220,14 @@ class DriveApiClient {
         await handleAuthError(error.status, retryOnAuth, sentWith);
       }
 
-      throw new DriveApiError(
-        error.message || error.result?.error?.message || 'Unknown API error',
-        error.status,
-        isNetworkError,
-        failure?.reason,
-        kind
-      );
+      // gapi rejects with no `.message`, so its error's text alone would drop
+      // the status and reason: name them, as the transport errors do.
+      const detail: string | undefined = error.message || error.result?.error?.message;
+      const message = failure?.status
+        ? `${detail || 'Drive API error'}: ${failure.status}` +
+          (failure.reason ? ` [${failure.reason}]` : '')
+        : detail || 'Unknown API error';
+      throw new DriveApiError(message, error.status, isNetworkError, failure?.reason, kind);
     }
   }
 
