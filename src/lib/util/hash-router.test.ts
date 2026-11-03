@@ -138,6 +138,7 @@ describe('AniList implicit-grant callback', () => {
 
   test('stores the token and restores the pre-login route', () => {
     sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
+    sessionStorage.setItem('anilist_return_at', String(Date.now()));
     window.location.hash = '#access_token=tok123&token_type=Bearer&expires_in=3600';
     const cleanup = initRouter();
     expect(localStorage.getItem('anilist_token')).toBe('tok123');
@@ -149,6 +150,7 @@ describe('AniList implicit-grant callback', () => {
     // AniList picks the parameter order; a `#access_token=` prefix test would
     // silently drop this login and strand the user on the catalog.
     sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
+    sessionStorage.setItem('anilist_return_at', String(Date.now()));
     window.location.hash = '#token_type=Bearer&expires_in=3600&access_token=tok456';
     const cleanup = initRouter();
     expect(localStorage.getItem('anilist_token')).toBe('tok456');
@@ -181,10 +183,38 @@ describe('AniList implicit-grant callback', () => {
     // it's fed into history.replaceState (a protocol-relative `//host` value
     // could otherwise navigate cross-origin or throw a SecurityError).
     sessionStorage.setItem('anilist_return', '//evil.example.com');
+    sessionStorage.setItem('anilist_return_at', String(Date.now()));
     window.location.hash = '#access_token=tok123&token_type=Bearer&expires_in=3600';
     const cleanup = initRouter();
     expect(window.location.hash).toBe('#/catalog');
     expect(localStorage.getItem('anilist_token')).toBe('tok123');
+    cleanup();
+  });
+
+  test('refuses a callback whose login was started too long ago', () => {
+    // A login the user walked away from must not stay armed for a crafted link.
+    sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
+    sessionStorage.setItem('anilist_return_at', String(Date.now() - 11 * 60 * 1000));
+    window.location.hash = '#access_token=attacker-token&token_type=Bearer&expires_in=3600';
+    const cleanup = initRouter();
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+    expect(window.location.hash).toBe('#/catalog');
+    cleanup();
+  });
+
+  test('a load without a callback disarms an abandoned login', () => {
+    // Back from AniList without signing in: the next crafted link in this tab
+    // must not pass as the answer to that login.
+    sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
+    sessionStorage.setItem('anilist_return_at', String(Date.now()));
+    window.location.hash = '#/catalog';
+    let cleanup = initRouter();
+    cleanup();
+    expect(sessionStorage.getItem('anilist_return')).toBeNull();
+
+    window.location.hash = '#access_token=attacker-token&token_type=Bearer&expires_in=3600';
+    cleanup = initRouter();
+    expect(localStorage.getItem('anilist_token')).toBeNull();
     cleanup();
   });
 
