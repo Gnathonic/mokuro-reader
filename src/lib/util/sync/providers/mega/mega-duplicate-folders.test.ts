@@ -271,6 +271,26 @@ describe('T5 (V4): one unexpected server-change packet does not freeze the tree'
 
     expect(server.openPolls()).toBe(0);
   });
+
+  it('logging out ends the session on the server (real megajs sends sml for its sid)', async () => {
+    const provider = await restoredProvider();
+    const before = server.requests.length;
+
+    await provider.logout();
+
+    const sent = server.requests.slice(before);
+    expect(sent.filter((req) => req.body.a === 'sml').map((req) => req.sid)).toEqual([CLIENT_SID]);
+    expect(localStorage.getItem('mega_session')).toBeNull();
+  });
+
+  it('a tree refresh on the live session never ends it', async () => {
+    const provider = await restoredProvider();
+
+    await (provider as any).reinitialize();
+
+    expect(server.requests.some((req) => req.body.a === 'sml')).toBe(false);
+    expect(provider.isAuthenticated()).toBe(true);
+  });
 });
 
 describe('T6 (V5): writers and the deduplicator agree on which root is the library', () => {

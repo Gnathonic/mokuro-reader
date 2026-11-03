@@ -39,6 +39,44 @@ import {
   type MegaSessionBlob
 } from './mega-session';
 import { CLOUD_TEST_HOOKS, megaGatewayOption } from '../../cloud-test-hooks';
+import { cancelProviderUploads } from '../../upload-cancellation';
+
+/**
+ * How long an explicit logout waits for MEGA to end the session server-side
+ * (`storage.close()`, which sends `{a:'sml'}`) before it gives up on that.
+ * Local state is cleared either way; this only bounds the wait.
+ */
+export const LOGOUT_CLOSE_TIMEOUT_MS = 3000;
+
+/**
+ * End `storage`'s session on MEGA's servers, waiting at most
+ * `LOGOUT_CLOSE_TIMEOUT_MS`. Never throws: a logout must succeed offline.
+ */
+async function closeSessionServerSide(storage: any): Promise<void> {
+  if (typeof storage?.close !== 'function') return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Handled on its own promise, so a close that fails after the timeout won
+  // is not an unhandled rejection.
+  const closing = Promise.resolve()
+    .then(() => storage.close())
+    .then(
+      () => 'closed' as const,
+      (error: unknown) => {
+        console.warn('[MEGA] Could not end the session on the server:', error);
+        return 'failed' as const;
+      }
+    );
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), LOGOUT_CLOSE_TIMEOUT_MS);
+  });
+  try {
+    if ((await Promise.race([closing, timeout])) === 'timeout') {
+      console.warn('[MEGA] Ending the session on the server timed out; logged out locally');
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 interface MegaCredentials {
   email: string;
@@ -225,6 +263,14 @@ export class MegaProvider implements SyncProvider {
   private stopServerChanges: (() => void) | null = null;
   /** Bumped on logout/expiry so a load that lands afterwards starts no poll. */
   private sessionEpoch = 0;
+  /**
+   * Main-thread uploads in flight, each by the function that rejects it. A
+   * logout rejects them before it closes the session: megajs drops every
+   * response that arrives after `close()` without calling back, so an upload
+   * still waiting on one would never settle, and neither would whatever
+   * awaits it (the metadata writers serialize their writes).
+   */
+  private inFlightUploads = new Set<(error: Error) => void>();
   /**
    * Consecutive sc recoveries whose poll has not yet answered once. Only a
    * poll that delivers resets it, so a poll that dies straight after every
@@ -493,7 +539,35 @@ export class MegaProvider implements SyncProvider {
     localStorage.removeItem(STORAGE_KEYS.PASSWORD);
   }
 
+  /**
+   * Explicit logout: stop this account's uploads, forget the session here,
+   * then end it on MEGA's servers too.
+   *
+   * Ending it server-side is what makes logging out mean something: the
+   * session blob (sid + master key) used to stay valid at MEGA after a logout,
+   * so a copy of it taken earlier (a copied browser profile, a backup) kept
+   * full access. It happens ONLY here: `storage.close()` kills the sid that
+   * every Storage of this session shares (login, restore, each upload
+   * worker), which is why `reinitialize()` and session expiry never close.
+   *
+   * Order matters. The upload workers carry the same sid, so they are
+   * cancelled first rather than left to fail mid-file. Local state is cleared
+   * next, before any network, so the logout holds even if the close never
+   * answers; the close is then bounded by `LOGOUT_CLOSE_TIMEOUT_MS`.
+   */
   async logout(): Promise<void> {
+    const liveStorage = this.storage;
+    const storedSession = browser ? localStorage.getItem(STORAGE_KEYS.SESSION) : null;
+
+    await cancelProviderUploads('mega', 'Upload cancelled: logged out of MEGA');
+    const cancelled = new ProviderError(
+      'Upload cancelled: logged out of MEGA',
+      'mega',
+      'UPLOAD_CANCELLED'
+    );
+    for (const reject of [...this.inFlightUploads]) reject(cancelled);
+    this.inFlightUploads.clear();
+
     this.endSession();
     this.needsReconnect = false;
     this.reconnectEmail = null;
@@ -506,7 +580,34 @@ export class MegaProvider implements SyncProvider {
     }
 
     clearActiveProviderKey();
+
+    // No live Storage (a restore that failed on a network error) can still
+    // leave a valid stored session: rebuild it just to close it. fromJSON does
+    // no network.
+    const toClose = liveStorage ?? (await this.storageForClosing(storedSession));
+    if (toClose) await closeSessionServerSide(toClose);
     console.log('MEGA logged out');
+  }
+
+  /** A Storage for a stored session blob, only to end it (see logout). */
+  private async storageForClosing(sessionRaw: string | null): Promise<any> {
+    if (!sessionRaw) return null;
+    try {
+      const blob = JSON.parse(sessionRaw) as MegaSessionBlob;
+      if (!blob?.sid) return null;
+      const { Storage } = await import('megajs');
+      return Storage.fromJSON({
+        ...(blob as any),
+        options: {
+          ...((blob as any).options ?? {}),
+          ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {}),
+          keepalive: false
+        }
+      });
+    } catch (error) {
+      console.warn('[MEGA] Could not read the stored session to end it:', error);
+      return null;
+    }
   }
 
   /** Rebuild an authenticated Storage from a saved session blob (no password, no login round-trip). */
@@ -1342,8 +1443,14 @@ export class MegaProvider implements SyncProvider {
       if (onProgress) {
         onProgress(0, payloadSize);
       }
+      // A logout rejects this upload at once (see `inFlightUploads`).
+      let rejectOnLogout!: (error: Error) => void;
+      const loggedOut = new Promise<never>((_, reject) => {
+        rejectOnLogout = reject;
+      });
+      this.inFlightUploads.add(rejectOnLogout);
       // Wrap upload in retry logic to handle stale cache
-      const uploaded = await retryWithCacheRefresh(
+      const uploading = retryWithCacheRefresh(
         async () => {
           const mokuroFolder = await this.ensureMokuroFolder();
 
@@ -1453,6 +1560,12 @@ export class MegaProvider implements SyncProvider {
         `Upload ${path} to MEGA`,
         () => this.reinitialize()
       );
+      let uploaded: UploadFileResult;
+      try {
+        uploaded = await Promise.race([uploading, loggedOut]);
+      } finally {
+        this.inFlightUploads.delete(rejectOnLogout);
+      }
       // No cache rebuild here: uploads emit a local 'add' event (megajs adds
       // the node from the API response), which the change listeners turn into
       // a debounced refresh. A mid-operation rebuild would clobber the
@@ -1460,6 +1573,7 @@ export class MegaProvider implements SyncProvider {
 
       return uploaded;
     } catch (error) {
+      if (error instanceof ProviderError && error.code === 'UPLOAD_CANCELLED') throw error;
       // Typed QUOTA_EXCEEDED with a message users can act on, instead of
       // megajs's raw "EOVERQUOTA (-17): Request over quota".
       if (isMegaOverQuotaError(error)) {

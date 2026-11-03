@@ -183,3 +183,98 @@ describe('a task settles exactly once', () => {
     expect(queued).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('WorkerPool.cancelTasks', () => {
+  // A logout cancels one provider's uploads; the downloads and the other
+  // providers' work sharing the pool keep running.
+  function poolOf(size: number) {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    return new WorkerPool('cancel-test', SilentWorker as unknown as new () => Worker, size, 500);
+  }
+  function providerTask(id: string, provider: string, onError: WorkerTask['onError']): WorkerTask {
+    return { ...task(id, onError), provider, providerConcurrencyLimit: 1 };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('rejects the matching tasks, in flight and queued, as cancelled and leaves the rest', async () => {
+    const pool = poolOf(2);
+    const megaActive = vi.fn();
+    const megaQueued = vi.fn();
+    const download = vi.fn();
+    pool.addTask(providerTask('mega-1', 'mega:upload', megaActive));
+    pool.addTask(providerTask('mega-2', 'mega:upload', megaQueued));
+    pool.addTask(providerTask('dl-1', 'mega:download', download));
+    await Promise.resolve();
+    expect(pool.activeTaskCount).toBe(2);
+    expect(pool.queuedTaskCount).toBe(1);
+    const uploadWorker = SilentWorker.instances.find((w) =>
+      w.posted.some((data: any) => data.fileId === 'mega-1')
+    )!;
+
+    const count = pool.cancelTasks((t) => t.provider === 'mega:upload', 'Logged out');
+
+    expect(count).toBe(2);
+    expect(megaActive).toHaveBeenCalledWith({
+      type: 'error',
+      fileId: 'mega-1',
+      error: 'Logged out',
+      kind: 'cancelled'
+    });
+    expect(megaQueued).toHaveBeenCalledWith(
+      expect.objectContaining({ fileId: 'mega-2', kind: 'cancelled' })
+    );
+    expect(download).not.toHaveBeenCalled();
+    // The upload's worker is gone (its request with it); the download's is not.
+    expect(uploadWorker.terminated).toBe(true);
+    expect(SilentWorker.instances.filter((w) => w.terminated)).toHaveLength(1);
+    expect(pool.activeTaskCount).toBe(1);
+    expect(pool.queuedTaskCount).toBe(0);
+  });
+
+  it('replaces the terminated worker, so the pool keeps its size and its provider slots', async () => {
+    const pool = poolOf(1);
+    pool.addTask(providerTask('mega-1', 'mega:upload', vi.fn()));
+    await Promise.resolve();
+
+    pool.cancelTasks((t) => t.id === 'mega-1');
+
+    // The slot the cancelled upload held is free again: a new upload starts.
+    const next = vi.fn();
+    pool.addTask(providerTask('mega-3', 'mega:upload', next));
+    await Promise.resolve();
+    expect(SilentWorker.instances).toHaveLength(2);
+    expect(SilentWorker.instances[1].posted).toEqual([{ mode: 'noop', fileId: 'mega-3' }]);
+    expect(pool.activeTaskCount).toBe(1);
+  });
+
+  it('starts a queued task once a cancellation frees a worker', async () => {
+    const pool = poolOf(1);
+    pool.addTask(providerTask('mega-1', 'mega:upload', vi.fn()));
+    pool.addTask(providerTask('gd-1', 'google-drive:upload', vi.fn()));
+    await Promise.resolve();
+    expect(pool.queuedTaskCount).toBe(1);
+
+    pool.cancelTasks((t) => t.provider === 'mega:upload');
+    await Promise.resolve();
+
+    expect(pool.queuedTaskCount).toBe(0);
+    expect(SilentWorker.instances.at(-1)!.posted).toEqual([{ mode: 'noop', fileId: 'gd-1' }]);
+  });
+
+  it('never rejects a task whose worker already completed it', async () => {
+    const pool = poolOf(1);
+    const onError = vi.fn();
+    pool.addTask({
+      ...providerTask('t', 'mega:upload', onError),
+      onComplete: () => {} // still finishing on the main thread
+    });
+    await Promise.resolve();
+    SilentWorker.instances[0].onmessage!({
+      data: { type: 'complete', fileId: 't' }
+    } as MessageEvent);
+
+    expect(pool.cancelTasks(() => true)).toBe(0);
+    expect(onError).not.toHaveBeenCalled();
+  });
+});

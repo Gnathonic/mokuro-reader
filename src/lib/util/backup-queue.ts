@@ -19,10 +19,12 @@ import {
   OWNERSHIP_REFRESH_MAX_AGE_MS
 } from './sync/account-capabilities';
 import {
+  cancelPoolTasks,
   getFileProcessingPool,
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
+import { registerUploadCanceller } from './sync/upload-cancellation';
 import { downloadFileBlob } from './volume-sidecars';
 import { stampLayersSynced, type LayerUploadSnapshot } from '$lib/metadata/layer-sync';
 import { personalLayerAccount } from '$lib/catalog/mokuro-hash';
@@ -143,6 +145,23 @@ let processingStarted = false;
 
 /** The end of the run in flight (`finishBackupRun` from `checkAndTerminatePool`), or null. */
 let runEnding: Promise<void> | null = null;
+
+/**
+ * Per provider, how many times its uploads were cancelled
+ * (`cancelBackupsForProvider`). An item compares the count it started under
+ * at each await, so work already past the queue when the cancel landed stops
+ * there instead of reaching the pool.
+ */
+const cancelGenerations = new Map<string, number>();
+
+/**
+ * The run in flight had its uploads cancelled (a logout): its drain ends
+ * without the run-end listing and metadata writes. They would list and write
+ * an account that is being logged out, and a listing landing after the
+ * logout cleared the caches would fill them with that account's files again.
+ * Cleared when the drain happens, and when a new cloud upload joins the run.
+ */
+let skipRunEnd = false;
 
 /**
  * Is a backup/export run currently draining the queue?
@@ -648,6 +667,12 @@ async function checkAndTerminatePool(): Promise<void> {
     decrementPoolUsers();
     processingStarted = false;
 
+    if (skipRunEnd) {
+      skipRunEnd = false;
+      console.log('[Backup Queue] Uploads cancelled; run ended without a listing');
+      return;
+    }
+
     // Replace the optimistic cache entries with real server data, write this
     // run's series.json files against that listing, then let the index refresh
     // read them back.
@@ -662,6 +687,48 @@ async function checkAndTerminatePool(): Promise<void> {
     console.log('[Backup Queue] Cloud cache refreshed with server data');
   }
 }
+
+/**
+ * Cancel every backup to `provider`: the items still queued, the ones on their
+ * way to the pool, and the uploads in flight (their workers are terminated,
+ * see `WorkerPool.cancelTasks`; the sidecar backfill's uploads share the same
+ * pool key and go too). Nothing is recorded as an upload failure: the user
+ * did not lose an upload, they ended the session it belonged to. Exports and
+ * other providers' uploads keep running.
+ *
+ * Called on an explicit logout (through `upload-cancellation.ts`), before the
+ * provider ends its session.
+ */
+export function cancelBackupsForProvider(
+  provider: BackupProviderType,
+  reason = 'Upload cancelled'
+): void {
+  cancelGenerations.set(provider, (cancelGenerations.get(provider) ?? 0) + 1);
+
+  const dropped = get(queueStore).filter((item) => item.provider === provider);
+  if (dropped.length > 0) {
+    queueStore.update((q) => q.filter((item) => item.provider !== provider));
+    for (const item of dropped) getBackupUiBridge().removeProgress(`backup-${item.volumeUuid}`);
+  }
+
+  if (!isPseudoProvider(provider)) {
+    // The run's pending metadata writes are for the account being left.
+    seriesNeedingIndexWrite.clear();
+    uploadedThisRun = false;
+    closedSeriesSkippedThisRun.clear();
+    if (processingStarted) skipRunEnd = true;
+  }
+
+  const cancelled = cancelPoolTasks((task) => task.provider === `${provider}:upload`, reason);
+  if (dropped.length > 0 || cancelled > 0) {
+    console.log(
+      `[Backup Queue] Cancelled ${provider} uploads: ${dropped.length} queued item(s), ${cancelled} pool task(s)`
+    );
+  }
+  void checkAndTerminatePool();
+}
+
+registerUploadCanceller((provider, reason) => cancelBackupsForProvider(provider, reason));
 
 /**
  * Resolves once nothing is queued or uploading AND the last run has ended —
@@ -688,6 +755,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
   // Check if this is an export operation (pseudo-provider)
   const isExport = isPseudoProvider(item.provider);
 
+  // Cancelled (`cancelBackupsForProvider`) since this item started: it has
+  // already left the queue, so it just stops.
+  const generation = cancelGenerations.get(item.provider) ?? 0;
+  const cancelledSinceStart = () => (cancelGenerations.get(item.provider) ?? 0) !== generation;
+
   // For real providers, get the active provider and validate authentication
   const provider = isExport ? null : unifiedCloudManager.getActiveProvider();
 
@@ -703,6 +775,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
   const needsMainThreadUpload = !isExport && provider !== null && !provider.supportsWorkerUpload;
 
   const pool = await getFileProcessingPool();
+  if (cancelledSinceStart()) {
+    getBackupUiBridge().removeProgress(processId);
+    await checkAndTerminatePool();
+    return;
+  }
 
   // Estimate volume size (rough estimate: page count * 0.5MB average per page)
   const estimatedSize = (item.volumeMetadata.page_count || 10) * 0.5 * 1024 * 1024;
@@ -795,6 +872,9 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           closedWhileWaiting = true;
           throw new Error(`Another account owns '${item.seriesTitle}' on this server`);
         }
+        // The pool has already rejected a cancelled task; this only keeps its
+        // late `prepareData` from asking a logged-out provider for credentials.
+        if (cancelledSinceStart()) throw new Error('Upload cancelled');
         const credentials = await getUploadWorkerCredentials(provider!, item.seriesTitle);
 
         return {
@@ -1103,6 +1183,16 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         }
       },
       onError: async (data) => {
+        // Cancelled (a logout): the item already left the queue and nothing
+        // failed, so no failure record and no error notice.
+        if (data?.kind === 'cancelled' || cancelledSinceStart()) {
+          queueStore.update((q) =>
+            q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
+          );
+          getBackupUiBridge().removeProgress(processId);
+          await checkAndTerminatePool();
+          return;
+        }
         if (closedWhileWaiting) {
           skipClosedSeriesItem(item, processId);
           await checkAndTerminatePool();
@@ -1158,6 +1248,9 @@ async function processQueue(): Promise<void> {
     if (queuedItems.length === 0) {
       return;
     }
+
+    // New cloud work joins the run: its end publishes again.
+    if (queuedItems.some((item) => !isPseudoProvider(item.provider))) skipRunEnd = false;
 
     // Mark all items as backing-up atomically
     queuedItems.forEach((item) => {
