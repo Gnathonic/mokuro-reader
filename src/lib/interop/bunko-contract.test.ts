@@ -879,9 +879,12 @@ describeContract('reading history uploads as Bunko answers them', () => {
     fetchHandler.impl = answers.fetch;
     xhrAnswers = [put];
     const result = await uploadAs('progress', path, new Blob([put.request.body_text!]));
+    // Bunko answers the PUT with the stored file's ETag (`"etag"` once the
+    // fixtures are normalized): the receipt's revision.
     expect(result).toEqual({
       fileId: `/mokuro-reader/${path}`,
-      serverDigestVerified: 'sha-256'
+      serverDigestVerified: 'sha-256',
+      revision: 'etag'
     });
     // Both answered by the fixtures above, at exactly these paths.
     expect(mkcols(answers.calls)).toEqual([HISTORY, DEVICE]);
@@ -920,9 +923,12 @@ describeContract('corrections as Bunko answers them', () => {
     fetchHandler.impl = fixtureFetch([fx('propfind-library-depth0')]).fetch;
     xhrAnswers = [f];
     const result = await uploadAs('progress', path, blobFor(f));
+    // Bunko answers the PUT with the stored file's ETag (`"etag"` once the
+    // fixtures are normalized): the receipt's revision.
     expect(result).toEqual({
       fileId: `/mokuro-reader/${path}`,
-      serverDigestVerified: 'sha-256'
+      serverDigestVerified: 'sha-256',
+      revision: 'etag'
     });
   });
 
