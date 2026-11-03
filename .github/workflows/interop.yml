@@ -10,11 +10,9 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    # feat/cloud-bunko: PRs stacked on the cloud branch run it too.
-    branches: [main, develop, feat/cloud-bunko]
-  # The rig, nightly, on develop and feat/cloud-bunko, so drift on Bunko's side
-  # shows without a reader PR. A schedule runs this file as the default branch
-  # has it.
+    branches: [main, develop]
+  # The rig, nightly, on develop, so drift on Bunko's side shows without a reader
+  # PR. A schedule runs this file as the default branch has it.
   schedule:
     - cron: '30 4 * * *'
   workflow_dispatch:
@@ -96,9 +94,9 @@ jobs:
             cloudsim.log
 
   # Which commits the rig runs on: the PR's (or the dispatched branch's), or on the
-  # schedule develop and feat/cloud-bunko; each only when it has the rig driver
-  # (src/lib/interop/rig-driver.ts), which a branch from before feat/cloud-bunko
-  # lacks. With none, the rig job shows as skipped, not failed. (hashFiles cannot
+  # schedule develop's; each only when it has the rig driver
+  # (src/lib/interop/rig-driver.ts), which a commit from before the 0.8 work lacks.
+  # With none, the rig job shows as skipped, not failed. (hashFiles cannot
   # decide a job's `if`: it reads a checkout, which a job condition has none of.)
   rig-refs:
     name: Rig targets
@@ -121,7 +119,7 @@ jobs:
             targets=$(jq -c --arg ref "$1" --arg name "$2" '. + [{ref: $ref, name: $name}]' <<< "$targets")
           }
           if [ "$EVENT" = schedule ]; then
-            for branch in develop feat/cloud-bunko; do
+            for branch in develop; do
               if git fetch -q --depth 1 origin "refs/heads/$branch" &&
                 git cat-file -e FETCH_HEAD:src/lib/interop/rig-driver.ts 2> /dev/null; then
                 add "refs/heads/$branch" "${branch//\//-}"
