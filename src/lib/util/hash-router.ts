@@ -5,6 +5,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import {
+  clearAniListLoginMarker,
   consumeAniListReturnHash,
   handleAniListCallbackHash,
   isAniListCallbackHash
@@ -286,6 +287,11 @@ export function initRouter(): () => void {
     if (rawReturnHash) {
       void handleAniListCallbackHash(callbackHash).catch(() => {});
     }
+  } else {
+    // Back in the app WITHOUT a token: whatever login this tab started is
+    // over (Back on AniList's page, or a denial). Its marker goes, so a
+    // forged callback opened later in this tab cannot complete it.
+    clearAniListLoginMarker();
   }
 
   // Handle legacy pathname-based routes from before hash router migration
@@ -315,6 +321,18 @@ export function initRouter(): () => void {
     currentView.set(parseHash(window.location.hash));
   }
 
+  // Back from AniList's page into this very document, restored from the
+  // back/forward cache: no reload, so the clearing above never ran.
+  function handlePageShow(event: PageTransitionEvent) {
+    if (event.persisted && !isAniListCallbackHash(window.location.hash)) {
+      clearAniListLoginMarker();
+    }
+  }
+
   window.addEventListener('hashchange', handleHashChange);
-  return () => window.removeEventListener('hashchange', handleHashChange);
+  window.addEventListener('pageshow', handlePageShow);
+  return () => {
+    window.removeEventListener('hashchange', handleHashChange);
+    window.removeEventListener('pageshow', handlePageShow);
+  };
 }

@@ -137,7 +137,10 @@ describe('AniList implicit-grant callback', () => {
   });
 
   test('stores the token and restores the pre-login route', () => {
-    sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
+    sessionStorage.setItem(
+      'anilist_return',
+      JSON.stringify({ hash: '#/series/One%20Piece', at: Date.now() })
+    );
     window.location.hash = '#access_token=tok123&token_type=Bearer&expires_in=3600';
     const cleanup = initRouter();
     expect(localStorage.getItem('anilist_token')).toBe('tok123');
@@ -148,7 +151,10 @@ describe('AniList implicit-grant callback', () => {
   test('accepts the callback whatever order AniList orders the fragment in', () => {
     // AniList picks the parameter order; a `#access_token=` prefix test would
     // silently drop this login and strand the user on the catalog.
-    sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
+    sessionStorage.setItem(
+      'anilist_return',
+      JSON.stringify({ hash: '#/series/One%20Piece', at: Date.now() })
+    );
     window.location.hash = '#token_type=Bearer&expires_in=3600&access_token=tok456';
     const cleanup = initRouter();
     expect(localStorage.getItem('anilist_token')).toBe('tok456');
@@ -180,11 +186,59 @@ describe('AniList implicit-grant callback', () => {
     // token is trusted — but the route value itself must be validated before
     // it's fed into history.replaceState (a protocol-relative `//host` value
     // could otherwise navigate cross-origin or throw a SecurityError).
-    sessionStorage.setItem('anilist_return', '//evil.example.com');
+    sessionStorage.setItem(
+      'anilist_return',
+      JSON.stringify({ hash: '//evil.example.com', at: Date.now() })
+    );
     window.location.hash = '#access_token=tok123&token_type=Bearer&expires_in=3600';
     const cleanup = initRouter();
     expect(window.location.hash).toBe('#/catalog');
     expect(localStorage.getItem('anilist_token')).toBe('tok123');
+    cleanup();
+  });
+
+  test('rejects a callback for a login abandoned more than 10 minutes ago', () => {
+    // The user left for AniList, gave up, and later opened an attacker's
+    // link in the same tab: the stale marker must not let it log them in.
+    sessionStorage.setItem(
+      'anilist_return',
+      JSON.stringify({ hash: '#/series/One%20Piece', at: Date.now() - 10 * 60 * 1000 - 1 })
+    );
+    window.location.hash = '#access_token=attacker-token&token_type=Bearer&expires_in=3600';
+    const cleanup = initRouter();
+    expect(window.location.hash).toBe('#/catalog');
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+    expect(sessionStorage.getItem('anilist_return')).toBeNull();
+    cleanup();
+  });
+
+  test('coming back without a token ends the pending login', () => {
+    sessionStorage.setItem(
+      'anilist_return',
+      JSON.stringify({ hash: '#/series/One%20Piece', at: Date.now() })
+    );
+    // Back on AniList's page: the app loads on an ordinary route.
+    window.location.hash = '#/series/One%20Piece';
+    const cleanup = initRouter();
+    expect(sessionStorage.getItem('anilist_return')).toBeNull();
+    cleanup();
+
+    // So a forged callback opened next in this tab is refused.
+    window.location.hash = '#access_token=attacker-token&token_type=Bearer&expires_in=3600';
+    const again = initRouter();
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+    again();
+  });
+
+  test('a back/forward-cache restore without a token ends the pending login too', () => {
+    window.location.hash = '#/catalog';
+    const cleanup = initRouter();
+    sessionStorage.setItem('anilist_return', JSON.stringify({ hash: '#/catalog', at: Date.now() }));
+    // A normal pageshow (first load) leaves it; a restored page does not.
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+    expect(sessionStorage.getItem('anilist_return')).not.toBeNull();
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    expect(sessionStorage.getItem('anilist_return')).toBeNull();
     cleanup();
   });
 

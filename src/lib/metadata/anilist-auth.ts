@@ -10,6 +10,19 @@ const RETURN_KEY = 'anilist_return';
 const DEFAULT_TTL_SEC = 365 * 24 * 60 * 60; // AniList tokens last one year
 
 /**
+ * How long the login marker (`startAniListLogin`) proves that this tab is
+ * waiting for AniList to send it back. AniList's implicit grant echoes no
+ * `state`, so the marker is the only thing tying a `#access_token=` callback
+ * to a login the user started. Left open, a login abandoned at AniList's
+ * page would let a later attacker link (with the attacker's token) complete
+ * it, silently connecting the user to someone else's account.
+ */
+export const ANILIST_LOGIN_MARKER_TTL_MS = 10 * 60 * 1000;
+
+/** Where AniList's settings list the apps that hold a token for the account. */
+export const ANILIST_APPS_SETTINGS_URL = 'https://anilist.co/settings/apps';
+
+/**
  * True when this fragment is an implicit-grant callback rather than a route.
  *
  * The order of the fragment's parameters is the provider's choice, not ours, so
@@ -96,7 +109,8 @@ _anilistConnected.set(getAniListToken() !== null);
 export function startAniListLogin(): void {
   const clientId = getAniListClientId();
   if (!browser || !clientId) return;
-  sessionStorage.setItem(RETURN_KEY, window.location.hash || '#/catalog');
+  const marker = { hash: window.location.hash || '#/catalog', at: Date.now() };
+  sessionStorage.setItem(RETURN_KEY, JSON.stringify(marker));
   window.location.assign(buildAniListAuthorizeUrl(clientId));
 }
 
@@ -143,6 +157,11 @@ export async function handleAniListCallbackHash(hash: string): Promise<boolean> 
       const user = { id: data.Viewer.id, name: data.Viewer.name };
       localStorage.setItem(USER_KEY, JSON.stringify(user));
       _anilistUser.set(user);
+      // Name the account out loud: a login that connected someone else's
+      // account (a forged callback) is then visible the moment it happens.
+      showSnackbar(`Connected to AniList as ${user.name}`);
+    } else {
+      showSnackbar('Connected to AniList');
     }
   } catch (error) {
     if (error instanceof AniListError && error.code === 'UNAUTHORIZED') {
@@ -151,19 +170,53 @@ export async function handleAniListCallbackHash(hash: string): Promise<boolean> 
       handleAniListUnauthorized();
     } else {
       console.warn('[anilist-auth] Viewer lookup failed:', error);
+      showSnackbar('Connected to AniList');
     }
   }
   return true;
 }
 
-/** Return-route saved by startAniListLogin(); cleared on read. */
+/**
+ * Return-route saved by startAniListLogin(); cleared on read. Null when there
+ * is no marker, when it is older than `ANILIST_LOGIN_MARKER_TTL_MS`, or when
+ * it is not one this code wrote (a marker without its timestamp proves
+ * nothing about when the login started).
+ */
 export function consumeAniListReturnHash(): string | null {
   if (!browser) return null;
-  const value = sessionStorage.getItem(RETURN_KEY);
+  const raw = sessionStorage.getItem(RETURN_KEY);
   sessionStorage.removeItem(RETURN_KEY);
-  return value;
+  if (!raw) return null;
+  try {
+    const marker = JSON.parse(raw);
+    if (typeof marker?.hash !== 'string' || typeof marker?.at !== 'number') return null;
+    const age = Date.now() - marker.at;
+    if (!Number.isFinite(age) || age < 0 || age > ANILIST_LOGIN_MARKER_TTL_MS) return null;
+    return marker.hash;
+  } catch {
+    return null;
+  }
 }
 
+/**
+ * The user came back to the app without a token (pressed Back on AniList's
+ * page, or AniList sent them back with an error): that login is over, and
+ * its marker must not wait around for a callback someone else could forge.
+ */
+export function clearAniListLoginMarker(): void {
+  if (!browser) return;
+  try {
+    sessionStorage.removeItem(RETURN_KEY);
+  } catch {
+    /* storage unavailable: nothing was stored either */
+  }
+}
+
+/**
+ * Forget the AniList session on this device. AniList has no revocation API,
+ * so the token itself stays valid until it expires or the user removes the
+ * app at `ANILIST_APPS_SETTINGS_URL`; the UI says so.
+ */
 export function disconnectAniList(): void {
   clearAniListSession();
 }
