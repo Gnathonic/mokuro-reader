@@ -187,11 +187,14 @@ function heldIsNewer(held: DriveFileMetadata, file: DriveFile): boolean {
 
 /** Everything one change-feed read decided, so the apply can run again on another map. */
 interface FeedPlan {
-  /** The folder map before this batch (what removed folders' children hang off). */
-  before: FolderMap;
-  /** The folder map after it. */
+  /** The folder map after this batch: live folders only. */
   folders: FolderMap;
-  /** Folders deleted, trashed or no longer ours. */
+  /**
+   * Folders deleted, trashed or no longer ours, AND every folder that sits
+   * under one once the batch's own moves are applied (Drive takes a folder's
+   * contents with it). Closed: a file has left with its folder exactly when
+   * its parent is in here.
+   */
   removed: ReadonlySet<string>;
   /** Folders renamed, moved or new: whatever is under them is placed again. */
   moved: ReadonlySet<string>;
@@ -245,12 +248,12 @@ function applyFeed(
     writable().set(key, [...(next.get(key) ?? []), entry]);
   };
 
-  // Folders first: what sat under a removed one is gone with it (Drive takes
+  // Folders first: what sits in a removed one is gone with it (Drive takes
   // the children too), what sits under a renamed or moved one has a new path.
   if (plan.removed.size > 0 || plan.moved.size > 0) {
     for (const [key, files] of map) {
       for (const entry of files) {
-        if (descendsFrom(entry.parentId, plan.removed, plan.before)) {
+        if (entry.parentId && plan.removed.has(entry.parentId)) {
           remove(entry.fileId);
           continue;
         }
@@ -709,7 +712,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     if (!feed) return this.listInFull(`more than ${MAX_CHANGE_PAGES} pages of changes`);
 
     const plan = this.planFeed(feed.changes, resolved);
-    // The write root went away: only a full listing picks the next one.
+    // The write root went away, itself or with a folder holding it: only a
+    // full listing picks the next one.
     if (this.readerFolderId && plan.removed.has(this.readerFolderId)) {
       return this.listInFull('the reader folder was removed');
     }
@@ -742,10 +746,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
 
   /** Sort one batch into folder effects and file changes, against the folder map. */
   private planFeed(changes: DriveChange[], resolved: FolderMap): FeedPlan {
-    const before = this.folders;
-    const folders: FolderMap = new Map(before);
+    const folders: FolderMap = new Map(this.folders);
     for (const [id, folder] of resolved) folders.set(id, folder);
-    const removed = new Set<string>();
+    /** The folders the batch itself reports gone. */
+    const gone = new Set<string>();
     const moved = new Set<string>();
     for (const id of resolved.keys()) moved.add(id);
     const files: DriveChange[] = [];
@@ -760,7 +764,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
         continue;
       }
       if (isGone(change)) {
-        removed.add(id);
+        gone.add(id);
         moved.delete(id);
         folders.delete(id);
         continue;
@@ -769,17 +773,27 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       const next = { name: file.name, parent: file.parents?.[0] };
       const held = folders.get(id);
       folders.set(id, next);
-      removed.delete(id);
+      gone.delete(id);
       if (!held || held.name !== next.name || held.parent !== next.parent) moved.add(id);
     }
     // Drive removes a folder's contents with it: the folders under a removed
-    // one leave the map too (their files go in `applyFeed`).
-    for (const id of [...folders.keys()]) {
-      if (descendsFrom(before.get(id)?.parent ?? folders.get(id)?.parent, removed, before)) {
-        folders.delete(id);
-      }
+    // one leave the map too (their files go in `applyFeed`). "Under" is where
+    // each folder sits AFTER this batch — `folders` already holds the batch's
+    // moves — never where it sat before: another device's dedup merge moves
+    // every series folder out of a duplicate root and then deletes the root,
+    // and this device reads both in one batch. Judged by the old parent, the
+    // series would leave with the root and take its files out of the cache.
+    // The whole set is decided before anything leaves the map, so a folder
+    // two levels down still finds its way up through its parent.
+    const removed = new Set(gone);
+    for (const [id, folder] of folders) {
+      if (descendsFrom(folder.parent, gone, folders)) removed.add(id);
     }
-    return { before, folders, removed, moved, files };
+    for (const id of removed) {
+      folders.delete(id);
+      moved.delete(id);
+    }
+    return { folders, removed, moved, files };
   }
 
   /** Does a folder this batch upserted share its name and parent with another? */

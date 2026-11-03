@@ -302,6 +302,124 @@ describe('driveFilesCache change feed (#288)', () => {
     expect(driveFilesCache.get('history/dev-a/2026-12.events')).toBeNull();
   });
 
+  describe('another device’s dedup merge: folders moved OUT of a folder removed in the same batch', () => {
+    /**
+     * A duplicate `mokuro-reader` root with a series and a history device in
+     * it, beside the listing's own root. FolderDeduplicator merges it by
+     * moving every child into the canonical root, then deleting it: this
+     * device reads the moves and the deletion in ONE batch.
+     */
+    const DUPLICATE: DriveFile[] = [
+      { id: 'reader-b', name: 'mokuro-reader', mimeType: FOLDER },
+      { id: 'series-s', name: 'Series S', mimeType: FOLDER, parents: ['reader-b'] },
+      { id: 'hist-b', name: 'history', mimeType: FOLDER, parents: ['reader-b'] },
+      { id: 'dev-b', name: 'dev-b', mimeType: FOLDER, parents: ['hist-b'] },
+      {
+        id: 's1',
+        name: 'Volume S.cbz',
+        mimeType: 'application/x-cbz',
+        parents: ['series-s'],
+        modifiedTime: T0,
+        size: '300'
+      },
+      {
+        id: 's1-mokuro',
+        name: 'Volume S.mokuro',
+        mimeType: 'application/json',
+        parents: ['series-s'],
+        modifiedTime: T0,
+        size: '30'
+      },
+      {
+        id: 'seg-b',
+        name: '2026-09.events',
+        mimeType: 'application/octet-stream',
+        parents: ['dev-b'],
+        modifiedTime: T0,
+        size: '9'
+      }
+    ];
+    const MOVED_OUT = [
+      changed({ id: 'series-s', name: 'Series S', mimeType: FOLDER, parents: ['reader'] }),
+      changed({ id: 'hist-b', name: 'history', mimeType: FOLDER, parents: ['reader'] })
+    ];
+    const ROOT_REMOVED: DriveChange = { fileId: 'reader-b', removed: true };
+
+    beforeEach(async () => {
+      driveFilesCache.clear();
+      // The walk, then the top-level query: `reader` is the write root.
+      api.listFiles
+        .mockResolvedValueOnce([...LISTING, ...DUPLICATE])
+        .mockResolvedValueOnce([
+          { id: 'reader', name: 'mokuro-reader', mimeType: FOLDER, parents: ['my-drive'] }
+        ]);
+      await driveFilesCache.fetch();
+      await settle();
+      api.listFiles.mockClear();
+      expect(await driveFilesCache.getReaderFolderId()).toBe('reader');
+      expect(paths()).toEqual([
+        'Series A/Volume 1.cbz',
+        'Series A/Volume 1.mokuro',
+        'Series S/Volume S.cbz',
+        'Series S/Volume S.mokuro',
+        'history/dev-a/2026-10.events',
+        'history/dev-b/2026-09.events',
+        'volume-data.json'
+      ]);
+    });
+
+    it.each([
+      ['the moves first', [...MOVED_OUT, ROOT_REMOVED]],
+      ['the deletion first', [ROOT_REMOVED, ...MOVED_OUT]]
+    ])('keeps what moved out, and its folders (%s)', async (_order, changes) => {
+      const before = paths();
+      feed(changes);
+
+      await driveFilesCache.refreshFromChanges();
+
+      // Nothing under the moved folders was in the batch, and nothing left.
+      expect(paths()).toEqual(before);
+      expect(api.listFiles).not.toHaveBeenCalled();
+
+      // The folder map still knows them: a new file in each is placed, with
+      // no lookup (an unknown parent would be looked up, and that rejects).
+      feed([
+        changed({ id: 's2', name: 'Volume S2.cbz', parents: ['series-s'], size: '1' }),
+        changed({ id: 'seg-b2', name: '2026-10.events', parents: ['dev-b'], size: '1' })
+      ]);
+      await driveFilesCache.refreshFromChanges();
+      expect(api.getFileMetadata).not.toHaveBeenCalled();
+      expect(driveFilesCache.get('Series S/Volume S2.cbz')?.fileId).toBe('s2');
+      expect(driveFilesCache.get('history/dev-b/2026-10.events')?.fileId).toBe('seg-b2');
+    });
+
+    it('a folder moved INTO the removed one goes with it', async () => {
+      feed([
+        changed({ id: 'series-a', name: 'Series A', mimeType: FOLDER, parents: ['reader-b'] }),
+        ROOT_REMOVED
+      ]);
+
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('applied');
+
+      // Series A went in, then the root went with everything it held.
+      expect(paths()).toEqual(['history/dev-a/2026-10.events', 'volume-data.json']);
+    });
+  });
+
+  it('lists in full when the reader folder sits under a folder the batch removed', async () => {
+    // The user filed the reader folder away, then trashed the folder holding it.
+    feed([
+      changed({ id: 'outer', name: 'Archive', mimeType: FOLDER, parents: ['my-drive'] }),
+      changed({ id: 'reader', name: 'mokuro-reader', mimeType: FOLDER, parents: ['outer'] })
+    ]);
+    await driveFilesCache.refreshFromChanges();
+    expect(api.listFiles).not.toHaveBeenCalled();
+
+    feed([changed({ id: 'outer', name: 'Archive', mimeType: FOLDER, trashed: true })]);
+    await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+    expect(api.listFiles).toHaveBeenCalledTimes(1);
+  });
+
   it('looks an unknown parent folder up ONCE, then knows it', async () => {
     api.getFileMetadata.mockResolvedValue({
       id: 'series-n',
