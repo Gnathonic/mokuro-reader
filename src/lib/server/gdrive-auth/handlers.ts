@@ -14,6 +14,7 @@ import {
   googleEndpoints,
   grantsDriveFile,
   refreshAccessToken,
+  remainingBudget,
   revokeToken,
   type FetchLike
 } from './google';
@@ -127,6 +128,8 @@ export function handleSession(event: AuthEvent, deps: AuthDeps): Promise<Respons
 
     const fetchImpl = deps.fetch ?? defaultFetch;
     const endpoints = googleEndpoints(deps.env);
+    // Wall-clock time, not deps.now: this measures the function's own budget.
+    const exchangeStarted = Date.now();
     const outcome = await exchangeCode(fetchImpl, endpoints, config, {
       code,
       codeVerifier,
@@ -153,7 +156,15 @@ export function handleSession(event: AuthEvent, deps: AuthDeps): Promise<Respons
       status: number,
       error: 'consent_incomplete' | 'internal'
     ) => {
-      await revokeToken(fetchImpl, endpoints, outcome.refreshToken ?? outcome.accessToken);
+      // Both Google calls must fit under maxDuration: were the function killed
+      // mid-revoke, the client would get a non-JSON 504 and the grant this
+      // was meant to end would stay live.
+      await revokeToken(
+        fetchImpl,
+        endpoints,
+        outcome.refreshToken ?? outcome.accessToken,
+        remainingBudget(Date.now() - exchangeStarted)
+      );
       logAuth({ route, status, event: why });
       return fail(status, error);
     };
@@ -348,6 +359,10 @@ export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response
     }
     clearSessionCookie(event);
     logAuth({ route, status: 200, event: outcome, googleError, kid });
-    return reply(200, { ok: true });
+    // `revoked` says whether THIS server ended the grant at Google. Anything
+    // short of that (Google down, a cookie sealed under a retired key, no
+    // cookie at all) leaves the client to revoke the access token it holds:
+    // revoking either token of a grant ends the whole grant.
+    return reply(200, { ok: true, revoked: outcome === 'revoked' });
   });
 }

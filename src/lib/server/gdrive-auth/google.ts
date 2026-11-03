@@ -15,6 +15,24 @@ export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 export const GOOGLE_TIMEOUT_MS = 5000;
 
 /**
+ * What one request may spend on Google in total, under the routes'
+ * `maxDuration` (10 s) with headroom for the function itself. Only /session
+ * makes two calls in a row (redeem the code, then revoke a grant it refuses);
+ * the second gets what the first left (`remainingBudget`).
+ */
+export const GOOGLE_BUDGET_MS = 8000;
+/** The least a follow-up call is given, however long the first one took. */
+export const MIN_GOOGLE_TIMEOUT_MS = 1000;
+
+/** The timeout for a follow-up Google call started `elapsedMs` into the budget. */
+export function remainingBudget(elapsedMs: number): number {
+  return Math.min(
+    GOOGLE_TIMEOUT_MS,
+    Math.max(MIN_GOOGLE_TIMEOUT_MS, GOOGLE_BUDGET_MS - Math.max(0, elapsedMs))
+  );
+}
+
+/**
  * Test-only: a stand-in for Google's OAuth origin (`GDRIVE_TEST_GOOGLE_ORIGIN`),
  * read only when the server runs in the `test` or `interop` mode. The mode is a
  * compile-time constant, so a production build folds this away together with
@@ -50,7 +68,8 @@ type Posted = { kind: 'answer'; status: number; body: unknown } | { kind: 'netwo
 async function postForm(
   fetchImpl: FetchLike,
   url: string,
-  form: Record<string, string>
+  form: Record<string, string>,
+  timeoutMs: number = GOOGLE_TIMEOUT_MS
 ): Promise<Posted> {
   let response: Response;
   try {
@@ -61,7 +80,7 @@ async function postForm(
         Accept: 'application/json'
       },
       body: new URLSearchParams(form).toString(),
-      signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       redirect: 'error'
     });
   } catch {
@@ -186,9 +205,10 @@ export async function refreshAccessToken(
 export async function revokeToken(
   fetchImpl: FetchLike,
   endpoints: GoogleEndpoints,
-  token: string
+  token: string,
+  timeoutMs: number = GOOGLE_TIMEOUT_MS
 ): Promise<{ revoked: boolean; googleError?: string }> {
-  const posted = await postForm(fetchImpl, endpoints.revoke, { token });
+  const posted = await postForm(fetchImpl, endpoints.revoke, { token }, timeoutMs);
   if (posted.kind === 'network') return { revoked: false, googleError: 'network' };
   if (posted.status >= 200 && posted.status < 300) return { revoked: true };
   return { revoked: false, googleError: errorCode(posted.body) };

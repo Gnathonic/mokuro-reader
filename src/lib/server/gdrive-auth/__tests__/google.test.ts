@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   exchangeCode,
   googleEndpoints,
   grantsDriveFile,
   refreshAccessToken,
+  remainingBudget,
   revokeToken,
-  GOOGLE_TIMEOUT_MS
+  GOOGLE_BUDGET_MS,
+  GOOGLE_TIMEOUT_MS,
+  MIN_GOOGLE_TIMEOUT_MS
 } from '../google';
 import { fakeGoogle, tokenAnswer, type GoogleAnswer } from './helpers';
 
@@ -160,5 +163,32 @@ describe('the endpoints', () => {
     expect(grantsDriveFile('https://www.googleapis.com/auth/drive.file.extra')).toBe(false);
     expect(grantsDriveFile('')).toBe(false);
     expect(grantsDriveFile(undefined)).toBe(false);
+  });
+});
+
+describe('the time budget', () => {
+  it('a follow-up call gets what the first left of the budget, at least a second, never more than one call’s timeout', () => {
+    expect(remainingBudget(0)).toBe(GOOGLE_TIMEOUT_MS);
+    expect(remainingBudget(4500)).toBe(GOOGLE_BUDGET_MS - 4500);
+    expect(remainingBudget(GOOGLE_TIMEOUT_MS)).toBe(GOOGLE_BUDGET_MS - GOOGLE_TIMEOUT_MS);
+    expect(remainingBudget(60_000)).toBe(MIN_GOOGLE_TIMEOUT_MS);
+    expect(remainingBudget(-5)).toBe(GOOGLE_TIMEOUT_MS);
+    // A timed-out first call plus the longest follow-up still fit under the
+    // routes' maxDuration (10 s) with room for the function.
+    expect(GOOGLE_TIMEOUT_MS + remainingBudget(GOOGLE_TIMEOUT_MS)).toBeLessThanOrEqual(8000);
+  });
+
+  it('a revoke takes the timeout it is given', async () => {
+    const timeouts: number[] = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      timeouts.push(ms);
+      return real(ms);
+    });
+    const google = fakeGoogle(() => ({ status: 200, body: {} }));
+    await revokeToken(google.fetch, endpoints, 'rt', 1234);
+    await revokeToken(google.fetch, endpoints, 'rt');
+    spy.mockRestore();
+    expect(timeouts).toEqual([1234, GOOGLE_TIMEOUT_MS]);
   });
 });

@@ -222,6 +222,30 @@ describe('POST /api/gdrive/session', () => {
     ]);
   });
 
+  it('a refused grant’s revoke gets only what the code exchange left of the time budget', async () => {
+    const s = setup();
+    let clock = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const timeouts: number[] = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      timeouts.push(ms);
+      return real(ms);
+    });
+    const { deps } = s.deps((call) => {
+      if (call.url.endsWith('/revoke')) return { status: 200, body: {} };
+      clock += 6000; // a slow exchange
+      return tokenAnswer();
+    });
+    const response = await handleSession(
+      sessionEvent(s.jar, { code: CODE, code_verifier: VERIFIER }),
+      deps
+    );
+    expect(response.status).toBe(403);
+    // 5 s for the exchange; the revoke gets 8 − 6 = 2 s, so both fit maxDuration.
+    expect(timeouts).toEqual([5000, 2000]);
+  });
+
   it.each([
     ['invalid_client', 401, 503, 'server_config'],
     ['redirect_uri_mismatch', 400, 503, 'server_config'],
@@ -536,7 +560,7 @@ describe('POST /api/gdrive/logout', () => {
     const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
     const response = await handleLogout(logoutEvent(s.jar), deps);
     expect(response.status).toBe(200);
-    expect(await bodyOf(response)).toEqual({ ok: true });
+    expect(await bodyOf(response)).toEqual({ ok: true, revoked: true });
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe('https://oauth2.googleapis.com/revoke');
     expect(calls[0].form).toEqual({ token: '1//planted' });
@@ -562,25 +586,35 @@ describe('POST /api/gdrive/logout', () => {
   });
 
   it.each([
-    ['a bad cookie', 'garbage'],
-    ['no cookie', undefined]
-  ])('%s: no revoke, still cleared, still 200', async (_l, value) => {
+    ['a bad cookie', () => 'garbage'],
+    // Sealed under a key this server no longer has (rotated out): unknown_kid.
+    ['a cookie under a retired key', () => setup().plant()],
+    ['no cookie', () => undefined]
+  ])('%s: no revoke, still cleared, still 200, and says it revoked nothing', async (_l, value) => {
     const s = setup();
-    if (value) s.jar.values.set(COOKIE, value);
+    const planted = value();
+    if (planted) s.jar.values.set(COOKIE, planted);
     const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
     const response = await handleLogout(logoutEvent(s.jar), deps);
     expect(response.status).toBe(200);
+    // The client must then revoke the access token it holds itself.
+    expect(await bodyOf(response)).toEqual({ ok: true, revoked: false });
     expect(calls).toHaveLength(0);
     expect(s.jar.deletes).toHaveLength(1);
   });
 
-  it('Google refusing or unreachable: still cleared, still 200', async () => {
-    for (const answer of ['network', { status: 400, body: { error: 'invalid_token' } }] as const) {
+  it('Google refusing or unreachable: still cleared, still 200, revoked: false', async () => {
+    for (const answer of [
+      'network',
+      { status: 503, body: {} },
+      { status: 400, body: { error: 'invalid_token' } }
+    ] as const) {
       const s = setup();
       s.plant();
       const { deps } = s.deps(() => answer as GoogleAnswer);
       const response = await handleLogout(logoutEvent(s.jar), deps);
       expect(response.status).toBe(200);
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false });
       expect(s.jar.deletes).toHaveLength(1);
     }
   });
