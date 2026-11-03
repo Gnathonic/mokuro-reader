@@ -11,10 +11,13 @@ on:
 permissions:
   contents: read
 
-# A new push to a PR supersedes the run on its previous head. Pushes to main or
-# develop are grouped by commit, so each one keeps its own complete run.
+# A new push to a PR supersedes the run on its previous head. Every other run is
+# its own group (the run id): GitHub keeps only ONE pending run per group and
+# cancels it when another arrives, so a group shared by commit would let a push
+# to main fast-forwarded to develop's commit wait on develop's run, and a third
+# run on one commit cancel the second.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

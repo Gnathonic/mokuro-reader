@@ -78,8 +78,10 @@ jobs:
             collecting && /^## \[?[0-9]/ { exit }
             collecting { print }
           ' CHANGELOG.md)
-          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/release-notes.md"
-          cat "$RUNNER_TEMP/release-notes.md"
+          # No trailing newline: the body is the section exactly, as the old step
+          # output (whose heredoc dropped the newline before its delimiter) gave it.
+          printf '%s' "$NOTES" > "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md"; echo
 
       # Create GitHub Release: tag vX.Y.Z (pushed above), title vX.Y.Z, this
       # version's changelog section as the body, a full release (not a draft, not a

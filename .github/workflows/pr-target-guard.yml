@@ -13,10 +13,14 @@ permissions:
 jobs:
   # Block any PR to main that doesn't come from develop (non-fork branches only;
   # forks are handled by redirect-forks below to avoid a duplicate message).
+  # Dependabot is exempt: its version updates target develop (dependabot.yml),
+  # but its SECURITY updates always target the default branch — target-branch
+  # does not apply to them — so the guard would only fail and comment on PRs
+  # nobody can retarget. Whether to merge one into main is left to the reviewer.
   require-develop-to-main:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'develop' && !github.event.pull_request.head.repo.fork
+    if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'develop' && !github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]'
     permissions:
       contents: read
       pull-requests: write

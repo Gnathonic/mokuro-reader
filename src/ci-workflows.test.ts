@@ -62,10 +62,33 @@ describe('GitHub workflows', () => {
   it.each(workflows)('$name pins every action to a commit, with its version noted', ({ text }) => {
     const uses = text.split('\n').filter((line) => /^\s*(?:- )?uses:/.test(line));
     for (const line of uses) {
-      expect(line).toMatch(
-        /uses: [\w.-]+\/[\w./-]+@[0-9a-f]{40} # (v\d+\.\d+\.\d+|stable branch \(no release tags\), \d{4}-\d{2}-\d{2})$/
-      );
+      expect(line).toMatch(/uses: [\w.-]+\/[\w./-]+@[0-9a-f]{40} # v\d+(?:\.\d+\.\d+)?$/);
+      // A bare major only where the action publishes nothing finer: dtolnay's
+      // only tag is `v1`, which follows master (never rewritten, unlike its
+      // force-pushed `stable` branch, whose head is orphaned by every master push).
+      if (!/ # v\d+\.\d+\.\d+$/.test(line)) expect(line).toMatch(/uses: dtolnay\/rust-toolchain@/);
     }
+  });
+
+  it('interop.yml names the Rust toolchain the v1 action requires as an input', () => {
+    const text = workflows.find((w) => w.name === 'interop.yml')!.text.split('\n');
+    const steps = text.flatMap((line, i) =>
+      /uses: dtolnay\/rust-toolchain@/.test(line) ? [i] : []
+    );
+    expect(steps.length).toBeGreaterThan(0);
+    for (const i of steps) {
+      expect(text[i]).toMatch(/ # v1$/);
+      expect(text.slice(i + 1, i + 3)).toEqual(['        with:', '          toolchain: stable']);
+    }
+  });
+
+  it('pr-target-guard.yml lets Dependabot security updates (always to main) through', () => {
+    const guard = workflows.find((w) => w.name === 'pr-target-guard.yml')!.text;
+    const job = jobBlocks(guard).find((j) => j.id === 'require-develop-to-main')!;
+    const condition = job.lines.find((line) => /^ {4}if: /.test(line))!;
+    expect(condition).toContain("github.event.pull_request.base.ref == 'main'");
+    expect(condition).toContain("github.event.pull_request.head.ref != 'develop'");
+    expect(condition).toContain("github.event.pull_request.user.login != 'dependabot[bot]'");
   });
 
   it.each(workflows)('$name defaults its token to read-only contents', ({ text }) => {
@@ -111,6 +134,9 @@ describe('GitHub workflows', () => {
     expect(release).toContain('gh release create "v$VERSION"');
     expect(release).toContain('--title "v$VERSION"');
     expect(release).toContain('--notes-file "$RUNNER_TEMP/release-notes.md"');
+    // The body byte for byte as the old step output gave it: no trailing newline.
+    expect(release).toContain(`printf '%s' "$NOTES" > "$RUNNER_TEMP/release-notes.md"`);
+    expect(release).not.toMatch(/printf '%s\\n' "\$NOTES"/);
     expect(release).not.toContain('--prerelease');
     expect(release).not.toContain('--generate-notes');
     expect(release).toContain('GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
@@ -119,9 +145,11 @@ describe('GitHub workflows', () => {
   });
 
   it.each(['ci.yml', 'interop.yml'])('%s cancels superseded runs on PRs only', (name) => {
+    // Outside a PR the group is the run itself: a shared group holds only one
+    // pending run and cancels it for the next, cancel-in-progress or not.
     const text = workflows.find((w) => w.name === name)!.text;
     expect(text).toContain(
-      'group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}'
+      'group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}'
     );
     expect(text).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
   });

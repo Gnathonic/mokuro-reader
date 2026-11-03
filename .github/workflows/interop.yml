@@ -22,11 +22,13 @@ on:
 permissions:
   contents: read
 
-# A new push to a PR supersedes the run on its previous head. Pushes, the
-# schedule and dispatches are grouped by event and commit, so each one keeps
-# its own complete run.
+# A new push to a PR supersedes the run on its previous head. Every other run —
+# a push, the schedule, a dispatch — is its own group (the run id): GitHub keeps
+# only ONE pending run per group and cancels it when another arrives, so a group
+# shared by commit would let a third dispatch on one commit (say after changing
+# vars.BUNKO_REF) cancel the second.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -55,7 +57,9 @@ jobs:
           path: bunko
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch (no release tags), 2026-10-16
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -229,7 +233,9 @@ jobs:
           path: bunko
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch (no release tags), 2026-10-16
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
