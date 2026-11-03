@@ -210,6 +210,75 @@ describe('onedriveCore', () => {
       }
     );
 
+    // Every chunk PUT failed, then the lost-ack probe found a file of the same
+    // size at the path. That may be THIS write, or the old file (a
+    // positions.json whose page changed but not its length), or another
+    // device's same-size write: nothing here tells them apart. The receipt
+    // must not hand out that item's change token, or the root-file memo would
+    // bind OUR bytes to its revision and stop reading the real file.
+    it(
+      'a write recovered by the lost-ack probe reports no revision and no server mtime',
+      { timeout: 30000 },
+      async () => {
+        vi.mocked(fetch).mockImplementation((async (input: unknown, init?: RequestInit) => {
+          const url = String(input);
+          if (url.endsWith(':/createUploadSession')) {
+            return { ok: true, json: async () => ({ uploadUrl: 'https://upload.example/xyz' }) };
+          }
+          if (url === 'https://upload.example/xyz' && init?.method === 'PUT') {
+            throw new TypeError('network error');
+          }
+          if (url === 'https://upload.example/xyz') {
+            return { ok: false, text: async () => '' }; // resume probe: no answer
+          }
+          // The lost-ack probe: whatever item sits at the path, same size.
+          return {
+            ok: true,
+            json: async () => ({
+              id: 'positions-id',
+              size: 10,
+              lastModifiedDateTime: '2026-11-01T09:00:00Z',
+              cTag: 'ctag-already-there',
+              eTag: 'etag-already-there'
+            })
+          };
+        }) as unknown as typeof fetch);
+
+        const result = await onedriveCore.uploadFile({
+          seriesTitle: '',
+          filename: 'positions.json',
+          blob: new Blob([new Uint8Array(10)]),
+          credentials: { accessToken: 'TOKEN' }
+        });
+
+        expect(result).toEqual({ fileId: 'positions-id', size: 10 });
+        expect(vi.mocked(fetch).mock.calls.at(-1)?.[0]).toBe(
+          'https://graph.microsoft.com/v1.0/me/drive/root:/mokuro-reader/positions.json'
+        );
+      }
+    );
+
+    it('a final chunk that answered carries its revision (cTag, else eTag)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ uploadUrl: 'https://upload.example/xyz' })
+      } as Response);
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: 'p', size: 10, cTag: 'ctag-ours', eTag: 'etag-ours' })
+      } as Response);
+
+      const result = await onedriveCore.uploadFile({
+        seriesTitle: '',
+        filename: 'positions.json',
+        blob: new Blob([new Uint8Array(10)]),
+        credentials: { accessToken: 'TOKEN' }
+      });
+
+      expect(result.revision).toBe('ctag-ours');
+    });
+
     it('fails fast on a non-retryable 4xx without retrying', async () => {
       vi.mocked(fetch).mockResolvedValueOnce({
         ok: true,

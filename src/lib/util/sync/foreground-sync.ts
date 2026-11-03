@@ -61,7 +61,11 @@ export function syncReady(): boolean {
   // volume-data.json and would upload this device's copy over it.
   const cache = cacheManager.getCache(provider.type);
   if (!cache?.isLoaded() || cache.isFetching()) return false;
-  // An expired Drive token waits for re-authentication, as at startup.
+  return providerTokenValid(provider);
+}
+
+/** An expired Drive token waits for re-authentication, as at startup. */
+export function providerTokenValid(provider: { type: string }): boolean {
   if (provider.type === 'google-drive') {
     const msLeft = tokenManager.getTimeUntilExpiry();
     if (msLeft !== null && msLeft <= 0) return false;

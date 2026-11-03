@@ -1010,13 +1010,13 @@ async function uploadMissingSidecars(feed: SidecarUploadFeed): Promise<void> {
   // session budget; import-fed uploads are budgeted by the user's downloads.
   try {
     for (const upload of uploads) {
-      // BLIND upload — the backfill is the caller the write-and-forget path
-      // exists for: a sidecar upload changes nothing any view renders, a
-      // failure loses nothing (the attempted-set defers it and the next
-      // session's sweep re-derives the gap and tries again), so there is no
-      // reason to pay Google Drive's ordinary post-upload refetch of the
-      // WHOLE listing (13+ `files.list` calls on a 12,500-file library,
-      // twice per backfilled volume). Convergence still holds: the unified
+      // BLIND upload — the write-and-forget path: a sidecar upload changes
+      // nothing any view renders, a failure loses nothing (the attempted-set
+      // defers it and the next session's sweep re-derives the gap and tries
+      // again), and no post-upload refresh work is worth paying for it (Google
+      // Drive's ordinary upload refetched the WHOLE listing until #288 — 13+
+      // `files.list` calls on a 12,500-file library, twice per backfilled
+      // volume). Convergence still holds: the unified
       // layer adds the file to the provider's listing cache with the upload
       // response's own metadata, so the next check sees the sidecar without
       // any fetch.

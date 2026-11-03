@@ -26,18 +26,18 @@
 
   let { volume, variant = 'list' }: Props = $props();
 
-  const volName = decodeURI(volume.volume_title);
+  let volName = $derived(decodeURI(volume.volume_title));
 
   // Get cloud metadata using helpers
-  const cloudFileId = getCloudFileId(volume);
-  const cloudProvider = getCloudProvider(volume);
-  const cloudSize = getCloudSize(volume);
+  let cloudFileId = $derived(getCloudFileId(volume));
+  let cloudProvider = $derived(getCloudProvider(volume));
+  let cloudSize = $derived(getCloudSize(volume));
 
   // The download size, in the same words a real volume row uses.
   let sizeDisplay = $derived(formatArchiveSize(getArchiveSize(volume) ?? 0) || 'Unknown size');
 
-  const providerName = cloudProvider ? PROVIDER_SHORT_LABELS[cloudProvider] : 'Cloud';
-  const badgeColor = cloudProvider ? PROVIDER_BADGE_COLORS[cloudProvider] : 'gray';
+  let providerName = $derived(cloudProvider ? PROVIDER_SHORT_LABELS[cloudProvider] : 'Cloud');
+  let badgeColor = $derived(cloudProvider ? PROVIDER_BADGE_COLORS[cloudProvider] : 'gray');
 
   // Track queue state
   let queueState = $state($downloadQueue);

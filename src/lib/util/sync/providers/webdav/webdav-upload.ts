@@ -27,6 +27,19 @@ export interface WebdavPutResult {
    * names, `sha-256`): the bytes it stored are the bytes we sent, end to end.
    */
   digestVerified?: string;
+  /**
+   * The PUT response's `ETag`, quotes stripped the way the `webdav` library
+   * strips a PROPFIND's `getetag` — so it compares equal to the next stat's.
+   * Absent when the server sent none or CORS does not expose it.
+   */
+  etag?: string;
+}
+
+/** An `ETag` header value in the form the `webdav` library reports `getetag`. */
+export function normalizeEtag(value: string | null | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const etag = value.trim().replace(/"/g, '');
+  return etag || undefined;
 }
 
 function base64OfBytes(bytes: Uint8Array): string {
@@ -325,8 +338,10 @@ export async function uploadFileWithClient(
         }
         const serverOcr = readServerOcrHeaders(header, uploadUrl);
         const digestVerified = header('X-Mokuro-Digest-Verified')?.trim().toLowerCase();
+        const etag = normalizeEtag(header('ETag'));
         resolve({
           path,
+          ...(etag ? { etag } : {}),
           ...(digestVerified ? { digestVerified } : {}),
           ...(serverOcr ? { serverOcr } : {}),
           ...(isVerifiedPutHeader(header('X-Mokuro-Put')) ? { putVerified: true as const } : {})

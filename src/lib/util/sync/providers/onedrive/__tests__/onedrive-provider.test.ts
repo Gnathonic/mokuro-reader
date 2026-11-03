@@ -20,6 +20,7 @@ vi.mock('../token-manager', () => ({
 // Graph client: every network call is a spy we drive per test.
 vi.mock('../graph-client', () => ({
   getItemByPath: vi.fn(),
+  getItemStamp: vi.fn(),
   listChildren: vi.fn(),
   createFolder: vi.fn(),
   deleteItem: vi.fn(),
@@ -28,7 +29,13 @@ vi.mock('../graph-client', () => ({
 }));
 
 import { OneDriveProvider } from '../onedrive-provider';
-import { getItemByPath, listChildren, createFolder, deleteItem } from '../graph-client';
+import {
+  getItemByPath,
+  getItemStamp,
+  listChildren,
+  createFolder,
+  deleteItem
+} from '../graph-client';
 import { ProviderError } from '../../../provider-interface';
 import { oneDriveStorageFullError } from '../graph-errors';
 
@@ -216,5 +223,56 @@ describe('nested folders (reading history)', () => {
       ['mokuro-reader', 'history'],
       ['mokuro-reader/history', 'dev-a']
     ]);
+  });
+});
+
+describe('OneDriveProvider.statFile (conditional root-file reads)', () => {
+  const file = {
+    provider: 'onedrive' as const,
+    fileId: 'item-1',
+    path: 'volume-data.json',
+    modifiedTime: '',
+    size: 0
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('is the item by id, $select-ed: cTag is the revision, else eTag', async () => {
+    vi.mocked(getItemStamp).mockResolvedValueOnce({
+      id: 'item-1',
+      name: 'volume-data.json',
+      size: 28542,
+      lastModifiedDateTime: '2026-11-02T10:00:00Z',
+      eTag: '"{E},3"',
+      cTag: '"c:{E},3"',
+      file: {}
+    });
+    const provider = new OneDriveProvider();
+    expect(await provider.statFile(file)).toEqual({
+      size: 28542,
+      modifiedTime: '2026-11-02T10:00:00Z',
+      revision: '"c:{E},3"'
+    });
+    expect(vi.mocked(getItemStamp)).toHaveBeenCalledWith('TOKEN', 'item-1');
+
+    vi.mocked(getItemStamp).mockResolvedValueOnce({
+      id: 'item-1',
+      name: 'volume-data.json',
+      size: 2,
+      lastModifiedDateTime: '2026-11-02T10:00:00Z',
+      eTag: '"{E},4"',
+      file: {}
+    });
+    expect((await provider.statFile(file))?.revision).toBe('"{E},4"');
+  });
+
+  it('a 404 (or a folder under that id) is gone', async () => {
+    const provider = new OneDriveProvider();
+    vi.mocked(getItemStamp).mockResolvedValueOnce(null);
+    expect(await provider.statFile(file)).toBeNull();
+    vi.mocked(getItemStamp).mockResolvedValueOnce({ id: 'item-1', name: 'x', folder: {} });
+    expect(await provider.statFile(file)).toBeNull();
   });
 });
