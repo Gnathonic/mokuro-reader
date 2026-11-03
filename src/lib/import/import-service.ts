@@ -19,16 +19,16 @@ import {
 } from './archive-listing';
 import { decideImportRouting } from './routing';
 import { processVolume, parseMokuroFile, matchImagesToPages } from './processing';
-import { saveVolume, storedTitleSegment, volumeExists } from './database';
+import { storedTitleSegment, volumeExists } from './database';
 import {
   applyImportedSeriesFiles,
   collectSeriesFileFromBytes,
   collectSeriesFileFromFile,
   dropLinkSeriesFiles,
-  noteLinkSeriesBeforeSave,
   recordImportedSeriesTitle,
   recordSeriesFile,
   resetImportedSeriesFiles,
+  saveLinkVolume,
   type LinkSeriesGuard,
   type PendingSeriesFile
 } from './series-file-import';
@@ -796,8 +796,7 @@ async function processArchiveContents(
           lastError = `Volume "${processed.metadata.volume}" already exists`;
         } else {
           // Save to database
-          if (seriesGuard) await noteLinkSeriesBeforeSave(seriesGuard, savedTitle(processed));
-          await saveVolume(processed);
+          await saveLinkVolume(processed, seriesGuard);
           noteImportedVolume(processed, batch);
           successCount++;
         }
@@ -996,10 +995,7 @@ async function processSingleVolume(
       }
 
       onProgress?.('Saving...', 85);
-      if (source.seriesGuard) {
-        await noteLinkSeriesBeforeSave(source.seriesGuard, savedTitle(processed));
-      }
-      await saveVolume(processed);
+      await saveLinkVolume(processed, source.seriesGuard);
       noteImportedVolume(processed, source.batch);
       onProgress?.('Complete', 100);
       return { success: true };
@@ -1084,10 +1080,7 @@ async function processSingleVolume(
     onProgress?.('Saving...', 80);
 
     // Save to database
-    if (source.seriesGuard) {
-      await noteLinkSeriesBeforeSave(source.seriesGuard, savedTitle(processed));
-    }
-    await saveVolume(processed);
+    await saveLinkVolume(processed, source.seriesGuard);
     noteImportedVolume(processed, source.batch);
 
     onProgress?.('Complete', 100);

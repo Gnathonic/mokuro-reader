@@ -60,14 +60,16 @@ import { cancelQueuedImports, importFiles, importQueue, isImporting } from '../i
 import {
   applyImportedSeriesFiles,
   dropLinkSeriesFiles,
-  noteLinkSeriesBeforeSave,
   parseImportedSeriesFile,
   recordImportedSeriesTitle,
   recordSeriesFile,
   resetImportedSeriesFiles,
+  saveLinkVolume,
   type LinkSeriesGuard
 } from '../series-file-import';
 import { buildSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
+import { localSeriesKeys } from '../deep-link-import';
+import type { ProcessedVolume } from '../types';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import type { VolumeMetadata } from '$lib/types';
@@ -570,22 +572,49 @@ describe('keying a series.json to a series of the batch', () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
-    /** A guard whose library reads answer `reads` in turn (the last one repeats). */
-    function guardReading(batch: number, ...reads: string[][]): LinkSeriesGuard {
-      let n = 0;
+    /** A guard that reads the real library, as a deep link's does. */
+    function libraryGuard(batch: number): LinkSeriesGuard {
+      return { batch, protectedKeys: new Set(), refresh: localSeriesKeys };
+    }
+
+    /** One processed volume of `seriesTitle`, ready for a real save. */
+    function linkVolume(seriesTitle: string, uuid: string): ProcessedVolume {
       return {
-        batch,
-        protectedKeys: new Set(),
-        refresh: async () => new Set(reads[Math.min(n++, reads.length - 1)])
+        metadata: {
+          volumeUuid: uuid,
+          seriesUuid: `${seriesTitle}-series`,
+          series: seriesTitle,
+          volume: uuid,
+          mokuroVersion: '0.2.1',
+          pageCount: 1,
+          chars: 0,
+          thumbnail: new Blob(['thumb']),
+          thumbnailWidth: 10,
+          thumbnailHeight: 14
+        },
+        ocrData: {
+          volume_uuid: uuid,
+          pages: [{ img_path: '001.jpg', blocks: [], cumulativeChars: 0 }]
+        },
+        fileData: { volume_uuid: uuid, files: { '001.jpg': new File([], '001.jpg') } },
+        nestedSources: []
       };
     }
 
-    it('lands on a series that was absent just before its import saved there', async () => {
-      // Absent at the save, there by apply time (the link's own volume).
-      const linkGuard = guardReading(7, [], ['naruto']);
+    /** Save as an import does, then record the title as `noteImportedVolume` would. */
+    async function linkSaves(seriesTitle: string, uuid: string, linkGuard: LinkSeriesGuard) {
+      await saveLinkVolume(linkVolume(seriesTitle, uuid), linkGuard);
+      recordImportedSeriesTitle(seriesTitle, uuid, linkGuard.batch);
+    }
+
+    /** A volume row some other writer (a download, another tab) stored. */
+    const otherRow = (seriesTitle: string, uuid: string) =>
+      ({ ...volume, series_title: seriesTitle, volume_uuid: uuid }) as VolumeMetadata;
+
+    it('lands on a series that was absent when its import saved there', async () => {
+      const linkGuard = libraryGuard(7);
       recordLinked('Naruto', linkGuard);
-      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
-      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+      await linkSaves('Naruto', 'naruto-vol', linkGuard);
       recordImportedSeriesTitle('Naruto', 'naruto-vol-2', 8);
 
       await applyImportedSeriesFiles();
@@ -596,11 +625,11 @@ describe('keying a series.json to a series of the batch', () => {
     it('not on one the library already held when its import saved there', async () => {
       const info = vi.spyOn(console, 'info').mockImplementation(() => {});
       // Whatever put "Naruto" there — another import, a cloud download — the
-      // read just before the link's save sees it.
-      const linkGuard = guardReading(7, ['naruto']);
+      // read inside the link's save sees it.
+      await db.volumes.put(otherRow('Naruto', 'cloud-naruto'));
+      const linkGuard = libraryGuard(7);
       recordLinked('Naruto', linkGuard);
-      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
-      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+      await linkSaves('Naruto', 'naruto-vol', linkGuard);
 
       await applyImportedSeriesFiles();
 
@@ -609,66 +638,139 @@ describe('keying a series.json to a series of the batch', () => {
       expect(info.mock.calls.flat().join(' ')).toContain('already in the library');
     });
 
-    it('reads the library once per series, at the first save there', async () => {
-      const linkGuard = guardReading(7, [], ['naruto']);
-      const refresh = vi.spyOn(linkGuard, 'refresh');
-      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
-      // The second save would see the link's own first volume; it must not
-      // take that back.
-      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
+    it('nor on one another writer created just before the save’s transaction', async () => {
+      // The window the old read-then-save left open: the series lands after
+      // any read made before `saveVolume`, before its transaction opens.
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const original = db.transaction.bind(db) as (...a: unknown[]) => unknown;
+      const spy = vi
+        .spyOn(db, 'transaction')
+        .mockImplementationOnce(((...args: unknown[]) =>
+          db.volumes
+            .put(otherRow('Naruto', 'cloud-naruto'))
+            .then(() => original(...args))) as never);
+      const linkGuard = libraryGuard(7);
       recordLinked('Naruto', linkGuard);
-      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+      await linkSaves('Naruto', 'naruto-vol', linkGuard);
+      spy.mockRestore();
 
       await applyImportedSeriesFiles();
 
-      expect(refresh).toHaveBeenCalledTimes(2); // the save's, then the apply's
+      expect(await db.volumes.count()).toBe(2);
+      expect(await db.series_metadata.count()).toBe(0);
+      expect(info.mock.calls.flat().join(' ')).toContain('already in the library');
+    });
+
+    it('reads the library once per series, inside the first save there', async () => {
+      const linkGuard = libraryGuard(7);
+      const refresh = vi.spyOn(linkGuard, 'refresh');
+      await linkSaves('Naruto', 'naruto-vol', linkGuard);
+      // The second save would see the link's own first volume; it must not
+      // take that back.
+      await linkSaves('Naruto', 'naruto-vol-2', linkGuard);
+      recordLinked('Naruto', linkGuard);
+
+      await applyImportedSeriesFiles();
+
+      expect(refresh).toHaveBeenCalledTimes(2); // the first save's, then the apply's
       expect((await db.series_metadata.get('naruto'))?.series_title).toBe('Naruto');
     });
 
     it('remembers what a link created across an apply that came between', async () => {
-      const linkGuard = guardReading(7, [], ['naruto']);
-      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
-      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+      const linkGuard = libraryGuard(7);
+      await linkSaves('Naruto', 'naruto-vol', linkGuard);
       // Another import's apply drains the batch before the link's file arrives.
       await applyImportedSeriesFiles();
 
       recordLinked('Naruto', linkGuard);
-      recordImportedSeriesTitle('Naruto', 'naruto-vol-2', 7);
+      await linkSaves('Naruto', 'naruto-vol-2', linkGuard);
       await applyImportedSeriesFiles();
 
       expect((await db.series_metadata.get('naruto'))?.series_title).toBe('Naruto');
     });
 
-    it('creates nothing when the library cannot be read before the save', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it.each([
+      ['a thrown error', async () => Promise.reject(new Error('library unreadable'))],
+      // A failed IndexedDB request inside the save's transaction (NaN is no
+      // valid key): caught, it must not abort the transaction.
+      ['a failed Dexie read', async () => db.volumes.get(NaN as never)]
+    ])(
+      'saves the volume but creates nothing when the read in the save fails (%s)',
+      async (_label, failingRead) => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        vi.spyOn(console, 'info').mockImplementation(() => {});
+        let reads = 0;
+        const linkGuard: LinkSeriesGuard = {
+          batch: 7,
+          protectedKeys: new Set(),
+          refresh: async () => {
+            if (reads++ === 0) {
+              await failingRead();
+              throw new Error('the read did not fail');
+            }
+            return localSeriesKeys();
+          }
+        };
+        recordLinked('Naruto', linkGuard);
+        await linkSaves('Naruto', 'naruto-vol', linkGuard);
+
+        expect(await db.volumes.get('naruto-vol')).toBeDefined();
+        expect(await db.volume_files.get('naruto-vol')).toBeDefined();
+
+        await applyImportedSeriesFiles();
+
+        expect(reads).toBe(2);
+        expect(await db.series_metadata.count()).toBe(0);
+        const warned = warn.mock.calls.flat().join(' ');
+        expect(warned).toContain('Could not read the library');
+        expect(warned).not.toContain('the read did not fail');
+      }
+    );
+
+    it.each([
+      [
+        'a duplicate uuid, before its read',
+        async () => {
+          // Installed, in another series: "Naruto" is still absent.
+          await db.volumes.put(otherRow('Other', 'naruto-vol'));
+        },
+        /already exists/
+      ],
+      [
+        'a write after its read found the series absent',
+        async () => {
+          vi.spyOn(db.volume_files, 'add').mockRejectedValueOnce(new Error('QuotaExceededError'));
+        },
+        /QuotaExceededError/
+      ]
+    ])('creates nothing when the save itself fails (%s)', async (_label, breakTheSave, thrown) => {
       vi.spyOn(console, 'info').mockImplementation(() => {});
-      let reads = 0;
-      const linkGuard: LinkSeriesGuard = {
-        batch: 7,
-        protectedKeys: new Set(),
-        refresh: async () => {
-          if (reads++ === 0) throw new Error('library unreadable');
-          return new Set(['naruto']);
-        }
-      };
-      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
+      await breakTheSave();
+      const linkGuard = libraryGuard(7);
+      const refresh = vi.spyOn(linkGuard, 'refresh');
       recordLinked('Naruto', linkGuard);
-      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+      await expect(saveLinkVolume(linkVolume('Naruto', 'naruto-vol'), linkGuard)).rejects.toThrow(
+        thrown
+      );
+      const readsInFailedSave = refresh.mock.calls.length;
+      // The link's next volume there is saved, but the key was already judged
+      // (and not created) by the failed save.
+      await linkSaves('Naruto', 'naruto-vol-2', linkGuard);
 
       await applyImportedSeriesFiles();
 
+      expect(await db.volumes.get('naruto-vol-2')).toBeDefined();
       expect(await db.series_metadata.count()).toBe(0);
-      expect(warn.mock.calls.flat().join(' ')).toContain('Could not read the library');
+      // Only the apply read again: the next save did not get a second look.
+      expect(refresh.mock.calls.length).toBe(readsInFailedSave + 1);
     });
 
     it('of two links naming one new series, only the one that created it applies', async () => {
       const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-      const first = guardReading(7, [], ['naruto']);
-      const second = guardReading(8, ['naruto']);
-      await noteLinkSeriesBeforeSave(first, 'Naruto');
-      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
-      await noteLinkSeriesBeforeSave(second, 'Naruto');
-      recordImportedSeriesTitle('Naruto', 'naruto-vol-2', 8);
+      const first = libraryGuard(7);
+      const second = libraryGuard(8);
+      await linkSaves('Naruto', 'naruto-vol', first);
+      await linkSaves('Naruto', 'naruto-vol-2', second);
       recordLinked('Naruto', first);
       recordSeriesFile({
         // Newer facts: only the guard can keep them off.

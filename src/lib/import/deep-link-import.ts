@@ -46,7 +46,8 @@ async function rememberPendingOcr(
  * Every series this library already knows, by `protectedSeriesKey` (the NFC
  * fold): a volume row in any state, a metadata record (facts the user set, or
  * a cloud catalog's) or a cached cloud `series.json`. Keys only — no row
- * bodies, no thumbnails.
+ * bodies, no thumbnails. Dexie reads only, and nothing else awaited: a link's
+ * guard also runs it inside a volume save's transaction (`saveLinkVolume`).
  */
 export async function localSeriesKeys(): Promise<Set<string>> {
   const [titles, metadataKeys, indexKeys] = await Promise.all([
@@ -83,9 +84,10 @@ export interface DeepLinkImportOptions {
  *   applied: a series a sync or another import added while the link waited, or
  *   while its archives were still in the queue, is just as much the user's.
  *   A link's file is keyed only by the titles its own import stored, lands
- *   unasked only on a series that was absent just before that import first
- *   saved into it, and is dropped when that import fails or imports nothing
- *   (`LinkSeriesGuard`);
+ *   unasked only on a series that was absent when that import first saved
+ *   into it — read inside that save's own transaction, so no other writer
+ *   can slip in between — and is dropped when that import fails or imports
+ *   nothing (`LinkSeriesGuard`);
  * - the layers go through the same importer a cloud listing's pull uses
  *   (`importFetchedLayers`), onto the volume this import installed.
  *

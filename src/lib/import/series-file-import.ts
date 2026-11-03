@@ -25,6 +25,8 @@ import {
 import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { upsertFromSeriesFile } from '$lib/metadata/store';
 import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
+import { saveVolume, storedTitleSegment, type SavedVolumeData } from './database';
+import type { ProcessedVolume } from './types';
 
 /** A validated `series.json` waiting for the batch's volumes to be saved. */
 export interface PendingSeriesFile {
@@ -55,11 +57,12 @@ export interface PendingSeriesFile {
  * added the very series the file names while the link's archives were still
  * in the queue.
  *
- * "Created by the link" is observed, never inferred: just before the link's
- * import first saves a volume under a series, the library is read again
- * (`noteLinkSeriesBeforeSave`), and only a series absent at that moment is the
- * link's. Whatever path wrote the series first — another import, a download,
- * a sync — the read sees it.
+ * "Created by the link" is observed, never inferred. When the link's import
+ * first saves a volume under a series, the library is read again inside that
+ * save's own transaction (`saveLinkVolume`). Only a series absent there is the
+ * link's. Nothing can write the series between that read and the save, so
+ * whatever path wrote it first — another import, another tab, a download, a
+ * sync — the read sees it.
  */
 export interface LinkSeriesGuard {
   /** The link's import (`PairedSource.batch`); archives nested in it share it. */
@@ -70,7 +73,11 @@ export interface LinkSeriesGuard {
    * confirmation to let it update.
    */
   protectedKeys: ReadonlySet<string>;
-  /** The same read, again: the library's series now, minus the agreed one. */
+  /**
+   * The same read, again: the library's series now, minus the agreed one.
+   * Also called inside a volume save's transaction, so it may await only
+   * Dexie reads of `volumes`, `series_metadata` and `series_index`.
+   */
   refresh: () => Promise<ReadonlySet<string>>;
 }
 
@@ -175,10 +182,11 @@ const titlesByImport = new Map<number, Set<string>>();
 /** Per import: volume_uuid → series title, as `importedVolumes`. */
 const volumesByImport = new Map<number, Map<string, string>>();
 /**
- * Per link (`LinkSeriesGuard.batch`): the series keys its import has saved a
- * volume under (`checked`), and those of them that were absent from the
- * library just before that first save (`created`) — the only series a link's
- * file may land on unasked.
+ * Per link (`LinkSeriesGuard.batch`): the series keys its import has tried to
+ * save a volume under (`checked`, claimed before the save), and those of them
+ * that the first such save found absent inside its own transaction and then
+ * committed (`created`). Those are the only series a link's file may land on
+ * unasked. A key whose save failed is checked but never created.
  *
  * NOT drained with the batch: a link's archives can outlive an apply, and the
  * record of what it created is a fact about the save, not about the batch it
@@ -206,35 +214,51 @@ export function dropLinkSeriesFiles(batch: number): void {
 }
 
 /**
- * Call just BEFORE a link's import saves a volume under `seriesTitle` (the
- * title it will be stored under, `storedTitleSegment`). The first time that
- * link saves under a series, the library is read again: a series that is not
- * there yet is one the link creates, so its file may describe it. One the
- * library already holds — whoever put it there, and whenever — stays the
- * user's. A failed read creates nothing (the file is then refused); it never
- * fails the import.
+ * Save a volume of an import (`saveVolume`). With a LINK's guard, the first
+ * save under a series also decides whether the link creates that series. The
+ * library is read inside the save's own transaction (`beforeWrite`), so no
+ * other writer can add the series between that read and the write. A series
+ * absent there is the link's, and its file may describe it. One the library
+ * already holds stays the user's, whoever put it there.
+ *
+ * The key counts as created only once the save committed. A failed save
+ * creates nothing, and neither does a failed read: the file is then refused,
+ * but the volume still saves.
  */
-export async function noteLinkSeriesBeforeSave(
-  guard: LinkSeriesGuard,
-  seriesTitle: string
-): Promise<void> {
-  if (!seriesTitle) return;
-  const key = protectedSeriesKey(seriesTitle);
+export async function saveLinkVolume(
+  processed: ProcessedVolume,
+  guard?: LinkSeriesGuard
+): Promise<SavedVolumeData> {
+  if (!guard) return saveVolume(processed);
+  const claimed = protectedSeriesKey(storedTitleSegment(processed.metadata.series));
   let entry = linkSeries.get(guard.batch);
   if (!entry) linkSeries.set(guard.batch, (entry = { checked: new Set(), created: new Set() }));
-  if (entry.checked.has(key)) return;
-  // Claimed before the read: a second save under the same key never gets a
+  if (entry.checked.has(claimed)) return saveVolume(processed);
+  // Claimed before the save: a second save under the same key never gets a
   // second, later look that a volume of this very link would answer.
-  entry.checked.add(key);
-  try {
-    const present = await guard.refresh();
-    if (!present.has(key) && !guard.protectedKeys.has(key)) entry.created.add(key);
-  } catch (error) {
-    console.warn(
-      `[Import] Could not read the library before a link saved into '${seriesTitle}'; its ${SERIES_FILE_NAME} will not apply there`,
-      error
-    );
+  entry.checked.add(claimed);
+  let absent: string | undefined;
+  const saved = await saveVolume(processed, {
+    // Inside the transaction: `refresh` reads only Dexie tables it spans.
+    beforeWrite: async (row) => {
+      // The title actually written (a reinstall keeps its stored one).
+      const key = protectedSeriesKey(row.series_title);
+      try {
+        const present = await guard.refresh();
+        if (!present.has(key)) absent = key;
+      } catch (error) {
+        console.warn(
+          `[Import] Could not read the library before a link saved into '${row.series_title}'; its ${SERIES_FILE_NAME} will not apply there`,
+          error
+        );
+      }
+    }
+  });
+  if (absent && !guard.protectedKeys.has(absent)) {
+    entry.checked.add(absent);
+    entry.created.add(absent);
   }
+  return saved;
 }
 
 /**
@@ -388,8 +412,8 @@ export async function applyImportedSeriesFiles(): Promise<void> {
       );
       continue;
     }
-    // The series this link created: absent from the library just before the
-    // link first saved a volume there (`noteLinkSeriesBeforeSave`).
+    // The series this link created: absent from the library inside the
+    // transaction of the link's first save there (`saveLinkVolume`).
     for (const key of created) protectedKeys.delete(key);
     const linkTitlesByKey = keyTitles(linkTitles);
     const linkVolumes = importVolumes.get(batch) ?? new Map<string, string>();

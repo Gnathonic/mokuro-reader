@@ -68,6 +68,7 @@ import {
 } from '../import-service';
 import { reviewSession } from '../review-session';
 import { protectedSeriesKey, resetImportedSeriesFiles } from '../series-file-import';
+import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import { installReviewer, type Reviewer } from './helpers/review-bridge';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.
@@ -565,6 +566,76 @@ describe('a deep link’s series.json and the imports around it (TOCTOU)', () =>
 
     expect(await titles()).toEqual(['Deep 01', 'Victim 01', 'Victim 02']);
     expect(await facts('Victim')).toBeUndefined();
+    expect(await db.series_index.get('victim')).toBeUndefined();
+  });
+
+  /**
+   * Run `writer` once, just before the next volume save opens its transaction:
+   * after any read the link's import made before calling `saveVolume`, before
+   * the save commits — another tab, a cloud download or a sync landing in
+   * that window.
+   */
+  function writeJustBeforeTheSave(writer: () => Promise<unknown>) {
+    const original = db.transaction.bind(db) as (...a: unknown[]) => unknown;
+    let armed = true;
+    return vi.spyOn(db, 'transaction').mockImplementation(((...args: unknown[]) => {
+      const tables = args[1];
+      if (!armed || !Array.isArray(tables) || !tables.includes(db.volume_files)) {
+        return original(...args);
+      }
+      armed = false;
+      return writer().then(() => original(...args));
+    }) as never);
+  }
+
+  it('never lands on a series another writer created between the library read and the save', async () => {
+    const spy = writeJustBeforeTheSave(() =>
+      db.volumes.put({
+        volume_uuid: 'cloud-victim-00',
+        series_uuid: 'cloud-victim',
+        series_title: 'Victim',
+        volume_title: 'Victim 00',
+        mokuro_version: '0.2.1',
+        page_count: 1,
+        character_count: 0,
+        page_char_counts: [0]
+      } as never)
+    );
+    await importArchiveWithOptionalMokuro(
+      await seriesVolume('Victim', 'Victim 01', {
+        extra: { 'series.json': seriesJson('Victim', ['Victim 01-volume']) }
+      }),
+      null,
+      { protectSeries: libraryKeys }
+    );
+    await waitForQueue();
+    spy.mockRestore();
+
+    expect(await titles()).toEqual(['Victim 00', 'Victim 01']);
+    expect(await facts('Victim')).toBeUndefined();
+    expect(await db.series_index.get('victim')).toBeUndefined();
+  });
+
+  it('never overwrites series facts another writer stored between the library read and the save', async () => {
+    const theUsers = {
+      ...createEmptySeriesMetadata('Victim', '2026-01-01T00:00:00.000Z'),
+      folded_key: protectedSeriesKey('Victim'),
+      external_ids: { anilist: 1 },
+      facts_updated_at: '2026-01-01T00:00:00.000Z'
+    };
+    const spy = writeJustBeforeTheSave(() => db.series_metadata.put(theUsers));
+    await importArchiveWithOptionalMokuro(
+      await seriesVolume('Victim', 'Victim 01', {
+        extra: { 'series.json': seriesJson('Victim', ['Victim 01-volume']) }
+      }),
+      null,
+      { protectSeries: libraryKeys }
+    );
+    await waitForQueue();
+    spy.mockRestore();
+
+    expect(await titles()).toEqual(['Victim 01']);
+    expect(await facts('Victim')).toEqual({ anilist: 1 });
     expect(await db.series_index.get('victim')).toBeUndefined();
   });
 
