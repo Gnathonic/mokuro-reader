@@ -4,7 +4,9 @@ import {
   describeLinkTarget,
   linkMayPrefillServer,
   linkTargetWarnings,
-  parseCloudLinkPrefill
+  parseCloudLinkPrefill,
+  redirectEscape,
+  assertNoRedirectEscape
 } from './link-safety';
 
 /** What the URL parser hands the classifier for this link host. */
@@ -180,5 +182,63 @@ describe('parseCloudLinkPrefill', () => {
 
   it('keeps a bare username: it names no server', () => {
     expect(parseCloudLinkPrefill('#/cloud?username=reader')).toEqual({ username: 'reader' });
+  });
+});
+
+describe('redirectEscape', () => {
+  it.each([
+    ['https://a.example/x', 'https://a.example/x'],
+    ['https://a.example/x', 'https://cdn.example/y'],
+    ['http://a.example/x', 'https://a.example/x'],
+    ['http://192.168.1.2/x', 'http://192.168.1.2/y'],
+    ['http://localhost:9090/x', 'http://localhost:9090/y']
+  ])('lets %s go on to %s', (from, to) => {
+    expect(redirectEscape(from, to)).toBeNull();
+  });
+
+  it('refuses plain http after https, even on the same host', () => {
+    expect(redirectEscape('https://a.example/x', 'http://a.example/x')).toContain(
+      'from a secure (https) address to a.example'
+    );
+  });
+
+  it.each(['https://127.0.0.1/x', 'https://10.1.2.3/x', 'https://[fe80::1]/x', 'https://nas/x'])(
+    'refuses a public host handing the fetch to %s',
+    (to) => {
+      expect(redirectEscape('https://a.example/x', to)).toContain(
+        'an address on this device or your own network'
+      );
+    }
+  );
+
+  it('refuses one private host handing the fetch to another the dialog never named', () => {
+    expect(redirectEscape('http://192.168.1.2/x', 'http://192.168.1.3/x')).toContain('192.168.1.3');
+  });
+
+  it('refuses a landing that is not a web address at all', () => {
+    expect(redirectEscape('https://a.example/x', 'file:///etc/passwd')).toContain(
+      'not a web address'
+    );
+  });
+});
+
+describe('assertNoRedirectEscape', () => {
+  function response(redirected: boolean, url: string): Response {
+    const r = new Response('x');
+    Object.defineProperty(r, 'redirected', { value: redirected });
+    Object.defineProperty(r, 'url', { value: url });
+    return r;
+  }
+
+  it('passes a response that was never redirected', () => {
+    expect(() =>
+      assertNoRedirectEscape('https://a.example/x', response(false, 'http://10.0.0.1/'))
+    ).not.toThrow();
+  });
+
+  it('throws, naming the requested URL and why, for a refused redirect', () => {
+    expect(() =>
+      assertNoRedirectEscape('https://a.example/x', response(true, 'http://10.0.0.1/'))
+    ).toThrow('Refused https://a.example/x: it was redirected from a secure (https) address');
   });
 });
