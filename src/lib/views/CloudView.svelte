@@ -24,6 +24,7 @@
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
   import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
+  import { backendAuthEnabled } from '$lib/util/sync/providers/google-drive/auth-backend';
   import DevicesSettings from '$lib/components/Devices/DevicesSettings.svelte';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
@@ -89,6 +90,9 @@
 
   // Without a client id the OneDrive login can only throw — hide the option.
   const onedriveConfigured = !!import.meta.env.VITE_ONEDRIVE_CLIENT_ID;
+  // Drive through the auth backend: one sign-in, then silent renewals — no
+  // hourly re-auth to describe or to switch on.
+  const gdriveStaysSignedIn = backendAuthEnabled();
 
   // Provider display names (shared module keeps all provider maps in sync)
   const providerNames: Record<ProviderType, string> = PROVIDER_LABELS;
@@ -693,7 +697,11 @@
               {/if}
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">Google Drive</div>
-                <div class="text-sm text-gray-400">Up to 15GB free • Automatic hourly re-auth</div>
+                <div class="text-sm text-gray-400">
+                  Up to 15GB free • {gdriveStaysSignedIn
+                    ? 'Stays signed in'
+                    : 'Automatic hourly re-auth'}
+                </div>
               </div>
             </div>
           </button>
@@ -1013,8 +1021,8 @@
               {/if}
             </div>
 
-            <!-- Auto re-authenticate toggle (Google Drive only) -->
-            {#if currentProvider === 'google-drive'}
+            <!-- Auto re-authenticate toggle (Google Drive's hourly popup sign-in only) -->
+            {#if currentProvider === 'google-drive' && !gdriveStaysSignedIn}
               <div class="flex flex-col gap-2">
                 <div class="flex items-center gap-3">
                   <Toggle

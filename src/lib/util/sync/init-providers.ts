@@ -2,7 +2,6 @@ import { providerManager } from './provider-manager';
 import { unifiedCloudManager } from './unified-cloud-manager';
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
-import { GOOGLE_DRIVE_CONFIG } from '$lib/util/sync/providers/google-drive/constants';
 import { getConfiguredProviderType } from './provider-detection';
 import type { SyncProvider, ProviderType } from './provider-interface';
 
@@ -68,16 +67,25 @@ export async function initializeProviders(): Promise<void> {
 
   // Provider-specific initialization
   if (activeProviderType === 'google-drive') {
+    // The auth backend: finish a sign-in Google just redirected back from, or
+    // renew a stale token through the session cookie. Before the API client,
+    // which waits on Google's scripts: neither needs them.
+    try {
+      await tokenManager.restoreSession();
+    } catch (error) {
+      console.warn('⚠️ Google Drive session restore failed:', error);
+    }
+
     console.log('🔧 Initializing Google Drive API client for auto-restore...');
     try {
       await driveApiClient.initialize();
       console.log('✅ Google Drive API client initialized');
 
-      // Check if token is expired and handle re-authentication
-      const gdriveExpiry = localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.TOKEN_EXPIRES);
-      if (gdriveExpiry) {
-        const expiryTime = parseInt(gdriveExpiry, 10);
-        const isExpired = expiryTime <= Date.now();
+      // Check if token is expired and handle re-authentication. Null: no
+      // expiry to act on (none stored, or the auth backend renews on use).
+      const msLeft = tokenManager.getTimeUntilExpiry();
+      if (msLeft !== null) {
+        const isExpired = msLeft <= 0;
 
         if (isExpired) {
           console.log('⚠️ Google Drive token expired');
@@ -90,7 +98,11 @@ export async function initializeProviders(): Promise<void> {
           const { get } = await import('svelte/store');
           const settings = get(miscSettings);
 
-          if (settings.gdriveAutoReAuth) {
+          // Backend mode with an expired session: the Reconnect button is up,
+          // and a sign-in waits for the user's click.
+          if (tokenManager.isBackendMode()) {
+            console.log('⚠️ Google Drive session needs a sign-in.');
+          } else if (settings.gdriveAutoReAuth) {
             console.log('🔄 Auto re-auth enabled, triggering re-authentication...');
             const { showSnackbar } = await import('../snackbar');
             showSnackbar('Google Drive session expired. Re-authenticating...');
@@ -129,13 +141,10 @@ export async function initializeProviders(): Promise<void> {
     // For Google Drive, check if token is still valid before trying to use it
     let shouldFetch = true;
     if (currentProvider.type === 'google-drive') {
-      const gdriveExpiry = localStorage.getItem(GOOGLE_DRIVE_CONFIG.STORAGE_KEYS.TOKEN_EXPIRES);
-      if (gdriveExpiry) {
-        const expiryTime = parseInt(gdriveExpiry, 10);
-        if (expiryTime <= Date.now()) {
-          console.log('ℹ️ Google Drive token expired, skipping fetch/sync until re-authentication');
-          shouldFetch = false;
-        }
+      const msLeft = tokenManager.getTimeUntilExpiry();
+      if (msLeft !== null && msLeft <= 0) {
+        console.log('ℹ️ Google Drive token expired, skipping fetch/sync until re-authentication');
+        shouldFetch = false;
       }
     }
 
