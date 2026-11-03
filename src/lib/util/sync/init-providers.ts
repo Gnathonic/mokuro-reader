@@ -2,6 +2,7 @@ import { providerManager } from './provider-manager';
 import { unifiedCloudManager } from './unified-cloud-manager';
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
+import { hasPendingCallback } from '$lib/util/sync/providers/google-drive/auth-backend';
 import { getConfiguredProviderType } from './provider-detection';
 import type { SyncProvider, ProviderType } from './provider-interface';
 
@@ -47,8 +48,11 @@ export async function loadProvider(type: ProviderType): Promise<SyncProvider> {
  * - Provider modules self-register their caches when loaded
  */
 export async function initializeProviders(): Promise<void> {
-  // Check which provider (if any) is active
-  const activeProviderType = getConfiguredProviderType();
+  // Check which provider (if any) is active. Google just redirected back with
+  // a Drive sign-in's answer: Drive, for this boot, so `restoreSession` can
+  // take it — the provider key only switches once that sign-in completes, so
+  // one abandoned on Google's page never leaves the app on Drive.
+  const activeProviderType = hasPendingCallback() ? 'google-drive' : getConfiguredProviderType();
 
   // If no provider is active, we're done - providers will lazy-load when user clicks login
   if (!activeProviderType) {

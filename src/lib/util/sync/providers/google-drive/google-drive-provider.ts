@@ -9,7 +9,7 @@ import type {
   StorageQuota,
   UploadFileResult
 } from '../../provider-interface';
-import { ProviderError } from '../../provider-interface';
+import { isLoginCancelled, LOGIN_CANCELLED, ProviderError } from '../../provider-interface';
 import { isCbzFile, isSidecarFile, isRootConfigFile, isSyncableFile } from '../../syncable-file';
 import { isHistoryFileName } from '$lib/reading-history/paths';
 import { driveHistoryPath } from './drive-history-path';
@@ -95,6 +95,31 @@ interface PickedFile {
  * Wraps existing Google Drive integration into the unified SyncProvider interface.
  * This allows Drive to work alongside MEGA and WebDAV providers.
  */
+
+/** How long a sign-in redirect may take to leave the page before it counts as failed. */
+const REDIRECT_TIMEOUT_MS = 30_000;
+
+/**
+ * After starting the full-page sign-in: true if this page is shown again from
+ * the back/forward cache (the user pressed Back on Google's page), false if it
+ * is still here after REDIRECT_TIMEOUT_MS without having left.
+ */
+function signInPageReturned(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const onShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      done(true);
+    };
+    const timer = setTimeout(() => done(false), REDIRECT_TIMEOUT_MS);
+    function done(returned: boolean) {
+      clearTimeout(timer);
+      window.removeEventListener('pageshow', onShow);
+      resolve(returned);
+    }
+    window.addEventListener('pageshow', onShow);
+  });
+}
+
 class GoogleDriveProvider implements SyncProvider {
   readonly type = 'google-drive' as const;
   readonly name = 'Google Drive';
@@ -297,10 +322,18 @@ class GoogleDriveProvider implements SyncProvider {
           return;
         }
         if (outcome === 'redirecting') {
-          // The page is navigating away; this never settles unless it did not.
-          await new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Google sign-in did not open')), 30_000)
-          );
+          // The page is navigating away; this settles only if it did not, or
+          // if the user came BACK to this very page (Back on Google's screen
+          // restores it from the back/forward cache): that is a cancel, not a
+          // failure to report.
+          if (await signInPageReturned()) {
+            throw new ProviderError(
+              'Google Drive sign-in cancelled',
+              'google-drive',
+              LOGIN_CANCELLED
+            );
+          }
+          throw new Error('Google sign-in did not open');
         }
         // 'popup': the backend is not there: the implicit sign-in below.
       }
@@ -319,6 +352,7 @@ class GoogleDriveProvider implements SyncProvider {
       setActiveProviderKey('google-drive');
       console.log('✅ Google Drive login successful');
     } catch (error) {
+      if (isLoginCancelled(error)) throw error;
       throw new ProviderError(
         `Google Drive login failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',

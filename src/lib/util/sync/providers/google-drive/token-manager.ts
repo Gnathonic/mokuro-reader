@@ -11,13 +11,39 @@ import {
   callWithProof,
   markBackendUnavailable,
   startSignIn,
-  takeCallback
+  takeCallback,
+  type BackendOutcome
 } from './auth-backend';
 
 /** What a caller of `getAccessToken` gets by default: a token good for this long. */
 export const DEFAULT_MIN_VALIDITY_MS = 5 * 60 * 1000;
 /** Transient refresh failures with an expired token before the popup is offered instead. */
 const FALLBACK_AFTER_FAILURES = 3;
+/**
+ * A sign-out that reached neither the backend nor Google (offline): the
+ * sealed cookie may still hold a live refresh token. Until a /logout gets
+ * through, no silent refresh may use it — on a shared machine the next
+ * person's Connect would otherwise sign the old account back in without a
+ * consent screen. localStorage: it must outlive the tab, like the cookie.
+ */
+export const LOGOUT_PENDING_KEY = 'gdrive_logout_pending';
+
+function logoutPending(): boolean {
+  try {
+    return localStorage.getItem(LOGOUT_PENDING_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setLogoutPending(pending: boolean): void {
+  try {
+    if (pending) localStorage.setItem(LOGOUT_PENDING_KEY, '1');
+    else localStorage.removeItem(LOGOUT_PENDING_KEY);
+  } catch {
+    // Storage blocked: nothing to remember it in.
+  }
+}
 
 /** What a silent refresh through the backend came to. */
 export type BackendRefresh = 'ok' | 'reauth' | 'transient' | 'unavailable';
@@ -98,6 +124,8 @@ class TokenManager {
   /** Transient refresh failures in a row, and when the next attempt may go out. */
   private transientFailures = 0;
   private retryNotBefore = 0;
+  /** Of those, the ones that reached (or timed out on) the backend: offline ones never count. */
+  private backendFailures = 0;
   /** The backend kept failing with an expired token: Reconnect opens the popup instead. */
   private popupFallbackOffered = false;
 
@@ -461,12 +489,19 @@ class TokenManager {
         // even when this tab fell back to the popup: a cookie from an earlier
         // session may still be there.
         const outcome = await callBackend('logout', {});
-        // Not reached: revoke the access token here instead. Revoking either
-        // token of a grant revokes the whole grant, so a cookie left behind
-        // holds a dead refresh token.
-        if (outcome.kind !== 'done' && currentToken && !injected) {
-          await this.revokeGrant(currentToken);
+        // Unless the server confirms it revoked the grant (it may not have:
+        // Google down, a cookie it could not open, no cookie at all), revoke
+        // the access token here. Revoking either token of a grant revokes the
+        // whole grant, so a cookie left behind holds a dead refresh token.
+        const serverRevoked = outcome.kind === 'done' && outcome.revoked;
+        let revokedHere = false;
+        if (!serverRevoked && currentToken && !injected) {
+          revokedHere = await this.revokeGrant(currentToken);
         }
+        if (outcome.kind === 'done') setLogoutPending(false);
+        // Neither got through: the cookie may still be live. Finish the
+        // sign-out before anything renews from it (`settlePendingLogout`).
+        else if (!revokedHere && !injected) setLogoutPending(true);
       } else if (currentToken && !injected) {
         await this.revokeToken(currentToken);
       }
@@ -480,17 +515,36 @@ class TokenManager {
     }
   }
 
-  /** Revoke at Google with the token in the BODY (never a URL a log could keep). */
-  private async revokeGrant(token: string): Promise<void> {
+  /**
+   * Revoke at Google with the token in the BODY (never a URL a log could
+   * keep). True only when Google confirmed it: an expired token's 400 ends
+   * nothing.
+   */
+  private async revokeGrant(token: string): Promise<boolean> {
     try {
-      await fetch(GOOGLE_DRIVE_CONFIG.OAUTH_ENDPOINT, {
+      const response = await fetch(GOOGLE_DRIVE_CONFIG.OAUTH_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ token }).toString()
       });
+      return response.ok;
     } catch (error) {
       console.error('Error revoking token:', error);
+      return false;
     }
+  }
+
+  /**
+   * Finish a sign-out that did not get through (`LOGOUT_PENDING_KEY`): null
+   * when nothing is pending or the server has now cleared the cookie;
+   * otherwise why it still could not, and no silent refresh may go out.
+   */
+  private async settlePendingLogout(): Promise<BackendOutcome | null> {
+    if (!logoutPending()) return null;
+    const outcome = await callBackend('logout', {});
+    if (outcome.kind !== 'done') return outcome;
+    setLogoutPending(false);
+    return null;
   }
 
   private getCurrentToken(): string {
@@ -570,10 +624,11 @@ class TokenManager {
       this.requestNewToken(false);
       return;
     }
-    if (this.backendSessionDead) {
-      void this.beginSignIn();
-      return;
-    }
+    // Even a session this tab found dead is tried once more first: the
+    // server keeps a bound cookie whose proof failed (a passing IndexedDB
+    // glitch is not a sign-out), so it may well renew now. Only a second
+    // reauth leaves for Google's consent screen.
+    this.backendSessionDead = false;
     void this.refreshFromBackend(true).then((result) => {
       if (result === 'ok') void this.runPostReauthSync(this.getCurrentToken());
       else if (result === 'reauth') void this.beginSignIn();
@@ -603,6 +658,7 @@ class TokenManager {
   private resetBackendState(): void {
     this.backendSessionDead = false;
     this.transientFailures = 0;
+    this.backendFailures = 0;
     this.retryNotBefore = 0;
     this.popupFallbackOffered = false;
   }
@@ -660,14 +716,20 @@ class TokenManager {
     });
   }
 
-  private noteTransientFailure(): void {
+  /**
+   * `offline`: the request never reached the backend. It still backs off, but
+   * never counts toward offering the popup: offline, the backend is not the
+   * problem, and Google's popup could not open either.
+   */
+  private noteTransientFailure(offline = false): void {
     this.transientFailures++;
+    if (!offline) this.backendFailures++;
     // 30 s, 1, 2, 4 min, then every 5 min.
     const delay = Math.min(30_000 * 2 ** (this.transientFailures - 1), 5 * 60_000);
     this.retryNotBefore = Date.now() + delay;
     if (
       !this.popupFallbackOffered &&
-      this.transientFailures >= FALLBACK_AFTER_FAILURES &&
+      this.backendFailures >= FALLBACK_AFTER_FAILURES &&
       !this.validFor(0) &&
       this.hasTokenClient()
     ) {
@@ -686,7 +748,8 @@ class TokenManager {
     if (!force && Date.now() < this.retryNotBefore) return Promise.resolve('transient');
     if (this.backendRefresh) return this.backendRefresh;
     this.backendRefresh = (async (): Promise<BackendRefresh> => {
-      const outcome = await callWithProof('refresh', {});
+      // An unfinished sign-out first: the cookie it left must not renew.
+      const outcome = (await this.settlePendingLogout()) ?? (await callWithProof('refresh', {}));
       switch (outcome.kind) {
         case 'ok':
           this.applyBackendToken(outcome.accessToken, outcome.expiresIn);
@@ -699,7 +762,7 @@ class TokenManager {
           markBackendUnavailable();
           return 'unavailable';
         default:
-          this.noteTransientFailure();
+          this.noteTransientFailure(outcome.kind === 'transient' && outcome.offline === true);
           return 'transient';
       }
     })().finally(() => {
@@ -751,6 +814,9 @@ class TokenManager {
     if (!browser || !this.isBackendMode()) return;
     const callback = takeCallback();
     if (callback.kind === 'code') {
+      // An unfinished sign-out goes first: run after the sign-in, it would
+      // clear the cookie this sign-in is about to set.
+      await this.settlePendingLogout();
       await this.completeSignIn(callback.code, callback.verifier);
       return;
     }
@@ -762,6 +828,11 @@ class TokenManager {
       );
     } else if (callback.kind === 'refused') {
       console.warn('Google sign-in answer refused:', callback.reason);
+      // The user finished Google's screens and came back to nothing: say so.
+      // (no_pending: not a sign-in this tab started — nothing to retry.)
+      if (callback.reason !== 'no_pending') {
+        showSnackbar('Google Drive sign-in did not finish. Click Connect to try again.');
+      }
     }
     if (this.isAuthenticated() && !this.validFor(DEFAULT_MIN_VALIDITY_MS)) {
       await this.refreshFromBackend(true);
@@ -771,6 +842,8 @@ class TokenManager {
   private async completeSignIn(code: string, verifier: string): Promise<void> {
     const outcome = await callWithProof('session', { code, code_verifier: verifier });
     if (outcome.kind === 'ok') {
+      // The new cookie replaced whatever an unfinished sign-out left behind.
+      setLogoutPending(false);
       this.applyBackendToken(outcome.accessToken, outcome.expiresIn);
       const { setActiveProviderKey } = await import('../../provider-detection');
       setActiveProviderKey('google-drive');
@@ -792,11 +865,12 @@ class TokenManager {
   /**
    * Leave for Google's sign-in page (backend mode, a user's click). The page
    * navigates away; the next load finishes the sign-in (`restoreSession`).
+   * The active provider is NOT switched here: a sign-in abandoned on Google's
+   * page must leave the app as it was. The callback's answer itself makes the
+   * next boot load Drive (`hasPendingCallback`), and only a completed sign-in
+   * makes Drive the provider.
    */
   async beginSignIn(): Promise<void> {
-    const { setActiveProviderKey } = await import('../../provider-detection');
-    // On return the app loads Drive first, which takes the callback's answer.
-    setActiveProviderKey('google-drive');
     await startSignIn();
   }
 
@@ -812,8 +886,7 @@ class TokenManager {
     if (result === 'ok') return 'connected';
     if (result === 'unavailable') return 'popup';
     if (result === 'transient') {
-      if (this.transientFailures >= FALLBACK_AFTER_FAILURES && this.hasTokenClient())
-        return 'popup';
+      if (this.backendFailures >= FALLBACK_AFTER_FAILURES && this.hasTokenClient()) return 'popup';
       throw new Error('Google sign-in is unavailable right now. Try again in a moment.');
     }
     if (!interactive) throw new Error('Connect Google Drive from the cloud page to sign in.');

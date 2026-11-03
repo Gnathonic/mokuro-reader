@@ -23,6 +23,7 @@
   import { cacheManager } from '$lib/util/sync/cache-manager';
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
+  import { isLoginCancelled } from '$lib/util/sync/provider-interface';
   import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
   import { backendAuthEnabled } from '$lib/util/sync/providers/google-drive/auth-backend';
   import DevicesSettings from '$lib/components/Devices/DevicesSettings.svelte';
@@ -398,6 +399,8 @@
       // Automatically sync after login
       await handlePostLogin();
     } catch (error) {
+      // Back from Google's sign-in page without signing in: nothing failed.
+      if (isLoginCancelled(error)) return;
       const message = error instanceof Error ? error.message : 'Login failed';
       showSnackbar(message);
     } finally {

@@ -69,7 +69,7 @@ import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
 import { providerManager } from '../../provider-manager';
-import { ProviderError } from '../../provider-interface';
+import { isLoginCancelled, ProviderError } from '../../provider-interface';
 import { driveStorageFullError } from '../../core/providers/drive-http';
 import { setActiveProviderKey } from '../../provider-detection';
 
@@ -302,6 +302,39 @@ describe('GoogleDriveProvider login() through the auth backend', () => {
     await googleDriveProvider.login();
     // Sticky, not transient: the chunk a click loads may outlast the click.
     expect(tokenManager.connectViaBackend).toHaveBeenLastCalledWith(true);
+  });
+
+  it('Back from Google’s page (the cloud page restored from bfcache) is a quiet cancel', async () => {
+    vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('redirecting');
+    const login = googleDriveProvider.login();
+    const settled = login.then(
+      () => 'resolved',
+      (error: unknown) => error
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    // A page shown fresh (not from the cache) says nothing about the sign-in.
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    const error = await settled;
+    expect(isLoginCancelled(error)).toBe(true);
+    expect(tokenManager.requestNewToken).not.toHaveBeenCalled();
+  });
+
+  it('a redirect that never leaves the page fails after 30 s, as an error to show', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('redirecting');
+      const settled = googleDriveProvider.login().then(
+        () => 'resolved',
+        (error: unknown) => error
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
+      const error = await settled;
+      expect(isLoginCancelled(error)).toBe(false);
+      expect((error as Error).message).toMatch(/did not open/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reauthenticate (a cloud-page button) is the interactive reconnect', async () => {

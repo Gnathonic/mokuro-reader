@@ -12,6 +12,7 @@ import {
   callBackend,
   callWithProof,
   CALLBACK_KEY,
+  hasPendingCallback,
   markBackendUnavailable,
   PENDING_KEY,
   pkceChallenge,
@@ -94,7 +95,18 @@ describe('callBackend', () => {
       json(200, { access_token: 'T', expires_in: 3599 }),
       { kind: 'ok', accessToken: 'T', expiresIn: 3599 }
     ],
-    ['logout done', json(200, { ok: true }), { kind: 'done' }],
+    [
+      'logout done, revoked by the server',
+      json(200, { ok: true, revoked: true }),
+      { kind: 'done', revoked: true }
+    ],
+    [
+      'logout done, nothing revoked',
+      json(200, { ok: true, revoked: false }),
+      { kind: 'done', revoked: false }
+    ],
+    // An older server that does not say: not proof of a revoke.
+    ['logout done (no revoked field)', json(200, { ok: true }), { kind: 'done', revoked: false }],
     ['reauth', json(401, { error: 'reauth' }), { kind: 'reauth' }],
     ['no_session', json(401, { error: 'no_session' }), { kind: 'reauth' }],
     [
@@ -127,9 +139,20 @@ describe('callBackend', () => {
     expect(await callBackend('refresh', {})).toEqual(outcome);
   });
 
-  it('a network failure is transient, never thrown', async () => {
+  it('a network failure is transient (offline: it never reached the backend), never thrown', async () => {
     vi.mocked(fetch).mockRejectedValue(new TypeError('Failed to fetch'));
+    expect(await callBackend('refresh', {})).toEqual({ kind: 'transient', offline: true });
+  });
+
+  it('our own timeout is a slow backend: transient, and it counts', async () => {
+    vi.mocked(fetch).mockRejectedValue(new DOMException('timed out', 'TimeoutError'));
     expect(await callBackend('refresh', {})).toEqual({ kind: 'transient' });
+  });
+
+  it('a browser that says it is offline: offline, even for a timeout', async () => {
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    vi.mocked(fetch).mockRejectedValue(new DOMException('timed out', 'TimeoutError'));
+    expect(await callBackend('refresh', {})).toEqual({ kind: 'transient', offline: true });
   });
 });
 
@@ -300,5 +323,18 @@ describe('takeCallback', () => {
     pending();
     sessionStorage.setItem(CALLBACK_KEY, '{nope');
     expect(takeCallback()).toEqual({ kind: 'refused', reason: 'malformed' });
+  });
+});
+
+describe('hasPendingCallback', () => {
+  it('only when the callback page left an answer, and only in backend mode', () => {
+    expect(hasPendingCallback()).toBe(false);
+    // A started sign-in alone (abandoned on Google's page) is not one.
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ state: 's' }));
+    expect(hasPendingCallback()).toBe(false);
+    sessionStorage.setItem(CALLBACK_KEY, JSON.stringify({ code: 'c', state: 's' }));
+    expect(hasPendingCallback()).toBe(true);
+    markBackendUnavailable();
+    expect(hasPendingCallback()).toBe(false);
   });
 });

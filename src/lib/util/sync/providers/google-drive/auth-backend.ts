@@ -74,14 +74,21 @@ export type BackendOutcome =
    * Nothing wrong with the session NOW: Google or our function is down, the
    * server is misconfigured (`server_config` keeps every cookie), a WAF answered
    * (a non-JSON 403/429), or the network failed. Keep a still-valid token.
+   * `offline`: the request never left this device (no network). That says
+   * nothing about the backend, so it never counts toward offering the popup
+   * — which could not work offline either.
    */
-  | { kind: 'transient' }
+  | { kind: 'transient'; offline?: true }
   /** No backend here (404/405/501, or an HTML page): implicit sign-in. */
   | { kind: 'unavailable' }
   /** Refused for a reason retrying will not fix (bad_request, consent_incomplete, …). */
   | { kind: 'refused'; error: string }
-  /** `/logout` done. */
-  | { kind: 'done' };
+  /**
+   * `/logout` done: the cookie is cleared. `revoked` only when the server
+   * ended the grant at Google; otherwise (Google down, a cookie it could not
+   * open, no cookie) the client must revoke the token it holds itself.
+   */
+  | { kind: 'done'; revoked: boolean };
 
 async function classify(response: Response): Promise<BackendOutcome> {
   const contentType = response.headers.get('content-type') ?? '';
@@ -104,7 +111,7 @@ async function classify(response: Response): Promise<BackendOutcome> {
     return { kind: 'transient' };
   }
   if (response.ok) {
-    if (body.ok === true) return { kind: 'done' };
+    if (body.ok === true) return { kind: 'done', revoked: body.revoked === true };
     const accessToken = body.access_token;
     const expiresIn = body.expires_in;
     if (typeof accessToken === 'string' && accessToken && typeof expiresIn === 'number') {
@@ -151,8 +158,13 @@ export async function callBackend(
       cache: 'no-store',
       signal: AbortSignal.timeout(CLIENT_TIMEOUT_MS)
     });
-  } catch {
-    return { kind: 'transient' };
+  } catch (error) {
+    // Our own timeout means the backend is slow: that counts. Anything else
+    // thrown for a same-origin request is the network (or the browser saying
+    // it is offline): nothing about the backend.
+    const timedOut = (error as { name?: unknown } | null)?.name === 'TimeoutError';
+    const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    return offline || !timedOut ? { kind: 'transient', offline: true } : { kind: 'transient' };
   }
   return classify(response);
 }
@@ -343,6 +355,21 @@ export function takeCallback(now = Date.now()): CallbackResult {
     return { kind: 'refused', reason: 'malformed' };
   }
   return { kind: 'code', code: answer.code, verifier: pending.verifier };
+}
+
+/**
+ * The callback page brought an answer back for this tab (backend mode): this
+ * boot must load Drive to take it, whatever provider was configured before.
+ * The provider key itself is only set once a sign-in completes, so an
+ * abandoned sign-in leaves the app as it was.
+ */
+export function hasPendingCallback(): boolean {
+  if (!backendAuthEnabled()) return false;
+  try {
+    return session()?.getItem(CALLBACK_KEY) != null;
+  } catch {
+    return false;
+  }
 }
 
 /** Tests: forget the in-memory clock offset. */

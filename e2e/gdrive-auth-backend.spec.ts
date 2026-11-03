@@ -270,6 +270,19 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, and a sign-out that 
   const consent: { url?: URL } = {};
   await routeGoogle(page, google, consent);
   const backendCalls: { path: string; body: Record<string, unknown> }[] = [];
+  const logoutAnswers: unknown[] = [];
+  page.on('response', async (response) => {
+    if (new URL(response.url()).pathname === '/api/gdrive/logout') {
+      logoutAnswers.push(await response.json().catch(() => null));
+    }
+  });
+  // The browser's own revoke (the fallback when the server could not): it
+  // must not be needed when the server confirms it revoked.
+  const browserRevokes: string[] = [];
+  await page.route('https://oauth2.googleapis.com/**', (route) => {
+    browserRevokes.push(route.request().url());
+    return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (url.origin === origin && url.pathname.startsWith('/api/gdrive/')) {
@@ -383,5 +396,9 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, and a sign-out that 
     await expect
       .poll(async () => (await context.cookies(origin)).some((c) => c.name === 'gdrive_rt'))
       .toBe(false);
+    // The server says it revoked, so the browser had nothing left to revoke.
+    expect(logoutAnswers.at(-1)).toEqual({ ok: true, revoked: true });
+    expect(browserRevokes).toEqual([]);
+    expect(await page.evaluate(() => localStorage.getItem('gdrive_logout_pending'))).toBeNull();
   });
 });

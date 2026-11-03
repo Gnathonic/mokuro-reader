@@ -114,6 +114,21 @@ is never forwarded.
 Only `invalid_grant` clears a cookie. A rotated or mistyped secret, or a client
 Google deleted (it can be restored for 30 days), keeps every session.
 
+### Signing out
+
+`/logout` always clears the cookie and answers `200 {ok: true, revoked}`.
+`revoked` is true only when the server ended the grant at Google. When it is
+false (Google down or slow, a cookie sealed under a retired key, no cookie at
+all), the client revokes the access token it holds itself: revoking either
+token of a grant ends the whole grant. If neither request gets through (the
+device is offline), the client remembers that (`gdrive_logout_pending` in
+localStorage). Until a later `/logout` gets through, it sends no refresh, so
+the cookie left behind can never sign anyone back in without a consent screen.
+
+On `/session`, the code exchange and the revoke of a grant the server refuses
+share one 8 s budget (`GOOGLE_BUDGET_MS`), under the routes' 10 s
+`maxDuration`.
+
 ## Logs
 
 The server writes one JSON line per request:

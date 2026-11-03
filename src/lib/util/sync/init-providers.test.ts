@@ -7,8 +7,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const order = vi.hoisted(() => [] as string[]);
+const boot = vi.hoisted(() => ({
+  configured: 'google-drive' as string | null,
+  callbackPending: false
+}));
 
-vi.mock('./provider-detection', () => ({ getConfiguredProviderType: () => 'google-drive' }));
+vi.mock('./provider-detection', () => ({ getConfiguredProviderType: () => boot.configured }));
+vi.mock('$lib/util/sync/providers/google-drive/auth-backend', () => ({
+  hasPendingCallback: () => boot.callbackPending
+}));
 vi.mock('./providers/google-drive/google-drive-provider', () => ({
   googleDriveProvider: { type: 'google-drive' }
 }));
@@ -49,6 +56,8 @@ import { unifiedCloudManager } from './unified-cloud-manager';
 
 beforeEach(() => {
   order.length = 0;
+  boot.configured = 'google-drive';
+  boot.callbackPending = false;
   vi.mocked(tokenManager.reAuthenticate).mockClear();
   vi.mocked(unifiedCloudManager.fetchAllCloudVolumes).mockClear();
   vi.mocked(unifiedCloudManager.syncProgress).mockClear();
@@ -90,5 +99,25 @@ describe('initializeProviders, Google Drive', () => {
     vi.mocked(tokenManager.getTimeUntilExpiry).mockReturnValue(null);
     await initializeProviders();
     expect(order).toContain('initialize');
+  });
+
+  it.each([
+    ['no provider configured', null],
+    ['another provider configured', 'mega']
+  ])(
+    'a sign-in answer waiting from Google (%s): Drive loads to take it',
+    async (_label, configured) => {
+      boot.configured = configured;
+      boot.callbackPending = true;
+      vi.mocked(tokenManager.getTimeUntilExpiry).mockReturnValue(null);
+      await initializeProviders();
+      expect(order.slice(0, 2)).toEqual(['restoreSession', 'initialize']);
+    }
+  );
+
+  it('nothing configured and no answer waiting: Drive is not loaded at all', async () => {
+    boot.configured = null;
+    await initializeProviders();
+    expect(order).toEqual([]);
   });
 });
