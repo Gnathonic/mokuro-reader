@@ -317,6 +317,15 @@ class UnifiedSyncService {
         }
       }
 
+      // Google Drive's listing moves only when this device lists or writes, and
+      // every step below reads it: other devices' root files, their copies,
+      // their history. Its change feed brings it current first — one small
+      // request when nothing changed (a full listing when the feed cannot
+      // answer). The other providers have no feed (MEGA's tree is live).
+      if (provider.type === 'google-drive') {
+        await cacheManager.getCache(provider.type)?.refreshFromChanges?.();
+      }
+
       // Sync volume data (read progress + series-level reading state)
       console.log('🔄 Syncing volume data...');
       await this.syncVolumeData(provider);

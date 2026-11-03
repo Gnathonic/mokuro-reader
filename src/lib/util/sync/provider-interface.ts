@@ -479,14 +479,11 @@ export interface SyncProvider {
    *
    * OPTIONAL, and absent means `uploadFile` is already blind: implement this
    * only when the ordinary `uploadFile` performs extra refresh work worth
-   * skipping. Google Drive is the one such provider today — its `uploadFile`
-   * ends with a FULL paged listing refetch (13+ `files.list` calls on a
-   * 12,500-file library), which `blindUploadFile` skips. Callers go through
+   * skipping. No provider does today: Google Drive's `uploadFile` ended with
+   * a FULL paged listing refetch (13+ `files.list` calls on a 12,500-file
+   * library) until #288, and was the one implementation. Callers go through
    * `unifiedCloudManager.blindUploadFile`, which handles the fallback and
-   * documents WHICH callers qualify — a write must change nothing any view
-   * renders, be retryable by a self-healing process, and lose nothing
-   * important on failure; everything else stays on `uploadFile`, whose
-   * refreshed cache is how backups are confirmed and rendered.
+   * documents which callers qualify.
    */
   blindUploadFile?(
     path: string,

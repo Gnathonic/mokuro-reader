@@ -409,40 +409,22 @@ class GoogleDriveProvider implements SyncProvider {
     }
   }
 
+  /**
+   * One upload and its receipt — nothing more. It used to end with a
+   * whole-account refetch (13+ `files.list` pages on a 12,500-file library)
+   * per upload, so every progress sync that wrote `volume-data.json` paid a
+   * full listing (#288). Nothing needs it: every caller records the upload in
+   * the cache from the receipt (`uploadCacheEntry`: id, server stamps,
+   * version, and where the file now lives), and other devices' writes reach
+   * the cache through the change feed at the top of each sync
+   * (`driveFilesCache.refreshFromChanges`). So there is no `blindUploadFile`
+   * here: this one already is.
+   */
   async uploadFile(
     path: string,
     blob: Blob,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<UploadFileResult> {
-    // Legacy contract: a full cache refetch rides every ordinary upload (see
-    // `performUpload`). Callers that don't need to read anything back use
-    // `blindUploadFile` instead.
-    return this.performUpload(path, blob, description, onProgress, true);
-  }
-
-  /**
-   * The write-and-forget upload (`SyncProvider.blindUploadFile`): identical to
-   * `uploadFile` minus the whole-account cache refetch — a full paged
-   * `files.list` walk (13+ round trips on a 12,500-file library) that a caller
-   * like the sidecar backfill, which converges through the unified layer's
-   * targeted cache add, has no use for.
-   */
-  async blindUploadFile(
-    path: string,
-    blob: Blob,
-    description?: string,
-    onProgress?: (loaded: number, total: number) => void
-  ): Promise<UploadFileResult> {
-    return this.performUpload(path, blob, description, onProgress, false);
-  }
-
-  private async performUpload(
-    path: string,
-    blob: Blob,
-    description: string | undefined,
-    onProgress: ((loaded: number, total: number) => void) | undefined,
-    refreshCache: boolean
   ): Promise<UploadFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
@@ -497,14 +479,6 @@ class GoogleDriveProvider implements SyncProvider {
         existingFileId: existingFileId || undefined,
         onProgress
       });
-
-      // The legacy whole-account refetch — `uploadFile` only. A blind upload
-      // skips it: the unified layer records the upload in the cache with a
-      // TARGETED add built from this upload's own response metadata
-      // (`uploadCacheEntry`), which is all convergence needs.
-      if (refreshCache) {
-        await driveFilesCache.fetch();
-      }
 
       // Update file description if provided
       if (description) {

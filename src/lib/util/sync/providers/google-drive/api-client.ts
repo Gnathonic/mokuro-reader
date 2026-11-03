@@ -1,4 +1,4 @@
-import { GOOGLE_DRIVE_CONFIG, type DriveFile } from './constants';
+import { GOOGLE_DRIVE_CONFIG, type DriveChange, type DriveFile } from './constants';
 import { tokenManager } from './token-manager';
 import {
   DriveHttpError,
@@ -118,7 +118,9 @@ async function handleAuthError(status: number, retryOnAuth = true): Promise<neve
     throw new DriveApiError(
       'Authentication expired. Re-authentication in progress...',
       status,
-      false
+      false,
+      undefined,
+      'auth'
     );
   }
 
@@ -127,10 +129,25 @@ async function handleAuthError(status: number, retryOnAuth = true): Promise<neve
   tokenManager.clearToken();
 
   if (retryOnAuth) {
-    throw new DriveApiError('Authentication expired. Please sign in again.', status, false);
+    throw new DriveApiError(
+      'Authentication expired. Please sign in again.',
+      status,
+      false,
+      undefined,
+      'auth'
+    );
   }
 
-  throw new DriveApiError('Authentication error', status, false);
+  throw new DriveApiError('Authentication error', status, false, undefined, 'auth');
+}
+
+/**
+ * Did this failure already go down the auth path (re-auth started, or the
+ * token cleared)? A caller with a fallback request must not send it: it would
+ * fail the same way and start the re-auth a second time.
+ */
+export function isDriveAuthFailure(error: unknown): boolean {
+  return (error as { kind?: unknown } | null)?.kind === 'auth';
 }
 
 class DriveApiClient {
@@ -260,6 +277,56 @@ class DriveApiClient {
       } while (pageToken);
 
       return allFiles;
+    });
+  }
+
+  /**
+   * The change feed's current position (`changes.getStartPageToken`): every
+   * change made after this call is listed by {@link listChanges} from it.
+   */
+  async getStartPageToken(): Promise<string> {
+    return this.handleApiCall(async () => {
+      const { result } = await gapi.client.drive.changes.getStartPageToken({
+        fields: 'startPageToken'
+      });
+      if (!result.startPageToken) throw new Error('Drive returned no start page token');
+      return result.startPageToken;
+    });
+  }
+
+  /**
+   * Every change since `pageToken` (`changes.list`, removals included), paged
+   * like {@link listFiles} — each page retried on its own, one auth path for
+   * the whole walk — and the token the NEXT call starts from. `null` when the
+   * log runs past `maxPages`: reading it would cost more than the listing it
+   * stands in for. `fields` selects inside `changes(...)`.
+   */
+  async listChanges(
+    pageToken: string,
+    fields: string,
+    maxPages = Infinity
+  ): Promise<{ changes: DriveChange[]; newStartPageToken: string } | null> {
+    return this.handleApiFailure(async () => {
+      const changes: DriveChange[] = [];
+      let token = pageToken;
+      for (let page = 1; ; page++) {
+        if (page > maxPages) return null;
+        const { result } = await this.retryingGapiCall(() =>
+          gapi.client.drive.changes.list({
+            pageToken: token,
+            pageSize: 1000,
+            includeRemoved: true,
+            fields: `nextPageToken,newStartPageToken,${fields}`
+          })
+        );
+        if (result.changes) changes.push(...(result.changes as DriveChange[]));
+        if (result.nextPageToken) {
+          token = result.nextPageToken;
+          continue;
+        }
+        if (!result.newStartPageToken) throw new Error('Drive change list ended without a token');
+        return { changes, newStartPageToken: result.newStartPageToken };
+      }
     });
   }
 

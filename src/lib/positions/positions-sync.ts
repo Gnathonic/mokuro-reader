@@ -102,9 +102,8 @@ async function upload(provider: SyncProvider, next: PositionsMap): Promise<strin
   const blob = new Blob([JSON.stringify(composePositionsFile(next))], {
     type: 'application/json'
   });
-  // The blind path skips the post-upload re-listing (Drive refetches the whole
-  // tree after every upload). It writes to the ACTIVE provider, so a sync of
-  // any other provider takes the ordinary upload. The manager records the
+  // The manager's upload writes to the ACTIVE provider, so a sync of any
+  // other provider uploads through that provider itself. The manager records the
   // upload's receipt in the cache and the read memo itself; the other path
   // records the same receipt here.
   if (unifiedCloudManager.getActiveProvider()?.type === provider.type) {

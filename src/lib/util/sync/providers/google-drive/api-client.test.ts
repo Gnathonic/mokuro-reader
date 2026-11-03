@@ -15,7 +15,7 @@ vi.mock('$lib/settings/misc', async () => {
 });
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 
-import { escapeNameForDriveQuery, driveApiClient } from './api-client';
+import { escapeNameForDriveQuery, driveApiClient, isDriveAuthFailure } from './api-client';
 import { tokenManager } from './token-manager';
 
 describe('driveApiClient.folderHasChildren', () => {
@@ -347,6 +347,103 @@ describe('driveApiClient failure classification', () => {
     FakeXhr.replies = [{ status: 401, response: new Blob(['']) }];
 
     await expect(driveApiClient.downloadFile('file-1')).rejects.toThrow(/Re-authentication/);
+    expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('driveApiClient change feed (changes.getStartPageToken / changes.list)', () => {
+  const list = vi.fn();
+  const getStartPageToken = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    list.mockReset();
+    getStartPageToken.mockReset();
+    vi.stubGlobal('gapi', { client: { drive: { changes: { list, getStartPageToken } } } });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('getStartPageToken asks for the token field only', async () => {
+    getStartPageToken.mockResolvedValue({ result: { startPageToken: '123' } });
+
+    await expect(driveApiClient.getStartPageToken()).resolves.toBe('123');
+    expect(getStartPageToken).toHaveBeenCalledWith({ fields: 'startPageToken' });
+  });
+
+  it('getStartPageToken retries a 429 like every other call', async () => {
+    getStartPageToken
+      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0.001' } })
+      .mockResolvedValueOnce({ result: { startPageToken: '124' } });
+
+    await expect(driveApiClient.getStartPageToken()).resolves.toBe('124');
+    expect(getStartPageToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('listChanges pages to the end and returns the next position', async () => {
+    list
+      .mockResolvedValueOnce({ result: { changes: [{ fileId: 'a' }], nextPageToken: 'p2' } })
+      .mockResolvedValueOnce({
+        result: { changes: [{ fileId: 'b', removed: true }], newStartPageToken: 'next' }
+      });
+
+    await expect(driveApiClient.listChanges('start', 'changes(fileId,removed)')).resolves.toEqual({
+      changes: [{ fileId: 'a' }, { fileId: 'b', removed: true }],
+      newStartPageToken: 'next'
+    });
+    expect(list.mock.calls.map(([args]) => args.pageToken)).toEqual(['start', 'p2']);
+    expect(list).toHaveBeenCalledWith({
+      pageToken: 'start',
+      pageSize: 1000,
+      includeRemoved: true,
+      fields: 'nextPageToken,newStartPageToken,changes(fileId,removed)'
+    });
+  });
+
+  it('a 429 on page N re-asks page N only', async () => {
+    list
+      .mockResolvedValueOnce({ result: { changes: [{ fileId: 'a' }], nextPageToken: 'p2' } })
+      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0.001' } })
+      .mockResolvedValueOnce({ result: { changes: [], newStartPageToken: 'next' } });
+
+    const result = await driveApiClient.listChanges('start', 'changes(fileId)');
+
+    expect(result?.changes).toEqual([{ fileId: 'a' }]);
+    expect(list.mock.calls.map(([args]) => args.pageToken)).toEqual(['start', 'p2', 'p2']);
+  });
+
+  it('is null past maxPages: the log would cost more than a listing', async () => {
+    list.mockResolvedValue({ result: { changes: [], nextPageToken: 'more' } });
+
+    await expect(driveApiClient.listChanges('start', 'changes(fileId)', 2)).resolves.toBeNull();
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it('a refused position fails typed, without a re-auth', async () => {
+    list.mockRejectedValue({
+      status: 400,
+      result: { error: { errors: [{ reason: 'invalid' }], message: 'Invalid Value' } }
+    });
+
+    const error = await driveApiClient.listChanges('bogus', 'changes(fileId)').catch((e) => e);
+
+    expect(error.status).toBe(400);
+    expect(error.kind).toBe('other');
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+  });
+
+  it('an expired token goes down the auth path, and says so', async () => {
+    list.mockRejectedValue({ status: 401, result: {} });
+
+    const error = await driveApiClient.listChanges('start', 'changes(fileId)').catch((e) => e);
+
+    expect(error.message).toMatch(/Re-authentication/);
+    expect(isDriveAuthFailure(error)).toBe(true);
     expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
   });
 });

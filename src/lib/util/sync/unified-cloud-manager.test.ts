@@ -5240,3 +5240,58 @@ describe('syncProgress starts progress resolution behind its result', () => {
     await expect(unifiedCloudManager.progressResolution).resolves.toBeUndefined();
   });
 });
+
+describe('UnifiedCloudManager.fetchAllCloudVolumes({ fromChangeFeed }) (#288)', () => {
+  const refreshFromChanges = vi.fn(async () => 'unchanged');
+  const cacheWithFeed = (loaded: boolean) => ({ refreshFromChanges, isLoaded: () => loaded });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getAllFiles.mockReturnValue([]);
+  });
+
+  it('on Google Drive with a loaded listing, reads the change feed instead of walking', async () => {
+    getActiveProvider.mockReturnValue({ type: 'google-drive' });
+    getCache.mockReturnValue(cacheWithFeed(true));
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true });
+
+    expect(getCache).toHaveBeenCalledWith('google-drive');
+    expect(refreshFromChanges).toHaveBeenCalledTimes(1);
+    expect(fetchAll).not.toHaveBeenCalled();
+  });
+
+  it('lists in full when nothing is listed yet', async () => {
+    getActiveProvider.mockReturnValue({ type: 'google-drive' });
+    getCache.mockReturnValue(cacheWithFeed(false));
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true });
+
+    expect(refreshFromChanges).not.toHaveBeenCalled();
+    expect(fetchAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists in full on every other provider', async () => {
+    getActiveProvider.mockReturnValue({ type: 'webdav' });
+    getCache.mockReturnValue(cacheWithFeed(true));
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true });
+
+    expect(refreshFromChanges).not.toHaveBeenCalled();
+    expect(fetchAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('a caller that did not ask for the feed always walks', async () => {
+    getActiveProvider.mockReturnValue({ type: 'google-drive' });
+    getCache.mockReturnValue(cacheWithFeed(true));
+
+    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
+
+    expect(refreshFromChanges).not.toHaveBeenCalled();
+    expect(fetchAll).toHaveBeenCalledTimes(1);
+  });
+});

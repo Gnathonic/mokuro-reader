@@ -34,6 +34,12 @@ import type { CloudFileMetadata, ProviderType, UploadFileResult } from './provid
 export type CacheAddMetadata<T> = T & { modifiedTimeProvisional: boolean };
 
 /**
+ * What one change-feed refresh did ({@link CloudCache.refreshFromChanges}):
+ * nothing to apply, changes applied, or a full listing instead.
+ */
+export type ChangeFeedResult = 'unchanged' | 'applied' | 'reset';
+
+/**
  * The cache entry ONE successful upload earns — the single rule for
  * post-upload cache maintenance, shared by every uploader
  * (`unifiedCloudManager.uploadFile`, the sync service's direct
@@ -137,6 +143,16 @@ export interface CloudCache<T = any> {
    * Fetch fresh data from cloud provider and populate cache
    */
   fetch(): Promise<void>;
+
+  /**
+   * Bring the cache up to date from the provider's change feed — the changes
+   * since the last listing, not the listing again; falls back to a full
+   * {@link fetch} whenever the feed cannot answer (`'reset'`). Never toggles
+   * the fetching/loaded state, and leaves the cache untouched (same identity)
+   * when nothing changed. OPTIONAL: Google Drive's cache is the one with a
+   * feed today (`changes.list`).
+   */
+  refreshFromChanges?(): Promise<ChangeFeedResult>;
 
   /**
    * Clear all cached data

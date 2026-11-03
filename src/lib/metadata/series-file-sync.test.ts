@@ -261,11 +261,15 @@ describe('series-file-sync', () => {
     scheduleSeriesFileWrite('Berserk');
     await flushSeriesFileWrites();
 
-    // One listing for the whole flush — it is a whole-account fetch, so N
+    // One listing for the whole flush — it may be a whole-account fetch, so N
     // series must not cost N of them. And never the index refresh: that pass
     // downloads sidecars, and this is a write path.
     expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
-    expect(fetchAllCloudVolumes).toHaveBeenCalledWith({ refreshIndexes: false });
+    // On Google Drive the manager takes it from the change feed (#288).
+    expect(fetchAllCloudVolumes).toHaveBeenCalledWith({
+      refreshIndexes: false,
+      fromChangeFeed: true
+    });
     expect(writeSeriesFile).toHaveBeenCalledTimes(2);
   });
 
