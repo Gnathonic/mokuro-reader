@@ -80,4 +80,25 @@ describe('proof of possession', () => {
       expect(parseProof(bad)).toBeNull();
     }
   });
+
+  it('accepts one spelling per coordinate: a non-canonical x (same point) is refused', async () => {
+    const key = await deviceKey();
+    const proof = await key.prove(PATH, NOW);
+    // 32 bytes take 43 base64url characters, the last carrying 2 spare bits.
+    // Flipping the lowest one spells the SAME bytes another way.
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const last = alphabet.indexOf(proof.jwk.x.at(-1)!);
+    const x = proof.jwk.x.slice(0, -1) + alphabet[last ^ 1];
+    const loose = { ...proof, jwk: { ...proof.jwk, x } };
+
+    // Node itself decodes it to the very same point: the signature verifies
+    // under it, with another thumbprint. That is why parsing must refuse it.
+    const unparsed = checkProof(loose, ORIGIN, PATH, NOW);
+    expect(unparsed.ok).toBe(true);
+    expect(unparsed.ok && unparsed.thumbprint).not.toBe(jwkThumbprint(proof.jwk));
+
+    expect(parseProof(loose)).toBeNull();
+    expect(parseProof({ ...proof, jwk: { ...proof.jwk, y: x } })).toBeNull();
+    expect(parseProof(proof)).toEqual(proof);
+  });
 });

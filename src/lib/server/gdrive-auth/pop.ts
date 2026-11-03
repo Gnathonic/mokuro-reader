@@ -43,7 +43,16 @@ export function jwkThumbprint(jwk: PopJwk): string {
   return toBase64Url(createHash('sha256').update(canonical).digest());
 }
 
-const COORDINATE = /^[A-Za-z0-9_-]{43}$/;
+/**
+ * A P-256 coordinate: exactly 32 bytes in CANONICAL base64url. A looser check
+ * (43 alphabet characters) lets the last character's spare bits vary: Node
+ * decodes each spelling to the same point, so one key would have up to 16
+ * thumbprints, and `cnf` would no longer name one key.
+ */
+function isCoordinate(text: string): boolean {
+  const bytes = fromBase64Url(text);
+  return bytes !== null && bytes.length === 32;
+}
 
 /** A request body's `pop`, as a well-formed proof, or null. Only the public members are read. */
 export function parseProof(value: unknown): PopProof | null {
@@ -53,7 +62,7 @@ export function parseProof(value: unknown): PopProof | null {
   if (!jwk || typeof jwk !== 'object') return null;
   if (jwk.kty !== 'EC' || jwk.crv !== 'P-256') return null;
   if (typeof jwk.x !== 'string' || typeof jwk.y !== 'string') return null;
-  if (!COORDINATE.test(jwk.x) || !COORDINATE.test(jwk.y)) return null;
+  if (!isCoordinate(jwk.x) || !isCoordinate(jwk.y)) return null;
   if (typeof proof.ts !== 'number' || !Number.isSafeInteger(proof.ts) || proof.ts < 0) return null;
   if (typeof proof.sig !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(proof.sig)) return null;
   return { jwk: { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y }, ts: proof.ts, sig: proof.sig };
