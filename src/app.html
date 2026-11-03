@@ -12,8 +12,9 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <!-- Noto Sans JP is registered by src/lib/util/web-fonts.ts (FontFace API, not a
          stylesheet: a stylesheet font is re-decoded on every media query change). -->
-    <script src="https://apis.google.com/js/api.js"></script>
-    <script src="https://accounts.google.com/gsi/client"></script>
+    <!-- The Google Drive scripts (gapi, Google Identity Services) are not loaded here:
+         src/lib/util/sync/providers/google-drive/google-scripts.ts injects them when
+         Drive is the active provider or the cloud page opens. -->
     %sveltekit.head%
     <style>
       /*

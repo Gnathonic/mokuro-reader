@@ -1,16 +1,17 @@
 /**
  * An interop build reaches no host off the machine but the two Google scripts
  * the rig answers empty: the rig refuses every other request and fails the
- * spec that made it (mokuro-bunko `interop/e2e/rig/egress.mjs`).
+ * spec that made it (mokuro-bunko `interop/e2e/rig/egress.mjs`). Those two are
+ * no longer in app.html — they are injected on demand (`google-scripts.ts`) —
+ * so the hermetic shell names no off-machine address at all.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import APP_HTML from '../../app.html?raw';
 import { hermeticShell } from './hermetic';
+import { GOOGLE_SCRIPT_URLS } from '$lib/util/sync/providers/google-drive/google-scripts';
 
-const STUBBED_BY_THE_RIG = [
-  'https://apis.google.com/js/api.js',
-  'https://accounts.google.com/gsi/client'
-];
+/** What the rig answers (empty): the scripts `google-scripts.ts` injects. */
+const STUBBED_BY_THE_RIG: readonly string[] = GOOGLE_SCRIPT_URLS;
 
 /** Every absolute http(s) address in `html`. */
 function addresses(html: string): string[] {
@@ -18,18 +19,25 @@ function addresses(html: string): string[] {
 }
 
 describe('hermeticShell', () => {
-  it('leaves app.html no address off the machine but the Google scripts', () => {
-    // app.html does name others (else this test proves nothing): the font
+  it('leaves app.html no address off the machine', () => {
+    // app.html does name some (else this test proves nothing): the font
     // host's preconnects and the jidoujisho icon on the public host.
-    expect(addresses(APP_HTML).filter((a) => !STUBBED_BY_THE_RIG.includes(a))).not.toEqual([]);
-    expect(addresses(hermeticShell(APP_HTML)).sort()).toEqual([...STUBBED_BY_THE_RIG].sort());
+    expect(addresses(APP_HTML)).not.toEqual([]);
+    expect(addresses(hermeticShell(APP_HTML))).toEqual([]);
+  });
+
+  it('has no Google script in the shell: they load on demand, and only those two', () => {
+    expect(APP_HTML).not.toMatch(/<script\b[^>]*\bsrc=/);
+    expect(STUBBED_BY_THE_RIG).toEqual([
+      'https://apis.google.com/js/api.js',
+      'https://accounts.google.com/gsi/client'
+    ]);
   });
 
   it('keeps the elements, only without the address', () => {
     const shell = hermeticShell(APP_HTML);
     expect(shell).toContain('id="popupAbout"');
     expect(shell).toContain('%sveltekit.body%');
-    expect(shell).toContain('<script src="https://apis.google.com/js/api.js"></script>');
     expect(shell).not.toContain('rel="preconnect"');
     expect(shell).toMatch(/background-image: none;/);
   });

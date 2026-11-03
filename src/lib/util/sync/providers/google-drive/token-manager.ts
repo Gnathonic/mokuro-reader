@@ -4,6 +4,7 @@ import { GOOGLE_DRIVE_CONFIG } from './constants';
 import { showSnackbar } from '$lib/util/snackbar';
 import { onNextUserGesture } from '$lib/util/user-gesture';
 import { CLOUD_TEST_HOOKS, cloudTestToken } from '../../cloud-test-hooks';
+import { loadGoogleScripts } from './google-scripts';
 
 /**
  * The interop rig's stand-in for a GIS token client: a request answers with the
@@ -245,12 +246,15 @@ class TokenManager {
   }
 
   /**
-   * Wait for google Identity Services global to be available (loaded from script tag)
+   * Wait for the Google Identity Services global. The script is injected on
+   * demand (`google-scripts.ts`), normally long before a token is needed: at
+   * boot for an active Drive, or when the cloud page opened.
    */
   private async waitForGoogleIdentity(): Promise<void> {
     if (typeof google !== 'undefined' && google?.accounts?.oauth2) return;
 
     console.log('⏳ Waiting for Google Identity Services to load...');
+    await loadGoogleScripts();
     const maxWait = 10000; // 10 seconds
     const start = Date.now();
 

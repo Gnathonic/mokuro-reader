@@ -6,8 +6,9 @@
  * service. Such a build therefore leaves out what a production page loads from
  * a third party: the Noto Sans JP web font (`loadWebFonts`; text lays out in
  * the fallback font) and the absolute addresses in `app.html` (`hermeticShell`,
- * applied by `hooks.server.ts`). The two Google scripts stay: the rig answers
- * them with an empty script.
+ * applied by `hooks.server.ts`). The two Google scripts are not in the shell
+ * at all: they are injected on demand (`google-scripts.ts`: an active Drive at
+ * boot, or the cloud page), and the rig answers them with an empty script.
  *
  * A compile-time constant, false in production and under Vitest, so a
  * production build keeps all of it.

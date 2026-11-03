@@ -6,6 +6,7 @@ import {
   type DriveFile
 } from './constants';
 import { tokenManager } from './token-manager';
+import { loadGoogleScripts } from './google-scripts';
 import {
   classifyDriveFailure,
   driveFailureOf,
@@ -189,12 +190,16 @@ class DriveApiClient {
   private isInitialized = false;
 
   /**
-   * Wait for gapi global to be available (loaded from script tag)
+   * Wait for the gapi global. The script is injected on demand
+   * (`google-scripts.ts`): usually its load is already in flight or done —
+   * started at boot or when the cloud page opened — and this joins it; a load
+   * that failed earlier is tried again here.
    */
   private async waitForGapi(): Promise<void> {
     if (typeof gapi !== 'undefined' && typeof gapi.load === 'function') return;
 
     console.log('⏳ Waiting for Google API (gapi) to load...');
+    await loadGoogleScripts();
     const maxWait = 10000; // 10 seconds
     const start = Date.now();
 
