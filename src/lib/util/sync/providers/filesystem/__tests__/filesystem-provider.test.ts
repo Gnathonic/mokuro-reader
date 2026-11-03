@@ -346,3 +346,32 @@ describe('FilesystemProvider.getStatus metadata gates', () => {
     expect(status.accountScope).toBeUndefined();
   });
 });
+
+describe('FilesystemProvider.statFile (conditional root-file reads)', () => {
+  it('stats the file without reading it: lastModified and size, as the listing reports them', async () => {
+    const root = new FakeDirHandle('');
+    await seedFile(root, 'volume-data.json', '{"a":1}');
+    const provider = makeProvider(root);
+    const [listed] = await provider.listCloudVolumes();
+    expect(await provider.statFile(listed)).toEqual({
+      size: listed.size,
+      modifiedTime: listed.modifiedTime
+    });
+  });
+
+  it('moves with a write; a gone file is null', async () => {
+    const root = new FakeDirHandle('');
+    await seedFile(root, 'volume-data.json', '{"a":1}');
+    const provider = makeProvider(root);
+    const [listed] = await provider.listCloudVolumes();
+    const before = await provider.statFile(listed);
+    const uploaded = await provider.uploadFile('volume-data.json', new Blob(['{"a":2}']));
+    const after = await provider.statFile(listed);
+    expect(after).not.toEqual(before);
+    // The upload receipt is the stamp the next stat reports.
+    expect(after).toEqual({ size: uploaded.size, modifiedTime: uploaded.modifiedTime });
+
+    await provider.deleteFile(listed);
+    expect(await provider.statFile(listed)).toBeNull();
+  });
+});

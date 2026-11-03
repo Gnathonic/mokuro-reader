@@ -13,7 +13,7 @@ const getCache = vi.fn();
 vi.mock('$lib/util/sync/cache-manager', () => ({
   cacheManager: { getCache: (...args: unknown[]) => getCache(...args) }
 }));
-const blindUploadFile = vi.fn(async (_path: string, _blob: Blob) => 'uploaded-id');
+const blindUploadFile = vi.fn(async (_path: string, _blob: Blob) => ({ fileId: 'uploaded-id' }));
 const getActiveProvider = vi.fn();
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
@@ -22,7 +22,11 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 const syncReady = vi.fn(() => true);
-vi.mock('$lib/util/sync/foreground-sync', () => ({ syncReady: () => syncReady() }));
+const providerTokenValid = vi.fn(() => true);
+vi.mock('$lib/util/sync/foreground-sync', () => ({
+  syncReady: () => syncReady(),
+  providerTokenValid: () => providerTokenValid()
+}));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 vi.mock('$lib/reading-history/history-db', () => ({ historyDb: () => ({}) }));
 vi.mock('$lib/reading-history/record', async (importOriginal) => ({
@@ -64,14 +68,17 @@ import { clearVolumes, updateProgress, volumesWithTrash } from '$lib/settings/vo
 import { _resetEscapesForTests, newestUploaded, watchEscapes } from './escapes';
 import { _resetPositionTracking, changedVolumes, initPositionTracking } from './positions-local';
 import { noteReaderClosed, noteReaderOpened } from './reader-open';
+import { _resetCloudPositionsForTests, cloudPositionStamp } from './positions-cloud';
 import {
   _resetPositionsSyncForTests,
   checkPositionsOnOpen,
   flushPositionPush,
   requestPositionCheck,
   initPositionPush,
+  probePositions,
   syncPositions
 } from './positions-sync';
+import { _resetRemoteReadsForTests, remoteReads } from '$lib/reading-history/remote-reads';
 
 const now = Date.parse('2026-10-16T12:00:00.000Z');
 
@@ -140,7 +147,10 @@ beforeEach(() => {
   _resetPositionTracking();
   _resetPositionsSyncForTests();
   _resetEscapesForTests();
+  _resetCloudPositionsForTests();
   syncReady.mockReturnValue(true);
+  providerTokenValid.mockReturnValue(true);
+  _resetRemoteReadsForTests();
   stops.push(initPositionTracking());
 });
 afterEach(() => {
@@ -229,7 +239,7 @@ describe('syncPositions', () => {
         ? fileBlob({ x: [now - 5000, 10, 100, 'phone'] })
         : fileBlob({ y: [now - 4000, 20, 200, 'phone'] });
     });
-    blindUploadFile.mockResolvedValueOnce('b');
+    blindUploadFile.mockResolvedValueOnce({ fileId: 'b' });
     vi.mocked(provider.deleteFile).mockImplementation(async (file) => {
       if (file.fileId === 'ghost') throw new ProviderError('File not found', 'webdav', 'NOT_FOUND');
     });
@@ -319,10 +329,9 @@ describe('syncPositions', () => {
       4100,
       'me'
     ]);
-    expect(cache.add).toHaveBeenCalledWith(
-      'positions.json',
-      expect.objectContaining({ fileId: 'uploaded-id', path: 'positions.json' })
-    );
+    // The manager's blind upload records the receipt in the cache itself; a
+    // second, client-clock entry here would overwrite the server's stamp.
+    expect(cache.add).not.toHaveBeenCalled();
     expect(changedVolumes()).toEqual([]);
 
     // The cloud now holds what went up.
@@ -331,6 +340,50 @@ describe('syncPositions', () => {
     const again = makeProvider(async () => ({ text: async () => sent }) as unknown as Blob);
     expect((await syncPositions(again)).uploaded).toBe(false);
     expect(blindUploadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers what the cloud file holds: after a read, and after its own write', async () => {
+    stubCache([listed('a')]);
+    const scope = { accountScope: 'https://dav.example/' };
+    const read = makeProvider(async () => fileBlob({ w: [now - 1000, 3, 30, 'phone'] }), scope);
+    await syncPositions(read);
+    // The volume-data sync's deferral asks this (`volume-data-deferral.ts`).
+    expect(cloudPositionStamp(read, 'w')).toBe(now - 1000);
+    expect(cloudPositionStamp(read, 'v')).toBeUndefined();
+
+    updateProgress('v', 41, 4100, false);
+    const written = makeProvider(async () => fileBlob({ w: [now - 1000, 3, 30, 'phone'] }), scope);
+    expect((await syncPositions(written)).uploaded).toBe(true);
+    expect(cloudPositionStamp(written, 'v')).toBe(
+      Date.parse(get(volumesWithTrash).v.lastProgressUpdate)
+    );
+    expect(cloudPositionStamp(written, 'w')).toBe(now - 1000);
+  });
+
+  it('a provider other than the active one: its own upload receipt goes into the cache', async () => {
+    const cache = stubCache([]);
+    updateProgress('v', 41, 4100, false);
+    const provider = makeProvider(async () => fileBlob({}));
+    getActiveProvider.mockReturnValue(null);
+    const uploadFile = vi.fn(async (_path: string, blob: Blob) => ({
+      fileId: 'other-id',
+      modifiedTime: '2026-11-02T10:00:00.000Z',
+      size: blob.size,
+      revision: 'r1'
+    }));
+    (provider as unknown as { uploadFile: typeof uploadFile }).uploadFile = uploadFile;
+    expect((await syncPositions(provider)).uploaded).toBe(true);
+    expect(blindUploadFile).not.toHaveBeenCalled();
+    expect(cache.add).toHaveBeenCalledTimes(1);
+    expect(cache.add).toHaveBeenCalledWith(
+      'positions.json',
+      expect.objectContaining({
+        fileId: 'other-id',
+        modifiedTime: '2026-11-02T10:00:00.000Z',
+        modifiedTimeProvisional: false,
+        revision: 'r1'
+      })
+    );
   });
 
   it('an upload reports each own stamp as escaped, for the volumes a visit watches', async () => {
@@ -353,7 +406,7 @@ describe('syncPositions', () => {
     let duringUpload = -1;
     blindUploadFile.mockImplementationOnce(async () => {
       duringUpload = newestUploaded('v');
-      return 'uploaded-id';
+      return { fileId: 'uploaded-id' };
     });
     const provider = makeProvider(async () => fileBlob({}));
     await syncPositions(provider);
@@ -575,5 +628,147 @@ describe('the reader-open check', () => {
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.waitFor(() => expect(provider.downloadFile).toHaveBeenCalledTimes(1));
+  });
+});
+
+/** A provider that can read `positions.json` by path (no listing). */
+function makeProbingProvider(
+  copies: () => Promise<Blob[]>,
+  status: Partial<ProviderStatus> = {}
+): SyncProvider & { readRootFileCopies: ReturnType<typeof vi.fn> } {
+  const provider = makeProvider(async () => {
+    throw new Error('the probe never downloads through the listing');
+  }, status) as SyncProvider & { readRootFileCopies: ReturnType<typeof vi.fn> };
+  provider.readRootFileCopies = vi.fn(copies);
+  (provider as unknown as { isAuthenticated: () => boolean }).isAuthenticated = () => true;
+  return provider;
+}
+
+describe('the cold probe (before the listing has loaded)', () => {
+  it('probePositions adopts by path and writes nothing, keeping own turns marked', async () => {
+    stubCache([], { loaded: false });
+    updateProgress('w', 3, 30, false);
+    const provider = makeProbingProvider(async () => [
+      fileBlob({ v: [now - 1000, 120, 12000, 'phone'] })
+    ]);
+    const outcome = await probePositions(provider);
+    expect(outcome).toMatchObject({ adopted: ['v'], uploaded: false, probe: true });
+    expect(provider.readRootFileCopies).toHaveBeenCalledWith('positions.json');
+    expect(provider.downloadFile).not.toHaveBeenCalled();
+    expect(get(volumesWithTrash).v.progress).toBe(120);
+    expect(blindUploadFile).not.toHaveBeenCalled();
+    // The full sync pushes them once the listing shows every copy.
+    expect(changedVolumes()).toEqual(['w']);
+  });
+
+  it('merges every copy the provider found', async () => {
+    stubCache([], { loaded: false });
+    const provider = makeProbingProvider(async () => [
+      fileBlob({ v: [now - 1000, 120, 12000, 'phone'] }),
+      fileBlob({ v: [now - 500, 130, 13000, 'tablet'], w: [now - 9000, 4, 40, 'phone'] })
+    ]);
+    expect((await probePositions(provider)).adopted.sort()).toEqual(['v', 'w']);
+    expect(get(volumesWithTrash).v.progress).toBe(130);
+  });
+
+  it('no file: adopts nothing, no error', async () => {
+    stubCache([], { loaded: false });
+    const provider = makeProbingProvider(async () => []);
+    expect(await probePositions(provider)).toMatchObject({ adopted: [], uploaded: false });
+  });
+
+  it('old bunko: not even the probe reads the shared path', async () => {
+    stubCache([], { loaded: false });
+    const provider = makeProbingProvider(async () => [fileBlob({})], {
+      serverCompilesMetadata: true
+    });
+    expect((await probePositions(provider)).skipped).toBe('not-allowed');
+    expect(provider.readRootFileCopies).not.toHaveBeenCalled();
+  });
+
+  it('an expired Drive token: no probe', async () => {
+    stubCache([], { loaded: false });
+    providerTokenValid.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => [fileBlob({})]);
+    expect((await probePositions(provider)).skipped).toBe('not-ready');
+    expect(provider.readRootFileCopies).not.toHaveBeenCalled();
+  });
+
+  it('the reader-open check probes while the first listing runs, and toasts', async () => {
+    stubCache([], { loaded: false, fetching: true });
+    syncReady.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => [
+      fileBlob({ v: [now - 1000, 120, 12000, 'phone'] })
+    ]);
+    await checkPositionsOnOpen('v');
+    expect(provider.readRootFileCopies).toHaveBeenCalledTimes(1);
+    expect(get(volumesWithTrash).v.progress).toBe(120);
+    expect(showSnackbar).toHaveBeenCalledWith('Continued from Pixel, p.120');
+  });
+
+  it('no listing under way (e.g. login not finished): the open check does not probe', async () => {
+    stubCache([], { loaded: false, fetching: false });
+    syncReady.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => [fileBlob({})]);
+    await checkPositionsOnOpen('v');
+    expect(provider.readRootFileCopies).not.toHaveBeenCalled();
+  });
+
+  it('a probe in flight answers the open check: no second wait', async () => {
+    stubCache([], { loaded: false, fetching: true });
+    syncReady.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return [fileBlob({ v: [now - 1000, 120, 12000, 'phone'] })];
+    });
+    void probePositions(provider);
+    await vi.advanceTimersByTimeAsync(100);
+    let done = false;
+    const check = checkPositionsOnOpen('v').then(() => (done = true));
+    await vi.advanceTimersByTimeAsync(200);
+    await check;
+    expect(done).toBe(true);
+    expect(get(volumesWithTrash).v.progress).toBe(120);
+    // The open was noted before the first probe's download landed: it toasts.
+    expect(showSnackbar).toHaveBeenCalledWith('Continued from Pixel, p.120');
+  });
+
+  it('the focus check probes while the first listing runs', async () => {
+    stubCache([], { loaded: false, fetching: true });
+    syncReady.mockReturnValue(false);
+    const provider = makeProbingProvider(async () => [fileBlob({})]);
+    requestPositionCheck(now);
+    await vi.waitFor(() => expect(provider.readRootFileCopies).toHaveBeenCalledTimes(1));
+  });
+
+  it('once the listing is in, the ordinary path runs (listed copies, push)', async () => {
+    stubCache([listed('a')]);
+    updateProgress('w', 3, 30, false);
+    const provider = makeProbingProvider(async () => [fileBlob({})]);
+    (provider.downloadFile as ReturnType<typeof vi.fn>).mockImplementation(async () =>
+      fileBlob({})
+    );
+    const outcome = await syncPositions(provider);
+    expect(outcome.uploaded).toBe(true);
+    expect(outcome.probe).toBeUndefined();
+    expect(provider.readRootFileCopies).not.toHaveBeenCalled();
+  });
+});
+
+describe('adopted positions are reads for smart sort', () => {
+  it('an adoption notes the reading device and its stamp', async () => {
+    stubCache([listed('a')]);
+    const remoteAt = now - 1000;
+    const provider = makeProvider(async () => fileBlob({ v: [remoteAt, 120, 12000, 'phone'] }));
+    await syncPositions(provider);
+    expect(get(remoteReads).get('v')).toEqual({ at: remoteAt, device: 'phone' });
+  });
+
+  it('an entry not adopted (older than local) notes nothing', async () => {
+    stubCache([listed('a')]);
+    updateProgress('v', 41, 4100, false);
+    const provider = makeProvider(async () => fileBlob({ v: [now - 60_000, 120, 12000, 'phone'] }));
+    await syncPositions(provider);
+    expect(get(remoteReads).has('v')).toBe(false);
   });
 });

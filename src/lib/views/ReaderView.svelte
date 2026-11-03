@@ -90,9 +90,13 @@
   // page while none has been turned here. Re-run for every volume opened.
   // The visit (look-ups claim nothing) starts from the page the check settled.
   let positionsChecked = $state(false);
+  // The volume the reader has open, for the unmount below (`volumeId` may
+  // already name the next route by then).
+  let openVolumeId = '';
   $effect(() => {
     const id = volumeId;
     if (!id) return;
+    openVolumeId = id;
     positionsChecked = false;
     let live = true;
     void checkPositionsOnOpen(id).finally(() => {
@@ -102,6 +106,7 @@
     });
     return () => {
       live = false;
+      if (openVolumeId === id) openVolumeId = '';
       noteReaderClosed(id);
       endVisit(id);
     };
@@ -113,6 +118,10 @@
     foregroundSync.request();
 
     return () => {
+      // The reading session ends BEFORE the flush, whichever teardown Svelte
+      // runs first: the flush's sync must see no session, so it uploads the
+      // volume-data.json a sync deferred while reading (`reading-session.ts`).
+      if (openVolumeId) noteReaderClosed(openVolumeId);
       // Send a pending progress change now rather than when the batching
       // interval allows.
       activityTracker.flush();

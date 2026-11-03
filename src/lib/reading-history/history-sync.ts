@@ -1,8 +1,8 @@
+import { historySyncAllowed } from './history-capability';
 import Dexie from 'dexie';
 import { sourceStampChanged } from '$lib/metadata/series-index';
 import type {
   CloudFileMetadata,
-  ProviderStatus,
   SyncProvider,
   UploadFileResult
 } from '$lib/util/sync/provider-interface';
@@ -98,6 +98,28 @@ export async function syncHistory(
 }
 
 /**
+ * The quick tier's half of `syncHistory`: IMPORT only, from a listing of
+ * `history/` alone (`SyncProvider.listFolder`), before the full listing has
+ * loaded. Exports wait for the full sync — they decide what to upload from
+ * the listing of every file this device already wrote.
+ */
+export async function importHistory(
+  provider: SyncProvider,
+  listing: CloudFileMetadata[],
+  db: HistoryDexie
+): Promise<number> {
+  if (!historySyncAllowed(provider.getStatus())) return 0;
+  const own = await getOrCreateDeviceId(db);
+  const warned = new Set<string>();
+  const warnOnce = (kind: string, ...details: unknown[]) => {
+    if (warned.has(kind)) return;
+    warned.add(kind);
+    console.warn(`[reading-history] ${kind}`, ...details);
+  };
+  return importOthers(provider, listing, db, own, warnOnce);
+}
+
+/**
  * Has this provider received every converted turn this device holds (the
  * `legacy.events` upload mark covers the local legacy count)? Until it has,
  * `volume-data.json` keeps carrying turns — stripping them would leave the
@@ -119,18 +141,7 @@ function legacyEvents(db: HistoryDexie) {
     .between([LEGACY_DEVICE_PREFIX, Dexie.minKey], ['legacy;', Dexie.minKey]);
 }
 
-/**
- * Can this provider carry reading history at all? An explicit `historySync`
- * decides (a bunko server's version and `per_user_files`, or on a cloud-direct
- * folder the lease holder's marker — `withCloudBunkoStatus`); otherwise a
- * server that compiles its own metadata (bunko, rules unknown) cannot, and
- * plain storage can.
- */
-export function historySyncAllowed(
-  status: Pick<ProviderStatus, 'historySync' | 'serverCompilesMetadata'>
-): boolean {
-  return status.historySync ?? !status.serverCompilesMetadata;
-}
+export { historySyncAllowed };
 
 type WarnOnce = (kind: string, ...details: unknown[]) => void;
 
@@ -375,9 +386,10 @@ async function exportOwnFacts(
 /**
  * Upload one history file. As a `Blob` (every provider handles one; some read
  * `.size`/`.arrayBuffer()`), and through `blindUploadFile` where a provider
- * has it: on Drive the regular upload re-lists the whole account afterwards,
- * and a history file changes nothing any view renders, is retried by the next
- * sync and loses nothing on failure — the documented test for a blind write.
+ * has it (no provider needs one since Drive's upload stopped re-listing the
+ * account, #288): a history file changes nothing any view renders, is retried
+ * by the next sync and loses nothing on failure — the documented test for a
+ * blind write.
  * Recording the upload in the listing cache is bookkeeping: if that throws,
  * the upload still counts.
  */

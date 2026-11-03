@@ -15,7 +15,7 @@ vi.mock('$lib/settings/misc', async () => {
 });
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 
-import { escapeNameForDriveQuery, driveApiClient } from './api-client';
+import { escapeNameForDriveQuery, driveApiClient, isDriveAuthFailure } from './api-client';
 import { tokenManager } from './token-manager';
 
 describe('driveApiClient.folderHasChildren', () => {
@@ -348,5 +348,191 @@ describe('driveApiClient failure classification', () => {
 
     await expect(driveApiClient.downloadFile('file-1')).rejects.toThrow(/Re-authentication/);
     expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('driveApiClient change feed (changes.getStartPageToken / changes.list)', () => {
+  const list = vi.fn();
+  const getStartPageToken = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    list.mockReset();
+    getStartPageToken.mockReset();
+    vi.stubGlobal('gapi', { client: { drive: { changes: { list, getStartPageToken } } } });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('getStartPageToken asks for the token field only', async () => {
+    getStartPageToken.mockResolvedValue({ result: { startPageToken: '123' } });
+
+    await expect(driveApiClient.getStartPageToken()).resolves.toBe('123');
+    expect(getStartPageToken).toHaveBeenCalledWith({ fields: 'startPageToken' });
+  });
+
+  it('getStartPageToken retries a 429 like every other call', async () => {
+    getStartPageToken
+      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0.001' } })
+      .mockResolvedValueOnce({ result: { startPageToken: '124' } });
+
+    await expect(driveApiClient.getStartPageToken()).resolves.toBe('124');
+    expect(getStartPageToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('listChanges pages to the end and returns the next position', async () => {
+    list
+      .mockResolvedValueOnce({ result: { changes: [{ fileId: 'a' }], nextPageToken: 'p2' } })
+      .mockResolvedValueOnce({
+        result: { changes: [{ fileId: 'b', removed: true }], newStartPageToken: 'next' }
+      });
+
+    await expect(driveApiClient.listChanges('start', 'changes(fileId,removed)')).resolves.toEqual({
+      changes: [{ fileId: 'a' }, { fileId: 'b', removed: true }],
+      newStartPageToken: 'next'
+    });
+    expect(list.mock.calls.map(([args]) => args.pageToken)).toEqual(['start', 'p2']);
+    expect(list).toHaveBeenCalledWith({
+      pageToken: 'start',
+      pageSize: 1000,
+      includeRemoved: true,
+      fields: 'nextPageToken,newStartPageToken,changes(fileId,removed)'
+    });
+  });
+
+  it('a 429 on page N re-asks page N only', async () => {
+    list
+      .mockResolvedValueOnce({ result: { changes: [{ fileId: 'a' }], nextPageToken: 'p2' } })
+      .mockRejectedValueOnce({ status: 429, result: {}, headers: { 'retry-after': '0.001' } })
+      .mockResolvedValueOnce({ result: { changes: [], newStartPageToken: 'next' } });
+
+    const result = await driveApiClient.listChanges('start', 'changes(fileId)');
+
+    expect(result?.changes).toEqual([{ fileId: 'a' }]);
+    expect(list.mock.calls.map(([args]) => args.pageToken)).toEqual(['start', 'p2', 'p2']);
+  });
+
+  it('is null past maxPages: the log would cost more than a listing', async () => {
+    list.mockResolvedValue({ result: { changes: [], nextPageToken: 'more' } });
+
+    await expect(driveApiClient.listChanges('start', 'changes(fileId)', 2)).resolves.toBeNull();
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it('a refused position fails typed, without a re-auth', async () => {
+    list.mockRejectedValue({
+      status: 400,
+      result: { error: { errors: [{ reason: 'invalid' }], message: 'Invalid Value' } }
+    });
+
+    const error = await driveApiClient.listChanges('bogus', 'changes(fileId)').catch((e) => e);
+
+    expect(error.status).toBe(400);
+    expect(error.kind).toBe('other');
+    // The POSITION was refused, not the feed: a listing takes a fresh one.
+    expect(error.feedUnavailable).toBeUndefined();
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+  });
+
+  it('an expired token goes down the auth path, and says so', async () => {
+    list.mockRejectedValue({ status: 401, result: {} });
+
+    const error = await driveApiClient.listChanges('start', 'changes(fileId)').catch((e) => e);
+
+    expect(error.message).toMatch(/Re-authentication/);
+    expect(isDriveAuthFailure(error)).toBe(true);
+    expect(error.feedUnavailable).toBeUndefined();
+    expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 401 on getStartPageToken is auth too', async () => {
+    getStartPageToken.mockRejectedValue({ status: 401, result: {} });
+
+    const error = await driveApiClient.getStartPageToken().catch((e) => e);
+
+    expect(isDriveAuthFailure(error)).toBe(true);
+    expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+
+  // A 403 the general classifier would send down the auth path (no reason,
+  // `insufficientPermissions`): from the feed it means the token cannot read
+  // the feed, not that it expired. A re-auth would mint the same token and
+  // the next listing would ask again — a re-auth prompt on every listing.
+  it.each([
+    ['no reason', {}],
+    ['insufficientPermissions', { error: { errors: [{ reason: 'insufficientPermissions' }] } }]
+  ])('a 403 (%s) on the feed is "feed unavailable", never a re-auth', async (_label, result) => {
+    list.mockRejectedValue({ status: 403, result });
+    getStartPageToken.mockRejectedValue({ status: 403, result });
+
+    for (const call of [
+      () => driveApiClient.listChanges('start', 'changes(fileId)'),
+      () => driveApiClient.getStartPageToken()
+    ]) {
+      const error = await call().catch((e) => e);
+      expect(error.status).toBe(403);
+      expect(error.feedUnavailable).toBe(true);
+      expect(isDriveAuthFailure(error)).toBe(false);
+    }
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  // A rate limit or an outage clears: it costs the call that met it a full
+  // listing (the cache's fallback), never the feed for the rest of the
+  // session — every later sync would walk the whole account.
+  it.each([
+    ['a 503', { status: 503, result: {} }],
+    ['a 429', { status: 429, result: {} }],
+    [
+      'a 403 rateLimitExceeded',
+      { status: 403, result: { error: { errors: [{ reason: 'rateLimitExceeded' }] } } }
+    ]
+  ])(
+    '%s that outlasts the retries is neither auth nor "feed unavailable"',
+    async (_label, rejection) => {
+      const answer = { ...rejection, headers: { 'retry-after': '0.001' } };
+      list.mockRejectedValue(answer);
+      getStartPageToken.mockRejectedValue(answer);
+
+      for (const call of [
+        () => driveApiClient.listChanges('start', 'changes(fileId)'),
+        () => driveApiClient.getStartPageToken()
+      ]) {
+        const error = await call().catch((e) => e);
+        expect(error.status).toBe(rejection.status);
+        expect(error.feedUnavailable).toBeUndefined();
+        expect(isDriveAuthFailure(error)).toBe(false);
+      }
+      expect(list.mock.calls.length).toBeGreaterThan(1); // retried first, like every call
+      expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    }
+  );
+
+  it('a named 403 refusal on the feed is "feed unavailable"', async () => {
+    list.mockRejectedValue({
+      status: 403,
+      result: { error: { errors: [{ reason: 'insufficientFilePermissions' }] } }
+    });
+
+    const error = await driveApiClient.listChanges('start', 'changes(fileId)').catch((e) => e);
+
+    expect(error.feedUnavailable).toBe(true);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+  });
+
+  it('a network failure is neither auth nor "feed unavailable"', async () => {
+    getStartPageToken.mockRejectedValue(new Error('network error'));
+
+    const error = await driveApiClient.getStartPageToken().catch((e) => e);
+
+    expect(isDriveAuthFailure(error)).toBe(false);
+    expect(error.feedUnavailable).toBeUndefined();
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
   });
 });

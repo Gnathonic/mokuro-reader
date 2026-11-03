@@ -32,6 +32,7 @@
 
   const coverClaims = createCoverClaims({
     claims: () => volumes,
+    // svelte-ignore state_referenced_locally
     ...(withTargets ? { targets: () => volumes } : {})
   });
   const { gate } = coverClaims;

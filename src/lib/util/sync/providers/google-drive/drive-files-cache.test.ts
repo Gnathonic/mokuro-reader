@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./api-client', () => ({
   driveApiClient: {
     listFiles: vi.fn(),
-    getFileMetadata: vi.fn(async () => ({ id: 'MY_DRIVE' }))
+    getFileMetadata: vi.fn(async () => ({ id: 'MY_DRIVE' })),
+    getStartPageToken: vi.fn(async () => 'start-token')
   },
-  escapeNameForDriveQuery: vi.fn((name: string) => name)
+  escapeNameForDriveQuery: vi.fn((name: string) => name),
+  isDriveAuthFailure: (error: unknown) => (error as { kind?: unknown })?.kind === 'auth'
 }));
 
 vi.mock('../../folder-deduplicator', async (importOriginal) => ({

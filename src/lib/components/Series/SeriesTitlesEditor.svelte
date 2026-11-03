@@ -51,6 +51,7 @@
   // out from under a still-focused field before that field's blur has fired. Saves below
   // refuse to run once that happens, instead of writing a junk record for a blank/foreign
   // series title.
+  // svelte-ignore state_referenced_locally
   const ownerSeriesTitle = seriesTitle;
 
   let meta = $derived($seriesMetadataMap.get(normalizeSeriesKey(seriesTitle)));
