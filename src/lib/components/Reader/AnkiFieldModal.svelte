@@ -12,7 +12,6 @@
     DYNAMIC_TAGS,
     resolveTemplate,
     resolveDynamicTags,
-    resolveExistingTags,
     tagSafeTitle,
     getModelConfig,
     type CreateCardOptions,
@@ -154,13 +153,8 @@
     const store = $cropperStore;
     if (!store || !template) return '';
 
-    // Replace {existing} with previous tags
-    let resolved = resolveExistingTags(template, store.previousTags);
-
-    // Use resolveDynamicTags for {series} and {volume}
-    resolved = resolveDynamicTags(resolved, store.metadata || {});
-
-    return resolved;
+    // {existing}, {series} and {volume} in one pass, as the card functions do
+    return resolveDynamicTags(template, store.metadata || {}, store.previousTags ?? []);
   }
 
   // Derive mode and settings from store
@@ -759,13 +753,12 @@
             pageFilename: $cropperStore.pageFilename,
             deckName: finalDeckName
           };
-          // Resolve dynamic tags for create mode
-          const resolvedTags = resolveDynamicTags(editableTags, $cropperStore.metadata || {});
+          // Pass raw tags - createCard resolves the dynamic tags (once)
           await createCard(
             imageData,
             selectedText,
             sentence,
-            resolvedTags,
+            editableTags,
             $cropperStore.metadata,
             createOptions
           );

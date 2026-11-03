@@ -96,29 +96,32 @@ export function generateImageFilename(
  *
  * Also used for deck names. Titles go through `tagSafeTitle`: Anki renders
  * `{{Tags}}` and `{{Deck}}` unescaped, so a title must not carry markup there.
+ *
+ * Given `existingTags` (update mode), `{existing}` is replaced with them in the
+ * SAME pass (none → removed); without it `{existing}` is left as written. One
+ * pass, so a value is never re-scanned: a title or an old tag that spells
+ * `{volume}` is inserted as written. Call this once per template — the card
+ * functions do, so callers hand them the raw template.
  */
-export function resolveDynamicTags(tags: string, metadata: VolumeMetadata): string {
+export function resolveDynamicTags(
+  tags: string,
+  metadata: VolumeMetadata,
+  existingTags?: string[]
+): string {
   if (!tags) return '';
 
   // Function replacers: a title's `$&` / `$'` must never splice the template.
-  const series = metadata.seriesTitle ? tagSafeTitle(metadata.seriesTitle) : '';
-  const volume = metadata.volumeTitle ? tagSafeTitle(metadata.volumeTitle) : '';
-  const resolved = tags.replace(/\{(series|volume)\}/g, (_match, name: string) =>
-    name === 'series' ? series : volume
+  const values: Record<string, string> = {
+    series: metadata.seriesTitle ? tagSafeTitle(metadata.seriesTitle) : '',
+    volume: metadata.volumeTitle ? tagSafeTitle(metadata.volumeTitle) : ''
+  };
+  const pattern = existingTags ? /\{(series|volume|existing)\}/g : /\{(series|volume)\}/g;
+  const resolved = tags.replace(pattern, (_match, name: string) =>
+    name === 'existing' ? (existingTags ?? []).join(' ') : values[name]
   );
 
   // Clean up any double spaces and trim
   return resolved.replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Replaces `{existing}` in a tags template with the card's previous tags
- * (update mode), or removes it when there are none. A function replacer, so a
- * `$&` in a tag is inserted literally.
- */
-export function resolveExistingTags(tags: string, previousTags?: string[]): string {
-  const existing = previousTags ? previousTags.join(' ') : '';
-  return tags.replace(/\{existing\}/g, () => existing);
 }
 
 /**
@@ -695,8 +698,9 @@ export async function createCard(
   const baseDeckName = options?.deckName || config.deckName;
   const resolvedDeckName = metadata ? resolveDynamicTags(baseDeckName, metadata) : baseDeckName;
 
-  // Resolve dynamic tags with volume metadata
-  const resolvedTags = tags && metadata ? resolveDynamicTags(tags, metadata) : tags;
+  // Resolve dynamic tags with volume metadata — the ONE place a create's tag
+  // template is resolved (callers pass it raw, so no value is re-scanned)
+  const resolvedTags = tags ? resolveDynamicTags(tags, metadata || {}) : '';
   const tagList = resolvedTags ? resolvedTags.split(' ').filter((t) => t.length > 0) : [];
 
   if (!imageData) {
@@ -748,6 +752,7 @@ export async function createCard(
       sentence,
       {
         pageNumber: options?.pageNumber,
+        pageFilename: options?.pageFilename,
         previousValues: options?.previousValues,
         fieldName: mapping.fieldName
       }
@@ -932,10 +937,9 @@ export async function updateLastCard(
   // Use provided field mappings (from modal) or fall back to saved config
   const fieldMappings = options?.fieldMappings || config.fieldMappings;
 
-  // Resolve dynamic tags with volume metadata and {existing}
-  let resolvedTags = resolveExistingTags(tags || '', options?.previousTags);
-  // Resolve {series} and {volume}
-  resolvedTags = metadata ? resolveDynamicTags(resolvedTags, metadata) : resolvedTags;
+  // Resolve {existing}, {series} and {volume} in one pass, so an old tag that
+  // spells `{volume}` is kept as written
+  const resolvedTags = resolveDynamicTags(tags || '', metadata || {}, options?.previousTags ?? []);
 
   if (!imageData) {
     showSnackbar('Error: No image data');
@@ -985,6 +989,7 @@ export async function updateLastCard(
       sentence,
       {
         pageNumber: options?.pageNumber,
+        pageFilename: options?.pageFilename,
         previousValues: options?.previousValues,
         fieldName: mapping.fieldName
       }
@@ -1182,11 +1187,10 @@ export async function sendQuickCapture(
     // Get the model config for create mode
     const config = getModelConfig(selectedModel, 'create');
 
-    // Use tags template from config, resolve dynamic tags
+    // Tags template from config, passed raw: createCard resolves it
     const tagsTemplate = config?.tags || '';
-    const resolvedTags = resolveDynamicTags(tagsTemplate, metadata || {});
 
-    await createCard(imageData, selectedText, sentence, resolvedTags, metadata, {
+    await createCard(imageData, selectedText, sentence, tagsTemplate, metadata, {
       deckName: config?.deckName,
       pageFilename
     });

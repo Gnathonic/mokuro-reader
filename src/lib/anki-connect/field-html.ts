@@ -33,16 +33,21 @@ export function escapeFieldText(value: string): string {
 /**
  * Make a title safe as part of an Anki tag or deck name. Anki substitutes
  * `{{Tags}}` and `{{Deck}}` into the card unescaped, and a tag cannot carry
- * entities (it is also searched and shown as plain text), so the two markup
+ * entities (it is also searched and shown as plain text), so the markup
  * delimiters are swapped for their fullwidth look-alikes — the same
- * substitution titles get as file names (`sanitize-title.ts`). Whitespace
- * becomes `_`, as Anki tags cannot contain spaces.
+ * substitution titles get as file names (`sanitize-title.ts`). That covers the
+ * quotes too: a card template may place `{{Tags}}` or `{{Deck}}` inside a
+ * quoted attribute (`class='{{Tags}}'`), and a title's `'` would end it there.
+ * `&` stays: an entity decodes to text, never to markup or a closing quote.
+ * Whitespace becomes `_`, as Anki tags cannot contain spaces.
  */
 export function tagSafeTitle(title: string): string {
   return title
     .replace(/\s+/g, '_')
     .replace(/</g, '＜') // FULLWIDTH LESS-THAN SIGN
-    .replace(/>/g, '＞'); // FULLWIDTH GREATER-THAN SIGN
+    .replace(/>/g, '＞') // FULLWIDTH GREATER-THAN SIGN
+    .replace(/"/g, '＂') // FULLWIDTH QUOTATION MARK
+    .replace(/'/g, '＇'); // FULLWIDTH APOSTROPHE
 }
 
 /**

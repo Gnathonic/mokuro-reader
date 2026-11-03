@@ -34,6 +34,17 @@ describe('tagSafeTitle', () => {
     expect(tagSafeTitle('<svg/onload=alert(1)>')).toBe('＜svg/onload=alert(1)＞');
   });
 
+  it('swaps quotes too, so a title cannot leave a quoted attribute', () => {
+    expect(tagSafeTitle("x'onmouseover='alert(1)")).toBe('x＇onmouseover=＇alert(1)');
+    expect(tagSafeTitle('x"onmouseover="alert(1)')).toBe('x＂onmouseover=＂alert(1)');
+    expect(tagSafeTitle("Tom & Jerry's")).toBe('Tom_&_Jerry＇s');
+  });
+
+  it('gives the same result when applied twice', () => {
+    const once = tagSafeTitle(`<a href='x'>"b"</a>`);
+    expect(tagSafeTitle(once)).toBe(once);
+  });
+
   it('keeps ordinary titles unchanged', () => {
     expect(tagSafeTitle('ダンジョン飯')).toBe('ダンジョン飯');
   });

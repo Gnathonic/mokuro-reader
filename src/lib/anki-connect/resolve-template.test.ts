@@ -29,7 +29,6 @@ import {
   createCard,
   generateImageFilename,
   resolveDynamicTags,
-  resolveExistingTags,
   resolveTemplate,
   updateLastCard
 } from './index';
@@ -228,17 +227,29 @@ describe('resolveDynamicTags', () => {
   });
 
   it('inserts $-patterns in a title literally', () => {
-    expect(resolveDynamicTags('x {series} y', { seriesTitle: "$'" })).toBe("x $' y");
+    expect(resolveDynamicTags('x {series} y', { seriesTitle: '$& $`' })).toBe('x $&_$` y');
   });
 });
 
-describe('resolveExistingTags', () => {
+describe('resolveDynamicTags: {existing}', () => {
   it('replaces {existing} with the previous tags, literally', () => {
-    expect(resolveExistingTags('{existing} new', ['a', '$&', "$'"])).toBe("a $& $' new");
+    expect(resolveDynamicTags('{existing} new', {}, ['a', '$&', "$'"])).toBe("a $& $' new");
   });
 
-  it('removes {existing} without previous tags', () => {
-    expect(resolveExistingTags('{existing} new')).toBe(' new');
+  it('removes {existing} when there are no previous tags', () => {
+    expect(resolveDynamicTags('{existing} new', {}, [])).toBe('new');
+  });
+
+  it('leaves {existing} as written when no previous tags are given (create)', () => {
+    expect(resolveDynamicTags('{existing} {series}', { seriesTitle: 'S' })).toBe('{existing} S');
+  });
+
+  it('never re-scans a value: an old tag or a title spelling a placeholder stays literal', () => {
+    expect(
+      resolveDynamicTags('{existing} {series}', { seriesTitle: '{volume}', volumeTitle: 'V' }, [
+        '{series}'
+      ])
+    ).toBe('{series} {volume}');
   });
 });
 
@@ -269,7 +280,8 @@ describe('cards sent to AnkiConnect', () => {
         const results: Record<string, unknown> = {
           deckNames: ['Default'],
           modelNames: ['Basic'],
-          modelFieldNames: ['Front', 'Back', 'Picture'],
+          modelFieldNames: ['Front', 'Back', 'Picture', 'Source'],
+          createDeck: 1,
           addNote: 1,
           updateNoteFields: null,
           addTags: null
@@ -294,9 +306,10 @@ describe('cards sent to AnkiConnect', () => {
         fieldMappings: [
           { fieldName: 'Front', template: '<u>{selection}</u>' },
           { fieldName: 'Back', template: '{sentence}' },
-          { fieldName: 'Picture', template: '{image}' }
+          { fieldName: 'Picture', template: '{image}' },
+          { fieldName: 'Source', template: '<i>{page_filename}</i>' }
         ],
-        pageFilename: '001.jpg',
+        pageFilename: '<b>001.jpg',
         deckName: 'Default'
       }
     );
@@ -305,12 +318,37 @@ describe('cards sent to AnkiConnect', () => {
     expect(add).toBeDefined();
     expect(add!.params.note.fields).toEqual({
       Front: `<u>${XSS_ESCAPED}</u>`,
-      Back: '一行目<br>&lt;b&gt;二行目&lt;/b&gt;'
+      Back: '一行目<br>&lt;b&gt;二行目&lt;/b&gt;',
+      Source: '<i>&lt;b&gt;001.jpg</i>'
     });
-    expect(add!.params.note.picture).toEqual([
-      { filename: 'mokuro_S_V_001.jpg.jpg', data: 'QUJD', fields: ['Picture'] }
-    ]);
+    expect(add!.params.note.picture).toHaveLength(1);
+    const picture = add!.params.note.picture[0];
+    expect(picture).toMatchObject({ data: 'QUJD', fields: ['Picture'] });
+    // Only the shape matters here; the exact name carries a known, unrelated
+    // double extension from generateImageFilename.
+    expect(picture.filename).toMatch(/^mokuro_S_V_.*001.*\.jpg$/);
+    expect(picture.filename).not.toMatch(/["<>]/);
     expect(add!.params.note.tags).toEqual(['mined']);
+  });
+
+  it('createCard resolves a raw tag and deck template exactly once', async () => {
+    await createCard(
+      IMAGE,
+      '語',
+      undefined,
+      'mokuro {series} {volume}',
+      { seriesTitle: "{volume} <x y='1'>", volumeTitle: 'V' },
+      {
+        fieldMappings: [{ fieldName: 'Front', template: '{selection}' }],
+        deckName: 'Mining::{series}'
+      }
+    );
+
+    const add = requests.find((r) => r.action === 'addNote');
+    expect(add).toBeDefined();
+    // The title's own `{volume}` is not expanded by a second pass.
+    expect(add!.params.note.tags).toEqual(['mokuro', '{volume}_＜x_y=＇1＇＞', 'V']);
+    expect(add!.params.note.deckName).toBe('Mining::{volume}_＜x_y=＇1＇＞');
   });
 
   it('updateLastCard keeps the existing field raw and escapes the new text', async () => {
@@ -320,7 +358,7 @@ describe('cards sent to AnkiConnect', () => {
         { fieldName: 'Back', template: '{existing}<br>{sentence}' }
       ],
       previousValues: { Front: '<b>語</b>', Back: '<i>old</i>' },
-      previousTags: ['old']
+      previousTags: ['old', '{volume}']
     });
 
     const update = requests.find((r) => r.action === 'updateNoteFields');
@@ -329,7 +367,21 @@ describe('cards sent to AnkiConnect', () => {
       Front: '<b>語</b>',
       Back: `<i>old</i><br>${XSS_ESCAPED}`
     });
+    // One pass: an old tag spelling `{volume}` is kept as written.
     const tags = requests.find((r) => r.action === 'addTags');
-    expect(tags?.params.tags).toBe('old A_B');
+    expect(tags?.params.tags).toBe('old {volume} A_B');
+  });
+
+  it('updateLastCard escapes the page filename', async () => {
+    await updateLastCard(IMAGE, '文', '', { seriesTitle: 'S' }, 42, 'Basic', {
+      fieldMappings: [{ fieldName: 'Back', template: '{sentence} ({page_filename})' }],
+      pageFilename: '"><img src=x onerror=alert(1)>.png'
+    });
+
+    const update = requests.find((r) => r.action === 'updateNoteFields');
+    expect(update).toBeDefined();
+    expect(update!.params.note.fields).toEqual({
+      Back: `文 (&quot;&gt;${XSS_ESCAPED}.png)`
+    });
   });
 });
