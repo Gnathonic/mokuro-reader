@@ -72,7 +72,9 @@ async function backup(): Promise<Record<string, unknown>> {
         seriesTitle: 'Series',
         credentials: { serverUrl: 'https://host', username: 'a', password: 'p' },
         includeSidecars: true,
-        serverCompilesMetadata: true
+        serverCompilesMetadata: true,
+        editLayerSync: 'push',
+        accountScope: 'webdav:https://host|a'
       }
     })
   );
@@ -99,6 +101,17 @@ describe('unified-file-worker compress-from-db backup', () => {
       { layerId: 'gcv', updatedAt: 't-gcv', size: layer('gcv').blob.size },
       { layerId: 'edit', updatedAt: 't-edit', size: layer('edit').blob.size }
     ]);
+  });
+
+  it('builds the layer sidecars for the provider it uploads to', async () => {
+    // A server OCR pulled from bunko is kept off that provider by its
+    // `cloud.server_compiled` mark, which only counts on the provider named.
+    await backup();
+    expect(generateVolumeSidecarsFromDb).toHaveBeenCalledWith(
+      'v1',
+      undefined,
+      expect.objectContaining({ provider: 'webdav', cloud: true })
+    );
   });
 
   it('reports only the layers that went up: a refused edit layer stays unstamped', async () => {

@@ -28,6 +28,7 @@ import { GOALS_FILE_NAME } from '$lib/goals/goals-file';
 import { naturalSort } from '$lib/util/natural-sort';
 import { isHistoryFilePath } from '$lib/reading-history/paths';
 import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
+import { isReservedLayerId } from '$lib/reader/edit/layer-names';
 
 const ROOT_CONFIG_FILENAMES = new Set([
   'volume-data.json',
@@ -81,10 +82,11 @@ export function syncMergesEveryCopy(basename: string): boolean {
 }
 
 /**
- * Files FolderDeduplicator moves in beside a same-named copy instead of
- * trashing the older one: the copies sync folds into one, and bunko's control
- * files. Two bunko roots each hold their own marker and queue, and trashing
- * one by write time could drop the live lease or queued work.
+ * Must a folder merge keep EVERY copy of this file rather than trash the older?
+ * Sync folds every copy of the merged root files into one, and Bunko reads
+ * every copy of its control files (newest wins there, not here): two bunko
+ * roots each hold their own marker and queue, and trashing one by write time
+ * could drop the live lease or queued work.
  */
 export function dedupKeepsEveryCopy(basename: string): boolean {
   return syncMergesEveryCopy(basename) || isBunkoControlFile(basename);
@@ -92,10 +94,13 @@ export function dedupKeepsEveryCopy(basename: string): boolean {
 
 /**
  * The two CONTROL files a cloud-direct mokuro-bunko keeps at the library root
- * (`mokuro-reader/`): its OCR queue and its liveness marker / lease. Neither is
- * a volume, a sidecar or a root config, so they stay OUT of
- * {@link isSyncableFile} on purpose (pinned by tests). Names are exact
- * (case-sensitive), like every other root file the reader owns.
+ * (`mokuro-reader/`): its OCR queue and its liveness marker / lease. They are
+ * read directly by name (`SyncProvider.readControlFile`), never listed: neither
+ * is a volume, a sidecar or a root config, and putting them in the listing
+ * would feed them to the listing caches, the sync diff and the managed-file
+ * matcher — some of which would try to download, move or delete them. So they
+ * stay OUT of {@link isSyncableFile} on purpose (pinned by tests). Names are
+ * exact (case-sensitive), like every other root file the reader owns.
  */
 export const QUEUE_FILE_NAME = '.mokuro-queue.json';
 export const BUNKO_MARKER_NAME = '.mokuro-bunko.json';
@@ -226,6 +231,19 @@ export function splitLayerSidecarName(
   const layerId = stripped.base.slice(dot + 1);
   if (!LAYER_ID_RE.test(layerId)) return null;
   return { stem, layerId, gz: stripped.gz };
+}
+
+/**
+ * Is `path` a layer file whose id is reserved (`isReservedLayerId`)? bunko
+ * refuses a write of some of those by design — a case merge's `curated-<n>`,
+ * the `curated` layer to an account without the rights, a shared `edit` — so a
+ * 403 there says nothing about the account's other writes (`webdav-provider`
+ * keeps the provider read-write). Listing-free, so `Vol 1.edit.mokuro` counts
+ * even when it is the primary of a volume titled `Vol 1.edit`.
+ */
+export function isReservedLayerSidecarPath(path: string): boolean {
+  const split = splitLayerSidecarName(path.split('/').pop() ?? path);
+  return !!split && isReservedLayerId(split.layerId);
 }
 
 /**

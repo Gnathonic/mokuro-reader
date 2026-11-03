@@ -1845,6 +1845,27 @@ describe('syncProvider — one sync per provider at a time', () => {
     }
   });
 
+  // An upgraded or rolled-back bunko changes what it keeps per user; the
+  // per-user files this sync writes must follow what it keeps NOW.
+  it('re-reads the server identity before the per-user files, if it is not fresh', async () => {
+    const steps = holdSteps();
+    try {
+      const order: string[] = [];
+      const refreshIdentity = vi.fn(async () => {
+        order.push('identity');
+      });
+      vi.mocked(svc.syncVolumeData).mockImplementation(async () => {
+        order.push('volume-data');
+      });
+      const webdav = { ...provider('webdav'), refreshIdentity } as unknown as SyncProvider;
+      await svc.syncProvider(webdav);
+      expect(order).toEqual(['identity', 'volume-data']);
+      expect(refreshIdentity).toHaveBeenCalledWith({ maxAgeMs: 5 * 60_000 });
+    } finally {
+      steps.restore();
+    }
+  });
+
   it('does not hold up a different provider', async () => {
     const steps = holdSteps();
     try {
@@ -1858,7 +1879,9 @@ describe('syncProvider — one sync per provider at a time', () => {
     } finally {
       steps.restore();
     }
-  });
+    // Its webdav sync loads modules lazily on first use; a busy machine pushed
+    // that past the 5 s default (it runs in milliseconds when warm).
+  }, 30_000);
 
   describe('a sync that never settles', () => {
     // A WebDAV download is a plain fetch with no signal or timeout: one that
@@ -1978,7 +2001,9 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
     await svc.syncVolumeData(p);
     expect(uploads).toHaveLength(1);
     expect(uploads[0].tracking).toEqual({ idle: { override_minutes: 12, lastUpdated: T2 } });
-  });
+    // The section's first sync pays the history cut-over's cold import; a
+    // busy machine pushed that past the 5 s default.
+  }, 30_000);
 
   it('adopts a newer cloud override and uploads nothing when they agree', async () => {
     setTrackingStates({ idle: { override_minutes: 12, lastUpdated: T1 } });

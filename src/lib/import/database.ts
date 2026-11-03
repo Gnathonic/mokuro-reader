@@ -136,7 +136,9 @@ export async function saveVolume(
     ...(metadata.mokuroSha256 ? { mokuro_sha256: metadata.mokuroSha256 } : {}),
     ...(metadata.mokuroSha256 && metadata.mokuroCloud
       ? { mokuro_sha256_cloud: metadata.mokuroCloud }
-      : {})
+      : {}),
+    // Same rule: the file's block or none, never a previous install's.
+    ...(metadata.ocrProvenance ? { ocr_provenance: [metadata.ocrProvenance] } : {})
   };
 
   // Strip cumulativeChars (it's stored in page_char_counts) — this is the

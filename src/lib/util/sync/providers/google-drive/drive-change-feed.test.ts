@@ -19,8 +19,12 @@ vi.mock('../../folder-deduplicator', async (importOriginal) => ({
 
 vi.mock('./google-drive-provider', () => ({
   googleDriveProvider: {
+    type: 'google-drive',
     isAuthenticated: vi.fn(() => false),
-    getFolderOperations: vi.fn(() => ({}))
+    getFolderOperations: vi.fn(() => ({})),
+    adoptListedReaderFolder: vi.fn(),
+    // No Bunko marker in the library: the dedup is the reader's to run.
+    readControlFile: vi.fn(async () => null)
   }
 }));
 
@@ -640,6 +644,23 @@ describe('driveFilesCache change feed (#288)', () => {
     await driveFilesCache.refreshFromChanges();
 
     await vi.waitFor(() => expect(folderDeduplicator.deduplicateAll).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps the listed reader folders in step: a new root joins, a removed one leaves', async () => {
+    // The control-file reads look for Bunko's marker in every live
+    // `mokuro-reader` folder, nested ones included (`resolveControlRoots`).
+    expect(driveFilesCache.getListedReaderFolderIds()).toEqual(['reader']);
+    feed([
+      changed({ id: 'backup', name: 'Backup', mimeType: FOLDER }),
+      changed({ id: 'nested', name: 'mokuro-reader', mimeType: FOLDER, parents: ['backup'] })
+    ]);
+    await driveFilesCache.refreshFromChanges();
+    expect(driveFilesCache.getListedReaderFolderIds()?.sort()).toEqual(['nested', 'reader']);
+
+    feed([{ fileId: 'nested', removed: true }]);
+    await driveFilesCache.refreshFromChanges();
+    expect(driveFilesCache.getListedReaderFolderIds()).toEqual(['reader']);
+    expect(api.listFiles).not.toHaveBeenCalled();
   });
 
   it('a folder of a new name starts no dedup', async () => {

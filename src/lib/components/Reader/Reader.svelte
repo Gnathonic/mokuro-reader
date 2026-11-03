@@ -74,7 +74,12 @@
     primaryLayerName,
     type LayerSummary
   } from '$lib/reader/edit/layer-list';
-  import { loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
+  import { forkIntoEditLayer, loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
+  import { pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
+  import { forksOnEdit } from '$lib/reader/edit/layer-kind';
+  import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
+  import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
+  import { canPublishCuratedVolume } from '$lib/util/sync/account-capabilities';
   import { layerNamePrompt, runLayerAction, type LayerAction } from './Layers/layer-actions';
   import LayerNameModal from './Layers/LayerNameModal.svelte';
   import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
@@ -713,7 +718,27 @@
   let editSession = $state<EditSession | null>(null);
   let editHasOriginal = $state(false);
 
-  function enterEditMode(focus?: LineRef) {
+  /** The displayed layer, when an edit of it must go into `edit` instead (`forksOnEdit`). */
+  let forkingLayer = $derived.by(() => {
+    if (!activeLayerId) return null;
+    const layer = layers.find((l) => l.layer_id === activeLayerId);
+    return layer && forksOnEdit(layer, $activeProviderStatus) ? layer : null;
+  });
+
+  /** The message when the account's own corrections are listed but could not be fetched. */
+  const OWN_EDIT_PULL_FAILED =
+    "Couldn't fetch your corrections from the cloud. Try again when connected.";
+  /** A primary entry is waiting on that fetch: a second request joins it. */
+  let primaryEditPullPending = false;
+
+  /**
+   * `fork: false` — the entry is a layer SWAP from inside the editor (L, the
+   * toolbar strip), not the user asking to edit this layer: cycling onto a
+   * shared layer must not bounce straight to `edit`, or L could never pass it.
+   * `pulled` — the account's listed `edit` overlay has been asked for already
+   * (the primary path's second pass, below).
+   */
+  function enterEditMode(focus?: LineRef, opts: { fork?: boolean; pulled?: boolean } = {}) {
     if (!volume || !volumeData || $settings.continuousScroll) return;
     if (editingBlocked) {
       showSnackbar('The original layer is read-only — pick another layer or create a copy');
@@ -727,7 +752,34 @@
       }
       return;
     }
+    if (forkingLayer) {
+      if (opts.fork === false) {
+        showSnackbar('Shared layers are read-only — press E to edit your own copy');
+      } else {
+        void forkIntoEditAndEdit(forkingLayer.layer_id, focus);
+      }
+      return;
+    }
     const uuid = volume.volume_uuid;
+    // The first save of a primary edit makes the `edit` layer from the
+    // primary (`persistPageEdit`). The account's own overlay from another
+    // device, listed but not pulled yet, must be here first — a fresh row would
+    // be newer and replace it on the next push. Same pull as a fork; a fetch
+    // that failed opens nothing.
+    if (!activeLayerId && !opts.pulled) {
+      if (primaryEditPullPending) return;
+      primaryEditPullPending = true;
+      void pullOwnEditLayerBeforeEdit(uuid).then((pull) => {
+        primaryEditPullPending = false;
+        if (volume?.volume_uuid !== uuid || activeLayerId) return;
+        if (pull === 'failed') {
+          showSnackbar(OWN_EDIT_PULL_FAILED);
+          return;
+        }
+        enterEditMode(focus, { ...opts, pulled: true });
+      });
+      return;
+    }
     const data = volumeData;
     // Edit whatever is on screen: an alternate layer's row, or the primary.
     const layerId = activeLayerId;
@@ -778,6 +830,33 @@
         });
     }
     overlaysVisible = true;
+  }
+
+  /**
+   * Editing a shared layer: copy it into the account's own `edit`
+   * layer — or keep the one there is — and edit THAT. The shared layer stays
+   * as everyone reads it. A focus (the context menu's line) carries over only
+   * into a fresh copy, whose blocks are the source's.
+   */
+  async function forkIntoEditAndEdit(sourceLayerId: string, focus?: LineRef) {
+    if (!volume) return;
+    const uuid = volume.volume_uuid;
+    try {
+      await settleEditsBeforeLayerMutation('new');
+      // The account's overlay from another device, listed but not pulled yet,
+      // is the copy to edit — a fresh fork would replace it on the next sync.
+      if ((await pullOwnEditLayerBeforeEdit(uuid)) === 'failed') {
+        showSnackbar(OWN_EDIT_PULL_FAILED);
+        return;
+      }
+      const { created } = await forkIntoEditLayer(uuid, sourceLayerId);
+      if (volume?.volume_uuid !== uuid) return;
+      reenterEditOnLayer = { layer: EDIT_LAYER_ID, focus: created ? focus : undefined };
+      updateVolumeSetting(uuid, 'ocrLayer', EDIT_LAYER_ID);
+      showSnackbar('Editing your corrections — the shared layer stays as it is');
+    } catch (error) {
+      showSnackbar(error instanceof Error ? error.message : String(error));
+    }
   }
 
   // Publish the state for the settings toggle; honour outside requests
@@ -843,13 +922,13 @@
     reenterEditOnLayer = wasEditing ? { layer: layerId } : null;
     updateVolumeSetting(volume.volume_uuid, 'ocrLayer', layerId ?? undefined);
   }
-  let reenterEditOnLayer = $state<{ layer: string | null } | null>(null);
+  let reenterEditOnLayer = $state<{ layer: string | null; focus?: LineRef } | null>(null);
   $effect(() => {
     const pending = reenterEditOnLayer;
     if (!pending || editSession || layerLoading) return;
     if (activeLayerId !== pending.layer) return;
     reenterEditOnLayer = null;
-    enterEditMode();
+    enterEditMode(pending.focus, { fork: false });
   });
 
   // Announce layer switches the same way the other reader shortcuts (T, N,
@@ -1659,6 +1738,8 @@
     {layers}
     currentLayer={activeLayerId}
     primaryLayerName={primaryName}
+    canPublishLayers={canPublishCuratedVolume($activeProviderStatus, volume)}
+    layerStatus={$activeProviderStatus}
     onSelectLayer={selectLayer}
     onLayerAction={runLayerActionFromReader}
     bind:layersOpen={layerPickerOpen}

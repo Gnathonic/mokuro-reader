@@ -109,12 +109,12 @@ describe('uploadVolumeFiles', () => {
         const result = await uploadVolumeFiles(
           {
             mokuro: file('Vol 1.mokuro'),
-            layers: [layer('previous-ocr'), layer('gcv')],
+            layers: [layer('curated-2'), layer('gcv')],
             thumbnail: file('Vol 1.webp')
           },
           {
             sidecar: async (f) => {
-              if (f.filename.includes('.previous-ocr.')) throw refusal();
+              if (f.filename.includes('.curated-2.')) throw refusal();
               order.push(f.filename);
               return {};
             },
@@ -163,27 +163,6 @@ describe('uploadVolumeFiles', () => {
       });
     }
 
-    it("bunko 0.8's reserved ids (edited previous-ocr, curated-<n>, pre-upgrade) refused 403 leave the backup standing", async () => {
-      const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
-      const archive = vi.fn(async () => 'ok');
-      const result = await uploadVolumeFiles(
-        {
-          mokuro: file('Vol 1.mokuro'),
-          layers: [layer('previous-ocr'), layer('curated-2'), layer('pre-upgrade'), layer('gcv')]
-        },
-        {
-          sidecar: async (f) => {
-            if (/\.(previous-ocr|curated-2|pre-upgrade)\./.test(f.filename)) throw httpError(403);
-            return {};
-          },
-          archive
-        }
-      );
-      expect(archive).toHaveBeenCalledOnce();
-      expect(result.layers.map((l) => l.layerId)).toEqual(['gcv']);
-      debug.mockRestore();
-    });
-
     it('the primary sidecar refused 403 still fails the backup (only layers are optional)', async () => {
       const archive = vi.fn(async () => 'ok');
       await expect(
@@ -218,6 +197,49 @@ describe('uploadVolumeFiles', () => {
       debug.mockRestore();
       warn.mockRestore();
     });
+  });
+
+  it('a primary whose title bunko would read as an edit/curated layer goes up after the archive', async () => {
+    for (const title of ['Notes.edit', 'Notes.edit-2', 'X.curated']) {
+      const order: string[] = [];
+      const onPrimary = vi.fn();
+      await uploadVolumeFiles(
+        { mokuro: file(`${title}.mokuro`), thumbnail: file(`${title}.webp`) },
+        {
+          sidecar: async (f) => {
+            order.push(f.filename);
+            return {};
+          },
+          archive: async () => {
+            order.push(`${title}.cbz`);
+            return 'ok';
+          }
+        },
+        { onPrimary }
+      );
+      // `<Title>.mokuro` reads as `<stem>.<id>.mokuro` to bunko, refused
+      // 409 no-volume while no `<Title>.cbz` is listed.
+      expect(order).toEqual([`${title}.webp`, `${title}.cbz`, `${title}.mokuro`]);
+      expect(onPrimary).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('a dotted title that names no anchored layer keeps the primary first', async () => {
+    const order: string[] = [];
+    await uploadVolumeFiles(
+      { mokuro: file('Vol. 1.mokuro') },
+      {
+        sidecar: async (f) => {
+          order.push(f.filename);
+          return {};
+        },
+        archive: async () => {
+          order.push('Vol. 1.cbz');
+          return 'ok';
+        }
+      }
+    );
+    expect(order).toEqual(['Vol. 1.mokuro', 'Vol. 1.cbz']);
   });
 
   it('no sidecars: only the archive', async () => {

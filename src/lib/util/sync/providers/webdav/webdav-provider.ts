@@ -7,7 +7,8 @@ import type {
   CloudFileMetadata,
   DownloadOptions,
   FileStamp,
-  UploadFileResult
+  UploadFileResult,
+  ControlFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
@@ -20,7 +21,7 @@ import {
   webdavAuthorization,
   type WebdavAuthMaterial
 } from '../../core/providers/webdav-authorization';
-import { isVerifiedPutHeader } from './webdav-upload';
+import { isVerifiedPutHeader, WebdavUploadError } from './webdav-upload';
 import { fetchWithRetryAfter, wrapWebdavClient } from './webdav-retry-after';
 import { fetchServerIdentity, type IdentityResult, type ServerPermissions } from './identity';
 import {
@@ -35,8 +36,14 @@ import {
   TransientAuthRefreshError
 } from '$lib/util/worker-auth-refresh';
 import { classifyWriteError, type WriteErrorKind } from './webdav-errors';
-import { CANNOT_RENAME_MESSAGE } from '../../account-capabilities';
-import { isBestEffortMetadataPath, isSyncableFile } from '../../syncable-file';
+import { CANNOT_RENAME_MESSAGE, OWNERSHIP_REFRESH_MAX_AGE_MS } from '../../account-capabilities';
+import {
+  isBestEffortMetadataPath,
+  isReservedLayerSidecarPath,
+  isSyncableFile
+} from '../../syncable-file';
+import { controlSetEtag } from '../../control-file-read';
+import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { bunkoSupportsHistory } from './bunko-version';
 
 interface WebDAVCredentials {
@@ -101,6 +108,14 @@ type ReissueOutcome =
  */
 type ReissueVerdict = 'retry' | 'final' | 'transient';
 
+/** Last-resort version of a body when the server sent neither ETag nor Last-Modified. */
+async function bodyFingerprint(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let hash = 0x811c9dc5; // FNV-1a
+  for (const byte of bytes) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+  return `len${bytes.length}-${hash.toString(16)}`;
+}
+
 function isUnauthorized(error: unknown): boolean {
   return (error as { status?: number } | null)?.status === 401;
 }
@@ -133,6 +148,49 @@ export function stripUrlUserinfo(url: string): string {
 const MOKURO_FOLDER = '/mokuro-reader';
 const VOLUME_DATA_FILE = '/mokuro-reader/volume-data.json';
 const PROFILES_FILE = '/mokuro-reader/profiles.json';
+
+/**
+ * A 403 on a reserved layer file (`isReservedLayerSidecarPath`): bunko refuses
+ * some of those by design (a case merge's `curated-<n>`, `curated` without the
+ * rights, a 0.7.x `edit`), so the refusal is that file's alone — reported as
+ * one (layer-sync stops asking), never as a read-only server.
+ */
+function reservedLayerRefusal(path: string): ProviderError {
+  return new ProviderError(
+    `The server refused the layer file ${path}`,
+    'webdav',
+    'PERMISSION_DENIED',
+    false,
+    false,
+    'permission'
+  );
+}
+
+/**
+ * A 403 on a library file from a bunko that records series owners
+ * (`permissions.addFiles` reported): another account owns the series, or the
+ * volume the file is named after. That file's refusal alone, with the
+ * server's reason when it sent one — never a read-only server, never a
+ * credential failure (`handleWriteFailure` is not reached).
+ */
+function libraryFileRefusal(path: string, error: unknown): ProviderError {
+  const detail = error instanceof WebdavUploadError && error.status === 403 ? error.detail : '';
+  return new ProviderError(
+    detail
+      ? `The server refused ${path}: ${detail}`
+      : `The server refused ${path} for this account`,
+    'webdav',
+    'PERMISSION_DENIED',
+    false,
+    false,
+    'permission'
+  );
+}
+
+/** A file in the shared library (a series folder), not a root config file or history. */
+function isLibraryFilePath(path: string): boolean {
+  return path.includes('/') && !path.startsWith('history/');
+}
 
 export class WebDAVProvider implements SyncProvider {
   readonly type = 'webdav' as const;
@@ -175,8 +233,30 @@ export class WebDAVProvider implements SyncProvider {
   private _serverVersion: string | undefined;
   /** Root files bunko reports keeping per account (`per_user_files`); undefined = not reported. */
   private _perUserFiles: string[] | undefined;
+  /** Layer ids bunko reports keeping per account (`per_user_layers`); undefined = not reported. */
+  private _perUserLayers: string[] | undefined;
+  /**
+   * When the identity endpoint was last asked (login or `refreshIdentity`),
+   * whatever it answered — a plain server's 'unsupported' and a failed request
+   * included, so `maxAgeMs` throttles every answer kind.
+   */
+  private identityAt: number | undefined;
+  /**
+   * The refresh in flight: concurrent callers of the SAME session share its
+   * one request (`epoch` = the `sessionEpoch` it was asked under).
+   */
+  private identityRefresh: { epoch: number; promise: Promise<void> } | null = null;
+  /**
+   * Moves on every login and logout. An identity answer is applied only to the
+   * session that asked: a refresh still in flight when the user switched
+   * accounts or servers (two GETs, up to ~20 s) must not turn the bunko gates
+   * on, or hand one account's lists to another session.
+   */
+  private sessionEpoch = 0;
   /** Set when stored credentials were rejected and the user must re-login */
   private _needsAttention = false;
+  /** Per control-file name: the last read's set etag and the server's raw ETag for its one node. */
+  private controlReads = new Map<string, { setEtag: string; serverEtag: string }>();
   /** Whether the current session was established with a password */
   private _hasPassword = false;
   private cloudCore = getCloudProviderCore('webdav');
@@ -456,7 +536,8 @@ export class WebDAVProvider implements SyncProvider {
   private async identify(
     serverUrl: string,
     username: string | undefined,
-    password: string | undefined
+    password: string | undefined,
+    options: { refresh?: boolean } = {}
   ): Promise<IdentityResult> {
     const token = this.sessionAuth().token;
     if (!token) return fetchServerIdentity(serverUrl, username, password);
@@ -466,6 +547,9 @@ export class WebDAVProvider implements SyncProvider {
         this.sessionAuth().token !== token ? 'replaced' : await this.reissueSingleFlight();
       if (outcome === 'refused') return identity;
       if (outcome === 'rate-limited') return { kind: 'rate-limited' };
+      // A refresh keeps the token through an unreachable re-issue, as any
+      // request does (`reissueVerdict` 'transient'): no answer, not a verdict.
+      if (outcome === 'unreachable' && options.refresh) return { kind: 'unsupported' };
       if (outcome === 'unavailable' || outcome === 'unreachable') this.dropToken();
       // The client follows whatever the session holds now (a new token, one
       // another tab stored, or Basic after the drop above).
@@ -474,6 +558,10 @@ export class WebDAVProvider implements SyncProvider {
       return fetchServerIdentity(serverUrl, username, password, undefined, fresh);
     }
     if (identity.kind === 'unsupported') {
+      // On a refresh this is most likely a transient failure (both candidates
+      // timed out or answered 5xx): keep the token and the last answer; the
+      // next connect asks the question below afresh.
+      if (options.refresh) return identity;
       // The token went to a server that no longer speaks bunko's identity
       // contract: drop it and ask again with Basic, as any other server.
       this.dropToken();
@@ -507,28 +595,84 @@ export class WebDAVProvider implements SyncProvider {
    *
    * Server-side permissions move mid-session: `ownedSeries` grows as this
    * account uploads new series, so a snapshot taken at connect goes stale and
-   * wrongly gates edits on series the account now owns. Called after the
-   * backup queue drains; fails quietly — the connect-time snapshot stays.
+   * wrongly gates edits on series the account now owns. So does the server
+   * itself: an upgrade or a rollback while a tab stays open changes what it
+   * keeps per user (`version`, `per_user_files`, `per_user_layers`), and the
+   * history/positions/edit-layer gates must follow — a 0.7.x files all three
+   * into its SHARED library. Called after the backup queue drains and, with
+   * `maxAgeMs`, before per-user files are written. Fails quietly — the last
+   * answer stays, and a held token is never dropped on a transient answer.
+   * One request in flight at a time (concurrent callers share it), and
+   * `maxAgeMs` counts every answer, a failure included.
    */
-  async refreshIdentity(): Promise<void> {
+  async refreshIdentity(options: { maxAgeMs?: number } = {}): Promise<void> {
     if (!browser || !this.client) return;
+    const epoch = this.sessionEpoch;
+    if (this.identityRefresh?.epoch === epoch) return this.identityRefresh.promise;
+    if (
+      options.maxAgeMs !== undefined &&
+      this.identityAt !== undefined &&
+      Date.now() - this.identityAt < options.maxAgeMs
+    ) {
+      return;
+    }
     const account = this.sessionAccount();
     if (!account) return;
+    const promise = this.askIdentityAgain(account, epoch).finally(() => {
+      if (this.identityRefresh?.promise === promise) this.identityRefresh = null;
+    });
+    this.identityRefresh = { epoch, promise };
+    return promise;
+  }
+
+  /** Forget the identity refresh state of the session that is ending. */
+  private endIdentitySession(): void {
+    this.sessionEpoch++;
+    this.identityRefresh = null;
+    this.identityAt = undefined;
+  }
+
+  private async askIdentityAgain(
+    account: {
+      serverUrl: string;
+      username: string;
+      password: string;
+    },
+    epoch: number
+  ): Promise<void> {
     try {
       const identity = await this.identify(
         account.serverUrl,
         account.username || undefined,
-        account.password || undefined
+        account.password || undefined,
+        { refresh: true }
       );
-      if (identity.kind === 'authenticated') {
-        this._capabilities = identity.permissions;
-        this._isReadOnly = !(
-          identity.permissions.canWriteProgress || identity.permissions.canAddFiles
-        );
+      // The session that asked has ended (logout, another login): its answer
+      // describes another account, maybe another server.
+      if (epoch !== this.sessionEpoch) return;
+      if (identity.kind === 'authenticated' || identity.kind === 'anonymous') {
+        if (identity.kind === 'authenticated') {
+          this._capabilities = identity.permissions;
+          this._isReadOnly = !(
+            identity.permissions.canWriteProgress || identity.permissions.canAddFiles
+          );
+        }
+        // The endpoint answered in bunko's contract shape: bunko, whatever the
+        // connect concluded (/me may have been unreachable then). Never
+        // cleared by a refresh — a failed one says nothing.
+        this._serverCompilesMetadata = true;
+        this._serverVersion = identity.serverVersion;
+        this._perUserFiles = identity.perUserFiles;
+        this._perUserLayers = identity.perUserLayers;
         this.notifyStatusChanged();
       }
     } catch (error) {
       console.warn('[WebDAV] identity refresh failed (keeping last known):', error);
+    } finally {
+      // Every answer kind (and a failure) counts: a plain server's
+      // 'unsupported' must not cost two GETs on every sync. Only for the
+      // session that asked.
+      if (epoch === this.sessionEpoch) this.identityAt = Date.now();
     }
   }
 
@@ -576,7 +720,10 @@ export class WebDAVProvider implements SyncProvider {
     const hasCredentials = !!serverUrl;
     const isConnected = this.isAuthenticated();
 
-    return {
+    // The marker is a fourth `serverCompilesMetadata` source beside the identity
+    // endpoint, anonymous access and PUT_VERIFIED: `withCloudBunkoStatus` ORs a
+    // fresh marker onto whatever those said.
+    return withCloudBunkoStatus(this.type, {
       isAuthenticated: isConnected,
       hasStoredCredentials: hasCredentials,
       needsAttention: this._needsAttention,
@@ -600,7 +747,18 @@ export class WebDAVProvider implements SyncProvider {
       positionsSync: this._serverCompilesMetadata
         ? (this._perUserFiles?.includes('positions.json') ?? false)
         : undefined,
+      // The edit layer goes up only to a bunko that keeps it per account; any
+      // other bunko would publish it to every account. Plain WebDAV: the
+      // user's own file.
+      editLayerSync: this._serverCompilesMetadata
+        ? this._perUserLayers?.includes('edit')
+          ? 'push'
+          : 'local'
+        : undefined,
+      curatedPublish: this._capabilities?.curated?.scope,
+      curatedVolumes: this._capabilities?.curated?.volumes,
       metadataPermissions: this._capabilities?.metadata,
+      addFilesPermissions: this._capabilities?.addFiles,
       canModifyDelete: this._capabilities?.canModifyDelete,
       canAddFiles: this._capabilities?.canAddFiles,
       // username is optional (some servers support password-only or no auth),
@@ -609,7 +767,7 @@ export class WebDAVProvider implements SyncProvider {
       accountScope: serverUrl
         ? `webdav:${stripUrlUserinfo(serverUrl)}${username ? `|${username}` : ''}`
         : undefined
-    };
+    });
   }
 
   async login(credentials?: ProviderCredentials): Promise<void> {
@@ -634,6 +792,9 @@ export class WebDAVProvider implements SyncProvider {
         'auth'
       );
     }
+
+    // A new session: a refresh the last one left in flight answers nobody.
+    this.endIdentitySession();
 
     // Normalize server URL (remove trailing slash)
     const normalizedUrl = serverUrl.replace(/\/$/, '');
@@ -716,6 +877,8 @@ export class WebDAVProvider implements SyncProvider {
           this._serverCompilesMetadata = true;
           this._serverVersion = identity.serverVersion;
           this._perUserFiles = identity.perUserFiles;
+          this._perUserLayers = identity.perUserLayers;
+          this.identityAt = Date.now();
           this._isReadOnly = !(
             identity.permissions.canWriteProgress || identity.permissions.canAddFiles
           );
@@ -739,6 +902,8 @@ export class WebDAVProvider implements SyncProvider {
           this._serverCompilesMetadata = true;
           this._serverVersion = identity.serverVersion;
           this._perUserFiles = identity.perUserFiles;
+          this._perUserLayers = identity.perUserLayers;
+          this.identityAt = Date.now();
           break;
 
         case 'unsupported':
@@ -770,6 +935,8 @@ export class WebDAVProvider implements SyncProvider {
           // A bunko recognised only by its verified PUTs reported no version.
           this._serverVersion = undefined;
           this._perUserFiles = undefined;
+          this._perUserLayers = undefined;
+          this.identityAt = Date.now();
           break;
       }
 
@@ -873,6 +1040,7 @@ export class WebDAVProvider implements SyncProvider {
   }
 
   async logout(): Promise<void> {
+    this.endIdentitySession();
     this.client = null;
     this.rawClient = null;
     this.mokuroFolderReady = false;
@@ -881,6 +1049,8 @@ export class WebDAVProvider implements SyncProvider {
     this._serverCompilesMetadata = false;
     this._serverVersion = undefined;
     this._perUserFiles = undefined;
+    this._perUserLayers = undefined;
+    this.controlReads.clear();
     this._hasPassword = false;
     this._needsAttention = false; // Deliberate logout - nothing to flag
 
@@ -1363,6 +1533,11 @@ export class WebDAVProvider implements SyncProvider {
       // here would hide backup and upload for a perfectly writable account.
       if (!isBestEffortMetadataPath(path)) {
         const kind = classifyWriteError(errorMessage);
+        if (kind === 'permission' && isReservedLayerSidecarPath(path)) {
+          throw reservedLayerRefusal(path);
+        }
+        const refusal = this.ownershipRefusal(kind, path, error);
+        if (refusal) throw refusal;
         if (kind !== 'other') {
           this.handleWriteFailure(kind, 'Write permission denied - server is read-only');
         }
@@ -1440,6 +1615,28 @@ export class WebDAVProvider implements SyncProvider {
     return result;
   }
 
+  /** bunko >= 0.8: series owners are recorded, and a 403 may be ownership. */
+  private enforcesSeriesOwners(): boolean {
+    return this._capabilities?.addFiles !== undefined;
+  }
+
+  /**
+   * A 403 on a library file from a bunko enforcing series owners: that file's
+   * refusal (`libraryFileRefusal`), and the identity is asked again (throttled)
+   * so a series that closed since login stops being offered. Null otherwise.
+   */
+  private ownershipRefusal(
+    kind: WriteErrorKind,
+    path: string,
+    error: unknown
+  ): ProviderError | null {
+    if (kind !== 'permission' || !this.enforcesSeriesOwners() || !isLibraryFilePath(path)) {
+      return null;
+    }
+    void this.refreshIdentity({ maxAgeMs: OWNERSHIP_REFRESH_MAX_AGE_MS });
+    return libraryFileRefusal(path, error);
+  }
+
   /**
    * A read refused 401 in a password-backed session: the server no longer takes the
    * password (changed elsewhere, an app password revoked). The same auth-failed
@@ -1472,6 +1669,9 @@ export class WebDAVProvider implements SyncProvider {
    *   message, but do NOT demote to read-only (that would hide progress sync)
    * - everything else (405, 403 on unknown/low capabilities, 401 on a
    *   credential-less session): legacy behavior - mark read-only
+   * Decided BEFORE this policy, by the callers: a 403 on a reserved layer file
+   * (`reservedLayerRefusal`) and, from a bunko reporting `addFiles`, a 403 on
+   * a library file (`ownershipRefusal`) are that one file's refusal.
    */
   private handleWriteFailure(
     kind: WriteErrorKind,
@@ -1544,6 +1744,97 @@ export class WebDAVProvider implements SyncProvider {
         true
       );
     }
+  }
+
+  /**
+   * Read `<server>/mokuro-reader/<name>` with ONE conditional GET (the server
+   * does the version check: `If-None-Match` with the previous read's ETag).
+   * 304 -> 'not-modified', 404 -> null, 200 -> a single node.
+   */
+  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+    const account = this.sessionAccount();
+    if (!this.isAuthenticated() || !account) {
+      throw new ProviderError('Not authenticated', 'webdav', 'NOT_AUTHENTICATED', true);
+    }
+    const base = stripUrlUserinfo(account.serverUrl).replace(/\/$/, '');
+    const url = `${base}${MOKURO_FOLDER}/${encodeURIComponent(name)}`;
+    const previous = this.controlReads.get(name);
+    const conditional =
+      previous !== undefined &&
+      opts?.ifNoneMatch !== undefined &&
+      opts.ifNoneMatch === previous.setEtag;
+
+    const request = async (): Promise<{ response: Response; sent: string | null }> => {
+      const sent = this.authorizationHeader();
+      const headers: Record<string, string> = webdavAuthHeaders(this.sessionAuth());
+      if (conditional) headers['If-None-Match'] = previous.serverEtag;
+      try {
+        // bunko's lease fence answers the marker itself 503 + Retry-After.
+        const response = await fetchWithRetryAfter(fetch, url, {
+          method: 'GET',
+          headers,
+          cache: 'no-store'
+        });
+        return { response, sent };
+      } catch (error) {
+        throw new ProviderError(
+          `Failed to read ${name}: ${error instanceof Error ? error.message : 'Network error'}`,
+          'webdav',
+          'READ_FAILED',
+          false,
+          true
+        );
+      }
+    };
+
+    let { response, sent } = await request();
+    if (response.status === 401 && bearerOf(sent) && (await this.reissueAfterUnauthorized(sent))) {
+      ({ response, sent } = await request()); // once, under the re-issued header
+    }
+
+    if (response.status === 304 && conditional) return 'not-modified';
+    if (response.status === 404) {
+      this.controlReads.delete(name);
+      return null;
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new ProviderError(
+        `WebDAV refused reading ${name} (${response.status})`,
+        'webdav',
+        'AUTH_FAILED',
+        true
+      );
+    }
+    if (!response.ok) {
+      throw new ProviderError(
+        `Failed to read ${name}: HTTP ${response.status}`,
+        'webdav',
+        'READ_FAILED',
+        false,
+        response.status >= 500
+      );
+    }
+
+    const blob = await response.blob();
+    const lastModified = response.headers.get('Last-Modified');
+    const serverEtag =
+      response.headers.get('ETag') || lastModified || (await bodyFingerprint(blob));
+    const etag = controlSetEtag([{ id: url, etag: serverEtag }]);
+    this.controlReads.set(name, { setEtag: etag, serverEtag });
+    // A server that ignored the conditional still answers 'unchanged' honestly.
+    if (opts?.ifNoneMatch !== undefined && opts.ifNoneMatch === etag) return 'not-modified';
+    const modifiedMs = lastModified ? Date.parse(lastModified) : NaN;
+    return {
+      nodes: [
+        {
+          id: url,
+          etag: serverEtag,
+          ...(Number.isFinite(modifiedMs) ? { modified: new Date(modifiedMs).toISOString() } : {}),
+          blob
+        }
+      ],
+      etag
+    };
   }
 
   /**
@@ -1680,6 +1971,11 @@ export class WebDAVProvider implements SyncProvider {
       // so an unguarded demotion here would flip the provider read-only silently.
       if (!isBestEffortMetadataPath(file.path)) {
         const kind = classifyWriteError(errorMessage);
+        if (kind === 'permission' && isReservedLayerSidecarPath(file.path)) {
+          throw reservedLayerRefusal(file.path);
+        }
+        const refusal = this.ownershipRefusal(kind, file.path, error);
+        if (refusal) throw refusal;
         if (kind !== 'other') {
           this.handleWriteFailure(kind, 'Delete permission denied - server is read-only');
         }

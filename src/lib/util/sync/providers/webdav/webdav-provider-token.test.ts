@@ -646,3 +646,34 @@ describe('sign-out and account changes', () => {
     expect(identityMock.mock.calls[0][4]).toBeUndefined(); // checked with Basic, not the token
   });
 });
+
+// A refresh runs on every sync once the last answer is five minutes old: a
+// transient answer then must never cost the session its token (connect-time
+// behaviour, above, is unchanged).
+describe('an identity REFRESH never drops a held token on a transient answer', () => {
+  it("an 'unsupported' answer (endpoint 5xx / timed out) keeps the token and the Bearer header", async () => {
+    const provider = await connected();
+    expect(localStorage.getItem('webdav_token')).toBe('tok-1');
+    identityMock.mockReset();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.refreshIdentity();
+    expect(localStorage.getItem('webdav_token')).toBe('tok-1');
+    expect(provider.authorizationHeader()).toBe('Bearer tok-1');
+    // Not re-asked under Basic either: the password stays off the wire.
+    expect(identityMock.mock.calls.every((call) => call[4] === 'tok-1')).toBe(true);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it('a refused token whose re-issue cannot reach the server keeps the token', async () => {
+    const provider = await connected();
+    identityMock.mockReset();
+    identityMock.mockResolvedValue({ kind: 'invalid-credentials' });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === ENDPOINT) throw new TypeError('Failed to fetch');
+      return new Response('', { status: 200 });
+    });
+    await provider.refreshIdentity();
+    expect(localStorage.getItem('webdav_token')).toBe('tok-1');
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+  });
+});

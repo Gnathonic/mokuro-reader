@@ -9,9 +9,12 @@ import {
   classifyMokuroSidecar,
   layerSidecarName,
   cbzStemsOf,
+  QUEUE_FILE_NAME,
+  BUNKO_MARKER_NAME,
   isBunkoControlFile,
   dedupKeepsEveryCopy,
   foldStem,
+  isReservedLayerSidecarPath,
   layerOwnerArchive,
   miscasedLayerStem
 } from './syncable-file';
@@ -136,6 +139,7 @@ describe('dedupKeepsEveryCopy', () => {
   it('covers the files sync folds across copies and the bunko control files', () => {
     expect(dedupKeepsEveryCopy('volume-data.json')).toBe(true);
     expect(dedupKeepsEveryCopy('Goals.json')).toBe(true);
+    expect(dedupKeepsEveryCopy('positions.json')).toBe(true);
     expect(dedupKeepsEveryCopy('.mokuro-bunko.json')).toBe(true);
     expect(dedupKeepsEveryCopy('.mokuro-queue.json')).toBe(true);
   });
@@ -409,6 +413,45 @@ describe('series-metadata.json stays retired', () => {
   });
 });
 
+describe('Bunko control files', () => {
+  it('names the queue file and the marker', () => {
+    expect(QUEUE_FILE_NAME).toBe('.mokuro-queue.json');
+    expect(BUNKO_MARKER_NAME).toBe('.mokuro-bunko.json');
+    expect(isBunkoControlFile('.mokuro-queue.json')).toBe(true);
+    expect(isBunkoControlFile('.mokuro-bunko.json')).toBe(true);
+    expect(isBunkoControlFile('mokuro-queue.json')).toBe(false);
+    expect(isBunkoControlFile('.bunko.json')).toBe(false);
+  });
+
+  it('keeps both control files out of every listing category', () => {
+    for (const name of [QUEUE_FILE_NAME, BUNKO_MARKER_NAME]) {
+      expect(isSyncableFile(name)).toBe(false);
+      expect(isSyncableFile(`mokuro-reader/${name}`)).toBe(false);
+      expect(isSyncableFile(`Series/${name}`)).toBe(false);
+      expect(isSidecarFile(name)).toBe(false);
+      expect(isRootConfigFile(name)).toBe(false);
+      expect(isCbzFile(name)).toBe(false);
+      expect(isBestEffortMetadataPath(name)).toBe(false);
+      expect(classifyMokuroSidecar(name, new Set(['.mokuro-queue']))).toEqual({ kind: 'orphan' });
+    }
+  });
+  // Folder dedup must never trash a copy: sync folds every copy of the merged
+  // root files into one, and Bunko reads every copy of its control files.
+  it('dedup keeps every copy of the merged root files and both control files', () => {
+    for (const name of [
+      'volume-data.json',
+      'goals.json',
+      'positions.json',
+      QUEUE_FILE_NAME,
+      BUNKO_MARKER_NAME
+    ]) {
+      expect(dedupKeepsEveryCopy(name)).toBe(true);
+    }
+    expect(dedupKeepsEveryCopy('Vol.mokuro')).toBe(false);
+    expect(dedupKeepsEveryCopy('profiles.json')).toBe(false);
+  });
+});
+
 describe('history files', () => {
   const DEV = '0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e';
   it('lists history segments and device facts by full path', () => {
@@ -423,5 +466,31 @@ describe('history files', () => {
   it('treats history writes as best-effort', () => {
     expect(isBestEffortMetadataPath(`history/${DEV}/2026-10.events`)).toBe(true);
     expect(isBestEffortMetadataPath('volume-data.json')).toBe(false);
+  });
+});
+
+describe('isReservedLayerSidecarPath', () => {
+  it('names a layer file whose id is reserved, in any folder, plain or gz', () => {
+    expect(isReservedLayerSidecarPath('S/Vol 1.edit.mokuro')).toBe(true);
+    expect(isReservedLayerSidecarPath('S/Vol 1.curated.mokuro.gz')).toBe(true);
+    expect(isReservedLayerSidecarPath('S/Vol 1.curated-2.mokuro')).toBe(true);
+    expect(isReservedLayerSidecarPath('Vol 1.tr-en.mokuro')).toBe(true);
+  });
+
+  it('nothing else', () => {
+    for (const path of [
+      'S/Vol 1.mokuro',
+      'S/Vol 1.fix.mokuro',
+      // Ordinary hand-made ids: bunko no longer writes or reserves them.
+      'S/Vol 1.pre-upgrade.mokuro',
+      'S/Vol 1.pre-upgrade-2.mokuro',
+      'S/Vol 1.previous-ocr.mokuro',
+      'S/Vol 1.EDIT.mokuro',
+      'S/Vol 1.edit.cbz',
+      'S/series.json',
+      'S/edit.mokuro'
+    ]) {
+      expect(isReservedLayerSidecarPath(path), path).toBe(false);
+    }
   });
 });

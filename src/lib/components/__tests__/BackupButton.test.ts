@@ -14,7 +14,8 @@ const { queueVolumeForBackup, getCloudFile } = vi.hoisted(() => ({
   queueVolumeForBackup: vi.fn(),
   getCloudFile: vi.fn((_series: string, _title: string): unknown => null)
 }));
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
+const showSnackbar = vi.hoisted(() => vi.fn());
+vi.mock('$lib/util', () => ({ showSnackbar }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
     cloudFiles: readable(new Map()),
@@ -62,6 +63,7 @@ beforeEach(() => {
   localStorage.clear();
   resetUploadFailuresForTest();
   queueVolumeForBackup.mockReset();
+  showSnackbar.mockReset();
   getCloudFile.mockReset();
   getCloudFile.mockImplementation(() => null);
 });
@@ -88,6 +90,30 @@ describe('BackupButton', () => {
     );
     await fireEvent.click(getByRole('button', { name: /Retry/ }));
     expect(queueVolumeForBackup).toHaveBeenCalledWith(volume);
+  });
+
+  it('announces a queued volume as added', async () => {
+    queueVolumeForBackup.mockReturnValue('added');
+    const { getByRole } = render(BackupButton, { props: { volume } });
+    await fireEvent.click(getByRole('button', { name: /Backup to WebDAV/ }));
+    expect(showSnackbar).toHaveBeenCalledWith('Added Volume 9 to backup queue');
+  });
+
+  // The snackbar has one slot: the queue's own skip notice (a series another
+  // account owns, bunko 0.8) must not be overwritten by a false "Added".
+  it('says nothing over the notice of a volume the queue skipped', async () => {
+    queueVolumeForBackup.mockReturnValue('refused');
+    const { getByRole } = render(BackupButton, { props: { volume } });
+    await fireEvent.click(getByRole('button', { name: /Backup to WebDAV/ }));
+    expect(queueVolumeForBackup).toHaveBeenCalledWith(volume);
+    expect(showSnackbar).not.toHaveBeenCalled();
+  });
+
+  it('a volume the queue already held is not announced as added', async () => {
+    queueVolumeForBackup.mockReturnValue('already-queued');
+    const { getByRole } = render(BackupButton, { props: { volume } });
+    await fireEvent.click(getByRole('button', { name: /Backup to WebDAV/ }));
+    expect(showSnackbar).toHaveBeenCalledWith('Volume already in backup queue');
   });
 
   it('reads a volume the cloud holds under its own spelling of the folder as backed up', () => {

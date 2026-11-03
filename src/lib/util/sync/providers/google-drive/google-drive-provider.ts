@@ -1,5 +1,6 @@
 import { browser } from '$app/environment';
 import type {
+  ControlFileResult,
   SyncProvider,
   ProviderStatus,
   CloudFileMetadata,
@@ -33,7 +34,16 @@ import {
   type FolderItem
 } from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
-import { isDriveQuotaError } from '../../core/providers/drive-http';
+import { ControlNodeCache, readControlNodes } from '../../control-file-read';
+import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { isDriveQuotaError, type DriveFailureKind } from '../../core/providers/drive-http';
+
+/** How long a resolved list of `mokuro-reader` root ids is trusted by `readControlFile`. */
+const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
+/** A cached root set that yields no file is re-resolved, at most this often. */
+const CONTROL_ROOTS_RECHECK_MS = 60 * 1000;
+/** Roots named in one control-file `files.list` (`'<id>' in parents or …`). */
+const CONTROL_ROOTS_PER_QUERY = 25;
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -65,6 +75,11 @@ class GoogleDriveProvider implements SyncProvider {
   private initializePromise: Promise<void> | null = null;
   private readerFolderPromise: Promise<string> | null = null; // Mutex for folder creation
   private cloudCore = getCloudProviderCore('google-drive');
+
+  /** Control-file bodies by file id + version, so an unchanged marker is never re-downloaded. */
+  private controlCache = new ControlNodeCache();
+  /** Every exact-name `mokuro-reader` folder in My Drive root (one merged root), with when it was resolved. */
+  private controlRoots: { ids: string[]; at: number } | null = null;
 
   /**
    * Assign the reader-folder id AND tell the status store about it.
@@ -168,7 +183,7 @@ class GoogleDriveProvider implements SyncProvider {
       statusMessage = 'Not configured';
     }
 
-    return {
+    return withCloudBunkoStatus(this.type, {
       isAuthenticated: authenticated,
       hasStoredCredentials: hasCredentials,
       needsAttention,
@@ -186,7 +201,7 @@ class GoogleDriveProvider implements SyncProvider {
           ? `google-drive:${this.readerFolderId}`
           : 'google-drive:default'
         : undefined
-    };
+    });
   }
 
   async login(): Promise<void> {
@@ -211,6 +226,7 @@ class GoogleDriveProvider implements SyncProvider {
       this.setReaderFolderId(null);
       driveFilesCache.clear();
       this.readerFolderPromise = null;
+      this.resetControlFileState();
 
       // Initialize Drive API if needed (this also initializes the token client)
       await driveApiClient.initialize();
@@ -256,6 +272,7 @@ class GoogleDriveProvider implements SyncProvider {
     // Use full logout (clears token + auth history) not just clearToken
     await tokenManager.logout();
     this.setReaderFolderId(null);
+    this.resetControlFileState();
     this.initializePromise = null; // Reset initialization state
     // Clear the active provider key
     clearActiveProviderKey();
@@ -264,6 +281,132 @@ class GoogleDriveProvider implements SyncProvider {
 
   async reauthenticate(): Promise<void> {
     tokenManager.reAuthenticate();
+  }
+
+  // CONTROL FILES (cloud-direct Bunko marker, queue)
+
+  /** Forget everything `readControlFile` learned (logout, account change). */
+  private resetControlFileState(): void {
+    this.controlRoots = null;
+    this.controlCache.clear();
+  }
+
+  /**
+   * Every live `mokuro-reader` folder — top-level AND nested (`Backup/
+   * mokuro-reader`): every root is read, and `pickReaderFolder` makes a
+   * nested one the write root when no top-level one exists, so Bunko's
+   * marker may live in any of them. Taken from the files cache's last
+   * listing when it has one (no request), else one folder query. The ids
+   * are cached for CONTROL_ROOTS_TTL_MS; an EMPTY answer is never cached
+   * (the folder may be created any moment), and `readControlFile`
+   * re-resolves FROM DRIVE (`force`, never the cache's possibly older
+   * listing) when a cached set older than CONTROL_ROOTS_RECHECK_MS yields no
+   * file, so a trashed/replaced root or a newly appeared one heals within a
+   * minute. Never creates a folder.
+   */
+  private async resolveControlRoots(force: boolean): Promise<string[]> {
+    const cached = this.controlRoots;
+    if (!force && cached && Date.now() - cached.at < CONTROL_ROOTS_TTL_MS) return cached.ids;
+    const listed = force ? null : driveFilesCache.getListedReaderFolderIds();
+    const ids = (
+      listed && listed.length > 0
+        ? listed
+        : (
+            await driveApiClient.listFiles(
+              `name='${escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER)}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and 'me' in owners and trashed=false`,
+              'files(id)'
+            )
+          ).map((f) => f.id)
+    ).sort();
+    this.controlRoots = ids.length > 0 ? { ids, at: Date.now() } : null;
+    return ids;
+  }
+
+  /**
+   * The control-file nodes named `name` under any root: ONE `files.list` per
+   * CONTROL_ROOTS_PER_QUERY roots (in practice one), so the query string and
+   * the request count stay bounded however many roots an account holds.
+   */
+  private async listControlNodes(name: string, rootIds: string[]) {
+    const files = [];
+    for (let i = 0; i < rootIds.length; i += CONTROL_ROOTS_PER_QUERY) {
+      const parents = rootIds
+        .slice(i, i + CONTROL_ROOTS_PER_QUERY)
+        .map((id) => `'${escapeNameForDriveQuery(id)}' in parents`)
+        .join(' or ');
+      files.push(
+        ...(await driveApiClient.listFiles(
+          `name='${escapeNameForDriveQuery(name)}' and trashed=false and (${parents})`,
+          'files(id,name,md5Checksum,modifiedTime,parents)'
+        ))
+      );
+    }
+    return files.map((f) => ({
+      id: f.id,
+      // md5Checksum is the content test; modifiedTime has no sub-second
+      // precision, so on its own it can miss two writes inside one second.
+      etag: `${f.md5Checksum ?? ''}:${f.modifiedTime ?? ''}`,
+      ...(f.modifiedTime ? { modified: f.modifiedTime } : {})
+    }));
+  }
+
+  /**
+   * Read a control file from the library root. Requests per read: one
+   * `files.list` for the file (plus one for the root folder ids when the
+   * cached set is older than 10 minutes, empty, or just yielded no file), and
+   * one `alt=media` download per node whose md5 + modifiedTime changed.
+   */
+  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+    try {
+      await this.ensureInitialized();
+      let rootIds = await this.resolveControlRoots(false);
+      if (rootIds.length === 0) {
+        this.controlCache.retain(name, []);
+        return null;
+      }
+      let listed = await this.listControlNodes(name, rootIds);
+      if (
+        listed.length === 0 &&
+        this.controlRoots &&
+        Date.now() - this.controlRoots.at >= CONTROL_ROOTS_RECHECK_MS
+      ) {
+        // The cached roots found nothing: they may be stale (trashed, or a
+        // sibling root appeared). Re-resolve before answering "none".
+        const fresh = await this.resolveControlRoots(true);
+        if (fresh.join() !== rootIds.join()) {
+          rootIds = fresh;
+          listed = fresh.length > 0 ? await this.listControlNodes(name, fresh) : [];
+        }
+      }
+      return await readControlNodes(
+        name,
+        listed,
+        (node) => driveApiClient.downloadFile(node.id),
+        this.controlCache,
+        opts?.ifNoneMatch
+      );
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      // api-client surfaces failures as a DriveApiError / DriveHttpError
+      // carrying `status` and, when classified, `kind` (after its own auto
+      // re-auth / token clearing). A classified kind wins: a full account or
+      // a rate limit answers 403 too, and is no auth failure. Only an
+      // unclassified error falls back to the status.
+      const { status, kind } = (error ?? {}) as { status?: number; kind?: DriveFailureKind };
+      const isAuth = kind ? kind === 'auth' : status === 401 || status === 403;
+      const isNetwork =
+        (error as { isNetworkError?: boolean } | null)?.isNetworkError === true || status === 0;
+      throw new ProviderError(
+        `Failed to read control file ${name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'google-drive',
+        isAuth ? 'AUTH_EXPIRED' : 'CONTROL_READ_FAILED',
+        isAuth,
+        isNetwork
+      );
+    }
   }
 
   // VOLUME STORAGE METHODS
@@ -1520,6 +1663,20 @@ class GoogleDriveProvider implements SyncProvider {
         driveFilesCache.setReaderFolderId(folderId);
       }
     };
+  }
+
+  /**
+   * Follow the write root a fresh listing chose (`pickReaderFolder`). The
+   * session pins its root on first use, and only a merge THIS device runs
+   * re-points it (`onRootFolderConfirmed`). When another merger empties the
+   * pinned root and trashes it — a cloud-direct Bunko that merges duplicates,
+   * which this device then steps aside for, or another device — the listing
+   * no longer shows it, and writes would keep landing under a trashed folder.
+   * Nothing is pinned before the session resolved a root of its own.
+   */
+  adoptListedReaderFolder(folderId: string): void {
+    if (!this.readerFolderId || this.readerFolderId === folderId) return;
+    this.setReaderFolderId(folderId);
   }
 
   /**

@@ -83,6 +83,7 @@ import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
 import { syncLayersFromListing } from '$lib/metadata/layer-sync';
 import { adoptCloudSeriesSpellings } from './cloud-spelling-adoption';
 import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
+import { sha256Hex } from '$lib/catalog/mokuro-hash';
 import {
   cbzStemsOf,
   classifyMokuroSidecar,
@@ -1140,14 +1141,36 @@ class UnifiedCloudManager {
     let freshMokuroBlob: Blob | null = null;
     // A metadata-only volume has no OCR here to rebuild the sidecar from, so
     // there is nothing to read and the gate below turns it into a clear error.
+    const volumeRow = volumeUuid ? await db.volumes.get(volumeUuid) : undefined;
     const volumeIsMetadataOnly = volumeUuid
-      ? isMetadataOnly((await db.volumes.get(volumeUuid)) ?? ({} as VolumeMetadata))
+      ? isMetadataOnly(volumeRow ?? ({} as VolumeMetadata))
       : false;
-    if (volumeUuid && !volumeIsMetadataOnly) {
-      const sidecars = await generateVolumeSidecarsFromDb(volumeUuid, {
-        seriesTitle: newSeriesTitle,
-        volumeTitle: newVolumeTitle
-      });
+    // An edited volume whose cloud main moved on past the OCR it was edited on
+    // (the upgrade filed the newer one as `updated-ocr`): its `original`
+    // snapshot is that older OCR, and rebuilt from it the main would put the
+    // older OCR back over the newer for every account. The cloud's own main
+    // is kept instead, under the new names.
+    const cloudMain =
+      volumeRow?.ocr_edited_at && volumeRow.updated_ocr_sha256
+        ? (managedFiles.find((f) => isPrimaryMokuro(f) && !/\.gz$/i.test(f.path)) ??
+          managedFiles.find(isPrimaryMokuro))
+        : undefined;
+    if (volumeUuid && cloudMain) {
+      // Throws before any write: a main that cannot be read is not renamed.
+      freshMokuroBlob = await this.retitledCloudMain(
+        provider,
+        cloudMain,
+        newSeriesTitle,
+        newVolumeTitle
+      );
+    } else if (volumeUuid && !volumeIsMetadataOnly) {
+      // Model output (D4): an edited volume's regenerated main sidecar comes
+      // from its `original` snapshot; the primary only when it has none.
+      const sidecars = await generateVolumeSidecarsFromDb(
+        volumeUuid,
+        { seriesTitle: newSeriesTitle, volumeTitle: newVolumeTitle },
+        { cloud: true, editedFallbackToPrimary: true }
+      );
       freshMokuroBlob = sidecars.mokuro?.blob ?? null;
     }
 
@@ -1239,9 +1262,18 @@ class UnifiedCloudManager {
     if (freshMokuroBlob) {
       await this.uploadFile(`${newBasePath}.mokuro`, freshMokuroBlob);
       changed++;
-      // The renamed sidecar embeds the new titles: new bytes, a new hash —
-      // and the exact bytes the cloud now holds as this volume's primary.
-      if (volumeUuid) {
+      if (volumeUuid && cloudMain) {
+        // The cloud's newer main, retitled: not the base this device's
+        // primary came from, but the file its `updated-ocr` already holds —
+        // the next upgrade pass need not fetch it again.
+        const sha256 = await sha256Hex(freshMokuroBlob);
+        // Best-effort: at worst that pass downloads it once and finds it filed.
+        if (sha256) {
+          await db.volumes.update(volumeUuid, { updated_ocr_sha256: sha256 }).catch(() => {});
+        }
+      } else if (volumeUuid) {
+        // The renamed sidecar embeds the new titles: new bytes, a new hash —
+        // and the exact bytes the cloud now holds as this volume's primary.
         await recordUploadedPrimarySidecarBlob(
           volumeUuid,
           provider.type,
@@ -1293,6 +1325,34 @@ class UnifiedCloudManager {
     // a rename's volumes are processed — see pruneSeriesDirectoryIfEmpty.)
 
     return changed;
+  }
+
+  /**
+   * The listed main sidecar with only its `title`/`volume` replaced: pages,
+   * provenance and every other field as the cloud holds them. Throws when it
+   * cannot be read or parsed.
+   */
+  private async retitledCloudMain(
+    provider: SyncProvider,
+    file: CloudFileMetadata,
+    seriesTitle: string,
+    volumeTitle: string
+  ): Promise<Blob> {
+    // Lazily: the OCR-upgrade module sits on top of the sync stack.
+    const { decodeMokuroSidecar } = await import('$lib/catalog/cloud-ocr-upgrade');
+    const decoded = await decodeMokuroSidecar(file.path, await provider.downloadFile(file));
+    if (!decoded) {
+      throw new ProviderError(
+        'Cannot rename: the OCR sidecar in the cloud could not be read',
+        provider.type,
+        'SIDECAR_REGEN_FAILED'
+      );
+    }
+    const json = JSON.parse(await decoded.text()) as Record<string, unknown>;
+    // Assigned in place, so the keys keep the order the file has.
+    json.title = seriesTitle;
+    json.volume = volumeTitle;
+    return new Blob([JSON.stringify(json)], { type: 'application/json' });
   }
 
   /**

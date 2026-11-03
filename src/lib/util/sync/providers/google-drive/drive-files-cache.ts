@@ -9,6 +9,10 @@ import { compareByAge } from '../../folder-deduplicator';
 import type { DriveChange, DriveFile } from './constants';
 import { HISTORY_FOLDER, isHistoryFileName } from '$lib/reading-history/paths';
 import { driveHistoryPath } from './drive-history-path';
+import {
+  cloudBunkoMergesDuplicates,
+  refreshCloudBunkoMarker
+} from '$lib/catalog/cloud-bunko-marker';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state
@@ -367,6 +371,12 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   private fetchingFlag = false;
   private lastFetchTime: number | null = null;
   private readerFolderId: string | null = null;
+  /**
+   * Every live `mokuro-reader` folder the last whole-account listing found
+   * (top-level and nested alike), plus any this session created; null until
+   * a listing completes. `readControlFile` reads Bunko's marker from all of them.
+   */
+  private readerFolderIds: string[] | null = null;
   /** My Drive's own folder id, learnt once per session (see topLevelTest). */
   private myDriveRootId: string | null = null;
   /**
@@ -598,6 +608,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
           this.readerFolderId = readerFolderId;
           console.log('Found mokuro-reader folder ID:', readerFolderId);
         }
+        this.readerFolderIds = readerFolders.map((f) => f.id);
         // The feed resumes from this listing: its folders, and the position
         // taken before it began.
         this.folders = folders;
@@ -764,6 +775,11 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       return this.listInFull('the reader folder was removed');
     }
     this.folders = plan.folders;
+    // Every live reader root, as a full listing would name them: Bunko's
+    // control files may sit in any of them (`getListedReaderFolderIds`).
+    this.readerFolderIds = [...plan.folders]
+      .filter(([, folder]) => folder.name === READER_FOLDER)
+      .map(([id]) => id);
     this.changesToken = feed.newStartPageToken;
     if (next !== current) {
       // `next` is the apply on the state as it stands; a replay onto another
@@ -1056,6 +1072,19 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    */
   setReaderFolderId(folderId: string): void {
     this.readerFolderId = folderId;
+    if (this.readerFolderIds && !this.readerFolderIds.includes(folderId)) {
+      this.readerFolderIds = [...this.readerFolderIds, folderId];
+    }
+  }
+
+  /**
+   * The ids of every live `mokuro-reader` folder, as of the last whole-account
+   * listing and the change batches applied since — not only the write root:
+   * Bunko may hold the library in any of them. Null when no listing has
+   * completed for this account.
+   */
+  getListedReaderFolderIds(): string[] | null {
+    return this.readerFolderIds ? [...this.readerFolderIds] : null;
   }
 
   /**
@@ -1242,6 +1271,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     this.cacheLoadedStore.set(false);
     this.lastFetchTime = null;
     this.readerFolderId = null;
+    this.readerFolderIds = null;
     this.myDriveRootId = null;
     this.notTopLevel.clear();
     this.topLevelPromise = null;
@@ -1442,8 +1472,9 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * being CREATED between passes — `findOrCreateFolder` creates a folder
    * whenever its lookup misses, and Drive's file index is eventually
    * consistent, so a write landing during a dedup pass can mint the very
-   * duplicate the next pass merges. That is an unbounded refetch engine, and
-   * it exists on no other provider: WebDAV and MEGA run no dedup at all.
+   * duplicate the next pass merges. That is an unbounded refetch engine
+   * (MEGA's dedup, added later, bounds its refetch the same way; WebDAV runs
+   * no dedup).
    *
    * So the chain is now DEPTH-BOUNDED. Convergence is unaffected (one refetch
    * is all a converged dedup ever needed); a pathological account gives up on
@@ -1456,6 +1487,19 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     Promise.all([import('../../folder-deduplicator'), import('./google-drive-provider')])
       .then(async ([{ folderDeduplicator }, { googleDriveProvider }]) => {
         if (!googleDriveProvider.isAuthenticated()) {
+          return;
+        }
+
+        // Before any merge: the merge below confirms its root itself, but a
+        // root merged away elsewhere (or by the Bunko this skips for) is only
+        // ever noticed here, as a listing that picks another one.
+        if (this.readerFolderId) googleDriveProvider.adoptListedReaderFolder(this.readerFolderId);
+
+        // A fresh Bunko lease holder that merges duplicates does it with the
+        // same rule; a second merger on the same folders only races its moves.
+        await refreshCloudBunkoMarker(googleDriveProvider);
+        if (cloudBunkoMergesDuplicates(googleDriveProvider.type)) {
+          console.log('[Dedup] a cloud-direct Bunko merges duplicates here; skipping');
           return;
         }
 

@@ -139,6 +139,29 @@ export interface ProviderStatus {
    */
   positionsSync?: boolean;
   /**
+   * May the account's own `edit` layer (`<Volume>.edit.mokuro`) go up here?
+   * `push` = yes: mokuro-bunko lists `edit` in `per_user_layers`, so it keeps
+   * that file per account. `local` = no: any other bunko (0.7.x, or one known
+   * only by its verified PUTs) files it into the SHARED library, where it
+   * would replace every account's corrections. Absent = plain storage or a
+   * cloud-direct bunko, where the file is the user's own: push.
+   */
+  editLayerSync?: 'push' | 'local';
+  /**
+   * Who may publish the library's shared `curated` layer
+   * (`canPublishCurated`): bunko's `permissions.curated.scope`, or `all` for
+   * the owner of a cloud folder whose fresh bunko marker keeps one. Absent =
+   * no curated layer here.
+   */
+  curatedPublish?: CuratedScope;
+  /**
+   * Under `curatedPublish` `owned`: the archives this account uploaded in
+   * series folders it does NOT own (bunko >= 0.8 `permissions.curated.volumes`),
+   * whose curated layer it may publish too. Absent = not reported (an older
+   * bunko): only the owned series.
+   */
+  curatedVolumes?: CuratedVolume[];
+  /**
    * Per-series metadata (names/links/tag/unit/spine offsets) edit scope, as reported by a
    * provider capable of restricting it (currently mokuro-bunko's identity endpoint, via
    * WebDAV). Absent = no restriction — an older server that doesn't report the field, or
@@ -160,6 +183,14 @@ export interface ProviderStatus {
    */
   canAddFiles?: boolean;
   /**
+   * Which series folders this account may add files to
+   * (`accountCanAddToSeries`): bunko >= 0.8 records series owners, and an
+   * uploader may add archives, sidecars and folders only to a series no other
+   * account owns (`closedSeries` lists those). Absent = no series is closed
+   * (older bunko, any other provider).
+   */
+  addFilesPermissions?: AddFilesPermissions;
+  /**
    * Stable, non-secret identifier for the connected account, used to scope the
    * cloud metadata cache so switching accounts cannot cross-contaminate it.
    * Shape: `<provider>:<discriminator>`. NEVER include a password or token —
@@ -167,6 +198,89 @@ export interface ProviderStatus {
    * account, and the cache is skipped entirely for it.
    */
   accountScope?: string;
+  /**
+   * What this library's cloud-direct mokuro-bunko marker
+   * (`mokuro-reader/.mokuro-bunko.json`) says, when one has been read for this
+   * provider — see `catalog/cloud-bunko-marker.ts`. A fresh marker makes
+   * `serverCompilesMetadata` true even on plain storage. Absent = no marker
+   * seen (no Bunko manages this folder, or it has not been read yet).
+   */
+  cloudBunko?: CloudBunkoStatus;
+}
+
+/** The marker's verdict as the views and gates see it (`ProviderStatus.cloudBunko`). */
+export interface CloudBunkoStatus {
+  /** A fresh, active marker that compiles the library metadata exists right now. */
+  fresh: boolean;
+  /** The top-ranked fresh marker (the lease holder); null when none is fresh. */
+  holder: {
+    instanceId: string;
+    instanceName: string;
+    /** Bunko's own clock, ISO — for "last seen" wording only, never for freshness. */
+    heartbeatAt: string;
+    /** The holder's `bunko_version`; '' when its marker names none (pre-0.8). */
+    bunkoVersion: string;
+    /** Files the holder keeps per account (`history/` = a per-account tree); [] pre-0.8. */
+    perUserFiles: string[];
+    /** The holder merges duplicate folders and files itself. */
+    dedup: boolean;
+    /** The holder keeps a shared `curated` layer. */
+    curated: boolean;
+  } | null;
+}
+
+/**
+ * One node of a control file. Providers that allow duplicate names (Drive,
+ * MEGA, merged `mokuro-reader` roots) may hold several nodes of one name, and
+ * every one of them is returned: the marker's rank is computed over all of
+ * them, never over a single "winner".
+ */
+export interface ControlFileNode {
+  /** The provider's node id (Drive file id, Graph item id, MEGA handle, WebDAV href). */
+  id: string;
+  /**
+   * The node's VERSION: something that changes whenever its content does
+   * (Drive md5Checksum + modifiedTime, Graph cTag, MEGA handle, WebDAV ETag).
+   * Never a client clock.
+   */
+  etag: string;
+  /** The provider's modification time (ISO), when it reports one. */
+  modified?: string;
+  blob: Blob;
+}
+
+export interface ControlFileRead {
+  nodes: ControlFileNode[];
+  /** Opaque version of the WHOLE node set: hand it back as `ifNoneMatch`. */
+  etag: string;
+}
+
+/**
+ * `readControlFile` result: the nodes, `'not-modified'` when `ifNoneMatch`
+ * still names the current set, or null when no node of that name exists.
+ */
+export type ControlFileResult = ControlFileRead | 'not-modified' | null;
+
+/** Scope of `ProviderStatus.curatedPublish`: every volume, the account's own uploads, or none. */
+export type CuratedScope = 'all' | 'owned' | 'none';
+
+/** One listed archive: its series FOLDER name and its stem (the `.cbz` name without `.cbz`). */
+export interface CuratedVolume {
+  series: string;
+  volume: string;
+}
+
+/**
+ * Scope of `ProviderStatus.addFilesPermissions`: every series, every series
+ * but the `closedSeries` other accounts own, or none.
+ */
+export type AddFilesScope = 'all' | 'open' | 'none';
+
+/** Where the server lets this account add files — see `ProviderStatus.addFilesPermissions`. */
+export interface AddFilesPermissions {
+  scope: AddFilesScope;
+  /** Series FOLDER names another account owns; present only when scope === 'open'. */
+  closedSeries?: string[];
 }
 
 /** Scope of a `metadataPermissions.scope` value — see `ProviderStatus.metadataPermissions`. */
@@ -544,8 +658,9 @@ export interface SyncProvider {
    * status update. Providers whose permissions can change server-side mid-session
    * (mokuro-bunko: `ownedSeries` grows as this account uploads) implement this so
    * the UI's gates track reality without a reconnect. Must fail quietly.
+   * `maxAgeMs`: skip it while the last answer is younger than that.
    */
-  refreshIdentity?(): Promise<void>;
+  refreshIdentity?(options?: { maxAgeMs?: number }): Promise<void>;
 
   /**
    * Optionally remove a directory ONLY if the provider confirms (server-side)
@@ -556,6 +671,24 @@ export interface SyncProvider {
    * (or that auto-prune) can omit this.
    */
   removeDirectoryIfEmpty?(relativePath: string): Promise<void>;
+
+  /**
+   * Read a CONTROL file at the library root (`mokuro-reader/<name>`, see
+   * `isBunkoControlFile`) directly by name — these files are never listed.
+   * Returns EVERY node of that name (duplicates included), `'not-modified'`
+   * when `opts.ifNoneMatch` equals the current set's `etag`, or null when
+   * there is none. Downloads only nodes whose version changed since the last
+   * read. Throws a `ProviderError` on failure (auth expiry: `isAuthError`).
+   * Optional: a provider without it simply never sees a cloud-direct Bunko.
+   */
+  readControlFile?(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult>;
+
+  /**
+   * Subscribe to changes of control files (called with the file's basename).
+   * MEGA: the live tree's change events; providers without a push feed omit
+   * it. Returns the unsubscribe.
+   */
+  onControlFileChange?(listener: (name: string) => void): () => void;
 
   /**
    * Get storage quota information from the provider

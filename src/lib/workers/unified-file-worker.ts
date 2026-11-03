@@ -148,6 +148,10 @@ interface CompressFromDbMessage {
    * editor's `original` snapshot is never uploaded there (`layerStaysLocal`).
    */
   serverCompilesMetadata?: boolean;
+  /** The target's `ProviderStatus.editLayerSync`: `local` keeps the `edit` layer off it. */
+  editLayerSync?: 'push' | 'local';
+  /** `personalLayerAccount` of the target: another account's `edit` layer is not uploaded. */
+  accountScope?: string;
 }
 
 /**
@@ -1015,7 +1019,11 @@ ctx.addEventListener('message', async (event) => {
         const generatedSidecars =
           message.includeSidecars === true
             ? await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
-                serverCompilesMetadata: message.serverCompilesMetadata === true
+                serverCompilesMetadata: message.serverCompilesMetadata === true,
+                editLayerSync: message.editLayerSync,
+                provider: provider ?? undefined,
+                account: message.accountScope,
+                cloud: true
               })
             : undefined;
         const sidecarProgressMessage: UploadProgressMessage = {
@@ -1126,7 +1134,7 @@ ctx.addEventListener('message', async (event) => {
         // what `loadVolumeSidecars`/`buildVolumeSidecarsFromData` produce from
         // the same rows on the main thread (pinned by the byte-identity test).
         // Only the upload FILENAME takes the archive's stem.
-        const sidecars = await generateVolumeSidecarsFromDb(volumeUuid);
+        const sidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, { cloud: true });
         if (wantMokuro && sidecars.mokuro) {
           const uploaded = await cloudProvider.uploadFile({
             seriesTitle,

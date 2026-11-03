@@ -249,12 +249,17 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   which roots are top-level from a `'root' in parents` query, never
   `files.get('root')` (a 404 under the app's `drive.file` scope); dedup
   confirms a root as the write root only when it is the cache's same pick.
+  Bunko's control files are read from EVERY live root too, nested ones
+  included (Drive: the cache's listed reader folders,
+  `getListedReaderFolderIds`, else one folder query with no parent clause;
+  MEGA: any parent named `mokuro-reader`) — a nested write root holds the
+  marker when there is no top-level one.
 - **Groups** are an exact name under one parent, within the library only
   (`listFolders` keeps `mokuro-reader` folders and their descendants). The
   kept folder is the oldest, then the smaller id (`compareByAge`).
 - **Same name on merge.** Folders, or a file beside a folder, move in and keep
   the name twice; so do `dedupKeepsEveryCopy` files (volume-data.json,
-  goals.json, and bunko's control files `.mokuro-bunko.json` /
+  goals.json, positions.json, and bunko's control files `.mokuro-bunko.json` /
   `.mokuro-queue.json`, exact names). Any other file: the strictly newer write
   wins, a tie keeps the canonical copy, the loser goes to the TRASH.
 - **Folder removal.** `deleteFolder` asks the server whether the duplicate
@@ -265,8 +270,20 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   the rest of the run while the other groups still merge.
   "Empty" on Drive means empty AS THE APP SEES IT: under `drive.file` the
   re-list misses files the app did not create (dropped in through the Drive
-  web UI, written by another client), and those go to the trash with the
-  folder. Recoverable from the trash, but not a "never deletes files" promise.
+  web UI, written by another client), and those go to Drive's trash with the
+  folder, where Drive keeps them for 30 days. Recoverable from the trash, but
+  not a "never deletes files" promise. Bunko's merge (below) has the same
+  blind spot and does the same; both sides document it (owner decision, 0.8).
+- **Bunko merges, the reader steps aside.** Before each pass
+  (`runDeduplication`, `mega-cache.ts` / `drive-files-cache.ts`) the cache
+  re-reads the marker (`refreshCloudBunkoMarker`) and skips the pass while
+  `cloudBunkoMergesDuplicates` — a fresh lease holder with `dedup: true`
+  merges with the same rules, and two mergers would only race each other's
+  moves. A stale or released holder hands the job back on the next fetch.
+  Drive pins its write root for the session and only its OWN merge
+  re-points it (`onRootFolderConfirmed`), so every listing also re-points a
+  pinned root at the cache's pick (`adoptListedReaderFolder`): a root that
+  Bunko or another device merged away and trashed is not written to again.
 
 ### Svelte 5 Reactive Performance
 
@@ -351,6 +368,7 @@ interface VolumeMetadata {
   mokuro_sha256?: string; // hash of the .mokuro bytes the installed primary came from — see "OCR upgrades"
   mokuro_sha256_cloud?: { provider: string; size: number; modified?: number }; // where that file is KNOWN to be stored
   updated_ocr_sha256?: string; // edited volumes: newest cloud OCR filed as the `updated-ocr` layer
+  ocr_provenance?: (({ engine: object } | { edited: object }) & { digest: string })[]; // installed files' blocks — see "Provenance blocks"
 }
 
 interface VolumeOCR {
@@ -468,8 +486,60 @@ Mokuro generates a `.mokuro` JSON file with this structure:
 
 Each `Page` contains `blocks` (text boxes) with bounding boxes, font size, and OCR text lines.
 
-The app writes `.mokuro` files in this pure upstream format — no reader-specific
-keys. Series-level data lives beside them in `series.json`.
+The app writes `.mokuro` files in this upstream format plus two reader
+extensions (`chars`, `spine_width`) and at most ONE provenance block (below).
+Series-level data lives beside them in `series.json`.
+
+#### Provenance blocks (`ocr_engine` / `edited`)
+
+A `.mokuro` says where its text came from with a top-level block — never both
+(bunko's `docs/design/sidecar-provenance.md` is the normative description):
+
+- **`ocr_engine`** (GENERATED): written by a server (mokuro-bunko) that ran an
+  engine — `id`, an integer `revision` (absent = 1; same id, higher revision =
+  newer output that replaces the old), `created`, recipe details, and `seal`.
+  The reader NEVER mints one. Every primary install (`processVolume` — local
+  import, cloud download, deep link — and the image-only upgrade) stores the
+  file's block verbatim in `VolumeMetadata.ocr_provenance` together with a
+  seal v1 digest of THAT FILE's pages (taken before the import remaps any
+  `img_path`); a reinstall from a file without one clears the list. What is
+  recorded follows bunko's precedence (`provenanceOfFile`): a file with an
+  `edited` object records THAT block (any `ocr_engine` left in it is
+  ignored), else its `ocr_engine`, else nothing (legacy OCR); any other block
+  (a stray `preserved` from a 0.8 pre-release bunko) is ignored. A primary
+  the reader regenerates — a rename's new main, a backup, the sidecar
+  backfill, an export, an archive's embedded copy, an edited volume's cloud
+  main from its `original` snapshot — carries the block exactly when the pages
+  written reproduce an entry's digest (`buildPrimaryMokuroMetadata` →
+  `carriedProvenance`, `catalog/ocr-provenance.ts`; the newest matching entry
+  wins), so the block survives reader renames (names are outside the seal)
+  and drops off the moment a page is edited. A layer file never carries one.
+- **`edited`** (EDITED): `by` (`"mokuro-reader"`), `at`, `base_sha256` and
+  `base_seal` — on every `edit`-kind layer file (`buildLayerMokuroMetadata`)
+  and on a primary written from the EDITED primary row itself (exports, Local
+  Folder, archives, a rename's fallback when the snapshot is missing) when no
+  block can be carried. A primary installed from an EDITED main (another
+  device's export or fallback rename) carries THAT file's `edited` block
+  verbatim the same way an `ocr_engine` is carried — dropping it would turn a
+  person's text into LEGACY OCR a bunko upgrade replaces. `base_sha256` is the
+  row's `mokuro_sha256`; `base_seal` is the seal of the sealed main the edits
+  sit on (`editBaseSeal`: the `original` snapshot's pages for an edited
+  primary, else the primary's — and only when that seal checks over those
+  pages, never a stale one),
+  computed for layer-sync pushes, Publish of the shared `curated` layer
+  (`publishCuratedLayer`) and the Worker's layer sidecars (backup, rename,
+  Worker exports); null from the main-thread layer exports
+  (`buildLayerExportFile`, `loadVolumeLayerFiles`), on an edited primary's own
+  `edited` block, and for an unsealed base.
+
+**Seal v1** = `"v1:"` + hex sha256 of the RFC 8785 (JCS) text of
+`{"ocr_engine": <block minus seal and content_sha256>, "pages": <pages>}` —
+keys sorted by UTF-16 code units, numbers as `JSON.stringify` spells them, no
+whitespace; a non-finite number means no seal (`canonicalJson`,
+`contentDigest`). Title, volume, uuids, `chars`, `spine_width`, `version`,
+`edited` and key order are outside it. The cross-language vectors live in
+bunko's `interop/contract/seal/*.json`; `runner-output` is hand-copied into
+`catalog/__fixtures__/seal-vector.ts` until the contract suite reads them all.
 
 ### OCR editor and layers
 
@@ -489,6 +559,262 @@ primary edits stay local, so the `original` never goes up there either — not
 pushed by layer-sync, not uploaded beside a backup (`layerStaysLocal`,
 `mokuro-hash.ts`); on a shared library it would publish a reserved, meaningless
 layer to every user. Plain storage keeps syncing it.
+
+**Corrections go up as the `edit` layer, never as the main sidecar** (bunko
+design 0.8 D4: the main `<Volume>.mokuro` is model output). `persistPageEdit`
+still writes the primary row — the local view every consumer reads — and, in
+the same transaction, the page into the `edit` layer (`EDIT_LAYER_ID`,
+"Your corrections"; created from the pre-edit primary on the first save, then
+page by page, so pages edited in the layer itself survive). Before that first
+save can happen, opening the editor on the primary of a volume with no `edit`
+row pulls the account's own listed `<Volume>.edit.mokuro` (the same
+`pullOwnEditLayerBeforeEdit` a fork uses): a row minted from the primary would
+be newer and replace another device's corrections on the next push. A listed
+overlay that could not be fetched (`'failed'`) opens nothing ("Couldn't fetch
+your corrections…"), for a fork too. Layer-sync pushes
+it as `<Volume>.edit.mokuro` (`scheduleLayerPush`, debounced, from the cached
+listing). Every layer file of kind `edit` carries a top-level
+`"edited": {"by": "mokuro-reader", "at": <layer updated_at>, "base_sha256":
+<row mokuro_sha256 or null>, "base_seal": <seal or null>}` block
+(`buildLayerMokuroMetadata`, the one serializer for pushes, backup layer
+sidecars and exports); no layer file the app writes carries `ocr_engine` (see
+"Provenance blocks"). An edit or a promotion NEVER re-uploads the main
+sidecar: the backfill no longer re-uploads an edited volume's listed `.mokuro`,
+and every cloud write of a main sidecar (a first backup, the backfill of a
+missing one, a rename's regeneration) is built from the `original` snapshot
+when the row is edited (`catalog/main-sidecar.ts`) — a missing snapshot means
+no main sidecar (a rename falls back to the primary). Except where the cloud's
+main moved on past that snapshot: an edited row with `updated_ocr_sha256` (the
+upgrade filed a newer main as `updated-ocr`) is renamed with the LISTED main,
+downloaded and given only the new `title`/`volume` (`retitledCloudMain`; pages
+and provenance as the cloud has them, unreadable = no rename) — rebuilt from
+`original` it would put the older OCR back for every account. Exports keep the primary.
+A layer made by name never takes a RESERVED id (`isReservedLayerId`,
+`layer-names.ts` — bunko's set: `original`, `gcv`, `updated-ocr`, `edit`,
+`curated`, the `tr-` prefix, and `edit-<n>`/`curated-<n>`): `slugifyLayerId` turns such a slug (or one with no
+letter) into `layer-<slug>` before de-duplicating with `-<n>` ("Edit" →
+`layer-edit`, "2024" → `layer-2024`). Edits made before this change live
+only in the primary: `migrateEditedPrimariesToEditLayers` (once per device,
+rows stamped before `edit-layer:epoch`) copies such a primary into an `edit`
+layer when it differs from every layer it has (not its `original`, nor a
+layer it was promoted from). Three id families are
+CORRECTIONS by id (`isCorrectionsLayerId`): an account's own `edit`/`edit-<n>`
+("Your corrections [n]", `isPersonalLayerId` — bunko 0.8 keeps them per
+account), the library's shared `curated` ("Shared corrections",
+`isCuratedLayerId`, published by accounts with the rights), and bunko's one
+keepsake — a case merge's `curated-<n>`, its copy of a second, different
+`curated` (`isServerKeepsakeLayerId`, sidecar names rule v1 ServerKeepsake).
+They are filed kind `edit` whatever `ocr_engine` stamp their file carries, and
+a pull never re-files one as `ocr`. `pre-upgrade*` and `previous-ocr*` are
+NOT special: bunko no longer writes or reserves them, so a layer under one of
+those ids is an ordinary hand-made layer everywhere — named from its id,
+filed by its stamp, pushed, uploaded beside a backup and deleted under the
+same rights as any other library file.
+Two capabilities say what this server does with them
+(`ProviderStatus`): `editLayerSync` is `push` when bunko's identity lists
+`edit` in `per_user_layers` (it keeps `edit`/`edit-<n>` per account), `local`
+on any other bunko (0.7.x, or one known only by its verified PUTs — there the
+file would land in the SHARED library and replace every account's
+corrections), and absent on plain storage and cloud-direct (the user's own
+file: push). `curatedPublish` is the identity's `permissions.curated.scope`
+(`all` / `owned` / `none`), else `all` from a fresh cloud marker that keeps a
+curated layer; `canPublishCurated(status, seriesTitle, volumeTitle)` reads it
+PER VOLUME (`owned` = a series in `metadataPermissions.ownedSeries`, or — in a
+SHARED folder — a volume this account uploaded, `curatedVolumes`; absent = no).
+`curatedVolumes` is bunko 0.8's `permissions.curated.volumes` (only under
+`owned`): `{ series, volume }` = the series folder as listed and the archive
+stem, every listed archive the account controls in folders it does NOT own
+(the folders it owns are `ownedSeries`). Both sides fold with
+`normalizeVolumeTitleKey`, so a local `volume_title` matches its listed stem.
+An older bunko sends no list: only owned series, exactly as before. bunko
+stays the judge: a 403 on the publish is final.
+
+**Series owners (bunko 0.8).** bunko records a series folder's owner (the
+account whose MKCOL created it; existing folders adopt their only uploader).
+Another account below editor may add nothing to it, and may write a file
+named after a volume (its sidecars, cover, hand-made layers, nested archives)
+only when it uploaded that volume; the owner controls everything in the
+folder. `/me` reports it as `permissions.addFiles` (`all` / `open` with
+`closedSeries` / `none`) → `ProviderStatus.addFilesPermissions`, whose
+PRESENCE says the server enforces owners (older bunko: absent, nothing
+closed); `ownedSeries` becomes the folders this account owns, which is who
+bunko takes a `series.json` update request from. Three paths pre-check
+`accountCanAddToSeries(status, folderTitle)` (folded like `ownedSeries`;
+includes `accountCanAddFiles`) and stay quiet for a closed series: the backup
+(it skips a closed series' volumes with ONE notice, never an "Upload failed"
+per volume — also for a series that closed while queued), the cover sync and
+the sidecar backfill. The backup queue words the request's one snackbar
+itself (`queueSeriesVolumesForBackup` → "Added N … Skipped M …";
+`queueVolumeForBackup` returns `'refused'` when it skipped and noticed): a
+caller's own "Added" snackbar would erase the skip notice from the single slot.
+Only `'added'` counts as added — `'already-queued'` (a second Backup press while
+the first is still queued) is named as such, never re-announced as added.
+Everything else (layer-sync's hand-made layer pushes, curated publish,
+deletes) relies on the server: a 403 on a library file from such a server is
+that file's refusal (`libraryFileRefusal`, `PERMISSION_DENIED` with the
+server's verdict detail): never read-only, never a credential failure, and
+it re-asks `/me` (throttled to once a minute, `OWNERSHIP_REFRESH_MAX_AGE_MS`,
+the backup's 403 re-ask too) so a stale `closedSeries` catches up;
+layer-sync remembers the refusal in `refusedPushes`. On a server WITHOUT
+`addFiles` a refused cover still fails the cover change (it may mean the
+server just went read-only). Personal `edit`
+layers stay writable everywhere (they are the account's own files). bunko's
+refusal texts never contain "401"/"Unauthorized": `classifyWriteError`
+matches those first and would clear the password.
+
+**What stays local** is one predicate, `layerStaysLocal(layer, target)`
+(`mokuro-hash.ts`; `target` = `{ serverCompilesMetadata, editLayerSync }`,
+threaded through layer-sync's plan, the backup's layer sidecars and the
+worker message): an untouched upgrade layer everywhere; `curated` everywhere
+(it goes up only by an explicit Publish — not by sync, backup or export);
+`edit`/`edit-<n>` where `editLayerSync` is `local`; and on a server that
+compiles its metadata `original` and bunko's keepsake `curated-<n>` (sidecar
+names rule v1 `layer_class` ServerKeepsake, whose PUT it refuses) — plus the
+server's own model output (`isCloudModelOutput`, kind `ocr` with an `engine`
+and a `cloud` stamp) even once edited: an edit forks into
+`edit` there, but one begun before the provider said it compiles its metadata
+(signing in, offline, a cloud-direct marker not read yet) edits the row in
+place, and that edit stays on the device rather than replace what the model
+wrote for every account — nor does bunko's later rewrite of that layer replace
+it (`keepsLocalEdits`, as for an `edit` held back from a 0.7.x). Both hold while
+the status says bunko OR the row was pulled from THAT provider while it did
+(`cloud.server_compiled`, unindexed, honoured only where the target's provider
+type equals the row's `cloud.provider` — `pulledFromCompilingServer`), so a
+status that reads plain storage again (a stale cloud-direct marker, a failed
+identity probe) changes neither. An export, a file and any other provider get
+the layer as usual; a second WebDAV server is the same provider type, so a
+backup there leaves the layer out too — a known limit accepted for 0.8.0
+(R8): the protection matches on provider TYPE, never on the server, so a
+second WebDAV server counts as the same provider. The other limit: a row pulled while the status
+ALREADY read plain storage carries no mark, and is treated as plain storage's
+(newest wins, pushed when edited). Its id half,
+`layerIdStaysLocal`, also decides deletes: a layer that stays local by what it
+IS is somebody else's file, so neither a local delete, its tombstone nor the
+`.gz`-sibling tidy ever removes its cloud copy (the delete reports
+`'kept-shared'`, and the user is told the shared copy stays). Writability is per layer (`canPushLayer`): a personal
+id on a `push` bunko needs only `isReadOnly !== true` (a `registered` account
+writes its own overlay), anything else also needs `canAddFiles` (and, on bunko
+0.8, control of the volume: its 403 is remembered in `refusedPushes`). A personal
+row on a WebDAV bunko (`push` or `local` — a 0.8 whose identity probe fell back
+reads `local`, and an overlay pulled then is still this account's) records the
+provider's `accountScope` in `cloud.account` (`personalLayerAccount`; push,
+pull, `stampLayersSynced`) — only there do two accounts read two files at one
+path, and elsewhere a scope need not even be stable within one account (Drive's
+is `default` until its reader folder resolves, and a cloud-direct marker
+reports no `editLayerSync`), so no other provider stamps or compares one: a row of another account on this device is never
+pushed — by sync or by a backup's layer sidecars (`account` in
+`generateVolumeSidecarsFromDb`) — and is replaced by this account's listed file
+only while it holds no unsynced edit. Its delete never touches the file at its
+path (that is the ACTIVE account's overlay): the tombstone carries the row's
+account (`PendingLayerDelete.account`), and only that account's listings
+retry, hide or spend it. **Accepted limit (owner, 2026-11-02):** signing out
+keeps the device's volumes and layers, and IndexedDB holds ONE `edit` row per
+volume, so after one account signs out and another signs in, the new account
+sees and edits the previous account's row. Those edits reach the previous
+account's overlay when it signs back in, and Publish uploads that row as
+`curated` (`publishCuratedLayer` checks permission, not whose row it is). Not
+fixed: it needs two accounts in turn in one browser.
+A 403 on a reserved layer file (`isReservedLayerSidecarPath`)
+is that file's refusal (`PERMISSION_DENIED`, remembered by layer-sync), never
+a read-only demotion of the WebDAV provider.
+
+**Layer ids at a glance** (reserved: `isReservedLayerId`). "Local" is
+`layerStaysLocal` — never pushed by layer-sync, never a backup sidecar, never
+exported or embedded:
+
+| Id                                | What it is                                                         | Written by         | Local?                                                                         |
+| --------------------------------- | ------------------------------------------------------------------ | ------------------ | ------------------------------------------------------------------------------ |
+| `original`                        | pre-edit snapshot, Revert's base (read-only)                       | the editor         | on bunko only                                                                  |
+| `updated-ocr`, `previous-ocr[-n]` | OCR-upgrade keepsakes (device-local)                               | the OCR upgrade    | while untouched                                                                |
+| `edit`, `edit-<n>`                | the account's own corrections ("Your corrections")                 | the editor         | where `editLayerSync` is `local`                                               |
+| `curated`                         | the library's shared corrections ("Shared corrections", read-only) | Publish only       | always                                                                         |
+| `curated-<n>`                     | bunko's copy of a second `curated` a case merge found              | bunko only         | on bunko                                                                       |
+| `tr-*`, engine ids, hand-made ids | translations, server OCR, user layers                              | engines / the user | server OCR a cloud vouches for, on bunko (pulled from bunko: on that provider) |
+
+So `edit` lives per account on a bunko that lists it in `per_user_layers`
+(the server serves each account its own file at the same path), stays on the
+device on any other bunko, and syncs as a normal layer file on plain storage
+and in cloud-direct folders (the folder owner's file). Hand-made ids stay
+shared library files. A backup sends an `edit` (or `curated`) file only AFTER
+the volume's archive (`uploadVolumeFiles`, `volume-upload-order.ts`, Worker and
+main thread alike): bunko refuses it with 409 `no-volume` while no `<Volume>.cbz`
+is listed beside it. A refusal there fails nothing — the layer is left unstamped
+and the next listing's layer sync pushes it. A PRIMARY whose title ends in such an
+id (`Notes.edit.mokuro`, `X.curated.mokuro` — `primaryAnchoredOnArchive`) also
+goes up right after the archive, since bunko reads that name as a layer until
+the archive is listed; unlike a layer it is still required, so a failure there
+fails the backup with the archive already on the server. Before the archive, a LAYER the
+server refuses (403/409 or a non-auth `PERMISSION_DENIED`, `isLayerFileRefusal`)
+fails nothing either: logged at debug, left unstamped for layer sync. A 401, a
+5xx or a network failure there still fails the backup, as does any failure of
+the primary sidecar or the cover.
+
+**Shared layers are read-only; an edit forks into `edit`.**
+`forksOnEdit(layer, status)` (`layer-kind.ts`) is true for `curated` always,
+and on a server that compiles its metadata also for bunko's keepsake
+(`curated-<n>`) and for server-stamped OCR rows (`isCloudModelOutput`) —
+on a shared library those are the one copy everyone reads. Edit mode on such a
+layer (`E`, quick actions, context menu) calls `forkIntoEditLayer`: it makes
+`edit` from the displayed layer's pages when there is none (no cloud stamp, so
+the push rule decides where it goes), switches the display to `edit` and
+opens the editor there ("Editing your corrections — the shared layer stays as
+it is"). An existing `edit` layer is never overwritten by a fork — nor one
+only LISTED so far (pushed from another device, not pulled here yet): the
+fork pulls that first (`pullOwnEditLayerBeforeEdit`), since a fresh copy
+would be newer and replace it on the next sync. The layer
+menu's **Copy to your corrections** (`copyIntoEditLayer`, after a confirm)
+replaces its pages on purpose. A layer SWAP from inside the editor (L, the
+toolbar strip) onto such a layer does not fork — the editor closes and says to
+press E — or L could never cycle past it. `persistLayerPageEdit` and
+`upsertLayerPages` refuse `curated` outright (`assertPagesWritable`); its name
+stays renamable (a display name is local). Edits on the primary are unchanged
+(primary + `edit`, above).
+
+**Publish / Unpublish** (`layer-sync.ts`). Shown only when
+`canPublishCurated(status, series, volume)` (per volume; the picker: Publish on `edit`, Unpublish
+on `curated`; the badges read "Yours" and "Shared"). `publishCuratedLayer`
+uploads the `edit` layer's own serialization (with its `edited` block) to
+`<folder>/<stem>.curated.mokuro`, spelled as the LISTING spells the folder and
+archive — the only code that writes `curated` — then writes the local
+`curated` row with the same pages and the upload's stamp, so the next listing
+neither pulls nor pushes it; a 403 is `'refused'` and writes nothing.
+`unpublishCuratedLayer` deletes every listed copy — the `.gz` ones first, the
+plain file (the one every reader takes while it is listed) last, the same
+`deleteListedLayerCopies` its tombstone's retry uses — then the row. The
+first copy that fails stops it, with the plain file still there: a 403 means
+nothing anyone reads changed (`'refused'`: row kept, no tombstone; plain
+first, a refused `.gz` would have become the shared layer); any other failure
+removes the row and leaves a tombstone flagged `unpublish`, naming the provider the `curated` row was
+synced with (else the active one; with neither, `'failed'` and nothing
+changes — a provider-less tombstone would apply to every provider), the
+only tombstone whose retry may delete a `curated` file (and only for an
+account that may publish that volume). It carries the stamp of
+the copy it meant (`file`): a listed `curated` that moved since is another
+editor's newer publish — the tombstone is spent and that file pulled, never
+deleted. Delete is never offered on
+`curated` (it could only hide the shared file here); the settings panel hides it
+too.
+
+**Migration guard on shared servers.** The one-time
+`migrateEditedPrimariesToEditLayers` stays local and additive and uploads
+nothing itself: the `edit` row it makes goes where the push rule sends it —
+nowhere on a 0.7.x bunko, the account's overlay on 0.8, the folder on plain
+storage. It skips a primary equal to ANY of the volume's layers (read one at a
+time through `layer-store.ts`, that volume only): `promoteLayer` stamps
+`ocr_edited_at` like a hand edit and keeps its source, so a pre-epoch promotion
+of `curated`, an engine layer or `updated-ocr` would otherwise go up as the
+account's own corrections. And a personal row that stays local with
+unsynced edits (`keepsLocalEdits`) is never pulled over: on a 0.7.x bunko the
+listed `<Volume>.edit.mokuro` is the SHARED file, another account's work.
+
+mokuro-bunko must, for all of this: list `edit` in `/login/api/me`'s
+`per_user_layers` only when it keeps that file per account; report
+`permissions.curated.scope` (`all` / `owned` / `none`) for the signed-in role,
+with `volumes` (its uploads in folders it does not own) under `owned`;
+answer a client PUT of `curated` without the right, or of `curated-<n>`, with
+403 (`pre-upgrade*` and `previous-ocr*` are ordinary layer ids, governed like
+any other hand-made layer); and (cloud-direct) write `curated: true` into the marker when the folder's
+owner may publish.
 
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings
@@ -553,7 +879,10 @@ A layer can be listed as BOTH `.mokuro` and `.mokuro.gz` (an engine wrote the
 `.gz`, a client pushed the plain name over it). The plain file wins every read;
 everything that removes or moves a layer works from all listed copies
 (`ListedLayerFile.copies`): a delete reports `'gone'` only when every copy went
-(else the tombstone stays), a push removes the `.gz` it superseded
+(else the tombstone stays), and takes them in one order
+(`deleteListedLayerCopies`: `.gz` first, the plain file last, stopping at the
+first copy that fails — a 403 or any other error — so a failure never leaves
+an older `.gz` read in the plain file's place), a push removes the `.gz` it superseded
 (best-effort, retried by later listings), and the volume delete/rename sweeps
 corroborate per layer id so both copies ride together.
 
@@ -567,12 +896,76 @@ archive without its main may be treated as owing OCR by a server that acts on
 what it finds (a cloud library waits 120 s before acting on arrivals; a local
 DAV library is not known to wait). The stale main is deleted last either way.
 
-`.mokuro` files themselves stay pure upstream format regardless of which
-layer produced them. A `gcv` or `tr-<lang>` layer from the removed
+`.mokuro` files themselves stay upstream format regardless of which layer
+produced them, plus the provenance blocks above. A layer that carries an
+`ocr_engine` (`servedEngineOf`) is a server's OCR and is filed as `ocr` whatever
+its id — including the `<Volume>.<primary generation>.mokuro` bunko writes beside
+an EDITED main when the recipe beneath the edit is outdated (it never replaces
+an edited main) — except the CORRECTIONS ids above, which stay `edit`. A `gcv`
+or `tr-<lang>` layer from the removed
 experimental client-side OCR/translation engines still lists, displays and
 deletes like any other layer — `KNOWN_ENGINE_IDS` (`reader/edit/layers.ts`)
 and `isTranslationLayerId` (`layer-kind.ts`) keep classifying those ids
 correctly on purpose, for devices that still have them in IndexedDB.
+
+### Cloud-direct mokuro-bunko (marker + queue file)
+
+A Bunko that manages a library on Drive / OneDrive / MEGA / plain WebDAV
+writes two control files at the library root, read by name through
+`SyncProvider.readControlFile` (every same-name node; never listed —
+`isBunkoControlFile` stays out of `isSyncableFile`):
+
+- `.mokuro-bunko.json`, the marker/lease (`catalog/cloud-bunko-marker.ts`):
+  per node, `changedAt` = when this device first saw its current version;
+  fresh iff `state == active`, `compiles` lists the file and
+  `now − changedAt < 2 × ttl_s` (cold start: `|now − heartbeat_at| < ttl_s + 5
+min`); `released` at once; rank epoch desc, claimed_at asc, instance_id asc.
+  Every provider's `getStatus()` folds it in (`withCloudBunkoStatus`):
+  `serverCompilesMetadata = reported || anyMarkerFresh`, and the provider
+  manager republishes on every verdict change and at expiry.
+  Marker v2 (bunko 0.8) adds `per_user_files`, `curated` and `dedup` beside
+  `bunko_version`, all optional (absent = '' / [] / false; a list with a
+  non-string entry reads as []). They reach `cloudBunko.holder` from the
+  top-ranked FRESH marker only; records stored before v2 load with those
+  defaults. The fold also sets the per-user gates from the holder:
+  `historySync` = `bunko_version` core ≥ 0.8.0 AND `per_user_files` has
+  `history/` (`bunkoSupportsHistory`), `positionsSync` = `per_user_files` has
+  `positions.json`. A gate the provider set itself (a bunko server's `/me`)
+  wins; with no fresh holder both stay undefined, so the folder is judged as
+  plain storage. A holder's `curated` makes `curatedPublish` `all` (the cloud
+  folder's owner may publish the shared layer) — unless the provider reported
+  its own, which wins the same way.
+  `cloudBunkoMergesDuplicates(scope)` is the holder's `dedup`, and gates the
+  reader's own folder dedup (see Duplicate folders). Read the marker through
+  `refreshCloudBunkoMarker`:
+  one If-None-Match etag per scope, shared by every caller, and one read in
+  flight per scope that concurrent callers await. The etag moves only after
+  its nodes are recorded (else a second caller is answered not-modified
+  against records that are not there yet); a clear voids a read in flight.
+  A read never forgets a live Bunko on the strength of one poll (else
+  `serverCompilesMetadata` drops for an interval and the reader produces
+  catalog/series files and dedups under it): nodes present but none a
+  marker (a half-written rewrite) count as not-modified, an unreadable node
+  beside readable ones keeps its last record, and a read with NO node keeps
+  the still-fresh records UNSTAMPED, so they go stale at 2 × ttl — the scope
+  is forgotten only once nothing kept is fresh.
+- `.mokuro-queue.json` (`server-ocr-queue.ts`, `cloudSourceFor`): the server
+  queue file plus `instance_id`, `truncated` and `done[]`. Trusted only when
+  `instance_id` names the top-ranked fresh marker. The cloud poller keeps
+  going while the tab is visible (per-provider floors; MEGA also on its live
+  tree's events), completes a volume ONLY via `done[]` (absence from a
+  truncated list is waiting), and then relists (the hook `+layout.svelte`
+  sets), runs the OCR upgrade pass and pulls layers — never
+  `pullCompletedVolume`. Cloud uploads are watched while a marker is fresh.
+- Folder dedup keeps EVERY copy of both control files when duplicate roots
+  merge (`dedupKeepsEveryCopy`, beside the merged root files): trashing the
+  older one would pull a marker or queue out from under a running Bunko. A
+  guard in front of both trash calls moves a control file instead, should
+  that rule ever miss one.
+- MEGA feeds control-file listeners from sc events AND from full tree loads
+  (`refreshTree`, incl. the sc outage recovery): a load that changes a
+  control file's handle set notifies that name. `endSession()` (logout and
+  expiry alike) drops the cached bodies and any pending notify.
 
 ### OCR upgrades
 
@@ -586,8 +979,8 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   it (local import, cloud download, deep link); the OCR upgrade and the
   image-only upgrade set it from the file they applied; this device's own
   uploads of the primary sidecar set it to the hash of exactly the bytes sent
-  (backup — worker and main-thread —, the sidecar backfill incl. edited
-  volumes' re-uploads, a rename's regenerated sidecar; `mokuro-upload-record.ts`).
+  (backup — worker and main-thread —, the sidecar backfill, a rename's
+  regenerated sidecar; `mokuro-upload-record.ts`).
   `mokuro_sha256_cloud` records where that file is KNOWN to be stored (a
   listed sidecar a download installed from, or an upload) — the certainty
   `buildSeriesFile` needs to publish the hash. A download takes the listed
@@ -598,6 +991,13 @@ re-fetches it and swaps the new OCR in — automatically, in the background
   `updated-ocr` layer adopts its `source_sha256` (attestation cleared);
   promoting any other layer leaves it. A reinstall's `put` replaces it.
   Unindexed fields: no Dexie version.
+- **Provenance learned.** `VolumeMetadata.ocr_provenance` (newest first, ≤ 4,
+  deduplicated by digest — `addProvenance`) is set by every primary install and
+  by the image-only upgrade, and the hash-driven pass APPENDS the downloaded
+  file's block (`ocr_engine`, or `edited`) on `upgraded`, `recorded` (another device's rename: same
+  pages, new bytes) and `layered` (so promoting `updated-ocr` later still
+  finds its block). Nothing is learned on `kept`, `mismatch` or `skipped`. See
+  "Provenance blocks".
 - **When.** After a listing refreshed `series.json` copies (`series-index-sync.ts`,
   for the refreshed series) and on series open (`series-open.ts`, that
   series). Single-flight (a request mid-run merges into ONE follow-up),
@@ -913,10 +1313,11 @@ not clobber, and each half merges newest-wins or unions by id, so the full
 sync redoing it changes nothing. Opening a page never stamps a
 position, and an adopted position keeps the other device's stamp. Not
 authoritative: history and `volume-data.json` still carry every position.
-mokuro-bunko gets it only when its identity lists it in `per_user_files`
-(`ProviderStatus.positionsSync`; no version floor, unlike `historySync`);
-before that the path is a shared library file, and the client neither reads
-nor writes it. Sync merges every listed copy (newest `t` per volume), so it is
+mokuro-bunko gets it only when it lists it in `per_user_files`
+(`ProviderStatus.positionsSync`; no version floor, unlike `historySync`) — a
+bunko server through its identity, a cloud-direct folder through the lease
+holder's marker (`withCloudBunkoStatus`); before that the path is a shared
+library file, and the client neither reads nor writes it. Sync merges every listed copy (newest `t` per volume), so it is
 in `MERGED_ACROSS_COPIES` (`syncable-file.ts`) with `volume-data.json` and
 `goals.json`: the folder dedup moves a duplicate copy in beside the other
 instead of trashing it.
@@ -1326,7 +1727,21 @@ month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —
   #27): the WebDAV provider sets `ProviderStatus.historySync` only when BOTH
   hold — the version's numeric core ≥ 0.8.0 (a `0.8.0-beta.N` counts as 0.8.0;
   missing or unparseable = no) AND `per_user_files` contains `history/`
-  (`bunko-version.ts`) — and `historySyncAllowed(status)` (`history-sync.ts`)
+  (`bunko-version.ts`). These gates (with `positionsSync` and
+  `editLayerSync`) follow the server, not the connect: each writer of a
+  per-user file — the progress sync, the positions push/open/foreground
+  checks (`syncPositions`), the listing- and edit-triggered layer sync, an
+  edit layer's cloud delete, the backup's worker message — first calls
+  `freshGateStatus`/`refreshGates` (`identity-gates.ts`), which re-reads the
+  identity once the last answer (any answer, a failure included) is 5 min old;
+  concurrent callers share one request. So after a bunko upgrade or rollback
+  under an open tab a writer can act on the old answer for at most 5 min, never
+  until a reload. A refresh never drops a held token on a transient answer, and
+  one that identifies bunko turns the bunko gates on (`serverCompilesMetadata`)
+  for a session that connected as plain storage. On a cloud-direct folder (Drive/OneDrive/MEGA/plain
+  WebDAV) the fresh lease holder's marker decides the same way, from its
+  `bunko_version` and `per_user_files` (`withCloudBunkoStatus`); no fresh
+  holder = plain storage. `historySyncAllowed(status)` (`history-sync.ts`)
   gates EVERYTHING. Otherwise `history/` lands in the shared library, so neither
   upload nor import runs there, and the file keeps carrying page turns
   (`attachProjectedTurns`).

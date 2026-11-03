@@ -1,4 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+/** Breaks the keep-both rule for the control files, to test the guard behind it alone. */
+const keepRule = vi.hoisted(() => ({ dropControlFiles: false }));
+vi.mock('./syncable-file', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./syncable-file')>();
+  return {
+    ...real,
+    dedupKeepsEveryCopy: (name: string) =>
+      keepRule.dropControlFiles ? real.syncMergesEveryCopy(name) : real.dedupKeepsEveryCopy(name)
+  };
+});
+
 import { folderDeduplicator, type FolderOperations } from './folder-deduplicator';
 
 // The merge rule over an in-memory drive: what each copy of a file becomes
@@ -76,6 +88,10 @@ const file = (id: string, parentId: string, name: string, modifiedTime?: string)
 });
 
 describe('FolderDeduplicator: same-named files when duplicate folders merge', () => {
+  afterEach(() => {
+    keepRule.dropControlFiles = false;
+  });
+
   it("keeps the duplicate folder's copy when it is the newer one, and trashes the older", async () => {
     const drive = twoRoots([
       file('OLD', 'KEEP', 'profiles.json', at(10)),
@@ -133,6 +149,25 @@ describe('FolderDeduplicator: same-named files when duplicate folders merge', ()
     expect(drive.trashed()).toEqual([]);
   });
 
+  it('keeps BOTH copies of the Bunko control files: Bunko reads every copy', async () => {
+    const drive = twoRoots([
+      file('MK', 'KEEP', '.mokuro-bunko.json', at(10)),
+      file('MD', 'DUP', '.mokuro-bunko.json', at(20)),
+      file('QK', 'KEEP', '.mokuro-queue.json', at(20)),
+      file('QD', 'DUP', '.mokuro-queue.json', at(10))
+    ]);
+
+    await folderDeduplicator.deduplicateAll('mega', drive.ops);
+
+    expect(drive.filesIn('KEEP')).toEqual([
+      '.mokuro-bunko.json#MD',
+      '.mokuro-bunko.json#MK',
+      '.mokuro-queue.json#QD',
+      '.mokuro-queue.json#QK'
+    ]);
+    expect(drive.trashed()).toEqual([]);
+  });
+
   it('keeps BOTH copies of positions.json: positions sync folds every copy into one', async () => {
     const drive = twoRoots([
       file('PK', 'KEEP', 'positions.json', at(20)),
@@ -176,12 +211,17 @@ describe('FolderDeduplicator: same-named files when duplicate folders merge', ()
     expect(drive.trashed()).toEqual(['J1']);
   });
 
-  it('keeps BOTH copies of the bunko control files, whatever their times', async () => {
+  it('never trashes a Bunko control file, even if the keep-both rule missed it', async () => {
+    // The guard in front of every trash call, on its own: a newer duplicate
+    // copy (MD) and an older one (QD) are both moved in instead.
+    keepRule.dropControlFiles = true;
     const drive = twoRoots([
       file('MK', 'KEEP', '.mokuro-bunko.json', at(10)),
       file('MD', 'DUP', '.mokuro-bunko.json', at(20)),
       file('QK', 'KEEP', '.mokuro-queue.json', at(20)),
-      file('QD', 'DUP', '.mokuro-queue.json', at(10))
+      file('QD', 'DUP', '.mokuro-queue.json', at(10)),
+      file('PK', 'KEEP', 'profiles.json', at(10)),
+      file('PD', 'DUP', 'profiles.json', at(20))
     ]);
 
     await folderDeduplicator.deduplicateAll('mega', drive.ops);
@@ -190,9 +230,11 @@ describe('FolderDeduplicator: same-named files when duplicate folders merge', ()
       '.mokuro-bunko.json#MD',
       '.mokuro-bunko.json#MK',
       '.mokuro-queue.json#QD',
-      '.mokuro-queue.json#QK'
+      '.mokuro-queue.json#QK',
+      'profiles.json#PD'
     ]);
-    expect(drive.trashed()).toEqual([]);
+    // Only the ordinary file's older copy went: the rule itself still works.
+    expect(drive.trashed()).toEqual(['PK']);
   });
 });
 

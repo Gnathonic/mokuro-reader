@@ -125,7 +125,14 @@ export function relativeEta(
 const HELD_TEXT: Readonly<Record<string, string>> = {
   'no-processor': 'held: no processor connected',
   paused: 'held: queue paused',
-  benchmarking: 'held: benchmarking'
+  benchmarking: 'held: benchmarking',
+  // A cloud-direct Bunko (library on Drive / OneDrive / MEGA / WebDAV) holds
+  // its queue for reasons of the storage it writes to.
+  'storage-offline': "held: Bunko can't reach your storage",
+  'storage-auth': 'held: Bunko needs you to sign in to your storage again',
+  'storage-full': 'held: your storage is full',
+  'transfer-quota': 'held: storage transfer limit reached',
+  'storage-lease': 'held: another Bunko manages this library'
 };
 
 /** A held code in plain words; an unknown (newer) code is just "held". */

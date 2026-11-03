@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderError } from '../../provider-interface';
 import { fetchServerIdentity } from './identity';
+import { WebdavUploadError } from './webdav-upload';
+import { ingestMarkerRead, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
 
 const { mockClient, mockCore, createClientMock } = vi.hoisted(() => {
   const mockClient = {
@@ -69,6 +71,7 @@ function authenticatedIdentity() {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  resetCloudBunkoMarkersForTest();
   mockClient.getDirectoryContents.mockResolvedValue([]);
   mockClient.exists.mockResolvedValue(true);
   mockClient.createDirectory.mockResolvedValue(undefined);
@@ -968,6 +971,192 @@ describe('WebDAVProvider and a 503 that names its wait (Retry-After)', () => {
   });
 });
 
+describe('WebDAVProvider.readControlFile()', () => {
+  const MARKER = '.mokuro-bunko.json';
+  const URL_OF_MARKER = 'https://host/mokuro-reader/.mokuro-bunko.json';
+
+  function freshMarkerBody() {
+    return JSON.stringify({
+      version: 1,
+      kind: 'mokuro-bunko',
+      instance_id: 'aaa',
+      instance_name: 'nas',
+      epoch: 1,
+      claimed_at: '2026-10-12T09:00:00Z',
+      heartbeat_at: new Date().toISOString(),
+      ttl_s: 900,
+      state: 'active',
+      compiles: ['series.json', 'catalog.json'],
+      ocr: true,
+      queue: '.mokuro-queue.json'
+    });
+  }
+
+  /** A plain (non-bunko) WebDAV: no identity endpoint, no PUT_VERIFIED. */
+  async function plainConnected(): Promise<WebDAVProvider> {
+    resetCloudBunkoMarkersForTest();
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' } as any);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    fetchMock.mockReset();
+    return provider;
+  }
+
+  function lastGet() {
+    const call = fetchMock.mock.calls.at(-1)!;
+    return { url: String(call[0]), init: call[1] as RequestInit };
+  }
+
+  it('reads one node with a no-store GET carrying the account Authorization', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), {
+        status: 200,
+        headers: { ETag: '"v1"', 'Last-Modified': 'Mon, 12 Oct 2026 09:00:00 GMT' }
+      })
+    );
+
+    const result = (await provider.readControlFile(MARKER)) as any;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const { url, init } = lastGet();
+    expect(url).toBe(URL_OF_MARKER);
+    expect(init.method).toBe('GET');
+    expect(init.cache).toBe('no-store');
+    const auth = (init.headers as Record<string, string>).Authorization;
+    expect(auth).toBeTruthy();
+    expect(auth).toBe(provider.authorizationHeader());
+    expect((init.headers as Record<string, string>)['If-None-Match']).toBeUndefined();
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0]).toMatchObject({
+      id: URL_OF_MARKER,
+      etag: '"v1"',
+      modified: '2026-10-12T09:00:00.000Z'
+    });
+    expect(JSON.parse(await result.nodes[0].blob.text()).instance_id).toBe('aaa');
+  });
+
+  it('sends If-None-Match with the server ETag and maps 304 to not-modified', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v1"' } })
+    );
+    const first = (await provider.readControlFile(MARKER)) as any;
+
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 304 }));
+    const second = await provider.readControlFile(MARKER, { ifNoneMatch: first.etag });
+
+    expect(second).toBe('not-modified');
+    expect((lastGet().init.headers as Record<string, string>)['If-None-Match']).toBe('"v1"');
+  });
+
+  it('does not send If-None-Match for an unknown set etag, and reads the new version', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v1"' } })
+    );
+    await provider.readControlFile(MARKER);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v2"' } })
+    );
+    const next = (await provider.readControlFile(MARKER, { ifNoneMatch: 'something-else' })) as any;
+
+    expect((lastGet().init.headers as Record<string, string>)['If-None-Match']).toBeUndefined();
+    expect(next.nodes[0].etag).toBe('"v2"');
+  });
+
+  it('falls back to Last-Modified, then a body fingerprint, when there is no ETag', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(
+      new Response('{}', {
+        status: 200,
+        headers: { 'Last-Modified': 'Mon, 12 Oct 2026 09:00:00 GMT' }
+      })
+    );
+    const byDate = (await provider.readControlFile(MARKER)) as any;
+    expect(byDate.nodes[0].etag).toBe('Mon, 12 Oct 2026 09:00:00 GMT');
+
+    fetchMock.mockResolvedValueOnce(new Response('{"a":1}', { status: 200 }));
+    const byBody = (await provider.readControlFile(MARKER)) as any;
+    expect(byBody.nodes[0].etag).toMatch(/^len7-[0-9a-f]+$/);
+    expect(byBody.nodes[0].modified).toBeUndefined();
+  });
+
+  it('returns null for 404', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }));
+    expect(await provider.readControlFile(MARKER)).toBeNull();
+  });
+
+  it('throws an auth ProviderError for 401', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }));
+    const err = await provider.readControlFile(MARKER).catch((e) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.isAuthError).toBe(true);
+  });
+
+  it('throws an auth ProviderError when not connected', async () => {
+    const provider = await freshProvider();
+    await expect(provider.readControlFile(MARKER)).rejects.toMatchObject({
+      code: 'NOT_AUTHENTICATED',
+      isAuthError: true
+    });
+  });
+
+  it('throws a network ProviderError when the request fails', async () => {
+    const provider = await plainConnected();
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(provider.readControlFile(MARKER)).rejects.toMatchObject({
+      isAuthError: false,
+      isNetworkError: true
+    });
+  });
+
+  // bunko's lease fence answers the marker itself 503 + Retry-After while it
+  // confirms its claim; the read waits that out like every other WebDAV request.
+  it('waits out a 503 that names a short Retry-After, then reads the marker', async () => {
+    const provider = await plainConnected();
+    vi.useFakeTimers();
+    try {
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('busy', { status: 503, headers: { 'Retry-After': '2' } })
+        )
+        .mockResolvedValueOnce(
+          new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v1"' } })
+        );
+
+      const done = provider.readControlFile(MARKER);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = (await done) as any;
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(String(fetchMock.mock.calls[1][0])).toBe(URL_OF_MARKER);
+      expect(result.nodes[0].etag).toBe('"v1"');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a fresh marker makes serverCompilesMetadata true on a plain WebDAV (false before)', async () => {
+    const provider = await plainConnected();
+    expect(provider.getStatus().serverCompilesMetadata).toBeFalsy();
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(freshMarkerBody(), { status: 200, headers: { ETag: '"v1"' } })
+    );
+    await ingestMarkerRead('webdav', await provider.readControlFile(MARKER));
+
+    const status = provider.getStatus();
+    expect(status.serverCompilesMetadata).toBe(true);
+    expect(status.cloudBunko?.fresh).toBe(true);
+  });
+});
+
 describe('WebDAVProvider Allow verdict on a known mokuro-bunko', () => {
   // bunko <= 0.7 answers a collection OPTIONS with no PUT or MKCOL in Allow;
   // its permissions are decided per request, so Allow must not demote it.
@@ -1167,6 +1356,499 @@ describe('WebDAVProvider getStatus().positionsSync (per-user positions.json)', (
     identityMock.mockResolvedValue({ kind: 'unsupported' });
     await provider.login({ serverUrl: 'https://host' });
     expect(provider.getStatus().positionsSync).toBeUndefined();
+  });
+});
+
+// bunko can be upgraded or rolled back while a tab stays open; the gates must
+// follow what the server keeps per user NOW, or a rolled-back 0.7.x would take
+// history, positions and edit layers into its SHARED library.
+describe('WebDAVProvider refreshIdentity() (the server changed under an open session)', () => {
+  const V08 = {
+    ...authenticatedIdentity(),
+    serverVersion: '0.8.0',
+    perUserFiles: ['volume-data.json', 'positions.json', 'history/'],
+    perUserLayers: ['edit']
+  };
+  const V073 = { ...authenticatedIdentity(), serverVersion: '0.7.3' };
+  const gates = (provider: WebDAVProvider) => {
+    const { historySync, positionsSync, editLayerSync } = provider.getStatus();
+    return { historySync, positionsSync, editLayerSync };
+  };
+
+  it('a rollback to 0.7.3 turns history, positions and edit-layer sync off', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(gates(provider)).toEqual({
+      historySync: true,
+      positionsSync: true,
+      editLayerSync: 'push'
+    });
+
+    identityMock.mockResolvedValue(V073);
+    await provider.refreshIdentity();
+    expect(gates(provider)).toEqual({
+      historySync: false,
+      positionsSync: false,
+      editLayerSync: 'local'
+    });
+  });
+
+  it('an upgrade to 0.8 turns them on without a reload', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V073);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    identityMock.mockResolvedValue(V08);
+    await provider.refreshIdentity();
+    expect(gates(provider)).toEqual({
+      historySync: true,
+      positionsSync: true,
+      editLayerSync: 'push'
+    });
+  });
+
+  it('the curated scope and its per-volume list follow the server (an upload adds a volume)', async () => {
+    const provider = await freshProvider();
+    const curated = (volumes?: { series: string; volume: string }[]) => ({
+      ...V08,
+      permissions: {
+        ...REGISTERED_PERMS,
+        canAddFiles: true,
+        curated: { scope: 'owned' as const, ...(volumes ? { volumes } : {}) }
+      }
+    });
+    identityMock.mockResolvedValue(curated());
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().curatedPublish).toBe('owned');
+    expect(provider.getStatus().curatedVolumes).toBeUndefined();
+
+    identityMock.mockResolvedValue(curated([{ series: 'Shared', volume: 'Vol 2' }]));
+    await provider.refreshIdentity();
+    expect(provider.getStatus().curatedVolumes).toEqual([{ series: 'Shared', volume: 'Vol 2' }]);
+  });
+
+  it('an anonymous session follows the server too', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous', perUserLayers: ['edit'] });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().editLayerSync).toBe('push');
+    identityMock.mockResolvedValue({ kind: 'anonymous', serverVersion: '0.7.3' });
+    await provider.refreshIdentity();
+    expect(provider.getStatus().editLayerSync).toBe('local');
+    expect(provider.isReadOnly).toBe(true);
+  });
+
+  it('maxAgeMs skips an identity fresher than that, and asks once it is older', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue(V08);
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      identityMock.mockClear();
+      identityMock.mockResolvedValue(V073);
+
+      now.mockReturnValue(1_000_000 + 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).not.toHaveBeenCalled();
+
+      now.mockReturnValue(1_000_000 + 6 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+      expect(provider.getStatus().editLayerSync).toBe('local');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it.each([
+    ['plain WebDAV (unsupported)', { kind: 'unsupported' as const }],
+    ['invalid credentials', { kind: 'invalid-credentials' as const }],
+    ['rate limited', { kind: 'rate-limited' as const }]
+  ])('maxAgeMs throttles a %s answer too', async (_label, answer) => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({ kind: 'unsupported' });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      identityMock.mockClear();
+      identityMock.mockResolvedValue(answer);
+
+      // The connect asked a moment ago: nothing to ask yet.
+      now.mockReturnValue(1_000_000 + 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).not.toHaveBeenCalled();
+
+      now.mockReturnValue(1_000_000 + 6 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+      now.mockReturnValue(1_000_000 + 7 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('a refresh that throws is throttled as well', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue(V08);
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      identityMock.mockReset();
+      identityMock.mockRejectedValue(new Error('boom'));
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      now.mockReturnValue(1_000_000 + 6 * 60_000);
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      await provider.refreshIdentity({ maxAgeMs: 5 * 60_000 });
+      expect(identityMock).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('concurrent refreshes share one request', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    identityMock.mockClear();
+    let answer!: (value: typeof V073) => void;
+    identityMock.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const first = provider.refreshIdentity();
+    const second = provider.refreshIdentity({ maxAgeMs: 0 });
+    answer(V073);
+    await Promise.all([first, second]);
+    expect(identityMock).toHaveBeenCalledTimes(1);
+    expect(provider.getStatus().editLayerSync).toBe('local');
+  });
+
+  it('a session that connected as plain storage (/me unreachable) becomes bunko once a refresh says so', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+    expect(gates(provider)).toEqual({
+      historySync: undefined,
+      positionsSync: undefined,
+      editLayerSync: undefined
+    });
+
+    identityMock.mockResolvedValue(V073);
+    await provider.refreshIdentity();
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+    expect(gates(provider)).toEqual({
+      historySync: false,
+      positionsSync: false,
+      editLayerSync: 'local'
+    });
+
+    // A failed refresh later never demotes it back.
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.refreshIdentity();
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it("a refresh that answers after a logout never touches the next session's gates", async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    let answer!: (value: typeof V08) => void;
+    identityMock.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    const late = provider.refreshIdentity();
+
+    // Logged out and connected to a plain WebDAV server while it hangs.
+    await provider.logout();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://plain', username: 'bob', password: 'pw2' });
+    identityMock.mockClear();
+    // The new session asks for itself rather than waiting on A's request.
+    const own = provider.refreshIdentity();
+    await vi.waitFor(() => expect(identityMock).toHaveBeenCalledTimes(1), { timeout: 500 });
+
+    answer(V08);
+    await Promise.all([late, own]);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+    expect(gates(provider)).toEqual({
+      historySync: undefined,
+      positionsSync: undefined,
+      editLayerSync: undefined
+    });
+  });
+
+  it('a failed refresh keeps what the server said last', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(V08);
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.refreshIdentity();
+    expect(gates(provider)).toEqual({
+      historySync: true,
+      positionsSync: true,
+      editLayerSync: 'push'
+    });
+  });
+});
+
+describe('WebDAVProvider getStatus().editLayerSync / curatedPublish (bunko 0.8 layers)', () => {
+  it('a bunko listing `edit` in per_user_layers keeps edit layers per account -> push', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      serverVersion: '0.8.0',
+      perUserLayers: ['edit']
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().editLayerSync).toBe('push');
+  });
+
+  it('a 0.7.3 bunko (no per_user_layers) would share them with every account -> local', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ ...authenticatedIdentity(), serverVersion: '0.7.3' });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().editLayerSync).toBe('local');
+
+    const other = await freshProvider();
+    identityMock.mockResolvedValue({ ...authenticatedIdentity(), perUserLayers: ['notes'] });
+    await other.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(other.getStatus().editLayerSync).toBe('local');
+  });
+
+  it('anonymous bunko follows its per_user_layers too', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous', perUserLayers: ['edit'] });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().editLayerSync).toBe('push');
+
+    const old = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous' });
+    await old.login({ serverUrl: 'https://host' });
+    expect(old.getStatus().editLayerSync).toBe('local');
+  });
+
+  it('a bunko known only by its verified PUTs (identity failed) -> local', async () => {
+    localStorage.setItem('webdav_put_verified', 'https://host');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host/', username: 'u', password: 'pw' });
+    expect(provider.getStatus().editLayerSync).toBe('local');
+  });
+
+  it('a plain WebDAV server -> undefined (its edit layer is the user’s own file)', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host' });
+    expect(provider.getStatus().editLayerSync).toBeUndefined();
+    expect(provider.getStatus().curatedPublish).toBeUndefined();
+  });
+
+  it.each(['all', 'owned', 'none'] as const)(
+    'curatedPublish is the identity’s curated scope (%s)',
+    async (scope) => {
+      const provider = await freshProvider();
+      identityMock.mockResolvedValue({
+        ...authenticatedIdentity(),
+        permissions: { ...REGISTERED_PERMS, curated: { scope } }
+      });
+      await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+      expect(provider.getStatus().curatedPublish).toBe(scope);
+    }
+  );
+
+  it('a bunko that reports no curated scope -> undefined', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().curatedPublish).toBeUndefined();
+  });
+
+  it('logout forgets both', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      permissions: { ...REGISTERED_PERMS, curated: { scope: 'all' as const } },
+      perUserLayers: ['edit']
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    await provider.logout();
+    expect(provider.getStatus().editLayerSync).toBeUndefined();
+    expect(provider.getStatus().curatedPublish).toBeUndefined();
+  });
+});
+
+// bunko 0.8 records series owners: an uploader's write into another account's
+// series, or to a file of a volume it does not control, answers 403. That is
+// that one file's refusal — never a read-only server, never a credential
+// failure — and a sign the closed-series list this session holds is stale.
+describe('WebDAVProvider: a 403 from a bunko that enforces series owners', () => {
+  const UPLOADER_PERMS = { canWriteProgress: true, canAddFiles: true, canModifyDelete: false };
+  const owners = (closedSeries: string[]) => ({
+    kind: 'authenticated' as const,
+    username: 'bob',
+    role: 'uploader',
+    serverVersion: '0.8.0',
+    permissions: {
+      ...UPLOADER_PERMS,
+      addFiles: { scope: 'open' as const, closedSeries }
+    }
+  });
+  const DETAIL = 'This file belongs to a volume another account uploaded.';
+  const refused = () =>
+    new WebdavUploadError(`WebDAV upload failed: 403 Forbidden (forbidden: ${DETAIL})`, {
+      status: 403,
+      reason: 'forbidden',
+      detail: DETAIL,
+      retryable: false
+    });
+  const cloudFile = (path: string) => ({
+    provider: 'webdav' as const,
+    fileId: `/mokuro-reader/${path}`,
+    path,
+    modifiedTime: '2026-10-01T00:00:00.000Z',
+    size: 1
+  });
+
+  let now = 1_000_000;
+  beforeEach(() => {
+    now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  async function bunko08(closedSeries: string[] = []): Promise<WebDAVProvider> {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(owners(closedSeries));
+    await provider.login({ serverUrl: 'https://host', username: 'bob', password: 'pw' });
+    localStorage.setItem('webdav_token', 'tok');
+    return provider;
+  }
+
+  it('getStatus reports where the account may add files', async () => {
+    const provider = await bunko08(['Admin Series']);
+    expect(provider.getStatus().addFilesPermissions).toEqual({
+      scope: 'open',
+      closedSeries: ['Admin Series']
+    });
+  });
+
+  it('an older bunko (no addFiles) reports none', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(provider.getStatus().addFilesPermissions).toBeUndefined();
+  });
+
+  it('refreshIdentity swaps the closed series in', async () => {
+    const provider = await bunko08([]);
+    identityMock.mockResolvedValue(owners(['Admin Series']));
+    await provider.refreshIdentity();
+    expect(provider.getStatus().addFilesPermissions?.closedSeries).toEqual(['Admin Series']);
+  });
+
+  it.each([
+    ['an archive', 'Admin Series/Volume 9.cbz'],
+    ['a primary sidecar', 'Shared/Volume 1.mokuro'],
+    ['a hand-made layer', 'Shared/Volume 1.my-fixes.mokuro'],
+    ['a cover', 'Shared/Volume 1.webp']
+  ])('a refused upload of %s is that file’s refusal, with the server’s reason', async (_, path) => {
+    const provider = await bunko08();
+    mockCore.uploadFile.mockRejectedValue(refused());
+    identityMock.mockClear();
+    now += 61_000;
+
+    const error = await provider.uploadFile(path, new Blob(['x'])).catch((e) => e);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error).toMatchObject({
+      code: 'PERMISSION_DENIED',
+      webdavErrorType: 'permission',
+      isAuthError: false,
+      isNetworkError: false
+    });
+    expect(error.message).toContain(DETAIL);
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+    expect(localStorage.getItem('webdav_token')).toBe('tok');
+    // The closed-series list this session holds may be stale: ask again.
+    await vi.waitFor(() => expect(identityMock).toHaveBeenCalledTimes(1));
+  });
+
+  // The safety of the ownership branch itself: the generic policy demotes a
+  // 403 to read-only unless /me said canWriteProgress. An addFiles-reporting
+  // identity without canWriteProgress must still get a per-file refusal.
+  it('decides before the generic policy, which would have gone read-only', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...owners([]),
+      permissions: {
+        canWriteProgress: false,
+        canAddFiles: true,
+        canModifyDelete: false,
+        addFiles: { scope: 'open' as const, closedSeries: [] }
+      }
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'bob', password: 'pw' });
+    expect(provider.isReadOnly).toBe(false);
+    mockCore.uploadFile.mockRejectedValue(refused());
+
+    const error = await provider.uploadFile('S/V.webp', new Blob(['x'])).catch((e) => e);
+    expect(error).toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(error.message).toContain(DETAIL);
+    expect(provider.isReadOnly).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+  });
+
+  it('a burst of refusals asks the identity endpoint at most once a minute', async () => {
+    const provider = await bunko08();
+    mockCore.uploadFile.mockRejectedValue(refused());
+    identityMock.mockClear();
+    await provider.uploadFile('S/V.webp', new Blob(['x'])).catch(() => {});
+    await provider.uploadFile('S/W.webp', new Blob(['x'])).catch(() => {});
+    // Login answered moments ago: nothing to catch up on yet.
+    expect(identityMock).not.toHaveBeenCalled();
+  });
+
+  it('a refused DELETE is that file’s refusal too', async () => {
+    const provider = await bunko08();
+    mockClient.deleteFile.mockRejectedValue(
+      Object.assign(new Error('Invalid response: 403 Forbidden'), { status: 403 })
+    );
+    identityMock.mockClear();
+    now += 61_000;
+
+    const error = await provider.deleteFile(cloudFile('Shared/Volume 1.cbz')).catch((e) => e);
+    expect(error).toMatchObject({ code: 'PERMISSION_DENIED', isAuthError: false });
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(false);
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
+    await vi.waitFor(() => expect(identityMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('a 401 still means the credentials failed', async () => {
+    const provider = await bunko08();
+    mockCore.uploadFile.mockRejectedValue(new Error('Request failed with status 401'));
+    await expect(provider.uploadFile('S/V.cbz', new Blob(['x']))).rejects.toMatchObject({
+      code: 'AUTH_FAILED'
+    });
+  });
+
+  it('an older bunko keeps the generic refusal and asks nothing', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      ...authenticatedIdentity(),
+      permissions: { ...UPLOADER_PERMS }
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    mockCore.uploadFile.mockRejectedValue(refused());
+    identityMock.mockClear();
+    now += 61_000;
+
+    const error = await provider.uploadFile('S/V.webp', new Blob(['x'])).catch((e) => e);
+    expect(error).toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(error.message).toBe(
+      'Your account does not have permission for this operation on this server'
+    );
+    expect(provider.isReadOnly).toBe(false);
+    expect(identityMock).not.toHaveBeenCalled();
   });
 });
 

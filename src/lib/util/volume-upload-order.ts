@@ -4,31 +4,39 @@
  * import it.
  */
 
+import { isCuratedLayerId, isPersonalLayerId } from '$lib/reader/edit/layer-names';
 import type { VolumeSidecarBlobData, VolumeSidecarBlobResult } from './compress-volume';
 
 type LayerSidecar = NonNullable<VolumeSidecarBlobResult['layers']>[number];
 
 /**
- * The layer ids mokuro-bunko 0.8 reserves for its per-account corrections
- * (`edit`, `edit-<n>`) and its shared `curated` layer — a layer named "Edit"
- * or "Curated" here slugs to one of them.
- */
-const ANCHORED_LAYER_ID_RE = /^(?:edit(?:-\d+)?|curated)$/;
-
-/**
- * A layer file mokuro-bunko anchors on the volume's archive: such an id is
- * refused (409 `no-volume`) while no `<Volume>.cbz` is listed beside it.
+ * A layer file mokuro-bunko anchors on the volume's archive: an account's
+ * `edit` overlay or the shared `curated` layer is refused (409 `no-volume`)
+ * while no `<Volume>.cbz` is listed beside it.
  */
 function anchoredOnArchive(layerId: string): boolean {
-  return ANCHORED_LAYER_ID_RE.test(layerId);
+  return isPersonalLayerId(layerId) || isCuratedLayerId(layerId);
+}
+
+/**
+ * A primary `<Title>.mokuro` whose title ends in such a layer id (`Notes.edit`,
+ * `X.curated`) reads to bunko as `<stem>.<id>.mokuro`, and is refused the
+ * same way until `<Title>.cbz` is listed (only then is it that volume's
+ * primary).
+ */
+function primaryAnchoredOnArchive(filename: string): boolean {
+  const title = filename.replace(/\.mokuro(?:\.gz)?$/i, '');
+  const dot = title.lastIndexOf('.');
+  return dot > 0 && anchoredOnArchive(title.slice(dot + 1));
 }
 
 /**
  * The server refused THIS layer file (403 forbidden / 409 conflict, or a
- * provider's non-auth `PERMISSION_DENIED`): bunko 0.8 answers so for a layer id it
- * reserves (`previous-ocr*`, `pre-upgrade*`, `curated-<n>` — refused
- * whatever the order) or one it cannot anchor yet. Never a 401 (credentials), a
- * 5xx or a network failure — those fail the backup as before.
+ * provider's non-auth `PERMISSION_DENIED`): bunko answers so for a layer id it
+ * reserves (a case merge's `curated-<n>`, a 0.7.x `edit`), a library file this
+ * account may not write (another account's series or volume), or one it cannot
+ * anchor yet. Never a 401 (credentials), a 5xx or a network failure — those
+ * fail the backup as before.
  *
  * Decided on the numeric `status` the error CARRIES, never on its message.
  * Every upload path types its failures: the WebDAV core throws a
@@ -57,7 +65,8 @@ export function isLayerFileRefusal(error: unknown): boolean {
 
 /**
  * Primary sidecar, the other layers, the cover, the archive, then the layers
- * anchored on it. Up to the archive, a failure fails the backup (the archive
+ * anchored on it (and a primary whose title names one,
+ * `primaryAnchoredOnArchive`, right after the archive). Up to the archive, a failure fails the backup (the archive
  * is never sent without its sidecars) — except a LAYER the server refuses
  * (`isLayerFileRefusal`), which is somebody else's file or not one this
  * account may write: it is logged at debug and left out. After the archive,
@@ -83,11 +92,14 @@ export async function uploadVolumeFiles<A, S>(
   const after = layers.filter((layer) => anchoredOnArchive(layer.layerId));
   const sent: LayerSidecar[] = [];
 
-  if (sidecars?.mokuro) {
-    const primary = await upload.sidecar(sidecars.mokuro);
-    await hooks.onPrimary?.(sidecars.mokuro, primary);
+  const sendPrimary = async (mokuro: VolumeSidecarBlobData) => {
+    const primary = await upload.sidecar(mokuro);
+    await hooks.onPrimary?.(mokuro, primary);
     hooks.onSidecar?.();
-  }
+  };
+  const primaryLast = !!sidecars?.mokuro && primaryAnchoredOnArchive(sidecars.mokuro.filename);
+
+  if (sidecars?.mokuro && !primaryLast) await sendPrimary(sidecars.mokuro);
   for (const layer of before) {
     try {
       await upload.sidecar(layer);
@@ -105,6 +117,8 @@ export async function uploadVolumeFiles<A, S>(
   }
 
   const archive = await upload.archive();
+  // Still required: its failure fails the backup, archive up or not.
+  if (sidecars?.mokuro && primaryLast) await sendPrimary(sidecars.mokuro);
 
   for (const layer of after) {
     try {

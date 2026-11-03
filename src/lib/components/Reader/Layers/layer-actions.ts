@@ -9,6 +9,7 @@ import type { Page, VolumeOcrLayerKind } from '$lib/types';
 import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '$lib/reader/edit/layer-kind';
 import {
   buildLayerExportFile as realBuildLayerExportFile,
+  copyIntoEditLayer as realCopyIntoEditLayer,
   createLayer as realCreateLayer,
   deleteLayer as realDeleteLayer,
   promoteLayer as realPromoteLayer,
@@ -20,10 +21,23 @@ import { showSnackbar } from '$lib/util/snackbar';
 import {
   clearPendingLayerDelete as realClearPendingLayerDelete,
   deleteCloudLayerFile as realDeleteCloudLayerFile,
+  listedCuratedLayerFile as realListedCuratedLayerFile,
+  publishCuratedLayer as realPublishCuratedLayer,
+  unpublishCuratedLayer as realUnpublishCuratedLayer,
   type CloudLayerDeleteOutcome
 } from '$lib/metadata/layer-sync';
+import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
+import { CANNOT_PUBLISH_CURATED_MESSAGE } from '$lib/util/sync/account-capabilities';
 
-export type LayerAction = 'new' | 'rename' | 'promote' | 'export' | 'delete';
+export type LayerAction =
+  | 'new'
+  | 'rename'
+  | 'promote'
+  | 'export'
+  | 'delete'
+  | 'publish'
+  | 'unpublish'
+  | 'copy-to-edit';
 export type LayerSource = 'copy' | 'empty';
 
 export interface LayerNamePrompt {
@@ -75,6 +89,10 @@ export interface LayerActionDeps {
   clearPendingLayerDelete: (volumeUuid: string, layerId: string) => void;
   promoteLayer: typeof realPromoteLayer;
   buildLayerExportFile: typeof realBuildLayerExportFile;
+  publishCuratedLayer: typeof realPublishCuratedLayer;
+  unpublishCuratedLayer: typeof realUnpublishCuratedLayer;
+  listedCuratedLayerFile: typeof realListedCuratedLayerFile;
+  copyIntoEditLayer: typeof realCopyIntoEditLayer;
   download: (file: File) => void;
   confirm: (message: string) => Promise<boolean>;
   notify: (message: string) => void;
@@ -88,6 +106,10 @@ const defaultDeps: LayerActionDeps = {
   clearPendingLayerDelete: realClearPendingLayerDelete,
   promoteLayer: realPromoteLayer,
   buildLayerExportFile: realBuildLayerExportFile,
+  publishCuratedLayer: realPublishCuratedLayer,
+  unpublishCuratedLayer: realUnpublishCuratedLayer,
+  listedCuratedLayerFile: realListedCuratedLayerFile,
+  copyIntoEditLayer: realCopyIntoEditLayer,
   download: downloadFileBlob,
   confirm: (message) =>
     new Promise((resolve) =>
@@ -192,8 +214,67 @@ export async function runLayerAction(action: LayerAction, ctx: LayerActionContex
         d.notify(
           cloud === 'unconfirmed'
             ? 'Layer deleted on this device. Its cloud copy will be removed when the cloud allows it.'
-            : 'Layer deleted'
+            : cloud === 'kept-shared'
+              ? 'Layer deleted on this device. The shared copy stays on the server.'
+              : 'Layer deleted'
         );
+        return;
+      }
+      case 'publish': {
+        // Offered on the account's `edit` layer only (`layerRowActions`).
+        const listed = await d.listedCuratedLayerFile(volumeUuid);
+        const at =
+          listed && !listed.modifiedTimeProvisional ? Date.parse(listed.modifiedTime) : NaN;
+        const since = Number.isFinite(at) ? `, published ${new Date(at).toLocaleDateString()}` : '';
+        const ok = await d.confirm(
+          `Publish your corrections for everyone on this server? This replaces the shared corrections${since}.`
+        );
+        if (!ok) return;
+        await ctx.onBeforeMutate?.();
+        const outcome = await d.publishCuratedLayer(volumeUuid);
+        d.notify(
+          outcome === 'published'
+            ? 'Your corrections are now the shared corrections'
+            : outcome === 'refused'
+              ? CANNOT_PUBLISH_CURATED_MESSAGE
+              : "Couldn't publish the shared corrections. Nothing was changed; try again when connected."
+        );
+        return;
+      }
+      case 'unpublish': {
+        const ok = await d.confirm('Remove the shared corrections for everyone?');
+        if (!ok) return;
+        await ctx.onBeforeMutate?.();
+        const outcome = await d.unpublishCuratedLayer(volumeUuid);
+        if (outcome === 'refused') {
+          d.notify(CANNOT_PUBLISH_CURATED_MESSAGE);
+          return;
+        }
+        if (outcome === 'failed') {
+          d.notify(
+            "Couldn't remove the shared corrections. Nothing was changed; try again when connected."
+          );
+          return;
+        }
+        await ctx.onSelectLayer(null);
+        d.notify(
+          outcome === 'gone'
+            ? 'Shared corrections removed'
+            : 'Shared corrections removed on this device. The server copy will be removed when the cloud allows it.'
+        );
+        return;
+      }
+      case 'copy-to-edit': {
+        if (!layerId) return;
+        const ok = await d.confirm(
+          `Copy "${ctx.layerName ?? layerId}" into your corrections? This replaces what your corrections layer holds.`
+        );
+        if (!ok) return;
+        await ctx.onBeforeMutate?.();
+        await d.copyIntoEditLayer(volumeUuid, layerId);
+        d.clearPendingLayerDelete(volumeUuid, EDIT_LAYER_ID);
+        await ctx.onSelectLayer(EDIT_LAYER_ID);
+        d.notify('Copied into your corrections');
         return;
       }
     }

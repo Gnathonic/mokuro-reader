@@ -20,8 +20,12 @@ vi.mock('../../folder-deduplicator', async (importOriginal) => ({
 
 vi.mock('./google-drive-provider', () => ({
   googleDriveProvider: {
+    type: 'google-drive',
     isAuthenticated: vi.fn(() => false),
-    getFolderOperations: vi.fn(() => ({}))
+    getFolderOperations: vi.fn(() => ({})),
+    adoptListedReaderFolder: vi.fn(),
+    // No marker in the library unless a test serves one.
+    readControlFile: vi.fn(async () => null)
   }
 }));
 
@@ -30,6 +34,8 @@ import { folderDeduplicator } from '../../folder-deduplicator';
 import { googleDriveProvider } from './google-drive-provider';
 import { driveFilesCache } from './drive-files-cache';
 import { CACHE_MUTATION_COALESCE_MS } from '../../coalesced-cache-store';
+import { COLD_START_GRACE_S, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
+import { activeBunkoMarker } from '$lib/catalog/__fixtures__/bunko-marker-active';
 
 describe('driveFilesCache', () => {
   beforeEach(() => {
@@ -560,8 +566,8 @@ describe('driveFilesCache emission coalescing', () => {
 /**
  * `runDeduplication` re-enters `fetchAllFiles` whenever a merge happened. That
  * is fine while dedup converges, and an unbounded whole-account refetch engine
- * when duplicate folders keep being created between passes — a Drive-only
- * failure mode, since no other provider runs a dedup pass at all.
+ * when duplicate folders keep being created between passes. (MEGA's pass is
+ * bounded the same way in mega-cache.)
  */
 describe('driveFilesCache dedup refetch', () => {
   it('stops re-entering the fetch once the merge count refuses to settle', async () => {
@@ -602,6 +608,122 @@ describe('driveFilesCache dedup refetch', () => {
     // ...and the chain really did engage: a bound that never fired would
     // prove nothing.
     expect(fetches).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * A cloud-direct Bunko holding the lease with `dedup: true` merges duplicate
+ * folders itself (with the same keep-newer rule); a second merger racing it
+ * on the same folders would only fight over the moves. The reader steps
+ * aside while that holder is FRESH, and takes over again once it is not.
+ */
+describe('driveFilesCache dedup under a cloud-direct Bunko', () => {
+  const marker = activeBunkoMarker();
+  /** Bunko's clock at its last heartbeat: a cold read then sees a fresh holder. */
+  const heartbeat = Date.parse(marker.heartbeat_at);
+  let now = heartbeat;
+  const readControlFile = googleDriveProvider.readControlFile as unknown as ReturnType<
+    typeof vi.fn
+  >;
+  const deduplicateAll = folderDeduplicator.deduplicateAll as unknown as ReturnType<typeof vi.fn>;
+
+  function serve(body: unknown) {
+    readControlFile.mockResolvedValue({
+      etag: 'm1',
+      nodes: [{ id: 'marker', etag: 'm1', blob: new Blob([JSON.stringify(body)]) }]
+    });
+  }
+
+  async function fetchAndSettle() {
+    await driveFilesCache.fetch();
+    // Drain the fire-and-forget dedup chain (dynamic imports + microtasks).
+    for (let round = 0; round < 10; round++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    now = heartbeat;
+    resetCloudBunkoMarkersForTest(() => now);
+    driveFilesCache.clear();
+    vi.mocked(driveApiClient.listFiles).mockReset().mockResolvedValue([]);
+    vi.mocked(googleDriveProvider.isAuthenticated).mockReturnValue(true);
+    deduplicateAll.mockReset().mockResolvedValue({ groupsMerged: 0 });
+    readControlFile.mockReset().mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.mocked(googleDriveProvider.isAuthenticated).mockReturnValue(false);
+    readControlFile.mockReset().mockResolvedValue(null);
+    resetCloudBunkoMarkersForTest();
+    localStorage.clear();
+  });
+
+  it("skips its own dedup while Bunko's fresh lease holder merges duplicates", async () => {
+    expect(marker.dedup).toBe(true);
+    serve(marker);
+
+    await fetchAndSettle();
+
+    expect(readControlFile).toHaveBeenCalled();
+    expect(deduplicateAll).not.toHaveBeenCalled();
+  });
+
+  it('runs its own dedup when the holder does not merge duplicates', async () => {
+    serve({ ...marker, dedup: false });
+
+    await fetchAndSettle();
+
+    expect(deduplicateAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs its own dedup again once the holder went stale', async () => {
+    serve(marker);
+    await fetchAndSettle();
+    expect(deduplicateAll).not.toHaveBeenCalled();
+
+    // The marker never moved again. Read cold (no change seen), it is stale
+    // once ttl + the cold-start grace has passed since its own heartbeat.
+    const staleAt = heartbeat + (marker.ttl_s + COLD_START_GRACE_S) * 1000;
+    now = staleAt - 1000;
+    await fetchAndSettle();
+    expect(deduplicateAll).not.toHaveBeenCalled();
+
+    now = staleAt;
+    await fetchAndSettle();
+
+    expect(deduplicateAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes under the listing's root once Bunko has merged away the one it pinned", async () => {
+    // A missed lookup minted a second root and the provider pinned it; Bunko
+    // merged it into the older one and trashed it, so the next listing shows
+    // only the older. Skipping dedup also skips the merge's root confirmation,
+    // so the listing itself must re-point the write root.
+    serve(marker);
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      {
+        id: 'older-root',
+        name: 'mokuro-reader',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: ['MY_DRIVE'],
+        createdTime: '2026-01-01T00:00:00.000Z'
+      }
+    ] as never);
+    const adopt = vi.mocked(googleDriveProvider.adoptListedReaderFolder);
+    adopt.mockClear();
+
+    await fetchAndSettle();
+
+    expect(deduplicateAll).not.toHaveBeenCalled();
+    expect(adopt).toHaveBeenCalledWith('older-root');
+  });
+
+  it('runs its own dedup when there is no marker at all', async () => {
+    await fetchAndSettle();
+
+    expect(deduplicateAll).toHaveBeenCalledTimes(1);
   });
 });
 

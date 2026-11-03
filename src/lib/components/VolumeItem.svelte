@@ -732,9 +732,13 @@
       return;
     }
 
-    // Add to backup queue
-    backupQueue.queueVolumeForBackup(volume);
-    showSnackbar(`Added ${volume.volume_title} to backup queue`);
+    // A refused volume already got the queue's own notice (one snackbar slot).
+    const queued = backupQueue.queueVolumeForBackup(volume);
+    if (queued === 'added') {
+      showSnackbar(`Added ${volume.volume_title} to backup queue`);
+    } else if (queued === 'already-queued') {
+      showSnackbar('Volume already in backup queue');
+    }
   }
 
   function onExtractClicked(e?: Event) {

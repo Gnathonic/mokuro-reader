@@ -131,7 +131,8 @@ const uploadRecord = vi.hoisted(() => ({
 }));
 vi.mock('$lib/catalog/mokuro-upload-record', () => uploadRecord);
 const watchUploadedVolume = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('$lib/catalog/server-ocr-queue', () => ({ watchUploadedVolume }));
+const watchCloudUpload = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('$lib/catalog/server-ocr-queue', () => ({ watchUploadedVolume, watchCloudUpload }));
 
 import type { VolumeMetadata } from '$lib/types';
 import { downloadFileBlob } from './volume-sidecars';
@@ -628,6 +629,41 @@ describe('export-for-download sidecars', () => {
       expect(message.serverCompilesMetadata).toBe(true);
     });
 
+    it('passes the edit-layer gate, so a 0.7.x bunko gets no edit layer file', async () => {
+      const message = await backupMessage('edit-local-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        getStatus: () => ({
+          isReadOnly: false,
+          serverCompilesMetadata: true,
+          editLayerSync: 'local'
+        })
+      });
+      expect(message.editLayerSync).toBe('local');
+    });
+
+    it('asks the identity again first, so a bunko rolled back to 0.7.x gets no edit layer', async () => {
+      let editLayerSync: 'push' | 'local' = 'push';
+      const refreshIdentity = vi.fn(async () => {
+        editLayerSync = 'local';
+      });
+      const message = await backupMessage('edit-rollback-webdav', {
+        type: 'webdav',
+        uploadConcurrencyLimit: 2,
+        supportsWorkerUpload: true,
+        refreshIdentity,
+        getStatus: () => ({
+          isReadOnly: false,
+          serverCompilesMetadata: true,
+          editLayerSync,
+          accountScope: 'webdav:https://host|alice'
+        })
+      });
+      expect(refreshIdentity).toHaveBeenCalledWith({ maxAgeMs: 5 * 60_000 });
+      expect(message.editLayerSync).toBe('local');
+    });
+
     it('…and not for plain storage', async () => {
       const message = await backupMessage('plain-webdav', {
         type: 'webdav',
@@ -685,9 +721,12 @@ describe('export-for-download sidecars', () => {
     // The stamp is handed what was SERIALIZED (id, the row's updated_at at
     // that moment, the uploaded byte count) — never left to re-read the row,
     // which may have been edited while the upload ran.
-    expect(stampLayersSynced).toHaveBeenCalledWith('layers-upload-uuid', 'filesystem', [
-      { layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }
-    ]);
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'layers-upload-uuid',
+      'filesystem',
+      [{ layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }],
+      undefined
+    );
   });
 
   it('a main-thread upload sends the edit layer after its archive; a refusal is not stamped', async () => {
@@ -731,9 +770,12 @@ describe('export-for-download sidecars', () => {
       'One Piece/Volume 1.cbz',
       'One Piece/One Piece - Volume 1.edit.mokuro'
     ]);
-    expect(stampLayersSynced).toHaveBeenCalledWith('edit-upload-uuid', 'filesystem', [
-      { layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }
-    ]);
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'edit-upload-uuid',
+      'filesystem',
+      [{ layerId: 'gcv', updatedAt: '2026-09-16T09:00:00.000Z', size: 2 }],
+      undefined
+    );
     expect(bridge.notify).toHaveBeenCalledWith('Backed up Volume 1 successfully');
   });
 
@@ -741,7 +783,14 @@ describe('export-for-download sidecars', () => {
     const provider = {
       type: 'webdav',
       uploadConcurrencyLimit: 2,
-      supportsWorkerUpload: true
+      supportsWorkerUpload: true,
+      // The account a personal layer's file belongs to (bunko keeps one per account).
+      getStatus: () => ({
+        isReadOnly: false,
+        serverCompilesMetadata: true,
+        editLayerSync: 'push',
+        accountScope: 'webdav:https://host|alice'
+      })
     } as never;
     getActiveProvider.mockReturnValue(provider);
     queueVolumeForBackup(volume({ volume_uuid: 'layers-worker-uuid' }), provider, {
@@ -754,7 +803,42 @@ describe('export-for-download sidecars', () => {
       { type: 'complete', fileId: 'remote-file-id', size: 123, layerSnapshots },
       vi.fn()
     );
-    expect(stampLayersSynced).toHaveBeenCalledWith('layers-worker-uuid', 'webdav', layerSnapshots);
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'layers-worker-uuid',
+      'webdav',
+      layerSnapshots,
+      'webdav:https://host|alice'
+    );
+  });
+
+  // Drive's scope is `default` until its reader folder resolves, then the
+  // folder's id: a stamp would read as another account's within one account.
+  it('a backup to plain storage stamps no account on its layers', async () => {
+    const provider = {
+      type: 'google-drive',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true,
+      getStatus: () => ({ isReadOnly: false, accountScope: 'google-drive:default' })
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'layers-drive-uuid' }), provider, {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    const message = await capturedTasks[0].prepareData();
+    expect(message.accountScope).toBeUndefined();
+    const layerSnapshots = [{ layerId: 'edit', updatedAt: '2026-09-16T09:00:00.000Z', size: 41 }];
+    await capturedTasks[0].onComplete(
+      { type: 'complete', fileId: 'remote-file-id', size: 123, layerSnapshots },
+      vi.fn()
+    );
+    expect(stampLayersSynced).toHaveBeenCalledWith(
+      'layers-drive-uuid',
+      'google-drive',
+      layerSnapshots,
+      undefined
+    );
   });
 
   // The primary `.mokuro` the worker uploaded: its hash becomes the volume's,
@@ -830,6 +914,27 @@ describe('export-for-download sidecars', () => {
     await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
     await capturedTasks[0].onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
     expect(watchUploadedVolume).not.toHaveBeenCalled();
+  });
+
+  it('offers a cloud upload to the cloud Bunko queue (which watches only while a marker is fresh)', async () => {
+    const provider = {
+      type: 'google-drive',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true
+    } as never;
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'cloud-uuid' }), provider, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onComplete({ type: 'complete', fileId: 'id', size: 1 }, vi.fn());
+    expect(watchUploadedVolume).not.toHaveBeenCalled();
+    expect(watchCloudUpload).toHaveBeenCalledWith({
+      volumeUuid: 'cloud-uuid',
+      series: 'One Piece',
+      volume: 'Volume 1'
+    });
   });
 });
 
@@ -1017,5 +1122,266 @@ describe('a failed upload is never silent (Addendum B)', () => {
       vi.fn()
     );
     expect(notePutVerified).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * bunko 0.8 records series owners: an uploader may add nothing to a series
+ * another account owns. Backing such a volume up would be refused file by
+ * file, so it is skipped with ONE notice — never an "Upload failed" per file.
+ */
+describe('a series another account owns on the server', () => {
+  function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
+    return {
+      volume_uuid: 'owned-uuid',
+      series_uuid: 'series-1',
+      series_title: 'Admin Series',
+      volume_title: 'Volume 1',
+      mokuro_version: '0.4.11',
+      page_count: 200,
+      character_count: 5000,
+      page_char_counts: [],
+      ...overrides
+    };
+  }
+  const NOTICE = 'This series belongs to another account on this server';
+
+  function serverProvider(closedSeries: string[] | undefined) {
+    const state = { closedSeries };
+    const provider = {
+      type: 'webdav',
+      uploadConcurrencyLimit: 2,
+      supportsWorkerUpload: true,
+      refreshIdentity: vi.fn(async () => {}),
+      getStatus: () => ({
+        isReadOnly: false,
+        canAddFiles: true,
+        ...(state.closedSeries
+          ? {
+              addFilesPermissions: {
+                scope: 'open' as const,
+                closedSeries: state.closedSeries
+              }
+            }
+          : {})
+      })
+    };
+    return { provider, state };
+  }
+
+  let items: Array<{ volumeUuid: string }> = [];
+  let unsubscribe = () => {};
+  beforeEach(() => {
+    capturedTasks.length = 0;
+    vi.clearAllMocks();
+    unsubscribe = backupQueue.subscribe((q) => (items = q));
+  });
+  afterEach(() => {
+    unsubscribe();
+    getActiveProvider.mockReturnValue(null);
+  });
+
+  it('a single volume of a closed series is not queued, with one notice', () => {
+    const { provider } = serverProvider(['admin series']);
+    // refused: the caller must not announce it as added over the notice.
+    expect(queueVolumeForBackup(volume({ volume_uuid: 'closed-1' }), provider as never)).toBe(
+      'refused'
+    );
+    expect(backupQueue.isVolumeInBackupQueue('closed-1')).toBe(false);
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith(NOTICE);
+  });
+
+  it('a queued volume reports itself added, and already queued the second time', () => {
+    const { provider } = serverProvider(['Berserk']);
+    expect(queueVolumeForBackup(volume({ volume_uuid: 'open-1' }), provider as never)).toBe(
+      'added'
+    );
+    expect(queueVolumeForBackup(volume({ volume_uuid: 'open-1' }), provider as never)).toBe(
+      'already-queued'
+    );
+  });
+
+  // Pressing Backup again while the first run is still queued must not
+  // announce the same volumes as added a second time.
+  it('a series backup pressed again counts only what it added', () => {
+    const { provider } = serverProvider([]);
+    const series = [
+      volume({ volume_uuid: 'again-1', series_title: 'Again' }),
+      volume({ volume_uuid: 'again-2', series_title: 'Again', volume_title: 'Volume 2' })
+    ];
+    backupQueue.queueSeriesVolumesForBackup(series, provider as never);
+    bridge.notify.mockClear();
+
+    const again = backupQueue.queueSeriesVolumesForBackup(series, provider as never);
+    expect(again).toEqual({ queued: 0, alreadyQueued: 2, closed: 0 });
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith('2 volumes already in backup queue');
+
+    bridge.notify.mockClear();
+    const more = backupQueue.queueSeriesVolumesForBackup(
+      [...series, volume({ volume_uuid: 'again-3', series_title: 'Again', volume_title: 'V3' })],
+      provider as never,
+      undefined,
+      { alreadyBackedUp: 4 }
+    );
+    expect(more).toEqual({ queued: 1, alreadyQueued: 2, closed: 0 });
+    expect(bridge.notify).toHaveBeenCalledWith(
+      'Added 1 volume to backup queue (4 already backed up, 2 already queued)'
+    );
+  });
+
+  // The snackbar has ONE slot: the series backup's own "Added N" used to be
+  // shown by the caller right after the queue's skip notice, wiping it out.
+  // The queue now words the one notice for the whole request.
+  it('a series backup queues only the open series and gives ONE notice naming both', () => {
+    const { provider } = serverProvider(['Admin Series']);
+    const result = backupQueue.queueSeriesVolumesForBackup(
+      [
+        volume({ volume_uuid: 'c-1' }),
+        volume({ volume_uuid: 'c-2', volume_title: 'Volume 2' }),
+        volume({ volume_uuid: 'o-1', series_title: 'Berserk' })
+      ],
+      provider as never
+    );
+    expect(result).toEqual({ queued: 1, alreadyQueued: 0, closed: 2 });
+    expect(items.map((item) => item.volumeUuid)).toContain('o-1');
+    expect(backupQueue.isVolumeInBackupQueue('c-1')).toBe(false);
+    expect(backupQueue.isVolumeInBackupQueue('c-2')).toBe(false);
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith(
+      'Added 1 volume to backup queue. Skipped 2 volumes: their series belongs to another account on this server'
+    );
+  });
+
+  it('a series backup with every volume closed gives only the skip notice', () => {
+    const { provider } = serverProvider(['Admin Series']);
+    const result = backupQueue.queueSeriesVolumesForBackup(
+      [
+        volume({ volume_uuid: 'all-1' }),
+        volume({ volume_uuid: 'all-2', volume_title: 'Volume 2' })
+      ],
+      provider as never,
+      undefined,
+      { alreadyBackedUp: 3 }
+    );
+    expect(result).toEqual({ queued: 0, alreadyQueued: 0, closed: 2 });
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith(
+      'Skipped 2 volumes: their series belongs to another account on this server'
+    );
+  });
+
+  it('an older server (no addFiles) queues everything, as before', () => {
+    const { provider } = serverProvider(undefined);
+    const result = backupQueue.queueSeriesVolumesForBackup(
+      [volume({ volume_uuid: 'old-1' }), volume({ volume_uuid: 'old-2', series_title: 'B' })],
+      provider as never,
+      undefined,
+      { alreadyBackedUp: 1 }
+    );
+    expect(result).toEqual({ queued: 2, alreadyQueued: 0, closed: 0 });
+    expect(backupQueue.isVolumeInBackupQueue('old-1')).toBe(true);
+    expect(backupQueue.isVolumeInBackupQueue('old-2')).toBe(true);
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith(
+      'Added 2 volumes to backup queue (1 already backed up)'
+    );
+  });
+
+  it('a series that closed before its queued volume reached the pool is dropped there', async () => {
+    const { provider, state } = serverProvider([]);
+    getActiveProvider.mockReturnValue(provider);
+    // Its own series: the run-scoped "noticed once" set outlives this test
+    // (the describe's earlier volumes never finish, so the run never ends).
+    queueVolumeForBackup(
+      volume({ volume_uuid: 'pre-1', series_title: 'Pre Series' }),
+      provider as never,
+      { includeSidecars: false, embedSidecarsInArchive: false }
+    );
+    // Closed after the enqueue gate, before processBackup submits the task.
+    state.closedSeries = ['Pre Series'];
+    await vi.waitFor(() => expect(backupQueue.isVolumeInBackupQueue('pre-1')).toBe(false));
+
+    expect(capturedTasks).toHaveLength(0);
+    expect(recordUploadFailure).not.toHaveBeenCalled();
+    expect(bridge.notifyError).not.toHaveBeenCalled();
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith(
+      'Skipped Pre Series: this series belongs to another account on this server'
+    );
+  });
+
+  it('a series that closed after it was queued is skipped once, without an upload failure', async () => {
+    const { provider, state } = serverProvider([]);
+    getActiveProvider.mockReturnValue(provider);
+    const sidecars = { includeSidecars: false, embedSidecarsInArchive: false };
+    queueVolumeForBackup(volume({ volume_uuid: 'late-1' }), provider as never, sidecars);
+    queueVolumeForBackup(
+      volume({ volume_uuid: 'late-2', volume_title: 'Volume 2' }),
+      provider as never,
+      sidecars
+    );
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(2));
+
+    // Another account's upload made it theirs; the identity says so now.
+    state.closedSeries = ['Admin Series'];
+    for (const task of capturedTasks) {
+      // The pool's contract: a prepareData that throws goes to onError.
+      const error = await task.prepareData().then(
+        () => null,
+        (e: unknown) => e
+      );
+      expect(error).toBeInstanceOf(Error);
+      await task.onError({ type: 'error', error: (error as Error).message });
+    }
+
+    expect(recordUploadFailure).not.toHaveBeenCalled();
+    expect(bridge.notifyError).not.toHaveBeenCalled();
+    expect(bridge.notify).toHaveBeenCalledTimes(1);
+    expect(bridge.notify).toHaveBeenCalledWith(
+      'Skipped Admin Series: this series belongs to another account on this server'
+    );
+    expect(backupQueue.isVolumeInBackupQueue('late-1')).toBe(false);
+    expect(backupQueue.isVolumeInBackupQueue('late-2')).toBe(false);
+  });
+
+  it('a 403 on an upload asks the server who owns what again, and keeps the volume’s failure', async () => {
+    const { provider } = serverProvider([]);
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'r-1' }), provider as never, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    provider.refreshIdentity.mockClear();
+
+    await capturedTasks[0].onError({
+      type: 'error',
+      error:
+        'WebDAV upload failed: 403 Forbidden (forbidden: This series belongs to another account.)',
+      detail: 'This series belongs to another account.'
+    });
+    // Throttled like the provider's own ownership refresh: one 403 per volume
+    // of a shared folder must not cost one /me each.
+    expect(provider.refreshIdentity).toHaveBeenCalledTimes(1);
+    expect(provider.refreshIdentity).toHaveBeenCalledWith({ maxAgeMs: 60_000 });
+    expect(recordUploadFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'This series belongs to another account.' })
+    );
+  });
+
+  it('an older server’s 403 asks nothing', async () => {
+    const { provider } = serverProvider(undefined);
+    getActiveProvider.mockReturnValue(provider);
+    queueVolumeForBackup(volume({ volume_uuid: 'r-2' }), provider as never, {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    provider.refreshIdentity.mockClear();
+    await capturedTasks[0].onError({ type: 'error', error: 'WebDAV upload failed: 403' });
+    expect(provider.refreshIdentity).not.toHaveBeenCalled();
+    expect(recordUploadFailure).toHaveBeenCalledTimes(1);
   });
 });

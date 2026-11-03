@@ -25,6 +25,7 @@ import {
   type TrackingState
 } from '$lib/settings/tracking-data';
 import { ProviderError } from './provider-interface';
+import { refreshGates } from './identity-gates';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
@@ -325,6 +326,9 @@ class UnifiedSyncService {
       if (provider.type === 'google-drive') {
         await cacheManager.getCache(provider.type)?.refreshFromChanges?.();
       }
+      // What the server keeps per user can change under an open tab (a bunko
+      // upgrade or rollback); the per-user files below follow it. Fails quietly.
+      await refreshGates(provider);
 
       // Sync volume data (read progress + series-level reading state)
       console.log('🔄 Syncing volume data...');

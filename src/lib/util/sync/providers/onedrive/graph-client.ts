@@ -83,6 +83,15 @@ export async function getItemByPath(accessToken: string, path: string): Promise<
   return (await response.json()) as DriveItem;
 }
 
+/** Download an item's content (`/content` redirects to a pre-authenticated URL). */
+export async function downloadItemContent(accessToken: string, itemId: string): Promise<Blob> {
+  const response = await fetch(`${BASE}/me/drive/items/${encodeURIComponent(itemId)}/content`, {
+    headers: authHeaders(accessToken)
+  });
+  if (!response.ok) await parseError(response);
+  return await response.blob();
+}
+
 /**
  * One item's stamp fields by id (`$select`ed: a few hundred bytes), or null
  * when it is gone (404).

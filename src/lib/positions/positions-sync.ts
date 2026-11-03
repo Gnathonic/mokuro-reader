@@ -32,6 +32,7 @@ import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
 import { noteRootFileUpload, readRootFile } from '$lib/util/sync/root-file-memo';
 import { providerTokenValid, syncReady } from '$lib/util/sync/foreground-sync';
+import { freshGateStatus } from '$lib/util/sync/identity-gates';
 import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import {
@@ -247,7 +248,10 @@ async function runSync(
 ): Promise<PositionsSyncOutcome> {
   const outcome: PositionsSyncOutcome = { adopted: [], deferred: [], uploaded: false };
   try {
-    const status = provider.getStatus();
+    // The gate must follow the server NOW (a bunko rolled back under an open
+    // tab shares this path): the page-turn push and the open/foreground
+    // checks run outside the progress sync, so they ask here (throttled).
+    const status = await freshGateStatus(provider);
     // On bunko the path is a SHARED library file until the server says it
     // keeps it per user: not even a read.
     if (!positionsReadAllowed(status)) return { ...outcome, skipped: 'not-allowed' };
