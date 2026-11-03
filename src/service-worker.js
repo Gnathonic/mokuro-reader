@@ -4,10 +4,20 @@ import { build, files, version } from '$service-worker';
 // Create a unique cache name for this deployment
 const CACHE = `cache-${version}`;
 
+/**
+ * Same-origin paths the service worker never touches: the Drive auth API
+ * (`/api/`, every answer `no-store`) and the OAuth callback (`/oauth/`, whose
+ * URL carries an authorization code). Not precached, not answered from the
+ * cache, never written to it: the browser fetches them as if no worker ran.
+ */
+function bypassesWorker(pathname) {
+  return pathname.startsWith('/api/') || pathname.startsWith('/oauth/');
+}
+
 const ASSETS = [
   ...build, // the app itself
   ...files // everything in `static`
-];
+].filter((path) => !bypassesWorker(path));
 
 self.addEventListener('install', (event) => {
   // Create a new cache and add all files to it
@@ -66,6 +76,9 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // The auth API and the OAuth callback: not through the worker at all.
+  if (url.origin === self.location.origin && bypassesWorker(url.pathname)) return;
+
   async function respond() {
     const cache = await caches.open(CACHE);
 
@@ -83,8 +96,10 @@ self.addEventListener('fetch', (event) => {
     try {
       const response = await fetch(event.request);
 
-      // Only cache successful (status 200) responses smaller than 10MB
-      if (response.status === 200) {
+      // Only cache successful (status 200) responses smaller than 10MB, and
+      // never one its server said must not be stored.
+      const noStore = /(^|,)\s*no-store\s*(,|$)/i.test(response.headers.get('cache-control') ?? '');
+      if (response.status === 200 && !noStore) {
         // Check response size before caching
         const contentLength = response.headers.get('content-length');
         const sizeInMB = contentLength ? parseInt(contentLength) / (1024 * 1024) : 0;

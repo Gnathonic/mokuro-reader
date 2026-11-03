@@ -112,6 +112,11 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          # Canaries, not secrets: check-no-server-secrets fails the build if
+          # either value shows up anywhere in the output.
+          GDRIVE_CLIENT_SECRET: GOCSPX-ci-canary-not-a-real-secret
+          GDRIVE_SESSION_KEY: Y2ktY2FuYXJ5LW5vdC1hLXJlYWwtc2Vzc2lvbi1rZXk=
 
   release-check:
     name: Release Check
