@@ -81,3 +81,17 @@ export function overwriteWarning(names: string[]): string {
     ? `Importing will replace your profile ${list} with the one in the file. Replace it?`
     : `Importing will replace your profiles ${list} with the ones in the file. Replace them?`;
 }
+
+/**
+ * The notice after an import. Names every AnkiConnect URL the file brought
+ * that this device has not confirmed: each stays unused until confirmed in
+ * Settings → Anki Connect, or mining just stops.
+ */
+export function importNotice(unconfirmedAnkiUrls: string[]): string {
+  if (unconfirmedAnkiUrls.length === 0) return 'Profiles imported';
+  const where = 'in Settings → Anki Connect before cards are sent there.';
+  if (unconfirmedAnkiUrls.length === 1) {
+    return `Profiles imported. Confirm the AnkiConnect URL ${unconfirmedAnkiUrls[0]} ${where}`;
+  }
+  return `Profiles imported. Confirm the AnkiConnect URLs ${unconfirmedAnkiUrls.join(', ')} ${where}`;
+}

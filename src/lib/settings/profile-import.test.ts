@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { confirmAnkiUrl, resetAnkiUrlTrustForTest } from '$lib/anki-connect/url-trust';
 import { migrateProfiles, type Profiles } from './settings';
-import { overwriteWarning, parseProfilesFile, planProfileImport } from './profile-import';
+import {
+  importNotice,
+  overwriteWarning,
+  parseProfilesFile,
+  planProfileImport
+} from './profile-import';
 
 function profile(fields: Record<string, unknown> = {}, anki: Record<string, unknown> = {}) {
   return {
@@ -93,5 +98,22 @@ describe('overwriteWarning', () => {
     expect(overwriteWarning(['A', 'B'])).toBe(
       'Importing will replace your profiles "A", "B" with the ones in the file. Replace them?'
     );
+  });
+});
+
+describe('importNotice', () => {
+  it('is plain when every URL is already usable', () => {
+    expect(importNotice([])).toBe('Profiles imported');
+  });
+
+  it('names the one URL to confirm', () => {
+    expect(importNotice(['https://anki.example.com'])).toContain(
+      'Confirm the AnkiConnect URL https://anki.example.com in Settings'
+    );
+  });
+
+  it('names every URL to confirm, not just the first', () => {
+    const notice = importNotice(['https://a.example.com', 'http://192.168.1.5:8765']);
+    expect(notice).toContain('AnkiConnect URLs https://a.example.com, http://192.168.1.5:8765');
   });
 });

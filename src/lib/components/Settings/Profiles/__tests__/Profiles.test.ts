@@ -98,6 +98,18 @@ describe('Import profiles', () => {
     expect(get(profiles).Imported.ankiConnectSettings.url).toBe('https://anki.example.com');
   });
 
+  it('names every unconfirmed AnkiConnect URL the file brings', async () => {
+    await importFile({
+      Imported: mine(33, 'https://anki.example.com'),
+      Mine: mine(20, 'http://192.168.1.5:8765')
+    });
+
+    await waitFor(() => expect(ui.showSnackbar).toHaveBeenCalledTimes(1));
+    const [notice] = ui.showSnackbar.mock.calls[0];
+    expect(notice).toContain('https://anki.example.com');
+    expect(notice).toContain('http://192.168.1.5:8765');
+  });
+
   it('a file that is not a profiles export changes nothing', async () => {
     const before = JSON.stringify(get(profilesWithTrash));
     await importFile(['not', 'profiles']);

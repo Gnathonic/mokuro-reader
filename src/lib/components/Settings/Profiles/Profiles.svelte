@@ -1,6 +1,7 @@
 <script lang="ts">
   import { changeProfile, currentProfile, profiles, profilesWithTrash } from '$lib/settings';
   import {
+    importNotice,
     overwriteWarning,
     parseProfilesFile,
     planProfileImport,
@@ -46,12 +47,7 @@
     onClose();
     // A URL that is not Anki on this machine stays unused until confirmed
     // here (`anki-connect/url-trust.ts`): say so, or mining just stops.
-    const [url] = plan.unconfirmedAnkiUrls;
-    showSnackbar(
-      url
-        ? `Profiles imported. Confirm the AnkiConnect URL ${url} in Settings → Anki Connect before cards are sent there.`
-        : 'Profiles imported'
-    );
+    showSnackbar(importNotice(plan.unconfirmedAnkiUrls));
   }
 
   function importProfile() {
