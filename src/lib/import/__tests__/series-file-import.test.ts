@@ -59,10 +59,12 @@ import { compressVolume } from '$lib/util/compress-volume';
 import { cancelQueuedImports, importFiles, importQueue, isImporting } from '../import-service';
 import {
   applyImportedSeriesFiles,
+  dropLinkSeriesFiles,
   parseImportedSeriesFile,
   recordImportedSeriesTitle,
   recordSeriesFile,
-  resetImportedSeriesFiles
+  resetImportedSeriesFiles,
+  type LinkSeriesGuard
 } from '../series-file-import';
 import { buildSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
@@ -533,6 +535,75 @@ describe('keying a series.json to a series of the batch', () => {
 
     await applyImportedSeriesFiles();
     expect(await db.series_metadata.count()).toBe(0);
+  });
+
+  describe('a file a link brought (LinkSeriesGuard)', () => {
+    function guard(batch: number, now: string[] = []): LinkSeriesGuard {
+      return {
+        batch,
+        protectedKeys: new Set(),
+        refresh: async () => new Set(now)
+      };
+    }
+
+    function recordLinked(seriesTitle: string, linkGuard: LinkSeriesGuard) {
+      recordSeriesFile({
+        file: seriesFileFor(seriesTitle),
+        path: `https://link.example/${seriesTitle}/series.json`,
+        size: 10,
+        modifiedTime: '2026-08-17T00:00:00.000Z',
+        linkGuard
+      });
+    }
+
+    it('is keyed only by the titles its own import stored', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      recordLinked('Naruto', guard(7));
+      recordImportedSeriesTitle('Deep', 'deep-vol', 7);
+      // Another import of the same batch window stored "Naruto".
+      recordImportedSeriesTitle('Naruto', 'naruto-vol', 8);
+
+      await applyImportedSeriesFiles();
+
+      expect(await db.series_metadata.count()).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('lands on a series its import created, even though the library has it by now', async () => {
+      recordLinked('Naruto', guard(7, ['naruto']));
+      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+      recordImportedSeriesTitle('Naruto', 'naruto-vol-2', 8);
+
+      await applyImportedSeriesFiles();
+
+      expect((await db.series_metadata.get('naruto'))?.series_title).toBe('Naruto');
+    });
+
+    it('not on one another import stored first, re-read at apply time', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      recordLinked('Naruto', guard(7, ['naruto']));
+      recordImportedSeriesTitle('Naruto', 'naruto-vol', 8);
+      recordImportedSeriesTitle('Naruto', 'naruto-vol-2', 7);
+
+      await applyImportedSeriesFiles();
+
+      expect(await db.series_metadata.count()).toBe(0);
+      expect(await db.series_index.count()).toBe(0);
+      expect(info.mock.calls.flat().join(' ')).toContain('already in the library');
+    });
+
+    it('dropLinkSeriesFiles forgets that link’s files and nobody else’s', async () => {
+      recordLinked('Naruto', guard(7));
+      record('One Piece');
+      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+      recordImportedSeriesTitle('One Piece', 'op-vol', 8);
+
+      dropLinkSeriesFiles(7);
+      await applyImportedSeriesFiles();
+
+      expect(await db.series_metadata.get('naruto')).toBeUndefined();
+      expect((await db.series_metadata.get('one piece'))?.series_title).toBe('One Piece');
+    });
   });
 });
 

@@ -38,10 +38,11 @@ vi.mock('$lib/util/progress-tracker', () => ({
 vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite: vi.fn() }));
 
 /** The missing-files prompt holds a direct import mid-flight until released. */
-const held = vi.hoisted(() => ({ release: [] as (() => void)[] }));
+const held = vi.hoisted(() => ({ release: [] as (() => void)[], cancel: [] as (() => void)[] }));
 vi.mock('$lib/util/modals', () => ({
-  promptMissingFiles: (_info: unknown, onContinue: () => void) => {
+  promptMissingFiles: (_info: unknown, onContinue: () => void, onCancel: () => void) => {
     held.release.push(onContinue);
+    held.cancel.push(onCancel);
   }
 }));
 
@@ -66,6 +67,7 @@ import {
   isImporting
 } from '../import-service';
 import { reviewSession } from '../review-session';
+import { protectedSeriesKey, resetImportedSeriesFiles } from '../series-file-import';
 import { installReviewer, type Reviewer } from './helpers/review-bridge';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.
@@ -136,9 +138,17 @@ beforeEach(async () => {
   importQueue.set([]);
   reviewSession.set({ pending: [], decided: 0 });
   held.release = [];
+  held.cancel = [];
   pool.users = 0;
   pool.terminations = 0;
-  await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), db.volume_files.clear()]);
+  resetImportedSeriesFiles();
+  await Promise.all([
+    db.volumes.clear(),
+    db.volume_ocr.clear(),
+    db.volume_files.clear(),
+    db.series_metadata.clear(),
+    db.series_index.clear()
+  ]);
 });
 
 afterEach(() => {
@@ -303,5 +313,239 @@ describe('a deep link (final review #8)', () => {
     await waitForQueue();
     expect(await titles()).toEqual(['Deep', 'Queued A', 'Queued B']);
     expect(pool.users).toBe(0);
+  });
+});
+
+describe('a deep link’s series.json and the imports around it (TOCTOU)', () => {
+  /** The library's series, as `localSeriesKeys` reads them for a real link. */
+  const libraryKeys = async (): Promise<Set<string>> => {
+    const rows = await db.volumes.toArray();
+    const records = await db.series_metadata.toCollection().primaryKeys();
+    return new Set(
+      [...rows.map((r: { series_title: string }) => r.series_title), ...records].map((k) =>
+        protectedSeriesKey(String(k))
+      )
+    );
+  };
+
+  function seriesJson(series: string, volumeUuids: string[] = []): string {
+    return JSON.stringify({
+      version: 2,
+      series_title: series,
+      external_ids: { anilist: 4242 },
+      titles: { native: 'リンク' },
+      synonyms: [],
+      updated_at: '2026-10-01T00:00:00.000Z',
+      volumes: volumeUuids.map((volume_uuid) => ({
+        volume_uuid,
+        volume_title: volume_uuid,
+        page_count: 1,
+        character_count: 0,
+        mokuro_version: '0.2.1'
+      }))
+    });
+  }
+
+  function mokuroJson(series: string, volume: string, uuid: string, pages: string[]): string {
+    return JSON.stringify({
+      version: '0.2.1',
+      title: series,
+      title_uuid: `${series}-series`,
+      volume,
+      volume_uuid: uuid,
+      pages: pages.map((img_path) => ({
+        version: '0.2.1',
+        img_width: 1,
+        img_height: 1,
+        img_path,
+        blocks: []
+      }))
+    });
+  }
+
+  async function zip(name: string, entries: Record<string, string | Uint8Array>): Promise<File> {
+    const writer = new ZipWriter(new Uint8ArrayWriter(), {
+      bufferedWrite: false,
+      extendedTimestamp: false
+    });
+    for (const [path, body] of Object.entries(entries)) {
+      const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
+      await writer.add(path, new Uint8ArrayReader(bytes));
+    }
+    return picked(name, new Blob([await writer.close()]));
+  }
+
+  /** One volume of `series`; extra `pages` make its import stop on the missing-files prompt. */
+  async function seriesVolume(
+    series: string,
+    volume: string,
+    { pages = ['001.jpg'], extra = {} }: { pages?: string[]; extra?: Record<string, string> } = {}
+  ): Promise<File> {
+    return zip(`${volume}.cbz`, {
+      [`${volume}.mokuro`]: mokuroJson(series, volume, `${volume}-volume`, pages),
+      [`${volume}/001.jpg`]: IMAGE,
+      ...extra
+    });
+  }
+
+  /**
+   * What the user drops while the link is in flight: "Victim" — the series the
+   * link's file names — and a second volume, so the batch is still queued when
+   * the link's own import ends and its files wait for the queue to drain.
+   */
+  const localDrop = async () => [
+    await seriesVolume('Victim', 'Victim 01'),
+    await seriesVolume('Bystander', 'Bystander 01')
+  ];
+
+  const facts = async (series: string) =>
+    (await db.series_metadata.get(series.toLowerCase()))?.external_ids;
+
+  it('never lands on a series a local import created while the link was in flight', async () => {
+    // The link's own volume is in "Deep"; its series.json names "Victim".
+    const link = importArchiveWithOptionalMokuro(
+      await seriesVolume('Deep', 'Deep 01', {
+        pages: ['001.jpg', '002.jpg'],
+        extra: { 'series.json': seriesJson('Victim') }
+      }),
+      null,
+      { protectSeries: libraryKeys }
+    );
+    await until(() => held.release.length === 1);
+    // Guard read at the link's turn: "Victim" is not in the library yet.
+    await importFiles(await localDrop());
+    expect(get(importQueue).map((i) => i.status)).toEqual(['queued', 'queued']);
+
+    held.release.shift()!();
+    await link;
+    await waitForQueue();
+
+    expect(await titles()).toEqual(['Bystander 01', 'Deep 01', 'Victim 01']);
+    expect(await facts('Victim')).toBeUndefined();
+    expect(await db.series_index.get('victim')).toBeUndefined();
+  });
+
+  it('never lands on one a local import created before the link’s queued archives saved', async () => {
+    // A series pack: the link's own volume, and an archive of "Victim" nested
+    // in it — queued behind whatever the user dropped during the link's turn.
+    const link = importArchiveWithOptionalMokuro(
+      await zip('Pack.zip', {
+        'Deep 01.mokuro': mokuroJson('Deep', 'Deep 01', 'Deep 01-volume', ['001.jpg', '002.jpg']),
+        'Deep 01/001.jpg': IMAGE,
+        'Victim 02.cbz': new Uint8Array(
+          await (await seriesVolume('Victim', 'Victim 02')).arrayBuffer()
+        ),
+        'series.json': seriesJson('Victim', ['Victim 02-volume'])
+      }),
+      null,
+      { protectSeries: libraryKeys }
+    );
+    await until(() => held.release.length === 1);
+    await importFiles([await seriesVolume('Victim', 'Victim 01')]);
+
+    held.release.shift()!();
+    await link;
+    await waitForQueue();
+
+    // Both landed in "Victim", but the user's import created it.
+    expect(await titles()).toEqual(['Deep 01', 'Victim 01', 'Victim 02']);
+    expect(await facts('Victim')).toBeUndefined();
+    expect(await db.series_index.get('victim')).toBeUndefined();
+  });
+
+  it('a failed link’s series.json is dropped, not applied to the next import’s series', async () => {
+    const link = importArchiveWithOptionalMokuro(
+      await seriesVolume('Deep', 'Deep 01', {
+        pages: ['001.jpg', '002.jpg'],
+        extra: { 'series.json': seriesJson('Victim') }
+      }),
+      null,
+      { protectSeries: libraryKeys }
+    );
+    await until(() => held.cancel.length === 1);
+    await importFiles(await localDrop());
+
+    // The user cancels the link's import at the missing-files prompt.
+    held.cancel.shift()!();
+    const result = await link;
+    await waitForQueue();
+
+    expect(result.success).toBe(false);
+    expect(await titles()).toEqual(['Bystander 01', 'Victim 01']);
+    expect(await facts('Victim')).toBeUndefined();
+  });
+
+  it('a skipped link’s series.json is dropped too', async () => {
+    reviewer = installReviewer('manual');
+    // Image-only: the link waits in its review until the user decides.
+    const link = importArchiveWithOptionalMokuro(
+      await zip('Deep 01.cbz', {
+        '001.jpg': IMAGE,
+        'series.json': seriesJson('Victim')
+      }),
+      null,
+      { protectSeries: libraryKeys }
+    );
+    await until(() => reviewer!.pending.length === 1);
+    await importFiles(await localDrop());
+
+    reviewer.pending.shift()!.decide({ action: 'skip' });
+    await link;
+    await waitForQueue();
+
+    expect(await titles()).toEqual(['Bystander 01', 'Victim 01']);
+    expect(await facts('Victim')).toBeUndefined();
+  });
+
+  it('still applies to the series the link itself created, whatever joined it later', async () => {
+    const link = importArchiveWithOptionalMokuro(
+      await seriesVolume('Deep', 'Deep 01', {
+        pages: ['001.jpg', '002.jpg'],
+        extra: { 'series.json': seriesJson('Deep', ['Deep 01-volume']) }
+      }),
+      null,
+      { protectSeries: libraryKeys }
+    );
+    await until(() => held.release.length === 1);
+    // The user's own volume of the same series, queued behind the link.
+    await importFiles([await seriesVolume('Deep', 'Deep 02')]);
+
+    held.release.shift()!();
+    await link;
+    await waitForQueue();
+
+    expect(await titles()).toEqual(['Deep 01', 'Deep 02']);
+    expect(await facts('Deep')).toEqual({ anilist: 4242 });
+    expect(await db.series_index.get('deep')).toBeDefined();
+  });
+
+  it('applies a link’s file in a lone confirmed import', async () => {
+    await importArchiveWithOptionalMokuro(
+      await seriesVolume('Deep', 'Deep 01', { extra: { 'series.json': seriesJson('Deep') } }),
+      null,
+      { protectSeries: libraryKeys }
+    );
+    await waitForQueue();
+    expect(await facts('Deep')).toEqual({ anilist: 4242 });
+  });
+
+  it('applies nothing when the library cannot be read again at apply time', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let reads = 0;
+    await importArchiveWithOptionalMokuro(
+      await seriesVolume('Deep', 'Deep 01', { extra: { 'series.json': seriesJson('Deep') } }),
+      null,
+      {
+        protectSeries: async () => {
+          if (reads++ > 0) throw new Error('library unreadable');
+          return libraryKeys();
+        }
+      }
+    );
+    await waitForQueue();
+    expect(reads).toBe(2);
+    expect(await facts('Deep')).toBeUndefined();
+    expect(warn.mock.calls.flat().join(' ')).toContain('could not read the library');
+    warn.mockRestore();
   });
 });

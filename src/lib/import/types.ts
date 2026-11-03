@@ -1,4 +1,5 @@
 import type { ImportNames } from './image-only-naming';
+import type { LinkSeriesGuard } from './series-file-import';
 /**
  * Types for the unified import system
  *
@@ -82,11 +83,11 @@ export interface PairedSource {
    */
   batch?: number;
   /**
-   * Series a `series.json` found INSIDE this source must not be applied to
-   * (`PendingSeriesFile.protectedSeriesKeys`): set on a deep-linked archive,
-   * whose contents someone else chose. Archives found inside it inherit it.
+   * The guard a `series.json` found INSIDE this source is collected with
+   * (`PendingSeriesFile.linkGuard`): set on a deep-linked archive, whose
+   * contents someone else chose. Archives found inside it inherit it.
    */
-  protectedSeriesKeys?: ReadonlySet<string>;
+  seriesGuard?: LinkSeriesGuard;
 }
 
 export interface ArchiveReview {

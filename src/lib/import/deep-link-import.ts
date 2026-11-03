@@ -79,8 +79,11 @@ export interface DeepLinkImportOptions {
  *   stored under) — except that neither it nor a `series.json` packed INSIDE
  *   the archive ever lands on a series that was already in the library, unless
  *   the user allowed that one in the confirmation (`allowSeriesKey`). The
- *   library is read for that inside the turn too: a series a sync or a queued
- *   import added while the link waited is just as much the user's;
+ *   library is read for that inside the turn too, and again when the file is
+ *   applied: a series a sync or another import added while the link waited, or
+ *   while its archives were still in the queue, is just as much the user's.
+ *   A link's file is keyed only by the titles its own import stored, and is
+ *   dropped when that import fails or imports nothing (`LinkSeriesGuard`);
  * - the layers go through the same importer a cloud listing's pull uses
  *   (`importFetchedLayers`), onto the volume this import installed.
  *

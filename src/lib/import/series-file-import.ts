@@ -35,15 +35,36 @@ export interface PendingSeriesFile {
   /** The file's own timestamp, ISO — the `source` stamp of the cached index. */
   modifiedTime: string;
   /**
-   * Series this file must NOT be applied to (`protectedSeriesKey`): the ones
-   * already in the library when a LINK brought the file, minus any the user
-   * agreed in the import confirmation to let it update. A link's server is
-   * whoever made the link; it may name a new series, but it does not get to
-   * rewrite the AniList link or titles of one the user already has — and so,
-   * through the write this would queue, the user's own cloud copy — unseen.
-   * Absent for files the user picked or dropped themselves.
+   * Set when a LINK brought the file (`LinkSeriesGuard`). Absent for files the
+   * user picked or dropped themselves.
    */
-  protectedSeriesKeys?: ReadonlySet<string>;
+  linkGuard?: LinkSeriesGuard;
+}
+
+/**
+ * What keeps a LINK's `series.json` to the series that link brought. A link's
+ * server is whoever made the link; it may name a new series, but it does not
+ * get to rewrite the AniList link or titles of one the user already has — and
+ * so, through the write this would queue, the user's own cloud copy — unseen.
+ *
+ * A link's files are therefore applied apart from the rest of the batch
+ * (`applyImportedSeriesFiles`): keyed only by the titles THAT import stored
+ * volumes under, and refused for every series the library holds at apply time
+ * that the link did not create itself — read again then, not just at the
+ * link's turn, since another import (or a sync) may have added the very series
+ * the file names while the link's archives were still in the queue.
+ */
+export interface LinkSeriesGuard {
+  /** The link's import (`PairedSource.batch`); archives nested in it share it. */
+  batch: number;
+  /**
+   * Series already in the library when the link had its import turn
+   * (`protectedSeriesKey`), minus any the user agreed in the import
+   * confirmation to let it update.
+   */
+  protectedKeys: ReadonlySet<string>;
+  /** The same read, again: the library's series now, minus the agreed one. */
+  refresh: () => Promise<ReadonlySet<string>>;
 }
 
 /**
@@ -114,15 +135,15 @@ export function protectedSeriesKey(title: string): string {
 /**
  * Collect a `series.json` extracted from an archive. Never throws.
  *
- * @param protectedSeriesKeys the archive's guard, when a LINK brought it
- *   (`PairedSource.protectedSeriesKeys`): a file inside a deep-linked archive
- *   is just as much the link's as one its manifest listed.
+ * @param linkGuard the archive's guard, when a LINK brought it
+ *   (`PairedSource.seriesGuard`): a file inside a deep-linked archive is just
+ *   as much the link's as one its manifest listed.
  */
 export function collectSeriesFileFromBytes(
   path: string,
   data: ArrayBuffer,
   lastModified: number,
-  protectedSeriesKeys?: ReadonlySet<string>
+  linkGuard?: LinkSeriesGuard
 ): void {
   let text: string;
   try {
@@ -132,7 +153,7 @@ export function collectSeriesFileFromBytes(
     return;
   }
   const parsed = parseImportedSeriesFile(path, text, data.byteLength, lastModified);
-  if (parsed) recordSeriesFile(protectedSeriesKeys ? { ...parsed, protectedSeriesKeys } : parsed);
+  if (parsed) recordSeriesFile(linkGuard ? { ...parsed, linkGuard } : parsed);
 }
 
 // The batch: everything collected since the last apply. Module state rather
@@ -142,21 +163,59 @@ const pendingFiles: PendingSeriesFile[] = [];
 const importedTitles = new Set<string>();
 /** volume_uuid → the series title that volume was stored under. */
 const importedVolumes = new Map<string, string>();
+/** Per import (`PairedSource.batch`): the titles its volumes were stored under. */
+const titlesByImport = new Map<number, Set<string>>();
+/** Per import: volume_uuid → series title, as `importedVolumes`. */
+const volumesByImport = new Map<number, Map<string, string>>();
+/**
+ * `protectedSeriesKey` → the import that stored the FIRST volume under that
+ * series since the last apply (`undefined`: one that carries no batch). A
+ * link's file may land on a series the link created, never on one another
+ * import created while the link's archives were still in the queue.
+ */
+const firstImportOfSeries = new Map<string, number | undefined>();
 
 export function recordSeriesFile(entry: PendingSeriesFile): void {
   pendingFiles.push(entry);
 }
 
 /**
+ * Forget the files a LINK's import recorded, unapplied: the import failed or
+ * imported nothing, so its `series.json` has no series of its own to describe
+ * — left in the batch, it would wait for whatever the next import stores.
+ */
+export function dropLinkSeriesFiles(batch: number): void {
+  for (let i = pendingFiles.length - 1; i >= 0; i--) {
+    if (pendingFiles[i].linkGuard?.batch === batch) pendingFiles.splice(i, 1);
+  }
+}
+
+/**
  * The series title a volume of this batch was actually stored under, with that
  * volume's uuid when the caller knows it — the uuid is what lets a sidecar be
  * matched to its series by index membership rather than by its (possibly
- * stale) `series_title`.
+ * stale) `series_title` — and the import (`PairedSource.batch`) that stored it,
+ * which is what a link's file is keyed by (`LinkSeriesGuard`).
  */
-export function recordImportedSeriesTitle(seriesTitle: string, volumeUuid?: string): void {
+export function recordImportedSeriesTitle(
+  seriesTitle: string,
+  volumeUuid?: string,
+  batch?: number
+): void {
   if (!seriesTitle) return;
   importedTitles.add(seriesTitle);
   if (volumeUuid) importedVolumes.set(volumeUuid, seriesTitle);
+  const key = protectedSeriesKey(seriesTitle);
+  if (!firstImportOfSeries.has(key)) firstImportOfSeries.set(key, batch);
+  if (batch === undefined) return;
+  let titles = titlesByImport.get(batch);
+  if (!titles) titlesByImport.set(batch, (titles = new Set()));
+  titles.add(seriesTitle);
+  if (volumeUuid) {
+    let volumes = volumesByImport.get(batch);
+    if (!volumes) volumesByImport.set(batch, (volumes = new Map()));
+    volumes.set(volumeUuid, seriesTitle);
+  }
 }
 
 /** Forget the batch without applying it (tests, cancelled imports). */
@@ -164,6 +223,9 @@ export function resetImportedSeriesFiles(): void {
   pendingFiles.length = 0;
   importedTitles.clear();
   importedVolumes.clear();
+  titlesByImport.clear();
+  volumesByImport.clear();
+  firstImportOfSeries.clear();
 }
 
 /**
@@ -218,69 +280,132 @@ function resolveSeriesTitle(
   return undefined;
 }
 
+/** The series key → title map `resolveSeriesTitle` looks titles up in. */
+function keyTitles(titles: Iterable<string>): Map<string, string> {
+  const byKey = new Map<string, string>();
+  for (const title of titles) byKey.set(normalizeSeriesKey(title), title);
+  return byKey;
+}
+
 /**
  * Apply and drain the batch — the drain happens even when nothing could be
  * applied, so a batch never leaks into the next import. Facts merge through `upsertFromSeriesFile` (strictly
  * newer wins), and the file is cached in `series_index` so this device reports
  * the same index as the one that wrote it — even though every volume of the
  * batch is installed locally and needs nothing from it.
+ *
+ * The files the user brought are keyed against every title of the batch. A
+ * LINK's files (`LinkSeriesGuard`) are keyed per link, against only the titles
+ * that link's own import stored volumes under, and never applied to a series
+ * the library holds now that the link did not create.
  */
 export async function applyImportedSeriesFiles(): Promise<void> {
   const entries = pendingFiles.splice(0, pendingFiles.length);
   const titles = [...importedTitles];
   const volumesByUuid = new Map(importedVolumes);
+  const importTitles = new Map(titlesByImport);
+  const importVolumes = new Map(volumesByImport);
+  const firstImports = new Map(firstImportOfSeries);
   importedTitles.clear();
   importedVolumes.clear();
+  titlesByImport.clear();
+  volumesByImport.clear();
+  firstImportOfSeries.clear();
   if (entries.length === 0) return;
 
-  const titlesByKey = new Map<string, string>();
-  for (const title of titles) titlesByKey.set(normalizeSeriesKey(title), title);
+  const own = entries.filter((entry) => !entry.linkGuard);
+  const titlesByKey = keyTitles(titles);
+  for (const entry of own) {
+    const seriesTitle = resolveSeriesTitle(entry, titlesByKey, volumesByUuid, own.length);
+    if (seriesTitle) await applySeriesFile(entry, seriesTitle);
+    else warnUnkeyed(entry);
+  }
 
+  const byLink = new Map<number, PendingSeriesFile[]>();
   for (const entry of entries) {
-    const seriesTitle = resolveSeriesTitle(entry, titlesByKey, volumesByUuid, entries.length);
-    if (!seriesTitle) {
-      console.warn(
-        `[Import] Could not tell which series the ${SERIES_FILE_NAME} at '${entry.path}' belongs to; ignoring it`
-      );
-      continue;
-    }
-    if (entry.protectedSeriesKeys?.has(protectedSeriesKey(seriesTitle))) {
-      // Neither the facts nor the cached index: both would reach this series.
-      console.info(
-        `[Import] Not applying the ${SERIES_FILE_NAME} at '${entry.path}' to '${seriesTitle}': that series was already in the library and the import did not allow changing it`
-      );
-      continue;
-    }
-
+    if (!entry.linkGuard) continue;
+    const group = byLink.get(entry.linkGuard.batch);
+    if (group) group.push(entry);
+    else byLink.set(entry.linkGuard.batch, [entry]);
+  }
+  for (const [batch, group] of byLink) {
+    const guard = group[0].linkGuard!;
+    const linkTitles = importTitles.get(batch) ?? new Set<string>();
+    let protectedKeys: Set<string>;
     try {
-      const applied = await upsertFromSeriesFile(seriesTitle, entry.file);
-      // An import is out of band: the cloud copy has never seen these facts and
-      // no other path will publish them, so queue a write. No ping-pong risk —
-      // this only fires for facts that actually landed, and the next read of the
-      // same file applies nothing, so the exchange converges. (An offsets-only
-      // file never reports `true` at all; its alignment rides the cached index
-      // below.) The debounced writer still needs a writable cloud that already
-      // holds the series.
-      if (applied) scheduleSeriesFileWrite(seriesTitle);
-      const key = normalizeSeriesKey(seriesTitle);
-      // Merge over whatever is cached: an imported file only knows the volumes
-      // of the library that exported it, so caching it as-is would drop the
-      // entries a cloud fetch had already collected for this series.
-      const cached = await getSeriesIndex(key);
-      await putSeriesIndex({
-        series_key: key,
-        series_title: seriesTitle,
-        file: mergeSeriesFileForCache(seriesTitle, entry.file, cached?.file),
-        source: {
-          provider: 'import',
-          path: entry.path,
-          size: entry.size,
-          modifiedTime: entry.modifiedTime
-        },
-        fetched_at: new Date().toISOString()
-      });
+      protectedKeys = new Set([...guard.protectedKeys, ...(await guard.refresh())]);
     } catch (error) {
-      console.warn(`[Import] Failed to apply the ${SERIES_FILE_NAME} of '${seriesTitle}':`, error);
+      // No guard, no apply: the file would be free to land on any series.
+      console.warn(
+        `[Import] Not applying a link's ${SERIES_FILE_NAME}: could not read the library`,
+        error
+      );
+      continue;
     }
+    // The series this link created: none of its volumes' series was in the
+    // library at its turn, and its import stored the first volume there.
+    for (const title of linkTitles) {
+      const key = protectedSeriesKey(title);
+      if (!guard.protectedKeys.has(key) && firstImports.get(key) === batch) {
+        protectedKeys.delete(key);
+      }
+    }
+    const linkTitlesByKey = keyTitles(linkTitles);
+    const linkVolumes = importVolumes.get(batch) ?? new Map<string, string>();
+    for (const entry of group) {
+      const seriesTitle = resolveSeriesTitle(entry, linkTitlesByKey, linkVolumes, group.length);
+      if (!seriesTitle) {
+        warnUnkeyed(entry);
+        continue;
+      }
+      if (protectedKeys.has(protectedSeriesKey(seriesTitle))) {
+        // Neither the facts nor the cached index: both would reach this series.
+        console.info(
+          `[Import] Not applying the ${SERIES_FILE_NAME} at '${entry.path}' to '${seriesTitle}': that series was already in the library and the import did not allow changing it`
+        );
+        continue;
+      }
+      await applySeriesFile(entry, seriesTitle);
+    }
+  }
+}
+
+function warnUnkeyed(entry: PendingSeriesFile): void {
+  console.warn(
+    `[Import] Could not tell which series the ${SERIES_FILE_NAME} at '${entry.path}' belongs to; ignoring it`
+  );
+}
+
+/** Apply one keyed file: its facts, a cloud write for them, the cached index. */
+async function applySeriesFile(entry: PendingSeriesFile, seriesTitle: string): Promise<void> {
+  try {
+    const applied = await upsertFromSeriesFile(seriesTitle, entry.file);
+    // An import is out of band: the cloud copy has never seen these facts and
+    // no other path will publish them, so queue a write. No ping-pong risk —
+    // this only fires for facts that actually landed, and the next read of the
+    // same file applies nothing, so the exchange converges. (An offsets-only
+    // file never reports `true` at all; its alignment rides the cached index
+    // below.) The debounced writer still needs a writable cloud that already
+    // holds the series.
+    if (applied) scheduleSeriesFileWrite(seriesTitle);
+    const key = normalizeSeriesKey(seriesTitle);
+    // Merge over whatever is cached: an imported file only knows the volumes
+    // of the library that exported it, so caching it as-is would drop the
+    // entries a cloud fetch had already collected for this series.
+    const cached = await getSeriesIndex(key);
+    await putSeriesIndex({
+      series_key: key,
+      series_title: seriesTitle,
+      file: mergeSeriesFileForCache(seriesTitle, entry.file, cached?.file),
+      source: {
+        provider: 'import',
+        path: entry.path,
+        size: entry.size,
+        modifiedTime: entry.modifiedTime
+      },
+      fetched_at: new Date().toISOString()
+    });
+  } catch (error) {
+    console.warn(`[Import] Failed to apply the ${SERIES_FILE_NAME} of '${seriesTitle}':`, error);
   }
 }
