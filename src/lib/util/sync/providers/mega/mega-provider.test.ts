@@ -288,6 +288,7 @@ describe('MegaProvider.logout()', () => {
     const provider = await connected(close);
 
     await provider.logout();
+    await provider.whenServerLogoutSettled();
 
     expect(cancelProviderUploads).toHaveBeenCalledWith('mega', expect.any(String));
     expect(close).toHaveBeenCalledTimes(1);
@@ -295,25 +296,28 @@ describe('MegaProvider.logout()', () => {
     expect(provider.isAuthenticated()).toBe(false);
   });
 
-  it('gives up on a close that never answers after 3 s, logged out locally all the same', async () => {
+  it('returns without waiting on the close, which gives up after 3 s', async () => {
+    // The provider manager clears its caches and the active-provider key once
+    // logout() resolves: a wait on the server there would leave the old
+    // listing on screen, and wipe the key of a login made meanwhile.
     vi.useFakeTimers();
     try {
-      const provider = await connected(() => new Promise(() => {}));
-      let done = false;
-      const loggingOut = provider.logout().then(() => (done = true));
+      const close = vi.fn(() => new Promise(() => {}));
+      const provider = await connected(close);
+      let closeSettled = false;
 
-      await vi.advanceTimersByTimeAsync(0);
-      // Cleared before the wait, so closing the tab now still logs out.
+      await provider.logout();
+      void provider.whenServerLogoutSettled().then(() => (closeSettled = true));
+
+      expect(close).toHaveBeenCalledTimes(1);
       expect(localStorage.getItem('mega_session')).toBeNull();
       expect(localStorage.getItem('active_cloud_provider')).toBeNull();
-      expect(done).toBe(false);
+      expect(provider.isAuthenticated()).toBe(false);
 
       await vi.advanceTimersByTimeAsync(2_999);
-      expect(done).toBe(false);
+      expect(closeSettled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
-      await loggingOut;
-      expect(done).toBe(true);
-      expect(provider.isAuthenticated()).toBe(false);
+      expect(closeSettled).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -326,6 +330,7 @@ describe('MegaProvider.logout()', () => {
     });
 
     await expect(provider.logout()).resolves.toBeUndefined();
+    await expect(provider.whenServerLogoutSettled()).resolves.toBeUndefined();
 
     expect(localStorage.getItem('mega_session')).toBeNull();
     expect(provider.isAuthenticated()).toBe(false);
@@ -345,6 +350,7 @@ describe('MegaProvider.logout()', () => {
     fromJSON.mockImplementationOnce((json: any) => ({ sid: json.sid, close }));
 
     await provider.logout();
+    await provider.whenServerLogoutSettled();
 
     expect(fromJSON).toHaveBeenLastCalledWith(
       expect.objectContaining({
