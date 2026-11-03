@@ -1,0 +1,437 @@
+import { test, expect, type BrowserContext, type Page } from '@playwright/test';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { rmSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { join } from 'node:path';
+import { inflateSync } from 'node:zlib';
+import { isAppViolation, type CspViolation } from '../src/lib/security/csp-violations';
+import { vercelHeadersFor } from './helpers/vercel-headers';
+import { writeSyntheticVolume, type SyntheticVolume } from './helpers/synthetic-volume';
+
+/**
+ * The shell's Content-Security-Policy, per CSP_MODE, in a PRODUCTION build
+ * (`vite build` + `vite preview`): the dev server's policy is not the one that
+ * ships (kit loosens style-src there for Vite's injected styles).
+ *
+ * Each mode gets its own build in its own `kit.outDir` (SVELTEKIT_OUT_DIR,
+ * under node_modules — see BUILDS), so the suite's dev server never sees its
+ * generated files change. `vercel.json`'s
+ * headers — the worker CSP, framing, COOP, Permissions-Policy — are not applied
+ * by `vite preview`, so every app response is re-issued with them on the way
+ * into the browser (`vercelHeadersFor`): the run sees what a deployment sends.
+ *
+ * Everything off the machine is answered here: the two Google scripts (and the
+ * module and stylesheet each pulls in, at the exact paths the policy allows)
+ * with stubs that record that they ran; every other host is refused. A refused
+ * request is a network error, not a CSP violation, so it cannot hide one.
+ *
+ * What the browser cannot be made to show here, the owner checks by hand before
+ * enforcing in production: Yomitan and Migaku (extensions are not loaded in
+ * this run), real Google sign-in / Picker, OneDrive's MSAL frames.
+ */
+
+const MODES = ['off', 'report-only', 'enforce'] as const;
+
+/**
+ * Where each mode's build goes. Under node_modules on purpose: Vite's dev
+ * watcher ignores it — a build anywhere else in the project writes a
+ * tsconfig.json the suite's dev server sees, and Vite answers that with a full
+ * reload of every page the other specs have open. And inside the project: the
+ * built server resolves its packages from the project's node_modules.
+ */
+const BUILDS = join('node_modules', '.cache', 'csp-e2e');
+
+test.use({
+  // A controlling service worker would fetch cross-origin fonts itself, past the
+  // routes below. Its registration is covered by its own test.
+  serviceWorkers: 'block'
+});
+
+const GAPI = 'https://apis.google.com/js/api.js';
+const GAPI_MODULE =
+  'https://apis.google.com/_/scs/abc-static/_/js/k=gapi.lb.en.e2e/m=client/cb=gapi.loaded_0';
+const GIS = 'https://accounts.google.com/gsi/client';
+const GIS_STYLE = 'https://accounts.google.com/gsi/style';
+/** Script URLs the policy must REFUSE: the bare hosts' JSONP/AngularJS gadgets. */
+const GADGETS = [
+  'https://accounts.google.com/o/e2e-gadget.js',
+  'https://www.gstatic.com/e2e-gadget.js'
+];
+
+const js = (body: string) => ({ status: 200, contentType: 'application/javascript', body });
+const mark = (key: string) =>
+  `(window.__e2eGoogle = window.__e2eGoogle || {})[${JSON.stringify(key)}] = true;`;
+
+/** What the stubbed Google hosts answer, by URL prefix. */
+const STUBS: [string, { status: number; contentType: string; body: string }][] = [
+  [
+    GAPI,
+    js(
+      `${mark('gapi')}
+       const s = document.createElement('script');
+       s.src = ${JSON.stringify(GAPI_MODULE)};
+       document.head.appendChild(s);`
+    )
+  ],
+  ['https://apis.google.com/_/scs/', js(mark('gapiModule'))],
+  [
+    GIS,
+    js(
+      `${mark('gis')}
+       const l = document.createElement('link');
+       l.rel = 'stylesheet';
+       l.href = ${JSON.stringify(GIS_STYLE)};
+       l.onload = () => { ${mark('gisStyle')} };
+       document.head.appendChild(l);`
+    )
+  ],
+  [GIS_STYLE, { status: 200, contentType: 'text/css', body: '/* e2e */' }],
+  ...GADGETS.map((url) => [url, js(mark(url))] as [string, ReturnType<typeof js>])
+];
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as import('node:net').AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function run(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', (d) => (output += d));
+    child.stderr.on('data', (d) => (output += d));
+    child.once('error', reject);
+    child.once('exit', (code) =>
+      code === 0
+        ? resolve()
+        : reject(new Error(`${command} ${args.join(' ')} exited ${code}\n${output}`))
+    );
+  });
+}
+
+async function waitForServer(url: string, child: ChildProcess, deadline: number) {
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error(`preview exited ${child.exitCode}`);
+    try {
+      const response = await fetch(url);
+      if (response.status > 0) return;
+    } catch {
+      // not listening yet
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`preview at ${url} never answered`);
+}
+
+/** Every CSP / Permissions-Policy complaint the browser writes to the console. */
+function watchConsole(page: Page) {
+  const csp: string[] = [];
+  const permissions: string[] = [];
+  page.on('console', (message) => {
+    const text = message.text();
+    // Chrome names the policy in every CSP message, report-only ones included.
+    if (/Content Security Policy/i.test(text)) csp.push(text);
+    if (/Permissions[- ]Policy|Unrecognized feature/i.test(text)) permissions.push(text);
+  });
+  return { csp, permissions };
+}
+
+/**
+ * Re-issue every app response with `vercel.json`'s headers; answer the Google
+ * stubs; refuse every other host.
+ */
+async function routeLikeVercel(context: BrowserContext, origin: string) {
+  await context.route('**/*', async (route) => {
+    const url = route.request().url();
+    if (url.startsWith(origin)) {
+      const { pathname } = new URL(url);
+      // Vercel serves its analytics script on a deployment; `vite preview`
+      // answers the path with the HTML shell, which nosniff then refuses.
+      if (pathname === '/_vercel/insights/script.js') return route.fulfill(js(''));
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: { ...response.headers(), ...vercelHeadersFor(pathname) }
+      });
+      return;
+    }
+    const stub = STUBS.find(([prefix]) => url.startsWith(prefix));
+    if (stub) return route.fulfill(stub[1]);
+    return route.abort('blockedbyclient');
+  });
+}
+
+async function violations(page: Page): Promise<CspViolation[]> {
+  return page.evaluate(() => {
+    const read = (window as unknown as { __mokuroCspViolations?: () => CspViolation[] })
+      .__mokuroCspViolations;
+    return read ? read() : [];
+  });
+}
+
+async function boot(page: Page, origin: string) {
+  await page.goto(`${origin}/`);
+  await expect
+    .poll(() => page.evaluate(() => window.location.hash), {
+      timeout: 30000,
+      message: 'the app never booted (the router never claimed the URL)'
+    })
+    .toBe('#/catalog');
+}
+
+async function importVolume(page: Page, volume: SyntheticVolume) {
+  // The navbar's upload icon (stats, progress tracker, settings, upload, cloud).
+  await page.locator('nav div.md\\:order-2 > button').nth(3).click();
+  const chooser = page.waitForEvent('filechooser');
+  await page.locator('dialog button', { hasText: 'choose files' }).click();
+  await (await chooser).setFiles([volume.mokuro, volume.cbz]);
+  await page.locator('dialog button', { hasText: /^\s*Import\s*$/ }).click();
+  // Saved = its image row exists. Read IndexedDB directly: a production build
+  // has no `/src/...` module to import.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          (uuid) =>
+            new Promise<boolean>((resolve) => {
+              const open = indexedDB.open('mokuro_v3');
+              open.onerror = () => resolve(false);
+              open.onsuccess = () => {
+                const db = open.result;
+                if (!db.objectStoreNames.contains('volume_files')) return resolve(false);
+                const get = db.transaction('volume_files').objectStore('volume_files').get(uuid);
+                get.onsuccess = () => resolve(get.result != null);
+                get.onerror = () => resolve(false);
+              };
+            }),
+          volume.volumeUuid
+        ),
+      { timeout: 60_000, message: 'the import never saved the volume' }
+    )
+    .toBe(true);
+}
+
+/** The colour of one screen pixel, from a 1×1 PNG screenshot (any filter type
+ * reduces to the raw bytes for the first pixel of the first row). */
+async function pixel(page: Page, x: number, y: number): Promise<[number, number, number]> {
+  const png = await page.screenshot({ clip: { x, y, width: 1, height: 1 } });
+  const idat: Buffer[] = [];
+  for (let at = 8; at < png.length; ) {
+    const length = png.readUInt32BE(at);
+    const type = png.toString('latin1', at + 4, at + 8);
+    if (type === 'IDAT') idat.push(png.subarray(at + 8, at + 8 + length));
+    at += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  return [raw[1], raw[2], raw[3]];
+}
+
+for (const mode of MODES) {
+  test.describe(`CSP_MODE=${mode}`, () => {
+    test.describe.configure({ mode: 'serial' });
+
+    const outDir = join(BUILDS, mode);
+    let preview: ChildProcess | null = null;
+    let origin = '';
+
+    test.beforeAll(async () => {
+      test.setTimeout(300_000);
+      const env = { ...process.env, CSP_MODE: mode, SVELTEKIT_OUT_DIR: outDir };
+      rmSync(outDir, { recursive: true, force: true });
+      await run('npx', ['vite', 'build'], env);
+      const port = await freePort();
+      origin = `http://localhost:${port}`;
+      preview = spawn('npx', ['vite', 'preview', '--port', String(port), '--strictPort'], {
+        env,
+        stdio: 'ignore',
+        detached: true
+      });
+      await waitForServer(`${origin}/`, preview, Date.now() + 60_000);
+    });
+
+    test.afterAll(() => {
+      if (preview?.pid) {
+        try {
+          process.kill(-preview.pid, 'SIGTERM');
+        } catch {
+          // already gone
+        }
+      }
+    });
+
+    test('the shell answers 200 with this mode’s policy, and reports nowhere', async ({
+      request
+    }) => {
+      const response = await request.get(`${origin}/`);
+      expect(response.status()).toBe(200);
+      const headers = response.headers();
+      const enforced = headers['content-security-policy'];
+      const reportOnly = headers['content-security-policy-report-only'];
+      expect(headers['reporting-endpoints']).toBeUndefined();
+      expect(headers['report-to']).toBeUndefined();
+
+      if (mode === 'off') {
+        expect(enforced).toBeUndefined();
+        expect(reportOnly).toBeUndefined();
+        return;
+      }
+      const policy = mode === 'enforce' ? enforced : reportOnly;
+      expect(mode === 'enforce' ? reportOnly : enforced).toBeUndefined();
+      expect(policy).toBeTruthy();
+      // kit's inline boot script, by hash — never a nonce on a cached shell.
+      expect(policy).toMatch(/script-src [^;]*'sha256-[A-Za-z0-9+/=]+'/);
+      expect(policy).not.toMatch(/nonce-/);
+      expect(policy).not.toMatch(/report-uri/);
+      if (mode === 'report-only') expect(policy).toMatch(/report-to csp-noop/);
+      else expect(policy).not.toMatch(/report-to/);
+      // The shell's inline scripts are kit's alone (app.html has none left).
+      const html = (await response.text()).replace(/<!--[\s\S]*?-->/g, '');
+      expect(html).not.toMatch(/<script\b[^>]*\bsrc=/);
+      expect(html).not.toMatch(/<style\b/);
+    });
+
+    test('boot, import, reader, OCR text, settings, night mode, cloud page: no app violations', async ({
+      context,
+      page
+    }) => {
+      test.setTimeout(180_000);
+      const volume = writeSyntheticVolume();
+      const consoleLog = watchConsole(page);
+      const workers: string[] = [];
+      page.on('worker', (worker) => workers.push(new URL(worker.url()).pathname));
+      await routeLikeVercel(context, origin);
+
+      await boot(page, origin);
+      // No Google script until Drive is needed (C5): not on the catalog.
+      await expect(page.locator(`script[src="${GAPI}"], script[src="${GIS}"]`)).toHaveCount(0);
+
+      await importVolume(page, volume);
+      // The import's archive streaming runs in the unified file worker, under
+      // the worker CSP vercel.json gives it.
+      expect(workers.some((w) => w.startsWith('/_app/immutable/workers/'))).toBe(true);
+
+      await page.evaluate(
+        ([series, vol]) => (window.location.hash = `#/reader/${series}/${vol}`),
+        [volume.seriesUuid, volume.volumeUuid]
+      );
+      const pageEl = page.locator('#manga-panel [data-page-index]').first();
+      await expect(pageEl).toBeVisible({ timeout: 30000 });
+      // The OCR text layer.
+      await expect(page.locator('.textBox').first()).toContainText(volume.text, {
+        timeout: 20000
+      });
+
+      const box = (await pageEl.boundingBox())!;
+      const probe = {
+        x: Math.round(box.x + box.width * 0.15),
+        y: Math.round(box.y + box.height * 0.85)
+      };
+      const [r0, g0, b0] = await pixel(page, probe.x, probe.y);
+      expect(Math.abs(g0 - volume.colour[1]), `page colour before night mode`).toBeLessThan(12);
+      expect(Math.abs(b0 - volume.colour[2])).toBeLessThan(12);
+      expect(r0).toBeGreaterThan(150);
+
+      // Settings panel → Night mode, through the real controls.
+      await page.locator('button.reader-hud.right-3').click();
+      await page.getByText('Enable night mode').click();
+      await expect
+        .poll(() => page.evaluate(() => document.documentElement.classList.contains('night-mode')))
+        .toBe(true);
+      // The drawer's own Close button, not its header's X (whose sr-only text is also Close).
+      await page.locator('#settings button[type="button"]', { hasText: /^\s*Close\s*$/ }).click();
+      await expect(page.locator('#settings')).toBeHidden();
+      // Red monochrome: luminance in red, nothing in green or blue.
+      await expect
+        .poll(
+          async () => {
+            const [r, g, b] = await pixel(page, probe.x, probe.y);
+            return r > 180 && g < 10 && b < 10;
+          },
+          { message: 'night mode tints the page red' }
+        )
+        .toBe(true);
+
+      // The cloud page loads the Google scripts (C5), and the policy lets each
+      // one — and what it pulls in, at the allowed paths — run.
+      await page.evaluate(() => (window.location.hash = '#/cloud'));
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => (window as unknown as { __e2eGoogle?: Record<string, boolean> }).__e2eGoogle ?? {}
+          )
+        )
+        .toEqual({ gapi: true, gapiModule: true, gis: true, gisStyle: true });
+      await expect(page.locator(`script[src="${GAPI}"]`)).toHaveCount(1);
+      await expect(page.locator(`script[src="${GIS}"]`)).toHaveCount(1);
+
+      const appViolations = (await violations(page)).filter(isAppViolation);
+      expect(appViolations, JSON.stringify(appViolations, null, 2)).toEqual([]);
+      expect(consoleLog.csp).toEqual([]);
+      // vercel.json's Permissions-Policy names only features Chromium knows —
+      // but `bluetooth`, a spec feature Chromium does not parse yet: denied
+      // ahead of time on purpose, one console warning per load.
+      expect(consoleLog.permissions).toEqual([
+        "Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'."
+      ]);
+    });
+
+    test('the bare Google hosts stay closed to scripts, and the page records the attempt', async ({
+      context,
+      page
+    }) => {
+      await routeLikeVercel(context, origin);
+      await boot(page, origin);
+      await page.evaluate((urls) => {
+        for (const src of urls) {
+          const s = document.createElement('script');
+          s.src = src;
+          document.head.appendChild(s);
+        }
+      }, GADGETS);
+      await page.waitForTimeout(1000);
+
+      const ran = await page.evaluate(
+        () => (window as unknown as { __e2eGoogle?: Record<string, boolean> }).__e2eGoogle ?? {}
+      );
+      const recorded = (await violations(page)).filter((v) => GADGETS.includes(v.blockedURI));
+      if (mode === 'off') {
+        expect(Object.keys(ran).sort()).toEqual([...GADGETS].sort());
+        expect(recorded).toEqual([]);
+        return;
+      }
+      // Report-only lets them run and counts them; enforce refuses them.
+      expect(Object.keys(ran).sort()).toEqual(mode === 'enforce' ? [] : [...GADGETS].sort());
+      expect(recorded.map((v) => v.blockedURI).sort()).toEqual([...GADGETS].sort());
+      for (const v of recorded) {
+        expect(v.disposition).toBe(mode === 'enforce' ? 'enforce' : 'report');
+        expect(v.directive).toBe('script-src-elem');
+      }
+    });
+
+    test('the service worker registers under the policy', async ({ browser }) => {
+      const context = await browser.newContext({ serviceWorkers: 'allow' });
+      const page = await context.newPage();
+      const consoleLog = watchConsole(page);
+      await boot(page, origin);
+      const scope = await page.evaluate(async () => {
+        const registration = await navigator.serviceWorker.ready;
+        return registration.scope;
+      });
+      expect(scope).toBe(`${origin}/`);
+      expect((await violations(page)).filter(isAppViolation)).toEqual([]);
+      expect(consoleLog.csp).toEqual([]);
+      await context.close();
+    });
+  });
+}
+
+// Each mode's build is large; leave none behind.
+test.afterAll(() => {
+  rmSync(BUILDS, { recursive: true, force: true });
+});

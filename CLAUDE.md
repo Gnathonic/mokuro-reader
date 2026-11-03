@@ -1901,7 +1901,7 @@ from anywhere else. Synced-progress rows are minted after every progress sync
 
 **Always add `relative z-10` to action button containers in modals.**
 
-Night mode applies a CSS `filter` to `<dialog>` elements (see `app.html`). The `filter` property creates a new stacking context, which resets all z-index relationships inside the dialog. Without explicit z-index, scrollable containers (`overflow: auto/scroll`) can capture click events instead of sibling button containers.
+Night mode applies a CSS `filter` to `<dialog>` elements (see `src/lib/styles/night-mode.css`). The `filter` property creates a new stacking context, which resets all z-index relationships inside the dialog. Without explicit z-index, scrollable containers (`overflow: auto/scroll`) can capture click events instead of sibling button containers.
 
 ```svelte
 <!-- ✅ Correct - buttons will be clickable even with night mode filter -->
@@ -1940,6 +1940,40 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   Register an AniList API client (implicit grant) whose redirect URL is the deploy
   origin with a trailing slash. Searching/linking series needs no key.
 - MEGA, WebDAV, and Local Folder require no env vars.
+- `CSP_MODE` (build time, NOT a `VITE_` var — read by `svelte.config.js`):
+  `off` (default) | `report-only` | `enforce`. See "Security headers and CSP".
+  Any other value fails the build.
+
+### Security headers and CSP
+
+- **`vercel.json`** sends `X-Content-Type-Options: nosniff`, `X-Frame-Options:
+SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
+  `same-origin`: it severs the GIS popup) and a `Permissions-Policy` denying
+  unused device features (never microphone — Migaku —, clipboard, fullscreen,
+  wake lock, share, local-network/loopback) on every path but `/api/` and
+  `/oauth/` (those get their own rules; keep one header name per path). The
+  module workers (`/_app/immutable/workers/*`) get their own CSP: a worker does
+  not inherit the page's. No global `Referrer-Policy` (the Drive API key's
+  referrer restriction needs the origin).
+- **The shell's CSP** is `kit.csp` (`src/lib/security/csp-policy.js`, mode
+  `hash` — never nonces on a CDN-cached shell), phased by `CSP_MODE`. Every
+  source in it is justified there; add a third-party host only with the same
+  evidence, and NEVER bare `accounts.google.com` / `www.gstatic.com` in
+  `script-src` (JSONP/AngularJS bypass gadgets — exact paths only). Report-only
+  carries `report-to csp-noop` (kit 500s every page without one) and no
+  Reporting-Endpoints header: reports go nowhere. No inline `<style>`/`<script>`
+  in `app.html` (kit hashes only its own): styles go in a stylesheet.
+- **Vercel Toolbar**: injected into preview deployments (beta), refused by the
+  policy. Turn it off for previews in the Vercel project settings rather than
+  widening the policy — beta must enforce exactly what production does.
+- **Violations** are kept in an in-page ring buffer (`csp-violations.ts`,
+  installed by `src/hooks.client.ts`): `__mokuroCspViolations()` in the console.
+- **The Google scripts** (gapi, GIS) load on demand (`google-scripts.ts`): when
+  Drive is the active provider at boot, and when the cloud page mounts —
+  never first inside the Connect click (the GIS popup needs its activation).
+- `e2e/csp.spec.ts` builds each mode (own `SVELTEKIT_OUT_DIR`), re-applies
+  `vercel.json`'s headers, and requires zero app violations through boot,
+  import, reader, OCR text, settings, night mode and the cloud page.
 
 ## Testing
 
@@ -2018,7 +2052,8 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   spec counts the writes a sync caused without waiting out the 2 s debounce.
 - An interop build reaches no host off the machine but the ones the config names: the rig
   refuses every other request and FAILS the spec that made it (only `apis.google.com/js/api.js`
-  and `accounts.google.com/gsi/client`, which `app.html` loads, are answered, empty). So
+  and `accounts.google.com/gsi/client`, which `google-scripts.ts` injects on demand, are
+  answered, empty). So
   `src/lib/interop/hermetic.ts` (`INTEROP_BUILD`, MODE interop only — Vitest keeps it off) skips
   the Noto Sans JP web font, and `src/hooks.server.ts` serves the shell without `app.html`'s
   other absolute addresses (the font host's preconnects, the jidoujisho icon). A new third-party
