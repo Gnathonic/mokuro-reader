@@ -43,8 +43,9 @@ Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-wh
 
 ### Essential Commands
 
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
+- `npm run dev` - Start development server (localhost only; `npm run dev -- --host` to reach it from the LAN)
+- `npm run build` - Build for production (`@sveltejs/adapter-vercel`, lockfile-pinned, runtime `nodejs24.x`);
+  fails when `scripts/check-no-test-hooks.mjs` finds a cloud test hook in the output
 - `npm run preview` - Preview production build
 - `npm test` - Run tests with Vitest
 - `npm run test:coverage` - Run tests with coverage
