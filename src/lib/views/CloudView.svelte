@@ -25,6 +25,7 @@
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
   import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
   import DevicesSettings from '$lib/components/Devices/DevicesSettings.svelte';
+  import { parseCloudLinkPrefill, type CloudLinkPrefill } from '$lib/util/link-safety';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -153,6 +154,13 @@
   let webdavLoading = $state(false);
   // Whether the WebDAV login form is expanded on the selection screen.
   let webdavFormOpen = $state(false);
+  // What a `#/cloud?server=…` link put into (or was refused from) the form.
+  let linkPrefill = $state<CloudLinkPrefill | null>(null);
+  // The banner names the linked server while the field still holds it; once the
+  // user types their own address it is no longer the link's.
+  let linkPrefilledHost = $derived(
+    linkPrefill?.server && webdavUrl === linkPrefill.server.url ? linkPrefill.server.host : null
+  );
 
   // Auto-open the (pre-filled) form when a session needs re-login, so the
   // password field is right there instead of behind a collapsed row.
@@ -334,15 +342,15 @@
     clearServiceWorkerCache();
     // Storage quota is fetched reactively via $effect when auth state changes
 
-    // Check for deep-link query params (e.g. #/cloud?server=...&username=...)
-    const hashQuery = window.location.hash.split('?')[1];
-    if (hashQuery) {
-      const params = new URLSearchParams(hashQuery);
-      const deepServer = params.get('server');
-      const deepUsername = params.get('username');
-      if (deepServer) webdavUrl = deepServer;
-      if (deepUsername) webdavUsername = deepUsername;
-    }
+    // Deep-link prefill (#/cloud?server=...&username=...). It only FILLS the
+    // form — never submits it, never supplies a password — and only with an
+    // https address (or plain http on this device): a LAN http server is fine
+    // when the user types it, but a link must not aim their password at one.
+    // Whatever was filled is announced in a banner above the form.
+    linkPrefill = parseCloudLinkPrefill(window.location.hash);
+    if (linkPrefill?.server) webdavUrl = linkPrefill.server.url;
+    if (linkPrefill?.username) webdavUsername = linkPrefill.username;
+    if (linkPrefill?.server || linkPrefill?.refused) webdavFormOpen = true;
 
     // Pre-fill WebDAV form fields from last session (if not already set by deep link)
     if (!webdavUrl || !webdavUsername) {
@@ -803,6 +811,35 @@
           </button>
 
           <div id="webdav-login-form" class:hidden={!webdavFormOpen} class="pr-4 pb-4 pl-12">
+            {#if linkPrefilledHost}
+              <div
+                class="mb-3 rounded-lg border border-amber-500 bg-amber-900/30 p-3 text-sm text-amber-200"
+                data-testid="webdav-link-prefill"
+                role="status"
+              >
+                This server address was filled in from a link:
+                <span class="font-mono font-semibold break-words text-white"
+                  >{linkPrefilledHost}</span
+                >. Only sign in if you know and trust this server — the password you enter is sent
+                to it.
+              </div>
+            {:else if linkPrefill?.refused}
+              <div
+                class="mb-3 rounded-lg border border-amber-500 bg-amber-900/30 p-3 text-sm text-amber-200"
+                data-testid="webdav-link-prefill-refused"
+                role="status"
+              >
+                {#if linkPrefill.refused.reason === 'insecure'}
+                  A link tried to fill in the server address
+                  <span class="font-mono break-words text-white">{linkPrefill.refused.value}</span>,
+                  which does not use a secure connection (https), so it was left out. If this is
+                  your own server, you can type its address yourself.
+                {:else}
+                  A link tried to fill in a server address that is not a web address, so it was left
+                  out.
+                {/if}
+              </div>
+            {/if}
             {#if webdavNeedsReLogin}
               <p class="mb-3 text-sm text-amber-400">
                 Your WebDAV session needs attention — re-enter your password to sign in again.
