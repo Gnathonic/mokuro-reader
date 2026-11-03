@@ -48,7 +48,7 @@
     getCardAgeInMin,
     extractFieldValues,
     getModelConfig,
-    blobToBase64,
+    coverImageDataUrl,
     type VolumeMetadata
   } from '$lib/anki-connect';
   import { db } from '$lib/catalog/db';
@@ -1408,11 +1408,9 @@
     // Load cover image for {cover} template support
     try {
       const dbVolume = await db.volumes.get(volume.volume_uuid);
-      if (dbVolume?.thumbnail) {
-        const coverImage = await blobToBase64(dbVolume.thumbnail);
-        if (coverImage) {
-          volumeMetadata.coverImage = coverImage;
-        }
+      const coverImage = await coverImageDataUrl(dbVolume?.thumbnail);
+      if (coverImage) {
+        volumeMetadata.coverImage = coverImage;
       }
     } catch {
       // Continue without cover image

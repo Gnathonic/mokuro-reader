@@ -16,6 +16,7 @@ import type {
 import { settings, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
 import { showSnackbar } from '$lib/util';
 import { isMobilePlatform } from '$lib/util/platform';
+import { rasterOrNull } from '$lib/util/raster-image';
 import { get } from 'svelte/store';
 
 export * from './cropper';
@@ -615,6 +616,18 @@ export async function blobToBase64(blob: Blob) {
     reader.onloadend = () => resolve(reader.result as string);
     reader.readAsDataURL(blob);
   });
+}
+
+/**
+ * A volume's stored thumbnail as a data URL for the `{cover}` field, or null
+ * when its type is not an accepted raster one: a thumbnail stored as
+ * `image/svg+xml` before the raster-only rule is never sent to Anki.
+ */
+export async function coverImageDataUrl(
+  thumbnail: Blob | null | undefined
+): Promise<string | null> {
+  const cover = rasterOrNull(thumbnail);
+  return cover ? await blobToBase64(cover) : null;
 }
 
 export async function imageToWebp(source: File, settings: Settings) {
