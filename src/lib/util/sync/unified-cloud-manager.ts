@@ -5,12 +5,14 @@ import {
   type SyncProvider,
   type CloudFileMetadata,
   type ProviderType,
+  type UploadFileResult,
   type UploadPayload
 } from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
 import { HISTORY_FOLDER } from '$lib/reading-history/paths';
 import { uploadCacheEntry } from './cloud-cache-interface';
+import { noteRootFileUpload } from './root-file-memo';
 import { providerManager } from './provider-manager';
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
 import { isMetadataOnly } from '$lib/catalog/volume-state';
@@ -408,11 +410,32 @@ class UnifiedCloudManager {
    * old title (via `upsertFromSeriesFile`) after `moveSeriesMetadataKey` already
    * moved it, leaving a ghost series in the catalog that no cleanup owns.
    */
-  async fetchAllCloudVolumes(options?: { refreshIndexes?: boolean }): Promise<void> {
-    this.startQuickSync();
-    await cacheManager.fetchAll();
+  async fetchAllCloudVolumes(options?: {
+    refreshIndexes?: boolean;
+    fromChangeFeed?: boolean;
+  }): Promise<void> {
+    if (!(options?.fromChangeFeed && (await this.refreshFromChangeFeed()))) {
+      this.startQuickSync();
+      await cacheManager.fetchAll();
+    }
     if (options?.refreshIndexes === false) return;
     this.refreshSeriesIndexesInBackground();
+  }
+
+  /**
+   * `fetchAllCloudVolumes({ fromChangeFeed: true })`: a caller that needs the
+   * listing CURRENT (a metadata writer about to merge and prune against it),
+   * not walked again, takes it from Google Drive's change feed when the
+   * cache is loaded — one small request when nothing moved. False = no feed
+   * here (another provider, or nothing listed yet): list in full.
+   */
+  private async refreshFromChangeFeed(): Promise<boolean> {
+    const provider = this.getActiveProvider();
+    if (provider?.type !== 'google-drive') return false;
+    const cache = cacheManager.getCache(provider.type);
+    if (!cache?.refreshFromChanges || !cache.isLoaded()) return false;
+    await cache.refreshFromChanges();
+    return true;
   }
 
   /**
@@ -566,7 +589,7 @@ class UnifiedCloudManager {
     blob: UploadPayload,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     return this.performUpload(path, blob, description, onProgress, false);
   }
 
@@ -574,31 +597,32 @@ class UnifiedCloudManager {
    * Write-and-forget upload: same contract and same targeted cache add as
    * {@link uploadFile}, but routed through the provider's `blindUploadFile`
    * when it has one — the variant that skips any post-upload refresh work the
-   * provider's ordinary upload performs (Google Drive refetches its WHOLE
-   * listing after every ordinary upload; see the interface doc). A provider
-   * without the method IS already blind, so this falls back to `uploadFile`.
+   * provider's ordinary upload performs. A provider without the method IS
+   * already blind, so this falls back to `uploadFile` — which is every
+   * provider today.
    *
-   * WHO MAY USE THIS — the ruling (2026-08-28): most callers use the updated
-   * cache to CONFIRM files are backed up and to RENDER those changes — the
-   * backup queue's badges, `writeSeriesFile`/`writeCatalogFile` and every
-   * flow a view reads back — and they stay on {@link uploadFile}. A caller
-   * qualifies for the blind path only when ALL THREE hold, as they do for
-   * the sidecar backfill:
-   *
-   * - the write changes NOTHING any view renders;
-   * - the process can simply try again later (self-healing — the next
-   *   session's sweep re-derives the gap and re-uploads);
-   * - nothing important is lost when it fails.
-   *
-   * Do not convert another caller to this path on efficiency grounds alone —
-   * check it against those three first.
+   * WHO MAY USE THIS — the ruling, revised for #288 (2026-11-02). The old
+   * ruling (2026-08-28) kept most callers on {@link uploadFile} because Google
+   * Drive's ordinary upload refetched the whole account, and that refreshed
+   * cache was taken to be how uploads are CONFIRMED and RENDERED. The audit
+   * for #288 found it was not: every main-thread caller reads back only its
+   * own write, which the targeted add below records from the receipt (server
+   * id, mtime, size, version and, on Drive, folder and name); the worker
+   * backups refetch once per run on their own (`finishBackupRun`); and the
+   * one thing the refetch really did — show other devices' writes — is the
+   * listing's job, done on Drive by the change feed at the top of every sync
+   * and before every metadata write (`refreshFromChanges`). So Drive's upload
+   * no longer refetches, the two paths are the same upload everywhere, and
+   * either is fine for any caller. A provider that ever adds post-upload
+   * refresh work must implement `blindUploadFile`, and nothing may depend on
+   * that work: an upload records its own receipt, never other devices' state.
    */
   async blindUploadFile(
     path: string,
     blob: UploadPayload,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     return this.performUpload(path, blob, description, onProgress, true);
   }
 
@@ -608,7 +632,7 @@ class UnifiedCloudManager {
     description: string | undefined,
     onProgress: ((loaded: number, total: number) => void) | undefined,
     blind: boolean
-  ): Promise<string> {
+  ): Promise<UploadFileResult> {
     const provider = this.getActiveProvider();
     if (!provider) {
       throw new Error('No cloud provider authenticated');
@@ -630,8 +654,10 @@ class UnifiedCloudManager {
     // reported, marked provisional otherwise) — see `uploadCacheEntry`.
     const cache = cacheManager.getCache(provider.type);
     cache?.add?.(path, uploadCacheEntry(provider.type, path, uploadSize, uploaded, description));
+    // A root file's own write seeds the read memo from the same receipt.
+    await noteRootFileUpload(provider, path, blob, uploaded);
 
-    return uploaded.fileId;
+    return uploaded;
   }
 
   /**

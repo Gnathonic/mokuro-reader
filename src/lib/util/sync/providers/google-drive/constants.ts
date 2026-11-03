@@ -7,6 +7,17 @@ export interface DriveFile {
   createdTime?: string;
   parents?: string[];
   description?: string;
+  /** Monotonic change counter (an int64 as a string); any change bumps it. */
+  version?: string;
+  trashed?: boolean;
+  ownedByMe?: boolean;
+}
+
+/** One entry of `changes.list`: a file's CURRENT state, or its removal. */
+export interface DriveChange {
+  fileId?: string;
+  removed?: boolean;
+  file?: DriveFile;
 }
 
 export const GOOGLE_DRIVE_CONFIG = {
@@ -33,7 +44,6 @@ export const GOOGLE_DRIVE_CONFIG = {
   STORAGE_KEYS: {
     TOKEN: 'gdrive_token',
     TOKEN_EXPIRES: 'gdrive_token_expires',
-    SYNC_AFTER_LOGIN: 'sync_after_login',
     LAST_AUTH_TIME: 'gdrive_last_auth_time',
     HAS_AUTHENTICATED: 'gdrive_has_authenticated' // Track if user has ever authenticated
   },

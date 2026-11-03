@@ -386,9 +386,10 @@ async function exportOwnFacts(
 /**
  * Upload one history file. As a `Blob` (every provider handles one; some read
  * `.size`/`.arrayBuffer()`), and through `blindUploadFile` where a provider
- * has it: on Drive the regular upload re-lists the whole account afterwards,
- * and a history file changes nothing any view renders, is retried by the next
- * sync and loses nothing on failure — the documented test for a blind write.
+ * has it (no provider needs one since Drive's upload stopped re-listing the
+ * account, #288): a history file changes nothing any view renders, is retried
+ * by the next sync and loses nothing on failure — the documented test for a
+ * blind write.
  * Recording the upload in the listing cache is bookkeeping: if that throws,
  * the upload still counts.
  */

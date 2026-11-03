@@ -7,6 +7,11 @@ vi.mock('./sync/unified-cloud-manager', () => ({
 }));
 
 import { ActivityTracker } from './activity-tracker';
+import {
+  clearVolumeDataDeferred,
+  noteVolumeDataDeferred,
+  volumeDataDeferred
+} from './sync/reading-session';
 
 let tracker: ActivityTracker;
 beforeEach(() => {
@@ -15,6 +20,7 @@ beforeEach(() => {
   tracker = new ActivityTracker();
 });
 afterEach(() => {
+  clearVolumeDataDeferred();
   tracker.destroy();
   vi.useRealTimers();
 });
@@ -51,6 +57,40 @@ describe('progress sync batching', () => {
   });
 
   it('flush() with nothing pending does nothing', () => {
+    tracker.flush();
+    expect(syncProgress).not.toHaveBeenCalled();
+  });
+
+  it('flush() ends a session that deferred its volume-data upload: it syncs with no new turn', async () => {
+    tracker.recordActivity();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(syncProgress).toHaveBeenCalledTimes(1);
+    // That sync was in a reading session and left volume-data.json for the end.
+    noteVolumeDataDeferred();
+    tracker.flush();
+    expect(syncProgress).toHaveBeenCalledTimes(2);
+  });
+
+  it('flush() consumes the deferral: offline or read-only, the next hide does not sync again', async () => {
+    // The deferring sync's upload never happened (offline, demoted read-only):
+    // only a new deferral may owe the next flush a sync.
+    noteVolumeDataDeferred();
+    tracker.flush();
+    expect(syncProgress).toHaveBeenCalledTimes(1);
+    expect(volumeDataDeferred()).toBe(false);
+    tracker.flush();
+    tracker.flush();
+    expect(syncProgress).toHaveBeenCalledTimes(1);
+
+    // A later sync deferred again: the next flush owes one sync again.
+    noteVolumeDataDeferred();
+    tracker.flush();
+    expect(syncProgress).toHaveBeenCalledTimes(2);
+  });
+
+  it('flush() after the deferred upload went up does nothing', async () => {
+    noteVolumeDataDeferred();
+    clearVolumeDataDeferred();
     tracker.flush();
     expect(syncProgress).not.toHaveBeenCalled();
   });

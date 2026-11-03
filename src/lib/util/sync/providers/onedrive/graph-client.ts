@@ -11,6 +11,8 @@ export interface DriveItem {
   size?: number;
   lastModifiedDateTime?: string;
   eTag?: string;
+  /** Changes with the CONTENT only (an eTag also moves on a rename or a property change). */
+  cTag?: string;
   folder?: Record<string, unknown>;
   file?: Record<string, unknown>;
   parentReference?: { id?: string; path?: string };
@@ -75,6 +77,18 @@ export async function listChildren(accessToken: string, path: string): Promise<D
 
 export async function getItemByPath(accessToken: string, path: string): Promise<DriveItem | null> {
   const url = path ? `${BASE}/me/drive/root:/${encodePath(path)}` : `${BASE}/me/drive/root`;
+  const response = await fetch(url, { headers: authHeaders(accessToken) });
+  if (response.status === 404) return null;
+  if (!response.ok) await parseError(response);
+  return (await response.json()) as DriveItem;
+}
+
+/**
+ * One item's stamp fields by id (`$select`ed: a few hundred bytes), or null
+ * when it is gone (404).
+ */
+export async function getItemStamp(accessToken: string, id: string): Promise<DriveItem | null> {
+  const url = `${BASE}/me/drive/items/${encodeURIComponent(id)}?$select=id,name,size,lastModifiedDateTime,eTag,cTag,file`;
   const response = await fetch(url, { headers: authHeaders(accessToken) });
   if (response.status === 404) return null;
   if (!response.ok) await parseError(response);

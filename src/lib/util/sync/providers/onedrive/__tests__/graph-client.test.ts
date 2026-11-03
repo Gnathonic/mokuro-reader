@@ -9,7 +9,8 @@ import {
   deleteItem,
   patchItem,
   createUploadSession,
-  getItemByPath
+  getItemByPath,
+  getItemStamp
 } from '../graph-client';
 import { ProviderError } from '../../../provider-interface';
 import { onedriveTokenManager } from '../token-manager';
@@ -301,5 +302,37 @@ describe('graph-client', () => {
       // listChildren (not getItemByPath, which maps 404 to null)
       await expect(listChildren('TOKEN', 'mokuro-reader/x')).rejects.toThrow(/404/);
     });
+  });
+});
+
+describe('graph-client getItemStamp', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('GETs the item by id with only the stamp fields selected', async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'i/1', name: 'x', size: 2, cTag: 'c' })
+    } as Response);
+    expect(await getItemStamp('TOKEN', 'i/1')).toMatchObject({ id: 'i/1', cTag: 'c' });
+    const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
+    expect(url.pathname).toBe('/v1.0/me/drive/items/i%2F1');
+    expect(url.searchParams.get('$select')!.split(',')).toEqual(
+      expect.arrayContaining(['id', 'size', 'lastModifiedDateTime', 'eTag', 'cTag'])
+    );
+  });
+
+  it('is null on a 404, and throws on any other failure', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 404 } as Response);
+    expect(await getItemStamp('TOKEN', 'gone')).toBeNull();
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      text: async () => ''
+    } as Response);
+    await expect(getItemStamp('TOKEN', 'x')).rejects.toThrow(/503/);
   });
 });

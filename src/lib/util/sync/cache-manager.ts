@@ -1,6 +1,9 @@
 import { derived, writable, type Readable } from 'svelte/store';
 import type { CloudCache } from './cloud-cache-interface';
 import type { CloudFileMetadata, ProviderType } from './provider-interface';
+import { clearRootFileMemo } from './root-file-memo';
+import { clearVolumeDataDeferred } from './reading-session';
+import { clearCloudPositions } from '$lib/positions/positions-cloud';
 
 /**
  * Cache Manager
@@ -70,7 +73,14 @@ class CacheManager {
     if (this.activeCache && this.activeProviderType !== provider) {
       console.log(`Clearing cache for ${this.activeProviderType} when switching to ${provider}`);
       this.activeCache.clear();
+      clearRootFileMemo();
+      // A volume-data upload owed to the old account is not owed to this one.
+      clearVolumeDataDeferred();
     }
+    // Every connect (this is called on each one): what positions.json held is
+    // re-read. An account scope can repeat across accounts — Local Folder's
+    // is the folder's basename — so a stamp seen before must not vouch now.
+    clearCloudPositions();
 
     this.activeProviderType = provider;
     this.activeCache = cache;
@@ -201,6 +211,11 @@ class CacheManager {
     if (this.activeCache) {
       this.activeCache.clear();
     }
+    // Logout and every cache clear: the root-file memo goes with the listing,
+    // and with it what positions.json held and any upload owed to the account.
+    clearRootFileMemo();
+    clearCloudPositions();
+    clearVolumeDataDeferred();
     this.activeCache = null;
     this.activeProviderType = null;
     this.activeCacheStore.set(null);

@@ -82,6 +82,16 @@ interface CompletedDriveItem {
   /** The server's own modification timestamp — what listings later report. */
   lastModifiedDateTime?: string;
   size?: number;
+  /** Content change token — the receipt's revision when present. */
+  cTag?: string;
+  eTag?: string;
+}
+
+/** A driveItem's revision token: `cTag` (moves with the content only), else `eTag`. */
+export function oneDriveRevision(item: { cTag?: string; eTag?: string }): string | undefined {
+  if (typeof item.cTag === 'string' && item.cTag) return item.cTag;
+  if (typeof item.eTag === 'string' && item.eTag) return item.eTag;
+  return undefined;
 }
 
 export const onedriveCore: CloudProviderCore = {
@@ -195,6 +205,14 @@ export const onedriveCore: CloudProviderCore = {
     }
 
     let lastItem: CompletedDriveItem | null = null;
+    /**
+     * `lastItem` came from the lost-ack probe, not from the upload session's
+     * own answer. A same-size file at the path is all it proves: that may be
+     * this write, the file it was replacing (a `positions.json` whose page
+     * moved but not its length), or another device's same-size write. Its
+     * change token and mtime then vouch for bytes that may not be ours.
+     */
+    let recovered = false;
     let offset = 0;
     let attempt = 0;
 
@@ -206,6 +224,7 @@ export const onedriveCore: CloudProviderCore = {
         const completed = await findCompletedUpload(accessToken, targetPath, blob.size);
         if (completed) {
           lastItem = completed;
+          recovered = true;
           offset = blob.size;
           return;
         }
@@ -241,6 +260,7 @@ export const onedriveCore: CloudProviderCore = {
         // server's `lastModifiedDateTime`, the same field listings report.
         const item = (await chunkResponse.json()) as CompletedDriveItem;
         lastItem = item;
+        recovered = false;
         offset = end + 1;
         attempt = 0;
         onProgress?.(offset, blob.size);
@@ -283,13 +303,25 @@ export const onedriveCore: CloudProviderCore = {
       throw new Error('OneDrive upload session did not return a final driveItem');
     }
     const finalItem: CompletedDriveItem = lastItem;
+    if (recovered) {
+      // An unverified receipt: no revision, so the root-file memo drops its
+      // copy and the next read downloads the real file
+      // (`noteRootFileUpload`); no server mtime, so the cache entry stays
+      // provisional (`uploadCacheEntry`). The id and size are the path's.
+      return {
+        fileId: finalItem.id,
+        size: typeof finalItem.size === 'number' ? finalItem.size : undefined
+      };
+    }
     return {
       fileId: finalItem.id,
       modifiedTime:
         typeof finalItem.lastModifiedDateTime === 'string'
           ? finalItem.lastModifiedDateTime
           : undefined,
-      size: typeof finalItem.size === 'number' ? finalItem.size : undefined
+      size: typeof finalItem.size === 'number' ? finalItem.size : undefined,
+      // The same token `statFile` compares: cTag (content only), else eTag.
+      ...(oneDriveRevision(finalItem) ? { revision: oneDriveRevision(finalItem) } : {})
     };
   }
 };

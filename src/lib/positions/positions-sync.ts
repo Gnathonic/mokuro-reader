@@ -30,6 +30,7 @@ import { showSnackbar } from '$lib/util/snackbar';
 import { isVolumeComplete, stampMs } from '$lib/util/volume-helpers';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
+import { noteRootFileUpload, readRootFile } from '$lib/util/sync/root-file-memo';
 import { providerTokenValid, syncReady } from '$lib/util/sync/foreground-sync';
 import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
@@ -44,6 +45,7 @@ import {
 import { positionsReadAllowed, positionsWriteAllowed } from './positions-capability';
 import { noteRemoteRead } from '$lib/reading-history/remote-reads';
 import { noteUploaded } from './escapes';
+import { noteCloudPositions } from './positions-cloud';
 import { clearChanged, ownChangedEntries } from './positions-local';
 import { reconcilePositions, type LocalPosition } from './positions-reconcile';
 import { noteReaderOpened, openReader } from './reader-open';
@@ -100,20 +102,22 @@ async function upload(provider: SyncProvider, next: PositionsMap): Promise<strin
   const blob = new Blob([JSON.stringify(composePositionsFile(next))], {
     type: 'application/json'
   });
-  // The blind path skips the post-upload re-listing (Drive refetches the whole
-  // tree after every upload). It writes to the ACTIVE provider, so a sync of
-  // any other provider takes the ordinary upload.
-  const fileId =
-    unifiedCloudManager.getActiveProvider()?.type === provider.type
-      ? await unifiedCloudManager.blindUploadFile(POSITIONS_FILE_NAME, blob)
-      : (await provider.uploadFile(POSITIONS_FILE_NAME, blob)).fileId;
+  // The manager's upload writes to the ACTIVE provider, so a sync of any
+  // other provider uploads through that provider itself. The manager records the
+  // upload's receipt in the cache and the read memo itself; the other path
+  // records the same receipt here.
+  if (unifiedCloudManager.getActiveProvider()?.type === provider.type) {
+    return (await unifiedCloudManager.blindUploadFile(POSITIONS_FILE_NAME, blob)).fileId;
+  }
+  const uploaded = await provider.uploadFile(POSITIONS_FILE_NAME, blob);
   cacheManager
     .getCache(provider.type)
     ?.add?.(
       POSITIONS_FILE_NAME,
-      uploadCacheEntry(provider.type, POSITIONS_FILE_NAME, blob.size, { fileId })
+      uploadCacheEntry(provider.type, POSITIONS_FILE_NAME, blob.size, uploaded)
     );
-  return fileId;
+  await noteRootFileUpload(provider, POSITIONS_FILE_NAME, blob, uploaded);
+  return uploaded.fileId;
 }
 
 /**
@@ -201,7 +205,7 @@ async function planFromCopies(readable: unknown[]) {
     open: openReader(),
     now
   });
-  return { plan: result, own };
+  return { plan: result, own, cloud };
 }
 
 /**
@@ -219,7 +223,8 @@ async function runProbe(
   }
   const copies = await provider.readRootFileCopies(POSITIONS_FILE_NAME);
   const readable = await Promise.all(copies.map(readJson));
-  const { plan: result } = await planFromCopies(readable);
+  const { plan: result, cloud } = await planFromCopies(readable);
+  noteCloudPositions(provider, cloud);
   await applyAdoptions(result, outcome);
   return { ...outcome, probe: true };
 }
@@ -263,9 +268,12 @@ async function runSync(
     // ignored. Any other failure means a copy we could not see — adopt from the
     // rest, but do not overwrite what we could not read.
     const { readable, unreadable } = await readCopies(
-      files.map((file) => () => provider.downloadFile(file))
+      files.map((file) => () => readRootFile(provider, file))
     );
-    const { plan: result, own } = await planFromCopies(readable);
+    const { plan: result, own, cloud } = await planFromCopies(readable);
+    // What the cloud holds now, for the volume-data upload decision of the
+    // next sync (`positions-cloud.ts`).
+    noteCloudPositions(provider, cloud);
     await applyAdoptions(result, outcome);
 
     if (unreadable) return outcome;
@@ -279,6 +287,7 @@ async function runSync(
     // look-up that comes home while the PUT is in flight still beats them.
     for (const [volume, entry] of Object.entries(own)) noteUploaded(volume, entry.t);
     const landedOn = await upload(provider, result.next);
+    noteCloudPositions(provider, result.next);
     outcome.uploaded = true;
     clearChanged(own);
     await removeOtherCopies(provider, files, landedOn);

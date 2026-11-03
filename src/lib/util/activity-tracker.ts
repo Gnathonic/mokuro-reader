@@ -1,4 +1,5 @@
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
+import { takeVolumeDataDeferred } from './sync/reading-session';
 
 /**
  * Batches progress syncs while reading: a page turn (`recordActivity`) marks
@@ -48,9 +49,14 @@ export class ActivityTracker {
 
   /**
    * Send a pending change now — leaving the reader, hiding the tab. Nothing
-   * pending, nothing sent.
+   * pending, nothing sent. A volume-data upload that a sync deferred while
+   * the user was reading (`sync/reading-session.ts`) counts as pending: this
+   * flush ends the session, and its sync is the one that uploads. The flush
+   * spends that debt — a sync that cannot upload (offline, read-only) is not
+   * re-run by every later hide; only a new deferral owes one again.
    */
   flush() {
+    if (takeVolumeDataDeferred()) this.hasPendingProgress = true;
     if (!this.hasPendingProgress) return;
     if (this.syncTimerId !== null) {
       clearTimeout(this.syncTimerId);

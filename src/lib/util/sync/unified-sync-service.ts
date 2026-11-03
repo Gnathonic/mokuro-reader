@@ -28,12 +28,19 @@ import { ProviderError } from './provider-interface';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
+import { noteRootFileUpload, readRootFile } from './root-file-memo';
 import { isHistoryFilePath } from '$lib/reading-history/paths';
 import { noteUploaded, watchedEscapes } from '$lib/positions/escapes';
 import { historySyncAllowed } from '$lib/reading-history/history-capability';
 import { noteMergedRemoteReads } from '$lib/reading-history/remote-reads';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
+import { planVolumeDataUpload, stableStringify } from './volume-data-deferral';
+import {
+  clearVolumeDataDeferred,
+  noteVolumeDataDeferred,
+  readingSessionActive
+} from './reading-session';
 import {
   GOALS_FILE_NAME,
   composeGoalsFile,
@@ -72,28 +79,6 @@ interface CloudGoalsFile {
   sections: GoalsFileSections;
   raw: Record<string, unknown>;
   bogusKeys: Partial<Record<GoalsSectionName, ReadonlySet<string>>>;
-}
-
-/**
- * Deep-sorts object keys before `JSON.stringify` so two values that differ
- * only in key order compare equal. Used to decide whether `volume-data.json`
- * needs to be re-uploaded without false positives from key ordering alone.
- */
-function stableStringify(value: unknown): string {
-  return JSON.stringify(sortKeysDeep(value));
-}
-
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0
-    );
-    const out: Record<string, unknown> = {};
-    for (const [key, v] of entries) out[key] = sortKeysDeep(v);
-    return out;
-  }
-  return value;
 }
 
 export interface SyncOptions {
@@ -332,6 +317,15 @@ class UnifiedSyncService {
         }
       }
 
+      // Google Drive's listing moves only when this device lists or writes, and
+      // every step below reads it: other devices' root files, their copies,
+      // their history. Its change feed brings it current first — one small
+      // request when nothing changed (a full listing when the feed cannot
+      // answer). The other providers have no feed (MEGA's tree is live).
+      if (provider.type === 'google-drive') {
+        await cacheManager.getCache(provider.type)?.refreshFromChanges?.();
+      }
+
       // Sync volume data (read progress + series-level reading state)
       console.log('🔄 Syncing volume data...');
       await this.syncVolumeData(provider);
@@ -458,7 +452,7 @@ class UnifiedSyncService {
         const downloads = await Promise.allSettled(
           volumeDataFiles.map(
             async (file): Promise<CloudVolumeDataFile> =>
-              this.parseVolumeDataCopy(await this.blobToJson(await provider.downloadFile(file)))
+              this.parseVolumeDataCopy(await this.blobToJson(await readRootFile(provider, file)))
           )
         );
 
@@ -532,8 +526,8 @@ class UnifiedSyncService {
         };
       }
 
-      // Single file - download normally
-      const blob = await provider.downloadFile(volumeDataFiles[0]);
+      // Single file - read normally (a stat when this device holds its bytes)
+      const blob = await readRootFile(provider, volumeDataFiles[0]);
       return this.parseVolumeDataCopy(await this.blobToJson(blob));
     } catch (error) {
       // File not found is not an error
@@ -681,6 +675,9 @@ class UnifiedSyncService {
     cacheManager
       .getCache(provider.type)
       ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
+    // And the read memo, so the next sync stats this copy instead of
+    // downloading the bytes it just sent.
+    await noteRootFileUpload(provider, path, blob, uploaded);
   }
 
   /**
@@ -802,7 +799,7 @@ class UnifiedSyncService {
     // them as history: on mokuro-bunko and read-only providers always, and
     // elsewhere until the converted turns are confirmed uploaded (the history
     // pass runs after this upload, so that is the next sync).
-    const finalVolumes = await this.volumesForUpload(provider);
+    const { records: finalVolumes, legacyCarried } = await this.volumesForUpload(provider);
 
     // Step 6: Upload if anything differs from what the cloud actually holds —
     // the copy that SURVIVED the duplicate sweep, every half of it.
@@ -822,15 +819,87 @@ class UnifiedSyncService {
       cloud?.rawTracking ?? {}
     );
 
-    if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
-      // A look-up visit's stamps leave the device now: its restore must beat
-      // them (`positions/visit.ts`) — reported before the PUT, which may still
-      // be in flight when the reader comes home.
-      for (const volume of watchedEscapes()) {
-        const stamp = finalVolumes[volume]?.lastProgressUpdate;
-        if (stamp) noteUploaded(volume, Date.parse(stamp));
-      }
-      await this.uploadVolumeDataFile(provider, nextFile);
+    if (stableStringify(nextFile) === stableStringify(cloudFile)) {
+      clearVolumeDataDeferred();
+      return;
+    }
+
+    // Step 6b: a page turn made while the user is still reading waits for the
+    // end of the session, when positions.json already carries it to the other
+    // devices (`volume-data-deferral.ts`). The flush on leaving the reader or
+    // hiding the tab runs a sync outside the session, and that sync uploads.
+    if (
+      await this.deferVolumeDataUpload(provider, legacyCarried, cloud, finalVolumes, {
+        mergedSeries,
+        mergedTracking
+      })
+    ) {
+      return;
+    }
+
+    // A look-up visit's stamps leave the device now: its restore must beat
+    // them (`positions/visit.ts`) — reported before the PUT, which may still
+    // be in flight when the reader comes home.
+    for (const volume of watchedEscapes()) {
+      const stamp = finalVolumes[volume]?.lastProgressUpdate;
+      if (stamp) noteUploaded(volume, Date.parse(stamp));
+    }
+    await this.uploadVolumeDataFile(provider, nextFile);
+    clearVolumeDataDeferred();
+  }
+
+  /**
+   * Should this sync skip the volume-data upload (`planVolumeDataUpload`)?
+   * Gathers the rule's inputs. The session is read here, after the
+   * downloads, so a sync that a session's end started sees it ended. On any
+   * failure the answer is "upload", the behaviour from before.
+   */
+  private async deferVolumeDataUpload(
+    provider: SyncProvider,
+    legacyCarried: boolean,
+    cloud: CloudVolumeDataFile | null,
+    finalVolumes: Record<string, unknown>,
+    merged: { mergedSeries: SeriesReadingStates; mergedTracking: TrackingState }
+  ): Promise<boolean> {
+    if (!cloud) return false; // the first upload to this provider
+    try {
+      const [{ changedMark }, { cloudPositionStamp }] = await Promise.all([
+        import('$lib/positions/positions-local'),
+        import('$lib/positions/positions-cloud')
+      ]);
+      // Read after this sync's last await: a session that ended while it
+      // downloaded (the flush that ends it) uploads.
+      if (!readingSessionActive()) return false;
+      const status = provider.getStatus?.() ?? {};
+      const plan = planVolumeDataUpload({
+        next: {
+          volumes: finalVolumes,
+          sections: this.composeVolumeDataFile({}, merged.mergedSeries, merged.mergedTracking)
+        },
+        cloud: {
+          volumes: cloud.survivorVolumes,
+          sections: this.composeVolumeDataFile(
+            {},
+            (cloud.rawSeries as SeriesReadingStates) ?? {},
+            cloud.rawTracking ?? {}
+          )
+        },
+        sessionActive: true,
+        status,
+        legacyCarried,
+        markOf: changedMark,
+        cloudPositionOf: (volume) => cloudPositionStamp(provider, volume)
+      });
+      if (plan.action !== 'defer') return false;
+      noteVolumeDataDeferred();
+      console.debug(
+        `[sync] volume-data.json upload deferred to the end of the reading session: ` +
+          `${plan.volumes.length} volume(s) moved, all carried by positions.json`
+      );
+      return true;
+    } catch (error) {
+      console.warn('[sync] volume-data deferral check failed, uploading:', error);
+      return false;
     }
   }
 
@@ -876,7 +945,7 @@ class UnifiedSyncService {
     // provider cache — so a not-found copy must not discard the readable ones.
     const downloads = await Promise.allSettled(
       files.map(async (file) => {
-        const blob = await provider.downloadFile(file);
+        const blob = await readRootFile(provider, file);
         return (await this.blobToJson(blob)) as unknown;
       })
     );
@@ -936,6 +1005,7 @@ class UnifiedSyncService {
         GOALS_FILE_NAME,
         uploadCacheEntry(provider.type, GOALS_FILE_NAME, blob.size, uploaded)
       );
+    await noteRootFileUpload(provider, GOALS_FILE_NAME, blob, uploaded);
   }
 
   /** The local half of `goals.json`, tombstones included. */
@@ -1015,7 +1085,7 @@ class UnifiedSyncService {
       }
 
       console.log('⬇️ Downloading profiles.json from cloud...');
-      const blob = await provider.downloadFile(profilesFile);
+      const blob = await readRootFile(provider, profilesFile);
       console.log('⬇️ Downloaded blob, converting to JSON...');
       const json = await this.blobToJson(blob);
       console.log('✅ Successfully parsed profiles JSON:', json);
@@ -1053,10 +1123,11 @@ class UnifiedSyncService {
     const path = 'profiles.json';
     const uploaded = await provider.uploadFile(path, blob);
     // Same targeted add as `uploadVolumeDataFile` — `findProfilesFiles` reads
-    // the cache too.
+    // the cache too — and the same read memo.
     cacheManager
       .getCache(provider.type)
       ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
+    await noteRootFileUpload(provider, path, blob, uploaded);
   }
 
   /**
@@ -1099,7 +1170,9 @@ class UnifiedSyncService {
    * Best-effort: on failure the turns simply stay in the file, as before.
    * Loaded lazily, like the history pass.
    */
-  private async volumesForUpload(provider: SyncProvider): Promise<any> {
+  private async volumesForUpload(
+    provider: SyncProvider
+  ): Promise<{ records: any; legacyCarried: boolean }> {
     const status = provider.getStatus?.() ?? ({} as Partial<ReturnType<SyncProvider['getStatus']>>);
     try {
       const [cutOver, historySync, historyDbModule] = await Promise.all([
@@ -1113,10 +1186,13 @@ class UnifiedSyncService {
       const carried =
         historySyncs &&
         (await historySync.legacyCarriedBy(provider.type, historyDbModule.historyDb()));
-      return carried ? records : await cutOver.attachProjectedTurns(records, { historySyncs });
+      return {
+        records: carried ? records : await cutOver.attachProjectedTurns(records, { historySyncs }),
+        legacyCarried: !!carried
+      };
     } catch (error) {
       console.warn('Page-turn cut-over failed (turns stay in volume-data.json):', error);
-      return get(volumesWithTrash);
+      return { records: get(volumesWithTrash), legacyCarried: false };
     }
   }
 
