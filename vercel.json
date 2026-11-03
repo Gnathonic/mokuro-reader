@@ -1,3 +1,26 @@
 {
-  "installCommand": "npm ci"
+  "installCommand": "npm ci",
+  "headers": [
+    {
+      "source": "/((?!api/|oauth/).*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin-allow-popups" },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=(), browsing-topics=()"
+        }
+      ]
+    },
+    {
+      "source": "/_app/immutable/workers/(.*)",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob: data:; object-src 'none'"
+        }
+      ]
+    }
+  ]
 }

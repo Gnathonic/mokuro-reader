@@ -34,7 +34,9 @@ describe('production build', () => {
 
   it('builds on Node 24 and installs from the lockfile on Vercel', () => {
     expect(pkg.engines).toEqual({ node: '24.x' });
-    expect(vercel).toEqual({ installCommand: 'npm ci' });
+    expect(vercel.installCommand).toBe('npm ci');
+    // Beside it only the response headers, pinned in src/lib/security/vercel-headers.test.ts.
+    expect(Object.keys(vercel).sort()).toEqual(['headers', 'installCommand']);
   });
 });
 
