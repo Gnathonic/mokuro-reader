@@ -176,6 +176,12 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   messages still carry `[reason]`. OneDrive's equivalent is
   `providers/onedrive/graph-errors.ts`: 507 / a refusal naming `insufficientStorage` /
   `quotaLimitReached` → `oneDriveStorageFullError()`, excluded from the ≥ 500 retry.
+- A 401 re-authenticates only when it refused the token held NOW: `handleAuthError` gets the
+  token the request carried, and a refusal of one a re-auth has since replaced asks for no
+  re-auth (a second sign-in popup for nothing, or a cleared token that works); the call is
+  sent ONCE more with the held token instead (`retryStaleTokenRefusal` — a 401 created
+  nothing, so even a create is safe). Every attempt, `withDriveRetry`'s included, reads the
+  token when it goes out: a re-auth can land during a backoff.
 - **An upload never re-lists the account** (#288). `uploadFile` is the upload plus its
   RECEIPT (id, `size`, `modifiedTime`, `version` as `revision`, `parentId`, `name`), and
   every caller records its own write in the cache from that receipt (`uploadCacheEntry`);
@@ -207,6 +213,14 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   once the cache is loaded; the backup run's single post-run listing stays. Unverified
   without a real account: whether `drive.file` scope shows another device's writes and
   folder moves in the feed — the full-fetch fallback covers any feed failure.
+
+**Provider status is published, never polled.** The navbar's reconnect banner, the cloud
+screen and every read-only gate read `providerManager.status`, which moves only when
+something calls `providerManager.updateStatus()`. A provider that changes its own
+`needsAttention`/`isReadOnly`/session state must publish it (WebDAV's
+`notifyStatusChanged`, OneDrive's `setNeedsAttention`, MEGA's `markSessionExpired`); the
+interop rig's `providerStatus()` reads the store as published, so a flag kept to itself
+fails the rig as the user would miss it.
 
 **mokuro-bunko specifics** (the WebDAV provider against a bunko server):
 
@@ -1957,6 +1971,67 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   throw "ambiguous fixtures" naming them — hand it only the fixtures the test means.
 - Fixtures report `/login/api/me`'s `version` as the sentinel `"0.0.0"`, below 0.8.0: a gate derived
   from a recorded identity (history) is OFF there. A test that needs it on sets it itself.
+
+### Interop rig driver (`src/lib/interop/rig-driver.ts`)
+
+- mokuro-bunko's rig (`cargo xtask interop rig`, `interop/e2e/rig/`) builds this reader with
+  `vite build --mode interop` and drives it through `globalThis.__mokuroInterop` (API v1: connect,
+  sync, library, progress, rename/delete, edit/Publish/layer selection, provider/control/history
+  status). `+layout.svelte` installs it only under `CLOUD_TEST_HOOKS`, and
+  `scripts/check-no-test-hooks.mjs` bans its names from the production bundle.
+- Each method calls the stores and functions the UI calls for that action (the cloud screen's
+  connect, `syncProgress`, the volume editor's rename, the card's delete, the paged page turn —
+  `reader/paged-progress.ts`, shared with `Reader.svelte` —, the editor persist path, the layer
+  picker's Publish). Add product logic to the app and call it from here, never the reverse.
+- `capabilities` names only what the branch really ships; a rig spec needing a missing one fails
+  unless bunko's `interop/pending-reader-caps.txt` lists it. Add a name with the cluster that ships it.
+- Before any page script the rig sets `globalThis.__mokuroInteropConfig` (v1: `bases`, `tokens`
+  for google and onedrive, `gapiShim`); `cloud-test-hooks.ts` reads it once at init. An injected
+  Google token replaces Google Identity Services in `token-manager.ts`, an injected OneDrive token
+  MSAL (no client id needed).
+- The injected Google client cannot mint: a silent re-auth for the token already held gets the
+  same string back ONCE (a one-off 401 refreshes), and a second rejection before a sync worked
+  with it is `access_denied` — token cleared, banner up — until the rig sets another token
+  (`__mokuroCloudTestHooks.setCloudTestToken('google', …)`). So a revoked-token spec just revokes
+  in cloudsim; a refresh spec that EXPIRES the token sets a newly minted one first, as GIS would
+  hand out.
+- The driver refuses what the UI refuses: `renameSeries` renames the catalog card's series uuid
+  only (its first row's) and throws `Nothing to rename`; `setSpineOffset` skips a value the shelf
+  already shows; `editFirstBlock` on `original` throws (`persistLayerPageEdit`).
+- `open(volumeId)` downloads a volume that is not on the device first, through the card's
+  Download (`downloadQueue.queueVolume`, waited out), and answers `{ id }` — the uuid the
+  download installed it under. Within v1 the rig's dav and api suites also call
+  `showSeries(series)` (the catalog card's click: the series page, so its volume cards mark
+  themselves shown for the OCR queue poller) and `pendingOcr(volumeId)` (what the card shows of
+  the server's queue, `describePendingOcr`).
+- The shared suite (the reader and a cloud Bunko on one folder) also calls
+  `importVolume({ path, base64 })` — the upload modal's `importFiles` of `<Series>/<Volume>.cbz`
+  as a folder pick names it, an image-only archive's review answered keeping its names
+  (`defaultNaming` in `folder` mode) — and `backupVolume(volumeId)`: the card's Backup, awaited
+  to the end of its run (`backupQueueSettled`, `util/backup-queue.ts`: the upload, then the run's
+  listing and its `series.json`/`catalog.json` writes), answering `{ cloudPath }` or the
+  failure THIS run recorded (`uploadFailures` keeps a volume's failure until an upload of it
+  succeeds, so one whose `at` did not move is an earlier run's).
+- `settleSeriesWrites()` (the spine offset scenario) runs every queued `series.json` write now
+  and waits out those in flight (`settleSeriesFileWrites`, `metadata/series-file-sync.ts`), so a
+  spec counts the writes a sync caused without waiting out the 2 s debounce.
+- An interop build reaches no host off the machine but the ones the config names: the rig
+  refuses every other request and FAILS the spec that made it (only `apis.google.com/js/api.js`
+  and `accounts.google.com/gsi/client`, which `app.html` loads, are answered, empty). So
+  `src/lib/interop/hermetic.ts` (`INTEROP_BUILD`, MODE interop only — Vitest keeps it off) skips
+  the Noto Sans JP web font, and `src/hooks.server.ts` serves the shell without `app.html`'s
+  other absolute addresses (the font host's preconnects, the jidoujisho icon). A new third-party
+  fetch needs the same treatment, or the rig fails.
+- Local rig runs pass `--reader-dir <this worktree>`; `interop/reader.ref` must name a pushed commit.
+- CI (`.github/workflows/interop.yml`, job `rig`): PRs into `main`, `develop` and
+  `feat/cloud-bunko`, nightly for `develop` and `feat/cloud-bunko`, and on demand, only where
+  `rig-driver.ts` exists (else shown skipped). Bunko is the nightly pre-release `BUNKO_REF` maps
+  to (`0.8/remote-storage` → `nightly-0.8`, `main` → `nightly`, checked out at its `bunko_sha`),
+  built from source for any other branch. It runs Bunko's six legs as six jobs per target
+  (`local` = dav,api; each of google/microsoft/mega/rclone = bridge,direct,shared; `cloud` on
+  all; 60 min each — all 18 pairs in one job took 49 min locally), each one
+  `cargo xtask interop rig <suites> --provider <p>` with `--reader-dir` on the PR's checkout,
+  and uploads the results as `rig-<target>-<leg>` on every run.
 
 ### E2E (Playwright)
 

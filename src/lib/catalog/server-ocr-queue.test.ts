@@ -17,13 +17,22 @@ vi.mock('$lib/catalog/cloud-ocr-upgrade', () => ({ upgradeOcrFromSidecarBlob }))
 const importFetchedLayers = vi.hoisted(() => vi.fn());
 vi.mock('$lib/metadata/layer-sync', () => ({ importFetchedLayers }));
 const getActiveProvider = vi.hoisted(() => vi.fn(() => null as unknown));
-vi.mock('$lib/util/sync/provider-manager', () => ({
-  providerManager: { getActiveProvider: () => getActiveProvider() }
-}));
+vi.mock('$lib/util/sync/provider-manager', async () => {
+  const { writable } = await import('svelte/store');
+  return {
+    providerManager: {
+      getActiveProvider: () => getActiveProvider(),
+      // As a login / logout after start moves it.
+      status: writable({ hasAnyAuthenticated: false, currentProviderType: null as string | null })
+    }
+  };
+});
 
 import { db } from '$lib/catalog/db';
+import { providerManager } from '$lib/util/sync/provider-manager';
 import { clearAllLayers } from '$lib/catalog/layer-store';
 import { queueFixture } from './__fixtures__/mokuro-queue';
+import type { Writable } from 'svelte/store';
 import { markVolumeShown, serverOcrQueueStatus, volumeQueueKey } from './server-ocr-pending';
 import {
   LEGACY_RECHECK_KEY,
@@ -42,6 +51,10 @@ import {
   watchedEntries
 } from './server-ocr-queue';
 
+const statusFeed = providerManager.status as unknown as Writable<{
+  hasAnyAuthenticated: boolean;
+  currentProviderType: string | null;
+}>;
 const QUEUE = 'https://bunko.example/mokuro-reader/.mokuro-queue.json';
 const NOW = Date.parse('2026-09-28T15:00:00Z');
 const KEY1 = volumeQueueKey('Dr Stone', 'Dr Stone 01');
@@ -700,6 +713,200 @@ describe('startServerOcrQueue (app start)', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     off2();
+  });
+});
+
+describe('a WebDAV login after app start', () => {
+  const CONNECTED = 'http://127.0.0.1:8090/mokuro-reader/.mokuro-queue.json';
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const bunkoServer = {
+    type: 'webdav',
+    getWorkerUploadCredentials: async () => ({
+      webdavUrl: 'http://127.0.0.1:8090',
+      webdavUsername: 'reader',
+      webdavPassword: 'pw',
+      webdavPutVerified: true
+    })
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW });
+    resetServerOcrQueueForTest();
+    localStorage.clear();
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+    getActiveProvider.mockReturnValue(null);
+    fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ ...queueFixture(NOW), volumes: [], next_check_after: null }),
+          { status: 200, headers: { ETag: '"e"' } }
+        )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    resetServerOcrQueueForTest();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    getActiveProvider.mockReturnValue(null);
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+  });
+
+  it('polls the bunko server it connected to, at once', async () => {
+    await startServerOcrQueue();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).not.toHaveBeenCalled(); // nothing connected at start
+
+    getActiveProvider.mockReturnValue(bunkoServer);
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([CONNECTED]));
+  });
+
+  it('does not poll again a server it already polled at start', async () => {
+    getActiveProvider.mockReturnValue(bunkoServer);
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await startServerOcrQueue();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(1_000); // the login's own look would land by now
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll a WebDAV server that is not bunko', async () => {
+    await startServerOcrQueue();
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getWorkerUploadCredentials: async () => ({
+        webdavUrl: 'https://nextcloud.example/dav',
+        webdavPassword: 'pw',
+        webdavPutVerified: false
+      })
+    });
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// A switch from one bunko server to another keeps the type `webdav`: the old
+// server's poller must not stay behind, sending unauthenticated GETs (its
+// Authorization never crosses origins) and nudged by every card and tab show.
+describe('switching to another WebDAV server', () => {
+  const A = 'http://127.0.0.1:8090';
+  const B = 'http://127.0.0.2:8091';
+  const QUEUE_A = `${A}/mokuro-reader/.mokuro-queue.json`;
+  const QUEUE_B = `${B}/mokuro-reader/.mokuro-queue.json`;
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let server: string;
+  const provider = {
+    type: 'webdav',
+    getWorkerUploadCredentials: async () => ({
+      webdavUrl: server,
+      webdavUsername: 'reader',
+      webdavPassword: 'pw',
+      webdavPutVerified: true
+    })
+  };
+  let offShown: (() => void) | null = null;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW });
+    resetServerOcrQueueForTest();
+    localStorage.clear();
+    server = A;
+    getActiveProvider.mockReturnValue(null);
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+    fetchMock = vi.fn(async (url: string) =>
+      url === QUEUE_A
+        ? new Response(JSON.stringify(queueFixture(NOW)), { status: 200 })
+        : new Response(
+            JSON.stringify({ ...queueFixture(NOW), volumes: [], next_check_after: null }),
+            { status: 200 }
+          )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    offShown?.();
+    offShown = null;
+    resetServerOcrQueueForTest();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    getActiveProvider.mockReturnValue(null);
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+  });
+
+  const callsTo = (url: string) => fetchMock.mock.calls.filter((c) => c[0] === url).length;
+
+  /** Logs in to server A after start, showing KEY1, which A's queue lists. */
+  async function connectToA() {
+    offShown = markVolumeShown(KEY1);
+    await startServerOcrQueue();
+    getActiveProvider.mockReturnValue(provider);
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(get(serverOcrQueueStatus)[KEY1]).toBeDefined());
+    expect(callsTo(QUEUE_A)).toBe(1);
+  }
+
+  async function connectThenSwitch() {
+    await connectToA();
+    server = B;
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(callsTo(QUEUE_B)).toBe(1));
+  }
+
+  it('polls the new server and withdraws the old one', async () => {
+    await connectThenSwitch();
+    expect(get(serverOcrQueueStatus)[KEY1]).toBeUndefined();
+    // Its timer, a card nudge and a tab show reach the old server no more.
+    await vi.advanceTimersByTimeAsync(QUEUE_BACKOFF_MS.at(-1)! * 2);
+    const off = markVolumeShown(KEY2);
+    await vi.advanceTimersByTimeAsync(1_000);
+    off();
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(callsTo(QUEUE_A)).toBe(1);
+  });
+
+  it('keeps a poller with watched volumes, but sends nothing to another origin', async () => {
+    await connectToA();
+    watchServerOcr(
+      {
+        volumeUuid: 'v1',
+        series: 'Dr Stone',
+        volume: 'Dr Stone 01',
+        queueUrl: QUEUE_A,
+        manifestUrl: `${A}/m`,
+        auth: 'webdav',
+        source: 'webdav'
+      },
+      { start: false }
+    );
+    server = B;
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(callsTo(QUEUE_B)).toBe(1));
+    await vi.advanceTimersByTimeAsync(QUEUE_BACKOFF_MS.at(-1)! * 2);
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(callsTo(QUEUE_A)).toBe(1);
+    expect(watchedEntries().map((w) => w.queue_url)).toEqual([QUEUE_A]);
+
+    // Back on that account: the kept poller takes a look at once, as it.
+    server = A;
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(callsTo(QUEUE_A)).toBe(2));
+    const back = fetchMock.mock.calls.filter((c) => c[0] === QUEUE_A)[1];
+    expect(back[1].headers.Authorization).toMatch(/^Basic /);
+  });
+
+  it('a logout withdraws the server it was connected to', async () => {
+    await connectToA();
+    getActiveProvider.mockReturnValue(null);
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+    await vi.waitFor(() => expect(get(serverOcrQueueStatus)[KEY1]).toBeUndefined());
+    await vi.advanceTimersByTimeAsync(QUEUE_BACKOFF_MS.at(-1)! * 2);
+    expect(callsTo(QUEUE_A)).toBe(1);
   });
 });
 

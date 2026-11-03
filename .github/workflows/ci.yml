@@ -4,8 +4,7 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    # feat/cloud-bunko: PRs into it run the Bunko contract job too.
-    branches: [main, develop, feat/cloud-bunko]
+    branches: [main, develop]
 
 jobs:
   lint:
@@ -63,8 +62,7 @@ jobs:
 
       # Bunko's contract fixtures (interop/contract/), at the ref the repository
       # variable BUNKO_REF names. The contract lives on 0.8/remote-storage until
-      # 0.8 is merged into Bunko's main: feat/cloud-bunko sets BUNKO_REF to it
-      # (or keeps this branch default) until then, after which main is right.
+      # 0.8 is merged into Bunko's main; then BUNKO_REF (and this default) is main.
       - name: Check out the Bunko contract
         uses: actions/checkout@v4
         with:

@@ -48,7 +48,9 @@ class DriveApiError extends Error {
     public readonly status?: number,
     public readonly isNetworkError = false,
     public readonly reason?: string,
-    public readonly kind?: DriveFailureKind
+    public readonly kind?: DriveFailureKind,
+    /** Refused for a token a re-auth has since replaced (see `retryStaleTokenRefusal`). */
+    public readonly staleToken = false
   ) {
     super(message);
     this.name = 'DriveApiError';
@@ -58,15 +60,69 @@ class DriveApiError extends Error {
 /** Requests that CREATE a file or folder retry rate limits only: a 5xx may have created it. */
 const rateLimitOnly = (kind: DriveFailureKind) => kind === 'rate-limit';
 
+/** One gapi request, retried on its own (see `handleApiCall`). */
+type DriveRequest = <R>(
+  call: () => Promise<R>,
+  retryOn?: DriveRetryOptions['retryOn']
+) => Promise<R>;
+
+/** The token the manager holds now. */
+function getCurrentToken(): string {
+  let token = '';
+  tokenManager.token.subscribe((value) => {
+    token = value;
+  })();
+  return token;
+}
+
+/**
+ * Run `run` once more when it was refused for a token a re-auth has since
+ * replaced: the token held now has not been tried, and a 401 created nothing,
+ * so even a create is safe to send again. Once only — a second refusal is
+ * the held token's own, and takes the auth path (or, if yet another re-auth
+ * replaced it meanwhile, is thrown).
+ */
+async function retryStaleTokenRefusal<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!(error instanceof DriveApiError && error.staleToken)) throw error;
+    console.log('Retrying with the token a re-auth has since put in place');
+    return run();
+  }
+}
+
 /**
  * Handle authentication errors (401/403) with auto re-auth support
  * Extracted to be reusable across api-client and provider
  *
  * @param status HTTP status code
  * @param retryOnAuth Whether to allow retry (prevents infinite loops)
+ * @param sentWith The token the refused request carried, when known
  * @throws DriveApiError with appropriate message
  */
-async function handleAuthError(status: number, retryOnAuth = true): Promise<never> {
+async function handleAuthError(
+  status: number,
+  retryOnAuth = true,
+  sentWith?: string
+): Promise<never> {
+  // A request sent before a re-auth replaced its token comes back refused
+  // after the new one is in: that refusal is the old token's. Re-authing again
+  // would be a second sign-in for nothing (a second popup), and clearing would
+  // drop the token that works; the caller sends it again with the held token.
+  const held = getCurrentToken();
+  if (sentWith !== undefined && held !== '' && sentWith !== held) {
+    console.log('API call refused a token a re-auth has since replaced');
+    throw new DriveApiError(
+      'Authentication expired. Please try again.',
+      status,
+      false,
+      undefined,
+      'auth',
+      true
+    );
+  }
+
   console.log('API call failed with auth error, token may be expired');
 
   // Check if auto re-auth is enabled
@@ -176,16 +232,36 @@ class DriveApiClient {
   }
 
   /**
-   * One gapi request, its rate limits and 5xx retried on their own
+   * Run `apiCall`, whose gapi requests go through the `request` it is handed:
+   * each request's rate limits and 5xx are retried on their own
    * (`withDriveRetry`), so a paged listing resumes at its page.
    */
-  private request<T>(call: () => Promise<T>, retryOn?: DriveRetryOptions['retryOn']): Promise<T> {
-    return withDriveRetry(call, { retryOn });
+  private handleApiCall<T>(
+    apiCall: (request: DriveRequest) => Promise<T>,
+    retryOnAuth = true
+  ): Promise<T> {
+    // A refusal of a replaced token runs the whole call again: a paged
+    // listing restarts at its first page, and every other call is one request.
+    return retryStaleTokenRefusal(() => this.runApiCall(apiCall, retryOnAuth));
   }
 
-  private async handleApiCall<T>(apiCall: () => Promise<T>, retryOnAuth = true): Promise<T> {
+  private async runApiCall<T>(
+    apiCall: (request: DriveRequest) => Promise<T>,
+    retryOnAuth: boolean
+  ): Promise<T> {
+    // The token the last attempt went out with (gapi's, which a grant sets
+    // together with the manager's).
+    let sentWith: string | undefined;
+    const request: DriveRequest = (call, retryOn) =>
+      withDriveRetry(
+        () => {
+          sentWith = getCurrentToken();
+          return call();
+        },
+        { retryOn }
+      );
     try {
-      return await apiCall();
+      return await apiCall(request);
     } catch (error: any) {
       const failure = driveFailureOf(error);
       console.error('Drive API error caught:', error);
@@ -215,7 +291,7 @@ class DriveApiClient {
       // limit that outlasted its retries, a Drive limit and a refusal Drive
       // meant all answer 403 too, and re-auth fixes none of them.
       if (!isNetworkError && kind === 'auth') {
-        await handleAuthError(error.status, retryOnAuth);
+        await handleAuthError(error.status, retryOnAuth, sentWith);
       }
 
       // gapi rejects with no `.message`, so its error's text alone would drop
@@ -230,14 +306,14 @@ class DriveApiClient {
   }
 
   async listFiles(query: string, fields = 'files(id, name, mimeType)'): Promise<DriveFile[]> {
-    return this.handleApiCall(async () => {
+    return this.handleApiCall(async (request) => {
       const allFiles: DriveFile[] = [];
       let pageToken: string | undefined = undefined;
 
       do {
         // Each page is retried on its own: a 429 on page N must not re-fetch
         // (and re-count) the pages already in hand.
-        const { result } = await this.request(() =>
+        const { result } = await request(() =>
           gapi.client.drive.files.list({
             q: query,
             fields: `nextPageToken, ${fields}`,
@@ -262,8 +338,8 @@ class DriveApiClient {
    * change made after this call is listed by {@link listChanges} from it.
    */
   async getStartPageToken(): Promise<string> {
-    return this.handleFeedFailure(() =>
-      this.request(async () => {
+    return this.handleFeedFailure((request) =>
+      request(async () => {
         const { result } = await gapi.client.drive.changes.getStartPageToken({
           fields: 'startPageToken'
         });
@@ -287,14 +363,35 @@ class DriveApiClient {
    * 400 on `changes.list` (`pageToken` given): Drive refused that POSITION,
    * and a full listing takes a fresh one.
    */
-  private async handleFeedFailure<T>(operation: () => Promise<T>, pageToken?: string): Promise<T> {
+  private handleFeedFailure<T>(
+    operation: (request: DriveRequest) => Promise<T>,
+    pageToken?: string
+  ): Promise<T> {
+    // A 401 for a token a re-auth has since replaced runs the read again with
+    // the held one, as every other call does (`retryStaleTokenRefusal`).
+    return retryStaleTokenRefusal(() => this.runFeedCall(operation, pageToken));
+  }
+
+  private async runFeedCall<T>(
+    operation: (request: DriveRequest) => Promise<T>,
+    pageToken?: string
+  ): Promise<T> {
+    let sentWith: string | undefined;
+    const request: DriveRequest = (call, retryOn) =>
+      withDriveRetry(
+        () => {
+          sentWith = getCurrentToken();
+          return call();
+        },
+        { retryOn }
+      );
     try {
-      return await operation();
+      return await operation(request);
     } catch (error: any) {
       // A DriveHttpError or gapi's own rejection (`{ status, result }`) alike.
       const info = driveFailureOf(error);
       const status = info?.status || undefined;
-      if (status === 401) await handleAuthError(status);
+      if (status === 401) await handleAuthError(status, true, sentWith);
       const kind = status ? classifyDriveFailure(status, info?.reason) : undefined;
       const detail: string | undefined = error?.message || error?.result?.error?.message;
       const failure = new DriveApiError(
@@ -326,12 +423,12 @@ class DriveApiClient {
     fields: string,
     maxPages = Infinity
   ): Promise<{ changes: DriveChange[]; newStartPageToken: string } | null> {
-    return this.handleFeedFailure(async () => {
+    return this.handleFeedFailure(async (request) => {
       const changes: DriveChange[] = [];
       let token = pageToken;
       for (let page = 1; ; page++) {
         if (page > maxPages) return null;
-        const { result } = await this.request(() =>
+        const { result } = await request(() =>
           gapi.client.drive.changes.list({
             pageToken: token,
             pageSize: 1000,
@@ -356,8 +453,8 @@ class DriveApiClient {
    * Ids never need escaping.
    */
   async folderHasChildren(folderId: string): Promise<boolean> {
-    return this.handleApiCall(async () => {
-      const { result } = await this.request(() =>
+    return this.handleApiCall(async (request) => {
+      const { result } = await request(() =>
         gapi.client.drive.files.list({
           q: `'${folderId}' in parents and trashed=false`,
           fields: 'files(id)',
@@ -369,7 +466,7 @@ class DriveApiClient {
   }
 
   async createFolder(name: string, parentId?: string): Promise<string> {
-    return this.handleApiCall(async () => {
+    return this.handleApiCall(async (request) => {
       const resource: any = {
         mimeType: GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER,
         name
@@ -379,7 +476,7 @@ class DriveApiClient {
         resource.parents = [parentId];
       }
 
-      const { result } = await this.request(
+      const { result } = await request(
         () =>
           gapi.client.drive.files.create({
             resource,
@@ -401,9 +498,7 @@ class DriveApiClient {
     fileId: string,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<Blob> {
-    // Get current access token
-    const token = this.getCurrentToken();
-    if (!token) {
+    if (!getCurrentToken()) {
       throw new DriveApiError('No access token available', 401);
     }
 
@@ -420,8 +515,11 @@ class DriveApiClient {
     }
 
     // Download file with XMLHttpRequest for progress tracking; a GET is
-    // idempotent, so rate limits and 5xx are simply asked again.
-    return withDriveRetry(() => this.downloadOnce(fileId, token, totalSize, onProgress));
+    // idempotent, so rate limits and 5xx are simply asked again. Each attempt
+    // reads the token afresh: a re-auth can land during a backoff.
+    return retryStaleTokenRefusal(() =>
+      withDriveRetry(() => this.downloadOnce(fileId, getCurrentToken(), totalSize, onProgress))
+    );
   }
 
   private downloadOnce(
@@ -455,7 +553,7 @@ class DriveApiClient {
         if (error.kind === 'auth') {
           // Handle authentication errors using shared helper
           try {
-            await handleAuthError(xhr.status);
+            await handleAuthError(xhr.status, true, token);
           } catch (authError) {
             reject(authError);
           }
@@ -487,80 +585,84 @@ class DriveApiClient {
     form.append('file', blob);
 
     const url = `${driveUploadBase()}/drive/v3/files${fileId ? `/${fileId}` : ''}?uploadType=multipart`;
-    const token = tokenManager.isAuthenticated() ? this.getCurrentToken() : null;
-
-    if (!token) {
+    if (!tokenManager.isAuthenticated() || !getCurrentToken()) {
       throw new DriveApiError('No valid token available');
     }
 
-    return withDriveRetry(
-      () =>
-        new Promise<{ id: string }>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open(fileId ? 'PATCH' : 'POST', url);
-          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-          xhr.responseType = 'json';
+    const send = () =>
+      withDriveRetry(
+        () =>
+          new Promise<{ id: string }>((resolve, reject) => {
+            // Read per attempt: a re-auth can land during a backoff, and the
+            // next attempt must go out with the token held then.
+            const token = getCurrentToken();
+            const xhr = new XMLHttpRequest();
+            xhr.open(fileId ? 'PATCH' : 'POST', url);
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            xhr.responseType = 'json';
 
-          if (onProgress) {
-            xhr.upload.onprogress = (event) => {
-              if (event.lengthComputable) {
-                onProgress(event.loaded, event.total);
-              }
-            };
-          }
+            if (onProgress) {
+              xhr.upload.onprogress = (event) => {
+                if (event.lengthComputable) {
+                  onProgress(event.loaded, event.total);
+                }
+              };
+            }
 
-          xhr.onload = async () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              const response = xhr.response;
-              if (response && typeof response === 'object' && 'id' in response) {
-                resolve(response as { id: string });
+            xhr.onload = async () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                const response = xhr.response;
+                if (response && typeof response === 'object' && 'id' in response) {
+                  resolve(response as { id: string });
+                  return;
+                }
+
+                try {
+                  const parsed = JSON.parse(xhr.responseText || '{}') as { id?: string };
+                  if (parsed.id) {
+                    resolve({ id: parsed.id });
+                  } else {
+                    reject(
+                      new DriveApiError(
+                        'Upload succeeded but response is missing file id',
+                        xhr.status
+                      )
+                    );
+                  }
+                } catch {
+                  reject(new DriveApiError('Upload response parsing failed', xhr.status));
+                }
                 return;
               }
-
-              try {
-                const parsed = JSON.parse(xhr.responseText || '{}') as { id?: string };
-                if (parsed.id) {
-                  resolve({ id: parsed.id });
-                } else {
-                  reject(
-                    new DriveApiError(
-                      'Upload succeeded but response is missing file id',
-                      xhr.status
-                    )
-                  );
+              const error = await driveHttpErrorFromXhr(xhr, 'Upload failed');
+              if (error.kind === 'auth') {
+                try {
+                  await handleAuthError(xhr.status, true, token);
+                } catch (authError) {
+                  reject(authError);
                 }
-              } catch {
-                reject(new DriveApiError('Upload response parsing failed', xhr.status));
+              } else {
+                reject(driveRefusal(error));
               }
-              return;
-            }
-            const error = await driveHttpErrorFromXhr(xhr, 'Upload failed');
-            if (error.kind === 'auth') {
-              try {
-                await handleAuthError(xhr.status);
-              } catch (authError) {
-                reject(authError);
-              }
-            } else {
-              reject(driveRefusal(error));
-            }
-          };
+            };
 
-          xhr.onerror = () => reject(new DriveApiError('Network error during upload', 0, true));
-          xhr.ontimeout = () => reject(new DriveApiError('Upload timed out', 0, true));
-          xhr.onabort = () => reject(new DriveApiError('Upload aborted', 0, true));
+            xhr.onerror = () => reject(new DriveApiError('Network error during upload', 0, true));
+            xhr.ontimeout = () => reject(new DriveApiError('Upload timed out', 0, true));
+            xhr.onabort = () => reject(new DriveApiError('Upload aborted', 0, true));
 
-          xhr.send(form);
-        }),
-      // Rate limits send the same form again. An update (PATCH) is idempotent;
-      // a create may already exist after a 5xx.
-      { retryOn: fileId ? undefined : rateLimitOnly }
-    );
+            xhr.send(form);
+          }),
+        // Rate limits send the same form again. An update (PATCH) is idempotent;
+        // a create may already exist after a 5xx.
+        { retryOn: fileId ? undefined : rateLimitOnly }
+      );
+    // A 401 for a replaced token created nothing, so even a create goes again.
+    return retryStaleTokenRefusal(send);
   }
 
   async deleteFile(fileId: string): Promise<void> {
-    return this.handleApiCall(async () => {
-      await this.request(() =>
+    return this.handleApiCall(async (request) => {
+      await request(() =>
         gapi.client.drive.files.delete({
           fileId
         })
@@ -573,8 +675,8 @@ class DriveApiClient {
    * Uses addParents/removeParents to move without copying
    */
   async moveFile(fileId: string, newParentId: string, oldParentId: string): Promise<void> {
-    return this.handleApiCall(async () => {
-      await this.request(() =>
+    return this.handleApiCall(async (request) => {
+      await request(() =>
         gapi.client.drive.files.update({
           fileId,
           addParents: newParentId,
@@ -598,8 +700,8 @@ class DriveApiClient {
       fields?: string;
     }
   ): Promise<DriveFile> {
-    return this.handleApiCall(async () => {
-      const { result } = await this.request(() =>
+    return this.handleApiCall(async (request) => {
+      const { result } = await request(() =>
         gapi.client.drive.files.update({
           fileId,
           resource,
@@ -618,8 +720,8 @@ class DriveApiClient {
    * @param fields Comma-separated list of fields to retrieve (e.g., 'description', 'name,description')
    */
   async getFileMetadata(fileId: string, fields: string): Promise<any> {
-    return this.handleApiCall(async () => {
-      const { result } = await this.request(() =>
+    return this.handleApiCall(async (request) => {
+      const { result } = await request(() =>
         gapi.client.drive.files.get({
           fileId,
           fields
@@ -634,8 +736,8 @@ class DriveApiClient {
    * Used to store verified series title for sideloaded files
    */
   async updateFileDescription(fileId: string, description: string): Promise<void> {
-    return this.handleApiCall(async () => {
-      await this.request(() =>
+    return this.handleApiCall(async (request) => {
+      await request(() =>
         gapi.client.drive.files.update({
           fileId,
           resource: { description },
@@ -643,14 +745,6 @@ class DriveApiClient {
         })
       );
     });
-  }
-
-  private getCurrentToken(): string {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
-    return token;
   }
 }
 

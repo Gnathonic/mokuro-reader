@@ -28,8 +28,13 @@ export type CloudBases = {
   megaGateway?: string;
 };
 
+/** A Google OAuth token as Google Identity Services hands it out. */
+export type GoogleTestToken = { access_token: string; expires_in: number };
+
+type TestTokens = { google: GoogleTestToken | null; onedrive: string | null };
+
 let bases: CloudBases | null = null;
-const tokens: { onedrive: string | null } = { onedrive: null };
+const tokens: TestTokens = { google: null, onedrive: null };
 
 function requireHooks(what: string): void {
   if (!CLOUD_TEST_HOOKS) {
@@ -48,14 +53,20 @@ export function setCloudTestBases(next: CloudBases | null): void {
   bases = next ? { ...next } : null;
 }
 
-/** Hand the OneDrive provider a token instead of MSAL's (`null` takes it back). */
-export function setCloudTestToken(provider: 'onedrive', token: string | null): void {
+/**
+ * Hand a provider a token instead of its sign-in library's: Google Identity
+ * Services for `google`, MSAL for `onedrive` (`null` takes it back).
+ */
+export function setCloudTestToken<P extends keyof TestTokens>(
+  provider: P,
+  token: TestTokens[P]
+): void {
   requireHooks('setCloudTestToken');
   tokens[provider] = token;
 }
 
 /** The injected token, or null (always, when hooks are off). */
-export function cloudTestToken(provider: 'onedrive'): string | null {
+export function cloudTestToken<P extends keyof TestTokens>(provider: P): TestTokens[P] | null {
   return CLOUD_TEST_HOOKS ? tokens[provider] : null;
 }
 
@@ -85,6 +96,41 @@ export function megaGatewayOption(): { gateway?: string } {
   return gateway ? { gateway } : {};
 }
 
+/**
+ * `globalThis.__mokuroInteropConfig` v1, set by the interop rig (Playwright
+ * `addInitScript`) before any page script runs: the simulator's bases, the
+ * tokens it minted, and whether the page needs the gapi REST shim (the rig
+ * answers apis.google.com with an empty script).
+ */
+interface InteropConfig {
+  v: 1;
+  bases?: CloudBases;
+  tokens?: { google?: GoogleTestToken; onedrive?: string };
+  gapiShim?: boolean;
+}
+
+/** Apply the rig's config, once, at module init. Anything not v1 is not ours to read. */
+function applyInteropConfig(raw: unknown): void {
+  const config = raw as Partial<InteropConfig> | null | undefined;
+  if (!config || typeof config !== 'object' || config.v !== 1) return;
+  if (config.bases) setCloudTestBases(config.bases);
+  const google = config.tokens?.google;
+  if (google && typeof google.access_token === 'string') {
+    setCloudTestToken('google', {
+      access_token: google.access_token,
+      expires_in: Number(google.expires_in) || 3600
+    });
+  }
+  const onedrive = config.tokens?.onedrive;
+  if (typeof onedrive === 'string') setCloudTestToken('onedrive', onedrive);
+  const driveApi = config.bases?.driveApi;
+  if (config.gapiShim && driveApi) {
+    void import('$lib/interop/gapi-rest-shim')
+      .then((m) => m.installGapiRestShim(driveApi))
+      .catch((error) => console.error('[cloud-test-hooks] gapi shim failed to load:', error));
+  }
+}
+
 // A hooked browser build (the interop rig drives it with Playwright) cannot
 // import this module from the page, so the setters are also reachable on
 // `globalThis`. Folded away with everything else in a production build.
@@ -93,4 +139,5 @@ if (CLOUD_TEST_HOOKS) {
     setCloudTestBases,
     setCloudTestToken
   };
+  applyInteropConfig((globalThis as Record<string, unknown>).__mokuroInteropConfig);
 }

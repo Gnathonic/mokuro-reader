@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+/** The token the manager holds now (a re-auth replaces it). */
+const tk = vi.hoisted(() => ({ value: 'TOKEN' }));
 vi.mock('./token-manager', () => ({
   tokenManager: {
     isAuthenticated: vi.fn(() => true),
     reAuthenticate: vi.fn(),
     clearToken: vi.fn(),
     initTokenClient: vi.fn(async () => {}),
-    token: { subscribe: (cb: (v: string) => void) => (cb('TOKEN'), () => {}) }
+    token: { subscribe: (cb: (v: string) => void) => (cb(tk.value), () => {}) }
   }
 }));
 vi.mock('$lib/settings/misc', async () => {
@@ -106,12 +108,16 @@ interface XhrReply {
   statusText?: string;
   response?: unknown;
   headers?: Record<string, string>;
+  /** Runs between the send and the answer (a re-auth landing meanwhile). */
+  meanwhile?: () => void;
 }
 
 /** Answers each send() with the next queued reply. */
 class FakeXhr {
   static replies: XhrReply[] = [];
   static sent = 0;
+  /** The Authorization header of every send, in order. */
+  static auth: string[] = [];
   status = 0;
   statusText = '';
   response: unknown = null;
@@ -123,8 +129,11 @@ class FakeXhr {
   onabort?: () => void;
   onprogress?: () => void;
   private headers: Record<string, string> = {};
+  private authorization = '';
   open() {}
-  setRequestHeader() {}
+  setRequestHeader(name: string, value: string) {
+    if (name.toLowerCase() === 'authorization') this.authorization = value;
+  }
   getResponseHeader(name: string) {
     return this.headers[name.toLowerCase()] ?? null;
   }
@@ -136,6 +145,7 @@ class FakeXhr {
   }
   send() {
     FakeXhr.sent++;
+    FakeXhr.auth.push(this.authorization);
     const reply = FakeXhr.replies.shift()!;
     this.status = reply.status;
     this.statusText = reply.statusText ?? '';
@@ -143,6 +153,7 @@ class FakeXhr {
     this.headers = Object.fromEntries(
       Object.entries(reply.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v])
     );
+    reply.meanwhile?.();
     queueMicrotask(() => this.onload?.());
   }
 }
@@ -159,6 +170,8 @@ describe('driveApiClient failure classification', () => {
     vi.stubGlobal('XMLHttpRequest', FakeXhr);
     FakeXhr.replies = [];
     FakeXhr.sent = 0;
+    FakeXhr.auth = [];
+    tk.value = 'TOKEN';
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
@@ -349,6 +362,110 @@ describe('driveApiClient failure classification', () => {
     await expect(driveApiClient.downloadFile('file-1')).rejects.toThrow(/Re-authentication/);
     expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
   });
+
+  // Requests sent with one token can come back 401 after a re-auth already
+  // replaced it: asking again would be a second sign-in for nothing (a second
+  // popup under Google's sign-in), and the token held now is not the one
+  // refused. A 401 created nothing, so the request is sent once more with the
+  // token held now.
+  it('a call answered 401 for a token a re-auth has since replaced is retried with the held one', async () => {
+    list
+      .mockImplementationOnce(async () => {
+        tk.value = 'NEWER';
+        throw { status: 401, result: {}, headers: {} };
+      })
+      .mockResolvedValueOnce({ result: { files: [{ id: 'f1', name: 'a', mimeType: 'x' }] } });
+
+    await expect(driveApiClient.listFiles("name='x'")).resolves.toEqual([
+      { id: 'f1', name: 'a', mimeType: 'x' }
+    ]);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  it('a stale-token retry refused for the held token takes the auth path, once', async () => {
+    list
+      .mockImplementationOnce(async () => {
+        tk.value = 'NEWER';
+        throw { status: 401, result: {}, headers: {} };
+      })
+      .mockRejectedValueOnce({ status: 401, result: {}, headers: {} });
+
+    await expect(driveApiClient.listFiles("name='x'")).rejects.toThrow(/Re-authentication/);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stale-token refusal is retried only once', async () => {
+    let n = 0;
+    list.mockImplementation(async () => {
+      tk.value = `NEWER-${++n}`;
+      throw { status: 401, result: {}, headers: {} };
+    });
+
+    await expect(driveApiClient.listFiles("name='x'")).rejects.toMatchObject({ status: 401 });
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  it('an XHR download answered 401 for a replaced token is retried with the held one', async () => {
+    const payload = new Blob(['data']);
+    FakeXhr.replies = [
+      { status: 401, response: new Blob(['']), meanwhile: () => (tk.value = 'NEWER') },
+      { status: 200, response: payload }
+    ];
+
+    await expect(driveApiClient.downloadFile('file-1')).resolves.toBe(payload);
+    expect(FakeXhr.auth).toEqual(['Bearer TOKEN', 'Bearer NEWER']);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  it('an XHR upload answered 401 for a replaced token is retried with the held one', async () => {
+    FakeXhr.replies = [
+      { status: 401, response: null, meanwhile: () => (tk.value = 'NEWER') },
+      { status: 200, response: { id: 'new-id' } }
+    ];
+
+    await expect(
+      driveApiClient.uploadFile(new Blob(['x']), { name: 'a.json', mimeType: 'application/json' })
+    ).resolves.toEqual({ id: 'new-id' });
+    expect(FakeXhr.auth).toEqual(['Bearer TOKEN', 'Bearer NEWER']);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  // A re-auth can land while a request waits out a rate limit's backoff: the
+  // next attempt must carry the token held THEN, or it is refused for the old one.
+  it('an XHR upload retried after a re-auth sends the token held now', async () => {
+    FakeXhr.replies = [
+      { status: 429, headers: { 'Retry-After': '0' }, meanwhile: () => (tk.value = 'NEWER') },
+      { status: 200, response: { id: 'new-id' } }
+    ];
+
+    await expect(
+      driveApiClient.uploadFile(new Blob(['x']), { name: 'a.json', mimeType: 'application/json' })
+    ).resolves.toEqual({ id: 'new-id' });
+    expect(FakeXhr.auth).toEqual(['Bearer TOKEN', 'Bearer NEWER']);
+  });
+
+  it('an XHR download retried after a re-auth sends the token held now', async () => {
+    const payload = new Blob(['data']);
+    FakeXhr.replies = [
+      {
+        status: 503,
+        response: new Blob(['']),
+        headers: { 'Retry-After': '0' },
+        meanwhile: () => (tk.value = 'NEWER')
+      },
+      { status: 200, response: payload }
+    ];
+
+    await expect(driveApiClient.downloadFile('file-1')).resolves.toBe(payload);
+    expect(FakeXhr.auth).toEqual(['Bearer TOKEN', 'Bearer NEWER']);
+  });
 });
 
 describe('driveApiClient change feed (changes.getStartPageToken / changes.list)', () => {
@@ -513,6 +630,34 @@ describe('driveApiClient change feed (changes.getStartPageToken / changes.list)'
       expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
     }
   );
+
+  // The stale-token rule holds for the feed as for every other call: a 401 for
+  // a token a re-auth has since replaced is that token's, not the held one's.
+  it('a feed read answered 401 for a replaced token is sent again with the held one', async () => {
+    tk.value = 'TOKEN';
+    getStartPageToken
+      .mockImplementationOnce(async () => {
+        tk.value = 'NEWER';
+        throw { status: 401, result: {}, headers: {} };
+      })
+      .mockResolvedValueOnce({ result: { startPageToken: '125' } });
+    list
+      .mockImplementationOnce(async () => {
+        tk.value = 'NEWEST';
+        throw { status: 401, result: {}, headers: {} };
+      })
+      .mockResolvedValueOnce({ result: { changes: [], newStartPageToken: 'n' } });
+
+    await expect(driveApiClient.getStartPageToken()).resolves.toBe('125');
+    await expect(driveApiClient.listChanges('start', 'changes(fileId)')).resolves.toEqual({
+      changes: [],
+      newStartPageToken: 'n'
+    });
+    expect(getStartPageToken).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
 
   it('a named 403 refusal on the feed is "feed unavailable"', async () => {
     list.mockRejectedValue({

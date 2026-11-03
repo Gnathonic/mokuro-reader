@@ -42,9 +42,11 @@ vi.mock('$lib/metadata/store', () => ({
 
 import {
   CATALOG_FILE_WRITE_DEBOUNCE_MS,
+  catalogFileWritePending,
   flushCatalogFileWrites,
   initCatalogFileSync,
-  scheduleCatalogFileWrite
+  scheduleCatalogFileWrite,
+  settleCatalogFileWrites
 } from './catalog-file-sync';
 
 beforeEach(() => {
@@ -123,6 +125,36 @@ describe('scheduleCatalogFileWrite', () => {
     writeCatalogFile.mockRejectedValueOnce(new Error('403 Forbidden'));
     scheduleCatalogFileWrite();
     await expect(flushCatalogFileWrites()).resolves.toBeUndefined();
+  });
+});
+
+describe('settleCatalogFileWrites (the rig driver)', () => {
+  it('runs a queued write now and waits for it', async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    writeCatalogFile.mockImplementationOnce(
+      () => new Promise((resolve) => (finish = () => resolve('written' as const)))
+    );
+    scheduleCatalogFileWrite();
+    expect(catalogFileWritePending()).toBe(true);
+    let settled = false;
+    const settle = settleCatalogFileWrites().then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writeCatalogFile).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    finish();
+    await settle;
+    expect(catalogFileWritePending()).toBe(false);
+    // Nothing left to fire later.
+    await vi.advanceTimersByTimeAsync(CATALOG_FILE_WRITE_DEBOUNCE_MS + 10);
+    vi.useRealTimers();
+    expect(writeCatalogFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes nothing when nothing is queued', async () => {
+    expect(catalogFileWritePending()).toBe(false);
+    await settleCatalogFileWrites();
+    expect(writeCatalogFile).not.toHaveBeenCalled();
   });
 });
 

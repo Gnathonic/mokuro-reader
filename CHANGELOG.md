@@ -48,6 +48,8 @@
 - WebDAV servers that allow writes no longer connect read-only
 - mokuro-bunko series differing only in case stay merged
 - Backups join a cloud folder differing only in case
+- mokuro-bunko: server OCR status shows right after connecting
+- Google Drive asks you to sign in again only once
 - Renaming a corrected volume keeps the server's newer OCR
 - mokuro-bunko: a cover the server refuses no longer fails the change
 

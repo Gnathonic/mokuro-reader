@@ -1,7 +1,9 @@
 /**
  * The Google Drive provider against cloudsim (`CLOUDSIM_URL`): the real provider,
- * api-client and token manager, with `gapi.client.drive` replaced by a REST shim
- * and every Drive address pointed at the simulator. Skipped without a simulator.
+ * api-client and token manager — signed in through the app's own login, with
+ * the simulator's token injected in place of Google Identity Services — with
+ * `gapi.client.drive` replaced by a REST shim and every Drive address pointed
+ * at the simulator. Skipped without a simulator.
  * The suites share one simulator and reset it: run them with
  * `--no-file-parallelism`.
  */
@@ -16,7 +18,7 @@ import {
   useTestFormData
 } from '../cloudsim';
 import { installGapiRestShim, removeGapiRestShim } from '../gapi-rest-shim';
-import { setCloudTestBases } from '$lib/util/sync/cloud-test-hooks';
+import { setCloudTestBases, setCloudTestToken } from '$lib/util/sync/cloud-test-hooks';
 import { ProviderError, type CloudFileMetadata } from '$lib/util/sync/provider-interface';
 
 vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
@@ -32,11 +34,12 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
   let restoreXhr = () => {};
   let restoreLocal = () => {};
 
+  /** The app's own login, with the simulator's token injected in place of Google's sign-in. */
   async function signIn(): Promise<void> {
     const t = await sim.token('google');
     accessToken = t.access_token;
-    (globalThis as any).gapi.client.setToken({ access_token: t.access_token });
-    tokenManager.setToken(t.access_token, t.expires_in);
+    setCloudTestToken('google', { access_token: t.access_token, expires_in: t.expires_in });
+    await provider.login();
   }
 
   async function listed(): Promise<CloudFileMetadata[]> {
@@ -72,6 +75,7 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
   });
 
   afterAll(async () => {
+    setCloudTestToken('google', null);
     setCloudTestBases(null);
     removeGapiRestShim();
     restoreXhr();
@@ -287,6 +291,37 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
       expect((err as ProviderError).code).toBe('AUTH_EXPIRED');
       expect((err as ProviderError).isAuthError).toBe(true);
       expect(reauth).toHaveBeenCalled();
+    } finally {
+      reauth.mockRestore();
+      await signIn();
+    }
+  });
+
+  it('a revoked token re-auths once, then leaves the banner up instead of looping', async () => {
+    const attention = () => {
+      let v = false;
+      tokenManager.needsAttention.subscribe((x) => (v = x))();
+      return v;
+    };
+    const reauth = vi.spyOn(tokenManager, 'reAuthenticate');
+    try {
+      await sim.revoke(accessToken);
+      await sim.clearLog();
+      // The first 401 re-grants the same token (a one-off would now work)...
+      await expect(provider.readControlFile('catalog.json')).rejects.toBeInstanceOf(ProviderError);
+      expect(attention()).toBe(false);
+      // ...the second is a gone grant: refused, token cleared, banner up.
+      await expect(provider.readControlFile('catalog.json')).rejects.toBeInstanceOf(ProviderError);
+      await vi.waitFor(() => expect(attention()).toBe(true));
+      expect(reauth).toHaveBeenCalledTimes(2);
+      let token = 'unset';
+      tokenManager.token.subscribe((t) => (token = t))();
+      expect(token).toBe('');
+      // Nothing keeps calling the simulator behind the banner.
+      const calls = (await sim.log()).length;
+      tokenManager.reAuthenticate();
+      expect(attention()).toBe(true);
+      expect((await sim.log()).length).toBe(calls);
     } finally {
       reauth.mockRestore();
       await signIn();

@@ -730,6 +730,17 @@ describe('WebDAVProvider read-failure policy', () => {
     expect(provider.getStatus().needsAttention).toBe(true);
   });
 
+  it('a control file refused 401 with a password-backed session asks for a new sign-in', async () => {
+    const provider = await connected(true);
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }));
+
+    await expect(provider.readControlFile('volume-data.json')).rejects.toMatchObject({
+      code: 'AUTH_FAILED',
+      isAuthError: true
+    });
+    expect(provider.getStatus().needsAttention).toBe(true);
+  });
+
   it('a credential-less session keeps a refused download a download failure', async () => {
     const provider = await connected(false);
     mockCore.downloadFile.mockRejectedValue(new Error('WebDAV download failed: 401 Unauthorized'));

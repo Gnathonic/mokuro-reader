@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // After `npm run build`: the production bundle must contain none of the cloud
-// test hooks (src/lib/util/sync/cloud-test-hooks.ts and the interop helpers).
+// test hooks (src/lib/util/sync/cloud-test-hooks.ts, the interop helpers and the
+// rig driver, src/lib/interop/rig-driver.ts).
 // They are guarded by a compile-time constant that is false in a production
 // build, so the bundler drops them; this proves it. Exits 1 listing every file
 // that still names one. A `vite build --mode interop` build (hooks on) fails it.
@@ -17,7 +18,10 @@ const NAMES = [
   'cloudTestToken',
   '__mokuroCloudTestHooks',
   'installGapiRestShim',
-  'CLOUDSIM'
+  'CLOUDSIM',
+  '__mokuroInterop',
+  '__mokuroInteropConfig',
+  'installRigDriver'
 ];
 // SvelteKit's output, and the adapter's (adapter-auto writes one only on a host it knows).
 const DIRS = ['.svelte-kit/output', 'build', '.vercel/output', '.netlify'];

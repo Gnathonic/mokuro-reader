@@ -97,6 +97,26 @@ export async function flushCatalogFileWrites(): Promise<void> {
   await chainWrite();
 }
 
+/**
+ * Run a queued write now (cancelling its timer) and wait out the one in
+ * flight. Unlike `flushCatalogFileWrites`, nothing queued means nothing
+ * written. For the interop rig's driver: what earlier syncs queued has run,
+ * and what it decided to send has been sent.
+ */
+export async function settleCatalogFileWrites(): Promise<void> {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+    void chainWrite();
+  }
+  while (inFlight) await inFlight;
+}
+
+/** A write is queued or running. */
+export function catalogFileWritePending(): boolean {
+  return timer !== null || inFlight !== null;
+}
+
 let teardown: (() => void) | null = null;
 
 /**

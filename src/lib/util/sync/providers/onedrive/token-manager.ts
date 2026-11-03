@@ -53,6 +53,8 @@ class OneDriveTokenManager {
    */
   async initialize(): Promise<void> {
     if (!browser) return;
+    // An injected token needs no MSAL: no client id, no authority to reach.
+    if (CLOUD_TEST_HOOKS ? cloudTestToken('onedrive') !== null : false) return;
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {

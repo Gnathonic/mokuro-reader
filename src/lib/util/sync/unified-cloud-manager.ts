@@ -341,6 +341,36 @@ class UnifiedCloudManager {
   }
 
   /**
+   * Everything the listings started in the background (`refreshSeriesIndexesInBackground`:
+   * the index and catalog refreshes, the spelling adoption and the write-side passes
+   * behind it), retained only so it can be waited out. Each entry settles without
+   * rejecting and leaves the set when it does.
+   */
+  private listingWork = new Set<Promise<unknown>>();
+
+  /** Retain `work` in `listingWork` until it settles. */
+  private retainListingWork(work: Promise<unknown>): void {
+    this.listingWork.add(work);
+    void work.finally(() => this.listingWork.delete(work));
+  }
+
+  /**
+   * Settles once the background work every listing so far started has finished,
+   * including work a listing started meanwhile. For the interop rig's driver: the
+   * `series.json` writes a listing's backfill queues are queued only once the
+   * spelling adoption ahead of it is done, after the listing itself resolved, so a
+   * caller counting writes must wait for this before it settles the writes.
+   */
+  async whenListingWorkSettled(): Promise<void> {
+    while (this.listingWork.size > 0) await Promise.all([...this.listingWork]);
+  }
+
+  /** A listing's background work is still running. */
+  listingWorkPending(): boolean {
+    return this.listingWork.size > 0;
+  }
+
+  /**
    * Store containing cloud volumes from the current provider
    * Returns Map<seriesTitle, CloudVolumeWithProvider[]> for efficient series-based operations
    * Delegates to cacheManager and adds provider field to each file
@@ -501,10 +531,13 @@ class UnifiedCloudManager {
       void refresh.finally(() => {
         if (this.seriesIndexRefresh === refresh) this.seriesIndexRefresh = null;
       });
+      this.retainListingWork(refresh);
       // The root catalog rides the same listing: one download for the whole
       // library, skipped entirely when its size/mtime has not moved.
-      void Promise.resolve(refreshCatalogIndex(listing, provider.type)).catch((error) =>
-        console.warn('Catalog index refresh failed:', error)
+      this.retainListingWork(
+        Promise.resolve(refreshCatalogIndex(listing, provider.type)).catch((error) =>
+          console.warn('Catalog index refresh failed:', error)
+        )
       );
       // The refreshes above READ the metadata files; everything below WRITES,
       // so it waits until a server that merged `one piece/` into `One Piece/`
@@ -515,6 +548,7 @@ class UnifiedCloudManager {
       const adoption = Promise.resolve(adoptCloudSeriesSpellings(files, provider.type)).catch(
         (error) => console.warn('Cloud spelling adoption failed:', error)
       );
+      this.retainListingWork(adoption);
       // This writes the metadata files that were never produced. A library
       // uploaded by an older build (or whose facts were set before it was ever
       // connected) has folders full of archives and no `series.json`, and no
@@ -525,9 +559,11 @@ class UnifiedCloudManager {
       // 2 s out and would each open with a second whole-account fetch of the
       // listing already in hand.
       markListingFresh();
-      void adoption.then(() =>
-        Promise.resolve(reconcileMissingMetadataFiles(files)).catch((error) =>
-          console.warn('Metadata backfill failed:', error)
+      this.retainListingWork(
+        adoption.then(() =>
+          Promise.resolve(reconcileMissingMetadataFiles(files)).catch((error) =>
+            console.warn('Metadata backfill failed:', error)
+          )
         )
       );
       // The per-VOLUME counterpart of the reconcile above: archives this
@@ -535,17 +571,21 @@ class UnifiedCloudManager {
       // installed locally, get them uploaded from local data. Rides the same
       // settled listing for the same reason — the writes it queues must never
       // re-fetch the listing that scheduled them (see `sidecar-backfill.ts`).
-      void adoption.then(() =>
-        Promise.resolve(sweepInstalledVolumesForSidecarBackfill(files)).catch((error) =>
-          console.warn('Volume sidecar backfill failed:', error)
+      this.retainListingWork(
+        adoption.then(() =>
+          Promise.resolve(sweepInstalledVolumesForSidecarBackfill(files)).catch((error) =>
+            console.warn('Volume sidecar backfill failed:', error)
+          )
         )
       );
       // OCR layers (`<Volume>.<id>.mokuro`, the shape bunko's engines write)
       // for volumes this device holds rows for: pull the ones the listing
       // shows as changed, push the ones edited here since their last sync.
-      void adoption.then(() =>
-        Promise.resolve(syncLayersFromListing(listing, provider.type)).catch((error) =>
-          console.warn('Layer sync failed:', error)
+      this.retainListingWork(
+        adoption.then(() =>
+          Promise.resolve(syncLayersFromListing(listing, provider.type)).catch((error) =>
+            console.warn('Layer sync failed:', error)
+          )
         )
       );
     } catch (error) {

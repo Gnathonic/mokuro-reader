@@ -108,16 +108,16 @@ type ReissueOutcome =
  */
 type ReissueVerdict = 'retry' | 'final' | 'transient';
 
+function isUnauthorized(error: unknown): boolean {
+  return (error as { status?: number } | null)?.status === 401;
+}
+
 /** Last-resort version of a body when the server sent neither ETag nor Last-Modified. */
 async function bodyFingerprint(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
   let hash = 0x811c9dc5; // FNV-1a
   for (const byte of bytes) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
   return `len${bytes.length}-${hash.toString(16)}`;
-}
-
-function isUnauthorized(error: unknown): boolean {
-  return (error as { status?: number } | null)?.status === 401;
 }
 
 /** The account a token belongs to: server URL (userinfo stripped) + username. */
@@ -1812,14 +1812,20 @@ export class WebDAVProvider implements SyncProvider {
     };
 
     let { response, sent } = await request();
-    if (response.status === 401 && bearerOf(sent) && (await this.reissueAfterUnauthorized(sent))) {
-      ({ response, sent } = await request()); // once, under the re-issued header
+    let reissue: ReissueVerdict | null = null;
+    if (response.status === 401 && bearerOf(sent)) {
+      reissue = await this.reissueVerdict(sent);
+      if (reissue === 'retry') ({ response, sent } = await request()); // once, under the re-issued header
     }
 
     if (response.status === 304 && conditional) return 'not-modified';
     if (response.status === 404) {
       this.controlReads.delete(name);
       return null;
+    }
+    if (response.status === 401 && reissue !== 'transient') {
+      const refused = this.refusedReadAuth({ status: 401 });
+      if (refused) throw refused;
     }
     if (response.status === 401 || response.status === 403) {
       throw new ProviderError(

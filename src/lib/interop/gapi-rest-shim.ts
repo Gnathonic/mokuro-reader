@@ -1,8 +1,9 @@
 /**
  * A stand-in for `gapi.client` (loaded from apis.google.com in the app) that
  * speaks Drive v3 REST with `fetch` against any base, so the Drive provider can
- * run against cloudsim in tests. Imported only by tests: the real gapi
- * transport is a live-run concern.
+ * run against cloudsim. Imported only by tests and, in an interop build, by
+ * `cloud-test-hooks.ts` when the rig's `__mokuroInteropConfig` asks for it
+ * (`gapiShim`); the real gapi transport is a live-run concern.
  *
  * It answers the way gapi does: `{ result, body, status, statusText, headers }`
  * on success, and rejects with the same shape (the error JSON in `result`) on a
