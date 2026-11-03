@@ -10,6 +10,7 @@
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { Process } from '$lib/util/progress-tracker';
   import { uploadFailures } from '$lib/util/upload-failures';
+  import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
 
   interface Props {
     volume: VolumeMetadata;
@@ -141,18 +142,28 @@
   async function handleDelete(e: MouseEvent) {
     e.stopPropagation();
 
-    const target = cloudFile;
-    if (!target) {
+    if (!cloudFile) {
       showSnackbar('Volume not backed up');
+      return;
+    }
+    // The same gate the volume row's own cloud delete runs: on a server whose
+    // rules refuse this account (an uploader on a series it does not own),
+    // every per-file DELETE would only 403.
+    const permitted = canDeleteSeriesOnServer(volume.series_title);
+    if (!permitted.allowed) {
+      showSnackbar(permitted.reason ?? "This account can't delete this on this server");
       return;
     }
 
     // The same question the series delete and the volume row's own cloud delete
-    // ask: a cloud delete is permanent, so one click never does it.
+    // ask: a cloud delete is permanent, so one click never does it. And the
+    // same delete — archive AND sidecars (`deleteManagedVolume`); deleting the
+    // archive node alone left its .mokuro and cover behind as orphans.
     const providerName = providerDisplayName;
-    promptConfirmation(`Delete ${volume.volume_title} from ${providerName}?`, async () => {
+    const { series_title, volume_title, volume_uuid } = volume;
+    promptConfirmation(`Delete ${volume_title} from ${providerName}?`, async () => {
       try {
-        await unifiedCloudManager.deleteFile(target);
+        await unifiedCloudManager.deleteManagedVolume(series_title, volume_title, volume_uuid);
         showSnackbar(`Deleted from ${providerName}`);
       } catch (error) {
         console.error('Delete failed:', error);

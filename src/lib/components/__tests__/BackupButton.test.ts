@@ -19,6 +19,13 @@ const promptConfirmation = vi.hoisted(() =>
   vi.fn((_message: string, _onConfirm?: () => unknown) => {})
 );
 const deleteFile = vi.hoisted(() => vi.fn(async (_file: unknown) => {}));
+const deleteManagedVolume = vi.hoisted(() =>
+  vi.fn(async (_series: string, _volume: string, _uuid?: string) => {})
+);
+const canDeleteSeriesOnServer = vi.hoisted(() =>
+  vi.fn((_series: string): { allowed: boolean; reason?: string } => ({ allowed: true }))
+);
+vi.mock('$lib/util/sync/metadata-permissions', () => ({ canDeleteSeriesOnServer }));
 vi.mock('$lib/util', () => ({ showSnackbar, promptConfirmation }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
@@ -27,7 +34,9 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
     isFetching: readable(false),
     getDefaultProvider: () => ({ type: 'webdav', name: 'WebDAV' }),
     getActiveProvider: () => ({ type: 'webdav', name: 'WebDAV' }),
-    deleteFile: (file: unknown) => deleteFile(file)
+    deleteFile: (file: unknown) => deleteFile(file),
+    deleteManagedVolume: (series: string, title: string, uuid?: string) =>
+      deleteManagedVolume(series, title, uuid)
   }
 }));
 vi.mock('$lib/util/sync', () => ({
@@ -70,6 +79,9 @@ beforeEach(() => {
   showSnackbar.mockReset();
   promptConfirmation.mockReset();
   deleteFile.mockReset();
+  deleteManagedVolume.mockReset();
+  canDeleteSeriesOnServer.mockReset();
+  canDeleteSeriesOnServer.mockImplementation(() => ({ allowed: true }));
   getCloudFile.mockReset();
   getCloudFile.mockImplementation(() => null);
 });
@@ -163,14 +175,30 @@ describe('BackupButton', () => {
       expect(promptConfirmation).toHaveBeenCalledTimes(1);
       expect(promptConfirmation.mock.calls[0][0]).toBe('Delete Volume 9 from WebDAV?');
       expect(deleteFile).not.toHaveBeenCalled();
+      expect(deleteManagedVolume).not.toHaveBeenCalled();
     });
 
-    it('deletes that file once the user says yes', async () => {
+    it('deletes the volume with its sidecars once the user says yes', async () => {
       const { getByRole } = render(BackupButton, { props: { volume } });
       await fireEvent.click(getByRole('button', { name: /Delete from WebDAV/ }));
       await promptConfirmation.mock.calls[0][1]?.();
-      expect(deleteFile).toHaveBeenCalledWith(backedUp);
+      expect(deleteManagedVolume).toHaveBeenCalledWith('One Piece', 'Volume 9', 'v9');
+      // Never the archive node alone: that orphans the .mokuro and cover.
+      expect(deleteFile).not.toHaveBeenCalled();
       expect(showSnackbar).toHaveBeenCalledWith('Deleted from WebDAV');
+    });
+
+    it('asks nothing and deletes nothing where the server would refuse this account', async () => {
+      canDeleteSeriesOnServer.mockImplementation(() => ({
+        allowed: false,
+        reason: 'Only the uploader can delete this series'
+      }));
+      const { getByRole } = render(BackupButton, { props: { volume } });
+      await fireEvent.click(getByRole('button', { name: /Delete from WebDAV/ }));
+      expect(canDeleteSeriesOnServer).toHaveBeenCalledWith('One Piece');
+      expect(promptConfirmation).not.toHaveBeenCalled();
+      expect(deleteManagedVolume).not.toHaveBeenCalled();
+      expect(showSnackbar).toHaveBeenCalledWith('Only the uploader can delete this series');
     });
   });
 });
