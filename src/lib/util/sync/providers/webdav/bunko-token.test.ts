@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   TOKEN_RENEW_BEFORE_MS,
   requestBunkoToken,
@@ -7,6 +7,7 @@ import {
   tokenLabel,
   tokenNeedsRenewal
 } from './bunko-token';
+import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
 
 const ENDPOINT = 'https://host/login/api/token';
 
@@ -124,6 +125,60 @@ describe('revokeBunkoToken', () => {
         throw new TypeError('offline');
       })
     ).toBe(false);
+  });
+});
+
+/** Bunko's own answer (its contract fixture, rebased onto `now`) as a fetch `Response`. */
+function bunko(name: string, now = Date.now()): Response {
+  const f = loadBunkoFixture(name, { now });
+  return json(f.status!, f.body);
+}
+
+describeContract('the token endpoint on Bunko’s own answers', () => {
+  it('posts a reader token request as JSON and returns the token on 200', async () => {
+    // Every clock read lands in a new second: the fixture the test expects and
+    // the one the fetch answers with must be rebased onto ONE now, or the
+    // rebased expires_at differs whenever the run crosses a second boundary.
+    let clock = Date.parse('2026-11-02T00:00:00.000Z');
+    const tick = vi.spyOn(Date, 'now').mockImplementation(() => (clock += 1000));
+    onTestFinished(() => tick.mockRestore());
+    const now = Date.now();
+    const issued = loadBunkoFixture('login-token-issue', { now });
+    const fetchImpl = vi.fn(async () => bunko('login-token-issue', now));
+    const result = await requestBunkoToken(ENDPOINT, 'alice', 'pässwörd', 'label', fetchImpl);
+    expect(result).toEqual({
+      kind: 'issued',
+      token: issued.body.token,
+      expiresAt: issued.body.expires_at * 1000
+    });
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(ENDPOINT);
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect(JSON.parse(init.body as string)).toEqual({
+      username: 'alice',
+      password: 'pässwörd',
+      kind: 'reader',
+      label: 'label'
+    });
+    // The fields Bunko took from the reader that the fixture was made with.
+    expect(Object.keys(JSON.parse(init.body as string)).sort()).toEqual(
+      Object.keys(issued.request.body as object).sort()
+    );
+  });
+
+  it('a JSON 429 is the login rate limiter', async () => {
+    const result = await requestBunkoToken(ENDPOINT, 'a', 'p', 'l', async () =>
+      bunko('login-token-rate-limited')
+    );
+    expect(result).toEqual({ kind: 'rate-limited' });
+  });
+
+  it('a sign-out answers 2xx', async () => {
+    expect(await revokeBunkoToken(ENDPOINT, 'tok', async () => bunko('login-token-revoke'))).toBe(
+      true
+    );
   });
 });
 

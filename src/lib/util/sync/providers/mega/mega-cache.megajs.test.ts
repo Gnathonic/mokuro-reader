@@ -12,7 +12,7 @@ import { megaProvider } from './mega-provider';
 import { FakeMegaServer } from './mega-fake-server';
 import { folderDeduplicator } from '../../folder-deduplicator';
 import { COLD_START_GRACE_S, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
-import { activeBunkoMarker } from '$lib/catalog/__fixtures__/bunko-marker-active';
+import { servedMarker } from '$lib/catalog/__fixtures__/bunko-marker';
 
 let server: FakeMegaServer;
 
@@ -84,7 +84,7 @@ describe('dedup after a fetch', () => {
 });
 
 describe('dedup under a cloud-direct Bunko', () => {
-  const marker = activeBunkoMarker();
+  const marker = servedMarker(Date.parse('2026-10-29T12:00:00.000Z'));
   /** Bunko's clock at its last heartbeat: a cold read then sees a fresh holder. */
   const heartbeat = Date.parse(marker.heartbeat_at);
   let now = heartbeat;

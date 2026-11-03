@@ -198,12 +198,18 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 
 **mokuro-bunko specifics** (the WebDAV provider against a bunko server):
 
-- **Write access.** A server known to be bunko — `PUT_VERIFIED` recorded for
-  the base URL, or an OPTIONS answering `X-Mokuro-Put: verified` — skips the
-  generic OPTIONS `Allow` verdict in `checkWritePermissions`: bunko decides
-  each request itself and its `Allow` is advisory (older versions list no PUT
-  or MKCOL on collections). A real refusal still demotes through
-  `handleWriteFailure`.
+- **Write access.** `/login/api/me` decides who may write; any answer from it
+  (anonymous and rate limited included) settles it. Only when it gives none
+  does `checkWritePermissions` guess, and a server known to be bunko —
+  `PUT_VERIFIED` recorded for the base URL, or an OPTIONS answering
+  `X-Mokuro-Put: verified` — skips even that: bunko decides each request
+  itself and its `Allow` is advisory. A generic server's guess reads the
+  library folder as a collection: DAV:write/write-content/all/bind/unbind in
+  its privilege set (whole names: write-properties and write-acl upload
+  nothing), else any of `COLLECTION_WRITE_METHODS` (PUT, MKCOL, DELETE, MOVE)
+  in its `Allow` — a collection never lists PUT and lists MKCOL only while
+  unmapped (RFC 4918), and PROPPATCH changes only properties, so it does not
+  count. A real refusal still demotes through `handleWriteFailure`.
 - **Case-variant series merge.** bunko folds `one piece/` into `One Piece/`. On
   a `serverCompilesMetadata` provider every listing runs
   `adoptCloudSeriesSpellings` (`util/sync/cloud-spelling-adoption.ts`): a local
@@ -538,8 +544,12 @@ keys sorted by UTF-16 code units, numbers as `JSON.stringify` spells them, no
 whitespace; a non-finite number means no seal (`canonicalJson`,
 `contentDigest`). Title, volume, uuids, `chars`, `spine_width`, `version`,
 `edited` and key order are outside it. The cross-language vectors live in
-bunko's `interop/contract/seal/*.json`; `runner-output` is hand-copied into
-`catalog/__fixtures__/seal-vector.ts` until the contract suite reads them all.
+bunko's `interop/contract/seal/*.json`, and `src/lib/interop/seal-vectors.test.ts`
+runs every one of them, plus an install → rename round trip (`processVolume`,
+`saveVolume`, `generateVolumeSidecarsFromDb`) whose regenerated main seals
+exactly when the installed file did. `runner-output` is also hand-copied into
+`catalog/__fixtures__/seal-vector.ts` for the unit tests that run without a
+Bunko checkout; the contract suite checks the copy is still Bunko's.
 
 ### OCR editor and layers
 
@@ -856,8 +866,12 @@ first (measured against the volume's OWN archive as the listing spells it, so a
 caller's DB spelling — composed, another case — still finds them), a leading UTF-8 BOM is
 tolerated on read, and every id the reader mints contains a letter
 (`slugifyLayerId`). The vectors both sides test against live in bunko's
-`interop/contract/sidecar-names.json` (hand-copied into `syncable-file.test.ts`
-for now) — and `src/lib/metadata/layer-sync.ts`
+`interop/contract/sidecar-names.json` — `src/lib/interop/sidecar-names.contract.test.ts`
+runs its `classify` and `layer_class` vectors (every id Bunko classes curated,
+server-keepsake or reserved must stay local on a bunko target, `layerIdStaysLocal`;
+the reader's sweep is no pure
+function, so `sweep` is Bunko's alone), and a hand copy in `syncable-file.test.ts`
+runs without a checkout — and `src/lib/metadata/layer-sync.ts`
 syncs layers for rows that already exist locally (installed or metadata-only), newest-wins, no merge. A
 layer with no local record is filed by inferring its kind from the id alone:
 `original` stays `original`, `tr-<lang>` is a `translation`, a known engine id
@@ -1906,6 +1920,31 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 - Component tests use @testing-library/svelte
 - Run tests with `npm test`
 - Example test files: `src/lib/util/count-chars.test.ts`, `src/lib/components/Settings/__tests__/QuickAccess.test.ts`
+
+### Bunko contract (`src/lib/interop/`)
+
+- The reader's tests parse mokuro-bunko's own answers (`interop/contract/bunko/*.json`), record the
+  requests the reader sends (`reader/*.json`, which bunko replays), and run its seal and sidecar-name
+  vectors. They read a bunko checkout: `BUNKO_REPO=<checkout>`, else a sibling `mokuro-webdav-library`
+  found by looking around. A sibling counts only when it holds every file of `CONTRACT_BASELINE`
+  (`contract.ts`, the newest contract files the tests read — add one there when a test starts reading
+  a new fixture): one on an older branch is ignored with a warning and the tests run on the reader's
+  snapshots, instead of failing ordinary unit tests on fixtures it never had. It may still be on
+  another branch than the one you are pairing with, so name it. `BUNKO_REPO` is used as named, never
+  skipped: one without `seed.json`, or lacking any `CONTRACT_BASELINE` file, throws once, listing
+  what it lacks. `BUNKO_CONTRACT_REQUIRED=1` turns a missing checkout (or a missing vectors file) into
+  a failure.
+- CI checks out bunko at `vars.BUNKO_REF` (default `0.8/remote-storage`) with
+  `BUNKO_CONTRACT_REQUIRED=1`, so a reader branch whose tests read a newer contract fails CI until that
+  bunko branch carries it: push bunko's contract FIRST, then the reader branch that reads it.
+- `BUNKO_REPO=<checkout> READER_BLESS=1 npx vitest run src/lib/interop` rewrites the records, in that
+  checkout only. A changed request lands in bunko FIRST (commit the records there, run its
+  `contract_replay`), then in the reader.
+- `fixtureFetch` answers a request from the fixtures it was given by method, path, query and
+  `Depth`; when several match, the request's auth, then its body, narrow them, and any still tied
+  throw "ambiguous fixtures" naming them — hand it only the fixtures the test means.
+- Fixtures report `/login/api/me`'s `version` as the sentinel `"0.0.0"`, below 0.8.0: a gate derived
+  from a recorded identity (history) is OFF there. A test that needs it on sets it itself.
 
 ### E2E (Playwright)
 

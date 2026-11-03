@@ -20,15 +20,24 @@ import {
   clearCloudBunkoMarkers,
   type MarkerNodeRecord
 } from './cloud-bunko-marker';
+import { EPOCH_MS, editExisting } from '$lib/interop/contract';
 import { positionsReadAllowed, positionsWriteAllowed } from '$lib/positions/positions-capability';
+import { servedMarker } from './__fixtures__/bunko-marker';
 
 const T0 = Date.parse('2026-10-12T10:00:00Z');
 const TTL = 900;
 
+/** The 0.8 marker keys (B2.6 per_user_files, B3.6 curated, B5.7 dedup). */
+const V08_KEYS = ['per_user_files', 'curated', 'dedup'];
+
+/**
+ * Bunko's own marker (its contract fixture), with these tests' values in its
+ * fields. A 0.8 key a test does not set is left OUT, whatever the fixture
+ * carries: unset means a 0.7 marker's none-of-them, so a test sees the
+ * blessed fixture's `dedup: true` only when it asks for it.
+ */
 function marker(over: Record<string, unknown> = {}) {
-  return {
-    version: 1,
-    kind: 'mokuro-bunko',
+  const body: Record<string, unknown> = editExisting(servedMarker(T0), {
     instance_id: 'aaa',
     boot_id: 'b1',
     instance_name: 'nas',
@@ -37,13 +46,10 @@ function marker(over: Record<string, unknown> = {}) {
     claimed_at: '2026-10-12T09:00:00Z',
     heartbeat_at: new Date(T0).toISOString(),
     ttl_s: TTL,
-    state: 'active',
-    compiles: ['series.json', 'catalog.json'],
-    ocr: true,
-    queue: '.mokuro-queue.json',
-    took_over_from: null,
     ...over
-  };
+  });
+  for (const k of V08_KEYS) if (!(k in over)) delete body[k];
+  return body;
 }
 
 function read(
@@ -134,7 +140,9 @@ describe('parseBunkoMarker', () => {
   });
 
   it('a 0.7 marker (no new keys) reads as none of them', () => {
-    const m = parseBunkoMarker(marker({ bunko_version: undefined }));
+    const body = marker({ bunko_version: undefined });
+    for (const k of V08_KEYS) expect(body).not.toHaveProperty(k);
+    const m = parseBunkoMarker(body);
     expect(m).toMatchObject({
       bunko_version: '',
       per_user_files: [],
@@ -159,40 +167,11 @@ describe('parseBunkoMarker', () => {
     );
   });
 
-  it('parses the planned 0.8 marker shape (placeholder for the blessed fixture)', () => {
-    // PLACEHOLDER, typed by hand: bunko's interop/contract/bunko/marker-active.json
-    // does not carry the 0.8 keys yet (B2.6 per_user_files, B3.6 curated,
-    // B5.7 dedup). Once bunko blesses them and src/lib/interop is on this
-    // branch (R6.3), read the blessed body through BUNKO_REPO instead. The
-    // list order is not part of the contract (the gates test membership);
-    // this is cc320b6's auth-list order (C16).
-    const body = {
-      version: 1,
-      kind: 'mokuro-bunko',
-      instance_id: '<id-1>',
-      boot_id: '<id-2>',
-      instance_name: 'contract-host',
-      bunko_version: '0.0.0',
-      epoch: 1,
-      claimed_at: '2000-01-01T00:00:00.000Z',
-      heartbeat_at: '2000-01-01T00:00:00.000Z',
-      ttl_s: 900,
-      state: 'active',
-      compiles: ['series.json', 'catalog.json'],
-      ocr: true,
-      queue: '.mokuro-queue.json',
-      took_over_from: null,
-      per_user_files: [
-        'volume-data.json',
-        'profiles.json',
-        'goals.json',
-        'positions.json',
-        'history/'
-      ],
-      curated: true,
-      dedup: true
-    };
-    const m = parseBunkoMarker(body);
+  it('reads every 0.8 key of the marker Bunko blesses', () => {
+    // Bunko's `marker-active` (or its snapshot without a checkout), sentinels
+    // and all. The list order is not part of the contract (the gates test
+    // membership); this is the order Bunko writes (C16).
+    const m = parseBunkoMarker(servedMarker(EPOCH_MS));
     expect(m).toEqual({
       version: 1,
       instance_id: '<id-1>',
@@ -206,11 +185,16 @@ describe('parseBunkoMarker', () => {
       compiles: ['series.json', 'catalog.json'],
       ocr: true,
       queue: '.mokuro-queue.json',
-      per_user_files: body.per_user_files,
+      per_user_files: [
+        'volume-data.json',
+        'profiles.json',
+        'goals.json',
+        'positions.json',
+        'history/'
+      ],
       curated: true,
       dedup: true
     });
-    expect(m?.per_user_files).toContain('history/');
   });
 });
 

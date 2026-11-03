@@ -192,6 +192,49 @@ function isLibraryFilePath(path: string): boolean {
   return path.includes('/') && !path.startsWith('history/');
 }
 
+/**
+ * Methods whose presence in a COLLECTION's `Allow` shows it can be written.
+ *
+ * `Allow` lists what the target resource itself supports (RFC 9110 §10.2.1),
+ * and the probe targets the library folder, an existing collection. Per
+ * RFC 4918 such a collection never lists PUT (files are PUT to member URLs;
+ * PUT on a collection is undefined, §9.7.2) and lists MKCOL only while its URL
+ * is unmapped (§9.3.1). So writability shows instead as the methods that
+ * change the collection's membership: DELETE (§9.6) and MOVE (§9.9). PUT and
+ * MKCOL still count, for servers that send one fixed `Allow` for every URL.
+ *
+ * Left out on purpose: PROPPATCH changes only properties (§9.2), which a
+ * server may let a read-only account keep; COPY only reads its source (the
+ * write lands at the Destination, §9.8); LOCK/UNLOCK come with class 2
+ * compliance and change no content themselves (§9.10, §9.11); POST is not a
+ * WebDAV write.
+ */
+const COLLECTION_WRITE_METHODS = ['PUT', 'MKCOL', 'DELETE', 'MOVE'] as const;
+
+/**
+ * Privileges (RFC 3744 §3) that let an account upload into the library
+ * folder: DAV:write, its DAV:write-content part, DAV:all, and DAV:bind /
+ * DAV:unbind (adding and removing a collection's members, §3.9-3.10, which an
+ * account may hold without the DAV:write aggregate). Matched as whole element
+ * names, any namespace prefix: DAV:write-properties and DAV:write-acl share
+ * the `write` prefix but upload nothing.
+ */
+const WRITE_PRIVILEGE_RE = /<(?:[\w-]+:)?(?:write|write-content|all|bind|unbind)\s*\/?>/;
+
+/**
+ * Read a collection's `Allow` header: true when it lists any collection write
+ * method, false when it lists methods but none of them, null when it is
+ * absent, blank or lists nothing (the caller decides; today that is "writable").
+ */
+export function allowHeaderPermitsCollectionWrite(allow: string | null): boolean | null {
+  const methods = (allow ?? '')
+    .split(',')
+    .map((m) => m.trim().toUpperCase())
+    .filter((m) => m.length > 0);
+  if (methods.length === 0) return null;
+  return COLLECTION_WRITE_METHODS.some((m) => methods.includes(m));
+}
+
 export class WebDAVProvider implements SyncProvider {
   readonly type = 'webdav' as const;
   readonly name = 'WebDAV';
@@ -908,8 +951,8 @@ export class WebDAVProvider implements SyncProvider {
 
         case 'unsupported':
         default:
-          // Generic WebDAV server (or older mokuro-bunko): keep the existing
-          // heuristics byte-for-byte (copyparty/nextcloud/nginx compatibility)
+          // Generic WebDAV server (or older mokuro-bunko): write access is read
+          // from the library folder's Allow (checkWritePermissions)
           this._capabilities = null;
 
           // Ensure mokuro folder exists
@@ -918,7 +961,9 @@ export class WebDAVProvider implements SyncProvider {
           // Check write permissions via OPTIONS request
           this._isReadOnly = !(await this.checkWritePermissions(normalizedUrl));
           if (this._isReadOnly) {
-            console.log('📖 WebDAV server is read-only (no PUT/DELETE/MKCOL permissions)');
+            console.log(
+              '📖 WebDAV server is read-only (no write privilege or write method allowed)'
+            );
           }
 
           // `fetchServerIdentity` also resolves 'unsupported' when the endpoint
@@ -1191,14 +1236,19 @@ export class WebDAVProvider implements SyncProvider {
    *
    * Uses tiered approach:
    * 1. Try PROPFIND with DAV:current-user-privilege-set (most accurate for ACL-enabled servers)
-   * 2. Fall back to OPTIONS request to check Allow header
+   * 2. Fall back to OPTIONS request to check Allow header for a collection
+   *    write method (`COLLECTION_WRITE_METHODS`)
    * 3. If both are inconclusive → assume write access
    * 4. Actual write operations will mark as read-only if they fail with permission errors
    *
+   * Runs only when the identity endpoint gave no answer (`unsupported`: a
+   * generic server, or a `/login/api/me` that was unreachable or not bunko's
+   * shape). Any answer from it, anonymous or rate limited included, decides
+   * without this guess.
+   *
    * A server known to be mokuro-bunko skips the verdict: bunko decides each
-   * request itself, and its Allow is advisory (older versions list no PUT or
-   * MKCOL on collections, which would wrongly read as read-only). A real
-   * refusal still demotes through handleWriteFailure.
+   * request itself, so neither its privilege set nor its Allow speaks for the
+   * account. A real refusal still demotes through handleWriteFailure.
    */
   private async checkWritePermissions(baseUrl: string): Promise<boolean> {
     if (this.isKnownBunkoServer(baseUrl)) return true;
@@ -1245,13 +1295,7 @@ export class WebDAVProvider implements SyncProvider {
         } else {
           // Server supports ACL - check for actual privileges
           // Look for privilege elements like <D:write/>, <D:read/>, <D:all/>, etc.
-          const hasWritePrivilege =
-            text.includes('<D:write') ||
-            text.includes('<write') ||
-            text.includes(':write/>') ||
-            text.includes('<D:all') ||
-            text.includes('<all') ||
-            text.includes(':all/>');
+          const hasWritePrivilege = WRITE_PRIVILEGE_RE.test(text);
 
           const hasReadPrivilege =
             text.includes('<D:read') || text.includes('<read') || text.includes(':read/>');
@@ -1289,7 +1333,7 @@ export class WebDAVProvider implements SyncProvider {
       console.log('[WebDAV] OPTIONS response status:', response.status);
       const putHeader = response.headers.get('X-Mokuro-Put');
       this.noteVerifiedPutHeader(putHeader, baseUrl);
-      // Only mokuro-bunko sends it: its Allow is advisory (see above).
+      // Only mokuro-bunko sends it: a known bunko skips the verdict (see above).
       if (isVerifiedPutHeader(putHeader)) return true;
 
       if (!response.ok) {
@@ -1301,36 +1345,16 @@ export class WebDAVProvider implements SyncProvider {
       const allowHeader = response.headers.get('Allow');
       console.log('[WebDAV] Allow header:', allowHeader);
 
-      // If Allow header is missing or empty, assume full access
-      // Not all servers return an Allow header on OPTIONS
-      if (!allowHeader || allowHeader.trim() === '') {
-        console.log('[WebDAV] No Allow header present, assuming full write access');
+      // Not all servers send Allow on OPTIONS, and a cross-origin page sees it
+      // only when the server exposes it: absent or empty, assume full access.
+      const permitsWrite = allowHeaderPermitsCollectionWrite(allowHeader);
+      if (permitsWrite === null) {
+        console.log('[WebDAV] No usable Allow header, assuming full write access');
         return true;
       }
 
-      const allowedMethods = allowHeader
-        .split(',')
-        .map((m) => m.trim().toUpperCase())
-        .filter((m) => m.length > 0);
-
-      // If the header exists but has no valid methods, assume full access
-      if (allowedMethods.length === 0) {
-        console.log('[WebDAV] Allow header empty, assuming full write access');
-        return true;
-      }
-
-      // Need PUT for uploads, DELETE for deletions, MKCOL for creating folders
-      const hasPut = allowedMethods.includes('PUT');
-      const hasDelete = allowedMethods.includes('DELETE');
-      const hasMkcol = allowedMethods.includes('MKCOL');
-
-      const hasWrite = hasPut && hasDelete && hasMkcol;
-
-      console.log(
-        `[WebDAV] Permissions: PUT=${hasPut}, DELETE=${hasDelete}, MKCOL=${hasMkcol}, hasWrite=${hasWrite}`
-      );
-
-      return hasWrite;
+      console.log(`[WebDAV] Allow lists a collection write method: ${permitsWrite}`);
+      return permitsWrite;
     } catch (error) {
       // If we can't check, assume full access (fail open for usability)
       console.warn('[WebDAV] Failed to check write permissions:', error);

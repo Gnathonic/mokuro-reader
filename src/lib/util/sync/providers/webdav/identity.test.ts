@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fetchServerIdentity } from './identity';
+import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
 import { bunkoLoginMe } from './__fixtures__/bunko-login-me';
 
 type MockResponse = { status: number; body: string; contentType?: string };
@@ -544,6 +545,63 @@ describe('per-account layers and the curated scope (bunko 0.8)', () => {
       expect(result).toMatchObject({ kind: 'authenticated' });
       expect((result as { permissions: object }).permissions).not.toHaveProperty('curated');
     }
+  });
+});
+
+/** What Bunko answers (its contract fixtures), served at `https://host/login/api/me`. */
+function bunko(name: string): MockResponse {
+  const f = loadBunkoFixture(name);
+  return {
+    status: f.status!,
+    body: JSON.stringify(f.body),
+    contentType: f.headers!['content-type']
+  };
+}
+
+/**
+ * What a 0.8 Bunko's `/login/api/me` carries beside the account; the version
+ * is the fixtures' sentinel (`bunko-contract.test.ts`).
+ */
+const BUNKO_08 = {
+  serverVersion: '0.0.0',
+  perUserFiles: ['volume-data.json', 'profiles.json', 'goals.json', 'positions.json', 'history/'],
+  perUserLayers: ['edit']
+};
+
+describeContract('fetchServerIdentity on Bunko’s own answers', () => {
+  it('returns authenticated with permissions on a 200 authenticated:true', async () => {
+    const { impl } = mockFetch({ 'https://host/login/api/me': bunko('login-me-basic') });
+
+    const result = await fetchServerIdentity('https://host', 'reader', 'pässwörd', impl);
+    expect(result).toEqual({
+      kind: 'authenticated',
+      username: 'reader',
+      role: 'uploader',
+      permissions: {
+        canWriteProgress: true,
+        canAddFiles: true,
+        canModifyDelete: false,
+        metadata: { scope: 'owned', ownedSeries: ['Contract Series'] },
+        curated: { scope: 'owned', volumes: [] },
+        addFiles: { scope: 'open', closedSeries: [] }
+      },
+      endpoint: 'https://host/login/api/me',
+      ...BUNKO_08
+    });
+  });
+
+  it('returns anonymous for 200 authenticated:false when no creds were sent', async () => {
+    const { impl } = mockFetch({ 'https://host/login/api/me': bunko('login-me-anonymous') });
+
+    const result = await fetchServerIdentity('https://host', undefined, undefined, impl);
+    expect(result).toEqual({ kind: 'anonymous', ...BUNKO_08 });
+  });
+
+  it('returns invalid-credentials for Bunko’s 401 to a wrong password', async () => {
+    const { impl } = mockFetch({ 'https://host/login/api/me': bunko('login-me-bad-password') });
+
+    const result = await fetchServerIdentity('https://host', 'reader', 'wrong', impl);
+    expect(result).toEqual({ kind: 'invalid-credentials' });
   });
 });
 
