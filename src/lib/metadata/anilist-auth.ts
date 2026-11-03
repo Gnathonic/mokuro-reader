@@ -7,15 +7,6 @@ const TOKEN_KEY = 'anilist_token';
 const EXPIRES_KEY = 'anilist_token_expires_at';
 const USER_KEY = 'anilist_user';
 const RETURN_KEY = 'anilist_return';
-/** When `startAniListLogin` armed the callback (epoch ms). */
-const RETURN_AT_KEY = 'anilist_return_at';
-/**
- * How long a started login stays armed. The marker is what tells a real
- * callback from a crafted `#access_token=` link, so a login the user walked
- * away from must not leave it armed for the rest of the tab's life: any later
- * link in that tab could sign them in to someone else's AniList account.
- */
-export const ANILIST_LOGIN_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_TTL_SEC = 365 * 24 * 60 * 60; // AniList tokens last one year
 
 /**
@@ -106,7 +97,6 @@ export function startAniListLogin(): void {
   const clientId = getAniListClientId();
   if (!browser || !clientId) return;
   sessionStorage.setItem(RETURN_KEY, window.location.hash || '#/catalog');
-  sessionStorage.setItem(RETURN_AT_KEY, String(Date.now()));
   window.location.assign(buildAniListAuthorizeUrl(clientId));
 }
 
@@ -166,31 +156,12 @@ export async function handleAniListCallbackHash(hash: string): Promise<boolean> 
   return true;
 }
 
-/**
- * Return-route saved by startAniListLogin(); cleared on read. Null — the
- * callback is not this tab's — unless the login was started within
- * `ANILIST_LOGIN_TTL_MS` (a marker without its stamp, or stamped in the
- * future, counts as not started).
- */
-export function consumeAniListReturnHash(now = Date.now()): string | null {
+/** Return-route saved by startAniListLogin(); cleared on read. */
+export function consumeAniListReturnHash(): string | null {
   if (!browser) return null;
   const value = sessionStorage.getItem(RETURN_KEY);
-  const startedAt = Number(sessionStorage.getItem(RETURN_AT_KEY));
-  discardAniListLogin();
-  if (value === null || !Number.isFinite(startedAt) || startedAt <= 0) return null;
-  if (startedAt > now || now - startedAt > ANILIST_LOGIN_TTL_MS) return null;
-  return value;
-}
-
-/**
- * Disarm a started login: the app loaded WITHOUT a callback (the user came
- * back from AniList without signing in, or never went), so nothing that
- * arrives later in this tab is the answer to it.
- */
-export function discardAniListLogin(): void {
-  if (!browser) return;
   sessionStorage.removeItem(RETURN_KEY);
-  sessionStorage.removeItem(RETURN_AT_KEY);
+  return value;
 }
 
 export function disconnectAniList(): void {

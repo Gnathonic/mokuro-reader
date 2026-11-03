@@ -15,7 +15,6 @@ import { showSnackbar } from '$lib/util/snackbar';
 import {
   anilistUser,
   buildAniListAuthorizeUrl,
-  ANILIST_LOGIN_TTL_MS,
   consumeAniListReturnHash,
   disconnectAniList,
   getAniListToken,
@@ -246,34 +245,7 @@ describe('anilistConnected', () => {
 describe('return hash', () => {
   it('consumes the saved return hash once', () => {
     sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
-    sessionStorage.setItem('anilist_return_at', String(Date.now()));
     expect(consumeAniListReturnHash()).toBe('#/series/One%20Piece');
-    expect(consumeAniListReturnHash()).toBeNull();
-  });
-
-  it('expires a login started more than ten minutes ago, and clears it', () => {
-    const startedAt = 1_800_000_000_000;
-    sessionStorage.setItem('anilist_return', '#/catalog');
-    sessionStorage.setItem('anilist_return_at', String(startedAt));
-    expect(consumeAniListReturnHash(startedAt + ANILIST_LOGIN_TTL_MS + 1)).toBeNull();
-    expect(sessionStorage.getItem('anilist_return')).toBeNull();
-    expect(sessionStorage.getItem('anilist_return_at')).toBeNull();
-  });
-
-  it('accepts a login started within ten minutes', () => {
-    const startedAt = 1_800_000_000_000;
-    sessionStorage.setItem('anilist_return', '#/catalog');
-    sessionStorage.setItem('anilist_return_at', String(startedAt));
-    expect(consumeAniListReturnHash(startedAt + ANILIST_LOGIN_TTL_MS - 1)).toBe('#/catalog');
-  });
-
-  it.each([
-    ['no stamp', null],
-    ['a junk stamp', 'soon'],
-    ['a stamp in the future', String(Date.now() + 60_000)]
-  ])('treats a marker with %s as no login at all', (_, stamp) => {
-    sessionStorage.setItem('anilist_return', '#/catalog');
-    if (stamp !== null) sessionStorage.setItem('anilist_return_at', stamp);
     expect(consumeAniListReturnHash()).toBeNull();
   });
 });
@@ -312,9 +284,6 @@ describe('startAniListLogin', () => {
     window.location.hash = '#/series/One%20Piece';
     startAniListLogin();
     expect(sessionStorage.getItem('anilist_return')).toBe('#/series/One%20Piece');
-    expect(Math.abs(Number(sessionStorage.getItem('anilist_return_at')) - Date.now())).toBeLessThan(
-      5_000
-    );
     expect(assignMock).toHaveBeenCalledWith(
       'https://anilist.co/api/v2/oauth/authorize?client_id=123&response_type=token'
     );

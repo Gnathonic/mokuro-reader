@@ -6,7 +6,6 @@
 import { writable, derived, get } from 'svelte/store';
 import {
   consumeAniListReturnHash,
-  discardAniListLogin,
   handleAniListCallbackHash,
   isAniListCallbackHash
 } from '$lib/metadata/anilist-auth';
@@ -287,11 +286,6 @@ export function initRouter(): () => void {
     if (rawReturnHash) {
       void handleAniListCallbackHash(callbackHash).catch(() => {});
     }
-  } else {
-    // Loaded without a callback: a login this tab started was abandoned
-    // (back from AniList, or the tab simply moved on), so disarm it — or a
-    // crafted `#access_token=` link later in this tab would pass as its answer.
-    discardAniListLogin();
   }
 
   // Handle legacy pathname-based routes from before hash router migration
