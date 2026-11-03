@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { googleDriveCore } from '../google-drive-core';
 import { DriveHttpError } from '../drive-http';
+import { ProviderError } from '$lib/util/sync/provider-interface';
+import { MAX_RETRY_ATTEMPTS } from '../../http-retry';
 
 const QUOTA_BODY = JSON.stringify({
   error: { errors: [{ domain: 'usageLimits', reason: 'storageQuotaExceeded' }], code: 403 }
@@ -93,7 +95,7 @@ describe('googleDriveCore', () => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
-    it('tells the caller about each session-init wait, so the tray is not frozen at 0 %', async () => {
+    it('tells the caller about each wait before a retry, so the tray is not frozen at 0 %', async () => {
       vi.mocked(fetch)
         .mockResolvedValueOnce(
           new Response('{}', { status: 429, headers: { 'Retry-After': '0.001' } })
@@ -112,13 +114,20 @@ describe('googleDriveCore', () => {
       });
 
       expect(onRetry.mock.calls).toEqual([
-        [{ attempt: 2, attempts: 4, delayMs: 1, reason: 'rate limited' }],
-        [{ attempt: 3, attempts: 4, delayMs: expect.any(Number), reason: 'HTTP 503' }]
+        [{ attempt: 2, attempts: MAX_RETRY_ATTEMPTS, delayMs: 1, reason: 'rate limited' }],
+        [
+          {
+            attempt: 3,
+            attempts: MAX_RETRY_ATTEMPTS,
+            delayMs: expect.any(Number),
+            reason: 'HTTP 503'
+          }
+        ]
       ]);
       expect(onRetry.mock.calls[1][0].delayMs).toBeGreaterThan(0);
     }, 10_000);
 
-    it('fails a full account at once, naming the reason in the message', async () => {
+    it('fails a full account at once, as the storage-full error', async () => {
       vi.mocked(fetch).mockResolvedValue(
         new Response(QUOTA_BODY, { status: 403, statusText: 'Forbidden' })
       );
@@ -127,20 +136,20 @@ describe('googleDriveCore', () => {
         .uploadFile({ seriesTitle: 'S', filename: 'v.cbz', blob: new Blob(['x']), credentials })
         .catch((e) => e);
 
-      expect(error).toBeInstanceOf(DriveHttpError);
-      expect(error.kind).toBe('quota');
-      // Only the message crosses the worker boundary.
-      expect(error.message).toMatch(/\[storageQuotaExceeded\]/);
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(error.code).toBe('QUOTA_EXCEEDED');
+      // Only the message crosses the worker boundary: it says so itself.
+      expect(error.message).toMatch(/storage is full/);
       expect(fetch).toHaveBeenCalledTimes(1);
       expect(FakeXhr.sent).toBe(0);
     });
 
-    it('classifies a 429 on the data PUT but never retries it mid-stream', async () => {
+    it('classifies a 5xx on the data PUT but never retries it: Drive may have kept the file', async () => {
       vi.mocked(fetch).mockResolvedValueOnce(initOk());
       FakeXhr.replies = [
         {
-          status: 429,
-          statusText: 'Too Many Requests',
+          status: 503,
+          statusText: 'Service Unavailable',
           response: '',
           headers: { 'Retry-After': '0.001' }
         }
@@ -151,8 +160,28 @@ describe('googleDriveCore', () => {
         .catch((e) => e);
 
       expect(error).toBeInstanceOf(DriveHttpError);
-      expect(error.kind).toBe('rate-limit');
+      expect(error.kind).toBe('transient');
+      expect(fetch).toHaveBeenCalledTimes(1);
       expect(FakeXhr.sent).toBe(1);
+    });
+
+    it('retries a 5xx session init, which creates nothing', async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(
+          new Response('', { status: 503, headers: { 'Retry-After': '0.001' } })
+        )
+        .mockResolvedValueOnce(initOk());
+      FakeXhr.replies = [{ status: 200, response: JSON.stringify({ id: 'new-id', size: '1' }) }];
+
+      const result = await googleDriveCore.uploadFile({
+        seriesTitle: 'S',
+        filename: 'v.cbz',
+        blob: new Blob(['x']),
+        credentials
+      });
+
+      expect(result.fileId).toBe('new-id');
+      expect(fetch).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -196,7 +225,7 @@ describe('googleDriveCore', () => {
         .downloadFile({ fileId: 'f1', credentials: { accessToken: 'TOKEN' }, onProgress: () => {} })
         .catch((e) => e);
 
-      expect(error.kind).toBe('quota');
+      expect(error.code).toBe('QUOTA_EXCEEDED');
       expect(FakeXhr.sent).toBe(1);
     });
   });

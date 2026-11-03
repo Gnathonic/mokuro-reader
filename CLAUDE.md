@@ -146,24 +146,36 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
   `error.errors[0].reason` — by NAME, never by domain (`sharingRateLimitExceeded` and the
-  item-count/depth limits are domain `global`, not `usageLimits`). A 403 is a full account
-  (`storageQuotaExceeded`, Drive's only storage-full reason → `QUOTA_EXCEEDED`, never
-  retried), a rate limit (`userRateLimitExceeded`/`rateLimitExceeded`/`dailyLimitExceeded`/
-  `sharingRateLimitExceeded`, and `quotaExceeded` — an API usage quota that resets, NOT
-  storage — like any 429 whatever its reason: retried by `withDriveRetry` after Retry-After,
-  capped 60 s, a zero/past value falls back to the backoff, 4 attempts), a `limit` nothing
-  lifts (`activeItemCreationLimitExceeded`, `numChildrenInNonRootLimitExceeded`,
-  `myDriveHierarchyDepthLimitExceeded`: fails with its message), or an auth failure that may
-  re-authenticate — an ALLOW-list: no reason, `authError`, `insufficientPermissions`,
-  `forbidden`; any other named 403 reason is a refusal that fails without touching the
-  token. 5xx are retried too, except on a request that CREATES a file or folder
+  item-count/depth limits are domain `global`, not `usageLimits`; `DriveHttpError.domain` and
+  `DriveFailure.domain` are kept for logs only). A 403 is a full account
+  (`storageQuotaExceeded`, Drive's only storage-full reason, never retried), a rate limit
+  (`userRateLimitExceeded`/`rateLimitExceeded`/`dailyLimitExceeded`/`sharingRateLimitExceeded`,
+  and `quotaExceeded` — an API usage quota that resets, NOT storage — like any 429 whatever
+  its reason), a `limit` nothing lifts (`activeItemCreationLimitExceeded`,
+  `numChildrenInNonRootLimitExceeded`, `myDriveHierarchyDepthLimitExceeded`: fails at once
+  with its message, no retry, no re-auth), or an auth failure that may re-authenticate — an
+  ALLOW-list: no reason, `authError`, `insufficientPermissions`, `forbidden`; any other named
+  403 reason is a refusal that fails without touching the token. `withDriveRetry` retries ONE
+  request at a time (each gapi call, so a paged listing resumes at its page and never
+  re-fetches the pages already in hand; each XHR/fetch) on the policy every cloud core shares
+  (`core/http-retry.ts`: 5 tries, Retry-After capped 32 s, else backoff with jitter; a zero
+  or already-past Retry-After is no advice and backs off too, for OneDrive as for Drive). Its
+  `onWait` feeds the upload's `onRetry`, so the tray says "retrying" instead of sitting at
+  0 %. 5xx are retried too, except on a request that CREATES a file or folder
   (`rateLimitOnly`): Drive can answer a 5xx after committing it, and a retry would make a
-  duplicate. A paginated listing retries per page, never the pages already fetched.
-  Messages carry `[reason]` so a worker's serialized error is still recognisable; the worker
+  duplicate. A resumable upload keeps ONE session (`google-drive-core.ts`): a retry after a
+  rate-limited PUT asks the session where it stands (an empty PUT,
+  `Content-Range: bytes */<size>`) and sends only the bytes it lacks — nothing when it
+  answers 200/201, a fresh session only on 404/410; a 5xx on the PUT itself is still not retried (the error's
+  `phase` says which step answered). A full account is thrown as the storage-full
+  `QUOTA_EXCEEDED` ProviderError where the answer is read (`driveRefusal`), so a worker's
+  message-only error already says it plainly; the provider passes it through. The worker
   also posts `kind: 'quota'` on its error message, which `backup-queue.ts` turns into the
-  provider's "storage is full" wording (`core/storage-full.ts`). OneDrive's equivalent is
-  `providers/onedrive/graph-errors.ts`: 507 / `insufficientStorage` / `quotaLimitReached` →
-  `GraphQuotaError` → `QUOTA_EXCEEDED`, excluded from the ≥ 500 retry.
+  provider's "storage is full" wording (`core/storage-full.ts`; without a kind it reads the
+  message: that wording, or a bracketed `[storageQuotaExceeded]` no 429 carried). Other
+  messages still carry `[reason]`. OneDrive's equivalent is
+  `providers/onedrive/graph-errors.ts`: 507 / a refusal naming `insufficientStorage` /
+  `quotaLimitReached` → `oneDriveStorageFullError()`, excluded from the ≥ 500 retry.
 - **An upload never re-lists the account** (#288). `uploadFile` is the upload plus its
   RECEIPT (id, `size`, `modifiedTime`, `version` as `revision`, `parentId`, `name`), and
   every caller records its own write in the cache from that receipt (`uploadCacheEntry`);

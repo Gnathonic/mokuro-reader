@@ -173,8 +173,8 @@ describe('driveApiClient failure classification', () => {
 
     const error = await driveApiClient.listFiles("name='x'").catch((e) => e);
 
-    expect(error.kind).toBe('quota');
-    expect(error.message).toMatch(/storageQuotaExceeded/);
+    expect(error.code).toBe('QUOTA_EXCEEDED');
+    expect(error.message).toMatch(/storage is full/);
     expect(list).toHaveBeenCalledTimes(1); // a full account is not retried
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
     expect(tokenManager.clearToken).not.toHaveBeenCalled();
@@ -307,7 +307,7 @@ describe('driveApiClient failure classification', () => {
       .uploadFile(new Blob(['x']), { name: 'a.json', mimeType: 'application/json' })
       .catch((e) => e);
 
-    expect(error.kind).toBe('quota');
+    expect(error.code).toBe('QUOTA_EXCEEDED');
     expect(FakeXhr.sent).toBe(1);
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
     expect(tokenManager.clearToken).not.toHaveBeenCalled();

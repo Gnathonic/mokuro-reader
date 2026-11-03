@@ -36,7 +36,14 @@ import {
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
-import { isDriveQuotaError, type DriveFailureKind } from '../../core/providers/drive-http';
+import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
+import {
+  driveFailureOf,
+  isDriveRateLimit,
+  isQuotaExceededError,
+  withDriveRetry,
+  type DriveFailureKind
+} from '../../core/providers/drive-http';
 
 /** How long a resolved list of `mokuro-reader` root ids is trusted by `readControlFile`. */
 const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
@@ -393,10 +400,13 @@ class GoogleDriveProvider implements SyncProvider {
       // api-client surfaces failures as a DriveApiError / DriveHttpError
       // carrying `status` and, when classified, `kind` (after its own auto
       // re-auth / token clearing). A classified kind wins: a full account or
-      // a rate limit answers 403 too, and is no auth failure. Only an
-      // unclassified error falls back to the status.
+      // a rate limit answers 403 too, and is no auth failure. An unclassified
+      // error falls back to the status, where a 403 rate limit that outlasted
+      // the retries is still no auth failure.
       const { status, kind } = (error ?? {}) as { status?: number; kind?: DriveFailureKind };
-      const isAuth = kind ? kind === 'auth' : status === 401 || status === 403;
+      const isAuth = kind
+        ? kind === 'auth'
+        : status === 401 || (status === 403 && !isDriveRateLimit(driveFailureOf(error)));
       const isNetwork =
         (error as { isNetworkError?: boolean } | null)?.isNetworkError === true || status === 0;
       throw new ProviderError(
@@ -641,14 +651,9 @@ class GoogleDriveProvider implements SyncProvider {
         name: uploaded.name ?? fileName
       };
     } catch (error) {
-      // Typed, and worded so the user can act on it — not a network blip to retry.
-      if (isDriveQuotaError(error)) {
-        throw new ProviderError(
-          'Google Drive storage is full — free up space or upgrade your plan',
-          'google-drive',
-          'QUOTA_EXCEEDED'
-        );
-      }
+      // A full drive keeps its own code and message (the transports throw
+      // the storage-full error), for the UI to show as is.
+      if (isQuotaExceededError(error)) throw error;
       throw new ProviderError(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
@@ -1359,9 +1364,11 @@ class GoogleDriveProvider implements SyncProvider {
     await this.ensureInitialized();
 
     try {
-      const response = await gapi.client.drive.about.get({
-        fields: 'storageQuota'
-      });
+      const response = await withDriveRetry(() =>
+        gapi.client.drive.about.get({
+          fields: 'storageQuota'
+        })
+      );
 
       const quota = response.result.storageQuota;
       if (!quota) {
@@ -1748,7 +1755,7 @@ class GoogleDriveProvider implements SyncProvider {
     tokenManager.token.subscribe((value) => {
       token = value;
     })();
-    return { accessToken: token };
+    return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<Record<string, any>> {
@@ -1761,7 +1768,7 @@ class GoogleDriveProvider implements SyncProvider {
     tokenManager.token.subscribe((value) => {
       token = value;
     })();
-    return { accessToken: token };
+    return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 }
 

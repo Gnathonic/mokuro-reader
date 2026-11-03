@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
-  GRAPH_QUOTA_MESSAGE,
-  GraphQuotaError,
   graphErrorCode,
   isGraphQuotaFailure,
-  isGraphRetryableStatus
+  isGraphRetryableStatus,
+  oneDriveStorageFullError
 } from '../graph-errors';
+import { ProviderError } from '../../../provider-interface';
 
 describe('graph-errors', () => {
   it('reads error.code from parsed or text bodies, preferring a nested quota code', () => {
@@ -31,10 +31,10 @@ describe('graph-errors', () => {
     expect(isGraphRetryableStatus(400)).toBe(false);
   });
 
-  it('words a full drive so a worker-serialized message is still recognised', () => {
-    expect(GRAPH_QUOTA_MESSAGE.test(new GraphQuotaError(507).message)).toBe(true);
-    expect(GRAPH_QUOTA_MESSAGE.test(new GraphQuotaError(403, 'quotaLimitReached').message)).toBe(
-      true
-    );
+  it('words a full drive for the user, so a worker-serialized message reads as is', () => {
+    const error = oneDriveStorageFullError();
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error.code).toBe('QUOTA_EXCEEDED');
+    expect(error.message).toMatch(/storage is full/);
   });
 });

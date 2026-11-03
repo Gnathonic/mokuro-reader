@@ -2,68 +2,6 @@ import type { VolumeMetadata } from '$lib/types';
 import { driveApiClient, escapeNameForDriveQuery } from './sync/providers/google-drive/api-client';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
 import type { ProviderType } from './sync/provider-interface';
-import { driveHttpErrorFromResponse, withDriveRetry } from './sync/core/providers/drive-http';
-
-/**
- * Uploads a CBZ blob to Google Drive
- * @param blob The CBZ blob to upload
- * @param filename The name for the file
- * @param parentFolderId Optional parent folder ID
- * @returns Promise resolving to the uploaded file ID
- */
-export async function uploadCbzToDrive(
-  blob: Blob,
-  filename: string,
-  parentFolderId?: string
-): Promise<string> {
-  // Use simple resumable upload for large binary files
-  const { access_token } = gapi.auth.getToken();
-
-  const metadata = {
-    name: filename,
-    mimeType: 'application/x-cbz',
-    ...(parentFolderId && { parents: [parentFolderId] })
-  };
-
-  // Step 1: Initiate resumable upload session (no data sent yet, so a rate
-  // limit or 5xx is retried; a full account fails at once — drive-http.ts)
-  const initResponse = await withDriveRetry(async () => {
-    const response = await fetch(
-      'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(metadata)
-      }
-    );
-    if (!response.ok) throw await driveHttpErrorFromResponse(response, 'Upload init failed');
-    return response;
-  });
-
-  // Step 2: Upload the actual file data
-  const uploadUrl = initResponse.headers.get('Location');
-  if (!uploadUrl) {
-    throw new Error('No upload URL returned');
-  }
-
-  const uploadResponse = await fetch(uploadUrl, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/x-cbz'
-    },
-    body: blob
-  });
-
-  if (!uploadResponse.ok) {
-    throw await driveHttpErrorFromResponse(uploadResponse, 'Upload failed');
-  }
-
-  const result = await uploadResponse.json();
-  return result.id;
-}
 
 /**
  * Finds or creates a folder in Google Drive

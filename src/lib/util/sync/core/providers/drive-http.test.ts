@@ -1,14 +1,25 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   DriveHttpError,
   classifyDriveFailure,
   driveErrorDomain,
   driveErrorReason,
+  driveFailureOf,
   driveHttpErrorFromResponse,
-  isDriveQuotaError,
-  parseRetryAfter,
+  driveRefusal,
+  driveStorageFullError,
+  isDriveRateLimit,
+  isDriveStorageFull,
   withDriveRetry
 } from './drive-http';
+import {
+  MAX_RETRY_ATTEMPTS,
+  RETRY_AFTER_MAX_MS,
+  RETRY_BASE_DELAY_MS,
+  RETRY_JITTER_MS,
+  parseRetryAfterMs
+} from '../http-retry';
+import { ProviderError } from '../../provider-interface';
 
 const QUOTA_BODY = {
   error: {
@@ -86,32 +97,33 @@ describe('classifyDriveFailure', () => {
   });
 });
 
-describe('parseRetryAfter', () => {
+// Drive reads Retry-After with the shared parser (core/http-retry.ts).
+describe('Retry-After as Drive sends it', () => {
   it('reads delta-seconds', () => {
-    expect(parseRetryAfter('7')).toBe(7000);
-    expect(parseRetryAfter('0.5')).toBe(500);
+    expect(parseRetryAfterMs('7')).toBe(7000);
+    expect(parseRetryAfterMs('0.5')).toBe(500);
   });
 
   it('reads an HTTP-date relative to now', () => {
     const now = Date.parse('2026-10-29T12:00:00Z');
-    expect(parseRetryAfter('Thu, 29 Oct 2026 12:00:10 GMT', now)).toBe(10_000);
+    expect(parseRetryAfterMs('Thu, 29 Oct 2026 12:00:10 GMT', now)).toBe(10_000);
   });
 
   it('treats a zero or past value as absent, so the backoff applies instead of a 0 ms wait', () => {
     const now = Date.parse('2026-10-29T12:00:00Z');
-    expect(parseRetryAfter('0')).toBeUndefined();
-    expect(parseRetryAfter('Thu, 29 Oct 2026 11:00:00 GMT', now)).toBeUndefined();
-    expect(parseRetryAfter('Thu, 29 Oct 2026 12:00:00 GMT', now)).toBeUndefined();
+    expect(parseRetryAfterMs('0')).toBeUndefined();
+    expect(parseRetryAfterMs('Thu, 29 Oct 2026 11:00:00 GMT', now)).toBeUndefined();
+    expect(parseRetryAfterMs('Thu, 29 Oct 2026 12:00:00 GMT', now)).toBeUndefined();
   });
 
-  it('caps at 60 s', () => {
-    expect(parseRetryAfter('3600')).toBe(60_000);
+  it('caps a long wait at the shared policy’s cap', () => {
+    expect(parseRetryAfterMs('3600')).toBe(RETRY_AFTER_MAX_MS);
   });
 
   it('is undefined when absent or unreadable', () => {
-    expect(parseRetryAfter(null)).toBeUndefined();
-    expect(parseRetryAfter(undefined)).toBeUndefined();
-    expect(parseRetryAfter('soon')).toBeUndefined();
+    expect(parseRetryAfterMs(null)).toBeUndefined();
+    expect(parseRetryAfterMs(undefined)).toBeUndefined();
+    expect(parseRetryAfterMs('soon')).toBeUndefined();
   });
 });
 
@@ -123,10 +135,14 @@ describe('DriveHttpError', () => {
     expect(error.status).toBe(403);
     expect(error.reason).toBe('storageQuotaExceeded');
     expect(error.kind).toBe('quota');
-    // A worker hands back only the message: the bracketed reason lets the
-    // main thread reclassify it.
+    // A worker hands back only the message: it still names the reason.
     expect(error.message).toMatch(/^Upload init failed: 403 \[storageQuotaExceeded\]$/);
-    expect(isDriveQuotaError(new Error(error.message))).toBe(true);
+  });
+
+  it('keeps a transport’s own wording when given one', () => {
+    const error = new DriveHttpError(404, 'notFound', { message: 'HTTP error 404: Not Found' });
+    expect(error.message).toBe('HTTP error 404: Not Found [notFound]');
+    expect(error.kind).toBe('other');
   });
 
   it('carries the error domain when the body named one', async () => {
@@ -155,21 +171,19 @@ describe('DriveHttpError', () => {
   });
 });
 
-describe('isDriveQuotaError', () => {
-  it('recognises the kind, or the bracketed reason in a bare message', () => {
-    expect(isDriveQuotaError(new DriveHttpError(403, 'storageQuotaExceeded'))).toBe(true);
-    expect(isDriveQuotaError(new Error('Upload failed: 403 [storageQuotaExceeded]'))).toBe(true);
-    expect(isDriveQuotaError({ kind: 'quota' })).toBe(true);
-    expect(isDriveQuotaError(new DriveHttpError(429, 'storageQuotaExceeded'))).toBe(false);
-    expect(
-      isDriveQuotaError(new Error('Upload failed: 429 Too Many Requests [storageQuotaExceeded]'))
-    ).toBe(false);
+describe('driveRefusal', () => {
+  it('a full account is the storage-full error; anything else stays as it is', () => {
+    const full = driveRefusal(new DriveHttpError(403, 'storageQuotaExceeded'));
+    expect(full).toBeInstanceOf(ProviderError);
+    expect((full as ProviderError).code).toBe('QUOTA_EXCEEDED');
+    // A 429 naming `storageQuotaExceeded` is a rate limit, not a full account.
+    const rate = new DriveHttpError(429, 'storageQuotaExceeded');
+    expect(driveRefusal(rate)).toBe(rate);
     // An API usage quota is not a full account.
-    expect(isDriveQuotaError(new DriveHttpError(403, 'quotaExceeded'))).toBe(false);
-    expect(isDriveQuotaError(new Error('Upload failed: 403 [quotaExceeded]'))).toBe(false);
-    expect(isDriveQuotaError(new DriveHttpError(403, 'userRateLimitExceeded'))).toBe(false);
-    expect(isDriveQuotaError(new Error('storage quota'))).toBe(false);
-    expect(isDriveQuotaError('nope')).toBe(false);
+    const usage = new DriveHttpError(403, 'quotaExceeded');
+    expect(driveRefusal(usage)).toBe(usage);
+    const limited = new DriveHttpError(403, 'userRateLimitExceeded');
+    expect(driveRefusal(limited)).toBe(limited);
   });
 });
 
@@ -190,20 +204,24 @@ describe('withDriveRetry', () => {
     expect(waits).toEqual([5000]);
   });
 
-  it('backs off 1 s, 2 s, 4 s (±20 %) without a Retry-After, and gives up after 4 attempts', async () => {
+  it('backs off on the shared policy without a Retry-After, and gives up after MAX_RETRY_ATTEMPTS', async () => {
     const { waits, sleep } = noSleep();
     const fn = vi.fn(async () => {
       throw new DriveHttpError(403, 'userRateLimitExceeded');
     });
-    await expect(withDriveRetry(fn, { sleep, random: () => 0.5 })).rejects.toMatchObject({
+    await expect(withDriveRetry(fn, { sleep, random: () => 0 })).rejects.toMatchObject({
       kind: 'rate-limit'
     });
-    expect(fn).toHaveBeenCalledTimes(4);
-    expect(waits).toEqual([1000, 2000, 4000]);
+    expect(fn).toHaveBeenCalledTimes(MAX_RETRY_ATTEMPTS);
+    const base = Array.from(
+      { length: MAX_RETRY_ATTEMPTS - 1 },
+      (_, i) => RETRY_BASE_DELAY_MS * 2 ** i
+    );
+    expect(waits).toEqual(base);
 
     const jittered = noSleep();
-    await withDriveRetry(fn, { sleep: jittered.sleep, random: () => 0 }).catch(() => {});
-    expect(jittered.waits).toEqual([800, 1600, 3200]);
+    await withDriveRetry(fn, { sleep: jittered.sleep, random: () => 0.5 }).catch(() => {});
+    expect(jittered.waits).toEqual(base.map((ms) => ms + Math.floor(0.5 * RETRY_JITTER_MS)));
   });
 
   it('retries a transient 503', async () => {
@@ -222,7 +240,7 @@ describe('withDriveRetry', () => {
       .mockRejectedValueOnce(new DriveHttpError(429, undefined, { retryAfterMs: 0 }))
       .mockResolvedValueOnce('ok');
     await expect(withDriveRetry(fn, { sleep, random: () => 0.5 })).resolves.toBe('ok');
-    expect(waits).toEqual([1000]);
+    expect(waits).toEqual([RETRY_BASE_DELAY_MS + Math.floor(0.5 * RETRY_JITTER_MS)]);
   });
 
   it('reports each wait with the attempt about to be made', async () => {
@@ -235,8 +253,13 @@ describe('withDriveRetry', () => {
       .mockResolvedValueOnce('ok');
     await expect(withDriveRetry(fn, { sleep, random: () => 0.5, onWait })).resolves.toBe('ok');
     expect(onWait.mock.calls).toEqual([
-      [5000, expect.objectContaining({ status: 429 }), 2, 4],
-      [2000, expect.objectContaining({ status: 503 }), 3, 4]
+      [5000, expect.objectContaining({ status: 429, kind: 'rate-limit' }), 2, MAX_RETRY_ATTEMPTS],
+      [
+        RETRY_BASE_DELAY_MS * 2 + Math.floor(0.5 * RETRY_JITTER_MS),
+        expect.objectContaining({ status: 503, kind: 'transient' }),
+        3,
+        MAX_RETRY_ATTEMPTS
+      ]
     ]);
   });
 
@@ -265,5 +288,163 @@ describe('withDriveRetry', () => {
       withDriveRetry(fn, { sleep, retryOn: (kind) => kind === 'rate-limit' })
     ).rejects.toMatchObject({ status: 503 });
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands retryOn the thrown error, so a step tagged on it can decide', async () => {
+    const { sleep } = noSleep();
+    const tagged = (phase: string) => Object.assign(new DriveHttpError(503), { phase });
+    const fn = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(tagged('init'))
+      .mockRejectedValueOnce(tagged('put'));
+    const retryOn = vi.fn(
+      (kind: string, error: unknown) =>
+        kind === 'transient' && (error as DriveHttpError).phase !== 'put'
+    );
+    await expect(withDriveRetry(fn, { sleep, retryOn })).rejects.toMatchObject({
+      status: 503,
+      phase: 'put'
+    });
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(retryOn.mock.calls.map(([, e]) => (e as DriveHttpError).phase)).toEqual(['init', 'put']);
+  });
+});
+
+/** A gapi rejection, the shape `gapi.client.drive.*` (and the REST shim) reject with. */
+function gapiError(status: number, reason: string, headers: Record<string, string> = {}) {
+  const result = {
+    error: { code: status, message: reason, errors: [{ domain: 'usageLimits', reason }] }
+  };
+  return { result, body: JSON.stringify(result), status, statusText: '', headers };
+}
+
+describe('Drive failure classification', () => {
+  it('reads the reason from an error body, object or text', () => {
+    const body = { error: { errors: [{ reason: 'userRateLimitExceeded' }] } };
+    expect(driveErrorReason(body)).toBe('userRateLimitExceeded');
+    expect(driveErrorReason(JSON.stringify(body))).toBe('userRateLimitExceeded');
+    expect(driveErrorReason('not json')).toBeUndefined();
+    expect(driveErrorReason(null)).toBeUndefined();
+  });
+
+  it('a 429, and a 403 with either rate-limit reason, is a rate limit', () => {
+    expect(isDriveRateLimit({ status: 429 })).toBe(true);
+    expect(isDriveRateLimit({ status: 403, reason: 'rateLimitExceeded' })).toBe(true);
+    expect(isDriveRateLimit({ status: 403, reason: 'userRateLimitExceeded' })).toBe(true);
+  });
+
+  it('other 403s are not: permissions, auth, a full drive', () => {
+    expect(isDriveRateLimit({ status: 403, reason: 'insufficientPermissions' })).toBe(false);
+    expect(isDriveRateLimit({ status: 403, reason: 'storageQuotaExceeded' })).toBe(false);
+    expect(isDriveRateLimit({ status: 403 })).toBe(false);
+    expect(isDriveRateLimit({ status: 500 })).toBe(false);
+  });
+
+  it('only a 403 storageQuotaExceeded is a full drive', () => {
+    expect(isDriveStorageFull({ status: 403, reason: 'storageQuotaExceeded' })).toBe(true);
+    // An API usage quota resets: a rate limit, never "full".
+    expect(isDriveStorageFull({ status: 403, reason: 'quotaExceeded' })).toBe(false);
+    expect(isDriveRateLimit({ status: 403, reason: 'quotaExceeded' })).toBe(true);
+    expect(isDriveStorageFull({ status: 403, reason: 'rateLimitExceeded' })).toBe(false);
+    expect(isDriveStorageFull({ status: 429, reason: 'storageQuotaExceeded' })).toBe(false);
+    expect(isDriveStorageFull({ status: 429 })).toBe(false);
+  });
+
+  it('the storage-full error carries the code MEGA uses', () => {
+    const error = driveStorageFullError();
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error.code).toBe('QUOTA_EXCEEDED');
+    expect(error.providerType).toBe('google-drive');
+    expect(error.message).toMatch(/storage is full/i);
+  });
+
+  it('reads a gapi rejection, its headers in any case', () => {
+    expect(driveFailureOf(gapiError(403, 'rateLimitExceeded', { 'retry-after': '2' }))).toEqual({
+      status: 403,
+      reason: 'rateLimitExceeded',
+      retryAfterMs: 2000,
+      domain: 'usageLimits'
+    });
+    expect(driveFailureOf(gapiError(429, 'x', { 'Retry-After': '1' }))?.retryAfterMs).toBe(1000);
+    expect(driveFailureOf(new DriveHttpError(429, undefined, { retryAfterMs: 300 }))).toEqual({
+      status: 429,
+      reason: undefined,
+      retryAfterMs: 300
+    });
+    expect(driveFailureOf(new Error('network'))).toBeUndefined();
+  });
+});
+
+describe('withDriveRetry on gapi rejections and real timers', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('waits out Retry-After on a 429, then succeeds', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(gapiError(429, 'rateLimitExceeded', { 'retry-after': '3' }))
+      .mockResolvedValueOnce('ok');
+    const done = withDriveRetry(request);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(done).resolves.toBe('ok');
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['rateLimitExceeded', 'userRateLimitExceeded'])(
+    'retries a 403 %s with backoff when there is no Retry-After',
+    async (reason) => {
+      const request = vi
+        .fn()
+        .mockRejectedValueOnce(gapiError(403, reason))
+        .mockRejectedValueOnce(gapiError(403, reason))
+        .mockResolvedValueOnce('ok');
+      const done = withDriveRetry(request);
+      await vi.runAllTimersAsync();
+      await expect(done).resolves.toBe('ok');
+      expect(request).toHaveBeenCalledTimes(3);
+    }
+  );
+
+  it('does not retry a 403 insufficientPermissions, nor a full drive', async () => {
+    for (const reason of ['insufficientPermissions', 'storageQuotaExceeded']) {
+      const refusal = gapiError(403, reason);
+      const request = vi.fn().mockRejectedValue(refusal);
+      await expect(withDriveRetry(request)).rejects.toBe(refusal);
+      expect(request).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('does not retry an error without a status (network, parse)', async () => {
+    const request = vi.fn().mockRejectedValue(new Error('Network error'));
+    await expect(withDriveRetry(request)).rejects.toThrow('Network error');
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after MAX_RETRY_ATTEMPTS tries with the last error', async () => {
+    const last = gapiError(429, 'rateLimitExceeded');
+    const request = vi.fn().mockRejectedValue(last);
+    const done = withDriveRetry(request);
+    const settled = done.catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    expect(await settled).toBe(last);
+    expect(request).toHaveBeenCalledTimes(MAX_RETRY_ATTEMPTS);
+  });
+
+  it('never waits longer than the cap, whatever Retry-After asks', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(gapiError(429, 'rateLimitExceeded', { 'retry-after': '86400' }))
+      .mockResolvedValueOnce('ok');
+    const done = withDriveRetry(request);
+    await vi.advanceTimersByTimeAsync(RETRY_AFTER_MAX_MS - 1);
+    expect(request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(done).resolves.toBe('ok');
   });
 });

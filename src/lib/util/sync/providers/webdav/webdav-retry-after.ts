@@ -22,8 +22,9 @@ export const RETRY_AFTER_MAX_RETRIES = 2;
  * The wait a response asks for, in ms: only a 503, only a readable
  * `Retry-After` (delay-seconds, or an HTTP-date — RFC 9110 allows both and
  * generic servers and proxies send dates), only up to `RETRY_AFTER_MAX_MS`.
- * Null otherwise. Deliberately not Drive's `parseRetryAfter` (`drive-http.ts`):
- * that one caps a long wait and always retries; here a long wait means "don't".
+ * Null otherwise. Deliberately not the Drive/OneDrive `parseRetryAfterMs`
+ * (`core/http-retry.ts`): that one caps a long wait and always retries; here a
+ * long wait means "don't".
  */
 export function retryAfterDelayMs(
   status: number | undefined,

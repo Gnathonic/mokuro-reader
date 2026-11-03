@@ -1,12 +1,17 @@
-import { GOOGLE_DRIVE_CONFIG, type DriveChange, type DriveFile } from './constants';
+import {
+  GOOGLE_DRIVE_CONFIG,
+  driveApiBase,
+  driveUploadBase,
+  type DriveChange,
+  type DriveFile
+} from './constants';
 import { tokenManager } from './token-manager';
 import {
-  DriveHttpError,
   classifyDriveFailure,
-  driveErrorDomain,
-  driveErrorReason,
+  driveFailureOf,
   driveHttpErrorFromXhr,
-  parseRetryAfter,
+  driveRefusal,
+  driveStorageFullError,
   withDriveRetry,
   type DriveFailureKind,
   type DriveRetryOptions
@@ -48,40 +53,6 @@ class DriveApiError extends Error {
     super(message);
     this.name = 'DriveApiError';
   }
-}
-
-/** Case-insensitive lookup in a gapi rejection's plain-object headers. */
-function headerValue(headers: unknown, name: string): string | undefined {
-  if (!headers || typeof headers !== 'object') return undefined;
-  const wanted = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
-    if (key.toLowerCase() === wanted && typeof value === 'string') return value;
-  }
-  return undefined;
-}
-
-/**
- * A gapi rejection (`{ status, result, body, headers }`) as a DriveHttpError,
- * so it can be classified and retried. Anything without an HTTP status
- * (offline, script failures) passes through untouched.
- */
-function fromGapiError(error: unknown): unknown {
-  const gapiError = error as {
-    status?: unknown;
-    result?: { error?: { message?: unknown } };
-    body?: unknown;
-    headers?: unknown;
-    message?: unknown;
-  } | null;
-  if (!gapiError || typeof gapiError.status !== 'number' || gapiError.status === 0) return error;
-  const reason = driveErrorReason(gapiError.result) ?? driveErrorReason(gapiError.body);
-  const domain = driveErrorDomain(gapiError.result) ?? driveErrorDomain(gapiError.body);
-  const detail = gapiError.result?.error?.message ?? gapiError.message;
-  return new DriveHttpError(gapiError.status, reason, {
-    context: typeof detail === 'string' && detail ? detail : 'Drive API error',
-    retryAfterMs: parseRetryAfter(headerValue(gapiError.headers, 'retry-after')),
-    domain
-  });
 }
 
 /** Requests that CREATE a file or folder retry rate limits only: a 5xx may have created it. */
@@ -204,71 +175,69 @@ class DriveApiClient {
     });
   }
 
-  /** One gapi request, retried on a rate limit or 5xx after Retry-After; see drive-http.ts. */
-  private retryingGapiCall<T>(
-    apiCall: () => Promise<T>,
-    retryOn?: DriveRetryOptions['retryOn']
-  ): Promise<T> {
-    return withDriveRetry(
-      async () => {
-        try {
-          return await apiCall();
-        } catch (error) {
-          throw fromGapiError(error);
-        }
-      },
-      { retryOn }
-    );
+  /**
+   * One gapi request, its rate limits and 5xx retried on their own
+   * (`withDriveRetry`), so a paged listing resumes at its page.
+   */
+  private request<T>(call: () => Promise<T>, retryOn?: DriveRetryOptions['retryOn']): Promise<T> {
+    return withDriveRetry(call, { retryOn });
   }
 
-  private handleApiCall<T>(
-    apiCall: () => Promise<T>,
-    retryOnAuth = true,
-    retryOn?: DriveRetryOptions['retryOn']
-  ): Promise<T> {
-    return this.handleApiFailure(() => this.retryingGapiCall(apiCall, retryOn), retryOnAuth);
-  }
-
-  /** Classifies a failed `operation` (its requests already retried): auth path or a typed error. */
-  private async handleApiFailure<T>(operation: () => Promise<T>, retryOnAuth = true): Promise<T> {
+  private async handleApiCall<T>(apiCall: () => Promise<T>, retryOnAuth = true): Promise<T> {
     try {
-      return await operation();
+      return await apiCall();
     } catch (error: any) {
+      const failure = driveFailureOf(error);
       console.error('Drive API error caught:', error);
-      console.error('Error details - status:', error.status, 'message:', error.message);
+      console.error(
+        'Error details - status:',
+        error.status,
+        'reason:',
+        failure?.reason,
+        'domain:',
+        failure?.domain,
+        'message:',
+        error.message
+      );
+
+      const kind: DriveFailureKind | undefined =
+        failure?.status !== undefined
+          ? classifyDriveFailure(failure.status, failure.reason)
+          : undefined;
+      if (kind === 'quota') throw driveStorageFullError();
 
       const isNetworkError =
         error.message?.toLowerCase().includes('network') ||
         error.message?.toLowerCase().includes('offline') ||
         error.status === 0;
-      const kind: DriveFailureKind | undefined =
-        error instanceof DriveHttpError ? error.kind : undefined;
 
-      // Only a real auth failure re-authenticates — a full account or a
-      // rate limit answered 403 too, and re-auth cannot fix either.
+      // Only a real auth failure re-authenticates — a full account, a rate
+      // limit that outlasted its retries, a Drive limit and a refusal Drive
+      // meant all answer 403 too, and re-auth fixes none of them.
       if (!isNetworkError && kind === 'auth') {
         await handleAuthError(error.status, retryOnAuth);
       }
 
-      throw new DriveApiError(
-        error.message || 'Unknown API error',
-        error.status,
-        isNetworkError,
-        error instanceof DriveHttpError ? error.reason : undefined,
-        kind
-      );
+      // gapi rejects with no `.message`, so its error's text alone would drop
+      // the status and reason: name them, as the transport errors do.
+      const detail: string | undefined = error.message || error.result?.error?.message;
+      const message = failure?.status
+        ? `${detail || 'Drive API error'}: ${failure.status}` +
+          (failure.reason ? ` [${failure.reason}]` : '')
+        : detail || 'Unknown API error';
+      throw new DriveApiError(message, error.status, isNetworkError, failure?.reason, kind);
     }
   }
 
   async listFiles(query: string, fields = 'files(id, name, mimeType)'): Promise<DriveFile[]> {
-    return this.handleApiFailure(async () => {
+    return this.handleApiCall(async () => {
       const allFiles: DriveFile[] = [];
       let pageToken: string | undefined = undefined;
 
       do {
         // Each page is retried on its own: a 429 on page N must not re-fetch
         // (and re-count) the pages already in hand.
-        const { result } = await this.retryingGapiCall(() =>
+        const { result } = await this.request(() =>
           gapi.client.drive.files.list({
             q: query,
             fields: `nextPageToken, ${fields}`,
@@ -294,7 +263,7 @@ class DriveApiClient {
    */
   async getStartPageToken(): Promise<string> {
     return this.handleFeedFailure(() =>
-      this.retryingGapiCall(async () => {
+      this.request(async () => {
         const { result } = await gapi.client.drive.changes.getStartPageToken({
           fields: 'startPageToken'
         });
@@ -322,21 +291,24 @@ class DriveApiClient {
     try {
       return await operation();
     } catch (error: any) {
-      const status: number | undefined =
-        typeof error?.status === 'number' ? error.status : undefined;
+      // A DriveHttpError or gapi's own rejection (`{ status, result }`) alike.
+      const info = driveFailureOf(error);
+      const status = info?.status || undefined;
       if (status === 401) await handleAuthError(status);
-      const httpError = error instanceof DriveHttpError ? error : undefined;
+      const kind = status ? classifyDriveFailure(status, info?.reason) : undefined;
+      const detail: string | undefined = error?.message || error?.result?.error?.message;
       const failure = new DriveApiError(
-        error?.message || 'Unknown API error',
+        status
+          ? `${detail || 'Drive API error'}: ${status}` + (info?.reason ? ` [${info.reason}]` : '')
+          : detail || 'Unknown API error',
         status,
         !status,
-        httpError?.reason,
+        info?.reason,
         // Never `auth` past this point: only the 401 above is.
-        httpError ? (httpError.kind === 'auth' ? 'other' : httpError.kind) : undefined
+        kind === 'auth' ? 'other' : kind
       );
       const refusedPosition = pageToken !== undefined && status === 400;
-      const passing = (kind: DriveFailureKind) => kind === 'rate-limit' || kind === 'transient';
-      const kind = status ? (httpError?.kind ?? classifyDriveFailure(status)) : undefined;
+      const passing = (k: DriveFailureKind) => k === 'rate-limit' || k === 'transient';
       if (status && kind && !refusedPosition && !passing(kind)) failure.feedUnavailable = true;
       throw failure;
     }
@@ -359,7 +331,7 @@ class DriveApiClient {
       let token = pageToken;
       for (let page = 1; ; page++) {
         if (page > maxPages) return null;
-        const { result } = await this.retryingGapiCall(() =>
+        const { result } = await this.request(() =>
           gapi.client.drive.changes.list({
             pageToken: token,
             pageSize: 1000,
@@ -385,38 +357,40 @@ class DriveApiClient {
    */
   async folderHasChildren(folderId: string): Promise<boolean> {
     return this.handleApiCall(async () => {
-      const { result } = await gapi.client.drive.files.list({
-        q: `'${folderId}' in parents and trashed=false`,
-        fields: 'files(id)',
-        pageSize: 1
-      });
+      const { result } = await this.request(() =>
+        gapi.client.drive.files.list({
+          q: `'${folderId}' in parents and trashed=false`,
+          fields: 'files(id)',
+          pageSize: 1
+        })
+      );
       return (result.files?.length ?? 0) > 0;
     });
   }
 
   async createFolder(name: string, parentId?: string): Promise<string> {
-    return this.handleApiCall(
-      async () => {
-        const resource: any = {
-          mimeType: GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER,
-          name
-        };
+    return this.handleApiCall(async () => {
+      const resource: any = {
+        mimeType: GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER,
+        name
+      };
 
-        if (parentId) {
-          resource.parents = [parentId];
-        }
+      if (parentId) {
+        resource.parents = [parentId];
+      }
 
-        const { result } = await gapi.client.drive.files.create({
-          resource,
-          fields: 'id'
-        });
+      const { result } = await this.request(
+        () =>
+          gapi.client.drive.files.create({
+            resource,
+            fields: 'id'
+          }),
+        // A 5xx may have made the folder already; a retry would make a duplicate.
+        rateLimitOnly
+      );
 
-        return result.id || '';
-      },
-      true,
-      // A 5xx may have made the folder already; a retry would make a duplicate.
-      rateLimitOnly
-    );
+      return result.id || '';
+    });
   }
 
   /**
@@ -445,7 +419,8 @@ class DriveApiClient {
       }
     }
 
-    // Download file with XMLHttpRequest for progress tracking
+    // Download file with XMLHttpRequest for progress tracking; a GET is
+    // idempotent, so rate limits and 5xx are simply asked again.
     return withDriveRetry(() => this.downloadOnce(fileId, token, totalSize, onProgress));
   }
 
@@ -457,7 +432,7 @@ class DriveApiClient {
   ): Promise<Blob> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('GET', `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+      xhr.open('GET', `${driveApiBase()}/drive/v3/files/${fileId}?alt=media`);
       xhr.setRequestHeader('Authorization', `Bearer ${token}`);
       xhr.responseType = 'blob';
 
@@ -472,7 +447,11 @@ class DriveApiClient {
           resolve(xhr.response as Blob);
           return;
         }
-        const error = await driveHttpErrorFromXhr(xhr, 'HTTP error');
+        const error = await driveHttpErrorFromXhr(
+          xhr,
+          'HTTP error',
+          `HTTP error ${xhr.status}: ${xhr.statusText}`
+        );
         if (error.kind === 'auth') {
           // Handle authentication errors using shared helper
           try {
@@ -481,7 +460,7 @@ class DriveApiClient {
             reject(authError);
           }
         } else {
-          reject(error);
+          reject(driveRefusal(error));
         }
       };
 
@@ -507,7 +486,7 @@ class DriveApiClient {
     form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
     form.append('file', blob);
 
-    const url = `https://www.googleapis.com/upload/drive/v3/files${fileId ? `/${fileId}` : ''}?uploadType=multipart`;
+    const url = `${driveUploadBase()}/drive/v3/files${fileId ? `/${fileId}` : ''}?uploadType=multipart`;
     const token = tokenManager.isAuthenticated() ? this.getCurrentToken() : null;
 
     if (!token) {
@@ -563,7 +542,7 @@ class DriveApiClient {
                 reject(authError);
               }
             } else {
-              reject(error);
+              reject(driveRefusal(error));
             }
           };
 
@@ -573,16 +552,19 @@ class DriveApiClient {
 
           xhr.send(form);
         }),
-      // An update (PATCH) is idempotent; a create may already exist after a 5xx.
+      // Rate limits send the same form again. An update (PATCH) is idempotent;
+      // a create may already exist after a 5xx.
       { retryOn: fileId ? undefined : rateLimitOnly }
     );
   }
 
   async deleteFile(fileId: string): Promise<void> {
     return this.handleApiCall(async () => {
-      await gapi.client.drive.files.delete({
-        fileId
-      });
+      await this.request(() =>
+        gapi.client.drive.files.delete({
+          fileId
+        })
+      );
     });
   }
 
@@ -592,13 +574,15 @@ class DriveApiClient {
    */
   async moveFile(fileId: string, newParentId: string, oldParentId: string): Promise<void> {
     return this.handleApiCall(async () => {
-      await gapi.client.drive.files.update({
-        fileId,
-        addParents: newParentId,
-        removeParents: oldParentId,
-        fields: 'id,parents',
-        resource: {} // Empty resource required by gapi types
-      });
+      await this.request(() =>
+        gapi.client.drive.files.update({
+          fileId,
+          addParents: newParentId,
+          removeParents: oldParentId,
+          fields: 'id,parents',
+          resource: {} // Empty resource required by gapi types
+        })
+      );
     });
   }
 
@@ -615,13 +599,15 @@ class DriveApiClient {
     }
   ): Promise<DriveFile> {
     return this.handleApiCall(async () => {
-      const { result } = await gapi.client.drive.files.update({
-        fileId,
-        resource,
-        addParents: options?.addParents,
-        removeParents: options?.removeParents,
-        fields: options?.fields || 'id,name,parents,modifiedTime,size,description'
-      });
+      const { result } = await this.request(() =>
+        gapi.client.drive.files.update({
+          fileId,
+          resource,
+          addParents: options?.addParents,
+          removeParents: options?.removeParents,
+          fields: options?.fields || 'id,name,parents,modifiedTime,size,description'
+        })
+      );
       return result as DriveFile;
     });
   }
@@ -633,10 +619,12 @@ class DriveApiClient {
    */
   async getFileMetadata(fileId: string, fields: string): Promise<any> {
     return this.handleApiCall(async () => {
-      const { result } = await gapi.client.drive.files.get({
-        fileId,
-        fields
-      });
+      const { result } = await this.request(() =>
+        gapi.client.drive.files.get({
+          fileId,
+          fields
+        })
+      );
       return result;
     });
   }
@@ -647,11 +635,13 @@ class DriveApiClient {
    */
   async updateFileDescription(fileId: string, description: string): Promise<void> {
     return this.handleApiCall(async () => {
-      await gapi.client.drive.files.update({
-        fileId,
-        resource: { description },
-        fields: 'id,description'
-      });
+      await this.request(() =>
+        gapi.client.drive.files.update({
+          fileId,
+          resource: { description },
+          fields: 'id,description'
+        })
+      );
     });
   }
 

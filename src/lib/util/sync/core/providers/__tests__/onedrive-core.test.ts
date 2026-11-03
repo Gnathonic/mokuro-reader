@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { onedriveCore } from '../onedrive-core';
+import { ProviderError } from '$lib/util/sync/provider-interface';
 
 describe('onedriveCore', () => {
   beforeEach(() => {
@@ -302,6 +303,87 @@ describe('onedriveCore', () => {
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2); // no retry
     });
 
+    it('a 507 on the upload session fails at once with QUOTA_EXCEEDED', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 507,
+        statusText: 'Insufficient Storage',
+        headers: new Headers({ 'Retry-After': '0' }),
+        text: async () => '{"error":{"code":"insufficientStorage"}}'
+      } as Response);
+
+      const err = await onedriveCore
+        .uploadFile({
+          seriesTitle: 'S',
+          filename: 'v.cbz',
+          blob: new Blob([new Uint8Array(100)]),
+          credentials: { accessToken: 'TOKEN' }
+        })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect((err as ProviderError).code).toBe('QUOTA_EXCEEDED');
+      expect((err as ProviderError).message).toMatch(/storage is full/i);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1); // waiting frees no storage
+    });
+
+    it('a 507 on an upload chunk fails at once with QUOTA_EXCEEDED', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ uploadUrl: 'https://upload.example/xyz' })
+      } as Response);
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 507,
+        statusText: 'Insufficient Storage',
+        text: async () => ''
+      } as Response);
+
+      const err = await onedriveCore
+        .uploadFile({
+          seriesTitle: 'S',
+          filename: 'v.cbz',
+          blob: new Blob([new Uint8Array(100)]),
+          credentials: { accessToken: 'TOKEN' }
+        })
+        .catch((e: unknown) => e);
+      expect((err as ProviderError).code).toBe('QUOTA_EXCEEDED');
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2); // session + one chunk, no retry
+    });
+
+    it('a 429 on the upload session is still retried after Retry-After', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(fetch).mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: new Headers({ 'Retry-After': '2' })
+        } as Response);
+        vi.mocked(fetch).mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ uploadUrl: 'https://upload.example/xyz' })
+        } as Response);
+        vi.mocked(fetch).mockResolvedValueOnce({
+          ok: true,
+          status: 201,
+          json: async () => ({ id: 'after-429' })
+        } as Response);
+
+        const done = onedriveCore.uploadFile({
+          seriesTitle: 'S',
+          filename: 'v.cbz',
+          blob: new Blob([new Uint8Array(100)]),
+          credentials: { accessToken: 'TOKEN' }
+        });
+        await vi.advanceTimersByTimeAsync(1999);
+        expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(done).resolves.toMatchObject({ fileId: 'after-429' });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('fails a 507 session creation at once — a full drive is never retried', async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: false,
@@ -318,7 +400,10 @@ describe('onedriveCore', () => {
           blob: new Blob([new Uint8Array(10)]),
           credentials: { accessToken: 'TOKEN' }
         })
-      ).rejects.toThrow(/storage full \(507 insufficientStorage\)/);
+      ).rejects.toMatchObject({
+        code: 'QUOTA_EXCEEDED',
+        message: expect.stringMatching(/storage is full/)
+      });
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     });
 
@@ -338,8 +423,108 @@ describe('onedriveCore', () => {
           blob: new Blob([new Uint8Array(10)]),
           credentials: { accessToken: 'TOKEN' }
         })
-      ).rejects.toThrow(/quotaLimitReached/);
+      ).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
+    // A quota code means a full drive whatever status carries it: read before
+    // the retryable check, so a 429/503 naming one is not retried five times
+    // and then reported as a generic failure.
+    it.each([
+      [503, 'quotaLimitReached'],
+      [429, 'insufficientStorage'],
+      [408, 'quotaLimitReached']
+    ])(
+      'a %i naming %s on the upload session fails at once with QUOTA_EXCEEDED',
+      async (status, code) => {
+        vi.mocked(fetch).mockResolvedValue({
+          ok: false,
+          status,
+          statusText: 'Refused',
+          text: async () => JSON.stringify({ error: { code } }),
+          headers: new Headers({ 'Retry-After': '0' })
+        } as Response);
+
+        const err = await onedriveCore
+          .uploadFile({
+            seriesTitle: 'S',
+            filename: 'v.cbz',
+            blob: new Blob([new Uint8Array(10)]),
+            credentials: { accessToken: 'TOKEN' }
+          })
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect((err as ProviderError).code).toBe('QUOTA_EXCEEDED');
+        expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+      }
+    );
+
+    it.each([
+      [503, 'quotaLimitReached'],
+      [429, 'insufficientStorage']
+    ])(
+      'a %i naming %s on an upload chunk fails at once, without retries or a probe',
+      async (status, code) => {
+        vi.mocked(fetch).mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ uploadUrl: 'https://upload.example/xyz' })
+        } as Response);
+        vi.mocked(fetch).mockResolvedValue({
+          ok: false,
+          status,
+          statusText: 'Refused',
+          text: async () => JSON.stringify({ error: { innerError: { code } } }),
+          headers: new Headers({ 'Retry-After': '0' })
+        } as Response);
+
+        const err = await onedriveCore
+          .uploadFile({
+            seriesTitle: 'S',
+            filename: 'v.cbz',
+            blob: new Blob([new Uint8Array(10)]),
+            credentials: { accessToken: 'TOKEN' }
+          })
+          .catch((e: unknown) => e);
+        expect((err as ProviderError).code).toBe('QUOTA_EXCEEDED');
+        expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2); // session + one chunk
+      }
+    );
+
+    it('a 503 without a quota code on the upload session is still retried, its body read', async () => {
+      vi.useFakeTimers();
+      try {
+        const text503 = vi.fn(async () =>
+          JSON.stringify({ error: { code: 'serviceNotAvailable' } })
+        );
+        vi.mocked(fetch).mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          text: text503,
+          headers: new Headers({ 'Retry-After': '1' })
+        } as unknown as Response);
+        vi.mocked(fetch).mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ uploadUrl: 'https://upload.example/xyz' })
+        } as Response);
+        vi.mocked(fetch).mockResolvedValueOnce({
+          ok: true,
+          status: 201,
+          json: async () => ({ id: 'after-503' })
+        } as Response);
+
+        const done = onedriveCore.uploadFile({
+          seriesTitle: 'S',
+          filename: 'v.cbz',
+          blob: new Blob([new Uint8Array(10)]),
+          credentials: { accessToken: 'TOKEN' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect(done).resolves.toMatchObject({ fileId: 'after-503' });
+        expect(text503).toHaveBeenCalledTimes(1); // drained, not left unread
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('fails a 507 chunk at once, without retries or a completed-upload probe', async () => {
@@ -362,7 +547,7 @@ describe('onedriveCore', () => {
           blob: new Blob([new Uint8Array(10)]),
           credentials: { accessToken: 'TOKEN' }
         })
-      ).rejects.toThrow(/storage full \(507/);
+      ).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
     });
 

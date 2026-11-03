@@ -37,7 +37,7 @@ import {
   deleteItem
 } from '../graph-client';
 import { ProviderError } from '../../../provider-interface';
-import { GraphQuotaError } from '../graph-errors';
+import { oneDriveStorageFullError } from '../graph-errors';
 
 describe('OneDriveProvider.listCloudVolumes', () => {
   let provider: OneDriveProvider;
@@ -177,40 +177,20 @@ describe('upload failure classification', () => {
     return provider;
   }
 
-  it("the core's own GraphQuotaError becomes QUOTA_EXCEEDED, by instance rather than by text", async () => {
-    // The main-thread core throws the typed error itself; its message is
-    // incidental here.
-    const error = new GraphQuotaError(507, 'insufficientStorage');
-    error.message = 'session refused';
-    const provider = providerWithCoreFailure(error);
-
-    const upload = await provider.uploadFile('volume-data.json', new Blob(['x'])).catch((e) => e);
-    expect(upload).toBeInstanceOf(ProviderError);
-    expect(upload.code).toBe('QUOTA_EXCEEDED');
-    expect(upload.message).toMatch(/storage is full/);
-
-    const download = await provider
-      .downloadFile({ fileId: 'f', name: 'v.cbz', path: 'S/v.cbz' } as never)
-      .catch((e) => e);
-    expect(download.code).toBe('QUOTA_EXCEEDED');
-  });
-
-  it('a full drive (worker message) becomes QUOTA_EXCEEDED, not a retryable 5xx', async () => {
-    const provider = providerWithCoreFailure(
-      'Failed to create OneDrive upload session: OneDrive storage full (507 insufficientStorage)'
-    );
+  it('a full drive (the core’s storage-full error) stays QUOTA_EXCEEDED, not a retryable 5xx', async () => {
+    const provider = providerWithCoreFailure(oneDriveStorageFullError());
 
     const err = await provider.uploadFile('volume-data.json', new Blob(['x'])).catch((e) => e);
     expect(err).toBeInstanceOf(ProviderError);
     expect(err.code).toBe('QUOTA_EXCEEDED');
     expect(err.isNetworkError).toBe(false);
     expect(err.message).toMatch(/storage is full/);
-  });
 
-  it('a quotaLimitReached message is a full drive too', async () => {
-    const provider = providerWithCoreFailure('OneDrive storage full (403 quotaLimitReached)');
-    const err = await provider.uploadFile('volume-data.json', new Blob(['x'])).catch((e) => e);
-    expect(err.code).toBe('QUOTA_EXCEEDED');
+    // A download through the same core passes it through the same way.
+    const download = await provider
+      .downloadFile({ fileId: 'f', name: 'v.cbz', path: 'S/v.cbz' } as never)
+      .catch((e) => e);
+    expect(download.code).toBe('QUOTA_EXCEEDED');
   });
 
   it('other 5xx failures stay retryable UPLOAD_FAILED', async () => {
