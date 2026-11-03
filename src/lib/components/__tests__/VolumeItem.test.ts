@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterAll, afterEach, beforeAll, beforeEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -365,6 +365,28 @@ describe('VolumeItem hover + Delete', () => {
 });
 
 describe('VolumeItem menu "Delete from cloud"', () => {
+  // Flowbite's popper calls the Popover API as its menu's intro starts; jsdom
+  // has none, and the missing method surfaced as an uncaught error that fails
+  // the run although every assertion passed.
+  const popoverMethods = ['showPopover', 'hidePopover', 'togglePopover'] as const;
+  const stubbed: (typeof popoverMethods)[number][] = [];
+  beforeAll(() => {
+    for (const name of popoverMethods) {
+      if (typeof HTMLElement.prototype[name] === 'function') continue;
+      Object.defineProperty(HTMLElement.prototype, name, {
+        configurable: true,
+        writable: true,
+        value: () => {}
+      });
+      stubbed.push(name);
+    }
+  });
+  afterAll(() => {
+    for (const name of stubbed.splice(0)) {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+    }
+  });
+
   afterEach(() => {
     cleanup();
     vi.mocked(promptConfirmation).mockClear();
