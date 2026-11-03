@@ -5,6 +5,7 @@
   import { showSnackbar } from '$lib/util';
   import {
     displayableImageBlob,
+    RASTER_FORMAT_NAMES,
     RASTER_IMAGE_TYPES,
     sniffRasterBlob
   } from '$lib/util/raster-image';
@@ -133,7 +134,7 @@
     if (input.files && input.files[0]) {
       const file = input.files[0];
       if (!(await isValidImageFile(file))) {
-        showSnackbar('Please select a JPEG, PNG, WebP, GIF or AVIF image (SVG is not supported)');
+        showSnackbar(`Please select a ${RASTER_FORMAT_NAMES} image (SVG is not supported)`);
         return;
       }
       onSelect(file, { pageIndex: null, cropZone: null });

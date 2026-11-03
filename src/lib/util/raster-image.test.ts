@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { IMAGE_MIME_TYPES } from '$lib/import/types';
 import {
+  RASTER_FORMAT_NAMES,
   RASTER_IMAGE_TYPES,
   displayableImageBlob,
   isRasterImageType,
@@ -155,6 +156,31 @@ describe('rasterTypeForName', () => {
     for (const name of ['cover.svg', 'cover', 'index.html', '', null, undefined]) {
       expect(rasterTypeForName(name), String(name)).toBeNull();
     }
+  });
+
+  it('names nothing for an extension that is an Object.prototype key', () => {
+    for (const name of ['p.constructor', 'p.toString', 'p.valueOf', 'p.__proto__']) {
+      expect(rasterTypeForName(name), name).toBeNull();
+    }
+  });
+
+  it('reads a file name as a file name, not a URL', () => {
+    expect(rasterTypeForName('p#01.jpg')).toBe('image/jpeg');
+    expect(rasterTypeForName('what?.png')).toBe('image/png');
+  });
+});
+
+describe('displayableImageBlob and an odd extension', () => {
+  it('shows an untyped page whose name ends in an Object.prototype key, as PNG', () => {
+    const page = new File(['x'], '001.constructor');
+    expect(displayableImageBlob(page).type).toBe('image/png');
+  });
+});
+
+describe('RASTER_FORMAT_NAMES', () => {
+  it('names one format per accepted type', () => {
+    const names = RASTER_FORMAT_NAMES.replace(' or ', ', ').split(', ');
+    expect(names).toHaveLength(RASTER_IMAGE_TYPES.length);
   });
 });
 

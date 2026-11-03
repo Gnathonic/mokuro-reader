@@ -29,7 +29,7 @@ import {
 } from '$lib/util/series-extraction';
 import { generateUUID } from '$lib/util/uuid';
 import { naturalSort } from '$lib/util/natural-sort';
-import { rasterTypeForName, toRasterImageFile } from '$lib/util/raster-image';
+import { RASTER_FORMAT_NAMES, rasterTypeForName, toRasterImageFile } from '$lib/util/raster-image';
 
 // ============================================
 // TYPES
@@ -527,7 +527,7 @@ export async function keepRasterImages(
   }
   if (rejected.length > 0) {
     console.warn(
-      `Skipped ${rejected.length} file(s) that are not a supported raster image (JPEG, PNG, WebP, GIF, AVIF, BMP, TIFF or JPEG XL):`,
+      `Skipped ${rejected.length} file(s) that are not a supported raster image (${RASTER_FORMAT_NAMES}):`,
       rejected
     );
   }

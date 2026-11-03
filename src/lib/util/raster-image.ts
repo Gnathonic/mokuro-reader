@@ -17,7 +17,7 @@
  * the import allowlist. A test keeps the two sets equal.
  */
 
-import { IMAGE_MIME_TYPES } from '$lib/import/types';
+import { IMAGE_EXTENSIONS, IMAGE_MIME_TYPES } from '$lib/import/types';
 
 export const RASTER_IMAGE_TYPES = [
   'image/jpeg',
@@ -31,6 +31,9 @@ export const RASTER_IMAGE_TYPES = [
 ] as const;
 
 export type RasterImageType = (typeof RASTER_IMAGE_TYPES)[number];
+
+/** The accepted formats, as a user-facing list for "not supported" messages. */
+export const RASTER_FORMAT_NAMES = 'JPEG, PNG, WebP, GIF, AVIF, BMP, TIFF or JPEG XL';
 
 const RASTER_TYPE_SET: ReadonlySet<string> = new Set(RASTER_IMAGE_TYPES);
 
@@ -147,13 +150,19 @@ export function isRasterImageType(type: string | null | undefined): type is Rast
   return RASTER_TYPE_SET.has(essence(type));
 }
 
-/** The raster type a file name's extension names, or null (`.svg`, no extension, …). */
+/**
+ * The raster type a file name's extension names, or null (`.svg`, no
+ * extension, …). A file name, not a URL: `p#01.jpg` is a `.jpg`.
+ */
 export function rasterTypeForName(name: string | null | undefined): RasterImageType | null {
-  const base = (name ?? '').split(/[?#]/)[0];
+  const base = name ?? '';
   const dot = base.lastIndexOf('.');
   if (dot < 0) return null;
-  const type = IMAGE_MIME_TYPES[base.slice(dot + 1).toLowerCase()];
-  return type && isRasterImageType(type) ? (essence(type) as RasterImageType) : null;
+  const ext = base.slice(dot + 1).toLowerCase();
+  // `IMAGE_MIME_TYPES` is a plain object: `constructor` would index a function.
+  if (!IMAGE_EXTENSIONS.has(ext)) return null;
+  const type = IMAGE_MIME_TYPES[ext];
+  return isRasterImageType(type) ? (essence(type) as RasterImageType) : null;
 }
 
 /** The extension {@link toRasterImageFile} names a file of this type with. */

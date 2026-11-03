@@ -22,7 +22,7 @@
   import { get } from 'svelte/store';
   import { figuresFor, readingStats, readingStatsReady } from '$lib/reading-history/stats-store';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
-  import { rasterOrNull, sniffRasterBlob } from '$lib/util/raster-image';
+  import { RASTER_FORMAT_NAMES, rasterOrNull, sniffRasterBlob } from '$lib/util/raster-image';
 
   let open = $state(false);
   let loading = $state(true);
@@ -436,7 +436,7 @@
 
   async function saveCover(file: File) {
     if (!(await isValidImageFile(file))) {
-      showSnackbar('Please select a JPEG, PNG, WebP, GIF or AVIF image (SVG is not supported)');
+      showSnackbar(`Please select a ${RASTER_FORMAT_NAMES} image (SVG is not supported)`);
       return;
     }
 

@@ -8,7 +8,7 @@ import {
 } from '$lib/util/file-processing-pool';
 import { generateUUID } from '$lib/util/uuid';
 import { mayBeImageType } from '$lib/util/image-content-type';
-import { toRasterImageFile } from '$lib/util/raster-image';
+import { RASTER_FORMAT_NAMES, toRasterImageFile } from '$lib/util/raster-image';
 import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
 import { fetchVolumeManifest, type VolumeManifest } from './deep-link-manifest';
 import { parseImportedSeriesFile, type PendingSeriesFile } from './series-file-import';
@@ -207,7 +207,7 @@ async function rasterCoverFile(
   const file = await toRasterImageFile(blob, `${normalizedVolume}.img`, { renameExtension: true });
   if (!file) {
     console.warn(
-      '[HTML Download] Cover is not a supported raster image (JPEG, PNG, WebP, GIF, AVIF, BMP, TIFF or JPEG XL); skipped:',
+      `[HTML Download] Cover is not a supported raster image (${RASTER_FORMAT_NAMES}); skipped:`,
       url
     );
     return null;
