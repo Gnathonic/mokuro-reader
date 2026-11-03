@@ -78,11 +78,10 @@ jobs:
       - name: Provider suite against cloudsim
         run: npx vitest run src/lib/interop/cloudsim --no-file-parallelism
 
-      - name: Production build
+      # `npm run build` ends with scripts/check-no-test-hooks.mjs, so a build that
+      # leaks a cloud test hook fails this step.
+      - name: Production build (fails if cloud test hooks leak)
         run: npm run build
-
-      - name: No cloud test hooks in the production build
-        run: node scripts/check-no-test-hooks.mjs
 
       - name: Upload the cloudsim log
         if: failure()
