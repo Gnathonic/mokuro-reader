@@ -17,8 +17,10 @@ import { settings, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
 import { showSnackbar } from '$lib/util';
 import { isMobilePlatform } from '$lib/util/platform';
 import { get } from 'svelte/store';
+import { escapeFieldText, placeholderNonce, tagSafeTitle } from './field-html';
 
 export * from './cropper';
+export { escapeFieldText, fieldHtmlToPreviewText, tagSafeTitle } from './field-html';
 
 // Template variables that can be used in field mappings
 export const FIELD_TEMPLATES = [
@@ -91,32 +93,32 @@ export function generateImageFilename(
 /**
  * Resolves dynamic tag templates in a tags string
  * e.g., "{series} mining" -> "One_Piece mining"
+ *
+ * Also used for deck names. Titles go through `tagSafeTitle`: Anki renders
+ * `{{Tags}}` and `{{Deck}}` unescaped, so a title must not carry markup there.
  */
 export function resolveDynamicTags(tags: string, metadata: VolumeMetadata): string {
   if (!tags) return '';
 
-  let resolved = tags;
-
-  // Replace {series} with sanitized series title
-  if (metadata.seriesTitle) {
-    // Anki tags can't have spaces, replace with underscores
-    const sanitized = metadata.seriesTitle.replace(/\s+/g, '_');
-    resolved = resolved.replace(/\{series\}/g, sanitized);
-  } else {
-    // Remove the tag if no series title available
-    resolved = resolved.replace(/\{series\}/g, '');
-  }
-
-  // Replace {volume} with sanitized volume title
-  if (metadata.volumeTitle) {
-    const sanitized = metadata.volumeTitle.replace(/\s+/g, '_');
-    resolved = resolved.replace(/\{volume\}/g, sanitized);
-  } else {
-    resolved = resolved.replace(/\{volume\}/g, '');
-  }
+  // Function replacers: a title's `$&` / `$'` must never splice the template.
+  const series = metadata.seriesTitle ? tagSafeTitle(metadata.seriesTitle) : '';
+  const volume = metadata.volumeTitle ? tagSafeTitle(metadata.volumeTitle) : '';
+  const resolved = tags.replace(/\{(series|volume)\}/g, (_match, name: string) =>
+    name === 'series' ? series : volume
+  );
 
   // Clean up any double spaces and trim
   return resolved.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Replaces `{existing}` in a tags template with the card's previous tags
+ * (update mode), or removes it when there are none. A function replacer, so a
+ * `$&` in a tag is inserted literally.
+ */
+export function resolveExistingTags(tags: string, previousTags?: string[]): string {
+  const existing = previousTags ? previousTags.join(' ') : '';
+  return tags.replace(/\{existing\}/g, () => existing);
 }
 
 /**
@@ -129,9 +131,21 @@ export type ResolveTemplateOptions = {
   fieldName?: string;
 };
 
+/** Every text variable a field template can name (`{image}`/`{cover}` are pictures). */
+const TEMPLATE_VARIABLE = /\{(selection|sentence|series|volume|page_num|page_filename|existing)\}/g;
+
 /**
  * Resolves all template variables in a field template string.
  * Returns the resolved string, or null if the template is empty or only contains {image}.
+ *
+ * The template itself is the user's own field HTML and stays raw, as does the
+ * note's `{existing}` content. Every other value is reader-sourced — OCR text,
+ * titles, filenames — and is HTML-escaped (`escapeFieldText`) before newlines
+ * become `<br>`, so it lands in the note as text and never as markup.
+ *
+ * All variables are substituted in ONE pass with a function replacer: a value
+ * is never re-scanned for other `{variables}`, and replacement patterns such
+ * as `$&` or `$'` inside it are inserted literally.
  */
 export function resolveTemplate(
   template: string,
@@ -144,62 +158,35 @@ export function resolveTemplate(
     return null; // {image} and {cover} are handled specially as picture parameters, not as text
   }
 
-  let resolved = template;
+  const values: Record<string, string> = {
+    selection: selectedText ? escapeFieldText(selectedText) : '',
+    sentence: sentence ? escapeFieldText(sentence) : '',
+    series: metadata.seriesTitle ? escapeFieldText(metadata.seriesTitle) : '',
+    volume: metadata.volumeTitle ? escapeFieldText(metadata.volumeTitle) : '',
+    // Page number is already 1-indexed from callers
+    page_num: options?.pageNumber !== undefined ? escapeFieldText(String(options.pageNumber)) : '',
+    page_filename: options?.pageFilename ? escapeFieldText(options.pageFilename) : ''
+  };
+
+  // {existing} is the existing value of the current field (update mode). It is
+  // held back behind a placeholder until after whitespace normalization and
+  // the newline conversion, so newlines inside its own HTML (a <style> block)
+  // are not turned into <br>. The token carries a random per-call nonce: OCR
+  // text that spells a token can never collide with one.
+  const existingValue =
+    options?.previousValues && options?.fieldName
+      ? options.previousValues[options.fieldName] || ''
+      : undefined;
   const existingPlaceholders: string[] = [];
+  const nonce = placeholderNonce();
 
-  // Replace {selection} with selected text
-  if (selectedText) {
-    resolved = resolved.replace(/\{selection\}/g, selectedText);
-  } else {
-    resolved = resolved.replace(/\{selection\}/g, '');
-  }
-
-  // Replace {sentence} with full sentence
-  if (sentence) {
-    resolved = resolved.replace(/\{sentence\}/g, sentence);
-  } else {
-    resolved = resolved.replace(/\{sentence\}/g, '');
-  }
-
-  // Replace {series} with series title
-  if (metadata.seriesTitle) {
-    resolved = resolved.replace(/\{series\}/g, metadata.seriesTitle);
-  } else {
-    resolved = resolved.replace(/\{series\}/g, '');
-  }
-
-  // Replace {volume} with volume title
-  if (metadata.volumeTitle) {
-    resolved = resolved.replace(/\{volume\}/g, metadata.volumeTitle);
-  } else {
-    resolved = resolved.replace(/\{volume\}/g, '');
-  }
-
-  // Replace {page_num} with page number (already 1-indexed from callers)
-  if (options?.pageNumber !== undefined) {
-    resolved = resolved.replace(/\{page_num\}/g, String(options.pageNumber));
-  } else {
-    resolved = resolved.replace(/\{page_num\}/g, '');
-  }
-
-  // Replace {page_filename} with page filename
-  if (options?.pageFilename) {
-    resolved = resolved.replace(/\{page_filename\}/g, options.pageFilename);
-  } else {
-    resolved = resolved.replace(/\{page_filename\}/g, '');
-  }
-
-  // Replace {existing} with existing value of the current field (for update mode)
-  if (options?.previousValues && options?.fieldName) {
-    const existingValue = options.previousValues[options.fieldName] || '';
-    resolved = resolved.replace(/\{existing\}/g, () => {
-      const token = `__MOKURO_EXISTING_${existingPlaceholders.length}__`;
-      existingPlaceholders.push(existingValue);
-      return token;
-    });
-  } else {
-    resolved = resolved.replace(/\{existing\}/g, '');
-  }
+  let resolved = template.replace(TEMPLATE_VARIABLE, (_match, name: string) => {
+    if (name !== 'existing') return values[name];
+    if (existingValue === undefined) return '';
+    const token = `__MOKURO_EXISTING_${nonce}_${existingPlaceholders.length}__`;
+    existingPlaceholders.push(existingValue);
+    return token;
+  });
 
   // Clean up whitespace (but preserve HTML structure)
   // Only collapse multiple spaces, don't trim inside HTML tags
@@ -211,11 +198,10 @@ export function resolveTemplate(
   resolved = resolved.replace(/\n/g, '<br>');
 
   // Restore raw existing HTML after normalization.
-  // This prevents converting newlines inside <style> blocks to <br>, which breaks CSS.
   if (existingPlaceholders.length > 0) {
-    resolved = resolved.replace(/__MOKURO_EXISTING_(\d+)__/g, (_match, idx) => {
-      const index = Number(idx);
-      return existingPlaceholders[index] ?? '';
+    const token = new RegExp(`__MOKURO_EXISTING_${nonce}_(\\d+)__`, 'g');
+    resolved = resolved.replace(token, (_match, idx: string) => {
+      return existingPlaceholders[Number(idx)] ?? '';
     });
   }
 
@@ -947,13 +933,7 @@ export async function updateLastCard(
   const fieldMappings = options?.fieldMappings || config.fieldMappings;
 
   // Resolve dynamic tags with volume metadata and {existing}
-  let resolvedTags = tags || '';
-  // Replace {existing} with previous tags
-  if (options?.previousTags) {
-    resolvedTags = resolvedTags.replace(/\{existing\}/g, options.previousTags.join(' '));
-  } else {
-    resolvedTags = resolvedTags.replace(/\{existing\}/g, '');
-  }
+  let resolvedTags = resolveExistingTags(tags || '', options?.previousTags);
   // Resolve {series} and {volume}
   resolvedTags = metadata ? resolveDynamicTags(resolvedTags, metadata) : resolvedTags;
 

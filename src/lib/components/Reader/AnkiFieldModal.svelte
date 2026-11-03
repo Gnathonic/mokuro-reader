@@ -12,6 +12,8 @@
     DYNAMIC_TAGS,
     resolveTemplate,
     resolveDynamicTags,
+    resolveExistingTags,
+    tagSafeTitle,
     getModelConfig,
     type CreateCardOptions,
     type UpdateCardOptions
@@ -138,10 +140,10 @@
     }
 
     if (metadata.seriesTitle) {
-      vars.push({ template: '{series}', value: metadata.seriesTitle.replace(/\s+/g, '_') });
+      vars.push({ template: '{series}', value: tagSafeTitle(metadata.seriesTitle) });
     }
     if (metadata.volumeTitle) {
-      vars.push({ template: '{volume}', value: metadata.volumeTitle.replace(/\s+/g, '_') });
+      vars.push({ template: '{volume}', value: tagSafeTitle(metadata.volumeTitle) });
     }
 
     return vars;
@@ -152,14 +154,8 @@
     const store = $cropperStore;
     if (!store || !template) return '';
 
-    let resolved = template;
-
     // Replace {existing} with previous tags
-    if (store.previousTags) {
-      resolved = resolved.replace(/\{existing\}/g, store.previousTags.join(' '));
-    } else {
-      resolved = resolved.replace(/\{existing\}/g, '');
-    }
+    let resolved = resolveExistingTags(template, store.previousTags);
 
     // Use resolveDynamicTags for {series} and {volume}
     resolved = resolveDynamicTags(resolved, store.metadata || {});
