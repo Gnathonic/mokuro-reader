@@ -25,7 +25,9 @@ import {
   collectSeriesFileFromBytes,
   collectSeriesFileFromFile,
   recordImportedSeriesTitle,
-  resetImportedSeriesFiles
+  recordSeriesFile,
+  resetImportedSeriesFiles,
+  type PendingSeriesFile
 } from './series-file-import';
 import { isSeriesFilePath } from '$lib/metadata/series-file';
 import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
@@ -195,12 +197,18 @@ function noteSkipAll(batch: number | undefined, decision: GroupDecision): void {
     skippedBatches.set(batch, cancelling ? 'cancel' : 'skip');
 }
 
-/** Sources found inside `parent` belong to its import. */
+/**
+ * Sources found inside `parent` belong to its import — and carry its
+ * `series.json` guard: an archive nested in a deep-linked one is the link's too.
+ */
 function inheritBatch(
   sources: PairedSource[] | undefined,
   parent: PairedSource
 ): PairedSource[] | undefined {
-  if (parent.batch !== undefined) for (const s of sources ?? []) s.batch ??= parent.batch;
+  for (const s of sources ?? []) {
+    if (parent.batch !== undefined) s.batch ??= parent.batch;
+    if (parent.protectedSeriesKeys) s.protectedSeriesKeys ??= parent.protectedSeriesKeys;
+  }
   return sources;
 }
 
@@ -569,6 +577,8 @@ async function streamExtractAllVolumes(
  * @param batch - The import this archive belongs to (`PairedSource.batch`).
  * @param reviewed - Collects the uuids of the image-only volumes approved for
  *   this archive, so the caller can settle them however this ends.
+ * @param protectedSeriesKeys - The guard a `series.json` inside this archive
+ *   is collected with (`PairedSource.protectedSeriesKeys`).
  */
 async function processArchiveContents(
   archiveFile: File,
@@ -577,7 +587,8 @@ async function processArchiveContents(
   archiveTitlePath?: string,
   review?: ArchiveReview,
   batch?: number,
-  reviewed: string[] = []
+  reviewed: string[] = [],
+  protectedSeriesKeys?: ReadonlySet<string>
 ): Promise<{
   success: boolean;
   error?: string;
@@ -654,7 +665,12 @@ async function processArchiveContents(
     });
     for (const entry of smallResult.entries) {
       if (isSeriesFilePath(entry.filename)) {
-        collectSeriesFileFromBytes(entry.filename, entry.data, archiveFile.lastModified);
+        collectSeriesFileFromBytes(
+          entry.filename,
+          entry.data,
+          archiveFile.lastModified,
+          protectedSeriesKeys
+        );
         continue;
       }
       const filename = entry.filename.split('/').pop() || entry.filename;
@@ -806,7 +822,8 @@ async function processArchiveContents(
         titlePath: joinTitlePath(archivePath, stripArchiveExtension(entry.filename)),
         estimatedSize: entry.data.byteLength,
         imageOnly: false,
-        batch
+        batch,
+        ...(protectedSeriesKeys ? { protectedSeriesKeys } : {})
       });
     }
   }
@@ -905,7 +922,12 @@ async function processSingleVolume(
       for (const entry of archiveEntries.entries) {
         if (isSystemFile(entry.filename)) continue;
         if (isSeriesFilePath(entry.filename)) {
-          collectSeriesFileFromBytes(entry.filename, entry.data, source.source.file.lastModified);
+          collectSeriesFileFromBytes(
+            entry.filename,
+            entry.data,
+            source.source.file.lastModified,
+            source.protectedSeriesKeys
+          );
           continue;
         }
         const ext = entry.filename.split('.').pop()?.toLowerCase() || '';
@@ -982,7 +1004,8 @@ async function processSingleVolume(
           source.titlePath,
           source.archiveReview,
           source.batch,
-          reviewed
+          reviewed,
+          source.protectedSeriesKeys
         );
       } finally {
         settleVolumesInFlight(reviewed);
@@ -1229,9 +1252,29 @@ function createArchiveSource(archiveFile: File, mokuroFile: File | null): Paired
   };
 }
 
+/** How a deep link's archive is imported (`importArchiveWithOptionalMokuro`). */
+export interface LinkedArchiveImportOptions {
+  /**
+   * The series a LINK's `series.json` must leave alone
+   * (`PendingSeriesFile.protectedSeriesKeys`), resolved once this import has
+   * its turn — not before: a queued import that ran meanwhile may have added
+   * the very series the link names. Applies to the `seriesFile` below and to
+   * every `series.json` found inside the archive (or archives nested in it).
+   * A failure to resolve it fails the import: no guard, no import.
+   */
+  protectSeries?: () => Promise<ReadonlySet<string>>;
+  /**
+   * A `series.json` that came WITH the archive (a manifest's): joins the batch
+   * inside the import turn, under the same guard, so no other import's apply
+   * can drain it against that import's titles.
+   */
+  seriesFile?: PendingSeriesFile | null;
+}
+
 export async function importArchiveWithOptionalMokuro(
   archiveFile: File,
-  mokuroFile: File | null
+  mokuroFile: File | null,
+  options: LinkedArchiveImportOptions = {}
 ): Promise<ImportResult> {
   const result: ImportResult = {
     success: true,
@@ -1265,6 +1308,25 @@ export async function importArchiveWithOptionalMokuro(
   beginDirectImport();
 
   try {
+    if (options.protectSeries) {
+      try {
+        pairedSource.protectedSeriesKeys = await options.protectSeries();
+      } catch (error) {
+        // No guard, no import: a link's series.json would otherwise be free
+        // to land on any series the user has.
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        markProgressTrackerError(queueItem.id, `Could not read the library: ${message}`);
+        throw error;
+      }
+    }
+    if (options.seriesFile) {
+      recordSeriesFile(
+        pairedSource.protectedSeriesKeys
+          ? { ...options.seriesFile, protectedSeriesKeys: pairedSource.protectedSeriesKeys }
+          : options.seriesFile
+      );
+    }
+
     const processResult = await processSingleVolume(pairedSource, (status, progress) => {
       updateProgressTracker(queueItem.id, status, progress);
     });

@@ -253,6 +253,41 @@ describe('a deep link (final review #8)', () => {
     expect(await titles()).toEqual(['Deep', 'First']);
   });
 
+  it('reads its series guard only once it has its turn, after the running import saved', async () => {
+    // A link's series.json must not land on a series the user was importing
+    // right then: the guard is read once that import is done, so it sees it.
+    const first = importFiles([await volumeArchive('First', ['001.jpg', '002.jpg'])]);
+    await until(() => held.release.length === 1);
+
+    const seenAtGuard: string[][] = [];
+    const protectSeries = vi.fn(async () => {
+      seenAtGuard.push(await titles());
+      return new Set<string>();
+    });
+    const deep = importArchiveWithOptionalMokuro(await volumeArchive('Deep'), null, {
+      protectSeries
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(protectSeries).not.toHaveBeenCalled();
+
+    held.release.shift()!();
+    await first;
+    await deep;
+    await waitForQueue();
+    expect(seenAtGuard).toEqual([['First']]);
+  });
+
+  it('fails the import, saving nothing, when its series guard cannot be read', async () => {
+    const result = await importArchiveWithOptionalMokuro(await volumeArchive('Deep'), null, {
+      protectSeries: async () => {
+        throw new Error('library unreadable');
+      }
+    }).catch((error: Error) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(await titles()).toEqual([]);
+    expect(get(isImporting)).toBe(false);
+  });
+
   it('waits for the queue too, and the queue waits for it in turn', async () => {
     // A queued pair: the first holds the queue on its missing-files prompt.
     void importFiles([

@@ -15,7 +15,7 @@
  */
 
 import { getSeriesIndex, putSeriesIndex } from '$lib/metadata/series-index';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import {
   SERIES_FILE_NAME,
   mergeSeriesFileForCache,
@@ -35,7 +35,7 @@ export interface PendingSeriesFile {
   /** The file's own timestamp, ISO — the `source` stamp of the cached index. */
   modifiedTime: string;
   /**
-   * Series this file must NOT be applied to (`normalizeSeriesKey`): the ones
+   * Series this file must NOT be applied to (`protectedSeriesKey`): the ones
    * already in the library when a LINK brought the file, minus any the user
    * agreed in the import confirmation to let it update. A link's server is
    * whoever made the link; it may name a new series, but it does not get to
@@ -101,11 +101,28 @@ export async function collectSeriesFileFromFile(path: string, file: File): Promi
   if (parsed) recordSeriesFile(parsed);
 }
 
-/** Collect a `series.json` extracted from an archive. Never throws. */
+/**
+ * The fold a protected series is recorded and looked up by: the catalog's
+ * grouping fold plus unicode composition (`normalizeVolumeTitleKey`, the fold
+ * `series_metadata.folded_key` and the cloud folder match use), so a link that
+ * spells a series decomposed (NFD) still finds the composed one the user has.
+ */
+export function protectedSeriesKey(title: string): string {
+  return normalizeVolumeTitleKey(title);
+}
+
+/**
+ * Collect a `series.json` extracted from an archive. Never throws.
+ *
+ * @param protectedSeriesKeys the archive's guard, when a LINK brought it
+ *   (`PairedSource.protectedSeriesKeys`): a file inside a deep-linked archive
+ *   is just as much the link's as one its manifest listed.
+ */
 export function collectSeriesFileFromBytes(
   path: string,
   data: ArrayBuffer,
-  lastModified: number
+  lastModified: number,
+  protectedSeriesKeys?: ReadonlySet<string>
 ): void {
   let text: string;
   try {
@@ -115,7 +132,7 @@ export function collectSeriesFileFromBytes(
     return;
   }
   const parsed = parseImportedSeriesFile(path, text, data.byteLength, lastModified);
-  if (parsed) recordSeriesFile(parsed);
+  if (parsed) recordSeriesFile(protectedSeriesKeys ? { ...parsed, protectedSeriesKeys } : parsed);
 }
 
 // The batch: everything collected since the last apply. Module state rather
@@ -227,7 +244,7 @@ export async function applyImportedSeriesFiles(): Promise<void> {
       );
       continue;
     }
-    if (entry.protectedSeriesKeys?.has(normalizeSeriesKey(seriesTitle))) {
+    if (entry.protectedSeriesKeys?.has(protectedSeriesKey(seriesTitle))) {
       // Neither the facts nor the cached index: both would reach this series.
       console.info(
         `[Import] Not applying the ${SERIES_FILE_NAME} at '${entry.path}' to '${seriesTitle}': that series was already in the library and the import did not allow changing it`

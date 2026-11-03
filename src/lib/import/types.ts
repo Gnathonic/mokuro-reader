@@ -81,6 +81,12 @@ export interface PairedSource {
    * every later review of the same import (#285).
    */
   batch?: number;
+  /**
+   * Series a `series.json` found INSIDE this source must not be applied to
+   * (`PendingSeriesFile.protectedSeriesKeys`): set on a deep-linked archive,
+   * whose contents someone else chose. Archives found inside it inherit it.
+   */
+  protectedSeriesKeys?: ReadonlySet<string>;
 }
 
 export interface ArchiveReview {
