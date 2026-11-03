@@ -10,9 +10,9 @@
 
 import type { ConfirmationDetails } from '$lib/util/modals';
 import { describeLinkTarget, linkTargetWarnings, type LinkTarget } from '$lib/util/link-safety';
-import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { sanitizeTitleSegment } from '$lib/util/sanitize-title';
 import type { HtmlDownloadRequest } from './html-download-provider';
+import { protectedSeriesKey } from './series-file-import';
 
 export interface LinkImportPrompt extends ConfirmationDetails {
   message: string;
@@ -20,9 +20,10 @@ export interface LinkImportPrompt extends ConfirmationDetails {
   warnings: string[];
   notes: string[];
   /**
-   * Offered when the link can bring a `series.json` (it carries a manifest) and
-   * the series it names is already here: the box that lets it update that
-   * series. Never remembered — each link is a fresh decision.
+   * Offered whenever the series the link names is already here — a manifest
+   * can list a `series.json`, and any archive can carry one inside it: the box
+   * that lets it update that series. Never remembered — each link is a fresh
+   * decision.
    */
   seriesUpdate?: { label: string; seriesKey: string };
 }
@@ -61,8 +62,9 @@ function linkTargets(request: HtmlDownloadRequest): LinkTarget[] {
 /**
  * Build the confirmation for one import link.
  *
- * @param localSeries the library's series keys (`localSeriesKeys`), so the
- *   prompt can say the volume joins a series already here.
+ * @param localSeries the library's series keys (`localSeriesKeys`, the
+ *   `protectedSeriesKey` fold), so the prompt can say the volume joins a
+ *   series already here.
  */
 export function buildLinkImportPrompt(
   request: HtmlDownloadRequest,
@@ -71,32 +73,32 @@ export function buildLinkImportPrompt(
   const displayName = linkDisplayName(request);
   const targets = linkTargets(request);
 
-  // One line per host, one warning list per host: a link naming the same
-  // server three times is one server.
+  // One line per host — a link naming the same server three times is one
+  // server — but every target is judged: `https://a.example` and
+  // `http://a.example` are one host and only one of them is secure.
   const hosts: string[] = [];
   const warnings: string[] = [];
   for (const target of targets) {
-    if (hosts.includes(target.host)) continue;
-    hosts.push(target.host);
-    warnings.push(...linkTargetWarnings(target));
+    if (!hosts.includes(target.host)) hosts.push(target.host);
+    for (const warning of linkTargetWarnings(target)) {
+      if (!warnings.includes(warning)) warnings.push(warning);
+    }
   }
 
   const notes: string[] = [
     'Only continue if you trust this site: the files it sends are added to your library.'
   ];
   let seriesUpdate: LinkImportPrompt['seriesUpdate'];
-  const seriesKey = normalizeSeriesKey(sanitizeTitleSegment(request.manga));
+  const seriesKey = protectedSeriesKey(sanitizeTitleSegment(request.manga));
   if (request.manga && localSeries.has(seriesKey)) {
     notes.push(`“${request.manga}” is already in your library; this volume is added to it.`);
-    if (request.manifestUrl) {
-      notes.push(
-        `Its series info (AniList link, titles, tag) is left as it is, unless you tick the box below.`
-      );
-      seriesUpdate = {
-        label: `Let this link update the series info of “${request.manga}”`,
-        seriesKey
-      };
-    }
+    notes.push(
+      `Its series info (AniList link, titles, tag) is left as it is, unless you tick the box below.`
+    );
+    seriesUpdate = {
+      label: `Let this link update the series info of “${request.manga}”`,
+      seriesKey
+    };
   }
 
   return {

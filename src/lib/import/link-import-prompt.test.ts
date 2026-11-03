@@ -72,6 +72,33 @@ describe('buildLinkImportPrompt', () => {
     expect(prompt.warnings.join(' ')).toContain('10.0.0.2 is a private address');
   });
 
+  it('judges every target on a host, so plain http beside https on the same host still warns', () => {
+    // One host, two schemes: the manifest — which picks every other URL —
+    // travels in the clear even though the archive link is https.
+    const prompt = buildLinkImportPrompt(
+      cbz(
+        'https://books.example.com/S/V.cbz',
+        `&manifest=${encodeURIComponent('http://books.example.com/manifest')}`
+      ),
+      new Set()
+    );
+    expect(prompt.source.values).toEqual(['books.example.com']);
+    expect(prompt.warnings).toEqual([
+      'books.example.com does not use a secure connection (https). What is downloaded from it could be read or changed on the way.'
+    ]);
+  });
+
+  it('says a warning once, however many targets earn it', () => {
+    const prompt = buildLinkImportPrompt(
+      cbz(
+        'http://books.example.com/S/V.cbz',
+        `&manifest=${encodeURIComponent('http://books.example.com/manifest')}`
+      ),
+      new Set()
+    );
+    expect(prompt.warnings).toHaveLength(1);
+  });
+
   it('covers directory-mode links (source=…)', () => {
     const prompt = buildLinkImportPrompt(
       request('source=http://nas.local/manga&manga=Dr%20Stone&volume=Dr%20Stone%2001'),
@@ -100,13 +127,22 @@ describe('buildLinkImportPrompt', () => {
       });
     });
 
-    it('offers no box when the link brings no series info (no manifest)', () => {
+    it('offers the box without a manifest too: the archive itself can carry a series.json', () => {
       const prompt = buildLinkImportPrompt(
         cbz('https://books.example.com/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.cbz'),
         existing
       );
       expect(prompt.notes.join(' ')).toContain('already in your library');
-      expect(prompt.seriesUpdate).toBeUndefined();
+      expect(prompt.notes.join(' ')).toContain('left as it is, unless you tick the box');
+      expect(prompt.seriesUpdate?.seriesKey).toBe('dr stone');
+    });
+
+    it('matches a decomposed (NFD) spelling of a composed series name', () => {
+      const prompt = buildLinkImportPrompt(
+        cbz(`https://books.example.com/${encodeURIComponent('Pokémon'.normalize('NFD'))}/V.cbz`),
+        new Set(['pokémon'.normalize('NFC')])
+      );
+      expect(prompt.seriesUpdate?.seriesKey).toBe('pokémon'.normalize('NFC'));
     });
 
     it('matches the series the way the catalog groups it (case, spacing)', () => {
