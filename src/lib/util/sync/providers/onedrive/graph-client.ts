@@ -100,7 +100,7 @@ export async function downloadItemContent(accessToken: string, itemId: string): 
  * when it is gone (404).
  */
 export async function getItemStamp(accessToken: string, id: string): Promise<DriveItem | null> {
-  const url = `${BASE}/me/drive/items/${encodeURIComponent(id)}?$select=id,name,size,lastModifiedDateTime,eTag,cTag,file`;
+  const url = `${graphBase()}/me/drive/items/${encodeURIComponent(id)}?$select=id,name,size,lastModifiedDateTime,eTag,cTag,file`;
   const response = await fetch(url, { headers: authHeaders(accessToken) });
   if (response.status === 404) return null;
   if (!response.ok) await parseError(response);
