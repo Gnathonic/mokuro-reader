@@ -125,13 +125,13 @@ src/
 
 Located in `src/lib/util/sync/`, the app supports multiple cloud storage providers:
 
-| Provider     | Auth Method                     | Status                |
-| ------------ | ------------------------------- | --------------------- |
-| Google Drive | OAuth2 implicit flow            | Full support          |
-| MEGA         | Email/password (+ optional 2FA) | Full support          |
-| WebDAV       | URL + credentials               | Full support          |
-| OneDrive     | MSAL (OAuth2 auth code + PKCE)  | Full support          |
-| Local Folder | Directory picker (no account)   | Desktop Chromium only |
+| Provider     | Auth Method                                                        | Status                |
+| ------------ | ------------------------------------------------------------------ | --------------------- |
+| Google Drive | OAuth2 implicit flow, or auth code + PKCE through the auth backend | Full support          |
+| MEGA         | Email/password (+ optional 2FA)                                    | Full support          |
+| WebDAV       | URL + credentials                                                  | Full support          |
+| OneDrive     | MSAL (OAuth2 auth code + PKCE)                                     | Full support          |
+| Local Folder | Directory picker (no account)                                      | Desktop Chromium only |
 
 **Architecture:**
 
@@ -142,7 +142,16 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 
 **Google Drive specifics** (`providers/google-drive/`):
 
-- Uses OAuth2 implicit flow (access tokens only, ~1 hour expiry)
+- Uses OAuth2 implicit flow (access tokens only, ~1 hour expiry) — unless the build sets
+  `VITE_GDRIVE_AUTH_BACKEND=true`: then ONE sign-in (PKCE, full-page redirect to the static
+  `static/oauth/google-callback.html`) and silent renewals through
+  `src/routes/api/gdrive/{session,refresh,logout}` (server logic in `src/lib/server/gdrive-auth/`;
+  the refresh token lives sealed in an HttpOnly cookie, optionally bound to a device key). Read
+  tokens through `tokenManager.getAccessToken(minValidityMs)`, never the store or localStorage;
+  only `tokenManager.reconnect()` (a user's click) may start a sign-in; `getTimeUntilExpiry()`
+  is null while the session can renew. A flag-set build whose server cannot serve the routes
+  falls back to the implicit flow for that tab. Full design, env vars, error vocabulary and
+  runbook: `docs/gdrive-auth-backend.md`.
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
@@ -1931,6 +1940,11 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 ```
 
 - `VITE_GDRIVE_*`: required only for Google Drive sync.
+- `VITE_GDRIVE_AUTH_BACKEND=true` + the server-only `GDRIVE_CLIENT_SECRET`,
+  `GDRIVE_SESSION_KEY` (`openssl rand -base64 32`), optional `GDRIVE_SESSION_KEY_PREV`,
+  `GDRIVE_CLIENT_ID` (falls back to `VITE_GDRIVE_CLIENT_ID`) and `GDRIVE_POP=off`: the Drive
+  auth backend (`docs/gdrive-auth-backend.md`). Secrets never take a `VITE_`/`PUBLIC_` prefix;
+  `npm run build` fails if one set in its env shows up in the output.
 - `VITE_ONEDRIVE_CLIENT_ID`: required only for OneDrive sync. Register an
   Azure AD app (any Microsoft account tenant, "common" authority) and add the
   deploy origin as a **Single-page application** redirect URI. Scopes used:
