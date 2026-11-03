@@ -44,9 +44,9 @@ The content of a root file read is unchanged; only the transport changes. No mer
 2. **Receipts.** `UploadFileResult` gains optional `revision?: string`, and for Drive `parentId?`
    and `name?`. Each provider fills what its upload response already carries (Drive: widen the
    resumable session `fields=` to `id,name,size,modifiedTime,version,parents`; OneDrive: the final
-   item's `eTag`/`cTag`; WebDAV: the PUT response's `ETag` header when readable, else one PROPFIND
-   Depth 0 of that file after the PUT for ROOT files only; MEGA: the node; Local Folder: the stat
-   it already does). `uploadCacheEntry` carries them into the cache entry.
+   item's `eTag`/`cTag`; WebDAV: the PUT response's `ETag` header when readable, else NO revision —
+   never a stat after the PUT, which could see another device's write landing in between and bind
+   our bytes to its revision; MEGA: the node; Local Folder: the stat it already does). `uploadCacheEntry` carries them into the cache entry.
    `unifiedCloudManager.uploadFile` / `blindUploadFile` return the full `UploadFileResult` (callers
    that used the id string are updated). `positions-sync.ts` stops re-adding a degraded cache entry
    after the blind upload (the manager already added the receipt).
@@ -70,7 +70,8 @@ The content of a root file read is unchanged; only the transport changes. No mer
 4. **WebDAV listings** keep `etag` (`getetag`) on entries (`WebDAVFileMetadata.etag`, and as
    `revision`).
 5. **Small WebDAV costs on the push path:** memoize a successful `ensureMokuroFolder` per session
-   (cleared on logout/login); when the caller already knows the file's size (memo or stat), the
+   (cleared on logout/login) for UPLOADS only — every listing still asks, so a reader folder
+   deleted on the server is made again; when the caller already knows the file's size (memo or stat), the
    download may skip its HEAD probe.
 
 ## Part B: page turns stop re-uploading volume-data.json

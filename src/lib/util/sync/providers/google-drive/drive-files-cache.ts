@@ -398,6 +398,14 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    */
   private changesToken: string | null = null;
   private changesTokenGeneration = -1;
+  /**
+   * Drive answered a feed request with a status that is not auth (a 403 such
+   * as a token that cannot read the feed, a 5xx past its retries —
+   * `driveApiClient`'s feed rule). The feed is off for this session: every
+   * refresh lists in full, and no listing asks for a position, until the
+   * next login or cache clear (`clearCache`).
+   */
+  private feedUnavailable = false;
   /** Bumped when a whole-account fetch starts: a feed read it overtook is dropped. */
   private fetchEpoch = 0;
   private feedPromise: Promise<ChangeFeedResult> | null = null;
@@ -634,13 +642,24 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * same way and start the re-auth a second time.
    */
   private async takeStartPageToken(): Promise<string | null> {
+    if (this.feedUnavailable) return null;
     try {
       return await driveApiClient.getStartPageToken();
     } catch (error) {
       if (isDriveAuthFailure(error)) throw error;
+      this.noteFeedFailure(error);
       console.warn('[DriveCache] No change-feed position; the next refresh lists in full:', error);
       return null;
     }
+  }
+
+  /** A feed failure Drive meant for the session (see `feedUnavailable`). */
+  private noteFeedFailure(error: unknown): void {
+    if ((error as { feedUnavailable?: unknown } | null)?.feedUnavailable !== true) return;
+    if (!this.feedUnavailable) {
+      console.warn('[DriveCache] Change feed unavailable; listing in full until the next login');
+    }
+    this.feedUnavailable = true;
   }
 
   /**
@@ -682,6 +701,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     // from ITS position once it lands.
     if (this.fetchPromise) await this.fetchPromise;
     const generation = this.cacheGeneration;
+    if (this.feedUnavailable) return this.listInFull('the change feed is unavailable');
     const token = this.changesToken;
     if (!token || this.changesTokenGeneration !== generation || !this.isLoaded()) {
       return this.listInFull('no change-feed position');
@@ -699,6 +719,7 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     } catch (error) {
       if (isDriveAuthFailure(error)) throw error;
       if (generation !== this.cacheGeneration) return 'reset';
+      this.noteFeedFailure(error);
       return this.listInFull('the change feed could not be read', error);
     }
     // The account went away meanwhile (sign-out, switch): nothing to apply to.
@@ -1180,6 +1201,8 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     this.folders = new Map();
     this.changesToken = null;
     this.feedPromise = null;
+    // The next login asks the feed again.
+    this.feedUnavailable = false;
   }
 
   /**

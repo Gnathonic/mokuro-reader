@@ -5,6 +5,12 @@ import type { CloudCache } from './cloud-cache-interface';
 import type { CloudFileMetadata, ProviderType } from './provider-interface';
 import { clearRootFileMemo, noteRootFileUpload, rootFileMemoSize } from './root-file-memo';
 import type { SyncProvider } from './provider-interface';
+import {
+  clearVolumeDataDeferred,
+  noteVolumeDataDeferred,
+  volumeDataDeferred
+} from './reading-session';
+import { cloudPositionStamp, noteCloudPositions } from '$lib/positions/positions-cloud';
 
 function fakeCache(): CloudCache<CloudFileMetadata> {
   return {
@@ -76,5 +82,52 @@ describe('cacheManager and the root-file memo', () => {
 
     cacheManager.setActiveProvider('webdav');
     expect(rootFileMemoSize()).toBe(1);
+  });
+});
+
+describe('cacheManager and the per-session sync state', () => {
+  const folder = fakeProvider('filesystem', 'manga');
+
+  beforeEach(() => {
+    cacheManager.clearAll();
+    clearVolumeDataDeferred();
+    cacheManager.registerCache('webdav', fakeCache());
+    cacheManager.registerCache('google-drive', fakeCache());
+    cacheManager.registerCache('filesystem', fakeCache());
+  });
+
+  /** The cloud positions.json was seen holding volume `v` at stamp 5. */
+  const seePositions = () =>
+    noteCloudPositions(folder, { v: { t: 5, page: 3, chars: 10, device: 'd' } });
+
+  it('clearAll (logout, cache clear) forgets the cloud positions memo and the deferral', () => {
+    cacheManager.setActiveProvider('filesystem');
+    seePositions();
+    noteVolumeDataDeferred();
+    expect(cloudPositionStamp(folder, 'v')).toBe(5);
+
+    cacheManager.clearAll();
+    expect(cloudPositionStamp(folder, 'v')).toBeUndefined();
+    expect(volumeDataDeferred()).toBe(false);
+  });
+
+  it('switching providers forgets the cloud positions memo and the deferral', () => {
+    cacheManager.setActiveProvider('webdav');
+    seePositions();
+    noteVolumeDataDeferred();
+
+    cacheManager.setActiveProvider('google-drive');
+    expect(cloudPositionStamp(folder, 'v')).toBeUndefined();
+    expect(volumeDataDeferred()).toBe(false);
+  });
+
+  it('a connect forgets the cloud positions memo: another folder of the same name is another file', () => {
+    // Local Folder's account scope is the folder's basename: two folders both
+    // named "manga" share it, so a stamp seen in one must not vouch for the other.
+    cacheManager.setActiveProvider('filesystem');
+    seePositions();
+
+    cacheManager.setActiveProvider('filesystem');
+    expect(cloudPositionStamp(folder, 'v')).toBeUndefined();
   });
 });

@@ -44,6 +44,12 @@ vi.mock('../../cache-manager', () => ({
 vi.mock('./webdav-cache', () => ({ webdavCache: {} }));
 
 import { WebDAVProvider } from './webdav-provider';
+import {
+  clearRootFileMemo,
+  noteRootFileUpload,
+  readRootFile,
+  rootFileMemoSize
+} from '../../root-file-memo';
 import { fetchWithRetryAfter } from './webdav-retry-after';
 
 const identityMock = vi.mocked(fetchServerIdentity);
@@ -1247,52 +1253,35 @@ describe('WebDAVProvider conditional root-file reads (stat, receipts, etags)', (
     expect(mockClient.stat).not.toHaveBeenCalled();
   });
 
-  it('a root file without an ETag gets one stat after the PUT; an archive never does', async () => {
+  it('a root file whose PUT carried no ETag gets no stat after it, and leaves no memo entry', async () => {
+    // A stat after the PUT could see ANOTHER device's write that landed in
+    // between, and bind our bytes to its revision: the memo would then call
+    // that device's file "unchanged" and this device would never read it.
     const provider = await connected();
-    mockClient.stat.mockClear();
+    clearRootFileMemo();
+    // A read memoized the file under its getetag.
     mockClient.stat.mockResolvedValueOnce({
       type: 'file',
       lastmod: LASTMOD,
       size: 2,
-      etag: 'after-put'
+      etag: 'read-tag'
     });
-    mockCore.uploadFile.mockResolvedValueOnce({ fileId: '/mokuro-reader/positions.json' });
-    expect(await provider.uploadFile('positions.json', new Blob(['{}']))).toEqual({
-      fileId: '/mokuro-reader/positions.json',
-      size: 2,
-      modifiedTime: LASTMOD,
-      revision: 'after-put'
-    });
-    expect(mockClient.stat).toHaveBeenCalledTimes(1);
+    mockCore.downloadFile.mockResolvedValueOnce(new TextEncoder().encode('{}').buffer);
+    await readRootFile(provider, VOLUME_DATA);
+    expect(rootFileMemoSize()).toBe(1);
 
-    mockCore.uploadFile.mockResolvedValueOnce({ fileId: '/mokuro-reader/S/V.cbz' });
-    await provider.uploadFile('S/V.cbz', new Blob(['x']));
-    mockCore.uploadFile.mockResolvedValueOnce({ fileId: '/mokuro-reader/S/series.json' });
-    await provider.uploadFile('S/series.json', new Blob(['x']));
-    expect(mockClient.stat).toHaveBeenCalledTimes(1);
-  });
-
-  it('a server whose stats carry no getetag gets no receipt stat (it would buy nothing)', async () => {
-    const provider = await connected();
     mockClient.stat.mockClear();
-    mockClient.stat.mockResolvedValueOnce({ type: 'file', lastmod: LASTMOD, size: 2, etag: null });
-    mockCore.uploadFile.mockResolvedValue({ fileId: VOLUME_DATA.fileId });
-    await provider.uploadFile('volume-data.json', new Blob(['{}']));
-    expect(mockClient.stat).toHaveBeenCalledTimes(1);
-    await provider.uploadFile('volume-data.json', new Blob(['{}']));
-    expect(mockClient.stat).toHaveBeenCalledTimes(1);
-  });
-
-  it('a failed receipt stat leaves the receipt without a stamp, the upload still succeeds', async () => {
-    const provider = await connected();
-    mockClient.stat.mockRejectedValueOnce(davError(503));
     mockCore.uploadFile.mockResolvedValueOnce({ fileId: VOLUME_DATA.fileId });
-    expect(await provider.uploadFile('volume-data.json', new Blob(['{}']))).toEqual({
-      fileId: VOLUME_DATA.fileId
-    });
+    const sent = new Blob(['{"a":1}']);
+    const uploaded = await provider.uploadFile('volume-data.json', sent);
+    expect(uploaded).toEqual({ fileId: VOLUME_DATA.fileId });
+    expect(mockClient.stat).not.toHaveBeenCalled();
+
+    await noteRootFileUpload(provider, 'volume-data.json', sent, uploaded);
+    expect(rootFileMemoSize()).toBe(0);
   });
 
-  it('asks whether the reader folder exists once per session, again after a reconnect', async () => {
+  it('an upload asks whether the reader folder exists once per session, again after a reconnect', async () => {
     const provider = await connected();
     const folderChecks = () =>
       mockClient.exists.mock.calls.filter(([path]) => path === '/mokuro-reader').length;
@@ -1301,7 +1290,6 @@ describe('WebDAVProvider conditional root-file reads (stat, receipts, etags)', (
     mockCore.uploadFile.mockResolvedValue({ fileId: VOLUME_DATA.fileId, revision: 't' });
     await provider.uploadFile('volume-data.json', new Blob(['{}']));
     await provider.uploadFile('profiles.json', new Blob(['{}']));
-    await provider.listCloudVolumes();
     expect(folderChecks()).toBe(1);
 
     await provider.logout();
@@ -1312,6 +1300,23 @@ describe('WebDAVProvider conditional root-file reads (stat, receipts, etags)', (
     await expect(provider.uploadFile('volume-data.json', new Blob(['{}']))).rejects.toThrow();
     await provider.uploadFile('volume-data.json', new Blob(['{}']));
     expect(folderChecks()).toBe(3);
+  });
+
+  it('every listing checks the reader folder for real, and re-creates it when it went away', async () => {
+    const provider = await connected();
+    const folderChecks = () =>
+      mockClient.exists.mock.calls.filter(([path]) => path === '/mokuro-reader').length;
+    expect(folderChecks()).toBe(1);
+
+    await provider.listCloudVolumes();
+    expect(folderChecks()).toBe(2);
+
+    // Someone deleted the folder on the server: the next listing makes it again.
+    mockClient.createDirectory.mockClear();
+    mockClient.exists.mockResolvedValueOnce(false);
+    await provider.listCloudVolumes();
+    expect(folderChecks()).toBe(3);
+    expect(mockClient.createDirectory).toHaveBeenCalledWith('/mokuro-reader');
   });
 
   it('a download told the size by a fresh stat passes it on, so the core skips its HEAD', async () => {

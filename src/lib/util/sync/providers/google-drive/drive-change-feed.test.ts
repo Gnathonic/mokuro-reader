@@ -640,6 +640,59 @@ describe('driveFilesCache change feed (#288)', () => {
     });
   });
 
+  describe('a feed Drive will not serve this session (403, 5xx): no re-auth, full listings', () => {
+    const unavailable = (status: number) =>
+      Object.assign(new Error(`changes: ${status}`), {
+        status,
+        kind: 'other',
+        feedUnavailable: true
+      });
+
+    it.each([403, 503])(
+      'a %s from changes.list lists in full, then stops calling the feed',
+      async (status) => {
+        api.listChanges.mockRejectedValueOnce(unavailable(status));
+
+        await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+        expect(api.listFiles).toHaveBeenCalledTimes(1);
+        // That listing took no position, and neither does the next.
+        expect(api.getStartPageToken).not.toHaveBeenCalled();
+
+        await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+        expect(api.listChanges).toHaveBeenCalledTimes(1);
+        expect(api.getStartPageToken).not.toHaveBeenCalled();
+        expect(api.listFiles).toHaveBeenCalledTimes(2);
+      }
+    );
+
+    it('a 403 from changes.getStartPageToken still lists, and the feed stays off', async () => {
+      driveFilesCache.clear();
+      api.getStartPageToken.mockRejectedValueOnce(unavailable(403));
+      await driveFilesCache.fetch();
+      expect(driveFilesCache.isLoaded()).toBe(true);
+      expect(paths()).toContain('Series A/Volume 1.cbz');
+      api.listFiles.mockClear();
+      api.getStartPageToken.mockClear();
+
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+      expect(api.listChanges).not.toHaveBeenCalled();
+      expect(api.getStartPageToken).not.toHaveBeenCalled();
+      expect(api.listFiles).toHaveBeenCalledTimes(1);
+    });
+
+    it('the next login (a cache clear) tries the feed again', async () => {
+      api.listChanges.mockRejectedValueOnce(unavailable(403));
+      await driveFilesCache.refreshFromChanges();
+
+      driveFilesCache.clear();
+      api.getStartPageToken.mockClear();
+      await driveFilesCache.fetch();
+      expect(api.getStartPageToken).toHaveBeenCalledTimes(1);
+      feed([]);
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('unchanged');
+    });
+  });
+
   it('an AUTH failure is rethrown, and no full listing follows it', async () => {
     api.listChanges.mockRejectedValueOnce(
       Object.assign(new Error('Authentication expired'), { status: 401, kind: 'auth' })

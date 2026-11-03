@@ -15,7 +15,9 @@
  * The deferred flag makes that flush run a sync even when no page was turned
  * since the deferring sync (`ActivityTracker.flush`). Without it, a sync that
  * deferred and then a close with nothing new pending would leave the upload
- * to whatever sync happens next.
+ * to whatever sync happens next. The flush consumes it
+ * (`takeVolumeDataDeferred`), and a provider disconnect or switch clears it
+ * (`cacheManager`): a debt to one account is not owed to another.
  */
 
 import { openReader } from '$lib/positions/reader-open';
@@ -41,4 +43,17 @@ export function clearVolumeDataDeferred(): void {
 /** Does the session's end owe a volume-data upload? */
 export function volumeDataDeferred(): boolean {
   return deferred;
+}
+
+/**
+ * The flush that ends a session takes the debt: it starts the sync that owes
+ * the upload, so the flag is spent whether that upload then lands or not. A
+ * sync that never uploads (offline, a provider demoted read-only) must not
+ * turn every later tab-hide into another full sync; a sync that defers again
+ * sets the flag again.
+ */
+export function takeVolumeDataDeferred(): boolean {
+  const owed = deferred;
+  deferred = false;
+  return owed;
 }

@@ -7,7 +7,11 @@ vi.mock('./sync/unified-cloud-manager', () => ({
 }));
 
 import { ActivityTracker } from './activity-tracker';
-import { clearVolumeDataDeferred, noteVolumeDataDeferred } from './sync/reading-session';
+import {
+  clearVolumeDataDeferred,
+  noteVolumeDataDeferred,
+  volumeDataDeferred
+} from './sync/reading-session';
 
 let tracker: ActivityTracker;
 beforeEach(() => {
@@ -62,6 +66,23 @@ describe('progress sync batching', () => {
     await vi.advanceTimersByTimeAsync(6_000);
     expect(syncProgress).toHaveBeenCalledTimes(1);
     // That sync was in a reading session and left volume-data.json for the end.
+    noteVolumeDataDeferred();
+    tracker.flush();
+    expect(syncProgress).toHaveBeenCalledTimes(2);
+  });
+
+  it('flush() consumes the deferral: offline or read-only, the next hide does not sync again', async () => {
+    // The deferring sync's upload never happened (offline, demoted read-only):
+    // only a new deferral may owe the next flush a sync.
+    noteVolumeDataDeferred();
+    tracker.flush();
+    expect(syncProgress).toHaveBeenCalledTimes(1);
+    expect(volumeDataDeferred()).toBe(false);
+    tracker.flush();
+    tracker.flush();
+    expect(syncProgress).toHaveBeenCalledTimes(1);
+
+    // A later sync deferred again: the next flush owes one sync again.
     noteVolumeDataDeferred();
     tracker.flush();
     expect(syncProgress).toHaveBeenCalledTimes(2);

@@ -4,6 +4,7 @@ import {
   clearVolumeDataDeferred,
   noteVolumeDataDeferred,
   readingSessionActive,
+  takeVolumeDataDeferred,
   volumeDataDeferred
 } from './reading-session';
 
@@ -48,5 +49,13 @@ describe('the deferred flag', () => {
     expect(volumeDataDeferred()).toBe(true);
     clearVolumeDataDeferred();
     expect(volumeDataDeferred()).toBe(false);
+  });
+
+  it('is spent by the flush that takes it, whatever that sync then does', () => {
+    expect(takeVolumeDataDeferred()).toBe(false);
+    noteVolumeDataDeferred();
+    expect(takeVolumeDataDeferred()).toBe(true);
+    expect(volumeDataDeferred()).toBe(false);
+    expect(takeVolumeDataDeferred()).toBe(false);
   });
 });

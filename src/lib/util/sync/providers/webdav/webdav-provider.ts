@@ -21,7 +21,6 @@ import {
   type WebdavAuthMaterial
 } from '../../core/providers/webdav-authorization';
 import { isVerifiedPutHeader } from './webdav-upload';
-import { isMemoRootFile } from '../../root-file-memo';
 import { fetchWithRetryAfter, wrapWebdavClient } from './webdav-retry-after';
 import { fetchServerIdentity, type IdentityResult, type ServerPermissions } from './identity';
 import {
@@ -163,15 +162,11 @@ export class WebDAVProvider implements SyncProvider {
   private _supportsDepthInfinity: boolean | null = null; // null = unknown, will probe on first use
   /**
    * The reader folder exists on this connection (`ensureMokuroFolder` saw or
-   * made it): every upload and listing asked again with a PROPFIND otherwise.
+   * made it): an upload skips the PROPFIND that asks again. Listings never
+   * trust it — they re-create a folder deleted on the server meanwhile.
    * Per session — reset whenever the client is made or dropped.
    */
   private mokuroFolderReady = false;
-  /**
-   * A stat on this connection came back without `getetag`: this server gives
-   * no change tokens, so a receipt stat after a PUT would buy nothing.
-   */
-  private statsCarryNoEtag = false;
   /** Server-reported permissions (mokuro-bunko identity endpoint); null = unknown/generic server */
   private _capabilities: ServerPermissions | null = null;
   /** The server answered the mokuro-bunko identity endpoint: it compiles the metadata files. */
@@ -671,7 +666,6 @@ export class WebDAVProvider implements SyncProvider {
       );
       this.client = this.wrapClient(this.rawClient);
       this.mokuroFolderReady = false;
-      this.statsCarryNoEtag = false;
 
       // Test connection with timeout (Issue #206 Lesson #3)
       const controller = new AbortController();
@@ -995,9 +989,14 @@ export class WebDAVProvider implements SyncProvider {
     }
   }
 
-  private async ensureMokuroFolder(): Promise<void> {
+  /**
+   * Make sure the reader folder exists. `recheck` ignores the session latch:
+   * a listing always asks the server, so a folder deleted there is made again
+   * (the latch only spares the upload path a PROPFIND per file).
+   */
+  private async ensureMokuroFolder(recheck = false): Promise<void> {
     if (!this.client) return;
-    if (this.mokuroFolderReady) return;
+    if (this.mokuroFolderReady && !recheck) return;
 
     try {
       const exists = await this.client.exists(MOKURO_FOLDER);
@@ -1177,8 +1176,8 @@ export class WebDAVProvider implements SyncProvider {
     }
 
     try {
-      // Ensure mokuro folder exists first
-      await this.ensureMokuroFolder();
+      // Ensure mokuro folder exists first — asked for real on every listing
+      await this.ensureMokuroFolder(true);
 
       const client = this.client;
 
@@ -1347,13 +1346,11 @@ export class WebDAVProvider implements SyncProvider {
 
       console.log(`✅ Uploaded ${path} to WebDAV`);
       if (uploaded.serverPutVerified) this.notePutVerified();
-      // A ROOT file's receipt is worth one PROPFIND when the PUT gave no
-      // ETag: without it this device re-downloads its own write at the next
-      // sync (`root-file-memo.ts`). Never for archives or sidecars — a bulk
-      // backup must not pay a round trip per file.
-      if (!uploaded.revision && !this.statsCarryNoEtag && isMemoRootFile(path)) {
-        return { ...uploaded, ...(await this.receiptStamp(uploaded.fileId)) };
-      }
+      // The receipt is the PUT response's own ETag or nothing. Never a stat
+      // after the PUT: another device's write landing in between would bind
+      // OUR bytes to THEIR revision, and the read memo would then call their
+      // file unchanged (`root-file-memo.ts`). Without an ETag the memo drops
+      // the file, and the next read downloads it once.
       return uploaded;
     } catch (error) {
       // The folder may be what failed: ask again next time.
@@ -1627,7 +1624,6 @@ export class WebDAVProvider implements SyncProvider {
         etag?: string | null;
       };
       if (stat.type !== 'file') return null;
-      if (!stat.etag) this.statsCarryNoEtag = true;
       return {
         size: stat.size || 0,
         modifiedTime: stat.lastmod,
@@ -1638,28 +1634,6 @@ export class WebDAVProvider implements SyncProvider {
       const refused = this.refusedReadAuth(error);
       if (refused) throw refused;
       throw error;
-    }
-  }
-
-  /** A just-written file's server stamp, as receipt fields; {} when the stat fails. */
-  private async receiptStamp(fileId: string): Promise<Partial<UploadFileResult>> {
-    try {
-      const stamp = await this.statFile({
-        provider: 'webdav',
-        fileId,
-        path: fileId,
-        modifiedTime: '',
-        size: 0
-      });
-      if (!stamp) return {};
-      // The listing's own `getlastmodified` string, as listings store it.
-      return {
-        size: stamp.size,
-        ...(stamp.modifiedTime ? { modifiedTime: stamp.modifiedTime } : {}),
-        ...(stamp.revision ? { revision: stamp.revision } : {})
-      };
-    } catch {
-      return {};
     }
   }
 

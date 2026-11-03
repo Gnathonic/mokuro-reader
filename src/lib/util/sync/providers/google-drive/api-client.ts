@@ -30,6 +30,13 @@ export function escapeNameForDriveQuery(name: string): string {
 }
 
 class DriveApiError extends Error {
+  /**
+   * A change-feed request (`changes.*`) Drive answered with an HTTP status
+   * other than 401: the feed is not available to this session. See
+   * `handleFeedFailure`.
+   */
+  feedUnavailable?: true;
+
   constructor(
     message: string,
     public readonly status?: number,
@@ -285,13 +292,49 @@ class DriveApiClient {
    * change made after this call is listed by {@link listChanges} from it.
    */
   async getStartPageToken(): Promise<string> {
-    return this.handleApiCall(async () => {
-      const { result } = await gapi.client.drive.changes.getStartPageToken({
-        fields: 'startPageToken'
-      });
-      if (!result.startPageToken) throw new Error('Drive returned no start page token');
-      return result.startPageToken;
-    });
+    return this.handleFeedFailure(() =>
+      this.retryingGapiCall(async () => {
+        const { result } = await gapi.client.drive.changes.getStartPageToken({
+          fields: 'startPageToken'
+        });
+        if (!result.startPageToken) throw new Error('Drive returned no start page token');
+        return result.startPageToken;
+      })
+    );
+  }
+
+  /**
+   * The change feed's failure rule. Only a 401 is auth (the token expired):
+   * the shared re-auth path. Any OTHER status — a 403 the general rule would
+   * call auth (no reason, `insufficientPermissions`: a token that cannot
+   * read the feed), a rate limit or 5xx that outlasted its retries — marks
+   * the error `feedUnavailable`: the cache lists in full and stops asking
+   * the feed until the next login (`drive-files-cache.ts`). A re-auth would
+   * mint the same token and the next listing would prompt again. Failures
+   * without an HTTP status (offline) are neither, and neither is a 400 on
+   * `changes.list` (`pageToken` given): Drive refused that POSITION, and a
+   * full listing takes a fresh one.
+   */
+  private async handleFeedFailure<T>(operation: () => Promise<T>, pageToken?: string): Promise<T> {
+    try {
+      return await operation();
+    } catch (error: any) {
+      const status: number | undefined =
+        typeof error?.status === 'number' ? error.status : undefined;
+      if (status === 401) await handleAuthError(status);
+      const httpError = error instanceof DriveHttpError ? error : undefined;
+      const failure = new DriveApiError(
+        error?.message || 'Unknown API error',
+        status,
+        !status,
+        httpError?.reason,
+        // Never `auth` past this point: only the 401 above is.
+        httpError ? (httpError.kind === 'auth' ? 'other' : httpError.kind) : undefined
+      );
+      const refusedPosition = pageToken !== undefined && status === 400;
+      if (status && !refusedPosition) failure.feedUnavailable = true;
+      throw failure;
+    }
   }
 
   /**
@@ -306,7 +349,7 @@ class DriveApiClient {
     fields: string,
     maxPages = Infinity
   ): Promise<{ changes: DriveChange[]; newStartPageToken: string } | null> {
-    return this.handleApiFailure(async () => {
+    return this.handleFeedFailure(async () => {
       const changes: DriveChange[] = [];
       let token = pageToken;
       for (let page = 1; ; page++) {
@@ -327,7 +370,7 @@ class DriveApiClient {
         if (!result.newStartPageToken) throw new Error('Drive change list ended without a token');
         return { changes, newStartPageToken: result.newStartPageToken };
       }
-    });
+    }, pageToken);
   }
 
   /**

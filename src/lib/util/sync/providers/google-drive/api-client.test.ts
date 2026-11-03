@@ -434,6 +434,8 @@ describe('driveApiClient change feed (changes.getStartPageToken / changes.list)'
 
     expect(error.status).toBe(400);
     expect(error.kind).toBe('other');
+    // The POSITION was refused, not the feed: a listing takes a fresh one.
+    expect(error.feedUnavailable).toBeUndefined();
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
   });
 
@@ -444,6 +446,62 @@ describe('driveApiClient change feed (changes.getStartPageToken / changes.list)'
 
     expect(error.message).toMatch(/Re-authentication/);
     expect(isDriveAuthFailure(error)).toBe(true);
+    expect(error.feedUnavailable).toBeUndefined();
     expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 401 on getStartPageToken is auth too', async () => {
+    getStartPageToken.mockRejectedValue({ status: 401, result: {} });
+
+    const error = await driveApiClient.getStartPageToken().catch((e) => e);
+
+    expect(isDriveAuthFailure(error)).toBe(true);
+    expect(tokenManager.reAuthenticate).toHaveBeenCalledTimes(1);
+  });
+
+  // A 403 the general classifier would send down the auth path (no reason,
+  // `insufficientPermissions`): from the feed it means the token cannot read
+  // the feed, not that it expired. A re-auth would mint the same token and
+  // the next listing would ask again — a re-auth prompt on every listing.
+  it.each([
+    ['no reason', {}],
+    ['insufficientPermissions', { error: { errors: [{ reason: 'insufficientPermissions' }] } }]
+  ])('a 403 (%s) on the feed is "feed unavailable", never a re-auth', async (_label, result) => {
+    list.mockRejectedValue({ status: 403, result });
+    getStartPageToken.mockRejectedValue({ status: 403, result });
+
+    for (const call of [
+      () => driveApiClient.listChanges('start', 'changes(fileId)'),
+      () => driveApiClient.getStartPageToken()
+    ]) {
+      const error = await call().catch((e) => e);
+      expect(error.status).toBe(403);
+      expect(error.feedUnavailable).toBe(true);
+      expect(isDriveAuthFailure(error)).toBe(false);
+    }
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    expect(tokenManager.clearToken).not.toHaveBeenCalled();
+  });
+
+  it('a 5xx that outlasts the retries is "feed unavailable", never a re-auth', async () => {
+    list.mockRejectedValue({ status: 503, result: {}, headers: { 'retry-after': '0.001' } });
+
+    const error = await driveApiClient.listChanges('start', 'changes(fileId)').catch((e) => e);
+
+    expect(list.mock.calls.length).toBeGreaterThan(1); // retried first, like every call
+    expect(error.status).toBe(503);
+    expect(error.feedUnavailable).toBe(true);
+    expect(isDriveAuthFailure(error)).toBe(false);
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+  });
+
+  it('a network failure is neither auth nor "feed unavailable"', async () => {
+    getStartPageToken.mockRejectedValue(new Error('network error'));
+
+    const error = await driveApiClient.getStartPageToken().catch((e) => e);
+
+    expect(isDriveAuthFailure(error)).toBe(false);
+    expect(error.feedUnavailable).toBeUndefined();
+    expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
   });
 });

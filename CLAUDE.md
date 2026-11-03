@@ -183,8 +183,13 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   same-name folder collision starts the dedup. No position (never listed / account switch /
   refused token), a failed feed read, more than `MAX_CHANGE_PAGES` (13) pages, a removed
   reader folder, or a full listing over `CHANGE_FEED_MAX_AGE_MS` (24 h) → `'reset'`: a full
-  fetch. An auth failure is rethrown, never followed by a full fetch (that would start the
-  re-auth twice). The feed never toggles `fetching`/`loaded`. It runs at the top of
+  fetch. Only a 401 from `changes.*` is auth: rethrown, never followed by a full fetch
+  (that would start the re-auth twice). Any other HTTP status — a 403 the general rule
+  would call auth, a 5xx or rate limit past its retries — is "feed unavailable"
+  (`feedUnavailable`, `handleFeedFailure` in `api-client.ts`): no re-auth, a full fetch, and
+  no feed request (no position either) until the next login / cache clear; a 400 on
+  `changes.list` is a refused POSITION only (the full fetch takes a fresh one). The feed
+  never toggles `fetching`/`loaded`. It runs at the top of
   `runProviderSync` (Drive only, before volume data), and metadata writers'
   `ensureFreshCloudListing` takes it via `fetchAllCloudVolumes({ fromChangeFeed: true })`
   once the cache is loaded; the backup run's single post-run listing stays. Unverified
@@ -935,13 +940,18 @@ a stale hit. Uploads seed it from their RECEIPT (`UploadFileResult.revision`,
 via `noteRootFileUpload` in `unifiedCloudManager.uploadFile` and the sync's
 writers): this device's own write is never downloaded back; a receipt with no
 token, or whose size disagrees with the bytes sent, drops that file's memo
-(WebDAV stats the file once after a root-file PUT whose `ETag` header was not
-readable). Bounded (16 entries), cleared on logout, provider switch and cache
+(a WebDAV PUT whose `ETag` header was not readable records NO revision — never
+a stat after the PUT: another device's write landing in between would bind our
+bytes to its revision). Bounded (16 entries), cleared on logout, provider switch and cache
 clear. Never a custom `If-None-Match`: plain servers' CORS allow-lists refuse
 unknown request headers, and a refused preflight looks like a network
 failure. Transport only — what a caller reads is byte-identical and no merge
-rule moves. WebDAV also memoizes `ensureMokuroFolder` per connection, and a
-download whose size the stat already gave skips its HEAD probe.
+rule moves. WebDAV also memoizes `ensureMokuroFolder` per connection for
+uploads only (every listing asks the server again, so a reader folder deleted
+there is made again), and a download whose size the stat already gave skips
+its HEAD probe. `positions-cloud.ts`'s memo is cleared on the same occasions
+and on every connect (`cacheManager.setActiveProvider`): Local Folder's
+account scope is a folder basename, which two folders can share.
 
 **Mid-session page turns do not upload `volume-data.json`**
 (`util/sync/volume-data-deferral.ts`, pure; inputs gathered by
@@ -959,7 +969,10 @@ the provider, and every moved volume is on its way through `positions.json`
 or removed record, any other field — uploads as before. The session's END
 uploads: `ReaderView` calls `noteReaderClosed` BEFORE `activityTracker.flush()`,
 a hidden tab is already `hidden` when the flush runs, and a deferral sets
-`noteVolumeDataDeferred` so that flush syncs even with no turn since. Every
+`noteVolumeDataDeferred` so that flush syncs even with no turn since. The flush
+CONSUMES the flag when it starts that sync (`takeVolumeDataDeferred`) — offline
+or read-only, the upload never lands, and every later hide would otherwise run
+a full sync — and a provider disconnect or switch clears it. Every
 sync outside a session uploads normally. `noteUploaded` escape reports run
 only where the upload runs. `e2e/sync-bandwidth.spec.ts` holds the budgets
 (no root-file body re-downloaded, no mid-session `volume-data.json` PUT, an

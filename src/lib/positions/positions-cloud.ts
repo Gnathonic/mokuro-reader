@@ -6,7 +6,9 @@
  * way to other devices (`util/sync/volume-data-deferral.ts`). It runs before
  * the positions step of the same sync, so it cannot use that step's outcome.
  * Only an account the provider can name is kept, so a stamp read from one
- * account never vouches for another.
+ * account never vouches for another. An account scope is not always unique
+ * (Local Folder's is the folder's basename), so the memo is also cleared on
+ * every connect, provider switch, logout and cache clear (`cacheManager`).
  *
  * LEAF MODULE: no stores, no IO.
  */
@@ -50,6 +52,9 @@ export function cloudPositionStamp(provider: ProviderLike, volume: string): numb
   return known.stamps.get(volume);
 }
 
-export function _resetCloudPositionsForTests(): void {
+/** Forget what the cloud file held (connect, provider switch, logout, cache clear). */
+export function clearCloudPositions(): void {
   known = null;
 }
+
+export const _resetCloudPositionsForTests = clearCloudPositions;
