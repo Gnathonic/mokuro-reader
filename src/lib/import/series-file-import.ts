@@ -51,8 +51,15 @@ export interface PendingSeriesFile {
  * (`applyImportedSeriesFiles`): keyed only by the titles THAT import stored
  * volumes under, and refused for every series the library holds at apply time
  * that the link did not create itself — read again then, not just at the
- * link's turn, since another import (or a sync) may have added the very series
- * the file names while the link's archives were still in the queue.
+ * link's turn, since another import (or a sync, or a cloud download) may have
+ * added the very series the file names while the link's archives were still
+ * in the queue.
+ *
+ * "Created by the link" is observed, never inferred: just before the link's
+ * import first saves a volume under a series, the library is read again
+ * (`noteLinkSeriesBeforeSave`), and only a series absent at that moment is the
+ * link's. Whatever path wrote the series first — another import, a download,
+ * a sync — the read sees it.
  */
 export interface LinkSeriesGuard {
   /** The link's import (`PairedSource.batch`); archives nested in it share it. */
@@ -168,12 +175,19 @@ const titlesByImport = new Map<number, Set<string>>();
 /** Per import: volume_uuid → series title, as `importedVolumes`. */
 const volumesByImport = new Map<number, Map<string, string>>();
 /**
- * `protectedSeriesKey` → the import that stored the FIRST volume under that
- * series since the last apply (`undefined`: one that carries no batch). A
- * link's file may land on a series the link created, never on one another
- * import created while the link's archives were still in the queue.
+ * Per link (`LinkSeriesGuard.batch`): the series keys its import has saved a
+ * volume under (`checked`), and those of them that were absent from the
+ * library just before that first save (`created`) — the only series a link's
+ * file may land on unasked.
+ *
+ * NOT drained with the batch: a link's archives can outlive an apply, and the
+ * record of what it created is a fact about the save, not about the batch it
+ * happened in. A link's entry goes once its files are applied or dropped
+ * (`forgetLinkSeries`). Losing an entry early can only ever refuse a file —
+ * the next save re-reads the library and finds the series there — never let
+ * one through.
  */
-const firstImportOfSeries = new Map<string, number | undefined>();
+const linkSeries = new Map<number, { checked: Set<string>; created: Set<string> }>();
 
 export function recordSeriesFile(entry: PendingSeriesFile): void {
   pendingFiles.push(entry);
@@ -187,6 +201,39 @@ export function recordSeriesFile(entry: PendingSeriesFile): void {
 export function dropLinkSeriesFiles(batch: number): void {
   for (let i = pendingFiles.length - 1; i >= 0; i--) {
     if (pendingFiles[i].linkGuard?.batch === batch) pendingFiles.splice(i, 1);
+  }
+  linkSeries.delete(batch);
+}
+
+/**
+ * Call just BEFORE a link's import saves a volume under `seriesTitle` (the
+ * title it will be stored under, `storedTitleSegment`). The first time that
+ * link saves under a series, the library is read again: a series that is not
+ * there yet is one the link creates, so its file may describe it. One the
+ * library already holds — whoever put it there, and whenever — stays the
+ * user's. A failed read creates nothing (the file is then refused); it never
+ * fails the import.
+ */
+export async function noteLinkSeriesBeforeSave(
+  guard: LinkSeriesGuard,
+  seriesTitle: string
+): Promise<void> {
+  if (!seriesTitle) return;
+  const key = protectedSeriesKey(seriesTitle);
+  let entry = linkSeries.get(guard.batch);
+  if (!entry) linkSeries.set(guard.batch, (entry = { checked: new Set(), created: new Set() }));
+  if (entry.checked.has(key)) return;
+  // Claimed before the read: a second save under the same key never gets a
+  // second, later look that a volume of this very link would answer.
+  entry.checked.add(key);
+  try {
+    const present = await guard.refresh();
+    if (!present.has(key) && !guard.protectedKeys.has(key)) entry.created.add(key);
+  } catch (error) {
+    console.warn(
+      `[Import] Could not read the library before a link saved into '${seriesTitle}'; its ${SERIES_FILE_NAME} will not apply there`,
+      error
+    );
   }
 }
 
@@ -205,8 +252,6 @@ export function recordImportedSeriesTitle(
   if (!seriesTitle) return;
   importedTitles.add(seriesTitle);
   if (volumeUuid) importedVolumes.set(volumeUuid, seriesTitle);
-  const key = protectedSeriesKey(seriesTitle);
-  if (!firstImportOfSeries.has(key)) firstImportOfSeries.set(key, batch);
   if (batch === undefined) return;
   let titles = titlesByImport.get(batch);
   if (!titles) titlesByImport.set(batch, (titles = new Set()));
@@ -225,7 +270,7 @@ export function resetImportedSeriesFiles(): void {
   importedVolumes.clear();
   titlesByImport.clear();
   volumesByImport.clear();
-  firstImportOfSeries.clear();
+  linkSeries.clear();
 }
 
 /**
@@ -305,12 +350,10 @@ export async function applyImportedSeriesFiles(): Promise<void> {
   const volumesByUuid = new Map(importedVolumes);
   const importTitles = new Map(titlesByImport);
   const importVolumes = new Map(volumesByImport);
-  const firstImports = new Map(firstImportOfSeries);
   importedTitles.clear();
   importedVolumes.clear();
   titlesByImport.clear();
   volumesByImport.clear();
-  firstImportOfSeries.clear();
   if (entries.length === 0) return;
 
   const own = entries.filter((entry) => !entry.linkGuard);
@@ -331,6 +374,9 @@ export async function applyImportedSeriesFiles(): Promise<void> {
   for (const [batch, group] of byLink) {
     const guard = group[0].linkGuard!;
     const linkTitles = importTitles.get(batch) ?? new Set<string>();
+    const created = linkSeries.get(batch)?.created ?? new Set<string>();
+    // Applied or refused below, either way this link's files are settled.
+    linkSeries.delete(batch);
     let protectedKeys: Set<string>;
     try {
       protectedKeys = new Set([...guard.protectedKeys, ...(await guard.refresh())]);
@@ -342,14 +388,9 @@ export async function applyImportedSeriesFiles(): Promise<void> {
       );
       continue;
     }
-    // The series this link created: none of its volumes' series was in the
-    // library at its turn, and its import stored the first volume there.
-    for (const title of linkTitles) {
-      const key = protectedSeriesKey(title);
-      if (!guard.protectedKeys.has(key) && firstImports.get(key) === batch) {
-        protectedKeys.delete(key);
-      }
-    }
+    // The series this link created: absent from the library just before the
+    // link first saved a volume there (`noteLinkSeriesBeforeSave`).
+    for (const key of created) protectedKeys.delete(key);
     const linkTitlesByKey = keyTitles(linkTitles);
     const linkVolumes = importVolumes.get(batch) ?? new Map<string, string>();
     for (const entry of group) {

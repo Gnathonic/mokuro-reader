@@ -284,7 +284,8 @@ describe('a deep link (final review #8)', () => {
     await first;
     await deep;
     await waitForQueue();
-    expect(seenAtGuard).toEqual([['First']]);
+    // The turn's read, then the one just before its own volume saved.
+    expect(seenAtGuard).toEqual([['First'], ['First']]);
   });
 
   it('fails the import, saving nothing, when its series guard cannot be read', async () => {
@@ -453,6 +454,120 @@ describe('a deep link’s series.json and the imports around it (TOCTOU)', () =>
     expect(await db.series_index.get('victim')).toBeUndefined();
   });
 
+  /**
+   * A series pack whose own volume holds on the missing-files prompt, with
+   * "Victim 02" in a nested archive that carries its own series.json (naming
+   * Victim) and holds on the prompt too — so a test can act while that nested
+   * archive is mid-scan in the queue.
+   */
+  async function packWithNestedVictim(): Promise<File> {
+    const nested = await seriesVolume('Victim', 'Victim 02', {
+      pages: ['001.jpg', '002.jpg'],
+      extra: { 'series.json': seriesJson('Victim', ['Victim 02-volume']) }
+    });
+    return zip('Pack.zip', {
+      'Deep 01.mokuro': mokuroJson('Deep', 'Deep 01', 'Deep 01-volume', ['001.jpg', '002.jpg']),
+      'Deep 01/001.jpg': IMAGE,
+      'N1.cbz': new Uint8Array(await nested.arrayBuffer())
+    });
+  }
+
+  it.each([
+    ['an empty drop', async () => void (await importFiles([]))],
+    [
+      'a lone volume, which must queue behind the running item',
+      async () => {
+        await importFiles([await seriesVolume('Other', 'Other 01')]);
+        const other = get(importQueue).find((i) => i.displayTitle.includes('Other'));
+        expect(other?.status).toBe('queued');
+      }
+    ],
+    [
+      'an all-skip review decision',
+      async () => {
+        reviewer = installReviewer(() => ({ action: 'skip' }));
+        await importFiles([await zip('Loose 01.cbz', { '001.jpg': IMAGE })]);
+      }
+    ]
+  ])(
+    'never lands on a series the user created, after %s while the link’s nested archive scans',
+    async (_label, midScan) => {
+      const link = importArchiveWithOptionalMokuro(await packWithNestedVictim(), null, {
+        protectSeries: libraryKeys
+      });
+      await until(() => held.release.length === 1);
+      // Queued ahead of the link's nested archive, so it creates "Victim".
+      await importFiles([await seriesVolume('Victim', 'Victim 01')]);
+      held.release.shift()!();
+      await link;
+
+      // The queue saved Victim 01 and now holds N1 mid-scan.
+      await until(() => held.release.length === 1);
+      expect(await titles()).toContain('Victim 01');
+      await midScan();
+
+      held.release.shift()!();
+      await waitForQueue();
+
+      expect(await titles()).toEqual(expect.arrayContaining(['Deep 01', 'Victim 01', 'Victim 02']));
+      expect(await facts('Victim')).toBeUndefined();
+      expect(await db.series_index.get('victim')).toBeUndefined();
+    }
+  );
+
+  it('does apply a nested archive’s file to the series that archive of the link created', async () => {
+    // The control for the two tests around it: with nobody else creating
+    // "Victim", the file a nested archive of the link carries does land.
+    const link = importArchiveWithOptionalMokuro(await packWithNestedVictim(), null, {
+      protectSeries: libraryKeys
+    });
+    await until(() => held.release.length === 1);
+    held.release.shift()!();
+    await link;
+    await until(() => held.release.length === 1);
+    held.release.shift()!();
+    await waitForQueue();
+
+    expect(await titles()).toEqual(['Deep 01', 'Victim 02']);
+    expect(await facts('Victim')).toEqual({ anilist: 4242 });
+  });
+
+  it('never lands on a series a cloud download created before the link’s archive saved', async () => {
+    const link = importArchiveWithOptionalMokuro(
+      await zip('Pack.zip', {
+        'Deep 01.mokuro': mokuroJson('Deep', 'Deep 01', 'Deep 01-volume', ['001.jpg', '002.jpg']),
+        'Deep 01/001.jpg': IMAGE,
+        'Victim 02.cbz': new Uint8Array(
+          await (await seriesVolume('Victim', 'Victim 02')).arrayBuffer()
+        ),
+        'series.json': seriesJson('Victim', ['Victim 02-volume'])
+      }),
+      null,
+      { protectSeries: libraryKeys }
+    );
+    await until(() => held.release.length === 1);
+    // The link's turn has read the library; now a download installs "Victim"
+    // (download-queue's processVolumeData records nothing with the import).
+    await db.volumes.put({
+      volume_uuid: 'cloud-victim-01',
+      series_uuid: 'cloud-victim',
+      series_title: 'Victim',
+      volume_title: 'Victim 01',
+      mokuro_version: '0.2.1',
+      page_count: 1,
+      character_count: 0,
+      page_char_counts: [0]
+    } as never);
+
+    held.release.shift()!();
+    await link;
+    await waitForQueue();
+
+    expect(await titles()).toEqual(['Deep 01', 'Victim 01', 'Victim 02']);
+    expect(await facts('Victim')).toBeUndefined();
+    expect(await db.series_index.get('victim')).toBeUndefined();
+  });
+
   it('a failed link’s series.json is dropped, not applied to the next import’s series', async () => {
     const link = importArchiveWithOptionalMokuro(
       await seriesVolume('Deep', 'Deep 01', {
@@ -537,13 +652,14 @@ describe('a deep link’s series.json and the imports around it (TOCTOU)', () =>
       null,
       {
         protectSeries: async () => {
-          if (reads++ > 0) throw new Error('library unreadable');
+          // The turn's read and the save's succeed; the apply's fails.
+          if (reads++ > 1) throw new Error('library unreadable');
           return libraryKeys();
         }
       }
     );
     await waitForQueue();
-    expect(reads).toBe(2);
+    expect(reads).toBe(3);
     expect(await facts('Deep')).toBeUndefined();
     expect(warn.mock.calls.flat().join(' ')).toContain('could not read the library');
     warn.mockRestore();

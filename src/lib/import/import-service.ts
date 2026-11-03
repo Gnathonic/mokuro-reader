@@ -25,6 +25,7 @@ import {
   collectSeriesFileFromBytes,
   collectSeriesFileFromFile,
   dropLinkSeriesFiles,
+  noteLinkSeriesBeforeSave,
   recordImportedSeriesTitle,
   recordSeriesFile,
   resetImportedSeriesFiles,
@@ -263,6 +264,12 @@ let directImports = 0;
  */
 function hasUnfinishedImports(): boolean {
   return (
+    // The running queue item first: its status is whatever its last progress
+    // report said ('Scanning archive...'), not 'processing', so the store
+    // alone would call the queue idle mid-item — and a lone drop would then
+    // run directly beside it, and any finished import would drain the batch
+    // under it. `processQueue` clears the flag before its own check.
+    processingQueue ||
     pendingReviewGroups > 0 ||
     directImports > 0 ||
     get(importQueue).some((item) => item.status === 'queued' || item.status === 'processing')
@@ -329,19 +336,21 @@ async function waitForImportTurn(): Promise<void> {
  * is dropped by the write's own fire-time gates.
  */
 function noteImportedVolume(processed: ProcessedVolume, batch: number | undefined): void {
+  const seriesTitle = savedTitle(processed);
   // Saved: its series counts it from the database now.
   settleVolumesInFlight([processed.metadata.volumeUuid]);
-  recordImportedSeriesTitle(
-    storedTitleSegment(processed.metadata.series),
-    processed.metadata.volumeUuid,
-    batch
-  );
+  recordImportedSeriesTitle(seriesTitle, processed.metadata.volumeUuid, batch);
   // Layer files that rode beside this volume in the batch attach now that its
   // row exists. Never throws; a layer that finds no volume simply stays behind.
   void applyStashedLayersFor(processed.metadata.volumeUuid, processed.metadata.volume);
   if (hasWritableNonServerProvider()) {
-    scheduleSeriesFileWrite(storedTitleSegment(processed.metadata.series));
+    scheduleSeriesFileWrite(seriesTitle);
   }
+}
+
+/** The series title `saveVolume` stores a processed volume under. */
+function savedTitle(processed: ProcessedVolume): string {
+  return storedTitleSegment(processed.metadata.series);
 }
 
 // ============================================
@@ -787,6 +796,7 @@ async function processArchiveContents(
           lastError = `Volume "${processed.metadata.volume}" already exists`;
         } else {
           // Save to database
+          if (seriesGuard) await noteLinkSeriesBeforeSave(seriesGuard, savedTitle(processed));
           await saveVolume(processed);
           noteImportedVolume(processed, batch);
           successCount++;
@@ -986,6 +996,9 @@ async function processSingleVolume(
       }
 
       onProgress?.('Saving...', 85);
+      if (source.seriesGuard) {
+        await noteLinkSeriesBeforeSave(source.seriesGuard, savedTitle(processed));
+      }
       await saveVolume(processed);
       noteImportedVolume(processed, source.batch);
       onProgress?.('Complete', 100);
@@ -1071,6 +1084,9 @@ async function processSingleVolume(
     onProgress?.('Saving...', 80);
 
     // Save to database
+    if (source.seriesGuard) {
+      await noteLinkSeriesBeforeSave(source.seriesGuard, savedTitle(processed));
+    }
     await saveVolume(processed);
     noteImportedVolume(processed, source.batch);
 

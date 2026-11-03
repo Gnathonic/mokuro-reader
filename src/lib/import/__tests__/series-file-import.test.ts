@@ -60,6 +60,7 @@ import { cancelQueuedImports, importFiles, importQueue, isImporting } from '../i
 import {
   applyImportedSeriesFiles,
   dropLinkSeriesFiles,
+  noteLinkSeriesBeforeSave,
   parseImportedSeriesFile,
   recordImportedSeriesTitle,
   recordSeriesFile,
@@ -569,8 +570,21 @@ describe('keying a series.json to a series of the batch', () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
-    it('lands on a series its import created, even though the library has it by now', async () => {
-      recordLinked('Naruto', guard(7, ['naruto']));
+    /** A guard whose library reads answer `reads` in turn (the last one repeats). */
+    function guardReading(batch: number, ...reads: string[][]): LinkSeriesGuard {
+      let n = 0;
+      return {
+        batch,
+        protectedKeys: new Set(),
+        refresh: async () => new Set(reads[Math.min(n++, reads.length - 1)])
+      };
+    }
+
+    it('lands on a series that was absent just before its import saved there', async () => {
+      // Absent at the save, there by apply time (the link's own volume).
+      const linkGuard = guardReading(7, [], ['naruto']);
+      recordLinked('Naruto', linkGuard);
+      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
       recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
       recordImportedSeriesTitle('Naruto', 'naruto-vol-2', 8);
 
@@ -579,16 +593,101 @@ describe('keying a series.json to a series of the batch', () => {
       expect((await db.series_metadata.get('naruto'))?.series_title).toBe('Naruto');
     });
 
-    it('not on one another import stored first, re-read at apply time', async () => {
+    it('not on one the library already held when its import saved there', async () => {
       const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-      recordLinked('Naruto', guard(7, ['naruto']));
-      recordImportedSeriesTitle('Naruto', 'naruto-vol', 8);
-      recordImportedSeriesTitle('Naruto', 'naruto-vol-2', 7);
+      // Whatever put "Naruto" there — another import, a cloud download — the
+      // read just before the link's save sees it.
+      const linkGuard = guardReading(7, ['naruto']);
+      recordLinked('Naruto', linkGuard);
+      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
+      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
 
       await applyImportedSeriesFiles();
 
       expect(await db.series_metadata.count()).toBe(0);
       expect(await db.series_index.count()).toBe(0);
+      expect(info.mock.calls.flat().join(' ')).toContain('already in the library');
+    });
+
+    it('reads the library once per series, at the first save there', async () => {
+      const linkGuard = guardReading(7, [], ['naruto']);
+      const refresh = vi.spyOn(linkGuard, 'refresh');
+      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
+      // The second save would see the link's own first volume; it must not
+      // take that back.
+      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
+      recordLinked('Naruto', linkGuard);
+      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+
+      await applyImportedSeriesFiles();
+
+      expect(refresh).toHaveBeenCalledTimes(2); // the save's, then the apply's
+      expect((await db.series_metadata.get('naruto'))?.series_title).toBe('Naruto');
+    });
+
+    it('remembers what a link created across an apply that came between', async () => {
+      const linkGuard = guardReading(7, [], ['naruto']);
+      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
+      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+      // Another import's apply drains the batch before the link's file arrives.
+      await applyImportedSeriesFiles();
+
+      recordLinked('Naruto', linkGuard);
+      recordImportedSeriesTitle('Naruto', 'naruto-vol-2', 7);
+      await applyImportedSeriesFiles();
+
+      expect((await db.series_metadata.get('naruto'))?.series_title).toBe('Naruto');
+    });
+
+    it('creates nothing when the library cannot be read before the save', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(console, 'info').mockImplementation(() => {});
+      let reads = 0;
+      const linkGuard: LinkSeriesGuard = {
+        batch: 7,
+        protectedKeys: new Set(),
+        refresh: async () => {
+          if (reads++ === 0) throw new Error('library unreadable');
+          return new Set(['naruto']);
+        }
+      };
+      await noteLinkSeriesBeforeSave(linkGuard, 'Naruto');
+      recordLinked('Naruto', linkGuard);
+      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+
+      await applyImportedSeriesFiles();
+
+      expect(await db.series_metadata.count()).toBe(0);
+      expect(warn.mock.calls.flat().join(' ')).toContain('Could not read the library');
+    });
+
+    it('of two links naming one new series, only the one that created it applies', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const first = guardReading(7, [], ['naruto']);
+      const second = guardReading(8, ['naruto']);
+      await noteLinkSeriesBeforeSave(first, 'Naruto');
+      recordImportedSeriesTitle('Naruto', 'naruto-vol', 7);
+      await noteLinkSeriesBeforeSave(second, 'Naruto');
+      recordImportedSeriesTitle('Naruto', 'naruto-vol-2', 8);
+      recordLinked('Naruto', first);
+      recordSeriesFile({
+        // Newer facts: only the guard can keep them off.
+        file: {
+          ...seriesFileFor('Naruto'),
+          external_ids: { anilist: 999 },
+          updated_at: '2026-09-01T00:00:00.000Z'
+        },
+        path: 'https://other.example/Naruto/series.json',
+        size: 10,
+        modifiedTime: '2026-08-17T00:00:00.000Z',
+        linkGuard: second
+      });
+
+      await applyImportedSeriesFiles();
+
+      expect((await db.series_metadata.get('naruto'))?.external_ids).toEqual(
+        seriesFileFor('Naruto').external_ids
+      );
       expect(info.mock.calls.flat().join(' ')).toContain('already in the library');
     });
 
