@@ -17,8 +17,26 @@ import { settings, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
 import { showSnackbar } from '$lib/util';
 import { isMobilePlatform } from '$lib/util/platform';
 import { get } from 'svelte/store';
+import { effectiveAnkiUrl, isAnkiUrlTrusted, unconfirmedAnkiUrlMessage } from './url-trust';
 
 export * from './cropper';
+export {
+  DEFAULT_ANKI_CONNECT_URL,
+  confirmAnkiUrl,
+  confirmedAnkiUrls,
+  isAnkiUrlTrusted,
+  isLoopbackAnkiUrl
+} from './url-trust';
+
+/**
+ * The AnkiConnect URL a call goes to: the one being tested, else the
+ * profile's, else the default. `trusted` is false for a non-loopback URL not
+ * yet confirmed on this device (`url-trust.ts`); nothing may be sent to it.
+ */
+function resolveAnkiUrl(testUrl?: string): { url: string; trusted: boolean } {
+  const url = effectiveAnkiUrl(testUrl || get(settings).ankiConnectSettings.url);
+  return { url, trusted: isAnkiUrlTrusted(url) };
+}
 
 // Template variables that can be used in field mappings
 export const FIELD_TEMPLATES = [
@@ -227,7 +245,11 @@ export function resolveTemplate(
  * Also detects if running on AnkiConnect Android by testing createDeck support.
  */
 export async function fetchConnectionData(testUrl?: string): Promise<AnkiConnectionData | null> {
-  const url = testUrl || get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
+  const { url, trusted } = resolveAnkiUrl(testUrl);
+  if (!trusted) {
+    showSnackbar(unconfirmedAnkiUrlMessage(url));
+    return null;
+  }
 
   try {
     // Test connection first
@@ -446,7 +468,13 @@ export function getModelConfig(
 
 export type ConnectionTestResult = {
   success: boolean;
-  error?: 'network' | 'cors' | 'invalid_response' | 'anki_error' | 'permission_denied';
+  error?:
+    | 'network'
+    | 'cors'
+    | 'invalid_response'
+    | 'anki_error'
+    | 'permission_denied'
+    | 'unconfirmed_url';
   message: string;
   version?: number;
 };
@@ -475,7 +503,10 @@ async function requestAnkiPermission(url: string): Promise<boolean> {
  * If CORS blocks the request, attempts to request permission from Anki.
  */
 export async function testConnection(testUrl?: string): Promise<ConnectionTestResult> {
-  const url = testUrl || get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
+  const { url, trusted } = resolveAnkiUrl(testUrl);
+  if (!trusted) {
+    return { success: false, error: 'unconfirmed_url', message: unconfirmedAnkiUrlMessage(url) };
+  }
 
   try {
     const res = await fetch(url, {
@@ -542,7 +573,11 @@ export async function ankiConnect(
   params: Record<string, any>,
   options?: { silent?: boolean; retried?: boolean }
 ) {
-  const url = get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
+  const { url, trusted } = resolveAnkiUrl();
+  if (!trusted) {
+    if (!options?.silent) showSnackbar(unconfirmedAnkiUrlMessage(url));
+    return undefined;
+  }
 
   try {
     const res = await fetch(url, {

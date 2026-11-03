@@ -1,0 +1,170 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('$app/environment', () => ({ browser: true }));
+
+// The AnkiConnect client reads the URL from the current profile; a stand-in
+// store lets each test say what the profile holds (as an import or a synced
+// profiles.json would have left it).
+const h = vi.hoisted(() => {
+  let value: any = { ankiConnectSettings: { url: 'http://127.0.0.1:8765' } };
+  const subs = new Set<(v: any) => void>();
+  return {
+    settings: {
+      subscribe(fn: (v: any) => void) {
+        subs.add(fn);
+        fn(value);
+        return () => subs.delete(fn);
+      },
+      set(v: any) {
+        value = v;
+        subs.forEach((fn) => fn(value));
+      }
+    },
+    showSnackbar: vi.fn()
+  };
+});
+vi.mock('$lib/settings', () => ({ settings: h.settings, DEFAULT_MODEL_CONFIGS: {} }));
+vi.mock('$lib/util', () => ({ showSnackbar: h.showSnackbar }));
+vi.mock('$lib/util/platform', () => ({ isMobilePlatform: () => false }));
+
+import {
+  CONFIRMED_ANKI_URLS_KEY,
+  ankiUrlKey,
+  confirmAnkiUrl,
+  isAnkiUrlTrusted,
+  isLoopbackAnkiUrl,
+  resetAnkiUrlTrustForTest
+} from '../url-trust';
+import { ankiConnect, fetchConnectionData, testConnection } from '../index';
+
+const fetchMock = vi.fn(async () => ({ json: async () => ({ result: 6, error: null }) }));
+
+beforeEach(() => {
+  localStorage.clear();
+  resetAnkiUrlTrustForTest();
+  h.showSnackbar.mockClear();
+  fetchMock.mockClear();
+  vi.stubGlobal('fetch', fetchMock);
+});
+afterEach(() => vi.unstubAllGlobals());
+
+function profileUrl(url: string) {
+  h.settings.set({ ankiConnectSettings: { url } });
+}
+
+describe('isLoopbackAnkiUrl', () => {
+  it.each([
+    'http://127.0.0.1:8765',
+    'http://localhost:8765',
+    'http://LOCALHOST:8765/',
+    'http://[::1]:8765',
+    'https://127.0.0.1:8765',
+    '',
+    '   '
+  ])('%s is Anki on this machine', (url) => {
+    expect(isLoopbackAnkiUrl(url)).toBe(true);
+  });
+
+  it.each([
+    'https://anki.example.com',
+    'http://192.168.1.20:8765',
+    'http://10.0.0.5:8765',
+    // userinfo, not a host: this goes to the host after the @
+    'http://127.0.0.1@evil.example:8765',
+    'http://127.0.0.1.evil.example:8765',
+    'http://localhost.evil.example',
+    'ftp://127.0.0.1:8765',
+    'not a url'
+  ])('%s is not', (url) => {
+    expect(isLoopbackAnkiUrl(url)).toBe(false);
+  });
+});
+
+describe('confirming a URL on this device', () => {
+  it('a loopback URL is trusted without asking', () => {
+    expect(isAnkiUrlTrusted('http://127.0.0.1:8765')).toBe(true);
+    expect(isAnkiUrlTrusted('http://localhost:8765')).toBe(true);
+  });
+
+  it('any other URL is not, until it is confirmed', () => {
+    expect(isAnkiUrlTrusted('http://192.168.1.20:8765')).toBe(false);
+    confirmAnkiUrl('http://192.168.1.20:8765');
+    expect(isAnkiUrlTrusted('http://192.168.1.20:8765')).toBe(true);
+    // Only that one.
+    expect(isAnkiUrlTrusted('https://anki.example.com')).toBe(false);
+  });
+
+  it('is stored in localStorage keyed by the URL, and survives a reload', () => {
+    confirmAnkiUrl('https://Anki.Example.com');
+    const stored = JSON.parse(localStorage.getItem(CONFIRMED_ANKI_URLS_KEY) ?? '{}');
+    expect(Object.keys(stored)).toEqual(['https://anki.example.com/']);
+    expect(Date.parse(stored['https://anki.example.com/'])).not.toBeNaN();
+
+    resetAnkiUrlTrustForTest(); // a fresh page load reading storage
+    // The same address however it is spelled.
+    expect(isAnkiUrlTrusted('https://anki.example.com/')).toBe(true);
+    expect(ankiUrlKey('https://ANKI.example.com')).toBe('https://anki.example.com/');
+  });
+
+  it('storage that holds junk trusts nothing', () => {
+    localStorage.setItem(CONFIRMED_ANKI_URLS_KEY, '["https://anki.example.com/"]');
+    resetAnkiUrlTrustForTest();
+    expect(isAnkiUrlTrusted('https://anki.example.com')).toBe(false);
+    localStorage.setItem(CONFIRMED_ANKI_URLS_KEY, '{not json');
+    resetAnkiUrlTrustForTest();
+    expect(isAnkiUrlTrusted('https://anki.example.com')).toBe(false);
+  });
+});
+
+describe('the AnkiConnect client sends nothing to an unconfirmed URL', () => {
+  it('a profile that arrived pointing at another host: no request, and the user is told', async () => {
+    profileUrl('https://anki.example.com');
+
+    await expect(ankiConnect('addNote', { note: { fields: { Front: 'x' } } })).resolves.toBe(
+      undefined
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(h.showSnackbar).toHaveBeenCalledWith(
+      expect.stringContaining('https://anki.example.com is not confirmed on this device')
+    );
+  });
+
+  it('silent calls stay silent, and still send nothing', async () => {
+    profileUrl('https://anki.example.com');
+    await ankiConnect('findNotes', { query: 'added:1' }, { silent: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(h.showSnackbar).not.toHaveBeenCalled();
+  });
+
+  it('the connection test and the settings fetch refuse it too', async () => {
+    profileUrl('http://192.168.1.20:8765');
+    await expect(testConnection()).resolves.toMatchObject({
+      success: false,
+      error: 'unconfirmed_url'
+    });
+    await expect(fetchConnectionData()).resolves.toBeNull();
+    // A URL handed in for testing is held to the same rule.
+    await expect(testConnection('https://anki.example.com')).resolves.toMatchObject({
+      error: 'unconfirmed_url'
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('once confirmed here, calls go to it', async () => {
+    profileUrl('http://192.168.1.20:8765');
+    confirmAnkiUrl('http://192.168.1.20:8765');
+
+    await expect(ankiConnect('version', {})).resolves.toBe(6);
+    expect(fetchMock).toHaveBeenCalledWith('http://192.168.1.20:8765', expect.anything());
+  });
+
+  it('Anki on this machine needs no confirmation', async () => {
+    profileUrl('http://127.0.0.1:8765');
+    await expect(ankiConnect('version', {})).resolves.toBe(6);
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:8765', expect.anything());
+
+    profileUrl('');
+    await ankiConnect('version', {});
+    expect(fetchMock).toHaveBeenLastCalledWith('http://127.0.0.1:8765', expect.anything());
+  });
+});
