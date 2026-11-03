@@ -370,6 +370,8 @@ for (const mode of MODES) {
       await expect(page.locator(`script[src="${GAPI}"]`)).toHaveCount(1);
       await expect(page.locator(`script[src="${GIS}"]`)).toHaveCount(1);
 
+      // No extension is loaded here, so the filter removes nothing; by hand,
+      // with Yomitan or Migaku on, every entry counts (`isAppViolation`).
       const appViolations = (await violations(page)).filter(isAppViolation);
       expect(appViolations, JSON.stringify(appViolations, null, 2)).toEqual([]);
       expect(consoleLog.csp).toEqual([]);
@@ -379,6 +381,37 @@ for (const mode of MODES) {
       expect(consoleLog.permissions).toEqual([
         "Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'."
       ]);
+
+      // ...and the zero above covers the app's workers too: a violation in one
+      // fires on the worker, never on the document, and reaches no console this
+      // run can read (page or worker), so the worker forwards it to the page's
+      // buffer. Prove that path with one deliberate violation in a live app
+      // worker: a module from another origin, which the worker policy
+      // (vercel.json, every mode) refuses. Not `eval`: code evaluated over CDP
+      // is exempt from a policy's eval rule.
+      const appWorker = page
+        .workers()
+        .find((w) => new URL(w.url()).pathname.startsWith('/_app/immutable/workers/'));
+      expect(appWorker, `a live app worker (seen: ${workers.join(', ')})`).toBeTruthy();
+      const workerPath = new URL(appWorker!.url()).pathname;
+      const gadget = GADGETS[1];
+      const imported = await appWorker!.evaluate(
+        (url) =>
+          import(/* @vite-ignore */ url).then(
+            () => true,
+            () => false
+          ),
+        gadget
+      );
+      expect(imported, 'the worker policy refuses a cross-origin module').toBe(false);
+      await expect
+        .poll(async () =>
+          (await violations(page))
+            .filter((v) => v.context !== 'document')
+            .map((v) => `${v.context} ${v.blockedURI}`)
+        )
+        .toEqual([`worker ${workerPath} ${gadget}`]);
+      expect(consoleLog.csp).toEqual([]);
     });
 
     test('the bare Google hosts stay closed to scripts, and the page records the attempt', async ({

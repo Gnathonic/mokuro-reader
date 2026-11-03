@@ -1,13 +1,17 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CSP_VIOLATIONS_GLOBAL,
   CSP_VIOLATION_CAPACITY,
+  CSP_VIOLATION_CHANNEL,
   ViolationRing,
+  forwardWorkerCspViolations,
+  fromForwarded,
   installCspViolationBuffer,
   isAppViolation,
   resetCspViolationBufferForTests,
   toViolation,
   type CspViolation,
+  type ViolationChannel,
   type ViolationEventLike
 } from './csp-violations';
 
@@ -43,8 +47,13 @@ describe('toViolation', () => {
       sourceFile: 'http://localhost/_app/immutable/chunks/a.js',
       line: 3,
       column: 7,
-      sample: ''
+      sample: '',
+      context: 'document'
     });
+  });
+
+  it('names the worker a forwarded violation fired in', () => {
+    expect(toViolation(event(), 1, 'worker /w.js').context).toBe('worker /w.js');
   });
 
   it('falls back to the violated directive when there is no effective one', () => {
@@ -82,7 +91,7 @@ describe('isAppViolation', () => {
     expect(isAppViolation({ sourceFile: '', blockedURI: 'inline' })).toBe(true);
   });
 
-  it('leaves out what an extension injected (Yomitan, Migaku, …)', () => {
+  it('tells the automated spec which entries an extension’s scheme is attributed to', () => {
     expect(
       isAppViolation({ sourceFile: 'chrome-extension://abc/content.js', blockedURI: 'inline' })
     ).toBe(false);
@@ -127,5 +136,97 @@ describe('installCspViolationBuffer', () => {
     expect(second).toBe(first);
     document.body.dispatchEvent(violationEvent());
     expect(first.list()).toHaveLength(1);
+  });
+});
+
+/** Two ends of one in-memory channel: what one posts, the other hears. */
+function channelPair(): [ViolationChannel, ViolationChannel] {
+  const listeners: [((e: MessageEvent) => void)[], ((e: MessageEvent) => void)[]] = [[], []];
+  const end = (mine: 0 | 1): ViolationChannel => ({
+    postMessage: (data) => {
+      for (const l of listeners[mine === 0 ? 1 : 0]) l({ data } as MessageEvent);
+    },
+    addEventListener: (_type, listener) => listeners[mine].push(listener),
+    close: vi.fn()
+  });
+  return [end(0), end(1)];
+}
+
+/** A worker global's stand-in: an event target with a location. */
+function workerScope(pathname: string) {
+  const target = new EventTarget();
+  return Object.assign(target, { location: { pathname } });
+}
+
+describe('fromForwarded', () => {
+  const valid = (): CspViolation => toViolation(event(), 5, 'worker /w.js');
+
+  it('takes a forwarded violation as it is', () => {
+    expect(fromForwarded(valid())).toEqual(valid());
+  });
+
+  it('keeps only the known fields', () => {
+    expect(fromForwarded({ ...valid(), extra: 'x' })).toEqual(valid());
+  });
+
+  it('refuses anything not shaped like a violation (the channel is open to the origin)', () => {
+    expect(fromForwarded(null)).toBeNull();
+    expect(fromForwarded('inline')).toBeNull();
+    expect(fromForwarded({ ...valid(), line: '3' })).toBeNull();
+    const { context: _drop, ...noContext } = valid();
+    expect(fromForwarded(noContext)).toBeNull();
+  });
+});
+
+describe('a worker’s violations reach the document’s buffer', () => {
+  it('forwards each one, with the worker it fired in', () => {
+    const [pageEnd, workerEnd] = channelPair();
+    const ring = installCspViolationBuffer(document, {}, pageEnd);
+    const scope = workerScope('/_app/immutable/workers/unified-file-worker-x.js');
+    forwardWorkerCspViolations(scope, () => workerEnd);
+
+    scope.dispatchEvent(violationEvent({ effectiveDirective: 'script-src', blockedURI: 'eval' }));
+
+    expect(ring.list()).toEqual([
+      expect.objectContaining({
+        directive: 'script-src',
+        blockedURI: 'eval',
+        context: 'worker /_app/immutable/workers/unified-file-worker-x.js'
+      })
+    ]);
+  });
+
+  it('opens the channel only with the first violation, and only once', () => {
+    const [, workerEnd] = channelPair();
+    const open = vi.fn(() => workerEnd);
+    const scope = workerScope('/w.js');
+    forwardWorkerCspViolations(scope, open);
+    expect(open).not.toHaveBeenCalled();
+
+    scope.dispatchEvent(violationEvent());
+    scope.dispatchEvent(violationEvent());
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing where there is no channel', () => {
+    const scope = workerScope('/w.js');
+    forwardWorkerCspViolations(scope, () => null);
+    expect(() => scope.dispatchEvent(violationEvent())).not.toThrow();
+  });
+
+  it('ignores junk on the channel', () => {
+    const [pageEnd, workerEnd] = channelPair();
+    const ring = installCspViolationBuffer(document, {}, pageEnd);
+    workerEnd.postMessage({ hello: 'world' });
+    expect(ring.list()).toEqual([]);
+  });
+
+  it.skipIf(typeof BroadcastChannel === 'undefined')('over a real BroadcastChannel', async () => {
+    const ring = installCspViolationBuffer(document, {});
+    const scope = workerScope('/w.js');
+    forwardWorkerCspViolations(scope);
+    scope.dispatchEvent(violationEvent({ blockedURI: 'wasm-eval' }));
+    await vi.waitFor(() => expect(ring.list().map((v) => v.blockedURI)).toEqual(['wasm-eval']));
+    expect(CSP_VIOLATION_CHANNEL).toBe('mokuro-csp-violations');
   });
 });
