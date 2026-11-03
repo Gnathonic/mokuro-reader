@@ -561,6 +561,7 @@ describe('MegaProvider ghost-node handling', () => {
     const node = makeFile('volume-data.json', folder);
     Object.assign(node, { nodeId: 'node-1', timestamp: 1_780_000_000, size: 9 });
     const provider = await loginWithTree({ root: folder, node });
+    pollRunning(provider);
     const listed = {
       provider: 'mega' as const,
       fileId: 'node-1',
@@ -578,6 +579,53 @@ describe('MegaProvider ghost-node handling', () => {
     expect(await provider.statFile({ ...listed, fileId: 'other' })).toBeNull();
     folder.children.splice(folder.children.indexOf(node), 1);
     expect(await provider.statFile(listed)).toBeNull();
+  });
+
+  /**
+   * The tree is only as current as the `sc` poll that applies other devices'
+   * changes to it. The unit mock starts no poll, so a test that wants one
+   * running says so. (A real one runs from every full-tree load.)
+   */
+  function pollRunning(provider: MegaProvider): void {
+    (provider as unknown as { stopServerChanges: () => void }).stopServerChanges = vi.fn();
+  }
+
+  // A poll that gave up (offline past its recovery backoff) leaves the tree
+  // frozen: another device's replace deletes the node this tree still holds
+  // linked. A stat answered from it would vouch for the deleted node, and the
+  // root-file memo would return its old bytes on every sync. The download it
+  // replaced failed ENOENT there, which reloads the tree; that must stay so.
+  it('statFile vouches for no node while the server-change poll is not running', async () => {
+    const folder = makeMokuroFolder();
+    const node = makeFile('volume-data.json', folder);
+    Object.assign(node, { nodeId: 'node-1', timestamp: 1_780_000_000, size: 3 });
+    const provider = await loginWithTree({ root: folder, node });
+    const listed = {
+      provider: 'mega' as const,
+      fileId: 'node-1',
+      path: 'volume-data.json',
+      modifiedTime: '',
+      size: 3
+    };
+    const { readRootFile, clearRootFileMemo } = await import('../../root-file-memo');
+    clearRootFileMemo();
+    const download = vi
+      .spyOn(provider, 'downloadFile')
+      .mockImplementation(async () => new Blob([new Uint8Array([1, 2, 3])]));
+
+    // Poll alive: the first read downloads and memoizes, the next is a stat.
+    pollRunning(provider);
+    await readRootFile(provider, listed);
+    await readRootFile(provider, listed);
+    expect(download).toHaveBeenCalledTimes(1);
+
+    // Poll gone: the stat refuses, so the read downloads (and a gone node
+    // fails there with ENOENT, which reloads the tree).
+    (provider as unknown as { stopServerChanges: null }).stopServerChanges = null;
+    await expect(provider.statFile(listed)).rejects.toThrow(/server-change/i);
+    await readRootFile(provider, listed);
+    expect(download).toHaveBeenCalledTimes(2);
+    clearRootFileMemo();
   });
 
   it('uploadFile replaces every same-name copy, not just the first', async () => {

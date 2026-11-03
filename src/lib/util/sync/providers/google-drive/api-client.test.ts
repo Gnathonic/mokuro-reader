@@ -483,15 +483,46 @@ describe('driveApiClient change feed (changes.getStartPageToken / changes.list)'
     expect(tokenManager.clearToken).not.toHaveBeenCalled();
   });
 
-  it('a 5xx that outlasts the retries is "feed unavailable", never a re-auth', async () => {
-    list.mockRejectedValue({ status: 503, result: {}, headers: { 'retry-after': '0.001' } });
+  // A rate limit or an outage clears: it costs the call that met it a full
+  // listing (the cache's fallback), never the feed for the rest of the
+  // session — every later sync would walk the whole account.
+  it.each([
+    ['a 503', { status: 503, result: {} }],
+    ['a 429', { status: 429, result: {} }],
+    [
+      'a 403 rateLimitExceeded',
+      { status: 403, result: { error: { errors: [{ reason: 'rateLimitExceeded' }] } } }
+    ]
+  ])(
+    '%s that outlasts the retries is neither auth nor "feed unavailable"',
+    async (_label, rejection) => {
+      const answer = { ...rejection, headers: { 'retry-after': '0.001' } };
+      list.mockRejectedValue(answer);
+      getStartPageToken.mockRejectedValue(answer);
+
+      for (const call of [
+        () => driveApiClient.listChanges('start', 'changes(fileId)'),
+        () => driveApiClient.getStartPageToken()
+      ]) {
+        const error = await call().catch((e) => e);
+        expect(error.status).toBe(rejection.status);
+        expect(error.feedUnavailable).toBeUndefined();
+        expect(isDriveAuthFailure(error)).toBe(false);
+      }
+      expect(list.mock.calls.length).toBeGreaterThan(1); // retried first, like every call
+      expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
+    }
+  );
+
+  it('a named 403 refusal on the feed is "feed unavailable"', async () => {
+    list.mockRejectedValue({
+      status: 403,
+      result: { error: { errors: [{ reason: 'insufficientFilePermissions' }] } }
+    });
 
     const error = await driveApiClient.listChanges('start', 'changes(fileId)').catch((e) => e);
 
-    expect(list.mock.calls.length).toBeGreaterThan(1); // retried first, like every call
-    expect(error.status).toBe(503);
     expect(error.feedUnavailable).toBe(true);
-    expect(isDriveAuthFailure(error)).toBe(false);
     expect(tokenManager.reAuthenticate).not.toHaveBeenCalled();
   });
 

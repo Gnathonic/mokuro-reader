@@ -959,13 +959,15 @@ account scope is a folder basename, which two folders can share.
 is active — reader open on a volume (`positions/reader-open.ts`) AND the
 document visible, read at decision time after the sync's downloads
 (`util/sync/reading-session.ts`) — a sync whose merged file differs from the
-cloud survivor copy ONLY in `progress`/`chars`/`lastProgressUpdate`/`completed`
-of records that exist on both sides with `progress > 0` (same `completedAt`,
-same series and tracking sections) skips the upload, provided it is covered:
-`historySyncAllowed`, not read-only, `positionsWriteAllowed`, `legacyCarriedBy`
-the provider, and every moved volume is on its way through `positions.json`
-(a changed-mark at or past the record's stamp, or a known cloud entry with
-`t >=` it, `positions-cloud.ts`). Anything else — a first read, a reset, a new
+cloud survivor copy ONLY in `progress`/`chars`/`lastProgressUpdate` of
+records that exist on both sides with `progress > 0` (same series and tracking
+sections) skips the upload, provided it is covered: `historySyncAllowed`, not
+read-only, `positionsWriteAllowed`, `legacyCarriedBy` the provider, and every
+moved volume is on its way through `positions.json` (a changed-mark EQUAL to
+the record's stamp — the push sends only those, and a look-up restore leaves a
+mark above it — or a known cloud entry with `t >=` it, `positions-cloud.ts`).
+Anything else — a first read, a reset, a `completed` flip (positions entries
+carry no flag, and an adopting device keeps its own for a closed volume), a new
 or removed record, any other field — uploads as before. The session's END
 uploads: `ReaderView` calls `noteReaderClosed` BEFORE `activityTracker.flush()`,
 a hidden tab is already `hidden` when the flush runs, and a deferral sets

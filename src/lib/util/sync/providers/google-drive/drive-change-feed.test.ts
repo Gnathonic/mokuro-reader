@@ -28,7 +28,12 @@ import { driveApiClient } from './api-client';
 import type { DriveChange, DriveFile } from './constants';
 import { folderDeduplicator } from '../../folder-deduplicator';
 import { googleDriveProvider } from './google-drive-provider';
-import { CHANGE_FEED_MAX_AGE_MS, MAX_CHANGE_PAGES, driveFilesCache } from './drive-files-cache';
+import {
+  CHANGE_FEED_MAX_AGE_MS,
+  FULL_LISTING_REUSE_MS,
+  MAX_CHANGE_PAGES,
+  driveFilesCache
+} from './drive-files-cache';
 import { uploadCacheEntry, type CacheAddMetadata } from '../../cloud-cache-interface';
 import type { DriveFileMetadata } from '../../provider-interface';
 import { CACHE_MUTATION_COALESCE_MS } from '../../coalesced-cache-store';
@@ -97,6 +102,12 @@ const paths = () =>
     .getAllFiles()
     .map((f) => f.path)
     .sort();
+
+/** The clock, `ms` from now (the last full listing stays where it was). */
+function later(ms: number): void {
+  const now = Date.now();
+  vi.spyOn(Date, 'now').mockReturnValue(now + ms);
+}
 
 /** Let the dedup pass a fetch fires from its `finally` finish (dynamic imports). */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
@@ -462,6 +473,67 @@ describe('driveFilesCache change feed (#288)', () => {
     expect(driveFilesCache.getBySeries('Shared')).toEqual([]);
   });
 
+  it("a parent Drive answers 404 for (not this app's) stays unknown too", async () => {
+    api.getFileMetadata.mockRejectedValue(
+      Object.assign(new Error('File not found: 404'), { status: 404, kind: 'other' })
+    );
+    feed([changed({ id: 's1', name: 'Volume 1.cbz', parents: ['elsewhere'], size: '1' })]);
+
+    await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('unchanged');
+    expect(api.listFiles).not.toHaveBeenCalled();
+  });
+
+  // A lookup that FAILED says nothing about the folder. Leaving it unknown
+  // dropped the file and stepped the feed past it for good: another device's
+  // new series stayed invisible until some full listing happened to run.
+  it.each([
+    ['a 503 past its retries', { status: 503, kind: 'transient' }],
+    ['a 429 past its retries', { status: 429, kind: 'rate-limit' }],
+    ['offline (no status)', {}]
+  ])('a parent lookup that fails (%s) lists in full instead', async (_label, failure) => {
+    api.getFileMetadata.mockRejectedValue(Object.assign(new Error('lookup failed'), failure));
+    feed([changed({ id: 'n1', name: 'Volume 1.cbz', parents: ['series-n'], size: '1' })]);
+    api.listFiles.mockResolvedValueOnce([
+      ...LISTING,
+      { id: 'series-n', name: 'Series N', mimeType: FOLDER, parents: ['reader'] },
+      {
+        id: 'n1',
+        name: 'Volume 1.cbz',
+        mimeType: 'application/x-cbz',
+        parents: ['series-n'],
+        modifiedTime: T1,
+        size: '1'
+      }
+    ]);
+    api.getStartPageToken.mockResolvedValueOnce('token-fresh');
+
+    await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+
+    expect(api.listFiles).toHaveBeenCalledTimes(1);
+    expect(driveFilesCache.get('Series N/Volume 1.cbz')?.fileId).toBe('n1');
+    // The feed resumes from that listing's position, never past the batch.
+    feed([]);
+    await driveFilesCache.refreshFromChanges();
+    expect(api.listChanges).toHaveBeenLastCalledWith(
+      'token-fresh',
+      expect.any(String),
+      MAX_CHANGE_PAGES
+    );
+  });
+
+  it('a batch that cannot be applied lists in full instead of failing every sync', async () => {
+    feed([changed({ ...LISTING[4], size: '101', modifiedTime: T1 })]);
+    vi.spyOn(
+      driveFilesCache as unknown as { planFeed: () => never },
+      'planFeed'
+    ).mockImplementationOnce(() => {
+      throw new Error('unexpected change shape');
+    });
+
+    await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+    expect(api.listFiles).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores a file this account does not own, and drops one it no longer owns', async () => {
     feed([
       changed({
@@ -612,12 +684,17 @@ describe('driveFilesCache change feed (#288)', () => {
       expect(api.listFiles).toHaveBeenCalledTimes(1);
     });
 
-    it('when the listing took no position', async () => {
+    it('when the listing took no position, once that listing is not fresh', async () => {
       driveFilesCache.clear();
       api.getStartPageToken.mockRejectedValueOnce(new Error('offline'));
       await driveFilesCache.fetch();
       api.listFiles.mockClear();
 
+      // Startup lists, then syncs at once: that sync walks nothing again.
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('unchanged');
+      expect(api.listFiles).not.toHaveBeenCalled();
+
+      later(FULL_LISTING_REUSE_MS + 1);
       await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
       expect(api.listChanges).not.toHaveBeenCalled();
       expect(api.listFiles).toHaveBeenCalledTimes(1);
@@ -640,7 +717,7 @@ describe('driveFilesCache change feed (#288)', () => {
     });
   });
 
-  describe('a feed Drive will not serve this session (403, 5xx): no re-auth, full listings', () => {
+  describe('a feed Drive will not serve this session (a 403): no re-auth, full listings', () => {
     const unavailable = (status: number) =>
       Object.assign(new Error(`changes: ${status}`), {
         status,
@@ -648,22 +725,24 @@ describe('driveFilesCache change feed (#288)', () => {
         feedUnavailable: true
       });
 
-    it.each([403, 503])(
-      'a %s from changes.list lists in full, then stops calling the feed',
-      async (status) => {
-        api.listChanges.mockRejectedValueOnce(unavailable(status));
+    it('a 403 from changes.list lists in full, then stops calling the feed', async () => {
+      api.listChanges.mockRejectedValueOnce(unavailable(403));
 
-        await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
-        expect(api.listFiles).toHaveBeenCalledTimes(1);
-        // That listing took no position, and neither does the next.
-        expect(api.getStartPageToken).not.toHaveBeenCalled();
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+      expect(api.listFiles).toHaveBeenCalledTimes(1);
+      // That listing took no position, and neither does the next.
+      expect(api.getStartPageToken).not.toHaveBeenCalled();
 
-        await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
-        expect(api.listChanges).toHaveBeenCalledTimes(1);
-        expect(api.getStartPageToken).not.toHaveBeenCalled();
-        expect(api.listFiles).toHaveBeenCalledTimes(2);
-      }
-    );
+      // A refresh straight after reuses that listing: no second walk.
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('unchanged');
+      expect(api.listFiles).toHaveBeenCalledTimes(1);
+
+      later(FULL_LISTING_REUSE_MS + 1);
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+      expect(api.listChanges).toHaveBeenCalledTimes(1);
+      expect(api.getStartPageToken).not.toHaveBeenCalled();
+      expect(api.listFiles).toHaveBeenCalledTimes(2);
+    });
 
     it('a 403 from changes.getStartPageToken still lists, and the feed stays off', async () => {
       driveFilesCache.clear();
@@ -674,9 +753,35 @@ describe('driveFilesCache change feed (#288)', () => {
       api.listFiles.mockClear();
       api.getStartPageToken.mockClear();
 
+      // The first sync after that listing (startup) walks nothing again.
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('unchanged');
+      expect(api.listFiles).not.toHaveBeenCalled();
+
+      later(FULL_LISTING_REUSE_MS + 1);
       await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
       expect(api.listChanges).not.toHaveBeenCalled();
       expect(api.getStartPageToken).not.toHaveBeenCalled();
+      expect(api.listFiles).toHaveBeenCalledTimes(1);
+    });
+
+    // A 5xx or rate limit the client did NOT mark (it clears by itself):
+    // that call lists in full, the next asks the feed again.
+    it('a transient feed failure costs one listing, and the feed resumes', async () => {
+      api.listChanges.mockRejectedValueOnce(
+        Object.assign(new Error('changes: 503'), { status: 503, kind: 'transient' })
+      );
+      api.getStartPageToken.mockResolvedValueOnce('token-after');
+
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+      expect(api.listFiles).toHaveBeenCalledTimes(1);
+
+      feed([]);
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('unchanged');
+      expect(api.listChanges).toHaveBeenLastCalledWith(
+        'token-after',
+        expect.any(String),
+        MAX_CHANGE_PAGES
+      );
       expect(api.listFiles).toHaveBeenCalledTimes(1);
     });
 

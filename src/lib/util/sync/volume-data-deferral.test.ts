@@ -63,11 +63,17 @@ describe('classifyVolumeDataDiff', () => {
     });
   });
 
-  it('a `completed` flip with the same completedAt is position-only', () => {
+  // positions.json entries are `[t, page, chars, device]`: no `completed`. An
+  // adopting device keeps its own flag for any volume it does not have open,
+  // so only volume-data.json carries the flip, and it must not wait.
+  it('a `completed` flip is not position-only, even with the same completedAt', () => {
     const cloud = record({ completed: true, completedAt: '2026-10-20T00:00:00.000Z' });
     const next = turned({ completed: false, completedAt: '2026-10-20T00:00:00.000Z' });
-    expect(classifyVolumeDataDiff(side({ a: next }), side({ a: cloud })).kind).toBe(
-      'position-only'
+    expect(classifyVolumeDataDiff(side({ a: next }), side({ a: cloud })).kind).toBe('other');
+    const reRead = record({ completed: false, completedAt: '2026-10-20T00:00:00.000Z' });
+    const finishedAgain = turned({ completed: true, completedAt: '2026-10-20T00:00:00.000Z' });
+    expect(classifyVolumeDataDiff(side({ a: finishedAgain }), side({ a: reRead })).kind).toBe(
+      'other'
     );
   });
 
@@ -183,13 +189,19 @@ describe('planVolumeDataUpload', () => {
   });
 
   describe('covered by positions.json', () => {
-    it('a changed-mark at the record stamp covers it; an older mark does not', () => {
+    // The push sends a volume only when its record's stamp IS the mark
+    // (`ownChangedEntries`), and clears any other mark (`clearChanged`). A
+    // mark above the stamp is what a look-up restore leaves behind
+    // (`visit.ts` puts the old stamp back and keeps the mark): nothing is on
+    // its way, so it covers nothing.
+    it('only a changed-mark AT the record stamp covers it; an older or newer one does not', () => {
       expect(planVolumeDataUpload(input({ markOf: () => T1_MS })).action).toBe('defer');
-      expect(planVolumeDataUpload(input({ markOf: () => T1_MS + 1 })).action).toBe('defer');
-      expect(planVolumeDataUpload(input({ markOf: () => T1_MS - 1 }))).toEqual({
-        action: 'upload',
-        reason: 'not-covered'
-      });
+      for (const mark of [T1_MS - 1, T1_MS + 1]) {
+        expect(planVolumeDataUpload(input({ markOf: () => mark }))).toEqual({
+          action: 'upload',
+          reason: 'not-covered'
+        });
+      }
     });
 
     it('a cloud positions entry at or past the stamp covers it; an older one does not', () => {

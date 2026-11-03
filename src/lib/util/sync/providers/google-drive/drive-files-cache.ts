@@ -56,6 +56,16 @@ export const CHANGE_FEED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const MAX_CHANGE_PAGES = 13;
 
 /**
+ * With no feed to read (no position, or a feed Drive will not serve), a
+ * refresh within this long of the last whole-account listing reuses it
+ * instead of walking the account again — startup lists and then syncs at
+ * once. The same window the metadata writers already accept as current
+ * (`LISTING_TTL_MS`, `series-file-sync.ts`), and no longer: they merge and
+ * prune against what a refresh leaves.
+ */
+export const FULL_LISTING_REUSE_MS = 30_000;
+
+/**
  * What one change entry needs: the listing's file fields, plus whether it is
  * trashed or ours (the listing filters on both) and its `version`.
  */
@@ -399,11 +409,11 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
   private changesToken: string | null = null;
   private changesTokenGeneration = -1;
   /**
-   * Drive answered a feed request with a status that is not auth (a 403 such
-   * as a token that cannot read the feed, a 5xx past its retries —
-   * `driveApiClient`'s feed rule). The feed is off for this session: every
-   * refresh lists in full, and no listing asks for a position, until the
-   * next login or cache clear (`clearCache`).
+   * Drive refused a feed request in a way that will not clear (a 403 such as
+   * a token that cannot read the feed — `driveApiClient`'s feed rule; a rate
+   * limit or 5xx is not one). The feed is off for this session: every
+   * refresh lists in full (`FULL_LISTING_REUSE_MS` aside), and no listing
+   * asks for a position, until the next login or cache clear (`clearCache`).
    */
   private feedUnavailable = false;
   /** Bumped when a whole-account fetch starts: a feed read it overtook is dropped. */
@@ -701,9 +711,13 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     // from ITS position once it lands.
     if (this.fetchPromise) await this.fetchPromise;
     const generation = this.cacheGeneration;
-    if (this.feedUnavailable) return this.listInFull('the change feed is unavailable');
+    if (this.feedUnavailable) {
+      if (this.listedJustNow()) return 'unchanged';
+      return this.listInFull('the change feed is unavailable');
+    }
     const token = this.changesToken;
     if (!token || this.changesTokenGeneration !== generation || !this.isLoaded()) {
+      if (this.listedJustNow()) return 'unchanged';
       return this.listInFull('no change-feed position');
     }
     if (this.lastFetchTime === null || Date.now() - this.lastFetchTime > CHANGE_FEED_MAX_AGE_MS) {
@@ -732,14 +746,23 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     }
     if (!feed) return this.listInFull(`more than ${MAX_CHANGE_PAGES} pages of changes`);
 
-    const plan = this.planFeed(feed.changes, resolved);
+    let plan: FeedPlan;
+    let current: Map<string, DriveFileMetadata[]>;
+    let next: Map<string, DriveFileMetadata[]>;
+    try {
+      plan = this.planFeed(feed.changes, resolved);
+      current = this.cache.read();
+      next = applyFeed(current, plan);
+    } catch (error) {
+      // Never step past a batch that was not applied, and never fail every
+      // sync on it either: the listing is what the batch would have made.
+      return this.listInFull('a change batch could not be applied', error);
+    }
     // The write root went away, itself or with a folder holding it: only a
     // full listing picks the next one.
     if (this.readerFolderId && plan.removed.has(this.readerFolderId)) {
       return this.listInFull('the reader folder was removed');
     }
-    const current = this.cache.read();
-    const next = applyFeed(current, plan);
     this.folders = plan.folders;
     this.changesToken = feed.newStartPageToken;
     if (next !== current) {
@@ -754,6 +777,20 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       this.runDeduplication();
     }
     return next !== current ? 'applied' : 'unchanged';
+  }
+
+  /**
+   * Is the cache a whole-account listing finished within
+   * `FULL_LISTING_REUSE_MS`? Only for a refresh with no feed to read: one
+   * that met a feed failure or a batch it could not apply lists regardless,
+   * since the listing is the only way past that batch.
+   */
+  private listedJustNow(): boolean {
+    return (
+      this.isLoaded() &&
+      this.lastFetchTime !== null &&
+      Date.now() - this.lastFetchTime < FULL_LISTING_REUSE_MS
+    );
   }
 
   /** Drop the feed's position and list the whole account. */
@@ -836,9 +873,11 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
    * `files.get` each, once per batch (three levels up for history, which is
    * placed by its device, `history` and reader folders). Normally empty: a
    * folder made by this app is in the feed beside its first file. A lookup
-   * that fails, or names anything the whole-account listing would not hold
-   * (not a folder, trashed, not ours), leaves the folder unknown, as it is
-   * to the listing.
+   * that names anything the whole-account listing would not hold (a 404, not
+   * a folder, trashed, not ours) leaves the folder unknown, as it is to the
+   * listing. A lookup that FAILS (a 5xx or rate limit past its retries,
+   * offline) throws: the feed then lists in full instead of stepping past a
+   * file it could not place, which it would never deliver again.
    */
   private async resolveUnknownParents(changes: DriveChange[]): Promise<FolderMap> {
     const resolved: FolderMap = new Map();
@@ -889,8 +928,10 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
       return { name: meta.name, parent: meta.parents?.[0] };
     } catch (error) {
       if (isDriveAuthFailure(error)) throw error;
-      console.warn(`[DriveCache] Could not look up folder ${id}:`, error);
-      return null;
+      // Drive's answer for a folder this app cannot see (`drive.file`): not
+      // in the whole-account listing either.
+      if ((error as { status?: unknown } | null)?.status === 404) return null;
+      throw error;
     }
   }
 

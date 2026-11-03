@@ -1267,13 +1267,27 @@ export class MegaProvider implements SyncProvider {
 
   /**
    * `SyncProvider.statFile` from the tree the session holds — no request: the
-   * `sc` long-poll applies every other device's change to it (and a dead poll
-   * reloads the tree). Every upload mints a new node, so the node id is the
-   * revision; a node that is gone, or no longer live, is gone.
+   * `sc` long-poll applies every other device's change to it. Every upload
+   * mints a new node, so the node id is the revision; a node that is gone, or
+   * no longer live, is gone.
+   *
+   * Only while that poll RUNS. One that died and gave up recovering (offline
+   * past its backoff, `recoverServerChanges`) leaves the tree frozen: another
+   * device's replace deletes the node this tree still holds linked, and a
+   * stat would vouch for it on every sync. So without a poll this throws, and
+   * the root-file read downloads instead (`root-file-memo.ts`) — where a gone
+   * node fails ENOENT, and the sync's not-found path reloads the tree.
    */
   async statFile(file: CloudFileMetadata): Promise<FileStamp | null> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+    if (!this.stopServerChanges) {
+      throw new ProviderError(
+        'MEGA server-change stream is not running; the tree may be stale',
+        'mega',
+        'STALE_TREE'
+      );
     }
     const node = (Object.values(this.storage?.files || {}) as any[]).find(
       (f) => (f.nodeId === file.fileId || f.id === file.fileId) && !f.directory

@@ -38,13 +38,14 @@ The content of a root file read is unchanged; only the transport changes. No mer
      `revision` = `cTag` (content changes only), else `eTag`.
    - MEGA: the in-memory node (`nodeId`, `timestamp`, `size`), no request. A different node id for
      the path means a different revision (uploads mint new nodes). Trust only while the `sc` poll is
-     alive; otherwise `null`-free fallback is to report the node as is (a full reload already
-     reconciles).
+     alive: with no poll running (one that gave up recovering) the stat throws, so the read
+     downloads, and a node another device replaced fails ENOENT there, which reloads the tree.
    - Local Folder: `getFile()` → `lastModified`, `size`.
 2. **Receipts.** `UploadFileResult` gains optional `revision?: string`, and for Drive `parentId?`
    and `name?`. Each provider fills what its upload response already carries (Drive: widen the
    resumable session `fields=` to `id,name,size,modifiedTime,version,parents`; OneDrive: the final
-   item's `eTag`/`cTag`; WebDAV: the PUT response's `ETag` header when readable, else NO revision —
+   item's `eTag`/`cTag`, but NONE when the item came from the lost-ack probe (a same-size file at
+   the path proves nothing about whose bytes it holds); WebDAV: the PUT response's `ETag` header when readable, else NO revision —
    never a stat after the PUT, which could see another device's write landing in between and bind
    our bytes to its revision; MEGA: the node; Local Folder: the stat it already does). `uploadCacheEntry` carries them into the cache entry.
    `unifiedCloudManager.uploadFile` / `blindUploadFile` return the full `UploadFileResult` (callers
@@ -91,15 +92,17 @@ outside a session. Nothing about the merge or the file format changes.
   (`positions/reader-open.ts` `openReader()` + `document.visibilityState`). The flush that ends a
   session must see "not active" (close/hide happen before it runs) — make that ordering explicit.
 - **Position-only** = for every volume whose record differs between the next file and the cloud
-  (survivor) copy, the difference is confined to `progress`, `chars`, `lastProgressUpdate`, and
-  `completed` only when `completedAt` is identical; both sides have `progress > 0`; and the record
-  exists on both sides. Any other field, any series/tracking-section difference, any added/removed
+  (survivor) copy, the difference is confined to `progress`, `chars` and `lastProgressUpdate`;
+  both sides have `progress > 0`; and the record exists on both sides. Any other field (`completed`
+  included: a `positions.json` entry carries no flag, and a device adopting one keeps its own for
+  a volume it does not have open), any series/tracking-section difference, any added/removed
   record → not position-only.
 - **Covered** = additionally all of: `historySyncAllowed(status)`, `!status.isReadOnly`,
   `positionsWriteAllowed(status)`, the provider holds legacy turns (`legacyCarriedBy` — otherwise
   the file still carries turns), and each such volume's position is on its way through
-  `positions.json` (it is in `changedVolumes()` with a mark at or past the record's stamp, OR the
-  cloud `positions.json` entry has `t >=` the record's stamp). Not covered → upload as today.
+  `positions.json` (it is in `changedVolumes()` with a mark EQUAL to the record's stamp — the push
+  sends only those, and a look-up restore leaves a mark above it — OR the cloud `positions.json`
+  entry has `t >=` the record's stamp). Not covered → upload as today.
 - The escape reporting at upload (`noteUploaded` for watched visits) stays exactly where it is: it
   runs whenever the upload runs. A deferred upload reports nothing (nothing left).
 - Log at debug when an upload is deferred, with the count of volumes.

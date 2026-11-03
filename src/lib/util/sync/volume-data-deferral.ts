@@ -13,20 +13,20 @@
  *
  * The upload is deferred only when ALL of these hold:
  * - **position-only**: every record that differs from the cloud copy (the
- *   survivor) differs only in `progress`, `chars`, `lastProgressUpdate` or
- *   `completed`. `completedAt` must be identical, since it is compared with
- *   every other field. The record exists on both sides, both sides have
- *   `progress > 0`, and the series and tracking sections are equal. A first
- *   read (0 → n), a reset to 0, a new or removed record, a tombstone, a title
- *   or settings edit, archived reads, or a completion date all upload.
+ *   survivor) differs only in `progress`, `chars` or `lastProgressUpdate` —
+ *   what `positions.json` carries. The record exists on both sides, both
+ *   sides have `progress > 0`, and the series and tracking sections are
+ *   equal. A first read (0 → n), a reset to 0, a new or removed record, a
+ *   tombstone, a title or settings edit, archived reads, a `completed` flip
+ *   or a completion date all upload.
  * - **in session**: the reader is open and the document is visible.
  * - **covered**: history syncs here (`historySyncAllowed`), the provider is
  *   not read-only, `positions.json` may be written (`positionsWriteAllowed`),
  *   and the provider already holds this device's legacy turns
  *   (`legacyCarriedBy`; otherwise the file still carries turns). Each
  *   deferred volume's position must also be on its way through
- *   `positions.json`. Either this device marked it changed at or past the
- *   record's stamp (the push sends it), or the cloud `positions.json` entry
+ *   `positions.json`. Either this device marked it changed AT the record's
+ *   stamp (the push sends exactly that), or the cloud `positions.json` entry
  *   is known to have `t >=` that stamp.
  *
  * PURE MODULE: no stores, no IO. The caller gathers the inputs.
@@ -36,13 +36,15 @@ import type { ProviderStatus } from './provider-interface';
 import { historySyncAllowed } from '$lib/reading-history/history-capability';
 import { positionsWriteAllowed } from '$lib/positions/positions-capability';
 
-/** The record fields a page turn writes. Only these may differ in a deferred upload. */
-export const POSITION_FIELDS: readonly string[] = [
-  'progress',
-  'chars',
-  'lastProgressUpdate',
-  'completed'
-];
+/**
+ * The record fields a page turn writes that `positions.json` carries to the
+ * other devices. Only these may differ in a deferred upload. NOT `completed`,
+ * though a turn into or out of the last-page window writes it: a positions
+ * entry is `[t, page, chars, device]`, and a device adopting one keeps its
+ * own flag for every volume it does not have open (`applyAdoptions`), so only
+ * this file carries the flip.
+ */
+export const POSITION_FIELDS: readonly string[] = ['progress', 'chars', 'lastProgressUpdate'];
 
 /**
  * Deep-sorts object keys before `JSON.stringify`, so two values that differ
@@ -181,7 +183,11 @@ export function planVolumeDataUpload(input: VolumeDataUploadInput): VolumeDataUp
     if (!(stamp > 0)) return { action: 'upload', reason: 'not-covered' };
     const mark = input.markOf(volume);
     const cloudT = input.cloudPositionOf(volume);
-    const marked = mark !== undefined && mark >= stamp;
+    // Exactly the stamp: the push sends a volume only when its record's stamp
+    // IS the mark (`ownChangedEntries`) and drops any other mark
+    // (`clearChanged`). A mark past the stamp is a look-up restore's leftover
+    // (`visit.ts` puts the old stamp back): nothing is on its way.
+    const marked = mark !== undefined && mark === stamp;
     const inCloud = cloudT !== undefined && cloudT >= stamp;
     if (!marked && !inCloud) return { action: 'upload', reason: 'not-covered' };
   }

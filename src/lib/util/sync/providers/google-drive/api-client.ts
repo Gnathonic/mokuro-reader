@@ -2,6 +2,7 @@ import { GOOGLE_DRIVE_CONFIG, type DriveChange, type DriveFile } from './constan
 import { tokenManager } from './token-manager';
 import {
   DriveHttpError,
+  classifyDriveFailure,
   driveErrorDomain,
   driveErrorReason,
   driveHttpErrorFromXhr,
@@ -305,15 +306,17 @@ class DriveApiClient {
 
   /**
    * The change feed's failure rule. Only a 401 is auth (the token expired):
-   * the shared re-auth path. Any OTHER status — a 403 the general rule would
-   * call auth (no reason, `insufficientPermissions`: a token that cannot
-   * read the feed), a rate limit or 5xx that outlasted its retries — marks
-   * the error `feedUnavailable`: the cache lists in full and stops asking
-   * the feed until the next login (`drive-files-cache.ts`). A re-auth would
-   * mint the same token and the next listing would prompt again. Failures
-   * without an HTTP status (offline) are neither, and neither is a 400 on
-   * `changes.list` (`pageToken` given): Drive refused that POSITION, and a
-   * full listing takes a fresh one.
+   * the shared re-auth path. A refusal that will not clear — a 403 the
+   * general rule would call auth (no reason, `insufficientPermissions`: a
+   * token that cannot read the feed), a named 403 refusal, a 404 — marks the
+   * error `feedUnavailable`: the cache lists in full and stops asking the
+   * feed until the next login (`drive-files-cache.ts`). A re-auth would mint
+   * the same token and the next listing would prompt again. A rate limit or
+   * 5xx that outlasted its retries clears by itself: neither, so only the
+   * call that met it lists in full and the next one asks the feed again.
+   * Failures without an HTTP status (offline) are neither, and neither is a
+   * 400 on `changes.list` (`pageToken` given): Drive refused that POSITION,
+   * and a full listing takes a fresh one.
    */
   private async handleFeedFailure<T>(operation: () => Promise<T>, pageToken?: string): Promise<T> {
     try {
@@ -332,7 +335,9 @@ class DriveApiClient {
         httpError ? (httpError.kind === 'auth' ? 'other' : httpError.kind) : undefined
       );
       const refusedPosition = pageToken !== undefined && status === 400;
-      if (status && !refusedPosition) failure.feedUnavailable = true;
+      const passing = (kind: DriveFailureKind) => kind === 'rate-limit' || kind === 'transient';
+      const kind = status ? (httpError?.kind ?? classifyDriveFailure(status)) : undefined;
+      if (status && kind && !refusedPosition && !passing(kind)) failure.feedUnavailable = true;
       throw failure;
     }
   }
