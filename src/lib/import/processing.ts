@@ -29,6 +29,7 @@ import {
 } from '$lib/util/series-extraction';
 import { generateUUID } from '$lib/util/uuid';
 import { naturalSort } from '$lib/util/natural-sort';
+import { rasterTypeForName, toRasterImageFile } from '$lib/util/raster-image';
 
 // ============================================
 // TYPES
@@ -485,9 +486,73 @@ function calculateCumulativeChars(pages: MokuroPage[]): number[] {
  * @param input - Decompressed volume data
  * @returns Processed volume ready for database
  */
+/**
+ * The volume's images, each typed by its magic bytes — raster formats only.
+ *
+ * Every install path (local files, archives, cloud downloads, deep links)
+ * converges here, so this is where an image's stored type is decided. An
+ * archive entry arrives untyped and a loose file with whatever its extension
+ * implied; neither is trusted. A non-empty file that is not a supported raster
+ * format (SVG, HTML, anything else) is left out with a warning, so a volume's
+ * OCR treats it as a missing page. An empty file carries no bytes to sniff and
+ * none to run: it keeps its place, labelled by its name's raster type.
+ */
+export async function keepRasterImages(
+  imageFiles: Map<string, File>
+): Promise<{ images: Map<string, File>; rejected: string[] }> {
+  const entries = await Promise.all(
+    Array.from(imageFiles, async ([path, file]): Promise<[string, File | null]> => {
+      if (file.size === 0) {
+        const type = rasterTypeForName(file.name) ?? rasterTypeForName(path) ?? 'image/png';
+        return [
+          path,
+          file.type === type
+            ? file
+            : new File([file], file.name, { type, lastModified: file.lastModified })
+        ];
+      }
+      try {
+        return [path, await toRasterImageFile(file, file.name)];
+      } catch (error) {
+        console.warn(`Could not read image ${path}:`, error);
+        return [path, null];
+      }
+    })
+  );
+  const images = new Map<string, File>();
+  const rejected: string[] = [];
+  for (const [path, file] of entries) {
+    if (file) images.set(path, file);
+    else rejected.push(path);
+  }
+  if (rejected.length > 0) {
+    console.warn(
+      `Skipped ${rejected.length} file(s) that are not a supported raster image (JPEG, PNG, WebP, GIF, AVIF, BMP, TIFF or JPEG XL):`,
+      rejected
+    );
+  }
+  return { images, rejected };
+}
+
 export async function processVolume(input: DecompressedVolume): Promise<ProcessedVolume> {
-  const { mokuroFile, imageFiles, basePath, sourceType, nestedArchives, thumbnailSidecar } = input;
+  const { mokuroFile, basePath, sourceType, nestedArchives } = input;
   const titlePath = input.titlePath ?? basePath;
+
+  // Raster images only, typed by their bytes (see `keepRasterImages`).
+  const { images: imageFiles } = await keepRasterImages(input.imageFiles);
+  let thumbnailSidecar: File | null = null;
+  if (input.thumbnailSidecar) {
+    thumbnailSidecar = await toRasterImageFile(
+      input.thumbnailSidecar,
+      input.thumbnailSidecar.name
+    ).catch(() => null);
+    if (!thumbnailSidecar) {
+      console.warn(
+        'Thumbnail sidecar is not a supported raster image; the cover is built from the pages:',
+        input.thumbnailSidecar.name
+      );
+    }
+  }
 
   // Parse mokuro or extract info from path
   let mokuroData: ParsedMokuro | null = null;

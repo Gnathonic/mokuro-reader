@@ -68,6 +68,23 @@ describe('PlaceholderThumbnail cover lifetime', () => {
     expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
   });
 
+  // SVG is unsupported: a stored `image/svg+xml` (or untyped) thumbnail from
+  // before that rule must never become an object URL, which would run its
+  // script as the app when opened in a new tab.
+  it('never makes an object URL of a thumbnail whose type is not raster', async () => {
+    for (const type of ['image/svg+xml', 'text/html', '']) {
+      const { container } = render(PlaceholderThumbnail, {
+        props: {
+          volume: volume(`s-${type}`, { thumbnail: new File(['<svg/>'], 'c.svg', { type }) })
+        }
+      });
+      await tick();
+      expect(container.querySelector('img'), type).toBeNull();
+      cleanup();
+    }
+    expect(created).toEqual([]);
+  });
+
   it('stops showing a cover whose URL it revoked when the volume changes', async () => {
     // The card reuses one PlaceholderThumbnail across volumes (a re-sort, a page of
     // results). Revoking without clearing the state leaves the <img> pointing at a dead

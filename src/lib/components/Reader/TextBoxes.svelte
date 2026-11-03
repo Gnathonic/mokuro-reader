@@ -26,6 +26,7 @@
   import { lineTransform } from '$lib/reader/line-grid';
   import { fontsReady, fontLoadEpoch } from '$lib/reader/fonts-ready';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
+  import { displayableImageBlob } from '$lib/util/raster-image';
 
   interface ContextMenuData {
     x: number;
@@ -502,7 +503,8 @@
 
     // Get image URL
     const url =
-      pageImageUrlFrom(event.target as HTMLElement) || (src ? URL.createObjectURL(src) : null);
+      pageImageUrlFrom(event.target as HTMLElement) ||
+      (src ? URL.createObjectURL(displayableImageBlob(src)) : null);
 
     if (!url) return;
 

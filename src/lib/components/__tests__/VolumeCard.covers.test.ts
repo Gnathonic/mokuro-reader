@@ -80,6 +80,25 @@ describe('VolumeCard covers', () => {
     expect(requestCover).not.toHaveBeenCalled();
   });
 
+  // SVG is unsupported: a stored `image/svg+xml` (or untyped) thumbnail from
+  // before that rule must never become an object URL, which would run its
+  // script as the app when opened in a new tab.
+  it('never makes an object URL of a thumbnail whose type is not raster', async () => {
+    isCoverFetchTarget.mockReturnValue(false);
+    for (const type of ['image/svg+xml', 'text/html', '']) {
+      const { container } = render(VolumeCard, {
+        props: {
+          ...baseProps,
+          volume: volume(`v-${type}`, { thumbnail: new File(['<svg/>'], 'c.svg', { type }) })
+        }
+      });
+      await tick();
+      expect(container.querySelector('img'), type).toBeNull();
+      cleanup();
+    }
+    expect(globalThis.URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
   it('shows the placeholder box and asks the service once, gated, when the row has no cover', async () => {
     const { container } = render(VolumeCard, {
       props: {
