@@ -60,7 +60,7 @@ vi.mock('$lib/catalog/server-ocr-queue', async (importOriginal) => {
 import { db } from '$lib/catalog/db';
 import { clearAllLayers, getLayerWithPages } from '$lib/catalog/layer-store';
 import { installedUuids } from '../cover-sidecar';
-import { importDeepLinkedArchive } from '../deep-link-import';
+import { importDeepLinkedArchive, localSeriesKeys } from '../deep-link-import';
 import type { HtmlDownloadResult } from '../html-download-provider';
 import { parseImportedSeriesFile, resetImportedSeriesFiles } from '../series-file-import';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
@@ -340,5 +340,98 @@ describe('importDeepLinkedArchive', () => {
       new Set()
     );
     expect(watchServerOcr).not.toHaveBeenCalled();
+  });
+
+  describe('a link’s series.json and a series already in the library', () => {
+    const seriesFile = () =>
+      parseImportedSeriesFile(
+        'https://bunko.example/mokuro-reader/Dr%20Stone/series.json',
+        seriesJson(),
+        100,
+        Date.parse('2026-09-27T01:02:07Z')
+      )!;
+
+    /** Another volume of the series, its pages removed from this device. */
+    async function seedExistingSeries() {
+      await db.volumes.put({
+        ...volume,
+        volume_uuid: 'volume-uuid-02',
+        volume_title: 'Dr Stone 02',
+        metadata_only: true
+      });
+    }
+
+    it('leaves the series alone — facts, cached index and cloud write — unless the user allowed it', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      await seedExistingSeries();
+
+      await importDeepLinkedArchive(
+        await downloaded({ seriesFile: seriesFile() }),
+        'Dr Stone 01',
+        new Set()
+      );
+
+      // The volume itself still imports, into that series.
+      expect((await db.volumes.get('volume-uuid-01'))?.series_title).toBe('Dr Stone');
+      expect(await db.series_metadata.get('dr stone')).toBeUndefined();
+      expect(await db.series_index.get('dr stone')).toBeUndefined();
+      expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+      expect(info.mock.calls.flat().join(' ')).toContain('already in the library');
+    });
+
+    it('applies it to that series when the user ticked the box for it', async () => {
+      await seedExistingSeries();
+
+      await importDeepLinkedArchive(
+        await downloaded({ seriesFile: seriesFile() }),
+        'Dr Stone 01',
+        new Set(),
+        { allowSeriesKey: 'dr stone' }
+      );
+
+      expect((await db.series_metadata.get('dr stone'))?.external_ids).toEqual({ anilist: 98416 });
+      expect(await db.series_index.get('dr stone')).toBeDefined();
+    });
+
+    it('a series known only by its metadata record is just as protected', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => {});
+      await db.series_metadata.put({
+        series_key: 'dr stone',
+        series_title: 'Dr Stone',
+        external_ids: { anilist: 1 },
+        facts_updated_at: '2020-01-01T00:00:00.000Z'
+      } as never);
+
+      await importDeepLinkedArchive(
+        await downloaded({ seriesFile: seriesFile() }),
+        'Dr Stone 01',
+        new Set()
+      );
+
+      expect((await db.series_metadata.get('dr stone'))?.external_ids).toEqual({ anilist: 1 });
+    });
+
+    it('allowing one series does not open up another', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => {});
+      await seedExistingSeries();
+
+      await importDeepLinkedArchive(
+        await downloaded({ seriesFile: seriesFile() }),
+        'Dr Stone 01',
+        new Set(),
+        { allowSeriesKey: 'one piece' }
+      );
+
+      expect(await db.series_metadata.get('dr stone')).toBeUndefined();
+    });
+  });
+});
+
+describe('localSeriesKeys', () => {
+  it('folds every series the library knows: rows, metadata records and cached indexes', async () => {
+    await db.volumes.put({ ...volume, series_title: '  Dr   STONE ' });
+    await db.series_metadata.put({ series_key: 'one piece', series_title: 'One Piece' } as never);
+    await db.series_index.put({ series_key: 'bleach', series_title: 'Bleach' } as never);
+    expect([...(await localSeriesKeys())].sort()).toEqual(['bleach', 'dr stone', 'one piece']);
   });
 });

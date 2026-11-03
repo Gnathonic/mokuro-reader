@@ -4,6 +4,7 @@ import { pickCoverTarget } from './cover-sidecar';
 import type { HtmlDownloadResult } from './html-download-provider';
 import { importArchiveWithOptionalMokuro } from './import-service';
 import { recordSeriesFile } from './series-file-import';
+import { normalizeSeriesKey } from '$lib/metadata/series-key';
 
 /**
  * The provider stamp a deep-linked layer row carries (`cloud.provider`), so a
@@ -43,11 +44,41 @@ async function rememberPendingOcr(
 }
 
 /**
+ * Every series this library already knows, by `normalizeSeriesKey`: a volume
+ * row in any state, a metadata record (facts the user set, or a cloud catalog's)
+ * or a cached cloud `series.json`. Keys only — no row bodies, no thumbnails.
+ */
+export async function localSeriesKeys(): Promise<Set<string>> {
+  const [titles, metadataKeys, indexKeys] = await Promise.all([
+    db.volumes.orderBy('series_title').uniqueKeys(),
+    db.series_metadata.toCollection().primaryKeys(),
+    db.series_index.toCollection().primaryKeys()
+  ]);
+  const keys = new Set<string>();
+  for (const title of titles) if (typeof title === 'string') keys.add(normalizeSeriesKey(title));
+  for (const key of [...metadataKeys, ...indexKeys]) {
+    if (typeof key === 'string') keys.add(normalizeSeriesKey(key));
+  }
+  return keys;
+}
+
+export interface DeepLinkImportOptions {
+  /**
+   * The one existing series (`normalizeSeriesKey`) the user agreed, in the
+   * import confirmation, to let this link's `series.json` update. Every other
+   * series already in the library is left alone.
+   */
+  allowSeriesKey?: string;
+}
+
+/**
  * Import a deep-linked `.cbz` with what its manifest brought along:
  *
  * - the `series.json` joins the import batch BEFORE the archive is queued, so
  *   the batch applies it once the volume is saved — exactly as a `series.json`
- *   inside an imported ZIP (keyed by the title the volume was stored under);
+ *   inside an imported ZIP (keyed by the title the volume was stored under) —
+ *   except that it never lands on a series that was already in the library,
+ *   unless the user allowed that one in the confirmation (`allowSeriesKey`);
  * - the layers go through the same importer a cloud listing's pull uses
  *   (`importFetchedLayers`), onto the volume this import installed.
  *
@@ -57,10 +88,17 @@ async function rememberPendingOcr(
 export async function importDeepLinkedArchive(
   downloaded: HtmlDownloadResult,
   requestVolume: string,
-  installedBefore: Set<string>
+  installedBefore: Set<string>,
+  options: DeepLinkImportOptions = {}
 ): Promise<VolumeMetadata | undefined> {
   if (!downloaded.archiveFile) throw new Error('No archive to import');
-  if (downloaded.seriesFile) recordSeriesFile(downloaded.seriesFile);
+  if (downloaded.seriesFile) {
+    // Snapshot taken now, after the download: a series a sync materialised
+    // while the archive was on its way is just as much the user's.
+    const protectedSeriesKeys = await localSeriesKeys();
+    if (options.allowSeriesKey) protectedSeriesKeys.delete(options.allowSeriesKey);
+    recordSeriesFile({ ...downloaded.seriesFile, protectedSeriesKeys });
+  }
 
   await importArchiveWithOptionalMokuro(downloaded.archiveFile, downloaded.mokuroFile);
 

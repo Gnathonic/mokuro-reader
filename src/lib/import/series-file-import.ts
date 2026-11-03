@@ -34,6 +34,16 @@ export interface PendingSeriesFile {
   size: number;
   /** The file's own timestamp, ISO — the `source` stamp of the cached index. */
   modifiedTime: string;
+  /**
+   * Series this file must NOT be applied to (`normalizeSeriesKey`): the ones
+   * already in the library when a LINK brought the file, minus any the user
+   * agreed in the import confirmation to let it update. A link's server is
+   * whoever made the link; it may name a new series, but it does not get to
+   * rewrite the AniList link or titles of one the user already has — and so,
+   * through the write this would queue, the user's own cloud copy — unseen.
+   * Absent for files the user picked or dropped themselves.
+   */
+  protectedSeriesKeys?: ReadonlySet<string>;
 }
 
 /**
@@ -214,6 +224,13 @@ export async function applyImportedSeriesFiles(): Promise<void> {
     if (!seriesTitle) {
       console.warn(
         `[Import] Could not tell which series the ${SERIES_FILE_NAME} at '${entry.path}' belongs to; ignoring it`
+      );
+      continue;
+    }
+    if (entry.protectedSeriesKeys?.has(normalizeSeriesKey(seriesTitle))) {
+      // Neither the facts nor the cached index: both would reach this series.
+      console.info(
+        `[Import] Not applying the ${SERIES_FILE_NAME} at '${entry.path}' to '${seriesTitle}': that series was already in the library and the import did not allow changing it`
       );
       continue;
     }

@@ -197,3 +197,26 @@ describe('AniList implicit-grant callback', () => {
     cleanup();
   });
 });
+
+/**
+ * A link can only OPEN a view: the query a link carries never reaches the view
+ * object, so no route can be told to log in, log out, delete or sync. The two
+ * views that read their own query (`#/upload`, `#/cloud`) ask or only fill a
+ * form — see UploadView.confirm.test.ts and link-safety.test.ts.
+ */
+describe('deep links carry no actions', () => {
+  test.each([
+    ['#/cloud?server=https://dav.example.com&action=logout', { type: 'cloud' }],
+    ['#/cloud?login=1&sync=1', { type: 'cloud' }],
+    ['#/upload?cbz=https://e.example.com/a.cbz&confirm=1', { type: 'upload' }],
+    ['#/series/One%20Piece?delete=1', { type: 'series', seriesId: 'One Piece' }],
+    [
+      '#/reader/One%20Piece/uuid-1?deleteCloud=1',
+      { type: 'reader', seriesId: 'One Piece', volumeId: 'uuid-1' }
+    ],
+    ['#/merge-series?execute=1', { type: 'merge-series' }],
+    ['#/catalog?clear=1', { type: 'catalog' }]
+  ])('%s opens the view and nothing more', (hash, view) => {
+    expect(parseHash(hash)).toEqual(view);
+  });
+});

@@ -210,11 +210,22 @@ export function getUploadParamsFromLocation(search: string, hash: string): URLSe
   return params;
 }
 
+/** A link's URL param as an absolute http(s) URL — `data:`, `blob:` and the rest are no download source. */
+function webUrl(value: string): URL | null {
+  try {
+    const url = new URL(value, window.location.href);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadRequest | null {
   const cbz = params.get('cbz');
   if (cbz) {
     try {
-      const cbzUrl = new URL(cbz, window.location.href);
+      const cbzUrl = webUrl(cbz);
+      if (!cbzUrl) return null;
       const segments = cbzUrl.pathname.split('/').filter(Boolean);
       const filename = decodeURIComponent(segments[segments.length - 1] || 'volume.cbz');
       const volume = filename.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
@@ -222,11 +233,8 @@ export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadR
       const manifest = params.get('manifest');
       let manifestUrl: string | undefined;
       if (manifest) {
-        try {
-          manifestUrl = new URL(manifest, window.location.href).toString();
-        } catch {
-          manifestUrl = undefined; // unusable: the legacy path, as with no param
-        }
+        // Unusable (unparseable, not http/https): the legacy path, as with no param.
+        manifestUrl = webUrl(manifest)?.toString();
       }
       const cover = params.get('cover');
       return {
@@ -247,6 +255,7 @@ export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadR
   const manga = params.get('manga');
   const volume = params.get('volume');
   if (!source || !manga || !volume) return null;
+  if (!webUrl(source)) return null;
 
   const type = (params.get('type') || 'directory').toLowerCase();
   if (type !== 'directory' && type !== 'cbz') return null;
