@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   BODY_LIMIT_BYTES,
   COOKIE_MAX_AGE_S,
@@ -94,17 +94,22 @@ describe('request validation (every route, before any crypto or Google call)', (
   it('counts a chunked body while streaming: no Content-Length does not get past the cap', async () => {
     const chunk = new TextEncoder().encode(`{"pad":"${'x'.repeat(1000)}`);
     let sent = 0;
+    const cancel = vi.fn();
     const stream = new ReadableStream<Uint8Array>({
       pull(controller) {
         sent++;
         if (sent > 100) controller.close();
         else controller.enqueue(chunk);
-      }
+      },
+      cancel
     });
     const r = await rejection({ rawBody: stream, headers: { 'content-length': null } });
     expect(r.status).toBe(413);
     // It stopped reading soon after the cap, not at the end of the stream.
     expect(sent).toBeLessThan(10);
+    // Stopped, not cancelled: SvelteKit's Node stream destroys the socket on a
+    // cancel, and the 413 would never reach the client.
+    expect(cancel).not.toHaveBeenCalled();
   });
 
   it('a body of exactly the cap is read', async () => {
@@ -130,9 +135,9 @@ describe('the session cookie', () => {
     expect(cookieName(new URL('http://127.0.0.1:4173/'))).toBe('gdrive_rt');
     expect(cookieName(new URL('http://[::1]:5173/'))).toBe('gdrive_rt');
     expect(cookieName(new URL('http://app.localhost/'))).toBe('gdrive_rt');
-    // A LAN address over http is not loopback: the browser drops a __Host-
-    // cookie there, and that is the right outcome.
-    expect(cookieName(new URL('http://192.168.1.20:5173/'))).toBe('__Host-gdrive_rt');
+    // Plain http anywhere but loopback (another machine on the network): the
+    // browser drops a __Host- cookie there, and that is the right outcome.
+    expect(cookieName(new URL('http://reader.test:5173/'))).toBe('__Host-gdrive_rt');
   });
 
   it('is set HttpOnly, Secure, SameSite=Strict, Path=/ for 180 days, attributes spelled out', () => {

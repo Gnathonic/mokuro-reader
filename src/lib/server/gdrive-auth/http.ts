@@ -98,7 +98,11 @@ async function readCapped(request: Request, limit: number): Promise<Uint8Array> 
     if (done) break;
     total += value.byteLength;
     if (total > limit) {
-      await reader.cancel().catch(() => {});
+      // Stop reading, but never cancel: SvelteKit's Node stream answers a
+      // cancel by destroying the socket, and the 413 would never be sent. The
+      // stream applies backpressure (it pauses the request once its small
+      // queue is full), so nothing more is buffered.
+      reader.releaseLock();
       throw new BodyTooLarge();
     }
     chunks.push(value);
