@@ -240,6 +240,41 @@ describe('when the backend cannot renew', () => {
   });
 });
 
+describe('across tabs', () => {
+  it('a sign-in in another tab brings this tab’s dead session back', async () => {
+    persist('OLD', -MIN);
+    const { tm, attention } = await load();
+    vi.mocked(fetch).mockImplementation(async () => json(401, { error: 'reauth' }));
+    await tm.getAccessToken();
+    expect(attention()).toBe(true);
+    expect(tm.getTimeUntilExpiry()).not.toBeNull();
+
+    // The other tab signed in again: a new cookie (shared) and a new token.
+    persist('FROM-OTHER-TAB', 3 * MIN);
+    vi.mocked(fetch).mockReset();
+    vi.mocked(fetch).mockResolvedValueOnce(granted('RENEWED-HERE'));
+    // Under five minutes left: adopted, and renewed through the session again.
+    expect(await tm.getAccessToken()).toBe('RENEWED-HERE');
+    expect(attention()).toBe(false);
+    expect(tm.getTimeUntilExpiry()).toBeNull();
+  });
+});
+
+describe('a burst of refusals while the backend is down', () => {
+  it('asks the backend once, then waits out the backoff', async () => {
+    persist('OLD', 30 * MIN);
+    const { tm } = await load();
+    vi.mocked(fetch).mockImplementation(async () => json(503, { error: 'transient' }));
+    expect(await tm.renewRejectedToken('OLD')).toEqual({ kind: 'transient' });
+    expect(await tm.renewRejectedToken('OLD')).toEqual({ kind: 'transient' });
+    expect(await tm.renewRejectedToken('OLD')).toEqual({ kind: 'transient' });
+    expect(calls('/api/gdrive/refresh')).toHaveLength(1);
+    // A click to reconnect is not held back by it.
+    await tm.refreshFromBackend(true);
+    expect(calls('/api/gdrive/refresh')).toHaveLength(2);
+  });
+});
+
 describe('the hourly countdown is gone', () => {
   it('getTimeUntilExpiry is null while the session can renew, even past expiry', async () => {
     persist('OLD', -5 * MIN);

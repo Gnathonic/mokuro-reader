@@ -64,11 +64,17 @@ const CONTROL_ROOTS_PER_QUERY = 25;
  */
 const WORKER_TOKEN_MIN_VALIDITY_MS = 15 * 60 * 1000;
 
-/** Did the user just act (a click's transient activation)? Unknown counts as yes. */
-function userIsActing(): boolean {
-  const activation = (globalThis.navigator as { userActivation?: { isActive: boolean } })
+/**
+ * Has the user interacted with this page at all (sticky activation)? A
+ * sign-in that leaves the page must never start before that: not at boot, not
+ * from code that runs on its own. Sticky rather than transient on purpose: the
+ * provider chunk a click loads first can outlast the few seconds a click's
+ * transient activation lasts. Unknown (no User Activation API) counts as yes.
+ */
+function userHasActed(): boolean {
+  const activation = (globalThis.navigator as { userActivation?: { hasBeenActive: boolean } })
     ?.userActivation;
-  return activation ? activation.isActive : true;
+  return activation ? activation.hasBeenActive : true;
 }
 
 /**
@@ -252,8 +258,8 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   async login(): Promise<void> {
-    // Read before any await: a sign-in may leave the page only for a click.
-    const interactive = userIsActing();
+    // A sign-in may leave the page only once the user has acted on it.
+    const interactive = userHasActed();
     try {
       if (!browser) {
         throw new Error('Google Drive auth only works in browser');

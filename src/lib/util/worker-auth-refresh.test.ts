@@ -119,13 +119,13 @@ describe('a Drive token renewed for a worker', () => {
     const credentials: Record<string, unknown> = {
       accessToken: 'OLD',
       seriesFolderId: 'folder',
-      cloudBases: { driveApi: 'http://sim' }
+      cloudBases: { driveApi: 'http://cloudsim.test' }
     };
     await refreshInto(async () => ({ accessToken: 'NEW' }), credentials)('Bearer OLD');
     expect(credentials).toEqual({
       accessToken: 'NEW',
       seriesFolderId: 'folder',
-      cloudBases: { driveApi: 'http://sim' }
+      cloudBases: { driveApi: 'http://cloudsim.test' }
     });
   });
 

@@ -623,7 +623,9 @@ class TokenManager {
   /**
    * Another tab of this browser may have renewed the token since we read it:
    * localStorage is shared, the store is not. Take a stored token that lasts
-   * longer than the one held.
+   * longer than the one held. The cookie is shared too, so whatever that tab
+   * did (renewed, or signed in again) holds here as well: this tab's own
+   * verdict on the session (gone, failing) is stale and is dropped.
    */
   private adoptStoredToken(): void {
     if (!browser) return;
@@ -633,6 +635,7 @@ class TokenManager {
     if (expiry === null || expiry <= Date.now()) return;
     this.tokenStore.set(stored);
     if (typeof gapi !== 'undefined' && gapi.client) gapi.client.setToken({ access_token: stored });
+    this.resetBackendState();
     this.setNeedsAttention(false);
   }
 
@@ -732,7 +735,9 @@ class TokenManager {
     const held = this.getCurrentToken();
     if (held && held !== rejected && this.validFor(0)) return { kind: 'renewed', token: held };
     if (!this.isBackendMode()) return { kind: 'failed' };
-    const result = await this.refreshFromBackend(true);
+    // Not forced: while the backend is backing off, a burst of refused calls
+    // must not each go and ask it again.
+    const result = await this.refreshFromBackend();
     const fresh = this.getCurrentToken();
     if (result === 'ok' && fresh && fresh !== rejected) return { kind: 'renewed', token: fresh };
     return result === 'transient' ? { kind: 'transient' } : { kind: 'failed' };

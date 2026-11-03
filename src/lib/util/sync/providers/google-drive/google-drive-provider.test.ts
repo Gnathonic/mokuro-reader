@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('$app/environment', () => ({ browser: true }));
 vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
@@ -14,7 +14,9 @@ vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
     // The implicit flow (no auth backend): the held token, nothing renewed.
     getAccessToken: vi.fn(async () => 'TOKEN'),
     isBackendMode: vi.fn(() => false),
-    renewRejectedToken: vi.fn(async () => ({ kind: 'failed' }))
+    renewRejectedToken: vi.fn(async () => ({ kind: 'failed' })),
+    connectViaBackend: vi.fn(),
+    reconnect: vi.fn()
   }
 }));
 vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
@@ -69,6 +71,7 @@ import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-fil
 import { providerManager } from '../../provider-manager';
 import { ProviderError } from '../../provider-interface';
 import { driveStorageFullError } from '../../core/providers/drive-http';
+import { setActiveProviderKey } from '../../provider-detection';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const JSON_MIME = 'application/json';
@@ -262,6 +265,48 @@ describe('GoogleDriveProvider login() with the token already there', () => {
       return () => {};
     });
     await expect(googleDriveProvider.login()).resolves.toBeUndefined();
+  });
+});
+
+describe('GoogleDriveProvider login() through the auth backend', () => {
+  beforeEach(() => {
+    vi.mocked(tokenManager.isBackendMode).mockReturnValue(true);
+    vi.mocked(tokenManager.requestNewToken).mockClear();
+    vi.mocked(tokenManager.connectViaBackend).mockReset();
+    vi.mocked(setActiveProviderKey).mockClear();
+  });
+  afterEach(() => {
+    vi.mocked(tokenManager.isBackendMode).mockReturnValue(false);
+    vi.unstubAllGlobals();
+  });
+
+  it('a live session reconnects without the popup', async () => {
+    vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('connected');
+    await googleDriveProvider.login();
+    expect(tokenManager.requestNewToken).not.toHaveBeenCalled();
+    expect(setActiveProviderKey).toHaveBeenCalledWith('google-drive');
+  });
+
+  it('no backend here: the popup sign-in, as before', async () => {
+    vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('popup');
+    await googleDriveProvider.login();
+    expect(tokenManager.requestNewToken).toHaveBeenCalledWith(true);
+  });
+
+  it('may leave the page only once the user has acted on it', async () => {
+    vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('connected');
+    vi.stubGlobal('navigator', { userActivation: { hasBeenActive: false, isActive: false } });
+    await googleDriveProvider.login();
+    expect(tokenManager.connectViaBackend).toHaveBeenLastCalledWith(false);
+    vi.stubGlobal('navigator', { userActivation: { hasBeenActive: true, isActive: false } });
+    await googleDriveProvider.login();
+    // Sticky, not transient: the chunk a click loads may outlast the click.
+    expect(tokenManager.connectViaBackend).toHaveBeenLastCalledWith(true);
+  });
+
+  it('reauthenticate (a cloud-page button) is the interactive reconnect', async () => {
+    await googleDriveProvider.reauthenticate();
+    expect(tokenManager.reconnect).toHaveBeenCalled();
   });
 });
 
