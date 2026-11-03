@@ -69,6 +69,13 @@ describe('webdavAuthOptions entity limits', () => {
     const custom = { limit: { maxTotalExpansions: 5, maxExpandedLength: 50 } };
     expect(webdavAuthOptions('user', 'pw', { entityDecoder: custom }).entityDecoder).toBe(custom);
   });
+
+  it('keeps the limits when extra carries entityDecoder: undefined', () => {
+    const withToken = webdavAuthOptions('', '', { entityDecoder: undefined }, 'tok');
+    const anonymous = webdavAuthOptions(undefined, undefined, { entityDecoder: undefined });
+    expect(withToken.entityDecoder).toEqual(WEBDAV_ENTITY_LIMITS);
+    expect(anonymous.entityDecoder).toEqual(WEBDAV_ENTITY_LIMITS);
+  });
 });
 
 describe('the webdav client the reader builds', () => {
@@ -91,14 +98,26 @@ describe('the webdav client the reader builds', () => {
     expect(entries).toHaveLength(1500);
   });
 
-  it('refuses a response that inflates a declared entity past the length limit', async () => {
-    // One 1000-character entity referenced 500 times = 500 000 characters of
-    // expansion from a ~4 KB body.
+  it('applies the configured expansion-length limit, not only the parser default', async () => {
+    // WEBDAV_ENTITY_LIMITS' length cap equals fast-xml-parser's built-in
+    // 100 000-character default, so a body over it fails with or without our
+    // decoder and proves nothing. A tighter cap passed through `extra` does:
+    // ~10 KB of expansion is fine by the defaults and refused only if the
+    // configured decoder is what the parser actually uses.
     const doctype = `<!DOCTYPE d:multistatus [<!ENTITY big "${'x'.repeat(1000)}">]>`;
-    fetchHandler.body = multistatus(['&big;'.repeat(500)], doctype);
-    const client = createClient(SERVER, webdavAuthOptions('user', 'pw'));
+    const body = multistatus(['&big;'.repeat(10)], doctype);
 
-    await expect(client.getDirectoryContents('/mokuro-reader/')).rejects.toThrow(/limit exceeded/i);
+    fetchHandler.body = body;
+    const defaults = createClient(SERVER, webdavAuthOptions('user', 'pw'));
+    const parsed = await defaults.getDirectoryContents('/mokuro-reader/');
+    expect(parsed.map((e) => e.basename)).toContain('x'.repeat(10_000));
+
+    fetchHandler.body = body;
+    const tight = { limit: { maxTotalExpansions: 1000, maxExpandedLength: 5000 } };
+    const limited = createClient(SERVER, webdavAuthOptions('user', 'pw', { entityDecoder: tight }));
+    await expect(limited.getDirectoryContents('/mokuro-reader/')).rejects.toThrow(
+      /limit exceeded/i
+    );
   });
 
   it('refuses a response that references a declared entity too many times', async () => {

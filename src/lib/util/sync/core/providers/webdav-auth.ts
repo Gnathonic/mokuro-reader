@@ -25,6 +25,10 @@ export {
  * Side effect: with a decoder configured, numeric character references
  * (`&#x65E5;`) in a response are decoded, as XML requires; the default parse
  * left them as literal text, which named a path that does not exist.
+ *
+ * Not covered: `client.lock()` — webdav parses LOCK responses with a separate
+ * parser that never receives `entityDecoder`. The reader never takes locks;
+ * a caller that starts to must not rely on these limits.
  */
 export const WEBDAV_ENTITY_LIMITS = {
   limit: { maxTotalExpansions: 1000, maxExpandedLength: 100_000 }
@@ -32,7 +36,9 @@ export const WEBDAV_ENTITY_LIMITS = {
 
 /**
  * Build webdav `createClient` options with the session's Authorization header
- * and the entity limits above (an `extra.entityDecoder` overrides them).
+ * and the entity limits above (an `extra.entityDecoder` overrides them; an
+ * `entityDecoder: undefined` in `extra` keeps them — turning the limits off
+ * takes an explicit decoder, never a missing value).
  *
  * The webdav library's own Basic-auth encoder (the `base-64` package) encodes
  * credentials as Latin-1: it throws on characters above U+00FF and produces
@@ -53,7 +59,10 @@ export function webdavAuthOptions(
   token?: string | null
 ): WebDAVClientOptions {
   const authorization = webdavAuthorization({ username, password, token });
-  const base: WebDAVClientOptions = { entityDecoder: WEBDAV_ENTITY_LIMITS, ...extra };
+  const base: WebDAVClientOptions = {
+    ...extra,
+    entityDecoder: extra.entityDecoder ?? WEBDAV_ENTITY_LIMITS
+  };
   if (!authorization) {
     return { ...base, authType: AuthType.None };
   }
