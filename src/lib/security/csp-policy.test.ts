@@ -106,12 +106,16 @@ describe('the directives', () => {
       'https://docs.google.com',
       'https://drive.google.com',
       'https://content.googleapis.com',
-      'https://login.microsoftonline.com'
+      'https://login.microsoftonline.com',
+      // MSAL's silent renewal frame redirects a personal account through it.
+      'https://login.live.com'
     ]);
   });
 
   it('lock down the rest', () => {
-    expect(d['default-src']).toEqual(['self']);
+    // No default: it would refuse the https: media extensions inject (Migaku).
+    expect(d['default-src']).toBeUndefined();
+    expect(d['media-src']).toBeUndefined();
     // pica's capability probe and zip.js's codec workers are data: URLs.
     expect(d['worker-src']).toEqual(['self', 'blob:', 'data:']);
     expect(d['object-src']).toEqual(['none']);

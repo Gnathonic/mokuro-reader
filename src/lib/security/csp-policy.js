@@ -50,6 +50,14 @@
 //   docs.google.com, drive.google.com     the Google Picker dialog
 //   content.googleapis.com                gapi.client's request proxy frame
 //   login.microsoftonline.com             MSAL's silent token renewal frame
+//   login.live.com       the personal-account hop of that same frame: with the
+//                        `/common` authority, a personal Microsoft account (the
+//                        usual OneDrive one) is redirected through it and back.
+//                        frame-src is checked on every redirect of a child
+//                        frame, so without it the renewal — which MSAL falls
+//                        back to once the 24 h SPA refresh token has expired —
+//                        times out (monitor_window_timeout, not an
+//                        interaction-required error: no reconnect prompt).
 // worker-src 'self' blob: data:
 //   the app's module workers and the service worker; pica starts its resize
 //   workers from blob: URLs and probes OffscreenCanvas support with a data:
@@ -57,8 +65,17 @@
 //   e2e run: without data: the probe is a violation on every thumbnail, and an
 //   archive import inside the file worker hangs)
 // object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'
-// default-src 'self'     the fallback for anything not named above (media,
-//                        manifest, prefetch)
+// No default-src: every fetch directive that can run code is named above, and a
+// default would only add media-src/manifest-src restrictions the app has no
+// use for — while refusing the https: audio and video that extensions (Migaku's
+// sentence audio, say) inject into the page.
+//
+// Browsers. 'wasm-unsafe-eval' needs Safari 16 and style-src-attr Safari 15.4.
+// Older Safari (iOS/iPadOS 15 devices that cannot update) ignores what it does
+// not know: under enforce it would refuse WebAssembly — in the worker policy
+// too, which vercel.json enforces whatever CSP_MODE says — and every inline
+// style attribute. Safari below 16 is knowingly unsupported under enforce;
+// check one such device by hand, if one is still to be supported.
 //
 // Not allowed: the Vercel Toolbar. Vercel injects it (scripts, frames and a
 // websocket from its own hosts) into PREVIEW deployments only — beta among them —
@@ -112,7 +129,6 @@ export function parseCspMode(value) {
  */
 export function cspDirectives() {
   return {
-    'default-src': ['self'],
     'script-src': [
       'self',
       'wasm-unsafe-eval',
@@ -131,7 +147,8 @@ export function cspDirectives() {
       'https://docs.google.com',
       'https://drive.google.com',
       'https://content.googleapis.com',
-      'https://login.microsoftonline.com'
+      'https://login.microsoftonline.com',
+      'https://login.live.com'
     ],
     'worker-src': ['self', 'blob:', 'data:'],
     'object-src': ['none'],

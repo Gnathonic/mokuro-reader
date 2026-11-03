@@ -1953,7 +1953,8 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
   wake lock, share, local-network/loopback) on every path but `/api/` and
   `/oauth/` (those get their own rules; keep one header name per path). The
   module workers (`/_app/immutable/workers/*`) get their own CSP: a worker does
-  not inherit the page's. No global `Referrer-Policy` (the Drive API key's
+  not inherit the page's. That one is NOT phased by `CSP_MODE` — it is enforced
+  from the first deploy. No global `Referrer-Policy` (the Drive API key's
   referrer restriction needs the origin).
 - **The shell's CSP** is `kit.csp` (`src/lib/security/csp-policy.js`, mode
   `hash` — never nonces on a CDN-cached shell), phased by `CSP_MODE`. Every
@@ -1962,12 +1963,26 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
   `script-src` (JSONP/AngularJS bypass gadgets — exact paths only). Report-only
   carries `report-to csp-noop` (kit 500s every page without one) and no
   Reporting-Endpoints header: reports go nowhere. No inline `<style>`/`<script>`
-  in `app.html` (kit hashes only its own): styles go in a stylesheet.
+  in `app.html` (kit hashes only its own): styles go in a stylesheet. No
+  `default-src` (it would only refuse the https: media extensions inject).
+  `frame-src` carries `login.live.com` beside `login.microsoftonline.com`: MSAL's
+  silent-renewal iframe sends a personal account through it. Safari below 16
+  (`'wasm-unsafe-eval'`, `style-src-attr`) is knowingly unsupported under
+  enforce.
 - **Vercel Toolbar**: injected into preview deployments (beta), refused by the
   policy. Turn it off for previews in the Vercel project settings rather than
   widening the policy — beta must enforce exactly what production does.
 - **Violations** are kept in an in-page ring buffer (`csp-violations.ts`,
   installed by `src/hooks.client.ts`): `__mokuroCspViolations()` in the console.
+  A violation inside a worker fires on the worker, so every app worker calls
+  `forwardWorkerCspViolations()` first thing (BroadcastChannel
+  `mokuro-csp-violations`, entries `context: 'worker <path>'`); a new app worker
+  must too. Third-party blob:/data: workers (zip.js codecs, pica) are not
+  covered. `isAppViolation` is for the automated spec only: checking a device
+  by hand, ANY entry recorded while Yomitan or Migaku is active — extension-
+  attributed ones included — blocks enforcement until it is allowed or shown
+  harmless (Chrome exempts an extension's own loads, so what does fire is its
+  main-world injection, exactly what enforce would break).
 - **The Google scripts** (gapi, GIS) load on demand (`google-scripts.ts`): when
   Drive is the active provider at boot, and when the cloud page mounts —
   never first inside the Connect click (the GIS popup needs its activation).
