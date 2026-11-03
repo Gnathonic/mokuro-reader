@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Button, Spinner } from 'flowbite-svelte';
   import { CloudArrowUpOutline, TrashBinSolid } from 'flowbite-svelte-icons';
-  import { showSnackbar } from '$lib/util';
+  import { promptConfirmation, showSnackbar } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
   import type { VolumeMetadata } from '$lib/types';
@@ -141,18 +141,24 @@
   async function handleDelete(e: MouseEvent) {
     e.stopPropagation();
 
-    if (!cloudFile) {
+    const target = cloudFile;
+    if (!target) {
       showSnackbar('Volume not backed up');
       return;
     }
 
-    try {
-      await unifiedCloudManager.deleteFile(cloudFile);
-      showSnackbar(`Deleted from ${cloudFile.provider}`);
-    } catch (error) {
-      console.error('Delete failed:', error);
-      showSnackbar(`Delete failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+    // The same question the series delete and the volume row's own cloud delete
+    // ask: a cloud delete is permanent, so one click never does it.
+    const providerName = providerDisplayName;
+    promptConfirmation(`Delete ${volume.volume_title} from ${providerName}?`, async () => {
+      try {
+        await unifiedCloudManager.deleteFile(target);
+        showSnackbar(`Deleted from ${providerName}`);
+      } catch (error) {
+        console.error('Delete failed:', error);
+        showSnackbar(`Delete failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    });
   }
 
   // Get active provider's display name
