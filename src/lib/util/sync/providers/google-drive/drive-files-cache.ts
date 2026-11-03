@@ -793,11 +793,18 @@ class DriveFilesCacheManager implements CloudCache<DriveFileMetadata> {
     );
   }
 
-  /** Drop the feed's position and list the whole account. */
+  /**
+   * List the whole account. The feed's position is NOT dropped first: a
+   * listing that succeeds installs its own (taken before its walk), and one
+   * that fails (offline) leaves the cache the exact snapshot at the old
+   * position, so the next refresh catches up with one feed read instead of
+   * another whole-account walk. A position Drive refused or a batch that could
+   * not be applied fails the same way again and lists again: nothing is lost
+   * by keeping it.
+   */
   private async listInFull(reason: string, error?: unknown): Promise<'reset'> {
     if (error) console.warn(`[DriveCache] Listing in full (${reason}):`, error);
     else console.log(`[DriveCache] Listing in full (${reason})`);
-    this.changesToken = null;
     await this.fetchAllFiles();
     return 'reset';
   }

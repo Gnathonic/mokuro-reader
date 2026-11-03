@@ -129,7 +129,12 @@ parents,description,trashed,ownedByMe,version)`), applies owned upserts/removals
    stays.
 4. Behaviour not verified without a real account (record in the PR): `drive.file` feed visibility of
    another device's writes, the invalid-token status code, folder-move entries. The full-fetch
-   fallback covers any feed failure.
+   fallback covers any feed failure. Known edge, accepted: the position is taken just before the
+   walk, so a file written seconds before it that Drive's eventually consistent `files.list` does not
+   yet return is in neither the walk nor the feed; the 24 h safety-net listing (or any full listing)
+   brings it. Before #288 the next upload's re-listing healed it sooner.
+5. A full listing never drops the feed's position before it runs: a listing that fails (offline)
+   leaves the cache the snapshot at that position, so the next refresh catches up with one feed read.
 
 ## Testing
 

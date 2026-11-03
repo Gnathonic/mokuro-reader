@@ -785,6 +785,28 @@ describe('driveFilesCache change feed (#288)', () => {
       expect(api.listFiles).toHaveBeenCalledTimes(1);
     });
 
+    // Offline wake: the feed read fails and so does the listing it falls back
+    // to. The cache is still the exact snapshot at the old position, so the
+    // position must survive: back online, ONE feed read catches up, never a
+    // whole-account listing.
+    it('a listing that fails offline keeps the old position for the next feed read', async () => {
+      api.listChanges.mockRejectedValueOnce(new Error('offline'));
+      api.listFiles.mockRejectedValueOnce(new Error('offline'));
+
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('reset');
+      expect(api.listFiles).toHaveBeenCalledTimes(1);
+
+      later(FULL_LISTING_REUSE_MS + 1000);
+      feed([]);
+      await expect(driveFilesCache.refreshFromChanges()).resolves.toBe('unchanged');
+      expect(api.listChanges).toHaveBeenLastCalledWith(
+        'token-1',
+        expect.any(String),
+        MAX_CHANGE_PAGES
+      );
+      expect(api.listFiles).toHaveBeenCalledTimes(1);
+    });
+
     it('the next login (a cache clear) tries the feed again', async () => {
       api.listChanges.mockRejectedValueOnce(unavailable(403));
       await driveFilesCache.refreshFromChanges();
