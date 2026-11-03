@@ -46,6 +46,12 @@ vi.mock('../../cache-manager', () => ({
 vi.mock('./webdav-cache', () => ({ webdavCache: {} }));
 
 import { WebDAVProvider, allowHeaderPermitsCollectionWrite } from './webdav-provider';
+import {
+  clearRootFileMemo,
+  noteRootFileUpload,
+  readRootFile,
+  rootFileMemoSize
+} from '../../root-file-memo';
 import { fetchWithRetryAfter } from './webdav-retry-after';
 
 const identityMock = vi.mocked(fetchServerIdentity);
@@ -1968,5 +1974,166 @@ describe('WebDAVProvider: a 403 from a bunko that enforces series owners', () =>
     );
     expect(provider.isReadOnly).toBe(false);
     expect(identityMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('WebDAVProvider conditional root-file reads (stat, receipts, etags)', () => {
+  async function connected(): Promise<WebDAVProvider> {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    return provider;
+  }
+
+  const VOLUME_DATA = {
+    provider: 'webdav' as const,
+    fileId: '/mokuro-reader/volume-data.json',
+    path: 'volume-data.json',
+    modifiedTime: '',
+    size: 0
+  };
+  const LASTMOD = 'Mon, 02 Nov 2026 10:00:00 GMT';
+
+  it('statFile is one PROPFIND Depth 0 of the file: getetag is the revision', async () => {
+    const provider = await connected();
+    mockClient.stat.mockResolvedValueOnce({
+      type: 'file',
+      filename: VOLUME_DATA.fileId,
+      lastmod: LASTMOD,
+      size: 28542,
+      etag: '1730541600.1-28542'
+    });
+    expect(await provider.statFile(VOLUME_DATA)).toEqual({
+      size: 28542,
+      modifiedTime: LASTMOD,
+      revision: '1730541600.1-28542'
+    });
+    expect(mockClient.stat).toHaveBeenLastCalledWith(VOLUME_DATA.fileId);
+  });
+
+  it('statFile: a server without getetag still stamps size + lastmod; 404 or a folder is gone', async () => {
+    const provider = await connected();
+    mockClient.stat.mockResolvedValueOnce({ type: 'file', lastmod: LASTMOD, size: 2, etag: null });
+    expect(await provider.statFile(VOLUME_DATA)).toEqual({ size: 2, modifiedTime: LASTMOD });
+    mockClient.stat.mockRejectedValueOnce(davError(404));
+    expect(await provider.statFile(VOLUME_DATA)).toBeNull();
+    mockClient.stat.mockResolvedValueOnce({ type: 'directory', lastmod: LASTMOD, size: 0 });
+    expect(await provider.statFile(VOLUME_DATA)).toBeNull();
+  });
+
+  it('listings keep getetag as etag and revision', async () => {
+    const provider = await connected();
+    mockClient.getDirectoryContents.mockResolvedValue([
+      {
+        type: 'file',
+        filename: '/mokuro-reader/volume-data.json',
+        basename: 'volume-data.json',
+        lastmod: LASTMOD,
+        size: 9,
+        etag: 'tag-1'
+      },
+      {
+        type: 'file',
+        filename: '/mokuro-reader/profiles.json',
+        basename: 'profiles.json',
+        lastmod: LASTMOD,
+        size: 4,
+        etag: null
+      }
+    ]);
+    const files = await provider.listCloudVolumes();
+    expect(files.find((f) => f.path === 'volume-data.json')).toMatchObject({
+      etag: 'tag-1',
+      revision: 'tag-1'
+    });
+    expect(files.find((f) => f.path === 'profiles.json')).not.toHaveProperty('etag');
+  });
+
+  it("a root file's receipt is the PUT's ETag when the server sent one: no stat", async () => {
+    const provider = await connected();
+    mockClient.stat.mockClear();
+    mockCore.uploadFile.mockResolvedValueOnce({ fileId: VOLUME_DATA.fileId, revision: 'put-tag' });
+    expect(await provider.uploadFile('volume-data.json', new Blob(['{}']))).toEqual({
+      fileId: VOLUME_DATA.fileId,
+      revision: 'put-tag'
+    });
+    expect(mockClient.stat).not.toHaveBeenCalled();
+  });
+
+  it('a root file whose PUT carried no ETag gets no stat after it, and leaves no memo entry', async () => {
+    // A stat after the PUT could see ANOTHER device's write that landed in
+    // between, and bind our bytes to its revision: the memo would then call
+    // that device's file "unchanged" and this device would never read it.
+    const provider = await connected();
+    clearRootFileMemo();
+    // A read memoized the file under its getetag.
+    mockClient.stat.mockResolvedValueOnce({
+      type: 'file',
+      lastmod: LASTMOD,
+      size: 2,
+      etag: 'read-tag'
+    });
+    mockCore.downloadFile.mockResolvedValueOnce(new TextEncoder().encode('{}').buffer);
+    await readRootFile(provider, VOLUME_DATA);
+    expect(rootFileMemoSize()).toBe(1);
+
+    mockClient.stat.mockClear();
+    mockCore.uploadFile.mockResolvedValueOnce({ fileId: VOLUME_DATA.fileId });
+    const sent = new Blob(['{"a":1}']);
+    const uploaded = await provider.uploadFile('volume-data.json', sent);
+    expect(uploaded).toEqual({ fileId: VOLUME_DATA.fileId });
+    expect(mockClient.stat).not.toHaveBeenCalled();
+
+    await noteRootFileUpload(provider, 'volume-data.json', sent, uploaded);
+    expect(rootFileMemoSize()).toBe(0);
+  });
+
+  it('an upload asks whether the reader folder exists once per session, again after a reconnect', async () => {
+    const provider = await connected();
+    const folderChecks = () =>
+      mockClient.exists.mock.calls.filter(([path]) => path === '/mokuro-reader').length;
+    // The connect itself made sure of it.
+    expect(folderChecks()).toBe(1);
+    mockCore.uploadFile.mockResolvedValue({ fileId: VOLUME_DATA.fileId, revision: 't' });
+    await provider.uploadFile('volume-data.json', new Blob(['{}']));
+    await provider.uploadFile('profiles.json', new Blob(['{}']));
+    expect(folderChecks()).toBe(1);
+
+    await provider.logout();
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    expect(folderChecks()).toBe(2);
+    // A failed upload may have been the folder: the next one asks again.
+    mockCore.uploadFile.mockRejectedValueOnce(new Error('409 Conflict'));
+    await expect(provider.uploadFile('volume-data.json', new Blob(['{}']))).rejects.toThrow();
+    await provider.uploadFile('volume-data.json', new Blob(['{}']));
+    expect(folderChecks()).toBe(3);
+  });
+
+  it('every listing checks the reader folder for real, and re-creates it when it went away', async () => {
+    const provider = await connected();
+    const folderChecks = () =>
+      mockClient.exists.mock.calls.filter(([path]) => path === '/mokuro-reader').length;
+    expect(folderChecks()).toBe(1);
+
+    await provider.listCloudVolumes();
+    expect(folderChecks()).toBe(2);
+
+    // Someone deleted the folder on the server: the next listing makes it again.
+    mockClient.createDirectory.mockClear();
+    mockClient.exists.mockResolvedValueOnce(false);
+    await provider.listCloudVolumes();
+    expect(folderChecks()).toBe(3);
+    expect(mockClient.createDirectory).toHaveBeenCalledWith('/mokuro-reader');
+  });
+
+  it('a download told the size by a fresh stat passes it on, so the core skips its HEAD', async () => {
+    const provider = await connected();
+    mockCore.downloadFile.mockResolvedValue(new ArrayBuffer(2));
+    await provider.downloadFile(VOLUME_DATA, undefined, { knownSize: 2 });
+    expect(mockCore.downloadFile).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fileId: VOLUME_DATA.fileId, expectedSize: 2 })
+    );
+    await provider.downloadFile(VOLUME_DATA);
+    expect(mockCore.downloadFile.mock.calls.at(-1)![0]).not.toHaveProperty('expectedSize');
   });
 });

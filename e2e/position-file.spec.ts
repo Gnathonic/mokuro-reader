@@ -25,6 +25,19 @@ import {
  * fixed-address file before it picks its page.
  */
 
+/** The full library listing every sync waits for: `Depth: infinity` on the reader root. */
+function isLibraryListing(request: {
+  method(): string;
+  url(): string;
+  headers(): Record<string, string>;
+}) {
+  return (
+    request.method() === 'PROPFIND' &&
+    request.headers()['depth'] === 'infinity' &&
+    /\/mokuro-reader\/?$/.test(new URL(request.url()).pathname)
+  );
+}
+
 /** Both devices hold the volume at p.40, synced; the phone has pushed its position. */
 async function bothAtForty(browser: Browser, stub: WebDavStub) {
   const phone = await device(browser, stub);
@@ -132,12 +145,15 @@ test('device swap lands on the newest position, not the last one written', async
   await sync(tablet);
 
   // The phone's push stalls on its read of the file: it reads to p.44 FIRST,
-  // but its merge lands only after the tablet's newer p.47 is up.
+  // but its merge lands only after the tablet's newer p.47 is up. The read
+  // starts with the file's stamp (a PROPFIND: the phone holds the bytes it
+  // last saw) and downloads only when that moved — whichever comes first is
+  // held, so the server answers it with what it holds once released.
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
   let held = false;
   await phone.route(`**${POSITIONS}`, async (route) => {
-    if (route.request().method() === 'GET') {
+    if (!held && ['GET', 'PROPFIND'].includes(route.request().method())) {
       held = true;
       await gate;
     }
@@ -157,4 +173,170 @@ test('device swap lands on the newest position, not the last one written', async
   await expect(counter(laptop, 47)).toBeVisible({ timeout: 20000 });
   await expect(laptop.getByText(/Continued from .+, p\.47/)).toBeVisible();
   expect(await progress(laptop)).toBe(47);
+});
+
+test("a cold start adopts the other device's position before the slow listing lands", async ({
+  browser
+}) => {
+  const stub = new WebDavStub();
+  const { phone, laptop } = await bothAtForty(browser, stub);
+  await phoneReadsOn(phone, stub, [41, 42, 43, 44]);
+
+  // The laptop starts cold, and its library listing (the Depth: infinity
+  // PROPFIND every sync waits for) hangs until released.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let listingsHeld = 0;
+  await laptop.route('http://stub.test/**', async (route) => {
+    const request = route.request();
+    if (isLibraryListing(request)) {
+      listingsHeld++;
+      await gate;
+    }
+    await route.fallback();
+  });
+  const putsBefore = positionPuts(stub);
+  await laptop.reload();
+  await expect.poll(() => listingsHeld, { timeout: 20000 }).toBeGreaterThan(0);
+
+  // Before any listing: the position is already here, read by path.
+  await expect.poll(() => progress(laptop), { timeout: 15000 }).toBe(44);
+  await openVolume(laptop);
+  await expect(counter(laptop, 44)).toBeVisible({ timeout: 20000 });
+  expect(listingsHeld).toBeGreaterThan(0);
+  // The probe only reads: no write before the listing can show every copy.
+  expect(positionPuts(stub)).toBe(putsBefore);
+
+  release();
+  await sync(laptop);
+  expect(await progress(laptop)).toBe(44);
+  expect(positionsFile(stub)[VOL][1]).toBe(44);
+});
+
+test('smart sort moves the series the other device read, from the probe alone', async ({
+  browser
+}) => {
+  const stub = new WebDavStub();
+  const { phone, laptop } = await bothAtForty(browser, stub);
+
+  // The laptop also has another series, read here AFTER the phone's p.40.
+  await laptop.evaluate(async () => {
+    const { db } = await import('/src/lib/catalog/db.ts');
+    const thumb = new File([new Uint8Array([0])], 'thumb.webp', { type: 'image/webp' });
+    await db.volumes.put({
+      volume_uuid: 'e2e-other-volume',
+      series_uuid: 'e2e-other-series',
+      series_title: 'Other Series',
+      volume_title: 'Vol 1',
+      mokuro_version: '0.2.1',
+      page_count: 50,
+      character_count: 0,
+      page_char_counts: Array(50).fill(0),
+      thumbnail: thumb
+    });
+    const { updateProgress } = await import('/src/lib/settings/volume-data.ts');
+    const { recordEvent } = await import('/src/lib/reading-history/record.ts');
+    for (const p of [2, 3, 4]) {
+      await recordEvent({
+        kind: 'page',
+        volume: 'e2e-other-volume',
+        first_page: p,
+        last_page: p,
+        page_chars: [0],
+        chars_before: 0,
+        dwell_ms: 5,
+        layout: 'single',
+        orientation: 'portrait',
+        viewport: { w: 400, h: 800 }
+      });
+      updateProgress('e2e-other-volume', p, 0);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  });
+
+  // Its own push lands first (the two devices never write at once here).
+  await expect.poll(() => positionsFile(stub)['e2e-other-volume']?.[1], { timeout: 15000 }).toBe(4);
+
+  /** Series titles in catalog order (smart sort is the default). */
+  const order = async () =>
+    laptop.evaluate(() => {
+      const text = document.body.innerText;
+      return ['Swap Series', 'Other Series']
+        .map((title) => [title, text.indexOf(title)] as const)
+        .filter(([, at]) => at >= 0)
+        .sort((a, b) => a[1] - b[1])
+        .map(([title]) => title);
+    });
+  await laptop.evaluate(() => (window.location.hash = '#/catalog'));
+  await expect.poll(order, { timeout: 20000 }).toEqual(['Other Series', 'Swap Series']);
+
+  // Then the phone reads on in Swap Series and only pushes its position.
+  await phoneReadsOn(phone, stub, [41, 42, 43, 44]);
+
+  // Cold start, listing held: only the probe can bring the phone's reading.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await laptop.route('http://stub.test/**', async (route) => {
+    const request = route.request();
+    if (isLibraryListing(request)) await gate;
+    await route.fallback();
+  });
+  await laptop.reload();
+  await expect.poll(() => progress(laptop), { timeout: 15000 }).toBe(44);
+  await expect.poll(order, { timeout: 20000 }).toEqual(['Swap Series', 'Other Series']);
+  release();
+});
+
+test('a cold start merges progress and history before the slow listing lands', async ({
+  browser
+}) => {
+  const stub = new WebDavStub();
+  const { phone, laptop } = await bothAtForty(browser, stub);
+  // The phone reads on and runs a FULL sync: volume-data.json and its history
+  // segment carry p.44. positions.json is taken away, so only those can.
+  await read(phone, [41, 42, 43, 44]);
+  await sync(phone);
+  stub.files.delete(POSITIONS);
+
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let listingsHeld = 0;
+  await laptop.route('http://stub.test/**', async (route) => {
+    if (isLibraryListing(route.request())) {
+      listingsHeld++;
+      await gate;
+    }
+    await route.fallback();
+  });
+  const writes = () =>
+    stub.log.filter((l) => ['PUT', 'DELETE', 'MOVE', 'MKCOL'].includes(l.method)).length;
+  await laptop.reload();
+  await expect.poll(() => listingsHeld, { timeout: 20000 }).toBeGreaterThan(0);
+  const writesBefore = writes();
+
+  // Progress, from volume-data.json read by path:
+  await expect.poll(() => progress(laptop), { timeout: 15000 }).toBe(44);
+  // History, from history/ listed on its own: the phone's p.44 view is here.
+  const phoneViews = () =>
+    laptop.evaluate(async (VOL) => {
+      const { getVolumeEvents } = await import('/src/lib/reading-history/turns-store.ts');
+      const { historyDb } = await import('/src/lib/reading-history/history-db.ts');
+      const { getOrCreateDeviceId } = await import('/src/lib/reading-history/record.ts');
+      const own = await getOrCreateDeviceId(historyDb());
+      return getVolumeEvents(VOL)
+        .filter((e) => e.kind === 'page' && e.device !== own)
+        .map((e) => (e as { first_page: number }).first_page)
+        .sort((a, b) => a - b);
+    }, VOL);
+  await expect.poll(phoneViews, { timeout: 15000 }).toContain(44);
+  await openVolume(laptop);
+  await expect(counter(laptop, 44)).toBeVisible({ timeout: 20000 });
+
+  // All of it before the listing, and read-only.
+  expect(listingsHeld).toBeGreaterThan(0);
+  expect(writes()).toBe(writesBefore);
+
+  release();
+  await sync(laptop);
+  expect(await progress(laptop)).toBe(44);
 });

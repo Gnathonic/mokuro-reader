@@ -32,13 +32,17 @@
   const selection = window.getSelection()?.toString().trim() || '';
   const hasSelection = selection.length > 0;
 
-  // Full text from all lines
+  // Full text from all lines — snapshotted at open time like the selection above.
+  // svelte-ignore state_referenced_locally
   const fullText = lines.join('');
   const fullTextStripped = fullText.replace(/[\n\r\t]/g, '');
 
   // Adjust position to keep menu in viewport and avoid overlapping textbox
   let menuElement: HTMLDivElement | undefined = $state();
+  // Seeded with the click point; the effect below moves them into the viewport.
+  // svelte-ignore state_referenced_locally
   let adjustedX = $state(x);
+  // svelte-ignore state_referenced_locally
   let adjustedY = $state(y);
 
   $effect(() => {

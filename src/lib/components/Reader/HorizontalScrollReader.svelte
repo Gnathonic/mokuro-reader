@@ -201,6 +201,8 @@
   // When the zoom mode (Z key) or a layout-affecting setting changes, reset
   // any user zoom (its measured spacer/transform are stale against the new
   // layout) and stay on the current page.
+  // The layout the reader OPENED with — the effect below compares against it.
+  // svelte-ignore state_referenced_locally
   let prevLayoutKey = `${$settings.continuousZoomDefault}|${$settings.pageDividers}|${$settings.scrollGap}|${volumeSettings.rightToLeft ?? true}`;
   $effect(() => {
     const layoutKey = `${zoomMode}|${$settings.pageDividers}|${$settings.scrollGap}|${rtl}`;
@@ -220,7 +222,10 @@
   // Progress tracking
   // ============================================================
 
+  // Both seeded once from the page the reader opened on.
+  // svelte-ignore state_referenced_locally
   let lastReportedPage = currentPage;
+  // svelte-ignore state_referenced_locally
   let navTarget = $state(currentPage - 1);
   let navIsKeyboard = false; // true when navTarget was set by keyboard, not scroll
   let settleTimer: ReturnType<typeof setTimeout> | undefined;

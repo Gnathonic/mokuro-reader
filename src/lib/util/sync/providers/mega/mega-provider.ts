@@ -4,6 +4,7 @@ import type {
   ProviderCredentials,
   ProviderStatus,
   CloudFileMetadata,
+  FileStamp,
   StorageQuota,
   UploadPayload,
   UploadFileResult,
@@ -1009,7 +1010,7 @@ export class MegaProvider implements SyncProvider {
     return true;
   }
 
-  private listFolder(folder: any): Promise<any[]> {
+  private childrenOfNode(folder: any): Promise<any[]> {
     return new Promise((resolve) => {
       // Get all files from storage
       const files = Object.values(this.storage.files || {});
@@ -1022,7 +1023,7 @@ export class MegaProvider implements SyncProvider {
 
   /** The live subfolder `name` of `folder` — the oldest, as the deduplicator keeps it. */
   private async findSubfolder(folder: any, name: string): Promise<any | null> {
-    const children = await this.listFolder(folder);
+    const children = await this.childrenOfNode(folder);
     const matches = children.filter((f: any) => f.name === name && f.directory);
     return matches.sort(compareByAge)[0] ?? null;
   }
@@ -1358,7 +1359,7 @@ export class MegaProvider implements SyncProvider {
           // Reading the payload can take a while; a tree load meanwhile
           // replaces every node object, so look the folder up again.
           targetFolder = this.current(targetFolder);
-          const children = await this.listFolder(targetFolder);
+          const children = await this.childrenOfNode(targetFolder);
 
           // Replace semantics: EVERY same-name copy goes (MEGA allows duplicate
           // names, so racing uploads can leave several) — but only once the new
@@ -1390,6 +1391,8 @@ export class MegaProvider implements SyncProvider {
                   const nodeSize = file?.size;
                   resolve({
                     fileId,
+                    // Every upload mints a new node: its id IS the revision.
+                    ...(fileId ? { revision: fileId } : {}),
                     modifiedTime:
                       typeof ts === 'number' && Number.isFinite(ts)
                         ? new Date(ts * 1000).toISOString()
@@ -1452,6 +1455,84 @@ export class MegaProvider implements SyncProvider {
         true
       );
     }
+  }
+
+  /**
+   * The quick tier's listing of one subtree: the listing itself, built from the
+   * tree the session already holds (no reload — the reload is what makes the
+   * full listing slow here), filtered to the folder.
+   */
+  async listFolder(folder: string): Promise<CloudFileMetadata[]> {
+    const prefix = `${folder.replace(/^\/+|\/+$/g, '')}/`;
+    const all = await this.listCloudVolumes(true);
+    return all.filter((file) => file.path.startsWith(prefix));
+  }
+
+  /**
+   * `SyncProvider.statFile` from the tree the session holds — no request: the
+   * `sc` long-poll applies every other device's change to it. Every upload
+   * mints a new node, so the node id is the revision; a node that is gone, or
+   * no longer live, is gone.
+   *
+   * Only while that poll RUNS. One that died and gave up recovering (offline
+   * past its backoff, `recoverServerChanges`) leaves the tree frozen: another
+   * device's replace deletes the node this tree still holds linked, and a
+   * stat would vouch for it on every sync. So without a poll this throws, and
+   * the root-file read downloads instead (`root-file-memo.ts`) — where a gone
+   * node fails ENOENT, and the sync's not-found path reloads the tree.
+   */
+  async statFile(file: CloudFileMetadata): Promise<FileStamp | null> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+    if (!this.stopServerChanges) {
+      throw new ProviderError(
+        'MEGA server-change stream is not running; the tree may be stale',
+        'mega',
+        'STALE_TREE'
+      );
+    }
+    const node = (Object.values(this.storage?.files || {}) as any[]).find(
+      (f) => (f.nodeId === file.fileId || f.id === file.fileId) && !f.directory
+    );
+    if (!node || !this.isLiveNode(node)) return null;
+    const ts = node.timestamp;
+    return {
+      size: node.size || 0,
+      modifiedTime:
+        typeof ts === 'number' && Number.isFinite(ts) ? new Date(ts * 1000).toISOString() : '',
+      revision: node.nodeId ?? node.id ?? file.fileId
+    };
+  }
+
+  /**
+   * The cold probe's read: the file of that name directly inside any live
+   * reader folder of the tree the session already holds — no reload.
+   */
+  async readRootFileCopies(name: string): Promise<Blob[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
+    }
+    const nodes = Object.values(this.storage?.files || {}) as any[];
+    const copies = nodes.filter(
+      (node) =>
+        node.name === name &&
+        !node.directory &&
+        node.parent?.name === MOKURO_FOLDER &&
+        node.parent?.directory &&
+        this.isLiveNode(node)
+    );
+    return Promise.all(
+      copies.map((node) =>
+        this.downloadFile({
+          provider: 'mega',
+          fileId: node.nodeId ?? node.id,
+          path: name,
+          modifiedTime: '',
+          size: node.size ?? 0
+        })
+      )
+    );
   }
 
   async downloadFile(
@@ -1625,7 +1706,7 @@ export class MegaProvider implements SyncProvider {
             ? await this.ensureSeriesFolder(newSeriesPath, mokuroFolder)
             : mokuroFolder;
 
-          const targetChildren = await this.listFolder(targetFolder);
+          const targetChildren = await this.childrenOfNode(targetFolder);
           const existingTarget = targetChildren.find(
             (child: any) =>
               !child.directory &&
@@ -1737,7 +1818,7 @@ export class MegaProvider implements SyncProvider {
             ? await this.ensureSeriesFolder(newParentPath, mokuroFolder)
             : mokuroFolder;
 
-          const targetChildren = await this.listFolder(targetParent);
+          const targetChildren = await this.childrenOfNode(targetParent);
           const conflictingFolder = targetChildren.find(
             (child: any) =>
               child.directory &&
@@ -1829,7 +1910,7 @@ export class MegaProvider implements SyncProvider {
 
     try {
       const mokuroFolder = await this.ensureMokuroFolder();
-      const children = await this.listFolder(mokuroFolder);
+      const children = await this.childrenOfNode(mokuroFolder);
       const target = children.find((f: any) => f.directory && f.name === normalized);
       if (!target?.nodeId) return;
 
@@ -1863,7 +1944,7 @@ export class MegaProvider implements SyncProvider {
           const mokuroFolder = await this.ensureMokuroFolder();
 
           // Find the series folder
-          const children = await this.listFolder(mokuroFolder);
+          const children = await this.childrenOfNode(mokuroFolder);
           const seriesFolder = children.find((f: any) => f.name === seriesTitle && f.directory);
 
           if (!seriesFolder) {

@@ -4,7 +4,7 @@ import { HistoryDexie } from './history-db';
 import { appendEvent, getOrCreateDeviceId } from './record';
 import { encodeSegment } from './segment-codec';
 import { historySegmentPath, historyDeviceFilePath, historyLegacyFilePath } from './paths';
-import { syncHistory } from './history-sync';
+import { importHistory, syncHistory } from './history-sync';
 import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
 import type { ReadingEvent } from './types';
 
@@ -436,5 +436,31 @@ describe('syncHistory', () => {
     await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
     expect(await legacyCarriedBy('webdav', a)).toBe(true);
     expect(await legacyCarriedBy('mega', a)).toBe(false);
+  });
+});
+
+describe('importHistory (the quick tier: import only)', () => {
+  it("imports the other device's months and uploads nothing of its own", async () => {
+    const cloud = fakeCloud();
+    await appendEvent(a, page('v1', 1), OCT);
+    await syncHistory(cloud.provider, cloud.listing(), a, { force: true, now: NOV });
+    await appendEvent(b, page('v2', 7), NOV); // b has its own month, not uploaded
+    vi.mocked(cloud.provider.uploadFile).mockClear();
+
+    expect(await importHistory(cloud.provider, cloud.listing(), b)).toBe(1);
+    expect(cloud.provider.uploadFile).not.toHaveBeenCalled();
+    expect(await b.reading_events.count()).toBe(2);
+
+    // The stamps it recorded are the full sync's: that sync downloads nothing again.
+    vi.mocked(cloud.provider.downloadFile).mockClear();
+    const r = await syncHistory(cloud.provider, cloud.listing(), b, { force: true, now: NOV });
+    expect(r.imported).toBe(0);
+    expect(cloud.provider.downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('does nothing where history cannot sync (bunko < 0.8)', async () => {
+    const cloud = fakeCloud({ serverCompilesMetadata: true });
+    expect(await importHistory(cloud.provider, cloud.listing(), b)).toBe(0);
+    expect(cloud.provider.downloadFile).not.toHaveBeenCalled();
   });
 });

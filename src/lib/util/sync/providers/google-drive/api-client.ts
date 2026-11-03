@@ -1,7 +1,8 @@
-import { GOOGLE_DRIVE_CONFIG, type DriveFile } from './constants';
+import { GOOGLE_DRIVE_CONFIG, type DriveChange, type DriveFile } from './constants';
 import { tokenManager } from './token-manager';
 import {
   DriveHttpError,
+  classifyDriveFailure,
   driveErrorDomain,
   driveErrorReason,
   driveHttpErrorFromXhr,
@@ -30,6 +31,13 @@ export function escapeNameForDriveQuery(name: string): string {
 }
 
 class DriveApiError extends Error {
+  /**
+   * A change-feed request (`changes.*`) Drive answered with an HTTP status
+   * other than 401: the feed is not available to this session. See
+   * `handleFeedFailure`.
+   */
+  feedUnavailable?: true;
+
   constructor(
     message: string,
     public readonly status?: number,
@@ -118,7 +126,9 @@ async function handleAuthError(status: number, retryOnAuth = true): Promise<neve
     throw new DriveApiError(
       'Authentication expired. Re-authentication in progress...',
       status,
-      false
+      false,
+      undefined,
+      'auth'
     );
   }
 
@@ -127,10 +137,25 @@ async function handleAuthError(status: number, retryOnAuth = true): Promise<neve
   tokenManager.clearToken();
 
   if (retryOnAuth) {
-    throw new DriveApiError('Authentication expired. Please sign in again.', status, false);
+    throw new DriveApiError(
+      'Authentication expired. Please sign in again.',
+      status,
+      false,
+      undefined,
+      'auth'
+    );
   }
 
-  throw new DriveApiError('Authentication error', status, false);
+  throw new DriveApiError('Authentication error', status, false, undefined, 'auth');
+}
+
+/**
+ * Did this failure already go down the auth path (re-auth started, or the
+ * token cleared)? A caller with a fallback request must not send it: it would
+ * fail the same way and start the re-auth a second time.
+ */
+export function isDriveAuthFailure(error: unknown): boolean {
+  return (error as { kind?: unknown } | null)?.kind === 'auth';
 }
 
 class DriveApiClient {
@@ -261,6 +286,96 @@ class DriveApiClient {
 
       return allFiles;
     });
+  }
+
+  /**
+   * The change feed's current position (`changes.getStartPageToken`): every
+   * change made after this call is listed by {@link listChanges} from it.
+   */
+  async getStartPageToken(): Promise<string> {
+    return this.handleFeedFailure(() =>
+      this.retryingGapiCall(async () => {
+        const { result } = await gapi.client.drive.changes.getStartPageToken({
+          fields: 'startPageToken'
+        });
+        if (!result.startPageToken) throw new Error('Drive returned no start page token');
+        return result.startPageToken;
+      })
+    );
+  }
+
+  /**
+   * The change feed's failure rule. Only a 401 is auth (the token expired):
+   * the shared re-auth path. A refusal that will not clear — a 403 the
+   * general rule would call auth (no reason, `insufficientPermissions`: a
+   * token that cannot read the feed), a named 403 refusal, a 404 — marks the
+   * error `feedUnavailable`: the cache lists in full and stops asking the
+   * feed until the next login (`drive-files-cache.ts`). A re-auth would mint
+   * the same token and the next listing would prompt again. A rate limit or
+   * 5xx that outlasted its retries clears by itself: neither, so only the
+   * call that met it lists in full and the next one asks the feed again.
+   * Failures without an HTTP status (offline) are neither, and neither is a
+   * 400 on `changes.list` (`pageToken` given): Drive refused that POSITION,
+   * and a full listing takes a fresh one.
+   */
+  private async handleFeedFailure<T>(operation: () => Promise<T>, pageToken?: string): Promise<T> {
+    try {
+      return await operation();
+    } catch (error: any) {
+      const status: number | undefined =
+        typeof error?.status === 'number' ? error.status : undefined;
+      if (status === 401) await handleAuthError(status);
+      const httpError = error instanceof DriveHttpError ? error : undefined;
+      const failure = new DriveApiError(
+        error?.message || 'Unknown API error',
+        status,
+        !status,
+        httpError?.reason,
+        // Never `auth` past this point: only the 401 above is.
+        httpError ? (httpError.kind === 'auth' ? 'other' : httpError.kind) : undefined
+      );
+      const refusedPosition = pageToken !== undefined && status === 400;
+      const passing = (kind: DriveFailureKind) => kind === 'rate-limit' || kind === 'transient';
+      const kind = status ? (httpError?.kind ?? classifyDriveFailure(status)) : undefined;
+      if (status && kind && !refusedPosition && !passing(kind)) failure.feedUnavailable = true;
+      throw failure;
+    }
+  }
+
+  /**
+   * Every change since `pageToken` (`changes.list`, removals included), paged
+   * like {@link listFiles} — each page retried on its own, one auth path for
+   * the whole walk — and the token the NEXT call starts from. `null` when the
+   * log runs past `maxPages`: reading it would cost more than the listing it
+   * stands in for. `fields` selects inside `changes(...)`.
+   */
+  async listChanges(
+    pageToken: string,
+    fields: string,
+    maxPages = Infinity
+  ): Promise<{ changes: DriveChange[]; newStartPageToken: string } | null> {
+    return this.handleFeedFailure(async () => {
+      const changes: DriveChange[] = [];
+      let token = pageToken;
+      for (let page = 1; ; page++) {
+        if (page > maxPages) return null;
+        const { result } = await this.retryingGapiCall(() =>
+          gapi.client.drive.changes.list({
+            pageToken: token,
+            pageSize: 1000,
+            includeRemoved: true,
+            fields: `nextPageToken,newStartPageToken,${fields}`
+          })
+        );
+        if (result.changes) changes.push(...(result.changes as DriveChange[]));
+        if (result.nextPageToken) {
+          token = result.nextPageToken;
+          continue;
+        }
+        if (!result.newStartPageToken) throw new Error('Drive change list ended without a token');
+        return { changes, newStartPageToken: result.newStartPageToken };
+      }
+    }, pageToken);
   }
 
   /**

@@ -69,6 +69,11 @@ export function changedVolumes(): string[] {
   return [...load().keys()];
 }
 
+/** The record stamp this device marked the volume changed at; undefined when unmarked. */
+export function changedMark(volume: string): number | undefined {
+  return load().get(volume);
+}
+
 /** Entries for the changed volumes, from the local records, under `device`. */
 export function ownChangedEntries(device: string): PositionsMap {
   const records = get(volumesWithTrash);

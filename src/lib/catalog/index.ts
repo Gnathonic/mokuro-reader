@@ -3,6 +3,7 @@ import type { VolumeData, VolumeMetadata } from '$lib/types';
 import { liveQuery } from 'dexie';
 import { derived, readable, type Readable } from 'svelte/store';
 import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
+import { createSeriesIdentityMemo } from '$lib/catalog/series-identity';
 import {
   unifiedCloudManager,
   type CloudVolumeWithProvider
@@ -432,6 +433,9 @@ export const volumesWithPlaceholders = derived(
 // Join on the PRIMITIVE language store, never on `catalogSettings`: that object store
 // emits a new object on every settings write (per-wheel-tick `pagedGap` included), which
 // would re-group, re-resolve and re-sort the whole library each time.
+/** Unchanged series stay the same object across emissions — see series-identity.ts. */
+const keepUnchangedSeries = createSeriesIdentityMemo();
+
 export const catalog = derived(
   [volumesWithPlaceholders, seriesMetadataMap, preferredTitleLanguage],
   ([$volumesWithPlaceholders, $seriesMetadataMap, $preferredTitleLanguage]) => {
@@ -451,10 +455,12 @@ export const catalog = derived(
     // row, thumbnail and history for the stats views, but the catalog does not
     // seat it. The metadata writers are unaffected: they read `db.volumes`
     // directly (series-file-sync.ts), never this display store.
-    return deriveSeriesFromVolumes(
-      Object.values($volumesWithPlaceholders).filter(isCatalogVisible),
-      $seriesMetadataMap,
-      $preferredTitleLanguage
+    return keepUnchangedSeries(
+      deriveSeriesFromVolumes(
+        Object.values($volumesWithPlaceholders).filter(isCatalogVisible),
+        $seriesMetadataMap,
+        $preferredTitleLanguage
+      )
     );
   }
 );

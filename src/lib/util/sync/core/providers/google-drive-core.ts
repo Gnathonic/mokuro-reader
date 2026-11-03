@@ -97,9 +97,11 @@ export const googleDriveCore: CloudProviderCore = {
     };
 
     // `fields` on the session-init URL selects what the FINAL upload response
-    // returns: the server's own `modifiedTime` (and authoritative `size`) come
-    // back with the last PUT for free — no follow-up metadata request needed.
-    const responseFields = 'fields=id,modifiedTime,size';
+    // returns: the server's own `modifiedTime` (and authoritative `size`), the
+    // file's `version` (the receipt's revision) and where it now lives
+    // (`name`, `parents`) come back with the last PUT for free — no follow-up
+    // metadata request needed.
+    const responseFields = 'fields=id,name,size,modifiedTime,version,parents';
     const uploadBase = existingFileId
       ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=resumable&${responseFields}`
       : `https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&${responseFields}`;
@@ -145,12 +147,24 @@ export const googleDriveCore: CloudProviderCore = {
       xhr.onload = async () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           const result = JSON.parse(xhr.responseText);
-          // Drive serializes `size` as a string in the file resource.
+          // Drive serializes `size` (and `version`, an int64) as strings in
+          // the file resource.
           const size = Number(result.size);
+          const version =
+            typeof result.version === 'string' || typeof result.version === 'number'
+              ? String(result.version)
+              : undefined;
+          const parentId =
+            Array.isArray(result.parents) && typeof result.parents[0] === 'string'
+              ? result.parents[0]
+              : undefined;
           resolve({
             fileId: result.id,
             modifiedTime: typeof result.modifiedTime === 'string' ? result.modifiedTime : undefined,
-            size: Number.isFinite(size) ? size : undefined
+            size: Number.isFinite(size) ? size : undefined,
+            ...(version ? { revision: version } : {}),
+            ...(parentId ? { parentId } : {}),
+            ...(typeof result.name === 'string' ? { name: result.name } : {})
           });
         } else {
           // Classified (a full account must not read as a network blip) but
