@@ -95,7 +95,7 @@
   menuCloseCallbacks.add(closeMenu);
   onDestroy(() => menuCloseCallbacks.delete(closeMenu));
 
-  const volName = decodeURI(volume.volume_title);
+  let volName = $derived(decodeURI(volume.volume_title));
 
   let volume_uuid = $derived(volume.volume_uuid);
   let volumeData = $derived($readingVolumes?.[volume.volume_uuid]);

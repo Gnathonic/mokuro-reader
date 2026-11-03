@@ -182,6 +182,37 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   sent ONCE more with the held token instead (`retryStaleTokenRefusal` — a 401 created
   nothing, so even a create is safe). Every attempt, `withDriveRetry`'s included, reads the
   token when it goes out: a re-auth can land during a backoff.
+- **An upload never re-lists the account** (#288). `uploadFile` is the upload plus its
+  RECEIPT (id, `size`, `modifiedTime`, `version` as `revision`, `parentId`, `name`), and
+  every caller records its own write in the cache from that receipt (`uploadCacheEntry`);
+  there is no separate `blindUploadFile` — this one already is. It used to end with a
+  whole-account `files.list` walk (13+ pages at ~12,500 files) per root-file write, and
+  nothing may depend on an upload refreshing the listing again.
+- **Other devices' writes arrive through the change feed**
+  (`DriveFilesCacheManager.refreshFromChanges`, `drive-files-cache.ts`):
+  `changes.getStartPageToken` is taken BEFORE each full walk, the folder map
+  (`id → {name, parent}`) stays on the instance, and `changes.list` is applied with the full
+  listing's placement rule (`placeFile`: series files, root config under the reader folder,
+  history paths) — folder renames re-path their children, a removed folder takes the files
+  whose parent is in the removed set closed AFTER the batch's own moves (a dedup that moves
+  series out of a duplicate root and deletes it keeps them), unknown parents cost one
+  `files.get`, not-owned and trashed files leave, a receipt newer than the feed is kept, our
+  own write's echo changes nothing (same map identity → `'unchanged'`, no re-emit), and a
+  same-name folder collision starts the dedup. No position (never listed / account switch /
+  refused token), a failed feed read, more than `MAX_CHANGE_PAGES` (13) pages, a removed
+  reader folder, or a full listing over `CHANGE_FEED_MAX_AGE_MS` (24 h) → `'reset'`: a full
+  fetch. Only a 401 from `changes.*` is auth: rethrown, never followed by a full fetch
+  (that would start the re-auth twice). Any other HTTP status — a 403 the general rule
+  would call auth, a 5xx or rate limit past its retries — is "feed unavailable"
+  (`feedUnavailable`, `handleFeedFailure` in `api-client.ts`): no re-auth, a full fetch, and
+  no feed request (no position either) until the next login / cache clear; a 400 on
+  `changes.list` is a refused POSITION only (the full fetch takes a fresh one). The feed
+  never toggles `fetching`/`loaded`. It runs at the top of
+  `runProviderSync` (Drive only, before volume data), and metadata writers'
+  `ensureFreshCloudListing` takes it via `fetchAllCloudVolumes({ fromChangeFeed: true })`
+  once the cache is loaded; the backup run's single post-run listing stays. Unverified
+  without a real account: whether `drive.file` scope shows another device's writes and
+  folder moves in the feed — the full-fetch fallback covers any feed failure.
 
 **Provider status is published, never polled.** The navbar's reconnect banner, the cloud
 screen and every read-only gate read `providerManager.status`, which moves only when
@@ -1306,7 +1337,20 @@ Rules:
 FIXED path, so a device that was just picked up can learn where the user
 stopped without the full listing: it is checked when the reader opens (≤ 1 s),
 rides every sync right after the volume data, and is pushed 3 s after page
-turns settle (at once when the tab is hidden). Opening a page never stamps a
+turns settle (at once when the tab is hidden); the push's own receipt seeds the
+root-file memo (below), so neither the next push nor the next sync downloads it
+back. Before the first listing has loaded (a cold start) the QUICK tier
+(`util/sync/quick-sync.ts`) runs beside that listing: `fetchAllCloudVolumes` starts it, and it reads by known path
+with no listing — `volume-data.json` merged (`quickMergeVolumeData`),
+`positions.json` adopted (`probePositions`; the open/focus checks use the
+probe too while the listing runs), and other devices' history imported from a
+listing of `history/` alone (`SyncProvider.listFolder` + `importHistory`).
+Providers do this through `readRootFileCopies` and `listFolder` (all five;
+Drive walks reader → `history` → device folders, one `files.list` per level,
+never the account-wide listing). The quick tier is READ-ONLY: every write
+waits for the full sync, the only thing that shows every copy an upload must
+not clobber, and each half merges newest-wins or unions by id, so the full
+sync redoing it changes nothing. Opening a page never stamps a
 position, and an adopted position keeps the other device's stamp. Not
 authoritative: history and `volume-data.json` still carry every position.
 mokuro-bunko gets it only when it lists it in `per_user_files`
@@ -1317,6 +1361,66 @@ library file, and the client neither reads nor writes it. Sync merges every list
 in `MERGED_ACROSS_COPIES` (`syncable-file.ts`) with `volume-data.json` and
 `goals.json`: the folder dedup moves a duplicate copy in beside the other
 instead of trashing it.
+
+**Root-file reads are conditional** (`util/sync/root-file-memo.ts`). Every
+read of `volume-data.json`, `profiles.json`, `goals.json` and `positions.json`
+in the full sync and the position push (`unified-sync-service.ts`,
+`positions-sync.ts`, each duplicate copy on its own) goes through
+`readRootFile`: an IN-MEMORY memo per provider type + account scope + file id
+holds the bytes of the last copy this device read or wrote under the server
+stamp they had, and `SyncProvider.statFile` (the stamp of ONE known file, no
+body; `null` = gone → NOT_FOUND) decides whether to download. Only a change
+TOKEN (`FileStamp.revision`) may say "unchanged" — Drive `version`, OneDrive
+`cTag` else `eTag`, WebDAV `getetag` (PROPFIND Depth 0), the MEGA node id
+(in-memory, no request) — never size + mtime: WebDAV's one-second
+`getlastmodified` would merge two same-size writes within a second as one. A
+provider with no token (Local Folder, a WebDAV server without `getetag`) is
+read by plain download for the session after its first tokenless stat. The
+stamp is sampled BEFORE the body, so a racing write costs a re-download, never
+a stale hit. Uploads seed it from their RECEIPT (`UploadFileResult.revision`,
+via `noteRootFileUpload` in `unifiedCloudManager.uploadFile` and the sync's
+writers): this device's own write is never downloaded back; a receipt with no
+token, or whose size disagrees with the bytes sent, drops that file's memo
+(a WebDAV PUT whose `ETag` header was not readable records NO revision — never
+a stat after the PUT: another device's write landing in between would bind our
+bytes to its revision). Bounded (16 entries), cleared on logout, provider switch and cache
+clear. Never a custom `If-None-Match`: plain servers' CORS allow-lists refuse
+unknown request headers, and a refused preflight looks like a network
+failure. Transport only — what a caller reads is byte-identical and no merge
+rule moves. WebDAV also memoizes `ensureMokuroFolder` per connection for
+uploads only (every listing asks the server again, so a reader folder deleted
+there is made again), and a download whose size the stat already gave skips
+its HEAD probe. `positions-cloud.ts`'s memo is cleared on the same occasions
+and on every connect (`cacheManager.setActiveProvider`): Local Folder's
+account scope is a folder basename, which two folders can share.
+
+**Mid-session page turns do not upload `volume-data.json`**
+(`util/sync/volume-data-deferral.ts`, pure; inputs gathered by
+`deferVolumeDataUpload` in `unified-sync-service.ts`). While a reading session
+is active — reader open on a volume (`positions/reader-open.ts`) AND the
+document visible, read at decision time after the sync's downloads
+(`util/sync/reading-session.ts`) — a sync whose merged file differs from the
+cloud survivor copy ONLY in `progress`/`chars`/`lastProgressUpdate` of
+records that exist on both sides with `progress > 0` (same series and tracking
+sections) skips the upload, provided it is covered: `historySyncAllowed`, not
+read-only, `positionsWriteAllowed`, `legacyCarriedBy` the provider, and every
+moved volume is on its way through `positions.json` (a changed-mark EQUAL to
+the record's stamp — the push sends only those, and a look-up restore leaves a
+mark above it — or a known cloud entry with `t >=` it, `positions-cloud.ts`).
+Anything else — a first read, a reset, a `completed` flip (positions entries
+carry no flag, and an adopting device keeps its own for a closed volume), a new
+or removed record, any other field — uploads as before. The session's END
+uploads: `ReaderView` calls `noteReaderClosed` BEFORE `activityTracker.flush()`,
+a hidden tab is already `hidden` when the flush runs, and a deferral sets
+`noteVolumeDataDeferred` so that flush syncs even with no turn since. The flush
+CONSUMES the flag when it starts that sync (`takeVolumeDataDeferred`) — offline
+or read-only, the upload never lands, and every later hide would otherwise run
+a full sync — and a provider disconnect or switch clears it. Every
+sync outside a session uploads normally. `noteUploaded` escape reports run
+only where the upload runs. `e2e/sync-bandwidth.spec.ts` holds the budgets
+(no root-file body re-downloaded, no mid-session `volume-data.json` PUT, an
+idle sync ≤ 4 stat requests and no bytes up) and `e2e/sync-session-deferral.spec.ts` the
+two-device behaviour.
 
 **Look-up visits claim nothing** (`reading-history/visits.ts`, live side
 `positions/visit.ts`). A visit is one device's run of page views of one volume,
@@ -1333,12 +1437,18 @@ restore drops it; offers, characters read and speed samples ignore look-up
 views. "Last read" (smart sort, progress tracker) comes from history
 (`reading-history/last-read.ts`): the newest reading view, else a
 `lastProgressUpdate` from before the volume's first event (reading history
-never saw), else 0 — a re-stamp never moves a series.
+never saw), else 0 — a re-stamp never moves a series. Another device's reading
+that arrived ahead of its events counts too (`reading-history/remote-reads.ts`):
+a position adopted from `positions.json` (with its device), or — where history
+does not sync — a record `volume-data.json`'s merge moved to a newer stamp
+(device unknown). It counts until that device's own page events reach the
+stamp; then history judges it, look-ups and all.
 
 Read progress, the series section, settings profiles and goals all sync
 automatically on every `syncProvider` call — there is no per-file opt-in and no
 separate "Sync profiles" button; `profiles.json` and `goals.json` ride along
-unconditionally, the same way `volume-data.json` always has. Goals sync AFTER
+unconditionally, the same way `volume-data.json` always has (whose UPLOAD alone
+may wait for the reading session's end, above). Goals sync AFTER
 volume data, because a closed period's snapshot is permanent and must be built
 from the progress that sync just merged.
 

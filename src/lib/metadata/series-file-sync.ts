@@ -329,7 +329,8 @@ export function ensureFreshCloudListing(): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // No index refresh: that pass downloads sidecars, and this is a write
-      // path that is about to publish one.
+      // path that is about to publish one. On Google Drive the change feed
+      // brings the listing current without walking the whole account.
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error(`listing refresh exceeded ${LISTING_TIMEOUT_MS} ms`)),
@@ -337,7 +338,7 @@ export function ensureFreshCloudListing(): Promise<boolean> {
         );
       });
       await Promise.race([
-        unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false }),
+        unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true }),
         timeout
       ]);
       lastListingAt = Date.now();

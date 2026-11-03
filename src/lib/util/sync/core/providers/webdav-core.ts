@@ -49,7 +49,13 @@ async function refreshedAfter401(
 }
 
 export const webdavCore: CloudProviderCore = {
-  async downloadFile({ fileId, credentials, onProgress, refreshAuth }): Promise<ArrayBuffer> {
+  async downloadFile({
+    fileId,
+    credentials,
+    onProgress,
+    refreshAuth,
+    expectedSize
+  }): Promise<ArrayBuffer> {
     const url = requireCredentialString(credentials, 'webdavUrl', 'WebDAV URL');
 
     const encodedPath = fileId
@@ -120,16 +126,21 @@ export const webdavCore: CloudProviderCore = {
 
     // Best-effort size probe: helps detect truncation even when GET is chunked
     // without Content-Length. If HEAD fails/is unsupported, we'll continue without it.
-    try {
-      const headResponse = await fetch(fullUrl, { method: 'HEAD', headers, cache });
-      if (headResponse.ok) {
-        const headSize = parseInt(headResponse.headers.get('Content-Length') || '0', 10);
-        if (headSize > 0) {
-          expectedTotal = headSize;
+    // A caller that stat'ed the file just now already knows the size: no HEAD.
+    if (typeof expectedSize === 'number' && expectedSize > 0) {
+      expectedTotal = expectedSize;
+    } else {
+      try {
+        const headResponse = await fetch(fullUrl, { method: 'HEAD', headers, cache });
+        if (headResponse.ok) {
+          const headSize = parseInt(headResponse.headers.get('Content-Length') || '0', 10);
+          if (headSize > 0) {
+            expectedTotal = headSize;
+          }
         }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
 
     while (true) {
@@ -329,7 +340,9 @@ export const webdavCore: CloudProviderCore = {
       // A WebDAV PUT response carries no usable resource mtime, and probing one
       // (a PROPFIND per upload) is exactly the extra round trip a bulk backup
       // must not pay — so no `modifiedTime` here: the upload-time cache entry
-      // stays provisional until the next real listing replaces it.
+      // stays provisional until the next real listing replaces it. Its `ETag`,
+      // when the server sends and exposes one, is the receipt's `revision`.
+      // (The provider stats a ROOT file it could not get one for.)
       // An archive PUT is retried with backoff on a transient failure (network,
       // timeout, 5xx, a server `retry: true`, a size mismatch); a small sidecar
       // or progress file gets one attempt — its callers have their own recovery —
@@ -353,6 +366,7 @@ export const webdavCore: CloudProviderCore = {
       // Only an archive enters a server's OCR queue; a header on anything else is noise.
       return {
         fileId: put.path,
+        ...(put.etag ? { revision: put.etag } : {}),
         ...(put.serverOcr && isArchive ? { serverOcr: put.serverOcr } : {}),
         ...(put.putVerified ? { serverPutVerified: true } : {}),
         ...(put.digestVerified ? { serverDigestVerified: put.digestVerified } : {})

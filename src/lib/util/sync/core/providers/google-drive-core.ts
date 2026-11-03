@@ -27,15 +27,30 @@ function phaseOf(error: unknown): string | undefined {
   return error instanceof DriveHttpError ? error.phase : undefined;
 }
 
-/** The final answer of a resumable session (`fields=id,modifiedTime,size`). */
+/**
+ * The final answer of a resumable session
+ * (`fields=id,name,size,modifiedTime,version,parents`): the upload's receipt.
+ */
 function uploadResult(text: string): UploadFileResult {
   const result = JSON.parse(text);
-  // Drive serializes `size` as a string in the file resource.
+  // Drive serializes `size` (and `version`, an int64) as strings in the file
+  // resource.
   const size = Number(result.size);
+  const version =
+    typeof result.version === 'string' || typeof result.version === 'number'
+      ? String(result.version)
+      : undefined;
+  const parentId =
+    Array.isArray(result.parents) && typeof result.parents[0] === 'string'
+      ? result.parents[0]
+      : undefined;
   return {
     fileId: result.id,
     modifiedTime: typeof result.modifiedTime === 'string' ? result.modifiedTime : undefined,
-    size: Number.isFinite(size) ? size : undefined
+    size: Number.isFinite(size) ? size : undefined,
+    ...(version ? { revision: version } : {}),
+    ...(parentId ? { parentId } : {}),
+    ...(typeof result.name === 'string' ? { name: result.name } : {})
   };
 }
 
@@ -240,9 +255,11 @@ export const googleDriveCore: CloudProviderCore = {
     };
 
     // `fields` on the session-init URL selects what the FINAL upload response
-    // returns: the server's own `modifiedTime` (and authoritative `size`) come
-    // back with the last PUT for free — no follow-up metadata request needed.
-    const responseFields = 'fields=id,modifiedTime,size';
+    // returns: the server's own `modifiedTime` (and authoritative `size`), the
+    // file's `version` (the receipt's revision) and where it now lives
+    // (`name`, `parents`) come back with the last PUT for free — no follow-up
+    // metadata request needed.
+    const responseFields = 'fields=id,name,size,modifiedTime,version,parents';
     const upload = CLOUD_TEST_HOOKS
       ? credentialBase(credentials, 'driveUpload', driveUploadBase())
       : driveUploadBase();

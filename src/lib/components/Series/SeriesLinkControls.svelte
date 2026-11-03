@@ -33,6 +33,7 @@
   // See SeriesTitlesEditor.svelte for why: captured once so the tag field's blur-save can
   // refuse to write once the host modal has cleared `seriesTitle` out from under it (e.g.
   // Escape closing the editor while the tag input still has focus).
+  // svelte-ignore state_referenced_locally
   const ownerSeriesTitle = seriesTitle;
 
   // Server-reported edit scope for THIS series (mokuro-bunko's identity endpoint). Disabled,

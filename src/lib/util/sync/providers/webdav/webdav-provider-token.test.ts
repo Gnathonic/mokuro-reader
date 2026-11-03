@@ -273,13 +273,16 @@ describe('a 401 under the token: re-issue once, retry once', () => {
   it('re-issues silently and retries the refused client request', async () => {
     tokenAnswers = [issue(), issue()];
     const provider = await connected();
-    mockClient.exists.mockClear();
-    mockClient.exists.mockRejectedValueOnce(unauthorizedError()).mockResolvedValue(true);
+    // The listing's PROPFIND (the reader folder is known from the connect).
+    mockClient.getDirectoryContents.mockClear();
+    mockClient.getDirectoryContents
+      .mockRejectedValueOnce(unauthorizedError())
+      .mockResolvedValue([]);
 
     await expect(provider.listCloudVolumes()).resolves.toEqual([]);
 
     expect(tokenPosts()).toHaveLength(2); // connect + one re-issue
-    expect(mockClient.exists).toHaveBeenCalledTimes(2);
+    expect(mockClient.getDirectoryContents).toHaveBeenCalledTimes(2);
     expect(clientHeaders.current.Authorization).toBe('Bearer tok-2');
     expect(localStorage.getItem('webdav_token')).toBe('tok-2');
     expect(provider.getStatus().needsAttention).toBe(false);
@@ -388,12 +391,12 @@ describe('a 401 re-issue and a 503 + Retry-After retry compose', () => {
     vi.useFakeTimers();
     const sent: string[] = [];
     let n = 0;
-    mockClient.exists.mockReset().mockImplementation(async () => {
+    mockClient.getDirectoryContents.mockReset().mockImplementation(async () => {
       sent.push(clientHeaders.current.Authorization);
       n += 1;
       if (n === 1) throw unauthorizedError();
       if (n === 2) throw busy();
-      return true;
+      return [];
     });
     try {
       const done = provider.listCloudVolumes();
@@ -412,12 +415,12 @@ describe('a 401 re-issue and a 503 + Retry-After retry compose', () => {
     vi.useFakeTimers();
     const sent: string[] = [];
     let n = 0;
-    mockClient.exists.mockReset().mockImplementation(async () => {
+    mockClient.getDirectoryContents.mockReset().mockImplementation(async () => {
       sent.push(clientHeaders.current.Authorization);
       n += 1;
       if (n === 1) throw busy();
       if (n === 2) throw unauthorizedError();
-      return true;
+      return [];
     });
     try {
       const done = provider.listCloudVolumes();

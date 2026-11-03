@@ -72,7 +72,10 @@
   onMount(() => {
     const stopForeground = foregroundSync.listen();
     // Progress syncs are batched while reading (activity-tracker); a pending
-    // change goes up at once when the tab hides or the page goes away.
+    // change goes up at once when the tab hides or the page goes away. On
+    // `visibilitychange` the document is already `hidden`, so the flush's sync
+    // is outside the reading session and uploads what one deferred
+    // (`util/sync/reading-session.ts`).
     const flushOnHide = () => {
       if (document.visibilityState === 'hidden') activityTracker.flush();
     };

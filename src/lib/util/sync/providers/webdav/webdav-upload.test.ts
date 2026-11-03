@@ -4,6 +4,7 @@ import {
   contentDigestOf,
   UPLOAD_RETRY_DELAYS_MS,
   WebdavUploadError,
+  normalizeEtag,
   uploadFileWithClient,
   uploadWithRetry
 } from './webdav-upload';
@@ -511,5 +512,33 @@ describe('readServerOcrHeaders', () => {
       manifestUrl: 'https://bunko.example/catalog/api/manifest?series=S&volume=V',
       recheckAfter: 30
     });
+  });
+});
+
+describe("a WebDAV PUT's ETag (the upload receipt)", () => {
+  it('is reported in the form the webdav library reports getetag (quotes stripped)', async () => {
+    answers = [{ status: 201, headers: { ETag: '"1730541600.123456-28542"' } }];
+    const result = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/volume-data.json',
+      new Blob(['x'])
+    );
+    expect(result.etag).toBe('1730541600.123456-28542');
+  });
+
+  it('is absent when the server sent none (or CORS hid it)', async () => {
+    answers = [{ status: 204 }];
+    const result = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/volume-data.json',
+      new Blob(['x'])
+    );
+    expect(result).not.toHaveProperty('etag');
+  });
+
+  it('normalizes like getetag: a weak tag keeps its W/ prefix, an empty one is none', () => {
+    expect(normalizeEtag('W/"abc"')).toBe('W/abc');
+    expect(normalizeEtag('""')).toBeUndefined();
+    expect(normalizeEtag(null)).toBeUndefined();
   });
 });

@@ -20,7 +20,9 @@ vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
     folderHasChildren: vi.fn(async () => false),
     deleteFile: vi.fn(async () => {}),
     createFolder: vi.fn(async () => 'created-folder'),
-    updateFileMetadata: vi.fn(async () => ({}))
+    updateFileMetadata: vi.fn(async () => ({})),
+    getFileMetadata: vi.fn(async () => ({})),
+    updateFileDescription: vi.fn(async () => {})
   },
   // The REAL escape, not a stand-in: the point of routing the folder queries
   // through the shared helper is that they get exactly this behaviour, and a
@@ -35,9 +37,10 @@ vi.mock('$lib/util/sync/providers/google-drive/drive-files-cache', () => ({
     getDriveFilesBySeries: vi.fn(() => []),
     removeById: vi.fn(),
     clear: vi.fn(),
-    // The whole-account refetch `uploadFile` performs and `blindUploadFile`
-    // must not — the upload suites below assert on it directly.
-    fetch: vi.fn(async () => {})
+    // The whole-account refetch an upload must not perform — the upload
+    // suites below assert on it directly.
+    fetch: vi.fn(async () => {}),
+    refreshFromChanges: vi.fn(async () => 'unchanged')
   }
 }));
 vi.mock('$lib/util/backup', () => ({ findFile: vi.fn() }));
@@ -476,13 +479,12 @@ describe('GoogleDriveProvider.adoptListedReaderFolder()', () => {
   });
 });
 
-describe('GoogleDriveProvider uploads — the blind path skips the whole-account refetch', () => {
+describe('GoogleDriveProvider uploads — no whole-account refetch (#288)', () => {
   /**
-   * `uploadFile` has always ended with `driveFilesCache.fetch()` — a FULL
-   * paged listing walk per upload. `blindUploadFile` is the same upload minus
-   * that refetch, for callers (the sidecar backfill) that never read their
-   * own writes back and converge through the unified layer's targeted cache
-   * add instead.
+   * `uploadFile` used to end with `driveFilesCache.fetch()` — a FULL paged
+   * listing walk per upload, paid by every progress sync that wrote
+   * `volume-data.json`. Every caller records its upload from the receipt, and
+   * other devices' writes arrive through the change feed, so it is gone.
    */
   const coreUpload = vi.fn(async () => ({
     fileId: 'uploaded-1',
@@ -500,11 +502,24 @@ describe('GoogleDriveProvider uploads — the blind path skips the whole-account
       { uploadFile: coreUpload };
   });
 
-  it('uploadFile keeps the legacy refetch (unaudited callers may depend on it)', async () => {
+  it('uploadFile uploads and returns the receipt, with NO listing request', async () => {
     const result = await googleDriveProvider.uploadFile('volume-data.json', new Blob(['abc']));
+    // Positive control: the upload genuinely ran and returned its metadata.
     expect(coreUpload).toHaveBeenCalledTimes(1);
-    expect(result.fileId).toBe('uploaded-1');
-    expect(driveFilesCache.fetch).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ fileId: 'uploaded-1', size: 3 });
+    // The point: neither a full listing nor a feed read rides an upload.
+    expect(driveFilesCache.fetch).not.toHaveBeenCalled();
+    expect(driveFilesCache.refreshFromChanges).not.toHaveBeenCalled();
+    expect(driveApiClient.listFiles).not.toHaveBeenCalledWith(
+      expect.stringContaining("'me' in owners"),
+      expect.anything()
+    );
+  });
+
+  it('a series upload does not refetch either', async () => {
+    await googleDriveProvider.uploadFile('Series/Volume 1.cbz', new Blob(['abc']));
+    expect(coreUpload).toHaveBeenCalledTimes(1);
+    expect(driveFilesCache.fetch).not.toHaveBeenCalled();
   });
 
   it('a full drive keeps its QUOTA_EXCEEDED code and message, not UPLOAD_FAILED', async () => {
@@ -541,13 +556,119 @@ describe('GoogleDriveProvider uploads — the blind path skips the whole-account
     expect(error.isNetworkError).toBe(true);
   });
 
-  it('blindUploadFile performs the SAME upload with NO refetch', async () => {
-    const result = await googleDriveProvider.blindUploadFile('volume-data.json', new Blob(['abc']));
-    // Positive control: the upload genuinely ran and returned its metadata.
-    expect(coreUpload).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ fileId: 'uploaded-1', size: 3 });
-    // The point: not one listing request rides a blind upload.
-    expect(driveFilesCache.fetch).not.toHaveBeenCalled();
+  it('has no blindUploadFile: its uploadFile already is one (the interface contract)', () => {
+    expect(
+      (googleDriveProvider as unknown as { blindUploadFile?: unknown }).blindUploadFile
+    ).toBeUndefined();
+  });
+});
+
+describe('GoogleDriveProvider receipts and stat (conditional root-file reads)', () => {
+  const coreUpload = vi.fn(async (_args: unknown) => ({
+    fileId: 'uploaded-1',
+    modifiedTime: '2026-11-02T10:00:00.000Z',
+    size: 3,
+    revision: '42'
+  }));
+
+  beforeEach(() => {
+    coreUpload.mockClear();
+    vi.mocked(tokenManager.isAuthenticated).mockReturnValue(true);
+    (googleDriveProvider as unknown as { cloudCore: { uploadFile: typeof coreUpload } }).cloudCore =
+      { uploadFile: coreUpload };
+  });
+
+  it('an upload receipt names the revision, the folder written into and the name', async () => {
+    const result = await googleDriveProvider.uploadFile('volume-data.json', new Blob(['abc']));
+    // The folder the core was told to write into (the reader root here).
+    const target = (coreUpload.mock.calls[0][0] as { credentials: { seriesFolderId: string } })
+      .credentials.seriesFolderId;
+    expect(target).toBeTruthy();
+    expect(result).toEqual({
+      fileId: 'uploaded-1',
+      modifiedTime: '2026-11-02T10:00:00.000Z',
+      size: 3,
+      revision: '42',
+      parentId: target,
+      name: 'volume-data.json'
+    });
+  });
+
+  it("keeps the response's own parent and name when it carried them", async () => {
+    coreUpload.mockResolvedValueOnce({
+      fileId: 'uploaded-1',
+      modifiedTime: '2026-11-02T10:00:00.000Z',
+      size: 3,
+      revision: '42',
+      parentId: 'parent-from-response',
+      name: 'positions.json'
+    } as never);
+    const result = await googleDriveProvider.uploadFile('positions.json', new Blob(['abc']));
+    expect(result).toMatchObject({ parentId: 'parent-from-response', name: 'positions.json' });
+  });
+
+  it('a description update after the upload drops the revision (it changed the file again)', async () => {
+    const result = await googleDriveProvider.uploadFile(
+      'volume-data.json',
+      new Blob(['abc']),
+      'a description'
+    );
+    expect(driveApiClient.updateFileDescription).toHaveBeenCalledWith(
+      'uploaded-1',
+      'a description'
+    );
+    expect(result.revision).toBeUndefined();
+    expect(result.fileId).toBe('uploaded-1');
+  });
+
+  const file = {
+    provider: 'google-drive' as const,
+    fileId: 'file-1',
+    path: 'volume-data.json',
+    modifiedTime: '',
+    size: 0
+  };
+
+  it('statFile reads the stamp fields only; version is the revision', async () => {
+    vi.mocked(driveApiClient.getFileMetadata).mockResolvedValueOnce({
+      id: 'file-1',
+      size: '28542',
+      modifiedTime: '2026-11-02T10:00:00.000Z',
+      version: '17',
+      md5Checksum: 'abc'
+    });
+    expect(await googleDriveProvider.statFile(file)).toEqual({
+      size: 28542,
+      modifiedTime: '2026-11-02T10:00:00.000Z',
+      revision: '17'
+    });
+    const [fileId, fields] = vi.mocked(driveApiClient.getFileMetadata).mock.calls.at(-1)!;
+    expect(fileId).toBe('file-1');
+    expect(fields.split(',')).toEqual(
+      expect.arrayContaining(['id', 'size', 'modifiedTime', 'version', 'md5Checksum'])
+    );
+  });
+
+  it('statFile: a 404 or a trashed file is gone', async () => {
+    vi.mocked(driveApiClient.getFileMetadata).mockRejectedValueOnce(
+      Object.assign(new Error('File not found'), { status: 404 })
+    );
+    expect(await googleDriveProvider.statFile(file)).toBeNull();
+    vi.mocked(driveApiClient.getFileMetadata).mockResolvedValueOnce({
+      id: 'file-1',
+      size: '3',
+      modifiedTime: '2026-11-02T10:00:00.000Z',
+      version: '3',
+      trashed: true
+    });
+    expect(await googleDriveProvider.statFile(file)).toBeNull();
+  });
+
+  it('statFile: any other failure propagates (the memo then downloads)', async () => {
+    vi.mocked(driveApiClient.getFileMetadata).mockRejectedValueOnce(
+      Object.assign(new Error('Backend error'), { status: 500 })
+    );
+    await expect(googleDriveProvider.statFile(file)).rejects.toThrow('Backend error');
   });
 });
 
@@ -692,5 +813,103 @@ describe('GoogleDriveProvider.getFolderOperations() — dedup parity', () => {
     ]);
 
     expect(await googleDriveProvider.findOrCreateFolder('reader-root', 'Ippo')).toBe('a-folder');
+  });
+});
+
+describe('GoogleDriveProvider quick-tier reads (no account-wide listing)', () => {
+  type Query = string;
+  const files = {
+    readers: [{ id: 'r1' }, { id: 'r2' }],
+    history: [{ id: 'h1', name: 'history' }],
+    deviceFolders: [{ id: 'd1', name: 'dev-a', mimeType: FOLDER_MIME, parents: ['h1'] }],
+    segments: [
+      {
+        id: 'f1',
+        name: '2026-10.events',
+        mimeType: 'application/octet-stream',
+        modifiedTime: '2026-10-30T00:00:00.000Z',
+        size: '123',
+        parents: ['d1']
+      },
+      {
+        id: 'f2',
+        name: 'device.json',
+        mimeType: JSON_MIME,
+        modifiedTime: '2026-10-29T00:00:00.000Z',
+        size: '45',
+        parents: ['d1']
+      },
+      { id: 'x', name: 'notes.txt', mimeType: 'text/plain', parents: ['d1'] }
+    ]
+  };
+
+  beforeEach(() => {
+    (googleDriveProvider as unknown as { quickReaderIds: unknown }).quickReaderIds = null;
+    vi.mocked(tokenManager.isAuthenticated).mockReturnValue(true);
+    vi.mocked(driveApiClient.listFiles).mockReset();
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: Query) => {
+      if (query.startsWith("name='mokuro-reader'")) return files.readers as never;
+      if (query.includes("name='history'")) {
+        expect(query).toContain("'r1' in parents or 'r2' in parents");
+        return files.history as never;
+      }
+      if (query.includes("name='positions.json'")) {
+        return [{ id: 'p1' }, { id: 'p2' }] as never;
+      }
+      if (query.startsWith("('h1' in parents)")) return files.deviceFolders as never;
+      if (query.startsWith("('d1' in parents)")) return files.segments as never;
+      return [] as never;
+    });
+  });
+
+  it('listFolder walks reader → history → device folders with one query per level', async () => {
+    const { driveHistoryPath } = await import('./drive-history-path');
+    const listed = await googleDriveProvider.listFolder('history');
+    expect(listed.map((f) => f.path).sort()).toEqual([
+      'history/dev-a/2026-10.events',
+      'history/dev-a/device.json'
+    ]);
+    const segment = listed.find((f) => f.fileId === 'f1')!;
+    // The same entry the Drive files cache makes, so import stamps still match.
+    expect(segment).toMatchObject({
+      provider: 'google-drive',
+      size: 123,
+      modifiedTime: '2026-10-30T00:00:00.000Z',
+      parentId: 'd1',
+      name: '2026-10.events'
+    });
+    const folders = new Map([
+      ['d1', { name: 'dev-a', parent: 'h1' }],
+      ['h1', { name: 'history', parent: 'r1' }],
+      ['r1', { name: 'mokuro-reader' }]
+    ]);
+    expect(segment.path).toBe(driveHistoryPath(files.segments[0], folders, 'mokuro-reader'));
+    // reader folders, history, device folders, segments
+    expect(driveApiClient.listFiles).toHaveBeenCalledTimes(4);
+    for (const [query] of vi.mocked(driveApiClient.listFiles).mock.calls) {
+      // Owned files only, like the full listing — but never its account-wide query.
+      expect(query).toContain("'me' in owners");
+      expect(query).not.toBe("'me' in owners and trashed=false");
+    }
+  });
+
+  it('no reader folder → nothing, after one query', async () => {
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async () => []);
+    expect(await googleDriveProvider.listFolder('history')).toEqual([]);
+    expect(driveApiClient.listFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('readRootFileCopies reads every copy in any reader folder; the folder lookup is shared', async () => {
+    const download = vi
+      .spyOn(googleDriveProvider, 'downloadFile')
+      .mockImplementation(async (file) => new Blob([file.fileId]));
+    const blobs = await googleDriveProvider.readRootFileCopies('positions.json');
+    expect(await Promise.all(blobs.map((b) => b.text()))).toEqual(['p1', 'p2']);
+    await googleDriveProvider.listFolder('history');
+    const readerLookups = vi
+      .mocked(driveApiClient.listFiles)
+      .mock.calls.filter(([q]) => q.startsWith("name='mokuro-reader'"));
+    expect(readerLookups).toHaveLength(1);
+    download.mockRestore();
   });
 });

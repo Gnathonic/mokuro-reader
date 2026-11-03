@@ -95,8 +95,8 @@ const cloud = vi.hoisted(() => {
       getAllCloudVolumes: () => [...state.files],
       getCloudVolumesBySeries,
       resolveCloudFolderTitle,
-      // The backfill must use the WRITE-AND-FORGET path: on Google Drive the
-      // ordinary uploadFile refetches the whole listing after every upload.
+      // The backfill must use the WRITE-AND-FORGET path (a provider whose
+      // ordinary uploadFile does refresh work must not charge it here).
       // All upload assertions in this suite read the `uploadFile` spy, which
       // here records the BLIND uploads; the ordinary method throws so any
       // regression back to it fails every upload test loudly.
