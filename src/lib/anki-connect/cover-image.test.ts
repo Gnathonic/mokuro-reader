@@ -10,7 +10,7 @@ class NodeFileReader {
   onloadend: (() => void) | null = null;
   readAsDataURL(blob: Blob) {
     void blob.arrayBuffer().then((buf) => {
-      this.result = `data:${blob.type};base64,${Buffer.from(buf).toString('base64')}`;
+      this.result = `data:${blob.type};base64,${btoa(String.fromCharCode(...new Uint8Array(buf)))}`;
       this.onloadend?.();
     });
   }
