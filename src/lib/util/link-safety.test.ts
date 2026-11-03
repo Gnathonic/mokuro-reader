@@ -180,8 +180,10 @@ describe('parseCloudLinkPrefill', () => {
     });
   });
 
-  it('keeps a bare username: it names no server', () => {
-    expect(parseCloudLinkPrefill('#/cloud?username=reader')).toEqual({ username: 'reader' });
+  it('fills nothing from a bare username: no server, no banner, no silent pairing', () => {
+    // The form would pair it with the server remembered from the last session.
+    expect(parseCloudLinkPrefill('#/cloud?username=reader')).toBeNull();
+    expect(parseCloudLinkPrefill('#/cloud?server=&username=reader')).toBeNull();
   });
 });
 

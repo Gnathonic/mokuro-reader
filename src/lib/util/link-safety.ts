@@ -174,7 +174,10 @@ export function linkMayPrefillServer(target: LinkTarget): boolean {
 export interface CloudLinkPrefill {
   /** The server address to fill in, with the host to name in the banner. */
   server?: { url: string; host: string };
-  /** Only with an accepted server, or when the link named no server at all. */
+  /**
+   * Only with an accepted server: the banner that names the server is what
+   * tells the user the link filled the form in.
+   */
   username?: string;
   /**
    * A server address the link carried that was NOT filled in, and why. `value`
@@ -188,7 +191,9 @@ export interface CloudLinkPrefill {
  * Read the WebDAV prefill a cloud link carries; null when it carries none.
  * Nothing here logs in: the form is only filled, and the password never comes
  * from a link. A refused server takes its username with it — the name belongs
- * to that server, not to whatever the user types instead.
+ * to that server, not to whatever the user types instead — and so does no
+ * server at all: a username alone would land, unannounced, beside the server
+ * the form remembers from the user's last session, a pairing the link chose.
  */
 export function parseCloudLinkPrefill(hash: string): CloudLinkPrefill | null {
   const queryIndex = hash.indexOf('?');
@@ -196,7 +201,7 @@ export function parseCloudLinkPrefill(hash: string): CloudLinkPrefill | null {
   const params = new URLSearchParams(hash.slice(queryIndex + 1));
   const server = params.get('server')?.trim() || '';
   const username = params.get('username') || '';
-  if (!server) return username ? { username } : null;
+  if (!server) return null;
 
   const target = describeLinkTarget(server);
   if (!target) return { refused: { value: '', reason: 'invalid' } };
