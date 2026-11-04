@@ -563,7 +563,7 @@ describe('POST /api/gdrive/logout', () => {
       ['{}', { body: {} }],
       ['{ everywhere: false }', { body: { everywhere: false } }]
     ] as const)(
-      '%s: Google is never asked, the cookie is cleared, revoked: false',
+      '%s: Google is never asked, the cookie is cleared, and a bound copy is now useless',
       async (_label, extra) => {
         const s = setup();
         const key = await deviceKey();
@@ -571,7 +571,7 @@ describe('POST /api/gdrive/logout', () => {
         const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
         const response = await handleLogout(logoutEvent(s.jar, { ...extra }), deps);
         expect(response.status).toBe(200);
-        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false });
+        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: true });
         expect(calls).toHaveLength(0);
         expect(s.jar.deletes.map((d) => d.name)).toEqual([COOKIE]);
         expect(JSON.parse(logs.at(-1)!)).toMatchObject({
@@ -584,29 +584,41 @@ describe('POST /api/gdrive/logout', () => {
       }
     );
 
-    it('an unbound session is cleared the same way, and the log says it was unbound', async () => {
+    it('an unbound session is cleared the same way, but a copy is NOT made useless — and it says so', async () => {
       const s = setup();
       s.plant();
       const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
       const response = await handleLogout(logoutEvent(s.jar), deps);
-      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false });
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
       expect(calls).toHaveLength(0);
       expect(s.jar.deletes).toHaveLength(1);
       expect(JSON.parse(logs.at(-1)!)).toMatchObject({ event: 'device_cleared_unbound' });
+    });
+
+    it('GDRIVE_POP=off: even a bound session’s copy stays usable, so invalidated: false', async () => {
+      const s = setup({ GDRIVE_POP: 'off' });
+      const key = await deviceKey();
+      s.plant({ cnf: jwkThumbprint(key.jwk) });
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(logoutEvent(s.jar), deps);
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
+      expect(calls).toHaveLength(0);
+      expect(s.jar.deletes).toHaveLength(1);
+      expect(JSON.parse(logs.at(-1)!)).toMatchObject({ event: 'device_cleared_pop_off' });
     });
 
     it.each([
       ['a bad cookie', () => 'garbage'],
       ['a cookie under a retired key', () => setup().plant()],
       ['no cookie', () => undefined]
-    ])('%s: no revoke, still cleared, still 200', async (_l, value) => {
+    ])('%s: no revoke, still cleared, still 200, invalidated: false', async (_l, value) => {
       const s = setup();
       const planted = value();
       if (planted) s.jar.values.set(COOKIE, planted);
       const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
       const response = await handleLogout(logoutEvent(s.jar), deps);
       expect(response.status).toBe(200);
-      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false });
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
       expect(calls).toHaveLength(0);
       expect(s.jar.deletes).toHaveLength(1);
     });
@@ -664,7 +676,7 @@ describe('POST /api/gdrive/logout', () => {
       const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
       const response = await handleLogout(everywhereEvent(s.jar), deps);
       expect(response.status).toBe(200);
-      expect(await bodyOf(response)).toEqual({ ok: true, revoked: true });
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: true, invalidated: true });
       expect(calls).toHaveLength(1);
       expect(calls[0].url).toBe('https://oauth2.googleapis.com/revoke');
       expect(calls[0].form).toEqual({ token: '1//planted' });
@@ -704,7 +716,7 @@ describe('POST /api/gdrive/logout', () => {
         const response = await handleLogout(everywhereEvent(s.jar), deps);
         expect(response.status).toBe(200);
         // The client must then revoke the access token it holds itself.
-        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false });
+        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
         expect(calls).toHaveLength(0);
         expect(s.jar.deletes).toHaveLength(1);
       }
@@ -721,7 +733,7 @@ describe('POST /api/gdrive/logout', () => {
         const { deps } = s.deps(() => answer as GoogleAnswer);
         const response = await handleLogout(everywhereEvent(s.jar), deps);
         expect(response.status).toBe(200);
-        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false });
+        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
         expect(s.jar.deletes).toHaveLength(1);
         expect(JSON.parse(logs.at(-1)!)).toMatchObject({ event: 'revoke_failed' });
       }

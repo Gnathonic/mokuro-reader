@@ -7,6 +7,7 @@ import type {
   DriveFileMetadata,
   FileStamp,
   LogoutOptions,
+  LogoutResult,
   StorageQuota,
   UploadFileResult
 } from '../../provider-interface';
@@ -368,15 +369,16 @@ class GoogleDriveProvider implements SyncProvider {
    * provider switch or the plain Log out must never revoke the Google grant
    * that other devices and a mokuro-bunko server may share.
    */
-  async logout(options?: LogoutOptions): Promise<void> {
+  async logout(options?: LogoutOptions): Promise<LogoutResult> {
     // Use full logout (clears token + auth history) not just clearToken
-    await tokenManager.logout(options);
+    const result = await tokenManager.logout(options);
     this.setReaderFolderId(null);
     this.resetControlFileState();
     this.initializePromise = null; // Reset initialization state
     // Clear the active provider key
     clearActiveProviderKey();
     console.log('Google Drive logged out');
+    return result;
   }
 
   /** The user asked to reconnect (a cloud-page button). */

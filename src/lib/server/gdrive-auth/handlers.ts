@@ -329,13 +329,18 @@ export function handleRefresh(event: AuthEvent, deps: AuthDeps): Promise<Respons
  *   so a revoke would also sign out every other device and any mokuro-bunko
  *   server holding a grant from the same project. The client deletes its
  *   device key alongside, so a copy of a BOUND cookie can never refresh again
- *   (no proof is possible). An unbound session's copy stays usable until it
- *   expires — logged as `device_cleared_unbound`.
+ *   (no proof is possible) — but only while proofs are required. An unbound
+ *   session's copy, or any copy while `GDRIVE_POP=off`, stays usable until it
+ *   expires; nothing here can end it short of a revoke (no database by
+ *   design), so the answer says so and the client tells the user.
  * - **Everywhere** (`everywhere: true`): the refresh token is revoked at
  *   Google, which ends the whole grant, then the cookie is cleared.
  *
- * Both answer `{ ok: true, revoked }`; a device sign-out always says `false`
- * (the client must not take that as a cue to revoke itself).
+ * Both answer `{ ok: true, revoked, invalidated }`. A device sign-out always
+ * says `revoked: false` (the client must not take that as a cue to revoke
+ * itself); `invalidated` is whether copies of the cookie are now useless —
+ * for a device sign-out, a bound session under required proofs; for
+ * everywhere, the revoke itself.
  */
 export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response> {
   const route: RouteName = 'logout';
@@ -365,6 +370,7 @@ export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response
     let outcome = 'no_cookie';
     let googleError: string | undefined;
     let kid: string | undefined;
+    let invalidated = false;
     if (value) {
       const opened = unseal(value, config, sealContext(event, config));
       if (!opened.ok) {
@@ -372,7 +378,12 @@ export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response
       } else {
         kid = opened.sealedWith === 'current' ? config.current.kid : config.previous?.kid;
         if (!everywhere) {
-          outcome = opened.payload.cnf ? 'device_cleared' : 'device_cleared_unbound';
+          invalidated = config.popRequired && !!opened.payload.cnf;
+          outcome = invalidated
+            ? 'device_cleared'
+            : !opened.payload.cnf
+              ? 'device_cleared_unbound'
+              : 'device_cleared_pop_off';
         } else {
           // Even an expired session's token is revoked: it may still be live at Google.
           const revoked = await revokeToken(
@@ -381,6 +392,7 @@ export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response
             opened.payload.rt
           );
           outcome = revoked.revoked ? 'revoked' : 'revoke_failed';
+          invalidated = revoked.revoked;
           googleError = revoked.googleError;
         }
       }
@@ -392,6 +404,6 @@ export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response
     // sealed under a retired key, no cookie at all) leaves the client to
     // revoke the access token it holds: revoking either token of a grant ends
     // the whole grant.
-    return reply(200, { ok: true, revoked: outcome === 'revoked' });
+    return reply(200, { ok: true, revoked: outcome === 'revoked', invalidated });
   });
 }

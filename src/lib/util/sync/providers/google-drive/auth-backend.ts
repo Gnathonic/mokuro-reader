@@ -86,9 +86,11 @@ export type BackendOutcome =
   /**
    * `/logout` done: the cookie is cleared. `revoked` only when the server
    * ended the grant at Google; otherwise (Google down, a cookie it could not
-   * open, no cookie) the client must revoke the token it holds itself.
+   * open, no cookie) an everywhere sign-out revokes the token it holds
+   * itself. `invalidated`: copies of the cookie are now useless (a bound
+   * session under required proofs, or a revoke). Absent reads as false.
    */
-  | { kind: 'done'; revoked: boolean };
+  | { kind: 'done'; revoked: boolean; invalidated: boolean };
 
 async function classify(response: Response): Promise<BackendOutcome> {
   const contentType = response.headers.get('content-type') ?? '';
@@ -111,7 +113,13 @@ async function classify(response: Response): Promise<BackendOutcome> {
     return { kind: 'transient' };
   }
   if (response.ok) {
-    if (body.ok === true) return { kind: 'done', revoked: body.revoked === true };
+    if (body.ok === true) {
+      return {
+        kind: 'done',
+        revoked: body.revoked === true,
+        invalidated: body.invalidated === true
+      };
+    }
     const accessToken = body.access_token;
     const expiresIn = body.expires_in;
     if (typeof accessToken === 'string' && accessToken && typeof expiresIn === 'number') {

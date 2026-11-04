@@ -135,10 +135,15 @@ are two sign-outs:
   clears the cookie. Implicit mode revokes the access token as before. Both
   delete the device key.
 
-`/logout` answers `200 {ok: true, revoked}`. A malformed body (`everywhere`
-not a boolean, bad JSON) is `400 bad_request` and changes nothing. A device
-sign-out always says `revoked: false`, and the client never takes that as a
-cue to revoke. On an everywhere sign-out, `revoked` is true only when the
+`/logout` answers `200 {ok: true, revoked, invalidated}`. A malformed body
+(`everywhere` not a boolean, bad JSON) is `400 bad_request` and changes
+nothing. A device sign-out always says `revoked: false`, and the client never
+takes that as a cue to revoke. `invalidated` says whether copies of the
+cookie are now useless: for a device sign-out only a bound session while
+proofs are required (`GDRIVE_POP` not `off`); for everywhere, the revoke. When
+a device sign-out answers `invalidated: false` (or, offline, the browser never
+had a device key), the snackbar says a copy could still work and points to
+"Sign out everywhere". On an everywhere sign-out, `revoked` is true only when the
 server ended the grant at Google. When it is false (Google down or slow, a
 cookie sealed under a retired key, no cookie at all), the client revokes the
 access token it holds itself: revoking either token of a grant ends the whole
@@ -163,7 +168,8 @@ It never logs a token, a code, a cookie or a body. Events include
 `signed_in(_bound)`, `refreshed(_resealed)`, `no_cookie`, `cookie_<reason>`,
 `expired`, `pop_missing`, `pop_mismatch`, `pop_clock`, `grant_revoked`,
 `server_config`, `transient`, `revoked`, `revoke_failed`,
-`device_cleared(_unbound)`, `bad_scope` and `not_configured`.
+`device_cleared`, `device_cleared_unbound`, `device_cleared_pop_off`,
+`bad_scope` and `not_configured`.
 
 ## Runbook
 
@@ -195,11 +201,13 @@ It never logs a token, a code, a cookie or a body. Events include
   mokuro-bunko server using it. A device sign-out revokes nothing; it relies
   on the device key instead.
 - **Unbound sessions and a device sign-out.** A session without `cnf` (the
-  browser could not create or keep a device key, or it signed in while
-  `GDRIVE_POP=off`) is not protected by deleting the key. A copy of its cookie
-  taken before the sign-out stays usable until it expires (180 days without
-  use). The server logs such a sign-out as `device_cleared_unbound`. Use "Sign
-  out everywhere" if a copy may exist.
+  browser could not create or keep a device key, or the proof failed while
+  `GDRIVE_POP=off`), and any session while `GDRIVE_POP=off`, is not protected
+  by deleting the key. A copy of its cookie taken before the sign-out stays
+  usable until it expires (180 days without use). The server answers
+  `invalidated: false` and logs `device_cleared_unbound` or
+  `device_cleared_pop_off`; the user is told to use "Sign out everywhere" to
+  end it for sure. There is no revoke and no denylist for it (no database).
 - **XSS.** While a tab is open, a script injected into the page can call
   `/refresh` and mint hour-long tokens. It cannot take the refresh token or
   the device key away with it. A Content-Security-Policy is the real defence,

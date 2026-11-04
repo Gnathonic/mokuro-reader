@@ -12,7 +12,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 
 const mocks = vi.hoisted(() => ({
-  logout: vi.fn(async (_options?: { everywhere?: boolean }) => {}),
+  logout: vi.fn(
+    async (_options?: { everywhere?: boolean }): Promise<{ copyMayStillWork?: boolean }> => ({})
+  ),
   showSnackbar: vi.fn()
 }));
 
@@ -106,6 +108,25 @@ describe('Google Drive sign-out on the cloud screen', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
     await waitFor(() => expect(mocks.logout).toHaveBeenCalledTimes(1));
     expect(mocks.logout.mock.calls[0][0]?.everywhere).not.toBe(true);
+    expect(mocks.showSnackbar).toHaveBeenCalledWith('Logged out of Google Drive on this device');
+  });
+
+  it('a device sign-out that left a usable copy says so, and points at Sign out everywhere', async () => {
+    mocks.logout.mockResolvedValueOnce({ copyMayStillWork: true });
+    render(CloudView);
+    await fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
+    await waitFor(() => expect(mocks.showSnackbar).toHaveBeenCalledTimes(1));
+    const [message] = mocks.showSnackbar.mock.calls[0];
+    expect(message).toMatch(/^Logged out of Google Drive on this device\. /);
+    expect(message).toContain('a copy of it could still work');
+    expect(message).toContain('Sign out everywhere');
+  });
+
+  it('a device sign-out that made every copy useless shows the plain message', async () => {
+    mocks.logout.mockResolvedValueOnce({ copyMayStillWork: false });
+    render(CloudView);
+    await fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
+    await waitFor(() => expect(mocks.showSnackbar).toHaveBeenCalledTimes(1));
     expect(mocks.showSnackbar).toHaveBeenCalledWith('Logged out of Google Drive on this device');
   });
 

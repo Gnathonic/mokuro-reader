@@ -97,16 +97,25 @@ describe('callBackend', () => {
     ],
     [
       'logout done, revoked by the server',
-      json(200, { ok: true, revoked: true }),
-      { kind: 'done', revoked: true }
+      json(200, { ok: true, revoked: true, invalidated: true }),
+      { kind: 'done', revoked: true, invalidated: true }
     ],
     [
-      'logout done, nothing revoked',
-      json(200, { ok: true, revoked: false }),
-      { kind: 'done', revoked: false }
+      'logout done, nothing revoked, copies of a bound cookie now useless',
+      json(200, { ok: true, revoked: false, invalidated: true }),
+      { kind: 'done', revoked: false, invalidated: true }
     ],
-    // An older server that does not say: not proof of a revoke.
-    ['logout done (no revoked field)', json(200, { ok: true }), { kind: 'done', revoked: false }],
+    [
+      'logout done, nothing revoked, a copy may still work',
+      json(200, { ok: true, revoked: false, invalidated: false }),
+      { kind: 'done', revoked: false, invalidated: false }
+    ],
+    // An older server that does not say: not proof of a revoke, nor of anything invalidated.
+    [
+      'logout done (no revoked or invalidated field)',
+      json(200, { ok: true }),
+      { kind: 'done', revoked: false, invalidated: false }
+    ],
     ['reauth', json(401, { error: 'reauth' }), { kind: 'reauth' }],
     ['no_session', json(401, { error: 'no_session' }), { kind: 'reauth' }],
     [

@@ -548,6 +548,51 @@ describe('logout: this device only (the default)', () => {
     expect(localStorage.getItem('gdrive_logout_pending')).toBeNull();
   });
 
+  describe('whether a copy of the session may still work', () => {
+    it.each([
+      ['a bound session under required proofs (invalidated: true)', { invalidated: true }, false],
+      ['an unbound session, or proofs off (invalidated: false)', { invalidated: false }, true],
+      ['a server that does not say', {}, true]
+    ] as const)('%s', async (_label, extra, expected) => {
+      persist('LIVE', 30 * MIN);
+      const { tm, device } = await load();
+      await withDeviceKey(device);
+      vi.mocked(fetch).mockResolvedValueOnce(json(200, { ok: true, revoked: false, ...extra }));
+      expect(await tm.logout()).toEqual({ copyMayStillWork: expected });
+    });
+
+    it('offline with the key deleted: no warning (a bound cookie is dead without it)', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm, device } = await load();
+      await withDeviceKey(device);
+      vi.mocked(fetch).mockRejectedValue(new TypeError('offline'));
+      expect(await tm.logout()).toEqual({ copyMayStillWork: false });
+    });
+
+    it('offline with no device key ever made: the session cannot have been bound', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch).mockRejectedValue(new TypeError('offline'));
+      expect(await tm.logout()).toEqual({ copyMayStillWork: true });
+    });
+
+    it('no backend here (404): no cookie of its making, no warning', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('', { status: 404 }));
+      expect(await tm.logout()).toEqual({ copyMayStillWork: false });
+    });
+
+    it('everywhere never warns: the grant itself is ended', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValueOnce(
+        json(200, { ok: true, revoked: true, invalidated: true })
+      );
+      expect(await tm.logout({ everywhere: true })).toEqual({ copyMayStillWork: false });
+    });
+  });
+
   it('{ everywhere: false } is the same device sign-out', async () => {
     persist('LIVE', 30 * MIN);
     const { tm } = await load();
@@ -760,7 +805,8 @@ describe('with the flag unset: the implicit flow, exactly as before', () => {
     const revoke = vi.fn();
     vi.stubGlobal('google', { accounts: { oauth2: { revoke } } });
     vi.mocked(fetch).mockResolvedValue(new Response('', { status: 200 }));
-    await tm.logout();
+    // No server cookie to copy in implicit mode: never a warning.
+    expect(await tm.logout()).toEqual({ copyMayStillWork: false });
     expect(fetch).not.toHaveBeenCalled();
     expect(revoke).not.toHaveBeenCalled();
     expect(held()).toBe('');

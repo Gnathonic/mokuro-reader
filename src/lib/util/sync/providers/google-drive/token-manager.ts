@@ -14,7 +14,7 @@ import {
   takeCallback,
   type BackendOutcome
 } from './auth-backend';
-import { deleteDeviceKey } from './device-key';
+import { deleteDeviceKey, loadDeviceKey } from './device-key';
 
 /** What a caller of `getAccessToken` gets by default: a token good for this long. */
 export const DEFAULT_MIN_VALIDITY_MS = 5 * 60 * 1000;
@@ -497,8 +497,15 @@ class TokenManager {
    * Google: every device, browser and server signed in through it must
    * connect again. An earlier everywhere sign-out that never got through
    * (offline) makes this one everywhere too — it was the user's ask.
+   *
+   * Answers `copyMayStillWork` for a device sign-out that could not make
+   * copies of the session cookie useless: the server says so
+   * (`invalidated: false` — an unbound session, or proofs switched off), or,
+   * when it never answered, this browser had no device key to delete (the
+   * session cannot have been bound) or could not delete it. Never in
+   * implicit mode: there is no server cookie to copy.
    */
-  async logout(options: { everywhere?: boolean } = {}): Promise<void> {
+  async logout(options: { everywhere?: boolean } = {}): Promise<{ copyMayStillWork: boolean }> {
     this.disarmGestureRetry();
     // Clear the refresh interval
     if (this.refreshIntervalId) {
@@ -512,10 +519,14 @@ class TokenManager {
     const backend = backendAuthConfigured();
     const everywhere = options.everywhere === true || (backend && logoutPending() === 'everywhere');
 
+    let copyMayStillWork = false;
     try {
+      // Whether there was a key to bind the session to at all (backend only:
+      // implicit mode never touches the key database but to delete it).
+      const hadKey = backend ? (await loadDeviceKey()) !== null : false;
       // The key goes first, whatever the network does: from here on no
       // proof for this session can be signed, so its cookie cannot refresh.
-      await deleteDeviceKey();
+      const keyDeleted = await deleteDeviceKey();
       if (backend) {
         // The server clears its cookie (and on `everywhere` revokes the
         // refresh token). Asked even when this tab fell back to the popup: a
@@ -534,6 +545,14 @@ class TokenManager {
             revokedHere = await this.revokeGrant(currentToken);
           }
         }
+        if (!everywhere && !injected) {
+          if (outcome.kind === 'done') copyMayStillWork = !outcome.invalidated;
+          // No answer (offline, refused): with the key gone, a bound cookie is
+          // dead either way; only a session that cannot have been bound — or
+          // a key that would not delete — may live on. No backend here
+          // (`unavailable`) means no cookie of its making.
+          else if (outcome.kind !== 'unavailable') copyMayStillWork = !hadKey || !keyDeleted;
+        }
         if (outcome.kind === 'done') setLogoutPending(null);
         // The cookie may still be there: finish the sign-out before anything
         // renews from it (`settlePendingLogout`). A revoke that got through
@@ -550,6 +569,7 @@ class TokenManager {
       // Clear token AND auth history on explicit logout
       this.clearToken(false);
     }
+    return { copyMayStillWork };
   }
 
   /**

@@ -434,11 +434,14 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, a
     await page.getByRole('button', { name: 'Log out' }).click();
     await expect.poll(() => storedToken(page), { timeout: 30_000 }).toBeNull();
     await expect.poll(() => hasCookie(context)).toBe(false);
-    await expect(page.getByText('Logged out of Google Drive on this device')).toBeVisible();
+    // The plain message: the session was bound, so no copy can work (no warning).
+    await expect(
+      page.getByText('Logged out of Google Drive on this device', { exact: true })
+    ).toBeVisible();
 
     const logout = backendCalls.filter((c) => c.path === '/api/gdrive/logout').at(-1)!;
     expect(logout.body).toEqual({ everywhere: false });
-    expect(logoutAnswers.at(-1)).toEqual({ ok: true, revoked: false });
+    expect(logoutAnswers.at(-1)).toEqual({ ok: true, revoked: false, invalidated: true });
     // Google never heard of it: the grant other devices (and a bunko server) use stays live.
     expect(google.requests.slice(googleCallsBefore)).toEqual([]);
     expect(google.revoked.size).toBe(0);
@@ -510,7 +513,7 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, a
     const logout = backendCalls.filter((c) => c.path === '/api/gdrive/logout').at(-1)!;
     expect(logout.body).toEqual({ everywhere: true });
     // The server says it revoked, so the browser had nothing left to revoke.
-    expect(logoutAnswers.at(-1)).toEqual({ ok: true, revoked: true });
+    expect(logoutAnswers.at(-1)).toEqual({ ok: true, revoked: true, invalidated: true });
     expect(browserRevokes).toEqual([]);
     expect(await hasDeviceKey(page)).toBe(false);
     expect(await page.evaluate(() => localStorage.getItem('gdrive_logout_pending'))).toBeNull();

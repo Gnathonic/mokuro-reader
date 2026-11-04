@@ -490,6 +490,16 @@ export type AnyCloudFileMetadata =
   | FilesystemFileMetadata
   | OneDriveFileMetadata;
 
+/** What a sign-out left behind (`SyncProvider.logout`), when the provider knows. */
+export interface LogoutResult {
+  /**
+   * A copy of this device's session (e.g. Google Drive's refresh cookie,
+   * copied off this machine before the sign-out) may still work: the
+   * sign-out could not make it useless without ending access everywhere.
+   */
+  copyMayStillWork?: boolean;
+}
+
 /** How far a sign-out reaches (`SyncProvider.logout`). */
 export interface LogoutOptions {
   /**
@@ -550,9 +560,10 @@ export interface SyncProvider {
    * Logout and clear stored credentials. By default this signs out THIS
    * device only. `everywhere` asks the provider to end the account's access
    * for every device too — only Google Drive honours it (a revoke of the
-   * whole grant); every other provider ignores it.
+   * whole grant); every other provider ignores it. A provider may answer
+   * with what the sign-out left behind (`LogoutResult`).
    */
-  logout(options?: LogoutOptions): Promise<void>;
+  logout(options?: LogoutOptions): Promise<LogoutResult | void>;
 
   // GENERIC FILE OPERATIONS (BLOB-BASED)
   /**

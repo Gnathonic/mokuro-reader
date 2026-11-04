@@ -1,6 +1,7 @@
 import { derived, writable, type Readable } from 'svelte/store';
 import type {
   LogoutOptions,
+  LogoutResult,
   SyncProvider,
   ProviderType,
   ProviderStatus
@@ -194,11 +195,13 @@ class ProviderManager {
   /**
    * Logout the current provider — this device only, unless
    * `options.everywhere` (see `SyncProvider.logout`), which is passed through.
+   * Answers what the current provider's sign-out left behind, if it said.
    */
-  async logout(options?: LogoutOptions): Promise<void> {
+  async logout(options?: LogoutOptions): Promise<LogoutResult> {
+    let result: LogoutResult = {};
     // Try the current provider first
     if (this.currentProvider) {
-      await this.currentProvider.logout(options);
+      result = (await this.currentProvider.logout(options)) ?? {};
       this.currentProvider = null;
     } else {
       // currentProvider is null (e.g., connection failed on startup).
@@ -240,6 +243,7 @@ class ProviderManager {
     }
 
     this.updateStatus();
+    return result;
   }
 
   /**

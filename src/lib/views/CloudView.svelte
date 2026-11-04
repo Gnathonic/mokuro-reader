@@ -547,7 +547,7 @@
 
     // Use providerManager.logout() for all providers
     // This properly clears currentProvider, active_cloud_provider key, and updates status
-    await providerManager.logout(everywhere ? { everywhere: true } : undefined);
+    const result = await providerManager.logout(everywhere ? { everywhere: true } : undefined);
 
     // Provider-specific cleanup
     if (provider === 'mega') {
@@ -561,11 +561,18 @@
       webdavPassword = '';
       showSnackbar('Logged out of WebDAV');
     } else if (provider === 'google-drive') {
-      showSnackbar(
-        everywhere
-          ? 'Signed out of Google Drive everywhere'
-          : 'Logged out of Google Drive on this device'
-      );
+      if (everywhere) {
+        showSnackbar('Signed out of Google Drive everywhere');
+      } else if (result?.copyMayStillWork) {
+        // The session was not tied to this device (or the server does not
+        // check that), so a copy of it taken earlier could still be used.
+        showSnackbar(
+          "Logged out of Google Drive on this device. This sign-in wasn't tied to this device, so a copy of it could still work. Use Sign out everywhere to end it for sure.",
+          10_000
+        );
+      } else {
+        showSnackbar('Logged out of Google Drive on this device');
+      }
     } else if (provider === 'filesystem') {
       showSnackbar('Local folder disconnected');
     } else if (provider === 'onedrive') {

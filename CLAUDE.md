@@ -157,7 +157,8 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   device and any mokuro-bunko server sharing the grant. Backend mode clears the cookie and
   deletes the device key (a bound cookie's copy can no longer refresh). Only the confirmed
   "Sign out everywhere…" passes `logout({ everywhere: true })` and revokes; a provider switch
-  never does.
+  never does. A device sign-out that cannot neutralise copies (unbound session, `GDRIVE_POP=off`)
+  answers `invalidated: false`, and the cloud page's snackbar says a copy could still work.
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
