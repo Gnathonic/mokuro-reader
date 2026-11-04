@@ -386,6 +386,9 @@ describe('materializeHistoryRows', () => {
       expect(counts['volumes.bytes'] ?? 0).toBe(0);
     });
 
+    // Hundreds of series in fake IndexedDB: ~0.5 s locally, ~4.5 s under CI's
+    // coverage instrumentation, too close to the 5 s default. It checks one run
+    // and one transaction, not speed, so it gets room.
     it('has no per-run cap: more history than the old caps allowed drains in ONE run and ONE transaction', async () => {
       // The removed caps were 1,000 rows and 200 series per run. Add enough
       // history to exceed both on top of the fixture above.
@@ -415,6 +418,6 @@ describe('materializeHistoryRows', () => {
       expect(created).toBe(expected);
       expect(counts['tx.volumes.readwrite']).toBe(1);
       await expect(materializeHistoryRows()).resolves.toBe(0);
-    });
+    }, 30_000);
   });
 });
