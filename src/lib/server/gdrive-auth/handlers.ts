@@ -1,7 +1,8 @@
 /**
  * The three Drive auth routes: `/api/gdrive/session` (redeem a sign-in's code
  * and set the sealed refresh cookie), `/api/gdrive/refresh` (a fresh access
- * token from the cookie) and `/api/gdrive/logout` (revoke and clear).
+ * token from the cookie) and `/api/gdrive/logout` (clear, and with
+ * `everywhere: true` also revoke).
  *
  * The browser never sees the refresh token: it lives sealed in an HttpOnly
  * cookie (`seal.ts`), optionally bound to a device key (`pop.ts`). There is no
@@ -320,14 +321,37 @@ export function handleRefresh(event: AuthEvent, deps: AuthDeps): Promise<Respons
   });
 }
 
+/**
+ * Sign out. The body is optional: `{ everywhere?: boolean }`.
+ *
+ * - **This device** (absent, `{}`, `everywhere: false`): the cookie is cleared
+ *   and Google is NOT asked. Google revokes per Cloud project, not per client,
+ *   so a revoke would also sign out every other device and any mokuro-bunko
+ *   server holding a grant from the same project. The client deletes its
+ *   device key alongside, so a copy of a BOUND cookie can never refresh again
+ *   (no proof is possible). An unbound session's copy stays usable until it
+ *   expires — logged as `device_cleared_unbound`.
+ * - **Everywhere** (`everywhere: true`): the refresh token is revoked at
+ *   Google, which ends the whole grant, then the cookie is cleared.
+ *
+ * Both answer `{ ok: true, revoked }`; a device sign-out always says `false`
+ * (the client must not take that as a cue to revoke itself).
+ */
 export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response> {
   const route: RouteName = 'logout';
   return guarded(route, async () => {
-    const validated = await validateRequest(event);
+    const validated = await validateRequest(event, { allowEmptyBody: true });
     if (!validated.ok) {
       logAuth({ route, status: validated.response.status, event: validated.event });
       return validated.response;
     }
+    // Checked before anything is cleared: a malformed request changes nothing.
+    const scope = validated.body.everywhere;
+    if (scope !== undefined && typeof scope !== 'boolean') {
+      logAuth({ route, status: 400, event: 'bad_scope' });
+      return fail(400, 'bad_request');
+    }
+    const everywhere = scope === true;
     const config = readAuthConfig(deps.env);
     if (!config) {
       // Nothing to revoke with, but the cookie still goes.
@@ -343,26 +367,31 @@ export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response
     let kid: string | undefined;
     if (value) {
       const opened = unseal(value, config, sealContext(event, config));
-      if (opened.ok) {
-        // Even an expired session's token is revoked: it may still be live at Google.
-        kid = opened.sealedWith === 'current' ? config.current.kid : config.previous?.kid;
-        const revoked = await revokeToken(
-          deps.fetch ?? defaultFetch,
-          googleEndpoints(deps.env),
-          opened.payload.rt
-        );
-        outcome = revoked.revoked ? 'revoked' : 'revoke_failed';
-        googleError = revoked.googleError;
-      } else {
+      if (!opened.ok) {
         outcome = `cookie_${opened.reason}`;
+      } else {
+        kid = opened.sealedWith === 'current' ? config.current.kid : config.previous?.kid;
+        if (!everywhere) {
+          outcome = opened.payload.cnf ? 'device_cleared' : 'device_cleared_unbound';
+        } else {
+          // Even an expired session's token is revoked: it may still be live at Google.
+          const revoked = await revokeToken(
+            deps.fetch ?? defaultFetch,
+            googleEndpoints(deps.env),
+            opened.payload.rt
+          );
+          outcome = revoked.revoked ? 'revoked' : 'revoke_failed';
+          googleError = revoked.googleError;
+        }
       }
     }
     clearSessionCookie(event);
     logAuth({ route, status: 200, event: outcome, googleError, kid });
-    // `revoked` says whether THIS server ended the grant at Google. Anything
-    // short of that (Google down, a cookie sealed under a retired key, no
-    // cookie at all) leaves the client to revoke the access token it holds:
-    // revoking either token of a grant ends the whole grant.
+    // `revoked` says whether THIS server ended the grant at Google. On an
+    // everywhere sign-out, anything short of that (Google down, a cookie
+    // sealed under a retired key, no cookie at all) leaves the client to
+    // revoke the access token it holds: revoking either token of a grant ends
+    // the whole grant.
     return reply(200, { ok: true, revoked: outcome === 'revoked' });
   });
 }

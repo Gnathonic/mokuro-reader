@@ -2,7 +2,9 @@
  * The Drive auth backend end to end, in a real browser: one sign-in (PKCE,
  * full-page redirect, the static callback page), a refresh cookie that is
  * HttpOnly and bound to this browser's device key, a silent renewal at the
- * next start, and a sign-out that revokes at "Google" and clears the cookie.
+ * next start, a sign-out on this device only (nothing revoked, the cookie and
+ * the device key gone, an old copy of the cookie refused), and a confirmed
+ * "sign out everywhere" that revokes at "Google" and clears the cookie.
  *
  * Nothing here talks to Google. The browser's side of Google (its scripts and
  * the consent screen) is answered by `page.route`. The SERVER's side — the
@@ -15,7 +17,7 @@
  * suite's shared server alone — down to its generated files and dependency
  * cache (`gdrive-auth-backend.vite.config.ts`, `MOKURO_E2E_KIT_OUT_DIR`).
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, request, test, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
@@ -23,6 +25,7 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { readAuthConfig } from '../src/lib/server/gdrive-auth/config';
 import { unseal } from '../src/lib/server/gdrive-auth/seal';
+import { signProof } from '../src/lib/util/sync/providers/google-drive/device-key';
 
 const CLIENT_ID = 'e2e-client.apps.example';
 const CLIENT_SECRET = 'e2e-secret-not-real';
@@ -258,11 +261,40 @@ function openSession(value: string) {
   return unseal(value, config, { clientId: CLIENT_ID, origin, cookieName: 'gdrive_rt' });
 }
 
+/** Whether this browser's device key is in its IndexedDB database (`device-key.ts`). */
+const hasDeviceKey = (page: Page) =>
+  page.evaluate(
+    () =>
+      new Promise<boolean>((resolve) => {
+        const open = indexedDB.open('mokuro-device-key');
+        open.onerror = () => resolve(false);
+        open.onsuccess = () => {
+          const db = open.result;
+          if (!db.objectStoreNames.contains('keys')) {
+            db.close();
+            return resolve(false);
+          }
+          const get = db.transaction('keys', 'readonly').objectStore('keys').get('gdrive-pop');
+          get.onsuccess = () => {
+            db.close();
+            resolve(!!get.result);
+          };
+          get.onerror = () => {
+            db.close();
+            resolve(false);
+          };
+        };
+      })
+  );
+
+const hasCookie = async (context: import('@playwright/test').BrowserContext) =>
+  (await context.cookies(origin)).some((c) => c.name === 'gdrive_rt');
+
 /** The stored access token; undefined while the page is between documents (the sign-in navigates). */
 const storedToken = (page: Page) =>
   page.evaluate(() => localStorage.getItem('gdrive_token')).catch(() => undefined);
 
-test('one sign-in, a bound HttpOnly cookie, silent renewal, and a sign-out that revokes', async ({
+test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, and a sign-out everywhere', async ({
   page,
   context
 }) => {
@@ -388,17 +420,99 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, and a sign-out that 
     expect((await context.cookies(origin)).some((c) => c.name === 'gdrive_rt')).toBe(true);
   });
 
-  await test.step('sign out: revoked at Google, cookie cleared, token gone from this device', async () => {
+  let firstCnf: string | undefined;
+
+  await test.step('sign out on this device: nothing revoked, the cookie and the key gone', async () => {
+    const cookie = (await context.cookies(origin)).find((c) => c.name === 'gdrive_rt')!;
+    const opened = openSession(cookie.value);
+    firstCnf = opened.ok ? opened.payload.cnf : undefined;
+    expect(firstCnf).toBeTruthy();
     await page.goto(`${origin}/#/cloud`);
+    expect(await hasDeviceKey(page)).toBe(true);
+    const googleCallsBefore = google.requests.length;
+
     await page.getByRole('button', { name: 'Log out' }).click();
     await expect.poll(() => storedToken(page), { timeout: 30_000 }).toBeNull();
+    await expect.poll(() => hasCookie(context)).toBe(false);
+    await expect(page.getByText('Logged out of Google Drive on this device')).toBeVisible();
+
+    const logout = backendCalls.filter((c) => c.path === '/api/gdrive/logout').at(-1)!;
+    expect(logout.body).toEqual({ everywhere: false });
+    expect(logoutAnswers.at(-1)).toEqual({ ok: true, revoked: false });
+    // Google never heard of it: the grant other devices (and a bunko server) use stays live.
+    expect(google.requests.slice(googleCallsBefore)).toEqual([]);
+    expect(google.revoked.size).toBe(0);
+    expect(browserRevokes).toEqual([]);
+    expect(await hasDeviceKey(page)).toBe(false);
+    expect(await page.evaluate(() => localStorage.getItem('gdrive_logout_pending'))).toBeNull();
+
+    // A copy of the old cookie, replayed from elsewhere, can no longer refresh:
+    // its session is bound to a key that no longer exists anywhere.
+    const elsewhere = await request.newContext();
+    try {
+      const headers = {
+        origin,
+        'x-requested-with': 'XMLHttpRequest',
+        'content-type': 'application/json',
+        cookie: `gdrive_rt=${cookie.value}`
+      };
+      const bare = await elsewhere.post(`${origin}/api/gdrive/refresh`, { headers, data: {} });
+      expect(bare.status()).toBe(401);
+      expect(await bare.json()).toEqual({ error: 'reauth' });
+      // Nor with a proof from any other key.
+      const other = (await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        false,
+        ['sign', 'verify']
+      )) as CryptoKeyPair;
+      const pop = await signProof(other, origin, '/api/gdrive/refresh', Date.now());
+      const signed = await elsewhere.post(`${origin}/api/gdrive/refresh`, {
+        headers,
+        data: { pop }
+      });
+      expect(signed.status()).toBe(401);
+      expect(await signed.json()).toEqual({ error: 'reauth' });
+    } finally {
+      await elsewhere.dispose();
+    }
+    // Refused before Google was asked for a token.
+    expect(google.requests.slice(googleCallsBefore)).toEqual([]);
+  });
+
+  await test.step('signing in again binds the new session to a NEW device key', async () => {
+    const connect = page.getByRole('button', { name: /Stays signed in/ });
+    await expect(connect).toBeVisible({ timeout: 60_000 });
+    await connect.click();
+    await expect.poll(() => storedToken(page), { timeout: 60_000 }).toMatch(/^ya29\.e2e-\d+$/);
+    expect(google.pkceVerified).toBe(2);
+    const cookie = (await context.cookies(origin)).find((c) => c.name === 'gdrive_rt')!;
+    const opened = openSession(cookie.value);
+    expect(opened.ok).toBe(true);
+    if (opened.ok) {
+      expect(opened.payload.cnf).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(opened.payload.cnf).not.toBe(firstCnf);
+    }
+    expect(await hasDeviceKey(page)).toBe(true);
+  });
+
+  await test.step('sign out everywhere: confirmed, revoked at Google, cookie and key gone', async () => {
+    await page.goto(`${origin}/#/cloud`);
+    await page.getByRole('button', { name: 'Sign out everywhere…' }).click();
+    const confirm = page.getByRole('button', { name: 'Sign out everywhere', exact: true });
+    await expect(confirm).toBeVisible();
+    await expect(page.getByText('on every device and browser where you use it')).toBeVisible();
+    await confirm.click();
+
+    await expect.poll(() => storedToken(page), { timeout: 30_000 }).toBeNull();
     await expect.poll(() => google.revoked.has(REFRESH_TOKEN)).toBe(true);
-    await expect
-      .poll(async () => (await context.cookies(origin)).some((c) => c.name === 'gdrive_rt'))
-      .toBe(false);
+    await expect.poll(() => hasCookie(context)).toBe(false);
+    await expect(page.getByText('Signed out of Google Drive everywhere')).toBeVisible();
+    const logout = backendCalls.filter((c) => c.path === '/api/gdrive/logout').at(-1)!;
+    expect(logout.body).toEqual({ everywhere: true });
     // The server says it revoked, so the browser had nothing left to revoke.
     expect(logoutAnswers.at(-1)).toEqual({ ok: true, revoked: true });
     expect(browserRevokes).toEqual([]);
+    expect(await hasDeviceKey(page)).toBe(false);
     expect(await page.evaluate(() => localStorage.getItem('gdrive_logout_pending'))).toBeNull();
   });
 });

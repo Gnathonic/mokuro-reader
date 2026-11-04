@@ -10,7 +10,7 @@
     type StorageQuota
   } from '$lib/util/sync/provider-interface';
   import { backupQueue } from '$lib/util/backup-queue';
-  import { Alert, Badge, Button, Radio, Toggle, Spinner } from 'flowbite-svelte';
+  import { Alert, Badge, Button, Modal, Radio, Toggle, Spinner } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import { GoogleSolid, InfoCircleSolid } from 'flowbite-svelte-icons';
   import { catalog } from '$lib/catalog';
@@ -528,14 +528,26 @@
     }
   }
 
+  // "Sign out everywhere…" (Google Drive only): the confirmation modal.
+  let signOutEverywhereOpen = $state(false);
+
+  async function confirmSignOutEverywhere() {
+    signOutEverywhereOpen = false;
+    await handleLogout({ everywhere: true });
+  }
+
   // Unified logout handler - all providers use providerManager.logout()
-  // (Storage quota is cleared reactively via $effect when auth state changes)
-  async function handleLogout() {
+  // (Storage quota is cleared reactively via $effect when auth state changes).
+  // Plain "Log out" signs out THIS device only. `everywhere` (Drive's
+  // confirmed "Sign out everywhere…") also revokes the Google grant, which
+  // every other device and any mokuro-bunko server signed in through it share.
+  async function handleLogout(options: { everywhere?: boolean } = {}) {
     const provider = currentProvider;
+    const everywhere = provider === 'google-drive' && options.everywhere === true;
 
     // Use providerManager.logout() for all providers
     // This properly clears currentProvider, active_cloud_provider key, and updates status
-    await providerManager.logout();
+    await providerManager.logout(everywhere ? { everywhere: true } : undefined);
 
     // Provider-specific cleanup
     if (provider === 'mega') {
@@ -549,7 +561,11 @@
       webdavPassword = '';
       showSnackbar('Logged out of WebDAV');
     } else if (provider === 'google-drive') {
-      showSnackbar('Logged out of Google Drive');
+      showSnackbar(
+        everywhere
+          ? 'Signed out of Google Drive everywhere'
+          : 'Logged out of Google Drive on this device'
+      );
     } else if (provider === 'filesystem') {
       showSnackbar('Local folder disconnected');
     } else if (provider === 'onedrive') {
@@ -891,7 +907,18 @@
                 <Badge color="green">Connected</Badge>
               {/if}
             </div>
-            <Button color="red" onclick={handleLogout}>Log out</Button>
+            <div class="flex flex-col items-end gap-1">
+              <Button color="red" onclick={() => handleLogout()}>Log out</Button>
+              {#if currentProvider === 'google-drive'}
+                <button
+                  type="button"
+                  class="text-xs text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
+                  onclick={() => (signOutEverywhereOpen = true)}
+                >
+                  Sign out everywhere…
+                </button>
+              {/if}
+            </div>
           </div>
 
           {#if currentProvider === 'filesystem' && filesystemNeedsReconnect}
@@ -1147,3 +1174,17 @@
     {/if}
   {/if}
 </div>
+
+<!-- Google Drive: the confirmed "Sign out everywhere" (a revoke of the whole Google grant). -->
+<Modal bind:open={signOutEverywhereOpen} size="xs" outsideclose title="Sign out everywhere?">
+  <p class="text-sm text-gray-500 dark:text-gray-300">
+    This removes the reader's access to your Google Drive on every device and browser where you use
+    it, and on any mokuro-bunko server signed in to the same Google connection. Each will need to
+    connect again.
+  </p>
+  <!-- relative z-10: night mode filters the <dialog>, which resets stacking (see CLAUDE.md) -->
+  <div class="relative z-10 flex justify-end gap-2">
+    <Button color="alternative" onclick={() => (signOutEverywhereOpen = false)}>Cancel</Button>
+    <Button color="red" onclick={confirmSignOutEverywhere}>Sign out everywhere</Button>
+  </div>
+</Modal>

@@ -1,5 +1,10 @@
 import { derived, writable, type Readable } from 'svelte/store';
-import type { SyncProvider, ProviderType, ProviderStatus } from './provider-interface';
+import type {
+  LogoutOptions,
+  SyncProvider,
+  ProviderType,
+  ProviderStatus
+} from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { getConfiguredProviderType, clearActiveProviderKey } from './provider-detection';
 import { clearCloudBunkoMarkers, onCloudBunkoMarkerChange } from '$lib/catalog/cloud-bunko-marker';
@@ -115,7 +120,9 @@ class ProviderManager {
 
   /**
    * Set the current provider (THE provider)
-   * Logs out the previous provider if switching
+   * Logs out the previous provider if switching — on THIS device only: a
+   * switch never passes `everywhere`, so Google Drive's grant (which other
+   * devices and a mokuro-bunko server may share) is never revoked by one.
    * @param provider The provider instance to make current
    */
   async setCurrentProvider(provider: SyncProvider): Promise<void> {
@@ -185,19 +192,20 @@ class ProviderManager {
   }
 
   /**
-   * Logout the current provider
+   * Logout the current provider — this device only, unless
+   * `options.everywhere` (see `SyncProvider.logout`), which is passed through.
    */
-  async logout(): Promise<void> {
+  async logout(options?: LogoutOptions): Promise<void> {
     // Try the current provider first
     if (this.currentProvider) {
-      await this.currentProvider.logout();
+      await this.currentProvider.logout(options);
       this.currentProvider = null;
     } else {
       // currentProvider is null (e.g., connection failed on startup).
       // Call logout on all registered providers to clear any stored credentials.
       for (const provider of this.providerRegistry.values()) {
         try {
-          await provider.logout();
+          await provider.logout(options);
         } catch {
           /* ignore */
         }

@@ -11,7 +11,9 @@
  *
  * The key is only ever CREATED in the sign-in path (`ensureDeviceKey`), with
  * `add()`, so two tabs signing in at once keep one key (the loser's
- * ConstraintError reads the winner's). Every other path only reads it. Storage
+ * ConstraintError reads the winner's). Every other path only reads it, except
+ * sign-out, which deletes it (`deleteDeviceKey`): a session bound to a deleted
+ * key can never refresh again, whoever holds a copy of its cookie. Storage
  * failures never block a sign-in: the session is simply unbound.
  */
 
@@ -145,6 +147,25 @@ export async function ensureDeviceKey(): Promise<CryptoKeyPair | null> {
   } catch (error) {
     console.warn('Drive device key not created; signing in unbound:', (error as Error)?.name);
     return null;
+  }
+}
+
+/**
+ * Forget this browser's key (sign-out). A session bound to it can then never
+ * refresh again: no proof for its thumbprint can be signed anywhere. The next
+ * sign-in creates a new key. Never throws; false when storage refused.
+ */
+export async function deleteDeviceKey(): Promise<boolean> {
+  cached = null;
+  try {
+    await withStore('readwrite', (store) => store.delete(RECORD_ID));
+    return true;
+  } catch (error) {
+    console.warn('Drive device key not deleted:', (error as Error)?.name ?? error);
+    return false;
+  } finally {
+    // A read that started before the delete must not bring the old key back.
+    cached = null;
   }
 }
 

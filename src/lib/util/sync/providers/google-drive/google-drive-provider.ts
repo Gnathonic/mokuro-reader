@@ -6,6 +6,7 @@ import type {
   CloudFileMetadata,
   DriveFileMetadata,
   FileStamp,
+  LogoutOptions,
   StorageQuota,
   UploadFileResult
 } from '../../provider-interface';
@@ -362,9 +363,14 @@ class GoogleDriveProvider implements SyncProvider {
     }
   }
 
-  async logout(): Promise<void> {
+  /**
+   * This device only, unless `everywhere` (see `tokenManager.logout`): a
+   * provider switch or the plain Log out must never revoke the Google grant
+   * that other devices and a mokuro-bunko server may share.
+   */
+  async logout(options?: LogoutOptions): Promise<void> {
     // Use full logout (clears token + auth history) not just clearToken
-    await tokenManager.logout();
+    await tokenManager.logout(options);
     this.setReaderFolderId(null);
     this.resetControlFileState();
     this.initializePromise = null; // Reset initialization state

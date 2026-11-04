@@ -6,6 +6,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  deleteDeviceKey,
   ensureDeviceKey,
   forgetCachedDeviceKeyForTest,
   loadDeviceKey,
@@ -74,6 +75,25 @@ describe('the device key', () => {
     });
     expect(await ensureDeviceKey()).toBeNull();
     expect(await loadDeviceKey()).toBeNull();
+  });
+
+  it('sign-out deletes it, from memory and from storage; the next sign-in makes a new one', async () => {
+    const before = await ensureDeviceKey();
+    expect(await deleteDeviceKey()).toBe(true);
+    // Neither this tab's memory nor a fresh read (a reload) has it.
+    expect(await loadDeviceKey()).toBeNull();
+    forgetCachedDeviceKeyForTest();
+    expect(await loadDeviceKey()).toBeNull();
+    const after = await ensureDeviceKey();
+    expect(await publicJwk(after!)).not.toEqual(await publicJwk(before!));
+  });
+
+  it('deleting with no key, or with storage refusing, never throws', async () => {
+    expect(await deleteDeviceKey()).toBe(true);
+    vi.spyOn(indexedDB, 'open').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    expect(await deleteDeviceKey()).toBe(false);
   });
 
   it('signs proofs the server verifies, under the key’s thumbprint', async () => {

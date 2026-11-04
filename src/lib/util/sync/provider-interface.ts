@@ -490,6 +490,15 @@ export type AnyCloudFileMetadata =
   | FilesystemFileMetadata
   | OneDriveFileMetadata;
 
+/** How far a sign-out reaches (`SyncProvider.logout`). */
+export interface LogoutOptions {
+  /**
+   * End this account's access on every device, not just this one. Only an
+   * explicit, confirmed user action passes it — never a provider switch.
+   */
+  everywhere?: boolean;
+}
+
 export interface SyncProvider {
   /** Provider type identifier */
   readonly type: ProviderType;
@@ -537,8 +546,13 @@ export interface SyncProvider {
    */
   login(credentials?: ProviderCredentials): Promise<void>;
 
-  /** Logout and clear stored credentials */
-  logout(): Promise<void>;
+  /**
+   * Logout and clear stored credentials. By default this signs out THIS
+   * device only. `everywhere` asks the provider to end the account's access
+   * for every device too — only Google Drive honours it (a revoke of the
+   * whole grant); every other provider ignores it.
+   */
+  logout(options?: LogoutOptions): Promise<void>;
 
   // GENERIC FILE OPERATIONS (BLOB-BASED)
   /**
