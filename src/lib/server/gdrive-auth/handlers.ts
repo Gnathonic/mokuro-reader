@@ -339,8 +339,8 @@ export function handleRefresh(event: AuthEvent, deps: AuthDeps): Promise<Respons
  * Both answer `{ ok: true, revoked, invalidated }`. A device sign-out always
  * says `revoked: false` (the client must not take that as a cue to revoke
  * itself); `invalidated` is whether copies of the cookie are now useless —
- * for a device sign-out, a bound session under required proofs; for
- * everywhere, the revoke itself.
+ * for a device sign-out, anything but a live unbound session (or any live
+ * session while `GDRIVE_POP=off`); for everywhere, the revoke itself.
  */
 export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response> {
   const route: RouteName = 'logout';
@@ -370,7 +370,11 @@ export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response
     let outcome = 'no_cookie';
     let googleError: string | undefined;
     let kid: string | undefined;
-    let invalidated = false;
+    // A device sign-out leaves a usable copy only when a live session opens
+    // below and is not bound under required proofs. No cookie, or one this
+    // server cannot open, leaves nothing a copy could use (the server could
+    // not open the copy either). An everywhere sign-out counts only a revoke.
+    let invalidated = !everywhere;
     if (value) {
       const opened = unseal(value, config, sealContext(event, config));
       if (!opened.ok) {
@@ -378,7 +382,9 @@ export function handleLogout(event: AuthEvent, deps: AuthDeps): Promise<Response
       } else {
         kid = opened.sealedWith === 'current' ? config.current.kid : config.previous?.kid;
         if (!everywhere) {
-          invalidated = config.popRequired && !!opened.payload.cnf;
+          // An expired session is refused by /refresh whatever it carries.
+          const expired = sessionExpired(opened.payload, (deps.now ?? Date.now)());
+          invalidated = expired || (config.popRequired && !!opened.payload.cnf);
           outcome = invalidated
             ? 'device_cleared'
             : !opened.payload.cnf

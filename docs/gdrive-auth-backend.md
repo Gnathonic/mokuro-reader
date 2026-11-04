@@ -139,8 +139,10 @@ are two sign-outs:
 (`everywhere` not a boolean, bad JSON) is `400 bad_request` and changes
 nothing. A device sign-out always says `revoked: false`, and the client never
 takes that as a cue to revoke. `invalidated` says whether copies of the
-cookie are now useless: for a device sign-out only a bound session while
-proofs are required (`GDRIVE_POP` not `off`); for everywhere, the revoke. When
+cookie are now useless: for a device sign-out, everything except a live
+unbound session, or any live session while `GDRIVE_POP=off` (no cookie, one
+the server cannot open, or an expired one leaves nothing a copy could use);
+for everywhere, the revoke. When
 a device sign-out answers `invalidated: false` (or, offline, the browser never
 had a device key), the snackbar says a copy could still work and points to
 "Sign out everywhere". On an everywhere sign-out, `revoked` is true only when the

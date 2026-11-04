@@ -595,6 +595,16 @@ describe('POST /api/gdrive/logout', () => {
       expect(JSON.parse(logs.at(-1)!)).toMatchObject({ event: 'device_cleared_unbound' });
     });
 
+    it('an expired unbound session: /refresh refuses any copy anyway, so invalidated: true', async () => {
+      const s = setup();
+      s.plant({ ts: NOW - 200 * DAY, iat0: NOW - 400 * DAY });
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(logoutEvent(s.jar), deps);
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: true });
+      expect(calls).toHaveLength(0);
+      expect(s.jar.deletes).toHaveLength(1);
+    });
+
     it('GDRIVE_POP=off: even a bound session’s copy stays usable, so invalidated: false', async () => {
       const s = setup({ GDRIVE_POP: 'off' });
       const key = await deviceKey();
@@ -611,17 +621,22 @@ describe('POST /api/gdrive/logout', () => {
       ['a bad cookie', () => 'garbage'],
       ['a cookie under a retired key', () => setup().plant()],
       ['no cookie', () => undefined]
-    ])('%s: no revoke, still cleared, still 200, invalidated: false', async (_l, value) => {
-      const s = setup();
-      const planted = value();
-      if (planted) s.jar.values.set(COOKIE, planted);
-      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
-      const response = await handleLogout(logoutEvent(s.jar), deps);
-      expect(response.status).toBe(200);
-      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
-      expect(calls).toHaveLength(0);
-      expect(s.jar.deletes).toHaveLength(1);
-    });
+    ])(
+      '%s: no revoke, still cleared, still 200, and nothing a copy could use',
+      async (_l, value) => {
+        const s = setup();
+        const planted = value();
+        if (planted) s.jar.values.set(COOKIE, planted);
+        const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+        const response = await handleLogout(logoutEvent(s.jar), deps);
+        expect(response.status).toBe(200);
+        // No cookie, or one this server cannot open: a copy could not be opened
+        // either, so no warning is due.
+        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: true });
+        expect(calls).toHaveLength(0);
+        expect(s.jar.deletes).toHaveLength(1);
+      }
+    );
   });
 
   describe('a malformed request', () => {

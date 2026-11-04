@@ -87,8 +87,9 @@ export type BackendOutcome =
    * `/logout` done: the cookie is cleared. `revoked` only when the server
    * ended the grant at Google; otherwise (Google down, a cookie it could not
    * open, no cookie) an everywhere sign-out revokes the token it holds
-   * itself. `invalidated`: copies of the cookie are now useless (a bound
-   * session under required proofs, or a revoke). Absent reads as false.
+   * itself. `invalidated`: copies of the cookie are now useless (for a
+   * device sign-out anything but a live unbound session or proofs switched
+   * off; for everywhere, a revoke). Absent reads as false.
    */
   | { kind: 'done'; revoked: boolean; invalidated: boolean };
 
