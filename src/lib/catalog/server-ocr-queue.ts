@@ -863,22 +863,36 @@ export async function fetchWithQueueAuth(
 const LINK_WATCH_SOURCE = 'html-download';
 
 /**
- * The servers a LINK-driven pull may read from, or null when the pull is not
- * link-driven. A deep link's watch (and any pull on the anonymous poller a
- * link started) re-reads the manifest long after the user confirmed the link:
- * every fetch then stays on the servers that confirmation showed — the
- * manifest's own and the queue's, which sits beside the confirmed archive —
- * and a redirect may not take it anywhere worse (`assertNoRedirectEscape`), as
- * for the import itself. The bunko account's own queue (`auth: 'webdav'`,
- * uploads) is not a link's and reads as it always has.
+ * The servers a LINK-driven pull may read from: `null` when the pull is not
+ * link-driven, `'not-its-queue'` when it must not run at all. A deep link's
+ * watch re-reads the manifest long after the user confirmed the link: every
+ * fetch then stays on the servers that confirmation showed — the manifest's
+ * own and the queue's, which sits beside the confirmed archive — and a
+ * redirect may not take it anywhere worse (`assertNoRedirectEscape`), as for
+ * the import itself.
+ *
+ * Watch keys are not scoped to a queue, and a poller reports any key it is
+ * merely SHOWN as done: another link's anonymous poller can report this
+ * watch. Read from the CALLER, the allowlist would then name that other
+ * server and the pull would apply its OCR to this watch's volume. So a link's
+ * watch reported by any queue but its own is refused (`'not-its-queue'`; the
+ * watch stays, its own poller pulls it), and otherwise allows the WATCH's
+ * origins. Without a watch, the anonymous poller (which exists because a
+ * link was confirmed) stays on its own server. A watch that is not a link's
+ * — the bunko account's uploads, also when they landed on an anonymous
+ * poller a link created first (pollers are keyed by queue URL alone) — reads
+ * as it always has.
  */
 function linkPullOrigins(
   watched: WatchEntry | undefined,
   target: Pick<PullTarget, 'queueUrl' | 'auth'>
-): string[] | null {
-  const linkDriven = (target.auth ?? 'none') === 'none' || watched?.source === LINK_WATCH_SOURCE;
-  if (!linkDriven) return null;
-  return [watched?.manifest_url, target.queueUrl].filter((u): u is string => !!u);
+): readonly string[] | 'not-its-queue' | null {
+  if (watched?.source === LINK_WATCH_SOURCE) {
+    if (watched.queue_url !== target.queueUrl) return 'not-its-queue';
+    return [watched.manifest_url, watched.queue_url].filter((u) => !!u);
+  }
+  if (!watched && (target.auth ?? 'none') === 'none') return [target.queueUrl];
+  return null;
 }
 
 /** Is `url` http(s) on the origin of one of `allowedUrls`? */
@@ -996,6 +1010,13 @@ export function pullCompletedVolume(
   entry: Pick<QueueVolume, 'series' | 'volume' | 'manifest'> | undefined,
   target: PullTarget
 ): Promise<boolean | PendingOnServer> {
+  // Decided before the in-flight check, synchronously: a refusal must
+  // neither join nor occupy the slot the watch's own queue pulls through.
+  const allowed = linkPullOrigins(loadWatches().get(key), target);
+  if (allowed === 'not-its-queue') {
+    console.warn(`[OCR queue] Not pulling ${key} for ${target.queueUrl}: its link watched another`);
+    return Promise.resolve(false);
+  }
   const inFlight = pulling.get(key);
   if (inFlight) return inFlight;
   const run = (async () => {
@@ -1016,7 +1037,6 @@ export function pullCompletedVolume(
         ? resolveBunkoLink(entry.manifest, target.queueUrl)
         : watched?.manifest_url;
       if (!manifestUrl) return false;
-      const allowed = linkPullOrigins(watched, target);
       if (allowed && !onOriginOf(manifestUrl, allowed)) {
         console.warn(
           `[OCR queue] Not reading manifest ${manifestUrl}: it is not on a server the link named`
@@ -1138,8 +1158,9 @@ function pollerFor(queueUrl: string, auth: WatchEntry['auth'], source: string): 
       return init ? pullCompletedVolume(key, entry, { queueUrl, init, source, auth }) : false;
     },
     isHidden,
-    // An anonymous poller exists only for a link's watch: its queue file is
-    // read under the same redirect rule as the link's other fetches.
+    // An anonymous poller is made for a link's watch (or restored for one),
+    // though an upload watch on the same server may share it later: its queue
+    // file is read under the same redirect rule as the link's other fetches.
     fetch: (input, init) =>
       fetchForPull(String(input), init ?? {}, { queueUrl, auth }, auth === 'none')
   });

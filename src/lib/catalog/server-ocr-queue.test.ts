@@ -780,6 +780,61 @@ describe("a link's watch stays on the servers the link named", () => {
     expect(source).toBe('webdav');
     expect((files as Array<{ layerId: string }>).map((f) => f.layerId)).toEqual(['paddle']);
   });
+
+  // Watch keys are not scoped to a queue, and a poller reports any key it is
+  // SHOWN as done too: another link's anonymous poller can report this watch.
+  const OTHER_QUEUE = 'https://other.example/mokuro-reader/.mokuro-queue.json';
+  const OTHER_MANIFEST =
+    'https://other.example/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001';
+  const OTHER_OCR = 'https://other.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro';
+
+  it("another queue's poller reporting a link's watch reads nothing and leaves the watch", async () => {
+    routes.set(OTHER_MANIFEST, { body: manifestListing(OTHER_OCR, []) });
+    routes.set(OTHER_OCR, { body: '{"pages":[]}' });
+    watchLink();
+    const otherTarget = { ...linkTarget, queueUrl: OTHER_QUEUE };
+    expect(await pullCompletedVolume(KEY1, entry, otherTarget)).toBe(false);
+    expect(fetchedUrls()).toEqual([]);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    expect(watchedEntries().map((w) => w.queue_url)).toEqual([QUEUE]);
+  });
+
+  it("the watch's own queue still pulls it after another queue's poller was refused", async () => {
+    const ocr = 'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro';
+    routes.set(MANIFEST, { body: manifestListing(ocr, []) });
+    routes.set(ocr, { body: '{"pages":[]}' });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, entry, { ...linkTarget, queueUrl: OTHER_QUEUE })).toBe(
+      false
+    );
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(true);
+    expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith('v1', ocr, expect.any(Blob));
+    expect(watchedEntries()).toEqual([]);
+  });
+
+  it('an upload watch that landed on an anonymous poller reads as it always did', async () => {
+    // Pollers are keyed by queue URL alone: a link to the user's own bunko
+    // server may have created the anonymous one an upload watch then reuses.
+    const cdnOcr = 'https://cdn.example/Dr%20Stone%2001.mokuro';
+    routes.set(MANIFEST, {
+      body: manifestListing(cdnOcr, []),
+      redirectTo: 'https://mirror.example/manifest.json'
+    });
+    routes.set(cdnOcr, { body: '{"pages":[]}' });
+    watchLink('webdav', 'webdav');
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(true);
+    expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith('v1', cdnOcr, expect.any(Blob));
+  });
+
+  it('an anonymous poller never reads an unwatched shown volume off its own server', async () => {
+    routes.set(OTHER_MANIFEST, { body: manifestListing(OTHER_OCR, []) });
+    routes.set(OTHER_OCR, { body: '{"pages":[]}' });
+    expect(
+      await pullCompletedVolume(KEY1, { ...entry, manifest: OTHER_MANIFEST }, linkTarget)
+    ).toBe(false);
+    expect(fetchedUrls()).toEqual([]);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+  });
 });
 
 describe('the status the views read', () => {
