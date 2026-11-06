@@ -364,23 +364,54 @@ describe('POST /api/gdrive/refresh', () => {
     expect(s.session()).toMatchObject({ rt: '1//planted', ts: NOW });
   });
 
-  it.each([
-    ['garbage', 'not-a-sealed-value'],
-    ['another key’s cookie', null]
-  ])(
-    'an undecryptable cookie (%s): reauth, the cookie is cleared, Google never asked',
-    async (_l, value) => {
-      const s = setup();
-      const other = setup();
-      s.jar.values.set(COOKIE, value ?? other.plant());
-      const { deps, calls } = s.deps(() => tokenAnswer());
-      const response = await handleRefresh(refreshEvent(s.jar), deps);
-      expect(response.status).toBe(401);
-      expect(await bodyOf(response)).toEqual({ error: 'reauth' });
-      expect(s.jar.deletes.map((d) => d.name)).toEqual([COOKIE]);
-      expect(calls).toHaveLength(0);
-    }
-  );
+  it('an undecryptable cookie (garbage): reauth, the cookie is cleared, Google never asked', async () => {
+    const s = setup();
+    s.jar.values.set(COOKIE, 'not-a-sealed-value');
+    const { deps, calls } = s.deps(() => tokenAnswer());
+    const response = await handleRefresh(refreshEvent(s.jar), deps);
+    expect(response.status).toBe(401);
+    expect(await bodyOf(response)).toEqual({ error: 'reauth' });
+    expect(s.jar.deletes.map((d) => d.name)).toEqual([COOKIE]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a cookie under a known key that fails its tag (tampered): reauth and cleared', async () => {
+    const s = setup();
+    const [v, kid, iv, body] = s.plant().split('.');
+    const flipped = body.slice(0, -2) + (body.endsWith('AA') ? 'BB' : 'AA');
+    s.jar.values.set(COOKIE, [v, kid, iv, flipped].join('.'));
+    const { deps, calls } = s.deps(() => tokenAnswer());
+    const response = await handleRefresh(refreshEvent(s.jar), deps);
+    expect(response.status).toBe(401);
+    expect(await bodyOf(response)).toEqual({ error: 'reauth' });
+    expect(s.jar.deletes.map((d) => d.name)).toEqual([COOKIE]);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(logs.at(-1)!)).toMatchObject({ event: 'cookie_bad_tag' });
+  });
+
+  it('a cookie sealed under a key this deployment does not have: reauth, Google never asked, cookie KEPT', async () => {
+    // A rollback past a key rotation, or a deployment with the wrong key:
+    // the fault is this deployment's, not the cookie's. Deleting it would
+    // sign the user out for good; kept, it opens again once the deployment
+    // with the key is back.
+    const s = setup();
+    const withKey = setup();
+    const value = withKey.plant();
+    s.jar.values.set(COOKIE, value);
+    const { deps, calls } = s.deps(() => tokenAnswer());
+    const response = await handleRefresh(refreshEvent(s.jar), deps);
+    expect(response.status).toBe(401);
+    expect(await bodyOf(response)).toEqual({ error: 'reauth' });
+    expect(s.jar.deletes).toHaveLength(0);
+    expect(s.jar.sets).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(logs.at(-1)!)).toMatchObject({ event: 'cookie_unknown_kid' });
+
+    // Rolled forward: the deployment with the key refreshes the same cookie.
+    withKey.jar.values.set(COOKIE, s.jar.values.get(COOKIE)!);
+    const again = withKey.deps(() => tokenAnswer());
+    expect((await handleRefresh(refreshEvent(withKey.jar), again.deps)).status).toBe(200);
+  });
 
   it('a cookie replayed against another origin does not open (the AAD names the origin)', async () => {
     const s = setup();

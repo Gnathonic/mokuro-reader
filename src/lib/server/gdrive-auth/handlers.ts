@@ -218,7 +218,14 @@ export function handleRefresh(event: AuthEvent, deps: AuthDeps): Promise<Respons
     const now = (deps.now ?? Date.now)();
     const opened = unseal(value, config, sealContext(event, config));
     if (!opened.ok) {
-      clearSessionCookie(event);
+      // A key id this deployment does not hold says nothing against the
+      // cookie: it is THIS deployment that lacks the key (an Instant Rollback
+      // past a rotation, a deployment with the wrong key). Deleting it would
+      // sign the user out for good; kept, it opens again once a deployment
+      // with the key serves. A cookie under a dropped key stays unopenable
+      // either way, and a sign-in overwrites it. Every other failure is the
+      // cookie's own (garbage, tampered, replayed elsewhere): cleared.
+      if (opened.reason !== 'unknown_kid') clearSessionCookie(event);
       logAuth({ route, status: 401, event: `cookie_${opened.reason}` });
       return fail(401, 'reauth');
     }

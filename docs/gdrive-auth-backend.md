@@ -99,20 +99,28 @@ Put the four variables in `.env.local` with a non-production client. Over plain
 Every answer is JSON with `Cache-Control: no-store`. Google's `error_description`
 is never forwarded.
 
-| Error                                                                                          | Status              | Meaning                                                                         | Cookie                           | Client                                                          |
-| ---------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------- | -------------------------------- | --------------------------------------------------------------- |
-| `no_session`                                                                                   | 401                 | No cookie                                                                       | —                                | Reconnect                                                       |
-| `reauth`                                                                                       | 401                 | Cookie unreadable or expired, Google `invalid_grant`, or a failed proof         | cleared (kept on a failed proof) | Reconnect                                                       |
-| `pop_clock`                                                                                    | 401                 | Proof timestamp off by more than 10 minutes (`serverTime` included)             | kept                             | Adopts the offset, retries once                                 |
-| `server_config`                                                                                | 503                 | `invalid_client`, `deleted_client`, `unauthorized_client`, `invalid_request`, … | **kept**                         | Keeps a valid token, retries later                              |
-| `transient`                                                                                    | 503                 | Google 5xx, 429, a timeout (5 s) or a network failure                           | kept                             | Same; after 3 with an expired token, Reconnect offers the popup |
-| `consent_incomplete`                                                                           | 403                 | No refresh token, or no Drive scope (the grant is revoked)                      | —                                | "Allow Drive access"                                            |
-| `not_configured`                                                                               | 501                 | Secrets missing or malformed                                                    | —                                | Popup flow for this tab                                         |
-| `forbidden`                                                                                    | 403                 | Origin, `Sec-Fetch-Site` or `X-Requested-With` check failed                     | —                                | —                                                               |
-| `bad_request`, `payload_too_large`, `unsupported_media_type`, `method_not_allowed`, `internal` | 400/413/415/405/500 | —                                                                               | —                                | —                                                               |
+| Error                                                                                          | Status              | Meaning                                                                         | Cookie                                                | Client                                                          |
+| ---------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------- |
+| `no_session`                                                                                   | 401                 | No cookie                                                                       | —                                                     | Reconnect                                                       |
+| `reauth`                                                                                       | 401                 | Cookie unreadable or expired, Google `invalid_grant`, or a failed proof         | cleared (kept on a failed proof or an unknown key id) | Reconnect                                                       |
+| `pop_clock`                                                                                    | 401                 | Proof timestamp off by more than 10 minutes (`serverTime` included)             | kept                                                  | Adopts the offset, retries once                                 |
+| `server_config`                                                                                | 503                 | `invalid_client`, `deleted_client`, `unauthorized_client`, `invalid_request`, … | **kept**                                              | Keeps a valid token, retries later                              |
+| `transient`                                                                                    | 503                 | Google 5xx, 429, a timeout (5 s) or a network failure                           | kept                                                  | Same; after 3 with an expired token, Reconnect offers the popup |
+| `consent_incomplete`                                                                           | 403                 | No refresh token, or no Drive scope (the grant is revoked)                      | —                                                     | "Allow Drive access"                                            |
+| `not_configured`                                                                               | 501                 | Secrets missing or malformed                                                    | —                                                     | Popup flow for this tab                                         |
+| `forbidden`                                                                                    | 403                 | Origin, `Sec-Fetch-Site` or `X-Requested-With` check failed                     | —                                                     | —                                                               |
+| `bad_request`, `payload_too_large`, `unsupported_media_type`, `method_not_allowed`, `internal` | 400/413/415/405/500 | —                                                                               | —                                                     | —                                                               |
 
-Only `invalid_grant` clears a cookie. A rotated or mistyped secret, or a client
-Google deleted (it can be restored for 30 days), keeps every session.
+Of Google's answers, only `invalid_grant` clears a cookie. A rotated or
+mistyped secret, or a client Google deleted (it can be restored for 30 days),
+keeps every session. So does a session key this deployment lacks: a cookie
+whose key id matches neither `GDRIVE_SESSION_KEY` nor `GDRIVE_SESSION_KEY_PREV`
+is answered `reauth` but KEPT (`cookie_unknown_kid`), because the fault is the
+deployment's, not the cookie's. An Instant Rollback past a key rotation, or a
+deployment given the wrong key, signs nobody out for good: once a deployment
+holding the key serves again, those cookies refresh as before. A cookie that
+fails under a key this deployment does hold (garbage, tampered, replayed from
+another origin) is cleared.
 
 ### Signing out
 
@@ -146,11 +154,16 @@ It never logs a token, a code, a cookie or a body. Events include
   flow.
 - **Sign out every session.** Set a new `GDRIVE_SESSION_KEY`, delete
   `GDRIVE_SESSION_KEY_PREV` and redeploy. Never roll back to an older deployment
-  afterwards: it carries the old key.
+  afterwards: it carries the old key, and the old cookies are still in the
+  browsers (a deployment cannot tell a dropped key from one it was never
+  given, so it keeps them), so the rollback would open them all again.
 - **Rotate the session key without signing anyone out.** Move the current key
   to `GDRIVE_SESSION_KEY_PREV`, set a new `GDRIVE_SESSION_KEY` and redeploy.
   Each cookie is re-sealed with the new key on its next refresh. Drop `_PREV`
-  once you no longer care about sessions idle since the rotation.
+  once you no longer care about sessions idle since the rotation. A rollback
+  past the rotation signs nobody out: the older deployment answers `reauth`
+  to cookies re-sealed under the new key but keeps them, and they work again
+  after rolling forward.
 - **Rotate the client secret.** Add a second secret in the Console, set it as
   `GDRIVE_CLIENT_SECRET`, redeploy and confirm a refresh works. Then disable and
   delete the old secret. Existing refresh tokens survive this; check once.
