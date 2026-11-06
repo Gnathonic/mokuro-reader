@@ -34,13 +34,16 @@ import TextBoxPicker from '../TextBoxPicker.svelte';
 import { showTextBoxPicker } from '../text-box-picker';
 import { getLastCardInfo } from '$lib/anki-connect';
 import { settings } from '$lib/settings';
-import type { Writable } from 'svelte/store';
+import { get, type Writable } from 'svelte/store';
 
 const settingsStore = settings as unknown as Writable<Record<string, any>>;
+const initialSettings = get(settingsStore);
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // A test that points the URL elsewhere must not leak it into the next one.
+  settingsStore.set(initialSettings);
 });
 
 async function pickAndContinue() {
