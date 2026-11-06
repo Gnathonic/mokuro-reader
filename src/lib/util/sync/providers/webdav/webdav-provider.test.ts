@@ -1391,8 +1391,11 @@ describe('WebDAVProvider getStatus().historySync (per-user reading history)', ()
   it.each([
     ['0.7.1', PER_USER, false],
     ['0.7.3', PER_USER, false],
+    ['0.7.7', PER_USER, false],
+    ['0.7.8', PER_USER, true],
     ['0.8.0', PER_USER, true],
     ['0.8.0-beta.1', PER_USER, true],
+    ['0.7.8', ['volume-data.json', 'profiles.json', 'goals.json', 'positions.json'], false],
     ['0.8.0', ['volume-data.json', 'profiles.json', 'goals.json'], false],
     ['0.8.0', undefined, false],
     [undefined, PER_USER, false],
