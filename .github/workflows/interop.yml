@@ -17,30 +17,51 @@ on:
     - cron: '30 4 * * *'
   workflow_dispatch:
 
+# Least privilege: every job reads the repository and nothing more unless it
+# says otherwise below. (Bunko's checkouts and nightly release are public reads.)
+permissions:
+  contents: read
+
+# A new push to a PR supersedes the run on its previous head. Every other run —
+# a push, the schedule, a dispatch — is its own group (the run id): GitHub keeps
+# only ONE pending run per group and cancels it when another arrives, so a group
+# shared by commit would let a third dispatch on one commit (say after changing
+# vars.BUNKO_REF) cancel the second.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   cloudsim:
     name: Providers against cloudsim
     # The schedule is the rig's.
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    # A cold cloudsim build plus the provider suite and a production build.
+    timeout-minutes: 45
     env:
       # The suites throw at collection without CLOUDSIM_URL, so the job can never
       # pass with every test skipped.
       REQUIRE_CLOUDSIM: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Check out Bunko (for cloudsim)
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: Gnathonic/mokuro-bunko
           # The default moves to `main` once 0.8 is merged there.
           ref: ${{ vars.BUNKO_REF || '0.8/remote-storage' }}
           path: bunko
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: bunko
 
@@ -66,7 +87,7 @@ jobs:
           echo "CLOUDSIM_URL=$url" >> "$GITHUB_ENV"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -78,15 +99,14 @@ jobs:
       - name: Provider suite against cloudsim
         run: npx vitest run src/lib/interop/cloudsim --no-file-parallelism
 
-      - name: Production build
+      # `npm run build` ends with scripts/check-no-test-hooks.mjs, so a build that
+      # leaks a cloud test hook fails this step.
+      - name: Production build (fails if cloud test hooks leak)
         run: npm run build
-
-      - name: No cloud test hooks in the production build
-        run: node scripts/check-no-test-hooks.mjs
 
       - name: Upload the cloudsim log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: cloudsim-log
           path: |
@@ -102,10 +122,14 @@ jobs:
     name: Rig targets
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       targets: ${{ steps.targets.outputs.targets }}
     steps:
-      - uses: actions/checkout@v4
+      # The schedule's `git fetch` below reads this public repository anonymously.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Commits with the rig driver
         id: targets
@@ -162,7 +186,7 @@ jobs:
       BUNKO_REF: ${{ vars.BUNKO_REF || '0.8/remote-storage' }}
     steps:
       - name: Check out the reader
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ matrix.target.ref }}
           path: reader
@@ -201,16 +225,18 @@ jobs:
       # At the commit the nightly was built from, so the rig's runner and specs are
       # the ones its binaries were built with.
       - name: Check out Bunko
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: Gnathonic/mokuro-bunko
           ref: ${{ steps.nightly.outputs.sha || env.BUNKO_REF }}
           path: bunko
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: bunko
 
@@ -225,7 +251,7 @@ jobs:
           cp target/release/bunko-cloudsim ../bunko-bin/bunko-cloudsim-x86_64-linux
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -254,7 +280,7 @@ jobs:
 
       - name: Upload the rig results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: rig-${{ matrix.target.name }}-${{ matrix.leg.name }}
           path: bunko/target/interop/rig/

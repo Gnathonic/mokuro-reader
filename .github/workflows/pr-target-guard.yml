@@ -1,38 +1,56 @@
 name: PR Target Guard
 
+# pull_request_target runs with this repository's token on a fork's PR, so no
+# job here checks out or runs the PR's code: they only comment on or close it.
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
 
+# Least privilege by default; each job names what it needs.
 permissions:
-  pull-requests: write
   contents: read
 
 jobs:
   # Block any PR to main that doesn't come from develop (non-fork branches only;
   # forks are handled by redirect-forks below to avoid a duplicate message).
+  # Dependabot is exempt: its version updates target develop (dependabot.yml),
+  # but its SECURITY updates always target the default branch — target-branch
+  # does not apply to them — so the guard would only fail and comment on PRs
+  # nobody can retarget. Whether to merge one into main is left to the reviewer.
   require-develop-to-main:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'develop' && !github.event.pull_request.head.repo.fork
+    timeout-minutes: 5
+    if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'develop' && !github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]'
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Block non-develop PRs to main
         run: |
-          gh pr comment ${{ github.event.number }} --repo ${{ github.repository }} --body "PRs to \`main\` must come from \`develop\`. Please target \`develop\` instead, or merge your changes into \`develop\` first."
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "PRs to \`main\` must come from \`develop\`. Please target \`develop\` instead, or merge your changes into \`develop\` first."
           exit 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
+          REPO: ${{ github.repository }}
 
   # Redirect external contributors to develop
   redirect-forks:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.repo.fork
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Close and redirect to develop
         run: |
-          gh pr close ${{ github.event.number }} --repo ${{ github.repository }} --comment "Thanks for helping make this project better!
+          gh pr close "$PR_NUMBER" --repo "$REPO" --comment "Thanks for helping make this project better!
 
           We use a \`develop\` branch for external PRs to allow for safer review and integration. Please update your PR to target \`develop\` instead of \`main\`, then reopen it.
 
           Looking forward to reviewing your changes!"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
+          REPO: ${{ github.repository }}

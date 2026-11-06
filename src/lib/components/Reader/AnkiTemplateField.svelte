@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ChevronRightOutline } from 'flowbite-svelte-icons';
   import { slide } from 'svelte/transition';
+  import { fieldHtmlToPreviewText } from '$lib/anki-connect/field-html';
 
   type TemplateButton = {
     readonly template: string;
@@ -63,28 +64,9 @@
     return template?.includes(t) ?? false;
   }
 
-  // Simplify HTML content for display (convert <img> to [img], strip other tags)
-  function simplifyHtml(html: string): string {
-    if (!html) return '';
-    return (
-      html
-        // Replace <img> tags with [img]
-        .replace(/<img[^>]*>/gi, '[img]')
-        // Replace <br> with newline
-        .replace(/<br\s*\/?>/gi, '\n')
-        // Strip remaining HTML tags
-        .replace(/<[^>]+>/g, '')
-        // Decode common HTML entities
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        // Clean up whitespace
-        .replace(/\n{3,}/g, '\n\n')
-        .trim()
-    );
-  }
+  // Simplify HTML content for display (convert <img> to [img], strip other
+  // tags, decode the entities field values are escaped with)
+  const simplifyHtml = fieldHtmlToPreviewText;
 
   // Get resolved value for a template variable
   function getVariableValue(t: string): string | null {

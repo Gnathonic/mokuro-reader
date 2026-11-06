@@ -8,10 +8,13 @@ export default defineConfig({
     format: 'es'
   },
   server: {
-    host: true,
+    // No `host` here: the dev server listens on localhost only. For LAN access
+    // (testing on a phone), opt in per run with `npm run dev -- --host`.
     fs: {
-      // Allow serving package.json for version info import
-      allow: ['..']
+      // SvelteKit allows src/, node_modules/ and its own output; the version
+      // import (`consts/index.ts`) also needs the root package.json — that one
+      // file, not the project's parent directory and every sibling in it.
+      allow: ['package.json']
     }
   },
   optimizeDeps: {
