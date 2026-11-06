@@ -7,6 +7,14 @@ vi.mock('../../cache-manager', () => ({
 }));
 const updateStatus = vi.hoisted(() => vi.fn());
 vi.mock('../../provider-manager', () => ({ providerManager: { updateStatus } }));
+// The order an explicit logout does things in (see 'MegaProvider.logout()').
+const logoutSteps = vi.hoisted(() => [] as string[]);
+const cancelProviderUploads = vi.hoisted(() =>
+  vi.fn(async (provider: string) => {
+    logoutSteps.push(`cancel:${provider}`);
+  })
+);
+vi.mock('../../upload-cancellation', () => ({ cancelProviderUploads }));
 
 // Controllable megajs Storage mock.
 const storageState = vi.hoisted(() => ({
@@ -258,6 +266,115 @@ describe('MegaProvider getStatus().accountScope', () => {
 });
 
 describe('MegaProvider.logout()', () => {
+  beforeEach(() => {
+    logoutSteps.length = 0;
+  });
+
+  /** A live session whose `close()` is `close` (megajs: sends `{a:'sml'}`). */
+  async function connected(close: () => Promise<unknown>) {
+    localStorage.setItem('mega_session', JSON.stringify({ key: 'K', sid: 'S', options: {} }));
+    localStorage.setItem('active_cloud_provider', 'mega');
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    (provider as any).storage = { sid: 'S', files: {}, api: fakeApi(), close };
+    return provider;
+  }
+
+  it('cancels the uploads, then ends the session on the server', async () => {
+    const close = vi.fn(async () => {
+      // Local state is already gone when the network call goes out.
+      logoutSteps.push(`close:${localStorage.getItem('mega_session') ?? 'cleared'}`);
+    });
+    const provider = await connected(close);
+
+    await provider.logout();
+    await provider.whenServerLogoutSettled();
+
+    expect(cancelProviderUploads).toHaveBeenCalledWith('mega', expect.any(String));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(logoutSteps).toEqual(['cancel:mega', 'close:cleared']);
+    expect(provider.isAuthenticated()).toBe(false);
+  });
+
+  it('returns without waiting on the close, which gives up after 3 s', async () => {
+    // The provider manager clears its caches and the active-provider key once
+    // logout() resolves: a wait on the server there would leave the old
+    // listing on screen, and wipe the key of a login made meanwhile.
+    vi.useFakeTimers();
+    try {
+      const close = vi.fn(() => new Promise(() => {}));
+      const provider = await connected(close);
+      let closeSettled = false;
+
+      await provider.logout();
+      void provider.whenServerLogoutSettled().then(() => (closeSettled = true));
+
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem('mega_session')).toBeNull();
+      expect(localStorage.getItem('active_cloud_provider')).toBeNull();
+      expect(provider.isAuthenticated()).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(closeSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(closeSettled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears local state even when the server refuses the close', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const provider = await connected(async () => {
+      throw new Error('ESID (-15): Invalid or expired user session');
+    });
+
+    await expect(provider.logout()).resolves.toBeUndefined();
+    await expect(provider.whenServerLogoutSettled()).resolves.toBeUndefined();
+
+    expect(localStorage.getItem('mega_session')).toBeNull();
+    expect(provider.isAuthenticated()).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('ends a stored session that never came back online (no live Storage)', async () => {
+    // A restore that failed on a network error leaves the blob and no
+    // Storage: the sid is still valid at MEGA, so it is rebuilt to close it.
+    const megajs = await import('megajs');
+    const close = vi.fn(async () => {});
+    const fromJSON = vi.mocked((megajs.Storage as any).fromJSON);
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    localStorage.setItem('mega_session', JSON.stringify({ key: 'K', sid: 'OLD', options: {} }));
+    fromJSON.mockImplementationOnce((json: any) => ({ sid: json.sid, close }));
+
+    await provider.logout();
+    await provider.whenServerLogoutSettled();
+
+    expect(fromJSON).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sid: 'OLD',
+        options: expect.objectContaining({ keepalive: false })
+      })
+    );
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('mega_session')).toBeNull();
+  });
+
+  it('rejects a main-thread upload still in flight instead of leaving it hanging', async () => {
+    // megajs drops every response that lands after close() without calling
+    // back: an upload waiting on one would never settle.
+    const provider = await connected(async () => {});
+    (provider as any).ensureMokuroFolder = vi.fn(() => new Promise(() => {}));
+
+    const upload = provider.uploadFile('Series/Vol.mokuro', new Uint8Array([1, 2, 3]));
+    await Promise.resolve();
+    await provider.logout();
+
+    await expect(upload).rejects.toMatchObject({ code: 'UPLOAD_CANCELLED' });
+  });
+
   it('clears session, legacy keys, and needs-attention flag', async () => {
     localStorage.setItem('mega_session', JSON.stringify({ key: 'K', sid: 'S', options: {} }));
     localStorage.setItem('mega_email', 'a@b.c');
