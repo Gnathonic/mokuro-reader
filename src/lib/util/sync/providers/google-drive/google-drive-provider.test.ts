@@ -1073,3 +1073,67 @@ describe('GoogleDriveProvider worker credentials and their renewal', () => {
     expect(answer).toMatchObject({ credentials: null, transient: true });
   });
 });
+
+describe('GoogleDriveProvider.getStorageQuota()', () => {
+  const quota = { result: { storageQuota: { usage: '100', limit: '1000' } } };
+  const refused = { status: 401, result: { error: { code: 401, message: 'Invalid Credentials' } } };
+  let aboutGet: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    aboutGet = vi.fn();
+    vi.stubGlobal('gapi', { client: { drive: { about: { get: aboutGet } } } });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('asks the token manager for a live token before it calls Drive (backend mode renews one)', async () => {
+    aboutGet.mockResolvedValue(quota);
+
+    expect(await googleDriveProvider.getStorageQuota()).toEqual({
+      used: 100,
+      total: 1000,
+      available: 900
+    });
+    expect(tokenManager.getAccessToken).toHaveBeenCalled();
+    expect(vi.mocked(tokenManager.getAccessToken).mock.invocationCallOrder[0]).toBeLessThan(
+      aboutGet.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('a 401 renews the refused token and sends the request once more', async () => {
+    aboutGet.mockRejectedValueOnce(refused).mockResolvedValueOnce(quota);
+    vi.mocked(tokenManager.renewRejectedToken).mockResolvedValueOnce({
+      kind: 'renewed',
+      token: 'NEW'
+    } as never);
+
+    expect(await googleDriveProvider.getStorageQuota()).toMatchObject({ used: 100 });
+    expect(tokenManager.renewRejectedToken).toHaveBeenCalledWith('TOKEN');
+    expect(aboutGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries only once: a second 401 fails the call', async () => {
+    aboutGet.mockRejectedValue(refused);
+    vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({
+      kind: 'renewed',
+      token: 'NEW'
+    } as never);
+
+    await expect(googleDriveProvider.getStorageQuota()).rejects.toMatchObject({
+      code: 'QUOTA_FETCH_FAILED'
+    });
+    expect(tokenManager.renewRejectedToken).toHaveBeenCalledTimes(1);
+    expect(aboutGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('no renewal to be had: the 401 stands, nothing sent again', async () => {
+    aboutGet.mockRejectedValue(refused);
+    vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({ kind: 'failed' } as never);
+
+    await expect(googleDriveProvider.getStorageQuota()).rejects.toMatchObject({
+      code: 'QUOTA_FETCH_FAILED'
+    });
+    expect(aboutGet).toHaveBeenCalledTimes(1);
+  });
+});

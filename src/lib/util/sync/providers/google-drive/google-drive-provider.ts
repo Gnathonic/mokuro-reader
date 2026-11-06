@@ -45,6 +45,7 @@ import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
 import {
+  classifyDriveFailure,
   driveFailureOf,
   isDriveRateLimit,
   isQuotaExceededError,
@@ -1459,11 +1460,27 @@ class GoogleDriveProvider implements SyncProvider {
     await this.ensureInitialized();
 
     try {
-      const response = await withDriveRetry(() =>
-        gapi.client.drive.about.get({
-          fields: 'storageQuota'
-        })
-      );
+      // A raw gapi call, outside `driveApiClient`: it gets that client's token
+      // handling here — a token with time left first (backend mode renews one
+      // about to expire), and a 401 renewed and sent once more.
+      const aboutGet = () =>
+        withDriveRetry(() =>
+          gapi.client.drive.about.get({
+            fields: 'storageQuota'
+          })
+        );
+      const sentWith = await this.getAccessToken();
+      let response: Awaited<ReturnType<typeof aboutGet>>;
+      try {
+        response = await aboutGet();
+      } catch (error) {
+        const failure = driveFailureOf(error);
+        if (failure?.status === undefined) throw error;
+        if (classifyDriveFailure(failure.status, failure.reason) !== 'auth') throw error;
+        const renewal = await tokenManager.renewRejectedToken(sentWith);
+        if (renewal.kind !== 'renewed') throw error;
+        response = await aboutGet();
+      }
 
       const quota = response.result.storageQuota;
       if (!quota) {

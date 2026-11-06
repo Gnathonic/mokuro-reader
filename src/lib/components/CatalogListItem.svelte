@@ -16,6 +16,7 @@
   import { isSeriesFinished, isVolumeFinished } from '$lib/util/volume-helpers';
   import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   import { onDestroy } from 'svelte';
+  import { displayableCoverBlob } from '$lib/util/raster-image';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {
@@ -89,8 +90,10 @@
     }
 
     thumbnailKey = nextKey;
-    if (!liveVolume?.thumbnail) return;
-    thumbnailUrl = URL.createObjectURL(liveVolume.thumbnail);
+    // Raster covers only — see `displayableCoverBlob`.
+    const cover = displayableCoverBlob(liveVolume?.thumbnail);
+    if (!cover) return;
+    thumbnailUrl = URL.createObjectURL(cover);
   });
 
   onDestroy(() => {

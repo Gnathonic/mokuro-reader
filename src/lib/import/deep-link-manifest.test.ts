@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchVolumeManifest, parseVolumeManifest } from './deep-link-manifest';
+import {
+  confineManifestToOrigins,
+  fetchVolumeManifest,
+  parseVolumeManifest
+} from './deep-link-manifest';
 
 const MANIFEST_URL =
   'https://bunko.example/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001';
@@ -272,5 +276,78 @@ describe('fetchVolumeManifest', () => {
     stubFetch(async () => new Response(JSON.stringify(sample({ version: 2 })), { status: 200 }));
     expect(await fetchVolumeManifest(MANIFEST_URL)).toBeNull();
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('confineManifestToOrigins', () => {
+  const CBZ = 'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.cbz';
+
+  it('keeps a manifest whose every file is on the servers the link named', () => {
+    const manifest = parseVolumeManifest(sample(), MANIFEST_URL)!;
+    expect(confineManifestToOrigins(manifest, [MANIFEST_URL, CBZ])).toEqual({ manifest });
+  });
+
+  it('refuses the whole manifest when the archive is elsewhere — scheme and port count', () => {
+    for (const url of [
+      'http://bunko.example/a.cbz',
+      'https://bunko.example:8443/a.cbz',
+      'https://192.168.0.9/a.cbz',
+      'data:application/zip;base64,UEsDBA=='
+    ]) {
+      const manifest = parseVolumeManifest(sample({ archive: { url } }), MANIFEST_URL)!;
+      expect(confineManifestToOrigins(manifest, [MANIFEST_URL, CBZ])).toHaveProperty('error');
+    }
+  });
+
+  it('drops each off-origin sidecar on its own, warning once per file', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const manifest = parseVolumeManifest(
+      sample({
+        ocr: { url: 'http://localhost:9000/x.mokuro' },
+        layers: [
+          { id: 'kept', url: '/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.kept.mokuro' },
+          { id: 'gone', url: 'https://10.0.0.2/x.gone.mokuro' }
+        ],
+        cover: { url: 'blob:https://bunko.example/1234' },
+        series_file: { url: 'https://elsewhere.example/series.json' }
+      }),
+      MANIFEST_URL
+    )!;
+    const confined = confineManifestToOrigins(manifest, [MANIFEST_URL, CBZ]);
+    if (!('manifest' in confined)) throw new Error('expected a manifest');
+    expect(confined.manifest.ocr).toBeNull();
+    expect(confined.manifest.layers.map((l) => l.id)).toEqual(['kept']);
+    expect(confined.manifest.cover).toBeNull();
+    expect(confined.manifest.series_file).toBeNull();
+    expect(confined.manifest.archive).toEqual(manifest.archive);
+    expect(warn).toHaveBeenCalledTimes(4);
+    warn.mockRestore();
+  });
+
+  it('counts no origin for an absent or non-web allowed URL', () => {
+    const manifest = parseVolumeManifest(sample(), MANIFEST_URL)!;
+    expect(confineManifestToOrigins(manifest, [undefined, 'data:,x'])).toHaveProperty('error');
+  });
+});
+
+describe('fetchVolumeManifest and redirects', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('refuses a manifest the server redirected to a private address', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const r = new Response(JSON.stringify(sample()), { status: 200 });
+        Object.defineProperty(r, 'redirected', { value: true });
+        Object.defineProperty(r, 'url', { value: 'https://192.168.1.1/manifest' });
+        return r;
+      })
+    );
+    expect(await fetchVolumeManifest(MANIFEST_URL)).toBeNull();
+    expect(String(warn.mock.calls[0].join(' '))).toContain('192.168.1.1');
   });
 });

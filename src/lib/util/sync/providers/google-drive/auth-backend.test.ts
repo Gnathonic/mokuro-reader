@@ -335,6 +335,85 @@ describe('takeCallback', () => {
   });
 });
 
+describe('takeCallback: the callback URL an old service worker cached', () => {
+  // A worker from before this build caches every same-origin 200 GET by its
+  // full URL, until the user accepts the update banner: the redirect back
+  // from Google, code and state included, lands in Cache Storage.
+  const at = (path: string) => new URL(path, location.origin).href;
+  const callbackUrl = at('/oauth/google-callback.html?code=4%2Fx&state=S1');
+
+  function fakeCaches(entries: Record<string, string[]>) {
+    const stores = new Map(
+      Object.entries(entries).map(([name, urls]) => [name, new Set(urls)] as const)
+    );
+    const api = {
+      keys: vi.fn(async () => [...stores.keys()]),
+      open: vi.fn(async (name: string) => {
+        const store = stores.get(name)!;
+        return {
+          keys: async () => [...store].map((url) => new Request(url)),
+          delete: async (request: Request) => store.delete(request.url)
+        };
+      })
+    };
+    vi.stubGlobal('caches', api);
+    return { api, urls: (name: string) => [...stores.get(name)!] };
+  }
+
+  const handBack = (value: Record<string, unknown>) => {
+    sessionStorage.setItem(
+      PENDING_KEY,
+      JSON.stringify({ state: 'S1', verifier: 'v'.repeat(43), returnTo: '', createdAt: Date.now() })
+    );
+    sessionStorage.setItem(CALLBACK_KEY, JSON.stringify(value));
+  };
+
+  it('a code handed back: the cached callback entries go, everything else stays', async () => {
+    const { urls } = fakeCaches({
+      'v-old': [callbackUrl, at('/'), at('/oauth/other.html')],
+      'v-older': [at('/oauth/google-callback.html?code=4%2Fy&state=S0'), at('/app.js')]
+    });
+    handBack({ code: '4/x', state: 'S1', error: null });
+
+    // Handed back at once: the purge never holds up the sign-in.
+    expect(takeCallback()).toEqual({ kind: 'code', code: '4/x', verifier: 'v'.repeat(43) });
+    await vi.waitFor(() => {
+      expect(urls('v-old')).toEqual([at('/')]);
+      expect(urls('v-older')).toEqual([at('/app.js')]);
+    });
+  });
+
+  it('a cancelled sign-in is purged too (its URL carries the state)', async () => {
+    const { urls } = fakeCaches({ v: [at('/oauth/google-callback.html?error=x&state=S1')] });
+    handBack({ code: null, state: 'S1', error: 'access_denied' });
+    expect(takeCallback()).toEqual({ kind: 'denied', error: 'access_denied' });
+    await vi.waitFor(() => expect(urls('v')).toEqual([]));
+  });
+
+  it('no answer to take: Cache Storage is not even opened', () => {
+    const { api } = fakeCaches({ v: [callbackUrl] });
+    expect(takeCallback()).toEqual({ kind: 'none' });
+    expect(api.keys).not.toHaveBeenCalled();
+  });
+
+  // An unhandled rejection from the purge would fail this run (vitest reports it).
+  it('Cache Storage missing or failing: the code is still handed back, nothing thrown', async () => {
+    const keys = vi.fn(async () => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    vi.stubGlobal('caches', { keys });
+    handBack({ code: '4/x', state: 'S1', error: null });
+    expect(takeCallback()).toMatchObject({ kind: 'code' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(keys).toHaveBeenCalled();
+
+    vi.stubGlobal('caches', undefined);
+    handBack({ code: '4/x', state: 'S1', error: null });
+    expect(takeCallback()).toMatchObject({ kind: 'code' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+});
+
 describe('hasPendingCallback', () => {
   it('only when the callback page left an answer, and only in backend mode', () => {
     expect(hasPendingCallback()).toBe(false);

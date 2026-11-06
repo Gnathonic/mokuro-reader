@@ -44,6 +44,7 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock('$lib/metadata/anilist-auth', () => ({
+  ANILIST_APPS_SETTINGS_URL: 'https://anilist.co/settings/apps',
   anilistUser: h.anilistUser,
   anilistConnected: h.anilistConnected,
   getAniListClientId: () => h.auth.clientId,
@@ -118,10 +119,47 @@ describe('AniListAccountSettings', () => {
     expect(getByText('Connected as nathan')).toBeTruthy();
     await fireEvent.click(getByText('Disconnect'));
     expect(disconnectAniList).toHaveBeenCalled();
-    expect(showSnackbar).toHaveBeenCalledWith('Disconnected from AniList');
+    expect(showSnackbar).toHaveBeenCalledWith('Disconnected from AniList on this device');
     // The stale-UI bug: this must flip to "Connect AniList" on the same click.
     expect(queryByText(/Connected/)).toBeNull();
     expect(getByText('Connect AniList')).toBeTruthy();
+  });
+
+  it('says before Disconnect that it does not revoke access, with a link to revoke it', () => {
+    h.anilistUser.set({ id: 1, name: 'nathan' });
+    h.anilistConnected.set(true);
+    const { getByTestId, getByRole } = render(AniListAccountSettings);
+    expect(getByTestId('anilist-revoke-note').textContent?.replace(/\s+/g, ' ')).toMatch(
+      /does not revoke the reader's access/
+    );
+    const link = getByRole('link', { name: 'anilist.co/settings/apps' });
+    expect(link.getAttribute('href')).toBe('https://anilist.co/settings/apps');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toContain('noopener');
+  });
+
+  it('after Disconnect, says the access was not revoked and links to where it can be', async () => {
+    h.anilistUser.set({ id: 1, name: 'nathan' });
+    h.anilistConnected.set(true);
+    const { getByText, getByTestId, getByRole } = render(AniListAccountSettings);
+    await fireEvent.click(getByText('Disconnect'));
+    expect(getByTestId('anilist-revoke-note').textContent?.replace(/\s+/g, ' ')).toMatch(
+      /Disconnected on this device only/
+    );
+    expect(getByRole('link', { name: 'anilist.co/settings/apps' })).toBeTruthy();
+  });
+
+  it('says nothing about revoking when never connected', () => {
+    const { queryByTestId } = render(AniListAccountSettings);
+    expect(queryByTestId('anilist-revoke-note')).toBeNull();
+  });
+
+  it('renders the account name as text, never as markup', () => {
+    h.anilistUser.set({ id: 1, name: '<img src=x onerror=alert(1)>' });
+    h.anilistConnected.set(true);
+    const { getByText, container } = render(AniListAccountSettings);
+    expect(getByText('Connected as <img src=x onerror=alert(1)>')).toBeTruthy();
+    expect(container.querySelector('img')).toBeNull();
   });
 
   it('shows a fallback connected label when a token exists but the Viewer lookup has not resolved', () => {

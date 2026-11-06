@@ -3,7 +3,7 @@
   import { browser } from '$app/environment';
   import { onDestroy } from 'svelte';
 
-  // The colour maths lives in the <style> block in src/app.html, which explains
+  // The colour maths lives in src/lib/styles/night-mode.css, which explains
   // why night mode is a blend-layer pair plus a top-layer filter rather than one
   // filter on the root. This component owns the two layer elements.
   //
