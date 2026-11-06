@@ -19,6 +19,7 @@
   import { showTextBoxPicker } from './text-box-picker';
   import type { Page } from '$lib/types';
   import { onDestroy } from 'svelte';
+  import { displayableImageBlob } from '$lib/util/raster-image';
 
   interface Props {
     left: (_e: any, ingoreTimeOut?: boolean) => void;
@@ -124,7 +125,13 @@
   async function onUpdateCard(src: File | undefined, page?: Page, pageNumber?: number) {
     if ($settings.ankiConnectSettings.enabled && src && page) {
       // Show text box picker first, then dispatch to create/update based on cardMode
-      showTextBoxPicker(URL.createObjectURL(src), page, ankiTags, volumeMetadata, pageNumber);
+      showTextBoxPicker(
+        URL.createObjectURL(displayableImageBlob(src)),
+        page,
+        ankiTags,
+        volumeMetadata,
+        pageNumber
+      );
     }
     open = false;
   }

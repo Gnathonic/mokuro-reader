@@ -20,6 +20,7 @@
   import { requestPersistentStorage } from '$lib/util/upload';
   import { nav } from '$lib/util/hash-router';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
+  import { toRasterImageFile } from '$lib/util/raster-image';
   import { onDestroy, onMount } from 'svelte';
 
   const uploadParams = getUploadParamsFromLocation(window.location.search, window.location.hash);
@@ -61,18 +62,26 @@
       return;
     }
 
+    // Raster bytes only (SVG is unsupported: stored, it would run as the app
+    // when opened in a new tab), typed by those bytes — never by the server.
+    const cover = await toRasterImageFile(coverFile, coverFile.name);
+    if (!cover) {
+      console.warn('[HTML Download] Sidecar thumbnail is not a raster image; skipped');
+      return;
+    }
+
     // A file the browser cannot decode is no cover: leave the row without one,
     // so the thumbnail pass builds it from the first page instead.
     let dims: { width: number; height: number };
     try {
-      dims = await getImageDimensions(coverFile);
+      dims = await getImageDimensions(cover);
     } catch (error) {
       console.warn('[HTML Download] Sidecar thumbnail is not a readable image; skipped', error);
       return;
     }
 
     await db.volumes.update(targetVolume.volume_uuid, {
-      thumbnail: coverFile,
+      thumbnail: cover,
       thumbnail_width: dims.width,
       thumbnail_height: dims.height
     });

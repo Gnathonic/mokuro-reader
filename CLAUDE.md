@@ -43,9 +43,10 @@ Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-wh
 
 ### Essential Commands
 
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run preview` - Preview production build
+- `npm run dev` - Start development server (localhost only; `npm run dev -- --host` to reach it from the LAN)
+- `npm run build` - Build for production (`@sveltejs/adapter-vercel`, lockfile-pinned, runtime `nodejs24.x`);
+  fails when `scripts/check-no-test-hooks.mjs` finds a cloud test hook in the output
+- `npm run preview` - Preview production build (localhost only; `npm run preview -- --host` to test it from a phone or another LAN device)
 - `npm test` - Run tests with Vitest
 - `npm run test:coverage` - Run tests with coverage
 - `npm run test:e2e` - Run Playwright e2e tests (see Testing for port caveats)
@@ -1884,6 +1885,26 @@ must not break. Highlights:
   measured off the drawn ink: glyph-on-cell drift, body-sized short lines, pointer-on-print
   hit-testing), `e2e/line-grid.spec.ts` (grid, rotation, hit-testing, turned cells, editing
   a tilted line), `e2e/char-offsets.spec.ts` (original mode, viewer and editor).
+
+### Images are raster only
+
+SVG is an unsupported format. Every page, cover and thumbnail ends up behind a
+`blob:` URL on the app's origin, served with the Blob's own `type`, so an
+`image/svg+xml` or `text/html` Blob (or an untyped one the browser sniffs as
+HTML) runs its script as the app when the user picks "Open image in new tab".
+`src/lib/util/raster-image.ts` is the rule: a stored image's type comes ONLY
+from its magic bytes (`toRasterImageFile`, `sniffRasterImageType`), for the
+formats in `IMAGE_MIME_TYPES` — never from a remote `Content-Type` or a file
+extension — and anything else is refused, never stored. `processVolume` types
+every page and the thumbnail sidecar that way (non-raster pages become missing
+pages); deep-link covers and cloud covers go through the same call. On the
+way out, thumbnail/cover surfaces and the Anki `{cover}` field go through
+`displayableCoverBlob` (a raster-typed Blob as is, an untyped one — older
+archive imports stored thumbnail sidecars untyped — under a raster label, any
+explicit non-raster type never), page object URLs are minted from a
+raster-labelled view (`displayableImageBlob`, for pages stored untyped by older
+builds), and `processThumbnails` re-types or drops any stored thumbnail whose
+type is not raster.
 
 ### Cloud covers
 

@@ -3,7 +3,12 @@
   import { Button, Modal, Spinner, Fileupload } from 'flowbite-svelte';
   import { getVolumeFiles } from '$lib/util/volume-editor';
   import { showSnackbar } from '$lib/util';
-  import { IMAGE_MIME_TYPES } from '$lib/import/types';
+  import {
+    displayableImageBlob,
+    RASTER_FORMAT_NAMES,
+    RASTER_IMAGE_TYPES,
+    sniffRasterBlob
+  } from '$lib/util/raster-image';
   import Cropper from 'cropperjs';
   import 'cropperjs/dist/cropper.css';
 
@@ -100,7 +105,7 @@
         pages = files.map((f) => ({
           path: f.path,
           file: f.file,
-          url: URL.createObjectURL(f.file)
+          url: URL.createObjectURL(displayableImageBlob(f.file))
         }));
         if (pages.length > 0) {
           const defaultIndex = Math.min(Math.max(initialPageIndex ?? 0, 0), pages.length - 1);
@@ -119,18 +124,17 @@
     }
   }
 
-  const validImageMimeTypes = new Set(Object.values(IMAGE_MIME_TYPES));
-
-  function isValidImageFile(file: File): boolean {
-    return validImageMimeTypes.has(file.type) || file.type.startsWith('image/');
+  /** Raster bytes only, whatever the file's type or name says (SVG is unsupported). */
+  async function isValidImageFile(file: File): Promise<boolean> {
+    return (await sniffRasterBlob(file).catch(() => null)) !== null;
   }
 
-  function handleFileUpload(event: Event) {
+  async function handleFileUpload(event: Event) {
     const input = event.target as HTMLInputElement;
     if (input.files && input.files[0]) {
       const file = input.files[0];
-      if (!isValidImageFile(file)) {
-        showSnackbar('Please select a valid image file');
+      if (!(await isValidImageFile(file))) {
+        showSnackbar(`Please select a ${RASTER_FORMAT_NAMES} image (SVG is not supported)`);
         return;
       }
       onSelect(file, { pageIndex: null, cropZone: null });
@@ -569,7 +573,7 @@
         <span class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
           Upload an image
         </span>
-        <Fileupload accept="image/*" onchange={handleFileUpload} />
+        <Fileupload accept={RASTER_IMAGE_TYPES.join(',')} onchange={handleFileUpload} />
       </div>
 
       <!-- Page Selection -->

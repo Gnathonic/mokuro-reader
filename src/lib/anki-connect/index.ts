@@ -16,9 +16,30 @@ import type {
 import { settings, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
 import { showSnackbar } from '$lib/util';
 import { isMobilePlatform } from '$lib/util/platform';
+import { displayableCoverBlob } from '$lib/util/raster-image';
 import { get } from 'svelte/store';
+import { escapeFieldText, placeholderNonce, tagSafeTitle } from './field-html';
+import { effectiveAnkiUrl, isAnkiUrlTrusted, unconfirmedAnkiUrlMessage } from './url-trust';
 
 export * from './cropper';
+export { escapeFieldText, fieldHtmlToPreviewText, tagSafeTitle } from './field-html';
+export {
+  DEFAULT_ANKI_CONNECT_URL,
+  confirmAnkiUrl,
+  confirmedAnkiUrls,
+  isAnkiUrlTrusted,
+  isLoopbackAnkiUrl
+} from './url-trust';
+
+/**
+ * The AnkiConnect URL a call goes to: the one being tested, else the
+ * profile's, else the default. `trusted` is false for a non-loopback URL not
+ * yet confirmed on this device (`url-trust.ts`); nothing may be sent to it.
+ */
+function resolveAnkiUrl(testUrl?: string): { url: string; trusted: boolean } {
+  const url = effectiveAnkiUrl(testUrl || get(settings).ankiConnectSettings.url);
+  return { url, trusted: isAnkiUrlTrusted(url) };
+}
 
 // Template variables that can be used in field mappings
 export const FIELD_TEMPLATES = [
@@ -91,29 +112,32 @@ export function generateImageFilename(
 /**
  * Resolves dynamic tag templates in a tags string
  * e.g., "{series} mining" -> "One_Piece mining"
+ *
+ * Also used for deck names. Titles go through `tagSafeTitle`: Anki renders
+ * `{{Tags}}` and `{{Deck}}` unescaped, so a title must not carry markup there.
+ *
+ * Given `existingTags` (update mode), `{existing}` is replaced with them in the
+ * SAME pass (none → removed); without it `{existing}` is left as written. One
+ * pass, so a value is never re-scanned: a title or an old tag that spells
+ * `{volume}` is inserted as written. Call this once per template — the card
+ * functions do, so callers hand them the raw template.
  */
-export function resolveDynamicTags(tags: string, metadata: VolumeMetadata): string {
+export function resolveDynamicTags(
+  tags: string,
+  metadata: VolumeMetadata,
+  existingTags?: string[]
+): string {
   if (!tags) return '';
 
-  let resolved = tags;
-
-  // Replace {series} with sanitized series title
-  if (metadata.seriesTitle) {
-    // Anki tags can't have spaces, replace with underscores
-    const sanitized = metadata.seriesTitle.replace(/\s+/g, '_');
-    resolved = resolved.replace(/\{series\}/g, sanitized);
-  } else {
-    // Remove the tag if no series title available
-    resolved = resolved.replace(/\{series\}/g, '');
-  }
-
-  // Replace {volume} with sanitized volume title
-  if (metadata.volumeTitle) {
-    const sanitized = metadata.volumeTitle.replace(/\s+/g, '_');
-    resolved = resolved.replace(/\{volume\}/g, sanitized);
-  } else {
-    resolved = resolved.replace(/\{volume\}/g, '');
-  }
+  // Function replacers: a title's `$&` / `$'` must never splice the template.
+  const values: Record<string, string> = {
+    series: metadata.seriesTitle ? tagSafeTitle(metadata.seriesTitle) : '',
+    volume: metadata.volumeTitle ? tagSafeTitle(metadata.volumeTitle) : ''
+  };
+  const pattern = existingTags ? /\{(series|volume|existing)\}/g : /\{(series|volume)\}/g;
+  const resolved = tags.replace(pattern, (_match, name: string) =>
+    name === 'existing' ? (existingTags ?? []).join(' ') : values[name]
+  );
 
   // Clean up any double spaces and trim
   return resolved.replace(/\s+/g, ' ').trim();
@@ -129,9 +153,21 @@ export type ResolveTemplateOptions = {
   fieldName?: string;
 };
 
+/** Every text variable a field template can name (`{image}`/`{cover}` are pictures). */
+const TEMPLATE_VARIABLE = /\{(selection|sentence|series|volume|page_num|page_filename|existing)\}/g;
+
 /**
  * Resolves all template variables in a field template string.
  * Returns the resolved string, or null if the template is empty or only contains {image}.
+ *
+ * The template itself is the user's own field HTML and stays raw, as does the
+ * note's `{existing}` content. Every other value is reader-sourced — OCR text,
+ * titles, filenames — and is HTML-escaped (`escapeFieldText`) before newlines
+ * become `<br>`, so it lands in the note as text and never as markup.
+ *
+ * All variables are substituted in ONE pass with a function replacer: a value
+ * is never re-scanned for other `{variables}`, and replacement patterns such
+ * as `$&` or `$'` inside it are inserted literally.
  */
 export function resolveTemplate(
   template: string,
@@ -144,62 +180,35 @@ export function resolveTemplate(
     return null; // {image} and {cover} are handled specially as picture parameters, not as text
   }
 
-  let resolved = template;
+  const values: Record<string, string> = {
+    selection: selectedText ? escapeFieldText(selectedText) : '',
+    sentence: sentence ? escapeFieldText(sentence) : '',
+    series: metadata.seriesTitle ? escapeFieldText(metadata.seriesTitle) : '',
+    volume: metadata.volumeTitle ? escapeFieldText(metadata.volumeTitle) : '',
+    // Page number is already 1-indexed from callers
+    page_num: options?.pageNumber !== undefined ? escapeFieldText(String(options.pageNumber)) : '',
+    page_filename: options?.pageFilename ? escapeFieldText(options.pageFilename) : ''
+  };
+
+  // {existing} is the existing value of the current field (update mode). It is
+  // held back behind a placeholder until after whitespace normalization and
+  // the newline conversion, so newlines inside its own HTML (a <style> block)
+  // are not turned into <br>. The token carries a random per-call nonce: OCR
+  // text that spells a token can never collide with one.
+  const existingValue =
+    options?.previousValues && options?.fieldName
+      ? options.previousValues[options.fieldName] || ''
+      : undefined;
   const existingPlaceholders: string[] = [];
+  const nonce = placeholderNonce();
 
-  // Replace {selection} with selected text
-  if (selectedText) {
-    resolved = resolved.replace(/\{selection\}/g, selectedText);
-  } else {
-    resolved = resolved.replace(/\{selection\}/g, '');
-  }
-
-  // Replace {sentence} with full sentence
-  if (sentence) {
-    resolved = resolved.replace(/\{sentence\}/g, sentence);
-  } else {
-    resolved = resolved.replace(/\{sentence\}/g, '');
-  }
-
-  // Replace {series} with series title
-  if (metadata.seriesTitle) {
-    resolved = resolved.replace(/\{series\}/g, metadata.seriesTitle);
-  } else {
-    resolved = resolved.replace(/\{series\}/g, '');
-  }
-
-  // Replace {volume} with volume title
-  if (metadata.volumeTitle) {
-    resolved = resolved.replace(/\{volume\}/g, metadata.volumeTitle);
-  } else {
-    resolved = resolved.replace(/\{volume\}/g, '');
-  }
-
-  // Replace {page_num} with page number (already 1-indexed from callers)
-  if (options?.pageNumber !== undefined) {
-    resolved = resolved.replace(/\{page_num\}/g, String(options.pageNumber));
-  } else {
-    resolved = resolved.replace(/\{page_num\}/g, '');
-  }
-
-  // Replace {page_filename} with page filename
-  if (options?.pageFilename) {
-    resolved = resolved.replace(/\{page_filename\}/g, options.pageFilename);
-  } else {
-    resolved = resolved.replace(/\{page_filename\}/g, '');
-  }
-
-  // Replace {existing} with existing value of the current field (for update mode)
-  if (options?.previousValues && options?.fieldName) {
-    const existingValue = options.previousValues[options.fieldName] || '';
-    resolved = resolved.replace(/\{existing\}/g, () => {
-      const token = `__MOKURO_EXISTING_${existingPlaceholders.length}__`;
-      existingPlaceholders.push(existingValue);
-      return token;
-    });
-  } else {
-    resolved = resolved.replace(/\{existing\}/g, '');
-  }
+  let resolved = template.replace(TEMPLATE_VARIABLE, (_match, name: string) => {
+    if (name !== 'existing') return values[name];
+    if (existingValue === undefined) return '';
+    const token = `__MOKURO_EXISTING_${nonce}_${existingPlaceholders.length}__`;
+    existingPlaceholders.push(existingValue);
+    return token;
+  });
 
   // Clean up whitespace (but preserve HTML structure)
   // Only collapse multiple spaces, don't trim inside HTML tags
@@ -211,11 +220,10 @@ export function resolveTemplate(
   resolved = resolved.replace(/\n/g, '<br>');
 
   // Restore raw existing HTML after normalization.
-  // This prevents converting newlines inside <style> blocks to <br>, which breaks CSS.
   if (existingPlaceholders.length > 0) {
-    resolved = resolved.replace(/__MOKURO_EXISTING_(\d+)__/g, (_match, idx) => {
-      const index = Number(idx);
-      return existingPlaceholders[index] ?? '';
+    const token = new RegExp(`__MOKURO_EXISTING_${nonce}_(\\d+)__`, 'g');
+    resolved = resolved.replace(token, (_match, idx: string) => {
+      return existingPlaceholders[Number(idx)] ?? '';
     });
   }
 
@@ -227,7 +235,11 @@ export function resolveTemplate(
  * Also detects if running on AnkiConnect Android by testing createDeck support.
  */
 export async function fetchConnectionData(testUrl?: string): Promise<AnkiConnectionData | null> {
-  const url = testUrl || get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
+  const { url, trusted } = resolveAnkiUrl(testUrl);
+  if (!trusted) {
+    showSnackbar(unconfirmedAnkiUrlMessage(url));
+    return null;
+  }
 
   try {
     // Test connection first
@@ -446,7 +458,13 @@ export function getModelConfig(
 
 export type ConnectionTestResult = {
   success: boolean;
-  error?: 'network' | 'cors' | 'invalid_response' | 'anki_error' | 'permission_denied';
+  error?:
+    | 'network'
+    | 'cors'
+    | 'invalid_response'
+    | 'anki_error'
+    | 'permission_denied'
+    | 'unconfirmed_url';
   message: string;
   version?: number;
 };
@@ -475,7 +493,10 @@ async function requestAnkiPermission(url: string): Promise<boolean> {
  * If CORS blocks the request, attempts to request permission from Anki.
  */
 export async function testConnection(testUrl?: string): Promise<ConnectionTestResult> {
-  const url = testUrl || get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
+  const { url, trusted } = resolveAnkiUrl(testUrl);
+  if (!trusted) {
+    return { success: false, error: 'unconfirmed_url', message: unconfirmedAnkiUrlMessage(url) };
+  }
 
   try {
     const res = await fetch(url, {
@@ -542,7 +563,11 @@ export async function ankiConnect(
   params: Record<string, any>,
   options?: { silent?: boolean; retried?: boolean }
 ) {
-  const url = get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
+  const { url, trusted } = resolveAnkiUrl();
+  if (!trusted) {
+    if (!options?.silent) showSnackbar(unconfirmedAnkiUrlMessage(url));
+    return undefined;
+  }
 
   try {
     const res = await fetch(url, {
@@ -615,6 +640,19 @@ export async function blobToBase64(blob: Blob) {
     reader.onloadend = () => resolve(reader.result as string);
     reader.readAsDataURL(blob);
   });
+}
+
+/**
+ * A volume's stored thumbnail as a data URL for the `{cover}` field, or null
+ * when it is not displayable (`displayableCoverBlob`): a thumbnail stored as
+ * `image/svg+xml` before the raster-only rule is never sent to Anki, while an
+ * untyped one from an older archive import goes under a raster label.
+ */
+export async function coverImageDataUrl(
+  thumbnail: Blob | null | undefined
+): Promise<string | null> {
+  const cover = displayableCoverBlob(thumbnail);
+  return cover ? await blobToBase64(cover) : null;
 }
 
 export async function imageToWebp(source: File, settings: Settings) {
@@ -709,8 +747,9 @@ export async function createCard(
   const baseDeckName = options?.deckName || config.deckName;
   const resolvedDeckName = metadata ? resolveDynamicTags(baseDeckName, metadata) : baseDeckName;
 
-  // Resolve dynamic tags with volume metadata
-  const resolvedTags = tags && metadata ? resolveDynamicTags(tags, metadata) : tags;
+  // Resolve dynamic tags with volume metadata — the ONE place a create's tag
+  // template is resolved (callers pass it raw, so no value is re-scanned)
+  const resolvedTags = tags ? resolveDynamicTags(tags, metadata || {}) : '';
   const tagList = resolvedTags ? resolvedTags.split(' ').filter((t) => t.length > 0) : [];
 
   if (!imageData) {
@@ -762,6 +801,7 @@ export async function createCard(
       sentence,
       {
         pageNumber: options?.pageNumber,
+        pageFilename: options?.pageFilename,
         previousValues: options?.previousValues,
         fieldName: mapping.fieldName
       }
@@ -911,6 +951,15 @@ export async function updateLastCard(
     return;
   }
 
+  // Before anything else is said: every later step would fail on the guard's
+  // silence and its own error ("could not find recent card") would replace
+  // the guard's notice in the one-message snackbar.
+  const { url, trusted } = resolveAnkiUrl();
+  if (!trusted) {
+    showSnackbar(unconfirmedAnkiUrlMessage(url));
+    return;
+  }
+
   // Model name is required for update mode - must know the card's actual note type
   if (!modelName) {
     showSnackbar('Error: Model name required for update mode');
@@ -946,16 +995,9 @@ export async function updateLastCard(
   // Use provided field mappings (from modal) or fall back to saved config
   const fieldMappings = options?.fieldMappings || config.fieldMappings;
 
-  // Resolve dynamic tags with volume metadata and {existing}
-  let resolvedTags = tags || '';
-  // Replace {existing} with previous tags
-  if (options?.previousTags) {
-    resolvedTags = resolvedTags.replace(/\{existing\}/g, options.previousTags.join(' '));
-  } else {
-    resolvedTags = resolvedTags.replace(/\{existing\}/g, '');
-  }
-  // Resolve {series} and {volume}
-  resolvedTags = metadata ? resolveDynamicTags(resolvedTags, metadata) : resolvedTags;
+  // Resolve {existing}, {series} and {volume} in one pass, so an old tag that
+  // spells `{volume}` is kept as written
+  const resolvedTags = resolveDynamicTags(tags || '', metadata || {}, options?.previousTags ?? []);
 
   if (!imageData) {
     showSnackbar('Error: No image data');
@@ -1005,6 +1047,7 @@ export async function updateLastCard(
       sentence,
       {
         pageNumber: options?.pageNumber,
+        pageFilename: options?.pageFilename,
         previousValues: options?.previousValues,
         fieldName: mapping.fieldName
       }
@@ -1202,11 +1245,10 @@ export async function sendQuickCapture(
     // Get the model config for create mode
     const config = getModelConfig(selectedModel, 'create');
 
-    // Use tags template from config, resolve dynamic tags
+    // Tags template from config, passed raw: createCard resolves it
     const tagsTemplate = config?.tags || '';
-    const resolvedTags = resolveDynamicTags(tagsTemplate, metadata || {});
 
-    await createCard(imageData, selectedText, sentence, resolvedTags, metadata, {
+    await createCard(imageData, selectedText, sentence, tagsTemplate, metadata, {
       deckName: config?.deckName,
       pageFilename
     });

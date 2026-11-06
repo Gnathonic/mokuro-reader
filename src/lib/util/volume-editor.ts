@@ -19,13 +19,20 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 
 type Volumes = Record<string, VolumeData>;
 
+/**
+ * A page that may be a generated missing-page placeholder the row does not
+ * list by path. Placeholders keep the missing page's own name (often `.jpg`)
+ * and are always PNG blobs, so the type/name mismatch was once a usable hint.
+ * It no longer is on its own: every stored page is now typed by its bytes, so
+ * a real PNG page named `001.jpg` is `image/png` too. Callers apply this only
+ * to a row that reports more missing pages than `missing_page_paths` lists
+ * ({@link hasUnlistedPlaceholders}); every other row lists its placeholders.
+ */
 function isLikelyGeneratedMissingPlaceholder(path: string, file: File): boolean {
   if (!file?.type || file.type.toLowerCase() !== 'image/png') {
     return false;
   }
 
-  // Our generated missing placeholders can keep original filename extensions (e.g. .jpg)
-  // while always being PNG blobs. Use this mismatch as a conservative legacy-data filter.
   const lowerPath = path.toLowerCase();
   return (
     lowerPath.endsWith('.jpg') ||
@@ -37,6 +44,15 @@ function isLikelyGeneratedMissingPlaceholder(path: string, file: File): boolean 
     lowerPath.endsWith('.tif') ||
     lowerPath.endsWith('.tiff')
   );
+}
+
+/**
+ * Does this row report missing pages it does not name? Every import that
+ * generates placeholders records both `missing_pages` and
+ * `missing_page_paths`, so only a damaged or partially written row can.
+ */
+function hasUnlistedPlaceholders(volume: VolumeMetadata): boolean {
+  return (volume.missing_pages ?? 0) > (volume.missing_page_paths?.length ?? 0);
 }
 
 function isCoverCandidateImage(path: string, file: File): boolean {
@@ -351,12 +367,13 @@ export async function resetVolumeCover(volumeUuid: string): Promise<void> {
 
   // Exclude known placeholder pages generated for missing files.
   const placeholderPaths = new Set(volume.missing_page_paths || []);
+  const guessPlaceholders = hasUnlistedPlaceholders(volume);
   const compareByPageOrder = await getPageOrderComparator(volumeUuid);
   const candidatePaths = Object.keys(volumeFiles.files).filter((path) => {
     if (placeholderPaths.has(path)) return false;
     const file = volumeFiles.files[path];
     if (!isCoverCandidateImage(path, file)) return false;
-    return !isLikelyGeneratedMissingPlaceholder(path, file);
+    return !guessPlaceholders || !isLikelyGeneratedMissingPlaceholder(path, file);
   });
 
   // Prefer OCR page order, then natural filename order.

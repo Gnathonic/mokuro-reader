@@ -4,18 +4,24 @@ on:
   push:
     branches: [main]
 
+# Least privilege by default; the release job asks for write access itself.
+permissions:
+  contents: read
+
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # The repo's default workflow token is read-only, so without this the job 403s
     # when pushing the tag / creating the release (releases had to be made by hand).
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      # Credentials stay persisted: the tag step below pushes with them.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -24,7 +30,7 @@ jobs:
         run: |
           # Get current version from package.json
           CURRENT_VERSION=$(node -p "require('./package.json').version")
-          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
 
           # Get previous version from the parent commit
           PREVIOUS_VERSION=$(git show HEAD^:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf8')).version" 2>/dev/null || echo "")
@@ -35,30 +41,34 @@ jobs:
           # Check if tag already exists
           if git rev-parse "v$CURRENT_VERSION" >/dev/null 2>&1; then
             echo "Tag v$CURRENT_VERSION already exists"
-            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
           elif [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ] && [ -n "$PREVIOUS_VERSION" ]; then
             echo "Version changed from $PREVIOUS_VERSION to $CURRENT_VERSION, will create release"
-            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
           else
             echo "No version change detected"
-            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
           fi
 
       # Create and push tag
       - name: Create and push tag
         if: steps.version_check.outputs.should_release == 'true'
+        env:
+          VERSION: ${{ steps.version_check.outputs.current_version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "v${{ steps.version_check.outputs.current_version }}"
-          git push origin "v${{ steps.version_check.outputs.current_version }}"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
 
-      # Extract release notes from CHANGELOG.md for this version
+      # Extract release notes from CHANGELOG.md for this version. They go to a file
+      # for `gh release create --notes-file`, never through a multi-line step output,
+      # so no changelog line can end a heredoc early or reach an expression.
       - name: Extract release notes
         if: steps.version_check.outputs.should_release == 'true'
-        id: release_notes
+        env:
+          VERSION: ${{ steps.version_check.outputs.current_version }}
         run: |
-          VERSION="${{ steps.version_check.outputs.current_version }}"
           # Print the body between this version's header and the next version header,
           # excluding both headers. Handles both "## 1.2.3" and "## [1.2.3]" styles.
           # (The old awk range failed because its end pattern also matched the start
@@ -68,19 +78,23 @@ jobs:
             collecting && /^## \[?[0-9]/ { exit }
             collecting { print }
           ' CHANGELOG.md)
-          # Use a delimiter for multiline output
-          echo "notes<<EOF" >> $GITHUB_OUTPUT
-          echo "$NOTES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # No trailing newline: the body is the section exactly, as the old step
+          # output (whose heredoc dropped the newline before its delimiter) gave it.
+          printf '%s' "$NOTES" > "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md"; echo
 
-      # Create GitHub Release
+      # Create GitHub Release: tag vX.Y.Z (pushed above), title vX.Y.Z, this
+      # version's changelog section as the body, a full release (not a draft, not a
+      # pre-release) and no auto-generated notes — what the third-party release
+      # action this replaces was configured to make.
       - name: Create GitHub Release
         if: steps.version_check.outputs.should_release == 'true'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ steps.version_check.outputs.current_version }}
-          name: v${{ steps.version_check.outputs.current_version }}
-          body: ${{ steps.release_notes.outputs.notes }}
-          generate_release_notes: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version_check.outputs.current_version }}
+        run: |
+          gh release create "v$VERSION" \
+            --verify-tag \
+            --title "v$VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"

@@ -78,6 +78,7 @@
   import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
   import { isTypingTarget } from '$lib/util/series-editor-shortcut';
   import { onDestroy } from 'svelte';
+  import { displayableCoverBlob } from '$lib/util/raster-image';
   import { get } from 'svelte/store';
 
   interface Props {
@@ -300,7 +301,7 @@
 
   function getThumbnailKey(volumeUuid: string, thumbnail?: File): string | undefined {
     if (!thumbnail) return undefined;
-    return `${volumeUuid}:${thumbnail.size}:${thumbnail.lastModified}`;
+    return `${volumeUuid}:${thumbnail.size}:${thumbnail.lastModified}:${thumbnail.type}`;
   }
 
   $effect(() => {
@@ -317,8 +318,10 @@
     }
 
     thumbnailKey = nextKey;
-    if (!liveVolume?.thumbnail) return;
-    thumbnailUrl = URL.createObjectURL(liveVolume.thumbnail);
+    // Raster covers only — see `displayableCoverBlob`.
+    const cover = displayableCoverBlob(liveVolume?.thumbnail);
+    if (!cover) return;
+    thumbnailUrl = URL.createObjectURL(cover);
   });
 
   onDestroy(() => {

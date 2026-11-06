@@ -19,4 +19,18 @@ describe('mayBeImageType', () => {
       expect(mayBeImageType(type)).toBe(false);
     }
   });
+
+  // SVG is an unsupported format: it is a document that can carry script.
+  it('refuses SVG and any XML image type', () => {
+    for (const type of [
+      'image/svg+xml',
+      'IMAGE/SVG+XML; charset=utf-8',
+      'image/svg',
+      'image/svg-xml',
+      'application/xhtml+xml',
+      'text/xml'
+    ]) {
+      expect(mayBeImageType(type), type).toBe(false);
+    }
+  });
 });

@@ -1,14 +1,16 @@
 <script lang="ts">
+  import { changeProfile, currentProfile, profiles, profilesWithTrash } from '$lib/settings';
   import {
-    changeProfile,
-    currentProfile,
-    profiles,
-    profilesWithTrash,
-    migrateProfiles
-  } from '$lib/settings';
+    importNotice,
+    overwriteWarning,
+    parseProfilesFile,
+    planProfileImport,
+    type ProfileImportPlan
+  } from '$lib/settings/profile-import';
   import { AccordionItem, Button, Select } from 'flowbite-svelte';
+  import { get } from 'svelte/store';
   import ManageProfilesModal from './ManageProfilesModal.svelte';
-  import { showSnackbar } from '$lib/util';
+  import { promptConfirmation, showSnackbar } from '$lib/util';
 
   interface Props {
     onClose: () => void;
@@ -39,23 +41,34 @@
   }
 
   let files: FileList | undefined = $state(undefined);
+
+  function applyImport(plan: ProfileImportPlan) {
+    profilesWithTrash.update((prev) => ({ ...prev, ...plan.profiles }));
+    onClose();
+    // A URL that is not Anki on this machine stays unused until confirmed
+    // here (`anki-connect/url-trust.ts`): say so, or mining just stops.
+    showSnackbar(importNotice(plan.unconfirmedAnkiUrls));
+  }
+
   function importProfile() {
     if (!files) return;
     const [file] = files;
     const reader = new FileReader();
 
     reader.onloadend = () => {
-      const imported = JSON.parse(reader.result?.toString() || '');
-      // Migrate imported profiles to ensure all fields exist with defaults
-      const migrated = migrateProfiles(imported);
-      profilesWithTrash.update((prev) => {
-        return {
-          ...prev,
-          ...migrated
-        };
-      });
-      onClose();
-      showSnackbar('Profiles imported');
+      let plan: ProfileImportPlan;
+      try {
+        // Migrated to the current shape, compared against the live profiles.
+        plan = planProfileImport(parseProfilesFile(reader.result?.toString() || ''), get(profiles));
+      } catch {
+        showSnackbar('That file is not a profiles export');
+        return;
+      }
+      if (plan.overwrites.length > 0) {
+        promptConfirmation(overwriteWarning(plan.overwrites), () => applyImport(plan));
+      } else {
+        applyImport(plan);
+      }
     };
 
     if (file) {
