@@ -229,7 +229,7 @@ export async function toRasterImageFile(
  * A stored cover or thumbnail, only when its type is an accepted raster type;
  * null otherwise. For data written before this rule: an `image/svg+xml` (or
  * untyped) thumbnail is never shown. `processThumbnails` re-types it from its
- * bytes or replaces it.
+ * bytes or replaces it. Display surfaces use {@link displayableCoverBlob}.
  */
 export function rasterOrNull<T extends Blob>(blob: T | null | undefined): T | null {
   return blob && isRasterImageType(blob.type) ? blob : null;
@@ -247,4 +247,18 @@ export function displayableImageBlob(blob: Blob): Blob {
   if (isRasterImageType(blob.type)) return blob;
   const type = (blob instanceof File ? rasterTypeForName(blob.name) : null) ?? 'image/png';
   return blob.slice(0, blob.size, type);
+}
+
+/**
+ * The Blob to show (or send to Anki) for a stored cover or thumbnail, or null.
+ * A raster-typed cover is shown as it is. An UNTYPED one is shown under a
+ * raster label, like an untyped page ({@link displayableImageBlob}): earlier
+ * builds stored archive thumbnail sidecars untyped, and they would otherwise
+ * vanish until `processThumbnails` re-types them. Any explicit non-raster
+ * type (`image/svg+xml`, `text/html`, …) is never shown.
+ */
+export function displayableCoverBlob(blob: Blob | null | undefined): Blob | null {
+  if (!blob) return null;
+  if (isRasterImageType(blob.type)) return blob;
+  return essence(blob.type) === '' ? displayableImageBlob(blob) : null;
 }

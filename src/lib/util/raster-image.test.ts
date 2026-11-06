@@ -3,6 +3,7 @@ import { IMAGE_MIME_TYPES } from '$lib/import/types';
 import {
   RASTER_FORMAT_NAMES,
   RASTER_IMAGE_TYPES,
+  displayableCoverBlob,
   displayableImageBlob,
   isRasterImageType,
   rasterOrNull,
@@ -235,6 +236,41 @@ describe('rasterOrNull', () => {
     expect(rasterOrNull(new File(['x'], 'c.svg', { type: 'image/svg+xml' }))).toBeNull();
     expect(rasterOrNull(new File(['x'], 'c.png'))).toBeNull();
     expect(rasterOrNull(undefined)).toBeNull();
+  });
+});
+
+describe('displayableCoverBlob', () => {
+  it('keeps a raster-typed cover as it is', () => {
+    const webp = new File(['x'], 'c.webp', { type: 'image/webp' });
+    expect(displayableCoverBlob(webp)).toBe(webp);
+  });
+
+  // Earlier builds stored archive thumbnail sidecars untyped. They are shown
+  // under an inert raster label until `processThumbnails` re-types them.
+  it('shows an untyped cover under a raster label, by name or else PNG, without losing bytes', async () => {
+    const cases: Array<[Blob, string]> = [
+      [new File(['bytes'], 'Vol 1.webp'), 'image/webp'],
+      [new File(['bytes'], 'cover.jpg'), 'image/jpeg'],
+      [new File(['<svg/>'], 'c.svg'), 'image/png'],
+      [new Blob(['<html>']), 'image/png']
+    ];
+    for (const [blob, type] of cases) {
+      const shown = displayableCoverBlob(blob)!;
+      expect(shown.type).toBe(type);
+      expect(shown.size).toBe(blob.size);
+      expect(await shown.text()).toBe(await blob.text());
+    }
+  });
+
+  it('never shows a cover with an explicit non-raster type', () => {
+    for (const type of ['image/svg+xml', 'text/html', 'application/xml', 'text/plain']) {
+      expect(displayableCoverBlob(new File(['<svg/>'], 'c.webp', { type })), type).toBeNull();
+    }
+  });
+
+  it('shows nothing without a cover', () => {
+    expect(displayableCoverBlob(undefined)).toBeNull();
+    expect(displayableCoverBlob(null)).toBeNull();
   });
 });
 

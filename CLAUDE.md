@@ -1897,10 +1897,13 @@ formats in `IMAGE_MIME_TYPES` — never from a remote `Content-Type` or a file
 extension — and anything else is refused, never stored. `processVolume` types
 every page and the thumbnail sidecar that way (non-raster pages become missing
 pages); deep-link covers and cloud covers go through the same call. On the
-way out, thumbnail/cover surfaces show only raster-typed Blobs (`rasterOrNull`),
-page object URLs are minted from a raster-labelled view (`displayableImageBlob`,
-for pages stored untyped by older builds), and `processThumbnails` re-types or
-drops any stored thumbnail whose type is not raster.
+way out, thumbnail/cover surfaces and the Anki `{cover}` field go through
+`displayableCoverBlob` (a raster-typed Blob as is, an untyped one — older
+archive imports stored thumbnail sidecars untyped — under a raster label, any
+explicit non-raster type never), page object URLs are minted from a
+raster-labelled view (`displayableImageBlob`, for pages stored untyped by older
+builds), and `processThumbnails` re-types or drops any stored thumbnail whose
+type is not raster.
 
 ### Cloud covers
 

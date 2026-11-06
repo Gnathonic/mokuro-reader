@@ -22,7 +22,11 @@
   import { get } from 'svelte/store';
   import { figuresFor, readingStats, readingStatsReady } from '$lib/reading-history/stats-store';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
-  import { RASTER_FORMAT_NAMES, rasterOrNull, sniffRasterBlob } from '$lib/util/raster-image';
+  import {
+    RASTER_FORMAT_NAMES,
+    displayableCoverBlob,
+    sniffRasterBlob
+  } from '$lib/util/raster-image';
 
   let open = $state(false);
   let loading = $state(true);
@@ -168,7 +172,7 @@
       if (thumbnailUrl) {
         URL.revokeObjectURL(thumbnailUrl);
       }
-      const cover = rasterOrNull(data.metadata.thumbnail);
+      const cover = displayableCoverBlob(data.metadata.thumbnail);
       if (cover) {
         thumbnailUrl = URL.createObjectURL(cover);
       } else {
@@ -341,7 +345,7 @@
 
       // Reload thumbnail
       const data = await getVolumeData(volumeUuid);
-      const cover = rasterOrNull(data?.metadata.thumbnail);
+      const cover = displayableCoverBlob(data?.metadata.thumbnail);
       if (cover) {
         if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
         thumbnailUrl = URL.createObjectURL(cover);
@@ -446,7 +450,7 @@
 
       // Reload thumbnail
       const data = await getVolumeData(volumeUuid);
-      const cover = rasterOrNull(data?.metadata.thumbnail);
+      const cover = displayableCoverBlob(data?.metadata.thumbnail);
       if (cover) {
         if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
         thumbnailUrl = URL.createObjectURL(cover);

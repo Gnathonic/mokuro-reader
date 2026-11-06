@@ -79,7 +79,7 @@
   import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
   import { isTypingTarget } from '$lib/util/series-editor-shortcut';
   import { onDestroy } from 'svelte';
-  import { rasterOrNull } from '$lib/util/raster-image';
+  import { displayableCoverBlob } from '$lib/util/raster-image';
   import { get } from 'svelte/store';
 
   interface Props {
@@ -319,8 +319,8 @@
     }
 
     thumbnailKey = nextKey;
-    // Raster-typed covers only — see `rasterOrNull`.
-    const cover = rasterOrNull(liveVolume?.thumbnail);
+    // Raster covers only — see `displayableCoverBlob`.
+    const cover = displayableCoverBlob(liveVolume?.thumbnail);
     if (!cover) return;
     thumbnailUrl = URL.createObjectURL(cover);
   });

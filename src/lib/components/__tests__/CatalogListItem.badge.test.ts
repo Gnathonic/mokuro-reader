@@ -175,6 +175,24 @@ describe('CatalogListItem gives an all-absent series the placeholder identity', 
     expect(removed.container.querySelector('img')).not.toBeNull();
   });
 
+  // Earlier builds stored archive thumbnail sidecars untyped: shown under a
+  // raster label until `processThumbnails` re-types them. An explicit
+  // non-raster type (SVG) is never shown.
+  it('shows an untyped cover, never an SVG-typed one', () => {
+    const untyped = render(CatalogListItem, {
+      props: { volumes: [volume({ thumbnail: new File(['x'], 'Vol 1.webp') })] }
+    });
+    expect(untyped.container.querySelector('img')).not.toBeNull();
+    cleanup();
+
+    const svg = render(CatalogListItem, {
+      props: {
+        volumes: [volume({ thumbnail: new File(['<svg/>'], 'c.svg', { type: 'image/svg+xml' }) })]
+      }
+    });
+    expect(svg.container.querySelector('img')).toBeNull();
+  });
+
   it('falls back to the download icon — never a blank "Cover" box — with no cover', () => {
     const { container } = render(CatalogListItem, {
       props: { volumes: [volume({ metadata_only: true })] }

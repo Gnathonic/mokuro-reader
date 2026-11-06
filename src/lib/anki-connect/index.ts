@@ -16,7 +16,7 @@ import type {
 import { settings, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
 import { showSnackbar } from '$lib/util';
 import { isMobilePlatform } from '$lib/util/platform';
-import { rasterOrNull } from '$lib/util/raster-image';
+import { displayableCoverBlob } from '$lib/util/raster-image';
 import { get } from 'svelte/store';
 
 export * from './cropper';
@@ -620,13 +620,14 @@ export async function blobToBase64(blob: Blob) {
 
 /**
  * A volume's stored thumbnail as a data URL for the `{cover}` field, or null
- * when its type is not an accepted raster one: a thumbnail stored as
- * `image/svg+xml` before the raster-only rule is never sent to Anki.
+ * when it is not displayable (`displayableCoverBlob`): a thumbnail stored as
+ * `image/svg+xml` before the raster-only rule is never sent to Anki, while an
+ * untyped one from an older archive import goes under a raster label.
  */
 export async function coverImageDataUrl(
   thumbnail: Blob | null | undefined
 ): Promise<string | null> {
-  const cover = rasterOrNull(thumbnail);
+  const cover = displayableCoverBlob(thumbnail);
   return cover ? await blobToBase64(cover) : null;
 }
 

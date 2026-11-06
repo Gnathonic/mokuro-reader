@@ -28,11 +28,18 @@ describe('coverImageDataUrl', () => {
     expect(await coverImageDataUrl(thumb)).toMatch(/^data:image\/jpeg;base64,/);
   });
 
-  it('sends nothing for an SVG, HTML or untyped thumbnail', async () => {
-    for (const type of ['image/svg+xml', 'text/html', '']) {
+  it('sends nothing for an SVG or HTML thumbnail', async () => {
+    for (const type of ['image/svg+xml', 'text/html']) {
       const thumb = new File(['<svg onload="x()"/>'], 't', { type });
       expect(await coverImageDataUrl(thumb), type).toBeNull();
     }
+  });
+
+  // Earlier builds stored archive thumbnail sidecars untyped; until
+  // `processThumbnails` re-types them they still go to Anki, raster-labelled.
+  it('sends an untyped thumbnail under a raster label', async () => {
+    const thumb = new File([new Uint8Array([0xff, 0xd8, 0xff])], 'Vol 1.jpg');
+    expect(await coverImageDataUrl(thumb)).toMatch(/^data:image\/jpeg;base64,/);
   });
 
   it('sends nothing without a thumbnail', async () => {
