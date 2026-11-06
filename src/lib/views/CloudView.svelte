@@ -564,7 +564,8 @@
       if (everywhere && result?.revoked) {
         showSnackbar('Signed out of Google Drive everywhere');
       } else if (everywhere && result?.pendingEverywhere) {
-        // Offline: queued, and replayed before this browser's next sign-in.
+        // Never got through (offline, the backend down): queued, and
+        // replayed before this browser's next sign-in.
         showSnackbar(
           'Signed out of Google Drive on this device. Signing out everywhere will finish the next time you connect here, or remove access now at myaccount.google.com/permissions.',
           10_000

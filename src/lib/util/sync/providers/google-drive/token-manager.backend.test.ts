@@ -855,6 +855,44 @@ describe('logout: everywhere', () => {
       expect(localStorage.getItem('gdrive_logout_pending')).toBe('everywhere');
     });
 
+    it.each([
+      ['no backend here (404)', () => new Response('Not found', { status: 404 })],
+      ['the app shell answered (HTML)', () => new Response('<!doctype html>', { status: 200 })],
+      ['the server refused it (bad_request)', () => json(400, { error: 'bad_request' })]
+    ])(
+      '%s, the revoke from here failing: NOT revoked, and NOT pending (no replay will ever finish it)',
+      async (_label, answer) => {
+        persist('LIVE', 30 * MIN);
+        const { tm } = await load();
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(answer())
+          .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+        expect(await tm.logout({ everywhere: true })).toMatchObject({
+          revoked: false,
+          pendingEverywhere: false
+        });
+      }
+    );
+
+    it('no backend here (404) and no token to revoke with: NOT pending either', async () => {
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValue(new Response('Not found', { status: 404 }));
+      expect(await tm.logout({ everywhere: true })).toMatchObject({
+        revoked: false,
+        pendingEverywhere: false
+      });
+      expect(browserRevokes()).toHaveLength(0);
+    });
+
+    it('the backend is down (a transient 503): NOT revoked, but pending', async () => {
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValue(json(503, { error: 'transient' }));
+      expect(await tm.logout({ everywhere: true })).toMatchObject({
+        revoked: false,
+        pendingEverywhere: true
+      });
+    });
+
     it('offline, and storage keeps no pending flag: NOT revoked, and not pending either', async () => {
       persist('LIVE', 30 * MIN);
       const { tm } = await load();
@@ -868,6 +906,52 @@ describe('logout: everywhere', () => {
         revoked: false,
         pendingEverywhere: false
       });
+    });
+  });
+
+  describe('while its /logout is out', () => {
+    /** An everywhere sign-out whose /logout answers only when told to. */
+    async function hangingEverywhere() {
+      persist('LIVE', 30 * MIN);
+      const loaded = await load();
+      let answer: ((r: Response) => void) | null = null;
+      vi.mocked(fetch).mockImplementation((url) => {
+        if (String(url) !== '/api/gdrive/logout') return Promise.resolve(granted('RENEWED'));
+        // The first one hangs; a second, concurrent one would answer at once.
+        if (answer) return Promise.resolve(json(200, { ok: true, revoked: false }));
+        return new Promise<Response>((r) => (answer = r));
+      });
+      const result = loaded.tm.logout({ everywhere: true });
+      await vi.waitFor(() => expect(calls('/api/gdrive/logout')).toHaveLength(1));
+      return { ...loaded, result, answer: (r: Response) => answer!(r) };
+    }
+
+    it('a 401 mid-sign-out renews nothing and sends no second /logout', async () => {
+      const { tm, result, answer, held } = await hangingEverywhere();
+      // A sync in progress got '' and Drive refused it.
+      expect(await tm.renewRejectedToken('')).toEqual({ kind: 'failed' });
+      expect(calls('/api/gdrive/logout')).toHaveLength(1);
+      expect(calls('/api/gdrive/refresh')).toHaveLength(0);
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      expect(await result).toMatchObject({ revoked: true, pendingEverywhere: false });
+      expect(held()).toBe('');
+    });
+
+    it('a silent refresh mid-sign-out is refused, not replayed', async () => {
+      const { tm, result, answer } = await hangingEverywhere();
+      expect(await tm.refreshFromBackend(true)).toBe('reauth');
+      expect(calls('/api/gdrive/logout')).toHaveLength(1);
+      expect(calls('/api/gdrive/refresh')).toHaveLength(0);
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      expect(await result).toMatchObject({ revoked: true });
+    });
+
+    it('once it has answered, a refresh goes out again', async () => {
+      const { tm, result, answer } = await hangingEverywhere();
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      await result;
+      expect(await tm.refreshFromBackend(true)).toBe('ok');
+      expect(calls('/api/gdrive/refresh')).toHaveLength(1);
     });
   });
 

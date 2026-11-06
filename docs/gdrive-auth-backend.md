@@ -151,8 +151,10 @@ cookie sealed under a retired key, no cookie at all), the client revokes the
 access token it holds itself: revoking either token of a grant ends the whole
 grant. The cloud page says "Signed out of Google Drive everywhere" only when
 one of the two revokes was confirmed (`logout()` answers `revoked`); otherwise
-it says the sign-out is queued for the next Connect here (offline,
-`pendingEverywhere`) or that Google could not be reached, and points to
+it says the sign-out is queued for the next Connect here (the request never
+got through — offline, a timeout, the backend down: `pendingEverywhere`) or
+that Google could not be reached (also when this host has no backend or the
+server refused the request: no replay would finish it), and points to
 myaccount.google.com/permissions. Implicit mode reports its revoke the same
 way. The client remembers the scope (`gdrive_logout_pending` in
 localStorage: `device` or `everywhere`; the older value `1` reads as
@@ -165,7 +167,9 @@ later `/logout` with that scope gets through, it sends no refresh, so the
 cookie left behind can never sign anyone back in without a consent screen. A
 pending `everywhere` is never narrowed: the next sign-out is an everywhere
 one too. For a pending device sign-out the key is already gone, so the cookie
-cannot refresh even before the replay clears it.
+cannot refresh even before the replay clears it. While a tab's own `/logout`
+is out, that tab renews nothing (a 401 mid-sign-out gets no token), so no
+replay of the queued sign-out races it with a second revoke of the same grant.
 
 On `/session`, the code exchange and the revoke of a grant the server refuses
 share one 8 s budget (`GOOGLE_BUDGET_MS`), under the routes' 10 s

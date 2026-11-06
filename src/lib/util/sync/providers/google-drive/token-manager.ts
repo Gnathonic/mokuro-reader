@@ -141,6 +141,14 @@ class TokenManager {
   private backendFailures = 0;
   /** The backend kept failing with an expired token: Reconnect opens the popup instead. */
   private popupFallbackOffered = false;
+  /**
+   * A sign-out of this tab is under way (its /logout may be out for up to the
+   * client timeout). Nothing renews meanwhile: a renewal would replay the
+   * pending sign-out (`settlePendingLogout`) concurrently with its own
+   * /logout, and the second revoke of the same grant answers 400, which can
+   * turn a sign-out that worked into "Google could not be reached".
+   */
+  private loggingOut = false;
 
   constructor() {
     if (browser) {
@@ -511,9 +519,12 @@ class TokenManager {
    * For an everywhere sign-out, `revoked` says Google confirmed the grant
    * ended (the server's revoke, or one from here); only then may the user be
    * told every device is signed out. Otherwise `pendingEverywhere` says the
-   * sign-out is queued to finish the next time this browser connects (the
-   * request never got through); neither means Google could not be reached
-   * and nothing will retry it. Both false on a device sign-out.
+   * sign-out is queued to finish the next time this browser connects: the
+   * request never got through (offline, a timeout, the backend down), so a
+   * replay can. Neither means Google could not be reached and nothing will
+   * retry it — also when the backend is missing here (`unavailable`: every
+   * replay meets the same 404) or refused the request (`refused`). Both false
+   * on a device sign-out.
    */
   async logout(options: { everywhere?: boolean } = {}): Promise<{
     copyMayStillWork: boolean;
@@ -536,6 +547,9 @@ class TokenManager {
     let copyMayStillWork = false;
     // The simulator's token has no grant behind it: nothing is left to end.
     let revoked = everywhere && !!injected;
+    // The request never got through, so the queued sign-out can finish later.
+    let queued = false;
+    this.loggingOut = true;
     try {
       // Written AHEAD, before anything awaits: a reload or a closed tab
       // while the key is deleted or /logout is out must still find this
@@ -582,6 +596,7 @@ class TokenManager {
         // (`settlePendingLogout`). A revoke that got through from here leaves
         // only a dead cookie behind.
         if (outcome.kind === 'done' || revokedHere) setLogoutPending(null);
+        queued = outcome.kind === 'transient';
       } else if (everywhere && currentToken && !injected) {
         revoked = await this.revokeToken(currentToken);
       }
@@ -592,9 +607,11 @@ class TokenManager {
       this.resetBackendState();
       // Clear token AND auth history on explicit logout
       this.clearToken(false);
+      this.loggingOut = false;
     }
     // Read back, not assumed: storage may have refused the flag.
-    const pendingEverywhere = backend && everywhere && !revoked && logoutPending() === 'everywhere';
+    const pendingEverywhere =
+      backend && everywhere && !revoked && queued && logoutPending() === 'everywhere';
     return { copyMayStillWork, revoked: everywhere && revoked, pendingEverywhere };
   }
 
@@ -828,7 +845,10 @@ class TokenManager {
    * single-flight per tab. `force` skips the backoff after transient failures.
    */
   refreshFromBackend(force = false): Promise<BackendRefresh> {
-    if (this.backendSessionDead) return Promise.resolve('reauth');
+    // Mid-sign-out the session is being ended: nothing to renew (and no
+    // second /logout racing the first). No verdict is kept; the sign-out
+    // resets the backend state when it finishes.
+    if (this.loggingOut || this.backendSessionDead) return Promise.resolve('reauth');
     if (!force && Date.now() < this.retryNotBefore) return Promise.resolve('transient');
     if (this.backendRefresh) return this.backendRefresh;
     this.backendRefresh = (async (): Promise<BackendRefresh> => {
@@ -878,6 +898,8 @@ class TokenManager {
    * never opens anything from here: a replaced token, or nothing.
    */
   async renewRejectedToken(rejected: string): Promise<TokenRenewal> {
+    // Mid-sign-out: no token to retry with, from anywhere.
+    if (this.loggingOut) return { kind: 'failed' };
     if (this.isBackendMode()) this.adoptStoredToken();
     const held = this.getCurrentToken();
     if (held && held !== rejected && this.validFor(0)) return { kind: 'renewed', token: held };
