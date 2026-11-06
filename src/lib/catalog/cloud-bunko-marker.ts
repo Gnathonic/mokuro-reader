@@ -533,7 +533,7 @@ export function cloudBunkoStatus(scope: string): CloudBunkoStatus | undefined {
 /**
  * A provider's own status with the marker folded in:
  * `serverCompilesMetadata = reported || anyMarkerFresh`; the per-user gates
- * from the lease HOLDER's rules — `historySync` needs bunko 0.8.0+ AND
+ * from the lease HOLDER's rules — `historySync` needs bunko 0.7.8+ AND
  * `history/` per user, `positionsSync` needs `positions.json` per user; and
  * `curatedPublish` `all` while the fresh holder keeps a curated layer — a
  * cloud-direct reader is the folder's owner. A verdict the provider set

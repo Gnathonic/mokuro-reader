@@ -36,7 +36,7 @@ import type { DeviceClass, DeviceFacts, ReadingEvent } from './types';
  *
  * Never uploads another device's events. Does nothing at all on a server that
  * cannot keep history per user (`historySyncAllowed`: mokuro-bunko before
- * 0.8.0 maps `history/` into the shared library); never uploads to a
+ * 0.7.8 maps `history/` into the shared library); never uploads to a
  * read-only provider, where imports still run.
  */
 
@@ -81,7 +81,7 @@ export async function syncHistory(
   };
 
   const status = provider.getStatus();
-  // A server that cannot keep history per user (mokuro-bunko < 0.8.0) files
+  // A server that cannot keep history per user (mokuro-bunko < 0.7.8) files
   // `history/` into the shared library: nothing goes up, and nothing listed
   // there is ours to import.
   if (!historySyncAllowed(status)) return result;
