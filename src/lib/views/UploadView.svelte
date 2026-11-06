@@ -8,14 +8,20 @@
   } from '$lib/import';
   import { db } from '$lib/catalog/db';
   import { installedUuids, pickCoverTarget } from '$lib/import/cover-sidecar';
-  import { importDeepLinkedArchive } from '$lib/import/deep-link-import';
+  import { importDeepLinkedArchive, localSeriesKeys } from '$lib/import/deep-link-import';
+  import { buildLinkImportPrompt, linkDisplayName } from '$lib/import/link-import-prompt';
   import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
-  import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
+  import {
+    confirmationPopupStore,
+    normalizeFilename,
+    promptConfirmationWith,
+    showSnackbar
+  } from '$lib/util';
   import { requestPersistentStorage } from '$lib/util/upload';
   import { nav } from '$lib/util/hash-router';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { toRasterImageFile } from '$lib/util/raster-image';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
 
   const uploadParams = getUploadParamsFromLocation(window.location.search, window.location.hash);
   const request = parseHtmlDownloadRequest(uploadParams);
@@ -88,7 +94,11 @@
     );
   }
 
-  async function onImport() {
+  /**
+   * @param allowSeriesKey the existing series the user let this link's
+   *   `series.json` update (the confirmation's box); none = no existing series.
+   */
+  async function onImport(allowSeriesKey?: string) {
     if (!request) return;
 
     // Request persistent storage now, within the confirmation click. The actual
@@ -98,7 +108,7 @@
 
     const normalizedVolume = normalizeFilename(request.volume);
     const processId = `cross-site-import-${Date.now()}`;
-    const displayName = decodeURIComponent(request.volume || normalizedVolume);
+    const displayName = linkDisplayName(request) || normalizedVolume;
 
     // Navigate to catalog immediately
     nav.toCatalog({ replaceState: true });
@@ -145,7 +155,8 @@
         const installed = await importDeepLinkedArchive(
           downloaded,
           normalizedVolume,
-          installedBefore
+          installedBefore,
+          { allowSeriesKey }
         );
         status = installed ? 'Complete' : 'Nothing imported';
         message = installed ? `Imported ${displayName}` : `Nothing imported from ${displayName}`;
@@ -191,18 +202,54 @@
     }
   }
 
+  // Left the import page (another hash) with the question still open: the
+  // question goes with it — an import nobody is looking at must not wait to be
+  // confirmed over some other screen — and its "no" sends no one anywhere.
+  let destroyed = false;
+  // The existing series the prompt's box would let this link update, if it offered one.
+  let seriesUpdateKey: string | undefined;
+  const onConfirm = (allowSeriesUpdate?: boolean) =>
+    onImport(seriesUpdateKey && allowSeriesUpdate ? seriesUpdateKey : undefined);
+
   function onCancel() {
+    if (destroyed) return;
     nav.toCatalog({ replaceState: true });
   }
 
-  onMount(() => {
+  onDestroy(() => {
+    destroyed = true;
+    confirmationPopupStore.update((popup) =>
+      popup?.open && popup.onConfirm === onConfirm ? { ...popup, open: false } : popup
+    );
+  });
+
+  onMount(async () => {
     if (!request) {
       showSnackbar('Invalid import URL - missing manga or volume parameter');
       onCancel();
-    } else {
-      const displayName = decodeURIComponent(request.volume || '');
-      promptConfirmation(`Import ${displayName} into catalog?`, onImport, onCancel);
+      return;
     }
+    // Nothing is fetched before the user answers: the prompt is built from the
+    // link alone (and the library's own series names).
+    let localSeries = new Set<string>();
+    try {
+      localSeries = await localSeriesKeys();
+    } catch (error) {
+      console.warn('[HTML Download] Could not read the library for the import prompt:', error);
+    }
+    if (destroyed) return;
+    const prompt = buildLinkImportPrompt(request, localSeries);
+    const { seriesUpdate, ...details } = prompt;
+    seriesUpdateKey = seriesUpdate?.seriesKey;
+    promptConfirmationWith({
+      ...details,
+      // Not remembered (no storageKey): every link is asked afresh, unticked.
+      ...(seriesUpdate
+        ? { checkboxOption: { label: seriesUpdate.label, defaultValue: false } }
+        : {}),
+      onConfirm,
+      onCancel
+    });
   });
 </script>
 

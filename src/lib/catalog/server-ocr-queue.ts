@@ -5,6 +5,7 @@ import { getLayerMeta } from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import {
+  confineManifestToOrigins,
   loadVolumeManifest,
   type ManifestPendingJob,
   type VolumeManifest
@@ -12,6 +13,7 @@ import {
 import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { VolumeMetadata } from '$lib/types';
+import { assertNoRedirectEscape } from '$lib/util/link-safety';
 import type { ProviderType, SyncProvider } from '$lib/util/sync/provider-interface';
 import { QUEUE_FILE_NAME } from '$lib/util/sync/syncable-file';
 import {
@@ -854,14 +856,78 @@ export async function fetchWithQueueAuth(
   });
 }
 
+/**
+ * The `source` of a deep link's watch (`DEEP_LINK_LAYER_SOURCE`, spelled out:
+ * importing it would pull the whole import pipeline into the poller).
+ */
+const LINK_WATCH_SOURCE = 'html-download';
+
+/**
+ * The servers a LINK-driven pull may read from: `null` when the pull is not
+ * link-driven, `'not-its-queue'` when it must not run at all. A deep link's
+ * watch re-reads the manifest long after the user confirmed the link: every
+ * fetch then stays on the servers that confirmation showed — the manifest's
+ * own and the queue's, which sits beside the confirmed archive — and a
+ * redirect may not take it anywhere worse (`assertNoRedirectEscape`), as for
+ * the import itself.
+ *
+ * Watch keys are not scoped to a queue, and a poller reports any key it is
+ * merely SHOWN as done: another link's anonymous poller can report this
+ * watch. Read from the CALLER, the allowlist would then name that other
+ * server and the pull would apply its OCR to this watch's volume. So ANY
+ * watch — a link's, an upload's — reported by a queue but its own is refused
+ * (`'not-its-queue'`; the watch stays, and its own poller, which
+ * watchServerOcr and startup always create, pulls it). On its own queue a
+ * link's watch allows only the WATCH's origins. Without a watch, the
+ * anonymous poller (which exists because a link was confirmed) stays on its
+ * own server. A watch that is not a link's — the bunko account's uploads,
+ * also when they landed on an anonymous poller a link created first (pollers
+ * are keyed by queue URL alone) — reads its own queue as it always has.
+ */
+function linkPullOrigins(
+  watched: WatchEntry | undefined,
+  target: Pick<PullTarget, 'queueUrl' | 'auth'>
+): readonly string[] | 'not-its-queue' | null {
+  if (watched && watched.queue_url !== target.queueUrl) return 'not-its-queue';
+  if (watched?.source === LINK_WATCH_SOURCE) {
+    return [watched.manifest_url, watched.queue_url].filter((u) => !!u);
+  }
+  if (!watched && (target.auth ?? 'none') === 'none') return [target.queueUrl];
+  return null;
+}
+
+/** Is `url` http(s) on the origin of one of `allowedUrls`? */
+function onOriginOf(url: string, allowedUrls: readonly string[]): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+    return allowedUrls.some((allowed) => originOf(allowed) === parsed.origin);
+  } catch {
+    return false;
+  }
+}
+
+/** `fetchWithQueueAuth`, refusing (throwing) a link-driven response a redirect took somewhere worse. */
+async function fetchForPull(
+  url: string,
+  init: RequestInit,
+  target: Pick<PullTarget, 'queueUrl' | 'auth'>,
+  linkDriven: boolean
+): Promise<Response> {
+  const response = await fetchWithQueueAuth(url, init, target.queueUrl, target.auth);
+  if (linkDriven) assertNoRedirectEscape(url, response);
+  return response;
+}
+
 async function fetchBlob(
   url: string,
   init: RequestInit,
   what: string,
-  target: Pick<PullTarget, 'queueUrl' | 'auth'>
+  target: Pick<PullTarget, 'queueUrl' | 'auth'>,
+  linkDriven: boolean
 ): Promise<Blob | null> {
   try {
-    const response = await fetchWithQueueAuth(url, init, target.queueUrl, target.auth);
+    const response = await fetchForPull(url, init, target, linkDriven);
     if (response.ok) return await response.blob();
     console.warn(`[OCR queue] Could not fetch ${what} ${url}: HTTP ${response.status}`);
   } catch (error) {
@@ -896,11 +962,12 @@ async function pullManifestFiles(
   row: VolumeMetadata,
   manifest: VolumeManifest,
   target: PullTarget,
-  source: string
+  source: string,
+  linkDriven: boolean
 ): Promise<void> {
   const init = target.init;
   if (manifest.ocr && wantsPrimary(row)) {
-    const blob = await fetchBlob(manifest.ocr.url, init, 'OCR file', target);
+    const blob = await fetchBlob(manifest.ocr.url, init, 'OCR file', target, linkDriven);
     if (blob) {
       const { upgradeOcrFromSidecarBlob } = await import('$lib/catalog/cloud-ocr-upgrade');
       try {
@@ -913,7 +980,7 @@ async function pullManifestFiles(
   const fetched: FetchedLayerFile[] = [];
   for (const layer of manifest.layers) {
     if (await getLayerMeta(db, row.volume_uuid, layer.id)) continue;
-    const blob = await fetchBlob(layer.url, init, `OCR layer '${layer.id}'`, target);
+    const blob = await fetchBlob(layer.url, init, `OCR layer '${layer.id}'`, target, linkDriven);
     if (!blob) continue;
     fetched.push({
       layerId: layer.id,
@@ -944,8 +1011,16 @@ export function pullCompletedVolume(
   entry: Pick<QueueVolume, 'series' | 'volume' | 'manifest'> | undefined,
   target: PullTarget
 ): Promise<boolean | PendingOnServer> {
+  // Decided before the in-flight check, synchronously: a refusal must
+  // neither join nor occupy the slot the watch's own queue pulls through.
+  const allowed = linkPullOrigins(loadWatches().get(key), target);
+  if (allowed === 'not-its-queue') {
+    console.warn(`[OCR queue] Not pulling ${key} for ${target.queueUrl}: its link watched another`);
+    return Promise.resolve(false);
+  }
   const inFlight = pulling.get(key);
   if (inFlight) return inFlight;
+  let finished = false;
   const run = (async () => {
     try {
       const watched = loadWatches().get(key);
@@ -964,11 +1039,21 @@ export function pullCompletedVolume(
         ? resolveBunkoLink(entry.manifest, target.queueUrl)
         : watched?.manifest_url;
       if (!manifestUrl) return false;
-      const load = await loadVolumeManifest(
+      if (allowed && !onOriginOf(manifestUrl, allowed)) {
+        console.warn(
+          `[OCR queue] Not reading manifest ${manifestUrl}: it is not on a server the link named`
+        );
+        return false;
+      }
+      const fetched = await loadVolumeManifest(
         manifestUrl,
         target.init.headers as Record<string, string> | undefined,
-        (input, init) => fetchWithQueueAuth(String(input), init ?? {}, target.queueUrl, target.auth)
+        (input, init) => fetchForPull(String(input), init ?? {}, target, allowed !== null)
       );
+      const load =
+        allowed && 'manifest' in fetched
+          ? confineManifestToOrigins(fetched.manifest, allowed)
+          : fetched;
       if ('error' in load) {
         console.warn(`[OCR queue] Manifest ${manifestUrl} unavailable:`, load.error);
         return false;
@@ -981,17 +1066,27 @@ export function pullCompletedVolume(
           recheckAfter: load.manifest.recheck_after
         };
       }
-      await pullManifestFiles(row, load.manifest, target, watched?.source ?? target.source);
+      await pullManifestFiles(
+        row,
+        load.manifest,
+        target,
+        watched?.source ?? target.source,
+        allowed !== null
+      );
       if (loadWatches().delete(key)) saveWatches();
       return true;
     } catch (error) {
       console.warn('[OCR queue] Pull failed; it is retried on the next look:', error);
       return false;
     } finally {
+      finished = true;
       pulling.delete(key);
     }
   })();
-  pulling.set(key, run);
+  // A body that returns before its first await has already run its `finally`
+  // here: registering it now would leave a settled promise answering every
+  // later pull of the key.
+  if (!finished) pulling.set(key, run);
   return run;
 }
 
@@ -1069,7 +1164,11 @@ function pollerFor(queueUrl: string, auth: WatchEntry['auth'], source: string): 
       return init ? pullCompletedVolume(key, entry, { queueUrl, init, source, auth }) : false;
     },
     isHidden,
-    fetch: (input, init) => fetchWithQueueAuth(String(input), init ?? {}, queueUrl, auth)
+    // An anonymous poller is made for a link's watch (or restored for one),
+    // though an upload watch on the same server may share it later: its queue
+    // file is read under the same redirect rule as the link's other fetches.
+    fetch: (input, init) =>
+      fetchForPull(String(input), init ?? {}, { queueUrl, auth }, auth === 'none')
   });
   pollers.set(queueUrl, poller);
   if (auth === 'webdav') webdavAuthPollers.add(queueUrl);
