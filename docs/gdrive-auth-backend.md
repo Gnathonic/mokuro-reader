@@ -149,7 +149,12 @@ had a device key), the snackbar says a copy could still work and points to
 server ended the grant at Google. When it is false (Google down or slow, a
 cookie sealed under a retired key, no cookie at all), the client revokes the
 access token it holds itself: revoking either token of a grant ends the whole
-grant. The client remembers the scope (`gdrive_logout_pending` in
+grant. The cloud page says "Signed out of Google Drive everywhere" only when
+one of the two revokes was confirmed (`logout()` answers `revoked`); otherwise
+it says the sign-out is queued for the next Connect here (offline,
+`pendingEverywhere`) or that Google could not be reached, and points to
+myaccount.google.com/permissions. Implicit mode reports its revoke the same
+way. The client remembers the scope (`gdrive_logout_pending` in
 localStorage: `device` or `everywhere`; the older value `1` reads as
 `everywhere`) and drops its token BEFORE the request goes out, so a reload
 or a closed tab mid-request still finds the device signed out and the

@@ -498,6 +498,17 @@ export interface LogoutResult {
    * sign-out could not make it useless without ending access everywhere.
    */
   copyMayStillWork?: boolean;
+  /**
+   * An `everywhere` sign-out: the provider confirmed the account's access
+   * ended on every device. Absent or false: it did not — never tell the user
+   * it did.
+   */
+  revoked?: boolean;
+  /**
+   * An `everywhere` sign-out that never reached the provider (offline): it is
+   * queued and finishes the next time this browser connects.
+   */
+  pendingEverywhere?: boolean;
 }
 
 /** How far a sign-out reaches (`SyncProvider.logout`). */

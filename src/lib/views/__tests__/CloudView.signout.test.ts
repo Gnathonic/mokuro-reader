@@ -13,7 +13,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/sv
 
 const mocks = vi.hoisted(() => ({
   logout: vi.fn(
-    async (_options?: { everywhere?: boolean }): Promise<{ copyMayStillWork?: boolean }> => ({})
+    async (_options?: {
+      everywhere?: boolean;
+    }): Promise<{
+      copyMayStillWork?: boolean;
+      revoked?: boolean;
+      pendingEverywhere?: boolean;
+    }> => ({})
   ),
   showSnackbar: vi.fn()
 }));
@@ -144,7 +150,8 @@ describe('Google Drive sign-out on the cloud screen', () => {
     expect(mocks.showSnackbar).not.toHaveBeenCalled();
   });
 
-  it('confirming signs out everywhere, and says so', async () => {
+  it('confirming signs out everywhere, and says so once Google confirmed it', async () => {
+    mocks.logout.mockResolvedValueOnce({ revoked: true });
     render(CloudView);
     await fireEvent.click(everywhereButton());
     await waitFor(() => expect(modalConfirm()).not.toBeNull());
@@ -152,6 +159,34 @@ describe('Google Drive sign-out on the cloud screen', () => {
     await waitFor(() => expect(mocks.logout).toHaveBeenCalledWith({ everywhere: true }));
     expect(mocks.logout).toHaveBeenCalledTimes(1);
     expect(mocks.showSnackbar).toHaveBeenCalledWith('Signed out of Google Drive everywhere');
+  });
+
+  async function signOutEverywhere() {
+    render(CloudView);
+    await fireEvent.click(everywhereButton());
+    await waitFor(() => expect(modalConfirm()).not.toBeNull());
+    await fireEvent.click(modalConfirm()!);
+    await waitFor(() => expect(mocks.showSnackbar).toHaveBeenCalledTimes(1));
+    return String(mocks.showSnackbar.mock.calls[0][0]);
+  }
+
+  it('an everywhere sign-out Google never confirmed does not claim it, and says where to finish it', async () => {
+    mocks.logout.mockResolvedValueOnce({ revoked: false, pendingEverywhere: false });
+    const message = await signOutEverywhere();
+    expect(message).not.toMatch(/everywhere/i);
+    expect(message).toMatch(
+      /^Signed out of Google Drive on this device, but Google could not be reached/
+    );
+    expect(message).toContain('myaccount.google.com/permissions');
+  });
+
+  it('an everywhere sign-out queued offline says it finishes on the next Connect here', async () => {
+    mocks.logout.mockResolvedValueOnce({ revoked: false, pendingEverywhere: true });
+    const message = await signOutEverywhere();
+    expect(message).not.toContain('Signed out of Google Drive everywhere');
+    expect(message).toMatch(/^Signed out of Google Drive on this device\. /);
+    expect(message).toContain('next time you connect');
+    expect(message).toContain('myaccount.google.com/permissions');
   });
 
   it('the action buttons sit above the dialog’s stacking context (night mode)', async () => {

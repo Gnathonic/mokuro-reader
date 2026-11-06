@@ -312,16 +312,19 @@ class TokenManager {
     });
   }
 
-  async revokeToken(token: string): Promise<void> {
+  /** Implicit mode's revoke. True only when Google confirmed it. */
+  async revokeToken(token: string): Promise<boolean> {
     try {
-      await fetch(`${GOOGLE_DRIVE_CONFIG.OAUTH_ENDPOINT}?token=${token}`, {
+      const response = await fetch(`${GOOGLE_DRIVE_CONFIG.OAUTH_ENDPOINT}?token=${token}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded'
         }
       });
+      return response.ok;
     } catch (error) {
       console.error('Error revoking token:', error);
+      return false;
     }
   }
 
@@ -504,8 +507,19 @@ class TokenManager {
    * when it never answered, this browser had no device key to delete (the
    * session cannot have been bound) or could not delete it. Never in
    * implicit mode: there is no server cookie to copy.
+   *
+   * For an everywhere sign-out, `revoked` says Google confirmed the grant
+   * ended (the server's revoke, or one from here); only then may the user be
+   * told every device is signed out. Otherwise `pendingEverywhere` says the
+   * sign-out is queued to finish the next time this browser connects (the
+   * request never got through); neither means Google could not be reached
+   * and nothing will retry it. Both false on a device sign-out.
    */
-  async logout(options: { everywhere?: boolean } = {}): Promise<{ copyMayStillWork: boolean }> {
+  async logout(options: { everywhere?: boolean } = {}): Promise<{
+    copyMayStillWork: boolean;
+    revoked: boolean;
+    pendingEverywhere: boolean;
+  }> {
     this.disarmGestureRetry();
     // Clear the refresh interval
     if (this.refreshIntervalId) {
@@ -520,6 +534,8 @@ class TokenManager {
     const everywhere = options.everywhere === true || (backend && logoutPending() === 'everywhere');
 
     let copyMayStillWork = false;
+    // The simulator's token has no grant behind it: nothing is left to end.
+    let revoked = everywhere && !!injected;
     try {
       // Written AHEAD, before anything awaits: a reload or a closed tab
       // while the key is deleted or /logout is out must still find this
@@ -551,6 +567,7 @@ class TokenManager {
           if (!serverRevoked && currentToken && !injected) {
             revokedHere = await this.revokeGrant(currentToken);
           }
+          revoked ||= serverRevoked || revokedHere;
         }
         if (!everywhere && !injected) {
           if (outcome.kind === 'done') copyMayStillWork = !outcome.invalidated;
@@ -566,7 +583,7 @@ class TokenManager {
         // only a dead cookie behind.
         if (outcome.kind === 'done' || revokedHere) setLogoutPending(null);
       } else if (everywhere && currentToken && !injected) {
-        await this.revokeToken(currentToken);
+        revoked = await this.revokeToken(currentToken);
       }
     } catch (error) {
       console.warn('Google Drive sign-out request failed:', error);
@@ -576,7 +593,9 @@ class TokenManager {
       // Clear token AND auth history on explicit logout
       this.clearToken(false);
     }
-    return { copyMayStillWork };
+    // Read back, not assumed: storage may have refused the flag.
+    const pendingEverywhere = backend && everywhere && !revoked && logoutPending() === 'everywhere';
+    return { copyMayStillWork, revoked: everywhere && revoked, pendingEverywhere };
   }
 
   /**

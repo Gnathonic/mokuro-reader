@@ -561,8 +561,21 @@
       webdavPassword = '';
       showSnackbar('Logged out of WebDAV');
     } else if (provider === 'google-drive') {
-      if (everywhere) {
+      if (everywhere && result?.revoked) {
         showSnackbar('Signed out of Google Drive everywhere');
+      } else if (everywhere && result?.pendingEverywhere) {
+        // Offline: queued, and replayed before this browser's next sign-in.
+        showSnackbar(
+          'Signed out of Google Drive on this device. Signing out everywhere will finish the next time you connect here, or remove access now at myaccount.google.com/permissions.',
+          10_000
+        );
+      } else if (everywhere) {
+        // Google never confirmed the revoke, and nothing will retry it: the
+        // other devices (and any mokuro-bunko server) are still signed in.
+        showSnackbar(
+          'Signed out of Google Drive on this device, but Google could not be reached to end the other sign-ins. Remove access at myaccount.google.com/permissions.',
+          10_000
+        );
       } else if (result?.copyMayStillWork) {
         // The session was not tied to this device (or the server does not
         // check that), so a copy of it taken earlier could still be used.

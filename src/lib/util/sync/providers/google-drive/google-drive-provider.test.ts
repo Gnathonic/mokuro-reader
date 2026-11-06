@@ -280,6 +280,12 @@ describe('GoogleDriveProvider.logout() scope', () => {
     await googleDriveProvider.logout({ everywhere: true });
     expect(tokenManager.logout).toHaveBeenCalledWith({ everywhere: true });
   });
+
+  it('answers what the token manager said, so the cloud page never claims a revoke that failed', async () => {
+    const said = { copyMayStillWork: false, revoked: false, pendingEverywhere: true };
+    vi.mocked(tokenManager.logout).mockResolvedValueOnce(said);
+    expect(await googleDriveProvider.logout({ everywhere: true })).toEqual(said);
+  });
 });
 
 describe('GoogleDriveProvider login() through the auth backend', () => {
