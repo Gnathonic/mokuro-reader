@@ -9,6 +9,7 @@ import {
   viewToHash
 } from '$lib/util/hash-router';
 import { get } from 'svelte/store';
+import { snackbarStore } from '$lib/util/snackbar';
 
 vi.mock('$lib/metadata/providers/anilist', () => ({
   anilistRequest: vi.fn().mockResolvedValue({ Viewer: null })
@@ -134,6 +135,7 @@ describe('AniList implicit-grant callback', () => {
   beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    snackbarStore.set(undefined);
   });
 
   test('stores the token and restores the pre-login route', () => {
@@ -206,9 +208,54 @@ describe('AniList implicit-grant callback', () => {
     );
     window.location.hash = '#access_token=attacker-token&token_type=Bearer&expires_in=3600';
     const cleanup = initRouter();
-    expect(window.location.hash).toBe('#/catalog');
     expect(localStorage.getItem('anilist_token')).toBeNull();
     expect(sessionStorage.getItem('anilist_return')).toBeNull();
+    cleanup();
+  });
+
+  test('a login that took over 10 minutes says so, and goes back where it started', () => {
+    // A slow sign-in (2FA, a password reset, the page left open) is refused
+    // like an abandoned one, but the user is told why instead of landing
+    // on the catalog with AniList still disconnected and no word.
+    sessionStorage.setItem(
+      'anilist_return',
+      JSON.stringify({ hash: '#/series/One%20Piece', at: Date.now() - 11 * 60 * 1000 })
+    );
+    window.location.hash = '#access_token=x&expires_in=1';
+    const cleanup = initRouter();
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+    expect(window.location.hash).toBe('#/series/One%20Piece');
+    expect(get(snackbarStore)?.message).toContain('took over 10 minutes');
+    expect(get(snackbarStore)?.message).toContain('Connect again from Settings');
+    cleanup();
+  });
+
+  test('a callback this tab never asked for is refused out loud', () => {
+    window.location.hash = '#access_token=attacker-token&token_type=Bearer&expires_in=3600';
+    const cleanup = initRouter();
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+    expect(get(snackbarStore)?.message).toContain('was not started in this tab');
+    cleanup();
+  });
+
+  test('an expired marker that holds an unsafe route still lands on the catalog', () => {
+    sessionStorage.setItem(
+      'anilist_return',
+      JSON.stringify({ hash: '//evil.example.com', at: Date.now() - 11 * 60 * 1000 })
+    );
+    window.location.hash = '#access_token=x&expires_in=1';
+    const cleanup = initRouter();
+    expect(window.location.hash).toBe('#/catalog');
+    expect(localStorage.getItem('anilist_token')).toBeNull();
+    cleanup();
+  });
+
+  test('a login this tab started is not refused', () => {
+    sessionStorage.setItem('anilist_return', JSON.stringify({ hash: '#/catalog', at: Date.now() }));
+    window.location.hash = '#access_token=tok789&expires_in=3600';
+    const cleanup = initRouter();
+    expect(localStorage.getItem('anilist_token')).toBe('tok789');
+    expect(get(snackbarStore)?.message ?? '').not.toContain('was not used');
     cleanup();
   });
 

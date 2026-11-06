@@ -6,9 +6,10 @@
 import { writable, derived, get } from 'svelte/store';
 import {
   clearAniListLoginMarker,
-  consumeAniListReturnHash,
+  consumeAniListLoginMarker,
   handleAniListCallbackHash,
-  isAniListCallbackHash
+  isAniListCallbackHash,
+  noteRefusedAniListCallback
 } from '$lib/metadata/anilist-auth';
 
 /**
@@ -274,18 +275,21 @@ export function initRouter(): () => void {
   // wipe the fragment before we ever get to read it.
   if (isAniListCallbackHash(window.location.hash)) {
     const callbackHash = window.location.hash;
-    const rawReturnHash = consumeAniListReturnHash();
+    const marker = consumeAniListLoginMarker();
     // Only a same-origin script can have written `anilist_return` (it's set
-    // by startAniListLogin() right before navigating to AniList), so its
-    // presence is proof this tab initiated the login. An attacker can send
+    // by startAniListLogin() right before navigating to AniList), so a
+    // fresh one is proof this tab initiated the login. An attacker can send
     // a bare `#access_token=…` link with no such key set — without this
     // check that link would silently log the victim into the attacker's
-    // AniList account. Absent proof, scrub the fragment and store nothing.
-    const returnHash =
-      rawReturnHash && rawReturnHash.startsWith('#/') ? rawReturnHash : '#/catalog';
+    // AniList account. Absent proof, scrub the fragment, store nothing, and
+    // say why. An expired marker still names where the login started.
+    const savedHash = marker.state === 'none' ? null : marker.hash;
+    const returnHash = savedHash && savedHash.startsWith('#/') ? savedHash : '#/catalog';
     window.history.replaceState(null, '', '/' + returnHash);
-    if (rawReturnHash) {
+    if (marker.state === 'started') {
       void handleAniListCallbackHash(callbackHash).catch(() => {});
+    } else {
+      noteRefusedAniListCallback(marker.state);
     }
   } else {
     // Back in the app WITHOUT a token: whatever login this tab started is

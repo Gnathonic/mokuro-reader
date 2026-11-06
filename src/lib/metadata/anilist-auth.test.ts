@@ -17,7 +17,7 @@ import {
   anilistUser,
   buildAniListAuthorizeUrl,
   clearAniListLoginMarker,
-  consumeAniListReturnHash,
+  consumeAniListLoginMarker,
   disconnectAniList,
   getAniListToken,
   handleAniListCallbackHash,
@@ -275,8 +275,11 @@ describe('return hash (the login marker)', () => {
 
   it('consumes the saved return hash once', () => {
     marker('#/series/One%20Piece', Date.now());
-    expect(consumeAniListReturnHash()).toBe('#/series/One%20Piece');
-    expect(consumeAniListReturnHash()).toBeNull();
+    expect(consumeAniListLoginMarker()).toEqual({
+      state: 'started',
+      hash: '#/series/One%20Piece'
+    });
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
   });
 
   it('is still good just under 10 minutes after the login started', () => {
@@ -284,35 +287,39 @@ describe('return hash (the login marker)', () => {
     vi.setSystemTime(1_800_000_000_000);
     marker('#/catalog', Date.now());
     vi.setSystemTime(1_800_000_000_000 + ANILIST_LOGIN_MARKER_TTL_MS - 1);
-    expect(consumeAniListReturnHash()).toBe('#/catalog');
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'started', hash: '#/catalog' });
   });
 
   it('proves nothing once 10 minutes have passed, and is removed all the same', () => {
     // An abandoned login: a forged callback opened later in the tab must not
-    // be able to complete it.
+    // be able to complete it. It is told apart from no login at all, so a
+    // user who just took too long hears that, and lands back where they were.
     expect(ANILIST_LOGIN_MARKER_TTL_MS).toBe(10 * 60 * 1000);
     vi.useFakeTimers();
     vi.setSystemTime(1_800_000_000_000);
-    marker('#/catalog', Date.now());
+    marker('#/series/One%20Piece', Date.now());
     vi.setSystemTime(1_800_000_000_000 + ANILIST_LOGIN_MARKER_TTL_MS + 1);
-    expect(consumeAniListReturnHash()).toBeNull();
+    expect(consumeAniListLoginMarker()).toEqual({
+      state: 'expired',
+      hash: '#/series/One%20Piece'
+    });
     expect(sessionStorage.getItem('anilist_return')).toBeNull();
   });
 
   it('a marker from the future or without its timestamp proves nothing', () => {
     marker('#/catalog', Date.now() + 60_000);
-    expect(consumeAniListReturnHash()).toBeNull();
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
     // The old bare-string marker, or anything else not written by this code.
     sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
-    expect(consumeAniListReturnHash()).toBeNull();
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
     sessionStorage.setItem('anilist_return', JSON.stringify({ hash: '#/catalog' }));
-    expect(consumeAniListReturnHash()).toBeNull();
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
   });
 
   it('clearAniListLoginMarker forgets a pending login', () => {
     marker('#/catalog', Date.now());
     clearAniListLoginMarker();
-    expect(consumeAniListReturnHash()).toBeNull();
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
   });
 });
 
