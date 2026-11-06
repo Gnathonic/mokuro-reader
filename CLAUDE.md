@@ -152,6 +152,13 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   is null while the session can renew. A flag-set build whose server cannot serve the routes
   falls back to the implicit flow for that tab. Full design, env vars, error vocabulary and
   runbook: `docs/gdrive-auth-backend.md`.
+- Sign-out is THIS DEVICE ONLY by default (Log out, provider switch, `providerManager.logout()`):
+  no Google revoke, because Google revokes per Cloud project and would sign out every other
+  device and any mokuro-bunko server sharing the grant. Backend mode clears the cookie and
+  deletes the device key (a bound cookie's copy can no longer refresh). Only the confirmed
+  "Sign out everywhere…" passes `logout({ everywhere: true })` and revokes; a provider switch
+  never does. A device sign-out that cannot neutralise copies (unbound session, `GDRIVE_POP=off`)
+  answers `invalidated: false`, and the cloud page's snackbar says a copy could still work.
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's

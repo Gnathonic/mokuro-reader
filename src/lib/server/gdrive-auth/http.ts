@@ -127,9 +127,13 @@ export type Validated =
  * subdomain through), the custom X-Requested-With header (no form or simple
  * request can set it), and a body of at most BODY_LIMIT_BYTES that parses to
  * a JSON object. POST only is the route's own export (`fallback` answers the
- * rest).
+ * rest). `allowEmptyBody`: an empty body reads as `{}` (every other check
+ * still applies — `/logout`, whose body is optional).
  */
-export async function validateRequest(event: AuthEvent): Promise<Validated> {
+export async function validateRequest(
+  event: AuthEvent,
+  options: { allowEmptyBody?: boolean } = {}
+): Promise<Validated> {
   const { request, url } = event;
   const reject = (status: number, error: AuthErrorCode, why: string): Validated => ({
     ok: false,
@@ -165,6 +169,8 @@ export async function validateRequest(event: AuthEvent): Promise<Validated> {
     if (error instanceof BodyTooLarge) return reject(413, 'payload_too_large', 'body_size');
     return reject(400, 'bad_request', 'body_read');
   }
+
+  if (raw.byteLength === 0 && options.allowEmptyBody) return { ok: true, body: {} };
 
   let body: unknown;
   try {

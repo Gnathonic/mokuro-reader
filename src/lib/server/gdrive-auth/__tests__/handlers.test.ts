@@ -584,95 +584,236 @@ describe('POST /api/gdrive/refresh', () => {
 describe('POST /api/gdrive/logout', () => {
   const logoutEvent = (jar: CookieJar, extra: Parameters<typeof authEvent>[0] = {}) =>
     authEvent({ path: '/api/gdrive/logout', jar, ...extra });
+  const everywhereEvent = (jar: CookieJar, extra: Parameters<typeof authEvent>[0] = {}) =>
+    logoutEvent(jar, { body: { everywhere: true }, ...extra });
 
-  it('revokes the refresh token at Google (in the body) and clears the cookie', async () => {
-    const s = setup();
-    s.plant();
-    const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
-    const response = await handleLogout(logoutEvent(s.jar), deps);
-    expect(response.status).toBe(200);
-    expect(await bodyOf(response)).toEqual({ ok: true, revoked: true });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('https://oauth2.googleapis.com/revoke');
-    expect(calls[0].form).toEqual({ token: '1//planted' });
-    expect(s.jar.deletes.map((d) => d.name)).toEqual([COOKIE]);
-    expectCleanLogs('1//planted');
-  });
+  describe('this device only (the default)', () => {
+    it.each([
+      ['no body at all', { rawBody: null }],
+      ['an empty body', { rawBody: '' }],
+      ['{}', { body: {} }],
+      ['{ everywhere: false }', { body: { everywhere: false } }]
+    ] as const)(
+      '%s: Google is never asked, the cookie is cleared, and a bound copy is now useless',
+      async (_label, extra) => {
+        const s = setup();
+        const key = await deviceKey();
+        s.plant({ cnf: jwkThumbprint(key.jwk) });
+        const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+        const response = await handleLogout(logoutEvent(s.jar, { ...extra }), deps);
+        expect(response.status).toBe(200);
+        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: true });
+        expect(calls).toHaveLength(0);
+        expect(s.jar.deletes.map((d) => d.name)).toEqual([COOKIE]);
+        expect(JSON.parse(logs.at(-1)!)).toMatchObject({
+          route: 'logout',
+          status: 200,
+          event: 'device_cleared',
+          kid: s.config.current.kid
+        });
+        expectCleanLogs('1//planted');
+      }
+    );
 
-  it('needs no proof: a bound session signs out from a device that lost its key', async () => {
-    const s = setup();
-    const key = await deviceKey();
-    s.plant({ cnf: jwkThumbprint(key.jwk) });
-    const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
-    expect((await handleLogout(logoutEvent(s.jar), deps)).status).toBe(200);
-    expect(calls).toHaveLength(1);
-  });
-
-  it('an expired session’s token is still revoked', async () => {
-    const s = setup();
-    s.plant({ ts: NOW - 200 * DAY, iat0: NOW - 400 * DAY });
-    const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
-    expect((await handleLogout(logoutEvent(s.jar), deps)).status).toBe(200);
-    expect(calls).toHaveLength(1);
-  });
-
-  it.each([
-    ['a bad cookie', () => 'garbage'],
-    // Sealed under a key this server no longer has (rotated out): unknown_kid.
-    ['a cookie under a retired key', () => setup().plant()],
-    ['no cookie', () => undefined]
-  ])('%s: no revoke, still cleared, still 200, and says it revoked nothing', async (_l, value) => {
-    const s = setup();
-    const planted = value();
-    if (planted) s.jar.values.set(COOKIE, planted);
-    const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
-    const response = await handleLogout(logoutEvent(s.jar), deps);
-    expect(response.status).toBe(200);
-    // The client must then revoke the access token it holds itself.
-    expect(await bodyOf(response)).toEqual({ ok: true, revoked: false });
-    expect(calls).toHaveLength(0);
-    expect(s.jar.deletes).toHaveLength(1);
-  });
-
-  it('Google refusing or unreachable: still cleared, still 200, revoked: false', async () => {
-    for (const answer of [
-      'network',
-      { status: 503, body: {} },
-      { status: 400, body: { error: 'invalid_token' } }
-    ] as const) {
+    it('an unbound session is cleared the same way, but a copy is NOT made useless — and it says so', async () => {
       const s = setup();
       s.plant();
-      const { deps } = s.deps(() => answer as GoogleAnswer);
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
       const response = await handleLogout(logoutEvent(s.jar), deps);
-      expect(response.status).toBe(200);
-      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false });
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
+      expect(calls).toHaveLength(0);
       expect(s.jar.deletes).toHaveLength(1);
-    }
+      expect(JSON.parse(logs.at(-1)!)).toMatchObject({ event: 'device_cleared_unbound' });
+    });
+
+    it('an expired unbound session: /refresh refuses any copy anyway, so invalidated: true', async () => {
+      const s = setup();
+      s.plant({ ts: NOW - 200 * DAY, iat0: NOW - 400 * DAY });
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(logoutEvent(s.jar), deps);
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: true });
+      expect(calls).toHaveLength(0);
+      expect(s.jar.deletes).toHaveLength(1);
+    });
+
+    it('GDRIVE_POP=off: even a bound session’s copy stays usable, so invalidated: false', async () => {
+      const s = setup({ GDRIVE_POP: 'off' });
+      const key = await deviceKey();
+      s.plant({ cnf: jwkThumbprint(key.jwk) });
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(logoutEvent(s.jar), deps);
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
+      expect(calls).toHaveLength(0);
+      expect(s.jar.deletes).toHaveLength(1);
+      expect(JSON.parse(logs.at(-1)!)).toMatchObject({ event: 'device_cleared_pop_off' });
+    });
+
+    it.each([
+      ['a bad cookie', () => 'garbage'],
+      ['a cookie under a retired key', () => setup().plant()],
+      ['no cookie', () => undefined]
+    ])(
+      '%s: no revoke, still cleared, still 200, and nothing a copy could use',
+      async (_l, value) => {
+        const s = setup();
+        const planted = value();
+        if (planted) s.jar.values.set(COOKIE, planted);
+        const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+        const response = await handleLogout(logoutEvent(s.jar), deps);
+        expect(response.status).toBe(200);
+        // No cookie, or one this server cannot open: a copy could not be opened
+        // either, so no warning is due.
+        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: true });
+        expect(calls).toHaveLength(0);
+        expect(s.jar.deletes).toHaveLength(1);
+      }
+    );
+  });
+
+  describe('a malformed request', () => {
+    it.each([
+      ['everywhere as a string', { body: { everywhere: 'true' } }],
+      ['everywhere as a number', { body: { everywhere: 1 } }],
+      ['everywhere: null', { body: { everywhere: null } }],
+      ['bad JSON', { rawBody: '{"everywhere": tru' }],
+      ['a JSON array', { rawBody: '[true]' }]
+    ] as const)('%s: 400, Google never asked, the cookie left alone', async (_label, extra) => {
+      const s = setup();
+      s.plant();
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(logoutEvent(s.jar, { ...extra }), deps);
+      expect(response.status).toBe(400);
+      expect(await bodyOf(response)).toEqual({ error: 'bad_request' });
+      expect(calls).toHaveLength(0);
+      expect(s.jar.deletes).toHaveLength(0);
+    });
+
+    it('an empty body still needs the JSON content type', async () => {
+      const s = setup();
+      s.plant();
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(
+        logoutEvent(s.jar, { rawBody: null, headers: { 'content-type': 'text/plain' } }),
+        deps
+      );
+      expect(response.status).toBe(415);
+      expect(calls).toHaveLength(0);
+      expect(s.jar.deletes).toHaveLength(0);
+    });
+
+    it('an oversized body is 413, never revoked', async () => {
+      const s = setup();
+      s.plant();
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(
+        logoutEvent(s.jar, { body: { everywhere: true, pad: 'x'.repeat(5000) } }),
+        deps
+      );
+      expect(response.status).toBe(413);
+      expect(calls).toHaveLength(0);
+      expect(s.jar.deletes).toHaveLength(0);
+    });
+  });
+
+  describe('everywhere', () => {
+    it('revokes the refresh token at Google (in the body) and clears the cookie', async () => {
+      const s = setup();
+      s.plant();
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(everywhereEvent(s.jar), deps);
+      expect(response.status).toBe(200);
+      expect(await bodyOf(response)).toEqual({ ok: true, revoked: true, invalidated: true });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe('https://oauth2.googleapis.com/revoke');
+      expect(calls[0].form).toEqual({ token: '1//planted' });
+      expect(s.jar.deletes.map((d) => d.name)).toEqual([COOKIE]);
+      expectCleanLogs('1//planted');
+    });
+
+    it('needs no proof: a bound session signs out from a device that lost its key', async () => {
+      const s = setup();
+      const key = await deviceKey();
+      s.plant({ cnf: jwkThumbprint(key.jwk) });
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      expect((await handleLogout(everywhereEvent(s.jar), deps)).status).toBe(200);
+      expect(calls).toHaveLength(1);
+    });
+
+    it('an expired session’s token is still revoked', async () => {
+      const s = setup();
+      s.plant({ ts: NOW - 200 * DAY, iat0: NOW - 400 * DAY });
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      expect((await handleLogout(everywhereEvent(s.jar), deps)).status).toBe(200);
+      expect(calls).toHaveLength(1);
+    });
+
+    it.each([
+      ['a bad cookie', () => 'garbage'],
+      // Sealed under a key this server no longer has (rotated out): unknown_kid.
+      ['a cookie under a retired key', () => setup().plant()],
+      ['no cookie', () => undefined]
+    ])(
+      '%s: no revoke, still cleared, still 200, and says it revoked nothing',
+      async (_l, value) => {
+        const s = setup();
+        const planted = value();
+        if (planted) s.jar.values.set(COOKIE, planted);
+        const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+        const response = await handleLogout(everywhereEvent(s.jar), deps);
+        expect(response.status).toBe(200);
+        // The client must then revoke the access token it holds itself.
+        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
+        expect(calls).toHaveLength(0);
+        expect(s.jar.deletes).toHaveLength(1);
+      }
+    );
+
+    it('Google refusing or unreachable: still cleared, still 200, revoked: false', async () => {
+      for (const answer of [
+        'network',
+        { status: 503, body: {} },
+        { status: 400, body: { error: 'invalid_token' } }
+      ] as const) {
+        const s = setup();
+        s.plant();
+        const { deps } = s.deps(() => answer as GoogleAnswer);
+        const response = await handleLogout(everywhereEvent(s.jar), deps);
+        expect(response.status).toBe(200);
+        expect(await bodyOf(response)).toEqual({ ok: true, revoked: false, invalidated: false });
+        expect(s.jar.deletes).toHaveLength(1);
+        expect(JSON.parse(logs.at(-1)!)).toMatchObject({ event: 'revoke_failed' });
+      }
+    });
   });
 
   it('a cross-site request is refused, and the cookie is NOT cleared (no logout CSRF)', async () => {
-    const s = setup();
-    s.plant();
-    const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
-    const response = await handleLogout(
-      logoutEvent(s.jar, { headers: { 'sec-fetch-site': 'cross-site' } }),
-      deps
-    );
-    expect(response.status).toBe(403);
-    expect(calls).toHaveLength(0);
-    expect(s.jar.deletes).toHaveLength(0);
+    for (const body of [{}, { everywhere: true }]) {
+      const s = setup();
+      s.plant();
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(
+        logoutEvent(s.jar, { body, headers: { 'sec-fetch-site': 'cross-site' } }),
+        deps
+      );
+      expect(response.status).toBe(403);
+      expect(calls).toHaveLength(0);
+      expect(s.jar.deletes).toHaveLength(0);
+    }
   });
 
-  it('not configured: the cookie still goes', async () => {
-    const s = setup();
-    s.plant();
-    const { deps } = s.deps(() => ({ status: 200, body: {} }));
-    const response = await handleLogout(logoutEvent(s.jar), {
-      ...deps,
-      env: { ...s.env, GDRIVE_CLIENT_SECRET: '' }
-    });
-    expect(response.status).toBe(501);
-    expect(s.jar.deletes).toHaveLength(1);
+  it('not configured: the cookie still goes, in either scope', async () => {
+    for (const body of [{}, { everywhere: true }]) {
+      const s = setup();
+      s.plant();
+      const { deps, calls } = s.deps(() => ({ status: 200, body: {} }));
+      const response = await handleLogout(logoutEvent(s.jar, { body }), {
+        ...deps,
+        env: { ...s.env, GDRIVE_CLIENT_SECRET: '' }
+      });
+      expect(response.status).toBe(501);
+      expect(calls).toHaveLength(0);
+      expect(s.jar.deletes).toHaveLength(1);
+    }
   });
 });
 

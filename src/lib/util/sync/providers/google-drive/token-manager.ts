@@ -15,32 +15,45 @@ import {
   takeCallback,
   type BackendOutcome
 } from './auth-backend';
+import { deleteDeviceKey, loadDeviceKey } from './device-key';
 
 /** What a caller of `getAccessToken` gets by default: a token good for this long. */
 export const DEFAULT_MIN_VALIDITY_MS = 5 * 60 * 1000;
 /** Transient refresh failures with an expired token before the popup is offered instead. */
 const FALLBACK_AFTER_FAILURES = 3;
 /**
- * A sign-out that reached neither the backend nor Google (offline): the
- * sealed cookie may still hold a live refresh token. Until a /logout gets
- * through, no silent refresh may use it — on a shared machine the next
- * person's Connect would otherwise sign the old account back in without a
- * consent screen. localStorage: it must outlive the tab, like the cookie.
+ * A sign-out that did not reach the backend (offline): the sealed cookie may
+ * still be there. Until a /logout gets through, no silent refresh may use it
+ * — on a shared machine the next person's Connect would otherwise sign the
+ * old account back in without a consent screen. The value is the scope to
+ * replay: `'device'` (just clear the cookie — this browser's key is already
+ * deleted, so the cookie can no longer refresh anyway) or `'everywhere'`
+ * (revoke at Google too; the grant may still be live). Builds before the
+ * scope existed stored `'1'`, which always meant a revoke: any value but
+ * `'device'` reads as `'everywhere'`. localStorage: it must outlive the tab,
+ * like the cookie.
  */
 export const LOGOUT_PENDING_KEY = 'gdrive_logout_pending';
 
-function logoutPending(): boolean {
+/** How far a sign-out reaches: this browser only, or the whole Google grant. */
+export type LogoutScope = 'device' | 'everywhere';
+
+function logoutPending(): LogoutScope | null {
   try {
-    return localStorage.getItem(LOGOUT_PENDING_KEY) === '1';
+    const value = localStorage.getItem(LOGOUT_PENDING_KEY);
+    if (!value) return null;
+    return value === 'device' ? 'device' : 'everywhere';
   } catch {
-    return false;
+    return null;
   }
 }
 
-function setLogoutPending(pending: boolean): void {
+function setLogoutPending(scope: LogoutScope | null): void {
   try {
-    if (pending) localStorage.setItem(LOGOUT_PENDING_KEY, '1');
-    else localStorage.removeItem(LOGOUT_PENDING_KEY);
+    if (!scope) localStorage.removeItem(LOGOUT_PENDING_KEY);
+    // Never narrow an unfinished revoke into a mere clear.
+    else if (scope === 'device' && logoutPending() === 'everywhere') return;
+    else localStorage.setItem(LOGOUT_PENDING_KEY, scope);
   } catch {
     // Storage blocked: nothing to remember it in.
   }
@@ -48,6 +61,13 @@ function setLogoutPending(pending: boolean): void {
 
 /** What a silent refresh through the backend came to. */
 export type BackendRefresh = 'ok' | 'reauth' | 'transient' | 'unavailable';
+
+/** What a sign-out came to (see `TokenManager.logout`). */
+export interface LogoutAnswer {
+  copyMayStillWork: boolean;
+  revoked: boolean;
+  pendingEverywhere: boolean;
+}
 
 /** What renewing a token Drive refused came to. */
 export type TokenRenewal =
@@ -129,6 +149,16 @@ class TokenManager {
   private backendFailures = 0;
   /** The backend kept failing with an expired token: Reconnect opens the popup instead. */
   private popupFallbackOffered = false;
+  /**
+   * A sign-out of this tab is under way (its /logout may be out for up to the
+   * client timeout). Nothing renews meanwhile: a renewal would replay the
+   * pending sign-out (`settlePendingLogout`) concurrently with its own
+   * /logout, and the second revoke of the same grant answers 400, which can
+   * turn a sign-out that worked into "Google could not be reached".
+   */
+  private loggingOut = false;
+  /** The sign-out under way (`logout` runs one at a time), with its scope. */
+  private logoutFlight: { everywhere: boolean; promise: Promise<LogoutAnswer> } | null = null;
 
   constructor() {
     if (browser) {
@@ -300,16 +330,19 @@ class TokenManager {
     });
   }
 
-  async revokeToken(token: string): Promise<void> {
+  /** Implicit mode's revoke. True only when Google confirmed it. */
+  async revokeToken(token: string): Promise<boolean> {
     try {
-      await fetch(`${GOOGLE_DRIVE_CONFIG.OAUTH_ENDPOINT}?token=${token}`, {
+      const response = await fetch(`${GOOGLE_DRIVE_CONFIG.OAUTH_ENDPOINT}?token=${token}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded'
         }
       });
+      return response.ok;
     } catch (error) {
       console.error('Error revoking token:', error);
+      return false;
     }
   }
 
@@ -475,7 +508,61 @@ class TokenManager {
     }
   }
 
-  async logout(): Promise<void> {
+  /**
+   * Sign out. By default **this device only**: nothing is revoked at Google,
+   * because Google revokes per Cloud project, not per client — a revoke here
+   * would also sign out every other device and any mokuro-bunko server
+   * holding a grant from the same project. The held access token is dropped,
+   * never revoked (revoking it would end that same whole grant); in backend
+   * mode the server clears its cookie and this browser's device key is
+   * deleted, so a copy of a bound cookie can never refresh again.
+   *
+   * `everywhere: true` (an explicit, confirmed action) ends the grant at
+   * Google: every device, browser and server signed in through it must
+   * connect again. An earlier everywhere sign-out that never got through
+   * (offline) makes this one everywhere too — it was the user's ask.
+   *
+   * Answers `copyMayStillWork` for a device sign-out that could not make
+   * copies of the session cookie useless: the server says so
+   * (`invalidated: false` — an unbound session, or proofs switched off), or,
+   * when it never answered, this browser had no device key to delete (the
+   * session cannot have been bound) or could not delete it. Never in
+   * implicit mode: there is no server cookie to copy.
+   *
+   * For an everywhere sign-out, `revoked` says Google confirmed the grant
+   * ended (the server's revoke, or one from here); only then may the user be
+   * told every device is signed out. Otherwise `pendingEverywhere` says the
+   * sign-out is queued to finish the next time this browser connects: the
+   * request never got through (offline, a timeout, the backend down), so a
+   * replay can. Neither means Google could not be reached and nothing will
+   * retry it — also when the backend is missing here (`unavailable`: every
+   * replay meets the same 404) or refused the request (`refused`). Both false
+   * on a device sign-out.
+   */
+  logout(options: { everywhere?: boolean } = {}): Promise<LogoutAnswer> {
+    // One sign-out at a time: the panel keeps its buttons while /logout is
+    // out (up to the client timeout), and a second, concurrent /logout would
+    // revoke the same grant twice (Google answers the second 400) and end the
+    // first one's renewal guard while it is still out. A click of the same or
+    // a narrower scope gets the running sign-out's answer; "everywhere" during
+    // a device sign-out runs after it.
+    const everywhere =
+      options.everywhere === true || (backendAuthConfigured() && logoutPending() === 'everywhere');
+    const flight = this.logoutFlight;
+    if (flight && (flight.everywhere || !everywhere)) return flight.promise;
+    const promise = (flight ? flight.promise : Promise.resolve()).then(() =>
+      this.logoutOnce(options)
+    );
+    const entry = { everywhere, promise };
+    this.logoutFlight = entry;
+    const clear = () => {
+      if (this.logoutFlight === entry) this.logoutFlight = null;
+    };
+    promise.then(clear, clear);
+    return promise;
+  }
+
+  private async logoutOnce(options: { everywhere?: boolean }): Promise<LogoutAnswer> {
     this.disarmGestureRetry();
     // Clear the refresh interval
     if (this.refreshIntervalId) {
@@ -486,28 +573,64 @@ class TokenManager {
     const currentToken = this.getCurrentToken();
     // An injected token is the simulator's: there is nothing at Google to revoke.
     const injected = CLOUD_TEST_HOOKS ? cloudTestToken('google') : null;
+    const backend = backendAuthConfigured();
+    const everywhere = options.everywhere === true || (backend && logoutPending() === 'everywhere');
 
+    let copyMayStillWork = false;
+    // The simulator's token has no grant behind it: nothing is left to end.
+    let revoked = everywhere && !!injected;
+    // The request never got through, so the queued sign-out can finish later.
+    let queued = false;
+    this.loggingOut = true;
     try {
-      if (backendAuthConfigured()) {
-        // The server revokes the refresh token and clears its cookie. Asked
-        // even when this tab fell back to the popup: a cookie from an earlier
-        // session may still be there.
-        const outcome = await callBackend('logout', {});
-        // Unless the server confirms it revoked the grant (it may not have:
-        // Google down, a cookie it could not open, no cookie at all), revoke
-        // the access token here. Revoking either token of a grant revokes the
-        // whole grant, so a cookie left behind holds a dead refresh token.
-        const serverRevoked = outcome.kind === 'done' && outcome.revoked;
+      // Written AHEAD, before anything awaits: a reload or a closed tab
+      // while the key is deleted or /logout is out must still find this
+      // device signed out and the sign-out queued (`settlePendingLogout`),
+      // not a live token over a cookie nobody clears. Undone below once the
+      // server answers, or a revoke from here got through.
+      if (backend && !injected) setLogoutPending(everywhere ? 'everywhere' : 'device');
+      this.clearToken(false);
+      // Whether there was a key to bind the session to at all (backend only:
+      // implicit mode never touches the key database but to delete it).
+      const hadKey = backend ? (await loadDeviceKey()) !== null : false;
+      // The key goes first, whatever the network does: from here on no
+      // proof for this session can be signed, so its cookie cannot refresh.
+      const keyDeleted = await deleteDeviceKey();
+      if (backend) {
+        // The server clears its cookie (and on `everywhere` revokes the
+        // refresh token). Asked even when this tab fell back to the popup: a
+        // cookie from an earlier session may still be there.
+        const outcome = await callBackend('logout', { everywhere });
         let revokedHere = false;
-        if (!serverRevoked && currentToken && !injected) {
-          revokedHere = await this.revokeGrant(currentToken);
+        if (everywhere) {
+          // Unless the server confirms it revoked the grant (it may not have:
+          // Google down, a cookie it could not open, no cookie at all),
+          // revoke the access token here. Revoking either token of a grant
+          // revokes the whole grant, so a cookie left behind holds a dead
+          // refresh token. Never on a device sign-out: the server's
+          // `revoked: false` there is the point, not a failure.
+          const serverRevoked = outcome.kind === 'done' && outcome.revoked;
+          if (!serverRevoked && currentToken && !injected) {
+            revokedHere = await this.revokeGrant(currentToken);
+          }
+          revoked ||= serverRevoked || revokedHere;
         }
-        if (outcome.kind === 'done') setLogoutPending(false);
-        // Neither got through: the cookie may still be live. Finish the
-        // sign-out before anything renews from it (`settlePendingLogout`).
-        else if (!revokedHere && !injected) setLogoutPending(true);
-      } else if (currentToken && !injected) {
-        await this.revokeToken(currentToken);
+        if (!everywhere && !injected) {
+          if (outcome.kind === 'done') copyMayStillWork = !outcome.invalidated;
+          // No answer (offline, refused): with the key gone, a bound cookie is
+          // dead either way; only a session that cannot have been bound — or
+          // a key that would not delete — may live on. No backend here
+          // (`unavailable`) means no cookie of its making.
+          else if (outcome.kind !== 'unavailable') copyMayStillWork = !hadKey || !keyDeleted;
+        }
+        // Otherwise the flag written above stays: the cookie may still be
+        // there, and the sign-out must finish before anything renews from it
+        // (`settlePendingLogout`). A revoke that got through from here leaves
+        // only a dead cookie behind.
+        if (outcome.kind === 'done' || revokedHere) setLogoutPending(null);
+        queued = outcome.kind === 'transient';
+      } else if (everywhere && currentToken && !injected) {
+        revoked = await this.revokeToken(currentToken);
       }
     } catch (error) {
       console.warn('Google Drive sign-out request failed:', error);
@@ -516,7 +639,12 @@ class TokenManager {
       this.resetBackendState();
       // Clear token AND auth history on explicit logout
       this.clearToken(false);
+      this.loggingOut = false;
     }
+    // Read back, not assumed: storage may have refused the flag.
+    const pendingEverywhere =
+      backend && everywhere && !revoked && queued && logoutPending() === 'everywhere';
+    return { copyMayStillWork, revoked: everywhere && revoked, pendingEverywhere };
   }
 
   /**
@@ -544,10 +672,11 @@ class TokenManager {
    * otherwise why it still could not, and no silent refresh may go out.
    */
   private async settlePendingLogout(): Promise<BackendOutcome | null> {
-    if (!logoutPending()) return null;
-    const outcome = await callBackend('logout', {});
+    const scope = logoutPending();
+    if (!scope) return null;
+    const outcome = await callBackend('logout', { everywhere: scope === 'everywhere' });
     if (outcome.kind !== 'done') return outcome;
-    setLogoutPending(false);
+    setLogoutPending(null);
     return null;
   }
 
@@ -748,7 +877,10 @@ class TokenManager {
    * single-flight per tab. `force` skips the backoff after transient failures.
    */
   refreshFromBackend(force = false): Promise<BackendRefresh> {
-    if (this.backendSessionDead) return Promise.resolve('reauth');
+    // Mid-sign-out the session is being ended: nothing to renew (and no
+    // second /logout racing the first). No verdict is kept; the sign-out
+    // resets the backend state when it finishes.
+    if (this.loggingOut || this.backendSessionDead) return Promise.resolve('reauth');
     if (!force && Date.now() < this.retryNotBefore) return Promise.resolve('transient');
     if (this.backendRefresh) return this.backendRefresh;
     this.backendRefresh = (async (): Promise<BackendRefresh> => {
@@ -798,6 +930,8 @@ class TokenManager {
    * never opens anything from here: a replaced token, or nothing.
    */
   async renewRejectedToken(rejected: string): Promise<TokenRenewal> {
+    // Mid-sign-out: no token to retry with, from anywhere.
+    if (this.loggingOut) return { kind: 'failed' };
     if (this.isBackendMode()) this.adoptStoredToken();
     const held = this.getCurrentToken();
     if (held && held !== rejected && this.validFor(0)) return { kind: 'renewed', token: held };
@@ -847,7 +981,7 @@ class TokenManager {
     const outcome = await callWithProof('session', { code, code_verifier: verifier });
     if (outcome.kind === 'ok') {
       // The new cookie replaced whatever an unfinished sign-out left behind.
-      setLogoutPending(false);
+      setLogoutPending(null);
       this.applyBackendToken(outcome.accessToken, outcome.expiresIn);
       const { setActiveProviderKey } = await import('../../provider-detection');
       setActiveProviderKey('google-drive');

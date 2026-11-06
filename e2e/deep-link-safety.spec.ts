@@ -31,6 +31,14 @@ async function openLink(page: Page, hash: string) {
   await page.goto('/' + hash);
 }
 
+/**
+ * The first thing a test waits for after `openLink` waits as long as a cold
+ * boot can take: the dev server compiles the app and the view's chunk on first
+ * use, and under parallel workers that runs past the 5 s default (the same
+ * budget `gotoApp` gives the router).
+ */
+const BOOT = { timeout: 30_000 };
+
 test.describe('import by link', () => {
   test('asks first, shows the host and the warnings, and fetches nothing on No', async ({
     page
@@ -42,7 +50,7 @@ test.describe('import by link', () => {
         encodeURIComponent('http://192.168.1.20:8080/mokuro-reader/Dr Stone/Dr Stone 01.cbz')
     );
 
-    await expect(page.getByText('Import Dr Stone 01 into your catalog?')).toBeVisible();
+    await expect(page.getByText('Import Dr Stone 01 into your catalog?')).toBeVisible(BOOT);
     const source = page.getByTestId('confirmation-source');
     await expect(source).toContainText('Downloads from');
     await expect(source).toContainText('192.168.1.20:8080');
@@ -65,7 +73,7 @@ test.describe('import by link', () => {
       '#/upload?cbz=' + encodeURIComponent('https://books.example.com/S/Volume 1.cbz')
     );
 
-    await expect(page.getByTestId('confirmation-source')).toContainText('books.example.com');
+    await expect(page.getByTestId('confirmation-source')).toContainText('books.example.com', BOOT);
     await expect(page.getByTestId('confirmation-warnings')).toHaveCount(0);
 
     await page.keyboard.press('Escape');
@@ -79,7 +87,7 @@ test.describe('import by link', () => {
 test('leaving the import page takes its open question with it', async ({ page }) => {
   const seen = await watchHosts(page, ['books.example.com']);
   await openLink(page, '#/upload?cbz=' + encodeURIComponent('https://books.example.com/S/V.cbz'));
-  await expect(page.getByTestId('confirmation-source')).toBeVisible();
+  await expect(page.getByTestId('confirmation-source')).toBeVisible(BOOT);
 
   await page.evaluate(() => {
     window.location.hash = '#/cloud';
@@ -104,7 +112,7 @@ test.describe('cloud prefill by link', () => {
     );
 
     const banner = page.getByTestId('webdav-link-prefill');
-    await expect(banner).toBeVisible();
+    await expect(banner).toBeVisible(BOOT);
     await expect(banner).toContainText('filled in from a link');
     await expect(banner).toContainText('dav.example.com');
     const form = page.locator('#webdav-login-form');
@@ -130,7 +138,7 @@ test.describe('cloud prefill by link', () => {
     );
 
     const refused = page.getByTestId('webdav-link-prefill-refused');
-    await expect(refused).toBeVisible();
+    await expect(refused).toBeVisible(BOOT);
     await expect(refused).toContainText('http://192.168.1.20');
     await expect(refused).toContainText('type its address yourself');
     const form = page.locator('#webdav-login-form');
@@ -142,7 +150,7 @@ test.describe('cloud prefill by link', () => {
 
   test('fills plain http on this device (a local server)', async ({ page }) => {
     await openLink(page, '#/cloud?server=' + encodeURIComponent('http://localhost:9090'));
-    await expect(page.getByTestId('webdav-link-prefill')).toContainText('localhost:9090');
+    await expect(page.getByTestId('webdav-link-prefill')).toContainText('localhost:9090', BOOT);
     await expect(page.locator('#webdav-login-form input[type="url"]')).toHaveValue(
       'http://localhost:9090'
     );

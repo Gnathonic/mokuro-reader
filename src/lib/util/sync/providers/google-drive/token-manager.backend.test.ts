@@ -509,18 +509,209 @@ describe('re-auth and reconnect', () => {
   });
 });
 
-describe('logout', () => {
-  it('asks the server to revoke and clear the cookie, then clears this device', async () => {
+/** Every fetch that went to Google's revoke endpoint (from the browser). */
+function browserRevokes() {
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter(([url]) => String(url).startsWith('https://oauth2.googleapis.com/revoke'));
+}
+
+/** This browser has a device key, as a backend sign-in leaves it. */
+async function withDeviceKey(device: Awaited<ReturnType<typeof load>>['device']) {
+  expect(await device.ensureDeviceKey()).not.toBeNull();
+}
+
+/** The key as a reload would find it (no in-memory copy). */
+async function storedDeviceKey(device: Awaited<ReturnType<typeof load>>['device']) {
+  device.forgetCachedDeviceKeyForTest();
+  return device.loadDeviceKey();
+}
+
+describe('logout: this device only (the default)', () => {
+  it('clears the cookie, revokes nothing, deletes the device key and clears this device', async () => {
     persist('LIVE', 30 * MIN);
-    const { tm, held } = await load();
-    vi.mocked(fetch).mockResolvedValueOnce(json(200, { ok: true, revoked: true }));
+    const { tm, held, device } = await load();
+    await withDeviceKey(device);
+    vi.mocked(fetch).mockResolvedValueOnce(json(200, { ok: true, revoked: false }));
     await tm.logout();
     expect(calls('/api/gdrive/logout')).toHaveLength(1);
+    expect(bodyOf(calls('/api/gdrive/logout')[0])).toEqual({ everywhere: false });
+    // `revoked: false` is the point of a device sign-out, never a cue to revoke here.
+    expect(browserRevokes()).toHaveLength(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(await storedDeviceKey(device)).toBeNull();
     expect(held()).toBe('');
     expect(localStorage.getItem(KEYS.token)).toBeNull();
     expect(localStorage.getItem(KEYS.expires)).toBeNull();
     expect(localStorage.getItem(KEYS.authed)).toBeNull();
     expect(gapiSetToken).toHaveBeenLastCalledWith(null);
+    expect(localStorage.getItem('gdrive_logout_pending')).toBeNull();
+  });
+
+  describe('whether a copy of the session may still work', () => {
+    it.each([
+      ['a bound session under required proofs (invalidated: true)', { invalidated: true }, false],
+      ['an unbound session, or proofs off (invalidated: false)', { invalidated: false }, true],
+      ['a server that does not say', {}, true]
+    ] as const)('%s', async (_label, extra, expected) => {
+      persist('LIVE', 30 * MIN);
+      const { tm, device } = await load();
+      await withDeviceKey(device);
+      vi.mocked(fetch).mockResolvedValueOnce(json(200, { ok: true, revoked: false, ...extra }));
+      expect(await tm.logout()).toEqual({
+        copyMayStillWork: expected,
+        revoked: false,
+        pendingEverywhere: false
+      });
+    });
+
+    it('offline with the key deleted: no warning (a bound cookie is dead without it)', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm, device } = await load();
+      await withDeviceKey(device);
+      vi.mocked(fetch).mockRejectedValue(new TypeError('offline'));
+      expect(await tm.logout()).toEqual({
+        copyMayStillWork: false,
+        revoked: false,
+        pendingEverywhere: false
+      });
+    });
+
+    it('offline with no device key ever made: the session cannot have been bound', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch).mockRejectedValue(new TypeError('offline'));
+      expect(await tm.logout()).toEqual({
+        copyMayStillWork: true,
+        revoked: false,
+        pendingEverywhere: false
+      });
+    });
+
+    it('no backend here (404): no cookie of its making, no warning', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('', { status: 404 }));
+      expect(await tm.logout()).toEqual({
+        copyMayStillWork: false,
+        revoked: false,
+        pendingEverywhere: false
+      });
+    });
+
+    it('everywhere never warns: the grant itself is ended', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValueOnce(
+        json(200, { ok: true, revoked: true, invalidated: true })
+      );
+      expect(await tm.logout({ everywhere: true })).toEqual({
+        copyMayStillWork: false,
+        revoked: true,
+        pendingEverywhere: false
+      });
+    });
+  });
+
+  it('{ everywhere: false } is the same device sign-out', async () => {
+    persist('LIVE', 30 * MIN);
+    const { tm } = await load();
+    vi.mocked(fetch).mockResolvedValueOnce(json(200, { ok: true, revoked: false }));
+    await tm.logout({ everywhere: false });
+    expect(bodyOf(calls('/api/gdrive/logout')[0])).toEqual({ everywhere: false });
+    expect(browserRevokes()).toHaveLength(0);
+  });
+
+  it('offline: no revoke, the key is gone anyway, and the clear is replayed as a device sign-out', async () => {
+    persist('LIVE', 30 * MIN);
+    const { tm, device } = await load();
+    await withDeviceKey(device);
+    vi.mocked(fetch).mockRejectedValue(new TypeError('offline'));
+    await tm.logout();
+    expect(tm.isAuthenticated()).toBe(false);
+    expect(browserRevokes()).toHaveLength(0);
+    // The cookie may still be there, but nothing can sign a proof for it.
+    expect(await storedDeviceKey(device)).toBeNull();
+    expect(localStorage.getItem('gdrive_logout_pending')).toBe('device');
+
+    // Back online: the next Connect clears the cookie first, device scope.
+    vi.mocked(fetch).mockReset();
+    vi.mocked(fetch).mockImplementation(async (url) =>
+      String(url) === '/api/gdrive/logout'
+        ? json(200, { ok: true, revoked: false })
+        : json(401, { error: 'no_session' })
+    );
+    expect(await tm.connectViaBackend(true)).toBe('redirecting');
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).toEqual([
+      '/api/gdrive/logout',
+      '/api/gdrive/refresh'
+    ]);
+    expect(bodyOf(calls('/api/gdrive/logout')[0])).toEqual({ everywhere: false });
+    expect(browserRevokes()).toHaveLength(0);
+    expect(localStorage.getItem('gdrive_logout_pending')).toBeNull();
+  });
+
+  it('an unfinished everywhere sign-out is never narrowed: the next sign-out revokes', async () => {
+    persist('LIVE', 30 * MIN);
+    localStorage.setItem('gdrive_logout_pending', 'everywhere');
+    const { tm } = await load();
+    vi.mocked(fetch).mockRejectedValue(new TypeError('offline'));
+    await tm.logout();
+    expect(localStorage.getItem('gdrive_logout_pending')).toBe('everywhere');
+    expect(bodyOf(calls('/api/gdrive/logout')[0])).toEqual({ everywhere: true });
+  });
+
+  it.each([
+    ['a device sign-out', {}, 'device'],
+    ['a sign-out everywhere', { everywhere: true }, 'everywhere']
+  ] as const)(
+    '%s is remembered and this device signed out BEFORE /logout answers (a reload mid-request)',
+    async (_label, options, scope) => {
+      persist('LIVE', 30 * MIN);
+      const { tm, held, device } = await load();
+      await withDeviceKey(device);
+      // The request never answers: the tab is reloaded or closed meanwhile.
+      vi.mocked(fetch).mockReturnValue(new Promise<Response>(() => {}));
+      void tm.logout(options);
+      await vi.waitFor(() => expect(calls('/api/gdrive/logout')).toHaveLength(1));
+      // What a reload would find now: a sign-out to finish, and no session.
+      expect(localStorage.getItem('gdrive_logout_pending')).toBe(scope);
+      expect(localStorage.getItem(KEYS.token)).toBeNull();
+      expect(localStorage.getItem(KEYS.authed)).toBeNull();
+      expect(held()).toBe('');
+      expect(tm.isAuthenticated()).toBe(false);
+    }
+  );
+
+  it('even a throwing fetch cannot keep the token or the key on this device', async () => {
+    persist('LIVE', 30 * MIN);
+    const { tm, held, device } = await load();
+    await withDeviceKey(device);
+    vi.mocked(fetch).mockImplementation(() => {
+      throw new Error('boom');
+    });
+    await tm.logout();
+    expect(held()).toBe('');
+    expect(localStorage.getItem(KEYS.token)).toBeNull();
+    expect(await storedDeviceKey(device)).toBeNull();
+  });
+});
+
+describe('logout: everywhere', () => {
+  it('asks the server to revoke and clear the cookie, then clears this device and its key', async () => {
+    persist('LIVE', 30 * MIN);
+    const { tm, held, device } = await load();
+    await withDeviceKey(device);
+    vi.mocked(fetch).mockResolvedValueOnce(json(200, { ok: true, revoked: true }));
+    await tm.logout({ everywhere: true });
+    expect(calls('/api/gdrive/logout')).toHaveLength(1);
+    expect(bodyOf(calls('/api/gdrive/logout')[0])).toEqual({ everywhere: true });
+    expect(held()).toBe('');
+    expect(localStorage.getItem(KEYS.token)).toBeNull();
+    expect(localStorage.getItem(KEYS.expires)).toBeNull();
+    expect(localStorage.getItem(KEYS.authed)).toBeNull();
+    expect(gapiSetToken).toHaveBeenLastCalledWith(null);
+    expect(await storedDeviceKey(device)).toBeNull();
     // Revoked server-side: no second revoke from here.
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -531,7 +722,7 @@ describe('logout', () => {
     vi.mocked(fetch)
       .mockRejectedValueOnce(new TypeError('offline'))
       .mockResolvedValueOnce(new Response('', { status: 200 }));
-    await tm.logout();
+    await tm.logout({ everywhere: true });
     expect(held()).toBe('');
     expect(localStorage.getItem(KEYS.token)).toBeNull();
     expect(gapiSetToken).toHaveBeenLastCalledWith(null);
@@ -539,6 +730,8 @@ describe('logout', () => {
     expect(String(revoke[0])).toBe('https://oauth2.googleapis.com/revoke');
     // The token in the body, not the URL.
     expect(String((revoke[1] as RequestInit).body)).toBe('token=LIVE');
+    // Revoked from here: the cookie left behind holds a dead token.
+    expect(localStorage.getItem('gdrive_logout_pending')).toBeNull();
   });
 
   it('the server cleared the cookie but revoked nothing: the grant is revoked from here', async () => {
@@ -549,7 +742,7 @@ describe('logout', () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(json(200, { ok: true, revoked: false }))
       .mockResolvedValueOnce(new Response('', { status: 200 }));
-    await tm.logout();
+    await tm.logout({ everywhere: true });
     const revoke = vi.mocked(fetch).mock.calls[1];
     expect(String(revoke[0])).toBe('https://oauth2.googleapis.com/revoke');
     expect((revoke[1] as RequestInit).method).toBe('POST');
@@ -562,15 +755,16 @@ describe('logout', () => {
     persist('LIVE', 30 * MIN);
     const { tm, signInsStarted } = await load();
     vi.mocked(fetch).mockRejectedValue(new TypeError('offline'));
-    await tm.logout();
+    await tm.logout({ everywhere: true });
     expect(tm.isAuthenticated()).toBe(false);
-    expect(localStorage.getItem('gdrive_logout_pending')).toBe('1');
+    expect(localStorage.getItem('gdrive_logout_pending')).toBe('everywhere');
 
     // Still offline at the next Connect: no refresh goes out.
     vi.mocked(fetch).mockClear();
     await expect(tm.connectViaBackend(true)).rejects.toThrow(/unavailable/);
     expect(calls('/api/gdrive/refresh')).toHaveLength(0);
     expect(calls('/api/gdrive/logout')).toHaveLength(1);
+    expect(bodyOf(calls('/api/gdrive/logout')[0])).toEqual({ everywhere: true });
 
     // Back online (someone else at the machine clicks Connect): the sign-out
     // finishes FIRST, so the old account's cookie cannot sign anyone in.
@@ -585,45 +779,233 @@ describe('logout', () => {
       '/api/gdrive/logout',
       '/api/gdrive/refresh'
     ]);
+    expect(bodyOf(calls('/api/gdrive/logout')[0])).toEqual({ everywhere: true });
     expect(localStorage.getItem('gdrive_logout_pending')).toBeNull();
     expect(signInsStarted()).toBe(1);
   });
 
-  it('a pending sign-out is finished before a returning sign-in sets its cookie, never after', async () => {
-    localStorage.setItem('gdrive_logout_pending', '1');
-    const { tm, held } = await load();
-    sessionStorage.setItem(
-      'gdrive_oauth_pending',
-      JSON.stringify({ state: 'S1', verifier: 'v'.repeat(43), createdAt: Date.now() })
+  describe('what it answers: whether the grant really ended', () => {
+    it('the server revoked it: revoked', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValueOnce(
+        json(200, { ok: true, revoked: true, invalidated: true })
+      );
+      expect(await tm.logout({ everywhere: true })).toMatchObject({
+        revoked: true,
+        pendingEverywhere: false
+      });
+    });
+
+    it('the server could not, but the revoke from here got through: revoked', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(json(200, { ok: true, revoked: false }))
+        .mockResolvedValueOnce(new Response('', { status: 200 }));
+      expect(await tm.logout({ everywhere: true })).toMatchObject({
+        revoked: true,
+        pendingEverywhere: false
+      });
+    });
+
+    it('neither could (Google down, the revoke from here failing): NOT revoked, and nothing left to retry', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(json(200, { ok: true, revoked: false, invalidated: false }))
+        .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      expect(await tm.logout({ everywhere: true })).toEqual({
+        copyMayStillWork: false,
+        revoked: false,
+        pendingEverywhere: false
+      });
+      // The server cleared the cookie: a replayed /logout could revoke nothing.
+      expect(localStorage.getItem('gdrive_logout_pending')).toBeNull();
+    });
+
+    it('Google refused the revoke from here (an expired token): NOT revoked', async () => {
+      persist('LIVE', -MIN);
+      const { tm } = await load();
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(json(200, { ok: true, revoked: false }))
+        .mockResolvedValueOnce(json(400, { error: 'invalid_token' }));
+      expect(await tm.logout({ everywhere: true })).toMatchObject({ revoked: false });
+    });
+
+    it('no token here to revoke with, and the server did not: NOT revoked', async () => {
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValueOnce(json(200, { ok: true, revoked: false }));
+      expect(await tm.logout({ everywhere: true })).toMatchObject({
+        revoked: false,
+        pendingEverywhere: false
+      });
+      expect(browserRevokes()).toHaveLength(0);
+    });
+
+    it('offline: NOT revoked, but pending — the next Connect here finishes it', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch).mockRejectedValue(new TypeError('offline'));
+      expect(await tm.logout({ everywhere: true })).toEqual({
+        copyMayStillWork: false,
+        revoked: false,
+        pendingEverywhere: true
+      });
+      expect(localStorage.getItem('gdrive_logout_pending')).toBe('everywhere');
+    });
+
+    it.each([
+      ['no backend here (404)', () => new Response('Not found', { status: 404 })],
+      ['the app shell answered (HTML)', () => new Response('<!doctype html>', { status: 200 })],
+      ['the server refused it (bad_request)', () => json(400, { error: 'bad_request' })]
+    ])(
+      '%s, the revoke from here failing: NOT revoked, and NOT pending (no replay will ever finish it)',
+      async (_label, answer) => {
+        persist('LIVE', 30 * MIN);
+        const { tm } = await load();
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(answer())
+          .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+        expect(await tm.logout({ everywhere: true })).toMatchObject({
+          revoked: false,
+          pendingEverywhere: false
+        });
+      }
     );
-    sessionStorage.setItem(
-      'gdrive_oauth_callback',
-      JSON.stringify({ code: '4/code', state: 'S1', error: null })
-    );
-    vi.mocked(fetch).mockImplementation(async (url) =>
-      String(url) === '/api/gdrive/logout'
-        ? json(200, { ok: true, revoked: false })
-        : granted('FIRST')
-    );
-    await tm.restoreSession();
-    expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).toEqual([
-      '/api/gdrive/logout',
-      '/api/gdrive/session'
-    ]);
-    expect(held()).toBe('FIRST');
-    expect(localStorage.getItem('gdrive_logout_pending')).toBeNull();
+
+    it('no backend here (404) and no token to revoke with: NOT pending either', async () => {
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValue(new Response('Not found', { status: 404 }));
+      expect(await tm.logout({ everywhere: true })).toMatchObject({
+        revoked: false,
+        pendingEverywhere: false
+      });
+      expect(browserRevokes()).toHaveLength(0);
+    });
+
+    it('the backend is down (a transient 503): NOT revoked, but pending', async () => {
+      const { tm } = await load();
+      vi.mocked(fetch).mockResolvedValue(json(503, { error: 'transient' }));
+      expect(await tm.logout({ everywhere: true })).toMatchObject({
+        revoked: false,
+        pendingEverywhere: true
+      });
+    });
+
+    it('offline, and storage keeps no pending flag: NOT revoked, and not pending either', async () => {
+      persist('LIVE', 30 * MIN);
+      const { tm } = await load();
+      vi.mocked(fetch).mockRejectedValue(new TypeError('offline'));
+      const setItem = localStorage.setItem.bind(localStorage);
+      vi.spyOn(localStorage, 'setItem').mockImplementation((key: string, value: string) => {
+        if (key === 'gdrive_logout_pending') throw new DOMException('full', 'QuotaExceededError');
+        setItem(key, value);
+      });
+      expect(await tm.logout({ everywhere: true })).toMatchObject({
+        revoked: false,
+        pendingEverywhere: false
+      });
+    });
   });
 
-  it('even a throwing fetch cannot keep the token on this device', async () => {
-    persist('LIVE', 30 * MIN);
-    const { tm, held } = await load();
-    vi.mocked(fetch).mockImplementation(() => {
-      throw new Error('boom');
+  describe('while its /logout is out', () => {
+    /** An everywhere sign-out whose /logout answers only when told to. */
+    async function hangingEverywhere() {
+      persist('LIVE', 30 * MIN);
+      const loaded = await load();
+      let answer: ((r: Response) => void) | null = null;
+      vi.mocked(fetch).mockImplementation((url) => {
+        if (String(url) !== '/api/gdrive/logout') return Promise.resolve(granted('RENEWED'));
+        // The first one hangs; a second, concurrent one would answer at once.
+        if (answer) return Promise.resolve(json(200, { ok: true, revoked: false }));
+        return new Promise<Response>((r) => (answer = r));
+      });
+      const result = loaded.tm.logout({ everywhere: true });
+      await vi.waitFor(() => expect(calls('/api/gdrive/logout')).toHaveLength(1));
+      return { ...loaded, result, answer: (r: Response) => answer!(r) };
+    }
+
+    it('a 401 mid-sign-out renews nothing and sends no second /logout', async () => {
+      const { tm, result, answer, held } = await hangingEverywhere();
+      // A sync in progress got '' and Drive refused it.
+      expect(await tm.renewRejectedToken('')).toEqual({ kind: 'failed' });
+      expect(calls('/api/gdrive/logout')).toHaveLength(1);
+      expect(calls('/api/gdrive/refresh')).toHaveLength(0);
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      expect(await result).toMatchObject({ revoked: true, pendingEverywhere: false });
+      expect(held()).toBe('');
     });
-    await tm.logout();
-    expect(held()).toBe('');
-    expect(localStorage.getItem(KEYS.token)).toBeNull();
+
+    it('a silent refresh mid-sign-out is refused, not replayed', async () => {
+      const { tm, result, answer } = await hangingEverywhere();
+      expect(await tm.refreshFromBackend(true)).toBe('reauth');
+      expect(calls('/api/gdrive/logout')).toHaveLength(1);
+      expect(calls('/api/gdrive/refresh')).toHaveLength(0);
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      expect(await result).toMatchObject({ revoked: true });
+    });
+
+    it('once it has answered, a refresh goes out again', async () => {
+      const { tm, result, answer } = await hangingEverywhere();
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      await result;
+      expect(await tm.refreshFromBackend(true)).toBe('ok');
+      expect(calls('/api/gdrive/refresh')).toHaveLength(1);
+    });
+
+    it('a second sign-out click joins the first: one /logout, one answer, no renewal gap', async () => {
+      const { tm, result, answer } = await hangingEverywhere();
+      // The panel still shows "Log out" while the first /logout is out.
+      const second = tm.logout();
+      expect(await tm.refreshFromBackend(true)).toBe('reauth');
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      const [first, again] = await Promise.all([result, second]);
+      expect(again).toEqual(first);
+      expect(first).toMatchObject({ revoked: true, pendingEverywhere: false });
+      expect(calls('/api/gdrive/logout')).toHaveLength(1);
+      expect(calls('/api/gdrive/refresh')).toHaveLength(0);
+    });
+
+    it('the guard holds until the LAST overlapping sign-out has answered', async () => {
+      const { tm, result, answer } = await hangingEverywhere();
+      const second = tm.logout({ everywhere: true });
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      await result;
+      await second;
+      // Nothing is left out: renewals may go again.
+      expect(await tm.refreshFromBackend(true)).toBe('ok');
+    });
   });
+
+  it.each(['1', 'true', 'yes'])(
+    'a pending flag from before scopes (%s) is replayed as everywhere, before a returning sign-in sets its cookie',
+    async (legacy) => {
+      localStorage.setItem('gdrive_logout_pending', legacy);
+      const { tm, held } = await load();
+      sessionStorage.setItem(
+        'gdrive_oauth_pending',
+        JSON.stringify({ state: 'S1', verifier: 'v'.repeat(43), createdAt: Date.now() })
+      );
+      sessionStorage.setItem(
+        'gdrive_oauth_callback',
+        JSON.stringify({ code: '4/code', state: 'S1', error: null })
+      );
+      vi.mocked(fetch).mockImplementation(async (url) =>
+        String(url) === '/api/gdrive/logout'
+          ? json(200, { ok: true, revoked: false })
+          : granted('FIRST')
+      );
+      await tm.restoreSession();
+      expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).toEqual([
+        '/api/gdrive/logout',
+        '/api/gdrive/session'
+      ]);
+      expect(bodyOf(calls('/api/gdrive/logout')[0])).toEqual({ everywhere: true });
+      expect(held()).toBe('FIRST');
+      expect(localStorage.getItem('gdrive_logout_pending')).toBeNull();
+    }
+  );
 });
 
 describe('with the flag unset: the implicit flow, exactly as before', () => {
@@ -653,14 +1035,54 @@ describe('with the flag unset: the implicit flow, exactly as before', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('logout revokes as before (no backend call)', async () => {
+  it('logout forgets the token on this device only: no revoke, no backend call', async () => {
+    persist('LIVE', 30 * MIN);
+    const { tm, held } = await load();
+    const revoke = vi.fn();
+    vi.stubGlobal('google', { accounts: { oauth2: { revoke } } });
+    vi.mocked(fetch).mockResolvedValue(new Response('', { status: 200 }));
+    // No server cookie to copy in implicit mode: never a warning.
+    expect(await tm.logout()).toEqual({
+      copyMayStillWork: false,
+      revoked: false,
+      pendingEverywhere: false
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(revoke).not.toHaveBeenCalled();
+    expect(held()).toBe('');
+    expect(localStorage.getItem(KEYS.token)).toBeNull();
+    expect(localStorage.getItem(KEYS.authed)).toBeNull();
+    expect(localStorage.getItem('gdrive_logout_pending')).toBeNull();
+  });
+
+  it('logout everywhere that Google refused or never got: NOT revoked (nothing pending: no cookie)', async () => {
     persist('LIVE', 30 * MIN);
     const { tm } = await load();
+    vi.mocked(fetch).mockResolvedValueOnce(json(400, { error: 'invalid_token' }));
+    expect(await tm.logout({ everywhere: true })).toEqual({
+      copyMayStillWork: false,
+      revoked: false,
+      pendingEverywhere: false
+    });
+    persist('LIVE', 30 * MIN);
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    expect(await tm.logout({ everywhere: true })).toMatchObject({ revoked: false });
+  });
+
+  it('logout everywhere revokes as before (no backend call), and deletes a leftover device key', async () => {
+    persist('LIVE', 30 * MIN);
+    const { tm, device } = await load();
+    await withDeviceKey(device);
     vi.mocked(fetch).mockResolvedValue(new Response('', { status: 200 }));
-    await tm.logout();
+    expect(await tm.logout({ everywhere: true })).toEqual({
+      copyMayStillWork: false,
+      revoked: true,
+      pendingEverywhere: false
+    });
     expect(calls('/api/gdrive/logout')).toHaveLength(0);
     expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(
       'https://oauth2.googleapis.com/revoke?token=LIVE'
     );
+    expect(await storedDeviceKey(device)).toBeNull();
   });
 });

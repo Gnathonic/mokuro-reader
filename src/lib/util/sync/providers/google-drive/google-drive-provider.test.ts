@@ -16,7 +16,8 @@ vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
     isBackendMode: vi.fn(() => false),
     renewRejectedToken: vi.fn(async () => ({ kind: 'failed' })),
     connectViaBackend: vi.fn(),
-    reconnect: vi.fn()
+    reconnect: vi.fn(),
+    logout: vi.fn(async () => {})
   }
 }));
 vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
@@ -265,6 +266,25 @@ describe('GoogleDriveProvider login() with the token already there', () => {
       return () => {};
     });
     await expect(googleDriveProvider.login()).resolves.toBeUndefined();
+  });
+});
+
+describe('GoogleDriveProvider.logout() scope', () => {
+  it('this device only by default: the token manager is not asked to sign out everywhere', async () => {
+    await googleDriveProvider.logout();
+    expect(tokenManager.logout).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(tokenManager.logout).mock.calls[0][0]?.everywhere).not.toBe(true);
+  });
+
+  it('passes an explicit everywhere through', async () => {
+    await googleDriveProvider.logout({ everywhere: true });
+    expect(tokenManager.logout).toHaveBeenCalledWith({ everywhere: true });
+  });
+
+  it('answers what the token manager said, so the cloud page never claims a revoke that failed', async () => {
+    const said = { copyMayStillWork: false, revoked: false, pendingEverywhere: true };
+    vi.mocked(tokenManager.logout).mockResolvedValueOnce(said);
+    expect(await googleDriveProvider.logout({ everywhere: true })).toEqual(said);
   });
 });
 

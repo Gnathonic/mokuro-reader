@@ -124,14 +124,60 @@ another origin) is cleared.
 
 ### Signing out
 
-`/logout` always clears the cookie and answers `200 {ok: true, revoked}`.
-`revoked` is true only when the server ended the grant at Google. When it is
-false (Google down or slow, a cookie sealed under a retired key, no cookie at
-all), the client revokes the access token it holds itself: revoking either
-token of a grant ends the whole grant. If neither request gets through (the
-device is offline), the client remembers that (`gdrive_logout_pending` in
-localStorage). Until a later `/logout` gets through, it sends no refresh, so
-the cookie left behind can never sign anyone back in without a consent screen.
+Google revokes per Cloud project, not per OAuth client. Revoking one token
+ends the user's whole grant: every device and browser using the reader, and
+any mokuro-bunko server whose Drive client sits in the same project. So there
+are two sign-outs:
+
+- **This device** (the default: "Log out", a switch to another provider,
+  `providerManager.logout()`). The client POSTs `/logout` with
+  `{"everywhere": false}`; an absent body or field means the same. The server
+  clears the cookie and does **not** call Google. The client deletes its
+  device key from IndexedDB and drops its access token without revoking it
+  (revoking an access token ends the whole grant too). A session bound to the
+  deleted key can never refresh again, so a copy of its cookie is worthless
+  even though the grant stays live for the other devices. Implicit mode
+  forgets the token locally and revokes nothing.
+- **Everywhere** ("Sign out everywhere…", confirmed in a modal; Drive only).
+  `{"everywhere": true}`: the server revokes the refresh token at Google, then
+  clears the cookie. Implicit mode revokes the access token as before. Both
+  delete the device key.
+
+`/logout` answers `200 {ok: true, revoked, invalidated}`. A malformed body
+(`everywhere` not a boolean, bad JSON) is `400 bad_request` and changes
+nothing. A device sign-out always says `revoked: false`, and the client never
+takes that as a cue to revoke. `invalidated` says whether copies of the
+cookie are now useless: for a device sign-out, everything except a live
+unbound session, or any live session while `GDRIVE_POP=off` (no cookie, one
+the server cannot open, or an expired one leaves nothing a copy could use);
+for everywhere, the revoke. When
+a device sign-out answers `invalidated: false` (or, offline, the browser never
+had a device key), the snackbar says a copy could still work and points to
+"Sign out everywhere". On an everywhere sign-out, `revoked` is true only when the
+server ended the grant at Google. When it is false (Google down or slow, a
+cookie sealed under a retired key, no cookie at all), the client revokes the
+access token it holds itself: revoking either token of a grant ends the whole
+grant. The cloud page says "Signed out of Google Drive everywhere" only when
+one of the two revokes was confirmed (`logout()` answers `revoked`); otherwise
+it says the sign-out is queued for the next Connect here (the request never
+got through — offline, a timeout, the backend down: `pendingEverywhere`) or
+that Google could not be reached (also when this host has no backend or the
+server refused the request: no replay would finish it), and points to
+myaccount.google.com/permissions. Implicit mode reports its revoke the same
+way. The client remembers the scope (`gdrive_logout_pending` in
+localStorage: `device` or `everywhere`; the older value `1` reads as
+`everywhere`) and drops its token BEFORE the request goes out, so a reload
+or a closed tab mid-request still finds the device signed out and the
+sign-out queued; the flag is cleared once the server answers (or a revoke
+from the browser got through). If the request does not get through (the
+device is offline), the flag stays. Until a
+later `/logout` with that scope gets through, it sends no refresh, so the
+cookie left behind can never sign anyone back in without a consent screen. A
+pending `everywhere` is never narrowed: the next sign-out is an everywhere
+one too. For a pending device sign-out the key is already gone, so the cookie
+cannot refresh even before the replay clears it. While a tab's own `/logout`
+is out, that tab renews nothing (a 401 mid-sign-out gets no token), so no
+replay of the queued sign-out races it with a second revoke of the same grant.
 
 On `/session`, the code exchange and the revoke of a grant the server refuses
 share one 8 s budget (`GOOGLE_BUDGET_MS`), under the routes' 10 s
@@ -144,7 +190,9 @@ The server writes one JSON line per request:
 It never logs a token, a code, a cookie or a body. Events include
 `signed_in(_bound)`, `refreshed(_resealed)`, `no_cookie`, `cookie_<reason>`,
 `expired`, `pop_missing`, `pop_mismatch`, `pop_clock`, `grant_revoked`,
-`server_config`, `transient`, `revoked`, `revoke_failed` and `not_configured`.
+`server_config`, `transient`, `revoked`, `revoke_failed`,
+`device_cleared`, `device_cleared_unbound`, `device_cleared_pop_off`,
+`bad_scope` and `not_configured`.
 
 ## Runbook
 
@@ -176,9 +224,18 @@ It never logs a token, a code, a cookie or a body. Events include
 
 ## Known limits
 
-- **Signing out revokes everywhere.** Google revokes the whole grant, so
-  every device using this client is signed out. There is no per-session
-  server revoke.
+- **There is no per-session revoke at Google.** "Sign out everywhere" ends
+  the whole grant for the Cloud project: every device, browser and
+  mokuro-bunko server using it. A device sign-out revokes nothing; it relies
+  on the device key instead.
+- **Unbound sessions and a device sign-out.** A session without `cnf` (the
+  browser could not create or keep a device key, or the proof failed while
+  `GDRIVE_POP=off`), and any session while `GDRIVE_POP=off`, is not protected
+  by deleting the key. A copy of its cookie taken before the sign-out stays
+  usable until it expires (180 days without use). The server answers
+  `invalidated: false` and logs `device_cleared_unbound` or
+  `device_cleared_pop_off`; the user is told to use "Sign out everywhere" to
+  end it for sure. There is no revoke and no denylist for it (no database).
 - **XSS.** While a tab is open, a script injected into the page can call
   `/refresh` and mint hour-long tokens. It cannot take the refresh token or
   the device key away with it. A Content-Security-Policy is the real defence,
