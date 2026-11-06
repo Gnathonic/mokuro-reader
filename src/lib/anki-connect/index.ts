@@ -946,6 +946,15 @@ export async function updateLastCard(
     return;
   }
 
+  // Before anything else is said: every later step would fail on the guard's
+  // silence and its own error ("could not find recent card") would replace
+  // the guard's notice in the one-message snackbar.
+  const { url, trusted } = resolveAnkiUrl();
+  if (!trusted) {
+    showSnackbar(unconfirmedAnkiUrlMessage(url));
+    return;
+  }
+
   // Model name is required for update mode - must know the card's actual note type
   if (!modelName) {
     showSnackbar('Error: Model name required for update mode');

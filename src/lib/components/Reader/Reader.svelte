@@ -51,6 +51,7 @@
     blobToBase64,
     type VolumeMetadata
   } from '$lib/anki-connect';
+  import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
   import { db } from '$lib/catalog/db';
   import { showSnackbar } from '$lib/util';
   import {
@@ -1439,6 +1440,13 @@
     const cardMode = $settings.ankiConnectSettings.cardMode;
 
     if (cardMode === 'update') {
+      // An unconfirmed URL answers nothing, which would read as "no recent card".
+      const refusal = ankiUrlRefusal($settings.ankiConnectSettings.url);
+      if (refusal) {
+        showSnackbar(refusal);
+        return;
+      }
+
       // Update mode: fetch previous card values
       const lastCard = await getLastCardInfo();
 

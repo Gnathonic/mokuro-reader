@@ -30,12 +30,13 @@ vi.mock('$lib/util/platform', () => ({ isMobilePlatform: () => false }));
 import {
   CONFIRMED_ANKI_URLS_KEY,
   ankiUrlKey,
+  ankiUrlRefusal,
   confirmAnkiUrl,
   isAnkiUrlTrusted,
   isLoopbackAnkiUrl,
   resetAnkiUrlTrustForTest
 } from '../url-trust';
-import { ankiConnect, fetchConnectionData, testConnection } from '../index';
+import { ankiConnect, fetchConnectionData, testConnection, updateLastCard } from '../index';
 
 const fetchMock = vi.fn(async () => ({ json: async () => ({ result: 6, error: null }) }));
 
@@ -166,5 +167,77 @@ describe('the AnkiConnect client sends nothing to an unconfirmed URL', () => {
     profileUrl('');
     await ankiConnect('version', {});
     expect(fetchMock).toHaveBeenLastCalledWith('http://127.0.0.1:8765', expect.anything());
+  });
+});
+
+describe('update mode with an unconfirmed URL', () => {
+  // The snackbar holds ONE message. A flow that reads the guard's silence as
+  // "no recent card" and reports that replaces the guard's notice, and the
+  // user never learns the URL needs confirming.
+  function updateProfile(url: string) {
+    h.settings.set({
+      ankiConnectSettings: {
+        url,
+        enabled: true,
+        cardMode: 'update',
+        connectionData: { modelFields: { Basic: ['Front'] } },
+        updateModelConfigs: {}
+      }
+    });
+  }
+
+  it('updateLastCard tells the user to confirm it, and that is the last word', async () => {
+    updateProfile('http://192.168.1.10:8765');
+
+    await updateLastCard('data:image/webp;base64,AAAA', 's', '', undefined, undefined, 'Basic');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(h.showSnackbar).toHaveBeenCalledTimes(1);
+    expect(h.showSnackbar.mock.calls.at(-1)?.[0]).toContain(
+      'http://192.168.1.10:8765 is not confirmed on this device'
+    );
+  });
+
+  it('a card id handed in (quick capture, the update modal) is refused the same way', async () => {
+    updateProfile('https://anki.example.com');
+
+    await updateLastCard('data:image/webp;base64,AAAA', 's', '', undefined, 1234, 'Basic');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(h.showSnackbar).toHaveBeenCalledTimes(1);
+    expect(h.showSnackbar.mock.calls[0][0]).toContain('is not confirmed on this device');
+  });
+
+  it('every component that looks up the last card checks the URL first', () => {
+    // A component reads "no result" from getLastCardInfo() as "no recent
+    // card" and says so, over the guard's notice. Each one must stop on
+    // ankiUrlRefusal() before it asks.
+    const sources = import.meta.glob('/src/lib/components/**/*.svelte', {
+      query: '?raw',
+      import: 'default',
+      eager: true
+    }) as Record<string, string>;
+    const callers = Object.entries(sources).filter(([, src]) => src.includes('getLastCardInfo()'));
+    expect(callers.map(([path]) => path.split('/').pop()).sort()).toEqual([
+      'Reader.svelte',
+      'TextBoxPicker.svelte',
+      'TextBoxes.svelte'
+    ]);
+    for (const [path, src] of callers) {
+      for (const call of src.matchAll(/getLastCardInfo\(\)/g)) {
+        const fnStart = src.lastIndexOf('function ', call.index);
+        expect(src.slice(fnStart, call.index), path).toContain('ankiUrlRefusal(');
+      }
+    }
+  });
+
+  it('ankiUrlRefusal names the notice for an unconfirmed URL, and nothing otherwise', () => {
+    expect(ankiUrlRefusal('http://192.168.1.10:8765')).toContain(
+      'http://192.168.1.10:8765 is not confirmed on this device'
+    );
+    expect(ankiUrlRefusal('http://127.0.0.1:8765')).toBeNull();
+    expect(ankiUrlRefusal('')).toBeNull();
+    confirmAnkiUrl('http://192.168.1.10:8765');
+    expect(ankiUrlRefusal('http://192.168.1.10:8765')).toBeNull();
   });
 });

@@ -12,6 +12,7 @@
     sendQuickCapture,
     type VolumeMetadata
   } from '$lib/anki-connect';
+  import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
   import { settings } from '$lib/settings';
   import { showSnackbar } from '$lib/util';
   import { onMount } from 'svelte';
@@ -110,6 +111,13 @@
     const cardMode = $settings.ankiConnectSettings.cardMode;
 
     if (cardMode === 'update') {
+      // An unconfirmed URL answers nothing, which would read as "no recent card".
+      const refusal = ankiUrlRefusal($settings.ankiConnectSettings.url);
+      if (refusal) {
+        showSnackbar(refusal);
+        return;
+      }
+
       const lastCard = await getLastCardInfo();
 
       if (!lastCard || !lastCard.noteId) {

@@ -16,6 +16,7 @@
     blobToBase64,
     type VolumeMetadata
   } from '$lib/anki-connect';
+  import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
   import { db } from '$lib/catalog/db';
   import {
     layoutLines,
@@ -514,6 +515,15 @@
     const metadataWithCover = await getMetadataWithCover();
 
     if (cardMode === 'update') {
+      // An unconfirmed URL answers nothing: the retries below would read that
+      // as "no recent card" and say so over the notice.
+      const refusal = ankiUrlRefusal($settings.ankiConnectSettings.url);
+      if (refusal) {
+        const { showSnackbar } = await import('$lib/util');
+        showSnackbar(refusal);
+        return;
+      }
+
       // Update mode: fetch previous card values with retry
       const maxRetries = 3;
       let lastCard = null;

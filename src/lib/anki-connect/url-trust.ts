@@ -107,6 +107,17 @@ export function unconfirmedAnkiUrlMessage(url: string | null | undefined): strin
   return `AnkiConnect URL ${effectiveAnkiUrl(url)} is not confirmed on this device. Confirm it in Settings → Anki Connect before cards are sent there.`;
 }
 
+/**
+ * The notice to show instead of sending to `url`, or null when this device
+ * may send to it. The client's guard answers an unconfirmed URL with this
+ * notice and no result, and the snackbar holds one message: a flow that would
+ * read "no result" as a failure of its own ("no recent card") and report it
+ * checks this first and stops on the notice, or the user never sees it.
+ */
+export function ankiUrlRefusal(url: string | null | undefined): string | null {
+  return isAnkiUrlTrusted(url) ? null : unconfirmedAnkiUrlMessage(url);
+}
+
 /** Test-only: re-read the confirmations from storage (after a test cleared it). */
 export function resetAnkiUrlTrustForTest(): void {
   _confirmed.set(readConfirmed());
