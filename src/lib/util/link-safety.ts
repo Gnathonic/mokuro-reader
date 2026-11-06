@@ -220,11 +220,13 @@ export function parseCloudLinkPrefill(hash: string): CloudLinkPrefill | null {
  *
  * The confirmation judged the address the LINK named; `fetch` follows
  * redirects without asking, so a public https server answering 302 with a
- * private or plain-http address would otherwise be fetched — and imported —
- * unannounced. A redirect may go anywhere that is no worse than what was shown:
- * another public https server (a CDN) is fine; plain http after https is not,
- * and neither is a private, link-local or loopback address the dialog did not
- * name. Null when the final address is acceptable, else why not, in words.
+ * private or plain-http address would otherwise have that address's answer
+ * read and imported unannounced. The browser has already sent the redirected
+ * request by the time this is asked: what is refused is reading and importing
+ * the response, not the request. A redirect may go anywhere that is no worse
+ * than what was shown: another public https server (a CDN) is fine; plain
+ * http after https is not, and neither is a private, link-local or loopback
+ * address the dialog did not name. Null when the final address is acceptable, else why not, in words.
  */
 export function redirectEscape(requested: string, final: string): string | null {
   const from = describeLinkTarget(requested);
@@ -241,9 +243,10 @@ export function redirectEscape(requested: string, final: string): string | null 
 }
 
 /**
- * Throw when `response` came back through a redirect `redirectEscape` refuses.
- * Call it on every response to a URL a link (or a link's manifest) chose,
- * before its body is used.
+ * Throw when `response` came back through a redirect `redirectEscape` refuses,
+ * so its body is never read or imported (the redirected request itself has
+ * already gone out). Call it on every response to a URL a link (or a link's
+ * manifest) chose, before its body is used.
  */
 export function assertNoRedirectEscape(requested: string, response: Response): void {
   if (!response.redirected || !response.url) return;
