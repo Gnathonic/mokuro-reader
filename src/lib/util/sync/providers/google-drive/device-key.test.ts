@@ -88,6 +88,55 @@ describe('the device key', () => {
     expect(await publicJwk(after!)).not.toEqual(await publicJwk(before!));
   });
 
+  describe('another tab (its own module instance) deletes or replaces the key', () => {
+    /** A second tab: the same browser storage, its own in-memory module state. */
+    async function otherTab(): Promise<typeof import('./device-key')> {
+      vi.resetModules();
+      return import('./device-key');
+    }
+
+    it('a sign-in here after the other tab signed out stores the key it binds to', async () => {
+      const tabA = await otherTab();
+      const tabB = await otherTab();
+      expect(await tabA.ensureDeviceKey()).not.toBeNull();
+      // Tab B has used the key (a refresh read it).
+      expect(await tabB.loadDeviceKey()).not.toBeNull();
+      // Tab A signs out.
+      expect(await tabA.deleteDeviceKey()).toBe(true);
+
+      // Tab B's Connect: the key it hands the sign-in must be the one stored,
+      // or the page Google returns to finds none and the session is unbound.
+      const signingIn = await tabB.ensureDeviceKey();
+      expect(signingIn).not.toBeNull();
+      const afterRedirect = await otherTab();
+      const stored = await afterRedirect.loadDeviceKey();
+      expect(stored).not.toBeNull();
+      expect(await publicJwk(stored!)).toEqual(await publicJwk(signingIn!));
+    });
+
+    it('a key the other tab made by signing in again is the one this tab signs with', async () => {
+      const tabA = await otherTab();
+      const tabB = await otherTab();
+      const k1 = await tabA.ensureDeviceKey();
+      expect(await publicJwk((await tabB.loadDeviceKey())!)).toEqual(await publicJwk(k1!));
+
+      await tabA.deleteDeviceKey();
+      const k2 = await tabA.ensureDeviceKey();
+      expect(await publicJwk(k2!)).not.toEqual(await publicJwk(k1!));
+      // The shared cookie is now bound to K2: tab B must prove with K2.
+      expect(await publicJwk((await tabB.loadDeviceKey())!)).toEqual(await publicJwk(k2!));
+    });
+
+    it('a key the other tab deleted is not signed with here', async () => {
+      const tabA = await otherTab();
+      const tabB = await otherTab();
+      await tabA.ensureDeviceKey();
+      expect(await tabB.loadDeviceKey()).not.toBeNull();
+      await tabA.deleteDeviceKey();
+      expect(await tabB.loadDeviceKey()).toBeNull();
+    });
+  });
+
   it('deleting with no key, or with storage refusing, never throws', async () => {
     expect(await deleteDeviceKey()).toBe(true);
     vi.spyOn(indexedDB, 'open').mockImplementation(() => {

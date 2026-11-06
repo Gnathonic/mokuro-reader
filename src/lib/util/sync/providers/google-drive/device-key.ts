@@ -14,7 +14,9 @@
  * ConstraintError reads the winner's). Every other path only reads it, except
  * sign-out, which deletes it (`deleteDeviceKey`): a session bound to a deleted
  * key can never refresh again, whoever holds a copy of its cookie. Storage
- * failures never block a sign-in: the session is simply unbound.
+ * failures never block a sign-in: the session is simply unbound. Nothing
+ * here remembers the key between calls (`loadDeviceKey`): every tab of the
+ * browser shares the one stored key, and another tab may delete or replace it.
  */
 
 const DB_NAME = 'mokuro-device-key';
@@ -92,12 +94,24 @@ function isKeyPair(record: unknown): record is KeyRecord {
   );
 }
 
+/** The read in flight, shared by callers at once. Never kept once it settles. */
 let cached: Promise<CryptoKeyPair | null> | null = null;
 
-/** The stored key pair, or null (none yet, or storage unreadable). Never creates one. */
+/**
+ * The stored key pair, or null (none yet, or storage unreadable). Never
+ * creates one. Every call reads storage (only a read already in flight is
+ * shared): another tab may delete the key (its sign-out) or replace it (its
+ * next sign-in) at any time, and a remembered copy would then hand this tab's
+ * sign-in a key the page Google returns to cannot find (an unbound session),
+ * or sign this tab's refreshes with a key the shared cookie is no longer
+ * bound to. One small IndexedDB read per sign-in, refresh or sign-out.
+ */
 export function loadDeviceKey(): Promise<CryptoKeyPair | null> {
   if (!cached) {
-    cached = withStore<KeyRecord | undefined>('readonly', (store) => store.get(RECORD_ID))
+    const read: Promise<CryptoKeyPair | null> = withStore<KeyRecord | undefined>(
+      'readonly',
+      (store) => store.get(RECORD_ID)
+    )
       .then((record) =>
         isKeyPair(record) ? { privateKey: record.privateKey, publicKey: record.publicKey } : null
       )
@@ -105,11 +119,10 @@ export function loadDeviceKey(): Promise<CryptoKeyPair | null> {
         console.warn('Drive device key unreadable:', error?.name ?? error);
         return null;
       })
-      .then((pair) => {
-        // A miss is not remembered: a sign-in in another tab may create the key.
-        if (!pair) cached = null;
-        return pair;
+      .finally(() => {
+        if (cached === read) cached = null;
       });
+    cached = read;
   }
   return cached;
 }
@@ -137,12 +150,11 @@ export async function ensureDeviceKey(): Promise<CryptoKeyPair | null> {
     } catch (error) {
       // Another tab stored its key first: that one is THE key.
       if ((error as DOMException | null)?.name === 'ConstraintError') {
-        cached = null;
+        cached = null; // a read in flight may predate the winner's add
         return await loadDeviceKey();
       }
       throw error;
     }
-    cached = Promise.resolve(pair);
     return pair;
   } catch (error) {
     console.warn('Drive device key not created; signing in unbound:', (error as Error)?.name);
@@ -199,7 +211,7 @@ export async function signProof(
   };
 }
 
-/** Tests: drop the in-memory copy (the database is the test's to reset). */
+/** Tests: drop a read in flight (the database is the test's to reset). */
 export function forgetCachedDeviceKeyForTest(): void {
   cached = null;
 }
