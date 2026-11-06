@@ -2651,3 +2651,32 @@ describe('page turns while reading wait for the end of the session', () => {
     expect(volumeDataDeferred()).toBe(false);
   });
 });
+
+describe('a Google Drive sync with no token', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const signedOutDrive = () =>
+    ({
+      type: 'google-drive',
+      name: 'Google Drive',
+      isAuthenticated: () => false,
+      login: vi.fn(async () => {
+        throw new Error('stop here');
+      })
+    }) as unknown as SyncProvider;
+
+  it('the popup flow signs in from the sync, as it always did', async () => {
+    vi.stubEnv('VITE_GDRIVE_AUTH_BACKEND', '');
+    const provider = signedOutDrive();
+    await unifiedSyncService.syncProvider(provider);
+    expect(provider.login).toHaveBeenCalledTimes(1);
+  });
+
+  it('the auth backend never starts its page-leaving sign-in from a sync', async () => {
+    vi.stubEnv('VITE_GDRIVE_AUTH_BACKEND', 'true');
+    const provider = signedOutDrive();
+    const result = await unifiedSyncService.syncProvider(provider);
+    expect(provider.login).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+  });
+});

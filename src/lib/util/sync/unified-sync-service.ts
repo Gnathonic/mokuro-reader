@@ -37,6 +37,7 @@ import { noteMergedRemoteReads } from '$lib/reading-history/remote-reads';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
 import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
 import { planVolumeDataUpload, stableStringify } from './volume-data-deferral';
+import { backendAuthEnabled } from './providers/google-drive/auth-backend';
 import {
   clearVolumeDataDeferred,
   noteVolumeDataDeferred,
@@ -309,8 +310,10 @@ class UnifiedSyncService {
 
       // Check authentication - if provider needs to re-authenticate, let it handle that
       if (!provider.isAuthenticated()) {
-        // For Google Drive specifically, trigger the auth flow if needed
-        if (provider.type === 'google-drive') {
+        // For Google Drive specifically, trigger the auth flow if needed —
+        // but never the auth backend's sign-in, which leaves the page: a sync
+        // is not the user asking to sign in (the Reconnect button is).
+        if (provider.type === 'google-drive' && !backendAuthEnabled()) {
           console.log('Google Drive not authenticated, triggering login...');
           await provider.login();
         } else {

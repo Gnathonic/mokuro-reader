@@ -6,6 +6,12 @@ type FetchHandler = (event: {
 }) => void;
 
 let fetchHandler: FetchHandler;
+let installHandler: (event: { waitUntil: (p: Promise<unknown>) => void }) => void;
+let cache: {
+  addAll: ReturnType<typeof vi.fn>;
+  match: ReturnType<typeof vi.fn>;
+  put: ReturnType<typeof vi.fn>;
+};
 
 beforeAll(async () => {
   const listeners = new Map<string, EventListener>();
@@ -14,7 +20,7 @@ beforeAll(async () => {
   }) as typeof self.addEventListener);
 
   const cacheStore = new Map<string, Response>();
-  const cache = {
+  cache = {
     addAll: vi.fn(async () => {}),
     match: vi.fn(async (key: string | Request) => {
       const k = typeof key === 'string' ? key : new URL(key.url).pathname;
@@ -41,6 +47,7 @@ beforeAll(async () => {
   await import(/* @vite-ignore */ swModule);
   fetchHandler = listeners.get('fetch') as unknown as FetchHandler;
   expect(fetchHandler).toBeTypeOf('function');
+  installHandler = listeners.get('install') as unknown as typeof installHandler;
 });
 
 function dispatch(url: string, method = 'GET') {
@@ -93,4 +100,59 @@ describe('service worker fetch interception', () => {
     const respondWith = dispatch(url);
     expect(respondWith).not.toHaveBeenCalled();
   });
+});
+
+describe('the Drive auth API and the OAuth callback', () => {
+  // `/api/` answers are no-store, and the callback's URL carries an
+  // authorization code: neither may be answered from, or written to, a cache.
+  it.each([
+    '/api/gdrive/refresh',
+    '/api/anything',
+    '/oauth/google-callback.html?code=4%2Fsecret&state=abc',
+    '/oauth/google-callback.js'
+  ])('does not intercept same-origin %s', (path) => {
+    const respondWith = dispatch(`${self.location.origin}${path}`);
+    expect(respondWith).not.toHaveBeenCalled();
+  });
+
+  it('does not precache them', async () => {
+    let installed: Promise<unknown> = Promise.resolve();
+    installHandler({ waitUntil: (p) => (installed = p) });
+    await installed;
+    const precached = cache.addAll.mock.calls.at(-1)?.[0] as string[];
+    expect(precached).toContain('/favicon.png');
+    expect(precached.filter((p) => p.startsWith('/oauth/') || p.startsWith('/api/'))).toEqual([]);
+  });
+
+  it('still intercepts other same-origin paths that merely contain the words', () => {
+    expect(dispatch(`${self.location.origin}/#/api/x`)).toHaveBeenCalledTimes(1);
+    expect(dispatch(`${self.location.origin}/apis.json`)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the network-first cache', () => {
+  async function respondTo(path: string, response: Response) {
+    vi.mocked(fetch).mockResolvedValueOnce(response);
+    const respondWith = dispatch(`${self.location.origin}${path}`);
+    await respondWith.mock.calls[0][0];
+    await Promise.resolve();
+  }
+
+  it('keeps an ordinary 200', async () => {
+    cache.put.mockClear();
+    await respondTo('/page-a', new Response('ok', { status: 200 }));
+    expect(cache.put).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['no-store', 'private, no-store', 'No-Store, max-age=0'])(
+    'never stores a response marked Cache-Control: %s',
+    async (cacheControl) => {
+      cache.put.mockClear();
+      await respondTo(
+        '/page-b',
+        new Response('secret', { status: 200, headers: { 'cache-control': cacheControl } })
+      );
+      expect(cache.put).not.toHaveBeenCalled();
+    }
+  );
 });

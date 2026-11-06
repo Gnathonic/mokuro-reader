@@ -6,6 +6,7 @@ import {
   type DriveFile
 } from './constants';
 import { tokenManager } from './token-manager';
+import { backendAuthEnabled } from './auth-backend';
 import {
   classifyDriveFailure,
   driveFailureOf,
@@ -66,6 +67,16 @@ type DriveRequest = <R>(
   retryOn?: DriveRetryOptions['retryOn']
 ) => Promise<R>;
 
+/**
+ * Backend mode: make sure the held token has a few minutes left before a
+ * request goes out (renewed through the session cookie when not). Implicit
+ * mode: nothing, and no extra tick before the request.
+ */
+function beforeRequest<R>(send: () => Promise<R>): Promise<R> {
+  if (!backendAuthEnabled()) return send();
+  return tokenManager.getAccessToken().then(send);
+}
+
 /** The token the manager holds now. */
 function getCurrentToken(): string {
   let token = '';
@@ -124,6 +135,32 @@ async function handleAuthError(
   }
 
   console.log('API call failed with auth error, token may be expired');
+
+  // Backend mode: renew through the session cookie and send the call again
+  // (once: `retryStaleTokenRefusal`), with no popup and nothing cleared. When
+  // no renewal is possible the manager has already put up Reconnect.
+  if (backendAuthEnabled()) {
+    const renewal = await tokenManager.renewRejectedToken(sentWith ?? held);
+    if (renewal.kind === 'renewed') {
+      throw new DriveApiError(
+        'Authentication renewed. Please try again.',
+        status,
+        false,
+        undefined,
+        'auth',
+        true
+      );
+    }
+    throw new DriveApiError(
+      renewal.kind === 'transient'
+        ? 'Google Drive sign-in is temporarily unavailable. Will retry later.'
+        : 'Google Drive session expired. Reconnect to continue.',
+      status,
+      false,
+      undefined,
+      'auth'
+    );
+  }
 
   // Check if auto re-auth is enabled
   const { miscSettings } = await import('$lib/settings/misc');
@@ -254,10 +291,11 @@ class DriveApiClient {
     let sentWith: string | undefined;
     const request: DriveRequest = (call, retryOn) =>
       withDriveRetry(
-        () => {
-          sentWith = getCurrentToken();
-          return call();
-        },
+        () =>
+          beforeRequest(() => {
+            sentWith = getCurrentToken();
+            return call();
+          }),
         { retryOn }
       );
     try {
@@ -379,10 +417,11 @@ class DriveApiClient {
     let sentWith: string | undefined;
     const request: DriveRequest = (call, retryOn) =>
       withDriveRetry(
-        () => {
-          sentWith = getCurrentToken();
-          return call();
-        },
+        () =>
+          beforeRequest(() => {
+            sentWith = getCurrentToken();
+            return call();
+          }),
         { retryOn }
       );
     try {
@@ -518,7 +557,9 @@ class DriveApiClient {
     // idempotent, so rate limits and 5xx are simply asked again. Each attempt
     // reads the token afresh: a re-auth can land during a backoff.
     return retryStaleTokenRefusal(() =>
-      withDriveRetry(() => this.downloadOnce(fileId, getCurrentToken(), totalSize, onProgress))
+      withDriveRetry(() =>
+        beforeRequest(() => this.downloadOnce(fileId, getCurrentToken(), totalSize, onProgress))
+      )
     );
   }
 
@@ -657,7 +698,8 @@ class DriveApiClient {
         { retryOn: fileId ? undefined : rateLimitOnly }
       );
     // A 401 for a replaced token created nothing, so even a create goes again.
-    return retryStaleTokenRefusal(send);
+    // Backend mode renews a token about to expire before the first attempt.
+    return retryStaleTokenRefusal(() => beforeRequest(send));
   }
 
   async deleteFile(fileId: string): Promise<void> {

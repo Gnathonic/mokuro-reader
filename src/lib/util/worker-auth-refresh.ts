@@ -152,9 +152,10 @@ export function createWorkerAuthRefresher(
  * credentials name exactly one of them (Bearer: the token, never the password;
  * Basic: the password), so the old secret must go — `webdavAuthorization`
  * prefers a token, and a dead one left behind after a fallback to Basic would
- * keep being sent.
+ * keep being sent. `accessToken` is Google Drive's (and OneDrive's) bearer
+ * token: a renewal always names it, and nothing else may keep the refused one.
  */
-const AUTH_SECRET_KEYS = ['webdavToken', 'webdavPassword'] as const;
+const AUTH_SECRET_KEYS = ['webdavToken', 'webdavPassword', 'accessToken'] as const;
 
 /** Write fresh credentials into `credentials`, replacing the auth secret wholesale. */
 export function replaceCredentials(

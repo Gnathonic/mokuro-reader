@@ -113,3 +113,25 @@ describe('worker credential refresh', () => {
     expect(credentials).toEqual({ webdavUrl: 'https://host', webdavToken: 'new' });
   });
 });
+
+describe('a Drive token renewed for a worker', () => {
+  it('replaces the refused access token in the message credentials and keeps the rest', async () => {
+    const credentials: Record<string, unknown> = {
+      accessToken: 'OLD',
+      seriesFolderId: 'folder',
+      cloudBases: { driveApi: 'http://cloudsim.test' }
+    };
+    await refreshInto(async () => ({ accessToken: 'NEW' }), credentials)('Bearer OLD');
+    expect(credentials).toEqual({
+      accessToken: 'NEW',
+      seriesFolderId: 'folder',
+      cloudBases: { driveApi: 'http://cloudsim.test' }
+    });
+  });
+
+  it('a renewal that names no access token leaves none of the old one behind', async () => {
+    const credentials: Record<string, unknown> = { accessToken: 'OLD', webdavUrl: 'u' };
+    await refreshInto(async () => ({ webdavToken: 'T' }), credentials)('Bearer OLD');
+    expect(credentials).toEqual({ webdavUrl: 'u', webdavToken: 'T' });
+  });
+});

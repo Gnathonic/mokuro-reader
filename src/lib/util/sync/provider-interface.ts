@@ -745,6 +745,17 @@ export interface SyncProvider {
 // WebDAV-specific error types for detailed modal guidance
 export type WebDAVErrorType = 'network' | 'auth' | 'connection' | 'permission' | 'unknown';
 
+/**
+ * `ProviderError.code` of a sign-in the user walked away from (Back on the
+ * provider's own page): nothing failed, so nothing is shown.
+ */
+export const LOGIN_CANCELLED = 'LOGIN_CANCELLED';
+
+/** The user cancelled the sign-in: say nothing. */
+export function isLoginCancelled(error: unknown): boolean {
+  return error instanceof ProviderError && error.code === LOGIN_CANCELLED;
+}
+
 export class ProviderError extends Error {
   constructor(
     message: string,
