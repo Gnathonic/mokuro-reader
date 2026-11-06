@@ -13,7 +13,7 @@
     getCardAgeInMin,
     extractFieldValues,
     getModelConfig,
-    blobToBase64,
+    coverImageDataUrl,
     type VolumeMetadata
   } from '$lib/anki-connect';
   import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
@@ -27,6 +27,7 @@
   import { lineTransform } from '$lib/reader/line-grid';
   import { fontsReady, fontLoadEpoch } from '$lib/reader/fonts-ready';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
+  import { displayableImageBlob } from '$lib/util/raster-image';
 
   interface ContextMenuData {
     x: number;
@@ -218,11 +219,9 @@
   async function getMetadataWithCover(): Promise<VolumeMetadata> {
     try {
       const dbVolume = await db.volumes.get(volumeUuid);
-      if (dbVolume?.thumbnail) {
-        const coverImage = await blobToBase64(dbVolume.thumbnail);
-        if (coverImage) {
-          return { ...volumeMetadata, coverImage };
-        }
+      const coverImage = await coverImageDataUrl(dbVolume?.thumbnail);
+      if (coverImage) {
+        return { ...volumeMetadata, coverImage };
       }
     } catch {
       // Fall through to return metadata without cover
@@ -503,7 +502,8 @@
 
     // Get image URL
     const url =
-      pageImageUrlFrom(event.target as HTMLElement) || (src ? URL.createObjectURL(src) : null);
+      pageImageUrlFrom(event.target as HTMLElement) ||
+      (src ? URL.createObjectURL(displayableImageBlob(src)) : null);
 
     if (!url) return;
 

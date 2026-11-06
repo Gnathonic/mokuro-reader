@@ -1,5 +1,6 @@
 import type { VolumeMetadata } from '$lib/types';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { toRasterImageFile } from '$lib/util/raster-image';
 
 export interface CloudThumbnailResult {
   file: File;
@@ -103,12 +104,6 @@ function releaseFetchSlot(): void {
   waiters.pop()?.grant();
 }
 
-function getThumbnailMime(path: string): string {
-  const lower = path.toLowerCase();
-  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
-  return 'image/webp';
-}
-
 async function downloadThumbnailWithTimeout(volume: VolumeMetadata): Promise<Blob> {
   const thumbnailPath =
     volume.cloudThumbnailPath ?? `${volume.series_title}/${volume.volume_title}.webp`;
@@ -175,8 +170,17 @@ export async function fetchCloudThumbnail(
       const thumbnailPath =
         volume.cloudThumbnailPath ?? `${volume.series_title}/${volume.volume_title}.webp`;
       const ext = thumbnailPath.split('.').pop()!.toLowerCase();
-      const mime = getThumbnailMime(thumbnailPath);
-      const file = new File([blob], `${volume.volume_title}.${ext}`, { type: mime });
+      // Typed by its bytes, never by its name: SVG is unsupported, and a
+      // cloud file named `.webp` may hold anything.
+      const file = await toRasterImageFile(blob, `${volume.volume_title}.${ext}`, {
+        renameExtension: true
+      });
+      if (!file) {
+        console.warn(
+          `Cloud thumbnail for ${volume.volume_title} is not a supported raster image; skipped`
+        );
+        return null;
+      }
 
       // Measure dimensions using createImageBitmap (most reliable for pixel dimensions)
       const bitmap = await createImageBitmap(file);

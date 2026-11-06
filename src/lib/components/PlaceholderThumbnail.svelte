@@ -3,6 +3,7 @@
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
+  import { displayableCoverBlob } from '$lib/util/raster-image';
 
   interface Props {
     /** Number of items to show in stack (1 = single, 2-3 = stacked) */
@@ -90,9 +91,15 @@
   }
 
   $effect(() => {
-    const file = volume?.thumbnail;
+    // Raster covers only — see `displayableCoverBlob`.
+    const stored = volume?.thumbnail;
+    const file = displayableCoverBlob(stored);
     const uuid = volume?.volume_uuid;
-    const key = file && uuid ? `${uuid}:${file.size}:${file.lastModified}` : null;
+    // Keyed by the STORED file: a relabelled view of an untyped one has no `lastModified`.
+    const key =
+      file && stored && uuid
+        ? `${uuid}:${stored.size}:${stored.lastModified}:${stored.type}`
+        : null;
     if (key === renderedCoverKey) return; // Same cover as already rendered — nothing to do.
     renderedCoverKey = key;
 

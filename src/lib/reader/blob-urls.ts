@@ -12,6 +12,8 @@
  * last holder lets go, so a holder that is replaced in the same frame (a
  * remount) picks the URL back up instead of minting a new one.
  */
+import { displayableImageBlob } from '$lib/util/raster-image';
+
 export const BLOB_URL_GRACE_MS = 5000;
 
 interface Entry {
@@ -26,7 +28,9 @@ const blobsByUrl = new Map<string, Blob>();
 export function acquireBlobUrl(blob: Blob): string {
   let entry = entries.get(blob);
   if (!entry) {
-    entry = { url: URL.createObjectURL(blob), refs: 0, timer: null };
+    // A raster-labelled view of the same bytes (see `displayableImageBlob`):
+    // a page stored untyped must never open as a document in a new tab.
+    entry = { url: URL.createObjectURL(displayableImageBlob(blob)), refs: 0, timer: null };
     entries.set(blob, entry);
     blobsByUrl.set(entry.url, blob);
   }

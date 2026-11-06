@@ -8,6 +8,7 @@ import {
 } from '$lib/util/file-processing-pool';
 import { generateUUID } from '$lib/util/uuid';
 import { mayBeImageType } from '$lib/util/image-content-type';
+import { RASTER_FORMAT_NAMES, toRasterImageFile } from '$lib/util/raster-image';
 import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
 import { fetchVolumeManifest, type VolumeManifest } from './deep-link-manifest';
 import { parseImportedSeriesFile, type PendingSeriesFile } from './series-file-import';
@@ -146,7 +147,7 @@ async function runCbzBundleTask(
           progress: 5 + Math.round((pct / 100) * 63)
         });
       },
-      onComplete: (result, completeTask) => {
+      onComplete: async (result, completeTask) => {
         completeTask();
         const bundle = result?.bundle;
         if (!bundle?.archive?.data) {
@@ -154,28 +155,32 @@ async function runCbzBundleTask(
           return;
         }
 
+        // Fixed types, never the server's: a remote Content-Type must not
+        // reach a Blob this app keeps (see `$lib/util/raster-image`).
         const archiveFile = new File([bundle.archive.data], `${normalizedVolume}.cbz`, {
-          type: bundle.archive.contentType || 'application/zip'
+          type: 'application/zip'
         });
         setRelativePath(archiveFile, `/${normalizedVolume}.cbz`);
 
         let mokuroFile: File | null = null;
         if (bundle.mokuro?.data) {
           mokuroFile = new File([bundle.mokuro.data], `${normalizedVolume}.mokuro`, {
-            type: bundle.mokuro.contentType || 'application/json'
+            type: 'application/json'
           });
           setRelativePath(mokuroFile, `/${normalizedVolume}.mokuro`);
         }
 
         let coverFile: File | null = null;
         if (bundle.cover?.data && mayBeImageType(bundle.cover.contentType)) {
-          const extFromPath = extensionFromPath(bundle.cover.url);
-          const extFromMime = extensionFromMimeType(bundle.cover.contentType || '');
-          const extension = extFromPath || extFromMime || 'webp';
-          coverFile = new File([bundle.cover.data], `${normalizedVolume}.${extension}`, {
-            type: bundle.cover.contentType || 'image/webp'
-          });
-          setRelativePath(coverFile, `/${normalizedVolume}.${extension}`);
+          try {
+            coverFile = await rasterCoverFile(
+              new Blob([bundle.cover.data]),
+              normalizedVolume,
+              bundle.cover.url
+            );
+          } catch (error) {
+            console.warn('[HTML Download] Could not read cover', bundle.cover.url, error);
+          }
         }
 
         resolve({ archiveFile, mokuroFile, coverFile });
@@ -185,6 +190,30 @@ async function runCbzBundleTask(
       }
     });
   });
+}
+
+/**
+ * A downloaded cover as a File typed by its BYTES, named `<volume>.<ext>` for
+ * that type — or null, with a warning naming the URL, when the bytes are not a
+ * raster image. The server's Content-Type and the URL's extension are never
+ * trusted: an SVG (or HTML) cover stored as such would run as the app the
+ * moment the user opened the cover in a new tab.
+ */
+async function rasterCoverFile(
+  blob: Blob,
+  normalizedVolume: string,
+  url: string
+): Promise<File | null> {
+  const file = await toRasterImageFile(blob, `${normalizedVolume}.img`, { renameExtension: true });
+  if (!file) {
+    console.warn(
+      `[HTML Download] Cover is not a supported raster image (${RASTER_FORMAT_NAMES}); skipped:`,
+      url
+    );
+    return null;
+  }
+  setRelativePath(file, `/${file.name}`);
+  return file;
 }
 
 function setRelativePath(file: File, relativePath: string): void {
@@ -272,23 +301,6 @@ function coverParamUrl(request: HtmlDownloadRequest): string | null {
   return `${request.source}/${path}`;
 }
 
-function extensionFromPath(pathOrUrl: string): string {
-  const pathname = pathOrUrl.split('?')[0].split('#')[0];
-  const ext = pathname.split('.').pop()?.toLowerCase() || '';
-  return ext.replace(/[^a-z0-9]/g, '');
-}
-
-function extensionFromMimeType(contentType: string | null): string {
-  if (!contentType) return '';
-  const value = contentType.toLowerCase();
-  if (value.includes('webp')) return 'webp';
-  if (value.includes('png')) return 'png';
-  if (value.includes('jpeg') || value.includes('jpg')) return 'jpg';
-  if (value.includes('avif')) return 'avif';
-  if (value.includes('gif')) return 'gif';
-  return '';
-}
-
 async function tryFetchMokuroSidecar(
   volumeBaseUrls: string[],
   normalizedVolume: string,
@@ -307,7 +319,7 @@ async function tryFetchMokuroSidecar(
     if (response.ok) {
       const blob = await response.blob();
       const file = new File([blob], `${normalizedVolume}.mokuro`, {
-        type: blob.type || 'application/json'
+        type: 'application/json'
       });
       setRelativePath(file, `/${normalizedVolume}.mokuro`);
       return file;
@@ -387,15 +399,9 @@ async function tryFetchCoverSidecar(
       continue;
     }
 
-    const blob = await response.blob();
-    const extFromPath = extensionFromPath(coverUrl);
-    const extFromMime = extensionFromMimeType(response.headers.get('content-type') || blob.type);
-    const extension = extFromPath || extFromMime || 'webp';
-    const filename = `${normalizedVolume}.${extension}`;
-
-    const file = new File([blob], filename, { type: blob.type || 'image/webp' });
-    setRelativePath(file, `/${filename}`);
-    console.log('[HTML Download] Using thumbnail sidecar:', filename, `(${blob.size} bytes)`);
+    const file = await rasterCoverFile(await response.blob(), normalizedVolume, coverUrl);
+    if (!file) continue;
+    console.log('[HTML Download] Using thumbnail sidecar:', file.name, `(${file.size} bytes)`);
     onStatus?.('Downloaded cover sidecar', 95);
     return file;
   }
@@ -473,15 +479,7 @@ async function fetchCoverFile(url: string, normalizedVolume: string): Promise<Fi
     return null;
   }
   try {
-    const blob = await response.blob();
-    const extension =
-      extensionFromPath(url) ||
-      extensionFromMimeType(response.headers.get('content-type') || blob.type) ||
-      'webp';
-    const filename = `${normalizedVolume}.${extension}`;
-    const file = new File([blob], filename, { type: blob.type || 'image/webp' });
-    setRelativePath(file, `/${filename}`);
-    return file;
+    return await rasterCoverFile(await response.blob(), normalizedVolume, url);
   } catch (error) {
     console.warn(`[HTML Download] Could not read cover ${url}:`, error);
     return null;

@@ -2,6 +2,7 @@ import type { Readable, Subscriber, Unsubscriber } from 'svelte/store';
 import { db } from './db';
 import { activeAccountScope, normalizeCachePath } from './cloud-cache-key';
 import type { CloudCover } from './cloud-covers';
+import { rasterOrNull } from '$lib/util/raster-image';
 
 /**
  * ONE CARD, ONE COVER, ONE KEYED READ.
@@ -211,7 +212,9 @@ function settle(entry: CoverEntry, row: CloudCover | undefined): void {
   // path ever issued (see {@link refreshCoverKeys}), and a `cloud_covers` row is
   // written once and never rewritten (see `cloud-covers.ts`). Anything that
   // makes an overwrite reachable has to bring all three back with it.
-  const next = row ? makeResolved(entry, row) : undefined;
+  // A cached cover whose type is not a raster one is never shown (SVG is
+  // unsupported: as an object URL it would run as the app in a new tab).
+  const next = row && rasterOrNull(row.thumbnail) ? makeResolved(entry, row) : undefined;
   if (next !== undefined) entry.value = next;
 
   // A refresh that arrived DURING this read is not answered by this row. The
