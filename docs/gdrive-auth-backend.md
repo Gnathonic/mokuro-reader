@@ -11,15 +11,15 @@ Without the flag, the implicit Google Identity Services flow runs exactly as
 before. The flag-less build is also what self-hosts, previews without secrets
 and the e2e suite use.
 
-| Piece             | Where                                                                                 |
-| ----------------- | ------------------------------------------------------------------------------------- |
-| Routes            | `src/routes/api/gdrive/{session,refresh,logout}/+server.ts`                           |
-| Server logic      | `src/lib/server/gdrive-auth/` (server-only)                                           |
-| Callback page     | `static/oauth/google-callback.{html,js}`                                              |
-| Client            | `src/lib/util/sync/providers/google-drive/{auth-backend,device-key,token-manager}.ts` |
-| Headers           | `vercel.json` (`/oauth/(.*)`, `/api/(.*)`)                                            |
-| Service worker    | `src/service-worker.js` never touches `/api/` or `/oauth/`                            |
-| Real-browser test | `e2e/gdrive-auth-backend.spec.ts`                                                     |
+| Piece             | Where                                                                                                                                                                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Routes            | `src/routes/api/gdrive/{session,refresh,logout}/+server.ts`                                                                                                                                                                   |
+| Server logic      | `src/lib/server/gdrive-auth/` (server-only)                                                                                                                                                                                   |
+| Callback page     | `static/oauth/google-callback.{html,js}`                                                                                                                                                                                      |
+| Client            | `src/lib/util/sync/providers/google-drive/{auth-backend,device-key,token-manager}.ts`                                                                                                                                         |
+| Headers           | `vercel.json` (`/oauth/(.*)`, `/api/(.*)`)                                                                                                                                                                                    |
+| Service worker    | `src/service-worker.js` never touches `/api/` or `/oauth/`; a worker from an older build, still in control until the update banner is accepted, may cache the callback URL, so `takeCallback` purges cached `/oauth/` entries |
+| Real-browser test | `e2e/gdrive-auth-backend.spec.ts`                                                                                                                                                                                             |
 
 ## Configuration
 

@@ -330,6 +330,9 @@ export function takeCallback(now = Date.now()): CallbackResult {
   const rawPending = store.getItem(PENDING_KEY);
   store.removeItem(CALLBACK_KEY);
   store.removeItem(PENDING_KEY);
+  // The redirect that brought this answer may sit in Cache Storage; cleared
+  // in the background, so the sign-in never waits on it.
+  void purgeCachedCallbacks();
 
   let answer: { code?: unknown; state?: unknown; error?: unknown };
   let pending: { state?: unknown; verifier?: unknown; createdAt?: unknown } | null;
@@ -355,6 +358,31 @@ export function takeCallback(now = Date.now()): CallbackResult {
     return { kind: 'refused', reason: 'malformed' };
   }
   return { kind: 'code', code: answer.code, verifier: pending.verifier };
+}
+
+/**
+ * Delete every cached `/oauth/` response, best-effort. This build's service
+ * worker never caches them, but one from an earlier build stays in control
+ * until the user accepts the update banner, and it caches every same-origin
+ * 200 GET by its full URL: the redirect back from Google, `?code=…&state=…`
+ * included. The code is single-use and PKCE-bound, but it has no business
+ * outliving the sign-in.
+ */
+async function purgeCachedCallbacks(): Promise<void> {
+  try {
+    if (typeof caches === 'undefined' || !caches) return;
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name);
+      for (const request of await cache.keys()) {
+        const url = new URL(request.url);
+        if (url.origin === location.origin && url.pathname.startsWith('/oauth/')) {
+          await cache.delete(request);
+        }
+      }
+    }
+  } catch {
+    // Cache Storage refused (a private window, blocked site data): nothing to purge.
+  }
 }
 
 /**
