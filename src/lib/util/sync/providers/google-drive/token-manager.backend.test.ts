@@ -641,6 +641,28 @@ describe('logout: this device only (the default)', () => {
     expect(bodyOf(calls('/api/gdrive/logout')[0])).toEqual({ everywhere: true });
   });
 
+  it.each([
+    ['a device sign-out', {}, 'device'],
+    ['a sign-out everywhere', { everywhere: true }, 'everywhere']
+  ] as const)(
+    '%s is remembered and this device signed out BEFORE /logout answers (a reload mid-request)',
+    async (_label, options, scope) => {
+      persist('LIVE', 30 * MIN);
+      const { tm, held, device } = await load();
+      await withDeviceKey(device);
+      // The request never answers: the tab is reloaded or closed meanwhile.
+      vi.mocked(fetch).mockReturnValue(new Promise<Response>(() => {}));
+      void tm.logout(options);
+      await vi.waitFor(() => expect(calls('/api/gdrive/logout')).toHaveLength(1));
+      // What a reload would find now: a sign-out to finish, and no session.
+      expect(localStorage.getItem('gdrive_logout_pending')).toBe(scope);
+      expect(localStorage.getItem(KEYS.token)).toBeNull();
+      expect(localStorage.getItem(KEYS.authed)).toBeNull();
+      expect(held()).toBe('');
+      expect(tm.isAuthenticated()).toBe(false);
+    }
+  );
+
   it('even a throwing fetch cannot keep the token or the key on this device', async () => {
     persist('LIVE', 30 * MIN);
     const { tm, held, device } = await load();

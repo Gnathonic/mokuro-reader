@@ -149,9 +149,13 @@ had a device key), the snackbar says a copy could still work and points to
 server ended the grant at Google. When it is false (Google down or slow, a
 cookie sealed under a retired key, no cookie at all), the client revokes the
 access token it holds itself: revoking either token of a grant ends the whole
-grant. If the request does not get through (the device is offline), the
-client remembers the scope (`gdrive_logout_pending` in localStorage:
-`device` or `everywhere`; the older value `1` reads as `everywhere`). Until a
+grant. The client remembers the scope (`gdrive_logout_pending` in
+localStorage: `device` or `everywhere`; the older value `1` reads as
+`everywhere`) and drops its token BEFORE the request goes out, so a reload
+or a closed tab mid-request still finds the device signed out and the
+sign-out queued; the flag is cleared once the server answers (or a revoke
+from the browser got through). If the request does not get through (the
+device is offline), the flag stays. Until a
 later `/logout` with that scope gets through, it sends no refresh, so the
 cookie left behind can never sign anyone back in without a consent screen. A
 pending `everywhere` is never narrowed: the next sign-out is an everywhere

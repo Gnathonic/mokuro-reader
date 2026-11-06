@@ -521,6 +521,13 @@ class TokenManager {
 
     let copyMayStillWork = false;
     try {
+      // Written AHEAD, before anything awaits: a reload or a closed tab
+      // while the key is deleted or /logout is out must still find this
+      // device signed out and the sign-out queued (`settlePendingLogout`),
+      // not a live token over a cookie nobody clears. Undone below once the
+      // server answers, or a revoke from here got through.
+      if (backend && !injected) setLogoutPending(everywhere ? 'everywhere' : 'device');
+      this.clearToken(false);
       // Whether there was a key to bind the session to at all (backend only:
       // implicit mode never touches the key database but to delete it).
       const hadKey = backend ? (await loadDeviceKey()) !== null : false;
@@ -553,11 +560,11 @@ class TokenManager {
           // (`unavailable`) means no cookie of its making.
           else if (outcome.kind !== 'unavailable') copyMayStillWork = !hadKey || !keyDeleted;
         }
-        if (outcome.kind === 'done') setLogoutPending(null);
-        // The cookie may still be there: finish the sign-out before anything
-        // renews from it (`settlePendingLogout`). A revoke that got through
-        // from here leaves only a dead cookie behind.
-        else if (!revokedHere && !injected) setLogoutPending(everywhere ? 'everywhere' : 'device');
+        // Otherwise the flag written above stays: the cookie may still be
+        // there, and the sign-out must finish before anything renews from it
+        // (`settlePendingLogout`). A revoke that got through from here leaves
+        // only a dead cookie behind.
+        if (outcome.kind === 'done' || revokedHere) setLogoutPending(null);
       } else if (everywhere && currentToken && !injected) {
         await this.revokeToken(currentToken);
       }
