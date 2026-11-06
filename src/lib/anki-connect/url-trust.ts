@@ -76,6 +76,17 @@ function readConfirmed(): Record<string, string> {
 
 const _confirmed = writable<Record<string, string>>(readConfirmed());
 
+// A confirmation made in another tab (the notice sends the user to Settings,
+// which may well be open elsewhere) reaches this one at once, as does storage
+// cleared there (`key` null). The browser fires `storage` only in the OTHER
+// tabs; this tab's own writes already set the store.
+if (browser && typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== null && event.key !== CONFIRMED_ANKI_URLS_KEY) return;
+    _confirmed.set(readConfirmed());
+  });
+}
+
 /** URL key → when it was confirmed on this device (ISO). Reactive, for the settings UI. */
 export const confirmedAnkiUrls: Readable<Record<string, string>> = {
   subscribe: _confirmed.subscribe

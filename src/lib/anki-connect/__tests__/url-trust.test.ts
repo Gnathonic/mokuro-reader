@@ -117,6 +117,42 @@ describe('confirming a URL on this device', () => {
   });
 });
 
+describe('a confirmation made in another tab', () => {
+  // Each tab reads the confirmations once at load. A user told to confirm the
+  // URL may do it in another tab; this one must follow, or it keeps refusing.
+  const url = 'http://192.168.1.20:8765';
+  const otherTabWrites = (value: string | null) => {
+    if (value === null) localStorage.removeItem(CONFIRMED_ANKI_URLS_KEY);
+    else localStorage.setItem(CONFIRMED_ANKI_URLS_KEY, value);
+    // The browser tells every OTHER tab; jsdom's own writes fire nothing.
+    window.dispatchEvent(new StorageEvent('storage', { key: CONFIRMED_ANKI_URLS_KEY }));
+  };
+
+  it('is trusted here at once', async () => {
+    expect(isAnkiUrlTrusted(url)).toBe(false);
+    otherTabWrites(JSON.stringify({ [ankiUrlKey(url)]: new Date().toISOString() }));
+    expect(isAnkiUrlTrusted(url)).toBe(true);
+
+    profileUrl(url);
+    await expect(ankiConnect('version', {})).resolves.toBe(6);
+    expect(fetchMock).toHaveBeenCalledWith(url, expect.anything());
+  });
+
+  it('and storage cleared in another tab takes the trust with it', () => {
+    confirmAnkiUrl(url);
+    localStorage.clear();
+    // `clear()` in another tab arrives with no key.
+    window.dispatchEvent(new StorageEvent('storage', { key: null }));
+    expect(isAnkiUrlTrusted(url)).toBe(false);
+  });
+
+  it('a change to any other key is none of its business', () => {
+    localStorage.setItem(CONFIRMED_ANKI_URLS_KEY, JSON.stringify({ [ankiUrlKey(url)]: 'x' }));
+    window.dispatchEvent(new StorageEvent('storage', { key: 'something_else' }));
+    expect(isAnkiUrlTrusted(url)).toBe(false);
+  });
+});
+
 describe('the AnkiConnect client sends nothing to an unconfirmed URL', () => {
   it('a profile that arrived pointing at another host: no request, and the user is told', async () => {
     profileUrl('https://anki.example.com');
