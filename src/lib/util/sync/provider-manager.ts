@@ -195,7 +195,10 @@ class ProviderManager {
   /**
    * Logout the current provider — this device only, unless
    * `options.everywhere` (see `SyncProvider.logout`), which is passed through.
-   * Answers what the current provider's sign-out left behind, if it said.
+   * Answers what the signed-out provider's sign-out left behind, if it said:
+   * the current provider's, or with none current, the configured one's —
+   * the provider the cloud page shows (`publishStatus`), whose panel the
+   * sign-out was asked from.
    */
   async logout(options?: LogoutOptions): Promise<LogoutResult> {
     let result: LogoutResult = {};
@@ -204,11 +207,17 @@ class ProviderManager {
       result = (await this.currentProvider.logout(options)) ?? {};
       this.currentProvider = null;
     } else {
-      // currentProvider is null (e.g., connection failed on startup).
-      // Call logout on all registered providers to clear any stored credentials.
+      // currentProvider is null (e.g., connection failed on startup, or
+      // Drive's token was cleared while its auth history was kept): the
+      // cloud page still shows the configured provider. Call logout on all
+      // registered providers to clear any stored credentials, and keep the
+      // shown one's answer — dropping it would tell the user, say, that
+      // Google was never reached when it confirmed the revoke.
+      const shown = getConfiguredProviderType();
       for (const provider of this.providerRegistry.values()) {
         try {
-          await provider.logout(options);
+          const answer = await provider.logout(options);
+          if (provider.type === shown) result = answer ?? {};
         } catch {
           /* ignore */
         }

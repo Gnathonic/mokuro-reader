@@ -82,4 +82,31 @@ describe('providerManager and the sign-out scope', () => {
 
     expect(drive.logout).toHaveBeenCalledWith({ everywhere: true });
   });
+
+  it('with no current provider, still answers the shown provider’s sign-out (Drive: revoked)', async () => {
+    // Drive is the configured provider (the cloud page shows its panel) but
+    // was never made current: its token was cleared, auth history kept.
+    localStorage.setItem('active_cloud_provider', 'google-drive');
+    const drive = fakeProvider('google-drive');
+    drive.logout.mockResolvedValue({ revoked: true } as never);
+    const mega = fakeProvider('mega');
+    providerManager.registerProvider(drive.provider);
+    providerManager.registerProvider(mega.provider);
+
+    const result = await providerManager.logout({ everywhere: true });
+
+    expect(drive.logout).toHaveBeenCalledWith({ everywhere: true });
+    expect(result).toEqual({ revoked: true });
+  });
+
+  it('with no current provider, another provider’s answer is not passed off as the shown one’s', async () => {
+    localStorage.setItem('active_cloud_provider', 'mega');
+    const drive = fakeProvider('google-drive');
+    drive.logout.mockResolvedValue({ revoked: true } as never);
+    const mega = fakeProvider('mega');
+    providerManager.registerProvider(drive.provider);
+    providerManager.registerProvider(mega.provider);
+
+    expect(await providerManager.logout({ everywhere: true })).toEqual({});
+  });
 });
