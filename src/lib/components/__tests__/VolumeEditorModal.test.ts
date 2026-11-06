@@ -97,3 +97,58 @@ describe('VolumeEditorModal time read', () => {
     expect(stats.readingStatsReady).toHaveBeenCalled();
   });
 });
+
+describe('VolumeEditorModal cover preview', () => {
+  const originalCreate = globalThis.URL.createObjectURL;
+  const originalRevoke = globalThis.URL.revokeObjectURL;
+  const meta = {
+    volume_uuid: 'vol-1',
+    series_uuid: 's1',
+    series_title: 'Series',
+    volume_title: 'Vol 1',
+    page_count: 100
+  };
+
+  beforeEach(() => {
+    globalThis.URL.createObjectURL = vi.fn(
+      (blob: Blob) => `blob:${blob.type}`
+    ) as unknown as typeof URL.createObjectURL;
+    globalThis.URL.revokeObjectURL = vi.fn();
+  });
+  afterEach(() => {
+    closeVolumeEditor();
+    cleanup();
+    globalThis.URL.createObjectURL = originalCreate;
+    globalThis.URL.revokeObjectURL = originalRevoke;
+  });
+
+  const preview = () => document.querySelector('img[src^="blob:"]')?.getAttribute('src') ?? null;
+
+  // Earlier builds stored archive thumbnail sidecars untyped: previewed under a
+  // raster label until `processThumbnails` re-types them.
+  it('previews an untyped thumbnail under a raster label', async () => {
+    editor.getVolumeData.mockResolvedValue({
+      metadata: { ...meta, thumbnail: new File(['x'], 'Vol 1.webp') },
+      stats: new VolumeData({})
+    });
+    render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(preview()).toBe('blob:image/webp'));
+  });
+
+  it('never previews an SVG-typed thumbnail', async () => {
+    editor.getVolumeData.mockResolvedValue({
+      metadata: {
+        ...meta,
+        thumbnail: new File(['<svg/>'], 'c.svg', { type: 'image/svg+xml' })
+      },
+      stats: new VolumeData({})
+    });
+    render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(editor.getVolumeData).toHaveBeenCalled());
+    await waitFor(() => expect(hours()).not.toBeNull());
+    expect(preview()).toBeNull();
+    expect(globalThis.URL.createObjectURL).not.toHaveBeenCalled();
+  });
+});

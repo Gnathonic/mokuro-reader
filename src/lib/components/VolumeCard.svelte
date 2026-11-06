@@ -9,6 +9,7 @@
   import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
   import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   import { untrack } from 'svelte';
+  import { displayableCoverBlob } from '$lib/util/raster-image';
 
   interface Props {
     volumeId: string;
@@ -130,7 +131,7 @@
    */
   let thumbnailKey = $derived(
     volume?.thumbnail
-      ? `${volumeId}:${volume.thumbnail.size}:${volume.thumbnail.lastModified ?? 0}`
+      ? `${volumeId}:${volume.thumbnail.size}:${volume.thumbnail.lastModified ?? 0}:${volume.thumbnail.type}`
       : undefined
   );
 
@@ -139,7 +140,8 @@
   $effect(() => {
     // Read the key so the effect re-runs only when the CONTENT changes.
     void thumbnailKey;
-    const file = untrack(() => volume?.thumbnail);
+    // Raster covers only — see `displayableCoverBlob`.
+    const file = untrack(() => displayableCoverBlob(volume?.thumbnail));
     if (!file) {
       thumbnailUrl = undefined;
       return;

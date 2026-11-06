@@ -14,7 +14,7 @@
  * - Reference counting prevents premature termination
  */
 
-import { WorkerPool } from './worker-pool';
+import { WorkerPool, type WorkerTask } from './worker-pool';
 import UnifiedFileWorker from '$lib/workers/unified-file-worker.ts?worker';
 import { miscSettings } from '$lib/settings/misc';
 import { sharedMemoryManager } from './shared-memory-manager';
@@ -146,6 +146,15 @@ export function decrementPoolUsers(): void {
     sharedPool.terminate();
     sharedPool = null;
   }
+}
+
+/**
+ * Cancel the pool's unsettled tasks that `matches` picks (see
+ * `WorkerPool.cancelTasks`). Never creates the pool: with none running there
+ * is nothing to cancel. Returns how many tasks were cancelled.
+ */
+export function cancelPoolTasks(matches: (task: WorkerTask) => boolean, reason?: string): number {
+  return sharedPool ? sharedPool.cancelTasks(matches, reason) : 0;
 }
 
 /**

@@ -10,8 +10,10 @@ import {
   processVolume,
   parseMokuroFile,
   matchImagesToPages,
-  extractVolumeInfo
+  extractVolumeInfo,
+  keepRasterImages
 } from '../processing';
+import { generateThumbnail } from '$lib/catalog/thumbnails';
 import type { DecompressedVolume } from '../types';
 import { RUNNER_OUTPUT_DOCUMENT, RUNNER_OUTPUT_SEAL } from '$lib/catalog/__fixtures__/seal-vector';
 
@@ -631,5 +633,117 @@ describe('OCR provenance (ocr_engine)', () => {
       })
     );
     expect(imageOnly.metadata.ocrProvenance).toBeUndefined();
+  });
+});
+
+/**
+ * Raster images only (SVG is an unsupported format). Every install path
+ * converges on `processVolume`, so this is where a page's stored type is
+ * decided: from its magic bytes, never its extension or the type it came with.
+ */
+describe('raster images only', () => {
+  const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]);
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+  const SVG =
+    '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>';
+
+  function images(entries: Array<[string, BlobPart, string?]>): Map<string, File> {
+    return new Map(entries.map(([name, body, type]) => [name, new File([body], name, { type })]));
+  }
+
+  it('types every page by its bytes and leaves out what is not raster', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { images: kept, rejected } = await keepRasterImages(
+      images([
+        ['a/page001.jpg', JPEG], // untyped, as an archive entry arrives
+        ['a/page002.jpg', PNG, 'image/jpeg'], // the extension lies
+        ['a/page003.png', SVG, 'image/png'], // an SVG dressed as a PNG
+        ['a/page004.jpg', '<html><script>1</script></html>'],
+        ['a/page005.webp', new Uint8Array(0)] // empty: nothing to sniff or run
+      ])
+    );
+
+    expect([...kept.keys()]).toEqual(['a/page001.jpg', 'a/page002.jpg', 'a/page005.webp']);
+    expect(kept.get('a/page001.jpg')!.type).toBe('image/jpeg');
+    expect(kept.get('a/page002.jpg')!.type).toBe('image/png');
+    expect(kept.get('a/page002.jpg')!.name).toBe('a/page002.jpg');
+    expect(kept.get('a/page005.webp')!.type).toBe('image/webp');
+    expect(rejected).toEqual(['a/page003.png', 'a/page004.jpg']);
+    expect(warn.mock.calls.flat().map(String).join(' ')).toContain('not a supported raster image');
+    warn.mockRestore();
+  });
+
+  it('treats an SVG page of an OCR volume as a missing page', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await processVolume(
+      createDecompressedVolume({
+        imageFiles: images([
+          ['page001.jpg', JPEG],
+          ['page002.jpg', SVG, 'image/svg+xml']
+        ])
+      })
+    );
+
+    expect(result.metadata.missingPagePaths).toEqual(['page002.jpg']);
+    expect(result.metadata.mismatchWarning).toContain('page002.jpg');
+    expect(result.ocrData.pages).toHaveLength(2);
+    for (const file of Object.values(result.fileData.files)) {
+      expect(file.type).toMatch(/^image\/(jpeg|png)$/);
+    }
+    expect(await result.fileData.files['page002.jpg'].text()).not.toContain('<svg');
+    warn.mockRestore();
+  });
+
+  it('drops an SVG page of an image-only volume', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: null,
+        imageFiles: images([
+          ['page001.jpg', JPEG],
+          ['page002.svg', SVG]
+        ])
+      })
+    );
+
+    expect(result.metadata.pageCount).toBe(1);
+    expect(Object.keys(result.fileData.files)).toEqual(['page001.jpg']);
+    expect(result.fileData.files['page001.jpg'].type).toBe('image/jpeg');
+    warn.mockRestore();
+  });
+
+  it('never keeps an SVG thumbnail sidecar, building the cover from the pages instead', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(generateThumbnail).mockClear();
+    const result = await processVolume(
+      createDecompressedVolume({
+        thumbnailSidecar: new File([SVG], 'Test Volume 01.webp', { type: 'image/webp' })
+      })
+    );
+
+    expect(generateThumbnail).toHaveBeenCalledTimes(1);
+    expect(result.metadata.thumbnail).not.toBeNull();
+    expect(await result.metadata.thumbnail!.text()).not.toContain('<svg');
+    warn.mockRestore();
+  });
+
+  it('keeps a raster thumbnail sidecar, typed by its bytes', async () => {
+    const original = (globalThis as { createImageBitmap?: unknown }).createImageBitmap;
+    (globalThis as { createImageBitmap?: unknown }).createImageBitmap = async () => ({
+      width: 250,
+      height: 350,
+      close() {}
+    });
+    try {
+      vi.mocked(generateThumbnail).mockClear();
+      const result = await processVolume(
+        createDecompressedVolume({ thumbnailSidecar: new File([PNG], 'Test Volume 01.webp') })
+      );
+      expect(generateThumbnail).not.toHaveBeenCalled();
+      expect((result.metadata.thumbnail as File).type).toBe('image/png');
+      expect(result.metadata.thumbnailWidth).toBe(250);
+    } finally {
+      (globalThis as { createImageBitmap?: unknown }).createImageBitmap = original;
+    }
   });
 });

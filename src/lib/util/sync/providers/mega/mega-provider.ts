@@ -39,6 +39,46 @@ import {
   type MegaSessionBlob
 } from './mega-session';
 import { CLOUD_TEST_HOOKS, megaGatewayOption } from '../../cloud-test-hooks';
+import { cancelProviderUploads } from '../../upload-cancellation';
+
+/**
+ * How long an explicit logout waits for MEGA to end the session server-side
+ * (`storage.close()`, which sends `{a:'sml'}`) before it gives up on that.
+ * Local state is cleared either way; this only bounds the wait.
+ */
+export const LOGOUT_CLOSE_TIMEOUT_MS = 3000;
+
+/**
+ * End `storage`'s session on MEGA's servers, waiting at most
+ * `LOGOUT_CLOSE_TIMEOUT_MS`. Never throws: a logout must succeed offline.
+ */
+async function closeSessionServerSide(storage: any): Promise<void> {
+  if (typeof storage?.close !== 'function') return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const failed = (error: unknown) => {
+    console.warn('[MEGA] Could not end the session on the server:', error);
+    return 'failed' as const;
+  };
+  // Sent synchronously (megajs issues the request inside close()), so it is
+  // on the wire before the caller moves on. Handled on its own promise, so a
+  // close that fails after the timeout won is not an unhandled rejection.
+  let closing: Promise<'closed' | 'failed'>;
+  try {
+    closing = Promise.resolve(storage.close()).then(() => 'closed' as const, failed);
+  } catch (error) {
+    closing = Promise.resolve(failed(error));
+  }
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), LOGOUT_CLOSE_TIMEOUT_MS);
+  });
+  try {
+    if ((await Promise.race([closing, timeout])) === 'timeout') {
+      console.warn('[MEGA] Ending the session on the server timed out; logged out locally');
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 interface MegaCredentials {
   email: string;
@@ -226,6 +266,20 @@ export class MegaProvider implements SyncProvider {
   /** Bumped on logout/expiry so a load that lands afterwards starts no poll. */
   private sessionEpoch = 0;
   /**
+   * Main-thread megajs requests in flight (see `raceLogout`), each by the
+   * function that rejects it. A logout rejects them all before it closes the
+   * session: megajs drops every response that arrives after `close()` without
+   * calling back (and a -3 retry after it throws in a timer), so a request
+   * still waiting on one would never settle, and neither would whatever
+   * awaits it: the folder mutexes below, the metadata writers' write slots.
+   */
+  private logoutRejectors = new Set<() => void>();
+  /**
+   * The logout's server-side close, still running after `logout()` returned
+   * (see there). Kept so tests can wait for it (`whenServerLogoutSettled`).
+   */
+  private serverLogout: Promise<void> | null = null;
+  /**
    * Consecutive sc recoveries whose poll has not yet answered once. Only a
    * poll that delivers resets it, so a poll that dies straight after every
    * reload backs off (1 s, 2 s, … 32 s) and then stops, instead of reloading
@@ -308,6 +362,27 @@ export class MegaProvider implements SyncProvider {
     };
   }
 
+  /**
+   * `work`, unless this provider is logged out first: then it rejects at once
+   * with a `ProviderError` of `code` (default `LOGGED_OUT`). Every main-thread
+   * wait on a megajs callback goes through here, because after the logout's
+   * `close()` megajs never calls it back (see `logoutRejectors`).
+   */
+  private raceLogout<T>(
+    work: Promise<T>,
+    code = 'LOGGED_OUT',
+    message = 'Cancelled: logged out of MEGA'
+  ): Promise<T> {
+    let rejector!: () => void;
+    const loggedOut = new Promise<never>((_, reject) => {
+      rejector = () => reject(new ProviderError(message, 'mega', code));
+    });
+    this.logoutRejectors.add(rejector);
+    return Promise.race([work, loggedOut]).finally(() => {
+      this.logoutRejectors.delete(rejector);
+    });
+  }
+
   constructor() {
     if (browser) {
       this.initPromise = this.restorePersistedSession();
@@ -360,6 +435,12 @@ export class MegaProvider implements SyncProvider {
     this.stopServerChanges?.();
     this.storage = null;
     this.mokuroFolder = null;
+    // A mkdir of the ended session must not be joined by the next one: after
+    // a logout it never answers (its waiters reject through raceLogout, and
+    // the identity checks in the mutexes' finally keep them from clearing a
+    // newer entry).
+    this.mokuroFolderPromise = null;
+    this.seriesFolderPromises.clear();
     // Control-file bodies and pending notifications belong to this session's
     // tree; logout and expiry both end here, so neither leaks into the next.
     this.controlCache.clear();
@@ -493,7 +574,38 @@ export class MegaProvider implements SyncProvider {
     localStorage.removeItem(STORAGE_KEYS.PASSWORD);
   }
 
+  /**
+   * Explicit logout: stop this account's uploads, forget the session here,
+   * then end it on MEGA's servers too.
+   *
+   * Ending it server-side is what makes logging out mean something: the
+   * session blob (sid + master key) used to stay valid at MEGA after a logout,
+   * so a copy of it taken earlier (a copied browser profile, a backup) kept
+   * full access. It happens ONLY here: `storage.close()` kills the sid that
+   * every Storage of this session shares (login, restore, each upload
+   * worker), which is why `reinitialize()` and session expiry never close.
+   *
+   * Order matters. The upload workers carry the same sid, so they are
+   * cancelled first rather than left to fail mid-file. Every main-thread
+   * request still waiting on megajs is rejected next (`raceLogout`), and
+   * local state is cleared before any network, so the logout holds even if
+   * the close never answers.
+   *
+   * The close itself, bounded by `LOGOUT_CLOSE_TIMEOUT_MS`, runs on after
+   * this returns (`serverLogout`): the provider manager clears its caches and
+   * the active-provider key once this resolves, and a wait of up to 3 s
+   * there would show the old account's listing after Log out, and wipe the
+   * key and cache of a login made meanwhile. It targets the old session's
+   * sid only, so a new login is unaffected by it.
+   */
   async logout(): Promise<void> {
+    const liveStorage = this.storage;
+    const storedSession = browser ? localStorage.getItem(STORAGE_KEYS.SESSION) : null;
+
+    await cancelProviderUploads('mega', 'Upload cancelled: logged out of MEGA');
+    for (const reject of [...this.logoutRejectors]) reject();
+    this.logoutRejectors.clear();
+
     this.endSession();
     this.needsReconnect = false;
     this.reconnectEmail = null;
@@ -507,10 +619,54 @@ export class MegaProvider implements SyncProvider {
 
     clearActiveProviderKey();
     console.log('MEGA logged out');
+
+    const closing = (async () => {
+      // No live Storage (a restore that failed on a network error) can still
+      // leave a valid stored session: rebuild it just to close it. fromJSON
+      // does no network.
+      const toClose = liveStorage ?? (await this.storageForClosing(storedSession));
+      if (toClose) await closeSessionServerSide(toClose);
+    })();
+    this.serverLogout = closing;
+    void closing.finally(() => {
+      if (this.serverLogout === closing) this.serverLogout = null;
+    });
   }
 
-  /** Rebuild an authenticated Storage from a saved session blob (no password, no login round-trip). */
-  private async restoreSession(blob: MegaSessionBlob): Promise<void> {
+  /** Resolves once the last logout's server-side close finished or gave up. */
+  whenServerLogoutSettled(): Promise<void> {
+    return this.serverLogout ?? Promise.resolve();
+  }
+
+  /** A Storage for a stored session blob, only to end it (see logout). */
+  private async storageForClosing(sessionRaw: string | null): Promise<any> {
+    if (!sessionRaw) return null;
+    try {
+      const blob = JSON.parse(sessionRaw) as MegaSessionBlob;
+      if (!blob?.sid) return null;
+      const { Storage } = await import('megajs');
+      return Storage.fromJSON({
+        ...(blob as any),
+        options: {
+          ...((blob as any).options ?? {}),
+          ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {}),
+          keepalive: false
+        }
+      });
+    } catch (error) {
+      console.warn('[MEGA] Could not read the stored session to end it:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Rebuild an authenticated Storage from a saved session blob (no password,
+   * no login round-trip). Resolves false when the session ended (a logout, or
+   * another login) while the tree was loading: the restore then leaves
+   * everything to whatever ended it — it neither goes live on a Storage the
+   * logout closed, nor reports the closed session as expired.
+   */
+  private async restoreSession(blob: MegaSessionBlob): Promise<boolean> {
     const { Storage } = await import('megajs');
     // keepalive:false whatever the blob says (blobs persisted before carry
     // true): the provider runs the one sc poll itself, see login().
@@ -524,14 +680,24 @@ export class MegaProvider implements SyncProvider {
     });
     // fromJSON does no network and loads no tree. A dead session throws ESID here.
     this.startSessionEpoch();
-    await this.loadTree(storage);
-    this.storage = storage;
-    this.attachChangeListeners(storage);
-    this.mokuroFolder = null;
-    await this.ensureMokuroFolder();
+    const epoch = this.sessionEpoch;
+    const superseded = () => this.sessionEpoch !== epoch;
+    try {
+      await this.loadTree(storage);
+      if (superseded()) return false;
+      this.storage = storage;
+      this.attachChangeListeners(storage);
+      this.mokuroFolder = null;
+      await this.ensureMokuroFolder();
+    } catch (error) {
+      if (superseded()) return false;
+      throw error;
+    }
+    if (superseded()) return false;
     this.needsReconnect = false;
     this.reconnectEmail = (blob.options && (blob.options as any).email) || this.reconnectEmail;
     setActiveProviderKey('mega');
+    return true;
   }
 
   /** Restore on app load: session blob first, then one-time legacy email/password migration. */
@@ -541,8 +707,9 @@ export class MegaProvider implements SyncProvider {
     const sessionRaw = localStorage.getItem(STORAGE_KEYS.SESSION);
     if (sessionRaw) {
       try {
-        await this.restoreSession(JSON.parse(sessionRaw) as MegaSessionBlob);
-        console.log('Restored MEGA session from stored token');
+        if (await this.restoreSession(JSON.parse(sessionRaw) as MegaSessionBlob)) {
+          console.log('Restored MEGA session from stored token');
+        }
       } catch (error) {
         if (isSessionExpiredError(error) || isAuthRejectionError(error)) {
           console.error('Stored MEGA session invalid; reconnect required');
@@ -604,6 +771,8 @@ export class MegaProvider implements SyncProvider {
         this.markSessionExpired();
         return;
       }
+      // Logged out mid-load: the caller's operation is over, not stale.
+      if (error instanceof ProviderError && error.code === 'LOGGED_OUT') throw error;
       // Transient error: keep the existing storage so we don't appear logged out.
       console.warn('Continuing with potentially stale MEGA cache:', error);
     }
@@ -720,7 +889,7 @@ export class MegaProvider implements SyncProvider {
       restoreRequest();
     }
     this.guardServerChanges(storage);
-    await Promise.race([reloaded, failed]);
+    await this.raceLogout(Promise.race([reloaded, failed]));
   }
 
   /**
@@ -948,7 +1117,9 @@ export class MegaProvider implements SyncProvider {
       return this.mokuroFolderPromise;
     }
 
-    this.mokuroFolderPromise = (async () => {
+    // Started from a reaction, so `promise` is assigned before the body (and
+    // its finally) can run, however soon it settles.
+    const promise: Promise<any> = Promise.resolve().then(async () => {
       try {
         // Re-check after acquiring the mutex; another caller may have created it.
         const recheck = this.findMokuroFolder();
@@ -962,6 +1133,7 @@ export class MegaProvider implements SyncProvider {
         this.mokuroFolder = folder;
         return folder;
       } catch (error) {
+        if (error instanceof ProviderError && error.code === 'LOGGED_OUT') throw error;
         console.error('ensureMokuroFolder error:', error);
         throw new ProviderError(
           `Failed to ensure mokuro folder exists: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -969,11 +1141,12 @@ export class MegaProvider implements SyncProvider {
           'FOLDER_ERROR'
         );
       } finally {
-        this.mokuroFolderPromise = null;
+        // Only our own entry: a logout may have replaced it meanwhile.
+        if (this.mokuroFolderPromise === promise) this.mokuroFolderPromise = null;
       }
-    })();
-
-    return this.mokuroFolderPromise;
+    });
+    this.mokuroFolderPromise = promise;
+    return promise;
   }
 
   /**
@@ -1041,18 +1214,20 @@ export class MegaProvider implements SyncProvider {
   }
 
   private createFolder(name: string): Promise<any> {
-    return new Promise((resolve, reject) => {
-      // The Cloud Drive node's own mkdir, not storage.mkdir: that one refuses
-      // unless status is 'ready', which only login() sets — a session restored
-      // from the stored token could never create the library folder.
-      this.storage.root.mkdir(name, (error: Error | null, folder: any) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve(folder);
-        }
-      });
-    });
+    return this.raceLogout(
+      new Promise((resolve, reject) => {
+        // The Cloud Drive node's own mkdir, not storage.mkdir: that one refuses
+        // unless status is 'ready', which only login() sets — a session restored
+        // from the stored token could never create the library folder.
+        this.storage.root.mkdir(name, (error: Error | null, folder: any) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve(folder);
+          }
+        });
+      })
+    );
   }
 
   private getNodeById(fileId: string): any | null {
@@ -1319,12 +1494,14 @@ export class MegaProvider implements SyncProvider {
   }
 
   private downloadControlNode(node: any): Promise<Blob> {
-    return new Promise<Blob>((resolve, reject) => {
-      node.download((error: Error | null, data: Uint8Array) => {
-        if (error) reject(error);
-        else resolve(new Blob([new Uint8Array(data)], { type: 'application/json' }));
-      });
-    });
+    return this.raceLogout(
+      new Promise<Blob>((resolve, reject) => {
+        node.download((error: Error | null, data: Uint8Array) => {
+          if (error) reject(error);
+          else resolve(new Blob([new Uint8Array(data)], { type: 'application/json' }));
+        });
+      })
+    );
   }
 
   async uploadFile(
@@ -1343,7 +1520,7 @@ export class MegaProvider implements SyncProvider {
         onProgress(0, payloadSize);
       }
       // Wrap upload in retry logic to handle stale cache
-      const uploaded = await retryWithCacheRefresh(
+      const uploading = retryWithCacheRefresh(
         async () => {
           const mokuroFolder = await this.ensureMokuroFolder();
 
@@ -1453,6 +1630,12 @@ export class MegaProvider implements SyncProvider {
         `Upload ${path} to MEGA`,
         () => this.reinitialize()
       );
+      // A logout rejects this upload at once (see `logoutRejectors`).
+      const uploaded = await this.raceLogout(
+        uploading,
+        'UPLOAD_CANCELLED',
+        'Upload cancelled: logged out of MEGA'
+      );
       // No cache rebuild here: uploads emit a local 'add' event (megajs adds
       // the node from the API response), which the change listeners turn into
       // a debounced refresh. A mid-operation rebuild would clobber the
@@ -1460,6 +1643,7 @@ export class MegaProvider implements SyncProvider {
 
       return uploaded;
     } catch (error) {
+      if (error instanceof ProviderError && error.code === 'UPLOAD_CANCELLED') throw error;
       // Typed QUOTA_EXCEEDED with a message users can act on, instead of
       // megajs's raw "EOVERQUOTA (-17): Request over quota".
       if (isMegaOverQuotaError(error)) {
@@ -1579,58 +1763,61 @@ export class MegaProvider implements SyncProvider {
         throw new Error('File not found');
       }
 
-      return new Promise((resolve, reject) => {
-        const fileObj = megaFile as any;
+      return await this.raceLogout(
+        new Promise<Blob>((resolve, reject) => {
+          const fileObj = megaFile as any;
 
-        // Use download with progress callback if provided
-        if (onProgress) {
-          // MEGA.js download supports progress via stream options
-          const stream = fileObj.download({ returnCiphertext: false });
+          // Use download with progress callback if provided
+          if (onProgress) {
+            // MEGA.js download supports progress via stream options
+            const stream = fileObj.download({ returnCiphertext: false });
 
-          const chunks: Uint8Array[] = [];
-          let loaded = 0;
-          const total = fileObj.size || 0;
+            const chunks: Uint8Array[] = [];
+            let loaded = 0;
+            const total = fileObj.size || 0;
 
-          stream.on('data', (chunk: Uint8Array) => {
-            chunks.push(chunk);
-            loaded += chunk.length;
-            onProgress(loaded, total);
-          });
+            stream.on('data', (chunk: Uint8Array) => {
+              chunks.push(chunk);
+              loaded += chunk.length;
+              onProgress(loaded, total);
+            });
 
-          stream.on('end', () => {
-            // Combine all chunks into a single Uint8Array
-            const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-            const combined = new Uint8Array(totalLength);
-            let offset = 0;
-            for (const chunk of chunks) {
-              combined.set(chunk, offset);
-              offset += chunk.length;
-            }
+            stream.on('end', () => {
+              // Combine all chunks into a single Uint8Array
+              const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+              const combined = new Uint8Array(totalLength);
+              let offset = 0;
+              for (const chunk of chunks) {
+                combined.set(chunk, offset);
+                offset += chunk.length;
+              }
 
-            const blob = new Blob([combined], { type: 'application/zip' });
-            console.log(`✅ Downloaded ${fileObj.name} from MEGA`);
-            resolve(blob);
-          });
-
-          stream.on('error', (error: Error) => {
-            reject(error);
-          });
-        } else {
-          // Simple download without progress
-          fileObj.download((error: Error | null, data: Uint8Array) => {
-            if (error) {
-              reject(error);
-            } else {
-              // Convert to standard Uint8Array to satisfy TypeScript
-              const standardArray = new Uint8Array(Array.from(data));
-              const blob = new Blob([standardArray], { type: 'application/zip' });
+              const blob = new Blob([combined], { type: 'application/zip' });
               console.log(`✅ Downloaded ${fileObj.name} from MEGA`);
               resolve(blob);
-            }
-          });
-        }
-      });
+            });
+
+            stream.on('error', (error: Error) => {
+              reject(error);
+            });
+          } else {
+            // Simple download without progress
+            fileObj.download((error: Error | null, data: Uint8Array) => {
+              if (error) {
+                reject(error);
+              } else {
+                // Convert to standard Uint8Array to satisfy TypeScript
+                const standardArray = new Uint8Array(Array.from(data));
+                const blob = new Blob([standardArray], { type: 'application/zip' });
+                console.log(`✅ Downloaded ${fileObj.name} from MEGA`);
+                resolve(blob);
+              }
+            });
+          }
+        })
+      );
     } catch (error) {
+      if (error instanceof ProviderError && error.code === 'LOGGED_OUT') throw error;
       throw new ProviderError(
         `Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'mega',
@@ -1665,21 +1852,23 @@ export class MegaProvider implements SyncProvider {
             throw new ProviderError(`File not found: ${file.path}`, 'mega', 'NOT_FOUND');
           }
 
-          return new Promise<void>((resolve, reject) => {
-            (megaFile as any).delete(true, (error: Error | null) => {
-              if (error) {
-                reject(error);
-              } else {
-                console.log(`✅ Deleted file from MEGA (${fileId})`);
-                resolve();
-                // No manual storage.files cleanup: the sc stream applies the
-                // delete (and a manual removal would crash its handler). megajs
-                // only unlinks the node, so the listing skips it via
-                // isLiveNode. The caller's cache update + the change listeners
-                // keep the UI current.
-              }
-            });
-          });
+          return this.raceLogout(
+            new Promise<void>((resolve, reject) => {
+              (megaFile as any).delete(true, (error: Error | null) => {
+                if (error) {
+                  reject(error);
+                } else {
+                  console.log(`✅ Deleted file from MEGA (${fileId})`);
+                  resolve();
+                  // No manual storage.files cleanup: the sc stream applies the
+                  // delete (and a manual removal would crash its handler). megajs
+                  // only unlinks the node, so the listing skips it via
+                  // isLiveNode. The caller's cache update + the change listeners
+                  // keep the UI current.
+                }
+              });
+            })
+          );
         },
         `Delete file ${fileId} from MEGA`,
         () => this.reinitialize()
@@ -1746,7 +1935,7 @@ export class MegaProvider implements SyncProvider {
           }
 
           if (!sameNode(megaFile.parent, targetFolder)) {
-            await megaFile.moveTo(targetFolder);
+            await this.raceLogout(megaFile.moveTo(targetFolder));
             // megajs applies moves to the local tree only when the sc packet
             // arrives (seconds later). Mirror it now so checks later in this
             // same operation — collision lookups, empty-folder pruning — see
@@ -1766,7 +1955,7 @@ export class MegaProvider implements SyncProvider {
             }
           }
           if (megaFile.name !== newFileName) {
-            await megaFile.rename(newFileName);
+            await this.raceLogout(megaFile.rename(newFileName));
           }
 
           const nextFileId = megaFile.nodeId || megaFile.id || file.fileId;
@@ -1858,10 +2047,10 @@ export class MegaProvider implements SyncProvider {
           }
 
           if (!sameNode(sourceFolder.parent, targetParent)) {
-            await sourceFolder.moveTo(targetParent);
+            await this.raceLogout(sourceFolder.moveTo(targetParent));
           }
           if (sourceFolder.name !== newFolderName) {
-            await sourceFolder.rename(newFolderName);
+            await this.raceLogout(sourceFolder.rename(newFolderName));
           }
         },
         `Rename series folder '${normalizedOldPath}' in MEGA`,
@@ -1900,11 +2089,14 @@ export class MegaProvider implements SyncProvider {
    * gives the same number.
    */
   private async serverFolderContentCount(folderId: string): Promise<number> {
-    const response: any = await new Promise((resolve, reject) => {
-      this.storage.api.request({ a: 'f', c: 1, n: folderId }, (error: Error | null, result: any) =>
-        error ? reject(error) : resolve(result)
-      );
-    });
+    const response: any = await this.raceLogout(
+      new Promise((resolve, reject) => {
+        this.storage.api.request(
+          { a: 'f', c: 1, n: folderId },
+          (error: Error | null, result: any) => (error ? reject(error) : resolve(result))
+        );
+      })
+    );
     const nodes: any[] = Array.isArray(response?.f) ? response.f : [];
     const parentOf = new Map<string, string | undefined>(nodes.map((n: any) => [n?.h, n?.p]));
     const inside = (handle: string): boolean => {
@@ -1944,9 +2136,11 @@ export class MegaProvider implements SyncProvider {
         return;
       }
 
-      await new Promise<void>((resolve, reject) => {
-        target.delete(true, (error: Error | null) => (error ? reject(error) : resolve()));
-      });
+      await this.raceLogout(
+        new Promise<void>((resolve, reject) => {
+          target.delete(true, (error: Error | null) => (error ? reject(error) : resolve()));
+        })
+      );
       console.log(`✅ Pruned empty series folder '${normalized}' from MEGA`);
     } catch (error) {
       // Best-effort: an orphaned empty directory is harmless.
@@ -1975,16 +2169,18 @@ export class MegaProvider implements SyncProvider {
           }
 
           // Delete the folder (recursive delete)
-          await new Promise<void>((resolve, reject) => {
-            seriesFolder.delete(true, (error: Error | null) => {
-              if (error) {
-                reject(error);
-              } else {
-                console.log(`✅ Deleted series folder '${seriesTitle}' from MEGA`);
-                resolve();
-              }
-            });
-          });
+          await this.raceLogout(
+            new Promise<void>((resolve, reject) => {
+              seriesFolder.delete(true, (error: Error | null) => {
+                if (error) {
+                  reject(error);
+                } else {
+                  console.log(`✅ Deleted series folder '${seriesTitle}' from MEGA`);
+                  resolve();
+                }
+              });
+            })
+          );
         },
         `Delete series folder '${seriesTitle}' from MEGA`,
         () => this.reinitialize()
@@ -2013,7 +2209,7 @@ export class MegaProvider implements SyncProvider {
 
     try {
       // Use getAccountInfo() for accurate quota information
-      const info = await this.storage.getAccountInfo();
+      const info = await this.raceLogout<any>(this.storage.getAccountInfo());
 
       const used = info.spaceUsed || 0;
       const total = info.spaceTotal || null;
@@ -2087,7 +2283,8 @@ export class MegaProvider implements SyncProvider {
       return inFlight;
     }
 
-    const promise = (async () => {
+    // Started from a reaction: `promise` is assigned before the finally runs.
+    const promise: Promise<any> = Promise.resolve().then(async () => {
       try {
         const pathParts = folderPath.split('/').filter(Boolean);
         // Held across awaits: re-resolve, a tree load may have replaced it.
@@ -2097,12 +2294,14 @@ export class MegaProvider implements SyncProvider {
           let subfolder = await this.findSubfolder(currentFolder, folderName);
 
           if (!subfolder) {
-            subfolder = await new Promise((resolve, reject) => {
-              currentFolder.mkdir(folderName, (error: Error | null, folder: any) => {
-                if (error) reject(error);
-                else resolve(folder);
-              });
-            });
+            subfolder = await this.raceLogout(
+              new Promise((resolve, reject) => {
+                currentFolder.mkdir(folderName, (error: Error | null, folder: any) => {
+                  if (error) reject(error);
+                  else resolve(folder);
+                });
+              })
+            );
             console.log(`Created folder: ${folderName}`);
           }
 
@@ -2111,9 +2310,10 @@ export class MegaProvider implements SyncProvider {
 
         return currentFolder;
       } finally {
-        this.seriesFolderPromises.delete(key);
+        // Only our own entry: a logout may have replaced it meanwhile.
+        if (this.seriesFolderPromises.get(key) === promise) this.seriesFolderPromises.delete(key);
       }
-    })();
+    });
 
     this.seriesFolderPromises.set(key, promise);
     return promise;
@@ -2229,7 +2429,7 @@ export class MegaProvider implements SyncProvider {
         if (!item) throw new Error(`MEGA dedup: item ${itemId} not found`);
         if (!newParent) throw new Error(`MEGA dedup: parent ${newParentId} not found`);
         const stateSynced = this.waitForNodeEvent(item, 'move');
-        await item.moveTo(newParent);
+        await this.raceLogout(item.moveTo(newParent));
         await stateSynced;
       },
 
@@ -2265,7 +2465,7 @@ export class MegaProvider implements SyncProvider {
         const trash = this.storage?.trash;
         if (!trash) throw new Error('MEGA dedup: no Rubbish Bin in the tree');
         const stateSynced = this.waitForNodeEvent(folder, 'move');
-        await folder.moveTo(trash);
+        await this.raceLogout(folder.moveTo(trash));
         await stateSynced;
         return true;
       },
@@ -2277,7 +2477,7 @@ export class MegaProvider implements SyncProvider {
         const trash = this.storage?.trash;
         if (!trash) throw new Error('MEGA dedup: no Rubbish Bin in the tree');
         const stateSynced = this.waitForNodeEvent(file, 'move');
-        await file.moveTo(trash);
+        await this.raceLogout(file.moveTo(trash));
         await stateSynced;
       },
 

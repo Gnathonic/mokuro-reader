@@ -22,7 +22,11 @@
   import { get } from 'svelte/store';
   import { figuresFor, readingStats, readingStatsReady } from '$lib/reading-history/stats-store';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
-  import { IMAGE_MIME_TYPES } from '$lib/import/types';
+  import {
+    RASTER_FORMAT_NAMES,
+    displayableCoverBlob,
+    sniffRasterBlob
+  } from '$lib/util/raster-image';
 
   let open = $state(false);
   let loading = $state(true);
@@ -168,8 +172,9 @@
       if (thumbnailUrl) {
         URL.revokeObjectURL(thumbnailUrl);
       }
-      if (data.metadata.thumbnail) {
-        thumbnailUrl = URL.createObjectURL(data.metadata.thumbnail);
+      const cover = displayableCoverBlob(data.metadata.thumbnail);
+      if (cover) {
+        thumbnailUrl = URL.createObjectURL(cover);
       } else {
         thumbnailUrl = null;
       }
@@ -340,9 +345,10 @@
 
       // Reload thumbnail
       const data = await getVolumeData(volumeUuid);
-      if (data?.metadata.thumbnail) {
+      const cover = displayableCoverBlob(data?.metadata.thumbnail);
+      if (cover) {
         if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
-        thumbnailUrl = URL.createObjectURL(data.metadata.thumbnail);
+        thumbnailUrl = URL.createObjectURL(cover);
       }
 
       showSnackbar('Cover reset to first page');
@@ -354,10 +360,9 @@
     }
   }
 
-  const validImageMimeTypes = new Set(Object.values(IMAGE_MIME_TYPES));
-
-  function isValidImageFile(file: File): boolean {
-    return validImageMimeTypes.has(file.type) || file.type.startsWith('image/');
+  /** Raster bytes only, whatever the file's type or name says (SVG is unsupported). */
+  async function isValidImageFile(file: File): Promise<boolean> {
+    return (await sniffRasterBlob(file).catch(() => null)) !== null;
   }
 
   function openCoverPicker() {
@@ -434,8 +439,8 @@
   }
 
   async function saveCover(file: File) {
-    if (!isValidImageFile(file)) {
-      showSnackbar('Please select a valid image file');
+    if (!(await isValidImageFile(file))) {
+      showSnackbar(`Please select a ${RASTER_FORMAT_NAMES} image (SVG is not supported)`);
       return;
     }
 
@@ -445,9 +450,10 @@
 
       // Reload thumbnail
       const data = await getVolumeData(volumeUuid);
-      if (data?.metadata.thumbnail) {
+      const cover = displayableCoverBlob(data?.metadata.thumbnail);
+      if (cover) {
         if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
-        thumbnailUrl = URL.createObjectURL(data.metadata.thumbnail);
+        thumbnailUrl = URL.createObjectURL(cover);
       }
 
       showSnackbar('Cover updated');

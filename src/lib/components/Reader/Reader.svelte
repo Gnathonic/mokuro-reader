@@ -48,9 +48,10 @@
     getCardAgeInMin,
     extractFieldValues,
     getModelConfig,
-    blobToBase64,
+    coverImageDataUrl,
     type VolumeMetadata
   } from '$lib/anki-connect';
+  import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
   import { db } from '$lib/catalog/db';
   import { showSnackbar } from '$lib/util';
   import {
@@ -1408,11 +1409,9 @@
     // Load cover image for {cover} template support
     try {
       const dbVolume = await db.volumes.get(volume.volume_uuid);
-      if (dbVolume?.thumbnail) {
-        const coverImage = await blobToBase64(dbVolume.thumbnail);
-        if (coverImage) {
-          volumeMetadata.coverImage = coverImage;
-        }
+      const coverImage = await coverImageDataUrl(dbVolume?.thumbnail);
+      if (coverImage) {
+        volumeMetadata.coverImage = coverImage;
       }
     } catch {
       // Continue without cover image
@@ -1439,6 +1438,13 @@
     const cardMode = $settings.ankiConnectSettings.cardMode;
 
     if (cardMode === 'update') {
+      // An unconfirmed URL answers nothing, which would read as "no recent card".
+      const refusal = ankiUrlRefusal($settings.ankiConnectSettings.url);
+      if (refusal) {
+        showSnackbar(refusal);
+        return;
+      }
+
       // Update mode: fetch previous card values
       const lastCard = await getLastCardInfo();
 

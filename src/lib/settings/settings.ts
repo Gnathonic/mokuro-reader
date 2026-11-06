@@ -415,7 +415,7 @@ const desktopDefaultSettings: Settings = {
   swipeThreshold: 35
 };
 
-type Profiles = Record<string, Settings>;
+export type Profiles = Record<string, Settings>;
 
 // Built-in profiles that cannot be deleted or renamed
 export const BUILT_IN_PROFILES = ['Mobile', 'Desktop'] as const;

@@ -72,6 +72,18 @@ const CBZ = `${BASE}Dr%20Stone%2001.cbz`;
 const MANIFEST = `${ORIGIN}/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001`;
 
 const OCR_JSON = JSON.stringify({ version: '0.2.1', pages: [] });
+/** Covers are typed by their bytes alone, so test covers need real signatures. */
+const WEBP_BYTES = new Uint8Array([
+  ...Array.from('RIFF', (c) => c.charCodeAt(0)),
+  4,
+  0,
+  0,
+  0,
+  ...Array.from('WEBPVP8 ', (c) => c.charCodeAt(0))
+]);
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+const SVG_COVER =
+  '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
 const SERIES_JSON = JSON.stringify({
   version: 2,
   series_title: 'Dr Stone',
@@ -117,8 +129,16 @@ async function gzip(text: string): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/** URL → response body (string/bytes), a status number, an Error to throw, or a Response. */
-type Route = string | Uint8Array | number | Error | Response;
+/** A 200 the server reached through a redirect to `to` (what `fetch` reports for one). */
+interface Redirected {
+  redirectedTo: string;
+  body: string | Uint8Array;
+}
+/**
+ * URL → response body (string/bytes), a status number, an Error to throw, a
+ * Response, or a redirect.
+ */
+type Route = string | Uint8Array | number | Error | Response | Redirected;
 let routes: Map<string, Route>;
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -138,6 +158,12 @@ beforeEach(() => {
     if (route instanceof Error) throw route;
     if (typeof route === 'number') return new Response('nope', { status: route });
     if (route instanceof Response) return route.clone();
+    if (typeof route === 'object' && 'redirectedTo' in route) {
+      const response = new Response(route.body as BodyInit, { status: 200 });
+      Object.defineProperty(response, 'redirected', { value: true });
+      Object.defineProperty(response, 'url', { value: route.redirectedTo });
+      return response;
+    }
     return new Response(route as BodyInit, { status: 200 });
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -186,7 +212,7 @@ describe('downloading a cbz deep link with a manifest', () => {
     serve(`${BASE}Dr%20Stone%2001.mokuro`, OCR_JSON);
     serve(`${BASE}Dr%20Stone%2001.hayai-nova-ppocr.mokuro`, '{"pages":[]}');
     serve(`${BASE}Dr%20Stone%2001.paddle.mokuro.gz`, await gzip('{"pages":[]}'));
-    serve(`${BASE}Dr%20Stone%2001.webp`, new Uint8Array([9, 9, 9, 9]));
+    serve(`${BASE}Dr%20Stone%2001.webp`, WEBP_BYTES);
     serve(`${BASE}series.json`, SERIES_JSON);
   }
 
@@ -277,7 +303,7 @@ describe('downloading a cbz deep link with a manifest', () => {
 
   it('a cover param wins over the manifest cover', async () => {
     await serveAll();
-    serve(`${ORIGIN}/covers/custom.png`, new Uint8Array([7]));
+    serve(`${ORIGIN}/covers/custom.png`, PNG_BYTES);
     const result = await htmlDownloadProvider.download(
       requestFor(
         `cbz=${encodeURIComponent(CBZ)}&manifest=${encodeURIComponent(MANIFEST)}&cover=${encodeURIComponent('covers/custom.png')}`
@@ -298,9 +324,8 @@ describe('downloading a cbz deep link with a manifest', () => {
     );
     expect(fetchedUrls()).toContain(`${ORIGIN}/Dr%20Stone/Dr%20Stone%2001.webp`);
     expect(result.coverFile?.name).toBe('Dr Stone 01.webp');
-    expect(new Uint8Array(await result.coverFile!.arrayBuffer())).toEqual(
-      new Uint8Array([9, 9, 9, 9])
-    );
+    expect(new Uint8Array(await result.coverFile!.arrayBuffer())).toEqual(WEBP_BYTES);
+    expect(result.coverFile!.type).toBe('image/webp');
   });
 
   // A series named `#Zombie Sagashitemasu`: unencoded, the `#` cut the URL to
@@ -311,7 +336,7 @@ describe('downloading a cbz deep link with a manifest', () => {
       `${ORIGIN}/`,
       new Response('<html>catalog</html>', { headers: { 'content-type': 'text/html' } })
     );
-    serve(`${ORIGIN}/%23Zombie/%23Zombie%2001.png`, new Uint8Array([7]));
+    serve(`${ORIGIN}/%23Zombie/%23Zombie%2001.png`, PNG_BYTES);
     const result = await htmlDownloadProvider.download(
       requestFor(
         `cbz=${encodeURIComponent(CBZ)}&manifest=${encodeURIComponent(MANIFEST)}&cover=${encodeURIComponent('#Zombie/#Zombie 01.png')}`
@@ -335,6 +360,62 @@ describe('downloading a cbz deep link with a manifest', () => {
     expect(warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toContain(
       'Dr%20Stone%2001.webp'
     );
+  });
+
+  // SVG is unsupported: stored as the cover, an `image/svg+xml` blob opened in
+  // a new tab runs its script as the app. Neither the server's Content-Type
+  // nor the URL's extension decides what a cover is — its bytes do.
+  it('never takes an SVG as the cover, whatever it is served or named as', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const contentType of ['image/svg+xml', 'image/webp', 'application/octet-stream', '']) {
+      routes.clear();
+      await serveAll();
+      serve(
+        `${BASE}Dr%20Stone%2001.webp`,
+        new Response(new TextEncoder().encode(SVG_COVER), {
+          headers: contentType ? { 'content-type': contentType } : {}
+        })
+      );
+      const result = await htmlDownloadProvider.download(link());
+      expect(result.coverFile, contentType).toBeNull();
+    }
+    expect(warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toContain(
+      'Dr%20Stone%2001.webp'
+    );
+  });
+
+  it('refuses an SVG cover param, served as an image', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await serveAll({ cover: null });
+    serve(
+      `${ORIGIN}/covers/evil.png`,
+      new Response(SVG_COVER, { headers: { 'content-type': 'image/png' } })
+    );
+    const result = await htmlDownloadProvider.download(
+      requestFor(
+        `cbz=${encodeURIComponent(CBZ)}&manifest=${encodeURIComponent(MANIFEST)}&cover=${encodeURIComponent('covers/evil.png')}`
+      )
+    );
+    expect(result.coverFile).toBeNull();
+  });
+
+  it('types the cover by its bytes, not the Content-Type or the extension', async () => {
+    await serveAll();
+    serve(
+      `${BASE}Dr%20Stone%2001.webp`,
+      new Response(PNG_BYTES, { headers: { 'content-type': 'image/svg+xml; charset=x' } })
+    );
+    // mayBeImageType turns an SVG Content-Type away before the bytes are read.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect((await htmlDownloadProvider.download(link())).coverFile).toBeNull();
+
+    serve(
+      `${BASE}Dr%20Stone%2001.webp`,
+      new Response(PNG_BYTES, { headers: { 'content-type': 'image/webp' } })
+    );
+    const result = await htmlDownloadProvider.download(link());
+    expect(result.coverFile?.type).toBe('image/png');
+    expect(result.coverFile?.name).toBe('Dr Stone 01.png');
   });
 
   it('survives every listed file failing, warning once per file by name', async () => {
@@ -371,6 +452,101 @@ describe('downloading a cbz deep link with a manifest', () => {
     serve(MANIFEST, JSON.stringify(manifest()));
     serve(CBZ, 404);
     await expect(htmlDownloadProvider.download(link())).rejects.toThrow();
+  });
+
+  describe('a manifest may only send fetches to the servers the link named', () => {
+    it('fails the import, fetching nothing more, when it moves the archive to another server', async () => {
+      await serveAll({ archive: { url: 'http://192.168.1.20/steal.cbz' } });
+      await expect(htmlDownloadProvider.download(link())).rejects.toThrow(
+        'The volume manifest sends the download to http://192.168.1.20, which is not a server this link named'
+      );
+      expect(fetchedUrls()).toEqual([MANIFEST]);
+      expect(workerTasks).toEqual([]);
+    });
+
+    it.each([
+      ['a loopback address', 'http://127.0.0.1:9000/x'],
+      ['plain http on the same host', 'http://bunko.example/x'],
+      ['another public server', 'https://elsewhere.example/x'],
+      ['a data: URL', 'data:application/json,{}']
+    ])('drops a sidecar listed on %s, with a warning, and imports the rest', async (_, url) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await serveAll({
+        ocr: { url: `${url}.mokuro` },
+        layers: [{ id: 'paddle', url: `${url}.paddle.mokuro` }],
+        cover: { url: `${url}.webp` },
+        series_file: { url: `${url}/series.json` }
+      });
+      const result = await htmlDownloadProvider.download(link());
+
+      expect(result.archiveFile).not.toBeNull();
+      expect(result.mokuroFile).toBeNull();
+      expect(result.layers).toEqual([]);
+      expect(result.coverFile).toBeNull();
+      expect(result.seriesFile).toBeNull();
+      expect(fetchedUrls()).toEqual([MANIFEST, CBZ]);
+      const warned = warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+      for (const what of ['OCR file', "OCR layer 'paddle'", 'cover', 'series.json']) {
+        expect(warned).toContain(`Ignoring the manifest's ${what}`);
+      }
+    });
+
+    it('accepts the archive on the archive link’s server when the manifest is on another the link named', async () => {
+      const manifestElsewhere = 'https://api.example/manifest?v=1';
+      serve(
+        manifestElsewhere,
+        JSON.stringify(
+          manifest({ archive: { url: CBZ }, ocr: null, layers: [], cover: null, series_file: null })
+        )
+      );
+      serve(CBZ, new Uint8Array([1, 2, 3]));
+      const result = await htmlDownloadProvider.download(
+        requestFor(
+          `cbz=${encodeURIComponent(CBZ)}&manifest=${encodeURIComponent(manifestElsewhere)}`
+        )
+      );
+      expect(result.archiveFile).not.toBeNull();
+      expect(result.manifest?.archive.url).toBe(CBZ);
+    });
+  });
+
+  describe('a redirect may not take a fetch somewhere the link did not show', () => {
+    it('refuses a listed file the server redirects to a private address', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await serveAll();
+      serve(`${BASE}series.json`, {
+        redirectedTo: 'http://10.0.0.5/series.json',
+        body: SERIES_JSON
+      });
+      const result = await htmlDownloadProvider.download(link());
+      expect(result.seriesFile).toBeNull();
+      expect(warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toContain(
+        'redirected from a secure (https) address to 10.0.0.5'
+      );
+    });
+
+    it('refuses a manifest the server redirects to plain http, falling back to the archive link', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await serveAll();
+      serve(MANIFEST, {
+        redirectedTo: 'http://bunko.example/manifest',
+        body: JSON.stringify(manifest({ archive: { url: 'http://bunko.example/evil.cbz' } }))
+      });
+      const result = await htmlDownloadProvider.download(link());
+      // The unusable manifest sends the download down the legacy path: the cbz the link named.
+      expect(result.manifest).toBeNull();
+      expect(workerTasks[0]).toMatchObject({ archiveUrl: CBZ });
+    });
+
+    it('follows a redirect to another public https server (a CDN)', async () => {
+      await serveAll();
+      serve(`${BASE}series.json`, {
+        redirectedTo: 'https://cdn.example/series.json',
+        body: SERIES_JSON
+      });
+      const result = await htmlDownloadProvider.download(link());
+      expect(result.seriesFile?.file.series_title).toBe('Dr Stone');
+    });
   });
 
   it('names what it is fetching in the progress text', async () => {
@@ -428,4 +604,46 @@ describe('falling back to guessing sidecars from the cbz URL', () => {
       expect(warn.mock.calls[0].map(String).join(' ')).toContain(MANIFEST);
     });
   }
+});
+
+describe('the cover a guessed sidecar or the worker bundle brings', () => {
+  it('keeps a raster cover from the worker bundle, typed by its bytes', async () => {
+    serve(CBZ, new Uint8Array([1, 2, 3]));
+    serve(`${BASE}Dr%20Stone%2001.webp`, PNG_BYTES);
+    const result = await htmlDownloadProvider.download(
+      requestFor(`cbz=${encodeURIComponent(CBZ)}`)
+    );
+    expect(result.coverFile?.type).toBe('image/png');
+    expect(result.coverFile?.name).toBe('Dr Stone 01.png');
+  });
+
+  it('drops an SVG the worker bundle fetched as the cover', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    serve(CBZ, new Uint8Array([1, 2, 3]));
+    serve(`${BASE}Dr%20Stone%2001.webp`, SVG_COVER);
+    const result = await htmlDownloadProvider.download(
+      requestFor(`cbz=${encodeURIComponent(CBZ)}`)
+    );
+    expect(result.archiveFile).not.toBeNull();
+    expect(result.coverFile).toBeNull();
+    expect(warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toContain(
+      'not a supported raster image'
+    );
+  });
+
+  it('never keeps a remote Content-Type on the archive or the OCR', async () => {
+    serve(
+      CBZ,
+      new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'text/html' } })
+    );
+    serve(
+      `${BASE}Dr%20Stone%2001.mokuro`,
+      new Response(OCR_JSON, { headers: { 'content-type': 'text/html' } })
+    );
+    const result = await htmlDownloadProvider.download(
+      requestFor(`cbz=${encodeURIComponent(CBZ)}`)
+    );
+    expect(result.archiveFile?.type).toBe('application/zip');
+    expect(result.mokuroFile?.type).toBe('application/json');
+  });
 });

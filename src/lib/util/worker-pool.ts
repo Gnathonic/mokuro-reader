@@ -344,6 +344,65 @@ export class WorkerPool {
   }
 
   /**
+   * Cancel every unsettled task `matches` picks, and keep the rest of the pool
+   * running. A queued task just leaves the queue. A task in flight loses its
+   * worker, which is terminated (any request it had open goes with it), and a
+   * fresh worker takes its place. Each task is rejected through its `onError`
+   * with `kind: 'cancelled'`, so a caller awaiting it is released and can tell
+   * a cancellation from a failure.
+   *
+   * A task that has already settled is left alone: its `onComplete` is the main
+   * thread finishing work the worker already did.
+   *
+   * Returns how many tasks were cancelled.
+   */
+  public cancelTasks(matches: (task: WorkerTask) => boolean, reason = 'Cancelled'): number {
+    const cancelled: WorkerTask[] = [];
+
+    this.taskQueue = this.taskQueue.filter((task) => {
+      if (this.settledTasks.has(task) || !matches(task)) return true;
+      cancelled.push(task);
+      return false;
+    });
+
+    for (const [worker, taskId] of [...this.workerTaskMap]) {
+      if (!taskId) continue;
+      const task = this.activeTasks.get(taskId);
+      if (!task || this.settledTasks.has(task) || !matches(task)) continue;
+      cancelled.push(task);
+
+      worker.terminate();
+      this.workerTaskMap.delete(worker);
+      this.workers = this.workers.filter((w) => w !== worker);
+      if (task.memoryRequirement) sharedMemoryManager.release(this.poolId, taskId);
+      if (task.provider) {
+        const count = this.providerOperationCounts.get(task.provider) || 0;
+        this.providerOperationCounts.set(task.provider, Math.max(0, count - 1));
+      }
+      this.activeTasks.delete(taskId);
+      this.addWorker();
+    }
+
+    for (const task of cancelled) {
+      const onError = task.onError;
+      if (!onError) {
+        this.settledTasks.add(task);
+        continue;
+      }
+      try {
+        this.settle(task, () =>
+          onError({ type: 'error', fileId: task.id, error: reason, kind: 'cancelled' })
+        );
+      } catch (error) {
+        console.error(`Worker pool: error handler of task ${task.id} threw`, error);
+      }
+    }
+
+    if (cancelled.length > 0) this.processQueue();
+    return cancelled.length;
+  }
+
+  /**
    * Run `handler` (the task's `onComplete` or `onError`) unless the task has
    * already settled. Marked BEFORE the call, so a handler that terminates the
    * pool re-entrantly is not followed by a second, "terminated" rejection.
