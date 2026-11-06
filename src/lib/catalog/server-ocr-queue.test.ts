@@ -585,6 +585,203 @@ describe('pulling a volume whose jobs are done', () => {
   });
 });
 
+describe("a link's watch stays on the servers the link named", () => {
+  const MANIFEST =
+    'https://bunko.example/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001';
+  const LOOPBACK_OCR = 'http://127.0.0.1:9/Dr%20Stone%2001.mokuro';
+  const THIRD_PARTY_LAYER = 'https://third.example/Dr%20Stone%2001.hayai-nova.mokuro';
+  const SAME_ORIGIN_LAYER =
+    'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.paddle.mokuro';
+  /** url → body; `redirectTo` answers as if `fetch` had followed a redirect there. */
+  const routes = new Map<string, { body: string; redirectTo?: string }>();
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const entry = {
+    series: 'Dr Stone',
+    volume: 'Dr Stone 01',
+    path: '/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.cbz',
+    manifest: '/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001',
+    jobs: []
+  };
+  const linkTarget = {
+    queueUrl: QUEUE,
+    init: { cache: 'no-store' as const },
+    source: 'html-download',
+    auth: 'none' as const
+  };
+
+  function manifestListing(ocr: string, layers: Array<{ id: string; url: string }>): string {
+    return JSON.stringify({
+      version: 1,
+      archive: { url: '/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.cbz' },
+      ocr: { url: ocr },
+      layers,
+      pending: [],
+      recheck_after: null
+    });
+  }
+
+  function watchLink(source = 'html-download', auth: 'none' | 'webdav' = 'none'): void {
+    watchServerOcr(
+      {
+        volumeUuid: 'v1',
+        series: 'Dr Stone',
+        volume: 'Dr Stone 01',
+        queueUrl: QUEUE,
+        manifestUrl: MANIFEST,
+        auth,
+        source
+      },
+      { start: false }
+    );
+  }
+
+  const fetchedUrls = () => fetchMock.mock.calls.map((c) => String(c[0]));
+
+  beforeEach(async () => {
+    resetServerOcrQueueForTest();
+    localStorage.clear();
+    routes.clear();
+    upgradeOcrFromSidecarBlob.mockReset().mockResolvedValue(true);
+    importFetchedLayers.mockReset().mockResolvedValue(1);
+    await Promise.all([
+      db.volumes.clear(),
+      db.volume_ocr.clear(),
+      db.volume_files.clear(),
+      clearAllLayers(db)
+    ]);
+    await db.volumes.put({
+      volume_uuid: 'v1',
+      series_uuid: 's',
+      series_title: 'Dr Stone',
+      volume_title: 'Dr Stone 01',
+      mokuro_version: '',
+      page_count: 4,
+      character_count: 0,
+      page_char_counts: [0, 0, 0, 0]
+    } as never);
+    await db.volume_ocr.put({ volume_uuid: 'v1', pages: [] });
+    await db.volume_files.put({ volume_uuid: 'v1', files: {} });
+    fetchMock = vi.fn(async (url: string) => {
+      const r = routes.get(String(url));
+      if (!r) return new Response('', { status: 404 });
+      const res = new Response(r.body, { status: 200 });
+      if (r.redirectTo) {
+        Object.defineProperty(res, 'redirected', { value: true });
+        Object.defineProperty(res, 'url', { value: r.redirectTo });
+      }
+      return res;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    routes.set(LOOPBACK_OCR, { body: '{"pages":[]}' });
+    routes.set(THIRD_PARTY_LAYER, { body: '{"pages":[]}' });
+    routes.set(SAME_ORIGIN_LAYER, { body: '{"pages":[]}' });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    resetServerOcrQueueForTest();
+  });
+
+  it('never fetches or applies OCR a re-read manifest names on another server', async () => {
+    routes.set(MANIFEST, {
+      body: manifestListing(LOOPBACK_OCR, [
+        { id: 'hayai-nova', url: THIRD_PARTY_LAYER },
+        { id: 'paddle', url: SAME_ORIGIN_LAYER }
+      ])
+    });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(true);
+    expect(fetchedUrls()).not.toContain(LOOPBACK_OCR);
+    expect(fetchedUrls()).not.toContain(THIRD_PARTY_LAYER);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    // The layer on the link's own server still arrives.
+    const files = importFetchedLayers.mock.calls[0][2] as Array<{ layerId: string }>;
+    expect(files.map((f) => f.layerId)).toEqual(['paddle']);
+  });
+
+  it('never reads a manifest the queue file names on another server', async () => {
+    const elsewhere = 'https://elsewhere.example/manifest.json';
+    routes.set(elsewhere, { body: manifestListing(LOOPBACK_OCR, []) });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, { ...entry, manifest: elsewhere }, linkTarget)).toBe(
+      false
+    );
+    expect(fetchedUrls()).not.toContain(elsewhere);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    expect(watchedEntries()).toHaveLength(1);
+  });
+
+  it('refuses a manifest that arrives through a redirect to this device', async () => {
+    routes.set(MANIFEST, {
+      body: manifestListing('/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro', []),
+      redirectTo: 'http://127.0.0.1:9/manifest.json'
+    });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(false);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    expect(fetchedUrls()).toEqual([MANIFEST]);
+  });
+
+  it('refuses an OCR file that arrives through a redirect to this device', async () => {
+    const ocr = 'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro';
+    routes.set(MANIFEST, { body: manifestListing(ocr, []) });
+    routes.set(ocr, { body: '{"pages":[]}', redirectTo: LOOPBACK_OCR });
+    watchLink();
+    await pullCompletedVolume(KEY1, entry, linkTarget);
+    expect(fetchedUrls()).toContain(ocr);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+  });
+
+  it("confines a link's watch even when the poller reads as the WebDAV account", async () => {
+    routes.set(MANIFEST, { body: manifestListing(LOOPBACK_OCR, []) });
+    watchLink();
+    await pullCompletedVolume(KEY1, entry, { ...linkTarget, source: 'webdav', auth: 'webdav' });
+    expect(fetchedUrls()).not.toContain(LOOPBACK_OCR);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+  });
+
+  it('the anonymous poller a link started never reads a queue file redirected to this device', async () => {
+    vi.useFakeTimers({ now: NOW, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      routes.set(QUEUE, {
+        body: JSON.stringify({ ...queueFixture(NOW), volumes: [], next_check_after: null }),
+        redirectTo: 'http://127.0.0.1:9/.mokuro-queue.json'
+      });
+      watchLink();
+      await startServerOcrQueue();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchedUrls()).toEqual([QUEUE]);
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('unavailable'),
+        expect.stringContaining('Refused')
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the bunko account's own queue still pulls files on any server, redirects and all", async () => {
+    const cdnOcr = 'https://cdn.example/Dr%20Stone%2001.mokuro';
+    const cdnLayer = 'https://cdn.example/Dr%20Stone%2001.paddle.mokuro';
+    routes.set(MANIFEST, {
+      body: manifestListing(cdnOcr, [{ id: 'paddle', url: cdnLayer }]),
+      redirectTo: 'http://127.0.0.1:9/manifest.json'
+    });
+    routes.set(cdnOcr, { body: '{"pages":[]}', redirectTo: 'http://10.0.0.5/x.mokuro' });
+    routes.set(cdnLayer, { body: '{"pages":[]}' });
+    watchLink('webdav', 'webdav');
+    const bunkoTarget = { ...linkTarget, source: 'webdav', auth: 'webdav' as const };
+    expect(await pullCompletedVolume(KEY1, entry, bunkoTarget)).toBe(true);
+    expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith('v1', cdnOcr, expect.any(Blob));
+    const [, source, files] = importFetchedLayers.mock.calls[0];
+    expect(source).toBe('webdav');
+    expect((files as Array<{ layerId: string }>).map((f) => f.layerId)).toEqual(['paddle']);
+  });
+});
+
 describe('the status the views read', () => {
   it('maps every volume in a polled file to its key', async () => {
     resetServerOcrQueueForTest();
