@@ -737,10 +737,12 @@ test.describe('CSP_MODE=enforce with the Drive auth backend', () => {
       await page.evaluate(() => (window as { __e2ePopupOpened?: boolean }).__e2ePopupOpened)
     ).toBeFalsy();
 
-    // Sign-out reaches the backend; the server revoked, so the browser need not.
+    // Sign-out reaches the backend. The token is cleared AHEAD of /logout
+    // (a reload mid-sign-out must still find this device signed out), so wait
+    // for the request itself, not just the cleared token.
     await page.getByRole('button', { name: 'Log out' }).click();
     await expect.poll(storedToken, { timeout: 30_000 }).toBeNull();
-    expect(backendCalls).toContain('logout');
+    await expect.poll(() => backendCalls, { timeout: 30_000 }).toContain('logout');
 
     expect(await recorded()).toEqual([]);
     expect((await violations(page)).filter(isAppViolation)).toEqual([]);
