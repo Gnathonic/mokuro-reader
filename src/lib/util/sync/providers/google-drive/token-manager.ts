@@ -61,6 +61,13 @@ function setLogoutPending(scope: LogoutScope | null): void {
 /** What a silent refresh through the backend came to. */
 export type BackendRefresh = 'ok' | 'reauth' | 'transient' | 'unavailable';
 
+/** What a sign-out came to (see `TokenManager.logout`). */
+export interface LogoutAnswer {
+  copyMayStillWork: boolean;
+  revoked: boolean;
+  pendingEverywhere: boolean;
+}
+
 /** What renewing a token Drive refused came to. */
 export type TokenRenewal =
   | { kind: 'renewed'; token: string }
@@ -149,6 +156,8 @@ class TokenManager {
    * turn a sign-out that worked into "Google could not be reached".
    */
   private loggingOut = false;
+  /** The sign-out under way (`logout` runs one at a time), with its scope. */
+  private logoutFlight: { everywhere: boolean; promise: Promise<LogoutAnswer> } | null = null;
 
   constructor() {
     if (browser) {
@@ -526,11 +535,30 @@ class TokenManager {
    * replay meets the same 404) or refused the request (`refused`). Both false
    * on a device sign-out.
    */
-  async logout(options: { everywhere?: boolean } = {}): Promise<{
-    copyMayStillWork: boolean;
-    revoked: boolean;
-    pendingEverywhere: boolean;
-  }> {
+  logout(options: { everywhere?: boolean } = {}): Promise<LogoutAnswer> {
+    // One sign-out at a time: the panel keeps its buttons while /logout is
+    // out (up to the client timeout), and a second, concurrent /logout would
+    // revoke the same grant twice (Google answers the second 400) and end the
+    // first one's renewal guard while it is still out. A click of the same or
+    // a narrower scope gets the running sign-out's answer; "everywhere" during
+    // a device sign-out runs after it.
+    const everywhere =
+      options.everywhere === true || (backendAuthConfigured() && logoutPending() === 'everywhere');
+    const flight = this.logoutFlight;
+    if (flight && (flight.everywhere || !everywhere)) return flight.promise;
+    const promise = (flight ? flight.promise : Promise.resolve()).then(() =>
+      this.logoutOnce(options)
+    );
+    const entry = { everywhere, promise };
+    this.logoutFlight = entry;
+    const clear = () => {
+      if (this.logoutFlight === entry) this.logoutFlight = null;
+    };
+    promise.then(clear, clear);
+    return promise;
+  }
+
+  private async logoutOnce(options: { everywhere?: boolean }): Promise<LogoutAnswer> {
     this.disarmGestureRetry();
     // Clear the refresh interval
     if (this.refreshIntervalId) {

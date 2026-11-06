@@ -953,6 +953,29 @@ describe('logout: everywhere', () => {
       expect(await tm.refreshFromBackend(true)).toBe('ok');
       expect(calls('/api/gdrive/refresh')).toHaveLength(1);
     });
+
+    it('a second sign-out click joins the first: one /logout, one answer, no renewal gap', async () => {
+      const { tm, result, answer } = await hangingEverywhere();
+      // The panel still shows "Log out" while the first /logout is out.
+      const second = tm.logout();
+      expect(await tm.refreshFromBackend(true)).toBe('reauth');
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      const [first, again] = await Promise.all([result, second]);
+      expect(again).toEqual(first);
+      expect(first).toMatchObject({ revoked: true, pendingEverywhere: false });
+      expect(calls('/api/gdrive/logout')).toHaveLength(1);
+      expect(calls('/api/gdrive/refresh')).toHaveLength(0);
+    });
+
+    it('the guard holds until the LAST overlapping sign-out has answered', async () => {
+      const { tm, result, answer } = await hangingEverywhere();
+      const second = tm.logout({ everywhere: true });
+      answer(json(200, { ok: true, revoked: true, invalidated: true }));
+      await result;
+      await second;
+      // Nothing is left out: renewals may go again.
+      expect(await tm.refreshFromBackend(true)).toBe('ok');
+    });
   });
 
   it.each(['1', 'true', 'yes'])(
