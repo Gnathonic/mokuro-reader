@@ -1985,7 +1985,13 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
   `same-origin`: it severs the GIS popup) and a `Permissions-Policy` denying
   unused device features (never microphone — Migaku —, clipboard, fullscreen,
   wake lock, share, local-network/loopback) on every path but `/api/` and
-  `/oauth/` (those get their own rules; keep one header name per path). The
+  `/oauth/` (those get their own rules; keep one header name per path). Both of
+  those carry `Cache-Control: no-store`, `Referrer-Policy: no-referrer` and their
+  own `nosniff`; `/api/` a `default-src 'none'; frame-ancestors 'none'` CSP, and
+  the Drive sign-in callback (`/oauth/`) `X-Frame-Options: DENY`, `noindex` and an
+  ENFORCED CSP (whatever `CSP_MODE` says) allowing only its own same-origin
+  script — `google-callback.js` fetches nothing, styles nothing and has no
+  inline code; keep it that way or widen that one policy with evidence. The
   module workers (`/_app/immutable/workers/*`) get their own CSP: a worker does
   not inherit the page's. That one is NOT phased by `CSP_MODE` — it is enforced
   from the first deploy. No global `Referrer-Policy` (the Drive API key's

@@ -1,7 +1,7 @@
 /**
  * The response headers `vercel.json` adds on Vercel (stage 1 of the security
  * headers; the shell's CSP is SvelteKit's, `csp-policy.js`), and the Drive auth
- * backend's own rules for `/oauth/` and `/api/` (their exact values are
+ * backend's own rules for `/oauth/` and `/api/` (their exact values are also
  * pinned in `src/build-config.test.ts`). `vite preview` does not apply this
  * file, so the e2e spec (`e2e/csp.spec.ts`) re-applies it with the same
  * matching as below; on a real deployment, check with `curl -sI`.
@@ -95,6 +95,41 @@ describe('vercel.json', () => {
       expect(matches(rule(OAUTH), path), path).toBe(path.startsWith('/oauth/'));
       expect(matches(rule(API), path), path).toBe(path.startsWith('/api/'));
     }
+  });
+
+  it('sends nosniff and a framing refusal on every path, the excluded ones included', () => {
+    for (const path of SAMPLE_PATHS) {
+      const at = headersAt(path);
+      expect(at.get('x-content-type-options'), path).toEqual(['nosniff']);
+      const framing =
+        at.has('x-frame-options') ||
+        /frame-ancestors/.test(at.get('content-security-policy')?.[0] ?? '');
+      expect(framing, path).toBe(true);
+    }
+  });
+
+  it('gives the OAuth callback page an enforced CSP that allows only its own script', () => {
+    // google-callback.html loads /oauth/google-callback.js and nothing else:
+    // no inline script, no style, no fetch, no frame, no form.
+    const oauth = rule(OAUTH);
+    expect(header(oauth, 'Content-Security-Policy')).toBe(
+      "default-src 'none'; script-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    );
+    expect(header(oauth, 'Content-Security-Policy-Report-Only')).toBeUndefined();
+    expect(header(oauth, 'X-Frame-Options')).toBe('DENY');
+    // Its URL carries the authorization code: no Referer, no cache, no index.
+    expect(header(oauth, 'Referrer-Policy')).toBe('no-referrer');
+    expect(header(oauth, 'Cache-Control')).toBe('no-store');
+    expect(header(oauth, 'X-Robots-Tag')).toBe('noindex');
+  });
+
+  it('gives the auth API nothing to render, frame or cache', () => {
+    const api = rule(API);
+    expect(header(api, 'Content-Security-Policy')).toBe(
+      "default-src 'none'; frame-ancestors 'none'"
+    );
+    expect(header(api, 'Cache-Control')).toBe('no-store');
+    expect(header(api, 'Referrer-Policy')).toBe('no-referrer');
   });
 
   it('sends nosniff, SAMEORIGIN framing and a popup-friendly opener policy', () => {

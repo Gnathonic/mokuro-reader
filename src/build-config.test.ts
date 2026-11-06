@@ -58,19 +58,27 @@ describe('Drive auth headers (vercel.json)', () => {
       (vercel.headers.find((h) => h.source === source)?.headers ?? []).map((h) => [h.key, h.value])
     );
 
-  it('the OAuth callback page: never cached, never a Referer, never indexed', () => {
-    // Its URL carries the authorization code until its script drops it.
+  it('the OAuth callback page: never cached, never a Referer, never indexed, never framed, one script', () => {
+    // Its URL carries the authorization code until its script drops it. The
+    // shell's rule excludes /oauth/, so this rule carries its own nosniff and
+    // framing; its CSP is enforced whatever CSP_MODE says, and allows exactly
+    // what google-callback.html needs: its one same-origin script.
     expect(headersFor('/oauth/(.*)')).toEqual({
       'Cache-Control': 'no-store',
       'Referrer-Policy': 'no-referrer',
-      'X-Robots-Tag': 'noindex'
+      'X-Robots-Tag': 'noindex',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Content-Security-Policy':
+        "default-src 'none'; script-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     });
   });
 
-  it('the auth API: never cached, never a Referer, nothing to render or frame', () => {
+  it('the auth API: never cached, never a Referer, never sniffed, nothing to render or frame', () => {
     expect(headersFor('/api/(.*)')).toEqual({
       'Cache-Control': 'no-store',
       'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'"
     });
   });

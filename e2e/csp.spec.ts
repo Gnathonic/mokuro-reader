@@ -1,6 +1,6 @@
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
@@ -28,6 +28,10 @@ import { writeSyntheticVolume, type SyntheticVolume } from './helpers/synthetic-
  * What the browser cannot be made to show here, the owner checks by hand before
  * enforcing in production: Yomitan and Migaku (extensions are not loaded in
  * this run), real Google sign-in / Picker, OneDrive's MSAL frames.
+ *
+ * Two more blocks below the modes: the Drive sign-in callback page under its own
+ * `vercel.json` policy (no build needed), and an enforce build with the Drive
+ * auth backend on, signing in through it end to end.
  */
 
 const MODES = ['off', 'report-only', 'enforce'] as const;
@@ -129,6 +133,35 @@ async function waitForServer(url: string, child: ChildProcess, deadline: number)
   throw new Error(`preview at ${url} never answered`);
 }
 
+/** `vite build` into `outDir` with `extraEnv`, then `vite preview` of it on a free port. */
+async function buildAndPreview(
+  outDir: string,
+  extraEnv: NodeJS.ProcessEnv
+): Promise<{ origin: string; preview: ChildProcess }> {
+  const env = { ...process.env, ...extraEnv, MOKURO_E2E_KIT_OUT_DIR: outDir };
+  rmSync(outDir, { recursive: true, force: true });
+  await run('npx', ['vite', 'build'], env);
+  const port = await freePort();
+  const origin = `http://localhost:${port}`;
+  const preview = spawn('npx', ['vite', 'preview', '--port', String(port), '--strictPort'], {
+    env,
+    stdio: 'ignore',
+    detached: true
+  });
+  await waitForServer(`${origin}/`, preview, Date.now() + 60_000);
+  return { origin, preview };
+}
+
+function stopPreview(preview: ChildProcess | null) {
+  if (preview?.pid) {
+    try {
+      process.kill(-preview.pid, 'SIGTERM');
+    } catch {
+      // already gone
+    }
+  }
+}
+
 /** Every CSP / Permissions-Policy complaint the browser writes to the console. */
 function watchConsole(page: Page) {
   const csp: string[] = [];
@@ -146,7 +179,7 @@ function watchConsole(page: Page) {
  * Re-issue every app response with `vercel.json`'s headers; answer the Google
  * stubs; refuse every other host.
  */
-async function routeLikeVercel(context: BrowserContext, origin: string) {
+async function routeLikeVercel(context: BrowserContext, origin: string, stubs = STUBS) {
   await context.route('**/*', async (route) => {
     const url = route.request().url();
     if (url.startsWith(origin)) {
@@ -161,7 +194,7 @@ async function routeLikeVercel(context: BrowserContext, origin: string) {
       });
       return;
     }
-    const stub = STUBS.find(([prefix]) => url.startsWith(prefix));
+    const stub = stubs.find(([prefix]) => url.startsWith(prefix));
     if (stub) return route.fulfill(stub[1]);
     return route.abort('blockedbyclient');
   });
@@ -242,28 +275,10 @@ for (const mode of MODES) {
 
     test.beforeAll(async () => {
       test.setTimeout(300_000);
-      const env = { ...process.env, CSP_MODE: mode, MOKURO_E2E_KIT_OUT_DIR: outDir };
-      rmSync(outDir, { recursive: true, force: true });
-      await run('npx', ['vite', 'build'], env);
-      const port = await freePort();
-      origin = `http://localhost:${port}`;
-      preview = spawn('npx', ['vite', 'preview', '--port', String(port), '--strictPort'], {
-        env,
-        stdio: 'ignore',
-        detached: true
-      });
-      await waitForServer(`${origin}/`, preview, Date.now() + 60_000);
+      ({ origin, preview } = await buildAndPreview(outDir, { CSP_MODE: mode }));
     });
 
-    test.afterAll(() => {
-      if (preview?.pid) {
-        try {
-          process.kill(-preview.pid, 'SIGTERM');
-        } catch {
-          // already gone
-        }
-      }
-    });
+    test.afterAll(() => stopPreview(preview));
 
     test('the shell answers 200 with this mode’s policy, and reports nowhere', async ({
       request
@@ -463,6 +478,275 @@ for (const mode of MODES) {
     });
   });
 }
+
+/**
+ * Every `securitypolicyviolation` in every document of the page, kept in
+ * sessionStorage: the Drive callback page replaces itself at once, so its own
+ * listeners and the app's buffer are both gone by the time anything is read.
+ * Init scripts come in over CDP, outside every page policy.
+ */
+async function recordViolationsAcrossDocuments(page: Page) {
+  await page.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (event) => {
+      const key = '__e2eCspViolations';
+      const seen = JSON.parse(sessionStorage.getItem(key) || '[]');
+      seen.push({
+        page: location.pathname,
+        directive: event.effectiveDirective,
+        blocked: event.blockedURI,
+        disposition: event.disposition
+      });
+      sessionStorage.setItem(key, JSON.stringify(seen));
+    });
+  });
+  return () =>
+    page.evaluate(() => JSON.parse(sessionStorage.getItem('__e2eCspViolations') || '[]'));
+}
+
+/** What `static/oauth/google-callback.js` hands the app (`auth-backend.ts`). */
+const OAUTH_PENDING_KEY = 'gdrive_oauth_pending';
+const OAUTH_CALLBACK_KEY = 'gdrive_oauth_callback';
+/** The callback page's policy, as `vercel.json` sends it (pinned in vercel-headers.test.ts). */
+const CALLBACK_CSP =
+  "default-src 'none'; script-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+test('the Drive sign-in callback page runs under its own enforced policy', async ({ page }) => {
+  // The exact files, under the exact headers vercel.json gives /oauth/ — on an
+  // origin this test answers itself, so no build or server is needed.
+  const origin = 'https://reader.e2e.test';
+  const files: Record<string, { type: string; body: string }> = {
+    '/oauth/google-callback.html': {
+      type: 'text/html; charset=utf-8',
+      body: readFileSync(join('static', 'oauth', 'google-callback.html'), 'utf8')
+    },
+    '/oauth/google-callback.js': {
+      type: 'text/javascript; charset=utf-8',
+      body: readFileSync(join('static', 'oauth', 'google-callback.js'), 'utf8')
+    }
+  };
+  expect(vercelHeadersFor('/oauth/google-callback.html')['content-security-policy']).toBe(
+    CALLBACK_CSP
+  );
+  const served: { path: string; csp?: string }[] = [];
+  await page.route(`${origin}/**`, (route) => {
+    const { pathname } = new URL(route.request().url());
+    const file = files[pathname];
+    const headers: Record<string, string> = {
+      'content-type': file?.type ?? 'text/html',
+      ...vercelHeadersFor(pathname)
+    };
+    served.push({ path: pathname, csp: headers['content-security-policy'] });
+    // Anything else stands in for the app the callback hands back to.
+    return route.fulfill({
+      status: 200,
+      headers,
+      body: file?.body ?? '<!doctype html><title>app</title>'
+    });
+  });
+  const recorded = await recordViolationsAcrossDocuments(page);
+  const consoleLog = watchConsole(page);
+
+  // A sign-in this tab started (startSignIn's record), then Google's redirect.
+  await page.goto(`${origin}/`);
+  await page.evaluate(
+    (key) =>
+      sessionStorage.setItem(
+        key,
+        JSON.stringify({
+          state: 'e2e-state',
+          verifier: 'v',
+          returnTo: '#/cloud',
+          createdAt: Date.now()
+        })
+      ),
+    OAUTH_PENDING_KEY
+  );
+  await page.goto(`${origin}/oauth/google-callback.html?code=4%2Fe2e-code&state=e2e-state`);
+
+  // The script ran: it stashed the answer and replaced itself with the app.
+  await expect.poll(() => page.url()).toBe(`${origin}/#/cloud`);
+  expect(
+    await page.evaluate(
+      (key) => JSON.parse(sessionStorage.getItem(key) || 'null'),
+      OAUTH_CALLBACK_KEY
+    )
+  ).toEqual({ code: '4/e2e-code', state: 'e2e-state', error: null });
+  // Both files went out under the callback policy (the app stand-in under none).
+  expect(served.filter((s) => s.path.startsWith('/oauth/'))).toEqual([
+    { path: '/oauth/google-callback.html', csp: CALLBACK_CSP },
+    { path: '/oauth/google-callback.js', csp: CALLBACK_CSP }
+  ]);
+  expect(await recorded()).toEqual([]);
+  expect(consoleLog.csp).toEqual([]);
+});
+
+/**
+ * The enforced shell with the Drive auth backend on (`VITE_GDRIVE_AUTH_BACKEND`):
+ * Connect leaves for Google's page (here: answered with a code), comes back
+ * through the static callback page under ITS policy, and the app redeems the
+ * code at `/api/gdrive/session`; then sign-out goes to `/api/gdrive/logout`.
+ * The routes are answered in the browser — the token exchange itself is
+ * server-side and has its own spec (`gdrive-auth-backend.spec.ts`); what is
+ * under test here is everything the PAGE does, under the policy it ships with.
+ */
+test.describe('CSP_MODE=enforce with the Drive auth backend', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  const outDir = join(BUILDS, 'enforce-gdrive-backend');
+  let preview: ChildProcess | null = null;
+  let origin = '';
+
+  /** gapi and GIS as inert stand-ins that the app can initialize against. */
+  const BACKEND_STUBS: typeof STUBS = [
+    [
+      GAPI,
+      js(`${mark('gapi')}
+        window.gapi = {
+          load: function (_name, cb) { setTimeout(cb, 0); },
+          client: {
+            init: function () { return Promise.resolve(); },
+            setToken: function (t) { window.__e2eGapiToken = t; },
+            getToken: function () { return window.__e2eGapiToken; },
+            drive: {
+              files: {
+                list: function () { return Promise.resolve({ result: { files: [] } }); },
+                create: function () { return Promise.resolve({ result: { id: 'e2e-folder' } }); },
+                get: function () { return Promise.resolve({ result: {} }); },
+                update: function () { return Promise.resolve({ result: {} }); },
+                delete: function () { return Promise.resolve({ result: {} }); }
+              },
+              changes: {
+                getStartPageToken: function () { return Promise.resolve({ result: { startPageToken: '1' } }); },
+                list: function () { return Promise.resolve({ result: { changes: [], newStartPageToken: '1' } }); }
+              }
+            }
+          }
+        };`)
+    ],
+    [
+      GIS,
+      js(`${mark('gis')}
+        window.google = { accounts: { oauth2: {
+          initTokenClient: function () {
+            return { requestAccessToken: function () { window.__e2ePopupOpened = true; } };
+          }
+        } } };`)
+    ]
+  ];
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    ({ origin, preview } = await buildAndPreview(outDir, {
+      CSP_MODE: 'enforce',
+      VITE_GDRIVE_AUTH_BACKEND: 'true',
+      VITE_GDRIVE_CLIENT_ID: 'e2e-client.apps.example'
+    }));
+  });
+
+  test.afterAll(() => stopPreview(preview));
+
+  test('sign-in, the callback page, the session and sign-out: nothing refused', async ({
+    context,
+    page
+  }) => {
+    test.setTimeout(180_000);
+    await routeLikeVercel(context, origin, BACKEND_STUBS);
+    const backendCalls: string[] = [];
+    const api = (status: number, body: unknown) => ({
+      status,
+      contentType: 'application/json',
+      headers: vercelHeadersFor('/api/gdrive/x'),
+      body: JSON.stringify(body)
+    });
+    // Page routes win over the context's: the auth API, Google's consent
+    // screen, Drive's REST host and Google's revoke endpoint.
+    await page.route(`${origin}/api/gdrive/**`, (route) => {
+      const route_ = new URL(route.request().url()).pathname.replace('/api/gdrive/', '');
+      backendCalls.push(route_);
+      if (route_ === 'refresh') return route.fulfill(api(401, { error: 'no_session' }));
+      if (route_ === 'session')
+        return route.fulfill(api(200, { access_token: 'ya29.csp-1', expires_in: 3599 }));
+      if (route_ === 'logout') return route.fulfill(api(200, { ok: true, revoked: true }));
+      return route.fulfill(api(404, { error: 'not_found' }));
+    });
+    const consent: { url?: URL } = {};
+    await page.route('https://accounts.google.com/o/oauth2/v2/auth**', (route) => {
+      const url = new URL(route.request().url());
+      consent.url = url;
+      const back = new URL(url.searchParams.get('redirect_uri')!);
+      back.searchParams.set('code', '4/e2e-code');
+      back.searchParams.set('state', url.searchParams.get('state') ?? '');
+      // A page that moves on, not a 302: the browser follows a fulfilled
+      // redirect without routing it, and the callback page must come back
+      // through routeLikeVercel to be served under its vercel.json policy.
+      const to = back.toString().replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: `<!doctype html><meta http-equiv="refresh" content="0;url=${to}">`
+      });
+    });
+    const cors = {
+      'access-control-allow-origin': '*',
+      'access-control-allow-headers': '*',
+      'access-control-allow-methods': '*'
+    };
+    await page.route('https://www.googleapis.com/**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: cors,
+        body: '{"id":"e2e-file"}'
+      })
+    );
+    await page.route('https://oauth2.googleapis.com/**', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: '{}' })
+    );
+    const callbackPolicies: (string | undefined)[] = [];
+    page.on('response', (response) => {
+      if (new URL(response.url()).pathname === '/oauth/google-callback.html')
+        callbackPolicies.push(response.headers()['content-security-policy']);
+    });
+    const recorded = await recordViolationsAcrossDocuments(page);
+    const consoleLog = watchConsole(page);
+    const storedToken = () =>
+      page.evaluate(() => localStorage.getItem('gdrive_token')).catch(() => undefined);
+
+    const shell = await page.goto(`${origin}/#/cloud`);
+    expect(shell?.headers()['content-security-policy']).toMatch(/script-src /);
+    const connect = page.getByRole('button', { name: /Stays signed in/ });
+    await expect(connect).toBeVisible({ timeout: 30_000 });
+    await connect.click();
+
+    await expect.poll(storedToken, { timeout: 60_000 }).toBe('ya29.csp-1');
+    expect(page.url()).toBe(`${origin}/#/cloud`);
+    expect(consent.url?.searchParams.get('redirect_uri')).toBe(
+      `${origin}/oauth/google-callback.html`
+    );
+    expect(callbackPolicies).toEqual([CALLBACK_CSP]);
+    expect(backendCalls).toEqual(expect.arrayContaining(['refresh', 'session']));
+    // The Google scripts ran under the policy; no popup was asked for.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { __e2eGoogle?: Record<string, boolean> }).__e2eGoogle ?? {}
+        )
+      )
+      .toEqual({ gapi: true, gis: true });
+    expect(
+      await page.evaluate(() => (window as { __e2ePopupOpened?: boolean }).__e2ePopupOpened)
+    ).toBeFalsy();
+
+    // Sign-out reaches the backend; the server revoked, so the browser need not.
+    await page.getByRole('button', { name: 'Log out' }).click();
+    await expect.poll(storedToken, { timeout: 30_000 }).toBeNull();
+    expect(backendCalls).toContain('logout');
+
+    expect(await recorded()).toEqual([]);
+    expect((await violations(page)).filter(isAppViolation)).toEqual([]);
+    expect(consoleLog.csp).toEqual([]);
+  });
+});
 
 // Each mode's build is large; leave none behind.
 test.afterAll(() => {
