@@ -3,6 +3,11 @@
  * Receives File objects, returns ImageBitmaps via Transferable
  */
 
+import { forwardWorkerCspViolations } from '$lib/security/csp-violations';
+
+// A violation here fires on this worker, where the page's buffer cannot see it.
+forwardWorkerCspViolations();
+
 export interface DecodeRequest {
   id: number;
   file: File;

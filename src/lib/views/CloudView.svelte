@@ -28,6 +28,7 @@
   import { backendAuthEnabled } from '$lib/util/sync/providers/google-drive/auth-backend';
   import DevicesSettings from '$lib/components/Devices/DevicesSettings.svelte';
   import { parseCloudLinkPrefill, type CloudLinkPrefill } from '$lib/util/link-safety';
+  import { preloadGoogleScripts } from '$lib/util/sync/providers/google-drive/google-scripts';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -341,6 +342,12 @@
   }
 
   onMount(async () => {
+    // The Drive Connect button below needs gapi and GIS on the page BEFORE it
+    // is clicked: the click's user activation has to reach the GIS popup, and
+    // waiting for two script downloads inside the handler spends it. (With the
+    // auth backend, Connect leaves for Google's page instead — on sticky
+    // activation — but still brings up the Drive client, gapi, first.)
+    preloadGoogleScripts();
     filesystemSupported = isFilesystemProviderSupported();
     // Clear service worker cache for Google Drive downloads
     // This is cloud-page-specific and not part of global init

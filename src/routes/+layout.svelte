@@ -1,5 +1,7 @@
 <script lang="ts">
   import '../app.css';
+  // After app.css, the cascade position its inline <style> in app.html had.
+  import '$lib/styles/night-mode.css';
   import { browser, dev } from '$app/environment';
   import { inject } from '@vercel/analytics';
   import { scrubAnalyticsEvent } from '$lib/util/analytics-scrub';

@@ -34,6 +34,10 @@ import { uploadVolumeFiles } from '$lib/util/volume-upload-order';
 import { mayBeImageType } from '$lib/util/image-content-type';
 import { assertNoRedirectEscape } from '$lib/util/link-safety';
 import { workerFailureKind, type WorkerFailureKind } from '$lib/util/sync/core/storage-full';
+import { forwardWorkerCspViolations } from '$lib/security/csp-violations';
+
+// A violation here fires on this worker, where the page's buffer cannot see it.
+forwardWorkerCspViolations();
 
 // Define the worker context
 const ctx: Worker = self as any;

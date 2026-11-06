@@ -3,6 +3,7 @@ import { unifiedCloudManager } from './unified-cloud-manager';
 import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { hasPendingCallback } from '$lib/util/sync/providers/google-drive/auth-backend';
+import { preloadGoogleScripts } from '$lib/util/sync/providers/google-drive/google-scripts';
 import { getConfiguredProviderType } from './provider-detection';
 import type { SyncProvider, ProviderType } from './provider-interface';
 
@@ -59,6 +60,11 @@ export async function initializeProviders(): Promise<void> {
     console.log('ℹ️ No active provider configured. Providers will load on login.');
     return;
   }
+
+  // Drive's two Google scripts are no longer in app.html: start them now, in
+  // parallel with the provider module, so the token client is ready long
+  // before any click needs it (`google-scripts.ts`).
+  if (activeProviderType === 'google-drive') preloadGoogleScripts();
 
   console.log(`🔧 Loading ${activeProviderType} provider...`);
 
