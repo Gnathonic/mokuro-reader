@@ -23,7 +23,8 @@ const NAMES = [
   '__mokuroInteropConfig',
   'installRigDriver'
 ];
-// SvelteKit's output, and the adapter's (adapter-auto writes one only on a host it knows).
+// SvelteKit's output, and the adapter's: adapter-vercel writes .vercel/output on every
+// build (CI and dev machines too); build/ and .netlify are leftovers of older adapters.
 const DIRS = ['.svelte-kit/output', 'build', '.vercel/output', '.netlify'];
 
 const root = process.cwd();
