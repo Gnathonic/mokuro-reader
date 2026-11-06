@@ -13,7 +13,7 @@ import { writeSyntheticVolume, type SyntheticVolume } from './helpers/synthetic-
  * (`vite build` + `vite preview`): the dev server's policy is not the one that
  * ships (kit loosens style-src there for Vite's injected styles).
  *
- * Each mode gets its own build in its own `kit.outDir` (SVELTEKIT_OUT_DIR,
+ * Each mode gets its own build in its own `kit.outDir` (MOKURO_E2E_KIT_OUT_DIR,
  * under node_modules — see BUILDS), so the suite's dev server never sees its
  * generated files change. `vercel.json`'s
  * headers — the worker CSP, framing, COOP, Permissions-Policy — are not applied
@@ -242,7 +242,7 @@ for (const mode of MODES) {
 
     test.beforeAll(async () => {
       test.setTimeout(300_000);
-      const env = { ...process.env, CSP_MODE: mode, SVELTEKIT_OUT_DIR: outDir };
+      const env = { ...process.env, CSP_MODE: mode, MOKURO_E2E_KIT_OUT_DIR: outDir };
       rmSync(outDir, { recursive: true, force: true });
       await run('npx', ['vite', 'build'], env);
       const port = await freePort();

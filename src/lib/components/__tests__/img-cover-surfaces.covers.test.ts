@@ -204,6 +204,21 @@ describe('PlaceholderThumbnail resolves its own cloud cover', () => {
     expect(container.textContent).not.toContain('No thumbnail');
   });
 
+  // SVG is unsupported. A cached cover whose stored type is not raster (data
+  // from before that rule) is a miss: never an object URL, never painted.
+  it('never paints a cached cover whose type is not raster', async () => {
+    await putCloudCovers([
+      cachedCover({ thumbnail: new File(['<svg/>'], 'cover.svg', { type: 'image/svg+xml' }) })
+    ]);
+
+    const { container } = render(PlaceholderThumbnail, { props: { volume: cloudVolume() } });
+    await settle();
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(created).toEqual([]);
+    expect(container.textContent).toContain('No thumbnail');
+  });
+
   it('shows the honest placeholder when nothing is cached for its path', async () => {
     const { container } = render(PlaceholderThumbnail, { props: { volume: cloudVolume() } });
     await settle();

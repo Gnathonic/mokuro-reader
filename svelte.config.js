@@ -19,9 +19,12 @@ const config = {
     // (off | report-only | enforce; unset = off). See src/lib/security/csp-policy.js.
     csp: kitCsp(parseCspMode(process.env.CSP_MODE)),
 
-    // Only the CSP e2e spec moves this: it builds one app per CSP_MODE beside a
-    // running dev server, which must not see its generated files rewritten.
-    ...(process.env.SVELTEKIT_OUT_DIR ? { outDir: process.env.SVELTEKIT_OUT_DIR } : {})
+    // Only e2e specs that build or serve a SECOND app beside the suite's running
+    // dev server set this (e2e/csp.spec.ts: one build per CSP_MODE;
+    // e2e/gdrive-auth-backend.spec.ts: a dev server with the auth backend on).
+    // Their generated files must not overwrite the first server's: that
+    // full-reloads every page open there.
+    ...(process.env.MOKURO_E2E_KIT_OUT_DIR ? { outDir: process.env.MOKURO_E2E_KIT_OUT_DIR } : {})
   },
 
   vitePlugin: {

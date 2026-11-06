@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   GAPI_SCRIPT_URL,
   GIS_SCRIPT_URL,
+  loadGapiScript,
+  loadGisScript,
   loadGoogleScripts,
   preloadGoogleScripts,
   resetGoogleScriptsForTests
@@ -70,6 +72,36 @@ describe('loadGoogleScripts', () => {
     expect(scripts(GIS_SCRIPT_URL)).toHaveLength(1);
     settle(GIS_SCRIPT_URL, 'load');
     await expect(retry).resolves.toBeUndefined();
+  });
+});
+
+describe('loadGapiScript / loadGisScript', () => {
+  it('each waits for its own script alone: GIS failing never fails gapi', async () => {
+    // Both in flight, as after a preload; then GIS is blocked and gapi loads.
+    preloadGoogleScripts();
+    const gapi = loadGapiScript();
+    const gis = loadGisScript();
+    settle(GIS_SCRIPT_URL, 'error');
+    await expect(gis).rejects.toThrow(GIS_SCRIPT_URL);
+    settle(GAPI_SCRIPT_URL, 'load');
+    await expect(gapi).resolves.toBeUndefined();
+  });
+
+  it('joins a load already in flight instead of injecting a second tag', async () => {
+    const both = loadGoogleScripts();
+    const gapi = loadGapiScript();
+    expect(scripts(GAPI_SCRIPT_URL)).toHaveLength(1);
+    settle(GAPI_SCRIPT_URL, 'load');
+    await expect(gapi).resolves.toBeUndefined();
+    settle(GIS_SCRIPT_URL, 'load');
+    await both;
+    expect(scripts(GIS_SCRIPT_URL)).toHaveLength(1);
+  });
+
+  it('loads only the one asked for', () => {
+    void loadGisScript();
+    expect(scripts(GIS_SCRIPT_URL)).toHaveLength(1);
+    expect(scripts(GAPI_SCRIPT_URL)).toHaveLength(0);
   });
 });
 

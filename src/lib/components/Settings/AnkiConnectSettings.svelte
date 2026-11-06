@@ -11,7 +11,14 @@
     Select,
     Toggle
   } from 'flowbite-svelte';
-  import { fetchConnectionData, openConfigureModal } from '$lib/anki-connect';
+  import {
+    DEFAULT_ANKI_CONNECT_URL,
+    confirmAnkiUrl,
+    confirmedAnkiUrls,
+    fetchConnectionData,
+    isAnkiUrlTrusted,
+    openConfigureModal
+  } from '$lib/anki-connect';
   import { onMount } from 'svelte';
 
   // Connection state
@@ -21,6 +28,24 @@
 
   // Basic settings
   let url = $state($settings.ankiConnectSettings.url);
+
+  // A URL that arrived in an imported or synced profile is not used until it
+  // is confirmed on this device (`anki-connect/url-trust.ts`); loopback is.
+  let storedUrl = $derived($settings.ankiConnectSettings.url);
+  let storedUrlTrusted = $derived.by(() => {
+    void $confirmedAnkiUrls; // re-check when a confirmation lands
+    return isAnkiUrlTrusted(storedUrl);
+  });
+
+  function confirmStoredUrl() {
+    confirmAnkiUrl(storedUrl);
+  }
+
+  function useLocalAnki() {
+    url = DEFAULT_ANKI_CONNECT_URL;
+    updateAnkiSetting('url', url);
+    updateAnkiSetting('connectionData', null);
+  }
 
   // Card settings
   let cardMode = $state($settings.ankiConnectSettings.cardMode);
@@ -95,7 +120,7 @@
 
   // Try auto-connect on mount if we have a URL and were previously connected
   onMount(() => {
-    if (url && !connectionData && $settings.ankiConnectSettings.enabled) {
+    if (url && !connectionData && $settings.ankiConnectSettings.enabled && storedUrlTrusted) {
       handleConnect();
     }
   });
@@ -120,6 +145,9 @@
           placeholder="http://127.0.0.1:8765"
           bind:value={url}
           onchange={() => {
+            // Typed here by the user: that is the confirmation an imported
+            // or synced URL is waiting for.
+            confirmAnkiUrl(url);
             updateAnkiSetting('url', url);
             // Clear connection data when URL changes
             if (isConnected) {
@@ -154,6 +182,27 @@
           </Button>
         {/if}
       </div>
+
+      {#if !storedUrlTrusted}
+        <div
+          role="alert"
+          data-testid="anki-url-unconfirmed"
+          class="mt-2 rounded bg-yellow-100 p-2 text-sm text-yellow-900 dark:bg-yellow-900 dark:text-yellow-100"
+        >
+          <p>
+            This AnkiConnect URL came from an imported or synced profile and is not confirmed on
+            this device: <code class="break-all">{storedUrl}</code>. Cards, sentences and page
+            images are sent to it, so nothing is sent until you confirm it.
+          </p>
+          <!-- relative z-10: night mode's filter makes the drawer a stacking context -->
+          <div class="relative z-10 mt-2 flex flex-wrap gap-2">
+            <Button size="xs" color="yellow" onclick={confirmStoredUrl}>Use this URL</Button>
+            <Button size="xs" color="alternative" onclick={useLocalAnki}>
+              Use Anki on this device instead
+            </Button>
+          </div>
+        </div>
+      {/if}
 
       <!-- Connection Status -->
       {#if isConnected}

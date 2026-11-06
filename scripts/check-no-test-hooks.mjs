@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // After `npm run build`: the production bundle must contain none of the cloud
 // test hooks (src/lib/util/sync/cloud-test-hooks.ts, the interop helpers and the
-// rig driver, src/lib/interop/rig-driver.ts).
+// rig driver, src/lib/interop/rig-driver.ts), nor the Drive auth backend's
+// stand-in Google endpoint (src/lib/server/gdrive-auth/google.ts), which the
+// SERVER output is scanned for as well as the client's.
 // They are guarded by a compile-time constant that is false in a production
 // build, so the bundler drops them; this proves it. Exits 1 listing every file
 // that still names one. A `vite build --mode interop` build (hooks on) fails it.
@@ -21,7 +23,8 @@ const NAMES = [
   'CLOUDSIM',
   '__mokuroInterop',
   '__mokuroInteropConfig',
-  'installRigDriver'
+  'installRigDriver',
+  'GDRIVE_TEST_GOOGLE_ORIGIN'
 ];
 // SvelteKit's output, and the adapter's: adapter-vercel writes .vercel/output on every
 // build (CI and dev machines too); build/ and .netlify are leftovers of older adapters.

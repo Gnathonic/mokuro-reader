@@ -10,6 +10,19 @@ const RETURN_KEY = 'anilist_return';
 const DEFAULT_TTL_SEC = 365 * 24 * 60 * 60; // AniList tokens last one year
 
 /**
+ * How long the login marker (`startAniListLogin`) proves that this tab is
+ * waiting for AniList to send it back. AniList's implicit grant echoes no
+ * `state`, so the marker is the only thing tying a `#access_token=` callback
+ * to a login the user started. Left open, a login abandoned at AniList's
+ * page would let a later attacker link (with the attacker's token) complete
+ * it, silently connecting the user to someone else's account.
+ */
+export const ANILIST_LOGIN_MARKER_TTL_MS = 10 * 60 * 1000;
+
+/** Where AniList's settings list the apps that hold a token for the account. */
+export const ANILIST_APPS_SETTINGS_URL = 'https://anilist.co/settings/apps';
+
+/**
  * True when this fragment is an implicit-grant callback rather than a route.
  *
  * The order of the fragment's parameters is the provider's choice, not ours, so
@@ -96,7 +109,8 @@ _anilistConnected.set(getAniListToken() !== null);
 export function startAniListLogin(): void {
   const clientId = getAniListClientId();
   if (!browser || !clientId) return;
-  sessionStorage.setItem(RETURN_KEY, window.location.hash || '#/catalog');
+  const marker = { hash: window.location.hash || '#/catalog', at: Date.now() };
+  sessionStorage.setItem(RETURN_KEY, JSON.stringify(marker));
   window.location.assign(buildAniListAuthorizeUrl(clientId));
 }
 
@@ -118,7 +132,7 @@ export function parseAniListCallbackHash(
  *
  * Callers MUST only invoke this when the callback has been verified as
  * originating from a login this tab started (see `initRouter`'s use of
- * `consumeAniListReturnHash`) — this function itself has no way to tell an
+ * `consumeAniListLoginMarker`) — this function itself has no way to tell an
  * attacker-crafted `#access_token=…` link from a legitimate redirect.
  */
 export async function handleAniListCallbackHash(hash: string): Promise<boolean> {
@@ -143,6 +157,11 @@ export async function handleAniListCallbackHash(hash: string): Promise<boolean> 
       const user = { id: data.Viewer.id, name: data.Viewer.name };
       localStorage.setItem(USER_KEY, JSON.stringify(user));
       _anilistUser.set(user);
+      // Name the account out loud: a login that connected someone else's
+      // account (a forged callback) is then visible the moment it happens.
+      showSnackbar(`Connected to AniList as ${user.name}`);
+    } else {
+      showSnackbar('Connected to AniList');
     }
   } catch (error) {
     if (error instanceof AniListError && error.code === 'UNAUTHORIZED') {
@@ -151,19 +170,79 @@ export async function handleAniListCallbackHash(hash: string): Promise<boolean> 
       handleAniListUnauthorized();
     } else {
       console.warn('[anilist-auth] Viewer lookup failed:', error);
+      showSnackbar('Connected to AniList');
     }
   }
   return true;
 }
 
-/** Return-route saved by startAniListLogin(); cleared on read. */
-export function consumeAniListReturnHash(): string | null {
-  if (!browser) return null;
-  const value = sessionStorage.getItem(RETURN_KEY);
+/**
+ * What the login marker says about a callback arriving now. `started`: this
+ * tab started a login within `ANILIST_LOGIN_MARKER_TTL_MS`, and only then may
+ * the callback be used. `expired`: it did, longer ago than that, which proves
+ * nothing either, but the user is told why and goes back to `hash`. `none`: no
+ * marker, or not one this code wrote (a marker without its timestamp, or one
+ * from the future, proves nothing about when the login started).
+ */
+export type AniListLoginMarker =
+  | { state: 'started'; hash: string }
+  | { state: 'expired'; hash: string }
+  | { state: 'none' };
+
+/** Read the marker startAniListLogin() saved, and clear it (one use). */
+export function consumeAniListLoginMarker(): AniListLoginMarker {
+  if (!browser) return { state: 'none' };
+  const raw = sessionStorage.getItem(RETURN_KEY);
   sessionStorage.removeItem(RETURN_KEY);
-  return value;
+  if (!raw) return { state: 'none' };
+  try {
+    const marker = JSON.parse(raw);
+    if (typeof marker?.hash !== 'string' || typeof marker?.at !== 'number') {
+      return { state: 'none' };
+    }
+    const age = Date.now() - marker.at;
+    if (!Number.isFinite(age) || age < 0) return { state: 'none' };
+    if (age > ANILIST_LOGIN_MARKER_TTL_MS) return { state: 'expired', hash: marker.hash };
+    return { state: 'started', hash: marker.hash };
+  } catch {
+    return { state: 'none' };
+  }
 }
 
+/**
+ * A callback arrived that the marker does not vouch for: nothing was stored.
+ * Say so, or a user whose sign-in took too long lands back with AniList still
+ * disconnected and no idea why (and a forged link is named for what it is).
+ */
+export function noteRefusedAniListCallback(state: 'expired' | 'none'): void {
+  const minutes = Math.round(ANILIST_LOGIN_MARKER_TTL_MS / 60_000);
+  showSnackbar(
+    state === 'expired'
+      ? `The AniList login took over ${minutes} minutes, so it was not used. Connect again from Settings.`
+      : 'This AniList login was not started in this tab, so it was not used. To link AniList, connect from Settings.',
+    8000
+  );
+}
+
+/**
+ * The user came back to the app without a token (pressed Back on AniList's
+ * page, or AniList sent them back with an error): that login is over, and
+ * its marker must not wait around for a callback someone else could forge.
+ */
+export function clearAniListLoginMarker(): void {
+  if (!browser) return;
+  try {
+    sessionStorage.removeItem(RETURN_KEY);
+  } catch {
+    /* storage unavailable: nothing was stored either */
+  }
+}
+
+/**
+ * Forget the AniList session on this device. AniList has no revocation API,
+ * so the token itself stays valid until it expires or the user removes the
+ * app at `ANILIST_APPS_SETTINGS_URL`; the UI says so.
+ */
 export function disconnectAniList(): void {
   clearAniListSession();
 }

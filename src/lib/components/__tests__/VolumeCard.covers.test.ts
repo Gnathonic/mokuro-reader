@@ -80,6 +80,43 @@ describe('VolumeCard covers', () => {
     expect(requestCover).not.toHaveBeenCalled();
   });
 
+  // SVG is unsupported: a stored `image/svg+xml` (or other non-raster)
+  // thumbnail from before that rule must never become an object URL, which
+  // would run its script as the app when opened in a new tab.
+  it('never makes an object URL of a thumbnail whose type is not raster', async () => {
+    isCoverFetchTarget.mockReturnValue(false);
+    for (const type of ['image/svg+xml', 'text/html']) {
+      const { container } = render(VolumeCard, {
+        props: {
+          ...baseProps,
+          volume: volume(`v-${type}`, { thumbnail: new File(['<svg/>'], 'c.svg', { type }) })
+        }
+      });
+      await tick();
+      expect(container.querySelector('img'), type).toBeNull();
+      cleanup();
+    }
+    expect(globalThis.URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  // Earlier builds stored archive thumbnail sidecars untyped. Until
+  // `processThumbnails` re-types them, they are shown under an inert raster
+  // label instead of vanishing from the shelf.
+  it('shows an untyped thumbnail under a raster label', async () => {
+    isCoverFetchTarget.mockReturnValue(false);
+    const { container } = render(VolumeCard, {
+      props: {
+        ...baseProps,
+        volume: volume('v-1', { thumbnail: new File(['x'], 'Vol 1.webp') })
+      }
+    });
+    await tick();
+
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:cover-1');
+    const shown = vi.mocked(globalThis.URL.createObjectURL).mock.calls[0][0] as Blob;
+    expect(shown.type).toBe('image/webp');
+  });
+
   it('shows the placeholder box and asks the service once, gated, when the row has no cover', async () => {
     const { container } = render(VolumeCard, {
       props: {

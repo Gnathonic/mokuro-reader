@@ -1,5 +1,9 @@
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
-import type { CloudProviderCore } from '../cloud-provider-core-types';
+import type {
+  CloudCoreAuthRefresher,
+  CloudCoreCredentials,
+  CloudProviderCore
+} from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { driveApiBase, driveUploadBase } from '../../providers/google-drive/constants';
 import { CLOUD_TEST_HOOKS, credentialBase } from '../../cloud-test-hooks';
@@ -51,6 +55,36 @@ function uploadResult(text: string): UploadFileResult {
     ...(version ? { revision: version } : {}),
     ...(parentId ? { parentId } : {}),
     ...(typeof result.name === 'string' ? { name: result.name } : {})
+  };
+}
+
+/**
+ * The access token for one transfer, renewed ONCE when Drive refuses it (401):
+ * `refreshAuth` asks the session for a fresh one (a worker's request goes to
+ * the main thread, `worker-auth-refresh.ts`), and the refused step runs again
+ * with it. No refresher, or none to be had: the 401 stands. A transient
+ * renewal failure (`TransientAuthRefreshError`) is thrown in its place, so the
+ * failure never reads as a rejected sign-in.
+ */
+function renewingToken(
+  credentials: CloudCoreCredentials,
+  refreshAuth: CloudCoreAuthRefresher | undefined
+) {
+  let token = requireCredentialString(credentials, 'accessToken', 'Google Drive access token');
+  let renewed = false;
+  return async function withToken<T>(step: (accessToken: string) => Promise<T>): Promise<T> {
+    try {
+      return await step(token);
+    } catch (error) {
+      const refused = error instanceof DriveHttpError && error.status === 401;
+      if (!refused || renewed || !refreshAuth) throw error;
+      renewed = true;
+      const fresh = await refreshAuth(`Bearer ${token}`);
+      const next = fresh?.accessToken;
+      if (typeof next !== 'string' || next === '' || next === token) throw error;
+      token = next;
+      return step(token);
+    }
   };
 }
 
@@ -161,69 +195,70 @@ function putFrom(
 }
 
 export const googleDriveCore: CloudProviderCore = {
-  async downloadFile({ fileId, credentials, onProgress }): Promise<ArrayBuffer> {
-    const accessToken = requireCredentialString(
-      credentials,
-      'accessToken',
-      'Google Drive access token'
-    );
+  async downloadFile({ fileId, credentials, onProgress, refreshAuth }): Promise<ArrayBuffer> {
+    const withToken = renewingToken(credentials, refreshAuth);
     // A worker's bases come in its credentials (see cloudTestCredentials).
     const api = CLOUD_TEST_HOOKS
       ? credentialBase(credentials, 'driveApi', driveApiBase())
       : driveApiBase();
 
     // Each request retries rate limits (429, or a 403 naming one) and 5xx
-    // on its own; a full account or a real auth failure is not retried.
-    const sizeResponse = await withDriveRetry(async () => {
-      const response = await fetch(`${api}/drive/v3/files/${fileId}?fields=size`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`
+    // on its own; a full account or a real auth failure is not retried (an
+    // expired token is renewed once, `renewingToken`).
+    const sizeResponse = await withToken((accessToken) =>
+      withDriveRetry(async () => {
+        const response = await fetch(`${api}/drive/v3/files/${fileId}?fields=size`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`
+          }
+        });
+        if (!response.ok) {
+          throw driveRefusal(await driveHttpErrorFromResponse(response, 'Failed to get file size'));
         }
-      });
-      if (!response.ok) {
-        throw driveRefusal(await driveHttpErrorFromResponse(response, 'Failed to get file size'));
-      }
-      return response;
-    });
+        return response;
+      })
+    );
 
     const sizeData = await sizeResponse.json();
     const totalSize = parseInt(sizeData.size, 10);
 
     // A GET is idempotent: a rejected attempt is simply asked again.
-    return await withDriveRetry(
-      () =>
-        new Promise<ArrayBuffer>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('GET', `${api}/drive/v3/files/${fileId}?alt=media`);
-          xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
-          xhr.responseType = 'arraybuffer';
+    return await withToken((accessToken) =>
+      withDriveRetry(
+        () =>
+          new Promise<ArrayBuffer>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', `${api}/drive/v3/files/${fileId}?alt=media`);
+            xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+            xhr.responseType = 'arraybuffer';
 
-          xhr.onprogress = (event) => {
-            onProgress(event.loaded, totalSize);
-          };
+            xhr.onprogress = (event) => {
+              onProgress(event.loaded, totalSize);
+            };
 
-          xhr.onerror = () => reject(new Error('Network error during download'));
-          xhr.ontimeout = () => reject(new Error('Download timed out'));
-          xhr.onabort = () => reject(new Error('Download aborted'));
+            xhr.onerror = () => reject(new Error('Network error during download'));
+            xhr.ontimeout = () => reject(new Error('Download timed out'));
+            xhr.onabort = () => reject(new Error('Download aborted'));
 
-          xhr.onload = async () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              resolve(xhr.response as ArrayBuffer);
-            } else {
-              reject(
-                driveRefusal(
-                  await driveHttpErrorFromXhr(
-                    xhr,
-                    'HTTP error',
-                    `HTTP error ${xhr.status}: ${xhr.statusText}`
+            xhr.onload = async () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                resolve(xhr.response as ArrayBuffer);
+              } else {
+                reject(
+                  driveRefusal(
+                    await driveHttpErrorFromXhr(
+                      xhr,
+                      'HTTP error',
+                      `HTTP error ${xhr.status}: ${xhr.statusText}`
+                    )
                   )
-                )
-              );
-            }
-          };
+                );
+              }
+            };
 
-          xhr.send();
-        })
+            xhr.send();
+          })
+      )
     );
   },
 
@@ -234,13 +269,12 @@ export const googleDriveCore: CloudProviderCore = {
     mimeType,
     existingFileId,
     onProgress,
-    onRetry
+    onRetry,
+    refreshAuth
   }): Promise<UploadFileResult> {
-    const accessToken = requireCredentialString(
-      credentials,
-      'accessToken',
-      'Google Drive access token'
-    );
+    // Only the session init carries the token: the session URI it returns is
+    // pre-authorized for the status queries and PUTs.
+    const withToken = renewingToken(credentials, refreshAuth);
     const seriesFolderId = requireCredentialString(
       credentials,
       'seriesFolderId',
@@ -286,7 +320,9 @@ export const googleDriveCore: CloudProviderCore = {
           else offset = state.offset;
         }
         if (!sessionUri) {
-          sessionUri = await openSession(uploadBase, existingFileId, accessToken, metadata);
+          sessionUri = await withToken((accessToken) =>
+            openSession(uploadBase, existingFileId, accessToken, metadata)
+          );
           offset = 0;
         }
         return await putFrom(sessionUri, blob, offset, uploadMimeType, onProgress);

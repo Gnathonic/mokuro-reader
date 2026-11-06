@@ -1,11 +1,11 @@
 /**
  * `driveApiClient.initialize()` no longer waits for a `<script>` in app.html:
- * it joins (or starts) the on-demand load of the Google scripts, then runs
- * gapi's loader as before.
+ * it joins (or starts) the on-demand load of gapi — gapi's alone, so a GIS
+ * failure never fails the Drive client — then runs gapi's loader as before.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./google-scripts', () => ({ loadGoogleScripts: vi.fn() }));
+vi.mock('./google-scripts', () => ({ loadGapiScript: vi.fn() }));
 vi.mock('./token-manager', () => ({
   tokenManager: {
     isAuthenticated: vi.fn(() => true),
@@ -22,7 +22,7 @@ vi.mock('$lib/settings/misc', async () => {
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 
 import { driveApiClient } from './api-client';
-import { loadGoogleScripts } from './google-scripts';
+import { loadGapiScript } from './google-scripts';
 import { tokenManager } from './token-manager';
 
 /** What api.js puts on the page: `gapi.load` and, once loaded, `gapi.client`. */
@@ -34,20 +34,20 @@ function fakeGapi() {
 
 afterEach(() => {
   delete (globalThis as { gapi?: unknown }).gapi;
-  vi.mocked(loadGoogleScripts).mockReset();
+  vi.mocked(loadGapiScript).mockReset();
 });
 
 describe('driveApiClient.initialize', () => {
   it('loads the Google scripts on demand when gapi is not on the page yet', async () => {
     const { gapi, load, init } = fakeGapi();
     // The injected script runs: gapi appears.
-    vi.mocked(loadGoogleScripts).mockImplementation(async () => {
+    vi.mocked(loadGapiScript).mockImplementation(async () => {
       (globalThis as { gapi?: unknown }).gapi = gapi;
     });
 
     await driveApiClient.initialize();
 
-    expect(loadGoogleScripts).toHaveBeenCalledTimes(1);
+    expect(loadGapiScript).toHaveBeenCalledTimes(1);
     expect(load).toHaveBeenCalledWith('client:picker', expect.any(Function));
     expect(init).toHaveBeenCalled();
     expect(tokenManager.initTokenClient).toHaveBeenCalled();
@@ -57,7 +57,7 @@ describe('driveApiClient.initialize', () => {
     // A fresh client: the one above is initialized.
     vi.resetModules();
     const { driveApiClient: fresh } = await import('./api-client');
-    const { loadGoogleScripts: load } = await import('./google-scripts');
+    const { loadGapiScript: load } = await import('./google-scripts');
     vi.mocked(load).mockRejectedValue(
       new Error('Failed to load https://apis.google.com/js/api.js')
     );

@@ -125,13 +125,13 @@ src/
 
 Located in `src/lib/util/sync/`, the app supports multiple cloud storage providers:
 
-| Provider     | Auth Method                     | Status                |
-| ------------ | ------------------------------- | --------------------- |
-| Google Drive | OAuth2 implicit flow            | Full support          |
-| MEGA         | Email/password (+ optional 2FA) | Full support          |
-| WebDAV       | URL + credentials               | Full support          |
-| OneDrive     | MSAL (OAuth2 auth code + PKCE)  | Full support          |
-| Local Folder | Directory picker (no account)   | Desktop Chromium only |
+| Provider     | Auth Method                                                        | Status                |
+| ------------ | ------------------------------------------------------------------ | --------------------- |
+| Google Drive | OAuth2 implicit flow, or auth code + PKCE through the auth backend | Full support          |
+| MEGA         | Email/password (+ optional 2FA)                                    | Full support          |
+| WebDAV       | URL + credentials                                                  | Full support          |
+| OneDrive     | MSAL (OAuth2 auth code + PKCE)                                     | Full support          |
+| Local Folder | Directory picker (no account)                                      | Desktop Chromium only |
 
 **Architecture:**
 
@@ -142,7 +142,16 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 
 **Google Drive specifics** (`providers/google-drive/`):
 
-- Uses OAuth2 implicit flow (access tokens only, ~1 hour expiry)
+- Uses OAuth2 implicit flow (access tokens only, ~1 hour expiry) — unless the build sets
+  `VITE_GDRIVE_AUTH_BACKEND=true`: then ONE sign-in (PKCE, full-page redirect to the static
+  `static/oauth/google-callback.html`) and silent renewals through
+  `src/routes/api/gdrive/{session,refresh,logout}` (server logic in `src/lib/server/gdrive-auth/`;
+  the refresh token lives sealed in an HttpOnly cookie, optionally bound to a device key). Read
+  tokens through `tokenManager.getAccessToken(minValidityMs)`, never the store or localStorage;
+  only `tokenManager.reconnect()` (a user's click) may start a sign-in; `getTimeUntilExpiry()`
+  is null while the session can renew. A flag-set build whose server cannot serve the routes
+  falls back to the implicit flow for that tab. Full design, env vars, error vocabulary and
+  runbook: `docs/gdrive-auth-backend.md`.
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
@@ -1886,6 +1895,26 @@ must not break. Highlights:
   hit-testing), `e2e/line-grid.spec.ts` (grid, rotation, hit-testing, turned cells, editing
   a tilted line), `e2e/char-offsets.spec.ts` (original mode, viewer and editor).
 
+### Images are raster only
+
+SVG is an unsupported format. Every page, cover and thumbnail ends up behind a
+`blob:` URL on the app's origin, served with the Blob's own `type`, so an
+`image/svg+xml` or `text/html` Blob (or an untyped one the browser sniffs as
+HTML) runs its script as the app when the user picks "Open image in new tab".
+`src/lib/util/raster-image.ts` is the rule: a stored image's type comes ONLY
+from its magic bytes (`toRasterImageFile`, `sniffRasterImageType`), for the
+formats in `IMAGE_MIME_TYPES` — never from a remote `Content-Type` or a file
+extension — and anything else is refused, never stored. `processVolume` types
+every page and the thumbnail sidecar that way (non-raster pages become missing
+pages); deep-link covers and cloud covers go through the same call. On the
+way out, thumbnail/cover surfaces and the Anki `{cover}` field go through
+`displayableCoverBlob` (a raster-typed Blob as is, an untyped one — older
+archive imports stored thumbnail sidecars untyped — under a raster label, any
+explicit non-raster type never), page object URLs are minted from a
+raster-labelled view (`displayableImageBlob`, for pages stored untyped by older
+builds), and `processThumbnails` re-types or drops any stored thumbnail whose
+type is not raster.
+
 ### Cloud covers
 
 `requestCover(vol)` (`src/lib/catalog/cover-service.ts`) is the only way anything obtains a
@@ -1931,6 +1960,11 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 ```
 
 - `VITE_GDRIVE_*`: required only for Google Drive sync.
+- `VITE_GDRIVE_AUTH_BACKEND=true` + the server-only `GDRIVE_CLIENT_SECRET`,
+  `GDRIVE_SESSION_KEY` (`openssl rand -base64 32`), optional `GDRIVE_SESSION_KEY_PREV`,
+  `GDRIVE_CLIENT_ID` (falls back to `VITE_GDRIVE_CLIENT_ID`) and `GDRIVE_POP=off`: the Drive
+  auth backend (`docs/gdrive-auth-backend.md`). Secrets never take a `VITE_`/`PUBLIC_` prefix;
+  `npm run build` fails if one set in its env shows up in the output.
 - `VITE_ONEDRIVE_CLIENT_ID`: required only for OneDrive sync. Register an
   Azure AD app (any Microsoft account tenant, "common" authority) and add the
   deploy origin as a **Single-page application** redirect URI. Scopes used:
@@ -1986,7 +2020,13 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
 - **The Google scripts** (gapi, GIS) load on demand (`google-scripts.ts`): when
   Drive is the active provider at boot, and when the cloud page mounts —
   never first inside the Connect click (the GIS popup needs its activation).
-- `e2e/csp.spec.ts` builds each mode (own `SVELTEKIT_OUT_DIR`), re-applies
+  Each waiter waits for its own script only (`loadGapiScript` for the Drive
+  client and Picker, `loadGisScript` for the token client): with the auth
+  backend GIS is just the popup fallback, and a blocked GIS must not take the
+  Drive client down. The backend's sign-in (a full-page `location.assign` to
+  Google) and renewals (`fetch('/api/gdrive/…')`, `connect-src 'self'`) need
+  no Google script and nothing beyond the shell policy.
+- `e2e/csp.spec.ts` builds each mode (own `MOKURO_E2E_KIT_OUT_DIR`), re-applies
   `vercel.json`'s headers, and requires zero app violations through boot,
   import, reader, OCR text, settings, night mode and the cloud page.
 

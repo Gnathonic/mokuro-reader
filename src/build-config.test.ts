@@ -15,8 +15,10 @@ const lock = JSON.parse(lockText);
 const devDependencies: Record<string, string | undefined> = pkg.devDependencies;
 
 describe('production build', () => {
-  it('fails when a cloud test hook reaches the bundle', () => {
-    expect(pkg.scripts.build).toBe('vite build && node scripts/check-no-test-hooks.mjs');
+  it('fails when a cloud test hook or a server secret reaches the bundle', () => {
+    expect(pkg.scripts.build).toBe(
+      'vite build && node scripts/check-no-test-hooks.mjs && node scripts/check-no-server-secrets.mjs'
+    );
   });
 
   it('uses the lockfile-pinned Vercel adapter, never adapter-auto', () => {
@@ -35,8 +37,48 @@ describe('production build', () => {
   it('builds on Node 24 and installs from the lockfile on Vercel', () => {
     expect(pkg.engines).toEqual({ node: '24.x' });
     expect(vercel.installCommand).toBe('npm ci');
-    // Beside it only the response headers, pinned in src/lib/security/vercel-headers.test.ts.
+    // Beside it only the response headers, pinned below (the Drive auth
+    // paths) and, as a whole rule set, in src/lib/security/vercel-headers.test.ts.
     expect(Object.keys(vercel).sort()).toEqual(['headers', 'installCommand']);
+  });
+
+  it('moves kit.outDir only for the e2e specs, under one variable', () => {
+    // e2e/csp.spec.ts and e2e/gdrive-auth-backend.spec.ts each build or serve a
+    // second app in this tree; both name the same override.
+    expect(svelteConfig.match(/process\.env\.[A-Z0-9_]*OUT_DIR/g) ?? []).toEqual([
+      'process.env.MOKURO_E2E_KIT_OUT_DIR',
+      'process.env.MOKURO_E2E_KIT_OUT_DIR'
+    ]);
+  });
+});
+
+describe('Drive auth headers (vercel.json)', () => {
+  const headersFor = (source: string) =>
+    Object.fromEntries(
+      (vercel.headers.find((h) => h.source === source)?.headers ?? []).map((h) => [h.key, h.value])
+    );
+
+  it('the OAuth callback page: never cached, never a Referer, never indexed', () => {
+    // Its URL carries the authorization code until its script drops it.
+    expect(headersFor('/oauth/(.*)')).toEqual({
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
+      'X-Robots-Tag': 'noindex'
+    });
+  });
+
+  it('the auth API: never cached, never a Referer, nothing to render or frame', () => {
+    expect(headersFor('/api/(.*)')).toEqual({
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'"
+    });
+  });
+
+  it('keeps each in its own entry (a page-wide CSP is added separately)', () => {
+    expect(vercel.headers.map((h) => h.source)).toEqual(
+      expect.arrayContaining(['/oauth/(.*)', '/api/(.*)'])
+    );
   });
 });
 

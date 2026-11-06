@@ -21,6 +21,22 @@
           "value": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob: data:; object-src 'none'"
         }
       ]
+    },
+    {
+      "source": "/oauth/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "X-Robots-Tag", "value": "noindex" }
+      ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "Content-Security-Policy", "value": "default-src 'none'; frame-ancestors 'none'" }
+      ]
     }
   ]
 }

@@ -14,8 +14,14 @@
  * NEVER first from the Connect click handler. The GIS popup must open inside
  * the click's user activation; a click that first waits for two script
  * downloads has used it up, and Safari (and popup blockers generally) then
- * refuse the popup. `driveApiClient.initialize()` still calls `loadGoogleScripts`
- * — by then it only returns the load already in flight or done.
+ * refuse the popup. `driveApiClient.initialize()` still waits for gapi
+ * (`loadGapiScript`) and `tokenManager.initTokenClient()` for GIS
+ * (`loadGisScript`) — by then each only joins the load already in flight or done.
+ *
+ * Each waiter waits for ITS script alone. With the Drive auth backend
+ * (`auth-backend.ts`) GIS is only the popup fallback: Drive's client must still
+ * come up when GIS is blocked or fails, as it did when both were tags in
+ * `app.html` — a combined wait would fail the Drive client on GIS's error.
  *
  * The Content-Security-Policy cannot vary per visit, so it allows these exact
  * paths either way (`src/lib/security/csp-policy.js`). No Subresource Integrity:
@@ -65,10 +71,22 @@ export function loadGoogleScripts(): Promise<void> {
   return Promise.all(GOOGLE_SCRIPT_URLS.map(loadScript)).then(() => undefined);
 }
 
+/** gapi alone (the Drive client and the Picker): settles with ITS load, whatever GIS does. */
+export function loadGapiScript(): Promise<void> {
+  if (typeof document === 'undefined') return Promise.resolve();
+  return loadScript(GAPI_SCRIPT_URL);
+}
+
+/** GIS alone (the OAuth token client; with the auth backend, only the popup fallback). */
+export function loadGisScript(): Promise<void> {
+  if (typeof document === 'undefined') return Promise.resolve();
+  return loadScript(GIS_SCRIPT_URL);
+}
+
 /**
  * Start loading the scripts and do not wait: for the moments BEFORE a Drive
  * action, so the action itself finds them ready. A failure here is only logged;
- * the action that needs the scripts reports it (`loadGoogleScripts` retries).
+ * the action that needs the scripts reports it (each loader retries a failure).
  */
 export function preloadGoogleScripts(): void {
   loadGoogleScripts().catch((error) => {

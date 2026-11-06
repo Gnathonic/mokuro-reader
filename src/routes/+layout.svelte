@@ -4,6 +4,7 @@
   import '$lib/styles/night-mode.css';
   import { browser, dev } from '$app/environment';
   import { inject } from '@vercel/analytics';
+  import { scrubAnalyticsEvent } from '$lib/util/analytics-scrub';
   import { onMount } from 'svelte';
   import NavBar from '$lib/components/NavBar.svelte';
   import Snackbar from '$lib/components/Snackbar.svelte';
@@ -69,7 +70,9 @@
 
   let { children }: Props = $props();
 
-  inject({ mode: dev ? 'development' : 'production' });
+  // Page views go out without sign-in secrets in their URL (OAuth codes,
+  // AniList's `#access_token=` landing).
+  inject({ mode: dev ? 'development' : 'production', beforeSend: scrubAnalyticsEvent });
 
   onMount(() => {
     const stopForeground = foregroundSync.listen();

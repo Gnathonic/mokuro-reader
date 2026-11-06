@@ -1,4 +1,5 @@
 import type { ImportNames } from './image-only-naming';
+import type { LinkSeriesGuard } from './series-file-import';
 /**
  * Types for the unified import system
  *
@@ -81,6 +82,12 @@ export interface PairedSource {
    * every later review of the same import (#285).
    */
   batch?: number;
+  /**
+   * The guard a `series.json` found INSIDE this source is collected with
+   * (`PendingSeriesFile.linkGuard`): set on a deep-linked archive, whose
+   * contents someone else chose. Archives found inside it inherit it.
+   */
+  seriesGuard?: LinkSeriesGuard;
 }
 
 export interface ArchiveReview {

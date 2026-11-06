@@ -292,6 +292,22 @@ describe('VolumeItem list row resolves its own cloud cover', () => {
     expect(_heldCoverCountForTests()).toBe(0);
   });
 
+  // Earlier builds stored archive thumbnail sidecars untyped. Until
+  // `processThumbnails` re-types them, the row shows them under an inert
+  // raster label instead of the "Cover" box.
+  it("shows the row's untyped thumbnail under a raster label", async () => {
+    const rowCover = new File([new Uint8Array([7, 7])], 'row.jpg');
+    const { container } = render(VolumeItem, {
+      props: { volume: cloudVolume({ thumbnail: rowCover }), variant: 'list' }
+    });
+    await settle();
+
+    expect(coverBox(container)).not.toBeNull();
+    const shown = vi.mocked(globalThis.URL.createObjectURL).mock.calls[0][0] as Blob;
+    expect(shown.type).toBe('image/jpeg');
+    expect(shown.size).toBe(rowCover.size);
+  });
+
   it('releases its claim on unmount', async () => {
     await putCloudCovers([cachedCover()]);
 
