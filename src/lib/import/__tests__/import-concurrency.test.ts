@@ -701,8 +701,11 @@ describe('a deep link’s series.json and the imports around it (TOCTOU)', () =>
     await waitForQueue();
 
     expect(await titles()).toEqual(['Deep 01', 'Deep 02']);
-    expect(await facts('Deep')).toEqual({ anilist: 4242 });
-    expect(await db.series_index.get('deep')).toBeDefined();
+    // The queue reports idle (`isImporting` false) BEFORE its finally applies
+    // the batch's series.json (facts, then the cached index), so both are
+    // waited for rather than read the moment the queue went idle.
+    await vi.waitFor(async () => expect(await facts('Deep')).toEqual({ anilist: 4242 }));
+    await vi.waitFor(async () => expect(await db.series_index.get('deep')).toBeDefined());
   });
 
   it('applies a link’s file in a lone confirmed import', async () => {
