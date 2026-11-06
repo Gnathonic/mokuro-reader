@@ -78,12 +78,15 @@ test('a slow check opens the local page, then moves before any page turn', async
   const { phone, laptop } = await bothAtForty(browser, stub);
   await phoneReadsOn(phone, stub, [41, 42, 43, 44]);
 
-  stub.delays.set(POSITIONS, 2500);
+  // The answer is held far longer than an open takes, even under parallel
+  // workers: an open that waited for it could not show a page before it.
+  const SLOW = 6000;
+  stub.delays.set(POSITIONS, SLOW);
   const opened = Date.now();
   await openVolume(laptop);
   // The reader does not wait for the slow answer: the local page first…
   await expect(counter(laptop, 40)).toBeVisible({ timeout: 20000 });
-  expect(Date.now() - opened).toBeLessThan(2500);
+  expect(Date.now() - opened).toBeLessThan(SLOW);
   // …then the late answer moves it, since no page was turned here.
   await expect(counter(laptop, 44)).toBeVisible({ timeout: 10000 });
   await expect(laptop.getByText(/Continued from .+, p\.44/)).toBeVisible();
