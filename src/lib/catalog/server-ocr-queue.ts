@@ -874,21 +874,22 @@ const LINK_WATCH_SOURCE = 'html-download';
  * Watch keys are not scoped to a queue, and a poller reports any key it is
  * merely SHOWN as done: another link's anonymous poller can report this
  * watch. Read from the CALLER, the allowlist would then name that other
- * server and the pull would apply its OCR to this watch's volume. So a link's
- * watch reported by any queue but its own is refused (`'not-its-queue'`; the
- * watch stays, its own poller pulls it), and otherwise allows the WATCH's
- * origins. Without a watch, the anonymous poller (which exists because a
- * link was confirmed) stays on its own server. A watch that is not a link's
- * — the bunko account's uploads, also when they landed on an anonymous
- * poller a link created first (pollers are keyed by queue URL alone) — reads
- * as it always has.
+ * server and the pull would apply its OCR to this watch's volume. So ANY
+ * watch — a link's, an upload's — reported by a queue but its own is refused
+ * (`'not-its-queue'`; the watch stays, and its own poller, which
+ * watchServerOcr and startup always create, pulls it). On its own queue a
+ * link's watch allows only the WATCH's origins. Without a watch, the
+ * anonymous poller (which exists because a link was confirmed) stays on its
+ * own server. A watch that is not a link's — the bunko account's uploads,
+ * also when they landed on an anonymous poller a link created first (pollers
+ * are keyed by queue URL alone) — reads its own queue as it always has.
  */
 function linkPullOrigins(
   watched: WatchEntry | undefined,
   target: Pick<PullTarget, 'queueUrl' | 'auth'>
 ): readonly string[] | 'not-its-queue' | null {
+  if (watched && watched.queue_url !== target.queueUrl) return 'not-its-queue';
   if (watched?.source === LINK_WATCH_SOURCE) {
-    if (watched.queue_url !== target.queueUrl) return 'not-its-queue';
     return [watched.manifest_url, watched.queue_url].filter((u) => !!u);
   }
   if (!watched && (target.auth ?? 'none') === 'none') return [target.queueUrl];
@@ -1019,6 +1020,7 @@ export function pullCompletedVolume(
   }
   const inFlight = pulling.get(key);
   if (inFlight) return inFlight;
+  let finished = false;
   const run = (async () => {
     try {
       const watched = loadWatches().get(key);
@@ -1077,10 +1079,14 @@ export function pullCompletedVolume(
       console.warn('[OCR queue] Pull failed; it is retried on the next look:', error);
       return false;
     } finally {
+      finished = true;
       pulling.delete(key);
     }
   })();
-  pulling.set(key, run);
+  // A body that returns before its first await has already run its `finally`
+  // here: registering it now would leave a settled promise answering every
+  // later pull of the key.
+  if (!finished) pulling.set(key, run);
   return run;
 }
 

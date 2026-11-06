@@ -826,6 +826,32 @@ describe("a link's watch stays on the servers the link named", () => {
     expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith('v1', cdnOcr, expect.any(Blob));
   });
 
+  it("another queue's poller reporting an UPLOAD watch reads nothing and leaves the watch", async () => {
+    // The user's own upload waits on their bunko queue; a link to another
+    // server lists the same (series, volume) as done while its card is shown.
+    routes.set(OTHER_MANIFEST, { body: manifestListing(OTHER_OCR, []) });
+    routes.set(OTHER_OCR, { body: '{"pages":[]}' });
+    watchLink('webdav', 'webdav');
+    const otherTarget = { ...linkTarget, queueUrl: OTHER_QUEUE };
+    expect(
+      await pullCompletedVolume(KEY1, { ...entry, manifest: OTHER_MANIFEST }, otherTarget)
+    ).toBe(false);
+    expect(fetchedUrls()).toEqual([]);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    expect(watchedEntries().map((w) => w.queue_url)).toEqual([QUEUE]);
+  });
+
+  it('a pull that ends before its first await does not wedge later pulls of the key', async () => {
+    // No entry and no watch: the pull has nothing to go on and ends at once.
+    expect(await pullCompletedVolume(KEY1, undefined, linkTarget)).toBe(false);
+    const ocr = 'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro';
+    routes.set(MANIFEST, { body: manifestListing(ocr, []) });
+    routes.set(ocr, { body: '{"pages":[]}' });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(true);
+    expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith('v1', ocr, expect.any(Blob));
+  });
+
   it('an anonymous poller never reads an unwatched shown volume off its own server', async () => {
     routes.set(OTHER_MANIFEST, { body: manifestListing(OTHER_OCR, []) });
     routes.set(OTHER_OCR, { body: '{"pages":[]}' });
