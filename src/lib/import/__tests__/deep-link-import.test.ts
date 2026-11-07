@@ -29,7 +29,6 @@ vi.mock('$lib/util/progress-tracker', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 vi.mock('$lib/util/modals', () => ({
-  promptImageOnlyImport: (_a: unknown, _b: unknown, onConfirm: () => void) => onConfirm(),
   promptMissingFiles: (_info: unknown, onContinue: () => void) => onContinue()
 }));
 const scheduleSeriesFileWrite = vi.hoisted(() => vi.fn());
@@ -61,11 +60,12 @@ vi.mock('$lib/catalog/server-ocr-queue', async (importOriginal) => {
 import { db } from '$lib/catalog/db';
 import { clearAllLayers, getLayerWithPages } from '$lib/catalog/layer-store';
 import { installedUuids } from '../cover-sidecar';
-import { importDeepLinkedArchive } from '../deep-link-import';
+import { importDeepLinkedArchive, localSeriesKeys } from '../deep-link-import';
 import type { HtmlDownloadResult } from '../html-download-provider';
 import { parseImportedSeriesFile, resetImportedSeriesFiles } from '../series-file-import';
 import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
 import type { Page, VolumeMetadata } from '$lib/types';
+import { installReviewer, type Reviewer } from './helpers/review-bridge';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.
 if (typeof Blob !== 'undefined' && !Blob.prototype.stream) {
@@ -108,6 +108,20 @@ async function imagesOnlyCbz(): Promise<File> {
     extendedTimestamp: false
   });
   await zipWriter.add('001.jpg', new Uint8ArrayReader(new Uint8Array([1, 2, 3])));
+  const bytes = await zipWriter.close();
+  return new File([bytes], 'Dr Stone 01.cbz', { type: 'application/zip' });
+}
+
+/** A deep-linked archive holding whatever entries the test names. */
+async function cbzWith(entries: Record<string, string | Uint8Array>): Promise<File> {
+  const zipWriter = new ZipWriter(new Uint8ArrayWriter(), {
+    bufferedWrite: false,
+    extendedTimestamp: false
+  });
+  for (const [name, body] of Object.entries(entries)) {
+    const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
+    await zipWriter.add(name, new Uint8ArrayReader(bytes));
+  }
   const bytes = await zipWriter.close();
   return new File([bytes], 'Dr Stone 01.cbz', { type: 'application/zip' });
 }
@@ -168,7 +182,10 @@ async function downloaded(
   };
 }
 
+let reviewer: Reviewer;
+
 beforeEach(async () => {
+  reviewer = installReviewer();
   resetImportedSeriesFiles();
   scheduleSeriesFileWrite.mockReset();
   watchServerOcr.mockReset();
@@ -184,6 +201,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  reviewer.restore();
   vi.restoreAllMocks();
   resetImportedSeriesFiles();
 });
@@ -336,5 +354,213 @@ describe('importDeepLinkedArchive', () => {
       new Set()
     );
     expect(watchServerOcr).not.toHaveBeenCalled();
+  });
+
+  describe('a link’s series.json and a series already in the library', () => {
+    const seriesFile = () =>
+      parseImportedSeriesFile(
+        'https://bunko.example/mokuro-reader/Dr%20Stone/series.json',
+        seriesJson(),
+        100,
+        Date.parse('2026-09-27T01:02:07Z')
+      )!;
+
+    /** Another volume of the series, its pages removed from this device. */
+    async function seedExistingSeries() {
+      await db.volumes.put({
+        ...volume,
+        volume_uuid: 'volume-uuid-02',
+        volume_title: 'Dr Stone 02',
+        metadata_only: true
+      });
+    }
+
+    it('leaves the series alone — facts, cached index and cloud write — unless the user allowed it', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      await seedExistingSeries();
+
+      await importDeepLinkedArchive(
+        await downloaded({ seriesFile: seriesFile() }),
+        'Dr Stone 01',
+        new Set()
+      );
+
+      // The volume itself still imports, into that series.
+      expect((await db.volumes.get('volume-uuid-01'))?.series_title).toBe('Dr Stone');
+      expect(await db.series_metadata.get('dr stone')).toBeUndefined();
+      expect(await db.series_index.get('dr stone')).toBeUndefined();
+      expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+      expect(info.mock.calls.flat().join(' ')).toContain('already in the library');
+    });
+
+    it('applies it to that series when the user ticked the box for it', async () => {
+      await seedExistingSeries();
+
+      await importDeepLinkedArchive(
+        await downloaded({ seriesFile: seriesFile() }),
+        'Dr Stone 01',
+        new Set(),
+        { allowSeriesKey: 'dr stone' }
+      );
+
+      expect((await db.series_metadata.get('dr stone'))?.external_ids).toEqual({ anilist: 98416 });
+      expect(await db.series_index.get('dr stone')).toBeDefined();
+    });
+
+    it('a series known only by its metadata record is just as protected', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => {});
+      await db.series_metadata.put({
+        series_key: 'dr stone',
+        series_title: 'Dr Stone',
+        external_ids: { anilist: 1 },
+        facts_updated_at: '2020-01-01T00:00:00.000Z'
+      } as never);
+
+      await importDeepLinkedArchive(
+        await downloaded({ seriesFile: seriesFile() }),
+        'Dr Stone 01',
+        new Set()
+      );
+
+      expect((await db.series_metadata.get('dr stone'))?.external_ids).toEqual({ anilist: 1 });
+    });
+
+    // The archive itself carries the series.json — this app's own exports put
+    // one at the root of every archive, so a bunko-served .cbz usually has it.
+    // Two routes through the importer: the OCR beside the archive (a manifest's,
+    // or the legacy guessed sidecar), and the OCR inside it.
+    const embeddedCases = [
+      {
+        name: 'beside the archive',
+        make: async () => ({
+          archiveFile: await cbzWith({
+            '001.jpg': new Uint8Array([1, 2, 3]),
+            'series.json': seriesJson()
+          }),
+          mokuroFile: mokuroFile()
+        })
+      },
+      {
+        name: 'inside the archive',
+        make: async () => ({
+          archiveFile: await cbzWith({
+            'Dr Stone 01.mokuro': JSON.stringify(buildMokuroMetadata(volume, [page('あい')])),
+            'Dr Stone 01/001.jpg': new Uint8Array([1, 2, 3]),
+            'series.json': seriesJson()
+          }),
+          mokuroFile: null
+        })
+      }
+    ];
+
+    for (const { name, make } of embeddedCases) {
+      describe(`a series.json packed inside the linked archive (OCR ${name})`, () => {
+        async function importIt(options = {}) {
+          const { archiveFile, mokuroFile: mokuro } = await make();
+          await importDeepLinkedArchive(
+            await downloaded({
+              archiveFile,
+              mokuroFile: mokuro,
+              importFiles: mokuro ? [archiveFile, mokuro] : [archiveFile]
+            }),
+            'Dr Stone 01',
+            new Set(),
+            options
+          );
+        }
+
+        it('never reaches a series already in the library', async () => {
+          const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+          await seedExistingSeries();
+
+          await importIt();
+
+          expect((await db.volumes.get('volume-uuid-01'))?.series_title).toBe('Dr Stone');
+          expect(await db.series_metadata.get('dr stone')).toBeUndefined();
+          expect(await db.series_index.get('dr stone')).toBeUndefined();
+          expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+          expect(info.mock.calls.flat().join(' ')).toContain('already in the library');
+        });
+
+        it('applies to a series the link brings new', async () => {
+          await importIt();
+          expect((await db.series_metadata.get('dr stone'))?.external_ids).toEqual({
+            anilist: 98416
+          });
+        });
+
+        it('applies to the existing series once the user allowed it', async () => {
+          await seedExistingSeries();
+          await importIt({ allowSeriesKey: 'dr stone' });
+          expect((await db.series_metadata.get('dr stone'))?.external_ids).toEqual({
+            anilist: 98416
+          });
+        });
+      });
+    }
+
+    it('protects a series the library spells composed (NFC) from a link spelling it decomposed', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => {});
+      const composed = 'Pokémon'.normalize('NFC');
+      const decomposed = 'Pokémon'.normalize('NFD');
+      await db.volumes.put({
+        ...volume,
+        series_title: composed,
+        volume_uuid: 'volume-uuid-02',
+        volume_title: 'Pokémon 02',
+        metadata_only: true
+      });
+      const linked = { ...volume, series_title: decomposed, volume_title: 'Pokémon 01' };
+      const file = parseImportedSeriesFile(
+        'https://bunko.example/x/series.json',
+        JSON.stringify({ ...JSON.parse(seriesJson()), series_title: decomposed }),
+        100,
+        Date.parse('2026-09-27T01:02:07Z')
+      )!;
+      const mokuro = new File(
+        [JSON.stringify(buildMokuroMetadata(linked, [page('あい')]))],
+        'Pokémon 01.mokuro',
+        { type: 'application/json' }
+      );
+
+      await importDeepLinkedArchive(
+        await downloaded({ seriesFile: file, mokuroFile: mokuro }),
+        'Pokémon 01',
+        new Set()
+      );
+
+      expect(await db.volumes.get('volume-uuid-01')).toBeDefined();
+      expect(await db.series_metadata.count()).toBe(0);
+      expect(await db.series_index.count()).toBe(0);
+      expect(scheduleSeriesFileWrite).not.toHaveBeenCalled();
+    });
+
+    it('allowing one series does not open up another', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => {});
+      await seedExistingSeries();
+
+      await importDeepLinkedArchive(
+        await downloaded({ seriesFile: seriesFile() }),
+        'Dr Stone 01',
+        new Set(),
+        { allowSeriesKey: 'one piece' }
+      );
+
+      expect(await db.series_metadata.get('dr stone')).toBeUndefined();
+    });
+  });
+});
+
+describe('localSeriesKeys', () => {
+  it('folds every series the library knows: rows, metadata records and cached indexes', async () => {
+    await db.volumes.put({ ...volume, series_title: '  Dr   STONE ' });
+    await db.series_metadata.put({ series_key: 'one piece', series_title: 'One Piece' } as never);
+    await db.series_index.put({ series_key: 'bleach', series_title: 'Bleach' } as never);
+    expect([...(await localSeriesKeys())].sort()).toEqual(['bleach', 'dr stone', 'one piece']);
+  });
+
+  it('folds unicode composition too, so NFD and NFC spellings are one series', async () => {
+    await db.volumes.put({ ...volume, series_title: 'Pokémon'.normalize('NFD') });
+    expect([...(await localSeriesKeys())]).toEqual(['pokémon'.normalize('NFC')]);
   });
 });

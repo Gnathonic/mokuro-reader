@@ -6,6 +6,7 @@
 import type { WebDAVClient } from 'webdav';
 import type { ServerOcrQueued } from '$lib/util/sync/provider-interface';
 import { resolveBunkoLink } from '$lib/util/bunko-links';
+import { RETRY_AFTER_MAX_RETRIES, retryAfterDelayMs } from './webdav-retry-after';
 
 /** What one PUT established. */
 export interface WebdavPutResult {
@@ -26,6 +27,19 @@ export interface WebdavPutResult {
    * names, `sha-256`): the bytes it stored are the bytes we sent, end to end.
    */
   digestVerified?: string;
+  /**
+   * The PUT response's `ETag`, quotes stripped the way the `webdav` library
+   * strips a PROPFIND's `getetag` — so it compares equal to the next stat's.
+   * Absent when the server sent none or CORS does not expose it.
+   */
+  etag?: string;
+}
+
+/** An `ETag` header value in the form the `webdav` library reports `getetag`. */
+export function normalizeEtag(value: string | null | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const etag = value.trim().replace(/"/g, '');
+  return etag || undefined;
 }
 
 function base64OfBytes(bytes: Uint8Array): string {
@@ -74,10 +88,18 @@ export class WebdavUploadError extends Error {
   /** One human sentence: the server's, or ours. */
   readonly detail: string;
   readonly retryable: boolean;
+  /** A 503's short `Retry-After`, in ms (`retryAfterDelayMs`): the server did not apply the PUT. */
+  readonly retryAfterMs?: number;
 
   constructor(
     message: string,
-    info: { status?: number; reason: string; detail: string; retryable: boolean }
+    info: {
+      status?: number;
+      reason: string;
+      detail: string;
+      retryable: boolean;
+      retryAfterMs?: number;
+    }
   ) {
     super(message);
     this.name = 'WebdavUploadError';
@@ -85,11 +107,17 @@ export class WebdavUploadError extends Error {
     this.reason = info.reason;
     this.detail = info.detail;
     this.retryable = info.retryable;
+    if (info.retryAfterMs !== undefined) this.retryAfterMs = info.retryAfterMs;
   }
 }
 
 /** A failed response: the server's JSON verdict when there is one, else the status decides. */
-function failureFromResponse(status: number, statusText: string, body: string): WebdavUploadError {
+function failureFromResponse(
+  status: number,
+  statusText: string,
+  body: string,
+  retryAfter: string | null
+): WebdavUploadError {
   let verdict: { reason?: unknown; detail?: unknown; retry?: unknown } = {};
   try {
     const parsed = JSON.parse(body) as unknown;
@@ -120,11 +148,13 @@ function failureFromResponse(status: number, statusText: string, body: string): 
       : serverDetail || `${status} ${statusText}`.trim();
   const suffix =
     typeof verdict.reason === 'string' ? ` (${reason}: ${serverDetail || detail})` : '';
+  const retryAfterMs = retryAfterDelayMs(status, retryAfter);
   return new WebdavUploadError(`WebDAV upload failed: ${status} ${statusText}`.trim() + suffix, {
     status,
     reason,
     detail,
-    retryable
+    retryable,
+    ...(retryAfterMs !== null ? { retryAfterMs } : {})
   });
 }
 
@@ -190,8 +220,9 @@ export interface UploadRetryInfo {
 /**
  * Run `attempt` until it settles, retrying only a `WebdavUploadError` that is
  * `retryable` (network, timeout, 5xx but 507, a server `retry: true`, a size
- * mismatch), with backoff. Anything else — a refusal the server means, or an
- * error nobody classified — rejects at once. The last error is the one thrown.
+ * mismatch), with backoff — or, for a 503 that named a short wait, after that
+ * wait instead of the step's (at most `RETRY_AFTER_MAX_RETRIES` times). Anything else — a refusal the server means, or
+ * an error nobody classified — rejects at once. The last error is the one thrown.
  */
 export async function uploadWithRetry<T>(
   attempt: () => Promise<T>,
@@ -204,6 +235,7 @@ export async function uploadWithRetry<T>(
   const delays = options.delaysMs ?? UPLOAD_RETRY_DELAYS_MS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const attempts = delays.length + 1;
+  let namedWaits = 0;
   for (let i = 0; ; i++) {
     try {
       return await attempt();
@@ -211,7 +243,12 @@ export async function uploadWithRetry<T>(
       if (!(error instanceof WebdavUploadError) || !error.retryable || i >= delays.length) {
         throw error;
       }
-      const delayMs = delays[i];
+      const named =
+        error.retryAfterMs !== undefined && namedWaits < RETRY_AFTER_MAX_RETRIES
+          ? error.retryAfterMs
+          : undefined;
+      if (named !== undefined) namedWaits += 1;
+      const delayMs = named ?? delays[i];
       console.warn(
         `[WebDAV] Upload attempt ${i + 1}/${attempts} failed (${error.detail}); retrying in ${Math.round(delayMs / 1000)} s`
       );
@@ -301,8 +338,10 @@ export async function uploadFileWithClient(
         }
         const serverOcr = readServerOcrHeaders(header, uploadUrl);
         const digestVerified = header('X-Mokuro-Digest-Verified')?.trim().toLowerCase();
+        const etag = normalizeEtag(header('ETag'));
         resolve({
           path,
+          ...(etag ? { etag } : {}),
           ...(digestVerified ? { digestVerified } : {}),
           ...(serverOcr ? { serverOcr } : {}),
           ...(isVerifiedPutHeader(header('X-Mokuro-Put')) ? { putVerified: true as const } : {})
@@ -314,7 +353,7 @@ export async function uploadFileWithClient(
         } catch {
           body = '';
         }
-        reject(failureFromResponse(xhr.status, xhr.statusText, body));
+        reject(failureFromResponse(xhr.status, xhr.statusText, body, header('Retry-After')));
       }
     };
 

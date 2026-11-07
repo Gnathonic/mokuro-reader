@@ -1,0 +1,36 @@
+# Dependabot version updates. Pull requests target develop: main only takes PRs
+# from develop (pr-target-guard.yml). Minor and patch bumps of an ecosystem come
+# as one grouped PR a week; major bumps stay one PR each, since they are the ones
+# that need a reading of the changelog. A release must be a week old before it is
+# proposed, so a compromised or broken publish has time to be caught and pulled.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore(deps)
+
+  # Every `uses:` is pinned to a commit SHA with its tag in a trailing comment;
+  # Dependabot moves both together.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore(ci)

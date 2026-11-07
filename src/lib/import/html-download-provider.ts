@@ -1,10 +1,21 @@
 import { getItems } from '$lib/upload';
 import { IMAGE_EXTENSIONS } from './types';
 import { normalizeFilename } from '$lib/util';
-import { getFileProcessingPool } from '$lib/util/file-processing-pool';
+import {
+  decrementPoolUsers,
+  getFileProcessingPool,
+  incrementPoolUsers
+} from '$lib/util/file-processing-pool';
 import { generateUUID } from '$lib/util/uuid';
+import { mayBeImageType } from '$lib/util/image-content-type';
+import { RASTER_FORMAT_NAMES, toRasterImageFile } from '$lib/util/raster-image';
+import { assertNoRedirectEscape } from '$lib/util/link-safety';
 import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
-import { fetchVolumeManifest, type VolumeManifest } from './deep-link-manifest';
+import {
+  confineManifestToOrigins,
+  fetchVolumeManifest,
+  type VolumeManifest
+} from './deep-link-manifest';
 import { parseImportedSeriesFile, type PendingSeriesFile } from './series-file-import';
 
 export type HtmlImportType = 'directory' | 'cbz';
@@ -41,11 +52,23 @@ export interface HtmlDownloadProgress {
   progress: number;
 }
 
+/**
+ * `fetch` for a URL the link (or its manifest) chose. The user confirmed the
+ * import by the hosts the link named; a redirect that lands somewhere worse —
+ * plain http after https, or a private or loopback address the dialog never
+ * showed — throws instead of being read (`redirectEscape`).
+ */
+async function linkFetch(url: string, init?: RequestInit): Promise<Response> {
+  const response = init ? await fetch(url, init) : await fetch(url);
+  assertNoRedirectEscape(url, response);
+  return response;
+}
+
 async function fetchBlobWithProgress(
   url: string,
   onProgress?: (loaded: number, total: number | null) => void
 ): Promise<{ response: Response; blob: Blob }> {
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await linkFetch(url, { cache: 'no-store' });
   if (!response.ok) {
     throw new Error(`Failed to fetch: ${response.status}`);
   }
@@ -91,6 +114,28 @@ async function downloadCbzBundleViaWorker(
   mokuroFile: File | null;
   coverFile: File | null;
 }> {
+  // Counted as a pool user for the whole download, so another user's count
+  // dropping to zero (an import's pre-scan, a queue draining) cannot
+  // terminate the pool under this task.
+  incrementPoolUsers();
+  try {
+    return await runCbzBundleTask(cbzUrl, normalizedVolume, mokuroUrls, coverUrls, onProgress);
+  } finally {
+    decrementPoolUsers();
+  }
+}
+
+async function runCbzBundleTask(
+  cbzUrl: string,
+  normalizedVolume: string,
+  mokuroUrls: string[],
+  coverUrls: string[],
+  onProgress?: (state: HtmlDownloadProgress) => void
+): Promise<{
+  archiveFile: File;
+  mokuroFile: File | null;
+  coverFile: File | null;
+}> {
   const pool = await getFileProcessingPool();
   const taskId = `html-download-${generateUUID()}`;
 
@@ -119,7 +164,7 @@ async function downloadCbzBundleViaWorker(
           progress: 5 + Math.round((pct / 100) * 63)
         });
       },
-      onComplete: (result, completeTask) => {
+      onComplete: async (result, completeTask) => {
         completeTask();
         const bundle = result?.bundle;
         if (!bundle?.archive?.data) {
@@ -127,28 +172,32 @@ async function downloadCbzBundleViaWorker(
           return;
         }
 
+        // Fixed types, never the server's: a remote Content-Type must not
+        // reach a Blob this app keeps (see `$lib/util/raster-image`).
         const archiveFile = new File([bundle.archive.data], `${normalizedVolume}.cbz`, {
-          type: bundle.archive.contentType || 'application/zip'
+          type: 'application/zip'
         });
         setRelativePath(archiveFile, `/${normalizedVolume}.cbz`);
 
         let mokuroFile: File | null = null;
         if (bundle.mokuro?.data) {
           mokuroFile = new File([bundle.mokuro.data], `${normalizedVolume}.mokuro`, {
-            type: bundle.mokuro.contentType || 'application/json'
+            type: 'application/json'
           });
           setRelativePath(mokuroFile, `/${normalizedVolume}.mokuro`);
         }
 
         let coverFile: File | null = null;
-        if (bundle.cover?.data) {
-          const extFromPath = extensionFromPath(bundle.cover.url);
-          const extFromMime = extensionFromMimeType(bundle.cover.contentType || '');
-          const extension = extFromPath || extFromMime || 'webp';
-          coverFile = new File([bundle.cover.data], `${normalizedVolume}.${extension}`, {
-            type: bundle.cover.contentType || 'image/webp'
-          });
-          setRelativePath(coverFile, `/${normalizedVolume}.${extension}`);
+        if (bundle.cover?.data && mayBeImageType(bundle.cover.contentType)) {
+          try {
+            coverFile = await rasterCoverFile(
+              new Blob([bundle.cover.data]),
+              normalizedVolume,
+              bundle.cover.url
+            );
+          } catch (error) {
+            console.warn('[HTML Download] Could not read cover', bundle.cover.url, error);
+          }
         }
 
         resolve({ archiveFile, mokuroFile, coverFile });
@@ -158,6 +207,30 @@ async function downloadCbzBundleViaWorker(
       }
     });
   });
+}
+
+/**
+ * A downloaded cover as a File typed by its BYTES, named `<volume>.<ext>` for
+ * that type — or null, with a warning naming the URL, when the bytes are not a
+ * raster image. The server's Content-Type and the URL's extension are never
+ * trusted: an SVG (or HTML) cover stored as such would run as the app the
+ * moment the user opened the cover in a new tab.
+ */
+async function rasterCoverFile(
+  blob: Blob,
+  normalizedVolume: string,
+  url: string
+): Promise<File | null> {
+  const file = await toRasterImageFile(blob, `${normalizedVolume}.img`, { renameExtension: true });
+  if (!file) {
+    console.warn(
+      `[HTML Download] Cover is not a supported raster image (${RASTER_FORMAT_NAMES}); skipped:`,
+      url
+    );
+    return null;
+  }
+  setRelativePath(file, `/${file.name}`);
+  return file;
 }
 
 function setRelativePath(file: File, relativePath: string): void {
@@ -183,11 +256,22 @@ export function getUploadParamsFromLocation(search: string, hash: string): URLSe
   return params;
 }
 
+/** A link's URL param as an absolute http(s) URL — `data:`, `blob:` and the rest are no download source. */
+function webUrl(value: string): URL | null {
+  try {
+    const url = new URL(value, window.location.href);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadRequest | null {
   const cbz = params.get('cbz');
   if (cbz) {
     try {
-      const cbzUrl = new URL(cbz, window.location.href);
+      const cbzUrl = webUrl(cbz);
+      if (!cbzUrl) return null;
       const segments = cbzUrl.pathname.split('/').filter(Boolean);
       const filename = decodeURIComponent(segments[segments.length - 1] || 'volume.cbz');
       const volume = filename.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
@@ -195,11 +279,8 @@ export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadR
       const manifest = params.get('manifest');
       let manifestUrl: string | undefined;
       if (manifest) {
-        try {
-          manifestUrl = new URL(manifest, window.location.href).toString();
-        } catch {
-          manifestUrl = undefined; // unusable: the legacy path, as with no param
-        }
+        // Unusable (unparseable, not http/https): the legacy path, as with no param.
+        manifestUrl = webUrl(manifest)?.toString();
       }
       const cover = params.get('cover');
       return {
@@ -220,6 +301,7 @@ export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadR
   const manga = params.get('manga');
   const volume = params.get('volume');
   if (!source || !manga || !volume) return null;
+  if (!webUrl(source)) return null;
 
   const type = (params.get('type') || 'directory').toLowerCase();
   if (type !== 'directory' && type !== 'cbz') return null;
@@ -233,29 +315,16 @@ export function parseHtmlDownloadRequest(params: URLSearchParams): HtmlDownloadR
   };
 }
 
-/** The `cover` param as a URL: absolute as given, else a path on the source's origin. */
+/**
+ * The `cover` param as a URL: absolute as given, else a path on the source's
+ * origin. A relative path is a decoded query value naming files — each segment
+ * is encoded, or a `#` or `?` in a series name ends the path there.
+ */
 function coverParamUrl(request: HtmlDownloadRequest): string | null {
   if (!request.cover) return null;
-  return /^https?:\/\//i.test(request.cover)
-    ? request.cover
-    : `${request.source}/${request.cover.replace(/^\/+/, '')}`;
-}
-
-function extensionFromPath(pathOrUrl: string): string {
-  const pathname = pathOrUrl.split('?')[0].split('#')[0];
-  const ext = pathname.split('.').pop()?.toLowerCase() || '';
-  return ext.replace(/[^a-z0-9]/g, '');
-}
-
-function extensionFromMimeType(contentType: string | null): string {
-  if (!contentType) return '';
-  const value = contentType.toLowerCase();
-  if (value.includes('webp')) return 'webp';
-  if (value.includes('png')) return 'png';
-  if (value.includes('jpeg') || value.includes('jpg')) return 'jpg';
-  if (value.includes('avif')) return 'avif';
-  if (value.includes('gif')) return 'gif';
-  return '';
+  if (/^https?:\/\//i.test(request.cover)) return request.cover;
+  const path = request.cover.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
+  return `${request.source}/${path}`;
 }
 
 async function tryFetchMokuroSidecar(
@@ -271,12 +340,12 @@ async function tryFetchMokuroSidecar(
       'Checking OCR sidecar (.mokuro)...',
       72 + Math.round((checked / totalCandidates) * 10)
     );
-    const response = await fetch(`${volumeBaseUrl}.mokuro`, { cache: 'no-store' });
+    const response = await linkFetch(`${volumeBaseUrl}.mokuro`, { cache: 'no-store' });
     checked++;
     if (response.ok) {
       const blob = await response.blob();
       const file = new File([blob], `${normalizedVolume}.mokuro`, {
-        type: blob.type || 'application/json'
+        type: 'application/json'
       });
       setRelativePath(file, `/${normalizedVolume}.mokuro`);
       return file;
@@ -287,7 +356,7 @@ async function tryFetchMokuroSidecar(
       'Checking OCR sidecar (.mokuro.gz)...',
       72 + Math.round((checked / totalCandidates) * 10)
     );
-    const gzResponse = await fetch(`${volumeBaseUrl}.mokuro.gz`, { cache: 'no-store' });
+    const gzResponse = await linkFetch(`${volumeBaseUrl}.mokuro.gz`, { cache: 'no-store' });
     checked++;
     if (!gzResponse.ok || typeof DecompressionStream === 'undefined') {
       continue;
@@ -345,21 +414,20 @@ async function tryFetchCoverSidecar(
       84 + Math.round((index / Math.max(candidateUrls.length, 1)) * 10)
     );
     console.log('[HTML Download] Trying thumbnail sidecar:', coverUrl);
-    const response = await fetch(coverUrl, { cache: 'no-store' });
+    const response = await linkFetch(coverUrl, { cache: 'no-store' });
     if (!response.ok) {
       console.log('[HTML Download] Thumbnail sidecar not found:', coverUrl, response.status);
       continue;
     }
+    const contentType = response.headers.get('content-type');
+    if (!mayBeImageType(contentType)) {
+      console.warn(`[HTML Download] Thumbnail sidecar is not an image (${contentType}):`, coverUrl);
+      continue;
+    }
 
-    const blob = await response.blob();
-    const extFromPath = extensionFromPath(coverUrl);
-    const extFromMime = extensionFromMimeType(response.headers.get('content-type') || blob.type);
-    const extension = extFromPath || extFromMime || 'webp';
-    const filename = `${normalizedVolume}.${extension}`;
-
-    const file = new File([blob], filename, { type: blob.type || 'image/webp' });
-    setRelativePath(file, `/${filename}`);
-    console.log('[HTML Download] Using thumbnail sidecar:', filename, `(${blob.size} bytes)`);
+    const file = await rasterCoverFile(await response.blob(), normalizedVolume, coverUrl);
+    if (!file) continue;
+    console.log('[HTML Download] Using thumbnail sidecar:', file.name, `(${file.size} bytes)`);
     onStatus?.('Downloaded cover sidecar', 95);
     return file;
   }
@@ -371,7 +439,7 @@ async function tryFetchCoverSidecar(
 /** GET one listed file; null — with a warning naming it — on any failure. Never throws. */
 async function fetchListedFile(url: string, what: string): Promise<Response | null> {
   try {
-    const response = await fetch(url, { cache: 'no-store' });
+    const response = await linkFetch(url, { cache: 'no-store' });
     if (response.ok) return response;
     console.warn(`[HTML Download] Could not fetch ${what} ${url}: HTTP ${response.status}`);
   } catch (error) {
@@ -431,16 +499,13 @@ async function fetchManifestLayers(layers: VolumeManifest['layers']): Promise<Fe
 async function fetchCoverFile(url: string, normalizedVolume: string): Promise<File | null> {
   const response = await fetchListedFile(url, 'cover');
   if (!response) return null;
+  const contentType = response.headers.get('content-type');
+  if (!mayBeImageType(contentType)) {
+    console.warn(`[HTML Download] Cover ${url} is not an image (${contentType})`);
+    return null;
+  }
   try {
-    const blob = await response.blob();
-    const extension =
-      extensionFromPath(url) ||
-      extensionFromMimeType(response.headers.get('content-type') || blob.type) ||
-      'webp';
-    const filename = `${normalizedVolume}.${extension}`;
-    const file = new File([blob], filename, { type: blob.type || 'image/webp' });
-    setRelativePath(file, `/${filename}`);
-    return file;
+    return await rasterCoverFile(await response.blob(), normalizedVolume, url);
   } catch (error) {
     console.warn(`[HTML Download] Could not read cover ${url}:`, error);
     return null;
@@ -505,12 +570,17 @@ async function downloadFromManifest(
     layers = await fetchManifestLayers(manifest.layers);
   }
 
-  // A `cover` param on the link wins; the manifest's cover is used only without one.
-  const coverUrl = coverParamUrl(request) ?? manifest.cover?.url ?? null;
+  // A `cover` param on the link wins; the manifest's cover is used without one,
+  // or when the param fetches no image (bunko's catalog passes a library-relative
+  // path there, which does not resolve on the origin root).
+  const coverUrls = [coverParamUrl(request), manifest.cover?.url].filter(
+    (url): url is string => !!url
+  );
   let coverFile: File | null = null;
-  if (coverUrl) {
+  for (const coverUrl of coverUrls) {
     onProgress?.({ status: 'Fetching cover...', progress: 86 });
     coverFile = await fetchCoverFile(coverUrl, normalizedVolume);
+    if (coverFile) break;
   }
 
   let seriesFile: PendingSeriesFile | null = null;
@@ -554,10 +624,14 @@ class HtmlDownloadPseudoProvider {
 
     if (request.type === 'cbz' && request.manifestUrl) {
       onProgress?.({ status: 'Fetching volume manifest...', progress: 2 });
-      const manifest = await fetchVolumeManifest(request.manifestUrl);
-      if (manifest) {
+      const fetched = await fetchVolumeManifest(request.manifestUrl);
+      if (fetched) {
+        // The confirmation showed the archive's host and the manifest's; the
+        // manifest may not send any fetch anywhere else.
+        const confined = confineManifestToOrigins(fetched, [request.manifestUrl, request.cbzUrl]);
+        if ('error' in confined) throw new Error(confined.error);
         return {
-          ...(await downloadFromManifest(request, manifest, normalizedVolume, onProgress)),
+          ...(await downloadFromManifest(request, confined.manifest, normalizedVolume, onProgress)),
           manifestUrl: request.manifestUrl
         };
       }
@@ -624,7 +698,7 @@ class HtmlDownloadPseudoProvider {
 
     onProgress?.({ status: 'Fetching image list...', progress: 5 });
 
-    const directoryRes = await fetch(`${volumeBaseUrl}/`);
+    const directoryRes = await linkFetch(`${volumeBaseUrl}/`);
     if (!directoryRes.ok) {
       throw new Error(`Failed to fetch directory: ${directoryRes.status}`);
     }
@@ -645,7 +719,7 @@ class HtmlDownloadPseudoProvider {
     });
 
     for (const item of imageItems) {
-      const image = await fetch(volumeBaseUrl + item.pathname);
+      const image = await linkFetch(volumeBaseUrl + item.pathname);
       if (!image.ok) {
         completed++;
         continue;

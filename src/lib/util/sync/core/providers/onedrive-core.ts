@@ -1,35 +1,39 @@
-import type { UploadFileResult } from '$lib/util/sync/provider-interface';
+import { ProviderError, type UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
-import { ONEDRIVE_CONFIG } from '../../providers/onedrive/constants';
+import { ONEDRIVE_CONFIG, graphBase } from '../../providers/onedrive/constants';
 import { parseNextExpectedRange } from '../../providers/onedrive/upload-session';
-
-const BASE = ONEDRIVE_CONFIG.GRAPH_BASE_URL;
+import { CLOUD_TEST_HOOKS, credentialBase } from '../../cloud-test-hooks';
+import {
+  MAX_RETRY_ATTEMPTS,
+  backoffDelayMs,
+  retryAfterMs,
+  retryDelayMs,
+  sleep
+} from '../http-retry';
+import {
+  graphErrorCode,
+  isGraphQuotaFailure,
+  isGraphRetryableStatus,
+  oneDriveStorageFullError
+} from '../../providers/onedrive/graph-errors';
 
 function encodePath(path: string): string {
   return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
 }
 
-const MAX_CHUNK_ATTEMPTS = 5;
-const RETRY_BASE_DELAY_MS = 400;
-const RETRY_MAX_DELAY_MS = 5000;
+const MAX_CHUNK_ATTEMPTS = MAX_RETRY_ATTEMPTS;
+
+/** A refusal's body as text ('' when unreadable), which also drains it. */
+async function readBody(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch {
+    return '';
+  }
+}
 const CHUNK_TIMEOUT_MS = 5 * 60 * 1000;
 const SESSION_TIMEOUT_MS = 30 * 1000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
-}
-
-function retryAfterMs(response: Response): number | undefined {
-  const header = response.headers?.get('Retry-After');
-  if (!header) return undefined;
-  const seconds = Number(header);
-  return Number.isFinite(seconds) ? Math.min(seconds * 1000, RETRY_MAX_DELAY_MS * 4) : undefined;
-}
 
 /**
  * Ask the upload session where to resume (Graph tracks received ranges
@@ -57,12 +61,13 @@ async function queryResumeOffset(uploadUrl: string): Promise<number | null> {
  * an upload that actually succeeded.
  */
 async function findCompletedUpload(
+  graph: string,
   accessToken: string,
   targetPath: string,
   expectedSize: number
 ): Promise<CompletedDriveItem | null> {
   try {
-    const response = await fetch(`${BASE}/me/drive/root:/${encodePath(targetPath)}`, {
+    const response = await fetch(`${graph}/me/drive/root:/${encodePath(targetPath)}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(SESSION_TIMEOUT_MS)
     });
@@ -80,6 +85,16 @@ interface CompletedDriveItem {
   /** The server's own modification timestamp — what listings later report. */
   lastModifiedDateTime?: string;
   size?: number;
+  /** Content change token — the receipt's revision when present. */
+  cTag?: string;
+  eTag?: string;
+}
+
+/** A driveItem's revision token: `cTag` (moves with the content only), else `eTag`. */
+export function oneDriveRevision(item: { cTag?: string; eTag?: string }): string | undefined {
+  if (typeof item.cTag === 'string' && item.cTag) return item.cTag;
+  if (typeof item.eTag === 'string' && item.eTag) return item.eTag;
+  return undefined;
 }
 
 export const onedriveCore: CloudProviderCore = {
@@ -89,10 +104,14 @@ export const onedriveCore: CloudProviderCore = {
       'accessToken',
       'OneDrive access token'
     );
+    // A worker's bases come in its credentials (see cloudTestCredentials).
+    const graph = CLOUD_TEST_HOOKS
+      ? credentialBase(credentials, 'graph', graphBase())
+      : graphBase();
 
     return await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('GET', `${BASE}/me/drive/items/${encodeURIComponent(fileId)}/content`);
+      xhr.open('GET', `${graph}/me/drive/items/${encodeURIComponent(fileId)}/content`);
       xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
       xhr.responseType = 'arraybuffer';
       xhr.onprogress = (event) => {
@@ -134,6 +153,9 @@ export const onedriveCore: CloudProviderCore = {
       ? `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${seriesTitle}`
       : ONEDRIVE_CONFIG.MOKURO_FOLDER;
     const targetPath = `${folderPath}/${filename}`;
+    const graph = CLOUD_TEST_HOOKS
+      ? credentialBase(credentials, 'graph', graphBase())
+      : graphBase();
 
     let uploadUrl: string | null = null;
     let sessionAttempt = 0;
@@ -142,7 +164,7 @@ export const onedriveCore: CloudProviderCore = {
       sessionAttempt++;
       try {
         const sessionResponse = await fetch(
-          `${BASE}/me/drive/root:/${encodePath(targetPath)}:/createUploadSession`,
+          `${graph}/me/drive/root:/${encodePath(targetPath)}:/createUploadSession`,
           {
             method: 'POST',
             headers: {
@@ -160,7 +182,12 @@ export const onedriveCore: CloudProviderCore = {
           break;
         }
         sessionError = `${sessionResponse.status} ${sessionResponse.statusText}`;
-        if (!isRetryableStatus(sessionResponse.status)) {
+        // Every refusal's body is read (and so drained): a full drive (507, or
+        // ANY status naming a quota code — a 429/503 can too) stays full, so it
+        // fails now with the storage-full error, before the retryable check.
+        const code = graphErrorCode(await readBody(sessionResponse));
+        if (isGraphQuotaFailure(sessionResponse.status, code)) throw oneDriveStorageFullError();
+        if (!isGraphRetryableStatus(sessionResponse.status)) {
           throw new Error(`Failed to create OneDrive upload session: ${sessionError}`);
         }
         if (sessionAttempt >= MAX_CHUNK_ATTEMPTS) {
@@ -168,11 +195,9 @@ export const onedriveCore: CloudProviderCore = {
             `Failed to create OneDrive upload session after ${MAX_CHUNK_ATTEMPTS} attempts: ${sessionError}`
           );
         }
-        await sleep(
-          retryAfterMs(sessionResponse) ??
-            Math.min(RETRY_BASE_DELAY_MS * 2 ** (sessionAttempt - 1), RETRY_MAX_DELAY_MS)
-        );
+        await sleep(retryDelayMs(sessionAttempt, retryAfterMs(sessionResponse)));
       } catch (error) {
+        if (error instanceof ProviderError) throw error;
         if (error instanceof Error && error.message.startsWith('Failed to create')) throw error;
         sessionError = error instanceof Error ? error.message : 'network error';
         if (sessionAttempt >= MAX_CHUNK_ATTEMPTS) {
@@ -180,11 +205,19 @@ export const onedriveCore: CloudProviderCore = {
             `Failed to create OneDrive upload session after ${MAX_CHUNK_ATTEMPTS} attempts: ${sessionError}`
           );
         }
-        await sleep(Math.min(RETRY_BASE_DELAY_MS * 2 ** (sessionAttempt - 1), RETRY_MAX_DELAY_MS));
+        await sleep(backoffDelayMs(sessionAttempt));
       }
     }
 
     let lastItem: CompletedDriveItem | null = null;
+    /**
+     * `lastItem` came from the lost-ack probe, not from the upload session's
+     * own answer. A same-size file at the path is all it proves: that may be
+     * this write, the file it was replacing (a `positions.json` whose page
+     * moved but not its length), or another device's same-size write. Its
+     * change token and mtime then vouch for bytes that may not be ours.
+     */
+    let recovered = false;
     let offset = 0;
     let attempt = 0;
 
@@ -193,15 +226,16 @@ export const onedriveCore: CloudProviderCore = {
       if (attempt >= MAX_CHUNK_ATTEMPTS) {
         // The write may well have succeeded even though we never saw the ack
         // (dropped connection, client-side timeout). Confirm before failing.
-        const completed = await findCompletedUpload(accessToken, targetPath, blob.size);
+        const completed = await findCompletedUpload(graph, accessToken, targetPath, blob.size);
         if (completed) {
           lastItem = completed;
+          recovered = true;
           offset = blob.size;
           return;
         }
         throw new Error(`OneDrive upload failed after ${MAX_CHUNK_ATTEMPTS} attempts: ${reason}`);
       }
-      await sleep(waitMs ?? Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS));
+      await sleep(retryDelayMs(attempt, waitMs));
       // Trust Graph's record of received bytes over our own counter.
       const resume = await queryResumeOffset(uploadUrl!);
       if (resume !== null) offset = resume;
@@ -231,6 +265,7 @@ export const onedriveCore: CloudProviderCore = {
         // server's `lastModifiedDateTime`, the same field listings report.
         const item = (await chunkResponse.json()) as CompletedDriveItem;
         lastItem = item;
+        recovered = false;
         offset = end + 1;
         attempt = 0;
         onProgress?.(offset, blob.size);
@@ -253,8 +288,13 @@ export const onedriveCore: CloudProviderCore = {
       }
 
       const waitMs = retryAfterMs(chunkResponse);
-      await chunkResponse.text().catch(() => '');
-      if (!isRetryableStatus(chunkResponse.status)) {
+      // A quota code fails at once whatever status carries it (see above).
+      if (
+        isGraphQuotaFailure(chunkResponse.status, graphErrorCode(await readBody(chunkResponse)))
+      ) {
+        throw oneDriveStorageFullError();
+      }
+      if (!isGraphRetryableStatus(chunkResponse.status)) {
         // A definitive 4xx (other than 408/429) means Graph rejected the
         // request outright — no ambiguity to resolve, unlike a dropped
         // connection or exhausted retries against a transient status.
@@ -269,13 +309,25 @@ export const onedriveCore: CloudProviderCore = {
       throw new Error('OneDrive upload session did not return a final driveItem');
     }
     const finalItem: CompletedDriveItem = lastItem;
+    if (recovered) {
+      // An unverified receipt: no revision, so the root-file memo drops its
+      // copy and the next read downloads the real file
+      // (`noteRootFileUpload`); no server mtime, so the cache entry stays
+      // provisional (`uploadCacheEntry`). The id and size are the path's.
+      return {
+        fileId: finalItem.id,
+        size: typeof finalItem.size === 'number' ? finalItem.size : undefined
+      };
+    }
     return {
       fileId: finalItem.id,
       modifiedTime:
         typeof finalItem.lastModifiedDateTime === 'string'
           ? finalItem.lastModifiedDateTime
           : undefined,
-      size: typeof finalItem.size === 'number' ? finalItem.size : undefined
+      size: typeof finalItem.size === 'number' ? finalItem.size : undefined,
+      // The same token `statFile` compares: cTag (content only), else eTag.
+      ...(oneDriveRevision(finalItem) ? { revision: oneDriveRevision(finalItem) } : {})
     };
   }
 };

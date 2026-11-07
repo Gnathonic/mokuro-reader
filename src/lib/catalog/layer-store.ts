@@ -20,8 +20,9 @@
  *   depends on that.
  *
  * Every function takes the connection as its first argument and this module
- * imports nothing at runtime, because the export Worker (`compress-volume.ts`)
- * opens its own connection and cannot load the main-thread `db` graph. On the
+ * imports nothing at runtime but the dependency-free `mokuro-hash.ts`, because
+ * the export Worker (`compress-volume.ts`) opens its own connection and cannot
+ * load the main-thread `db` graph. On the
  * main thread `$lib/reader/edit/layers.ts` is the layer API; this is the
  * storage underneath it.
  *
@@ -36,6 +37,7 @@ import type {
   VolumeOcrLayerPages,
   VolumeOcrLayerWithPages
 } from '$lib/types';
+import { isUntouchedUpgradeLayer } from './mokuro-hash';
 
 export const LAYER_META_TABLE = 'volume_ocr_layers';
 export const LAYER_PAGES_TABLE = 'volume_ocr_layer_pages';
@@ -213,5 +215,59 @@ export function clearAllLayers(db: Dexie): Promise<void> {
   return db.transaction('rw', layerTables(db), async () => {
     await metaTable(db).clear();
     await pagesTable(db).clear();
+  });
+}
+
+// ---- one-time cleanup ----
+
+/**
+ * The ids v1.10.0's OCR upgrade kept a replaced primary under ("Previous OCR":
+ * `previous-ocr`, then `previous-ocr-<n>` once the user had edited one), and
+ * the names it gave them. The upgrade no longer keeps one.
+ */
+const RETIRED_PREVIOUS_OCR_ID = /^previous-ocr(?:-\d+)?$/;
+const RETIRED_PREVIOUS_OCR_NAME = /^Previous OCR(?: \(\d+\))?$/;
+
+/**
+ * Delete every `previous-ocr` / `previous-ocr-<n>` layer nobody claimed, both
+ * rows. Claimed, and kept as an ordinary layer: one the user edited (no longer
+ * `isUntouchedUpgradeLayer`), renamed (a name other than the one v1.10.0 gave
+ * it — a rename never moves `updated_at`), or one a volume displays
+ * (`isDisplayed`, the volume's `ocrLayer` setting — picking a layer moves no
+ * stamp either, and deleting a displayed layer would leave the reader holding
+ * its pages and the setting naming nothing). No cloud tombstone: an untouched
+ * keepsake was never pushed.
+ *
+ * Chosen from METADATA only: the candidates by id off the metadata table's
+ * primary keys (no row read), then each candidate's metadata row — re-read,
+ * and `isDisplayed` asked again, inside the delete's transaction, so an edit
+ * or a pick landing meanwhile keeps its layer. The pages table is only ever
+ * deleted from. Idempotent. Resolves the number of layers deleted.
+ */
+export async function deleteRetiredPreviousOcrLayers(
+  db: Dexie,
+  isDisplayed: (volumeUuid: string, layerId: string) => boolean
+): Promise<number> {
+  const unclaimed = (meta: VolumeOcrLayer | undefined): meta is VolumeOcrLayer =>
+    !!meta &&
+    isUntouchedUpgradeLayer(meta) &&
+    RETIRED_PREVIOUS_OCR_NAME.test(meta.name) &&
+    !isDisplayed(meta.volume_uuid, meta.layer_id);
+  const keys = await metaTable(db).toCollection().primaryKeys();
+  const candidates = keys.filter((key) => RETIRED_PREVIOUS_OCR_ID.test(key[1]));
+  if (candidates.length === 0) return 0;
+  // Read-only first: a library whose only leftovers are claimed ones (kept for
+  // good) never opens a write transaction.
+  const metas = await metaTable(db).bulkGet(candidates);
+  const victims = candidates.filter((_, i) => unclaimed(metas[i]));
+  if (victims.length === 0) return 0;
+  return db.transaction('rw', layerTables(db), async () => {
+    let deleted = 0;
+    for (const [volumeUuid, layerId] of victims) {
+      if (!unclaimed(await metaTable(db).get([volumeUuid, layerId]))) continue;
+      await deleteLayerRows(db, volumeUuid, layerId);
+      deleted++;
+    }
+    return deleted;
   });
 }

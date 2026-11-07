@@ -20,6 +20,8 @@ import { parseSeriesFile } from '$lib/metadata/series-file';
 import { createEmptySeriesMetadata } from '$lib/metadata/types';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { clearAllLayers, putLayerWithPages } from '$lib/catalog/layer-store';
+import { contentDigest, provenanceOfFile } from '$lib/catalog/ocr-provenance';
+import { RUNNER_OUTPUT_DOCUMENT, RUNNER_OUTPUT_SEAL } from '$lib/catalog/__fixtures__/seal-vector';
 
 // zip.js writes the archive through a Blob stream; jsdom's Blob has none.
 if (typeof Blob !== 'undefined' && !Blob.prototype.stream) {
@@ -289,6 +291,119 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
     ).toEqual(['updated-ocr']);
   });
 
+  describe('the personal and shared correction layers (bunko 0.8)', () => {
+    async function seedLayers() {
+      for (const layer_id of ['edit', 'curated', 'fix']) {
+        await putLayerWithPages(db, {
+          volume_uuid: 'volume-uuid',
+          layer_id,
+          name: layer_id,
+          kind: 'edit',
+          created_at: '2026-09-16T00:00:00.000Z',
+          updated_at: '2026-09-16T00:00:00.000Z',
+          pages: []
+        });
+      }
+    }
+    const ids = async (target?: Parameters<typeof generateVolumeSidecarsFromDb>[2]) =>
+      (await generateVolumeSidecarsFromDb('volume-uuid', undefined, target)).layers?.map(
+        (l) => l.layerId
+      );
+
+    it('a backup to a 0.7.x bunko (edit layers shared there) writes neither edit nor curated', async () => {
+      await seedLayers();
+      expect(
+        await ids({ serverCompilesMetadata: true, editLayerSync: 'local', cloud: true })
+      ).toEqual(['fix']);
+    });
+
+    it('a bunko keeping edit layers per account gets the edit layer, never curated', async () => {
+      await seedLayers();
+      expect(
+        await ids({ serverCompilesMetadata: true, editLayerSync: 'push', cloud: true })
+      ).toEqual(['edit', 'fix']);
+    });
+
+    it('plain storage (Drive) gets the edit layer but not curated: that only goes up by Publish', async () => {
+      await seedLayers();
+      expect(await ids({ cloud: true })).toEqual(['edit', 'fix']);
+    });
+
+    it("a backup under account B never uploads A's edit layer into B's overlay", async () => {
+      await seedLayers();
+      await putLayerWithPages(db, {
+        volume_uuid: 'volume-uuid',
+        layer_id: 'edit',
+        name: 'edit',
+        kind: 'edit',
+        created_at: '2026-09-16T00:00:00.000Z',
+        updated_at: '2026-09-17T00:00:00.000Z',
+        cloud: {
+          provider: 'webdav',
+          account: 'webdav:https://host|alice',
+          synced_at: '2026-09-16T00:00:00.000Z'
+        },
+        pages: []
+      });
+      const target = { serverCompilesMetadata: true, editLayerSync: 'push', cloud: true } as const;
+      expect(await ids({ ...target, account: 'webdav:https://host|bob' })).toEqual(['fix']);
+      expect(await ids({ ...target, account: 'webdav:https://host|alice' })).toEqual([
+        'edit',
+        'fix'
+      ]);
+    });
+  });
+
+  it("never uploads a server's own OCR, edited here, beside a backup to that server", async () => {
+    // Pulled from bunko with its engine stamp, then edited in place (the edit
+    // began before the provider said it compiles its metadata).
+    await putLayerWithPages(db, {
+      volume_uuid: 'volume-uuid',
+      layer_id: 'hayai',
+      name: 'Hayai',
+      kind: 'ocr',
+      engine: 'hayai',
+      created_at: '2026-09-16T00:00:00.000Z',
+      updated_at: '2026-09-17T00:00:00.000Z',
+      cloud: { provider: 'webdav', synced_at: '2026-09-16T00:00:00.000Z' },
+      pages: []
+    });
+    const ids = async (target: Parameters<typeof generateVolumeSidecarsFromDb>[2]) =>
+      (await generateVolumeSidecarsFromDb('volume-uuid', undefined, target)).layers?.map(
+        (l) => l.layerId
+      );
+    expect(
+      await ids({ serverCompilesMetadata: true, editLayerSync: 'push', cloud: true })
+    ).toBeUndefined();
+    expect(await ids({ cloud: true })).toEqual(['hayai']);
+  });
+
+  it("keeps a server's OCR pulled from bunko in exports and backups to other providers", async () => {
+    // Pulled from a 0.8 bunko (the row remembers the server compiled its
+    // metadata, `cloud.server_compiled`), then edited in place. Only a backup
+    // to the provider it came from leaves it out, stale status or not.
+    await putLayerWithPages(db, {
+      volume_uuid: 'volume-uuid',
+      layer_id: 'gcv',
+      name: 'GCV',
+      kind: 'ocr',
+      engine: 'gcv',
+      created_at: '2026-09-16T00:00:00.000Z',
+      updated_at: '2026-09-17T00:00:00.000Z',
+      cloud: { provider: 'webdav', server_compiled: true, synced_at: '2026-09-16T00:00:00.000Z' },
+      pages: []
+    });
+    const ids = async (target?: Parameters<typeof generateVolumeSidecarsFromDb>[2]) =>
+      (await generateVolumeSidecarsFromDb('volume-uuid', undefined, target)).layers?.map(
+        (l) => l.layerId
+      );
+    // An export (no target) and a Drive backup.
+    expect(await ids()).toEqual(['gcv']);
+    expect(await ids({ cloud: true, provider: 'google-drive' })).toEqual(['gcv']);
+    // The bunko it came from, its status reading plain storage again.
+    expect(await ids({ cloud: true, provider: 'webdav' })).toBeUndefined();
+  });
+
   it("never uploads the editor's original snapshot to a server that compiles its metadata", async () => {
     await putLayerWithPages(db, {
       volume_uuid: 'volume-uuid',
@@ -311,5 +426,169 @@ describe('generateVolumeSidecarsFromDb — layers', () => {
         })
       ).layers
     ).toBeUndefined();
+  });
+});
+
+describe('the primary .mokuro carries its provenance', () => {
+  const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+  const stamped = {
+    ...volume,
+    mokuro_sha256: 'a'.repeat(64),
+    ocr_provenance: [{ engine: doc.ocr_engine, digest: RUNNER_OUTPUT_SEAL }]
+  };
+  const editedPages = () => {
+    const pages = structuredClone(doc.pages);
+    pages[0].blocks[0].lines[0] = '橋を渡った';
+    return pages;
+  };
+
+  beforeEach(async () => {
+    await db.table('volumes').put(stamped);
+    await db.table('volume_ocr').put({ volume_uuid: 'volume-uuid', pages: doc.pages });
+  });
+
+  it('a rename regenerates the main with the installed block, still sealed, under the new names', async () => {
+    const sidecars = await generateVolumeSidecarsFromDb(
+      'volume-uuid',
+      { seriesTitle: 'Renamed', volumeTitle: 'Renamed 01' },
+      { cloud: true, editedFallbackToPrimary: true }
+    );
+    const main = JSON.parse(await sidecars.mokuro!.blob.text());
+    expect(main.ocr_engine).toEqual(doc.ocr_engine);
+    expect(main.title).toBe('Renamed');
+    expect(main.volume).toBe('Renamed 01');
+    expect(sidecars.mokuro!.filename).toBe('Renamed 01.mokuro');
+    expect(await contentDigest(main.ocr_engine, main.pages)).toBe(RUNNER_OUTPUT_SEAL);
+    expect('edited' in main).toBe(false);
+  });
+
+  it("an edited volume's cloud main (from original) carries the block; its export is `edited`", async () => {
+    await db.table('volumes').put({ ...stamped, ocr_edited_at: '2026-10-01T00:00:00.000Z' });
+    await db.table('volume_ocr').put({ volume_uuid: 'volume-uuid', pages: editedPages() });
+    await putLayerWithPages(db, {
+      volume_uuid: 'volume-uuid',
+      layer_id: 'original',
+      name: 'Original',
+      kind: 'original',
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-01T00:00:00.000Z',
+      pages: doc.pages
+    });
+
+    const cloud = await generateVolumeSidecarsFromDb('volume-uuid', undefined, { cloud: true });
+    const main = JSON.parse(await cloud.mokuro!.blob.text());
+    expect(main.ocr_engine).toEqual(doc.ocr_engine);
+    expect('edited' in main).toBe(false);
+
+    // The edited primary itself — a local export, and the archive's own copy.
+    const exported = JSON.parse(
+      await (await generateVolumeSidecarsFromDb('volume-uuid')).mokuro!.blob.text()
+    );
+    expect('ocr_engine' in exported).toBe(false);
+    expect(exported.edited).toMatchObject({
+      by: 'mokuro-reader',
+      at: '2026-10-01T00:00:00.000Z',
+      base_sha256: 'a'.repeat(64)
+    });
+    const archive = await compressVolumeFromDb('volume-uuid', undefined, {
+      embedMokuroInArchive: true
+    });
+    const embedded = JSON.parse(await entryText(archive, 'Vol 1.mokuro'));
+    expect('ocr_engine' in embedded).toBe(false);
+    expect(embedded.edited.at).toBe('2026-10-01T00:00:00.000Z');
+  });
+
+  it('a volume installed from an EDITED main keeps `edited` through a rename, and no ocr_engine', async () => {
+    const block = {
+      by: 'mokuro-reader',
+      at: '2026-09-01T00:00:00.000Z',
+      base_sha256: 'b'.repeat(64),
+      base_seal: null
+    };
+    // Installed on this device from another device's edited main: no local edit.
+    await db.table('volumes').put({
+      ...volume,
+      mokuro_sha256: 'a'.repeat(64),
+      ocr_provenance: [
+        await provenanceOfFile({ ocrEngine: doc.ocr_engine, edited: block }, doc.pages)
+      ]
+    });
+    const sidecars = await generateVolumeSidecarsFromDb(
+      'volume-uuid',
+      { seriesTitle: 'Renamed', volumeTitle: 'Renamed 01' },
+      { cloud: true, editedFallbackToPrimary: true }
+    );
+    const main = JSON.parse(await sidecars.mokuro!.blob.text());
+    expect(main.edited).toEqual(block);
+    expect('ocr_engine' in main).toBe(false);
+    expect(main.volume).toBe('Renamed 01');
+  });
+
+  it('an unedited export and archive carry the block too', async () => {
+    const exported = JSON.parse(
+      await (await generateVolumeSidecarsFromDb('volume-uuid')).mokuro!.blob.text()
+    );
+    expect(exported.ocr_engine).toEqual(doc.ocr_engine);
+    const archive = await compressVolumeFromDb('volume-uuid', undefined, {
+      embedMokuroInArchive: true
+    });
+    expect(JSON.parse(await entryText(archive, 'Vol 1.mokuro')).ocr_engine).toEqual(doc.ocr_engine);
+  });
+});
+
+describe('edited.base_seal on backup/rename layer sidecars', () => {
+  const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+  const fix = {
+    volume_uuid: 'volume-uuid',
+    layer_id: 'edit',
+    name: 'Your corrections',
+    kind: 'edit' as const,
+    created_at: '2026-10-01T00:00:00.000Z',
+    updated_at: '2026-10-01T00:00:00.000Z',
+    pages: []
+  };
+
+  async function editedBlock() {
+    const sidecars = await generateVolumeSidecarsFromDb('volume-uuid', undefined, { cloud: true });
+    const layer = sidecars.layers!.find((l) => l.layerId === 'edit')!;
+    return JSON.parse(await layer.blob.text()).edited;
+  }
+
+  it("names the seal of the sealed main the edits sit on (the edited volume's original)", async () => {
+    await db.table('volumes').put({
+      ...volume,
+      ocr_edited_at: '2026-10-01T00:00:00.000Z',
+      ocr_provenance: [{ engine: doc.ocr_engine, digest: RUNNER_OUTPUT_SEAL }]
+    });
+    await putLayerWithPages(db, {
+      ...fix,
+      layer_id: 'original',
+      name: 'Original',
+      kind: 'original',
+      pages: doc.pages
+    });
+    await putLayerWithPages(db, fix);
+    expect((await editedBlock()).base_seal).toBe(RUNNER_OUTPUT_SEAL);
+  });
+
+  it('an unedited primary is the base when it has no original', async () => {
+    await db.table('volumes').put({
+      ...volume,
+      ocr_provenance: [{ engine: doc.ocr_engine, digest: RUNNER_OUTPUT_SEAL }]
+    });
+    await db.table('volume_ocr').put({ volume_uuid: 'volume-uuid', pages: doc.pages });
+    await putLayerWithPages(db, fix);
+    expect((await editedBlock()).base_seal).toBe(RUNNER_OUTPUT_SEAL);
+  });
+
+  it('null for a base with no recorded block (0.7.x), or whose pages are not the file', async () => {
+    await putLayerWithPages(db, fix);
+    expect((await editedBlock()).base_seal).toBeNull();
+
+    await db.table('volumes').put({
+      ...volume,
+      ocr_provenance: [{ engine: doc.ocr_engine, digest: RUNNER_OUTPUT_SEAL }]
+    });
+    expect((await editedBlock()).base_seal).toBeNull();
   });
 });

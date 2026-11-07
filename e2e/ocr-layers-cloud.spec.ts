@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * OCR layers in the cloud, against the REAL app and a stubbed WebDAV server
@@ -180,8 +181,7 @@ class WebDavStub {
 }
 
 async function seedInstalledVolume(page: Page, mokuro = mokuroJson('あい')) {
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, mokuro }) => {
       const { db } = await import('/src/lib/catalog/db.ts');
@@ -333,11 +333,15 @@ test.describe('OCR layers in the cloud (stubbed WebDAV)', () => {
       'volume',
       'volume_uuid'
     ]);
-    // Stamped: a second relist pushes nothing more.
-    const putsBefore = stub.log.filter((l) => l.method === 'PUT').length;
+    // Stamped: a second relist pushes no layer file again. (Only layer files
+    // count: the cover backfill uploads `Vol 1.webp` on its own schedule, and
+    // under load it landed inside this window.)
+    const layerPuts = () =>
+      stub.log.filter((l) => l.method === 'PUT' && /\.mokuro(\.gz)?$/.test(l.path)).length;
+    const putsBefore = layerPuts();
     await relist(page);
     await page.waitForTimeout(1500);
-    expect(stub.log.filter((l) => l.method === 'PUT').length).toBe(putsBefore);
+    expect(layerPuts()).toBe(putsBefore);
 
     // RENAME: the layer file MOVES with the volume; the primary is regenerated.
     stub.log.length = 0;
@@ -452,5 +456,63 @@ test.describe('OCR layers in the cloud (stubbed WebDAV)', () => {
     });
     // Nothing was written to the server for it, and the primary is untouched.
     expect(stub.log.filter((l) => l.path.includes('ppocr-manga'))).toEqual([]);
+  });
+
+  // bunko seals the main it installs; a rename here regenerates that main under
+  // the new names. The block must ride along (names are outside the seal), or
+  // the server reads the renamed volume as never OCR'd by its engine.
+  test('a rename regenerates the main WITH its sealed ocr_engine block, before the archive moves', async ({
+    page
+  }) => {
+    const stub = new WebDavStub();
+    await page.route(`${STUB}/**`, stub.handle);
+    await seedInstalledVolume(page);
+    // The installed file as bunko wrote it: block + a real seal over its pages.
+    const engine = await page.evaluate(async (uuid) => {
+      const { db } = await import('/src/lib/catalog/db.ts');
+      const { contentDigest, provenanceFromParsed } = await import(
+        '/src/lib/catalog/ocr-provenance.ts'
+      );
+      const pages = (await db.volume_ocr.get(uuid))!.pages;
+      const recipe = { id: 'hayai-nova', revision: 2, created: '2026-10-29T00:00:00Z' };
+      const sealed = { ...recipe, seal: (await contentDigest(recipe, pages))! };
+      await db.volumes.update(uuid, {
+        ocr_provenance: [(await provenanceFromParsed(sealed, pages))!]
+      });
+      return sealed;
+    }, VOLUME_UUID);
+    stub.file(`${ROOT}/${SERIES}/Vol 1.cbz`, 'PK-not-really');
+    stub.file(
+      `${ROOT}/${SERIES}/Vol 1.mokuro`,
+      JSON.stringify({ ...JSON.parse(mokuroJson('あい')), ocr_engine: engine })
+    );
+    await connectStub(page);
+
+    stub.log.length = 0;
+    await page.evaluate(
+      async ({ SERIES, uuid }) => {
+        const { unifiedCloudManager } = await import('/src/lib/util/sync/unified-cloud-manager.ts');
+        await unifiedCloudManager.renameVolume(SERIES, 'Vol 1', SERIES, 'Vol 9', uuid);
+      },
+      { SERIES, uuid: VOLUME_UUID }
+    );
+
+    const writes = stub.log.filter((l) => l.method !== 'GET').map((l) => `${l.method} ${l.path}`);
+    const putMain = writes.indexOf(`PUT ${ROOT}/${SERIES}/Vol 9.mokuro`);
+    expect(putMain).toBeGreaterThanOrEqual(0);
+    expect(putMain).toBeLessThan(writes.indexOf(`MOVE ${ROOT}/${SERIES}/Vol 1.cbz`));
+    const main = JSON.parse(
+      stub.log.find((l) => l.method === 'PUT' && l.path === `${ROOT}/${SERIES}/Vol 9.mokuro`)!.body!
+    );
+    expect(main.volume).toBe('Vol 9');
+    expect(main.ocr_engine).toEqual(engine);
+    expect(main.edited).toBeUndefined();
+    // Still sealed: recomputed in the page over what was uploaded.
+    expect(
+      await page.evaluate(async (main) => {
+        const { contentDigest } = await import('/src/lib/catalog/ocr-provenance.ts');
+        return contentDigest(main.ocr_engine, main.pages);
+      }, main)
+    ).toBe(engine.seal);
   });
 });

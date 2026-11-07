@@ -3,7 +3,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { pickCoverTarget } from './cover-sidecar';
 import type { HtmlDownloadResult } from './html-download-provider';
 import { importArchiveWithOptionalMokuro } from './import-service';
-import { recordSeriesFile } from './series-file-import';
+import { protectedSeriesKey } from './series-file-import';
 
 /**
  * The provider stamp a deep-linked layer row carries (`cloud.provider`), so a
@@ -43,11 +43,51 @@ async function rememberPendingOcr(
 }
 
 /**
+ * Every series this library already knows, by `protectedSeriesKey` (the NFC
+ * fold): a volume row in any state, a metadata record (facts the user set, or
+ * a cloud catalog's) or a cached cloud `series.json`. Keys only — no row
+ * bodies, no thumbnails. Dexie reads only, and nothing else awaited: a link's
+ * guard also runs it inside a volume save's transaction (`saveLinkVolume`).
+ */
+export async function localSeriesKeys(): Promise<Set<string>> {
+  const [titles, metadataKeys, indexKeys] = await Promise.all([
+    db.volumes.orderBy('series_title').uniqueKeys(),
+    db.series_metadata.toCollection().primaryKeys(),
+    db.series_index.toCollection().primaryKeys()
+  ]);
+  const keys = new Set<string>();
+  for (const key of [...titles, ...metadataKeys, ...indexKeys]) {
+    if (typeof key === 'string') keys.add(protectedSeriesKey(key));
+  }
+  return keys;
+}
+
+export interface DeepLinkImportOptions {
+  /**
+   * The one existing series (`protectedSeriesKey`) the user agreed, in the
+   * import confirmation, to let this link's `series.json` update. Every other
+   * series already in the library is left alone.
+   */
+  allowSeriesKey?: string;
+}
+
+/**
  * Import a deep-linked `.cbz` with what its manifest brought along:
  *
- * - the `series.json` joins the import batch BEFORE the archive is queued, so
- *   the batch applies it once the volume is saved — exactly as a `series.json`
- *   inside an imported ZIP (keyed by the title the volume was stored under);
+ * - the manifest's `series.json` joins the import batch once the archive has
+ *   its import turn, so the batch applies it once the volume is saved — exactly
+ *   as a `series.json` inside an imported ZIP (keyed by the title the volume was
+ *   stored under) — except that neither it nor a `series.json` packed INSIDE
+ *   the archive ever lands on a series that was already in the library, unless
+ *   the user allowed that one in the confirmation (`allowSeriesKey`). The
+ *   library is read for that inside the turn too, and again when the file is
+ *   applied: a series a sync or another import added while the link waited, or
+ *   while its archives were still in the queue, is just as much the user's.
+ *   A link's file is keyed only by the titles its own import stored, lands
+ *   unasked only on a series that was absent when that import first saved
+ *   into it — read inside that save's own transaction, so no other writer
+ *   can slip in between — and is dropped when that import fails or imports
+ *   nothing (`LinkSeriesGuard`);
  * - the layers go through the same importer a cloud listing's pull uses
  *   (`importFetchedLayers`), onto the volume this import installed.
  *
@@ -57,12 +97,19 @@ async function rememberPendingOcr(
 export async function importDeepLinkedArchive(
   downloaded: HtmlDownloadResult,
   requestVolume: string,
-  installedBefore: Set<string>
+  installedBefore: Set<string>,
+  options: DeepLinkImportOptions = {}
 ): Promise<VolumeMetadata | undefined> {
   if (!downloaded.archiveFile) throw new Error('No archive to import');
-  if (downloaded.seriesFile) recordSeriesFile(downloaded.seriesFile);
 
-  await importArchiveWithOptionalMokuro(downloaded.archiveFile, downloaded.mokuroFile);
+  await importArchiveWithOptionalMokuro(downloaded.archiveFile, downloaded.mokuroFile, {
+    protectSeries: async () => {
+      const keys = await localSeriesKeys();
+      if (options.allowSeriesKey) keys.delete(options.allowSeriesKey);
+      return keys;
+    },
+    seriesFile: downloaded.seriesFile
+  });
 
   const target = pickCoverTarget(await db.volumes.toArray(), installedBefore, requestVolume);
   await rememberPendingOcr(downloaded, target);

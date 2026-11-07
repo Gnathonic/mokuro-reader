@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { generateThumbnail } from '$lib/catalog/thumbnails';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
+import { provenanceOfFile, type OcrProvenance } from '$lib/catalog/ocr-provenance';
 import {
   extractSeriesName,
   extractTitlesFromPath,
@@ -28,6 +29,7 @@ import {
 } from '$lib/util/series-extraction';
 import { generateUUID } from '$lib/util/uuid';
 import { naturalSort } from '$lib/util/natural-sort';
+import { RASTER_FORMAT_NAMES, rasterTypeForName, toRasterImageFile } from '$lib/util/raster-image';
 
 // ============================================
 // TYPES
@@ -45,6 +47,10 @@ export interface ParsedMokuro {
   pages: MokuroPage[];
   chars: number;
   spineWidth?: number;
+  /** The file's `ocr_engine` block, verbatim, when it is a plain object (`ocr-provenance.ts`). */
+  ocrEngine?: Record<string, unknown>;
+  /** The file's `edited` block (a person's text), verbatim, when it is a plain object. */
+  edited?: Record<string, unknown>;
 }
 
 /**
@@ -154,6 +160,10 @@ async function getImageDimensions(file: File): Promise<{ width: number; height: 
  * @returns Parsed mokuro data
  * @throws If the file is invalid or missing required fields
  */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
   const text = await readFileAsText(file);
   let data: unknown;
@@ -181,7 +191,9 @@ export async function parseMokuroFile(file: File): Promise<ParsedMokuro> {
     volumeUuid: obj.volume_uuid as string,
     pages: obj.pages as MokuroPage[],
     chars: (obj.chars as number) ?? 0,
-    ...(obj.spine_width != null && { spineWidth: obj.spine_width as number })
+    ...(obj.spine_width != null && { spineWidth: obj.spine_width as number }),
+    ...(isPlainObject(obj.ocr_engine) ? { ocrEngine: obj.ocr_engine } : {}),
+    ...(isPlainObject(obj.edited) ? { edited: obj.edited } : {})
   };
 }
 
@@ -467,11 +479,80 @@ function calculateCumulativeChars(pages: MokuroPage[]): number[] {
  * 4. Calculating character counts
  * 5. Creating nested source pairings for discovered archives
  *
+ * An image-only volume reviewed at import (#285) is saved under exactly the
+ * names and uuid the review chose (`input.importNames`); any other image-only
+ * volume (a cloud download) is named by the cleaned-up path extraction.
+ *
  * @param input - Decompressed volume data
  * @returns Processed volume ready for database
  */
+/**
+ * The volume's images, each typed by its magic bytes — raster formats only.
+ *
+ * Every install path (local files, archives, cloud downloads, deep links)
+ * converges here, so this is where an image's stored type is decided. An
+ * archive entry arrives untyped and a loose file with whatever its extension
+ * implied; neither is trusted. A non-empty file that is not a supported raster
+ * format (SVG, HTML, anything else) is left out with a warning, so a volume's
+ * OCR treats it as a missing page. An empty file carries no bytes to sniff and
+ * none to run: it keeps its place, labelled by its name's raster type.
+ */
+export async function keepRasterImages(
+  imageFiles: Map<string, File>
+): Promise<{ images: Map<string, File>; rejected: string[] }> {
+  const entries = await Promise.all(
+    Array.from(imageFiles, async ([path, file]): Promise<[string, File | null]> => {
+      if (file.size === 0) {
+        const type = rasterTypeForName(file.name) ?? rasterTypeForName(path) ?? 'image/png';
+        return [
+          path,
+          file.type === type
+            ? file
+            : new File([file], file.name, { type, lastModified: file.lastModified })
+        ];
+      }
+      try {
+        return [path, await toRasterImageFile(file, file.name)];
+      } catch (error) {
+        console.warn(`Could not read image ${path}:`, error);
+        return [path, null];
+      }
+    })
+  );
+  const images = new Map<string, File>();
+  const rejected: string[] = [];
+  for (const [path, file] of entries) {
+    if (file) images.set(path, file);
+    else rejected.push(path);
+  }
+  if (rejected.length > 0) {
+    console.warn(
+      `Skipped ${rejected.length} file(s) that are not a supported raster image (${RASTER_FORMAT_NAMES}):`,
+      rejected
+    );
+  }
+  return { images, rejected };
+}
+
 export async function processVolume(input: DecompressedVolume): Promise<ProcessedVolume> {
-  const { mokuroFile, imageFiles, basePath, sourceType, nestedArchives, thumbnailSidecar } = input;
+  const { mokuroFile, basePath, sourceType, nestedArchives } = input;
+  const titlePath = input.titlePath ?? basePath;
+
+  // Raster images only, typed by their bytes (see `keepRasterImages`).
+  const { images: imageFiles } = await keepRasterImages(input.imageFiles);
+  let thumbnailSidecar: File | null = null;
+  if (input.thumbnailSidecar) {
+    thumbnailSidecar = await toRasterImageFile(
+      input.thumbnailSidecar,
+      input.thumbnailSidecar.name
+    ).catch(() => null);
+    if (!thumbnailSidecar) {
+      console.warn(
+        'Thumbnail sidecar is not a supported raster image; the cover is built from the pages:',
+        input.thumbnailSidecar.name
+      );
+    }
+  }
 
   // Parse mokuro or extract info from path
   let mokuroData: ParsedMokuro | null = null;
@@ -482,9 +563,14 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
   // these exact bytes, whichever path delivered them — an imported file, an
   // archive entry, a cloud sidecar (already gunzipped), a deep link's fetch.
   let mokuroSha256: string | undefined;
+  // What the file says made its OCR (or that a person did), with a digest of
+  // the FILE's pages: taken before the image matching below remaps any
+  // `img_path`.
+  let ocrProvenance: OcrProvenance | undefined;
   if (mokuroFile) {
     mokuroData = await parseMokuroFile(mokuroFile);
     mokuroSha256 = await sha256Hex(mokuroFile);
+    ocrProvenance = await provenanceOfFile(mokuroData, mokuroData.pages);
     volumeInfo = {
       series: mokuroData.series,
       volume: mokuroData.volume
@@ -492,7 +578,11 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
   } else {
     // Image-only volume
     isImageOnly = true;
-    volumeInfo = extractVolumeInfo(basePath);
+    if (input.importNames) {
+      volumeInfo = { series: input.importNames.series, volume: input.importNames.volume };
+    } else {
+      volumeInfo = extractVolumeInfo(basePath);
+    }
   }
 
   // Match images to pages
@@ -651,6 +741,7 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
       mokuroFile: null,
       source: archiveSource,
       basePath: archiveStem,
+      titlePath: `${titlePath}/${archiveStem}`,
       estimatedSize: archiveFile.size * 2.5,
       imageOnly: false
     };
@@ -666,15 +757,21 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     seriesUuid = mokuroData.seriesUuid;
     seriesName = volumeInfo.series;
   } else {
-    // Image-only: use sophisticated series extraction and deterministic UUID
-    seriesName = extractSeriesName(basePath);
+    // Image-only: the reviewed series, else the extracted one, and a
+    // deterministic UUID from that name
+    seriesName = input.importNames ? volumeInfo.series : extractSeriesName(basePath);
     seriesUuid = generateDeterministicUUID(seriesName);
   }
 
   // Generate deterministic volume UUID from series + volume name
-  // This ensures the same volume gets the same UUID across devices
+  // This ensures the same volume gets the same UUID across devices.
+  // A reviewed image-only volume carries its uuid: its literal location's, or
+  // the row the library already has for it (#285).
   const volumeUuid =
-    mokuroData?.volumeUuid || generateDeterministicUUID(`${seriesName}/${volumeInfo.volume}`);
+    mokuroData?.volumeUuid ||
+    (!mokuroData && input.importNames
+      ? input.importNames.uuid
+      : generateDeterministicUUID(`${seriesName}/${volumeInfo.volume}`));
 
   const metadata: ProcessedMetadata = {
     volumeUuid,
@@ -691,9 +788,11 @@ export async function processVolume(input: DecompressedVolume): Promise<Processe
     missingPages: matchResult.missing.length > 0 ? matchResult.missing.length : undefined,
     missingPagePaths: matchResult.missing.length > 0 ? matchResult.missing : undefined,
     imageOnly: isImageOnly,
+    ...(!mokuroData && input.importNames?.restore ? { keepStoredTitles: true } : {}),
     sourceType,
     spineWidth: mokuroData?.spineWidth,
-    ...(mokuroSha256 ? { mokuroSha256 } : {})
+    ...(mokuroSha256 ? { mokuroSha256 } : {}),
+    ...(ocrProvenance ? { ocrProvenance } : {})
   };
 
   return {

@@ -1,5 +1,5 @@
 import type { Readable } from 'svelte/store';
-import type { CloudFileMetadata, ProviderType } from './provider-interface';
+import type { CloudFileMetadata, ProviderType, UploadFileResult } from './provider-interface';
 
 /**
  * Cloud Cache Interface
@@ -34,6 +34,12 @@ import type { CloudFileMetadata, ProviderType } from './provider-interface';
 export type CacheAddMetadata<T> = T & { modifiedTimeProvisional: boolean };
 
 /**
+ * What one change-feed refresh did ({@link CloudCache.refreshFromChanges}):
+ * nothing to apply, changes applied, or a full listing instead.
+ */
+export type ChangeFeedResult = 'unchanged' | 'applied' | 'reset';
+
+/**
  * The cache entry ONE successful upload earns — the single rule for
  * post-upload cache maintenance, shared by every uploader
  * (`unifiedCloudManager.uploadFile`, the sync service's direct
@@ -54,9 +60,12 @@ export function uploadCacheEntry(
   providerType: ProviderType,
   path: string,
   uploadedBytes: number,
-  uploaded: { fileId: string; modifiedTime?: string; size?: number },
+  uploaded: Pick<
+    UploadFileResult,
+    'fileId' | 'modifiedTime' | 'size' | 'revision' | 'parentId' | 'name'
+  >,
   description?: string
-): CacheAddMetadata<CloudFileMetadata> {
+): CacheAddMetadata<CloudFileMetadata & { parentId?: string; name?: string }> {
   return {
     provider: providerType,
     fileId: uploaded.fileId,
@@ -64,7 +73,13 @@ export function uploadCacheEntry(
     modifiedTime: uploaded.modifiedTime ?? new Date().toISOString(),
     modifiedTimeProvisional: !uploaded.modifiedTime,
     size: uploaded.size ?? uploadedBytes,
-    description
+    description,
+    // The receipt's change token, and on Drive where the file now lives
+    // (`deleteSeriesFolder` reads `parentId`; `renameFile` falls back to a
+    // folder lookup without it). Absent fields stay absent.
+    ...(uploaded.revision ? { revision: uploaded.revision } : {}),
+    ...(uploaded.parentId ? { parentId: uploaded.parentId } : {}),
+    ...(uploaded.name ? { name: uploaded.name } : {})
   };
 }
 
@@ -118,9 +133,26 @@ export interface CloudCache<T = any> {
   getAllFiles(): T[];
 
   /**
+   * A token that changes whenever the cached contents do (see
+   * `CoalescedCacheStore.revision`). Optional: a cache without one is simply
+   * never memoised over.
+   */
+  revision?(): object;
+
+  /**
    * Fetch fresh data from cloud provider and populate cache
    */
   fetch(): Promise<void>;
+
+  /**
+   * Bring the cache up to date from the provider's change feed — the changes
+   * since the last listing, not the listing again; falls back to a full
+   * {@link fetch} whenever the feed cannot answer (`'reset'`). Never toggles
+   * the fetching/loaded state, and leaves the cache untouched (same identity)
+   * when nothing changed. OPTIONAL: Google Drive's cache is the one with a
+   * feed today (`changes.list`).
+   */
+  refreshFromChanges?(): Promise<ChangeFeedResult>;
 
   /**
    * Clear all cached data

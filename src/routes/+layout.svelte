@@ -1,13 +1,16 @@
 <script lang="ts">
   import '../app.css';
+  // After app.css, the cascade position its inline <style> in app.html had.
+  import '$lib/styles/night-mode.css';
   import { browser, dev } from '$app/environment';
   import { inject } from '@vercel/analytics';
+  import { scrubAnalyticsEvent } from '$lib/util/analytics-scrub';
   import { onMount } from 'svelte';
   import NavBar from '$lib/components/NavBar.svelte';
   import Snackbar from '$lib/components/Snackbar.svelte';
   import ConfirmationPopup from '$lib/components/ConfirmationPopup.svelte';
   import ExtractionModal from '$lib/components/ExtractionModal.svelte';
-  import ImageOnlyImportModal from '$lib/components/ImageOnlyImportModal.svelte';
+  import ImageOnlyReviewDialog from '$lib/components/ImageOnlyReviewDialog.svelte';
   import ImportMismatchModal from '$lib/components/ImportMismatchModal.svelte';
   import WebDAVErrorModal from '$lib/components/WebDAVErrorModal.svelte';
   import MissingFilesModal from '$lib/components/MissingFilesModal.svelte';
@@ -22,6 +25,8 @@
   import MigrationBlocker from '$lib/components/MigrationBlocker.svelte';
   import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
   import { initializeProviders } from '$lib/util/sync/init-providers';
+  import { foregroundSync } from '$lib/util/sync/foreground-sync';
+  import { activityTracker } from '$lib/util/activity-tracker';
   import { initFileHandler } from '$lib/util/file-handler';
   import { initProgressTracker } from '$lib/metadata/progress-tracker';
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
@@ -30,12 +35,30 @@
   import { navigateBack, currentView } from '$lib/util/hash-router';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
+  import { retirePreviousOcrLayers } from '$lib/catalog/retired-previous-ocr';
+  import { historyDb } from '$lib/reading-history/history-db';
+  import { loadHistoryTurns } from '$lib/reading-history/turns-store';
+  import { getOrCreateDeviceId } from '$lib/reading-history/record';
+  import {
+    detectDeviceFacts,
+    readDeviceEnv,
+    touchDeviceRecord
+  } from '$lib/reading-history/device-facts';
   import { initGoalsLifecycle } from '$lib/goals';
   import { cleanupLegacyEngineCredentials } from '$lib/settings/engine-credentials-cleanup';
   import { get } from 'svelte/store';
   import { loadWebFonts } from '$lib/util/web-fonts';
+  import { CLOUD_TEST_HOOKS } from '$lib/util/sync/cloud-test-hooks';
 
   if (browser) void loadWebFonts();
+
+  // The interop rig's driver (`__mokuroInterop`), in a hooked build only: the
+  // constant is false in production, so the import and its chunk are dropped.
+  if (CLOUD_TEST_HOOKS && browser) {
+    import('$lib/interop/rig-driver')
+      .then((m) => m.install())
+      .catch((error) => console.error('[interop] rig driver failed to load', error));
+  }
 
   // Migration state
   let migrationNeeded: 1 | 2 | null = $state(null);
@@ -47,7 +70,29 @@
 
   let { children }: Props = $props();
 
-  inject({ mode: dev ? 'development' : 'production' });
+  // Page views go out without sign-in secrets in their URL (OAuth codes,
+  // AniList's `#access_token=` landing).
+  inject({ mode: dev ? 'development' : 'production', beforeSend: scrubAnalyticsEvent });
+
+  onMount(() => {
+    const stopForeground = foregroundSync.listen();
+    // Progress syncs are batched while reading (activity-tracker); a pending
+    // change goes up at once when the tab hides or the page goes away. On
+    // `visibilitychange` the document is already `hidden`, so the flush's sync
+    // is outside the reading session and uploads what one deferred
+    // (`util/sync/reading-session.ts`).
+    const flushOnHide = () => {
+      if (document.visibilityState === 'hidden') activityTracker.flush();
+    };
+    const flushOnPageHide = () => activityTracker.flush();
+    document.addEventListener('visibilitychange', flushOnHide);
+    window.addEventListener('pagehide', flushOnPageHide);
+    return () => {
+      stopForeground();
+      document.removeEventListener('visibilitychange', flushOnHide);
+      window.removeEventListener('pagehide', flushOnPageHide);
+    };
+  });
 
   onMount(() => {
     return initGoalsLifecycle();
@@ -100,6 +145,55 @@
     // Start background thumbnail generation once startup checks are complete
     startThumbnailProcessing();
 
+    // Reading history: create/refresh this device's facts. Never blocks start-up.
+    touchDeviceRecord(
+      historyDb(),
+      detectDeviceFacts(readDeviceEnv()),
+      new Date().toISOString()
+    ).catch((error) => console.warn('[reading-history] device record failed:', error));
+    // positions.json: mark this device's position changes and push them after
+    // page turns settle. Started at once, so no turn goes unmarked.
+    void Promise.all([
+      import('$lib/positions/positions-local'),
+      import('$lib/positions/positions-sync'),
+      import('$lib/positions/visit')
+    ])
+      .then(([{ initPositionTracking }, { initPositionPush }, { initVisitTracking }]) => {
+        initPositionTracking();
+        initPositionPush();
+        // Look-up visits give their position back; they need this device's id.
+        return getOrCreateDeviceId(historyDb()).then(initVisitTracking);
+      })
+      .catch((error) => console.warn('[positions] could not start:', error));
+    // Reading history's page turns load first (the stats read them); then turns
+    // still held in volume records become history events (phase 2b). The
+    // cut-over strips nothing unless that load succeeded.
+    loadHistoryTurns(historyDb())
+      .catch((error) => console.warn('[reading-history] could not load history turns:', error))
+      .then(() => import('$lib/reading-history/cut-over'))
+      .then(({ cutOverLegacyTurns }) => cutOverLegacyTurns(historyDb()))
+      .catch((error) => console.warn('[reading-history] cut-over failed:', error))
+      // Cross-device position offers (phase 2c): watch history once it is loaded.
+      .then(() => import('$lib/reading-history/position-store'))
+      .then(({ initPositionOffers }) => initPositionOffers(historyDb()))
+      .catch((error) => console.warn('[reading-history] position offers failed:', error));
+
+    // Reading stats from history (phase 3a). Each record's reading from
+    // before history is frozen into a snapshot right away (it needs no
+    // events: history from before the freeze is set against it as it arrives).
+    void import('$lib/reading-history/stats-store')
+      .then(({ initReadingStats, freezeLegacyBaselines }) => {
+        freezeLegacyBaselines();
+        initReadingStats();
+      })
+      .catch((error) => console.warn('[reading-history] stats failed to start:', error));
+
+    // v1.10.0's "Previous OCR" keepsakes nobody claimed (the OCR upgrade no
+    // longer keeps one): removed once per browser, from metadata rows alone.
+    retirePreviousOcrLayers().catch((error) =>
+      console.debug('[layers] previous-ocr cleanup skipped:', error)
+    );
+
     // Prune expired cloud cover cache, fire-and-forget
     void import('$lib/catalog/cloud-covers')
       .then((m) => m.pruneExpiredCloudCovers())
@@ -115,7 +209,15 @@
       // the connected server is known and can authenticate.
       .finally(() => {
         void import('$lib/catalog/server-ocr-queue')
-          .then((m) => m.startServerOcrQueue())
+          .then((m) => {
+            // A cloud Bunko finished volumes: pick up their new sidecars
+            // (the listing's index refresh runs the OCR upgrade + layer pull).
+            m.setQueueRelistHook(async () => {
+              const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+              await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true });
+            });
+            return m.startServerOcrQueue();
+          })
           .catch((error) => console.debug('[OCR queue] start skipped:', error));
       });
 
@@ -152,7 +254,7 @@
     <Snackbar />
     <ConfirmationPopup />
     <ExtractionModal />
-    <ImageOnlyImportModal />
+    <ImageOnlyReviewDialog />
     <ImportMismatchModal />
     <WebDAVErrorModal />
     <MissingFilesModal />

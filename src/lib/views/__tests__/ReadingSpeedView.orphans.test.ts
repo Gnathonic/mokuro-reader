@@ -100,15 +100,21 @@ import ReadingSpeedView from '$lib/views/ReadingSpeedView.svelte';
 import { resolveSyncedProgress } from '$lib/metadata/hole-patch';
 import { VolumeData, volumes, volumesWithTrash } from '$lib/settings/volume-data';
 
-/** A record that clears `processVolumeSpeedData`'s filters, so it is SPEED-TRACKED. */
-function speedTracked(over: Partial<VolumeData> = {}) {
+/**
+ * A record that clears `processVolumeSpeedData`'s filters, so it is
+ * SPEED-TRACKED. Its time and characters ride a pre-history baseline — the
+ * figures the stats count for a volume read before reading history existed.
+ */
+function speedTracked(over: Partial<VolumeData> & { minutes?: number } = {}) {
+  const { minutes = 100, ...rest } = over;
+  const chars = rest.chars ?? 5000;
   return new VolumeData({
     completed: true,
     progress: 180,
-    chars: 5000,
-    timeReadInMinutes: 100,
+    chars,
     lastProgressUpdate: '2026-08-01T00:00:00.000Z',
-    ...over
+    legacyStats: { time_ms: minutes * 60_000, chars, before: 1 },
+    ...rest
   });
 }
 
@@ -200,7 +206,7 @@ describe('ReadingSpeedView orphan bucket', () => {
     volumesWithTrash.set({
       // In the clicked bucket: orphaned AND speed-tracked.
       'uuid-bucket-1': speedTracked(),
-      'uuid-bucket-2': speedTracked({ chars: 4000, timeReadInMinutes: 80 }),
+      'uuid-bucket-2': speedTracked({ chars: 4000, minutes: 80 }),
       // Orphaned but NOT in that row — no speed data, so the series table never
       // lists them. These are the 456 the button used to take with it.
       'uuid-elsewhere-1': markedOnly(),
@@ -265,5 +271,46 @@ describe('ReadingSpeedView orphan bucket', () => {
     const others = await screen.findByText(/other volume\(s\)/);
     expect(others.textContent).toMatch(/\b1 other volume\(s\)/);
     expect(others.textContent).not.toMatch(/\b2 other volume\(s\)/);
+  });
+});
+
+describe('ReadingSpeedView per-volume delete', () => {
+  it('forgets the volume\'s stats exactly like deleting a volume with "remove stats"', async () => {
+    // The dialog promises "all progress, time, and speed data"; the button used
+    // to zero only `timeReadInMinutes`, so progress, chars and page turns stayed.
+    volumesWithTrash.set({
+      'uuid-real': speedTracked({
+        series_uuid: 'series-real',
+        series_title: 'Real Series',
+        volume_title: 'Real Series v01',
+        recentPageTurns: [
+          [1_000, 1, 10],
+          [61_000, 2, 30]
+        ]
+      })
+    });
+
+    render(ReadingSpeedView);
+
+    const row = await vi.waitFor(() => {
+      const found = screen
+        .getAllByRole('row')
+        .find(
+          (r) =>
+            r.textContent?.includes('Real Series v01') &&
+            within(r).queryAllByRole('button').length > 0
+        );
+      expect(found).toBeDefined();
+      return found!;
+    });
+    await fireEvent.click(within(row).getAllByRole('button')[0]);
+    await fireEvent.click(await screen.findByText('Yes, delete'));
+
+    const record = get(volumesWithTrash)['uuid-real'];
+    expect(record.deletedOn).toBeTruthy();
+    expect(record.progress).toBe(0);
+    expect(record.chars).toBe(0);
+    expect(record.recentPageTurns).toEqual([]);
+    expect(get(volumes)['uuid-real']).toBeUndefined();
   });
 });

@@ -25,6 +25,11 @@ export type MiscSettings = {
    * Top and left only for now (right/bottom collide with the quick actions
    * menu). */
   editToolbarDock: EditToolbarDock;
+  /** The naming mode last used in the image-only import review (#285):
+   * true = "Folder names" (each volume's own folder/archive name verbatim),
+   * false = "Cleaned up" (series name + number). Only the review's starting
+   * mode — the review's choice is what names the volumes. */
+  keepFolderNamesAsTitles: boolean;
 };
 
 export type EditToolbarDock = 'top' | 'left';
@@ -56,7 +61,8 @@ const defaultSettings: MiscSettings = {
   deviceRamGB: getDefaultRamSetting(),
   turboMode: false, // Default to single-operation mode (patient users)
   gdriveAutoReAuth: true, // Keep users synced during long reading sessions
-  editToolbarDock: 'top'
+  editToolbarDock: 'top',
+  keepFolderNamesAsTitles: false
 };
 
 /**

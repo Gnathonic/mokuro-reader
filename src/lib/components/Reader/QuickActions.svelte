@@ -19,6 +19,7 @@
   import { showTextBoxPicker } from './text-box-picker';
   import type { Page } from '$lib/types';
   import { onDestroy } from 'svelte';
+  import { displayableImageBlob } from '$lib/util/raster-image';
 
   interface Props {
     left: (_e: any, ingoreTimeOut?: boolean) => void;
@@ -41,6 +42,10 @@
     layers?: LayerSummary[];
     currentLayer?: string | null;
     primaryLayerName?: string;
+    /** Passed to the picker: may the account publish this volume's shared corrections? */
+    canPublishLayers?: boolean;
+    /** Passed to the picker: the connected provider's status (`forksOnEdit`). */
+    layerStatus?: { serverCompilesMetadata?: boolean } | null;
     onSelectLayer?: (layerId: string | null) => void;
     onLayerAction?: (action: LayerAction, layerId: string | null) => void;
     /**
@@ -69,6 +74,8 @@
     layers = [],
     currentLayer = null,
     primaryLayerName = 'Primary',
+    canPublishLayers = false,
+    layerStatus = null,
     onSelectLayer,
     onLayerAction,
     layersOpen = $bindable(false)
@@ -118,7 +125,13 @@
   async function onUpdateCard(src: File | undefined, page?: Page, pageNumber?: number) {
     if ($settings.ankiConnectSettings.enabled && src && page) {
       // Show text box picker first, then dispatch to create/update based on cardMode
-      showTextBoxPicker(URL.createObjectURL(src), page, ankiTags, volumeMetadata, pageNumber);
+      showTextBoxPicker(
+        URL.createObjectURL(displayableImageBlob(src)),
+        page,
+        ankiTags,
+        volumeMetadata,
+        pageNumber
+      );
     }
     open = false;
   }
@@ -227,6 +240,8 @@
         {layers}
         current={currentLayer}
         primaryName={primaryLayerName}
+        canPublish={canPublishLayers}
+        status={layerStatus}
         onSelect={(id) => {
           onSelectLayer?.(id);
           layersOpen = false;

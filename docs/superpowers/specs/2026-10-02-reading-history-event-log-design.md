@@ -1,0 +1,412 @@
+# Reading history as a per-device event log
+
+**Date:** 2026-10-02
+**Status:** design, not implemented. Branch `docs/reading-history-event-log` (off develop @ 6107b9a1).
+**Deferred, separate:** provider write receipts + change feeds — issue #288. This design works with
+today's full listings and gets cheaper when #288 lands.
+Tags: **[V]** verified in code on develop · **[L]** likely · **[S]** speculative.
+
+## Why
+
+A user report: the same volume, synced correctly (page 58/200, 2h 39m on both devices), shows ~7h 14m
+left on desktop and ~6h 20m on mobile. Investigating it turned up problems in both the speed maths and
+the storage underneath it.
+
+### Speed calculation
+
+1. **Device-dependent results. [V]** The idle cutoff is `inactivityTimeoutMinutes`, a _profile_ setting
+   (`settings.ts:321`), and the active profile is chosen per device (`settings.ts:581-582`, Mobile vs
+   Desktop by platform). The same synced turns give different speeds on different devices.
+2. **The 4 h window can drop all page-turn data. [V]** `calculateReadingSpeed` adds volumes newest-first
+   and `break`s at the first one that would exceed 4 h (`reading-speed.ts:259`). Turns accumulate forever,
+   so a long or re-read volume trips it and the estimate silently falls back to completed volumes only.
+3. **Two clocks. [V]** `timeReadInMinutes` is a `setInterval` +1/min (`volume-data.ts:757`) that also runs
+   while "paused" (#175); turn-derived time is the other; `getEffectiveReadingTime` takes the max
+   (`reading-speed.ts:126`).
+4. **No per-page skip handling. [V]** Skimmed pages count; the only guard drops a whole volume above
+   1000 cpm. Related: #160, #224, #276, #202.
+5. **The last page of a sitting has no end time. [V]** A turn records arrival only; the dwell on the page
+   you closed on is unknown.
+
+### Storage and sync
+
+6. **History lost on merge. [V]** Volume entries merge whole-entry, newest wins
+   (`unified-sync-service.ts:951`, `:1162`). Turns recorded on the losing device between syncs are gone.
+7. **Whole file per page pause. [V]** Every page turn resets a 5 s sync timer (`activity-tracker.ts:75`);
+   each sync downloads, parses, merges, stringifies and re-uploads the entire `volume-data.json`. On Drive
+   each upload also walks the whole account listing (`google-drive-provider.ts:468`) — #288.
+8. **localStorage ceiling. [V]** The whole map is rewritten to localStorage on every turn and every timer
+   minute (`volume-data.ts:784`), with no try/catch. ~5 MB quota ≈ 900 read volumes.
+9. **Size. [L]** Page turns are ~94% of `volume-data.json` (synthetic model, ≈5.4 KB per read volume; the
+   largest real file seen is 873 KB). Delta-encoded columns + deflate are ~11× smaller than the JSON.
+
+## Decisions already made (owner, 2026-10-02)
+
+- Keep **raw events** indefinitely. Summarising old data is a later option, not part of this.
+- Idle cutoff becomes **adaptive** (from the user's own measured speed), with an optional **manual override
+  that syncs with the history**, not with profiles. Applied when stats are computed, never at recording.
+- Providers can't append to an existing file (Drive, OneDrive, MEGA: no; WebDAV only through a SabreDAV
+  extension). The design must not need append.
+- `feat/reading-history-heatmap` is deleted; any heatmap returns as a rewrite on this storage.
+- Device-level stats (which devices you read on, how speed compares) are a goal.
+
+## Model
+
+### Identity
+
+- **Device ID**: random UUID created on first run, stored in IndexedDB. Clearing site data makes a new one.
+- **Event ID**: `[device, seq]`, where `seq` increments per device. Permanent and globally unique; the merge
+  key for everything below. Ordering _within_ a device is by `seq`, never by timestamp.
+
+### Device record
+
+The record splits by **who may write it**. A device's own folder is written only by that device, but a
+user must be able to rename or merge any device from any other device.
+
+```ts
+// history/<device>/device.json — FACTS, written only by that device
+interface DeviceFacts {
+  device: string; // UUID
+  class: 'phone' | 'tablet' | 'laptop' | 'desktop' | 'unknown'; // auto-detected
+  os?: string; // coarse family: 'Android', 'iOS', 'Windows', 'macOS', 'Linux', 'ChromeOS'
+  browser?: string; // coarse family: 'Chrome', 'Firefox', 'Safari', 'Edge', …
+  first_seen: string; // ISO
+  last_seen: string;
+}
+
+// volume-data.json → `tracking.devices[device]` — USER CHOICES, any device may edit,
+// newest `updated_at` wins per device key (same merge + future-stamp clamp as the `series` section)
+interface DeviceLabel {
+  name?: string; // "Pixel 8", "Work laptop"
+  class?: DeviceFacts['class']; // user correction of the detected class
+  merged_into?: string; // alias: this device's events count as that device's
+  updated_at: string;
+}
+```
+
+Class, OS and browser come from coarse signals (pointer type, touch, screen size,
+`navigator.userAgentData` where available, a minimal UA family match otherwise). No device model, no full
+user agent.
+
+#### Labels
+
+The UUID is never shown. Every device always has a readable label:
+
+- **Generated default**, used until the user names it: `<class> · <OS> · <browser>`, e.g.
+  "Phone · Android · Chrome", "Desktop · Windows · Firefox". When two devices generate the same label,
+  both get their first-seen month appended ("… (since Mar 2026)").
+- **The current device is marked** ("This device") wherever devices are listed, so the user can tell which
+  row to rename without reading anything technical.
+
+Where the user labels a device (recommendation; one edit component, three entry points):
+
+1. **Settings → Sync → Devices**: "This device" with an editable name at the top, then every other device
+   with rename, class correction and merge. The full management screen.
+2. **Inline in the device stats view**: click a device's name to rename it in place, where the label
+   actually matters.
+3. **One non-blocking prompt**, the first time the history holds events from a second device: a dismissible
+   banner on the stats view, "You read on 2 devices — name this one?". Never a first-run modal. A
+   single-device user never sees a device anywhere.
+
+**As built (phase 4, `devices.ts` / `device-stats.ts` / `tracking-data.ts` / `DevicesSettings.svelte` /
+`DeviceStatsCard.svelte` / `SecondDeviceBanner.svelte`).** Deviations from the design above:
+
+- The label entry is `tracking.devices[<id>]` = `{name?, class?, merged_into?, lastUpdated}` —
+  `lastUpdated`, not `updated_at`, like every other `tracking` key (the bogus-stamp check reads that
+  name). One stamp per entry, newest wins, a tie keeps local; a future stamp is clamped and forfeits as in
+  `series`, detected per id (`devices/<id>` in the tracking section's one bogus set), and the multi-copy
+  fold filters per id. The entry is replaced whole, so a cleared name or an unmerge wins by its stamp; a
+  rename and a merge of the same device on two devices between syncs keep only the newer. Labels never
+  touch `device.json` or the history database.
+- A device is any id with a facts row or a native event; `legacy:` ids are never devices. Generated
+  labels still equal after the month get " 2", " 3", … by first-seen, then id; the month is UTC so
+  every device shows the same suffix. Collisions are counted over every known id, merged ones included,
+  so a device keeps one label everywhere. A device with events but no facts is "Unknown device", its
+  first-seen taken from its earliest event.
+- `merged_into` applies only where reading is grouped by device (the per-device rows and the device
+  lists), followed with a cycle guard: two devices merged into each other between syncs both show
+  unmerged, and the next merge into either takes that device off the cycle first, so it wins. Events are never re-keyed, so volume, series and total figures, long-pause answers and
+  position offers keep raw ids and do not move on a merge. Merging does not carry the source's name; the
+  group shows the target's.
+- Entry point 1 is a "Devices" block on the cloud screen (`#/cloud`); the app has no "Settings → Sync".
+  It shows once two device ids are known, so an unmerge stays reachable after everything is merged.
+  Entry points 2 and 3 show once two device groups hold native reading. "Not now" on the banner is per
+  browser (`localStorage`); naming this device ends it too — the banner stays as "Saved." with a Close
+  button until closed, so nothing vanishes under the pointer.
+- Per device: time, characters read, share of time, last read (its newest event — another device's
+  `last_seen` is stale by design, the upload signature leaves it out) and speed once ≥ 30 min of samples.
+  "Before history" holds converted legacy views plus the unexplained pre-history snapshot, so the rows
+  sum to the page's totals; volume-editor `adjust`s are their own "Edits" row, not the editing
+  device's. Both are hidden at zero and cannot be renamed. Per-class and per-layout totals are not built.
+- The position offer names the device the reading comes from ("on Pixel 8", the generated label when
+  unnamed); a device this one knows nothing about keeps "on another device".
+
+### Events
+
+Each event carries `device`, `seq`, `t` (epoch ms, the recording device's clock) and one payload:
+
+| Kind      | Payload                                                                                                                                                                                   | Replaces                                                                                                   |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `page`    | `volume`, `first_page`, `last_page`, `page_chars` (per page, first..last), `chars_before`, `dwell_ms` (raw, uncapped; `null` = unknown, legacy only), `layout`, `orientation`, `viewport` | `recentPageTurns`                                                                                          |
+| `adjust`  | `volume`, `time_delta_ms?`, `chars_delta?`                                                                                                                                                | manual edits in the volume editor                                                                          |
+| `restart` | `volume`                                                                                                                                                                                  | `archivedReads` marker                                                                                     |
+| `forget`  | `volume`, `before`                                                                                                                                                                        | "delete stats" (`deleteVolume`: volume delete with "remove stats", and the speed page's per-volume delete) |
+| `resolve` | `volume` (the target's), `target` (`[device, seq]` of a `page` event), `count`: `'full'` \| `'typical'` \| `'none'`                                                                       | — (the user's answer about a long pause)                                                                   |
+
+- A `page` event is written when the user **leaves** a view (turn, close, tab hidden, idle), so dwell is
+  known, which fixes problem 5.
+- **One event per view, not per page.** Whatever is on screen together (one page, a double-page spread,
+  several pages of a continuous strip on an ultrawide) is one event. Its pages are the **whole pages in
+  the layout**: every page with any part on screen counts in full, never a fraction, and a view is always
+  at least one page (a zoomed-in corner of a page counts that whole page). `layout` is `single` |
+  `double` | `continuous-v` | `continuous-h`.
+- Two figures are **derived at analysis time**, not recorded, because they need every device's events:
+  `chars_visible` = `sum(page_chars)`, which drives the idle cutoff; and `chars_new` = the chars of pages
+  no earlier view of this read pass showed (on any device), which drives "characters read", so
+  overlapping views in continuous mode, or the same pages read on two devices, never credit a page twice.
+  Recording `page_chars` per page is what makes both possible.
+- Nothing is ever edited or deleted. `forget` and `restart` are applied when stats are computed, so both
+  are reversible in principle.
+- `completed`, `progress`, `chars` (current position) and per-volume settings stay in `volume-data.json`.
+  That file is **state**; the log is **history**.
+
+## Storage
+
+### Local (IndexedDB)
+
+A **separate Dexie database, `mokuro_history`**, not new tables in `mokuro_v3`. History has its own
+lifecycle (it outlives every catalog row), the export Worker never needs it, it stays off the
+`MOKURO_DB_SCHEMA` ladder, and its small writes never queue behind the catalog's long blob
+transactions.
+
+| Table            | Key                                   | Purpose                                                                          |
+| ---------------- | ------------------------------------- | -------------------------------------------------------------------------------- |
+| `history_meta`   | `key`                                 | this device's ID and next `seq` (phase 1)                                        |
+| `reading_events` | `[device+seq]`, indexes `volume`, `t` | every device's events, ours and imported                                         |
+| `history_files`  | cloud path                            | per remote file: `size`, `modifiedTime`, provider, imported `last_seq` (phase 2) |
+| `devices`        | `device`                              | device facts                                                                     |
+
+- Recording writes one row per event. No more whole-map rewrite to localStorage on every turn. The slimmed
+  `volumes` localStorage entry is still written, with a try/catch.
+- Estimated size: ~250k events for 1000 read volumes, a few tens of MB. [S] If that's a problem on phones,
+  closed months can stay as compressed blobs locally and decode only when a graph needs them.
+
+### Cloud
+
+```
+history/<device>/device.json          DeviceFacts (labels live in volume-data.json → tracking.devices)
+history/<device>/<YYYY-MM>.events     one month of that device's events
+```
+
+- **A device only ever writes files under its own `<device>/` folder.** No two devices write the same file,
+  so there are no write conflicts.
+- The current month's file is rebuilt from local events and uploaded **whole**. A heavy reader's month is
+  ~15 KB encoded. Once a month is over, its file is written one last time and then never changes.
+- Writes are batched: on leaving the reader, on `visibilitychange` → hidden, every few minutes while
+  reading, and on manual sync. Not per page.
+- File format: a small JSON header (`format`, `device`, `month`, `first_seq`, `last_seq`, `count`), then
+  the events in delta-encoded columns, deflated with the built-in `CompressionStream`. Versioned via
+  `format`. No new dependency.
+- `history/` must join the syncable allowlist (`syncable-file.ts:61-67`) so every provider lists it.
+
+### Import (how another device's events reach local records)
+
+1. A listing shows a remote `history/<X>/<month>.events` whose (`size`, `modifiedTime`, provider) differs
+   from `history_files`. Same staleness check as `series_index`.
+2. Download, decode, validate the header against the path.
+3. In **one transaction**, write every event keyed by `[device, seq]`. Writing an event that's already there
+   changes nothing: re-imports, retries and duplicate downloads are no-ops. A longer version of the file just
+   adds the new events.
+4. Update `history_files`. If decoding fails, the transaction never runs and the old stamp stays, so it's
+   retried next listing.
+
+Every device therefore holds the union of all devices' events. Graphs and speed read `reading_events`.
+
+**Integrity rules**
+
+- Size or modified time only decides _whether to download_. It never decides what gets written locally.
+- A header `last_seq` lower than what was already imported is logged as an anomaly (for example the other
+  device rebuilt after losing data). Nothing is deleted.
+- The same `[device, seq]` arriving with different content means two installs share an ID (a copied browser
+  profile). The importer keeps both, and the local device re-keys itself to a new ID going forward. [S]
+- A device never uploads events whose `device` isn't its own.
+
+## Speed and stats
+
+All computed from `reading_events` (after applying `forget`/`restart`/`merged_into`), the same way on every
+device.
+
+- **One clock.** Time read = sum of the counted dwell of `page` events plus `adjust` deltas. The
+  `setInterval` minute counter is retired; the live timer shows the same derived figure.
+- **Adaptive idle cutoff.** Based on the characters in the layout. A view's expected dwell is
+  `chars_visible × pace`, where `pace` (seconds per character) is one global robust median over recent
+  views. Because `chars_visible` already counts every whole page on screen, double-page spreads and long
+  continuous strips scale on their own; there is no per-device or per-layout term. A view's cap =
+  `clamp(k × expected, floor, ceiling)`; the floor covers art-only pages. With no data yet: today's 5 min
+  default. `k` starts at a fixed default and is **widened by the user** (below).
+  - **Manual override**: one value in a new `tracking` section of `volume-data.json`, newest-stamp-wins like
+    the `series` section (with the same future-stamp clamp). When set, it replaces the adaptive cap
+    everywhere. Profiles no longer hold it.
+- **Long pauses: ask at the timeout.** When a view reaches its cap, the timer stops counting and a prompt
+  appears **right then**, and stays up until answered. The app can't know whether the user is reading, so
+  it asks instead of guessing:
+  - **"Still reading"** (the user is there, reading slowly): the whole time so far counts, the timer
+    resumes, and the cutoff is **widened** so it doesn't keep happening: `k` grows to fit this view with
+    some headroom (bounded by the ceiling) and is saved in the `tracking` section, so it syncs. The prompt
+    can say what changed ("Cutoff widened to ~9 min for pages like this").
+  - **If they were away**, the same prompt is waiting when they return, showing how long it has been. They
+    choose: count it all, count typical time (`expected`), or don't count it.
+  - **No answer** (they turn the page without answering, the tab is hidden, or the app closes): the pause
+    goes to a "long pauses to review" list on the stats page and counts as **typical** time, shown as
+    provisional, until answered.
+  - **Every answer is a `resolve` event**, so it syncs, every device applies it, and it can be changed later
+    from the review list. ("Still reading" is a `resolve` with `count: 'full'` plus the `k` change.)
+  - **Don't ask again:** offered only after the user has answered a few prompts (e.g. 3), not on the first
+    ones. It stores a standing default (`'full'` | `'typical'` | `'none'`) in the `tracking` section; prompts
+    stop and new pauses resolve to that default. Changeable in settings.
+  - **Revised (owner, 2026-11-07), replacing the three bullets above:** an unanswered pause counts **up
+    to the cap** (the released timer's rule), not typical time, and there is no review list, no
+    "typical" choice and no standing default. The prompt says "No page turn for N, so the timer
+    stopped." with Still reading / Close / Don't ask again; on return, "This page was open M. N
+    counted." with Keep N / Count all M / Count none / Don't ask again. Asking is an on/off setting
+    (`tracking.pauses.ask`, default on); a stored standing default from before reads as off. Recorded
+    `typical` answers still count as they did. The device-label UI (stats card, banner, cloud-page
+    Devices block) was removed as clutter the same day; labels stay in the data, a readable
+    per-device breakdown is wishlisted.
+  - Legacy data converted from `recentPageTurns` is never prompted for; over its cap it counts nothing
+    (the old idle rule, kept in phase 3b: counting typical could lift history from before the freeze above
+    the frozen `legacyStats` snapshot).
+- **Skips.** A view read faster than an implausible rate (e.g. 1500 cpm) is a skip: its time and chars are
+  excluded from speed, and its `chars_new` count as **skipped, not read**. "Characters read" totals exclude
+  skips; the stats show a separate skipped figure (#160, #224). Existing totals drop slightly once history is
+  computed this way; the release note should say so.
+- **Recent speed** = the last N active hours across all volumes and devices, by time. No volume-granular
+  window, so no cliff.
+- **Time left** uses the series' own speed once it has enough data, else the recent speed.
+- **Devices and layouts.** Per-device, per-class and per-layout totals, speed and share of reading time,
+  shown as a section of the existing reading-speed page. Comparisons should prefer like-for-like material
+  (the same series, or volumes read on several devices) and always show the sample size behind them.
+
+**As built (phase 3a, `stats-engine.ts` / `stats-store.ts`).** Constants: `k` = 3, floor 60 s, ceiling
+30 min, no-data cap 5 min, skip above 1500 cpm, pace = median of the newest 500 views of ≥ 20 characters
+(≥ 30 of them). A view over its cap with no answer counts typical time (phase 3b asks about it). Reading from before history
+is kept as a per-volume snapshot in the synced record (`legacyStats`: the old minute counter and lifetime
+characters, frozen at a time `before`); stats show `max(old, history before the freeze) + history after`,
+so events recorded before the freeze but arriving later explain the old figure rather than add to it. It
+is the `adjust` conversion described under Migration, done as record state so it also syncs where history
+cannot (a bunko server unless its version core is at least 0.8.0 and its `per_user_files` lists
+`history/`). The manual override lives in `volume-data.json` → `tracking.idle`.
+
+**As built (phase 3b, `pause-watch.ts` / `LongPausePrompt.svelte` / `pause-review.ts`).** The reader arms one
+timer for the open view at `since + cap`, re-armed when the pace, `k` or the override moves, and asks in a
+non-modal prompt above the page. A `resolve` also carries its target's `volume`, so everything keyed by
+volume handles it unchanged; it is kind 5 inside segment format 1 (the codec had not shipped). A live answer
+**splits the view**: the view so far and its `resolve` are written in one transaction, and a continuation
+view of the same pages opens at the answer time. No answer waits on a later event, and the continuation
+earns no new characters. "Still reading" counts the time in full and widens `k` to fit this view × 1.5,
+rounded up to a half step, at most 20 and never past where the ceiling caps it anyway. It changes nothing
+under a manual override, without a pace yet, or on a page whose cap is held at the floor (its time says
+nothing about pace, and one tap on a one-bubble page would widen every other page's cap; the floor stays
+fixed). The live timer stops at the cap while the prompt asks, then shows what the answer counts; a view
+that just ended adds what the stats will count for it until they do (`endedView`). `k`
+keeps sharing `tracking.idle`'s stamp with the override. Two minutes past the cap the prompt shows how long
+the page has been open: count all, typical, or none. An answer applies under whatever cap holds later, and
+only to time: pages stay read and skips stay skips, and `'none'` gives no speed sample. The latest answer per
+target wins in event order (t, device, seq), the same on every device. Unanswered pauses count typical and are
+listed as provisional on the reading-speed page, where any answer can be changed. "Always do this" appears once
+3 pauses are answered, counted from the answers themselves across devices (nothing is stored). The standing
+default (`tracking.pauses`, its own key and stamp) is written as a view's answer when the view ends, and only
+for views that reached the cap while it was set, never backwards over the review list.
+
+## Migration and compatibility
+
+- **Old data** (converted in **phase 2**, at the cut-over where page turns stop being written, never
+  earlier: during phase 1 every device both writes turns and records native events, so converting then
+  would count that reading twice). Only turns that no native `page` event of the same volume covers (on
+  any device, which phase 2's sync makes visible) are converted. Each volume's `recentPageTurns` becomes
+  `page` events under a deterministic
+  legacy key, `device = 'legacy:' + volume_uuid` and `seq = turn timestamp`, so every device converting the
+  same turns produces the same IDs and the union deduplicates. Dwell comes from the next turn, as today.
+  `archivedReads` becomes `restart` events. `timeReadInMinutes` beyond what the turns explain becomes one
+  `adjust` event per volume, so totals don't drop.
+- **Old app versions are not a design concern.** Web-app updates are close to automatic and the app
+  prompts for them, so two versions trading `volume-data.json` is a short window. New versions convert
+  whatever `recentPageTurns` they find (local or in the cloud file) through the legacy path above and write
+  `volume-data.json` without them. No compatibility mode, no dual writing.
+- **mokuro-bunko** must treat `history/` as per-user progress, the same partition as root `.json`. Until a
+  bunko release does, the client skips uploading history to bunko (provider capability flag) and keeps it
+  local.
+
+## Rollout (each phase shippable)
+
+1. **Local event store + recording.** Separate `mokuro_history` IndexedDB, `page` events on leave,
+   `adjust`/`restart`/`forget` from the existing stat edits, device facts. Nothing reads the events yet;
+   page turns, sync and speed are unchanged.
+2. **Segment sync + cut-over.** Upload own months, import others, add `history/` to the allowlist,
+   convert legacy turns (coverage rule above), drop page turns from `volume-data.json`, batch the writes,
+   stop syncing per page turn.
+3. **Stats on events.** One clock, adaptive cutoff + synced override, long-pause prompts + review list,
+   skip classification, recent speed by time, per-series time left. Retire `getEffectiveReadingTime` and
+   the minute counter.
+4. **Device views.** Generated labels, the three labelling entry points, class correction, merging devices, per-device stats.
+
+## Testing
+
+- Import is idempotent: same file twice, longer file after shorter, shuffled order → identical table.
+- Two simulated devices recording concurrently, syncing in every interleaving → identical final tables and
+  identical speed figures on both.
+- Corrupt or truncated file → no partial import, retried next time.
+- Legacy conversion on two devices from the same `volume-data.json` → same event IDs.
+- Speed: no cliff when one volume exceeds any window; same result regardless of profile.
+- Encoding round-trip, plus measured size on a real exported history.
+
+## Decided (owner, 2026-10-02)
+
+1. Long pauses: **prompt at the timeout itself**, staying up until answered; "Still reading" counts the
+   time and widens the cutoff (synced) so it stops recurring; away → count all / typical / none on return;
+   unanswered → review list, typical while provisional; "don't ask again" only after a few answers.
+2. Skipped views **don't** count toward characters read; shown as skipped.
+3. Old app versions: **not a concern** (fast web-app updates + update prompt). Convert old-format turns,
+   stop writing them, no compatibility mode.
+4. Idle cutoff: **characters in the layout** (whole pages only, at least one page) × one global pace. No
+   per-device-class or per-layout term.
+5. Device/layout stats: a section of the existing reading-speed page.
+
+## Position across devices (owner, 2026-10-04)
+
+Reported: a device that missed a sync opens a volume on an old page, one page turn makes that the
+newest position, and every device lands there. The hotfix on `fix/sync-diverged-reads` keeps both
+devices' page turns, stops a blank "just opened" record from resetting progress, and syncs on foreground
+and reader open. It leaves the position rule as is. Phase 2 owns the rest:
+
+1. **Position = the newest page event.** "Highest page wins" is rejected: a reader peeks ahead, goes
+   back and stops; another device must resume where they stopped.
+2. **Diverged reading is offered, not decided.** When two devices each read pages the other never saw,
+   the newest position stands, and the other device's FINAL position (not its furthest page) is offered:
+   "You also read to p.N on another device — Jump / Stay". Offer on **any** page difference.
+3. **A reset wins** (restart series, mark unread, forget). Newer reading from a device that missed the
+   reset is offered as above, not applied.
+4. **Cadence:** at most once per session, in at most 2 sessions; after that a chip on the volume card
+   until answered. An answer is durable (a "dismissed up to" time per volume) and never comes back from a
+   stale copy. Jump is its own event, not a page turn, and fires no completion.
+
+Built on the event log, these come for free or nearly: device ids, reset events (`restart`/`forget`/
+`adjust`), and order-independent merging. A stress review of doing it inside `volume-data.json` found 31
+failure scenarios (three devices, Stay undone by a stale copy, clock skew, resets with no trace in
+turns), which is why it waits for phase 2.
+
+**As built (phase 2c, `position-offer.ts`).** "The other device's final position" is decided from what
+the newest device saw, so no pair of devices is ever compared by clock alone:
+
+- The newest device is the one with the newest native page view. Another device's final view is offered
+  unless the newest device viewed that page AFTER it (a handoff, or a stale device the sync on open
+  corrected) or that view already contains the current position. Its page is the view's first page.
+- A restart is followed once any device views page 1 (or earlier) after it. An unfollowed restart from
+  another device, with the newest device reading on after it, is re-applied on this device (the pass is
+  archived, then zeroed; never under an open reader) and recorded as a `position` event with answer
+  `reset`; the newest device's reading, as it stood at that answer, is then offered.
+- Answers are `position` events `{answer: jump|stay|reset, through, page}`. Nothing at or before the
+  latest `jump`/`stay` `through` is offered again; reading from before the newest restart or reset is the
+  previous pass. A `forget` hides everything before it, and converted legacy events never drive offers.
+- The durable "dismissed up to" is that `through` — a synced event, not a per-device flag, so a stale
+  copy cannot bring an answered offer back. Marking a volume read or unread records `stay`.

@@ -29,6 +29,8 @@
     canRename?: boolean;
   } = $props();
 
+  // Seeded once: the field then belongs to the user's typing.
+  // svelte-ignore state_referenced_locally
   let renameValue = $state(seriesTitle);
   let renameError = $state('');
   let renameSaving = $state(false);

@@ -10,7 +10,7 @@
     type StorageQuota
   } from '$lib/util/sync/provider-interface';
   import { backupQueue } from '$lib/util/backup-queue';
-  import { Alert, Badge, Button, Radio, Toggle, Spinner } from 'flowbite-svelte';
+  import { Alert, Badge, Button, Modal, Radio, Toggle, Spinner } from 'flowbite-svelte';
   import { onMount } from 'svelte';
   import { GoogleSolid, InfoCircleSolid } from 'flowbite-svelte-icons';
   import { catalog } from '$lib/catalog';
@@ -23,7 +23,11 @@
   import { cacheManager } from '$lib/util/sync/cache-manager';
   import { isFilesystemProviderSupported } from '$lib/util/sync/providers/filesystem/feature-detect';
   import { PROVIDER_LABELS } from '$lib/util/sync/provider-display';
+  import { isLoginCancelled } from '$lib/util/sync/provider-interface';
   import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
+  import { backendAuthEnabled } from '$lib/util/sync/providers/google-drive/auth-backend';
+  import { parseCloudLinkPrefill, type CloudLinkPrefill } from '$lib/util/link-safety';
+  import { preloadGoogleScripts } from '$lib/util/sync/providers/google-drive/google-scripts';
 
   const CLOUD_ROOT_FOLDER = 'mokuro-reader';
 
@@ -88,49 +92,32 @@
 
   // Without a client id the OneDrive login can only throw — hide the option.
   const onedriveConfigured = !!import.meta.env.VITE_ONEDRIVE_CLIENT_ID;
+  // Drive through the auth backend: one sign-in, then silent renewals — no
+  // hourly re-auth to describe or to switch on.
+  const gdriveStaysSignedIn = backendAuthEnabled();
 
   // Provider display names (shared module keeps all provider maps in sync)
   const providerNames: Record<ProviderType, string> = PROVIDER_LABELS;
 
-  // Provider info
+  // Provider info. Free tiers as of 2026-11.
   const providerInfo = {
     'google-drive': {
-      items: [
-        'Up to 15GB free storage',
-        'Seamless Google account integration',
-        'Back up from app, download on any device',
-        'Auto re-authentication support'
-      ]
+      items: ['15GB free (shared with Gmail)', 'Only sees files this app saves']
     },
     mega: {
-      items: [
-        '20GB free storage',
-        'End-to-end encryption',
-        'Persistent login (no re-authentication needed)'
-      ]
+      items: ['20GB free', 'End-to-end encrypted', 'Two-factor sign-in']
     },
     webdav: {
       items: [
-        'Compatible with Mokuro-Bunko, Nextcloud, ownCloud, and NAS devices',
-        'Persistent login (no re-authentication needed)',
-        'Self-hosted and private'
+        'Mokuro-Bunko, Nextcloud, a NAS, or any WebDAV server',
+        'Other servers need CORS enabled'
       ]
     },
     filesystem: {
-      items: [
-        'Reads and writes real files in a folder you pick',
-        'Works offline — no account needed',
-        'Best for bulk import/export on this device',
-        'Chromium browsers only (Chrome, Edge, etc.)'
-      ]
+      items: ['A folder on this device', 'Offline, no account', 'Chromium browsers only']
     },
     onedrive: {
-      items: [
-        'Free 5GB personal storage; 1TB+ for Microsoft 365 subscribers',
-        'Works with personal accounts (outlook.com) and work/school accounts',
-        'Persistent login (no re-authentication needed)',
-        'Encrypted in transit and at rest'
-      ]
+      items: ['5GB free (shared with Outlook)', 'Personal or work/school accounts']
     }
   };
 
@@ -152,6 +139,13 @@
   let webdavLoading = $state(false);
   // Whether the WebDAV login form is expanded on the selection screen.
   let webdavFormOpen = $state(false);
+  // What a `#/cloud?server=…` link put into (or was refused from) the form.
+  let linkPrefill = $state<CloudLinkPrefill | null>(null);
+  // The banner names the linked server while the field still holds it; once the
+  // user types their own address it is no longer the link's.
+  let linkPrefilledHost = $derived(
+    linkPrefill?.server && webdavUrl === linkPrefill.server.url ? linkPrefill.server.host : null
+  );
 
   // Auto-open the (pre-filled) form when a session needs re-login, so the
   // password field is right there instead of behind a collapsed row.
@@ -327,21 +321,27 @@
   }
 
   onMount(async () => {
+    // The Drive Connect button below needs gapi and GIS on the page BEFORE it
+    // is clicked: the click's user activation has to reach the GIS popup, and
+    // waiting for two script downloads inside the handler spends it. (With the
+    // auth backend, Connect leaves for Google's page instead — on sticky
+    // activation — but still brings up the Drive client, gapi, first.)
+    preloadGoogleScripts();
     filesystemSupported = isFilesystemProviderSupported();
     // Clear service worker cache for Google Drive downloads
     // This is cloud-page-specific and not part of global init
     clearServiceWorkerCache();
     // Storage quota is fetched reactively via $effect when auth state changes
 
-    // Check for deep-link query params (e.g. #/cloud?server=...&username=...)
-    const hashQuery = window.location.hash.split('?')[1];
-    if (hashQuery) {
-      const params = new URLSearchParams(hashQuery);
-      const deepServer = params.get('server');
-      const deepUsername = params.get('username');
-      if (deepServer) webdavUrl = deepServer;
-      if (deepUsername) webdavUsername = deepUsername;
-    }
+    // Deep-link prefill (#/cloud?server=...&username=...). It only FILLS the
+    // form — never submits it, never supplies a password — and only with an
+    // https address (or plain http on this device): a LAN http server is fine
+    // when the user types it, but a link must not aim their password at one.
+    // Whatever was filled is announced in a banner above the form.
+    linkPrefill = parseCloudLinkPrefill(window.location.hash);
+    if (linkPrefill?.server) webdavUrl = linkPrefill.server.url;
+    if (linkPrefill?.username) webdavUsername = linkPrefill.username;
+    if (linkPrefill?.server || linkPrefill?.refused) webdavFormOpen = true;
 
     // Pre-fill WebDAV form fields from last session (if not already set by deep link)
     if (!webdavUrl || !webdavUsername) {
@@ -393,6 +393,8 @@
       // Automatically sync after login
       await handlePostLogin();
     } catch (error) {
+      // Back from Google's sign-in page without signing in: nothing failed.
+      if (isLoginCancelled(error)) return;
       const message = error instanceof Error ? error.message : 'Login failed';
       showSnackbar(message);
     } finally {
@@ -520,14 +522,26 @@
     }
   }
 
+  // "Sign out everywhere…" (Google Drive only): the confirmation modal.
+  let signOutEverywhereOpen = $state(false);
+
+  async function confirmSignOutEverywhere() {
+    signOutEverywhereOpen = false;
+    await handleLogout({ everywhere: true });
+  }
+
   // Unified logout handler - all providers use providerManager.logout()
-  // (Storage quota is cleared reactively via $effect when auth state changes)
-  async function handleLogout() {
+  // (Storage quota is cleared reactively via $effect when auth state changes).
+  // Plain "Log out" signs out THIS device only. `everywhere` (Drive's
+  // confirmed "Sign out everywhere…") also revokes the Google grant, which
+  // every other device and any mokuro-bunko server signed in through it share.
+  async function handleLogout(options: { everywhere?: boolean } = {}) {
     const provider = currentProvider;
+    const everywhere = provider === 'google-drive' && options.everywhere === true;
 
     // Use providerManager.logout() for all providers
     // This properly clears currentProvider, active_cloud_provider key, and updates status
-    await providerManager.logout();
+    const result = await providerManager.logout(everywhere ? { everywhere: true } : undefined);
 
     // Provider-specific cleanup
     if (provider === 'mega') {
@@ -541,7 +555,32 @@
       webdavPassword = '';
       showSnackbar('Logged out of WebDAV');
     } else if (provider === 'google-drive') {
-      showSnackbar('Logged out of Google Drive');
+      if (everywhere && result?.revoked) {
+        showSnackbar('Signed out of Google Drive everywhere');
+      } else if (everywhere && result?.pendingEverywhere) {
+        // Never got through (offline, the backend down): queued, and
+        // replayed before this browser's next sign-in.
+        showSnackbar(
+          'Signed out of Google Drive on this device. Signing out everywhere will finish the next time you connect here, or remove access now at myaccount.google.com/permissions.',
+          10_000
+        );
+      } else if (everywhere) {
+        // Google never confirmed the revoke, and nothing will retry it: the
+        // other devices (and any mokuro-bunko server) are still signed in.
+        showSnackbar(
+          'Signed out of Google Drive on this device, but Google could not be reached to end the other sign-ins. Remove access at myaccount.google.com/permissions.',
+          10_000
+        );
+      } else if (result?.copyMayStillWork) {
+        // The session was not tied to this device (or the server does not
+        // check that), so a copy of it taken earlier could still be used.
+        showSnackbar(
+          "Logged out of Google Drive on this device. This sign-in wasn't tied to this device, so a copy of it could still work. Use Sign out everywhere to end it for sure.",
+          10_000
+        );
+      } else {
+        showSnackbar('Logged out of Google Drive on this device');
+      }
     } else if (provider === 'filesystem') {
       showSnackbar('Local folder disconnected');
     } else if (provider === 'onedrive') {
@@ -658,15 +697,11 @@
       return;
     }
 
-    // Add all volumes to the backup queue
-    backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider);
-
-    // Show notification
-    const message =
-      skippedCount > 0
-        ? `Added ${volumesToBackup.length} volumes to backup queue (${skippedCount} already backed up)`
-        : `Added ${volumesToBackup.length} volumes to backup queue`;
-    showSnackbar(message);
+    // The queue gives the one notice (what it added, and what it skipped):
+    // a snackbar shown here would erase its skip notice.
+    backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider, undefined, {
+      alreadyBackedUp: skippedCount
+    });
   }
 </script>
 
@@ -696,7 +731,7 @@
               {/if}
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">Google Drive</div>
-                <div class="text-sm text-gray-400">Up to 15GB free • Automatic hourly re-auth</div>
+                <div class="text-sm text-gray-400">15GB free</div>
               </div>
             </div>
           </button>
@@ -714,7 +749,7 @@
               <div class="flex h-8 w-8 items-center justify-center text-2xl">M</div>
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">MEGA</div>
-                <div class="text-sm text-gray-400">20GB free • Persistent login</div>
+                <div class="text-sm text-gray-400">20GB free • End-to-end encrypted</div>
               </div>
             </div>
           </button>
@@ -779,9 +814,7 @@
                 <div class="flex h-8 w-8 items-center justify-center text-2xl">O</div>
                 <div class="flex-1 text-left">
                   <div class="text-lg font-semibold">OneDrive</div>
-                  <div class="text-sm text-gray-400">
-                    5GB free • Personal or work/school • Persistent login
-                  </div>
+                  <div class="text-sm text-gray-400">5GB free • Personal or work/school</div>
                 </div>
               </div>
             </button>
@@ -798,14 +831,41 @@
               <div class="flex h-8 w-8 items-center justify-center text-2xl">W</div>
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">WebDAV</div>
-                <div class="text-sm text-gray-400">
-                  Mokuro-Bunko, Nextcloud, NAS • Persistent login
-                </div>
+                <div class="text-sm text-gray-400">Mokuro-Bunko, Nextcloud, NAS</div>
               </div>
             </div>
           </button>
 
           <div id="webdav-login-form" class:hidden={!webdavFormOpen} class="pr-4 pb-4 pl-12">
+            {#if linkPrefilledHost}
+              <div
+                class="mb-3 rounded-lg border border-amber-500 bg-amber-900/30 p-3 text-sm text-amber-200"
+                data-testid="webdav-link-prefill"
+                role="status"
+              >
+                This server address was filled in from a link:
+                <span class="font-mono font-semibold break-words text-white"
+                  >{linkPrefilledHost}</span
+                >. Only sign in if you know and trust this server — the password you enter is sent
+                to it.
+              </div>
+            {:else if linkPrefill?.refused}
+              <div
+                class="mb-3 rounded-lg border border-amber-500 bg-amber-900/30 p-3 text-sm text-amber-200"
+                data-testid="webdav-link-prefill-refused"
+                role="status"
+              >
+                {#if linkPrefill.refused.reason === 'insecure'}
+                  A link tried to fill in the server address
+                  <span class="font-mono break-words text-white">{linkPrefill.refused.value}</span>,
+                  which does not use a secure connection (https), so it was left out. If this is
+                  your own server, you can type its address yourself.
+                {:else}
+                  A link tried to fill in a server address that is not a web address, so it was left
+                  out.
+                {/if}
+              </div>
+            {/if}
             {#if webdavNeedsReLogin}
               <p class="mb-3 text-sm text-amber-400">
                 Your WebDAV session needs attention — re-enter your password to sign in again.
@@ -883,7 +943,18 @@
                 <Badge color="green">Connected</Badge>
               {/if}
             </div>
-            <Button color="red" onclick={handleLogout}>Log out</Button>
+            <div class="flex flex-col items-end gap-1">
+              <Button color="red" onclick={() => handleLogout()}>Log out</Button>
+              {#if currentProvider === 'google-drive'}
+                <button
+                  type="button"
+                  class="text-xs text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
+                  onclick={() => (signOutEverywhereOpen = true)}
+                >
+                  Sign out everywhere…
+                </button>
+              {/if}
+            </div>
           </div>
 
           {#if currentProvider === 'filesystem' && filesystemNeedsReconnect}
@@ -1016,8 +1087,8 @@
               {/if}
             </div>
 
-            <!-- Auto re-authenticate toggle (Google Drive only) -->
-            {#if currentProvider === 'google-drive'}
+            <!-- Auto re-authenticate toggle (Google Drive's hourly popup sign-in only) -->
+            {#if currentProvider === 'google-drive' && !gdriveStaysSignedIn}
               <div class="flex flex-col gap-2">
                 <div class="flex items-center gap-3">
                   <Toggle
@@ -1136,3 +1207,17 @@
     {/if}
   {/if}
 </div>
+
+<!-- Google Drive: the confirmed "Sign out everywhere" (a revoke of the whole Google grant). -->
+<Modal bind:open={signOutEverywhereOpen} size="xs" outsideclose title="Sign out everywhere?">
+  <p class="text-sm text-gray-500 dark:text-gray-300">
+    This removes the reader's access to your Google Drive on every device and browser where you use
+    it, and on any mokuro-bunko server signed in to the same Google connection. Each will need to
+    connect again.
+  </p>
+  <!-- relative z-10: night mode filters the <dialog>, which resets stacking (see CLAUDE.md) -->
+  <div class="relative z-10 flex justify-end gap-2">
+    <Button color="alternative" onclick={() => (signOutEverywhereOpen = false)}>Cancel</Button>
+    <Button color="red" onclick={confirmSignOutEverywhere}>Sign out everywhere</Button>
+  </div>
+</Modal>

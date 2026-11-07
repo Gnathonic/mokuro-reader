@@ -1,11 +1,10 @@
-import { get } from 'svelte/store';
 import { parseMokuroFile } from '$lib/import/processing';
 import type { SeriesFileVolume } from '$lib/metadata/series-file';
 import { getSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import { groupSeriesSidecarFiles } from '$lib/metadata/cloud-sidecar-stamps';
 import type { Page, VolumeMetadata } from '$lib/types';
-import { currentView } from '$lib/util/hash-router';
+import { isVolumeOpen } from '$lib/util/hash-router';
 import { showSnackbar } from '$lib/util/snackbar';
 import { cacheManager } from '$lib/util/sync/cache-manager';
 import type {
@@ -21,6 +20,7 @@ import {
   type CloudPrimaryOutcome
 } from './cloud-ocr-upgrade';
 import { isMokuroSha256, sha256Hex } from './mokuro-hash';
+import { provenanceOfFile, type OcrProvenance } from './ocr-provenance';
 import { volumesForFoldedSeriesTitle } from './volumes-by-series';
 import { isVolumeInstalled } from './volume-state';
 
@@ -130,12 +130,6 @@ function noteVerdict(volumeUuid: string, sha256: string): void {
 
 // ---- planning ----
 
-/** Is this volume on screen right now (reader or its text view)? */
-function isVolumeOpen(volumeUuid: string): boolean {
-  const view = get(currentView) as { type?: string; volumeId?: string };
-  return (view.type === 'reader' || view.type === 'volume-text') && view.volumeId === volumeUuid;
-}
-
 function normalizeCloudPath(path: string): string {
   return path.replace(/^\/+|\/+$/g, '');
 }
@@ -232,14 +226,25 @@ async function planSeries(
 async function readSidecarBytes(
   sidecar: CloudFileMetadata,
   blob: Blob
-): Promise<{ pages: Page[]; version: string; sha256: string } | null> {
+): Promise<{
+  pages: Page[];
+  version: string;
+  sha256: string;
+  provenance?: OcrProvenance;
+} | null> {
   const file = await decodeMokuroSidecar(sidecar.path, blob);
   if (!file) return null;
   const sha256 = await sha256Hex(file);
   if (!sha256) return null;
   const parsed = await parseMokuroFile(file);
   const pages = Array.isArray(parsed.pages) ? (parsed.pages as unknown as Page[]) : [];
-  return { pages, version: typeof parsed.version === 'string' ? parsed.version : '', sha256 };
+  const provenance = await provenanceOfFile(parsed, pages);
+  return {
+    pages,
+    version: typeof parsed.version === 'string' ? parsed.version : '',
+    sha256,
+    ...(provenance ? { provenance } : {})
+  };
 }
 
 async function runTask(
@@ -288,7 +293,8 @@ async function runTask(
     pages: read.pages,
     version: read.version,
     sha256: read.sha256,
-    cloud: attestationOfListedFile(provider.type, sidecar)
+    cloud: attestationOfListedFile(provider.type, sidecar),
+    provenance: read.provenance
   });
   if (read.sha256 !== entryHash) {
     // The listing served other bytes than the index describes (a stale or

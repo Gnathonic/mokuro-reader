@@ -11,14 +11,16 @@ vi.mock('$lib/catalog/db', async () => {
     await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
   return { db: new CatalogDexieV3('mokuro_v3_layers_test') };
 });
-const noteOcrEdited = vi.hoisted(() => vi.fn());
-vi.mock('$lib/util/sync/sidecar-backfill', () => ({ noteOcrEdited }));
+const scheduleLayerPush = vi.hoisted(() => vi.fn());
+vi.mock('$lib/metadata/layer-sync', () => ({ scheduleLayerPush }));
 
 import { db } from '$lib/catalog/db';
 import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
 import {
   buildLayerExportFile,
+  copyIntoEditLayer,
   createLayer,
+  forkIntoEditLayer,
   deleteLayer,
   listLayers,
   loadLayerPages,
@@ -26,10 +28,12 @@ import {
   promoteLayer,
   renameLayer,
   slugifyLayerId,
+  upsertLayerPages,
   layerKindForId,
   servedEngineOf,
   layerNameForId
 } from './layers';
+import { isReservedLayerId } from './layer-names';
 
 function pg(text: string, img_path = 'p.png'): Page {
   return {
@@ -43,7 +47,7 @@ function pg(text: string, img_path = 'p.png'): Page {
 const PAGES = [pg('あい'), pg('うえ', 'q.png')];
 
 beforeEach(async () => {
-  noteOcrEdited.mockClear();
+  scheduleLayerPush.mockClear();
   await Promise.all([db.volumes.clear(), db.volume_ocr.clear(), clearAllLayers(db)]);
   await db.volumes.put({
     volume_uuid: 'v1',
@@ -61,10 +65,55 @@ beforeEach(async () => {
 describe('slugifyLayerId', () => {
   it('slugs, truncates, and de-duplicates; never yields "original"', () => {
     expect(slugifyLayerId('My Translation!', [])).toBe('my-translation');
-    expect(slugifyLayerId('Original', [])).toBe('original-2');
-    expect(slugifyLayerId('gcv', ['gcv', 'gcv-2'])).toBe('gcv-3');
+    expect(slugifyLayerId('Original', [])).toBe('layer-original');
+    expect(slugifyLayerId('Fixes', ['fixes', 'fixes-2'])).toBe('fixes-3');
     expect(slugifyLayerId('', [])).toBe('layer');
     expect(slugifyLayerId('a'.repeat(40), [])).toHaveLength(24);
+  });
+
+  it('a new id always carries a letter (rule v1 #8), so it never reads as a bare number', () => {
+    expect(slugifyLayerId('2024', [])).toBe('layer-2024');
+    expect(slugifyLayerId('2024', ['layer-2024'])).toBe('layer-2024-2');
+    expect(slugifyLayerId('1.5', [])).toBe('layer-1-5');
+    expect(slugifyLayerId('9'.repeat(40), [])).toHaveLength(24);
+    expect(slugifyLayerId('9'.repeat(40), [])).toMatch(/^layer-9+$/);
+    expect(slugifyLayerId('New layer', [])).toBe('new-layer');
+    expect(slugifyLayerId('Vol 2', [])).toBe('vol-2');
+  });
+
+  it('steps out of every reserved id and family with a layer- prefix', () => {
+    expect(slugifyLayerId('Edit', [])).toBe('layer-edit');
+    expect(slugifyLayerId('Curated', [])).toBe('layer-curated');
+    expect(slugifyLayerId('Updated OCR', [])).toBe('layer-updated-ocr');
+    expect(slugifyLayerId('gcv', [])).toBe('layer-gcv');
+    expect(slugifyLayerId('Edit 2', [])).toBe('layer-edit-2');
+    expect(slugifyLayerId('curated 7', [])).toBe('layer-curated-7');
+    expect(slugifyLayerId('TR en', [])).toBe('layer-tr-en');
+    // Then de-duplicated like any other id.
+    expect(slugifyLayerId('Edit', ['layer-edit'])).toBe('layer-edit-2');
+    // `tr` is free, but its first de-duplicated form `tr-2` is a translation id.
+    expect(slugifyLayerId('tr', ['tr'])).toBe('layer-tr');
+    expect(slugifyLayerId('tr', ['tr', 'layer-tr'])).toBe('layer-tr-2');
+    // Not reserved: kept as they are.
+    expect(slugifyLayerId('Editorial', [])).toBe('editorial');
+    expect(slugifyLayerId('Edit X', [])).toBe('edit-x');
+    // Ordinary hand-made ids now: bunko no longer writes or reserves them.
+    expect(slugifyLayerId('Pre upgrade', [])).toBe('pre-upgrade');
+    expect(slugifyLayerId('Previous OCR', [])).toBe('previous-ocr');
+  });
+
+  it('never returns a reserved id, whatever the name', () => {
+    const names = ['Edit', 'edit-2', 'Curated', 'curated 2', 'original', 'GCV', 'updated ocr'];
+    names.push('pre-upgrade 9', 'previous ocr 2', 'tr', 'tr ja', '2024', '', '---', 'Ｅｄｉｔ');
+    for (const name of names) {
+      const taken: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        const id = slugifyLayerId(name, taken);
+        expect(isReservedLayerId(id), `${name} -> ${id}`).toBe(false);
+        expect(taken).not.toContain(id);
+        taken.push(id);
+      }
+    }
   });
 });
 
@@ -175,7 +224,11 @@ describe('promoteLayer', () => {
       'あい'
     ]);
     expect(replacedLayerId).toBeNull();
-    expect(noteOcrEdited).toHaveBeenCalledWith('v1');
+    // A local view choice (D4): nothing is scheduled for upload, and the
+    // promoted layer is no edit layer either.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(scheduleLayerPush).not.toHaveBeenCalled();
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
   });
 
   it('keeps a replaced-… snapshot when the previous primary differs from the original', async () => {
@@ -210,8 +263,17 @@ describe('promoteLayer', () => {
       pages: [pg('Hello there'), pg('General', 'q.png')]
     });
     // A row whose kind says "edit" but whose id files it as a translation
-    // everywhere a kind is inferred (cloud pull, import).
-    await createLayer('v1', { name: 'tr en', pages: [pg('Hi'), pg('Yo', 'q.png')] });
+    // everywhere a kind is inferred (cloud pull, import). `createLayer` no
+    // longer mints a `tr-` id (reserved), so an older row is seeded directly.
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'tr-en',
+      name: 'tr en',
+      kind: 'edit',
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+      pages: [pg('Hi'), pg('Yo', 'q.png')]
+    });
     expect((await getLayerWithPages(db, 'v1', 'tr-en'))?.kind).toBe('edit');
 
     for (const id of ['english', 'tr-en']) {
@@ -223,7 +285,7 @@ describe('promoteLayer', () => {
     expect(row?.page_char_counts).toEqual([2, 4]);
     expect(row?.ocr_edited_at).toBeUndefined();
     expect(await getLayerWithPages(db, 'v1', 'original')).toBeUndefined();
-    expect(noteOcrEdited).not.toHaveBeenCalled();
+    expect(scheduleLayerPush).not.toHaveBeenCalled();
   });
 
   it('refuses a missing layer and leaves primary untouched', async () => {
@@ -368,6 +430,40 @@ describe('upsertLayerPages', () => {
   });
 });
 
+describe('the editor’s edit layer (D4)', () => {
+  it('an edit-kind layer file carries the edited block (base = the main sidecar hash), no ocr_engine', async () => {
+    const sha = 'ab'.repeat(32);
+    await db.volumes.update('v1', { mokuro_sha256: sha });
+    const layer = await createLayer('v1', { name: 'Fixes', pages: [pg('直'), pg('す', 'q.png')] });
+    const json = JSON.parse(await (await buildLayerExportFile('v1', layer.layer_id)).text());
+    // The export path names no base seal (bunko reads base_sha256 then).
+    expect(json.edited).toEqual({
+      by: 'mokuro-reader',
+      at: layer.updated_at,
+      base_sha256: sha,
+      base_seal: null
+    });
+    expect(json.ocr_engine).toBeUndefined();
+  });
+
+  it('base_sha256 is null when this device does not know the main sidecar’s hash', async () => {
+    const layer = await createLayer('v1', { name: 'Fixes', pages: PAGES });
+    const json = JSON.parse(await (await buildLayerExportFile('v1', layer.layer_id)).text());
+    expect(json.edited.base_sha256).toBeNull();
+  });
+
+  it('a new layer never takes the reserved edit id', () => {
+    expect(slugifyLayerId('Edit', [])).toBe('layer-edit');
+    expect(slugifyLayerId('original', [])).toBe('layer-original');
+  });
+
+  it('names the edit layer; a pre-upgrade layer is named like any other id', () => {
+    expect(layerNameForId('edit')).toBe('Your corrections');
+    expect(layerNameForId('pre-upgrade')).toBe('Pre Upgrade');
+    expect(layerNameForId('pre-upgrade-2')).toBe('Pre Upgrade 2');
+  });
+});
+
 describe('layerKindForId / layerNameForId', () => {
   it('files a pulled layer by its id alone', () => {
     expect(layerKindForId('original')).toBe('original');
@@ -387,6 +483,23 @@ describe('layerKindForId / layerNameForId', () => {
     // The reserved ids keep their meaning even if a file claims an engine.
     expect(layerKindForId('original', 'hayai-nova')).toBe('original');
     expect(layerKindForId('tr-en', 'hayai-nova')).toBe('translation');
+  });
+
+  it('files the shared, personal and keepsake layers as corrections, stamp or not', () => {
+    // A stamp on these never makes them a server's OCR: curated is published
+    // corrections, edit-<n> a person's, curated-<n> a case merge's copy of a
+    // second curated. Their role is read from the id.
+    for (const id of ['curated', 'edit', 'edit-2', 'curated-2']) {
+      expect(layerKindForId(id)).toBe('edit');
+      expect(layerKindForId(id, 'hayai-nova')).toBe('edit');
+    }
+  });
+
+  it('files pre-upgrade / previous-ocr like any other hand-made id: by the stamp it carries', () => {
+    for (const id of ['pre-upgrade', 'pre-upgrade-2', 'previous-ocr', 'previous-ocr-2']) {
+      expect(layerKindForId(id)).toBe('edit');
+      expect(layerKindForId(id, 'hayai-nova')).toBe('ocr');
+    }
   });
 
   it('reads the engine stamp bunko writes, and nothing that merely looks like one', () => {
@@ -413,5 +526,86 @@ describe('layerKindForId / layerNameForId', () => {
     expect(layerKindForId('ppocr-manga')).toBe('ocr');
     // Title-casing the slug would read "Ppocr Manga".
     expect(layerNameForId('ppocr-manga')).toBe('PP-OCR Manga');
+  });
+});
+
+describe('shared layers are read-only: an edit forks into `edit`', () => {
+  async function seedCurated(pages = [pg('共有'), pg('ページ', 'q.png')]) {
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'curated',
+      name: 'Shared corrections',
+      kind: 'edit',
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-01T00:00:00.000Z',
+      cloud: { provider: 'webdav', size: 10, synced_at: '2026-10-01T00:00:00.000Z' },
+      pages
+    });
+  }
+
+  it('persistLayerPageEdit and upsertLayerPages refuse the curated layer and change nothing', async () => {
+    await seedCurated();
+    await expect(persistLayerPageEdit('v1', 'curated', 0, pg('x'))).rejects.toThrow(/read-only/);
+    await expect(
+      upsertLayerPages('v1', 'curated', {
+        name: 'x',
+        kind: 'ocr',
+        engine: 'x',
+        sourcePages: PAGES,
+        pages: new Map([[0, pg('x')]])
+      })
+    ).rejects.toThrow(/read-only/);
+    expect((await getLayerWithPages(db, 'v1', 'curated'))?.pages[0].blocks[0].lines).toEqual([
+      '共有'
+    ]);
+    // The display name is local: renaming stays allowed.
+    await renameLayer('v1', 'curated', 'Team fixes');
+    expect((await getLayerWithPages(db, 'v1', 'curated'))?.name).toBe('Team fixes');
+  });
+
+  it('forkIntoEditLayer creates `edit` from the source pages once, never stamped as synced', async () => {
+    await seedCurated();
+    expect(await forkIntoEditLayer('v1', 'curated')).toEqual({ created: true });
+    const edit = await getLayerWithPages(db, 'v1', 'edit');
+    expect(edit).toMatchObject({ kind: 'edit', name: 'Your corrections' });
+    expect(edit?.cloud).toBeUndefined();
+    expect(edit?.pages.map((p) => p.blocks[0].lines[0])).toEqual(['共有', 'ページ']);
+
+    // An existing edit layer is never overwritten by a fork.
+    await persistLayerPageEdit('v1', 'edit', 0, pg('私の'));
+    expect(await forkIntoEditLayer('v1', 'curated')).toEqual({ created: false });
+    expect((await getLayerWithPages(db, 'v1', 'edit'))?.pages[0].blocks[0].lines).toEqual(['私の']);
+    // The source is untouched either way.
+    expect((await getLayerWithPages(db, 'v1', 'curated'))?.pages[0].blocks[0].lines).toEqual([
+      '共有'
+    ]);
+  });
+
+  it('forkIntoEditLayer refuses a missing source and writes nothing', async () => {
+    await expect(forkIntoEditLayer('v1', 'curated')).rejects.toThrow(/not found/);
+    expect(await getLayerWithPages(db, 'v1', 'edit')).toBeUndefined();
+  });
+
+  it('copyIntoEditLayer replaces the pages of an existing edit layer and keeps its identity', async () => {
+    await seedCurated();
+    await forkIntoEditLayer('v1', 'curated');
+    await persistLayerPageEdit('v1', 'edit', 0, pg('私の'));
+    await renameLayer('v1', 'edit', 'Mine');
+    const before = await getLayerWithPages(db, 'v1', 'edit');
+
+    await copyIntoEditLayer('v1', 'curated');
+    const after = await getLayerWithPages(db, 'v1', 'edit');
+    expect(after?.pages[0].blocks[0].lines).toEqual(['共有']);
+    expect(after?.name).toBe('Mine');
+    expect(after?.created_at).toBe(before?.created_at);
+    expect(after!.updated_at >= before!.updated_at).toBe(true);
+  });
+
+  it('copyIntoEditLayer makes the edit layer when there is none', async () => {
+    await seedCurated();
+    await copyIntoEditLayer('v1', 'curated');
+    expect((await getLayerWithPages(db, 'v1', 'edit'))?.pages[1].blocks[0].lines).toEqual([
+      'ページ'
+    ]);
   });
 });

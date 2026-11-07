@@ -1,0 +1,566 @@
+import { LEGACY_DEVICE_PREFIX } from './paths';
+import { nativeCoverage } from './project-turns';
+import type { PauseCount, ReadingEvent } from './types';
+import { eventKey, lookupVisits } from './visits';
+
+/**
+ * Reading stats from history events (phase 3a; spec: "Speed and stats"). Pure:
+ * the same events give the same figures on every device.
+ *
+ * - **One clock.** Time read is the counted dwell of `page` views plus
+ *   `adjust` deltas.
+ * - **Adaptive cutoff.** A view's expected dwell is its visible characters ×
+ *   one global pace (the median ms per character of recent views); its cap is
+ *   `clamp(k × expected, FLOOR, CEILING)`, or the manual override. A view over
+ *   its cap is a long pause: it counts up to its cap (the released timer's
+ *   rule: time on a page stops counting at the cutoff) unless the user
+ *   answered, then what the latest `resolve` targeting it says
+ *   (`countedDwell`) — an answer applies whatever the cap is now. `typical`
+ *   answers (expected time, at least the floor) are no longer offered; ones
+ *   already recorded still count that way.
+ * - **Skips.** A view faster than `SKIP_CPM` is a skip: its time counts, but
+ *   it never feeds speed, and pages only skip views showed are skipped, not
+ *   read.
+ * - **Passes.** A `restart` starts a new pass: a page's characters are read
+ *   once per pass, credited (for speed) to the first non-skip view that
+ *   showed it. A `forget` hides everything recorded before its `before`.
+ * - **Legacy turns** (converted `recentPageTurns`) count only where no native
+ *   view covers them; their page characters are the difference between
+ *   consecutive turns' cumulative counts (the old pair rule), and one over its
+ *   cap counts nothing (the old idle rule). The old pair rule also dropped a
+ *   pair whose count FALLS (the next turn is another device's, interleaved by
+ *   a merge) or that is implausibly fast: such a turn is `unread` — its time
+ *   passed, but it says nothing about what was read, so it credits no page,
+ *   skims none and feeds no speed.
+ * - **Look-ups** (`visits.ts`). The views of a look-up visit that showed no
+ *   page of its home view count their time but are skips: no characters
+ *   read, no speed sample. Its home views count as any other.
+ */
+
+export const DEFAULT_K = 3;
+/** The least any view may take before it counts as a long pause (art pages). */
+export const FLOOR_MS = 60_000;
+export const CEILING_MS = 30 * 60_000;
+/** The cap before there is enough data for a pace: the old default timeout. */
+export const NO_DATA_CAP_MS = 5 * 60_000;
+export const SKIP_CPM = 1500;
+/** The widest "Still reading" may make `k` (tracking-data's range ends here too). */
+export const K_MAX = 20;
+/** "Still reading" fits `k` to the view's time so far × this. */
+export const WIDEN_HEADROOM = 1.5;
+
+const PACE_MIN_CHARS = 20;
+const PACE_MAX_SAMPLES = 500;
+const PACE_MIN_SAMPLES = 30;
+/** Recent speed looks back over this much counted reading. */
+export const RECENT_WINDOW_MS = 8 * 60 * 60_000;
+
+export interface IdleSettings {
+  /** Cap multiplier over the expected dwell. */
+  k: number;
+  /** Manual cutoff; replaces the adaptive cap everywhere when set. */
+  overrideMs: number | null;
+}
+
+export interface PreparedView {
+  t: number;
+  end: number;
+  /** Raw dwell; `null` = unknown (the last converted turn of a sitting). */
+  dwell: number | null;
+  /** Characters on screen (`chars_visible`). */
+  chars: number;
+  /** Faster than `SKIP_CPM` (native): time counts, its pages are skimmed. */
+  skip: boolean;
+  /**
+   * A legacy turn that cannot say what was read: its next turn is another
+   * device's (the cumulative count falls — a seam) or it is faster than
+   * `SKIP_CPM`. Time counts; nothing is read, skimmed or sampled.
+   */
+  unread: boolean;
+  legacy: boolean;
+  pass: number;
+  /** Pages on screen and their characters. */
+  pages: Array<[page: number, chars: number]>;
+  /** The recording event's id — what a `resolve` targets. */
+  device: string;
+  seq: number;
+  /** The latest answer about this view; always `null` for legacy (never prompted). */
+  answer: PauseCount | null;
+}
+
+export interface PreparedVolume {
+  views: PreparedView[];
+  /** Volume-editor edits, in time order, with the device that made each. */
+  adjusts: Array<{ t: number; ms: number; chars: number; device: string }>;
+  /** This volume's newest views usable for the pace, `[t, ms per char]`, newest first. */
+  paceTail: Array<[t: number, rate: number]>;
+}
+
+export interface SpeedSample {
+  end: number;
+  ms: number;
+  chars: number;
+}
+
+/** Running totals after each counted entry, by time — for `totalsBefore`. */
+export type TimelinePoint = [t: number, timeMs: number, readChars: number, skippedChars: number];
+
+/** A native view over its cap, or one the user answered about (review list, answer count). */
+export interface Pause {
+  device: string;
+  seq: number;
+  t: number;
+  /** First page on screen. */
+  page: number;
+  dwell: number;
+  cap: number;
+  typical: number;
+  /** What it counts now (`countedDwell`). */
+  counted: number;
+  /** `null` = provisional: unanswered, counts typical. */
+  answer: PauseCount | null;
+}
+
+/**
+ * One device's share of a volume (phase 4). The parts sum to the volume:
+ * Σ (`timeMs` + `adjustMs`) = `VolumeTotals.timeMs`, Σ (`readChars` +
+ * `adjustChars`) = `readChars`, Σ `skippedChars` = `skippedChars`. A page's
+ * characters go to the device whose view credited them (first view wins).
+ */
+export interface DeviceTotals {
+  /** Counted dwell of this device's views. */
+  timeMs: number;
+  readChars: number;
+  skippedChars: number;
+  /** What its speed samples hold (non-skip views that counted time). */
+  sampleMs: number;
+  sampleChars: number;
+  /** Its volume-editor edits — kept apart: they are not reading. */
+  adjustMs: number;
+  adjustChars: number;
+  /** Earliest view start and latest view end; `null` when it only edited. */
+  firstReadAt: number | null;
+  lastReadAt: number | null;
+}
+
+export interface VolumeTotals {
+  /**
+   * RAW totals: a negative `adjust` (an editor edit below what history
+   * holds) may take them below zero — the pre-history baseline is added
+   * before anything is clamped (`figuresFor`).
+   */
+  timeMs: number;
+  readChars: number;
+  skippedChars: number;
+  lastReadAt: number | null;
+  /** Latest end among `samples` (−Infinity without any). */
+  newestSampleEnd: number;
+  timeline: TimelinePoint[];
+  /** Non-skip views that counted time, oldest first. */
+  samples: SpeedSample[];
+  /** Native views over their cap or answered, oldest first. Legacy never. */
+  pauses: Pause[];
+  /**
+   * By RAW device id (merges are applied by whoever groups them); every
+   * converted turn under the one key `LEGACY_DEVICE_PREFIX`.
+   */
+  byDevice: Map<string, DeviceTotals>;
+}
+
+export interface SpeedEstimate {
+  charsPerMinute: number;
+  minutes: number;
+}
+
+type PageEvent = Extract<ReadingEvent, { kind: 'page' }>;
+
+/** A view's identity across devices: its page event's `[device, seq]` — what a `resolve` targets. */
+export function pauseKey(p: { device: string; seq: number }): string {
+  return `${p.device}\u0000${p.seq}`;
+}
+
+const byTime = (a: ReadingEvent, b: ReadingEvent) =>
+  a.t - b.t || a.device.localeCompare(b.device) || a.seq - b.seq;
+
+/** One volume's events → the pace-independent part of its stats. */
+export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
+  let horizon = -Infinity;
+  for (const e of events) if (e.kind === 'forget' && e.before > horizon) horizon = e.before;
+  const live = events.filter((e) => e.t >= horizon).sort(byTime);
+  // `live` is in time order (ties by device, then seq), so the last answer
+  // set for a view is the latest — the same on every device.
+  const answers = new Map<string, PauseCount>();
+  for (const e of live) {
+    if (e.kind === 'resolve')
+      answers.set(pauseKey({ device: e.target[0], seq: e.target[1] }), e.count);
+  }
+
+  const native = live.filter(
+    (e): e is PageEvent => e.kind === 'page' && !e.device.startsWith(LEGACY_DEVICE_PREFIX)
+  );
+  const { outsideHome } = lookupVisits(native);
+  const covered = nativeCoverage(native);
+  // Legacy page chars come from the NEXT legacy turn, covered or not: the
+  // cumulative count is a position, whichever device recorded the next one.
+  const legacyAll = live.filter(
+    (e): e is PageEvent => e.kind === 'page' && e.device.startsWith(LEGACY_DEVICE_PREFIX)
+  );
+  const legacyChars = new Map<PageEvent, { chars: number; seam: boolean }>();
+  for (let i = 0; i < legacyAll.length; i++) {
+    const here = legacyAll[i];
+    const next = legacyAll[i + 1];
+    const known = here.page_chars.length > 0 && next && next.page_chars.length > 0;
+    const delta = known ? next.chars_before - here.chars_before : 0;
+    legacyChars.set(here, { chars: Math.max(0, delta), seam: delta < 0 });
+  }
+
+  const views: PreparedView[] = [];
+  const adjusts: PreparedVolume['adjusts'] = [];
+  let pass = 0;
+  for (const e of live) {
+    if (e.kind === 'restart') {
+      pass++;
+      continue;
+    }
+    if (e.kind === 'adjust') {
+      adjusts.push({ t: e.t, ms: e.time_delta_ms, chars: e.chars_delta, device: e.device });
+      continue;
+    }
+    if (e.kind !== 'page') continue;
+    const legacy = e.device.startsWith(LEGACY_DEVICE_PREFIX);
+    if (legacy && covered(e.t)) continue;
+    const seam = legacy && (legacyChars.get(e)?.seam ?? false);
+    const pages: Array<[number, number]> = legacy
+      ? [[e.first_page, legacyChars.get(e)?.chars ?? 0]]
+      : e.page_chars.map((c, i) => [e.first_page + i, c]);
+    const chars = pages.reduce((sum, [, c]) => sum + c, 0);
+    const dwell = e.dwell_ms;
+    const fast = chars > 0 && dwell !== null && (dwell <= 0 || (chars / dwell) * 60_000 > SKIP_CPM);
+    views.push({
+      t: e.t,
+      end: e.t + (dwell ?? 0),
+      dwell,
+      chars,
+      skip: (fast && !legacy) || (!legacy && outsideHome.has(eventKey(e))),
+      unread: seam || (fast && legacy),
+      legacy,
+      pass,
+      pages,
+      device: e.device,
+      seq: e.seq,
+      answer: legacy || answers.size === 0 ? null : (answers.get(pauseKey(e)) ?? null)
+    });
+  }
+  const paceTail: PreparedVolume['paceTail'] = [];
+  for (let i = views.length - 1; i >= 0 && paceTail.length < PACE_MAX_SAMPLES; i--) {
+    const v = views[i];
+    if (v.skip || v.unread || v.dwell === null || v.chars < PACE_MIN_CHARS) continue;
+    if (v.dwell <= 0 || v.dwell > CEILING_MS) continue;
+    paceTail.push([v.t, v.dwell / v.chars]);
+  }
+  paceTail.sort((a, b) => b[0] - a[0]);
+  return { views, adjusts, paceTail };
+}
+
+/** Median ms per character over the newest usable views of every volume. */
+export function estimatePace(volumes: Iterable<PreparedVolume>): number | null {
+  // Newest volumes first; once 500 candidates are in hand, a volume whose
+  // newest view is older than the 500th can contribute nothing. A page turn
+  // then costs the few volumes read lately, not the whole library.
+  const tails = [...volumes]
+    .map((v) => v.paceTail)
+    .filter((tail) => tail.length > 0)
+    .sort((a, b) => b[0][0] - a[0][0]);
+  let usable: Array<[number, number]> = [];
+  for (const tail of tails) {
+    if (usable.length >= PACE_MAX_SAMPLES) {
+      usable.sort((a, b) => b[0] - a[0]);
+      usable.length = PACE_MAX_SAMPLES;
+      if (tail[0][0] < usable[PACE_MAX_SAMPLES - 1][0]) break;
+    }
+    usable = usable.concat(tail);
+  }
+  if (usable.length < PACE_MIN_SAMPLES) return null;
+  const recent = usable
+    .sort((a, b) => b[0] - a[0])
+    .slice(0, PACE_MAX_SAMPLES)
+    .map((s) => s[1])
+    .sort((a, b) => a - b);
+  const mid = recent.length >> 1;
+  return recent.length % 2 ? recent[mid] : (recent[mid - 1] + recent[mid]) / 2;
+}
+
+/** How long a view of `chars` characters may last before it is a long pause. */
+export function viewCap(chars: number, pace: number | null, idle: IdleSettings): number {
+  if (idle.overrideMs !== null) return idle.overrideMs;
+  if (pace === null) return NO_DATA_CAP_MS;
+  return clamp(idle.k * chars * pace, FLOOR_MS, CEILING_MS);
+}
+
+/** What a view over its cap counts: its expected dwell, within floor and cap. */
+export function typicalDwell(chars: number, pace: number | null, cap: number): number {
+  const expected = pace === null ? cap : chars * pace;
+  return clamp(expected, Math.min(FLOOR_MS, cap), cap);
+}
+
+/**
+ * What a view's dwell counts, given the user's answer (`null` = none):
+ * `full` all of it, `none` nothing, `typical` at most its typical time (an
+ * answer no longer offered, still honoured where recorded). An unanswered
+ * view counts up to its cap. An answer holds whatever the cap is now, so a
+ * pace change never undoes a "don't count".
+ */
+export function countedDwell(
+  dwell: number,
+  cap: number,
+  typical: number,
+  answer: PauseCount | null
+): number {
+  if (answer === 'full') return dwell;
+  if (answer === 'none') return 0;
+  if (answer === 'typical') return Math.min(dwell, typical);
+  return Math.min(dwell, cap);
+}
+
+/**
+ * `k` after "Still reading" on a view of `chars` characters open for
+ * `elapsed`: fits that time with `WIDEN_HEADROOM`, rounded up to a half step,
+ * never past `K_MAX` nor the half step at which this view's cap meets the
+ * ceiling. `null` when widening cannot lengthen THIS view's cap — a manual
+ * override, no pace yet, an art-only page, a cap held at the floor (its time
+ * reflects the floor, not the reader's pace) or already at the ceiling —
+ * since `k` is global and would only move other views' caps.
+ */
+export function widenedK(
+  elapsed: number,
+  chars: number,
+  pace: number | null,
+  idle: IdleSettings
+): number | null {
+  if (idle.overrideMs !== null || pace === null || chars * pace <= 0) return null;
+  const expected = chars * pace;
+  // Held at the floor, the time so far says nothing about pace: fitting k to
+  // it would move every other page's cap far more than this one's.
+  if (idle.k * expected <= FLOOR_MS) return null;
+  const fit = Math.ceil(((elapsed * WIDEN_HEADROOM) / expected) * 2) / 2;
+  const reach = Math.ceil((CEILING_MS / expected) * 2) / 2;
+  const next = Math.min(K_MAX, reach, fit);
+  if (next <= idle.k) return null;
+  const widened = viewCap(chars, pace, { k: next, overrideMs: null });
+  return widened > viewCap(chars, pace, idle) ? next : null;
+}
+
+export function countVolume(
+  prepared: PreparedVolume,
+  pace: number | null,
+  idle: IdleSettings
+): VolumeTotals {
+  let timeMs = 0;
+  let lastReadAt: number | null = null;
+  const counted: Array<{ view: PreparedView; ms: number; reads: boolean }> = [];
+  const pauses: Pause[] = [];
+  for (const view of prepared.views) {
+    const cap = viewCap(view.chars, pace, idle);
+    let ms: number;
+    let reads = !view.skip && !view.unread;
+    if (view.dwell === null) ms = 0;
+    else if (view.dwell <= cap && view.answer === null) ms = view.dwell;
+    else if (view.legacy) {
+      // The old idle rule: a gap over the timeout was neither time nor reading.
+      ms = 0;
+      reads = false;
+    } else {
+      // A long pause or an answered view. An answer moves time only: whether
+      // its pages were read stays as the view's own speed says.
+      const typical = typicalDwell(view.chars, pace, cap);
+      ms = countedDwell(view.dwell, cap, typical, view.answer);
+      pauses.push({
+        device: view.device,
+        seq: view.seq,
+        t: view.t,
+        page: view.pages[0]?.[0] ?? 0,
+        dwell: view.dwell,
+        cap,
+        typical,
+        counted: ms,
+        answer: view.answer
+      });
+    }
+    timeMs += ms;
+    lastReadAt = Math.max(lastReadAt ?? view.end, view.end);
+    counted.push({ view, ms, reads });
+  }
+
+  // Per pass: a page is read when any counting non-skip view showed it,
+  // skipped when only skip views did (an unread legacy turn does neither).
+  let readChars = 0;
+  let skippedChars = 0;
+  const entries: Array<[t: number, ms: number, read: number, skipped: number]> = [];
+  const samples: SpeedSample[] = [];
+  const credited = new Set<string>();
+  const readPages = new Set<string>();
+  for (const { view, reads } of counted) {
+    if (reads) for (const [page] of view.pages) readPages.add(`${view.pass}|${page}`);
+  }
+  const skippedSeen = new Set<string>();
+  const byDevice = new Map<string, DeviceTotals>();
+  for (const { view, ms, reads } of counted) {
+    let fresh = 0;
+    let skimmed = 0;
+    for (const [page, chars] of view.pages) {
+      const key = `${view.pass}|${page}`;
+      if (reads) {
+        if (credited.has(key)) continue;
+        credited.add(key);
+        fresh += chars;
+      } else if (view.skip && !readPages.has(key) && !skippedSeen.has(key)) {
+        skippedSeen.add(key);
+        skimmed += chars;
+      }
+    }
+    readChars += fresh;
+    skippedChars += skimmed;
+    entries.push([view.t, ms, fresh, skimmed]);
+    const part = deviceTotals(byDevice, view.device);
+    part.timeMs += ms;
+    part.readChars += fresh;
+    part.skippedChars += skimmed;
+    part.firstReadAt = Math.min(part.firstReadAt ?? view.t, view.t);
+    part.lastReadAt = Math.max(part.lastReadAt ?? view.end, view.end);
+    if (reads && ms > 0) {
+      samples.push({ end: view.end, ms, chars: fresh });
+      part.sampleMs += ms;
+      part.sampleChars += fresh;
+    }
+  }
+  for (const a of prepared.adjusts) {
+    timeMs += a.ms;
+    readChars += a.chars;
+    entries.push([a.t, a.ms, a.chars, 0]);
+    const part = deviceTotals(byDevice, a.device);
+    part.adjustMs += a.ms;
+    part.adjustChars += a.chars;
+  }
+
+  entries.sort((a, b) => a[0] - b[0]);
+  const timeline: TimelinePoint[] = [];
+  let [t0, r0, s0] = [0, 0, 0];
+  for (const [t, ms, read, skipped] of entries) {
+    t0 += ms;
+    r0 += read;
+    s0 += skipped;
+    timeline.push([t, t0, r0, s0]);
+  }
+
+  let newestSampleEnd = -Infinity;
+  for (const sample of samples) if (sample.end > newestSampleEnd) newestSampleEnd = sample.end;
+  return {
+    timeMs,
+    readChars,
+    skippedChars,
+    lastReadAt,
+    newestSampleEnd,
+    timeline,
+    samples,
+    pauses,
+    byDevice
+  };
+}
+
+/** The running share of `device` (converted turns all share one key), created empty. */
+function deviceTotals(byDevice: Map<string, DeviceTotals>, device: string): DeviceTotals {
+  const key = device.startsWith(LEGACY_DEVICE_PREFIX) ? LEGACY_DEVICE_PREFIX : device;
+  let part = byDevice.get(key);
+  if (!part) {
+    part = {
+      timeMs: 0,
+      readChars: 0,
+      skippedChars: 0,
+      sampleMs: 0,
+      sampleChars: 0,
+      adjustMs: 0,
+      adjustChars: 0,
+      firstReadAt: null,
+      lastReadAt: null
+    };
+    byDevice.set(key, part);
+  }
+  return part;
+}
+
+/** What a volume's history held from before `before` (views by their start). */
+export function totalsBefore(
+  totals: Pick<VolumeTotals, 'timeline'>,
+  before: number
+): { timeMs: number; readChars: number; skippedChars: number } {
+  const line = totals.timeline;
+  let lo = 0;
+  let hi = line.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (line[mid][0] < before) {
+      found = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  if (found < 0) return { timeMs: 0, readChars: 0, skippedChars: 0 };
+  const [, timeMs, readChars, skippedChars] = line[found];
+  return { timeMs, readChars, skippedChars };
+}
+
+/** Speed over the newest `windowMs` of counted reading; a sample straddling the edge counts pro rata. */
+export function speedFromSamples(
+  samples: SpeedSample[],
+  windowMs: number = RECENT_WINDOW_MS
+): SpeedEstimate {
+  const newest = [...samples].sort((a, b) => b.end - a.end);
+  let ms = 0;
+  let chars = 0;
+  for (const s of newest) {
+    if (ms >= windowMs) break;
+    const take = Math.min(s.ms, windowMs - ms);
+    ms += take;
+    chars += s.chars * (take / s.ms);
+  }
+  return ms > 0
+    ? { charsPerMinute: (chars / ms) * 60_000, minutes: ms / 60_000 }
+    : { charsPerMinute: 0, minutes: 0 };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * `speedFromSamples` over many volumes without sorting every sample: volumes
+ * are taken newest first until the window is full and the next volume's
+ * newest sample is older than the window's edge.
+ */
+export function recentSpeed(
+  volumes: Iterable<Pick<VolumeTotals, 'samples' | 'newestSampleEnd'>>,
+  windowMs: number = RECENT_WINDOW_MS
+): SpeedEstimate {
+  const ordered = [...volumes]
+    .filter((v) => v.samples.length > 0)
+    .sort((a, b) => b.newestSampleEnd - a.newestSampleEnd);
+  let picked: SpeedSample[] = [];
+  let pickedMs = 0;
+  for (const volume of ordered) {
+    if (pickedMs >= windowMs && volume.newestSampleEnd < windowEdge(picked, windowMs)) break;
+    picked = picked.concat(volume.samples);
+    for (const s of volume.samples) pickedMs += s.ms;
+  }
+  return speedFromSamples(picked, windowMs);
+}
+
+/** The end of the oldest sample the window (newest first) still reaches. */
+function windowEdge(samples: SpeedSample[], windowMs: number): number {
+  const newest = [...samples].sort((a, b) => b.end - a.end);
+  let ms = 0;
+  for (const s of newest) {
+    ms += s.ms;
+    if (ms >= windowMs) return s.end;
+  }
+  return -Infinity;
+}

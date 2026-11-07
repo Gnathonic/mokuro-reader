@@ -1,5 +1,6 @@
 import type { VolumeMetadata } from '$lib/types';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { toRasterImageFile } from '$lib/util/raster-image';
 
 export interface CloudThumbnailResult {
   file: File;
@@ -7,11 +8,18 @@ export interface CloudThumbnailResult {
   height: number;
 }
 
-// Session cache: volumeUuid -> result
-const cache = new Map<string, CloudThumbnailResult>();
+// Session cache: volumeUuid -> the newest cover downloaded this session, with
+// the listed version it came from. A different version is a miss: a cover
+// changed in the cloud is never answered from the old copy.
+const cache = new Map<string, { version: string; result: CloudThumbnailResult }>();
 
-// Coalesce concurrent requests for the same volume
+// Coalesce concurrent requests for the same cover version
 const pendingFetches = new Map<string, Promise<CloudThumbnailResult | null>>();
+
+/** The listed cover sidecar's version: its size and modification time, `':'` when unknown. */
+function coverVersion(volume: VolumeMetadata): string {
+  return `${volume.cloudThumbnailSize ?? ''}:${volume.cloudThumbnailModifiedTime ?? ''}`;
+}
 
 /**
  * Cover downloads in flight at once. Was 4 — a number picked at this module's
@@ -103,12 +111,6 @@ function releaseFetchSlot(): void {
   waiters.pop()?.grant();
 }
 
-function getThumbnailMime(path: string): string {
-  const lower = path.toLowerCase();
-  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
-  return 'image/webp';
-}
-
 async function downloadThumbnailWithTimeout(volume: VolumeMetadata): Promise<Blob> {
   const thumbnailPath =
     volume.cloudThumbnailPath ?? `${volume.series_title}/${volume.volume_title}.webp`;
@@ -139,17 +141,20 @@ async function downloadThumbnailWithTimeout(volume: VolumeMetadata): Promise<Blo
  * Get a cached cloud thumbnail synchronously (returns undefined if not cached)
  */
 export function getCachedCloudThumbnail(volumeUuid: string): CloudThumbnailResult | undefined {
-  return cache.get(volumeUuid);
+  return cache.get(volumeUuid)?.result;
 }
 
 /**
  * Fetch a cloud thumbnail for a placeholder volume.
  * Downloads the .webp file, measures dimensions, and caches the result.
- * Coalesces concurrent requests for the same volume.
+ * Coalesces concurrent requests for the same volume and cover version.
+ * `refresh`: the caller has decided the copy on hand is stale — skip the
+ * session copy and download.
  */
 export async function fetchCloudThumbnail(
   volume: VolumeMetadata,
-  stillNear?: () => boolean
+  stillNear?: () => boolean,
+  options: { refresh?: boolean } = {}
 ): Promise<CloudThumbnailResult | null> {
   if (!volume.cloudThumbnailFileId) return null;
   if (!volume.cloudProvider) return null;
@@ -159,12 +164,15 @@ export async function fetchCloudThumbnail(
     return null;
   }
 
-  // Check session cache
-  const cached = cache.get(volume.volume_uuid);
-  if (cached) return cached;
+  const version = coverVersion(volume);
+  if (!options.refresh) {
+    const cached = cache.get(volume.volume_uuid);
+    if (cached && cached.version === version) return cached.result;
+  }
 
   // Coalesce concurrent requests
-  const pending = pendingFetches.get(volume.volume_uuid);
+  const fetchKey = `${volume.volume_uuid}\u0000${version}`;
+  const pending = pendingFetches.get(fetchKey);
   if (pending) return pending;
 
   const fetchPromise = (async (): Promise<CloudThumbnailResult | null> => {
@@ -175,8 +183,17 @@ export async function fetchCloudThumbnail(
       const thumbnailPath =
         volume.cloudThumbnailPath ?? `${volume.series_title}/${volume.volume_title}.webp`;
       const ext = thumbnailPath.split('.').pop()!.toLowerCase();
-      const mime = getThumbnailMime(thumbnailPath);
-      const file = new File([blob], `${volume.volume_title}.${ext}`, { type: mime });
+      // Typed by its bytes, never by its name: SVG is unsupported, and a
+      // cloud file named `.webp` may hold anything.
+      const file = await toRasterImageFile(blob, `${volume.volume_title}.${ext}`, {
+        renameExtension: true
+      });
+      if (!file) {
+        console.warn(
+          `Cloud thumbnail for ${volume.volume_title} is not a supported raster image; skipped`
+        );
+        return null;
+      }
 
       // Measure dimensions using createImageBitmap (most reliable for pixel dimensions)
       const bitmap = await createImageBitmap(file);
@@ -185,17 +202,17 @@ export async function fetchCloudThumbnail(
       bitmap.close();
 
       const result: CloudThumbnailResult = { file, width, height };
-      cache.set(volume.volume_uuid, result);
+      cache.set(volume.volume_uuid, { version, result });
       return result;
     } catch (error) {
       console.warn(`Failed to fetch cloud thumbnail for ${volume.volume_title}:`, error);
       return null;
     } finally {
       releaseFetchSlot();
-      pendingFetches.delete(volume.volume_uuid);
+      pendingFetches.delete(fetchKey);
     }
   })();
 
-  pendingFetches.set(volume.volume_uuid, fetchPromise);
+  pendingFetches.set(fetchKey, fetchPromise);
   return fetchPromise;
 }

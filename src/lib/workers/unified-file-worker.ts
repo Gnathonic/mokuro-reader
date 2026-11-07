@@ -30,6 +30,14 @@ import {
   type WorkerAuthRefresher
 } from '$lib/util/worker-auth-refresh';
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
+import { uploadVolumeFiles } from '$lib/util/volume-upload-order';
+import { mayBeImageType } from '$lib/util/image-content-type';
+import { assertNoRedirectEscape } from '$lib/util/link-safety';
+import { workerFailureKind, type WorkerFailureKind } from '$lib/util/sync/core/storage-full';
+import { forwardWorkerCspViolations } from '$lib/security/csp-violations';
+
+// A violation here fires on this worker, where the page's buffer cannot see it.
+forwardWorkerCspViolations();
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -145,6 +153,10 @@ interface CompressFromDbMessage {
    * editor's `original` snapshot is never uploaded there (`layerStaysLocal`).
    */
   serverCompilesMetadata?: boolean;
+  /** The target's `ProviderStatus.editLayerSync`: `local` keeps the `edit` layer off it. */
+  editLayerSync?: 'push' | 'local';
+  /** `personalLayerAccount` of the target: another account's `edit` layer is not uploaded. */
+  accountScope?: string;
 }
 
 /**
@@ -281,6 +293,12 @@ interface ErrorMessage {
   error: string;
   /** The server's one-sentence verdict, when the failure carried one (a WebDAV upload). */
   detail?: string;
+  /**
+   * `'quota'` when the account is full: only the message crosses to the main
+   * thread, and the backup queue must not show a raw `403 [reason]` for a
+   * failure the user has to act on (`storage-full.ts`).
+   */
+  kind?: WorkerFailureKind;
 }
 
 interface DecompressedEntry {
@@ -457,6 +475,9 @@ async function downloadFromUrl(
   onProgress?: (loaded: number, total: number) => void
 ): Promise<{ data: ArrayBuffer; contentType?: string }> {
   const response = await fetch(url, { cache: 'no-store' });
+  // Every URL here came from a deep link (or its manifest), which the user
+  // confirmed by host: a redirect may not take it somewhere that was not shown.
+  assertNoRedirectEscape(url, response);
   if (!response.ok) {
     throw new Error(`HTTP download failed: ${response.status}`);
   }
@@ -493,11 +514,14 @@ async function downloadFromUrl(
 }
 
 async function tryDownloadOptionalUrl(
-  urls: string[]
+  urls: string[],
+  acceptType: (contentType: string | undefined) => boolean = () => true
 ): Promise<{ url: string; data: ArrayBuffer; contentType?: string } | undefined> {
   for (const url of urls) {
     try {
       const result = await downloadFromUrl(url);
+      // A server's HTML page for a missing path is a 200 too: try the next URL.
+      if (!acceptType(result.contentType)) continue;
       return { url, data: result.data, contentType: result.contentType };
     } catch {
       // best effort
@@ -644,7 +668,7 @@ ctx.addEventListener('message', async (event) => {
       });
 
       const mokuro = await tryDownloadOptionalUrl(mokuroUrls);
-      const cover = await tryDownloadOptionalUrl(coverUrls);
+      const cover = await tryDownloadOptionalUrl(coverUrls, mayBeImageType);
 
       const completeMessage: DownloadCompleteMessage = {
         type: 'complete',
@@ -1000,84 +1024,95 @@ ctx.addEventListener('message', async (event) => {
             mimeType: sidecarBlob.type || 'application/octet-stream'
           });
 
-        if (message.includeSidecars === true) {
-          const generatedSidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
-            serverCompilesMetadata: message.serverCompilesMetadata === true
-          });
-          const sidecarsToUpload: Array<{ filename: string; blob: Blob }> = [];
-          if (generatedSidecars.mokuro) {
-            sidecarsToUpload.push(generatedSidecars.mokuro);
-          }
-          // Layers after the primary, before the archive (same idempotent overwrite).
-          for (const layer of generatedSidecars.layers ?? []) {
-            sidecarsToUpload.push(layer);
-          }
-          layerSnapshots = generatedSidecars.layers?.map((layer) => ({
-            layerId: layer.layerId,
-            updatedAt: layer.updatedAt,
-            size: layer.blob.size
-          }));
-          if (generatedSidecars.thumbnail) {
-            sidecarsToUpload.push(generatedSidecars.thumbnail);
-          }
-
-          if (sidecarsToUpload.length > 0) {
-            const sidecarProgressMessage: UploadProgressMessage = {
-              type: 'progress',
-              phase: 'sidecars',
-              progress: 100
-            };
-
-            ctx.postMessage(sidecarProgressMessage);
-            for (const sidecar of sidecarsToUpload) {
-              console.log(`Worker: Uploading sidecar ${sidecar.filename}...`);
-              const uploadedSidecar = await uploadSidecar(sidecar.filename, sidecar.blob);
-              if (sidecar === generatedSidecars.mokuro) {
-                const sha256 = await sha256Hex(sidecar.blob);
-                if (sha256) {
-                  mokuroSidecar = {
-                    sha256,
-                    size: sidecar.blob.size,
-                    ...(uploadedSidecar?.modifiedTime
-                      ? { modifiedTime: uploadedSidecar.modifiedTime }
-                      : {})
-                  };
-                }
-              }
-              ctx.postMessage(sidecarProgressMessage);
-            }
-          }
+        const generatedSidecars =
+          message.includeSidecars === true
+            ? await generateVolumeSidecarsFromDb(volumeUuid, undefined, {
+                serverCompilesMetadata: message.serverCompilesMetadata === true,
+                editLayerSync: message.editLayerSync,
+                provider: provider ?? undefined,
+                account: message.accountScope,
+                cloud: true
+              })
+            : undefined;
+        const sidecarProgressMessage: UploadProgressMessage = {
+          type: 'progress',
+          phase: 'sidecars',
+          progress: 100
+        };
+        if (
+          generatedSidecars &&
+          (generatedSidecars.mokuro ||
+            generatedSidecars.thumbnail ||
+            generatedSidecars.layers?.length)
+        ) {
+          ctx.postMessage(sidecarProgressMessage);
         }
 
-        ctx.postMessage({
-          type: 'progress',
-          phase: 'uploading',
-          progress: 0
-        } satisfies UploadProgressMessage);
-
-        const uploaded = await cloudProvider.uploadFile({
-          seriesTitle,
-          filename,
-          blob: cbzBlob,
-          credentials,
-          mimeType: 'application/x-cbz',
-          onProgress: (loaded, total) => {
-            const progressMessage: UploadProgressMessage = {
-              type: 'progress',
-              phase: 'uploading',
-              progress: total > 0 ? (loaded / total) * 100 : 0
-            };
-            ctx.postMessage(progressMessage);
+        // A layer bunko anchors on the archive goes up after it
+        // (`uploadVolumeFiles`); the rest before it (same idempotent overwrite).
+        const { archive: uploaded, layers: sentLayers } = await uploadVolumeFiles(
+          generatedSidecars,
+          {
+            sidecar: (sidecar) => {
+              console.log(`Worker: Uploading sidecar ${sidecar.filename}...`);
+              return uploadSidecar(sidecar.filename, sidecar.blob);
+            },
+            archive: () => {
+              ctx.postMessage({
+                type: 'progress',
+                phase: 'uploading',
+                progress: 0
+              } satisfies UploadProgressMessage);
+              return cloudProvider.uploadFile({
+                seriesTitle,
+                filename,
+                blob: cbzBlob,
+                credentials,
+                mimeType: 'application/x-cbz',
+                onProgress: (loaded, total) => {
+                  const progressMessage: UploadProgressMessage = {
+                    type: 'progress',
+                    phase: 'uploading',
+                    progress: total > 0 ? (loaded / total) * 100 : 0
+                  };
+                  ctx.postMessage(progressMessage);
+                },
+                onRetry: (retry) => {
+                  ctx.postMessage({
+                    type: 'progress',
+                    phase: 'retrying',
+                    progress: 0,
+                    retry
+                  } satisfies UploadProgressMessage);
+                }
+              });
+            }
           },
-          onRetry: (retry) => {
-            ctx.postMessage({
-              type: 'progress',
-              phase: 'retrying',
-              progress: 0,
-              retry
-            } satisfies UploadProgressMessage);
+          {
+            onPrimary: async (sidecar, uploadedSidecar) => {
+              const sha256 = await sha256Hex(sidecar.blob);
+              if (sha256) {
+                mokuroSidecar = {
+                  sha256,
+                  size: sidecar.blob.size,
+                  ...(uploadedSidecar?.modifiedTime
+                    ? { modifiedTime: uploadedSidecar.modifiedTime }
+                    : {})
+                };
+              }
+            },
+            onSidecar: () => ctx.postMessage(sidecarProgressMessage)
           }
-        });
+        );
+        // Only what went up: a layer refused after the archive is pushed by
+        // the next listing's layer sync instead.
+        layerSnapshots = generatedSidecars?.layers
+          ? sentLayers.map((layer) => ({
+              layerId: layer.layerId,
+              updatedAt: layer.updatedAt,
+              size: layer.blob.size
+            }))
+          : undefined;
 
         const completeMessage: UploadCompleteMessage = {
           type: 'complete',
@@ -1107,7 +1142,7 @@ ctx.addEventListener('message', async (event) => {
         // what `loadVolumeSidecars`/`buildVolumeSidecarsFromData` produce from
         // the same rows on the main thread (pinned by the byte-identity test).
         // Only the upload FILENAME takes the archive's stem.
-        const sidecars = await generateVolumeSidecarsFromDb(volumeUuid);
+        const sidecars = await generateVolumeSidecarsFromDb(volumeUuid, undefined, { cloud: true });
         if (wantMokuro && sidecars.mokuro) {
           const uploaded = await cloudProvider.uploadFile({
             seriesTitle,
@@ -1184,6 +1219,8 @@ ctx.addEventListener('message', async (event) => {
         ? { detail: (error as { detail: string }).detail }
         : {})
     };
+    const kind = workerFailureKind(error);
+    if (kind) errorMessage.kind = kind;
     ctx.postMessage(errorMessage);
   }
 });

@@ -697,6 +697,31 @@ export function seriesFileCarriesServerRequest(
   return false;
 }
 
+/**
+ * The body to PUT to a server that compiles `series.json` itself, given the
+ * file `buildSeriesFile` produced: that file plus an EXPLICIT `spine_offset: 0`
+ * when this device deliberately reset an alignment the server still publishes.
+ *
+ * `buildSeriesFile` omits a zero (plain storage keeps build → parse an
+ * identity, and an absent value already means "none" there). A compiling
+ * server reads an absent key as "keep the stored value", so without this the
+ * reset never reaches it and every cycle re-sends the same no-op request.
+ * Only a reset the record HOLDS (`spine-offsets.ts` stores the 0) counts — no
+ * local opinion inherits the published value. Per-volume offsets need nothing:
+ * the server clears a listed volume that arrives without one.
+ */
+export function withServerIndexClears(
+  file: SeriesFile,
+  existing: SeriesFile | undefined,
+  meta: SeriesMetadata | undefined
+): SeriesFile {
+  if (file.spine_offset !== undefined) return file;
+  if (!sanitizeSpineOffset(existing?.spine_offset)) return file;
+  const localReset =
+    !!meta && Object.hasOwn(meta, 'spine_offset') && sanitizeSpineOffset(meta.spine_offset) === 0;
+  return localReset ? { ...file, spine_offset: 0 } : file;
+}
+
 /** The shareable half of a series record (or of the file already in the cloud). */
 interface SeriesFacts {
   external_ids?: SeriesExternalIds;

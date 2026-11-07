@@ -1,9 +1,11 @@
 import { browser } from '$app/environment';
 import type {
+  ControlFileResult,
   SyncProvider,
   ProviderCredentials,
   ProviderStatus,
   CloudFileMetadata,
+  FileStamp,
   StorageQuota,
   UploadPayload,
   UploadFileResult
@@ -12,16 +14,25 @@ import { ProviderError } from '../../provider-interface';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import { ONEDRIVE_CONFIG } from './constants';
 import { onedriveTokenManager } from './token-manager';
+import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
 import {
   createFolder,
   deleteItem,
+  downloadItemContent,
   getDriveQuota,
   getItemByPath,
+  getItemStamp,
   listChildren,
   patchItem
 } from './graph-client';
+import { oneDriveRevision } from '../../core/providers/onedrive-core';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { isSyncableFile } from '../../syncable-file';
+import { ControlNodeCache, readControlNodes } from '../../control-file-read';
+import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+
+/** Worth retrying later; a full drive (507) is not, so it is excluded. */
+const RETRYABLE_MESSAGE = /network|timed out|\b429\b|\b5(?!07)\d\d\b/i;
 
 export class OneDriveProvider implements SyncProvider {
   readonly type = 'onedrive' as const;
@@ -32,6 +43,8 @@ export class OneDriveProvider implements SyncProvider {
   readonly downloadConcurrencyLimit = 4;
 
   private cloudCore = getCloudProviderCore('onedrive');
+  /** Control-file bodies by item id + cTag, so an unchanged marker is never re-downloaded. */
+  private controlCache = new ControlNodeCache();
   private initPromise: Promise<void>;
   private initError: Error | null = null;
 
@@ -82,13 +95,13 @@ export class OneDriveProvider implements SyncProvider {
         ? 'Configured (not connected)'
         : 'Not configured';
     const accountId = onedriveTokenManager.getActiveAccountId();
-    return {
+    return withCloudBunkoStatus(this.type, {
       isAuthenticated: authenticated,
       hasStoredCredentials: hasCredentials,
       needsAttention,
       statusMessage,
       accountScope: accountId ? `onedrive:${accountId}` : undefined
-    };
+    });
   }
 
   async login(_credentials?: ProviderCredentials): Promise<void> {
@@ -136,6 +149,7 @@ export class OneDriveProvider implements SyncProvider {
     // Clear the active-provider key BEFORE the token manager's logout —
     // logoutRedirect() navigates the window away and nothing after it runs.
     clearActiveProviderKey();
+    this.controlCache.clear();
     console.log('OneDrive logged out');
     await onedriveTokenManager.logout();
   }
@@ -198,13 +212,79 @@ export class OneDriveProvider implements SyncProvider {
     const promise = (async () => {
       try {
         await this.ensureMokuroFolder();
-        return await this.createFolderTolerant(ONEDRIVE_CONFIG.MOKURO_FOLDER, seriesTitle);
+        // One folder per segment: Graph refuses a `/` in an item name, and
+        // reading history lives two levels deep (history/<device>).
+        let parent: string = ONEDRIVE_CONFIG.MOKURO_FOLDER;
+        let id = '';
+        for (const segment of seriesTitle.split('/')) {
+          const here = `${parent}/${segment}`;
+          const existingSegment = await getItemByPath(
+            await onedriveTokenManager.getAccessToken(),
+            here
+          );
+          id = existingSegment
+            ? existingSegment.id
+            : await this.createFolderTolerant(parent, segment);
+          parent = here;
+        }
+        return id;
       } finally {
         this.seriesFolderPromises.delete(seriesTitle);
       }
     })();
     this.seriesFolderPromises.set(seriesTitle, promise);
     return promise;
+  }
+
+  /**
+   * Read a control file at the library root (`mokuro-reader/<name>`): ONE
+   * `GET /me/drive/root:/mokuro-reader/<name>` per read. OneDrive names are
+   * unique within a folder, so there is at most one node. Its `cTag` (content
+   * tag; falls back to `eTag`) is the version: unchanged means no content
+   * download. Never creates anything; a missing file (or folder) is null.
+   */
+  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
+    }
+    try {
+      const token = await onedriveTokenManager.getAccessToken();
+      const item = await getItemByPath(token, `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${name}`);
+      const version = item ? (item.cTag ?? item.eTag) : undefined;
+      const listed =
+        item && version
+          ? [
+              {
+                id: item.id,
+                etag: version,
+                ...(item.lastModifiedDateTime ? { modified: item.lastModifiedDateTime } : {})
+              }
+            ]
+          : [];
+      return await readControlNodes(
+        name,
+        listed,
+        async (node) => downloadItemContent(await onedriveTokenManager.getAccessToken(), node.id),
+        this.controlCache,
+        opts?.ifNoneMatch
+      );
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      // MSAL asks for interaction when the refresh token is gone: that is an
+      // auth failure the UI resolves with a reconnect (needsAttention is set
+      // by the token manager).
+      const isAuth =
+        (error instanceof Error && error.name === 'InteractionRequiredAuthError') ||
+        /Not authenticated with OneDrive/.test(message);
+      throw new ProviderError(
+        `OneDrive control file read failed: ${message}`,
+        'onedrive',
+        'CONTROL_READ_FAILED',
+        isAuth,
+        /network|failed to fetch|timed out/i.test(message)
+      );
+    }
   }
 
   async listCloudVolumes(): Promise<CloudFileMetadata[]> {
@@ -226,27 +306,7 @@ export class OneDriveProvider implements SyncProvider {
       return results;
     }
 
-    const walk = async (path: string): Promise<void> => {
-      const children = await listChildren(token, path);
-      for (const item of children) {
-        const childPath = path ? `${path}/${item.name}` : item.name;
-        if (item.folder) {
-          await walk(childPath);
-        } else if (item.file) {
-          const relative = childPath.replace(`${ONEDRIVE_CONFIG.MOKURO_FOLDER}/`, '');
-          if (!isSyncableFile(relative)) continue;
-          results.push({
-            provider: 'onedrive',
-            fileId: item.id,
-            path: relative,
-            modifiedTime: item.lastModifiedDateTime ?? new Date().toISOString(),
-            size: item.size ?? 0
-          });
-        }
-      }
-    };
-
-    await walk(ONEDRIVE_CONFIG.MOKURO_FOLDER);
+    await this.walkInto(token, ONEDRIVE_CONFIG.MOKURO_FOLDER, results);
     console.log(`✅ Listed ${results.length} files from OneDrive`);
     return results;
   }
@@ -284,6 +344,7 @@ export class OneDriveProvider implements SyncProvider {
         onProgress
       });
     } catch (error) {
+      // The core throws a full drive as the storage-full error already.
       if (error instanceof ProviderError) throw error;
       const message = error instanceof Error ? error.message : 'Unknown error';
       throw new ProviderError(
@@ -291,11 +352,84 @@ export class OneDriveProvider implements SyncProvider {
         'onedrive',
         'UPLOAD_FAILED',
         /\b401\b/.test(message),
-        /network|timed out|\b429\b|\b5\d\d\b/i.test(message)
+        RETRYABLE_MESSAGE.test(message)
       );
     }
     console.log(`✅ Uploaded ${path} to OneDrive`);
     return uploaded;
+  }
+
+  /** Every syncable file below `path`, as listing entries (relative to the mokuro folder). */
+  private async walkInto(token: string, path: string, results: CloudFileMetadata[]): Promise<void> {
+    const children = await listChildren(token, path);
+    for (const item of children) {
+      const childPath = path ? `${path}/${item.name}` : item.name;
+      if (item.folder) {
+        await this.walkInto(token, childPath, results);
+      } else if (item.file) {
+        const relative = childPath.replace(`${ONEDRIVE_CONFIG.MOKURO_FOLDER}/`, '');
+        if (!isSyncableFile(relative)) continue;
+        results.push({
+          provider: 'onedrive',
+          fileId: item.id,
+          path: relative,
+          modifiedTime: item.lastModifiedDateTime ?? new Date().toISOString(),
+          size: item.size ?? 0
+        });
+      }
+    }
+  }
+
+  /** The quick tier's listing of one subtree — the listing's own walk, from there. */
+  async listFolder(folder: string): Promise<CloudFileMetadata[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
+    }
+    const token = await onedriveTokenManager.getAccessToken();
+    const path = `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${folder.replace(/^\/+|\/+$/g, '')}`;
+    const root = await getItemByPath(token, path);
+    if (!root?.folder) return [];
+    const results: CloudFileMetadata[] = [];
+    await this.walkInto(token, path, results);
+    return results;
+  }
+
+  /** The cold probe's read: the item by path, then its content — no walk. */
+  async readRootFileCopies(name: string): Promise<Blob[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
+    }
+    const token = await onedriveTokenManager.getAccessToken();
+    const item = await getItemByPath(token, `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${name}`);
+    if (!item || !item.file) return [];
+    return [
+      await this.downloadFile({
+        provider: 'onedrive',
+        fileId: item.id,
+        path: name,
+        modifiedTime: item.lastModifiedDateTime ?? '',
+        size: item.size ?? 0
+      })
+    ];
+  }
+
+  /**
+   * `SyncProvider.statFile`: the item by id, `$select`ed to its stamp. The
+   * revision is `cTag` (content only), else `eTag`.
+   */
+  async statFile(file: CloudFileMetadata): Promise<FileStamp | null> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
+    }
+    const token = await onedriveTokenManager.getAccessToken();
+    const item = await getItemStamp(token, file.fileId);
+    if (!item || item.folder) return null;
+    const revision = oneDriveRevision(item);
+    return {
+      size: item.size ?? 0,
+      modifiedTime: item.lastModifiedDateTime ?? '',
+      ...(revision ? { revision } : {})
+    };
   }
 
   async downloadFile(
@@ -321,7 +455,7 @@ export class OneDriveProvider implements SyncProvider {
         'onedrive',
         'DOWNLOAD_FAILED',
         /\b401\b/.test(message),
-        /network|timed out|\b429\b|\b5\d\d\b/i.test(message)
+        RETRYABLE_MESSAGE.test(message)
       );
     }
     return new Blob([buffer], { type: 'application/zip' });
@@ -490,12 +624,12 @@ export class OneDriveProvider implements SyncProvider {
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {
     const accessToken = await onedriveTokenManager.getAccessToken();
-    return { accessToken };
+    return { accessToken, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 
   async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
     const accessToken = await onedriveTokenManager.getAccessToken();
-    return { accessToken };
+    return { accessToken, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 }
 

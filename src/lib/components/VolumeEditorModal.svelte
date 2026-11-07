@@ -19,9 +19,14 @@
   import { ProviderError } from '$lib/util/sync/provider-interface';
   import { renameRefusalMessage } from '$lib/util/sync/account-capabilities';
   import type { VolumeMetadata } from '$lib/types';
-  import { VolumeData } from '$lib/settings/volume-data';
+  import { get } from 'svelte/store';
+  import { figuresFor, readingStats, readingStatsReady } from '$lib/reading-history/stats-store';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
-  import { IMAGE_MIME_TYPES } from '$lib/import/types';
+  import {
+    RASTER_FORMAT_NAMES,
+    displayableCoverBlob,
+    sniffRasterBlob
+  } from '$lib/util/raster-image';
 
   let open = $state(false);
   let loading = $state(true);
@@ -40,6 +45,8 @@
   // Reading stats
   let progress = $state(0);
   let timeReadInMinutes = $state(0);
+  /** Time read as the stats showed it when the editor opened: a save records the difference. */
+  let loadedMinutes = 0;
 
   // Time display as hh:mm
   let timeHours = $state(0);
@@ -145,7 +152,12 @@
       characterCount = await calculateVolumeCharacterCount(volumeUuid);
 
       progress = data.stats.progress || 0;
-      timeReadInMinutes = data.stats.timeReadInMinutes || 0;
+      // A save records the DIFFERENCE from the time shown here, so it must be
+      // the counted figure: before the stats' first pass the history half is
+      // empty and the baseline alone would make every edit overshoot.
+      await readingStatsReady();
+      timeReadInMinutes = figuresFor(get(readingStats), volumeUuid, data.stats).minutes;
+      loadedMinutes = timeReadInMinutes;
       updateTimeFromMinutes(timeReadInMinutes);
 
       isNewSeries = false;
@@ -160,8 +172,9 @@
       if (thumbnailUrl) {
         URL.revokeObjectURL(thumbnailUrl);
       }
-      if (data.metadata.thumbnail) {
-        thumbnailUrl = URL.createObjectURL(data.metadata.thumbnail);
+      const cover = displayableCoverBlob(data.metadata.thumbnail);
+      if (cover) {
+        thumbnailUrl = URL.createObjectURL(cover);
       } else {
         thumbnailUrl = null;
       }
@@ -296,7 +309,7 @@
       updateVolumeStats(volumeUuid, {
         progress,
         chars,
-        timeReadInMinutes,
+        timeRead: { from: loadedMinutes, to: timeReadInMinutes },
         series_uuid: finalSeriesUuid,
         series_title: finalSeriesTitle,
         volume_title: volumeTitle
@@ -332,9 +345,10 @@
 
       // Reload thumbnail
       const data = await getVolumeData(volumeUuid);
-      if (data?.metadata.thumbnail) {
+      const cover = displayableCoverBlob(data?.metadata.thumbnail);
+      if (cover) {
         if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
-        thumbnailUrl = URL.createObjectURL(data.metadata.thumbnail);
+        thumbnailUrl = URL.createObjectURL(cover);
       }
 
       showSnackbar('Cover reset to first page');
@@ -346,10 +360,9 @@
     }
   }
 
-  const validImageMimeTypes = new Set(Object.values(IMAGE_MIME_TYPES));
-
-  function isValidImageFile(file: File): boolean {
-    return validImageMimeTypes.has(file.type) || file.type.startsWith('image/');
+  /** Raster bytes only, whatever the file's type or name says (SVG is unsupported). */
+  async function isValidImageFile(file: File): Promise<boolean> {
+    return (await sniffRasterBlob(file).catch(() => null)) !== null;
   }
 
   function openCoverPicker() {
@@ -426,8 +439,8 @@
   }
 
   async function saveCover(file: File) {
-    if (!isValidImageFile(file)) {
-      showSnackbar('Please select a valid image file');
+    if (!(await isValidImageFile(file))) {
+      showSnackbar(`Please select a ${RASTER_FORMAT_NAMES} image (SVG is not supported)`);
       return;
     }
 
@@ -437,9 +450,10 @@
 
       // Reload thumbnail
       const data = await getVolumeData(volumeUuid);
-      if (data?.metadata.thumbnail) {
+      const cover = displayableCoverBlob(data?.metadata.thumbnail);
+      if (cover) {
         if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
-        thumbnailUrl = URL.createObjectURL(data.metadata.thumbnail);
+        thumbnailUrl = URL.createObjectURL(cover);
       }
 
       showSnackbar('Cover updated');

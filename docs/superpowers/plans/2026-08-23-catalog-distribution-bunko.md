@@ -1,6 +1,6 @@
 # Catalog Distribution — Bunko Updates Plan
 
-> Executed in the **mokuro-bunko** repository (server on unraid 192.168.2.49), not in mokuro-reader. This document is the contract the reader client is built against, plus bunko's task list. Spec: `docs/superpowers/specs/2026-08-23-catalog-distribution-design.md` (mokuro-reader repo).
+> Executed in the **mokuro-bunko** repository, not in mokuro-reader. This document is the contract the reader client is built against, plus bunko's task list. Spec: `docs/superpowers/specs/2026-08-23-catalog-distribution-design.md` (mokuro-reader repo).
 
 **Goal:** Bunko compiles `series.json` + `catalog.json` server-side, blocks permission-scoped users' raw writes, and accepts metadata updates by intercepting `series.json` PUTs.
 
@@ -30,7 +30,7 @@
 - [ ] 6. Write blocking per §5 for archives/covers/catalog.json.
 - [ ] 7. Regeneration triggers: library scan diff + accepted updates; debounce burst updates.
 - [ ] 8. Cover sidecar generation (§7).
-- [ ] 9. Deploy note: compose/template on unraid diverge from repo (see project memory `project_mokuro_bunko_deploy`) — rebuild per the recorded recipe; bump version; verify with a scoped user + the reader client against the live server.
+- [ ] 9. Release: bump the version; verify with a scoped user + the reader client against a running server.
 
 ## Out of scope
 

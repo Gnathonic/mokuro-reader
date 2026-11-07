@@ -1,4 +1,5 @@
 import { test, expect, type Page, type ConsoleMessage } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * E2E for the catalog distribution client (spec:
@@ -15,7 +16,9 @@ import { test, expect, type Page, type ConsoleMessage } from '@playwright/test';
  *    asserted on. Where a provider is genuinely required (the reconcile
  *    backfill, download queueing, hole patching) the Local Folder provider is
  *    connected against OPFS, which needs no account and no server: the
- *    directory picker is stubbed to hand back `navigator.storage.getDirectory()`.
+ *    directory picker is stubbed to hand back a NAMED folder inside OPFS
+ *    (`library`; the OPFS root's name is "", and a provider without a folder
+ *    name has no account scope, so nothing may be cached for it).
  */
 
 const CATALOG_JSON = {
@@ -100,7 +103,7 @@ const OPFS_PICKER_STUB = `(() => {
     try { if (typeof h.requestPermission !== 'function') h.requestPermission = async () => 'granted'; } catch {}
     return h;
   };
-  window.showDirectoryPicker = async () => patch(await navigator.storage.getDirectory());
+  window.showDirectoryPicker = async () => patch(await (await navigator.storage.getDirectory()).getDirectoryHandle('library', { create: true }));
 })();`;
 
 /**
@@ -113,13 +116,7 @@ const OPFS_PICKER_STUB = `(() => {
  */
 async function boot(page: Page) {
   await page.addInitScript(OPFS_PICKER_STUB);
-  await page.goto('/');
-  await expect
-    .poll(() => page.evaluate(() => window.location.hash), {
-      timeout: 20000,
-      message: 'the app never claimed the URL'
-    })
-    .toBe('#/catalog');
+  await gotoApp(page);
   await page.evaluate(async () => {
     const { db } = await import('/src/lib/catalog/db.ts');
     await db.open();
@@ -129,7 +126,9 @@ async function boot(page: Page) {
 /** Create files in OPFS — the "cloud folder" the Local Folder provider reads. */
 async function seedOpfs(page: Page, files: Array<{ path: string; text?: string; bytes?: number }>) {
   await page.evaluate(async (specs) => {
-    const root = await navigator.storage.getDirectory();
+    const root = await (
+      await navigator.storage.getDirectory()
+    ).getDirectoryHandle('library', { create: true });
     for (const spec of specs) {
       const parts = spec.path.split('/');
       let dir = root;
@@ -179,7 +178,12 @@ const opfsTree = (page: Page) =>
         } else out.push(path);
       }
     };
-    await walk(await navigator.storage.getDirectory(), '');
+    await walk(
+      await (
+        await navigator.storage.getDirectory()
+      ).getDirectoryHandle('library', { create: true }),
+      ''
+    );
     return out;
   });
 
@@ -188,7 +192,9 @@ const opfsRead = (page: Page, relative: string) =>
   probe(() =>
     page.evaluate(async (rel) => {
       const parts = rel.split('/');
-      let dir = await navigator.storage.getDirectory();
+      let dir = await (
+        await navigator.storage.getDirectory()
+      ).getDirectoryHandle('library', { create: true });
       try {
         for (const segment of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(segment);
         const handle = await dir.getFileHandle(parts[parts.length - 1]);
@@ -385,6 +391,22 @@ async function goHash(page: Page, hash: string) {
   await page.waitForTimeout(700);
 }
 
+/**
+ * Back absent (metadata-only) rows with a real listing entry: their `.cbz` in the
+ * Local Folder "cloud", then connect it. `isCatalogVisible` only seats an absent
+ * row the ACTIVE listing can deliver — exactly what a user sees.
+ */
+async function backWithListing(
+  page: Page,
+  archives: Array<{ series: string; title: string; bytes?: number }>
+) {
+  await seedOpfs(
+    page,
+    archives.map((a) => ({ path: `${a.series}/${a.title}.cbz`, bytes: a.bytes ?? 2048 }))
+  );
+  await connectLocalFolder(page);
+}
+
 const seriesHash = (title: string) => `#/series/${encodeURIComponent(title)}`;
 
 test.describe('catalog.json', () => {
@@ -561,7 +583,11 @@ test.describe('materialization', () => {
     page
   }) => {
     const watch = watchConsole(page);
-    await seedCatalogIndex(page);
+    await backWithListing(page, [
+      { series: 'Dr Stone (HD Scan)', title: 'Volume 1' },
+      { series: 'Dr Stone (HD Scan)', title: 'Volume 2' }
+    ]);
+    await seedCatalogIndex(page, { provider: 'filesystem' });
     const created = await page.evaluate(async () => {
       const { materializeSeriesVolumes } = await import('/src/lib/catalog/materialize.ts');
       return materializeSeriesVolumes({
@@ -785,7 +811,7 @@ test.describe('Local Folder provider (OPFS)', () => {
     await expect(page.getByText('Open to load volumes')).toHaveCount(0);
     await expect(page.getByText('Bare Folder')).toHaveCount(0);
     // The real series still renders its normal card.
-    await expect(page.getByText('Dr Stone (HD Scan)').first()).toBeVisible();
+    await expect(page.locator('a[href="#/series/Dr%20Stone%20(HD%20Scan)"]').first()).toBeVisible();
 
     // (b) The real series IS searchable by a synonym and an alternate-language
     // title delivered through catalog.json — its facts still merge into
@@ -793,16 +819,16 @@ test.describe('Local Folder provider (OPFS)', () => {
     const search = page.locator('input[type="search"]').first();
     await search.fill('doctor stone');
     await page.waitForTimeout(400);
-    await expect(page.getByText('Dr Stone (HD Scan)').first()).toBeVisible();
+    await expect(page.locator('a[href="#/series/Dr%20Stone%20(HD%20Scan)"]').first()).toBeVisible();
     await search.fill('Dr.STONE');
     await page.waitForTimeout(400);
-    await expect(page.getByText('Dr Stone (HD Scan)').first()).toBeVisible();
+    await expect(page.locator('a[href="#/series/Dr%20Stone%20(HD%20Scan)"]').first()).toBeVisible();
 
     // A query that could only ever match the catalog-only, no-local-presence
     // entry finds nothing — there was never a card to search.
     await search.fill('Bare Folder');
     await page.waitForTimeout(400);
-    await expect(page.getByText('Dr Stone (HD Scan)')).toHaveCount(0);
+    await expect(page.locator('a[href="#/series/Dr%20Stone%20(HD%20Scan)"]')).toHaveCount(0);
     await expect(page.getByText('Bare Folder')).toHaveCount(0);
 
     await search.fill('');
@@ -963,6 +989,9 @@ test.describe('metadata-only volumes in the UI', () => {
       },
       { uuid: 'ux-2', series: 'UX Series', title: 'UX Series Vol 2' }
     ]);
+    await backWithListing(page, [
+      { series: 'UX Series', title: 'UX Series Vol 1', bytes: 52_428_800 }
+    ]);
     await page.evaluate(() => window.localStorage.setItem('series-view-mode', 'list'));
     await goHash(page, seriesHash('UX Series'));
 
@@ -1022,9 +1051,7 @@ test.describe('metadata-only volumes in the UI', () => {
     expectCleanConsole(watch);
   });
 
-  test('notOnDeviceDisplay regroups absent volumes and series without a reload', async ({
-    page
-  }) => {
+  test('absent volumes and series always draw under "Available in"', async ({ page }) => {
     const watch = watchConsole(page);
     await seedVolumes(page, [
       { uuid: 'grp-1', series: 'Grouped Series', title: 'Grouped Series Vol 1' },
@@ -1036,30 +1063,16 @@ test.describe('metadata-only volumes in the UI', () => {
       },
       { uuid: 'gone-1', series: 'Gone Series', title: 'Gone Series Vol 1', metadataOnly: true }
     ]);
+    await backWithListing(page, [
+      { series: 'Grouped Series', title: 'Grouped Series Vol 2' },
+      { series: 'Gone Series', title: 'Gone Series Vol 1' }
+    ]);
     await page.evaluate(() => window.localStorage.setItem('series-view-mode', 'list'));
     await goHash(page, seriesHash('Grouped Series'));
-
-    const setDisplay = (mode: string) =>
-      page.evaluate(async (value) => {
-        const { updateCatalogSetting } = await import('/src/lib/settings/settings.ts');
-        updateCatalogSetting('notOnDeviceDisplay', value);
-      }, mode);
-
-    // mixed: the absent volume sits in the main list, no cloud section.
-    await expect(page.getByText('Available in', { exact: false })).toHaveCount(0);
-    await expect(page.getByTestId('download-badge')).toHaveCount(1);
-
-    await setDisplay('cloud-section');
     await expect(page.getByText('Available in', { exact: false }).first()).toBeVisible();
     await expect(page.getByTestId('download-badge')).toHaveCount(1);
 
-    await setDisplay('mixed');
-    await expect(page.getByText('Available in', { exact: false })).toHaveCount(0);
-
-    // The same setting regroups whole series on the catalog.
     await goHash(page, '#/');
-    await expect(page.getByTestId('catalog-cloud')).toHaveCount(0);
-    await setDisplay('cloud-section');
     await expect(page.getByTestId('catalog-cloud')).toBeVisible();
     await expect(
       page.getByTestId('catalog-cloud').getByText('Gone Series', { exact: true })
@@ -1067,8 +1080,6 @@ test.describe('metadata-only volumes in the UI', () => {
     await expect(
       page.getByTestId('catalog-library').getByText('Grouped Series', { exact: true })
     ).toBeVisible();
-    await setDisplay('mixed');
-    await expect(page.getByTestId('catalog-cloud')).toHaveCount(0);
     expectCleanConsole(watch);
   });
 
@@ -1085,6 +1096,13 @@ test.describe('metadata-only volumes in the UI', () => {
         title: `Long Series Vol ${i + 1}`,
         // Only the first volume is actually here.
         metadataOnly: i > 0
+      }))
+    );
+    await backWithListing(
+      page,
+      Array.from({ length: VOLUMES - 1 }, (_, i) => ({
+        series: 'Long Series',
+        title: `Long Series Vol ${i + 2}`
       }))
     );
     await page.evaluate(async () => {
@@ -1125,6 +1143,13 @@ test.describe('metadata-only volumes in the UI', () => {
         metadataOnly: true
       }))
     );
+    await backWithListing(
+      page,
+      Array.from({ length: 4 }, (_, i) => ({
+        series: 'Absent Series',
+        title: `Absent Series Vol ${i + 1}`
+      }))
+    );
     await goHash(page, '#/');
     await expect(page.getByText('Absent Series')).toBeVisible();
     await expect(page.getByTestId('cloud-card-mark')).toHaveCount(1);
@@ -1163,6 +1188,13 @@ test.describe('spine showcase', () => {
     // window on top, which is more than the file's default budget.
     test.setTimeout(90000);
     const watch = watchConsole(page);
+    await seedOpfs(
+      page,
+      Array.from({ length: 8 }, (_, i) => ({
+        path: `Shelf Series/Shelf Series Vol ${i + 2}.cbz`,
+        bytes: 2048
+      }))
+    );
     await connectLocalFolder(page);
 
     // Volume 1 is here with a cover; the rest are metadata-only rows whose
@@ -1219,7 +1251,9 @@ test.describe('spine showcase', () => {
     }
 
     // Long enough for both schedules to be spent…
-    await page.waitForTimeout(9000);
+    // The in-flight dedupe makes the two surfaces' schedules run BACK TO BACK
+    // (one ~10 s cycle, then the second), not side by side.
+    await page.waitForTimeout(20000);
     const settled = await coverRequests();
     for (const [path, count] of Object.entries(settled)) {
       expect(count, `${path} was requested ${count} times in all`).toBeLessThanOrEqual(6);
@@ -1266,6 +1300,10 @@ test.describe('spine showcase', () => {
         title,
         metadataOnly: true
       }))
+    );
+    await backWithListing(
+      page,
+      titles.map((title) => ({ series: 'Order Series', title }))
     );
     await openShelf(page, 'Order Series');
 

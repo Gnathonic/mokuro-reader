@@ -1,12 +1,26 @@
+import { CLOUD_TEST_HOOKS, cloudBase } from '../../cloud-test-hooks';
+
 export interface DriveFile {
   id: string;
   name: string;
   mimeType: string;
   size?: string;
   modifiedTime?: string;
+  md5Checksum?: string;
   createdTime?: string;
   parents?: string[];
   description?: string;
+  /** Monotonic change counter (an int64 as a string); any change bumps it. */
+  version?: string;
+  trashed?: boolean;
+  ownedByMe?: boolean;
+}
+
+/** One entry of `changes.list`: a file's CURRENT state, or its removal. */
+export interface DriveChange {
+  fileId?: string;
+  removed?: boolean;
+  file?: DriveFile;
 }
 
 export const GOOGLE_DRIVE_CONFIG = {
@@ -33,7 +47,6 @@ export const GOOGLE_DRIVE_CONFIG = {
   STORAGE_KEYS: {
     TOKEN: 'gdrive_token',
     TOKEN_EXPIRES: 'gdrive_token_expires',
-    SYNC_AFTER_LOGIN: 'sync_after_login',
     LAST_AUTH_TIME: 'gdrive_last_auth_time',
     HAS_AUTHENTICATED: 'gdrive_has_authenticated' // Track if user has ever authenticated
   },
@@ -45,3 +58,16 @@ export const GOOGLE_DRIVE_CONFIG = {
   // Debug mode: Set to true to use short-lived tokens for testing (30 seconds)
   DEBUG_SHORT_TOKEN_EXPIRY: false
 } as const;
+
+const DRIVE_API = 'https://www.googleapis.com';
+const DRIVE_UPLOAD = 'https://www.googleapis.com/upload';
+
+/** The Drive API origin (`/drive/v3/...` follows), read per request. */
+export function driveApiBase(): string {
+  return CLOUD_TEST_HOOKS ? cloudBase('driveApi', DRIVE_API) : DRIVE_API;
+}
+
+/** The Drive upload origin (`/drive/v3/files...` follows), read per request. */
+export function driveUploadBase(): string {
+  return CLOUD_TEST_HOOKS ? cloudBase('driveUpload', DRIVE_UPLOAD) : DRIVE_UPLOAD;
+}

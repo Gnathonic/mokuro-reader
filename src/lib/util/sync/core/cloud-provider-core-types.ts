@@ -26,6 +26,11 @@ export interface CloudCoreDownloadArgs {
   credentials: CloudCoreCredentials;
   onProgress: (loaded: number, total: number) => void;
   refreshAuth?: CloudCoreAuthRefresher;
+  /**
+   * The file's size as the server reported it just now (`DownloadOptions.knownSize`):
+   * a core may skip its own size probe (WebDAV's HEAD).
+   */
+  expectedSize?: number;
 }
 
 export interface CloudCoreUploadArgs {

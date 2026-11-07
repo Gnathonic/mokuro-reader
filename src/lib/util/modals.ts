@@ -2,16 +2,36 @@ import { writable } from 'svelte/store';
 
 type CheckboxOption = {
   label: string;
-  storageKey: string;
+  /**
+   * Where the box's last answer is remembered. Without one the box is not
+   * remembered: it opens at `defaultValue` every time — for a choice that must
+   * be made afresh each time (a link asking to change something already here).
+   */
+  storageKey?: string;
   defaultValue: boolean;
 };
 
-type ConfirmationPopup = {
+/** The extras a confirmation can carry beside its message (see `promptConfirmationWith`). */
+export type ConfirmationDetails = {
+  /** Shown large under the message: where the thing comes from, e.g. `From` → a host. */
+  source?: { label: string; values: string[] };
+  /** Plain-words cautions, shown as a warning list. */
+  warnings?: string[];
+  /** Neutral facts the user should see before agreeing. */
+  notes?: string[];
+  confirmLabel?: string;
+  cancelLabel?: string;
+  /** Focus the cancel button instead of the confirm one, so a stray Enter declines. */
+  focusCancel?: boolean;
+};
+
+type ConfirmationPopup = ConfirmationDetails & {
   open: boolean;
   message: string;
   checkboxOption?: CheckboxOption;
   checkboxOption2?: CheckboxOption;
   onConfirm?: (checkboxValue?: boolean, checkboxValue2?: boolean) => void;
+  /** Called on No — and on any other dismissal (Escape, a click outside). */
   onCancel?: () => void;
 };
 export const confirmationPopupStore = writable<ConfirmationPopup | undefined>(undefined);
@@ -23,14 +43,12 @@ export function promptConfirmation(
   checkboxOption?: CheckboxOption,
   checkboxOption2?: CheckboxOption
 ) {
-  confirmationPopupStore.set({
-    open: true,
-    message,
-    checkboxOption,
-    checkboxOption2,
-    onConfirm,
-    onCancel
-  });
+  promptConfirmationWith({ message, onConfirm, onCancel, checkboxOption, checkboxOption2 });
+}
+
+/** `promptConfirmation` with the details a plain message cannot carry. */
+export function promptConfirmationWith(options: Omit<ConfirmationPopup, 'open'>) {
+  confirmationPopupStore.set({ ...options, open: true });
 }
 
 type ExtractionModal = {
@@ -64,37 +82,6 @@ export function promptExtraction(
     open: true,
     singleVolume,
     firstVolume,
-    onConfirm,
-    onCancel
-  });
-}
-
-// Image-only import confirmation modal
-export type SeriesImportInfo = {
-  seriesName: string;
-  volumeCount: number;
-};
-
-type ImageOnlyImportModal = {
-  open: boolean;
-  seriesList: SeriesImportInfo[];
-  totalVolumes: number;
-  onConfirm?: () => void;
-  onCancel?: () => void;
-};
-
-export const imageOnlyImportModalStore = writable<ImageOnlyImportModal | undefined>(undefined);
-
-export function promptImageOnlyImport(
-  seriesList: SeriesImportInfo[],
-  totalVolumes: number,
-  onConfirm?: () => void,
-  onCancel?: () => void
-) {
-  imageOnlyImportModalStore.set({
-    open: true,
-    seriesList,
-    totalVolumes,
     onConfirm,
     onCancel
   });

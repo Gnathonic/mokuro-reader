@@ -31,7 +31,6 @@ vi.mock('$lib/settings', async () => {
     disableAnimations: false,
     textBoxContextMenu: false,
     continuousScroll: false,
-    inactivityTimeoutMinutes: 5,
     nightMode: false,
     invertColors: false,
     grayscale: false,
@@ -93,5 +92,18 @@ describe('ReaderToggles — Edit OCR text', () => {
     const input = getByLabelText(/Edit OCR text/) as HTMLInputElement;
     expect(input.disabled).toBe(true);
     expect(getByText(/paged mode only/i)).toBeTruthy();
+  });
+});
+
+describe('ReaderToggles — reading timer', () => {
+  it('carries the cutoff and the long-pause question as one "Reading timer" group', () => {
+    const { getByRole, getByLabelText, queryByLabelText } = render(ReaderToggles);
+    expect(getByRole('heading', { name: 'Reading timer' })).toBeTruthy();
+    const cutoff = getByLabelText('Stop the timer after');
+    const ask = getByLabelText('Ask if I’m still reading');
+    expect(cutoff.compareDocumentPosition(ask) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The controls it replaced are gone.
+    expect(queryByLabelText('Automatic idle cutoff')).toBeNull();
+    expect(queryByLabelText('When a page stays open past the cutoff')).toBeNull();
   });
 });

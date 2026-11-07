@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Button, Spinner } from 'flowbite-svelte';
   import { CloudArrowUpOutline, TrashBinSolid } from 'flowbite-svelte-icons';
-  import { showSnackbar } from '$lib/util';
+  import { promptConfirmation, showSnackbar } from '$lib/util';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { providerManager } from '$lib/util/sync';
   import type { VolumeMetadata } from '$lib/types';
@@ -10,6 +10,7 @@
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import type { Process } from '$lib/util/progress-tracker';
   import { uploadFailures } from '$lib/util/upload-failures';
+  import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
 
   interface Props {
     volume: VolumeMetadata;
@@ -75,13 +76,17 @@
     });
   });
 
-  // Check if this volume exists in any cloud provider (reactive to cloudFiles changes)
+  // Is this volume backed up? The ONE selector every backup surface asks —
+  // the same folded resolution the backup queue uploads into
+  // (`resolveCloudFolderTitle`), so a volume the cloud holds under its own
+  // spelling of the folder reads as backed up here too instead of being
+  // re-uploaded on every click. `cloudFiles` is read for the dependency only:
+  // the selector reads the listing cache that store is derived from.
   let cloudFile = $derived.by(() => {
-    const path = `${volume.series_title}/${volume.volume_title}.cbz`;
-    const seriesFiles = cloudFiles.get(volume.series_title) || [];
-    return seriesFiles.find((f) => f.path === path);
+    void cloudFiles;
+    return unifiedCloudManager.getCloudFile(volume.series_title, volume.volume_title);
   });
-  let isBackedUp = $derived(cloudFile !== undefined);
+  let isBackedUp = $derived(cloudFile !== null);
   let backupProvider = $derived(cloudFile?.provider);
 
   // Check if this volume is in the backup queue
@@ -125,9 +130,13 @@
       return;
     }
 
-    // Add to backup queue
-    backupQueue.queueVolumeForBackup(volume);
-    showSnackbar(`Added ${volume.volume_title} to backup queue`);
+    // A refused volume already got the queue's own notice (one snackbar slot).
+    const queued = backupQueue.queueVolumeForBackup(volume);
+    if (queued === 'added') {
+      showSnackbar(`Added ${volume.volume_title} to backup queue`);
+    } else if (queued === 'already-queued') {
+      showSnackbar('Volume already in backup queue');
+    }
   }
 
   async function handleDelete(e: MouseEvent) {
@@ -137,14 +146,30 @@
       showSnackbar('Volume not backed up');
       return;
     }
-
-    try {
-      await unifiedCloudManager.deleteFile(cloudFile);
-      showSnackbar(`Deleted from ${cloudFile.provider}`);
-    } catch (error) {
-      console.error('Delete failed:', error);
-      showSnackbar(`Delete failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    // The same gate the volume row's own cloud delete runs: on a server whose
+    // rules refuse this account (an uploader on a series it does not own),
+    // every per-file DELETE would only 403.
+    const permitted = canDeleteSeriesOnServer(volume.series_title);
+    if (!permitted.allowed) {
+      showSnackbar(permitted.reason ?? "This account can't delete this on this server");
+      return;
     }
+
+    // The same question the series delete and the volume row's own cloud delete
+    // ask: a cloud delete is permanent, so one click never does it. And the
+    // same delete — archive AND sidecars (`deleteManagedVolume`); deleting the
+    // archive node alone left its .mokuro and cover behind as orphans.
+    const providerName = providerDisplayName;
+    const { series_title, volume_title, volume_uuid } = volume;
+    promptConfirmation(`Delete ${volume_title} from ${providerName}?`, async () => {
+      try {
+        await unifiedCloudManager.deleteManagedVolume(series_title, volume_title, volume_uuid);
+        showSnackbar(`Deleted from ${providerName}`);
+      } catch (error) {
+        console.error('Delete failed:', error);
+        showSnackbar(`Delete failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    });
   }
 
   // Get active provider's display name

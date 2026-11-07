@@ -4,6 +4,7 @@ import type {
   ProviderCredentials,
   ProviderStatus,
   CloudFileMetadata,
+  FileStamp,
   StorageQuota,
   UploadPayload,
   UploadFileResult
@@ -358,6 +359,60 @@ export class FilesystemProvider implements SyncProvider {
       return data;
     } catch (error) {
       throw this.toProviderError(error, 'Download', file.path);
+    }
+  }
+
+  /** `SyncProvider.statFile`: a local `getFile()` stat — `lastModified` and `size`, no read. */
+  async statFile(file: CloudFileMetadata): Promise<FileStamp | null> {
+    try {
+      this.requireRoot();
+      const fileHandle = await this.resolveFileHandle(file.fileId, { create: false });
+      const data = await fileHandle.getFile();
+      return { size: data.size, modifiedTime: new Date(data.lastModified).toISOString() };
+    } catch (error) {
+      const name = (error as { name?: string })?.name;
+      if (name === 'NotFoundError' || name === 'TypeMismatchError') return null;
+      throw this.toProviderError(error, 'Stat', file.path);
+    }
+  }
+
+  /** The quick tier's listing of one subtree, entries as `listCloudVolumes` makes them. */
+  async listFolder(folder: string): Promise<CloudFileMetadata[]> {
+    const prefix = folder.replace(/^\/+|\/+$/g, '');
+    let dir: FileSystemDirectoryHandle;
+    try {
+      dir = await this.resolveDirectoryHandle(prefix, { create: false });
+    } catch (error) {
+      if ((error as { name?: string })?.name === 'NotFoundError') return [];
+      throw this.toProviderError(error, 'List', prefix);
+    }
+    try {
+      const results: CloudFileMetadata[] = [];
+      for await (const { path, fileHandle } of this.walkDirectory(dir, prefix)) {
+        if (!isSyncableFile(path)) continue;
+        const file = await fileHandle.getFile();
+        results.push({
+          provider: 'filesystem',
+          fileId: path,
+          path,
+          modifiedTime: new Date(file.lastModified).toISOString(),
+          size: file.size
+        });
+      }
+      return results;
+    } catch (error) {
+      throw this.toProviderError(error, 'List', prefix);
+    }
+  }
+
+  /** The cold probe's read: the root folder's file of that name, no walk. */
+  async readRootFileCopies(name: string): Promise<Blob[]> {
+    try {
+      const fileHandle = await this.requireRoot().getFileHandle(name, { create: false });
+      return [await fileHandle.getFile()];
+    } catch (error) {
+      if ((error as { name?: string })?.name === 'NotFoundError') return [];
+      throw this.toProviderError(error, 'Download', name);
     }
   }
 

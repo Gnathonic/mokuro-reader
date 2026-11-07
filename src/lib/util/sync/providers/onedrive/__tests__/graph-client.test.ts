@@ -9,7 +9,8 @@ import {
   deleteItem,
   patchItem,
   createUploadSession,
-  getItemByPath
+  getItemByPath,
+  getItemStamp
 } from '../graph-client';
 import { ProviderError } from '../../../provider-interface';
 import { onedriveTokenManager } from '../token-manager';
@@ -262,6 +263,35 @@ describe('graph-client', () => {
       expect(err.isAuthError).toBe(false);
     });
 
+    it('types a 507 insufficientStorage as QUOTA_EXCEEDED, never retryable', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 507,
+        statusText: 'Insufficient Storage',
+        text: async () =>
+          JSON.stringify({ error: { code: 'insufficientStorage', message: 'Insufficient Space' } })
+      } as Response);
+
+      const err = await createFolder('TOKEN', 'mokuro-reader', 'S').catch((e) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect(err.code).toBe('QUOTA_EXCEEDED');
+      expect(err.isNetworkError).toBe(false);
+      expect(err.isAuthError).toBe(false);
+    });
+
+    it('types a quotaLimitReached body as QUOTA_EXCEEDED whatever the status', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () => JSON.stringify({ error: { code: 'quotaLimitReached', message: 'full' } })
+      } as Response);
+
+      const err = await createUploadSession('TOKEN', 'mokuro-reader/v.cbz').catch((e) => e);
+      expect(err.code).toBe('QUOTA_EXCEEDED');
+      expect(err.isNetworkError).toBe(false);
+    });
+
     it('keeps the Graph <status> message shape for not-found sniffing', async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: false,
@@ -272,5 +302,37 @@ describe('graph-client', () => {
       // listChildren (not getItemByPath, which maps 404 to null)
       await expect(listChildren('TOKEN', 'mokuro-reader/x')).rejects.toThrow(/404/);
     });
+  });
+});
+
+describe('graph-client getItemStamp', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('GETs the item by id with only the stamp fields selected', async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'i/1', name: 'x', size: 2, cTag: 'c' })
+    } as Response);
+    expect(await getItemStamp('TOKEN', 'i/1')).toMatchObject({ id: 'i/1', cTag: 'c' });
+    const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
+    expect(url.pathname).toBe('/v1.0/me/drive/items/i%2F1');
+    expect(url.searchParams.get('$select')!.split(',')).toEqual(
+      expect.arrayContaining(['id', 'size', 'lastModifiedDateTime', 'eTag', 'cTag'])
+    );
+  });
+
+  it('is null on a 404, and throws on any other failure', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 404 } as Response);
+    expect(await getItemStamp('TOKEN', 'gone')).toBeNull();
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      text: async () => ''
+    } as Response);
+    await expect(getItemStamp('TOKEN', 'x')).rejects.toThrow(/503/);
   });
 });

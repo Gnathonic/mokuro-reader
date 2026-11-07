@@ -1,15 +1,26 @@
 import { browser } from '$app/environment';
 import type {
+  ControlFileResult,
   SyncProvider,
   ProviderStatus,
   CloudFileMetadata,
   DriveFileMetadata,
+  FileStamp,
+  LogoutOptions,
+  LogoutResult,
   StorageQuota,
   UploadFileResult
 } from '../../provider-interface';
-import { ProviderError } from '../../provider-interface';
-import { isCbzFile, isSidecarFile, isRootConfigFile } from '../../syncable-file';
+import { isLoginCancelled, LOGIN_CANCELLED, ProviderError } from '../../provider-interface';
+import { isCbzFile, isSidecarFile, isRootConfigFile, isSyncableFile } from '../../syncable-file';
+import { isHistoryFileName } from '$lib/reading-history/paths';
+import { driveHistoryPath } from './drive-history-path';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
+import {
+  registerWorkerAuthRefresher,
+  TransientAuthRefreshError
+} from '$lib/util/worker-auth-refresh';
+import { waitFor } from '$lib/util/store-wait';
 import {
   driveApiClient,
   escapeNameForDriveQuery
@@ -23,8 +34,51 @@ import { findFile } from '$lib/util/backup';
 import { cacheManager } from '../../cache-manager';
 import { providerManager } from '../../provider-manager';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
-import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
+import {
+  compareByAge,
+  type FolderOperations,
+  type FolderInfo,
+  type FolderItem
+} from '../../folder-deduplicator';
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
+import { ControlNodeCache, readControlNodes } from '../../control-file-read';
+import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
+import {
+  classifyDriveFailure,
+  driveFailureOf,
+  isDriveRateLimit,
+  isQuotaExceededError,
+  withDriveRetry,
+  type DriveFailureKind
+} from '../../core/providers/drive-http';
+
+/** How long a resolved list of `mokuro-reader` root ids is trusted by `readControlFile`. */
+const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
+/** A cached root set that yields no file is re-resolved, at most this often. */
+const CONTROL_ROOTS_RECHECK_MS = 60 * 1000;
+/** Roots named in one control-file `files.list` (`'<id>' in parents or …`). */
+const CONTROL_ROOTS_PER_QUERY = 25;
+/**
+ * A worker's transfer outlives the call that started it, so its token must too:
+ * credentials handed to a worker are good for at least this long (backend mode
+ * renews the token first when not). A worker that still meets a 401 asks the
+ * main thread for a fresh one (`refreshedWorkerCredentials`).
+ */
+const WORKER_TOKEN_MIN_VALIDITY_MS = 15 * 60 * 1000;
+
+/**
+ * Has the user interacted with this page at all (sticky activation)? A
+ * sign-in that leaves the page must never start before that: not at boot, not
+ * from code that runs on its own. Sticky rather than transient on purpose: the
+ * provider chunk a click loads first can outlast the few seconds a click's
+ * transient activation lasts. Unknown (no User Activation API) counts as yes.
+ */
+function userHasActed(): boolean {
+  const activation = (globalThis.navigator as { userActivation?: { hasBeenActive: boolean } })
+    ?.userActivation;
+  return activation ? activation.hasBeenActive : true;
+}
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -44,6 +98,31 @@ interface PickedFile {
  * Wraps existing Google Drive integration into the unified SyncProvider interface.
  * This allows Drive to work alongside MEGA and WebDAV providers.
  */
+
+/** How long a sign-in redirect may take to leave the page before it counts as failed. */
+const REDIRECT_TIMEOUT_MS = 30_000;
+
+/**
+ * After starting the full-page sign-in: true if this page is shown again from
+ * the back/forward cache (the user pressed Back on Google's page), false if it
+ * is still here after REDIRECT_TIMEOUT_MS without having left.
+ */
+function signInPageReturned(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const onShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      done(true);
+    };
+    const timer = setTimeout(() => done(false), REDIRECT_TIMEOUT_MS);
+    function done(returned: boolean) {
+      clearTimeout(timer);
+      window.removeEventListener('pageshow', onShow);
+      resolve(returned);
+    }
+    window.addEventListener('pageshow', onShow);
+  });
+}
+
 class GoogleDriveProvider implements SyncProvider {
   readonly type = 'google-drive' as const;
   readonly name = 'Google Drive';
@@ -56,6 +135,11 @@ class GoogleDriveProvider implements SyncProvider {
   private initializePromise: Promise<void> | null = null;
   private readerFolderPromise: Promise<string> | null = null; // Mutex for folder creation
   private cloudCore = getCloudProviderCore('google-drive');
+
+  /** Control-file bodies by file id + version, so an unchanged marker is never re-downloaded. */
+  private controlCache = new ControlNodeCache();
+  /** Every exact-name `mokuro-reader` folder in My Drive root (one merged root), with when it was resolved. */
+  private controlRoots: { ids: string[]; at: number } | null = null;
 
   /**
    * Assign the reader-folder id AND tell the status store about it.
@@ -87,12 +171,33 @@ class GoogleDriveProvider implements SyncProvider {
     providerManager.updateStatus();
   }
 
-  private getAccessToken(): string {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
-    return token;
+  /** A token to send now (backend mode renews one about to expire). */
+  private getAccessToken(minValidityMs?: number): Promise<string> {
+    return tokenManager.getAccessToken(minValidityMs);
+  }
+
+  /**
+   * Fresh credentials for a transfer whose token Drive refused (a worker's,
+   * through `worker-auth-refresh.ts`, or this thread's core call): a token
+   * another request already renewed, else one renewed now through the auth
+   * backend. Null when there is none (the 401 stands, as it always did);
+   * transient when the backend cannot renew right now.
+   */
+  async refreshedWorkerCredentials(
+    staleAuthorization: string
+  ): Promise<Record<string, unknown> | null> {
+    const stale = staleAuthorization.replace(/^Bearer\s+/i, '');
+    const renewal = await tokenManager.renewRejectedToken(stale);
+    if (renewal.kind === 'transient') {
+      throw new TransientAuthRefreshError(
+        'Google Drive sign-in renewal is temporarily unavailable - will retry later'
+      );
+    }
+    if (renewal.kind !== 'renewed') return null;
+    return {
+      accessToken: renewal.token,
+      ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {})
+    };
   }
 
   isAuthenticated(): boolean {
@@ -159,7 +264,7 @@ class GoogleDriveProvider implements SyncProvider {
       statusMessage = 'Not configured';
     }
 
-    return {
+    return withCloudBunkoStatus(this.type, {
       isAuthenticated: authenticated,
       hasStoredCredentials: hasCredentials,
       needsAttention,
@@ -177,10 +282,12 @@ class GoogleDriveProvider implements SyncProvider {
           ? `google-drive:${this.readerFolderId}`
           : 'google-drive:default'
         : undefined
-    };
+    });
   }
 
   async login(): Promise<void> {
+    // A sign-in may leave the page only once the user has acted on it.
+    const interactive = userHasActed();
     try {
       if (!browser) {
         throw new Error('Google Drive auth only works in browser');
@@ -202,32 +309,53 @@ class GoogleDriveProvider implements SyncProvider {
       this.setReaderFolderId(null);
       driveFilesCache.clear();
       this.readerFolderPromise = null;
+      this.resetControlFileState();
 
       // Initialize Drive API if needed (this also initializes the token client)
       await driveApiClient.initialize();
 
+      // The auth backend: a live session cookie reconnects at once; otherwise
+      // the page leaves for Google's consent screen and the next load
+      // finishes the sign-in (`tokenManager.restoreSession`).
+      if (tokenManager.isBackendMode()) {
+        const outcome = await tokenManager.connectViaBackend(interactive);
+        if (outcome === 'connected') {
+          setActiveProviderKey('google-drive');
+          console.log('✅ Google Drive reconnected through its session');
+          return;
+        }
+        if (outcome === 'redirecting') {
+          // The page is navigating away; this settles only if it did not, or
+          // if the user came BACK to this very page (Back on Google's screen
+          // restores it from the back/forward cache): that is a cancel, not a
+          // failure to report.
+          if (await signInPageReturned()) {
+            throw new ProviderError(
+              'Google Drive sign-in cancelled',
+              'google-drive',
+              LOGIN_CANCELLED
+            );
+          }
+          throw new Error('Google sign-in did not open');
+        }
+        // 'popup': the backend is not there: the implicit sign-in below.
+      }
+
       // Request OAuth token with full consent screen (initial login)
       tokenManager.requestNewToken(true);
 
-      // Wait for token to be set
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Login timeout'));
-        }, 60000); // 60 second timeout
-
-        const unsubscribe = tokenManager.token.subscribe((token) => {
-          if (token) {
-            clearTimeout(timeout);
-            unsubscribe();
-            resolve();
-          }
-        });
+      // Wait for the token to be set — possibly already (a token client that
+      // answered synchronously): `waitFor` takes the current value too.
+      await waitFor(tokenManager.token, (token) => !!token, {
+        timeoutMs: 60_000,
+        timeoutMessage: 'Login timeout'
       });
 
       // Set the active provider key for lazy loading on next startup
       setActiveProviderKey('google-drive');
       console.log('✅ Google Drive login successful');
     } catch (error) {
+      if (isLoginCancelled(error)) throw error;
       throw new ProviderError(
         `Google Drive login failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
@@ -237,18 +365,155 @@ class GoogleDriveProvider implements SyncProvider {
     }
   }
 
-  async logout(): Promise<void> {
+  /**
+   * This device only, unless `everywhere` (see `tokenManager.logout`): a
+   * provider switch or the plain Log out must never revoke the Google grant
+   * that other devices and a mokuro-bunko server may share.
+   */
+  async logout(options?: LogoutOptions): Promise<LogoutResult> {
     // Use full logout (clears token + auth history) not just clearToken
-    await tokenManager.logout();
+    const result = await tokenManager.logout(options);
     this.setReaderFolderId(null);
+    this.resetControlFileState();
     this.initializePromise = null; // Reset initialization state
     // Clear the active provider key
     clearActiveProviderKey();
     console.log('Google Drive logged out');
+    return result;
   }
 
+  /** The user asked to reconnect (a cloud-page button). */
   async reauthenticate(): Promise<void> {
-    tokenManager.reAuthenticate();
+    tokenManager.reconnect();
+  }
+
+  // CONTROL FILES (cloud-direct Bunko marker, queue)
+
+  /** Forget everything `readControlFile` learned (logout, account change). */
+  private resetControlFileState(): void {
+    this.controlRoots = null;
+    this.controlCache.clear();
+  }
+
+  /**
+   * Every live `mokuro-reader` folder — top-level AND nested (`Backup/
+   * mokuro-reader`): every root is read, and `pickReaderFolder` makes a
+   * nested one the write root when no top-level one exists, so Bunko's
+   * marker may live in any of them. Taken from the files cache's last
+   * listing when it has one (no request), else one folder query. The ids
+   * are cached for CONTROL_ROOTS_TTL_MS; an EMPTY answer is never cached
+   * (the folder may be created any moment), and `readControlFile`
+   * re-resolves FROM DRIVE (`force`, never the cache's possibly older
+   * listing) when a cached set older than CONTROL_ROOTS_RECHECK_MS yields no
+   * file, so a trashed/replaced root or a newly appeared one heals within a
+   * minute. Never creates a folder.
+   */
+  private async resolveControlRoots(force: boolean): Promise<string[]> {
+    const cached = this.controlRoots;
+    if (!force && cached && Date.now() - cached.at < CONTROL_ROOTS_TTL_MS) return cached.ids;
+    const listed = force ? null : driveFilesCache.getListedReaderFolderIds();
+    const ids = (
+      listed && listed.length > 0
+        ? listed
+        : (
+            await driveApiClient.listFiles(
+              `name='${escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER)}' and mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and 'me' in owners and trashed=false`,
+              'files(id)'
+            )
+          ).map((f) => f.id)
+    ).sort();
+    this.controlRoots = ids.length > 0 ? { ids, at: Date.now() } : null;
+    return ids;
+  }
+
+  /**
+   * The control-file nodes named `name` under any root: ONE `files.list` per
+   * CONTROL_ROOTS_PER_QUERY roots (in practice one), so the query string and
+   * the request count stay bounded however many roots an account holds.
+   */
+  private async listControlNodes(name: string, rootIds: string[]) {
+    const files = [];
+    for (let i = 0; i < rootIds.length; i += CONTROL_ROOTS_PER_QUERY) {
+      const parents = rootIds
+        .slice(i, i + CONTROL_ROOTS_PER_QUERY)
+        .map((id) => `'${escapeNameForDriveQuery(id)}' in parents`)
+        .join(' or ');
+      files.push(
+        ...(await driveApiClient.listFiles(
+          `name='${escapeNameForDriveQuery(name)}' and trashed=false and (${parents})`,
+          'files(id,name,md5Checksum,modifiedTime,parents)'
+        ))
+      );
+    }
+    return files.map((f) => ({
+      id: f.id,
+      // md5Checksum is the content test; modifiedTime has no sub-second
+      // precision, so on its own it can miss two writes inside one second.
+      etag: `${f.md5Checksum ?? ''}:${f.modifiedTime ?? ''}`,
+      ...(f.modifiedTime ? { modified: f.modifiedTime } : {})
+    }));
+  }
+
+  /**
+   * Read a control file from the library root. Requests per read: one
+   * `files.list` for the file (plus one for the root folder ids when the
+   * cached set is older than 10 minutes, empty, or just yielded no file), and
+   * one `alt=media` download per node whose md5 + modifiedTime changed.
+   */
+  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+    try {
+      await this.ensureInitialized();
+      let rootIds = await this.resolveControlRoots(false);
+      if (rootIds.length === 0) {
+        this.controlCache.retain(name, []);
+        return null;
+      }
+      let listed = await this.listControlNodes(name, rootIds);
+      if (
+        listed.length === 0 &&
+        this.controlRoots &&
+        Date.now() - this.controlRoots.at >= CONTROL_ROOTS_RECHECK_MS
+      ) {
+        // The cached roots found nothing: they may be stale (trashed, or a
+        // sibling root appeared). Re-resolve before answering "none".
+        const fresh = await this.resolveControlRoots(true);
+        if (fresh.join() !== rootIds.join()) {
+          rootIds = fresh;
+          listed = fresh.length > 0 ? await this.listControlNodes(name, fresh) : [];
+        }
+      }
+      return await readControlNodes(
+        name,
+        listed,
+        (node) => driveApiClient.downloadFile(node.id),
+        this.controlCache,
+        opts?.ifNoneMatch
+      );
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      // api-client surfaces failures as a DriveApiError / DriveHttpError
+      // carrying `status` and, when classified, `kind` (after its own auto
+      // re-auth / token clearing). A classified kind wins: a full account or
+      // a rate limit answers 403 too, and is no auth failure. An unclassified
+      // error falls back to the status, where a 403 rate limit that outlasted
+      // the retries is still no auth failure.
+      const { status, kind } = (error ?? {}) as { status?: number; kind?: DriveFailureKind };
+      const isAuth = kind
+        ? kind === 'auth'
+        : status === 401 || (status === 403 && !isDriveRateLimit(driveFailureOf(error)));
+      const isNetwork =
+        (error as { isNetworkError?: boolean } | null)?.isNetworkError === true || status === 0;
+      throw new ProviderError(
+        `Failed to read control file ${name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'google-drive',
+        isAuth ? 'AUTH_EXPIRED' : 'CONTROL_READ_FAILED',
+        isAuth,
+        isNetwork
+      );
+    }
   }
 
   // VOLUME STORAGE METHODS
@@ -273,15 +538,20 @@ class GoogleDriveProvider implements SyncProvider {
       // Build folder map (folder ID -> folder name)
       const READER_FOLDER_NAME = GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER;
       const folderNames = new Map<string, string>();
+      const folders = new Map<string, { name: string; parent?: string }>();
       const cbzFiles: any[] = [];
       const sidecarFiles: any[] = [];
       const jsonFiles: any[] = [];
+      const historyFiles: any[] = [];
 
       for (const item of allItems) {
         if (item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER) {
           folderNames.set(item.id, item.name);
+          folders.set(item.id, { name: item.name, parent: item.parents?.[0] });
         } else if (isCbzFile(item.name)) {
           cbzFiles.push(item);
+        } else if (isHistoryFileName(item.name)) {
+          historyFiles.push(item);
         } else if (isSidecarFile(item.name)) {
           sidecarFiles.push(item);
         } else if (isRootConfigFile(item.name)) {
@@ -358,6 +628,22 @@ class GoogleDriveProvider implements SyncProvider {
         });
       }
 
+      // Reading history: mokuro-reader/history/<device>/<file>, by its full path.
+      for (const file of historyFiles) {
+        const path = driveHistoryPath(file, folders, READER_FOLDER_NAME);
+        if (!path) continue;
+        cloudVolumes.push({
+          provider: 'google-drive',
+          fileId: file.id,
+          path,
+          modifiedTime: file.modifiedTime || new Date().toISOString(),
+          size: file.size ? parseInt(file.size) : 0,
+          description: file.description,
+          parentId: file.parents?.[0],
+          name: file.name
+        });
+      }
+
       console.log(
         `✅ Listed ${cloudVolumes.length} files from Google Drive (${cbzFiles.length} CBZ, ${sidecarFiles.length} sidecars, ${jsonFiles.length} JSON)`
       );
@@ -373,40 +659,22 @@ class GoogleDriveProvider implements SyncProvider {
     }
   }
 
+  /**
+   * One upload and its receipt — nothing more. It used to end with a
+   * whole-account refetch (13+ `files.list` pages on a 12,500-file library)
+   * per upload, so every progress sync that wrote `volume-data.json` paid a
+   * full listing (#288). Nothing needs it: every caller records the upload in
+   * the cache from the receipt (`uploadCacheEntry`: id, server stamps,
+   * version, and where the file now lives), and other devices' writes reach
+   * the cache through the change feed at the top of each sync
+   * (`driveFilesCache.refreshFromChanges`). So there is no `blindUploadFile`
+   * here: this one already is.
+   */
   async uploadFile(
     path: string,
     blob: Blob,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<UploadFileResult> {
-    // Legacy contract: a full cache refetch rides every ordinary upload (see
-    // `performUpload`). Callers that don't need to read anything back use
-    // `blindUploadFile` instead.
-    return this.performUpload(path, blob, description, onProgress, true);
-  }
-
-  /**
-   * The write-and-forget upload (`SyncProvider.blindUploadFile`): identical to
-   * `uploadFile` minus the whole-account cache refetch — a full paged
-   * `files.list` walk (13+ round trips on a 12,500-file library) that a caller
-   * like the sidecar backfill, which converges through the unified layer's
-   * targeted cache add, has no use for.
-   */
-  async blindUploadFile(
-    path: string,
-    blob: Blob,
-    description?: string,
-    onProgress?: (loaded: number, total: number) => void
-  ): Promise<UploadFileResult> {
-    return this.performUpload(path, blob, description, onProgress, false);
-  }
-
-  private async performUpload(
-    path: string,
-    blob: Blob,
-    description: string | undefined,
-    onProgress: ((loaded: number, total: number) => void) | undefined,
-    refreshCache: boolean
   ): Promise<UploadFileResult> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
@@ -429,7 +697,9 @@ class GoogleDriveProvider implements SyncProvider {
           ? 'image/webp'
           : lowerFileName.endsWith('.jpg') || lowerFileName.endsWith('.jpeg')
             ? 'image/jpeg'
-            : 'application/x-cbz';
+            : lowerFileName.endsWith('.events')
+              ? 'application/octet-stream'
+              : 'application/x-cbz';
 
       // Ensure folder structure exists
       const rootFolderId = await this.ensureReaderFolder();
@@ -443,7 +713,7 @@ class GoogleDriveProvider implements SyncProvider {
       const existingFileId = await findFile(fileName, targetFolderId);
 
       // Upload (create or update) via shared provider core.
-      const token = this.getAccessToken();
+      const token = await this.getAccessToken();
       if (!token) {
         throw new Error('No access token available');
       }
@@ -457,16 +727,9 @@ class GoogleDriveProvider implements SyncProvider {
         },
         mimeType,
         existingFileId: existingFileId || undefined,
-        onProgress
+        onProgress,
+        refreshAuth: (stale) => this.refreshedWorkerCredentials(stale)
       });
-
-      // The legacy whole-account refetch — `uploadFile` only. A blind upload
-      // skips it: the unified layer records the upload in the cache with a
-      // TARGETED add built from this upload's own response metadata
-      // (`uploadCacheEntry`), which is all convergence needs.
-      if (refreshCache) {
-        await driveFilesCache.fetch();
-      }
 
       // Update file description if provided
       if (description) {
@@ -474,8 +737,21 @@ class GoogleDriveProvider implements SyncProvider {
       }
 
       console.log(`✅ Uploaded ${fileName} to Google Drive (${uploaded.fileId})`);
-      return uploaded;
+      // Where the file lives, so the cache entry carries it (the response
+      // names it; the folder we wrote into and the name we gave otherwise).
+      // A description update is a second change: the upload's `version` no
+      // longer names the file's current revision.
+      const { revision, ...receipt } = uploaded;
+      return {
+        ...receipt,
+        ...(revision && !description ? { revision } : {}),
+        parentId: uploaded.parentId ?? targetFolderId,
+        name: uploaded.name ?? fileName
+      };
     } catch (error) {
+      // A full drive keeps its own code and message (the transports throw
+      // the storage-full error), for the UI to show as is.
+      if (isQuotaExceededError(error)) throw error;
       throw new ProviderError(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
@@ -484,6 +760,174 @@ class GoogleDriveProvider implements SyncProvider {
         true
       );
     }
+  }
+
+  private quickReaderIds: { at: number; ids: Promise<string[]> } | null = null;
+
+  /**
+   * Every live reader folder's id this account OWNS (duplicates included, as
+   * the listing sees them — it lists `'me' in owners` only). The quick tier's
+   * three reads start together: one lookup serves them all (30 s), a failed
+   * one is not kept.
+   */
+  private quickReaderFolderIds(): Promise<string[]> {
+    if (this.quickReaderIds && Date.now() - this.quickReaderIds.at < 30_000) {
+      return this.quickReaderIds.ids;
+    }
+    const ids = (async () => {
+      await this.ensureInitialized();
+      const folders = await driveApiClient.listFiles(
+        `name='${escapeNameForDriveQuery(GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER)}' and ` +
+          `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and trashed=false and 'me' in owners`,
+        'files(id)'
+      );
+      return folders.map((folder) => folder.id);
+    })();
+    const entry = { at: Date.now(), ids };
+    this.quickReaderIds = entry;
+    ids.catch(() => {
+      if (this.quickReaderIds === entry) this.quickReaderIds = null;
+    });
+    return ids;
+  }
+
+  /**
+   * `files.list` over children of `parentIds`, chunked so the query stays
+   * short. Owned files only — the full listing's own filter (`'me' in owners`),
+   * so a folder someone shared can never feed the quick tier what the listing
+   * would refuse.
+   */
+  private async childrenOf(parentIds: string[], clause: string, fields: string) {
+    const out: DriveFile[] = [];
+    for (let i = 0; i < parentIds.length; i += 40) {
+      const parents = parentIds
+        .slice(i, i + 40)
+        .map((id) => `'${id}' in parents`)
+        .join(' or ');
+      out.push(
+        ...(await driveApiClient.listFiles(
+          `(${parents}) and trashed=false and 'me' in owners${clause}`,
+          fields
+        ))
+      );
+    }
+    return out;
+  }
+
+  /**
+   * The cold probe's read, no listing: every reader folder (duplicates
+   * included, as the listing would), then the file of that name in any of
+   * them — two `files.list` calls.
+   */
+  async readRootFileCopies(name: string): Promise<Blob[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+    const readers = await this.quickReaderFolderIds();
+    if (readers.length === 0) return [];
+    const files = await this.childrenOf(
+      readers,
+      ` and name='${escapeNameForDriveQuery(name)}' and ` +
+        `mimeType!='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}'`,
+      'files(id, name)'
+    );
+    return Promise.all(
+      files.map((file) =>
+        this.downloadFile({
+          provider: 'google-drive',
+          fileId: file.id,
+          path: name,
+          modifiedTime: '',
+          size: 0
+        })
+      )
+    );
+  }
+
+  /**
+   * The quick tier's listing of `<reader>/<folder>/…` without the account-wide
+   * listing: one `files.list` per folder level (reader folders, the folder,
+   * then each level below), entries shaped exactly as the Drive files cache
+   * shapes them (`drive-files-cache.ts`), so stamps recorded from them hold.
+   */
+  async listFolder(folder: string): Promise<CloudFileMetadata[]> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+    const FOLDER = GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER;
+    const fields = 'files(id,name,mimeType,modifiedTime,size,parents,description)';
+    const readers = await this.quickReaderFolderIds();
+    if (readers.length === 0) return [];
+    const tops = await this.childrenOf(
+      readers,
+      ` and name='${escapeNameForDriveQuery(folder)}' and mimeType='${FOLDER}'`,
+      'files(id,name)'
+    );
+    const out: DriveFileMetadata[] = [];
+    // folder id -> its path below the reader root
+    let level = new Map<string, string>(tops.map((top) => [top.id, folder]));
+    for (let depth = 0; level.size > 0 && depth < 8; depth++) {
+      const next = new Map<string, string>();
+      const items = await this.childrenOf([...level.keys()], '', fields);
+      for (const item of items) {
+        const parentId = item.parents?.find((id) => level.has(id));
+        if (!parentId) continue;
+        const path = `${level.get(parentId)}/${item.name}`;
+        if (item.mimeType === FOLDER) {
+          next.set(item.id, path);
+          continue;
+        }
+        if (!isSyncableFile(path)) continue;
+        out.push({
+          provider: 'google-drive',
+          fileId: item.id,
+          name: item.name,
+          modifiedTime: item.modifiedTime || new Date().toISOString(),
+          size: item.size ? parseInt(String(item.size)) : 0,
+          path,
+          description: item.description,
+          parentId
+        });
+      }
+      level = next;
+    }
+    return out;
+  }
+
+  /**
+   * `SyncProvider.statFile`: `files.get` with only the stamp fields (one small
+   * metadata request through the retrying client). `version` is the revision
+   * — monotonic, any change bumps it. A 404 or a trashed file is gone.
+   */
+  async statFile(file: CloudFileMetadata): Promise<FileStamp | null> {
+    if (!this.isAuthenticated()) {
+      throw new ProviderError('Not authenticated', 'google-drive', 'NOT_AUTHENTICATED', true);
+    }
+    await this.ensureInitialized();
+    let meta: {
+      size?: string | number;
+      modifiedTime?: string;
+      version?: string | number;
+      trashed?: boolean;
+    };
+    try {
+      meta = await driveApiClient.getFileMetadata(
+        file.fileId,
+        'id,size,modifiedTime,version,md5Checksum,trashed'
+      );
+    } catch (error) {
+      if ((error as { status?: number })?.status === 404) return null;
+      throw error;
+    }
+    if (!meta || meta.trashed) return null;
+    const size = Number(meta.size);
+    return {
+      size: Number.isFinite(size) ? size : 0,
+      modifiedTime: typeof meta.modifiedTime === 'string' ? meta.modifiedTime : '',
+      ...(meta.version !== undefined && meta.version !== null
+        ? { revision: String(meta.version) }
+        : {})
+    };
   }
 
   async downloadFile(
@@ -501,14 +945,15 @@ class GoogleDriveProvider implements SyncProvider {
     const fileId = file.fileId;
 
     try {
-      const token = this.getAccessToken();
+      const token = await this.getAccessToken();
       if (!token) {
         throw new Error('No access token available');
       }
       const data = await this.cloudCore.downloadFile({
         fileId,
         credentials: { accessToken: token },
-        onProgress: onProgress || (() => {})
+        onProgress: onProgress || (() => {}),
+        refreshAuth: (stale) => this.refreshedWorkerCredentials(stale)
       });
       const blob = new Blob([data], { type: 'application/zip' });
       console.log(`✅ Downloaded file from Google Drive (${fileId})`);
@@ -822,10 +1267,7 @@ class GoogleDriveProvider implements SyncProvider {
           const readerFolderId = await this.ensureReaderFolder();
 
           // Get access token
-          let token = '';
-          tokenManager.token.subscribe((value) => {
-            token = value;
-          })();
+          const token = await this.getAccessToken();
 
           if (!token) {
             throw new Error('No access token available');
@@ -1018,9 +1460,27 @@ class GoogleDriveProvider implements SyncProvider {
     await this.ensureInitialized();
 
     try {
-      const response = await gapi.client.drive.about.get({
-        fields: 'storageQuota'
-      });
+      // A raw gapi call, outside `driveApiClient`: it gets that client's token
+      // handling here — a token with time left first (backend mode renews one
+      // about to expire), and a 401 renewed and sent once more.
+      const aboutGet = () =>
+        withDriveRetry(() =>
+          gapi.client.drive.about.get({
+            fields: 'storageQuota'
+          })
+        );
+      const sentWith = await this.getAccessToken();
+      let response: Awaited<ReturnType<typeof aboutGet>>;
+      try {
+        response = await aboutGet();
+      } catch (error) {
+        const failure = driveFailureOf(error);
+        if (failure?.status === undefined) throw error;
+        if (classifyDriveFailure(failure.status, failure.reason) !== 'auth') throw error;
+        const renewal = await tokenManager.renewRejectedToken(sentWith);
+        if (renewal.kind !== 'renewed') throw error;
+        response = await aboutGet();
+      }
 
       const quota = response.result.storageQuota;
       if (!quota) {
@@ -1072,13 +1532,10 @@ class GoogleDriveProvider implements SyncProvider {
       );
     }
 
-    // Return first folder found (oldest if multiple - they'll be deduped later)
+    // The folder FolderDeduplicator keeps (oldest, then id), so writes never
+    // go to the copy the next merge empties.
     if (folders.length > 1) {
-      folders.sort((a, b) => {
-        const dateA = new Date(a.createdTime || 0).getTime();
-        const dateB = new Date(b.createdTime || 0).getTime();
-        return dateA - dateB;
-      });
+      folders.sort(compareByAge);
       console.log(
         `⚠️ Found ${folders.length} folders named '${folderName}', using oldest (dedup will run later)`
       );
@@ -1158,11 +1615,7 @@ class GoogleDriveProvider implements SyncProvider {
       return null;
     }
 
-    folders.sort((a, b) => {
-      const dateA = new Date(a.createdTime || 0).getTime();
-      const dateB = new Date(b.createdTime || 0).getTime();
-      return dateA - dateB;
-    });
+    folders.sort(compareByAge);
 
     const folder = folders[0];
     return {
@@ -1222,8 +1675,17 @@ class GoogleDriveProvider implements SyncProvider {
    * Returns an object that implements FolderOperations
    */
   getFolderOperations(): FolderOperations {
+    const READER = GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER;
+    // Duplicates this run already kept once because the server still listed
+    // children in them (see deleteFolder).
+    const keptOnce = new Set<string>();
+    // May a merged root group's canonical become the write root? From the
+    // cache's pick over the last listFolders' roots: only that same folder,
+    // and no folder at all while Drive could not be asked which roots are
+    // top-level. Before any listing, any root, as before.
+    let confirmable = (_folderId: string): boolean => true;
     return {
-      rootFolderName: GOOGLE_DRIVE_CONFIG.FOLDER_NAMES.READER,
+      rootFolderName: READER,
 
       listFolders: async (): Promise<FolderInfo[]> => {
         await this.ensureInitialized();
@@ -1231,7 +1693,31 @@ class GoogleDriveProvider implements SyncProvider {
           `mimeType='${GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER}' and 'me' in owners and trashed=false`,
           'files(id,name,parents,createdTime)'
         );
-        return items.map((item) => ({
+        // The listing is account-wide: two same-named folders the user keeps
+        // for anything else are not ours to merge. Only `mokuro-reader`
+        // folders and what is inside them, as MEGA's isInLibrary.
+        const byId = new Map(items.map((item) => [item.id, item]));
+        const inLibrary = (item: DriveFile): boolean => {
+          const seen = new Set<string>();
+          for (
+            let current: DriveFile | undefined = item;
+            current && !seen.has(current.id);
+            current = current.parents?.[0] ? byId.get(current.parents[0]) : undefined
+          ) {
+            if (current.name === READER) return true;
+            seen.add(current.id);
+          }
+          return false;
+        };
+        const library = items.filter(inLibrary);
+
+        const pick = await driveFilesCache.pickReaderFolder(
+          library.filter((item) => item.name === READER),
+          new Set(items.map((item) => item.id))
+        );
+        confirmable = pick.topLevelKnown ? (folderId) => folderId === pick.id : () => false;
+
+        return library.map((item) => ({
           id: item.id,
           name: item.name,
           parentId: item.parents?.[0] || null,
@@ -1243,12 +1729,13 @@ class GoogleDriveProvider implements SyncProvider {
         await this.ensureInitialized();
         const items = await driveApiClient.listFiles(
           `'${folderId}' in parents and trashed=false`,
-          'files(id,name,mimeType)'
+          'files(id,name,mimeType,modifiedTime)'
         );
         return items.map((item) => ({
           id: item.id,
           name: item.name,
-          isFolder: item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER
+          isFolder: item.mimeType === GOOGLE_DRIVE_CONFIG.MIME_TYPES.FOLDER,
+          modifiedTime: item.modifiedTime
         }));
       },
 
@@ -1257,21 +1744,58 @@ class GoogleDriveProvider implements SyncProvider {
         await driveApiClient.moveFile(itemId, newParentId, oldParentId);
       },
 
-      deleteFolder: async (folderId: string): Promise<void> => {
+      // Both to Drive's trash, never files.delete: the folder was judged empty
+      // from a listing a moment old, and a trashed folder takes its contents.
+      deleteFolder: async (folderId: string): Promise<boolean> => {
         await this.ensureInitialized();
-        await driveApiClient.deleteFile(folderId);
+        // So ask the server again, and trash only what it lists empty: another
+        // device's upload may have landed since. The next pass moves it.
+        if (await driveApiClient.folderHasChildren(folderId)) {
+          // Still not empty after a second merge (another device keeps
+          // writing there): give this group up for the run rather than loop.
+          if (keptOnce.has(folderId)) {
+            throw new Error(
+              `Drive dedup: duplicate folder ${folderId} still holds item(s) after a second merge; giving up on it this run`
+            );
+          }
+          keptOnce.add(folderId);
+          console.warn(
+            `[GoogleDrive] duplicate folder ${folderId} kept: server still lists item(s) in it`
+          );
+          return false;
+        }
+        await driveApiClient.updateFileMetadata(folderId, { trashed: true }, { fields: 'id' });
+        return true;
       },
 
-      deleteFile: async (fileId: string): Promise<void> => {
+      trashFile: async (fileId: string): Promise<void> => {
         await this.ensureInitialized();
-        await driveApiClient.deleteFile(fileId);
+        await driveApiClient.updateFileMetadata(fileId, { trashed: true }, { fields: 'id' });
       },
 
       onRootFolderConfirmed: (folderId: string): void => {
+        // A merged group of nested roots (`Backup/mokuro-reader` twice) has a
+        // canonical folder too: it is read, never the write root while the
+        // cache's choice (top-level first) is another folder, or unsure.
+        if (!confirmable(folderId)) return;
         this.setReaderFolderId(folderId);
         driveFilesCache.setReaderFolderId(folderId);
       }
     };
+  }
+
+  /**
+   * Follow the write root a fresh listing chose (`pickReaderFolder`). The
+   * session pins its root on first use, and only a merge THIS device runs
+   * re-points it (`onRootFolderConfirmed`). When another merger empties the
+   * pinned root and trashes it — a cloud-direct Bunko that merges duplicates,
+   * which this device then steps aside for, or another device — the listing
+   * no longer shows it, and writes would keep landing under a trashed folder.
+   * Nothing is pinned before the session resolved a root of its own.
+   */
+  adoptListedReaderFolder(folderId: string): void {
+    if (!this.readerFolderId || this.readerFolderId === folderId) return;
+    this.setReaderFolderId(folderId);
   }
 
   /**
@@ -1339,11 +1863,8 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
-    return { accessToken: token };
+    const token = await this.getAccessToken(WORKER_TOKEN_MIN_VALIDITY_MS);
+    return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<Record<string, any>> {
@@ -1352,15 +1873,17 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
-    return { accessToken: token };
+    const token = await this.getAccessToken(WORKER_TOKEN_MIN_VALIDITY_MS);
+    return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 }
 
 export const googleDriveProvider = new GoogleDriveProvider();
+
+// Workers never renew a token themselves: a 401 in any of them comes here.
+registerWorkerAuthRefresher('google-drive', (stale) =>
+  googleDriveProvider.refreshedWorkerCredentials(stale)
+);
 
 // Self-register cache when module is loaded
 cacheManager.registerCache('google-drive', driveFilesCache);

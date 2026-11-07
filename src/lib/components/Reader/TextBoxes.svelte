@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pageImageUrlFrom } from '$lib/reader/page-image-url';
   import { clamp, promptConfirmation } from '$lib/util';
   import type { Page } from '$lib/types';
   import { settings, volumes } from '$lib/settings';
@@ -12,9 +13,10 @@
     getCardAgeInMin,
     extractFieldValues,
     getModelConfig,
-    blobToBase64,
+    coverImageDataUrl,
     type VolumeMetadata
   } from '$lib/anki-connect';
+  import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
   import { db } from '$lib/catalog/db';
   import {
     layoutLines,
@@ -25,6 +27,7 @@
   import { lineTransform } from '$lib/reader/line-grid';
   import { fontsReady, fontLoadEpoch } from '$lib/reader/fonts-ready';
   import { dedupeBlocks } from '$lib/reader/block-dedupe';
+  import { displayableImageBlob } from '$lib/util/raster-image';
 
   interface ContextMenuData {
     x: number;
@@ -216,11 +219,9 @@
   async function getMetadataWithCover(): Promise<VolumeMetadata> {
     try {
       const dbVolume = await db.volumes.get(volumeUuid);
-      if (dbVolume?.thumbnail) {
-        const coverImage = await blobToBase64(dbVolume.thumbnail);
-        if (coverImage) {
-          return { ...volumeMetadata, coverImage };
-        }
+      const coverImage = await coverImageDataUrl(dbVolume?.thumbnail);
+      if (coverImage) {
+        return { ...volumeMetadata, coverImage };
       }
     } catch {
       // Fall through to return metadata without cover
@@ -483,23 +484,6 @@
     };
   }
 
-  function getImageUrlFromElement(element: HTMLElement): string | null {
-    // Traverse up to find the MangaPage div with background-image
-    let current: HTMLElement | null = element;
-    while (current) {
-      const bgImage = getComputedStyle(current).backgroundImage;
-      if (bgImage && bgImage !== 'none') {
-        // Extract URL from "url(...)"
-        const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
-        if (match) {
-          return match[1];
-        }
-      }
-      current = current.parentElement;
-    }
-    return null;
-  }
-
   function getSelectedText(): string {
     // Get actual selected text from the DOM
     const selection = window.getSelection();
@@ -518,8 +502,8 @@
 
     // Get image URL
     const url =
-      getImageUrlFromElement(event.target as HTMLElement) ||
-      (src ? URL.createObjectURL(src) : null);
+      pageImageUrlFrom(event.target as HTMLElement) ||
+      (src ? URL.createObjectURL(displayableImageBlob(src)) : null);
 
     if (!url) return;
 
@@ -531,6 +515,15 @@
     const metadataWithCover = await getMetadataWithCover();
 
     if (cardMode === 'update') {
+      // An unconfirmed URL answers nothing: the retries below would read that
+      // as "no recent card" and say so over the notice.
+      const refusal = ankiUrlRefusal($settings.ankiConnectSettings.url);
+      if (refusal) {
+        const { showSnackbar } = await import('$lib/util');
+        showSnackbar(refusal);
+        return;
+      }
+
       // Update mode: fetch previous card values with retry
       const maxRetries = 3;
       let lastCard = null;
@@ -754,7 +747,9 @@
 
 <style>
   .textBox {
-    color: black;
+    /* A page printed in ink color (#256, MangaPage) sets the matching text
+       colour; only the glyphs change — backgrounds, selection, DOM untouched. */
+    color: var(--page-ink-text, black);
     padding: 0;
     position: absolute;
     line-height: 1.1em;

@@ -1,8 +1,7 @@
-import { ONEDRIVE_CONFIG } from './constants';
+import { graphBase } from './constants';
 import { ProviderError } from '../../provider-interface';
 import { onedriveTokenManager } from './token-manager';
-
-const BASE = ONEDRIVE_CONFIG.GRAPH_BASE_URL;
+import { graphErrorCode, isGraphQuotaFailure } from './graph-errors';
 
 export interface DriveItem {
   id: string;
@@ -10,6 +9,8 @@ export interface DriveItem {
   size?: number;
   lastModifiedDateTime?: string;
   eTag?: string;
+  /** Changes with the CONTENT only (an eTag also moves on a rename or a property change). */
+  cTag?: string;
   folder?: Record<string, unknown>;
   file?: Record<string, unknown>;
   parentReference?: { id?: string; path?: string };
@@ -36,17 +37,19 @@ async function parseError(response: Response): Promise<never> {
     // refresh alone won't detect this — flag the session for reconnect.
     onedriveTokenManager.markNeedsAttention();
   }
+  // A full drive (507 or a quota code) is not a 5xx to retry.
+  const quota = isGraphQuotaFailure(response.status, graphErrorCode(text));
   throw new ProviderError(
     `Graph ${response.status} ${response.statusText}: ${text || '(no body)'}`,
     'onedrive',
-    `GRAPH_${response.status}`,
+    quota ? 'QUOTA_EXCEEDED' : `GRAPH_${response.status}`,
     response.status === 401,
-    response.status === 429 || response.status >= 500
+    !quota && (response.status === 429 || response.status >= 500)
   );
 }
 
 export async function getDriveQuota(accessToken: string): Promise<DriveQuota> {
-  const response = await fetch(`${BASE}/me/drive`, { headers: authHeaders(accessToken) });
+  const response = await fetch(`${graphBase()}/me/drive`, { headers: authHeaders(accessToken) });
   if (!response.ok) await parseError(response);
   const data = (await response.json()) as { quota?: DriveQuota };
   return data.quota ?? { used: 0, total: 0, remaining: 0 };
@@ -57,8 +60,8 @@ export async function listChildren(accessToken: string, path: string): Promise<D
   // large folders (a library with hundreds of series, or a series with many
   // files) are not silently truncated.
   let url: string = path
-    ? `${BASE}/me/drive/root:/${encodePath(path)}:/children`
-    : `${BASE}/me/drive/root/children`;
+    ? `${graphBase()}/me/drive/root:/${encodePath(path)}:/children`
+    : `${graphBase()}/me/drive/root/children`;
   const items: DriveItem[] = [];
   while (url) {
     const response = await fetch(url, { headers: authHeaders(accessToken) });
@@ -71,7 +74,33 @@ export async function listChildren(accessToken: string, path: string): Promise<D
 }
 
 export async function getItemByPath(accessToken: string, path: string): Promise<DriveItem | null> {
-  const url = path ? `${BASE}/me/drive/root:/${encodePath(path)}` : `${BASE}/me/drive/root`;
+  const url = path
+    ? `${graphBase()}/me/drive/root:/${encodePath(path)}`
+    : `${graphBase()}/me/drive/root`;
+  const response = await fetch(url, { headers: authHeaders(accessToken) });
+  if (response.status === 404) return null;
+  if (!response.ok) await parseError(response);
+  return (await response.json()) as DriveItem;
+}
+
+/** Download an item's content (`/content` redirects to a pre-authenticated URL). */
+export async function downloadItemContent(accessToken: string, itemId: string): Promise<Blob> {
+  const response = await fetch(
+    `${graphBase()}/me/drive/items/${encodeURIComponent(itemId)}/content`,
+    {
+      headers: authHeaders(accessToken)
+    }
+  );
+  if (!response.ok) await parseError(response);
+  return await response.blob();
+}
+
+/**
+ * One item's stamp fields by id (`$select`ed: a few hundred bytes), or null
+ * when it is gone (404).
+ */
+export async function getItemStamp(accessToken: string, id: string): Promise<DriveItem | null> {
+  const url = `${graphBase()}/me/drive/items/${encodeURIComponent(id)}?$select=id,name,size,lastModifiedDateTime,eTag,cTag,file`;
   const response = await fetch(url, { headers: authHeaders(accessToken) });
   if (response.status === 404) return null;
   if (!response.ok) await parseError(response);
@@ -84,8 +113,8 @@ export async function createFolder(
   name: string
 ): Promise<DriveItem> {
   const url = parentPath
-    ? `${BASE}/me/drive/root:/${encodePath(parentPath)}:/children`
-    : `${BASE}/me/drive/root/children`;
+    ? `${graphBase()}/me/drive/root:/${encodePath(parentPath)}:/children`
+    : `${graphBase()}/me/drive/root/children`;
   const response = await fetch(url, {
     method: 'POST',
     headers: authHeaders(accessToken, { 'Content-Type': 'application/json' }),
@@ -100,7 +129,7 @@ export async function createFolder(
 }
 
 export async function deleteItem(accessToken: string, itemId: string): Promise<void> {
-  const response = await fetch(`${BASE}/me/drive/items/${encodeURIComponent(itemId)}`, {
+  const response = await fetch(`${graphBase()}/me/drive/items/${encodeURIComponent(itemId)}`, {
     method: 'DELETE',
     headers: authHeaders(accessToken)
   });
@@ -118,7 +147,7 @@ export async function patchItem(
   itemId: string,
   body: PatchItemBody
 ): Promise<DriveItem> {
-  const response = await fetch(`${BASE}/me/drive/items/${encodeURIComponent(itemId)}`, {
+  const response = await fetch(`${graphBase()}/me/drive/items/${encodeURIComponent(itemId)}`, {
     method: 'PATCH',
     headers: authHeaders(accessToken, { 'Content-Type': 'application/json' }),
     body: JSON.stringify(body)
@@ -128,13 +157,16 @@ export async function patchItem(
 }
 
 export async function createUploadSession(accessToken: string, path: string): Promise<string> {
-  const response = await fetch(`${BASE}/me/drive/root:/${encodePath(path)}:/createUploadSession`, {
-    method: 'POST',
-    headers: authHeaders(accessToken, { 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
-      item: { '@microsoft.graph.conflictBehavior': 'replace' }
-    })
-  });
+  const response = await fetch(
+    `${graphBase()}/me/drive/root:/${encodePath(path)}:/createUploadSession`,
+    {
+      method: 'POST',
+      headers: authHeaders(accessToken, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        item: { '@microsoft.graph.conflictBehavior': 'replace' }
+      })
+    }
+  );
   if (!response.ok) await parseError(response);
   const data = (await response.json()) as { uploadUrl: string };
   return data.uploadUrl;

@@ -17,13 +17,22 @@ vi.mock('$lib/catalog/cloud-ocr-upgrade', () => ({ upgradeOcrFromSidecarBlob }))
 const importFetchedLayers = vi.hoisted(() => vi.fn());
 vi.mock('$lib/metadata/layer-sync', () => ({ importFetchedLayers }));
 const getActiveProvider = vi.hoisted(() => vi.fn(() => null as unknown));
-vi.mock('$lib/util/sync/provider-manager', () => ({
-  providerManager: { getActiveProvider: () => getActiveProvider() }
-}));
+vi.mock('$lib/util/sync/provider-manager', async () => {
+  const { writable } = await import('svelte/store');
+  return {
+    providerManager: {
+      getActiveProvider: () => getActiveProvider(),
+      // As a login / logout after start moves it.
+      status: writable({ hasAnyAuthenticated: false, currentProviderType: null as string | null })
+    }
+  };
+});
 
 import { db } from '$lib/catalog/db';
+import { providerManager } from '$lib/util/sync/provider-manager';
 import { clearAllLayers } from '$lib/catalog/layer-store';
 import { queueFixture } from './__fixtures__/mokuro-queue';
+import type { Writable } from 'svelte/store';
 import { markVolumeShown, serverOcrQueueStatus, volumeQueueKey } from './server-ocr-pending';
 import {
   LEGACY_RECHECK_KEY,
@@ -42,6 +51,10 @@ import {
   watchedEntries
 } from './server-ocr-queue';
 
+const statusFeed = providerManager.status as unknown as Writable<{
+  hasAnyAuthenticated: boolean;
+  currentProviderType: string | null;
+}>;
 const QUEUE = 'https://bunko.example/mokuro-reader/.mokuro-queue.json';
 const NOW = Date.parse('2026-09-28T15:00:00Z');
 const KEY1 = volumeQueueKey('Dr Stone', 'Dr Stone 01');
@@ -83,6 +96,8 @@ describe('parseQueueFile', () => {
       ...queueFixture(NOW),
       held: { reason: 'no-processor' },
       next_check_after: null,
+      // An older server's file: no count of the waiting volumes.
+      pending_volumes: undefined,
       volumes: [
         ...queueFixture(NOW).volumes,
         { series: 'x' },
@@ -570,6 +585,284 @@ describe('pulling a volume whose jobs are done', () => {
   });
 });
 
+describe("a link's watch stays on the servers the link named", () => {
+  const MANIFEST =
+    'https://bunko.example/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001';
+  const LOOPBACK_OCR = 'http://127.0.0.1:9/Dr%20Stone%2001.mokuro';
+  const THIRD_PARTY_LAYER = 'https://third.example/Dr%20Stone%2001.hayai-nova.mokuro';
+  const SAME_ORIGIN_LAYER =
+    'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.paddle.mokuro';
+  /** url → body; `redirectTo` answers as if `fetch` had followed a redirect there. */
+  const routes = new Map<string, { body: string; redirectTo?: string }>();
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const entry = {
+    series: 'Dr Stone',
+    volume: 'Dr Stone 01',
+    path: '/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.cbz',
+    manifest: '/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001',
+    jobs: []
+  };
+  const linkTarget = {
+    queueUrl: QUEUE,
+    init: { cache: 'no-store' as const },
+    source: 'html-download',
+    auth: 'none' as const
+  };
+
+  function manifestListing(ocr: string, layers: Array<{ id: string; url: string }>): string {
+    return JSON.stringify({
+      version: 1,
+      archive: { url: '/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.cbz' },
+      ocr: { url: ocr },
+      layers,
+      pending: [],
+      recheck_after: null
+    });
+  }
+
+  function watchLink(source = 'html-download', auth: 'none' | 'webdav' = 'none'): void {
+    watchServerOcr(
+      {
+        volumeUuid: 'v1',
+        series: 'Dr Stone',
+        volume: 'Dr Stone 01',
+        queueUrl: QUEUE,
+        manifestUrl: MANIFEST,
+        auth,
+        source
+      },
+      { start: false }
+    );
+  }
+
+  const fetchedUrls = () => fetchMock.mock.calls.map((c) => String(c[0]));
+
+  beforeEach(async () => {
+    resetServerOcrQueueForTest();
+    localStorage.clear();
+    routes.clear();
+    upgradeOcrFromSidecarBlob.mockReset().mockResolvedValue(true);
+    importFetchedLayers.mockReset().mockResolvedValue(1);
+    await Promise.all([
+      db.volumes.clear(),
+      db.volume_ocr.clear(),
+      db.volume_files.clear(),
+      clearAllLayers(db)
+    ]);
+    await db.volumes.put({
+      volume_uuid: 'v1',
+      series_uuid: 's',
+      series_title: 'Dr Stone',
+      volume_title: 'Dr Stone 01',
+      mokuro_version: '',
+      page_count: 4,
+      character_count: 0,
+      page_char_counts: [0, 0, 0, 0]
+    } as never);
+    await db.volume_ocr.put({ volume_uuid: 'v1', pages: [] });
+    await db.volume_files.put({ volume_uuid: 'v1', files: {} });
+    fetchMock = vi.fn(async (url: string) => {
+      const r = routes.get(String(url));
+      if (!r) return new Response('', { status: 404 });
+      const res = new Response(r.body, { status: 200 });
+      if (r.redirectTo) {
+        Object.defineProperty(res, 'redirected', { value: true });
+        Object.defineProperty(res, 'url', { value: r.redirectTo });
+      }
+      return res;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    routes.set(LOOPBACK_OCR, { body: '{"pages":[]}' });
+    routes.set(THIRD_PARTY_LAYER, { body: '{"pages":[]}' });
+    routes.set(SAME_ORIGIN_LAYER, { body: '{"pages":[]}' });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    resetServerOcrQueueForTest();
+  });
+
+  it('never fetches or applies OCR a re-read manifest names on another server', async () => {
+    routes.set(MANIFEST, {
+      body: manifestListing(LOOPBACK_OCR, [
+        { id: 'hayai-nova', url: THIRD_PARTY_LAYER },
+        { id: 'paddle', url: SAME_ORIGIN_LAYER }
+      ])
+    });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(true);
+    expect(fetchedUrls()).not.toContain(LOOPBACK_OCR);
+    expect(fetchedUrls()).not.toContain(THIRD_PARTY_LAYER);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    // The layer on the link's own server still arrives.
+    const files = importFetchedLayers.mock.calls[0][2] as Array<{ layerId: string }>;
+    expect(files.map((f) => f.layerId)).toEqual(['paddle']);
+  });
+
+  it('never reads a manifest the queue file names on another server', async () => {
+    const elsewhere = 'https://elsewhere.example/manifest.json';
+    routes.set(elsewhere, { body: manifestListing(LOOPBACK_OCR, []) });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, { ...entry, manifest: elsewhere }, linkTarget)).toBe(
+      false
+    );
+    expect(fetchedUrls()).not.toContain(elsewhere);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    expect(watchedEntries()).toHaveLength(1);
+  });
+
+  it('refuses a manifest that arrives through a redirect to this device', async () => {
+    routes.set(MANIFEST, {
+      body: manifestListing('/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro', []),
+      redirectTo: 'http://127.0.0.1:9/manifest.json'
+    });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(false);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    expect(fetchedUrls()).toEqual([MANIFEST]);
+  });
+
+  it('refuses an OCR file that arrives through a redirect to this device', async () => {
+    const ocr = 'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro';
+    routes.set(MANIFEST, { body: manifestListing(ocr, []) });
+    routes.set(ocr, { body: '{"pages":[]}', redirectTo: LOOPBACK_OCR });
+    watchLink();
+    await pullCompletedVolume(KEY1, entry, linkTarget);
+    expect(fetchedUrls()).toContain(ocr);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+  });
+
+  it("confines a link's watch even when the poller reads as the WebDAV account", async () => {
+    routes.set(MANIFEST, { body: manifestListing(LOOPBACK_OCR, []) });
+    watchLink();
+    await pullCompletedVolume(KEY1, entry, { ...linkTarget, source: 'webdav', auth: 'webdav' });
+    expect(fetchedUrls()).not.toContain(LOOPBACK_OCR);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+  });
+
+  it('the anonymous poller a link started never reads a queue file redirected to this device', async () => {
+    vi.useFakeTimers({ now: NOW, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      routes.set(QUEUE, {
+        body: JSON.stringify({ ...queueFixture(NOW), volumes: [], next_check_after: null }),
+        redirectTo: 'http://127.0.0.1:9/.mokuro-queue.json'
+      });
+      watchLink();
+      await startServerOcrQueue();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchedUrls()).toEqual([QUEUE]);
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('unavailable'),
+        expect.stringContaining('Refused')
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the bunko account's own queue still pulls files on any server, redirects and all", async () => {
+    const cdnOcr = 'https://cdn.example/Dr%20Stone%2001.mokuro';
+    const cdnLayer = 'https://cdn.example/Dr%20Stone%2001.paddle.mokuro';
+    routes.set(MANIFEST, {
+      body: manifestListing(cdnOcr, [{ id: 'paddle', url: cdnLayer }]),
+      redirectTo: 'http://127.0.0.1:9/manifest.json'
+    });
+    routes.set(cdnOcr, { body: '{"pages":[]}', redirectTo: 'http://10.0.0.5/x.mokuro' });
+    routes.set(cdnLayer, { body: '{"pages":[]}' });
+    watchLink('webdav', 'webdav');
+    const bunkoTarget = { ...linkTarget, source: 'webdav', auth: 'webdav' as const };
+    expect(await pullCompletedVolume(KEY1, entry, bunkoTarget)).toBe(true);
+    expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith('v1', cdnOcr, expect.any(Blob));
+    const [, source, files] = importFetchedLayers.mock.calls[0];
+    expect(source).toBe('webdav');
+    expect((files as Array<{ layerId: string }>).map((f) => f.layerId)).toEqual(['paddle']);
+  });
+
+  // Watch keys are not scoped to a queue, and a poller reports any key it is
+  // SHOWN as done too: another link's anonymous poller can report this watch.
+  const OTHER_QUEUE = 'https://other.example/mokuro-reader/.mokuro-queue.json';
+  const OTHER_MANIFEST =
+    'https://other.example/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2001';
+  const OTHER_OCR = 'https://other.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro';
+
+  it("another queue's poller reporting a link's watch reads nothing and leaves the watch", async () => {
+    routes.set(OTHER_MANIFEST, { body: manifestListing(OTHER_OCR, []) });
+    routes.set(OTHER_OCR, { body: '{"pages":[]}' });
+    watchLink();
+    const otherTarget = { ...linkTarget, queueUrl: OTHER_QUEUE };
+    expect(await pullCompletedVolume(KEY1, entry, otherTarget)).toBe(false);
+    expect(fetchedUrls()).toEqual([]);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    expect(watchedEntries().map((w) => w.queue_url)).toEqual([QUEUE]);
+  });
+
+  it("the watch's own queue still pulls it after another queue's poller was refused", async () => {
+    const ocr = 'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro';
+    routes.set(MANIFEST, { body: manifestListing(ocr, []) });
+    routes.set(ocr, { body: '{"pages":[]}' });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, entry, { ...linkTarget, queueUrl: OTHER_QUEUE })).toBe(
+      false
+    );
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(true);
+    expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith('v1', ocr, expect.any(Blob));
+    expect(watchedEntries()).toEqual([]);
+  });
+
+  it('an upload watch that landed on an anonymous poller reads as it always did', async () => {
+    // Pollers are keyed by queue URL alone: a link to the user's own bunko
+    // server may have created the anonymous one an upload watch then reuses.
+    const cdnOcr = 'https://cdn.example/Dr%20Stone%2001.mokuro';
+    routes.set(MANIFEST, {
+      body: manifestListing(cdnOcr, []),
+      redirectTo: 'https://mirror.example/manifest.json'
+    });
+    routes.set(cdnOcr, { body: '{"pages":[]}' });
+    watchLink('webdav', 'webdav');
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(true);
+    expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith('v1', cdnOcr, expect.any(Blob));
+  });
+
+  it("another queue's poller reporting an UPLOAD watch reads nothing and leaves the watch", async () => {
+    // The user's own upload waits on their bunko queue; a link to another
+    // server lists the same (series, volume) as done while its card is shown.
+    routes.set(OTHER_MANIFEST, { body: manifestListing(OTHER_OCR, []) });
+    routes.set(OTHER_OCR, { body: '{"pages":[]}' });
+    watchLink('webdav', 'webdav');
+    const otherTarget = { ...linkTarget, queueUrl: OTHER_QUEUE };
+    expect(
+      await pullCompletedVolume(KEY1, { ...entry, manifest: OTHER_MANIFEST }, otherTarget)
+    ).toBe(false);
+    expect(fetchedUrls()).toEqual([]);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+    expect(watchedEntries().map((w) => w.queue_url)).toEqual([QUEUE]);
+  });
+
+  it('a pull that ends before its first await does not wedge later pulls of the key', async () => {
+    // No entry and no watch: the pull has nothing to go on and ends at once.
+    expect(await pullCompletedVolume(KEY1, undefined, linkTarget)).toBe(false);
+    const ocr = 'https://bunko.example/mokuro-reader/Dr%20Stone/Dr%20Stone%2001.mokuro';
+    routes.set(MANIFEST, { body: manifestListing(ocr, []) });
+    routes.set(ocr, { body: '{"pages":[]}' });
+    watchLink();
+    expect(await pullCompletedVolume(KEY1, entry, linkTarget)).toBe(true);
+    expect(upgradeOcrFromSidecarBlob).toHaveBeenCalledWith('v1', ocr, expect.any(Blob));
+  });
+
+  it('an anonymous poller never reads an unwatched shown volume off its own server', async () => {
+    routes.set(OTHER_MANIFEST, { body: manifestListing(OTHER_OCR, []) });
+    routes.set(OTHER_OCR, { body: '{"pages":[]}' });
+    expect(
+      await pullCompletedVolume(KEY1, { ...entry, manifest: OTHER_MANIFEST }, linkTarget)
+    ).toBe(false);
+    expect(fetchedUrls()).toEqual([]);
+    expect(upgradeOcrFromSidecarBlob).not.toHaveBeenCalled();
+  });
+});
+
 describe('the status the views read', () => {
   it('maps every volume in a polled file to its key', async () => {
     resetServerOcrQueueForTest();
@@ -701,6 +994,200 @@ describe('startServerOcrQueue (app start)', () => {
   });
 });
 
+describe('a WebDAV login after app start', () => {
+  const CONNECTED = 'http://127.0.0.1:8090/mokuro-reader/.mokuro-queue.json';
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const bunkoServer = {
+    type: 'webdav',
+    getWorkerUploadCredentials: async () => ({
+      webdavUrl: 'http://127.0.0.1:8090',
+      webdavUsername: 'reader',
+      webdavPassword: 'pw',
+      webdavPutVerified: true
+    })
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW });
+    resetServerOcrQueueForTest();
+    localStorage.clear();
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+    getActiveProvider.mockReturnValue(null);
+    fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ ...queueFixture(NOW), volumes: [], next_check_after: null }),
+          { status: 200, headers: { ETag: '"e"' } }
+        )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    resetServerOcrQueueForTest();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    getActiveProvider.mockReturnValue(null);
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+  });
+
+  it('polls the bunko server it connected to, at once', async () => {
+    await startServerOcrQueue();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).not.toHaveBeenCalled(); // nothing connected at start
+
+    getActiveProvider.mockReturnValue(bunkoServer);
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([CONNECTED]));
+  });
+
+  it('does not poll again a server it already polled at start', async () => {
+    getActiveProvider.mockReturnValue(bunkoServer);
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await startServerOcrQueue();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(1_000); // the login's own look would land by now
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll a WebDAV server that is not bunko', async () => {
+    await startServerOcrQueue();
+    getActiveProvider.mockReturnValue({
+      type: 'webdav',
+      getWorkerUploadCredentials: async () => ({
+        webdavUrl: 'https://nextcloud.example/dav',
+        webdavPassword: 'pw',
+        webdavPutVerified: false
+      })
+    });
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// A switch from one bunko server to another keeps the type `webdav`: the old
+// server's poller must not stay behind, sending unauthenticated GETs (its
+// Authorization never crosses origins) and nudged by every card and tab show.
+describe('switching to another WebDAV server', () => {
+  const A = 'http://127.0.0.1:8090';
+  const B = 'http://127.0.0.2:8091';
+  const QUEUE_A = `${A}/mokuro-reader/.mokuro-queue.json`;
+  const QUEUE_B = `${B}/mokuro-reader/.mokuro-queue.json`;
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let server: string;
+  const provider = {
+    type: 'webdav',
+    getWorkerUploadCredentials: async () => ({
+      webdavUrl: server,
+      webdavUsername: 'reader',
+      webdavPassword: 'pw',
+      webdavPutVerified: true
+    })
+  };
+  let offShown: (() => void) | null = null;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW });
+    resetServerOcrQueueForTest();
+    localStorage.clear();
+    server = A;
+    getActiveProvider.mockReturnValue(null);
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+    fetchMock = vi.fn(async (url: string) =>
+      url === QUEUE_A
+        ? new Response(JSON.stringify(queueFixture(NOW)), { status: 200 })
+        : new Response(
+            JSON.stringify({ ...queueFixture(NOW), volumes: [], next_check_after: null }),
+            { status: 200 }
+          )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    offShown?.();
+    offShown = null;
+    resetServerOcrQueueForTest();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    getActiveProvider.mockReturnValue(null);
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+  });
+
+  const callsTo = (url: string) => fetchMock.mock.calls.filter((c) => c[0] === url).length;
+
+  /** Logs in to server A after start, showing KEY1, which A's queue lists. */
+  async function connectToA() {
+    offShown = markVolumeShown(KEY1);
+    await startServerOcrQueue();
+    getActiveProvider.mockReturnValue(provider);
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(get(serverOcrQueueStatus)[KEY1]).toBeDefined());
+    expect(callsTo(QUEUE_A)).toBe(1);
+  }
+
+  async function connectThenSwitch() {
+    await connectToA();
+    server = B;
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(callsTo(QUEUE_B)).toBe(1));
+  }
+
+  it('polls the new server and withdraws the old one', async () => {
+    await connectThenSwitch();
+    expect(get(serverOcrQueueStatus)[KEY1]).toBeUndefined();
+    // Its timer, a card nudge and a tab show reach the old server no more.
+    await vi.advanceTimersByTimeAsync(QUEUE_BACKOFF_MS.at(-1)! * 2);
+    const off = markVolumeShown(KEY2);
+    await vi.advanceTimersByTimeAsync(1_000);
+    off();
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(callsTo(QUEUE_A)).toBe(1);
+  });
+
+  it('keeps a poller with watched volumes, but sends nothing to another origin', async () => {
+    await connectToA();
+    watchServerOcr(
+      {
+        volumeUuid: 'v1',
+        series: 'Dr Stone',
+        volume: 'Dr Stone 01',
+        queueUrl: QUEUE_A,
+        manifestUrl: `${A}/m`,
+        auth: 'webdav',
+        source: 'webdav'
+      },
+      { start: false }
+    );
+    server = B;
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(callsTo(QUEUE_B)).toBe(1));
+    await vi.advanceTimersByTimeAsync(QUEUE_BACKOFF_MS.at(-1)! * 2);
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(callsTo(QUEUE_A)).toBe(1);
+    expect(watchedEntries().map((w) => w.queue_url)).toEqual([QUEUE_A]);
+
+    // Back on that account: the kept poller takes a look at once, as it.
+    server = A;
+    statusFeed.set({ hasAnyAuthenticated: true, currentProviderType: 'webdav' });
+    await vi.waitFor(() => expect(callsTo(QUEUE_A)).toBe(2));
+    const back = fetchMock.mock.calls.filter((c) => c[0] === QUEUE_A)[1];
+    expect(back[1].headers.Authorization).toMatch(/^Basic /);
+  });
+
+  it('a logout withdraws the server it was connected to', async () => {
+    await connectToA();
+    getActiveProvider.mockReturnValue(null);
+    statusFeed.set({ hasAnyAuthenticated: false, currentProviderType: null });
+    await vi.waitFor(() => expect(get(serverOcrQueueStatus)[KEY1]).toBeUndefined());
+    await vi.advanceTimersByTimeAsync(QUEUE_BACKOFF_MS.at(-1)! * 2);
+    expect(callsTo(QUEUE_A)).toBe(1);
+  });
+});
+
 describe('the queue under a bunko bearer token', () => {
   const SERVER = 'http://127.0.0.1:8090';
   const CONNECTED = `${SERVER}/mokuro-reader/.mokuro-queue.json`;
@@ -779,6 +1266,40 @@ describe('the queue under a bunko bearer token', () => {
       fetchMock
     );
     expect(res.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 503 + Retry-After is sent again after the wait, and composes with the 401 re-issue', async () => {
+    const auths: string[] = [];
+    const answers = [
+      () => new Response('', { status: 401 }),
+      () => new Response('', { status: 503, headers: { 'Retry-After': '2' } }),
+      () => new Response('x', { status: 200 })
+    ];
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      auths.push((init?.headers as Record<string, string>).Authorization);
+      return answers.shift()!();
+    });
+    const done = fetchWithQueueAuth(
+      `${SERVER}/mokuro-reader/S/V.mokuro`,
+      { headers: { Authorization: 'Bearer old' } },
+      CONNECTED,
+      'webdav',
+      fetchMock
+    );
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await done).status).toBe(200);
+    expect(auths).toEqual(['Bearer old', 'Bearer new', 'Bearer new']);
+  });
+
+  it('a 503 without a usable Retry-After is answered as is', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response('', { status: 503, headers: { 'Retry-After': '600' } })
+    );
+    const res = await fetchWithQueueAuth(`${SERVER}/x`, {}, CONNECTED, 'none', fetchMock);
+    expect(res.status).toBe(503);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

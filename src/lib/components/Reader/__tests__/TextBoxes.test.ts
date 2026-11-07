@@ -7,6 +7,8 @@ import type { Page } from '$lib/types';
 import fixturePage from '$lib/reader/__fixtures__/ocr-page.json';
 import { processLine } from '$lib/reader/line-coords-layout';
 import textBoxesSource from '../TextBoxes.svelte?raw';
+import { getLastCardInfo } from '$lib/anki-connect';
+import { snackbarStore } from '$lib/util/snackbar';
 
 vi.mock('$lib/settings', async () => {
   const { writable } = await import('svelte/store');
@@ -560,5 +562,50 @@ describe('TextBoxes: the fixed-pitch grid and rotation', () => {
         await expectPlaced(50, -6);
       });
     });
+  });
+});
+
+describe('TextBoxes: double-tap update with an unconfirmed AnkiConnect URL', () => {
+  // The guard in the AnkiConnect client answers an unconfirmed URL with its
+  // notice and no result. The update flow used to read that as "no recent
+  // card", retry twice and replace the notice (the snackbar holds one
+  // message) with "No recent card found to update".
+  it('tells the user to confirm the URL, without looking for a card', async () => {
+    const before = get(settingsStore);
+    settingsStore.update((s) => ({
+      ...s,
+      ankiConnectSettings: {
+        enabled: true,
+        triggerMethod: 'doubleTap',
+        cardMode: 'update',
+        tags: '',
+        url: 'http://192.168.1.10:8765'
+      }
+    }));
+    // jsdom has no object URLs; the page image is handed in as a File.
+    const createObjectURL = URL.createObjectURL;
+    URL.createObjectURL = () => 'blob:page';
+    snackbarStore.set(undefined);
+    try {
+      const { container } = render(TextBoxes, {
+        page: makePage([blockWithCoords]),
+        src: new File([new Uint8Array(1)], 'page_001.jpg'),
+        volumeUuid: 'test-uuid'
+      });
+      container
+        .querySelector('.textBox')!
+        .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+
+      await vi.waitFor(() => expect(get(snackbarStore)?.message).toBeTruthy(), {
+        timeout: 3000
+      });
+      expect(get(snackbarStore)?.message).toContain(
+        'http://192.168.1.10:8765 is not confirmed on this device'
+      );
+      expect(getLastCardInfo).not.toHaveBeenCalled();
+    } finally {
+      URL.createObjectURL = createObjectURL;
+      settingsStore.set(before);
+    }
   });
 });

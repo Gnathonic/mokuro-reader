@@ -1,5 +1,5 @@
 import { browser } from '$app/environment';
-import { writable, type Readable } from 'svelte/store';
+import { get, writable, type Readable } from 'svelte/store';
 import type {
   PublicClientApplication,
   AccountInfo,
@@ -8,6 +8,7 @@ import type {
   SilentRequest
 } from '@azure/msal-browser';
 import { ONEDRIVE_CONFIG } from './constants';
+import { CLOUD_TEST_HOOKS, cloudTestToken } from '../../cloud-test-hooks';
 
 type Msal = typeof import('@azure/msal-browser');
 
@@ -29,6 +30,20 @@ class OneDriveTokenManager {
     return this.needsAttentionStore;
   }
 
+  /**
+   * Set the reconnect flag, and publish a change: the navbar's banner and the
+   * cloud screen read the provider manager's status, which only moves when
+   * asked, so a flag kept here alone never reached them.
+   */
+  private setNeedsAttention(value: boolean): void {
+    if (get(this.needsAttentionStore) === value) return;
+    this.needsAttentionStore.set(value);
+    // Imported late: the provider manager imports the providers.
+    void import('../../provider-manager').then(({ providerManager }) =>
+      providerManager.updateStatus()
+    );
+  }
+
   private initPromise: Promise<void> | null = null;
 
   /**
@@ -38,6 +53,8 @@ class OneDriveTokenManager {
    */
   async initialize(): Promise<void> {
     if (!browser) return;
+    // An injected token needs no MSAL: no client id, no authority to reach.
+    if (CLOUD_TEST_HOOKS ? cloudTestToken('onedrive') !== null : false) return;
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
@@ -97,6 +114,7 @@ class OneDriveTokenManager {
   }
 
   isAuthenticated(): boolean {
+    if (CLOUD_TEST_HOOKS && cloudTestToken('onedrive') !== null) return true;
     return this.account !== null && !!this.instance;
   }
 
@@ -190,6 +208,8 @@ class OneDriveTokenManager {
    * required (the caller should prompt the user via reauthenticate()).
    */
   async getAccessToken(): Promise<string> {
+    const injected = CLOUD_TEST_HOOKS ? cloudTestToken('onedrive') : null;
+    if (injected !== null) return injected;
     await this.initialize();
     if (!this.instance || !this.account || !this.msal) {
       throw new Error('Not authenticated with OneDrive');
@@ -201,11 +221,11 @@ class OneDriveTokenManager {
     try {
       const result = await this.instance.acquireTokenSilent(request);
       this.tokenStore.set(result.accessToken);
-      this.needsAttentionStore.set(false);
+      this.setNeedsAttention(false);
       return result.accessToken;
     } catch (error) {
       if (error instanceof this.msal.InteractionRequiredAuthError) {
-        this.needsAttentionStore.set(true);
+        this.setNeedsAttention(true);
       }
       throw error;
     }
@@ -213,7 +233,7 @@ class OneDriveTokenManager {
 
   /** Flag the session as needing user re-authentication (e.g. Graph 401). */
   markNeedsAttention(): void {
-    this.needsAttentionStore.set(true);
+    this.setNeedsAttention(true);
   }
 
   /**

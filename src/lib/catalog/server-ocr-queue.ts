@@ -1,9 +1,11 @@
 import { db } from '$lib/catalog/db';
 import { resolveBunkoLink } from '$lib/util/bunko-links';
+import { fetchWithRetryAfter } from '$lib/util/sync/providers/webdav/webdav-retry-after';
 import { getLayerMeta } from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import {
+  confineManifestToOrigins,
   loadVolumeManifest,
   type ManifestPendingJob,
   type VolumeManifest
@@ -11,6 +13,9 @@ import {
 import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { VolumeMetadata } from '$lib/types';
+import { assertNoRedirectEscape } from '$lib/util/link-safety';
+import type { ProviderType, SyncProvider } from '$lib/util/sync/provider-interface';
+import { QUEUE_FILE_NAME } from '$lib/util/sync/syncable-file';
 import {
   authFromCredentials,
   bearerOf,
@@ -35,8 +40,9 @@ import {
  * - Polls only while a volume of interest could be pending: volumes this
  *   device uploaded there, deep-link imports whose manifest had pending jobs
  *   (both "watched", persisted), and volumes the catalog is showing.
- * - Started by an upload or a deep-link import (at once), by app start and by
- *   the tab becoming visible (one poll); then every `next_check_after` s
+ * - Started by an upload or a deep-link import (at once), by app start or a
+ *   WebDAV login to a bunko server, and by the tab becoming visible (one
+ *   poll); then every `next_check_after` s
  *   (floor 30 s) with `If-None-Match`; stops when no volume of interest is in
  *   the file. Errors back off 60 s → 10 min. Paused while the tab is hidden.
  * - A volume of interest that leaves the file is done: its new sidecars are
@@ -48,6 +54,16 @@ import {
  *   the volume's manifest decides. One that still has jobs there stays
  *   watched, shows the manifest's jobs, and is asked again at its
  *   `recheck_after`.
+ *
+ * A CLOUD-DIRECT Bunko (library on Drive / OneDrive / MEGA / plain WebDAV,
+ * bunko design 0.8 §9) writes the same file into the library folder. Its
+ * poller reads it through the provider (`cloudSourceFor`, a `QueueSource`):
+ * the marker `.mokuro-bunko.json` first, then the queue file, trusted only
+ * when its `instance_id` names the marker's lease holder. That poller keeps
+ * going while the tab is visible (the marker decides `serverCompilesMetadata`),
+ * completes a volume ONLY by its entry in `done[]` — absence from a
+ * `truncated` list is waiting — and on completion relists, runs the OCR
+ * upgrade pass and pulls layers (`CloudCompletions`), never a manifest pull.
  *
  * Replaces the per-volume recheck timers of Addendum A (their persisted
  * entries are removed once, `cleanupLegacyRecheckEntries`).
@@ -77,6 +93,30 @@ export interface QueueFile {
    */
   pending_volumes: number | null;
   volumes: QueueVolume[];
+  /**
+   * A cloud-direct Bunko's copy (bunko design 0.8 §9.1): the writer's
+   * instance id — the file is trusted only when it names the marker's lease
+   * holder. Absent from a bunko server's live file.
+   */
+  instance_id?: string;
+  /** The writer listed only part of the waiting volumes: absence is "waiting", never "done". */
+  truncated: boolean;
+  /**
+   * Recently finished volumes, newest first (cloud copy only). Presence here is
+   * a cloud reader's ONLY completion signal.
+   */
+  done: QueueDone[];
+}
+
+/** One finished volume of a cloud queue file, with where its new sidecars are. */
+export interface QueueDone {
+  series: string;
+  volume: string;
+  /** ISO time the sidecar was committed; '' when the writer gave none. */
+  at: string;
+  /** Library-relative path of the primary sidecar, when it changed. */
+  ocr: string | null;
+  layers: Array<{ id: string; path: string }>;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -114,6 +154,27 @@ export function parseQueueFile(json: unknown): QueueFile | null {
       jobs: Array.isArray(jobs) ? jobs.map(readJob).filter((j): j is QueueJob => j !== null) : []
     });
   }
+  const done: QueueDone[] = [];
+  if (Array.isArray(json.done)) {
+    for (const d of json.done) {
+      if (!isObject(d)) continue;
+      const { series, volume, at, ocr, layers } = d;
+      if (typeof series !== 'string' || typeof volume !== 'string') continue;
+      done.push({
+        series,
+        volume,
+        at: typeof at === 'string' ? at : '',
+        ocr: typeof ocr === 'string' && ocr ? ocr : null,
+        layers: Array.isArray(layers)
+          ? layers.flatMap((l) =>
+              isObject(l) && typeof l.id === 'string' && typeof l.path === 'string'
+                ? [{ id: l.id, path: l.path }]
+                : []
+            )
+          : []
+      });
+    }
+  }
   const held =
     isObject(json.held) && typeof json.held.reason === 'string'
       ? { reason: json.held.reason }
@@ -127,7 +188,12 @@ export function parseQueueFile(json: unknown): QueueFile | null {
     next_check_after: typeof next === 'number' && Number.isFinite(next) && next >= 0 ? next : null,
     pending_volumes:
       typeof pending === 'number' && Number.isInteger(pending) && pending >= 0 ? pending : null,
-    volumes
+    volumes,
+    ...(typeof json.instance_id === 'string' && json.instance_id
+      ? { instance_id: json.instance_id }
+      : {}),
+    truncated: json.truncated === true,
+    done
   };
 }
 
@@ -151,12 +217,55 @@ export const QUEUE_BACKOFF_MS: readonly number[] = [60_000, 120_000, 240_000, 48
 const MIN_INTERVAL_S = 30;
 const UNPRICED_INTERVAL_S = 300;
 
-export type PollTrigger = 'upload' | 'deep-link' | 'start' | 'visible' | 'shown';
+export type PollTrigger = 'upload' | 'deep-link' | 'start' | 'visible' | 'shown' | 'changed';
+
+/** What a {@link QueueSource} read produced. */
+export interface QueueSourceRead {
+  /** The file, or null when the source has no file it trusts right now (shown as nothing). */
+  file: QueueFile | null;
+  /** Hand back as `prev.etag` next time. */
+  etag: string | null;
+}
+
+/**
+ * Where a poller's queue file comes from. A bunko SERVER serves it over HTTP
+ * (`httpQueueSource`); a cloud-direct Bunko writes it into the library folder,
+ * read through the provider (`cloudQueueSource`).
+ */
+export interface QueueSource {
+  /** The poller's key: the queue URL, or `cloud:<provider>`. */
+  id: string;
+  /**
+   * One read. `'not-modified'`: the previous file stands. `'unavailable'`:
+   * the account the source needs is gone — the poller stops until triggered.
+   * Throws on a failed read (the poller backs off).
+   */
+  read(prev: {
+    etag: string | null;
+    file: QueueFile | null;
+  }): Promise<QueueSourceRead | 'not-modified' | 'unavailable'>;
+  /**
+   * How a volume of interest completes. `manifest` (a bunko server): it left
+   * the file, and its manifest decides. `done-list` (a cloud copy): only an
+   * entry in `done[]` completes it — absence from a truncated list is waiting.
+   */
+  completion?: 'manifest' | 'done-list';
+  /**
+   * Keep polling while the tab is visible even with nothing of interest: a
+   * cloud source also watches the Bunko marker, which decides
+   * `serverCompilesMetadata` for the whole library.
+   */
+  keepAlive?: boolean;
+  /** Floor between polls, seconds (default 30). */
+  minIntervalS?: number;
+}
 
 export interface QueuePollerDeps {
-  queueUrl: string;
+  /** Where the file comes from; when omitted, `queueUrl` over HTTP (`requestInit` + `fetch`). */
+  source?: QueueSource;
+  queueUrl?: string;
   /** Fetch options (auth); null when the account it needs is not available. */
-  requestInit: () => Promise<RequestInit | null>;
+  requestInit?: () => Promise<RequestInit | null>;
   /** Keys of the volumes watched on this server (uploads, deep links). */
   watchedKeys: () => string[];
   /** Is the catalog showing this volume? */
@@ -164,15 +273,45 @@ export interface QueuePollerDeps {
   /** The file as last read; null when polling stops (nothing to show from it). */
   onStatus: (file: QueueFile | null) => void;
   /**
-   * A volume of interest is no longer in the file. Its manifest decides: the
-   * jobs are done (pulled), or it answers what is still pending there.
+   * A volume of interest is done. `manifest` sources: it is no longer in the
+   * file, and its manifest decides — the jobs are done (pulled), or it answers
+   * what is still pending there. `done-list` sources: it is in `done[]`
+   * (`done` carries the entry); the answer is ignored.
    */
   onDone: (
     key: string,
-    entry: QueueVolume | undefined
+    entry: QueueVolume | undefined,
+    done?: QueueDone
   ) => void | Promise<boolean | PendingOnServer | void>;
   isHidden: () => boolean;
   fetch?: typeof fetch;
+}
+
+/** The queue file of a bunko SERVER, over HTTP with `If-None-Match`. */
+export function httpQueueSource(
+  queueUrl: string,
+  requestInit: () => Promise<RequestInit | null>,
+  fetchImpl?: typeof fetch
+): QueueSource {
+  return {
+    id: queueUrl,
+    completion: 'manifest',
+    async read(prev) {
+      const init = await requestInit();
+      if (!init) return 'unavailable';
+      const headers: Record<string, string> = {
+        ...((init.headers as Record<string, string> | undefined) ?? {})
+      };
+      if (prev.etag && prev.file) headers['If-None-Match'] = prev.etag;
+      const doFetch = fetchImpl ?? fetch;
+      const response = await doFetch(queueUrl, { ...init, cache: 'no-store', headers });
+      if (response.status === 304 && prev.file) return 'not-modified';
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const file = parseQueueFile(await response.json());
+      if (!file) throw new Error('not a version 1 queue file');
+      return { file, etag: response.headers.get('ETag') };
+    }
+  };
 }
 
 export class QueuePoller {
@@ -185,15 +324,31 @@ export class QueuePoller {
    * jobs: when to ask the manifest again, and the entry shown meanwhile.
    */
   private offList = new Map<string, { until: number; volume: QueueVolume }>();
+  /** `done-list` sources: the `done[]` entries already acted on (`key\0at`). */
+  private doneSeen: Set<string> | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private fetching = false;
   private again = false;
   private paused = false;
   private errors = 0;
   private delay: number | null = null;
+  private readonly source: QueueSource;
   lastPollAt = 0;
 
-  constructor(private readonly deps: QueuePollerDeps) {}
+  constructor(private readonly deps: QueuePollerDeps) {
+    if (deps.source) {
+      this.source = deps.source;
+    } else {
+      if (!deps.queueUrl || !deps.requestInit) {
+        throw new Error('QueuePoller needs a source, or a queueUrl and requestInit');
+      }
+      this.source = httpQueueSource(deps.queueUrl, deps.requestInit, deps.fetch);
+    }
+  }
+
+  get id(): string {
+    return this.source.id;
+  }
 
   get state(): 'idle' | 'waiting' | 'fetching' | 'paused' {
     if (this.fetching) return 'fetching';
@@ -262,26 +417,30 @@ export class QueuePoller {
     this.fetching = true;
     this.lastPollAt = Date.now();
     try {
-      const init = await this.deps.requestInit();
-      if (!init) {
-        this.halt();
-        return;
-      }
-      let file: QueueFile | null;
+      let result: Awaited<ReturnType<QueueSource['read']>>;
       try {
-        file = await this.read(init);
+        result = await this.source.read({ etag: this.etag, file: this.lastFile });
       } catch (error) {
         const wait = QUEUE_BACKOFF_MS[Math.min(this.errors, QUEUE_BACKOFF_MS.length - 1)];
         this.errors++;
         console.warn(
-          `[OCR queue] ${this.deps.queueUrl} unavailable; next look in ${wait / 1000} s:`,
+          `[OCR queue] ${this.source.id} unavailable; next look in ${wait / 1000} s:`,
           error instanceof Error ? error.message : error
         );
         this.schedule(wait);
         return;
       }
       this.errors = 0;
-      this.evaluate(file);
+      if (result === 'unavailable') {
+        this.halt();
+        return;
+      }
+      if (result !== 'not-modified') {
+        this.etag = result.etag;
+        this.lastFile = result.file;
+      }
+      if (this.lastFile) this.evaluate(this.lastFile);
+      else this.untrusted();
     } finally {
       this.fetching = false;
       if (this.again) {
@@ -292,23 +451,18 @@ export class QueuePoller {
     }
   }
 
-  private async read(init: RequestInit): Promise<QueueFile> {
-    const headers: Record<string, string> = {
-      ...((init.headers as Record<string, string> | undefined) ?? {})
-    };
-    if (this.etag && this.lastFile) headers['If-None-Match'] = this.etag;
-    const doFetch = this.deps.fetch ?? fetch;
-    const response = await doFetch(this.deps.queueUrl, { ...init, cache: 'no-store', headers });
-    if (response.status === 304 && this.lastFile) return this.lastFile;
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const file = parseQueueFile(await response.json());
-    if (!file) throw new Error('not a version 1 queue file');
-    this.etag = response.headers.get('ETag');
-    this.lastFile = file;
-    return file;
+  /** The source has no file it trusts (no fresh Bunko marker): show nothing, look again later. */
+  private untrusted(): void {
+    this.seen = new Map();
+    this.offList.clear();
+    this.publishOrHalt();
   }
 
   private evaluate(file: QueueFile): void {
+    if (this.source.completion === 'done-list') {
+      this.evaluateDoneList(file);
+      return;
+    }
     const inFile = new Map<string, QueueVolume>();
     for (const v of file.volumes) inFile.set(volumeQueueKey(v.series, v.volume), v);
     const watched = this.deps.watchedKeys();
@@ -350,6 +504,49 @@ export class QueuePoller {
     }
   }
 
+  /**
+   * A cloud copy: a volume completes ONLY by appearing in `done[]`. Leaving
+   * `volumes`, or never being listed past a truncated list, is waiting. The
+   * first file read is a baseline — what finished before this device looked
+   * is already in the listing it loaded at start — except for watched
+   * volumes, whose completion is acted on whenever it is first seen.
+   */
+  private evaluateDoneList(file: QueueFile): void {
+    const watched = this.deps.watchedKeys();
+    const watchedSet = new Set(watched);
+    const interesting = new Map<string, QueueVolume>();
+    for (const v of file.volumes) {
+      const key = volumeQueueKey(v.series, v.volume);
+      if (watchedSet.has(key) || this.deps.isShown(key)) interesting.set(key, v);
+    }
+    const previous = this.seen;
+    this.seen = interesting;
+    this.offList.clear();
+
+    const baseline = this.doneSeen === null;
+    const seenDone = this.doneSeen ?? new Set<string>();
+    const fresh: Array<{ key: string; done: QueueDone }> = [];
+    const listedDone = new Set<string>();
+    for (const done of file.done) {
+      const key = volumeQueueKey(done.series, done.volume);
+      const id = `${key}\u0000${done.at}`;
+      listedDone.add(id);
+      if (seenDone.has(id)) continue;
+      seenDone.add(id);
+      if (baseline && !watchedSet.has(key)) continue;
+      fresh.push({ key, done });
+    }
+    // Forget entries the writer dropped (it keeps the last 100 / 24 h).
+    for (const id of [...seenDone]) if (!listedDone.has(id)) seenDone.delete(id);
+    this.doneSeen = seenDone;
+
+    this.publishOrHalt();
+    for (const { key, done } of fresh) {
+      const outcome = this.deps.onDone(key, previous.get(key), done);
+      if (outcome instanceof Promise) void outcome.catch(() => {});
+    }
+  }
+
   /** The manifest's answer for a volume the file stopped listing. */
   private settleDone(key: string, result: boolean | PendingOnServer | void): void {
     if (!isPendingOnServer(result)) {
@@ -380,7 +577,13 @@ export class QueuePoller {
   private publishOrHalt(): void {
     const file = this.lastFile;
     if (!file || (this.seen.size === 0 && this.offList.size === 0)) {
-      this.halt();
+      if (!this.source.keepAlive) {
+        this.halt();
+        return;
+      }
+      // A cloud source keeps watching the marker: nothing shown, next look later.
+      this.deps.onStatus(null);
+      if (!this.timer) this.schedule(this.intervalMs(file));
       return;
     }
     const listed = new Set(file.volumes.map((v) => volumeQueueKey(v.series, v.volume)));
@@ -389,12 +592,18 @@ export class QueuePoller {
       .map(([, off]) => off.volume);
     this.deps.onStatus(extra.length > 0 ? { ...file, volumes: [...file.volumes, ...extra] } : file);
     if (!this.timer) {
-      let wait = Math.max(MIN_INTERVAL_S, file.next_check_after ?? UNPRICED_INTERVAL_S) * 1000;
+      let wait = this.intervalMs(file);
       for (const off of this.offList.values()) {
         wait = Math.min(wait, Math.max(MIN_INTERVAL_S * 1000, off.until - Date.now()));
       }
       this.schedule(wait);
     }
+  }
+
+  /** `next_check_after` (or the unpriced default), never under the source's floor. */
+  private intervalMs(file: QueueFile | null): number {
+    const floor = this.source.minIntervalS ?? MIN_INTERVAL_S;
+    return Math.max(floor, file?.next_check_after ?? UNPRICED_INTERVAL_S) * 1000;
   }
 
   /** Nothing of interest: no timer, nothing shown from this file until the next trigger. */
@@ -439,8 +648,12 @@ export interface WatchEntry {
   volume: string;
   queue_url: string;
   manifest_url: string;
-  /** `webdav` = as the connected WebDAV account (same origin only); `none` = anonymous. */
-  auth: 'webdav' | 'none';
+  /**
+   * `webdav` = as the connected WebDAV account (same origin only); `none` =
+   * anonymous; `cloud` = the connected provider's cloud-direct Bunko queue
+   * (`queue_url` is then `cloud:<provider>`, `manifest_url` is empty).
+   */
+  auth: 'webdav' | 'none' | 'cloud';
   /** The `cloud.provider` stamp a pulled layer row gets. */
   source: string;
   added_at: number;
@@ -458,7 +671,7 @@ function isWatch(v: unknown): v is WatchEntry {
     typeof w.volume === 'string' &&
     typeof w.queue_url === 'string' &&
     typeof w.manifest_url === 'string' &&
-    (w.auth === 'webdav' || w.auth === 'none') &&
+    (w.auth === 'webdav' || w.auth === 'none' || w.auth === 'cloud') &&
     typeof w.source === 'string' &&
     typeof w.added_at === 'number'
   );
@@ -539,6 +752,30 @@ export async function watchUploadedVolume(input: {
   watchServerOcr({ ...input, queueUrl, auth: 'webdav', source: 'webdav' });
 }
 
+/**
+ * A volume this device just uploaded to a CLOUD library (Drive, OneDrive,
+ * MEGA, plain WebDAV) while a cloud-direct Bunko's marker is fresh there: the
+ * PUT answers nothing about OCR, so the volume is watched by `(series, volume)`
+ * on that library's queue file. No fresh marker → no watch.
+ */
+export async function watchCloudUpload(input: {
+  volumeUuid: string;
+  series: string;
+  volume: string;
+}): Promise<void> {
+  const source = await connectedCloudQueueSource();
+  if (!source) return;
+  const { cloudBunkoHolder } = await import('./cloud-bunko-marker');
+  if (!cloudBunkoHolder(source.providerType)) return;
+  watchServerOcr({
+    ...input,
+    queueUrl: source.id,
+    manifestUrl: '',
+    auth: 'cloud',
+    source: source.providerType
+  });
+}
+
 /** Watch a volume the server is making OCR for, and poll its server at once. */
 export function watchServerOcr(input: WatchInput, options: { start?: boolean } = {}): void {
   const key = volumeQueueKey(input.series, input.volume);
@@ -583,8 +820,9 @@ function originOf(url: string): string | null {
 /**
  * `fetch` for a request on behalf of a queue's account: the WebDAV session's
  * Authorization goes ONLY to the queue's own origin (a manifest may name files
- * anywhere), and a 401 under a bearer token replaces the token once — through
- * the provider's single-flight re-issue — and retries with the fresh header.
+ * anywhere), a 401 under a bearer token replaces the token once — through
+ * the provider's single-flight re-issue — and retries with the fresh header,
+ * and a short 503 + Retry-After is waited out (`fetchWithRetryAfter`).
  */
 export async function fetchWithQueueAuth(
   url: string,
@@ -597,32 +835,99 @@ export async function fetchWithQueueAuth(
     ...((init.headers as Record<string, string> | undefined) ?? {})
   };
   if (headers.Authorization && originOf(url) !== originOf(queueUrl)) delete headers.Authorization;
-  const response = await fetchImpl(url, { ...init, headers });
-  const sent = headers.Authorization;
-  if (response.status !== 401 || auth !== 'webdav' || !bearerOf(sent)) return response;
-  const provider = (await activeWebdavProvider()) as {
-    reissueAfterUnauthorized?: (stale: string) => Promise<boolean>;
-  } | null;
-  if (!provider?.reissueAfterUnauthorized || !(await provider.reissueAfterUnauthorized(sent))) {
-    return response;
+  return fetchWithRetryAfter(fetchImpl, url, { ...init, headers }, async (sent) => {
+    if (auth !== 'webdav' || !bearerOf(sent.Authorization)) return null;
+    const provider = (await activeWebdavProvider()) as {
+      reissueAfterUnauthorized?: (stale: string) => Promise<boolean>;
+    } | null;
+    if (
+      !provider?.reissueAfterUnauthorized ||
+      !(await provider.reissueAfterUnauthorized(sent.Authorization))
+    ) {
+      return null;
+    }
+    const fresh = (await requestInitFor(queueUrl, auth))?.headers as
+      | Record<string, string>
+      | undefined;
+    const retryHeaders = { ...sent };
+    if (fresh?.Authorization) retryHeaders.Authorization = fresh.Authorization;
+    else delete retryHeaders.Authorization;
+    return retryHeaders;
+  });
+}
+
+/**
+ * The `source` of a deep link's watch (`DEEP_LINK_LAYER_SOURCE`, spelled out:
+ * importing it would pull the whole import pipeline into the poller).
+ */
+const LINK_WATCH_SOURCE = 'html-download';
+
+/**
+ * The servers a LINK-driven pull may read from: `null` when the pull is not
+ * link-driven, `'not-its-queue'` when it must not run at all. A deep link's
+ * watch re-reads the manifest long after the user confirmed the link: every
+ * fetch then stays on the servers that confirmation showed — the manifest's
+ * own and the queue's, which sits beside the confirmed archive — and a
+ * redirect may not take it anywhere worse (`assertNoRedirectEscape`), as for
+ * the import itself.
+ *
+ * Watch keys are not scoped to a queue, and a poller reports any key it is
+ * merely SHOWN as done: another link's anonymous poller can report this
+ * watch. Read from the CALLER, the allowlist would then name that other
+ * server and the pull would apply its OCR to this watch's volume. So ANY
+ * watch — a link's, an upload's — reported by a queue but its own is refused
+ * (`'not-its-queue'`; the watch stays, and its own poller, which
+ * watchServerOcr and startup always create, pulls it). On its own queue a
+ * link's watch allows only the WATCH's origins. Without a watch, the
+ * anonymous poller (which exists because a link was confirmed) stays on its
+ * own server. A watch that is not a link's — the bunko account's uploads,
+ * also when they landed on an anonymous poller a link created first (pollers
+ * are keyed by queue URL alone) — reads its own queue as it always has.
+ */
+function linkPullOrigins(
+  watched: WatchEntry | undefined,
+  target: Pick<PullTarget, 'queueUrl' | 'auth'>
+): readonly string[] | 'not-its-queue' | null {
+  if (watched && watched.queue_url !== target.queueUrl) return 'not-its-queue';
+  if (watched?.source === LINK_WATCH_SOURCE) {
+    return [watched.manifest_url, watched.queue_url].filter((u) => !!u);
   }
-  const fresh = (await requestInitFor(queueUrl, auth))?.headers as
-    | Record<string, string>
-    | undefined;
-  const retryHeaders = { ...headers };
-  if (fresh?.Authorization) retryHeaders.Authorization = fresh.Authorization;
-  else delete retryHeaders.Authorization;
-  return fetchImpl(url, { ...init, headers: retryHeaders });
+  if (!watched && (target.auth ?? 'none') === 'none') return [target.queueUrl];
+  return null;
+}
+
+/** Is `url` http(s) on the origin of one of `allowedUrls`? */
+function onOriginOf(url: string, allowedUrls: readonly string[]): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+    return allowedUrls.some((allowed) => originOf(allowed) === parsed.origin);
+  } catch {
+    return false;
+  }
+}
+
+/** `fetchWithQueueAuth`, refusing (throwing) a link-driven response a redirect took somewhere worse. */
+async function fetchForPull(
+  url: string,
+  init: RequestInit,
+  target: Pick<PullTarget, 'queueUrl' | 'auth'>,
+  linkDriven: boolean
+): Promise<Response> {
+  const response = await fetchWithQueueAuth(url, init, target.queueUrl, target.auth);
+  if (linkDriven) assertNoRedirectEscape(url, response);
+  return response;
 }
 
 async function fetchBlob(
   url: string,
   init: RequestInit,
   what: string,
-  target: Pick<PullTarget, 'queueUrl' | 'auth'>
+  target: Pick<PullTarget, 'queueUrl' | 'auth'>,
+  linkDriven: boolean
 ): Promise<Blob | null> {
   try {
-    const response = await fetchWithQueueAuth(url, init, target.queueUrl, target.auth);
+    const response = await fetchForPull(url, init, target, linkDriven);
     if (response.ok) return await response.blob();
     console.warn(`[OCR queue] Could not fetch ${what} ${url}: HTTP ${response.status}`);
   } catch (error) {
@@ -657,11 +962,12 @@ async function pullManifestFiles(
   row: VolumeMetadata,
   manifest: VolumeManifest,
   target: PullTarget,
-  source: string
+  source: string,
+  linkDriven: boolean
 ): Promise<void> {
   const init = target.init;
   if (manifest.ocr && wantsPrimary(row)) {
-    const blob = await fetchBlob(manifest.ocr.url, init, 'OCR file', target);
+    const blob = await fetchBlob(manifest.ocr.url, init, 'OCR file', target, linkDriven);
     if (blob) {
       const { upgradeOcrFromSidecarBlob } = await import('$lib/catalog/cloud-ocr-upgrade');
       try {
@@ -674,7 +980,7 @@ async function pullManifestFiles(
   const fetched: FetchedLayerFile[] = [];
   for (const layer of manifest.layers) {
     if (await getLayerMeta(db, row.volume_uuid, layer.id)) continue;
-    const blob = await fetchBlob(layer.url, init, `OCR layer '${layer.id}'`, target);
+    const blob = await fetchBlob(layer.url, init, `OCR layer '${layer.id}'`, target, linkDriven);
     if (!blob) continue;
     fetched.push({
       layerId: layer.id,
@@ -705,8 +1011,16 @@ export function pullCompletedVolume(
   entry: Pick<QueueVolume, 'series' | 'volume' | 'manifest'> | undefined,
   target: PullTarget
 ): Promise<boolean | PendingOnServer> {
+  // Decided before the in-flight check, synchronously: a refusal must
+  // neither join nor occupy the slot the watch's own queue pulls through.
+  const allowed = linkPullOrigins(loadWatches().get(key), target);
+  if (allowed === 'not-its-queue') {
+    console.warn(`[OCR queue] Not pulling ${key} for ${target.queueUrl}: its link watched another`);
+    return Promise.resolve(false);
+  }
   const inFlight = pulling.get(key);
   if (inFlight) return inFlight;
+  let finished = false;
   const run = (async () => {
     try {
       const watched = loadWatches().get(key);
@@ -725,11 +1039,21 @@ export function pullCompletedVolume(
         ? resolveBunkoLink(entry.manifest, target.queueUrl)
         : watched?.manifest_url;
       if (!manifestUrl) return false;
-      const load = await loadVolumeManifest(
+      if (allowed && !onOriginOf(manifestUrl, allowed)) {
+        console.warn(
+          `[OCR queue] Not reading manifest ${manifestUrl}: it is not on a server the link named`
+        );
+        return false;
+      }
+      const fetched = await loadVolumeManifest(
         manifestUrl,
         target.init.headers as Record<string, string> | undefined,
-        (input, init) => fetchWithQueueAuth(String(input), init ?? {}, target.queueUrl, target.auth)
+        (input, init) => fetchForPull(String(input), init ?? {}, target, allowed !== null)
       );
+      const load =
+        allowed && 'manifest' in fetched
+          ? confineManifestToOrigins(fetched.manifest, allowed)
+          : fetched;
       if ('error' in load) {
         console.warn(`[OCR queue] Manifest ${manifestUrl} unavailable:`, load.error);
         return false;
@@ -742,23 +1066,46 @@ export function pullCompletedVolume(
           recheckAfter: load.manifest.recheck_after
         };
       }
-      await pullManifestFiles(row, load.manifest, target, watched?.source ?? target.source);
+      await pullManifestFiles(
+        row,
+        load.manifest,
+        target,
+        watched?.source ?? target.source,
+        allowed !== null
+      );
       if (loadWatches().delete(key)) saveWatches();
       return true;
     } catch (error) {
       console.warn('[OCR queue] Pull failed; it is retried on the next look:', error);
       return false;
     } finally {
+      finished = true;
       pulling.delete(key);
     }
   })();
-  pulling.set(key, run);
+  // A body that returns before its first await has already run its `finally`
+  // here: registering it now would leave a settled promise answering every
+  // later pull of the key.
+  if (!finished) pulling.set(key, run);
   return run;
 }
 
 // ---------------------------------------------------------------- pollers per server
 
 const pollers = new Map<string, QueuePoller>();
+
+/**
+ * The provider manager, imported lazily (it pulls in every provider) through
+ * ONE promise: every caller gets the same module, also when several ask at
+ * once (vitest 3 hands the second of two concurrent imports of a mocked
+ * module the unmocked one).
+ */
+let providerManagerImport: Promise<typeof import('$lib/util/sync/provider-manager')> | null = null;
+function providerManagerModule(): Promise<typeof import('$lib/util/sync/provider-manager')> {
+  return (providerManagerImport ??= import('$lib/util/sync/provider-manager'));
+}
+/** The SERVER pollers that read as the connected WebDAV account (`auth: 'webdav'`). */
+const webdavAuthPollers = new Set<string>();
 
 function isHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
@@ -768,7 +1115,7 @@ async function activeWebdavProvider(): Promise<{
   type?: string;
   getWorkerUploadCredentials?: () => Promise<Record<string, unknown>>;
 } | null> {
-  const { providerManager } = await import('$lib/util/sync/provider-manager');
+  const { providerManager } = await providerManagerModule();
   const provider = providerManager.getActiveProvider() as {
     type?: string;
     getWorkerUploadCredentials?: () => Promise<Record<string, unknown>>;
@@ -785,18 +1132,24 @@ async function requestInitFor(
   if (!provider) return null;
   const credentials = await provider.getWorkerUploadCredentials!();
   const url = typeof credentials.webdavUrl === 'string' ? credentials.webdavUrl : '';
+  // A queue on another origin than the connected account's (an account since
+  // switched away from): its credentials never leave for it, and an
+  // anonymous read of an account's queue would only be refused, again at
+  // every look. Nothing to read until that account is connected again.
+  if (originOf(url) === null || originOf(url) !== originOf(queueUrl)) return null;
   // The session's header: Bearer when a token is held, else Basic, else none.
   const authorization = webdavAuthorization(authFromCredentials(credentials));
-  // The account's token or password never leaves for another origin.
-  if (!authorization || originOf(url) === null || originOf(url) !== originOf(queueUrl)) {
-    return { cache: 'no-store' };
-  }
+  if (!authorization) return { cache: 'no-store' };
   return { cache: 'no-store', headers: { Authorization: authorization } };
 }
 
 function pollerFor(queueUrl: string, auth: WatchEntry['auth'], source: string): QueuePoller {
   const existing = pollers.get(queueUrl);
   if (existing) return existing;
+  if (auth === 'cloud') {
+    const cloud = cloudSourceFor(source as ProviderType);
+    return cloudPollerFor(cloud);
+  }
   const poller = new QueuePoller({
     queueUrl,
     requestInit: () => requestInitFor(queueUrl, auth),
@@ -811,9 +1164,14 @@ function pollerFor(queueUrl: string, auth: WatchEntry['auth'], source: string): 
       return init ? pullCompletedVolume(key, entry, { queueUrl, init, source, auth }) : false;
     },
     isHidden,
-    fetch: (input, init) => fetchWithQueueAuth(String(input), init ?? {}, queueUrl, auth)
+    // An anonymous poller is made for a link's watch (or restored for one),
+    // though an upload watch on the same server may share it later: its queue
+    // file is read under the same redirect rule as the link's other fetches.
+    fetch: (input, init) =>
+      fetchForPull(String(input), init ?? {}, { queueUrl, auth }, auth === 'none')
   });
   pollers.set(queueUrl, poller);
+  if (auth === 'webdav') webdavAuthPollers.add(queueUrl);
   return poller;
 }
 
@@ -880,10 +1238,17 @@ export async function startServerOcrQueue(): Promise<void> {
   started = true;
   cleanupLegacyRecheckEntries();
   setShownListener(nudgeForShownVolumes);
-  for (const w of watchedEntries()) pollerFor(w.queue_url, w.auth, w.source);
+  for (const w of watchedEntries()) {
+    // A cloud watch belongs to whichever provider is connected now (below).
+    if (w.auth !== 'cloud') pollerFor(w.queue_url, w.auth, w.source);
+  }
   const connected = await connectedBunkoQueueUrl();
   if (connected) pollerFor(connected, 'webdav', 'webdav');
+  connectedServer = connected;
   for (const p of pollers.values()) p.trigger('start');
+  // The connected cloud library's queue + marker (and again after every login,
+  // switch or logout): created — and given its first look — there.
+  await followActiveProvider();
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
       for (const p of pollers.values()) p.onVisibilityChange();
@@ -891,16 +1256,352 @@ export async function startServerOcrQueue(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- cloud-direct Bunko
+
+/**
+ * Floors between reads of a cloud library's control files (bunko design 0.8
+ * §9.1 writes the queue no more often than these). MEGA's reads are answered
+ * from the live in-memory tree and re-triggered by its change events, so its
+ * floor costs no requests.
+ */
+const CLOUD_MIN_INTERVAL_S: Record<ProviderType, number> = {
+  webdav: 30,
+  'google-drive': 60,
+  onedrive: 60,
+  mega: 60,
+  filesystem: 300
+};
+
+/** The relist a completion runs — set by the app shell (`+layout.svelte`). */
+let relistHook: (() => Promise<void>) | null = null;
+
+/**
+ * How the poller asks for a fresh listing after a cloud Bunko finished
+ * volumes ("pick up new sidecars"): the app passes
+ * `unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true })`.
+ */
+export function setQueueRelistHook(hook: (() => Promise<void>) | null): void {
+  relistHook = hook;
+}
+
+async function relist(): Promise<void> {
+  if (relistHook) return relistHook();
+  const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+  await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true });
+}
+
+async function activeProvider(): Promise<SyncProvider | null> {
+  const { providerManager } = await providerManagerModule();
+  return providerManager.getActiveProvider();
+}
+
+export interface CloudQueueSource extends QueueSource {
+  providerType: ProviderType;
+}
+
+const cloudSources = new Map<ProviderType, CloudQueueSource>();
+
+/**
+ * The queue of a cloud-direct Bunko on `providerType`'s library. Every read:
+ * the marker first (it decides `serverCompilesMetadata` for the library and
+ * who holds the lease), then the queue file — trusted only when its
+ * `instance_id` names the top-ranked fresh marker. No fresh marker, or no
+ * holder's file: nothing is shown.
+ */
+export function cloudSourceFor(providerType: ProviderType): CloudQueueSource {
+  const existing = cloudSources.get(providerType);
+  if (existing) return existing;
+  let queueEtag: string | undefined;
+  let candidates: QueueFile[] = [];
+  const source: CloudQueueSource = {
+    id: `cloud:${providerType}`,
+    providerType,
+    completion: 'done-list',
+    keepAlive: true,
+    minIntervalS: CLOUD_MIN_INTERVAL_S[providerType] ?? 60,
+    async read() {
+      const provider = await activeProvider();
+      if (!provider || provider.type !== providerType || !provider.readControlFile) {
+        return 'unavailable';
+      }
+      const { refreshCloudBunkoMarker, cloudBunkoHolder } = await import('./cloud-bunko-marker');
+      // One marker etag per scope, shared with the dedup pass's reads.
+      if (!(await refreshCloudBunkoMarker(provider))) {
+        // Back off as for any failed read; the last verdict stands meanwhile.
+        throw new Error('the Bunko marker could not be read');
+      }
+      const holder = cloudBunkoHolder(providerType);
+      if (!holder) {
+        // Nobody is managing the library right now: whatever a queue file
+        // says is stale. Skip reading it until a marker is fresh again.
+        queueEtag = undefined;
+        candidates = [];
+        return { file: null, etag: null };
+      }
+      const queue = await provider.readControlFile(QUEUE_FILE_NAME, { ifNoneMatch: queueEtag });
+      if (queue !== 'not-modified') {
+        queueEtag = queue?.etag;
+        candidates = [];
+        for (const node of queue?.nodes ?? []) {
+          try {
+            const file = parseQueueFile(JSON.parse(await node.blob.text()));
+            if (file) candidates.push(file);
+          } catch {
+            // Half-written or not JSON: this node says nothing.
+          }
+        }
+      }
+      const trusted = candidates.find((f) => f.instance_id === holder.instance_id) ?? null;
+      return { file: trusted, etag: queueEtag ?? null };
+    }
+  };
+  cloudSources.set(providerType, source);
+  return source;
+}
+
+/**
+ * The connected provider's cloud queue source: Drive, OneDrive, MEGA, or a
+ * WebDAV that is NOT a bunko server (a bunko server serves its live queue
+ * over HTTP — `connectedBunkoQueueUrl`). Null without a provider that can
+ * read control files.
+ */
+export async function connectedCloudQueueSource(): Promise<CloudQueueSource | null> {
+  try {
+    const provider = await activeProvider();
+    if (!provider?.readControlFile) return null;
+    if (provider.type === 'filesystem') return null;
+    if (provider.type === 'webdav' && (await connectedBunkoQueueUrl())) return null;
+    return cloudSourceFor(provider.type);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Completions of a cloud queue, batched: one relist for every volume that
+ * finished since the last one (a Bunko working through a backlog finishes a
+ * volume every few minutes, and a relist is a whole-account listing), then
+ * the OCR upgrade pass for their series and a layer pull for each local row.
+ * Never `pullCompletedVolume`: a cloud has no manifest — sidecars are found
+ * by convention in the fresh listing.
+ */
+const CLOUD_RELIST_SPACING_MS = 60_000;
+
+class CloudCompletions {
+  private pending = new Map<string, { providerType: ProviderType; done: QueueDone }>();
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private running: Promise<void> | null = null;
+  private lastRunAt = 0;
+
+  add(key: string, providerType: ProviderType, done: QueueDone): Promise<void> {
+    this.pending.set(key, { providerType, done });
+    return this.kick();
+  }
+
+  private kick(): Promise<void> {
+    if (this.running || this.timer) return this.running ?? Promise.resolve();
+    const wait = Math.max(0, this.lastRunAt + CLOUD_RELIST_SPACING_MS - Date.now());
+    if (wait > 0) {
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        void this.kick();
+      }, wait);
+      return Promise.resolve();
+    }
+    const run = this.run().finally(() => {
+      if (this.running === run) this.running = null;
+      if (this.pending.size > 0) void this.kick();
+    });
+    this.running = run;
+    return run;
+  }
+
+  private async run(): Promise<void> {
+    const batch = [...this.pending.entries()];
+    this.pending.clear();
+    this.lastRunAt = Date.now();
+    try {
+      await relist();
+    } catch (error) {
+      console.warn('[OCR queue] Relist after cloud OCR failed; the next look retries:', error);
+      for (const [key, value] of batch) if (!this.pending.has(key)) this.pending.set(key, value);
+      return;
+    }
+    const byProvider = new Map<ProviderType, Array<[string, QueueDone]>>();
+    for (const [key, { providerType, done }] of batch) {
+      const list = byProvider.get(providerType) ?? [];
+      list.push([key, done]);
+      byProvider.set(providerType, list);
+    }
+    for (const [providerType, entries] of byProvider) {
+      try {
+        const { requestOcrUpgradePass } = await import('./ocr-upgrade-pass');
+        const series = [
+          ...new Map(entries.map(([, d]) => [normalizeSeriesKey(d.series), d.series]))
+        ].map(([, title]) => ({ title }));
+        void requestOcrUpgradePass(providerType, series);
+      } catch (error) {
+        console.debug('[OCR queue] Could not request the OCR upgrade pass:', error);
+      }
+      const { pullLayersForVolume } = await import('$lib/metadata/layer-sync');
+      for (const [key, done] of entries) {
+        try {
+          const row = await localRowFor(key, done.series, done.volume);
+          if (row) await pullLayersForVolume(row.volume_uuid, providerType);
+        } catch (error) {
+          console.debug('[OCR queue] Could not pull layers of a finished volume:', error);
+        }
+        if (loadWatches().delete(key)) saveWatches();
+      }
+    }
+  }
+
+  /** Tests: wait for the batch in flight (a spaced follow-up waits on its timer). */
+  async settle(): Promise<void> {
+    while (this.running) await this.running;
+  }
+
+  reset(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.pending.clear();
+    this.running = null;
+    this.lastRunAt = 0;
+  }
+}
+
+const cloudCompletions = new CloudCompletions();
+
+/** Tests: wait for queued cloud completions. */
+export function settleCloudCompletionsForTest(): Promise<void> {
+  return cloudCompletions.settle();
+}
+
+const controlFeedUnsubscribers = new Map<string, () => void>();
+
+function cloudPollerFor(source: CloudQueueSource): QueuePoller {
+  const existing = pollers.get(source.id);
+  if (existing) return existing;
+  const poller = new QueuePoller({
+    source,
+    watchedKeys: () =>
+      watchedEntries()
+        .filter((w) => w.queue_url === source.id)
+        .map((w) => w.key),
+    isShown: (key) => isVolumeShown(key),
+    onStatus: (file) => publishQueueStatus(source.id, file),
+    onDone: (key, _entry, done) =>
+      done ? cloudCompletions.add(key, source.providerType, done) : undefined,
+    isHidden
+  });
+  pollers.set(source.id, poller);
+  return poller;
+}
+
+/**
+ * The poller for the connected provider's cloud queue, created when the
+ * provider can read control files; a poller for a provider no longer
+ * connected is stopped and its status withdrawn. MEGA's live tree pushes
+ * changes (`onControlFileChange`): a control-file event triggers a look.
+ */
+export async function ensureCloudPoller(): Promise<QueuePoller | null> {
+  const source = await connectedCloudQueueSource();
+  for (const [id, poller] of [...pollers]) {
+    if (!id.startsWith('cloud:') || id === source?.id) continue;
+    poller.stop();
+    pollers.delete(id);
+    publishQueueStatus(id, null);
+    controlFeedUnsubscribers.get(id)?.();
+    controlFeedUnsubscribers.delete(id);
+  }
+  if (!source) return null;
+  const known = pollers.has(source.id);
+  const poller = cloudPollerFor(source);
+  if (!controlFeedUnsubscribers.has(source.id)) {
+    const provider = await activeProvider();
+    const off = provider?.onControlFileChange?.(() => poller.trigger('changed'));
+    if (off) controlFeedUnsubscribers.set(source.id, off);
+  }
+  if (!known) poller.trigger('start');
+  return poller;
+}
+
+let providerFollow: (() => void) | null = null;
+/** The bunko server the pollers last followed (`ensureServerPoller`). */
+let connectedServer: string | null = null;
+
+/**
+ * The connected bunko SERVER's poller, given its first look when it is new. App
+ * start makes it for the account connected then; a WebDAV login later in the
+ * session needs it too, or a series opened after connecting shows no status
+ * until the app restarts.
+ */
+async function ensureServerPoller(): Promise<void> {
+  const connected = await connectedBunkoQueueUrl();
+  // A server switched or logged away from: its poller would go on reading as
+  // an account no longer connected. Stopped and its status withdrawn, unless
+  // volumes are still watched there (those wait, reading nothing, until that
+  // account is connected again — `requestInitFor`).
+  for (const id of [...webdavAuthPollers]) {
+    if (id === connected || watchedEntries().some((w) => w.queue_url === id)) continue;
+    pollers.get(id)?.stop();
+    pollers.delete(id);
+    webdavAuthPollers.delete(id);
+    publishQueueStatus(id, null);
+  }
+  // Connected (again): one look, also for a poller kept for its watched
+  // volumes, which read nothing while another account was connected.
+  const switched = connected !== connectedServer;
+  connectedServer = connected;
+  if (!connected) return;
+  const known = pollers.has(connected);
+  const poller = pollerFor(connected, 'webdav', 'webdav');
+  if (!known || switched) poller.trigger('start');
+}
+
+/** Log in / switch / log out after start: keep the pollers on the connected provider. */
+async function followActiveProvider(): Promise<void> {
+  if (providerFollow) return;
+  const { providerManager } = await providerManagerModule();
+  if (!providerManager.status) {
+    await ensureCloudPoller();
+    return;
+  }
+  let lastType: string | null | undefined;
+  const unsubscribe = providerManager.status.subscribe((status) => {
+    const type = status.hasAnyAuthenticated ? status.currentProviderType : null;
+    if (type === lastType) {
+      // A switch from one WebDAV server to another keeps the type.
+      if (type === 'webdav') void ensureServerPoller();
+      return;
+    }
+    lastType = type;
+    // In turn: the cloud check steps aside for a bunko server, which this then
+    // polls (or, connected elsewhere now, the last server's poller is dropped).
+    void ensureCloudPoller().then(ensureServerPoller);
+  });
+  providerFollow = unsubscribe;
+}
+
 /** Tests: forget every poller, watch and published status. */
 export function resetServerOcrQueueForTest(): void {
   for (const p of pollers.values()) p.stop();
   pollers.clear();
+  webdavAuthPollers.clear();
+  connectedServer = null;
   pulling.clear();
   statusByQueue.clear();
   queueStatusStore.set({});
   watches = null;
   watchedKeyStore.set({});
   started = false;
+  relistHook = null;
+  cloudSources.clear();
+  cloudCompletions.reset();
+  providerFollow?.();
+  providerFollow = null;
+  for (const off of controlFeedUnsubscribers.values()) off();
+  controlFeedUnsubscribers.clear();
   setShownListener(null);
   if (shownNudge) clearTimeout(shownNudge);
   shownNudge = null;

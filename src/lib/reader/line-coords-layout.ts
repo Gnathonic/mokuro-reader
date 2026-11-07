@@ -38,10 +38,13 @@ import {
   rectOverlapArea,
   rectsCollide,
   spacingUnits,
+  splitUnits,
+  type GridSpacing,
   type LineFrame,
   type LinePitch,
   type OrientedRect,
-  type PitchInput
+  type PitchInput,
+  type RunAdvance
 } from './line-grid';
 
 /** One OCR line quad: 4 corner points, [x, y] each, in page pixels. */
@@ -59,8 +62,19 @@ export function processLine(raw: string): string {
   return raw.replace(/\.\.\./g, ELLIPSIS).replace(/．．．/g, ELLIPSIS);
 }
 
-/** Advance of a text string in em units (width at font-size 1). */
-export type TextMeasurer = (text: string) => number;
+/**
+ * The size, px, text is measured at when no size is asked for: the size the
+ * pitch model and every font-size decision work in.
+ */
+export const MEASURE_SIZE = 100;
+
+/**
+ * Advance of a text string in em units, as drawn at `size` px (default
+ * `MEASURE_SIZE`). With a hinted font the answer depends on the size — glyph
+ * advances snap to whole pixels — so what a line will actually be drawn as is
+ * measured at the size it renders at.
+ */
+export type TextMeasurer = (text: string, size?: number) => number;
 
 export interface LayoutBlock {
   box: number[];
@@ -291,8 +305,10 @@ export function heuristicMeasurer(text: string): number {
 }
 
 /**
- * Canvas-based measurer using the reader's text font. Memoized per string;
- * falls back to the heuristic when canvas is unavailable.
+ * Canvas-based measurer using the reader's text font. Memoized per (string,
+ * size); falls back to the heuristic when canvas is unavailable. The canvas
+ * draws at a size exactly as the DOM does (hinted advances included), so a
+ * string measured at a line's own font size is that line's run.
  *
  * Vertical text approximation: upright CJK advances ~1em vertically, which
  * matches its horizontal measure; rotated Latin advances by its horizontal
@@ -300,10 +316,11 @@ export function heuristicMeasurer(text: string): number {
  */
 export function createCanvasMeasurer(fontFamily = "'Noto Sans JP', sans-serif"): TextMeasurer {
   let ctx: CanvasRenderingContext2D | null = null;
+  let ctxSize = MEASURE_SIZE;
   try {
     ctx = document.createElement('canvas').getContext('2d');
     if (ctx) {
-      ctx.font = `100px ${fontFamily}`;
+      ctx.font = `${MEASURE_SIZE}px ${fontFamily}`;
       // Fixed-pitch text is measured as such: with kerning on, the canvas
       // closes up pairs like 」「 and reports 38.91em for 39 fullwidth glyphs,
       // which sizes the font 0.2% too large. The line spans render with
@@ -316,12 +333,19 @@ export function createCanvasMeasurer(fontFamily = "'Noto Sans JP', sans-serif"):
   if (!ctx || typeof ctx.measureText !== 'function') return heuristicMeasurer;
   const canvasCtx = ctx;
   const cache = new Map<string, number>();
-  return (text: string) => {
-    let advance = cache.get(text);
+  return (text: string, size = MEASURE_SIZE) => {
+    if (!(size > 0) || !Number.isFinite(size)) size = MEASURE_SIZE;
+    // `size` exactly as the DOM gets it (`${fontSize}px`): never rounded
+    const key = size === MEASURE_SIZE ? text : `${size}\u0000${text}`;
+    let advance = cache.get(key);
     if (advance === undefined) {
-      advance = canvasCtx.measureText(text).width / 100;
+      if (size !== ctxSize) {
+        canvasCtx.font = `${size}px ${fontFamily}`;
+        ctxSize = size;
+      }
+      advance = canvasCtx.measureText(text).width / size;
       if (!Number.isFinite(advance) || advance < 0) advance = heuristicMeasurer(text);
-      cache.set(text, advance);
+      cache.set(key, advance);
     }
     return advance;
   };
@@ -373,6 +397,45 @@ export function pitchInput(
     count: spacingUnits(text),
     ...inkInsets(text, vertical)
   };
+}
+
+/** A run's advance and its end units', em, at `size` (`RunAdvance`); `units`
+ * is the text cut once by `splitUnits`, so every run of a line is cut alike. */
+export function runAdvance(
+  text: string,
+  units: string[],
+  measure: TextMeasurer,
+  size?: number
+): RunAdvance {
+  return {
+    total: measure(text, size),
+    first: units.length ? measure(units[0], size) : 0,
+    last: units.length ? measure(units[units.length - 1], size) : 0,
+    count: units.length
+  };
+}
+
+/**
+ * The fixed-pitch grid (`gridSpacing`) for a line drawn at `fontSize`: the
+ * pitch model's run, measured at `MEASURE_SIZE`, against the run the browser
+ * will draw — measured at `fontSize`, the exact px the line span gets. One
+ * place, so the viewer and the OCR editor space a line alike.
+ */
+export function lineGridSpacing(
+  pitch: LinePitch,
+  text: string,
+  fontSize: number,
+  measure: TextMeasurer
+): GridSpacing | null {
+  const units = splitUnits(text);
+  return gridSpacing({
+    pitch,
+    fontSize,
+    run: {
+      model: runAdvance(text, units, measure),
+      rendered: runAdvance(text, units, measure, fontSize)
+    }
+  });
 }
 
 /**
@@ -777,7 +840,11 @@ export function layoutLines(
     });
   }
 
-  const model = collisionModel(block, layouts, measured, wraps);
+  // A line's unspaced run as drawn: at its own size, not the measuring size
+  // scaled (`TextMeasurer`).
+  const runLength = (i: number) =>
+    measure(processedLines[i], layouts[i].fontSize) * layouts[i].fontSize;
+  const model = collisionModel(block, layouts, measured, wraps, runLength);
 
   // Rotation. A clean single line whose quad is tilted renders in the quad's
   // own frame: a main × cross box centred on the quad's centre, turned by the
@@ -833,12 +900,7 @@ export function layoutLines(
     const l = layouts[i];
     const pitch = measured[i].pitch;
     if (l.hidden || l.wrap || !pitch || !griddable(processedLines[i])) continue;
-    const grid = gridSpacing({
-      pitch,
-      advanceEm: measured[i].advanceEm,
-      fontSize: l.fontSize,
-      count: spacingUnits(processedLines[i])
-    });
+    const grid = lineGridSpacing(pitch, processedLines[i], l.fontSize, measure);
     if (!grid) continue;
     l.letterSpacing = grid.letterSpacing;
     l.inset = grid.inset;
@@ -920,12 +982,14 @@ function collisionModel(
     hidden: boolean;
     slice?: unknown;
   }[],
-  wraps: boolean[]
+  wraps: boolean[],
+  /** px: line i's unspaced run, as drawn at its current font size */
+  runLength: (i: number) => number
 ): CollisionModel {
   const vertical = block.vertical;
   const trust = measured.map((m, i) => (m.hidden ? -1 : m.suspect || wraps[i] || m.slice ? 1 : 2));
 
-  const advance = (i: number) => measured[i].advanceEm * layouts[i].fontSize;
+  const advance = runLength;
 
   const rendered = (i: number): OrientedRect => {
     const l = layouts[i];

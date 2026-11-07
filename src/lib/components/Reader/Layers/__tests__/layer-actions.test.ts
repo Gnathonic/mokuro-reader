@@ -5,6 +5,7 @@ import type { Page } from '$lib/types';
 vi.mock('$lib/catalog/db', () => ({ db: {} }));
 vi.mock('$lib/reader/edit/layers', () => ({
   buildLayerExportFile: vi.fn(),
+  copyIntoEditLayer: vi.fn(),
   createLayer: vi.fn(),
   deleteLayer: vi.fn(),
   promoteLayer: vi.fn(),
@@ -15,7 +16,10 @@ vi.mock('$lib/util/modals', () => ({ promptConfirmation: vi.fn() }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 vi.mock('$lib/metadata/layer-sync', () => ({
   deleteCloudLayerFile: vi.fn(async () => 'gone'),
-  clearPendingLayerDelete: vi.fn()
+  clearPendingLayerDelete: vi.fn(),
+  publishCuratedLayer: vi.fn(),
+  unpublishCuratedLayer: vi.fn(),
+  listedCuratedLayerFile: vi.fn(async () => null)
 }));
 
 import { layerNamePrompt, promptLayerName, runLayerAction } from '../layer-actions';
@@ -37,6 +41,10 @@ function deps(over: Record<string, unknown> = {}) {
     download: vi.fn(),
     confirm: vi.fn(async () => true),
     notify: vi.fn(),
+    publishCuratedLayer: vi.fn(async () => 'published'),
+    unpublishCuratedLayer: vi.fn(async () => 'gone'),
+    listedCuratedLayerFile: vi.fn(async () => null),
+    copyIntoEditLayer: vi.fn(async () => {}),
     ...over
   } as never;
 }
@@ -256,6 +264,25 @@ describe('runLayerAction', () => {
   // The cloud copy could not be removed (offline, read-only…): layer-sync has
   // left a tombstone, so the row still goes now — but the user is told the
   // cloud half is outstanding instead of a plain "deleted".
+  // A layer whose cloud file is somebody else's (a shared edit layer on a
+  // 0.7.x bunko, a case merge's curated-<n> keepsake) is never deleted from here:
+  // promising a later cloud removal would be a lie.
+  it('delete of a layer whose cloud copy is shared says the shared copy stays', async () => {
+    const d = deps({ deleteCloudLayerFile: vi.fn(async () => 'kept-shared') });
+    await runLayerAction('delete', {
+      volumeUuid: 'v',
+      layerId: 'curated-2',
+      displayedPages: [],
+      onSelectLayer: vi.fn(),
+      deps: d
+    });
+    const m = d as Record<string, ReturnType<typeof vi.fn>>;
+    expect(m.deleteLayer).toHaveBeenCalledWith('v', 'curated-2');
+    expect(m.notify).toHaveBeenCalledWith(
+      'Layer deleted on this device. The shared copy stays on the server.'
+    );
+  });
+
   it('delete with an unconfirmed cloud removal still deletes the row, and says so', async () => {
     const d = deps({ deleteCloudLayerFile: vi.fn(async () => 'unconfirmed') });
     await runLayerAction('delete', {
@@ -318,5 +345,105 @@ describe('runLayerAction', () => {
     expect(m.promoteLayer).not.toHaveBeenCalled();
     expect(m.download).not.toHaveBeenCalled();
     expect(m.deleteLayer).not.toHaveBeenCalled();
+  });
+});
+
+describe('Publish / Unpublish / Copy to your corrections', () => {
+  type D = Record<string, ReturnType<typeof vi.fn>>;
+  const ctx = (layerId: string, d: unknown, over: Record<string, unknown> = {}) => ({
+    volumeUuid: 'v',
+    layerId,
+    layerName: layerId === 'curated' ? 'Shared corrections' : 'Your corrections',
+    displayedPages: [page],
+    onSelectLayer: vi.fn(),
+    onBeforeMutate: vi.fn(async () => {}),
+    deps: d as never,
+    ...over
+  });
+
+  it('publish: confirms (naming the date of the shared file it replaces), settles, then uploads', async () => {
+    const d = deps({
+      listedCuratedLayerFile: vi.fn(async () => ({
+        path: 'S/V.curated.mokuro',
+        modifiedTime: '2026-10-01T12:00:00.000Z'
+      }))
+    }) as unknown as D;
+    const c = ctx('edit', d);
+    await runLayerAction('publish', c);
+    const message = d.confirm.mock.calls[0][0] as string;
+    expect(message).toMatch(/^Publish your corrections for everyone on this server\?/);
+    expect(message).toContain('This replaces the shared corrections');
+    expect(message).toContain(new Date('2026-10-01T12:00:00.000Z').toLocaleDateString());
+    expect(c.onBeforeMutate).toHaveBeenCalled();
+    expect(d.publishCuratedLayer).toHaveBeenCalledWith('v');
+    expect(d.notify).toHaveBeenCalledWith('Your corrections are now the shared corrections');
+  });
+
+  it('publish: a declined confirm uploads nothing', async () => {
+    const d = deps({ confirm: vi.fn(async () => false) }) as unknown as D;
+    const c = ctx('edit', d);
+    await runLayerAction('publish', c);
+    expect(d.publishCuratedLayer).not.toHaveBeenCalled();
+    expect(c.onBeforeMutate).not.toHaveBeenCalled();
+  });
+
+  it('publish: a refusal says the account may not, a failure says so too', async () => {
+    const d = deps({ publishCuratedLayer: vi.fn(async () => 'refused') }) as unknown as D;
+    await runLayerAction('publish', ctx('edit', d));
+    expect(d.notify).toHaveBeenCalledWith(
+      "This account can't publish shared corrections for this volume"
+    );
+    const f = deps({ publishCuratedLayer: vi.fn(async () => 'failed') }) as unknown as D;
+    await runLayerAction('publish', ctx('edit', f));
+    expect(f.notify.mock.calls[0][0]).toMatch(/^Couldn't publish/);
+  });
+
+  it('unpublish: confirms, removes for everyone, and shows the primary', async () => {
+    const d = deps() as unknown as D;
+    const c = ctx('curated', d);
+    await runLayerAction('unpublish', c);
+    expect(d.confirm).toHaveBeenCalledWith('Remove the shared corrections for everyone?');
+    expect(d.unpublishCuratedLayer).toHaveBeenCalledWith('v');
+    expect(c.onSelectLayer).toHaveBeenCalledWith(null);
+    expect(d.notify).toHaveBeenCalledWith('Shared corrections removed');
+  });
+
+  it('unpublish: declined → nothing; refused → the layer stays shown; unconfirmed → says the copy waits', async () => {
+    const no = deps({ confirm: vi.fn(async () => false) }) as unknown as D;
+    await runLayerAction('unpublish', ctx('curated', no));
+    expect(no.unpublishCuratedLayer).not.toHaveBeenCalled();
+
+    const refused = deps({ unpublishCuratedLayer: vi.fn(async () => 'refused') }) as unknown as D;
+    const c = ctx('curated', refused);
+    await runLayerAction('unpublish', c);
+    expect(c.onSelectLayer).not.toHaveBeenCalled();
+    expect(refused.notify).toHaveBeenCalledWith(
+      "This account can't publish shared corrections for this volume"
+    );
+
+    const later = deps({ unpublishCuratedLayer: vi.fn(async () => 'unconfirmed') }) as unknown as D;
+    await runLayerAction('unpublish', ctx('curated', later));
+    expect(later.notify.mock.calls[0][0]).toMatch(/when the cloud allows it/);
+
+    const failed = deps({ unpublishCuratedLayer: vi.fn(async () => 'failed') }) as unknown as D;
+    const f = ctx('curated', failed);
+    await runLayerAction('unpublish', f);
+    expect(f.onSelectLayer).not.toHaveBeenCalled();
+    expect(failed.notify.mock.calls[0][0]).toMatch(/^Couldn't remove the shared corrections/);
+  });
+
+  it('copy-to-edit: confirms, settles, replaces the edit layer and shows it', async () => {
+    const d = deps() as unknown as D;
+    const c = ctx('curated', d);
+    await runLayerAction('copy-to-edit', c);
+    expect(d.confirm.mock.calls[0][0]).toMatch(/Shared corrections/);
+    expect(c.onBeforeMutate).toHaveBeenCalled();
+    expect(d.copyIntoEditLayer).toHaveBeenCalledWith('v', 'curated');
+    expect(d.clearPendingLayerDelete).toHaveBeenCalledWith('v', 'edit');
+    expect(c.onSelectLayer).toHaveBeenCalledWith('edit');
+
+    const no = deps({ confirm: vi.fn(async () => false) }) as unknown as D;
+    await runLayerAction('copy-to-edit', ctx('curated', no));
+    expect(no.copyIntoEditLayer).not.toHaveBeenCalled();
   });
 });

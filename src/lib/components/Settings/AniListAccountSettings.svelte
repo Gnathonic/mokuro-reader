@@ -2,6 +2,7 @@
 <script lang="ts">
   import { Button, Toggle } from 'flowbite-svelte';
   import {
+    ANILIST_APPS_SETTINGS_URL,
     anilistConnected,
     anilistUser,
     disconnectAniList,
@@ -23,6 +24,9 @@
   let connected = $derived($anilistConnected);
   let pushAllowed = $derived($catalogSettings?.pushProgressToAniList ?? true);
   let syncingAll = $state(false);
+  // Set by Disconnect, so the not-connected view goes on to say that the
+  // token was only forgotten here (AniList has no revocation API).
+  let disconnectedHere = $state(false);
 
   /** "Synced 12 series — 3 pushed, 8 up to date, 1 queued" (silent about zeroes). */
   function describeTally(tally: SyncAllTally): string {
@@ -52,7 +56,8 @@
 
   function disconnect() {
     disconnectAniList();
-    showSnackbar('Disconnected from AniList');
+    disconnectedHere = true;
+    showSnackbar('Disconnected from AniList on this device');
   }
 </script>
 
@@ -72,6 +77,23 @@
         <Button size="xs" color="primary" onclick={startAniListLogin}>Connect AniList</Button>
       {/if}
     </div>
+    {#if connected || disconnectedHere}
+      <p class="text-xs text-gray-500" data-testid="anilist-revoke-note">
+        {#if connected}
+          Disconnecting only forgets the AniList login on this device. It does not revoke the
+          reader's access to your AniList account; to do that, remove the app at
+        {:else}
+          Disconnected on this device only. The reader can still access your AniList account until
+          you remove the app at
+        {/if}
+        <a
+          class="text-primary-600 underline dark:text-primary-400"
+          href={ANILIST_APPS_SETTINGS_URL}
+          target="_blank"
+          rel="noopener noreferrer">anilist.co/settings/apps</a
+        >.
+      </p>
+    {/if}
     <Toggle
       checked={$catalogSettings?.pushProgressToAniList ?? true}
       onchange={(e) => updateCatalogSetting('pushProgressToAniList', e.currentTarget.checked)}

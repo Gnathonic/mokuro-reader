@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,8 +77,7 @@ interface FilePage {
 
 /** Draws the page, measures the ink, seeds the volume. Returns the file page. */
 async function seedVolume(page: Page): Promise<FilePage> {
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   return page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, BLOCKS, PITCH, STRIP, TOP, PAGE_W, PAGE_H }) => {
       const { db } = await import('/src/lib/catalog/db.ts');

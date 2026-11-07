@@ -329,7 +329,8 @@ export function ensureFreshCloudListing(): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // No index refresh: that pass downloads sidecars, and this is a write
-      // path that is about to publish one.
+      // path that is about to publish one. On Google Drive the change feed
+      // brings the listing current without walking the whole account.
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error(`listing refresh exceeded ${LISTING_TIMEOUT_MS} ms`)),
@@ -337,7 +338,7 @@ export function ensureFreshCloudListing(): Promise<boolean> {
         );
       });
       await Promise.race([
-        unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false }),
+        unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true }),
         timeout
       ]);
       lastListingAt = Date.now();
@@ -758,6 +759,25 @@ export async function flushSeriesFileWrites(): Promise<void> {
     timers.delete(key);
   }
   await Promise.all(keys.map((key) => runWrite(key)));
+}
+
+/**
+ * Run every queued write now and wait out every write in flight (and a
+ * reconcile pass still deciding what to queue), until none is left. For the
+ * rig driver: "the syncs after X wrote series.json N times" can only be
+ * counted once nothing they queued is still pending.
+ */
+export async function settleSeriesFileWrites(): Promise<void> {
+  while (seriesFileWritesPending()) {
+    if (reconcileInFlight) await reconcileInFlight;
+    await flushSeriesFileWrites();
+    await Promise.all([...inFlightWrites.values()]);
+  }
+}
+
+/** A write is queued or running, or a reconcile pass may still queue one. */
+export function seriesFileWritesPending(): boolean {
+  return timers.size > 0 || inFlightWrites.size > 0 || reconcileInFlight !== null;
 }
 
 let teardown: (() => void) | null = null;

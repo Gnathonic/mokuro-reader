@@ -8,7 +8,8 @@
   import { promptExtraction, promptSeriesEditor } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { volumes, progress, settings } from '$lib/settings';
-  import { getEffectiveReadingTime } from '$lib/util/reading-speed';
+  import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
+  import { seriesSpeeds } from '$lib/reading-history/series-speeds';
   import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
@@ -41,23 +42,21 @@
   import { isIndexedPlaceholder } from '$lib/catalog/placeholders';
   import { deleteSeriesFromCloudByTitle, promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { getCloudFileId } from '$lib/util/cloud-fields';
+  import type { VolumeMetadata } from '$lib/types';
   import { downloadQueue } from '$lib/util/download-queue';
 
   // Calculate manga stats locally to avoid circular dependency
   let mangaStats = $derived.by(() => {
     if (!manga || manga.length === 0 || !$volumes) return null;
 
-    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
-
     return manga
       .map((vol) => vol.volume_uuid)
       .reduce(
         (stats, volumeId) => {
           const volumeData = $volumes[volumeId];
-          const timeReadInMinutes = volumeData
-            ? getEffectiveReadingTime(volumeData, idleTimeoutMs)
-            : 0;
-          const chars = volumeData?.chars || 0;
+          const figures = figuresFor($readingStats, volumeId, volumeData);
+          const timeReadInMinutes = figures.minutes;
+          const chars = figures.chars;
           const completed = volumeData?.completed ? 1 : 0;
 
           stats.timeReadInMinutes = stats.timeReadInMinutes + timeReadInMinutes;
@@ -121,8 +120,10 @@
     const charsRemaining = totalSeriesChars - charsReadInSeries;
     if (charsRemaining <= 0) return null;
 
-    // Get personalized reading speed
-    const readingSpeed = $personalizedReadingSpeed;
+    // This series' own speed once it has enough reading, else the recent speed
+    // (computed once per stats change for every series — see series-speeds.ts)
+    const readingSpeed =
+      (manga[0] && $seriesSpeeds.get(manga[0].series_uuid)) ?? $personalizedReadingSpeed;
     if (!readingSpeed.isPersonalized || readingSpeed.charsPerMinute <= 0) {
       return null;
     }
@@ -387,32 +388,25 @@
       return;
     }
 
-    // Build a path set from all cloud files to avoid lookup inconsistencies
-    // between different cache adapters and grouping keys.
-    const cloudPathSet = new Set<string>();
-    for (const files of cloudFiles.values()) {
-      for (const file of files) {
-        cloudPathSet.add(file.path);
-      }
-    }
+    // The ONE "is it backed up" selector every backup surface asks (BackupButton,
+    // VolumeItem, the cloud screen): the same folded resolution the backup queue
+    // uploads into, so a series the cloud spells differently reads as backed up
+    // instead of being re-uploaded on every click. `cloudFiles` is read for the
+    // dependency only — the selector reads the cache that store is derived from.
+    void cloudFiles;
+    const backedUp = (vol: VolumeMetadata) =>
+      unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title);
 
-    allBackedUp = manga.every((vol) => {
-      const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return cloudPathSet.has(path);
-    });
-
-    anyBackedUp = manga.some((vol) => {
-      const path = `${vol.series_title}/${vol.volume_title}.cbz`;
-      return cloudPathSet.has(path);
-    });
+    allBackedUp = manga.every(backedUp);
+    anyBackedUp = manga.some(backedUp);
 
     console.log(
       '[Series Page] Backup status computed - allBackedUp:',
       allBackedUp,
       'anyBackedUp:',
       anyBackedUp,
-      'cloudPaths:',
-      cloudPathSet.size
+      'cloudSeries:',
+      cloudFiles.size
     );
   });
 
@@ -432,7 +426,7 @@
     }
 
     promptConfirmation(`Delete ${seriesTitle} from ${providerDisplayName}?`, async () => {
-      await deleteSeriesFromCloudByTitle(seriesTitle);
+      await deleteSeriesFromCloudByTitle(seriesTitle, allVolumes ?? []);
     });
   }
 
@@ -478,19 +472,14 @@
       return;
     }
 
-    // Filter out already backed up volumes using the same cloud path set
-    // used by the current view status calculations.
-    const cloudPathSet = new Set<string>();
-    for (const files of cloudFiles.values()) {
-      for (const file of files) {
-        cloudPathSet.add(file.path);
-      }
-    }
-
+    // Skip the volumes already backed up — by the same selector the status
+    // above and the queue's folder resolution use, so nothing is re-uploaded
+    // over itself into a folder the cloud spells differently.
     const volumesToBackup = manga.filter(
       // Metadata-only rows have no pages to upload.
       (vol) =>
-        isVolumeInstalled(vol) && !cloudPathSet.has(`${vol.series_title}/${vol.volume_title}.cbz`)
+        isVolumeInstalled(vol) &&
+        !unifiedCloudManager.existsInCloud(vol.series_title, vol.volume_title)
     );
 
     if (volumesToBackup.length === 0) {
@@ -502,10 +491,8 @@
       return;
     }
 
-    // Add volumes to backup queue
+    // The queue gives the one notice (what it added, and what it skipped).
     backupQueue.queueSeriesVolumesForBackup(volumesToBackup, provider);
-
-    showSnackbar(`Added ${volumesToBackup.length} volume(s) to backup queue`);
   }
 
   async function downloadAllPlaceholders() {

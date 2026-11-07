@@ -273,13 +273,16 @@ describe('a 401 under the token: re-issue once, retry once', () => {
   it('re-issues silently and retries the refused client request', async () => {
     tokenAnswers = [issue(), issue()];
     const provider = await connected();
-    mockClient.exists.mockClear();
-    mockClient.exists.mockRejectedValueOnce(unauthorizedError()).mockResolvedValue(true);
+    // The listing's PROPFIND (the reader folder is known from the connect).
+    mockClient.getDirectoryContents.mockClear();
+    mockClient.getDirectoryContents
+      .mockRejectedValueOnce(unauthorizedError())
+      .mockResolvedValue([]);
 
     await expect(provider.listCloudVolumes()).resolves.toEqual([]);
 
     expect(tokenPosts()).toHaveLength(2); // connect + one re-issue
-    expect(mockClient.exists).toHaveBeenCalledTimes(2);
+    expect(mockClient.getDirectoryContents).toHaveBeenCalledTimes(2);
     expect(clientHeaders.current.Authorization).toBe('Bearer tok-2');
     expect(localStorage.getItem('webdav_token')).toBe('tok-2');
     expect(provider.getStatus().needsAttention).toBe(false);
@@ -370,6 +373,63 @@ describe('a 401 under the token: re-issue once, retry once', () => {
       modifiedTime: '',
       size: 1
     });
+    expect(tokenPosts()).toHaveLength(2);
+  });
+});
+
+describe('a 401 re-issue and a 503 + Retry-After retry compose', () => {
+  function busy() {
+    return Object.assign(new Error('Invalid response: 503 Service Unavailable'), {
+      status: 503,
+      response: new Response(null, { status: 503, headers: { 'Retry-After': '1' } })
+    });
+  }
+
+  it('a 401 re-issue followed by a 503 is retried under the fresh token', async () => {
+    tokenAnswers = [issue(), issue()];
+    const provider = await connected();
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    let n = 0;
+    mockClient.getDirectoryContents.mockReset().mockImplementation(async () => {
+      sent.push(clientHeaders.current.Authorization);
+      n += 1;
+      if (n === 1) throw unauthorizedError();
+      if (n === 2) throw busy();
+      return [];
+    });
+    try {
+      const done = provider.listCloudVolumes();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(done).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sent.slice(0, 3)).toEqual(['Bearer tok-1', 'Bearer tok-2', 'Bearer tok-2']);
+    expect(tokenPosts()).toHaveLength(2);
+  });
+
+  it('a 503 retried into a 401 still re-issues once', async () => {
+    tokenAnswers = [issue(), issue()];
+    const provider = await connected();
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    let n = 0;
+    mockClient.getDirectoryContents.mockReset().mockImplementation(async () => {
+      sent.push(clientHeaders.current.Authorization);
+      n += 1;
+      if (n === 1) throw busy();
+      if (n === 2) throw unauthorizedError();
+      return [];
+    });
+    try {
+      const done = provider.listCloudVolumes();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(done).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sent.slice(0, 3)).toEqual(['Bearer tok-1', 'Bearer tok-1', 'Bearer tok-2']);
     expect(tokenPosts()).toHaveLength(2);
   });
 });
@@ -584,5 +644,36 @@ describe('sign-out and account changes', () => {
       .login({ serverUrl: SERVER, username: 'alice', password: 'typo' })
       .catch(() => {});
     expect(identityMock.mock.calls[0][4]).toBeUndefined(); // checked with Basic, not the token
+  });
+});
+
+// A refresh runs on every sync once the last answer is five minutes old: a
+// transient answer then must never cost the session its token (connect-time
+// behaviour, above, is unchanged).
+describe('an identity REFRESH never drops a held token on a transient answer', () => {
+  it("an 'unsupported' answer (endpoint 5xx / timed out) keeps the token and the Bearer header", async () => {
+    const provider = await connected();
+    expect(localStorage.getItem('webdav_token')).toBe('tok-1');
+    identityMock.mockReset();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.refreshIdentity();
+    expect(localStorage.getItem('webdav_token')).toBe('tok-1');
+    expect(provider.authorizationHeader()).toBe('Bearer tok-1');
+    // Not re-asked under Basic either: the password stays off the wire.
+    expect(identityMock.mock.calls.every((call) => call[4] === 'tok-1')).toBe(true);
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it('a refused token whose re-issue cannot reach the server keeps the token', async () => {
+    const provider = await connected();
+    identityMock.mockReset();
+    identityMock.mockResolvedValue({ kind: 'invalid-credentials' });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === ENDPOINT) throw new TypeError('Failed to fetch');
+      return new Response('', { status: 200 });
+    });
+    await provider.refreshIdentity();
+    expect(localStorage.getItem('webdav_token')).toBe('tok-1');
+    expect(localStorage.getItem('webdav_password')).toBe('pw');
   });
 });

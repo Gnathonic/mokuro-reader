@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    describeImportOutcome,
     importFiles,
     htmlDownloadProvider,
     getUploadParamsFromLocation,
@@ -7,13 +8,20 @@
   } from '$lib/import';
   import { db } from '$lib/catalog/db';
   import { installedUuids, pickCoverTarget } from '$lib/import/cover-sidecar';
-  import { importDeepLinkedArchive } from '$lib/import/deep-link-import';
+  import { importDeepLinkedArchive, localSeriesKeys } from '$lib/import/deep-link-import';
+  import { buildLinkImportPrompt, linkDisplayName } from '$lib/import/link-import-prompt';
   import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
-  import { normalizeFilename, promptConfirmation, showSnackbar } from '$lib/util';
+  import {
+    confirmationPopupStore,
+    normalizeFilename,
+    promptConfirmationWith,
+    showSnackbar
+  } from '$lib/util';
   import { requestPersistentStorage } from '$lib/util/upload';
   import { nav } from '$lib/util/hash-router';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
-  import { onMount } from 'svelte';
+  import { toRasterImageFile } from '$lib/util/raster-image';
+  import { onDestroy, onMount } from 'svelte';
 
   const uploadParams = getUploadParamsFromLocation(window.location.search, window.location.hash);
   const request = parseHtmlDownloadRequest(uploadParams);
@@ -54,18 +62,26 @@
       return;
     }
 
-    let dims = { width: 1, height: 1 };
+    // Raster bytes only (SVG is unsupported: stored, it would run as the app
+    // when opened in a new tab), typed by those bytes — never by the server.
+    const cover = await toRasterImageFile(coverFile, coverFile.name);
+    if (!cover) {
+      console.warn('[HTML Download] Sidecar thumbnail is not a raster image; skipped');
+      return;
+    }
+
+    // A file the browser cannot decode is no cover: leave the row without one,
+    // so the thumbnail pass builds it from the first page instead.
+    let dims: { width: number; height: number };
     try {
-      dims = await getImageDimensions(coverFile);
+      dims = await getImageDimensions(cover);
     } catch (error) {
-      console.warn(
-        '[HTML Download] Failed to read sidecar dimensions; using fallback dimensions',
-        error
-      );
+      console.warn('[HTML Download] Sidecar thumbnail is not a readable image; skipped', error);
+      return;
     }
 
     await db.volumes.update(targetVolume.volume_uuid, {
-      thumbnail: coverFile,
+      thumbnail: cover,
       thumbnail_width: dims.width,
       thumbnail_height: dims.height
     });
@@ -78,7 +94,11 @@
     );
   }
 
-  async function onImport() {
+  /**
+   * @param allowSeriesKey the existing series the user let this link's
+   *   `series.json` update (the confirmation's box); none = no existing series.
+   */
+  async function onImport(allowSeriesKey?: string) {
     if (!request) return;
 
     // Request persistent storage now, within the confirmation click. The actual
@@ -88,7 +108,7 @@
 
     const normalizedVolume = normalizeFilename(request.volume);
     const processId = `cross-site-import-${Date.now()}`;
-    const displayName = decodeURIComponent(request.volume || normalizedVolume);
+    const displayName = linkDisplayName(request) || normalizedVolume;
 
     // Navigate to catalog immediately
     nav.toCatalog({ replaceState: true });
@@ -126,23 +146,42 @@
       // For CBZ deep links, queue a pre-paired archive item so we don't rely on generic
       // post-download pairing for archive+sidecar combinations. A manifest's
       // series.json and OCR layers ride along (applied once the volume is saved).
+      // What to report: "Complete" only for a volume that actually saved — an
+      // image-only one may still be waiting for its review, or be skipped in it.
+      let status: string;
+      let message: string;
       if (downloaded.archiveFile && request.type === 'cbz') {
-        await importDeepLinkedArchive(downloaded, normalizedVolume, installedBefore);
+        // Resolves after the archive's own import, review included.
+        const installed = await importDeepLinkedArchive(
+          downloaded,
+          normalizedVolume,
+          installedBefore,
+          { allowSeriesKey }
+        );
+        status = installed ? 'Complete' : 'Nothing imported';
+        message = installed ? `Imported ${displayName}` : `Nothing imported from ${displayName}`;
       } else {
         // Directory mode and fallback paths still use generic import pairing.
-        await importFiles(files);
+        const result = await importFiles(files);
+        const pending = result.awaitingReview > 0 || result.queued > 0;
+        const done = !pending && result.success && result.imported > 0;
+        status = done
+          ? 'Complete'
+          : result.awaitingReview > 0
+            ? 'Waiting for review'
+            : pending
+              ? 'Queued'
+              : 'Nothing imported';
+        message = done ? `Imported ${displayName}` : describeImportOutcome(result);
       }
 
       if (downloaded.coverFile) {
         await applyDownloadedCoverSidecar(downloaded.coverFile, installedBefore, normalizedVolume);
       }
 
-      progressTrackerStore.updateProcess(processId, {
-        status: 'Complete',
-        progress: 100
-      });
+      progressTrackerStore.updateProcess(processId, { status, progress: 100 });
 
-      showSnackbar(`Imported ${displayName}`);
+      showSnackbar(message);
 
       // Remove from tracker after a short delay
       setTimeout(() => {
@@ -163,18 +202,54 @@
     }
   }
 
+  // Left the import page (another hash) with the question still open: the
+  // question goes with it — an import nobody is looking at must not wait to be
+  // confirmed over some other screen — and its "no" sends no one anywhere.
+  let destroyed = false;
+  // The existing series the prompt's box would let this link update, if it offered one.
+  let seriesUpdateKey: string | undefined;
+  const onConfirm = (allowSeriesUpdate?: boolean) =>
+    onImport(seriesUpdateKey && allowSeriesUpdate ? seriesUpdateKey : undefined);
+
   function onCancel() {
+    if (destroyed) return;
     nav.toCatalog({ replaceState: true });
   }
 
-  onMount(() => {
+  onDestroy(() => {
+    destroyed = true;
+    confirmationPopupStore.update((popup) =>
+      popup?.open && popup.onConfirm === onConfirm ? { ...popup, open: false } : popup
+    );
+  });
+
+  onMount(async () => {
     if (!request) {
       showSnackbar('Invalid import URL - missing manga or volume parameter');
       onCancel();
-    } else {
-      const displayName = decodeURIComponent(request.volume || '');
-      promptConfirmation(`Import ${displayName} into catalog?`, onImport, onCancel);
+      return;
     }
+    // Nothing is fetched before the user answers: the prompt is built from the
+    // link alone (and the library's own series names).
+    let localSeries = new Set<string>();
+    try {
+      localSeries = await localSeriesKeys();
+    } catch (error) {
+      console.warn('[HTML Download] Could not read the library for the import prompt:', error);
+    }
+    if (destroyed) return;
+    const prompt = buildLinkImportPrompt(request, localSeries);
+    const { seriesUpdate, ...details } = prompt;
+    seriesUpdateKey = seriesUpdate?.seriesKey;
+    promptConfirmationWith({
+      ...details,
+      // Not remembered (no storageKey): every link is asked afresh, unticked.
+      ...(seriesUpdate
+        ? { checkboxOption: { label: seriesUpdate.label, defaultValue: false } }
+        : {}),
+      onConfirm,
+      onCancel
+    });
   });
 </script>
 

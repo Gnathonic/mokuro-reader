@@ -15,6 +15,7 @@ import { browser } from '$app/environment';
 import { progressTrackerStore } from '$lib/util/progress-tracker';
 import { naturalSort } from '$lib/util/natural-sort';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { isRasterImageType, toRasterImageFile } from '$lib/util/raster-image';
 import { MOKURO_DB_NAME, declareMokuroSchema } from './db-schema';
 
 export class CatalogDexieV3 extends Dexie {
@@ -44,13 +45,20 @@ export class CatalogDexieV3 extends Dexie {
 
     // Get volumes that need thumbnail generation/regeneration
     // Missing any of thumbnail, width, or height indicates need for (re)generation.
-    // Metadata-only rows are excluded: their images are not on this device, so
-    // there is nothing to generate from and every pass would retry them forever.
+    // So does a stored thumbnail whose type is not a raster one, in ANY state:
+    // SVG is an unsupported format (an SVG or HTML blob opened in a new tab
+    // runs as the app), and rows written before that rule may hold one. Such a
+    // thumbnail is re-typed from its bytes when they are raster, else dropped
+    // (and rebuilt from the first page when the pages are here).
+    // Metadata-only rows are otherwise excluded: their images are not on this
+    // device, so there is nothing to generate from and every pass would retry
+    // them forever.
     const volumesNeedingThumbnails = await this.volumes
       .filter(
         (vol) =>
-          isVolumeInstalled(vol) &&
-          (!vol.thumbnail || !vol.thumbnail_width || !vol.thumbnail_height)
+          (!!vol.thumbnail && !isRasterImageType(vol.thumbnail.type)) ||
+          (isVolumeInstalled(vol) &&
+            (!vol.thumbnail || !vol.thumbnail_width || !vol.thumbnail_height))
       )
       .primaryKeys();
 
@@ -75,6 +83,7 @@ export class CatalogDexieV3 extends Dexie {
         await Promise.all(
           batch.map(async (volumeUuid) => {
             try {
+              if (await this.repairThumbnailType(volumeUuid as string)) return;
               const files = await this.volume_files.get(volumeUuid as string);
               if (files && files.files) {
                 // Get the first image file when sorted naturally
@@ -109,6 +118,37 @@ export class CatalogDexieV3 extends Dexie {
       // Remove process from tracker after a short delay
       setTimeout(() => progressTrackerStore.removeProcess(processId), 2000);
     }
+  }
+
+  /**
+   * Re-validate a stored thumbnail's type (see `processThumbnails`). Returns
+   * true when the row needs nothing more: its thumbnail was re-typed from its
+   * bytes and has its dimensions, or the row is not installed and there is
+   * nothing to rebuild it from.
+   */
+  private async repairThumbnailType(volumeUuid: string): Promise<boolean> {
+    const vol = await this.volumes.get(volumeUuid);
+    if (!vol) return true;
+    const stored = vol.thumbnail;
+    if (stored && !isRasterImageType(stored.type)) {
+      const name = (stored as Partial<File>).name || 'thumbnail';
+      const retyped = await toRasterImageFile(stored, name);
+      if (retyped) {
+        await this.volumes.update(volumeUuid, { thumbnail: retyped });
+        if (vol.thumbnail_width && vol.thumbnail_height) return true;
+      } else {
+        console.warn(
+          `[thumbnails] Dropped a stored thumbnail that is not a raster image (type '${stored.type}'):`,
+          volumeUuid
+        );
+        await this.volumes.update(volumeUuid, {
+          thumbnail: undefined,
+          thumbnail_width: undefined,
+          thumbnail_height: undefined
+        });
+      }
+    }
+    return !isVolumeInstalled(vol);
   }
 }
 

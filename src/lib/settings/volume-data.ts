@@ -1,11 +1,18 @@
 import { browser } from '$app/environment';
 import { derived, get, writable, readable } from 'svelte/store';
+import {
+  getHistoryLegacyTurns,
+  getHistoryTurns,
+  historyTurns
+} from '$lib/reading-history/turns-store';
+import { unionTurns } from '$lib/util/sync/volume-record-merge';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
-import { getEffectiveReadingTime } from '$lib/util/reading-speed';
 import { hasFreshPassSince } from '$lib/util/volume-helpers';
 import { SERIES_SECTION_KEY } from './series-data';
+import { TRACKING_SECTION_KEY } from './tracking-data';
+import { recordEvent } from '$lib/reading-history/record';
 
 // Deep equality check for settings objects
 function settingsEqual(
@@ -78,6 +85,29 @@ function isArchivedRead(value: unknown): value is ArchivedRead {
   );
 }
 
+/**
+ * Reading done before reading history existed (phase 3a): a SNAPSHOT of the
+ * record's old figures — the retired minute counter and the characters it
+ * held, lifetime — frozen at `before`. Stats show `max(old, what events from
+ * before the freeze explain) + everything after it` (`figuresFor`), so events
+ * another device recorded before the freeze, arriving later, explain the old
+ * figure instead of adding to it. Taken once per record; a merge keeps the
+ * later snapshot; a forget drops it.
+ */
+export interface LegacyStats {
+  time_ms: number;
+  chars: number;
+  /** Epoch ms of the freeze: events from before it are already in the old figures. */
+  before: number;
+}
+
+function parseLegacyStats(value: unknown): LegacyStats | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { time_ms, chars, before } = value as Record<string, unknown>;
+  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  return ok(time_ms) && ok(chars) && ok(before) ? { time_ms, chars, before } : undefined;
+}
+
 type Progress = Record<string, number> | undefined;
 type VolumeDataJSON = {
   progress?: number;
@@ -101,6 +131,9 @@ type VolumeDataJSON = {
   // Deletion tracking for sync (mutually exclusive)
   addedOn?: string; // ISO datetime when volume was added/created
   deletedOn?: string; // ISO datetime when metadata was deleted
+  /** When this volume's stats were last forgotten (see the class field). */
+  forgotAt?: string;
+  legacyStats?: LegacyStats;
 };
 
 export class VolumeData implements VolumeDataJSON {
@@ -132,6 +165,14 @@ export class VolumeData implements VolumeDataJSON {
   volume_title?: string;
   addedOn?: string; // ISO datetime when volume was added/created
   deletedOn?: string; // ISO datetime when metadata was deleted
+  /**
+   * The `deletedOn` of the "forget stats" tombstone this record replaced, when
+   * the volume was opened again afterwards. The sync merge drops page turns up
+   * to it, so another device's stale copy cannot bring the forgotten reading
+   * back once both records are live again.
+   */
+  forgotAt?: string;
+  legacyStats?: LegacyStats;
 
   constructor(data: Partial<VolumeDataJSON> = {}) {
     this.progress = typeof data.progress === 'number' ? data.progress : 0;
@@ -163,6 +204,11 @@ export class VolumeData implements VolumeDataJSON {
     // Deletion tracking (optional, undefined means epoch in merge logic)
     this.addedOn = data.addedOn;
     this.deletedOn = data.deletedOn;
+    this.forgotAt =
+      typeof data.forgotAt === 'string' && !Number.isNaN(Date.parse(data.forgotAt))
+        ? data.forgotAt
+        : undefined;
+    this.legacyStats = parseLegacyStats(data.legacyStats);
 
     // Only store explicitly set values, leave others undefined to fall back to global defaults
     this.settings = {};
@@ -244,6 +290,9 @@ export class VolumeData implements VolumeDataJSON {
       result.archivedReads = this.archivedReads;
     }
 
+    // Kept even when zero: it records that the freeze happened.
+    if (this.legacyStats) result.legacyStats = this.legacyStats;
+
     // Include volume metadata if present (for self-describing sync data)
     if (this.series_uuid) {
       result.series_uuid = this.series_uuid;
@@ -262,17 +311,13 @@ export class VolumeData implements VolumeDataJSON {
     if (this.deletedOn) {
       result.deletedOn = this.deletedOn;
     }
+    if (this.forgotAt) {
+      result.forgotAt = this.forgotAt;
+    }
 
     return result;
   }
 }
-
-type TotalStats = {
-  completed: number;
-  pagesRead: number;
-  charsRead: number;
-  minutesRead: number;
-};
 
 type Volumes = Record<string, VolumeData>;
 
@@ -284,7 +329,10 @@ export function parseVolumesFromJson(storedData: string): Volumes {
         // Filter out entries with empty/invalid volume IDs (bug cleanup), and the
         // reserved `series` section — series-level reading state shares this file
         // but is not a volume (see `$lib/settings/series-data`).
-        .filter(([key]) => key && key.length > 0 && key !== SERIES_SECTION_KEY)
+        .filter(
+          ([key]) =>
+            key && key.length > 0 && key !== SERIES_SECTION_KEY && key !== TRACKING_SECTION_KEY
+        )
         .map(([key, value]) => [key, VolumeData.fromJSON(value)])
     );
   } catch {
@@ -467,25 +515,109 @@ export const volumesWithTrash = _volumesInternal;
 
 // Public derived store - filters out deleted volumes (tombstones)
 // This is what UI and stats code should use
-export const volumes = derived(_volumesInternal, ($internal) => {
-  return Object.fromEntries(Object.entries($internal).filter(([_, vol]) => !vol.deletedOn));
+//
+// Page turns come from reading history once it has loaded (phase 2b): the
+// projection of every device's events (`historyTurns`) UNITED with the record's
+// own `recentPageTurns` — which is only what has not been converted yet: turns
+// merged in from `volume-data.json` that no cut-over has run over (on a
+// provider that cannot carry history the cut-over only runs at start), served
+// at once rather than after the next restart. One turn per (time, page), so a
+// record turn and its converted event count once. The record's own turns alone
+// stand for volumes history knows nothing about (or before it loads, or when
+// IndexedDB is unavailable), so no stat ever goes empty. A record is only
+// copied when its turns differ, and the copy is reused while neither side
+// changes, so per-volume consumers keep their identity across emissions.
+const projectedCopies = new WeakMap<VolumeData, { turns: PageTurn[]; copy: VolumeData }>();
+
+/** The record's own turns plus the projected ones; the record's own array when nothing is added. */
+function turnsWith(vol: VolumeData, projected: PageTurn[] | undefined): PageTurn[] {
+  if (!projected || projected === vol.recentPageTurns) return vol.recentPageTurns;
+  return vol.recentPageTurns.length === 0 ? projected : unionTurns(vol.recentPageTurns, projected);
+}
+
+/**
+ * The record as the stats see it. Cached per (record, projection) identity,
+ * the same record back when the projection adds nothing.
+ */
+function withProjectedTurns(vol: VolumeData, projected: PageTurn[] | undefined): VolumeData {
+  if (!projected) return vol;
+  const turns = turnsWith(vol, projected);
+  if (turns === vol.recentPageTurns) return vol;
+  const cached = projectedCopies.get(vol);
+  if (cached?.turns === projected) return cached.copy;
+  const copy = new VolumeData({ ...vol, recentPageTurns: turns });
+  projectedCopies.set(vol, { turns: projected, copy });
+  return copy;
+}
+
+/**
+ * Projected turns minus those before the record's own forget horizon: a
+ * "forget stats" from before reading history recorded `forget` events lives
+ * only in the record (`forgotAt`), and another device may have converted the
+ * forgotten turns into legacy events. Returns the same array when nothing is
+ * hidden, so identity caching holds.
+ */
+const horizonFiltered = new WeakMap<PageTurn[], { horizon: number; turns: PageTurn[] }>();
+function afterForgetHorizon(
+  vol: VolumeData,
+  turns: PageTurn[] | undefined
+): PageTurn[] | undefined {
+  if (!turns || !vol.forgotAt) return turns;
+  const horizon = Date.parse(vol.forgotAt);
+  const cached = horizonFiltered.get(turns);
+  if (cached?.horizon === horizon) return cached.turns;
+  const kept = turns.filter((turn) => turn[0] > horizon);
+  const result = kept.length === turns.length ? turns : kept.length > 0 ? kept : undefined;
+  if (result) horizonFiltered.set(turns, { horizon, turns: result });
+  return result;
+}
+
+/**
+ * Every device's turns for a volume: the record's own plus those history
+ * projects for it once loaded (`legacyOnly`: from its legacy events only —
+ * what the synced file must still carry; native views travel as history).
+ */
+export function projectedTurnsOf(
+  volume: string,
+  vol: VolumeData,
+  { legacyOnly = false }: { legacyOnly?: boolean } = {}
+): PageTurn[] {
+  // Only the full projection is cached: it is what the `volumes` store serves,
+  // and a legacy-only answer under the same record would evict its copy.
+  if (legacyOnly) return turnsWith(vol, afterForgetHorizon(vol, getHistoryLegacyTurns(volume)));
+  return withProjectedTurns(vol, afterForgetHorizon(vol, getHistoryTurns(volume))).recentPageTurns;
+}
+
+export const volumes = derived([_volumesInternal, historyTurns], ([$internal, $turns]) => {
+  const out: Volumes = {};
+  for (const [id, vol] of Object.entries($internal)) {
+    if (vol.deletedOn) continue;
+    out[id] = withProjectedTurns(vol, afterForgetHorizon(vol, $turns.get(id)));
+  }
+  return out;
 });
 
 export function initializeVolume(volume: string) {
   _volumesInternal.update((prev) => {
+    const previous = prev[volume];
     return {
       ...prev,
       [volume]: new VolumeData({
-        addedOn: new Date().toISOString()
+        addedOn: new Date().toISOString(),
+        // Replacing a "forget stats" tombstone: remember when, so a stale copy
+        // on another device cannot merge the forgotten reading back in.
+        forgotAt: previous?.deletedOn ?? previous?.forgotAt
       })
     };
   });
 }
 
 export function deleteVolume(volume: string) {
+  let forgotten = false;
   _volumesInternal.update((prev) => {
     const existing = prev[volume];
     if (!existing) return prev; // Already gone or never existed
+    forgotten = true;
 
     // Create tombstone with deletion timestamp.
     //
@@ -508,34 +640,16 @@ export function deleteVolume(volume: string) {
       [volume]: tombstone
     };
   });
+  // Reading history: forgetting is an event, so every device's stats apply it.
+  if (forgotten) void recordEvent({ kind: 'forget', volume, before: Date.now() });
 }
 
 export function clearVolumes() {
   _volumesInternal.set({});
 }
 
-export function clearVolumeSpeedData(volume: string) {
-  _volumesInternal.update((prev) => {
-    const currentVolume = prev[volume];
-    if (!currentVolume) return prev;
-
-    // Parse the existing timestamp and add 1ms to win sync conflicts
-    const currentTimestamp = new Date(currentVolume.lastProgressUpdate).getTime();
-    const newTimestamp = new Date(currentTimestamp + 1).toISOString();
-
-    return {
-      ...prev,
-      [volume]: new VolumeData({
-        ...currentVolume,
-        timeReadInMinutes: 0,
-        lastProgressUpdate: newTimestamp
-        // Keep: progress, chars, completed, settings, recentPageTurns, sessions
-      })
-    };
-  });
-}
-
 export function clearOrphanedVolumeData(volumeIds: string[]) {
+  const forgotten: string[] = [];
   _volumesInternal.update((prev) => {
     const updated = { ...prev };
     const now = new Date().toISOString();
@@ -543,6 +657,7 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
     volumeIds.forEach((id) => {
       const existing = updated[id];
       if (existing) {
+        forgotten.push(id);
         // Create tombstone instead of deleting
         updated[id] = new VolumeData({
           deletedOn: now,
@@ -556,6 +671,9 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
 
     return updated;
   });
+  // Reading history: the same "forget these stats" as `deleteVolume`.
+  const before = Date.now();
+  for (const id of forgotten) void recordEvent({ kind: 'forget', volume: id, before });
 }
 
 type CompletionListener = (volumeUuid: string) => void;
@@ -582,6 +700,72 @@ function notifyCompletion(volumeUuid: string) {
   }
 }
 
+type CompletionHold = (volumeUuid: string) => boolean;
+const completionHolds = new Set<CompletionHold>();
+/** Completions kept back by a hold, announced (or dropped) at release. */
+const heldCompletions = new Set<string>();
+
+/**
+ * While `hold(volume)` is true, a completion of that volume is kept instead of
+ * announced (look-up visits: the AniList push waits until the visit ends, and
+ * a look-up that came back restores the flag, so nothing goes). Returns an
+ * unregister function.
+ */
+export function registerCompletionHold(hold: CompletionHold): () => void {
+  completionHolds.add(hold);
+  return () => {
+    completionHolds.delete(hold);
+  };
+}
+
+function announceCompletion(volumeUuid: string) {
+  for (const hold of completionHolds) {
+    let held = false;
+    try {
+      held = hold(volumeUuid);
+    } catch (error) {
+      console.warn('[volume-data] completion hold failed:', error);
+    }
+    if (held) {
+      heldCompletions.add(volumeUuid);
+      return;
+    }
+  }
+  notifyCompletion(volumeUuid);
+}
+
+/** Announce a kept completion if the record is still completed; forget it either way. */
+export function releaseHeldCompletion(volumeUuid: string): void {
+  if (!heldCompletions.delete(volumeUuid)) return;
+  if (get(_volumesInternal)[volumeUuid]?.completed) notifyCompletion(volumeUuid);
+}
+
+type PositionListener = (volumeUuid: string) => void;
+const positionListeners = new Set<PositionListener>();
+
+/**
+ * Called after THIS device moved a volume's position: a real page turn, a
+ * jump, a restart or an un-read. Not for a re-report of the page the reader
+ * already shows, and not for `adoptPosition` (another device's news). Feeds
+ * the `positions.json` push. Returns an unregister function.
+ */
+export function registerPositionListener(fn: PositionListener): () => void {
+  positionListeners.add(fn);
+  return () => {
+    positionListeners.delete(fn);
+  };
+}
+
+function notifyPosition(volumeUuid: string) {
+  for (const fn of positionListeners) {
+    try {
+      fn(volumeUuid);
+    } catch (error) {
+      console.warn('[volume-data] position listener failed:', error);
+    }
+  }
+}
+
 /**
  * Has the reader started a fresh pass since this volume was last finished?
  *
@@ -595,6 +779,7 @@ function notifyCompletion(volumeUuid: string) {
  * purpose; see its doc comment for why the two must answer alike.
  */
 function startedFreshPassSince(
+  volume: string,
   volumeData: VolumeData,
   sinceIso: string | undefined,
   completingPage: number
@@ -603,7 +788,9 @@ function startedFreshPassSince(
   const since = Date.parse(sinceIso);
   if (Number.isNaN(since)) return true;
 
-  return hasFreshPassSince(volumeData.recentPageTurns, since, completingPage);
+  // Reading history's turns once loaded (every device's), else the record's own.
+  const turns = projectedTurnsOf(volume, volumeData);
+  return hasFreshPassSince(turns, since, completingPage);
 }
 
 export function updateProgress(
@@ -613,20 +800,15 @@ export function updateProgress(
   completed = false
 ) {
   let becameCompleted = false;
+  let moved = false;
   _volumesInternal.update((prev) => {
     const currentVolume = prev[volume] || new VolumeData();
     becameCompleted = completed && !currentVolume.completed;
-    const now = Date.now();
-    // One stamp shared by the page turn and the completion, so a backfill can
-    // rely on them lining up.
-    const nowIso = new Date(now).toISOString();
+    const nowIso = new Date().toISOString();
 
-    // Add new turn with cumulative character count
-    // Page turns accumulate indefinitely - idle gaps are filtered during time calculation
-    // Store cumulative chars so we can calculate reading speed even if volume is deleted from IndexedDB
-    const cumulativeChars = chars ?? currentVolume.chars;
-    const newTurn: PageTurn = [now, progress, cumulativeChars];
-    const recentPageTurns = [...currentVolume.recentPageTurns, newTurn];
+    // No page turn is written any more (phase 2b): the reader records each view
+    // as a reading-history event, which syncs per device and is projected back
+    // into turns for the stats (`volumes`).
 
     // Lazy metadata population: If metadata is missing, fetch it asynchronously
     // This ensures stats pages work even if IndexedDB is later deleted
@@ -649,6 +831,27 @@ export function updateProgress(
           console.warn(`Failed to enrich metadata for ${volume}:`, err);
         });
     }
+
+    // The reader reports the page it shows when a volume opens, and again on
+    // layout changes. A report of the position the record already holds is
+    // not a position change: stamping it would make an opened-but-unread
+    // device the "newest" position and drag the device that actually read on
+    // back to it at the next sync — the device-swap bug.
+    //
+    // Judged on the page and the flag ONLY. The chars are this device's own
+    // count up to that page, and an adopted position (`adoptPosition`) stores
+    // the other device's count, so a same-page report — the page input set to
+    // the page shown, the scroll reader's edge nav at the last page — would
+    // otherwise re-stamp the record over the real reader's without a turn.
+    // On an unchanged page the stored chars stay.
+    if (
+      prev[volume] &&
+      progress === currentVolume.progress &&
+      completed === currentVolume.completed
+    ) {
+      return prev;
+    }
+    moved = true;
 
     return {
       ...prev,
@@ -679,23 +882,197 @@ export function updateProgress(
          */
         completedAt: completed
           ? becameCompleted &&
-            startedFreshPassSince(currentVolume, currentVolume.completedAt, progress)
+            startedFreshPassSince(volume, currentVolume, currentVolume.completedAt, progress)
             ? nowIso
             : (currentVolume.completedAt ?? nowIso)
           : currentVolume.completedAt,
-        lastProgressUpdate: nowIso,
-        recentPageTurns
+        lastProgressUpdate: nowIso
       })
     };
   });
 
-  if (becameCompleted) {
-    notifyCompletion(volume);
-  }
+  if (moved) notifyPosition(volume);
+  if (becameCompleted) announceCompletion(volume);
+}
+
+/**
+ * Put a position back as it was, with the given stamp (look-up visits: the
+ * visit claimed nothing). Drops a completion the visit held. Notifies position
+ * listeners only when `announce` — a restore with the record's own old stamp
+ * has nothing to push. False for a missing or deleted ("forget stats") record.
+ */
+export function restoreVolumePosition(
+  volume: string,
+  snapshot: { progress: number; chars: number; completed: boolean; completedAt?: string },
+  stamp: number,
+  options: { announce: boolean }
+): boolean {
+  let restored = false;
+  _volumesInternal.update((prev) => {
+    const current = prev[volume];
+    if (!current || current.deletedOn) return prev;
+    restored = true;
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        progress: snapshot.progress,
+        chars: snapshot.chars,
+        completed: snapshot.completed,
+        completedAt: snapshot.completedAt,
+        lastProgressUpdate: new Date(stamp).toISOString()
+      })
+    };
+  });
+  if (!restored) return false;
+  heldCompletions.delete(volume);
+  if (options.announce) notifyPosition(volume);
+  return true;
+}
+
+/**
+ * The "Jump" answer to a cross-device position offer (phase 2c): move to the
+ * page another device stopped on. A user action, so it carries a fresh stamp
+ * and wins the next merge — but it is not reading: no page view, and no
+ * completion notice (a `completed` it brings along is only recorded).
+ */
+export function jumpToPosition(
+  volume: string,
+  progress: number,
+  chars: number,
+  completed: boolean,
+  /** When that reading happened: a completion it brings is dated then, not now. */
+  readAt: number = Date.now()
+) {
+  _volumesInternal.update((prev) => {
+    const current = prev[volume] || new VolumeData();
+    const nowIso = new Date().toISOString();
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        progress,
+        chars,
+        completed,
+        completedAt: completed
+          ? (current.completedAt ?? new Date(readAt).toISOString())
+          : current.completedAt,
+        lastProgressUpdate: nowIso
+      })
+    };
+  });
+  notifyPosition(volume);
+}
+
+/**
+ * Take a position another device set (`positions.json`), WITH ITS STAMP: this
+ * device did not move it now, so it must not out-rank a later turn made on the
+ * device that did. A no-op (false) unless `setAt` is strictly newer than the
+ * local stamp, and for a deleted ("forget stats") record. Reading, not a user
+ * action here: no page view, no completion notice, no position notice.
+ */
+export function adoptPosition(
+  volume: string,
+  page: number,
+  chars: number,
+  /** undefined = keep the local flag (the page count was unknown). */
+  completed: boolean | undefined,
+  setAt: number
+): boolean {
+  let adopted = false;
+  _volumesInternal.update((prev) => {
+    const current = prev[volume] || new VolumeData();
+    if (current.deletedOn) return prev;
+    const stamp = Date.parse(current.lastProgressUpdate);
+    if (!(setAt > (Number.isNaN(stamp) ? 0 : stamp))) return prev;
+    adopted = true;
+    const nextCompleted = completed ?? current.completed;
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        progress: page,
+        chars,
+        completed: nextCompleted,
+        completedAt:
+          completed === true
+            ? (current.completedAt ?? new Date(setAt).toISOString())
+            : current.completedAt,
+        lastProgressUpdate: new Date(setAt).toISOString()
+      })
+    };
+  });
+  return adopted;
+}
+
+/**
+ * Re-apply a restart another device made that this position never saw (phase
+ * 2c: a reset wins). The pass the restart ended was archived where it happened
+ * (the merge keeps both sides' `archivedReads`); the reading since, done
+ * without seeing the restart, is archived here. Fresh `lastProgressUpdate`,
+ * so the zeroed record wins the next merge.
+ *
+ * `readThrough` — the missed reading's final view (`PositionPlan.reset.through`)
+ * — is the archive's `at`, NOT this device's clock: the merge unions archives
+ * by `at`, and more than one device re-applies the same restart (the stale
+ * device before its answer reaches anyone; the restarting device at its next
+ * sync, where the stale record still wins). Under one stamp the union keeps
+ * the pass once; under two it was counted twice in lifetime stats and goals,
+ * permanently. An archive already made under that stamp is replaced, so a
+ * second application on one device never adds a pass either.
+ */
+export function applyMissedRestart(volume: string, readThrough: number) {
+  let restarted = false;
+  _volumesInternal.update((prev) => {
+    const current = prev[volume];
+    if (!current || current.deletedOn) return prev;
+    restarted = true;
+    const now = Date.now();
+    // This device read on without seeing the restart: that pass is real reading
+    // (and may have finished the volume), so it is archived like any restarted
+    // pass, its completion date with it.
+    const archived =
+      current.progress > 0 || current.completed
+        ? [
+            ...current.archivedReads.filter((read) => read.at !== readThrough),
+            {
+              at: readThrough,
+              pages: current.progress,
+              chars: current.chars,
+              completed: current.completed,
+              ...(current.completedAt ? { completedAt: current.completedAt } : {})
+            }
+          ].sort((a, b) => a.at - b.at)
+        : current.archivedReads;
+    return {
+      ...prev,
+      [volume]: new VolumeData({
+        ...current,
+        archivedReads: archived,
+        progress: 0,
+        chars: 0,
+        completed: false,
+        completedAt: undefined,
+        lastProgressUpdate: new Date(now).toISOString()
+      })
+    };
+  });
+  if (restarted) notifyPosition(volume);
+}
+
+/**
+ * A deliberate position change from outside the reader settles any pending
+ * cross-device position offer up to now (phase 2c): otherwise a page another
+ * device stopped on would be offered back against the user's own choice.
+ */
+function settlePositionOffers(volume: string, page: number): void {
+  const now = Date.now();
+  void recordEvent({ kind: 'position', volume, answer: 'stay', through: now, page }, now);
 }
 
 export function markVolumeAsComplete(volumeUuid: string, pageCount: number, totalChars?: number) {
   updateProgress(volumeUuid, pageCount, totalChars, true);
+  settlePositionOffers(volumeUuid, pageCount);
 }
 
 export function markVolumeAsUnread(volumeUuid: string) {
@@ -704,6 +1081,7 @@ export function markVolumeAsUnread(volumeUuid: string) {
   // and rides the fresh `lastProgressUpdate` that call just wrote, so the
   // clear wins the next merge.
   updateProgress(volumeUuid, 0, 0, false);
+  settlePositionOffers(volumeUuid, 0);
   _volumesInternal.update((prev) => {
     const current = prev[volumeUuid];
     if (!current?.completedAt) return prev;
@@ -723,12 +1101,14 @@ export function markVolumeAsUnread(volumeUuid: string) {
 export function archiveAndResetVolumes(volumeUuids: string[]) {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
+  const archived: string[] = [];
   _volumesInternal.update((prev) => {
     const updated = { ...prev };
     for (const uuid of volumeUuids) {
       const existing = updated[uuid];
       if (!existing || existing.deletedOn) continue;
       if (existing.progress <= 0 && !existing.completed) continue;
+      archived.push(uuid);
       updated[uuid] = new VolumeData({
         ...existing,
         archivedReads: [
@@ -752,27 +1132,9 @@ export function archiveAndResetVolumes(volumeUuids: string[]) {
     }
     return updated;
   });
-}
-
-export function startCount(volume: string) {
-  // Guard against null/undefined/empty volume IDs
-  if (!volume) {
-    console.warn('[startCount] Called with empty volume ID, skipping timer');
-    return undefined;
-  }
-
-  return setInterval(() => {
-    _volumesInternal.update((prev) => {
-      const currentVolume = prev[volume] || new VolumeData();
-      return {
-        ...prev,
-        [volume]: new VolumeData({
-          ...currentVolume,
-          timeReadInMinutes: currentVolume.timeReadInMinutes + 1
-        })
-      };
-    });
-  }, 60 * 1000);
+  // Reading history: a new read pass of each archived volume starts here.
+  for (const uuid of archived) void recordEvent({ kind: 'restart', volume: uuid }, now);
+  for (const uuid of archived) notifyPosition(uuid);
 }
 
 // Save internal store (including tombstones) to localStorage
@@ -781,9 +1143,22 @@ _volumesInternal.subscribe((volumes) => {
     const serializedVolumes = volumes
       ? Object.fromEntries(Object.entries(volumes).map(([key, value]) => [key, value.toJSON()]))
       : {};
-    window.localStorage.setItem('volumes', JSON.stringify(serializedVolumes));
+    try {
+      window.localStorage.setItem('volumes', JSON.stringify(serializedVolumes));
+    } catch (error) {
+      // Quota or a blocked storage: the in-memory store and the next sync
+      // still hold the data, and a throw here would break every store update.
+      warnPersistFailureOnce(error);
+    }
   }
 });
+
+let persistFailureWarned = false;
+function warnPersistFailureOnce(error: unknown): void {
+  if (persistFailureWarned) return;
+  persistFailureWarned = true;
+  console.warn('[volume-data] could not save to localStorage:', error);
+}
 
 export const progress = derived(volumes, ($volumes) => {
   const progress: Progress = {};
@@ -879,37 +1254,6 @@ export function calculatePagesReadInPeriod(
 
   return uniquePages.size;
 }
-
-export const totalStats = derived([volumes, globalSettings], ([$volumes, $settings]) => {
-  if ($volumes) {
-    const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
-
-    return Object.values($volumes).reduce<TotalStats>(
-      (stats, volumeData) => {
-        if (volumeData.completed) {
-          stats.completed++;
-        }
-
-        stats.pagesRead += volumeData.progress;
-        stats.minutesRead += getEffectiveReadingTime(volumeData, idleTimeoutMs);
-        stats.charsRead += volumeData.chars;
-        // Lifetime totals keep every archived pass (restart series never lowers them)
-        for (const read of volumeData.archivedReads) {
-          stats.pagesRead += read.pages;
-          stats.charsRead += read.chars;
-        }
-
-        return stats;
-      },
-      {
-        charsRead: 0,
-        completed: 0,
-        pagesRead: 0,
-        minutesRead: 0
-      }
-    );
-  }
-});
 
 // mangaStats moved to series page to avoid circular dependency with currentSeries
 // volumeStats moved to Timer component to avoid circular dependency with currentVolume

@@ -37,6 +37,7 @@
   // Held still for the component's life, so neither can be the reason for a redraw.
   const volumeOffsets = new Map<number, number>();
 
+  // svelte-ignore state_referenced_locally
   control((next) => {
     covers = next;
   });

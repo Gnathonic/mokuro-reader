@@ -59,6 +59,9 @@ export class CoalescedCacheStore<V> {
   private state: Map<string, V>;
   private published: Writable<Map<string, V>>;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private revisionToken: object = {};
+  /** The listing a fetch has open, and the updates made since it began. */
+  private listing: { updates: ((map: Map<string, V>) => Map<string, V>)[] } | null = null;
 
   constructor(initial: Map<string, V> = new Map()) {
     this.state = initial;
@@ -76,6 +79,16 @@ export class CoalescedCacheStore<V> {
   }
 
   /**
+   * A token that is replaced on every {@link update} and {@link set}, at once
+   * — the STATE's identity, never the emission's. What a derivation over the
+   * whole listing memoises on (`unifiedCloudManager`'s folder index): equal
+   * tokens mean equal contents, whatever an update function did to the map.
+   */
+  revision(): object {
+    return this.revisionToken;
+  }
+
+  /**
    * Svelte store contract over the PUBLISHED side. An arrow property (not a
    * method) so the store can be handed around detached, as `Readable`
    * consumers do.
@@ -89,9 +102,18 @@ export class CoalescedCacheStore<V> {
    * An INCREMENTAL mutation (post-upload add, delete, description update):
    * applied to the state immediately — synchronous readers see it before
    * this returns — and published on the coalesced trailing edge.
+   *
+   * `replay` is what an open listing re-applies to its own map (see
+   * {@link beginListing}); it defaults to `fn`. A cache passes its own when the
+   * listing may already hold a newer revision than this mutation knew.
    */
-  update(fn: (map: Map<string, V>) => Map<string, V>): void {
+  update(
+    fn: (map: Map<string, V>) => Map<string, V>,
+    replay: (map: Map<string, V>) => Map<string, V> = fn
+  ): void {
+    this.listing?.updates.push(replay);
     this.state = fn(this.state);
+    this.revisionToken = {};
     if (this.timer === null) {
       this.timer = setTimeout(() => {
         this.timer = null;
@@ -111,9 +133,40 @@ export class CoalescedCacheStore<V> {
    * account's files.
    */
   set(map: Map<string, V>): void {
+    this.listing = null;
     this.cancelPending();
     this.state = map;
+    this.revisionToken = {};
     this.published.set(map);
+  }
+
+  /**
+   * Open a full listing, for a fetch that walks the provider and then swaps
+   * its map in. The walk reads each folder at some moment before the swap, so
+   * an upload or delete this app makes after that moment is in the state but
+   * not in the listing, and a plain {@link set} would erase it (a first
+   * `volume-data.json` uploaded mid-walk, gone from the cache, is then
+   * written again unread over another device's copy). Until `install`, every
+   * {@link update} is recorded too, and `install` replays them onto the
+   * listing's map — in arrival order, each update's `replay`.
+   *
+   * A `set` meanwhile (a `clear()` at sign-out) or a newer listing supersedes
+   * this one: `install` then installs nothing and answers false. `abandon`
+   * closes a listing that failed; it is a no-op once superseded or installed.
+   */
+  beginListing(): { install(map: Map<string, V>): boolean; abandon(): void } {
+    const listing = { updates: [] as ((map: Map<string, V>) => Map<string, V>)[] };
+    this.listing = listing;
+    return {
+      install: (map) => {
+        if (this.listing !== listing) return false;
+        this.set(listing.updates.reduce((acc, fn) => fn(acc), map));
+        return true;
+      },
+      abandon: () => {
+        if (this.listing === listing) this.listing = null;
+      }
+    };
   }
 
   /**

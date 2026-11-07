@@ -8,13 +8,17 @@
  *   E2E_BUNKO_URL      e.g. http://127.0.0.1:5197 (CORS must allow the reader's origin)
  *   E2E_BUNKO_USER     an account that may upload (role uploader or above)
  *   E2E_BUNKO_PW_FILE  file holding that account's password (never on a command line)
- *   E2E_BUNKO_DB       optional: the server's mokuro.db, to assert `auth_tokens` rows
+ *   E2E_BUNKO_DB       optional: the server's mokuro.db, to assert that account's `auth_tokens` rows
+ *
+ * The library must hold `TokenSeries/TokenSeries 01.cbz` and `TokenSeries 02.cbz`,
+ * and the server must be fresh: the test uploads `LocalSeries/Vol 1.cbz`.
  *
  * Without them that test is skipped; the stubbed Basic tests always run.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { test, expect, type BrowserContext, type Page, type Route } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 const BUNKO = (process.env.E2E_BUNKO_URL ?? '').replace(/\/$/, '');
 const USER = process.env.E2E_BUNKO_USER ?? '';
@@ -57,9 +61,10 @@ function tokenRows(): Array<{ username: string; kind: string; label: string; day
       '-c',
       `import json, sqlite3, sys
 c = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
-rows = c.execute("SELECT username, kind, label, (expires_at - created_at) / 86400.0 FROM auth_tokens ORDER BY created_at").fetchall()
+rows = c.execute("SELECT username, kind, label, (expires_at - created_at) / 86400.0 FROM auth_tokens WHERE username = ? ORDER BY created_at", (sys.argv[2],)).fetchall()
 print(json.dumps([dict(username=r[0], kind=r[1], label=r[2], days=r[3]) for r in rows]))`,
-      DB
+      DB,
+      USER
     ],
     { encoding: 'utf8' }
   );
@@ -145,8 +150,7 @@ test.describe('bunko bearer tokens (real server)', () => {
     const baseRows = tokenRows().length;
     const since = (n: number) => seen.slice(n);
 
-    await page.goto('/');
-    await page.waitForTimeout(800);
+    await gotoApp(page);
     await seedLocalVolume(page, 'tok-local-1', 'LocalSeries');
 
     // ---- connect through the real login form
@@ -357,8 +361,7 @@ test.describe('bunko bearer tokens: sign-out (real server)', () => {
     const password = readFileSync(PW_FILE, 'utf8').trim();
     const seen = recordRequests(context, BUNKO);
     const baseRows = tokenRows().length;
-    await page.goto('/');
-    await page.waitForTimeout(800);
+    await gotoApp(page);
     await page.evaluate(
       async ({ serverUrl, username, password }) => {
         const { providerManager } = await import('/src/lib/util/sync/provider-manager.ts');
@@ -436,8 +439,7 @@ for (const kind of ['plain WebDAV', 'pre-token bunko'] as const) {
   test(`${kind}: Basic exactly as before`, async ({ page }) => {
     const stub = davStub({ bunkoIdentity: kind === 'pre-token bunko' });
     await page.route(`${STUB}/**`, stub.handle);
-    await page.goto('/');
-    await page.waitForTimeout(800);
+    await gotoApp(page);
     await page.evaluate(async (serverUrl) => {
       const { providerManager } = await import('/src/lib/util/sync/provider-manager.ts');
       const provider = await providerManager.getOrLoadProvider('webdav');

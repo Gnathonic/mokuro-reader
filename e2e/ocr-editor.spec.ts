@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 
 /**
  * The in-reader OCR editor against the REAL app: a seeded one-page volume is
@@ -15,8 +16,7 @@ const ORIGINAL_BLOCK = { box: [250, 50, 310, 250], vertical: true, font_size: 30
 async function seedVolume(page: Page, opts: { pages?: number; view?: 'single' | 'dual' } = {}) {
   const pageCount = opts.pages ?? 1;
   const view = opts.view ?? 'single';
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, ORIGINAL_BLOCK, pageCount, view }) => {
       const { db } = await import('/src/lib/catalog/db.ts');
@@ -227,14 +227,14 @@ test.describe('OCR editor', () => {
 
     // Persist, then revert: the right page returns to its original, and the
     // left page's row was never written.
-    await page.waitForTimeout(1200);
-    expect((await readOcr(page, 1)).block!.lines).toEqual(['さしす']);
+    await expect.poll(async () => (await readOcr(page, 1)).block!.lines).toEqual(['さしす']);
     expect((await readOcr(page, 0)).block).toEqual(ORIGINAL_BLOCK);
     await page.getByLabel('Revert page').click();
     await expect(rightBlock.locator('.line').first()).toHaveText(ORIGINAL_BLOCK.lines[0]);
-    await page.waitForTimeout(1200);
-    expect((await readOcr(page, 1)).block).toEqual(ORIGINAL_BLOCK);
-    expect(page.locator('[data-page-index="0"] .editBlock .line').first()).toHaveText(
+    await expect.poll(async () => (await readOcr(page, 1)).block).toEqual(ORIGINAL_BLOCK);
+    // Awaited: an unawaited expect polls on after the test returns, against a page
+    // already being torn down.
+    await expect(page.locator('[data-page-index="0"] .editBlock .line').first()).toHaveText(
       ORIGINAL_BLOCK.lines[0]
     );
   });

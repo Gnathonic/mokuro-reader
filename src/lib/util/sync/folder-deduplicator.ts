@@ -1,4 +1,5 @@
 import type { ProviderType } from './provider-interface';
+import { dedupKeepsEveryCopy, isBunkoControlFile } from './syncable-file';
 
 /**
  * Folder information for deduplication
@@ -17,6 +18,8 @@ export interface FolderItem {
   id: string;
   name: string;
   isFolder: boolean;
+  /** ISO time of the last write, when the provider knows it. */
+  modifiedTime?: string;
 }
 
 /**
@@ -24,7 +27,11 @@ export interface FolderItem {
  * Providers that support folder dedup implement this
  */
 export interface FolderOperations {
-  /** List all folders the user owns */
+  /**
+   * The folders that may be merged: the app's own folders only. On a
+   * provider that can see the whole account (MEGA), this must not reach
+   * folders the user keeps for anything else.
+   */
   listFolders(): Promise<FolderInfo[]>;
 
   /** List contents of a specific folder */
@@ -33,11 +40,22 @@ export interface FolderOperations {
   /** Move an item to a new parent folder */
   moveItem(itemId: string, newParentId: string, oldParentId: string): Promise<void>;
 
-  /** Delete a folder (should be empty) */
-  deleteFolder(folderId: string): Promise<void>;
+  /**
+   * Remove a duplicate folder the merge just emptied. The merge judged it
+   * empty from a listing a moment old, so a provider re-checks with the
+   * server first and leaves a folder that still holds anything for the next
+   * pass: a folder removal takes its contents with it. Resolves true when
+   * the folder is gone, false when it was kept for the next pass; a throw
+   * (a provider giving up on a folder that keeps filling) gives up on that
+   * folder's group for the rest of the run.
+   */
+  deleteFolder(folderId: string): Promise<boolean>;
 
-  /** Delete a file */
-  deleteFile(fileId: string): Promise<void>;
+  /**
+   * Move a superseded copy of a file to the provider's trash. Never a
+   * permanent delete: a shared name says nothing about shared content.
+   */
+  trashFile(fileId: string): Promise<void>;
 
   /** Called when root app folder ID is confirmed (e.g., mokuro-reader) */
   onRootFolderConfirmed?(folderId: string): void;
@@ -56,6 +74,38 @@ export interface DeduplicationResult {
   foldersDeleted: number;
   /** Total number of items moved */
   itemsMoved: number;
+}
+
+/** Strictly newer by the provider's write time; unknown or equal times keep the canonical copy. */
+function isNewer(a: FolderItem, b: FolderItem): boolean {
+  const ta = a.modifiedTime ? Date.parse(a.modifiedTime) : NaN;
+  const tb = b.modifiedTime ? Date.parse(b.modifiedTime) : NaN;
+  return Number.isFinite(ta) && Number.isFinite(tb) && ta > tb;
+}
+
+/** A creation time in ms; missing or unparsable counts as oldest. */
+function createdAt(createdTime: string | undefined): number {
+  const t = createdTime ? Date.parse(createdTime) : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Oldest first, then the smaller id (code-unit order, as MEGA and bunko
+ * compare). The id tie-break makes the kept folder independent of the order a
+ * provider happens to list in, so every client keeps the same one.
+ */
+export function compareByAge(
+  a: { id: string; createdTime?: string },
+  b: { id: string; createdTime?: string }
+): number {
+  const age = createdAt(a.createdTime) - createdAt(b.createdTime);
+  if (age !== 0) return age;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** A duplicate group's key: the exact name under one parent. */
+function groupKey(folder: FolderInfo): string {
+  return `${folder.parentId || 'root'}:${folder.name}`;
 }
 
 /**
@@ -102,6 +152,8 @@ class FolderDeduplicator {
     // Cap pass count to prevent runaway loops if a provider keeps reporting duplicates
     // (e.g., move/delete silently failing). Real-world depth is small.
     const MAX_PASSES = 20;
+    // Groups a merge failed on this run, by parent and name (see the loop).
+    const skipped = new Set<string>();
 
     try {
       for (let pass = 1; pass <= MAX_PASSES; pass++) {
@@ -121,11 +173,22 @@ class FolderDeduplicator {
         );
 
         for (const group of duplicateGroups) {
-          const mergeResult = await this.mergeGroup(provider, ops, group);
-          result.groupsMerged++;
-          result.foldersDeleted += mergeResult.foldersDeleted;
-          result.itemsMoved += mergeResult.itemsMoved;
+          const key = groupKey(group[0]);
+          if (skipped.has(key)) continue;
+          try {
+            const mergeResult = await this.mergeGroup(provider, ops, group);
+            result.groupsMerged++;
+            result.foldersDeleted += mergeResult.foldersDeleted;
+            result.itemsMoved += mergeResult.itemsMoved;
+          } catch (error) {
+            // One group that cannot finish (a duplicate another device keeps
+            // writing into) is not a reason to leave the others for the next
+            // run; it is skipped for the rest of this one.
+            console.warn(`[Dedup:${provider}] Giving up on "${key}" for this run:`, error);
+            skipped.add(key);
+          }
         }
+        if (duplicateGroups.every((group) => skipped.has(groupKey(group[0])))) break;
 
         if (pass === MAX_PASSES) {
           console.warn(
@@ -152,14 +215,14 @@ class FolderDeduplicator {
 
   /**
    * Find all groups of duplicate folders (same name + same parent)
-   * Each group is sorted by creation time (oldest first = canonical)
+   * Each group is sorted oldest first, then by id (first = canonical)
    */
   private findAllDuplicateGroups(folders: FolderInfo[]): FolderInfo[][] {
     // Group folders by "parentId:name" key
     const byKey = new Map<string, FolderInfo[]>();
 
     for (const folder of folders) {
-      const key = `${folder.parentId || 'root'}:${folder.name}`;
+      const key = groupKey(folder);
       const existing = byKey.get(key);
       if (existing) {
         existing.push(folder);
@@ -168,17 +231,12 @@ class FolderDeduplicator {
       }
     }
 
-    // Filter to only groups with duplicates and sort each by creation time
+    // Filter to only groups with duplicates; the first after sorting is canonical
     const duplicateGroups: FolderInfo[][] = [];
 
     for (const group of byKey.values()) {
       if (group.length > 1) {
-        // Sort by creation time - oldest first (canonical)
-        group.sort((a, b) => {
-          const dateA = new Date(a.createdTime || 0).getTime();
-          const dateB = new Date(b.createdTime || 0).getTime();
-          return dateA - dateB;
-        });
+        group.sort(compareByAge);
         duplicateGroups.push(group);
       }
     }
@@ -204,40 +262,58 @@ class FolderDeduplicator {
       `[Dedup:${provider}] Merging ${duplicates.length} duplicate(s) of "${canonical.name}" into ${canonical.id}`
     );
 
-    // Get existing items in canonical folder (for collision detection)
-    const canonicalContents = await ops.listFolderContents(canonical.id);
-    const canonicalNames = new Set(canonicalContents.map((c) => c.name));
-
     // Merge each duplicate into canonical
     for (const duplicate of duplicates) {
+      // Listed afresh per duplicate, for collision detection: a sync running
+      // beside a long merge may have written into the canonical folder since.
+      const canonicalContents = await ops.listFolderContents(canonical.id);
+      const canonicalItems = new Map(canonicalContents.map((c) => [c.name, c]));
       const contents = await ops.listFolderContents(duplicate.id);
 
       for (const item of contents) {
-        if (canonicalNames.has(item.name)) {
-          if (item.isFolder) {
-            // Folder with same name exists - move it anyway, creates duplicate
-            // Next pass will see these duplicates and merge them
-            console.log(`[Dedup:${provider}]   Moving folder (will merge next pass): ${item.name}`);
-            await ops.moveItem(item.id, canonical.id, duplicate.id);
-            itemsMoved++;
-          } else {
-            // File with same name - delete the duplicate's version
-            console.log(`[Dedup:${provider}]   Deleting duplicate file: ${item.name}`);
-            await ops.deleteFile(item.id);
-          }
-        } else {
+        const existing = canonicalItems.get(item.name);
+        if (!existing) {
           // No collision - move to canonical
           console.log(`[Dedup:${provider}]   Moving: ${item.name}`);
           await ops.moveItem(item.id, canonical.id, duplicate.id);
-          canonicalNames.add(item.name);
+          canonicalItems.set(item.name, item);
           itemsMoved++;
+        } else if (item.isFolder || existing.isFolder || dedupKeepsEveryCopy(item.name)) {
+          // Moved in beside the same name: two folders merge on the next
+          // pass; a file next to a folder is no duplicate; sync folds every
+          // copy of volume-data.json / goals.json / positions.json into one,
+          // so dropping either here would lose what only that copy held; and
+          // Bunko reads every copy of its control files (trashing its marker
+          // or queue would break a running Bunko).
+          console.log(`[Dedup:${provider}]   Moving (name kept twice): ${item.name}`);
+          await ops.moveItem(item.id, canonical.id, duplicate.id);
+          itemsMoved++;
+        } else if (isBunkoControlFile(item.name) || isBunkoControlFile(existing.name)) {
+          // Never reached while the rule above keeps control files; a guard
+          // so no edit to that rule can ever trash a running Bunko's marker
+          // or queue.
+          console.warn(`[Dedup:${provider}]   Moving a control file, never trashing: ${item.name}`);
+          await ops.moveItem(item.id, canonical.id, duplicate.id);
+          itemsMoved++;
+        } else if (isNewer(item, existing)) {
+          // Two copies of one file: the newer stays, the other goes to the trash.
+          console.log(`[Dedup:${provider}]   Trashing the older copy of: ${item.name}`);
+          await ops.trashFile(existing.id);
+          await ops.moveItem(item.id, canonical.id, duplicate.id);
+          canonicalItems.set(item.name, item);
+          itemsMoved++;
+        } else {
+          console.log(`[Dedup:${provider}]   Trashing the older copy of: ${item.name}`);
+          await ops.trashFile(item.id);
         }
       }
 
-      // Delete the now-empty duplicate folder
-      console.log(`[Dedup:${provider}] Deleting empty folder: ${duplicate.id}`);
-      await ops.deleteFolder(duplicate.id);
-      foldersDeleted++;
+      // Remove the now-empty duplicate folder; a provider that finds it not
+      // empty after all keeps it for the next pass.
+      if (await ops.deleteFolder(duplicate.id)) {
+        console.log(`[Dedup:${provider}] Deleted empty folder: ${duplicate.id}`);
+        foldersDeleted++;
+      }
     }
 
     // Notify provider if this was the root folder

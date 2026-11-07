@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { gotoApp } from './helpers/app';
 import { readFile } from 'node:fs/promises';
 
 /**
@@ -15,8 +16,7 @@ const VOLUME_UUID = 'e2e-layers-volume';
 const ORIGINAL_BLOCK = { box: [250, 50, 310, 250], vertical: true, font_size: 30, lines: ['あい'] };
 
 async function seedVolume(page: Page) {
-  await page.goto('/');
-  await page.waitForTimeout(800);
+  await gotoApp(page);
   await page.evaluate(
     async ({ SERIES, SERIES_UUID, VOLUME_UUID, ORIGINAL_BLOCK }) => {
       const { db } = await import('/src/lib/catalog/db.ts');
@@ -289,5 +289,82 @@ test.describe('OCR layers', () => {
     await expect
       .poll(async () => Object.keys((await readState(page)).layers))
       .toEqual(['original']);
+  });
+});
+
+test.describe('shared corrections: an edit forks into your own', () => {
+  test('E on the shared curated layer edits Your corrections; the shared pages stay', async ({
+    page
+  }) => {
+    await seedVolume(page);
+    // A curated layer as a listing would have pulled it: stamped by a cloud.
+    await page.evaluate(async (uuid) => {
+      const { db } = await import('/src/lib/catalog/db.ts');
+      const ocr = await db.volume_ocr.get(uuid);
+      const at = '2026-10-01T00:00:00.000Z';
+      const { putLayerWithPages } = await import('/src/lib/catalog/layer-store.ts');
+      const pages = structuredClone(ocr!.pages);
+      pages[0].blocks[0].lines = ['きょうゆう'];
+      await putLayerWithPages(db, {
+        volume_uuid: uuid,
+        layer_id: 'curated',
+        name: 'Shared corrections',
+        kind: 'edit',
+        created_at: at,
+        updated_at: at,
+        cloud: { provider: 'webdav', size: 10, synced_at: at },
+        pages
+      });
+    }, VOLUME_UUID);
+    await openReader(page);
+
+    await openLayerPicker(page);
+    const picker = page.getByRole('dialog', { name: 'OCR layers' });
+    await expect(picker.getByText('Shared', { exact: true })).toBeVisible();
+    // No Delete on the shared layer (and no Publish without a provider's right).
+    await expect(page.getByLabel('Delete layer Shared corrections')).toHaveCount(0);
+    await expect(page.getByLabel('Unpublish layer Shared corrections')).toHaveCount(0);
+    await picker.getByRole('radio', { name: /Shared corrections/ }).click();
+    await expect.poll(async () => (await readState(page)).setting).toBe('curated');
+    await page.waitForTimeout(300);
+
+    // E forks: the editor opens on the account's own `edit` layer.
+    await page.keyboard.press('e');
+    await expect(
+      page.getByText('Editing your corrections — the shared layer stays as it is')
+    ).toBeVisible();
+    await expect.poll(async () => (await readState(page)).setting).toBe('edit');
+    await expect(page.locator('[data-edit-toolbar-layer]')).toHaveText('Your corrections');
+    let state = await readState(page);
+    expect(state.layers.edit).toEqual({ kind: 'edit', lines: ['きょうゆう'] });
+
+    const block = page.locator('.editBlock').first();
+    await block.dblclick();
+    const line = block.locator('[contenteditable]').first();
+    await line.click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('わたしの');
+    await page.keyboard.press('Escape');
+    await expect.poll(async () => (await readState(page)).layers.edit.lines).toEqual(['わたしの']);
+    state = await readState(page);
+    expect(state.layers.curated.lines).toEqual(['きょうゆう']);
+    expect(state.primaryLines).toEqual(['あい']);
+
+    // Swapping back onto the shared layer from inside the editor does not
+    // bounce to `edit` again: the editor closes, and says how to edit.
+    await page.getByLabel('Previous layer').click();
+    await expect.poll(async () => (await readState(page)).setting).toBe('curated');
+    await expect(
+      page.getByText('Shared layers are read-only — press E to edit your own copy')
+    ).toBeVisible();
+    await expect(page.locator('[data-edit-toolbar]')).toHaveCount(0);
+
+    // A second E keeps the existing corrections: never overwritten by a fork.
+    await page.keyboard.press('e');
+    await expect.poll(async () => (await readState(page)).setting).toBe('edit');
+    await expect(page.locator('[data-edit-toolbar-layer]')).toHaveText('Your corrections');
+    state = await readState(page);
+    expect(state.layers.edit.lines).toEqual(['わたしの']);
+    expect(state.layers.curated.lines).toEqual(['きょうゆう']);
   });
 });

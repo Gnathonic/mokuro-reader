@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterAll, afterEach, beforeAll, beforeEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -40,7 +40,7 @@ vi.mock('$lib/settings', () => ({
   deleteVolume: vi.fn(),
   progress: emptyStore<Record<string, number>>({}),
   volumes: emptyStore<Record<string, unknown>>({}),
-  settings: emptyStore({ inactivityTimeoutMinutes: 5 }),
+  settings: emptyStore({}),
   markVolumeAsComplete: vi.fn(),
   markVolumeAsUnread: vi.fn()
 }));
@@ -72,7 +72,10 @@ vi.mock('$lib/util/hash-router', () => ({
 // subscribe time, so a test sets these before it renders.
 const cloudState = vi.hoisted(() => ({
   files: new Map<string, unknown[]>(),
-  authenticated: false
+  authenticated: false,
+  // What the manager's `getCloudFile` answers. Unset, the exact path in
+  // `files`; a test sets it to stand in for the folded resolution.
+  lookup: null as null | ((series: string, title: string) => unknown)
 }));
 vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   unifiedCloudManager: {
@@ -85,6 +88,12 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
         return () => {};
       }
     },
+    getCloudFile: (series: string, title: string) =>
+      cloudState.lookup
+        ? cloudState.lookup(series, title)
+        : (((cloudState.files.get(series) ?? []) as { path: string }[]).find(
+            (f) => f.path === `${series}/${title}.cbz`
+          ) ?? null),
     isFetching: emptyStore(false),
     getDefaultProvider: () => null,
     deleteManagedVolume: vi.fn(),
@@ -330,6 +339,105 @@ describe('VolumeItem hover + Delete', () => {
 
     expect(promptConfirmation).not.toHaveBeenCalled();
     expect(showSnackbar).toHaveBeenCalledWith('Volume is not backed up to cloud');
+  });
+
+  it('finds the cloud copy through the manager’s selector, not the exact path', async () => {
+    // The cloud spells the folder `One Piece`; this device still says `one piece`,
+    // so `cloudFiles` (keyed by the exact folder) has nothing under the local
+    // title. The backup queue uploads into the cloud's folder; the row's "is it
+    // backed up" must resolve the same way, or it offers a backup that
+    // re-uploads the archive over itself and refuses to delete the copy.
+    const archive = { path: 'One Piece/Vol 1.cbz', provider: 'webdav' };
+    cloudState.authenticated = true;
+    cloudState.lookup = (series, title) =>
+      series === 'one piece' && title === 'Vol 1' ? archive : null;
+    try {
+      await hover('list', { series_title: 'one piece' });
+      await fireEvent.keyDown(window, { key: 'Delete', shiftKey: true });
+
+      expect(showSnackbar).not.toHaveBeenCalledWith('Volume is not backed up to cloud');
+      expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe('Delete Vol 1 from cloud?');
+    } finally {
+      cloudState.authenticated = false;
+      cloudState.lookup = null;
+    }
+  });
+});
+
+describe('VolumeItem menu "Delete from cloud"', () => {
+  // Flowbite's popper calls the Popover API as its menu's intro starts; jsdom
+  // has none, and the missing method surfaced as an uncaught error that fails
+  // the run although every assertion passed.
+  const popoverMethods = ['showPopover', 'hidePopover', 'togglePopover'] as const;
+  const stubbed: (typeof popoverMethods)[number][] = [];
+  beforeAll(() => {
+    for (const name of popoverMethods) {
+      if (typeof HTMLElement.prototype[name] === 'function') continue;
+      Object.defineProperty(HTMLElement.prototype, name, {
+        configurable: true,
+        writable: true,
+        value: () => {}
+      });
+      stubbed.push(name);
+    }
+  });
+  afterAll(() => {
+    for (const name of stubbed.splice(0)) {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(promptConfirmation).mockClear();
+    vi.mocked(showSnackbar).mockClear();
+    vi.mocked(unifiedCloudManager.deleteManagedVolume).mockReset();
+    vi.mocked(unifiedCloudManager.deleteFile).mockReset();
+    cloudState.authenticated = false;
+    cloudState.files = new Map();
+  });
+
+  async function openMenu() {
+    const v = volume();
+    cloudState.authenticated = true;
+    cloudState.files = new Map([
+      [
+        v.series_title,
+        [{ path: `${v.series_title}/${v.volume_title}.cbz`, provider: 'webdav', fileId: 'f1' }]
+      ]
+    ]);
+    const { container, findByText } = render(VolumeItem, { props: { volume: v, variant: 'grid' } });
+    // Flowbite's popper opens a click-triggered menu on mousedown.
+    await fireEvent.mouseDown(
+      container.querySelector(`#volume-menu-${v.volume_uuid}`) as HTMLElement
+    );
+    // The menu opens through Flowbite's popper a few ticks later. Under a full
+    // parallel suite that took longer than findBy's default 1 s (2 of 4 runs).
+    return { v, item: await findByText('Delete from cloud', {}, { timeout: 5000 }) };
+  }
+
+  it('asks first, and deletes nothing on the click', async () => {
+    const { item } = await openMenu();
+    await fireEvent.click(item);
+
+    expect(promptConfirmation).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe('Delete Vol 1 from cloud?');
+    expect(unifiedCloudManager.deleteManagedVolume).not.toHaveBeenCalled();
+    expect(unifiedCloudManager.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('deletes the volume with its sidecars only once the user says yes', async () => {
+    const { v, item } = await openMenu();
+    await fireEvent.click(item);
+    await (vi.mocked(promptConfirmation).mock.calls[0][1] as () => Promise<void>)();
+
+    expect(unifiedCloudManager.deleteManagedVolume).toHaveBeenCalledWith(
+      v.series_title,
+      v.volume_title,
+      v.volume_uuid
+    );
+    expect(unifiedCloudManager.deleteFile).not.toHaveBeenCalled();
+    expect(showSnackbar).toHaveBeenCalledWith('Deleted from cloud');
   });
 });
 

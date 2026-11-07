@@ -18,6 +18,15 @@ import { naturalSort } from '$lib/util/natural-sort';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
 
 /**
+ * The uuids of every volume row filed under a stored series title — keys only,
+ * through the `series_title` index, never a row read.
+ */
+export async function seriesVolumeUuids(seriesTitle: string): Promise<string[]> {
+  const keys = await db.volumes.where('series_title').equals(seriesTitle).primaryKeys();
+  return keys.map(String);
+}
+
+/**
  * Is this volume already INSTALLED?
  *
  * The import's duplicate check, so a row whose files were removed from the
@@ -75,6 +84,14 @@ export interface SavedVolumeData {
  *   volume would read as un-backed-up and renames would miss its files).
  *   Legacy titles get sanitized later, at rename time, where the rename
  *   machinery moves the cloud files along with the title.
+ * @param options.beforeWrite - Runs INSIDE the save's transaction, once the row
+ *   is final (titles included, after a reinstall kept its stored ones) and
+ *   before anything is written. A check made here and the write are one
+ *   transaction, so nothing can land between them. When it is given, the
+ *   transaction also spans `series_metadata` and `series_index`, which it may
+ *   read. It may await ONLY Dexie operations on those tables and the volume
+ *   tables: any other await lets the transaction commit early, and the write
+ *   then fails with `TransactionInactiveError`. If it throws, nothing is saved.
  * @returns The exact objects committed — see {@link SavedVolumeData}. A cloud
  *   download feeds these straight to the import-time sidecar backfill
  *   (`queueSidecarBackfillFromImport`) so it can serialize the `.mokuro` from
@@ -83,7 +100,10 @@ export interface SavedVolumeData {
  */
 export async function saveVolume(
   volume: ProcessedVolume,
-  options?: { preserveTitles?: boolean }
+  options?: {
+    preserveTitles?: boolean;
+    beforeWrite?: (row: VolumeMetadata) => Promise<void>;
+  }
 ): Promise<SavedVolumeData> {
   const { metadata, ocrData, fileData } = volume;
   const canonicalVolumeUuid = metadata.volumeUuid;
@@ -127,7 +147,9 @@ export async function saveVolume(
     ...(metadata.mokuroSha256 ? { mokuro_sha256: metadata.mokuroSha256 } : {}),
     ...(metadata.mokuroSha256 && metadata.mokuroCloud
       ? { mokuro_sha256_cloud: metadata.mokuroCloud }
-      : {})
+      : {}),
+    // Same rule: the file's block or none, never a previous install's.
+    ...(metadata.ocrProvenance ? { ocr_provenance: [metadata.ocrProvenance] } : {})
   };
 
   // Strip cumulativeChars (it's stored in page_char_counts) — this is the
@@ -135,8 +157,13 @@ export async function saveVolume(
   // serialized from (see `SavedVolumeData`).
   const pagesForDb = ocrData.pages.map(({ cumulativeChars, ...page }) => page);
 
-  // Write to all 3 tables atomically
-  await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
+  // Write to all 3 tables atomically. A `beforeWrite` check reads the series
+  // tables too, so they join the transaction only then.
+  const beforeWrite = options?.beforeWrite;
+  const tables = beforeWrite
+    ? [db.volumes, db.volume_ocr, db.volume_files, db.series_metadata, db.series_index]
+    : [db.volumes, db.volume_ocr, db.volume_files];
+  await db.transaction('rw', tables, async () => {
     const [existingVolume, existingOcr, existingFiles] = await Promise.all([
       db.volumes.get(canonicalVolumeUuid),
       db.volume_ocr.get(canonicalVolumeUuid),
@@ -149,16 +176,17 @@ export async function saveVolume(
       throw new Error(`Volume ${canonicalVolumeUuid} already exists in database`);
     }
 
-    // Clean up stale rows left behind by an interrupted delete before re-importing.
-    if (existingOcr) {
-      await db.volume_ocr.delete(canonicalVolumeUuid);
-    }
-
-    if (existingFiles) {
-      await db.volume_files.delete(canonicalVolumeUuid);
-    }
-
     if (existingVolume) {
+      // A reviewed image-only volume restored onto the row it already was
+      // (#285) keeps that row's titles, and the caller sees what was stored.
+      if (metadata.keepStoredTitles) {
+        volumeMetadata.series_title = existingVolume.series_title;
+        volumeMetadata.series_uuid = existingVolume.series_uuid;
+        volumeMetadata.volume_title = existingVolume.volume_title;
+        metadata.series = existingVolume.series_title;
+        metadata.seriesUuid = existingVolume.series_uuid;
+        metadata.volume = existingVolume.volume_title;
+      }
       // Reinstall: the retained cover is already the right one, so keep it when
       // the archive did not bring its own rather than re-deriving it from page 1.
       if (!volumeMetadata.thumbnail && existingVolume.thumbnail) {
@@ -172,6 +200,21 @@ export async function saveVolume(
       if (!volumeMetadata.archive_size && existingVolume.archive_size) {
         volumeMetadata.archive_size = existingVolume.archive_size;
       }
+    }
+
+    // The row is final here; nothing has been written yet.
+    if (beforeWrite) await beforeWrite(volumeMetadata);
+
+    // Clean up stale rows left behind by an interrupted delete before re-importing.
+    if (existingOcr) {
+      await db.volume_ocr.delete(canonicalVolumeUuid);
+    }
+
+    if (existingFiles) {
+      await db.volume_files.delete(canonicalVolumeUuid);
+    }
+
+    if (existingVolume) {
       // `put` replaces the whole row, which is what clears `metadata_only`:
       // a row written together with its files is installed by definition.
       await db.volumes.put(volumeMetadata);

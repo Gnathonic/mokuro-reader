@@ -2,6 +2,7 @@ import type { Readable, Subscriber, Unsubscriber } from 'svelte/store';
 import { db } from './db';
 import { activeAccountScope, normalizeCachePath } from './cloud-cache-key';
 import type { CloudCover } from './cloud-covers';
+import { rasterOrNull } from '$lib/util/raster-image';
 
 /**
  * ONE CARD, ONE COVER, ONE KEYED READ.
@@ -97,6 +98,12 @@ interface CoverEntry {
    * `refreshCoverKeys`.
    */
   pendingRefresh: boolean;
+  /**
+   * A {@link replaceCoverKeys} that arrived while a read was in flight: that
+   * read may have snapshotted the row before it was rewritten, so once it
+   * settles with a value, the value is read again and replaced.
+   */
+  pendingRewrite: boolean;
   /** Non-null only once someone has read `ResolvedCover.url`. */
   url: string | null;
   ready: Promise<ResolvedCover | undefined>;
@@ -176,6 +183,10 @@ function revokeEntryUrl(entry: CoverEntry): void {
   const url = entry.url;
   if (url === null) return;
   entry.url = null;
+  revokeUrl(url);
+}
+
+function revokeUrl(url: string): void {
   try {
     URL.revokeObjectURL(url);
   } catch (error) {
@@ -207,11 +218,11 @@ function settle(entry: CoverEntry, row: CloudCover | undefined): void {
   // so `entry.value` is `undefined` on arrival here, and with it `entry.url`
   // (one is minted only for a LIVE value). That is what makes this three
   // lines instead of a row-identity comparison, an object-URL revoke and a
-  // replacement branch: those existed for a forced re-read that no production
-  // path ever issued (see {@link refreshCoverKeys}), and a `cloud_covers` row is
-  // written once and never rewritten (see `cloud-covers.ts`). Anything that
-  // makes an overwrite reachable has to bring all three back with it.
-  const next = row ? makeResolved(entry, row) : undefined;
+  // replacement branch. A row rewritten under the same key reaches a held
+  // value through {@link replaceCoverKeys} instead, which owns replacement.
+  // A cached cover whose type is not a raster one is never shown (SVG is
+  // unsupported: as an object URL it would run as the app in a new tab).
+  const next = row && rasterOrNull(row.thumbnail) ? makeResolved(entry, row) : undefined;
   if (next !== undefined) entry.value = next;
 
   // A refresh that arrived DURING this read is not answered by this row. The
@@ -235,6 +246,11 @@ function settle(entry: CoverEntry, row: CloudCover | undefined): void {
   entry.resolveReady = null;
   resolveReady?.(entry.value);
   if (next !== undefined) emit(entry);
+
+  if (entry.pendingRewrite) {
+    entry.pendingRewrite = false;
+    if (entry.value !== undefined) startRewriteRead(entry);
+  }
 }
 
 function startRead(entry: CoverEntry): void {
@@ -271,6 +287,7 @@ function dropEntry(entry: CoverEntry): void {
   entry.subscribers.clear();
   entry.value = undefined;
   entry.pendingRefresh = false;
+  entry.pendingRewrite = false;
   entry.settled = false;
   revokeEntryUrl(entry);
   const resolveReady = entry.resolveReady;
@@ -407,6 +424,7 @@ export function acquireCover(path: string | null | undefined): CoverHandle {
       settled: false,
       reading: false,
       pendingRefresh: false,
+      pendingRewrite: false,
       url: null,
       ready: RESOLVED_MISS,
       resolveReady: null,
@@ -443,8 +461,9 @@ export function acquireCover(path: string | null | undefined): CoverHandle {
  * is responsible for not handing this the whole library on every cover write,
  * which is why `initCoverKeyWatch` passes only the keys that just landed.
  *
- * NO `force`, DELIBERATELY. There was one, for the self-heal case: a cover
- * whose bytes change under a path that does not. Nothing could ever call it —
+ * NO `force`: a cover whose bytes change under a path that does not is
+ * {@link replaceCoverKeys}' job, announced by the writer that rewrote it. The
+ * history below is why this function never grew one. Nothing could ever call it —
  * NOT because a `cloud_covers` row can never be rewritten. It can:
  * `putCloudCovers` is a `bulkPut`, and `cover-persist.ts`'s ROUTING sends a
  * self-healed cover for a `volumes` row with NO relationship (a
@@ -509,4 +528,58 @@ export function _resetCoverResolverForTests(): void {
 /** Test hook: how many paths are currently held — 0 means nothing leaked. */
 export function _heldCoverCountForTests(): number {
   return entries.size;
+}
+
+/**
+ * Replace the covers held at `paths` under `scope`, after their `cloud_covers`
+ * rows were REWRITTEN at the same key (a changed cover re-fetched by
+ * `cover-persist.ts`). The key-set watch cannot see a same-key overwrite, so
+ * the writer announces it here.
+ *
+ * Only a held handle that already shows a value is re-read: a held miss gets
+ * the cover through the key watch like any arrival, and an unheld path costs
+ * nothing. A read in flight is re-read after it settles, since its snapshot
+ * may pre-date the rewrite. A row that is gone by the time the re-read lands
+ * (pruned) leaves the picture in place: stale is better than blank.
+ *
+ * Replacing a live value mints a new object URL for the new blob and revokes
+ * the old one only after the holders were told, on a later task, so an
+ * `<img>` repaints from the new URL rather than losing the one it shows.
+ */
+export function replaceCoverKeys(scope: string, paths: Iterable<string>): void {
+  for (const path of paths) {
+    const normalized = path ? normalizeCachePath(path) : '';
+    if (!normalized) continue;
+    const entry = entries.get(`${scope}\u0000${normalized}`);
+    if (!entry) continue;
+    if (entry.reading) entry.pendingRewrite = true;
+    else if (entry.value !== undefined) startRewriteRead(entry);
+  }
+}
+
+function startRewriteRead(entry: CoverEntry): void {
+  entry.reading = true;
+  const land = (row: CloudCover | undefined): void => {
+    if (entries.get(entry.key) !== entry) return;
+    entry.reading = false;
+    // Never swap in a non-raster cover (see settle): the old picture stays.
+    if (row && rasterOrNull(row.thumbnail)) replaceValue(entry, row);
+    if (entry.pendingRewrite) {
+      entry.pendingRewrite = false;
+      startRewriteRead(entry);
+    }
+  };
+  void readCover(entry.scope, entry.path).then(land, (error) => {
+    console.debug('[cover-resolver] keyed cover re-read failed:', error);
+    land(undefined);
+  });
+}
+
+function replaceValue(entry: CoverEntry, row: CloudCover): void {
+  const oldUrl = entry.url;
+  entry.url = null;
+  entry.value = makeResolved(entry, row);
+  entry.ready = Promise.resolve(entry.value);
+  emit(entry);
+  if (oldUrl !== null) setTimeout(() => revokeUrl(oldUrl), 0);
 }

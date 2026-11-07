@@ -12,6 +12,7 @@ import {
   clearAllLayers,
   deleteLayerRows,
   deleteLayersOfVolume,
+  deleteRetiredPreviousOcrLayers,
   getLayerMeta,
   getLayerPages,
   getLayerWithPages,
@@ -170,5 +171,129 @@ describe('layer-store', () => {
       await getLayerPages(db, 'v1', 'a');
     });
     expect(opsOn(withPages, 'volume_ocr_layer_pages')).toEqual(['volume_ocr_layer_pages.get']);
+  });
+
+  describe('deleteRetiredPreviousOcrLayers (v1.10.0 leftovers)', () => {
+    /** A layer the OCR upgrade wrote and nobody touched: `source_at === updated_at`,
+     * under the name v1.10.0 gave it. */
+    const untouched = {
+      kind: 'ocr' as const,
+      source_at: 'u',
+      updated_at: 'u',
+      name: 'Previous OCR'
+    };
+    /** No volume displays any layer. */
+    const noneDisplayed = () => false;
+
+    async function seed(): Promise<void> {
+      await putLayerWithPages(db, layer('v1', 'previous-ocr', 'old', untouched));
+      await putLayerWithPages(
+        db,
+        layer('v1', 'previous-ocr-2', 'old2', { ...untouched, name: 'Previous OCR (2)' })
+      );
+      // Edited after the upgrade wrote it: the user's own layer now.
+      await putLayerWithPages(
+        db,
+        layer('v1', 'previous-ocr-3', 'mine', {
+          ...untouched,
+          name: 'Previous OCR (3)',
+          updated_at: 'u2'
+        })
+      );
+      await putLayerWithPages(db, layer('v2', 'previous-ocr', 'old', untouched));
+      // Never a keepsake, whatever its stamps.
+      await putLayerWithPages(db, layer('v1', 'updated-ocr', 'cloud', untouched));
+      await putLayerWithPages(db, layer('v1', 'previous-ocr-x', 'other', untouched));
+      await putLayerWithPages(db, layer('v1', 'my-previous-ocr', 'other', untouched));
+      await putLayerWithPages(db, layer('v1', 'original', 'orig', { kind: 'original' }));
+      await putLayerWithPages(db, layer('v2', 'fix', 'edit'));
+    }
+
+    async function allKeys(table: 'volume_ocr_layers' | 'volume_ocr_layer_pages') {
+      return (await db.table(table).toCollection().primaryKeys())
+        .map((key) => (key as [string, string]).join('/'))
+        .sort();
+    }
+
+    const SURVIVORS = [
+      'v1/my-previous-ocr',
+      'v1/original',
+      'v1/previous-ocr-3',
+      'v1/previous-ocr-x',
+      'v1/updated-ocr',
+      'v2/fix'
+    ];
+
+    it('deletes untouched previous-ocr and previous-ocr-<n>, both rows; keeps edited ones and every other layer', async () => {
+      await seed();
+      expect(await deleteRetiredPreviousOcrLayers(db, noneDisplayed)).toBe(3);
+      expect(await allKeys('volume_ocr_layers')).toEqual(SURVIVORS);
+      expect(await allKeys('volume_ocr_layer_pages')).toEqual(SURVIVORS);
+      expect((await getLayerPages(db, 'v1', 'previous-ocr-3'))![0].blocks[0].lines).toEqual([
+        'mine'
+      ]);
+      expect((await getLayerMeta(db, 'v1', 'updated-ocr'))?.updated_at).toBe('u');
+    });
+
+    it('chooses from metadata only: the pages table is only ever deleted from', async () => {
+      await seed();
+      const counts = await countIdbOps(async () => {
+        expect(await deleteRetiredPreviousOcrLayers(db, noneDisplayed)).toBe(3);
+      });
+      expect(opsOn(counts, 'volume_ocr_layer_pages')).toEqual(['volume_ocr_layer_pages.delete']);
+      expect(counts['volume_ocr_layer_pages.delete']).toBe(3);
+      expect(opsOn(counts, 'volume_ocr_layers').length).toBeGreaterThan(0);
+    });
+
+    it('is safe to run twice: the second run deletes nothing and reads keys only', async () => {
+      await seed();
+      expect(await deleteRetiredPreviousOcrLayers(db, noneDisplayed)).toBe(3);
+      const counts = await countIdbOps(async () => {
+        expect(await deleteRetiredPreviousOcrLayers(db, noneDisplayed)).toBe(0);
+      });
+      expect(await allKeys('volume_ocr_layers')).toEqual(SURVIVORS);
+      expect(await allKeys('volume_ocr_layer_pages')).toEqual(SURVIVORS);
+      expect(opsOn(counts, 'volume_ocr_layer_pages')).toEqual([]);
+      // Only the kept, edited `previous-ocr-3` is a candidate by id: its one
+      // metadata row is re-checked, nothing else is read, nothing is written.
+      expect(counts['volume_ocr_layers.get']).toBe(1);
+      expect(counts['volume_ocr_layers.delete'] ?? 0).toBe(0);
+    });
+
+    it('does nothing on an empty table', async () => {
+      expect(await deleteRetiredPreviousOcrLayers(db, noneDisplayed)).toBe(0);
+    });
+
+    it('keeps the keepsake a volume displays and a renamed one: picking or renaming moves no stamp', async () => {
+      await putLayerWithPages(db, layer('v1', 'previous-ocr', 'shown', untouched));
+      await putLayerWithPages(
+        db,
+        layer('v2', 'previous-ocr', 'renamed', { ...untouched, name: 'Good OCR' })
+      );
+      await putLayerWithPages(
+        db,
+        layer('v3', 'previous-ocr-2', 'old', { ...untouched, name: 'Previous OCR (2)' })
+      );
+      const isDisplayed = vi.fn(
+        (volumeUuid: string, layerId: string) => volumeUuid === 'v1' && layerId === 'previous-ocr'
+      );
+      expect(await deleteRetiredPreviousOcrLayers(db, isDisplayed)).toBe(1);
+      expect(await allKeys('volume_ocr_layers')).toEqual(['v1/previous-ocr', 'v2/previous-ocr']);
+      expect(await allKeys('volume_ocr_layer_pages')).toEqual([
+        'v1/previous-ocr',
+        'v2/previous-ocr'
+      ]);
+      expect(isDisplayed).toHaveBeenCalledWith('v1', 'previous-ocr');
+    });
+
+    it('asks again inside the delete: a layer picked meanwhile is kept', async () => {
+      await putLayerWithPages(db, layer('v1', 'previous-ocr', 'old', untouched));
+      let asked = 0;
+      // Not displayed when the candidates are chosen; picked before the delete.
+      const isDisplayed = () => ++asked > 1;
+      expect(await deleteRetiredPreviousOcrLayers(db, isDisplayed)).toBe(0);
+      expect(asked).toBe(2);
+      expect(await allKeys('volume_ocr_layers')).toEqual(['v1/previous-ocr']);
+    });
   });
 });

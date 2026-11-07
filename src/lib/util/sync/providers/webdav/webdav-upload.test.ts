@@ -4,9 +4,11 @@ import {
   contentDigestOf,
   UPLOAD_RETRY_DELAYS_MS,
   WebdavUploadError,
+  normalizeEtag,
   uploadFileWithClient,
   uploadWithRetry
 } from './webdav-upload';
+import { describeContract, loadBunkoFixture } from '$lib/interop/contract';
 
 /** What the fake server answers each PUT with, in order. */
 type Answer =
@@ -109,6 +111,27 @@ describe('a WebDAV PUT that the server queued for OCR (Addendum A)', () => {
     expect(result.serverOcr).toEqual({
       manifestUrl: 'https://bunko.example/dav/m',
       recheckAfter: null
+    });
+  });
+});
+
+describeContract('a volume PUT as Bunko answers it (Addendum A)', () => {
+  // The fixture's server is mounted under `/dav`, so bunko's root-absolute
+  // manifest link is put back under that prefix (`resolveBunkoLink`).
+  it('reports the manifest URL, resolved against the upload URL, and the recheck delay', async () => {
+    const put = loadBunkoFixture('put-volume');
+    const headers = put.headers!;
+    answers = [{ status: put.status!, headers }];
+    const result = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/Contract Series/Volume 03.cbz',
+      new Blob([new Uint8Array(Number(headers['x-mokuro-size']))])
+    );
+    expect(result.path).toBe('/mokuro-reader/Contract Series/Volume 03.cbz');
+    expect(result.putVerified).toBe(true);
+    expect(result.serverOcr).toEqual({
+      manifestUrl: `https://bunko.example/dav${headers['x-mokuro-manifest']}`,
+      recheckAfter: Number(headers['x-mokuro-recheck-after'])
     });
   });
 });
@@ -276,6 +299,66 @@ describe('uploadWithRetry', () => {
   });
 });
 
+describe('a 503 PUT that names its wait (Retry-After)', () => {
+  const put = () =>
+    uploadFileWithClient(client, '/mokuro-reader/S/V.mokuro', new Blob(['x'])).then(
+      () => {
+        throw new Error('the PUT settled');
+      },
+      (e: unknown) => e as WebdavUploadError
+    );
+
+  it('carries the wait the server named, in ms', async () => {
+    answers = [{ status: 503, headers: { 'Retry-After': '7' } }];
+    expect((await put()).retryAfterMs).toBe(7_000);
+  });
+
+  it('names none for a 503 without one, one over 30 s, or another status', async () => {
+    answers = [
+      { status: 503 },
+      { status: 503, headers: { 'Retry-After': '31' } },
+      { status: 500, headers: { 'Retry-After': '1' } }
+    ];
+    for (let i = 0; i < 3; i++) expect((await put()).retryAfterMs).toBeUndefined();
+  });
+
+  it('uploadWithRetry waits that long instead of its step delay', async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    let n = 0;
+    const attempt = vi.fn(async () => {
+      if (n++ === 0) {
+        throw new WebdavUploadError('WebDAV upload failed: 503', {
+          status: 503,
+          reason: 'http-503',
+          detail: 'busy',
+          retryable: true,
+          retryAfterMs: 2_000
+        });
+      }
+      return 'ok';
+    });
+    await expect(uploadWithRetry(attempt, { sleep })).resolves.toBe('ok');
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([2_000]);
+  });
+});
+
+describe('uploadWithRetry and a 503 that keeps naming its wait', () => {
+  it('waits a named time at most twice, then takes its own step', async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    const attempt = vi.fn(async () => {
+      throw new WebdavUploadError('WebDAV upload failed: 503', {
+        status: 503,
+        reason: 'http-503',
+        detail: 'busy',
+        retryable: true,
+        retryAfterMs: 2_000
+      });
+    });
+    await expect(uploadWithRetry(attempt, { sleep })).rejects.toThrow('503');
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([2_000, 2_000, UPLOAD_RETRY_DELAYS_MS[2]]);
+  });
+});
+
 describe('X-Mokuro-Put on a PUT response', () => {
   it('reports a server that stages and verifies its PUTs', async () => {
     answers = [{ status: 201, headers: { 'X-Mokuro-Put': 'verified' } }];
@@ -429,5 +512,33 @@ describe('readServerOcrHeaders', () => {
       manifestUrl: 'https://bunko.example/catalog/api/manifest?series=S&volume=V',
       recheckAfter: 30
     });
+  });
+});
+
+describe("a WebDAV PUT's ETag (the upload receipt)", () => {
+  it('is reported in the form the webdav library reports getetag (quotes stripped)', async () => {
+    answers = [{ status: 201, headers: { ETag: '"1730541600.123456-28542"' } }];
+    const result = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/volume-data.json',
+      new Blob(['x'])
+    );
+    expect(result.etag).toBe('1730541600.123456-28542');
+  });
+
+  it('is absent when the server sent none (or CORS hid it)', async () => {
+    answers = [{ status: 204 }];
+    const result = await uploadFileWithClient(
+      client,
+      '/mokuro-reader/volume-data.json',
+      new Blob(['x'])
+    );
+    expect(result).not.toHaveProperty('etag');
+  });
+
+  it('normalizes like getetag: a weak tag keeps its W/ prefix, an empty one is none', () => {
+    expect(normalizeEtag('W/"abc"')).toBe('W/abc');
+    expect(normalizeEtag('""')).toBeUndefined();
+    expect(normalizeEtag(null)).toBeUndefined();
   });
 });

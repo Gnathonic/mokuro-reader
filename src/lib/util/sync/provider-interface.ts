@@ -124,6 +124,44 @@ export interface ProviderStatus {
    */
   serverCompilesMetadata?: boolean;
   /**
+   * Can this server keep this user's reading history (`history/<device>/`)?
+   * `false` = no: mokuro-bunko before 0.7.8 (or one that does not list
+   * `history/` in `per_user_files`) files those paths into the SHARED
+   * library, so the client neither uploads nor imports history there and keeps
+   * page turns in `volume-data.json`. Absent = no restriction (plain storage).
+   */
+  historySync?: boolean;
+  /**
+   * Can this server keep `positions.json` per user? `false` = no (mokuro-bunko
+   * not listing it in its identity's `per_user_files`): the path is a SHARED
+   * library file there, so the client neither reads nor writes it. Absent =
+   * plain storage.
+   */
+  positionsSync?: boolean;
+  /**
+   * May the account's own `edit` layer (`<Volume>.edit.mokuro`) go up here?
+   * `push` = yes: mokuro-bunko lists `edit` in `per_user_layers`, so it keeps
+   * that file per account. `local` = no: any other bunko (0.7.x, or one known
+   * only by its verified PUTs) files it into the SHARED library, where it
+   * would replace every account's corrections. Absent = plain storage or a
+   * cloud-direct bunko, where the file is the user's own: push.
+   */
+  editLayerSync?: 'push' | 'local';
+  /**
+   * Who may publish the library's shared `curated` layer
+   * (`canPublishCurated`): bunko's `permissions.curated.scope`, or `all` for
+   * the owner of a cloud folder whose fresh bunko marker keeps one. Absent =
+   * no curated layer here.
+   */
+  curatedPublish?: CuratedScope;
+  /**
+   * Under `curatedPublish` `owned`: the archives this account uploaded in
+   * series folders it does NOT own (bunko >= 0.8 `permissions.curated.volumes`),
+   * whose curated layer it may publish too. Absent = not reported (an older
+   * bunko): only the owned series.
+   */
+  curatedVolumes?: CuratedVolume[];
+  /**
    * Per-series metadata (names/links/tag/unit/spine offsets) edit scope, as reported by a
    * provider capable of restricting it (currently mokuro-bunko's identity endpoint, via
    * WebDAV). Absent = no restriction — an older server that doesn't report the field, or
@@ -145,6 +183,14 @@ export interface ProviderStatus {
    */
   canAddFiles?: boolean;
   /**
+   * Which series folders this account may add files to
+   * (`accountCanAddToSeries`): bunko >= 0.8 records series owners, and an
+   * uploader may add archives, sidecars and folders only to a series no other
+   * account owns (`closedSeries` lists those). Absent = no series is closed
+   * (older bunko, any other provider).
+   */
+  addFilesPermissions?: AddFilesPermissions;
+  /**
    * Stable, non-secret identifier for the connected account, used to scope the
    * cloud metadata cache so switching accounts cannot cross-contaminate it.
    * Shape: `<provider>:<discriminator>`. NEVER include a password or token —
@@ -152,6 +198,89 @@ export interface ProviderStatus {
    * account, and the cache is skipped entirely for it.
    */
   accountScope?: string;
+  /**
+   * What this library's cloud-direct mokuro-bunko marker
+   * (`mokuro-reader/.mokuro-bunko.json`) says, when one has been read for this
+   * provider — see `catalog/cloud-bunko-marker.ts`. A fresh marker makes
+   * `serverCompilesMetadata` true even on plain storage. Absent = no marker
+   * seen (no Bunko manages this folder, or it has not been read yet).
+   */
+  cloudBunko?: CloudBunkoStatus;
+}
+
+/** The marker's verdict as the views and gates see it (`ProviderStatus.cloudBunko`). */
+export interface CloudBunkoStatus {
+  /** A fresh, active marker that compiles the library metadata exists right now. */
+  fresh: boolean;
+  /** The top-ranked fresh marker (the lease holder); null when none is fresh. */
+  holder: {
+    instanceId: string;
+    instanceName: string;
+    /** Bunko's own clock, ISO — for "last seen" wording only, never for freshness. */
+    heartbeatAt: string;
+    /** The holder's `bunko_version`; '' when its marker names none (pre-0.8). */
+    bunkoVersion: string;
+    /** Files the holder keeps per account (`history/` = a per-account tree); [] pre-0.8. */
+    perUserFiles: string[];
+    /** The holder merges duplicate folders and files itself. */
+    dedup: boolean;
+    /** The holder keeps a shared `curated` layer. */
+    curated: boolean;
+  } | null;
+}
+
+/**
+ * One node of a control file. Providers that allow duplicate names (Drive,
+ * MEGA, merged `mokuro-reader` roots) may hold several nodes of one name, and
+ * every one of them is returned: the marker's rank is computed over all of
+ * them, never over a single "winner".
+ */
+export interface ControlFileNode {
+  /** The provider's node id (Drive file id, Graph item id, MEGA handle, WebDAV href). */
+  id: string;
+  /**
+   * The node's VERSION: something that changes whenever its content does
+   * (Drive md5Checksum + modifiedTime, Graph cTag, MEGA handle, WebDAV ETag).
+   * Never a client clock.
+   */
+  etag: string;
+  /** The provider's modification time (ISO), when it reports one. */
+  modified?: string;
+  blob: Blob;
+}
+
+export interface ControlFileRead {
+  nodes: ControlFileNode[];
+  /** Opaque version of the WHOLE node set: hand it back as `ifNoneMatch`. */
+  etag: string;
+}
+
+/**
+ * `readControlFile` result: the nodes, `'not-modified'` when `ifNoneMatch`
+ * still names the current set, or null when no node of that name exists.
+ */
+export type ControlFileResult = ControlFileRead | 'not-modified' | null;
+
+/** Scope of `ProviderStatus.curatedPublish`: every volume, the account's own uploads, or none. */
+export type CuratedScope = 'all' | 'owned' | 'none';
+
+/** One listed archive: its series FOLDER name and its stem (the `.cbz` name without `.cbz`). */
+export interface CuratedVolume {
+  series: string;
+  volume: string;
+}
+
+/**
+ * Scope of `ProviderStatus.addFilesPermissions`: every series, every series
+ * but the `closedSeries` other accounts own, or none.
+ */
+export type AddFilesScope = 'all' | 'open' | 'none';
+
+/** Where the server lets this account add files — see `ProviderStatus.addFilesPermissions`. */
+export interface AddFilesPermissions {
+  scope: AddFilesScope;
+  /** Series FOLDER names another account owns; present only when scope === 'open'. */
+  closedSeries?: string[];
 }
 
 /** Scope of a `metadataPermissions.scope` value — see `ProviderStatus.metadataPermissions`. */
@@ -223,6 +352,40 @@ export interface UploadFileResult {
   modifiedTime?: string;
   /** Server-reported size in bytes, when the upload response carried one. */
   size?: number;
+  /**
+   * The server's change token for the file just written, when the upload
+   * response carried one — the same token `statFile` reports as
+   * {@link FileStamp.revision} (Drive `version`, OneDrive `cTag` else `eTag`,
+   * a WebDAV `ETag`, a MEGA node id). Provider-opaque: compare, never parse.
+   */
+  revision?: string;
+  /** Google Drive: the folder the file was written into. */
+  parentId?: string;
+  /** Google Drive: the file's name as Drive holds it. */
+  name?: string;
+}
+
+/**
+ * The server's current stamp of ONE known file, read without its body
+ * (`SyncProvider.statFile`). `size` and `modifiedTime` are always filled;
+ * `revision` is the strongest provider-opaque change token the provider has
+ * (see {@link UploadFileResult.revision}) and is compared before them.
+ */
+export interface FileStamp {
+  size: number;
+  /** Server modification time; compare through `Date.parse` (WebDAV gives RFC 1123). */
+  modifiedTime: string;
+  revision?: string;
+}
+
+/** Hints for `SyncProvider.downloadFile`. */
+export interface DownloadOptions {
+  /**
+   * The file's size as the server reported it just now (a `statFile` taken
+   * before this download): a provider may skip its own size probe (WebDAV's
+   * HEAD). Never a listing's size, which can be hours old.
+   */
+  knownSize?: number;
 }
 
 /**
@@ -252,6 +415,12 @@ export interface CloudFileMetadata {
   modifiedTimeProvisional?: boolean;
   /** File size in bytes */
   size: number;
+  /**
+   * The provider's change token for this revision of the file, when the
+   * listing or upload response carried one (see {@link FileStamp.revision}).
+   * Optional and never a substitute for `size` + `modifiedTime`.
+   */
+  revision?: string;
   /** Optional description/metadata */
   description?: string;
 }
@@ -321,6 +490,36 @@ export type AnyCloudFileMetadata =
   | FilesystemFileMetadata
   | OneDriveFileMetadata;
 
+/** What a sign-out left behind (`SyncProvider.logout`), when the provider knows. */
+export interface LogoutResult {
+  /**
+   * A copy of this device's session (e.g. Google Drive's refresh cookie,
+   * copied off this machine before the sign-out) may still work: the
+   * sign-out could not make it useless without ending access everywhere.
+   */
+  copyMayStillWork?: boolean;
+  /**
+   * An `everywhere` sign-out: the provider confirmed the account's access
+   * ended on every device. Absent or false: it did not — never tell the user
+   * it did.
+   */
+  revoked?: boolean;
+  /**
+   * An `everywhere` sign-out that never reached the provider (offline): it is
+   * queued and finishes the next time this browser connects.
+   */
+  pendingEverywhere?: boolean;
+}
+
+/** How far a sign-out reaches (`SyncProvider.logout`). */
+export interface LogoutOptions {
+  /**
+   * End this account's access on every device, not just this one. Only an
+   * explicit, confirmed user action passes it — never a provider switch.
+   */
+  everywhere?: boolean;
+}
+
 export interface SyncProvider {
   /** Provider type identifier */
   readonly type: ProviderType;
@@ -368,8 +567,14 @@ export interface SyncProvider {
    */
   login(credentials?: ProviderCredentials): Promise<void>;
 
-  /** Logout and clear stored credentials */
-  logout(): Promise<void>;
+  /**
+   * Logout and clear stored credentials. By default this signs out THIS
+   * device only. `everywhere` asks the provider to end the account's access
+   * for every device too — only Google Drive honours it (a revoke of the
+   * whole grant); every other provider ignores it. A provider may answer
+   * with what the sign-out left behind (`LogoutResult`).
+   */
+  logout(options?: LogoutOptions): Promise<LogoutResult | void>;
 
   // GENERIC FILE OPERATIONS (BLOB-BASED)
   /**
@@ -395,6 +600,28 @@ export interface SyncProvider {
   ): Promise<UploadFileResult>;
 
   /**
+   * Every copy of a ROOT file (beside `volume-data.json`), found by its known
+   * path WITHOUT the library listing; [] = no such file. The cold probe reads
+   * `positions.json` this way while the first, slow listing still runs.
+   *
+   * READ-ONLY by contract: a caller never writes from what this returns — it
+   * cannot promise to have seen every copy the way a listing does. OPTIONAL:
+   * absent = the probe waits for the listing, as before.
+   */
+  readRootFileCopies?(name: string): Promise<Blob[]>;
+
+  /**
+   * Every syncable file under ONE folder of the reader root (e.g. `history`),
+   * listed WITHOUT walking the library, as the same entries the full listing
+   * would hold for them (same `path`, `size`, `modifiedTime`, `fileId`) —
+   * stamps recorded from these must still match after the full listing.
+   * [] = no such folder. The quick tier lists `history/` this way.
+   *
+   * READ-ONLY by contract, like `readRootFileCopies`. OPTIONAL.
+   */
+  listFolder?(folder: string): Promise<CloudFileMetadata[]>;
+
+  /**
    * Upload WITHOUT any post-upload refresh work — the write-and-forget path
    * for callers that do not need to read the result back (the sidecar
    * backfill: it converges through the targeted cache add the unified layer
@@ -402,14 +629,11 @@ export interface SyncProvider {
    *
    * OPTIONAL, and absent means `uploadFile` is already blind: implement this
    * only when the ordinary `uploadFile` performs extra refresh work worth
-   * skipping. Google Drive is the one such provider today — its `uploadFile`
-   * ends with a FULL paged listing refetch (13+ `files.list` calls on a
-   * 12,500-file library), which `blindUploadFile` skips. Callers go through
+   * skipping. No provider does today: Google Drive's `uploadFile` ended with
+   * a FULL paged listing refetch (13+ `files.list` calls on a 12,500-file
+   * library) until #288, and was the one implementation. Callers go through
    * `unifiedCloudManager.blindUploadFile`, which handles the fallback and
-   * documents WHICH callers qualify — a write must change nothing any view
-   * renders, be retryable by a self-healing process, and lose nothing
-   * important on failure; everything else stays on `uploadFile`, whose
-   * refreshed cache is how backups are confirmed and rendered.
+   * documents which callers qualify.
    */
   blindUploadFile?(
     path: string,
@@ -419,14 +643,26 @@ export interface SyncProvider {
   ): Promise<UploadFileResult>;
 
   /**
+   * The server's CURRENT stamp of one known file, without its body — one
+   * small metadata request (MEGA and Local Folder: none). `null` = the file
+   * is gone. Lets `readRootFile` (`root-file-memo.ts`) skip downloading a
+   * root file this device already holds the bytes of. Must never send a
+   * request header a plain server's CORS allow-list could refuse (WebDAV:
+   * a PROPFIND Depth 0, no `If-None-Match`). OPTIONAL.
+   */
+  statFile?(file: CloudFileMetadata): Promise<FileStamp | null>;
+
+  /**
    * Download a file from cloud storage
    * @param file Cloud file metadata (provider extracts internal ID)
    * @param onProgress Optional progress callback (loaded, total)
+   * @param options Optional hints (see {@link DownloadOptions})
    * @returns File data as Blob
    */
   downloadFile(
     file: CloudFileMetadata,
-    onProgress?: (loaded: number, total: number) => void
+    onProgress?: (loaded: number, total: number) => void,
+    options?: DownloadOptions
   ): Promise<Blob>;
 
   /**
@@ -458,8 +694,9 @@ export interface SyncProvider {
    * status update. Providers whose permissions can change server-side mid-session
    * (mokuro-bunko: `ownedSeries` grows as this account uploads) implement this so
    * the UI's gates track reality without a reconnect. Must fail quietly.
+   * `maxAgeMs`: skip it while the last answer is younger than that.
    */
-  refreshIdentity?(): Promise<void>;
+  refreshIdentity?(options?: { maxAgeMs?: number }): Promise<void>;
 
   /**
    * Optionally remove a directory ONLY if the provider confirms (server-side)
@@ -470,6 +707,24 @@ export interface SyncProvider {
    * (or that auto-prune) can omit this.
    */
   removeDirectoryIfEmpty?(relativePath: string): Promise<void>;
+
+  /**
+   * Read a CONTROL file at the library root (`mokuro-reader/<name>`, see
+   * `isBunkoControlFile`) directly by name — these files are never listed.
+   * Returns EVERY node of that name (duplicates included), `'not-modified'`
+   * when `opts.ifNoneMatch` equals the current set's `etag`, or null when
+   * there is none. Downloads only nodes whose version changed since the last
+   * read. Throws a `ProviderError` on failure (auth expiry: `isAuthError`).
+   * Optional: a provider without it simply never sees a cloud-direct Bunko.
+   */
+  readControlFile?(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult>;
+
+  /**
+   * Subscribe to changes of control files (called with the file's basename).
+   * MEGA: the live tree's change events; providers without a push feed omit
+   * it. Returns the unsubscribe.
+   */
+  onControlFileChange?(listener: (name: string) => void): () => void;
 
   /**
    * Get storage quota information from the provider
@@ -525,6 +780,17 @@ export interface SyncProvider {
 
 // WebDAV-specific error types for detailed modal guidance
 export type WebDAVErrorType = 'network' | 'auth' | 'connection' | 'permission' | 'unknown';
+
+/**
+ * `ProviderError.code` of a sign-in the user walked away from (Back on the
+ * provider's own page): nothing failed, so nothing is shown.
+ */
+export const LOGIN_CANCELLED = 'LOGIN_CANCELLED';
+
+/** The user cancelled the sign-in: say nothing. */
+export function isLoginCancelled(error: unknown): boolean {
+  return error instanceof ProviderError && error.code === LOGIN_CANCELLED;
+}
 
 export class ProviderError extends Error {
   constructor(

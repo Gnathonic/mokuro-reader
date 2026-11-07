@@ -25,7 +25,9 @@ const cloud = vi.hoisted(() => {
   const downloadFile = vi.fn((file: { fileId: string }) => {
     calls.push(file.fileId);
     return new Promise<Blob>((resolve) => {
-      resolvers.push(() => resolve(new Blob([new Uint8Array([1, 2])], { type: 'image/webp' })));
+      // A real WebP signature: covers are typed by their bytes alone.
+      const webp = new Uint8Array([82, 73, 70, 70, 4, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 32]);
+      resolvers.push(() => resolve(new Blob([webp], { type: 'image/webp' })));
     });
   });
   return { calls, resolvers, downloadFile };
@@ -61,9 +63,16 @@ function vol(id: string): VolumeMetadata {
   } as VolumeMetadata;
 }
 
-/** Let a resolved download run its post-download chain (bitmap, cache, release, grant). */
+/**
+ * Let a resolved download run its post-download chain (byte sniff, bitmap,
+ * cache, release, grant). Reading the cover's leading bytes settles on a task,
+ * not a microtask, so each round also yields one macrotask.
+ */
 async function flush(): Promise<void> {
-  for (let i = 0; i < 8; i++) await Promise.resolve();
+  for (let round = 0; round < 3; round++) {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 /** Resolve every outstanding download until the queue is fully drained. */

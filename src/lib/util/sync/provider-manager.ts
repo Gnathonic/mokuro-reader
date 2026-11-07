@@ -1,7 +1,14 @@
 import { derived, writable, type Readable } from 'svelte/store';
-import type { SyncProvider, ProviderType, ProviderStatus } from './provider-interface';
+import type {
+  LogoutOptions,
+  LogoutResult,
+  SyncProvider,
+  ProviderType,
+  ProviderStatus
+} from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { getConfiguredProviderType, clearActiveProviderKey } from './provider-detection';
+import { clearCloudBunkoMarkers, onCloudBunkoMarkerChange } from '$lib/catalog/cloud-bunko-marker';
 
 /**
  * How many times one `updateStatus()` call may recompute because a subscriber
@@ -49,6 +56,14 @@ class ProviderManager {
   });
 
   constructor() {
+    // A cloud-direct Bunko's marker feeds every provider's
+    // `serverCompilesMetadata` (`withCloudBunkoStatus` in each `getStatus`).
+    // The snapshot below is only recomputed when asked, so a marker read that
+    // changed the verdict — or a fresh marker expiring, on the marker store's
+    // own timer — must ask: otherwise the gates that read this store
+    // (`canProduceCatalog`, `hasWritableNonServerProvider`) keep the old answer.
+    onCloudBunkoMarkerChange(() => this.updateStatus());
+
     // Check localStorage synchronously to set initial "configured" state
     // This prevents UI from showing "not connected" while waiting for async init
     const configuredProvider = getConfiguredProviderType();
@@ -106,7 +121,9 @@ class ProviderManager {
 
   /**
    * Set the current provider (THE provider)
-   * Logs out the previous provider if switching
+   * Logs out the previous provider if switching — on THIS device only: a
+   * switch never passes `everywhere`, so Google Drive's grant (which other
+   * devices and a mokuro-bunko server may share) is never revoked by one.
    * @param provider The provider instance to make current
    */
   async setCurrentProvider(provider: SyncProvider): Promise<void> {
@@ -176,19 +193,31 @@ class ProviderManager {
   }
 
   /**
-   * Logout the current provider
+   * Logout the current provider — this device only, unless
+   * `options.everywhere` (see `SyncProvider.logout`), which is passed through.
+   * Answers what the signed-out provider's sign-out left behind, if it said:
+   * the current provider's, or with none current, the configured one's —
+   * the provider the cloud page shows (`publishStatus`), whose panel the
+   * sign-out was asked from.
    */
-  async logout(): Promise<void> {
+  async logout(options?: LogoutOptions): Promise<LogoutResult> {
+    let result: LogoutResult = {};
     // Try the current provider first
     if (this.currentProvider) {
-      await this.currentProvider.logout();
+      result = (await this.currentProvider.logout(options)) ?? {};
       this.currentProvider = null;
     } else {
-      // currentProvider is null (e.g., connection failed on startup).
-      // Call logout on all registered providers to clear any stored credentials.
+      // currentProvider is null (e.g., connection failed on startup, or
+      // Drive's token was cleared while its auth history was kept): the
+      // cloud page still shows the configured provider. Call logout on all
+      // registered providers to clear any stored credentials, and keep the
+      // shown one's answer — dropping it would tell the user, say, that
+      // Google was never reached when it confirmed the revoke.
+      const shown = getConfiguredProviderType();
       for (const provider of this.providerRegistry.values()) {
         try {
-          await provider.logout();
+          const answer = await provider.logout(options);
+          if (provider.type === shown) result = answer ?? {};
         } catch {
           /* ignore */
         }
@@ -197,6 +226,8 @@ class ProviderManager {
 
     // Always clear state — belt and suspenders
     cacheManager.clearAll();
+    // The next account's library has its own marker (or none).
+    clearCloudBunkoMarkers();
     clearActiveProviderKey();
 
     // Force-clear all provider credential keys from localStorage
@@ -221,6 +252,7 @@ class ProviderManager {
     }
 
     this.updateStatus();
+    return result;
   }
 
   /**

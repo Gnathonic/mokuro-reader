@@ -5,9 +5,11 @@
 
 import { writable, derived, get } from 'svelte/store';
 import {
-  consumeAniListReturnHash,
+  clearAniListLoginMarker,
+  consumeAniListLoginMarker,
   handleAniListCallbackHash,
-  isAniListCallbackHash
+  isAniListCallbackHash,
+  noteRefusedAniListCallback
 } from '$lib/metadata/anilist-auth';
 
 /**
@@ -251,6 +253,17 @@ export const routeParams = derived(currentView, ($currentView) => {
 export const isOnReader = derived(currentView, ($currentView) => $currentView.type === 'reader');
 
 /**
+ * Is this volume on screen right now (the reader or its text view)? Background
+ * passes that would write its `volumes` row ask this first: the open volume's
+ * data reloads whenever its row changes (`volumeRowSignature`), swapping every
+ * page image and moving the text under the user mid-page.
+ */
+export function isVolumeOpen(volumeUuid: string): boolean {
+  const view = get(currentView);
+  return (view.type === 'reader' || view.type === 'volume-text') && view.volumeId === volumeUuid;
+}
+
+/**
  * Initialize the router - sets up hashchange listener
  * Call this on app initialization, returns cleanup function
  */
@@ -262,19 +275,27 @@ export function initRouter(): () => void {
   // wipe the fragment before we ever get to read it.
   if (isAniListCallbackHash(window.location.hash)) {
     const callbackHash = window.location.hash;
-    const rawReturnHash = consumeAniListReturnHash();
+    const marker = consumeAniListLoginMarker();
     // Only a same-origin script can have written `anilist_return` (it's set
-    // by startAniListLogin() right before navigating to AniList), so its
-    // presence is proof this tab initiated the login. An attacker can send
+    // by startAniListLogin() right before navigating to AniList), so a
+    // fresh one is proof this tab initiated the login. An attacker can send
     // a bare `#access_token=…` link with no such key set — without this
     // check that link would silently log the victim into the attacker's
-    // AniList account. Absent proof, scrub the fragment and store nothing.
-    const returnHash =
-      rawReturnHash && rawReturnHash.startsWith('#/') ? rawReturnHash : '#/catalog';
+    // AniList account. Absent proof, scrub the fragment, store nothing, and
+    // say why. An expired marker still names where the login started.
+    const savedHash = marker.state === 'none' ? null : marker.hash;
+    const returnHash = savedHash && savedHash.startsWith('#/') ? savedHash : '#/catalog';
     window.history.replaceState(null, '', '/' + returnHash);
-    if (rawReturnHash) {
+    if (marker.state === 'started') {
       void handleAniListCallbackHash(callbackHash).catch(() => {});
+    } else {
+      noteRefusedAniListCallback(marker.state);
     }
+  } else {
+    // Back in the app WITHOUT a token: whatever login this tab started is
+    // over (Back on AniList's page, or a denial). Its marker goes, so a
+    // forged callback opened later in this tab cannot complete it.
+    clearAniListLoginMarker();
   }
 
   // Handle legacy pathname-based routes from before hash router migration
@@ -304,6 +325,18 @@ export function initRouter(): () => void {
     currentView.set(parseHash(window.location.hash));
   }
 
+  // Back from AniList's page into this very document, restored from the
+  // back/forward cache: no reload, so the clearing above never ran.
+  function handlePageShow(event: PageTransitionEvent) {
+    if (event.persisted && !isAniListCallbackHash(window.location.hash)) {
+      clearAniListLoginMarker();
+    }
+  }
+
   window.addEventListener('hashchange', handleHashChange);
-  return () => window.removeEventListener('hashchange', handleHashChange);
+  window.addEventListener('pageshow', handlePageShow);
+  return () => {
+    window.removeEventListener('hashchange', handleHashChange);
+    window.removeEventListener('pageshow', handlePageShow);
+  };
 }

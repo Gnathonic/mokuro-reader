@@ -1,12 +1,13 @@
 import { isUntouchedUpgradeLayer } from '$lib/catalog/mokuro-hash';
 import { db } from '$lib/catalog/db';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
+import { mainSidecarPagesForCloud } from '$lib/catalog/main-sidecar';
 import type { VolumeMetadata } from '$lib/types';
 import { getSeriesIndex } from '$lib/metadata/series-index';
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { buildSeriesFileFrom, type SeriesFile } from '$lib/metadata/series-file';
 import { getSeriesMetadataForTitle } from '$lib/metadata/store';
-import { buildMokuroMetadata } from './mokuro-metadata';
+import { buildLayerMokuroMetadata, buildPrimaryMokuroMetadata } from './mokuro-metadata';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerSidecarName } from './sync/syncable-file';
 
@@ -62,17 +63,19 @@ function extensionFromMimeType(contentType: string): string {
  * stores (`cumulativeChars` removed, exactly what `saveVolume` writes) —
  * never the import pipeline's in-flight pages. Pass `null` when there is no
  * OCR row; an image-only volume (empty `mokuro_version`) never yields a
- * `.mokuro` either way.
+ * `.mokuro` either way. `markEdited`: the pages are the volume's own primary
+ * row (see `buildPrimaryMokuroMetadata`).
  */
-export function buildVolumeSidecarsFromData(
+export async function buildVolumeSidecarsFromData(
   volume: VolumeMetadata,
-  pages: unknown[] | null
-): VolumeSidecarFiles {
+  pages: unknown[] | null,
+  opts: { markEdited?: boolean } = {}
+): Promise<VolumeSidecarFiles> {
   let mokuroFile: File | null = null;
   const hasMokuroVersion =
     typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
   if (hasMokuroVersion && pages) {
-    const metadata = buildMokuroMetadata(volume, pages);
+    const metadata = await buildPrimaryMokuroMetadata(volume, pages, opts);
     const blob = new Blob([JSON.stringify(metadata)], { type: 'application/json' });
     mokuroFile = new File([blob], `${volume.volume_title}.mokuro`, { type: 'application/json' });
   }
@@ -94,7 +97,15 @@ export function buildVolumeSidecarsFromData(
  * which a per-volume caller (the export loop) must not pay once per volume —
  * `buildSeriesFileForExport` is called once per series instead.
  */
-export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSidecarFiles> {
+export async function loadVolumeSidecars(
+  volumeUuid: string,
+  /**
+   * `forCloud`: the main `.mokuro` is model output (`catalog/main-sidecar.ts`)
+   * — an edited volume's comes from its `original` snapshot, or is left out.
+   * Exports keep the primary (the user's own view) as it is.
+   */
+  opts: { forCloud?: boolean } = {}
+): Promise<VolumeSidecarFiles> {
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {
     throw new Error(`Volume ${volumeUuid} not found`);
@@ -103,7 +114,16 @@ export async function loadVolumeSidecars(volumeUuid: string): Promise<VolumeSide
   const hasMokuroVersion =
     typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
   const volumeOcr = hasMokuroVersion ? await db.volume_ocr.get(volumeUuid) : undefined;
-  return buildVolumeSidecarsFromData(volume, volumeOcr?.pages ?? null);
+  const primary = volumeOcr?.pages ?? null;
+  if (!opts.forCloud || !primary) {
+    return buildVolumeSidecarsFromData(volume, primary, { markEdited: true });
+  }
+  const pages = await mainSidecarPagesForCloud(db, volume, primary);
+  const counted =
+    pages && pages !== primary
+      ? { ...volume, character_count: buildPageCharCounts(pages).totalChars }
+      : volume;
+  return buildVolumeSidecarsFromData(counted, pages, { markEdited: pages === primary });
 }
 
 export function downloadFileBlob(file: File): void {
@@ -127,15 +147,12 @@ export async function loadVolumeLayerFiles(volumeUuid: string): Promise<File[]> 
   return (
     layers
       // Same rule as `compress-volume`'s layer sidecars: an untouched upgrade
-      // layer (`updated-ocr`, `previous-ocr`) is never a layer file.
+      // layer (`updated-ocr`) is never a layer file.
       .filter((layer) => !isUntouchedUpgradeLayer(layer))
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {
         const { totalChars } = buildPageCharCounts(layer.pages);
-        const metadata = buildMokuroMetadata(
-          { ...volume, character_count: totalChars },
-          layer.pages
-        );
+        const metadata = buildLayerMokuroMetadata(volume, layer, totalChars);
         return new File(
           [JSON.stringify(metadata)],
           layerSidecarName(volume.volume_title, layer.layer_id),

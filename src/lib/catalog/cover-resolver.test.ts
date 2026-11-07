@@ -15,6 +15,7 @@ import { putCloudCovers, type CloudCover } from './cloud-covers';
 import {
   acquireCover,
   refreshCoverKeys,
+  replaceCoverKeys,
   _heldCoverCountForTests,
   _resetCoverResolverForTests,
   type ResolvedCover
@@ -596,5 +597,98 @@ describe('refreshCoverKeys', () => {
 
     expect(coverOps(counts)).toEqual({});
     handle.release();
+  });
+});
+
+describe('replaceCoverKeys: a cover rewritten under the same key', () => {
+  const NEW_FILE = () => new File([new Uint8Array([9, 9])], 'new.webp', { type: 'image/webp' });
+
+  it('reaches a card already showing the old cover, with a new URL, and frees the old one', async () => {
+    await putCloudCovers([cover()]);
+    const handle = acquireCover(PATH);
+    const seen: (ResolvedCover | undefined)[] = [];
+    handle.subscribe((v) => seen.push(v));
+    const old = await handle.ready;
+    const oldUrl = old!.url;
+
+    await putCloudCovers([cover({ thumbnail: NEW_FILE(), width: 300, cached_at: 1756000001000 })]);
+    replaceCoverKeys(SCOPE, [PATH]);
+    await flush();
+
+    expect(handle.current).toMatchObject({ width: 300 });
+    expect(seen.at(-1)).toMatchObject({ width: 300 });
+    expect(await handle.current!.file.text()).toBe(await NEW_FILE().text());
+    expect(handle.current!.url).not.toBe(oldUrl);
+    expect(revoked).toContain(oldUrl);
+    await expect(handle.ready).resolves.toMatchObject({ width: 300 });
+    handle.release();
+  });
+
+  it('costs nothing for a path nobody holds or a held miss', async () => {
+    const miss = acquireCover('Miss/Volume 01.cbz');
+    await miss.ready;
+    const counts = await countIdbOps(async () => {
+      replaceCoverKeys(SCOPE, ['Miss/Volume 01.cbz', 'Nobody/Holds This.cbz']);
+      await flush();
+    });
+    expect(coverOps(counts)).toEqual({});
+    miss.release();
+  });
+
+  it('keeps the picture it has when the row is gone (pruned), never blanking the card', async () => {
+    await putCloudCovers([cover()]);
+    const handle = acquireCover(PATH);
+    await handle.ready;
+    await db.cloud_covers.clear();
+    replaceCoverKeys(SCOPE, [PATH]);
+    await flush();
+    expect(handle.current).toMatchObject({ width: 250 });
+    handle.release();
+  });
+
+  it('never shows a rewritten cover that is not a raster image, and keeps the old picture', async () => {
+    await putCloudCovers([cover()]);
+    const handle = acquireCover(PATH);
+    const old = await handle.ready;
+    const svg = new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'c.svg', {
+      type: 'image/svg+xml'
+    });
+    await db.cloud_covers.put(cover({ thumbnail: svg, width: 300 }));
+    replaceCoverKeys(SCOPE, [PATH]);
+    await flush();
+    expect(handle.current).toMatchObject({ width: 250 });
+    expect(handle.current!.url).toBe(old!.url);
+    expect(revoked).not.toContain(old!.url);
+    handle.release();
+  });
+
+  it('honours a rewrite announced while the first read is still in flight', async () => {
+    await putCloudCovers([cover()]);
+    const realGet = db.cloud_covers.get.bind(db.cloud_covers);
+    let land!: () => void;
+    const gate = new Promise<void>((resolve) => (land = resolve));
+    let reads = 0;
+    const spy = vi.spyOn(db.cloud_covers, 'get').mockImplementation((async (
+      key: [string, string]
+    ) => {
+      reads += 1;
+      if (reads > 1) return realGet(key);
+      const before = await realGet(key); // the pre-write snapshot: the OLD cover
+      await gate;
+      return before;
+    }) as unknown as typeof db.cloud_covers.get);
+    try {
+      const handle = acquireCover(PATH);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await putCloudCovers([cover({ thumbnail: NEW_FILE(), width: 300 })]);
+      replaceCoverKeys(SCOPE, [PATH]);
+      land();
+      await flush();
+      expect(handle.current).toMatchObject({ width: 300 });
+      expect(reads).toBe(2);
+      handle.release();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

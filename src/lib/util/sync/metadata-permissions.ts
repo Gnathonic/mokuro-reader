@@ -64,14 +64,18 @@ function ownedKeysFor(permissions: SeriesMetadataPermissions): Set<string> {
  * Can the signed-in account edit `seriesTitle`'s shared metadata on the currently active
  * provider? `seriesTitle` is the series FOLDER name (the same identity `ownedSeries`
  * lists) — both sides are folded through `normalizeVolumeTitleKey` before comparing, so a
- * folder name that arrived NFD-decomposed still matches an NFC-composed entry.
+ * folder name that arrived NFD-decomposed still matches an NFC-composed entry. From bunko
+ * 0.8 `ownedSeries` is the folders this account is the RECORDED owner of (their first
+ * uploader), which is exactly who bunko accepts a `series.json` update request from.
  */
 /**
  * Can the signed-in account delete `seriesTitle`'s files on the currently active
  * provider? Mirrors the server's DELETE rules: a modify/delete role may delete
  * anything; an uploader-style account (canModifyDelete: false) only what it owns —
- * the server grants per-volume ownership deletes, approximated here at series
- * granularity via the same `ownedSeries` list the edit gate uses. A provider that
+ * from bunko 0.8 the recorded owner of a series may delete every volume in it and
+ * the folder itself, whoever uploaded them (`ownedSeries`, the same list the edit
+ * gate uses); the uploader of one volume in a shared folder may delete that volume,
+ * which this series-level gate does not offer. A provider that
  * reports no `canModifyDelete` at all (plain WebDAV, other providers) reads as
  * unrestricted, like every absent permission field.
  */

@@ -10,8 +10,14 @@ import {
 import { normalizeSeriesKey } from '$lib/metadata/series-key';
 import { MOKURO_DB_NAME, declareMokuroSchema } from '$lib/catalog/db-schema';
 import { listLayersWithPages } from '$lib/catalog/layer-store';
-import { layerStaysLocal } from '$lib/catalog/mokuro-hash';
-import { buildMokuroMetadata, type MokuroMetadata } from './mokuro-metadata';
+import { mainSidecarPagesForCloud } from '$lib/catalog/main-sidecar';
+import { layerStaysLocal, syncedForOtherAccount, type LayerTarget } from '$lib/catalog/mokuro-hash';
+import { editBaseSeal } from '$lib/catalog/ocr-provenance';
+import {
+  buildLayerMokuroMetadata,
+  buildPrimaryMokuroMetadata,
+  type MokuroMetadata
+} from './mokuro-metadata';
 import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
 import { layerSidecarName } from './sync/syncable-file';
 
@@ -197,8 +203,31 @@ function getDatabase(): Dexie {
 export async function generateVolumeSidecarsFromDb(
   volumeUuid: string,
   overrides?: { seriesTitle?: string; volumeTitle?: string },
-  /** The target compiles its own metadata (bunko): see `layerStaysLocal`. */
-  target: { serverCompilesMetadata?: boolean } = {}
+  target: {
+    /** The target compiles its own metadata (bunko): see `layerStaysLocal`. */
+    serverCompilesMetadata?: boolean;
+    /** The target's `ProviderStatus.editLayerSync`: see `layerStaysLocal`. */
+    editLayerSync?: 'push' | 'local';
+    /** The target's provider type; absent for an export: see `LayerTarget.provider`. */
+    provider?: string;
+    /**
+     * The target's `personalLayerAccount`: a personal layer last synced under
+     * another account is that account's overlay, never uploaded into this one's.
+     */
+    account?: string;
+    /**
+     * The sidecars go to the CLOUD: the main `.mokuro` is model output
+     * (`catalog/main-sidecar.ts`) — an edited volume's comes from its
+     * `original` snapshot, and with none it is left out.
+     */
+    cloud?: boolean;
+    /**
+     * With `cloud`: an edited volume with no snapshot falls back to its
+     * primary rather than leaving the main sidecar out — for a rename, which
+     * must regenerate the file the cloud already holds.
+     */
+    editedFallbackToPrimary?: boolean;
+  } = {}
 ): Promise<VolumeSidecarBlobResult> {
   const db = getDatabase();
 
@@ -219,10 +248,32 @@ export async function generateVolumeSidecarsFromDb(
     typeof volume.mokuro_version === 'string' && volume.mokuro_version.trim() !== '';
   if (hasMokuroVersion) {
     const volumeOcr = await db.table('volume_ocr').get(volumeUuid);
-    if (volumeOcr?.pages) {
-      const metadata = buildMokuroMetadata(volume, volumeOcr.pages, {
+    let pages: unknown[] | null = volumeOcr?.pages ?? null;
+    if (pages && target.cloud) {
+      const modelOutput = await mainSidecarPagesForCloud(db, volume, pages as never);
+      if (modelOutput) {
+        pages = modelOutput;
+      } else if (!target.editedFallbackToPrimary) {
+        pages = null;
+        console.warn(
+          `[sidecars] '${volume.volume_title}' is edited and has no original snapshot: no main .mokuro is uploaded`
+        );
+      }
+    }
+    if (pages) {
+      // The snapshot's own character count, not the edited primary's.
+      const counted =
+        pages === volumeOcr?.pages
+          ? volume
+          : { ...volume, character_count: buildPageCharCounts(pages).totalChars };
+      // `ocr_engine` rides along whenever these pages are an installed file's
+      // (a rename keeps it; the `original` snapshot of an edited volume does
+      // too). Pages that are the EDITED primary itself — an export, Local
+      // Folder, a rename's fallback — say so with `edited` instead.
+      const metadata = await buildPrimaryMokuroMetadata(counted, pages, {
         seriesTitle,
-        volumeTitle
+        volumeTitle,
+        markEdited: pages === volumeOcr?.pages
       });
       sidecars.mokuro = {
         filename: `${volumeTitle}.mokuro`,
@@ -243,7 +294,12 @@ export async function generateVolumeSidecarsFromDb(
     db,
     volume,
     { seriesTitle, volumeTitle },
-    target.serverCompilesMetadata === true
+    {
+      serverCompilesMetadata: target.serverCompilesMetadata === true,
+      editLayerSync: target.editLayerSync,
+      provider: target.provider
+    },
+    target.account
   );
   if (layers.length > 0) sidecars.layers = layers;
 
@@ -261,28 +317,37 @@ async function buildLayerSidecarsFromDb(
   db: Dexie,
   volume: VolumeMetadata,
   titles: { seriesTitle: string; volumeTitle: string },
-  serverCompilesMetadata = false
+  target: LayerTarget = { serverCompilesMetadata: false },
+  /** The target's `personalLayerAccount` (`generateVolumeSidecarsFromDb`). */
+  account?: string
 ): Promise<VolumeLayerSidecarBlobData[]> {
   // Metadata and pages in one read transaction: `updatedAt` below must be the
   // stamp of exactly the pages serialized (`stampLayersSynced` compares it).
   const layers = await listLayersWithPages(db, volume.volume_uuid);
+  // One base for every edit-kind file of the volume (`edited.base_seal`).
+  const baseSeal = layers.some((layer) => layer.kind === 'edit')
+    ? await editBaseSeal(db, volume)
+    : null;
   return (
     layers
       // An untouched upgrade layer (`updated-ocr`: the cloud's own primary,
-      // mirrored for an edited volume; `previous-ocr`: the local primary an
-      // upgrade replaced) is never written out as a layer file — not beside a
-      // cloud archive, and not into one (this also serves Local Folder). Nor
-      // the editor's `original` snapshot to a server that compiles its own
-      // metadata (`layerStaysLocal`).
-      .filter((layer) => !layerStaysLocal(layer, serverCompilesMetadata))
+      // mirrored for an edited volume) is never written out as a layer file —
+      // not beside a cloud archive, and not into one (this also serves Local
+      // Folder). Nor the shared `curated` layer (only Publish writes it), an
+      // account's `edit` where the server would share it, or the editor's
+      // `original` snapshot and a case merge's `curated-<n>` to a server that
+      // compiles its own metadata (`layerStaysLocal`).
+      .filter((layer) => !layerStaysLocal(layer, target))
+      // Another account's personal layer (two accounts, one device, one
+      // bunko): uploading it would overwrite this account's own overlay.
+      .filter((layer) => !syncedForOtherAccount(layer, account))
       .sort((a, b) => (a.layer_id < b.layer_id ? -1 : a.layer_id > b.layer_id ? 1 : 0))
       .map((layer) => {
         const { totalChars } = buildPageCharCounts(layer.pages);
-        const metadata = buildMokuroMetadata(
-          { ...volume, character_count: totalChars },
-          layer.pages,
-          titles
-        );
+        const metadata = buildLayerMokuroMetadata(volume, layer, totalChars, {
+          ...titles,
+          baseSeal
+        });
         return {
           layerId: layer.layer_id,
           filename: layerSidecarName(titles.volumeTitle, layer.layer_id),
@@ -362,9 +427,10 @@ export async function compressVolumeFromDb(
 
   // Build mokuro metadata
   const isImageOnly = volume.mokuro_version === '';
+  // The archive holds the primary as this device has it: an edited one says so.
   const metadata: MokuroMetadata | null = isImageOnly
     ? null
-    : buildMokuroMetadata(volume, volumeOcr?.pages || []);
+    : await buildPrimaryMokuroMetadata(volume, volumeOcr?.pages || [], { markEdited: true });
 
   // Get list of files, excluding placeholders
   const filenames = Object.keys(volumeFiles.files);

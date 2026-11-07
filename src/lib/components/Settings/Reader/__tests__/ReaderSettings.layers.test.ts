@@ -125,6 +125,21 @@ describe('ReaderSettings — OCR layers', () => {
     }
   });
 
+  it('offers no Delete on the shared curated layer (Unpublish is the layer menu’s)', async () => {
+    const { volumes } = (await import('$lib/settings')) as unknown as {
+      volumes: { set: (v: unknown) => void };
+    };
+    volumes.set({ v1: { progress: 1, settings: { ocrLayer: 'curated' } } });
+    try {
+      const { queryByLabelText } = render(ReaderSettings);
+      await flushTasks();
+      expect(queryByLabelText('Delete layer')).toBeNull();
+      expect(queryByLabelText('Export layer')).toBeTruthy();
+    } finally {
+      volumes.set({ v1: { progress: 1, settings: { ocrLayer: 'fix' } } });
+    }
+  });
+
   it("'new' settles the reader's unsaved edits BEFORE reading the pages it copies", async () => {
     let settled!: () => void;
     const hook = vi.fn(() => new Promise<void>((r) => (settled = r)));

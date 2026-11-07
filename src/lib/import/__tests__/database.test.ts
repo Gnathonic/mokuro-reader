@@ -34,6 +34,8 @@ vi.mock('$lib/catalog/db', () => ({
     },
     volume_ocr_layers: {},
     volume_ocr_layer_pages: {},
+    series_metadata: {},
+    series_index: {},
     transaction: vi.fn(),
     processThumbnails: vi.fn().mockResolvedValue(undefined)
   }
@@ -255,6 +257,29 @@ describe('saveVolume', () => {
     expect(written.updated_ocr_sha256).toBeUndefined();
   });
 
+  it('records the installed file’s OCR provenance as a one-entry list', async () => {
+    const p = { engine: { id: 'hayai-nova', revision: 2 }, digest: `v1:${'d'.repeat(64)}` };
+    await saveVolume(
+      createProcessedVolume({
+        metadata: { ...createProcessedVolume().metadata, ocrProvenance: p }
+      })
+    );
+    const added = (db.volumes.add as any).mock.calls[0][0];
+    expect(added.ocr_provenance).toEqual([p]);
+  });
+
+  it('a reinstall from a file without a block clears ocr_provenance', async () => {
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      ocr_provenance: [{ engine: { id: 'hayai-nova' }, digest: `v1:${'e'.repeat(64)}` }]
+    });
+    const saved = await saveVolume(createProcessedVolume());
+    const written = (db.volumes.put as any).mock.calls[0][0];
+    expect(written).not.toHaveProperty('ocr_provenance');
+    expect(saved.metadata).not.toHaveProperty('ocr_provenance');
+  });
+
   it('still rejects a genuinely installed duplicate', async () => {
     (db.volumes.get as any).mockResolvedValue({ volume_uuid: 'test-volume-uuid' });
 
@@ -307,6 +332,72 @@ describe('saveVolume', () => {
       expect.arrayContaining([db.volumes, db.volume_ocr, db.volume_files]),
       expect.any(Function)
     );
+  });
+
+  it('keeps the series tables out of the transaction without a beforeWrite', async () => {
+    await saveVolume(createProcessedVolume());
+
+    const tables = (db.transaction as any).mock.calls[0][1];
+    expect(tables).toEqual([db.volumes, db.volume_ocr, db.volume_files]);
+  });
+
+  it('runs beforeWrite inside the transaction, on the final row, before any write', async () => {
+    // A reinstall that keeps its stored titles: the hook sees those.
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      series_title: 'Stored Series',
+      series_uuid: 'stored-series-uuid',
+      volume_title: 'Stored Volume'
+    });
+    (db.volume_ocr.get as any).mockResolvedValue({ volume_uuid: 'test-volume-uuid', pages: [] });
+    const seen: { title: string; writes: number }[] = [];
+    const writes = () =>
+      [db.volumes.put, db.volumes.add, db.volume_ocr.add, db.volume_ocr.delete].reduce(
+        (n, fn) => n + (fn as any).mock.calls.length,
+        0
+      );
+    let inside = false;
+    (db.transaction as any).mockImplementation(
+      async (_mode: string, _tables: any[], callback: () => Promise<void>) => {
+        inside = true;
+        try {
+          await callback();
+        } finally {
+          inside = false;
+        }
+      }
+    );
+    const volume = createProcessedVolume({
+      metadata: { ...createProcessedVolume().metadata, keepStoredTitles: true }
+    });
+
+    await saveVolume(volume, {
+      beforeWrite: async (row) => {
+        expect(inside).toBe(true);
+        seen.push({ title: row.series_title, writes: writes() });
+      }
+    });
+
+    expect(seen).toEqual([{ title: 'Stored Series', writes: 0 }]);
+    expect(db.transaction).toHaveBeenCalledWith(
+      'rw',
+      [db.volumes, db.volume_ocr, db.volume_files, db.series_metadata, db.series_index],
+      expect.any(Function)
+    );
+  });
+
+  it('saves nothing when beforeWrite throws', async () => {
+    await expect(
+      saveVolume(createProcessedVolume(), {
+        beforeWrite: async () => {
+          throw new Error('check failed');
+        }
+      })
+    ).rejects.toThrow('check failed');
+    expect(db.volumes.add).not.toHaveBeenCalled();
+    expect(db.volume_ocr.add).not.toHaveBeenCalled();
+    expect(db.volume_files.add).not.toHaveBeenCalled();
   });
 
   it('prevents duplicate imports', async () => {

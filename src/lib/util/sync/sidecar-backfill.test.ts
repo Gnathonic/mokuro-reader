@@ -39,13 +39,18 @@ const cloud = vi.hoisted(() => {
     // `undefined` by default, matching a provider that cannot report an
     // account scope — `attemptKey` must fall back to `provider.type` alone in
     // that case (Finding 4's "a null scope behaves as today").
-    accountScope: undefined as string | undefined
+    accountScope: undefined as string | undefined,
+    // bunko 0.8's series-owner report; `undefined` = a server without it.
+    addFilesPermissions: undefined as { scope: 'open'; closedSeries: string[] } | undefined
   };
   const listCloudVolumes = vi.fn(async () => [...state.files]);
   const provider = {
     type: 'webdav',
     listCloudVolumes,
-    getStatus: () => ({ accountScope: state.accountScope }),
+    getStatus: () => ({
+      accountScope: state.accountScope,
+      addFilesPermissions: state.addFilesPermissions
+    }),
     // Worker-path capability, toggled per test. `undefined` (the beforeEach
     // reset) keeps every pre-existing test on the serial main-thread path —
     // the drain requires `=== true`.
@@ -90,8 +95,8 @@ const cloud = vi.hoisted(() => {
       getAllCloudVolumes: () => [...state.files],
       getCloudVolumesBySeries,
       resolveCloudFolderTitle,
-      // The backfill must use the WRITE-AND-FORGET path: on Google Drive the
-      // ordinary uploadFile refetches the whole listing after every upload.
+      // The backfill must use the WRITE-AND-FORGET path (a provider whose
+      // ordinary uploadFile does refresh work must not charge it here).
       // All upload assertions in this suite read the `uploadFile` spy, which
       // here records the BLIND uploads; the ordinary method throws so any
       // regression back to it fails every upload test loudly.
@@ -227,10 +232,10 @@ vi.mock('$lib/metadata/store', () => ({ getSeriesMetadataForTitle: vi.fn(async (
 vi.mock('$lib/metadata/series-index', () => ({ getSeriesIndex: vi.fn(async () => undefined) }));
 
 import { db } from '$lib/catalog/db';
+import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
 import {
   _drainForTests,
   _resetSidecarBackfillForTests,
-  noteOcrEdited,
   queueSidecarBackfillForVolume,
   queueSidecarBackfillFromImport,
   sweepInstalledVolumesForSidecarBackfill
@@ -246,6 +251,7 @@ import { buildVolumeSidecarsFromData, loadVolumeSidecars } from '$lib/util/volum
 // production) and the real main schema, for the byte-identity three-way below.
 import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
 import { CatalogDexieV3 } from '$lib/catalog/db-v3';
+import { provenanceFromParsed, type OcrProvenance } from '$lib/catalog/ocr-provenance';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -307,6 +313,7 @@ beforeEach(async () => {
   await db.volume_files.clear();
   cloud.state.files.length = 0;
   cloud.state.accountScope = undefined;
+  cloud.state.addFilesPermissions = undefined;
   cloud.uploadFile.mockReset();
   cloud.uploadFile.mockImplementation(cloud.defaultUpload);
   cloud.fetchAllCloudVolumes.mockClear();
@@ -769,6 +776,23 @@ describe('sidecar backfill — convergence', () => {
 });
 
 describe('sidecar backfill — gates', () => {
+  // Today the backfill never runs against bunko (it compiles the metadata:
+  // `hasWritableNonServerProvider`); this pins the owner gate under it anyway.
+  it('a series another account owns on the server uploads nothing', async () => {
+    cloud.state.addFilesPermissions = { scope: 'open', closedSeries: ['legacy series'] };
+    await withOcr(installedVolume());
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+
+    expect(cloud.uploadFile).not.toHaveBeenCalled();
+    cloud.state.addFilesPermissions = { scope: 'open', closedSeries: ['Other Series'] };
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(cloud.uploadFile).toHaveBeenCalledTimes(2);
+  });
+
   it('a read-only provider enqueues nothing, uploads nothing, and logs nothing', async () => {
     const debugSpy = vi.spyOn(console, 'debug');
     gate.writable = false;
@@ -926,6 +950,7 @@ function processedVolumeFixture(
     volumeTitle?: string;
     thumbnail?: Blob | null;
     mokuroVersion?: string;
+    ocrProvenance?: OcrProvenance;
   } = {}
 ): ProcessedVolume {
   return {
@@ -944,7 +969,8 @@ function processedVolumeFixture(
       thumbnailWidth: 4,
       thumbnailHeight: 4,
       sourceType: 'cloud',
-      spineWidth: 12
+      spineWidth: 12,
+      ...(overrides.ocrProvenance ? { ocrProvenance: overrides.ocrProvenance } : {})
     },
     ocrData: {
       volume_uuid: uuid,
@@ -1031,9 +1057,51 @@ describe('sidecar backfill — the import feed (in-memory upload at download com
     // Teeth (permanent negative control): serializing the UNSTRIPPED pipeline
     // pages — `cumulativeChars` still present — would NOT match. If this ever
     // starts matching, the equality above has gone vacuous.
-    const unstripped = buildVolumeSidecarsFromData(saved.metadata, processed.ocrData.pages);
+    const unstripped = await buildVolumeSidecarsFromData(saved.metadata, processed.ocrData.pages);
     const unstrippedBytes = new Uint8Array(await unstripped.mokuroFile!.arrayBuffer());
     expect(unstrippedBytes).not.toEqual(dbBytes);
+  });
+
+  it('a volume installed from a stamped file: every feed writes the same bytes, block included', async () => {
+    const engine = { id: 'hayai-nova', revision: 2, seal: 'v1:' + '0'.repeat(64) };
+    // The digest of the pages as stored (what the FILE's pages were).
+    const filePages = processedVolumeFixture().ocrData.pages.map(
+      ({ cumulativeChars: _c, ...p }) => p
+    );
+    const ocrProvenance = (await provenanceFromParsed(engine, filePages))!;
+    const saved = await saveVolume(processedVolumeFixture('imp-1', { ocrProvenance }), {
+      preserveTitles: true
+    });
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+
+    queueSidecarBackfillFromImport(saved, 'webdav');
+    await settle();
+
+    const mokuroCall = cloud.uploadFile.mock.calls.find((call) =>
+      (call[0] as string).endsWith('.mokuro')
+    );
+    const importedText = await (mokuroCall![1] as File).text();
+    // The import-time upload carries the block it was installed with.
+    expect(JSON.parse(importedText).ocr_engine).toEqual(engine);
+
+    const fromDb = await loadVolumeSidecars('imp-1');
+    expect(await fromDb.mokuroFile!.text()).toBe(importedText);
+    const forCloud = await loadVolumeSidecars('imp-1', { forCloud: true });
+    expect(await forCloud.mokuroFile!.text()).toBe(importedText);
+
+    const workerSide = new CatalogDexieV3();
+    try {
+      await workerSide.volumes.put((await db.volumes.get('imp-1'))!);
+      await workerSide.volume_ocr.put((await db.volume_ocr.get('imp-1'))!);
+      const workerSidecars = await generateVolumeSidecarsFromDb('imp-1', undefined, {
+        cloud: true
+      });
+      expect(await workerSidecars.mokuro!.blob.text()).toBe(importedText);
+    } finally {
+      await workerSide.volumes.clear();
+      await workerSide.volume_ocr.clear();
+      workerSide.close();
+    }
   });
 
   it('uploads both sidecars from memory with ZERO IndexedDB operations', async () => {
@@ -1671,80 +1739,48 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
   });
 });
 
-describe('sidecar backfill — OCR edits re-upload the .mokuro (TRIGGER 3)', () => {
+describe('sidecar backfill — an OCR edit never re-uploads the main .mokuro (D4)', () => {
+  const page = (text: string) => ({
+    img_width: 100,
+    img_height: 100,
+    img_path: 'p.png',
+    blocks: [{ box: [0, 0, 1, 1], vertical: true, font_size: 10, lines: [text] }]
+  });
+
   function listedWithSidecars() {
     cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
     cloud.state.files.push(listed('Legacy Series/Volume 01.mokuro')); // modified 2026-08-01
     cloud.state.files.push(listed('Legacy Series/Volume 01.webp'));
   }
 
-  it('an edited volume whose listed .mokuro predates the edit re-uploads ONLY the .mokuro', async () => {
-    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }));
-    listedWithSidecars();
-
-    noteOcrEdited('uuid-1');
-    await settle();
-
-    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+  beforeEach(async () => {
+    await clearAllLayers(db);
   });
 
-  it('a listed .mokuro newer than the edit is left alone', async () => {
-    await withOcr(installedVolume({ ocr_edited_at: '2026-07-01T00:00:00Z' }));
-    listedWithSidecars();
-
-    noteOcrEdited('uuid-1');
-    await settle();
-    expect(uploadedPaths()).toEqual([]);
-  });
-
-  it('a second edit in the same session re-uploads again (the attempted-mark is cleared)', async () => {
-    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }));
-    listedWithSidecars();
-    noteOcrEdited('uuid-1');
-    await settle();
-    expect(uploadedPaths()).toHaveLength(1);
-
-    // The upload landed in the cache with a "now" mtime; a LATER edit is newer.
-    await db.volumes.update('uuid-1', {
-      ocr_edited_at: new Date(Date.now() + 5000).toISOString()
+  async function withOriginal(pages: unknown[]) {
+    await putLayerWithPages(db, {
+      volume_uuid: 'uuid-1',
+      layer_id: 'original',
+      name: 'Original',
+      kind: 'original',
+      created_at: '2026-09-15T12:00:00Z',
+      updated_at: '2026-09-15T12:00:00Z',
+      pages: pages as never
     });
-    noteOcrEdited('uuid-1');
-    await settle();
-    expect(uploadedPaths()).toHaveLength(2);
-  });
+  }
 
-  it('an edit made while the provider was not ready is remembered for a later sweep', async () => {
-    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }));
+  it('a listed .mokuro older than the edit is left alone — on the sweep and after a reload', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }), [page('fixed')]);
     listedWithSidecars();
+    // What an older reader left behind: "upload still due".
+    localStorage.setItem('sidecar-backfill:edited-volumes', JSON.stringify(['uuid-1']));
 
-    // Edited while the cache was still loading (or read-only): nothing can
-    // upload now, but the marker survives — even a page reload (simulated by
-    // clearing every in-memory set while leaving localStorage alone).
-    cacheState.loaded = false;
-    noteOcrEdited('uuid-1');
-    await settle();
-    expect(uploadedPaths()).toEqual([]);
-    cacheState.loaded = true;
-
-    await sweepInstalledVolumesForSidecarBackfill();
-    await settle();
-    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
-    expect(localStorage.getItem('sidecar-backfill:edited-volumes')).toBeNull();
-  });
-
-  it('a converged edit leaves the marker, and the steady state stays transaction-free', async () => {
-    await withOcr(installedVolume({ ocr_edited_at: '2026-07-01T00:00:00Z' }));
-    listedWithSidecars(); // .mokuro modified 2026-08-01 — newer than the edit
-    cacheState.loaded = false;
-    noteOcrEdited('uuid-1');
-    cacheState.loaded = true;
-    expect(localStorage.getItem('sidecar-backfill:edited-volumes')).toContain('uuid-1');
-
+    queueSidecarBackfillForVolume('uuid-1');
     await sweepInstalledVolumesForSidecarBackfill();
     await settle();
     expect(uploadedPaths()).toEqual([]);
-    expect(localStorage.getItem('sidecar-backfill:edited-volumes')).toBeNull();
 
+    // The steady state (nothing missing) costs no transaction at all.
     const counts = await countIdbOps(async () => {
       await sweepInstalledVolumesForSidecarBackfill();
       await settle();
@@ -1752,21 +1788,80 @@ describe('sidecar backfill — OCR edits re-upload the .mokuro (TRIGGER 3)', () 
     expect(counts['transactions'] ?? 0).toBe(0);
   });
 
-  it('the worker path re-uploads too: wantMokuro is set and wantCover is not', async () => {
-    cloud.provider.supportsWorkerUpload = true;
-    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }));
-    listedWithSidecars();
+  it('a MISSING main .mokuro of an edited volume is uploaded from its original snapshot', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z', character_count: 5 }), [
+      page('fixed')
+    ]);
+    await withOriginal([page('model')]);
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+    cloud.state.files.push(listed('Legacy Series/Volume 01.webp'));
 
-    noteOcrEdited('uuid-1');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const task = workerPool.open()[0];
-    expect(task?.data).toMatchObject({
-      mode: 'upload-sidecars',
-      wantMokuro: true,
-      wantCover: false
-    });
-    workerPool.complete(task, { type: 'complete', sidecarResults: [] });
+    await sweepInstalledVolumesForSidecarBackfill();
     await settle();
+    expect(uploadedPaths()).toEqual(['Legacy Series/Volume 01.mokuro']);
+    const sent = JSON.parse(await (cloud.uploadFile.mock.calls[0][1] as Blob).text());
+    expect(sent.pages[0].blocks[0].lines).toEqual(['model']);
+    // Counted on the snapshot's own pages (latin text counts 0), not the row's 5.
+    expect(sent.chars).toBe(0);
+  });
+
+  it('an edited volume with no original snapshot uploads no main .mokuro at all', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }), [page('fixed')]);
+    cloud.state.files.push(listed('Legacy Series/Volume 01.cbz'));
+    cloud.state.files.push(listed('Legacy Series/Volume 01.webp'));
+
+    await sweepInstalledVolumesForSidecarBackfill();
+    await settle();
+    expect(uploadedPaths()).toEqual([]);
+  });
+
+  it('worker serializer, edited with no snapshot: no main .mokuro — except a rename, which falls back', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }), [page('fixed')]);
+    const workerSide = new CatalogDexieV3();
+    try {
+      await workerSide.volumes.put((await db.volumes.get('uuid-1'))!);
+      await workerSide.volume_ocr.put((await db.volume_ocr.get('uuid-1'))!);
+      await clearAllLayers(workerSide);
+      const cloudOnly = await generateVolumeSidecarsFromDb('uuid-1', undefined, { cloud: true });
+      expect(cloudOnly.mokuro).toBeUndefined();
+      const rename = await generateVolumeSidecarsFromDb('uuid-1', undefined, {
+        cloud: true,
+        editedFallbackToPrimary: true
+      });
+      expect(JSON.parse(await rename.mokuro!.blob.text()).pages[0].blocks[0].lines).toEqual([
+        'fixed'
+      ]);
+    } finally {
+      await workerSide.volumes.clear();
+      await workerSide.volume_ocr.clear();
+      workerSide.close();
+    }
+  });
+
+  it('the worker path builds the main sidecar the same way (model output)', async () => {
+    await withOcr(installedVolume({ ocr_edited_at: '2026-09-15T12:00:00Z' }), [page('fixed')]);
+    await withOriginal([page('model')]);
+    const main = await loadVolumeSidecars('uuid-1', { forCloud: true });
+    // The worker reads its OWN connection to `mokuro_v3`: mirror the rows there.
+    const workerSide = new CatalogDexieV3();
+    try {
+      await workerSide.volumes.put((await db.volumes.get('uuid-1'))!);
+      await workerSide.volume_ocr.put((await db.volume_ocr.get('uuid-1'))!);
+      const original = await getLayerWithPages(db, 'uuid-1', 'original');
+      await putLayerWithPages(workerSide, original!);
+      const worker = await generateVolumeSidecarsFromDb('uuid-1', undefined, { cloud: true });
+      expect(await worker.mokuro!.blob.text()).toBe(await main.mokuroFile!.text());
+    } finally {
+      await workerSide.volumes.clear();
+      await workerSide.volume_ocr.clear();
+      await clearAllLayers(workerSide);
+      workerSide.close();
+    }
+    expect(JSON.parse(await main.mokuroFile!.text()).pages[0].blocks[0].lines).toEqual(['model']);
+    // An export keeps the primary — the user's own view.
+    const exported = await loadVolumeSidecars('uuid-1');
+    expect(JSON.parse(await exported.mokuroFile!.text()).pages[0].blocks[0].lines).toEqual([
+      'fixed'
+    ]);
   });
 });

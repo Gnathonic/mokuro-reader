@@ -1,5 +1,4 @@
 import { writable, get } from 'svelte/store';
-import { progressTrackerStore } from '../progress-tracker';
 import {
   volumesWithTrash,
   profiles,
@@ -15,12 +14,35 @@ import {
   type SeriesReadingStates,
   type VolumeData
 } from '$lib/settings';
-import { showSnackbar } from '../snackbar';
+import {
+  TRACKING_SECTION_KEY,
+  detectBogusTrackingKeys,
+  foldableTracking,
+  mergeTrackingSections,
+  parseTrackingSection,
+  setTrackingStates,
+  trackingState,
+  type TrackingState
+} from '$lib/settings/tracking-data';
 import { ProviderError } from './provider-interface';
+import { refreshGates } from './identity-gates';
 import type { SyncProvider, ProviderType, CloudFileMetadata } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
+import { noteRootFileUpload, readRootFile } from './root-file-memo';
+import { isHistoryFilePath } from '$lib/reading-history/paths';
+import { noteUploaded, watchedEscapes } from '$lib/positions/escapes';
+import { historySyncAllowed } from '$lib/reading-history/history-capability';
+import { noteMergedRemoteReads } from '$lib/reading-history/remote-reads';
 import { FUTURE_TOLERANCE_MS, normalizeUpdatedAt } from '$lib/metadata/sanitize';
+import { applyForgetHorizon, mergeLiveVolumeRecords } from './volume-record-merge';
+import { planVolumeDataUpload, stableStringify } from './volume-data-deferral';
+import { backendAuthEnabled } from './providers/google-drive/auth-backend';
+import {
+  clearVolumeDataDeferred,
+  noteVolumeDataDeferred,
+  readingSessionActive
+} from './reading-session';
 import {
   GOALS_FILE_NAME,
   composeGoalsFile,
@@ -61,28 +83,6 @@ interface CloudGoalsFile {
   bogusKeys: Partial<Record<GoalsSectionName, ReadonlySet<string>>>;
 }
 
-/**
- * Deep-sorts object keys before `JSON.stringify` so two values that differ
- * only in key order compare equal. Used to decide whether `volume-data.json`
- * needs to be re-uploaded without false positives from key ordering alone.
- */
-function stableStringify(value: unknown): string {
-  return JSON.stringify(sortKeysDeep(value));
-}
-
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0
-    );
-    const out: Record<string, unknown> = {};
-    for (const [key, v] of entries) out[key] = sortKeysDeep(v);
-    return out;
-  }
-  return value;
-}
-
 export interface SyncOptions {
   /** If true, suppress snackbar notifications */
   silent?: boolean;
@@ -108,7 +108,17 @@ export interface SyncResult {
  * `lastUpdated`.
  */
 export interface CloudVolumeDataFile {
+  /** The volume map folded across every readable copy (`mergeVolumePair`). */
   volumes: Record<string, VolumeData>;
+  /**
+   * The volume map as the copy that SURVIVES the delete sweep holds it — the
+   * one copy left for the fold to be written back over. The upload decision
+   * compares against THIS, not against `volumes`: when the fold equals what
+   * this device already had, the merged map shows nothing to write, yet a
+   * stale survivor still lacks what the deleted copies held, and that state
+   * leaves the cloud with them. Equal to `volumes` for a single listed copy.
+   */
+  survivorVolumes: Record<string, VolumeData>;
   series: SeriesReadingStates;
   /**
    * The `series` section exactly as the surviving cloud copy holds it —
@@ -136,6 +146,51 @@ export interface CloudVolumeDataFile {
    * Drives FORFEIT-ON-BOGUS in `syncVolumeData`'s cloud-vs-local merge.
    */
   bogusSeriesKeys?: ReadonlySet<string>;
+  /** The `tracking` section (idle cutoff), parsed; same rules as `series`. */
+  tracking?: TrackingState;
+  /** The `tracking` section as the surviving copy holds it (see `rawSeries`). */
+  rawTracking?: unknown;
+  /** Tracking keys whose raw stamp needed clamping, in any readable copy. */
+  bogusTrackingKeys?: ReadonlySet<string>;
+}
+
+/**
+ * Is listed copy `a` the newer of two duplicates? By the server's
+ * `modifiedTime`, an unparseable stamp losing to a parseable one; equal
+ * stamps fall to the `fileId`, so every device keeps the same copy.
+ */
+function newerListedCopy(a: CloudFileMetadata, b: CloudFileMetadata): boolean {
+  const ta = Date.parse(a.modifiedTime);
+  const tb = Date.parse(b.modifiedTime);
+  const va = Number.isNaN(ta) ? -Infinity : ta;
+  const vb = Number.isNaN(tb) ? -Infinity : tb;
+  if (va !== vb) return va > vb;
+  return a.fileId > b.fileId;
+}
+
+/**
+ * How long one provider sync may run before it is given up on, in ms.
+ *
+ * A flight is released only when its run settles, and every request made in
+ * the meantime waits on it. The steps are network round-trips with no
+ * timeout of their own — a WebDAV download (`webdav-core.ts`) is a plain
+ * `fetch` with no signal — so one stalled download would otherwise hold the
+ * provider's flight for good: `isSyncing` stuck on, the NavBar button and
+ * foreground sync returning early, the activity tracker joined to a follow-up
+ * that never runs, until a reload. Five minutes is well past any honest sync
+ * (one small JSON file each way per step, three steps) on a slow link, yet
+ * bounded. A run that outlives it is reported as a failure and its late
+ * result discarded.
+ */
+export const SYNC_FLIGHT_DEADLINE_MS = 5 * 60_000;
+
+interface SyncFlight {
+  running: Promise<ProviderSyncResult>;
+  followUp?: {
+    promise: Promise<ProviderSyncResult>;
+    resolve: (result: ProviderSyncResult) => void;
+    reject: (error: unknown) => void;
+  };
 }
 
 /**
@@ -147,160 +202,118 @@ export interface CloudVolumeDataFile {
  */
 class UnifiedSyncService {
   private isSyncingStore = writable<boolean>(false);
-  private syncLock = false;
+  /** Provider syncs in progress (a running flight and its follow-up count once); `isSyncing` is "any". */
+  private activeSyncs = 0;
+  /** The sync running per provider type, and the one queued behind it. */
+  private flights = new Map<string, SyncFlight>();
+
+  private beginSyncing(): void {
+    this.activeSyncs++;
+    this.isSyncingStore.set(true);
+  }
+
+  private endSyncing(): void {
+    this.activeSyncs = Math.max(0, this.activeSyncs - 1);
+    if (this.activeSyncs === 0) this.isSyncingStore.set(false);
+  }
 
   get isSyncing() {
     return this.isSyncingStore;
   }
 
   /**
-   * Sync with all authenticated providers
+   * Sync with a single provider. One at a time per provider: two overlapping
+   * syncs each download the config files, merge and upload, and the second
+   * can read a file the first is rewriting (a Local Folder `File` goes
+   * unreadable mid-read). A request made while one runs waits for it, and
+   * every such request shares ONE follow-up sync, started with no options
+   * (`silent` only affects a log line here; the snackbars are the caller's).
    */
-  async syncAllProviders(
-    providers: SyncProvider[],
-    options: SyncOptions = {}
-  ): Promise<SyncResult> {
-    // Prevent concurrent syncs
-    if (this.syncLock) {
-      console.log('⏭️ Sync already in progress, skipping');
-      if (!options.silent) {
-        showSnackbar('Sync already in progress');
-      }
-      return {
-        totalProviders: 0,
-        succeeded: 0,
-        failed: 0,
-        results: []
-      };
-    }
+  syncProvider(provider: SyncProvider, options: SyncOptions = {}): Promise<ProviderSyncResult> {
+    const flight = this.flights.get(provider.type);
+    if (!flight) return this.startFlight(provider, options, false);
+    if (flight.followUp) return flight.followUp.promise;
+    let resolve!: (result: ProviderSyncResult) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<ProviderSyncResult>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    flight.followUp = { promise, resolve, reject };
+    return promise;
+  }
 
-    this.syncLock = true;
-    this.isSyncingStore.set(true);
-
-    // Filter to only authenticated providers
-    const authenticatedProviders = providers.filter((p) => p.isAuthenticated());
-
-    if (authenticatedProviders.length === 0) {
-      console.log('ℹ️ No authenticated providers to sync');
-      if (!options.silent) {
-        showSnackbar('No cloud providers connected');
-      }
-      this.syncLock = false;
-      this.isSyncingStore.set(false);
-      return {
-        totalProviders: 0,
-        succeeded: 0,
-        failed: 0,
-        results: []
-      };
-    }
-
-    const processId = 'unified-sync';
-
-    try {
-      if (!options.silent) {
-        progressTrackerStore.addProcess({
-          id: processId,
-          description: 'Syncing with cloud providers',
-          progress: 0,
-          status: `Syncing with ${authenticatedProviders.length} provider(s)...`
-        });
-      }
-
-      // Sync with all providers in parallel
-      const results = await Promise.allSettled(
-        authenticatedProviders.map((provider) => this.syncProvider(provider, options))
-      );
-
-      // Count successes and failures
-      let succeeded = 0;
-      let failed = 0;
-      const providerResults: ProviderSyncResult[] = [];
-
-      results.forEach((result, index) => {
-        const provider = authenticatedProviders[index];
-        if (result.status === 'fulfilled' && result.value.success) {
-          succeeded++;
-          providerResults.push(result.value);
+  /** Run a sync and, when it ends, the follow-up queued behind it — with no gap a third could slip into. */
+  private startFlight(
+    provider: SyncProvider,
+    options: SyncOptions,
+    continuing: boolean
+  ): Promise<ProviderSyncResult> {
+    if (!continuing) this.beginSyncing();
+    const flight: SyncFlight = { running: undefined as unknown as Promise<ProviderSyncResult> };
+    this.flights.set(provider.type, flight);
+    flight.running = this.withDeadline(provider, this.runProviderSync(provider, options)).finally(
+      () => {
+        const next = flight.followUp;
+        if (next) {
+          this.startFlight(provider, {}, true).then(next.resolve, next.reject);
         } else {
-          failed++;
-          providerResults.push({
-            provider: provider.type,
-            success: false,
-            error:
-              result.status === 'rejected'
-                ? result.reason?.message || 'Unknown error'
-                : result.value.error
-          });
-        }
-      });
-
-      // Show completion message
-      if (!options.silent) {
-        progressTrackerStore.updateProcess(processId, {
-          progress: 100,
-          status: 'Sync complete'
-        });
-
-        if (failed === 0) {
-          showSnackbar(`Synced with ${succeeded} provider(s) successfully`);
-        } else {
-          showSnackbar(`Synced with ${succeeded} provider(s), ${failed} failed`);
+          this.flights.delete(provider.type);
+          this.endSyncing();
         }
       }
-
-      return {
-        totalProviders: authenticatedProviders.length,
-        succeeded,
-        failed,
-        results: providerResults
-      };
-    } catch (error) {
-      console.error('Unified sync error:', error);
-      if (!options.silent) {
-        progressTrackerStore.updateProcess(processId, {
-          progress: 0,
-          status: 'Sync failed'
-        });
-        showSnackbar('Sync failed');
-      }
-      return {
-        totalProviders: authenticatedProviders.length,
-        succeeded: 0,
-        failed: authenticatedProviders.length,
-        results: authenticatedProviders.map((p) => ({
-          provider: p.type,
-          success: false,
-          error: 'Sync failed'
-        }))
-      };
-    } finally {
-      if (!options.silent) {
-        setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
-      }
-      this.syncLock = false;
-      this.isSyncingStore.set(false);
-    }
+    );
+    return flight.running;
   }
 
   /**
-   * Sync with a single provider
+   * The run's result, or a failure once `SYNC_FLIGHT_DEADLINE_MS` has passed.
+   * After the deadline the run's own settling is discarded: the handlers
+   * below absorb it (a late rejection is handled, never unhandled) and the
+   * returned promise is already settled, so the flight is released once.
    */
-  async syncProvider(
+  private withDeadline(
     provider: SyncProvider,
-    options: SyncOptions = {}
+    run: Promise<ProviderSyncResult>
   ): Promise<ProviderSyncResult> {
-    // Set syncing state
-    this.isSyncingStore.set(true);
+    return new Promise<ProviderSyncResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        console.warn(
+          `⚠️ ${provider.name} sync still running after ${SYNC_FLIGHT_DEADLINE_MS / 60_000} min — giving up on it so the next sync can run`
+        );
+        resolve({
+          provider: provider.type,
+          success: false,
+          error: `Sync timed out after ${SYNC_FLIGHT_DEADLINE_MS / 60_000} minutes`
+        });
+      }, SYNC_FLIGHT_DEADLINE_MS);
+      run.then(
+        (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
+  }
 
+  private async runProviderSync(
+    provider: SyncProvider,
+    options: SyncOptions
+  ): Promise<ProviderSyncResult> {
     try {
       console.log(`🔄 Syncing with ${provider.name}...`);
       console.log('🔄 Sync options:', options);
 
       // Check authentication - if provider needs to re-authenticate, let it handle that
       if (!provider.isAuthenticated()) {
-        // For Google Drive specifically, trigger the auth flow if needed
-        if (provider.type === 'google-drive') {
+        // For Google Drive specifically, trigger the auth flow if needed —
+        // but never the auth backend's sign-in, which leaves the page: a sync
+        // is not the user asking to sign in (the Reconnect button is).
+        if (provider.type === 'google-drive' && !backendAuthEnabled()) {
           console.log('Google Drive not authenticated, triggering login...');
           await provider.login();
         } else {
@@ -308,10 +321,26 @@ class UnifiedSyncService {
         }
       }
 
+      // Google Drive's listing moves only when this device lists or writes, and
+      // every step below reads it: other devices' root files, their copies,
+      // their history. Its change feed brings it current first — one small
+      // request when nothing changed (a full listing when the feed cannot
+      // answer). The other providers have no feed (MEGA's tree is live).
+      if (provider.type === 'google-drive') {
+        await cacheManager.getCache(provider.type)?.refreshFromChanges?.();
+      }
+      // What the server keeps per user can change under an open tab (a bunko
+      // upgrade or rollback); the per-user files below follow it. Fails quietly.
+      await refreshGates(provider);
+
       // Sync volume data (read progress + series-level reading state)
       console.log('🔄 Syncing volume data...');
       await this.syncVolumeData(provider);
       console.log('✅ Volume data synced');
+
+      // The fixed-address position index, right after the volume data it
+      // mirrors. Best-effort: it never fails the sync.
+      await this.syncPositionsFile(provider);
 
       // Profiles get the same treatment: read → merge (newest `lastUpdated` per
       // profile, tombstones honoured) → push. It used to be a button nobody
@@ -327,6 +356,9 @@ class UnifiedSyncService {
       console.log('🔄 Syncing goals...');
       await this.syncGoals(provider);
       console.log('✅ Goals synced');
+
+      // Reading history last: best-effort, it never fails the sync above.
+      await this.syncReadingHistory(provider, options);
 
       console.log(`✅ ${provider.name} sync complete`);
       return {
@@ -347,9 +379,6 @@ class UnifiedSyncService {
         success: false,
         error: errorMessage
       };
-    } finally {
-      // Clear syncing state
-      this.isSyncingStore.set(false);
     }
   }
 
@@ -428,15 +457,10 @@ class UnifiedSyncService {
         // server-side but still present in a stale provider cache — so a
         // not-found copy must not discard the readable copies with it.
         const downloads = await Promise.allSettled(
-          volumeDataFiles.map(async (file): Promise<CloudVolumeDataFile> => {
-            const blob = await provider.downloadFile(file);
-            const data = await this.blobToJson(blob);
-            return {
-              volumes: parseVolumesFromJson(JSON.stringify(data)),
-              series: parseSeriesSection(data?.[SERIES_SECTION_KEY]),
-              rawSeries: data?.[SERIES_SECTION_KEY]
-            };
-          })
+          volumeDataFiles.map(
+            async (file): Promise<CloudVolumeDataFile> =>
+              this.parseVolumeDataCopy(await this.blobToJson(await readRootFile(provider, file)))
+          )
         );
 
         const transient = downloads.find(
@@ -462,64 +486,25 @@ class UnifiedSyncService {
           throw (downloads[0] as PromiseRejectedResult).reason;
         }
 
-        // Per-copy bogus-key detection (on each copy's OWN raw section), and
-        // the UNION across every readable copy — not only the one that ends
-        // up surviving the delete sweep below. A poisoned stamp on a copy
-        // that gets deleted is exactly as real a poison as one on the
-        // survivor; deriving this from only one copy's raw section would let
-        // it escape detection entirely once that copy is gone.
-        const perCopyBogusKeys = readable.map((entry) =>
-          detectBogusSeriesKeys(entry.result.value.rawSeries)
-        );
-        const bogusSeriesKeys = new Set<string>();
-        for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
+        const {
+          volumes: merged,
+          series: mergedSeries,
+          tracking: mergedTracking,
+          bogusSeriesKeys,
+          bogusTrackingKeys
+        } = this.foldVolumeDataCopies(readable.map((entry) => entry.result.value));
 
-        // Merge all readable copies (newest lastProgressUpdate wins per volume)
-        const merged: Record<string, VolumeData> = {};
-        let mergedSeries: SeriesReadingStates = {};
-        for (let i = 0; i < readable.length; i++) {
-          const entry = readable[i];
-          for (const [volumeId, volumeData] of Object.entries(entry.result.value.volumes)) {
-            const existing = merged[volumeId];
-            if (!existing) {
-              merged[volumeId] = volumeData;
-            } else {
-              // Keep the volume with the most recent progress update
-              const existingTime = new Date(existing.lastProgressUpdate || 0).getTime();
-              const newTime = new Date(volumeData.lastProgressUpdate || 0).getTime();
-              if (newTime > existingTime) {
-                merged[volumeId] = volumeData;
-              }
-            }
-          }
-
-          // The series section folds by its own key, newest `lastUpdated`
-          // wins — except FORFEIT-ON-BOGUS applies within this cloud-vs-cloud
-          // fold too: a key THIS copy holds with a bogus (pre-clamp) stamp
-          // must not clobber an honest entry from ANOTHER copy, regardless of
-          // fold order. Such a key is excluded from this copy's contribution
-          // whenever some other readable copy holds it honestly — that other
-          // copy's own turn in this loop supplies it instead. Only when NO
-          // readable copy holds the key honestly does the bogus (clamped)
-          // value get folded in at all, as the best available answer.
-          const entryBogus = perCopyBogusKeys[i];
-          const foldable: SeriesReadingStates = {};
-          for (const [key, state] of Object.entries(entry.result.value.series)) {
-            const honestElsewhere =
-              entryBogus.has(key) &&
-              readable.some(
-                (_other, j) =>
-                  j !== i && key in readable[j].result.value.series && !perCopyBogusKeys[j].has(key)
-              );
-            if (honestElsewhere) continue;
-            foldable[key] = state;
-          }
-          mergedSeries = mergeSeriesSections(mergedSeries, foldable, entryBogus);
-        }
-
-        // Keep the first readable copy; delete every other listed copy.
+        // Keep the NEWEST readable copy (the server's modifiedTime; a tie
+        // falls to the fileId, so every device picks the same one); delete
+        // every other listed copy. The first LISTED copy is not it: MEGA's
+        // upload order lands the new copy before the old one is deleted, so
+        // a device listing [old, new] in that window would keep old and
+        // delete the copy every other device's fold was written to.
         // An already-gone delete target means converged, not failed.
-        const keepIndex = readable[0].index;
+        const survivor = readable.reduce((best, entry) =>
+          newerListedCopy(volumeDataFiles[entry.index], volumeDataFiles[best.index]) ? entry : best
+        );
+        const keepIndex = survivor.index;
         for (let i = 0; i < volumeDataFiles.length; i++) {
           if (i === keepIndex) continue;
           console.log(`🗑️ Deleting duplicate volume-data.json (${volumeDataFiles[i].fileId})`);
@@ -538,22 +523,19 @@ class UnifiedSyncService {
         // copy inspected — see the field doc on `CloudVolumeDataFile`.
         return {
           volumes: merged,
+          survivorVolumes: survivor.result.value.volumes,
           series: mergedSeries,
-          rawSeries: readable[0].result.value.rawSeries,
-          bogusSeriesKeys
+          rawSeries: survivor.result.value.rawSeries,
+          bogusSeriesKeys,
+          tracking: mergedTracking,
+          rawTracking: survivor.result.value.rawTracking,
+          bogusTrackingKeys
         };
       }
 
-      // Single file - download normally
-      const blob = await provider.downloadFile(volumeDataFiles[0]);
-      const data = await this.blobToJson(blob);
-      const rawSeries = data?.[SERIES_SECTION_KEY];
-      return {
-        volumes: parseVolumesFromJson(JSON.stringify(data)),
-        series: parseSeriesSection(rawSeries),
-        rawSeries,
-        bogusSeriesKeys: detectBogusSeriesKeys(rawSeries)
-      };
+      // Single file - read normally (a stat when this device holds its bytes)
+      const blob = await readRootFile(provider, volumeDataFiles[0]);
+      return this.parseVolumeDataCopy(await this.blobToJson(blob));
     } catch (error) {
       // File not found is not an error
       if (this.isFileNotFoundError(error)) {
@@ -570,6 +552,108 @@ class UnifiedSyncService {
       }
       throw error;
     }
+  }
+
+  /** One copy of `volume-data.json`, parsed; bogus keys from its OWN raw sections. */
+  private parseVolumeDataCopy(data: any): CloudVolumeDataFile {
+    const rawSeries = data?.[SERIES_SECTION_KEY];
+    const rawTracking = data?.[TRACKING_SECTION_KEY];
+    const volumes = parseVolumesFromJson(JSON.stringify(data));
+    return {
+      volumes,
+      survivorVolumes: volumes,
+      series: parseSeriesSection(rawSeries),
+      rawSeries,
+      bogusSeriesKeys: detectBogusSeriesKeys(rawSeries),
+      tracking: parseTrackingSection(rawTracking),
+      rawTracking,
+      bogusTrackingKeys: detectBogusTrackingKeys(rawTracking)
+    };
+  }
+
+  /**
+   * Several readable copies folded into one (Drive mints duplicates): the
+   * rules of the duplicate sweep, without choosing a survivor or deleting
+   * anything — the quick tier folds the copies it read the same way.
+   */
+  private foldVolumeDataCopies(copies: CloudVolumeDataFile[]): {
+    volumes: Record<string, VolumeData>;
+    series: SeriesReadingStates;
+    tracking: TrackingState;
+    bogusSeriesKeys: Set<string>;
+    bogusTrackingKeys: Set<string>;
+  } {
+    // Per-copy bogus-key detection (on each copy's OWN raw section), and
+    // the UNION across every readable copy — not only the one that ends
+    // up surviving the delete sweep below. A poisoned stamp on a copy
+    // that gets deleted is exactly as real a poison as one on the
+    // survivor; deriving this from only one copy's raw section would let
+    // it escape detection entirely once that copy is gone.
+    const perCopyBogusKeys = copies.map((copy) => detectBogusSeriesKeys(copy.rawSeries));
+    const bogusSeriesKeys = new Set<string>();
+    for (const keys of perCopyBogusKeys) for (const key of keys) bogusSeriesKeys.add(key);
+
+    // The tracking section folds the same way as the series section below:
+    // newest per key (`devices`: per device id), and a copy's bogus entry
+    // never beats another copy's honest one (`foldableTracking`).
+    const trackingCopies = copies.map((copy) => ({
+      tracking: copy.tracking ?? {},
+      bogus: detectBogusTrackingKeys(copy.rawTracking)
+    }));
+    const bogusTrackingKeys = new Set<string>();
+    for (const copy of trackingCopies) for (const key of copy.bogus) bogusTrackingKeys.add(key);
+    let mergedTracking: TrackingState = {};
+    trackingCopies.forEach((copy, i) => {
+      mergedTracking = mergeTrackingSections(
+        mergedTracking,
+        foldableTracking(trackingCopies, i),
+        copy.bogus
+      );
+    });
+
+    // Merge all readable copies volume by volume (`mergeVolumePair`)
+    const merged: Record<string, VolumeData> = {};
+    let mergedSeries: SeriesReadingStates = {};
+    for (let i = 0; i < copies.length; i++) {
+      const copy = copies[i];
+      for (const [volumeId, volumeData] of Object.entries(copy.volumes)) {
+        const existing = merged[volumeId];
+        // Same rules as the local/cloud merge: newest position, both
+        // copies' reading.
+        merged[volumeId] = existing
+          ? this.mergeVolumePair(volumeId, existing, volumeData)
+          : volumeData;
+      }
+
+      // The series section folds by its own key, newest `lastUpdated`
+      // wins — except FORFEIT-ON-BOGUS applies within this cloud-vs-cloud
+      // fold too: a key THIS copy holds with a bogus (pre-clamp) stamp
+      // must not clobber an honest entry from ANOTHER copy, regardless of
+      // fold order. Such a key is excluded from this copy's contribution
+      // whenever some other readable copy holds it honestly — that other
+      // copy's own turn in this loop supplies it instead. Only when NO
+      // readable copy holds the key honestly does the bogus (clamped)
+      // value get folded in at all, as the best available answer.
+      const entryBogus = perCopyBogusKeys[i];
+      const foldable: SeriesReadingStates = {};
+      for (const [key, state] of Object.entries(copy.series)) {
+        const honestElsewhere =
+          entryBogus.has(key) &&
+          copies.some(
+            (_other, j) => j !== i && key in copies[j].series && !perCopyBogusKeys[j].has(key)
+          );
+        if (honestElsewhere) continue;
+        foldable[key] = state;
+      }
+      mergedSeries = mergeSeriesSections(mergedSeries, foldable, entryBogus);
+    }
+    return {
+      volumes: merged,
+      series: mergedSeries,
+      tracking: mergedTracking,
+      bogusSeriesKeys,
+      bogusTrackingKeys
+    };
   }
 
   /**
@@ -598,6 +682,9 @@ class UnifiedSyncService {
     cacheManager
       .getCache(provider.type)
       ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
+    // And the read memo, so the next sync stats this copy instead of
+    // downloading the bytes it just sent.
+    await noteRootFileUpload(provider, path, blob, uploaded);
   }
 
   /**
@@ -606,19 +693,34 @@ class UnifiedSyncService {
    * series-level state produces byte-identical files to before this existed —
    * no spurious upload, no mtime churn on every other device.
    */
-  private composeVolumeDataFile(volumes: any, series: SeriesReadingStates): any {
-    return Object.keys(series).length > 0
-      ? { ...volumes, [SERIES_SECTION_KEY]: series }
-      : { ...volumes };
+  private composeVolumeDataFile(
+    volumes: any,
+    series: SeriesReadingStates,
+    tracking: unknown = {}
+  ): any {
+    const file: Record<string, unknown> = { ...volumes };
+    if (Object.keys(series).length > 0) file[SERIES_SECTION_KEY] = series;
+    // Same rule for the tracking section: absent until the user sets something.
+    if (tracking && typeof tracking === 'object' && Object.keys(tracking).length > 0) {
+      file[TRACKING_SECTION_KEY] = tracking;
+    }
+    return file;
   }
 
   /**
-   * Sync volume data (read progress) with a provider
+   * Steps 2–5 of the volume-data sync: merge a cloud copy into local state
+   * (volumes, series section, tracking section) and set the stores.
+   *
+   * SYNCHRONOUS on purpose: nothing may run between reading local state and
+   * setting the merge, or a page turn made in between would be overwritten.
+   * Shared by the full sync and the quick tier's read-only merge — the quick
+   * one is safe to run before, beside or after it: every half merges
+   * newest-wins, so applying a copy older than local changes nothing.
    */
-  private async syncVolumeData(provider: SyncProvider): Promise<void> {
-    // Step 1: Download cloud data (volumes + the series section)
-    const cloud = await this.downloadVolumeDataFile(provider);
-
+  private applyCloudVolumeData(
+    provider: SyncProvider,
+    cloud: CloudVolumeDataFile | null
+  ): { mergedSeries: SeriesReadingStates; mergedTracking: TrackingState } {
     // Step 2: Get local data (including tombstones for deletion sync)
     const localVolumes = get(volumesWithTrash);
 
@@ -635,29 +737,176 @@ class UnifiedSyncService {
       cloud?.series ?? {},
       cloud?.bogusSeriesKeys ?? new Set()
     );
+    const mergedTracking = mergeTrackingSections(
+      get(trackingState),
+      cloud?.tracking ?? {},
+      cloud?.bogusTrackingKeys ?? new Set()
+    );
 
     // Step 4: Purge tombstones older than 30 days
     const purgedVolumes = this.purgeTombstones(mergedVolumes);
 
+    // Where history does not sync, this merge is the ONLY carrier of another
+    // device's reading: smart sort counts what it brought as reading
+    // (`remote-reads.ts`), since local history would otherwise outrank it.
+    const status = provider.getStatus?.();
+    if (status && !historySyncAllowed(status)) {
+      noteMergedRemoteReads(localVolumes, purgedVolumes);
+    }
+
     // Step 5: Update local storage (including tombstones)
     volumesWithTrash.set(purgedVolumes);
     setSeriesReadingStates(mergedSeries);
+    setTrackingStates(mergedTracking);
 
-    // Step 6: Upload if anything differs from what the cloud actually holds.
+    return { mergedSeries, mergedTracking };
+  }
+
+  /**
+   * The quick tier's progress sync: every copy of `volume-data.json` read by
+   * its known path (`readRootFileCopies`, no listing) and merged into local
+   * state — READ-ONLY. The write, the duplicate sweep and the turn cut-over
+   * stay with the full sync, which needs the listing to see every copy.
+   * Resolves `true` when a file was merged.
+   */
+  async quickMergeVolumeData(provider: SyncProvider): Promise<boolean> {
+    if (!provider.readRootFileCopies) return false;
+    const blobs = await provider.readRootFileCopies('volume-data.json');
+    const copies: CloudVolumeDataFile[] = [];
+    for (const blob of blobs) {
+      try {
+        copies.push(this.parseVolumeDataCopy(await this.blobToJson(blob)));
+      } catch {
+        // an unparseable copy says nothing; the full sync deals with it
+      }
+    }
+    if (copies.length === 0) return false;
+    const cloud: CloudVolumeDataFile =
+      copies.length === 1
+        ? copies[0]
+        : { ...this.foldVolumeDataCopies(copies), survivorVolumes: {} };
+    this.applyCloudVolumeData(provider, cloud);
+    return true;
+  }
+
+  /**
+   * Sync volume data (read progress) with a provider
+   */
+  private async syncVolumeData(provider: SyncProvider): Promise<void> {
+    // Step 1: Download cloud data (volumes + the series section)
+    const cloud = await this.downloadVolumeDataFile(provider);
+
+    // Steps 2–5: merge into local state (`applyCloudVolumeData`).
+    const { mergedSeries, mergedTracking } = this.applyCloudVolumeData(provider, cloud);
+
+    // Step 5b: page turns the merge brought back (an older client, a device
+    // that has not converted yet) become reading-history events and leave the
+    // records — but only where history itself can sync. The file keeps
+    // carrying turns (every turn history projects) until this provider holds
+    // them as history: on mokuro-bunko and read-only providers always, and
+    // elsewhere until the converted turns are confirmed uploaded (the history
+    // pass runs after this upload, so that is the next sync).
+    const { records: finalVolumes, legacyCarried } = await this.volumesForUpload(provider);
+
+    // Step 6: Upload if anything differs from what the cloud actually holds —
+    // the copy that SURVIVED the duplicate sweep, every half of it.
     //
-    // The series half is compared against the RAW cloud section, not the parsed
-    // one (see `CloudVolumeDataFile.rawSeries`): otherwise a clamped or
+    // The volume half is compared against the survivor's OWN map, not the
+    // fold (see `CloudVolumeDataFile.survivorVolumes`): the fold can equal
+    // what this device already had while the survivor still lacks what the
+    // deleted copies held. The series half is compared against the RAW cloud
+    // section, not the parsed one (see `rawSeries`): otherwise a clamped or
     // sanitized value looks like a match and never heals. `stableStringify`
     // sorts keys, so two devices whose maps hold identical state in different
     // insertion orders stop re-uploading the same bytes at each other.
-    const nextFile = this.composeVolumeDataFile(purgedVolumes, mergedSeries);
+    const nextFile = this.composeVolumeDataFile(finalVolumes, mergedSeries, mergedTracking);
     const cloudFile = this.composeVolumeDataFile(
-      cloud?.volumes ?? {},
-      (cloud?.rawSeries as SeriesReadingStates) ?? {}
+      cloud?.survivorVolumes ?? {},
+      (cloud?.rawSeries as SeriesReadingStates) ?? {},
+      cloud?.rawTracking ?? {}
     );
 
-    if (stableStringify(nextFile) !== stableStringify(cloudFile)) {
-      await this.uploadVolumeDataFile(provider, nextFile);
+    if (stableStringify(nextFile) === stableStringify(cloudFile)) {
+      clearVolumeDataDeferred();
+      return;
+    }
+
+    // Step 6b: a page turn made while the user is still reading waits for the
+    // end of the session, when positions.json already carries it to the other
+    // devices (`volume-data-deferral.ts`). The flush on leaving the reader or
+    // hiding the tab runs a sync outside the session, and that sync uploads.
+    if (
+      await this.deferVolumeDataUpload(provider, legacyCarried, cloud, finalVolumes, {
+        mergedSeries,
+        mergedTracking
+      })
+    ) {
+      return;
+    }
+
+    // A look-up visit's stamps leave the device now: its restore must beat
+    // them (`positions/visit.ts`) — reported before the PUT, which may still
+    // be in flight when the reader comes home.
+    for (const volume of watchedEscapes()) {
+      const stamp = finalVolumes[volume]?.lastProgressUpdate;
+      if (stamp) noteUploaded(volume, Date.parse(stamp));
+    }
+    await this.uploadVolumeDataFile(provider, nextFile);
+    clearVolumeDataDeferred();
+  }
+
+  /**
+   * Should this sync skip the volume-data upload (`planVolumeDataUpload`)?
+   * Gathers the rule's inputs. The session is read here, after the
+   * downloads, so a sync that a session's end started sees it ended. On any
+   * failure the answer is "upload", the behaviour from before.
+   */
+  private async deferVolumeDataUpload(
+    provider: SyncProvider,
+    legacyCarried: boolean,
+    cloud: CloudVolumeDataFile | null,
+    finalVolumes: Record<string, unknown>,
+    merged: { mergedSeries: SeriesReadingStates; mergedTracking: TrackingState }
+  ): Promise<boolean> {
+    if (!cloud) return false; // the first upload to this provider
+    try {
+      const [{ changedMark }, { cloudPositionStamp }] = await Promise.all([
+        import('$lib/positions/positions-local'),
+        import('$lib/positions/positions-cloud')
+      ]);
+      // Read after this sync's last await: a session that ended while it
+      // downloaded (the flush that ends it) uploads.
+      if (!readingSessionActive()) return false;
+      const status = provider.getStatus?.() ?? {};
+      const plan = planVolumeDataUpload({
+        next: {
+          volumes: finalVolumes,
+          sections: this.composeVolumeDataFile({}, merged.mergedSeries, merged.mergedTracking)
+        },
+        cloud: {
+          volumes: cloud.survivorVolumes,
+          sections: this.composeVolumeDataFile(
+            {},
+            (cloud.rawSeries as SeriesReadingStates) ?? {},
+            cloud.rawTracking ?? {}
+          )
+        },
+        sessionActive: true,
+        status,
+        legacyCarried,
+        markOf: changedMark,
+        cloudPositionOf: (volume) => cloudPositionStamp(provider, volume)
+      });
+      if (plan.action !== 'defer') return false;
+      noteVolumeDataDeferred();
+      console.debug(
+        `[sync] volume-data.json upload deferred to the end of the reading session: ` +
+          `${plan.volumes.length} volume(s) moved, all carried by positions.json`
+      );
+      return true;
+    } catch (error) {
+      console.warn('[sync] volume-data deferral check failed, uploading:', error);
+      return false;
     }
   }
 
@@ -679,6 +928,16 @@ class UnifiedSyncService {
    * and a `get`-only path silently ignores every copy but one — losing whatever
    * only the other copies held.
    */
+  /** `positions.json` (`$lib/positions`), loaded lazily like the history modules. */
+  private async syncPositionsFile(provider: SyncProvider): Promise<void> {
+    try {
+      const { syncPositions } = await import('$lib/positions/positions-sync');
+      await syncPositions(provider);
+    } catch (error) {
+      console.warn('[positions] sync step failed:', error);
+    }
+  }
+
   private findGoalsFiles(provider: SyncProvider): CloudFileMetadata[] {
     const cache = cacheManager.getCache(provider.type);
     if (!cache) return [];
@@ -693,7 +952,7 @@ class UnifiedSyncService {
     // provider cache — so a not-found copy must not discard the readable ones.
     const downloads = await Promise.allSettled(
       files.map(async (file) => {
-        const blob = await provider.downloadFile(file);
+        const blob = await readRootFile(provider, file);
         return (await this.blobToJson(blob)) as unknown;
       })
     );
@@ -753,6 +1012,7 @@ class UnifiedSyncService {
         GOALS_FILE_NAME,
         uploadCacheEntry(provider.type, GOALS_FILE_NAME, blob.size, uploaded)
       );
+    await noteRootFileUpload(provider, GOALS_FILE_NAME, blob, uploaded);
   }
 
   /** The local half of `goals.json`, tombstones included. */
@@ -832,7 +1092,7 @@ class UnifiedSyncService {
       }
 
       console.log('⬇️ Downloading profiles.json from cloud...');
-      const blob = await provider.downloadFile(profilesFile);
+      const blob = await readRootFile(provider, profilesFile);
       console.log('⬇️ Downloaded blob, converting to JSON...');
       const json = await this.blobToJson(blob);
       console.log('✅ Successfully parsed profiles JSON:', json);
@@ -870,10 +1130,11 @@ class UnifiedSyncService {
     const path = 'profiles.json';
     const uploaded = await provider.uploadFile(path, blob);
     // Same targeted add as `uploadVolumeDataFile` — `findProfilesFiles` reads
-    // the cache too.
+    // the cache too — and the same read memo.
     cacheManager
       .getCache(provider.type)
       ?.add?.(path, uploadCacheEntry(provider.type, path, blob.size, uploaded));
+    await noteRootFileUpload(provider, path, blob, uploaded);
   }
 
   /**
@@ -912,6 +1173,69 @@ class UnifiedSyncService {
   }
 
   /**
+   * Convert and strip page turns still held in volume records (phase 2b).
+   * Best-effort: on failure the turns simply stay in the file, as before.
+   * Loaded lazily, like the history pass.
+   */
+  private async volumesForUpload(
+    provider: SyncProvider
+  ): Promise<{ records: any; legacyCarried: boolean }> {
+    const status = provider.getStatus?.() ?? ({} as Partial<ReturnType<SyncProvider['getStatus']>>);
+    try {
+      const [cutOver, historySync, historyDbModule] = await Promise.all([
+        import('$lib/reading-history/cut-over'),
+        import('$lib/reading-history/history-sync'),
+        import('$lib/reading-history/history-db')
+      ]);
+      const historySyncs = historySync.historySyncAllowed(status) && !status.isReadOnly;
+      if (historySyncs) await cutOver.cutOverLegacyTurns();
+      const records = get(volumesWithTrash);
+      const carried =
+        historySyncs &&
+        (await historySync.legacyCarriedBy(provider.type, historyDbModule.historyDb()));
+      return {
+        records: carried ? records : await cutOver.attachProjectedTurns(records, { historySyncs }),
+        legacyCarried: !!carried
+      };
+    } catch (error) {
+      console.warn('Page-turn cut-over failed (turns stay in volume-data.json):', error);
+      return { records: get(volumesWithTrash), legacyCarried: false };
+    }
+  }
+
+  /**
+   * Reading history (spec: Storage → Cloud): upload this device's months,
+   * import every other device's. Best-effort — it is this device's copy of
+   * data it keeps locally, so a failure logs and the next sync retries; it
+   * never fails the progress sync. Loaded lazily: the history database module
+   * must not be evaluated by suites that mock `dexie`.
+   */
+  private async syncReadingHistory(
+    provider: SyncProvider,
+    options: SyncOptions = {}
+  ): Promise<void> {
+    try {
+      const cache = cacheManager.getCache(provider.type);
+      if (!cache?.isLoaded?.() || cache.isFetching?.()) return;
+      const listing = cache.getAllFiles().filter((f) => isHistoryFilePath(f.path));
+      const [{ syncHistory }, { historyDb }] = await Promise.all([
+        import('$lib/reading-history/history-sync'),
+        import('$lib/reading-history/history-db')
+      ]);
+      const result = await syncHistory(provider, listing, historyDb(), {
+        force: !options.silent,
+        onUploaded: (path, bytes, uploaded) =>
+          cache.add?.(path, uploadCacheEntry(provider.type, path, bytes, uploaded))
+      });
+      if (result.imported || result.uploaded.length || result.failed.length) {
+        console.log('📚 Reading history:', result);
+      }
+    } catch (error) {
+      console.warn('Reading history sync failed (will retry next sync):', error);
+    }
+  }
+
+  /**
    * Merge volume data using newest-wins strategy with deletion tracking support
    * Handles addedOn/deletedOn timestamps to properly sync deletions across devices
    * IMPORTANT: Always returns VolumeData class instances to ensure toJSON() is available
@@ -932,72 +1256,91 @@ class UnifiedSyncService {
         // Only in local - already a VolumeData instance
         merged[volumeId] = localVol;
       } else {
-        // In both - determine which has the most recent user action
-        // Consider all timestamps: lastProgressUpdate (reading), addedOn (import), deletedOn (deletion)
-        // Treat undefined timestamps as epoch (0) for legacy volumes
-        const localMostRecent = Math.max(
-          new Date(localVol.lastProgressUpdate || 0).getTime(),
-          new Date(localVol.addedOn || 0).getTime(),
-          new Date(localVol.deletedOn || 0).getTime()
-        );
-
-        const cloudMostRecent = Math.max(
-          new Date(cloudVol.lastProgressUpdate || 0).getTime(),
-          new Date(cloudVol.addedOn || 0).getTime(),
-          new Date(cloudVol.deletedOn || 0).getTime()
-        );
-
-        let winner;
-        if (cloudMostRecent > localMostRecent) {
-          // Cloud has more recent user action
-          const parsed = parseVolumesFromJson(JSON.stringify({ [volumeId]: cloudVol }));
-          winner = parsed[volumeId];
-        } else if (localMostRecent > cloudMostRecent) {
-          // Local has more recent user action
-          winner = localVol;
-        } else {
-          // Timestamps equal (including both at epoch)
-          // Prefer active over deleted to prevent accidental data loss
-          if (cloudVol.deletedOn && !localVol.deletedOn) {
-            winner = localVol; // Local is active, keep it
-          } else if (localVol.deletedOn && !cloudVol.deletedOn) {
-            const parsed = parseVolumesFromJson(JSON.stringify({ [volumeId]: cloudVol }));
-            winner = parsed[volumeId]; // Cloud is active, keep it
-          } else {
-            // Both same state (both active or both deleted) - arbitrary choice: local
-            winner = localVol;
-          }
-        }
-
-        // Preserve metadata from both records - fill in missing fields
-        // (only if the winner is not deleted - tombstones keep minimal data)
-        if (!winner.deletedOn) {
-          merged[volumeId] = parseVolumesFromJson(
-            JSON.stringify({
-              [volumeId]: {
-                ...winner,
-                series_uuid: winner.series_uuid || localVol.series_uuid || cloudVol.series_uuid,
-                series_title: winner.series_title || localVol.series_title || cloudVol.series_title,
-                volume_title: winner.volume_title || localVol.volume_title || cloudVol.volume_title,
-                // A completed winner without a stamp (written by a client that
-                // predates `completedAt`, or one that has not backfilled yet)
-                // inherits the other side's: dropping it would re-date the
-                // completion on every device. A winner that is not completed
-                // was un-read, so there is nothing to carry.
-                completedAt:
-                  winner.completedAt ??
-                  (winner.completed ? (localVol.completedAt ?? cloudVol.completedAt) : undefined)
-              }
-            })
-          )[volumeId];
-        } else {
-          // Winner is a tombstone - keep it as-is (minimal data)
-          merged[volumeId] = winner;
-        }
+        merged[volumeId] = this.mergeVolumePair(volumeId, localVol, cloudVol);
       }
     });
 
     return merged;
+  }
+
+  /**
+   * One volume held on both sides (or in two duplicate cloud copies; `a` wins
+   * a tie). The newest user action picks the record whose position and
+   * completion stand; when both are live, the other side's reading is merged
+   * in (`mergeLiveVolumeRecords`).
+   */
+  private mergeVolumePair(volumeId: string, a: any, b: any): any {
+    const parse = (vol: any) => parseVolumesFromJson(JSON.stringify({ [volumeId]: vol }))[volumeId];
+    // The synced shape of a record (a VolumeData instance's `toJSON`).
+    const plain = (vol: any) => JSON.parse(JSON.stringify(vol));
+    const bothLive = !a.deletedOn && !b.deletedOn;
+
+    // Treat undefined timestamps as epoch (0) for legacy volumes. Between two
+    // live records `addedOn` does not count: opening a volume this device has
+    // no record for creates one stamped only with `addedOn`, and that blank
+    // record outranked real reading on every other device — progress went to
+    // 0 everywhere. It still counts against a tombstone, so a re-import revives
+    // a volume whose stats were forgotten.
+    // One exception: a record that replaced a "forget stats" tombstone
+    // (`forgotAt`) was opened deliberately after the forget, so its `addedOn`
+    // does count — otherwise a stale pre-forget copy outranks it and brings
+    // the forgotten progress, completion and timer back.
+    const mostRecent = (vol: any) =>
+      Math.max(
+        new Date(vol.lastProgressUpdate || 0).getTime(),
+        bothLive && !vol.forgotAt ? 0 : new Date(vol.addedOn || 0).getTime(),
+        new Date(vol.deletedOn || 0).getTime()
+      );
+    const aMostRecent = mostRecent(a);
+    const bMostRecent = mostRecent(b);
+
+    let winner;
+    let loser;
+    if (bMostRecent > aMostRecent) {
+      [winner, loser] = [b, a];
+    } else if (aMostRecent > bMostRecent) {
+      [winner, loser] = [a, b];
+    } else if (b.deletedOn && !a.deletedOn) {
+      // Timestamps equal: prefer active over deleted to prevent accidental data loss
+      [winner, loser] = [a, b];
+    } else if (a.deletedOn && !b.deletedOn) {
+      [winner, loser] = [b, a];
+    } else if (bothLive) {
+      // A tie between live records must not depend on which side is local, or
+      // two devices each keep their own copy and re-upload it on every sync.
+      // The earlier-added record wins (a legacy one without `addedOn` first),
+      // then the content decides.
+      const addedA = new Date(a.addedOn || 0).getTime();
+      const addedB = new Date(b.addedOn || 0).getTime();
+      const bFirst =
+        addedA !== addedB ? addedB < addedA : stableStringify(plain(b)) < stableStringify(plain(a));
+      [winner, loser] = bFirst ? [b, a] : [a, b];
+    } else {
+      // Both deleted - arbitrary choice: a
+      [winner, loser] = [a, b];
+    }
+
+    // Winner is a tombstone - keep it as-is (minimal data)
+    if (winner.deletedOn) return winner === a ? a : parse(winner);
+
+    const live = loser.deletedOn
+      ? applyForgetHorizon(plain(winner), loser.deletedOn)
+      : mergeLiveVolumeRecords(plain(winner), plain(loser));
+
+    // Preserve metadata from both records - fill in missing fields
+    return parse({
+      ...live,
+      series_uuid: winner.series_uuid || a.series_uuid || b.series_uuid,
+      series_title: winner.series_title || a.series_title || b.series_title,
+      volume_title: winner.volume_title || a.volume_title || b.volume_title,
+      // A completed winner without a stamp (written by a client that
+      // predates `completedAt`, or one that has not backfilled yet)
+      // inherits the other side's: dropping it would re-date the
+      // completion on every device. A winner that is not completed
+      // was un-read, so there is nothing to carry.
+      completedAt:
+        winner.completedAt ?? (winner.completed ? (a.completedAt ?? b.completedAt) : undefined)
+    });
   }
 
   /**

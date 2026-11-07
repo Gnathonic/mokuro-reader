@@ -16,6 +16,7 @@
 import { db } from '$lib/catalog/db';
 import {
   deleteLayerRows,
+  getLayerMeta,
   getLayerPages,
   getLayerWithPages,
   layerTables,
@@ -26,12 +27,20 @@ import {
 } from '$lib/catalog/layer-store';
 import { buildPageCharCounts } from '$lib/catalog/cloud-ocr-upgrade';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
-import { noteOcrEdited } from '$lib/util/sync/sidecar-backfill';
+import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
 import { LAYER_ID_RE, layerSidecarName } from '$lib/util/sync/syncable-file';
 import type { Page, VolumeOcrLayer, VolumeOcrLayerKind, VolumeOcrLayerWithPages } from '$lib/types';
-import { layerNameForId, titleCasedLayerId } from './layer-names';
-import { ORIGINAL_LAYER_ID } from './edit-persist';
+import {
+  EDIT_LAYER_ID,
+  isCuratedLayerId,
+  isPersonalLayerId,
+  isReservedLayerId,
+  isServerKeepsakeLayerId,
+  layerNameForId,
+  titleCasedLayerId
+} from './layer-names';
+import { ORIGINAL_LAYER_ID, noteLayerEdited } from './edit-persist';
+import { editLayerEpoch } from './edit-layer-epoch';
 import {
   TRANSLATION_PROMOTE_BLOCKED,
   isTranslationLayer,
@@ -72,10 +81,11 @@ const SERVED_ENGINE_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /**
  * The engine that produced a layer file, when a SERVER produced it. bunko
  * stamps every layer sidecar it generates with a top-level
- * `ocr_engine: { id, … }`, and nothing this app writes carries one — a pushed
- * edit layer is pure mokuro format. So the stamp, not the file's name, tells a
- * server's OCR from a person's edits: the name is whatever the server's admin
- * called that generation, and no closed list of ids can know it.
+ * `ocr_engine: { id, … }`, and no LAYER file this app writes carries one (a
+ * pushed edit layer carries `edited`; only a primary carries a block, and only
+ * one it installed — `ocr-provenance.ts`). So the stamp, not the file's name,
+ * tells a server's OCR from a person's edits: the name is whatever the
+ * server's admin called that generation, and no closed list of ids can know it.
  */
 export function servedEngineOf(json: unknown): string | undefined {
   if (!json || typeof json !== 'object') return undefined;
@@ -86,19 +96,41 @@ export function servedEngineOf(json: unknown): string | undefined {
 }
 
 /**
+ * A layer of corrections by its id alone: the shared `curated`, an account's
+ * `edit`/`edit-<n>`, or bunko's keepsake (a case merge's `curated-<n>`). No
+ * server stamp makes one of them a generation (`layerKindForId`,
+ * `layer-sync`'s re-filing).
+ */
+export function isCorrectionsLayerId(layerId: string): boolean {
+  return (
+    isCuratedLayerId(layerId) || isPersonalLayerId(layerId) || isServerKeepsakeLayerId(layerId)
+  );
+}
+
+/**
  * The kind a layer file with no local row is filed under: from the engine
  * stamp it carried (`servedEngineOf`) when it had one, else from its id alone.
  */
 export function layerKindForId(layerId: string, servedEngine?: string): VolumeOcrLayerKind {
   if (layerId === ORIGINAL_LAYER_ID) return 'original';
   if (isTranslationLayerId(layerId)) return 'translation';
+  // Corrections whatever the file claims: the shared `curated` layer, an
+  // account's own `edit`, a case merge's `curated-<n>`. What may write them is
+  // read from the id (`layerStaysLocal`).
+  if (isCorrectionsLayerId(layerId)) return 'edit';
   if (servedEngine || KNOWN_ENGINE_IDS.has(layerId)) return 'ocr';
   return 'edit';
 }
 
-/** A display name → a unique `layer_id` slug (never the reserved `original`). */
+/**
+ * A display name → a unique `layer_id` slug. Never a reserved id or family
+ * (`isReservedLayerId`) and always with a letter in it (sidecar names rule v1
+ * #8): such a slug becomes `layer-<slug>` — a `-<n>` alone would never
+ * leave `edit-<n>`, `curated-<n>` or `tr-…` — then de-duplicates.
+ */
 export function slugifyLayerId(name: string, taken: Iterable<string>): string {
   const used = new Set(taken);
+  const prefixed = (slug: string) => `layer-${slug}`.slice(0, MAX_SLUG).replace(/-+$/g, '');
   let base = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -106,16 +138,36 @@ export function slugifyLayerId(name: string, taken: Iterable<string>): string {
     .slice(0, MAX_SLUG)
     .replace(/-+$/g, '');
   if (!base) base = 'layer';
+  // An all-digit id is valid in a listing, but bunko's listing-free paths
+  // need a letter to tell `Vol 1.2024.mokuro` from the primary of `Vol 1.2024`.
+  if (!/[a-z]/.test(base) || isReservedLayerId(base)) base = prefixed(base);
   let candidate = base;
   let n = 2;
-  while (candidate === ORIGINAL_LAYER_ID || used.has(candidate) || !LAYER_ID_RE.test(candidate)) {
+  while (used.has(candidate) || !LAYER_ID_RE.test(candidate) || isReservedLayerId(candidate)) {
     candidate = `${base.slice(0, MAX_SLUG - 3)}-${n++}`;
+    // `tr` is free but `tr-2` is a translation id: step out the same way.
+    if (isReservedLayerId(candidate)) {
+      base = prefixed(base);
+      candidate = base;
+      n = 2;
+    }
   }
   return candidate;
 }
 
 function assertEditable(layerId: string): void {
   if (layerId === ORIGINAL_LAYER_ID) throw new Error('The original layer is read-only');
+}
+
+/**
+ * May this layer's PAGES be written here? Never the `original` snapshot, and
+ * never the shared `curated` layer: only Publish writes that (`layer-sync`),
+ * and an in-place edit would be pulled over by the next listing anyway. Its
+ * name stays the user's to change: a display name is local.
+ */
+function assertPagesWritable(layerId: string): void {
+  assertEditable(layerId);
+  if (isCuratedLayerId(layerId)) throw new Error('The shared corrections layer is read-only');
 }
 
 function byOriginalThenCreated(a: VolumeOcrLayer, b: VolumeOcrLayer): number {
@@ -194,7 +246,7 @@ export async function persistLayerPageEdit(
   pageIndex: number,
   page: Page
 ): Promise<void> {
-  assertEditable(layerId);
+  assertPagesWritable(layerId);
   await db.transaction('rw', layerTables(db), async () => {
     const row = await getLayerWithPages(db, volumeUuid, layerId);
     if (!row) throw new Error(`Layer ${layerId} not found`);
@@ -202,6 +254,66 @@ export async function persistLayerPageEdit(
     pages[pageIndex] = page;
     await putLayerWithPages(db, { ...row, pages, updated_at: new Date().toISOString() });
   });
+  noteLayerEdited();
+}
+
+/**
+ * An edit of a layer that must stay as it is (`forksOnEdit`) goes into the
+ * account's own `edit` layer: made here from `sourceLayerId`'s pages when
+ * there is none, with no cloud stamp, so the next sync pushes it wherever
+ * personal layers go up (`layerNeedsPush`). An existing `edit` layer holds
+ * corrections of its own and is never overwritten (`copyIntoEditLayer` does
+ * that, on the user's word) — nor is one only listed in the cloud so far: the
+ * caller pulls that first (`pullOwnEditLayerBeforeEdit`, `layer-sync.ts`).
+ */
+export async function forkIntoEditLayer(
+  volumeUuid: string,
+  sourceLayerId: string
+): Promise<{ created: boolean }> {
+  const created = await db.transaction('rw', layerTables(db), async () => {
+    if (await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID)) return false;
+    const source = await getLayerPages(db, volumeUuid, sourceLayerId);
+    if (!source) throw new Error(`Layer ${sourceLayerId} not found`);
+    const now = new Date().toISOString();
+    await putLayerWithPages(db, {
+      volume_uuid: volumeUuid,
+      layer_id: EDIT_LAYER_ID,
+      name: layerNameForId(EDIT_LAYER_ID),
+      kind: 'edit',
+      created_at: now,
+      updated_at: now,
+      pages: structuredClone(source)
+    });
+    return true;
+  });
+  return { created };
+}
+
+/**
+ * "Copy to your corrections": `sourceLayerId`'s pages REPLACE the `edit`
+ * layer's (made when there is none). The row keeps its name, creation and
+ * cloud stamp, so the replacement is an edit since its last sync and goes up
+ * like any other. The caller has the user's confirmation.
+ */
+export async function copyIntoEditLayer(volumeUuid: string, sourceLayerId: string): Promise<void> {
+  await db.transaction('rw', layerTables(db), async () => {
+    const source = await getLayerPages(db, volumeUuid, sourceLayerId);
+    if (!source) throw new Error(`Layer ${sourceLayerId} not found`);
+    const existing = await getLayerMeta(db, volumeUuid, EDIT_LAYER_ID);
+    const now = new Date().toISOString();
+    await putLayerWithPages(db, {
+      ...(existing ?? {
+        volume_uuid: volumeUuid,
+        layer_id: EDIT_LAYER_ID,
+        name: layerNameForId(EDIT_LAYER_ID),
+        kind: 'edit' as const,
+        created_at: now
+      }),
+      updated_at: now,
+      pages: structuredClone(source)
+    });
+  });
+  noteLayerEdited();
 }
 
 /** `replaced-YYYYMMDD-HHMM` (UTC), de-duplicated against `taken`. */
@@ -221,8 +333,9 @@ function samePages(a: Page[], b: Page[]): boolean {
  * Make a layer THE primary OCR. The previous primary is never lost: it
  * becomes `original` if no original exists yet, or a `replaced-…` layer if
  * it had drifted from the original (byte-equal → nothing to keep). The
- * primary write goes through the same recount + `ocr_edited_at` stamp +
- * `noteOcrEdited` as an in-place edit, so the cloud `.mokuro` re-uploads.
+ * primary write goes through the same recount + `ocr_edited_at` stamp as an
+ * in-place edit. It stays LOCAL: the cloud main `.mokuro` is
+ * model output and is never re-uploaded from a promoted primary (D4).
  *
  * A TRANSLATION layer is refused (see `TRANSLATION_PROMOTE_BLOCKED`): that
  * very recount would zero the volume's character stats. The UI never offers
@@ -232,6 +345,7 @@ export async function promoteLayer(
   volumeUuid: string,
   layerId: string
 ): Promise<{ replacedLayerId: string | null }> {
+  editLayerEpoch(); // a promotion after it is never migrated into an `edit` layer
   const now = new Date();
   const editedAt = now.toISOString();
   const result = await db.transaction(
@@ -290,11 +404,9 @@ export async function promoteLayer(
       return { replacedLayerId: replaced };
     }
   );
-  try {
-    noteOcrEdited(volumeUuid);
-  } catch (error) {
-    console.debug('[layers] could not nominate volume for sidecar re-upload:', error);
-  }
+  // No upload: promotion is a LOCAL view choice (bunko design 0.8 D4). The
+  // main sidecar stays model output — a later cloud write of it is built from
+  // the `original` snapshot (`mainSidecarPagesForCloud`), never from this.
   return result;
 }
 
@@ -307,7 +419,7 @@ export async function buildLayerExportFile(volumeUuid: string, layerId: string):
   if (!volume) throw new Error(`Volume ${volumeUuid} not found`);
   if (!layer) throw new Error(`Layer ${layerId} not found`);
   const { totalChars } = buildPageCharCounts(layer.pages);
-  const meta = buildMokuroMetadata({ ...volume, character_count: totalChars }, layer.pages);
+  const meta = buildLayerMokuroMetadata(volume, layer, totalChars);
   return new File([JSON.stringify(meta)], layerSidecarName(volume.volume_title, layerId), {
     type: 'application/json'
   });
@@ -354,7 +466,7 @@ export async function upsertLayerPages(
   layerId: string,
   opts: UpsertLayerPagesOptions
 ): Promise<VolumeOcrLayerWithPages | null> {
-  assertEditable(layerId);
+  assertPagesWritable(layerId);
   const now = new Date().toISOString();
   return db.transaction('rw', [db.volumes, ...layerTables(db)], async () => {
     const volume = await db.volumes.get(volumeUuid);

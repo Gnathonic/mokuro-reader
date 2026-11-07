@@ -161,6 +161,7 @@ vi.mock('$lib/settings/volume-data', () => ({
 import { db } from '$lib/catalog/db';
 import { _resetCoverPersistForTests } from './cover-persist';
 import { _getCloudCoversForTests, putCloudCovers } from './cloud-covers';
+import { acquireCover } from './cover-resolver';
 import {
   _resetCoverServiceForTests,
   flushPendingCoverPersists,
@@ -708,6 +709,24 @@ describe('dedupe: the ledger records what was delivered, keyed by scope + uuid +
     );
     update.mockRestore();
   });
+
+  it('every download carries the listed cover version, and a refresh tells the download to skip its session copy', async () => {
+    await db.volumes.put(row('v-1'));
+    const vol = row('v-1', {
+      cloudThumbnailFileId: 'c-1',
+      cloudThumbnailSize: 9,
+      cloudThumbnailModifiedTime: '2026-01-01T00:00:00.000Z'
+    });
+    await requestCover(vol, { refresh: true });
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cloudThumbnailSize: 9,
+        cloudThumbnailModifiedTime: '2026-01-01T00:00:00.000Z'
+      }),
+      undefined,
+      { refresh: true }
+    );
+  });
 });
 
 /**
@@ -1149,6 +1168,60 @@ describe('promotion: a cached cover is installed onto a row the user has read, w
     expect(outcome).toBe('cache');
     expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
     expect(await db.volumes.count()).toBe(0);
+  });
+
+  it('a STALE cached cover with no relationship is fetched again and re-cached with the new stamp', async () => {
+    await cacheCover(path, { cover_size: 5, cover_modified: 1700000000 });
+    const shown = acquireCover(path); // a card already showing the old cover
+    expect(await (await shown.ready)!.file.text()).toBe('cached');
+    const outcome = await requestCover(
+      indexedPlaceholder('idx-1', {
+        cloudProvider: 'webdav',
+        cloudThumbnailFileId: 'c-1',
+        cloudPath: path,
+        cloudThumbnailSize: 9,
+        cloudThumbnailModifiedTime: '2026-01-01T00:00:00.000Z'
+      })
+    );
+    await flushPendingCoverPersists();
+
+    expect(outcome).toBe('cache');
+    expect(fetchCloudThumbnailMock).toHaveBeenCalledTimes(1);
+    expect(await db.volumes.count()).toBe(0);
+    const cached = (await _getCloudCoversForTests('mega:a@b.com', [path])).get(path);
+    expect(cached?.cover_size).toBe(9);
+    expect(cached?.cover_modified).toBe(Date.parse('2026-01-01T00:00:00.000Z') / 1000);
+    // ...and that card now shows the new one, with no reload.
+    await vi.waitFor(async () => expect(await shown.current!.file.text()).toBe('img'));
+    shown.release();
+  });
+
+  it('a cached cover with no relationship whose stamp MATCHES the listing is not fetched', async () => {
+    await cacheCover(path, { cover_size: 5, cover_modified: 1700000000 });
+    const outcome = await requestCover(
+      indexedPlaceholder('idx-1', {
+        cloudThumbnailFileId: 'c-1',
+        cloudPath: path,
+        cloudThumbnailSize: 5,
+        cloudThumbnailModifiedTime: '2023-11-14T22:13:20.000Z'
+      })
+    );
+    expect(outcome).toBe('cache');
+    expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
+  });
+
+  it('a STAMPLESS cached cover with no relationship is kept (only its 14-day expiry refreshes it)', async () => {
+    await cacheCover(path);
+    const outcome = await requestCover(
+      indexedPlaceholder('idx-1', {
+        cloudThumbnailFileId: 'c-1',
+        cloudPath: path,
+        cloudThumbnailSize: 9,
+        cloudThumbnailModifiedTime: '2026-01-01T00:00:00.000Z'
+      })
+    );
+    expect(outcome).toBe('cache');
+    expect(fetchCloudThumbnailMock).not.toHaveBeenCalled();
   });
 
   it('a STALE cached cover is fetched fresh instead of promoted', async () => {

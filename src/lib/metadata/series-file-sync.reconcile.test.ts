@@ -137,7 +137,9 @@ import {
   markListingFresh,
   reconcileMissingMetadataFiles,
   scheduleSeriesFileWrite,
-  SERIES_FILE_WRITE_DEBOUNCE_MS
+  SERIES_FILE_WRITE_DEBOUNCE_MS,
+  seriesFileWritesPending,
+  settleSeriesFileWrites
 } from './series-file-sync';
 import { toStoredSeriesMetadata, type SeriesMetadata } from './types';
 
@@ -675,6 +677,17 @@ describe('reconcileMissingMetadataFiles', () => {
 
     expect(writtenTitles()).toEqual(titles);
     expect(fetchAllCloudVolumes).toHaveBeenCalled();
+  });
+
+  it('a settle waits out a pass in flight and runs the writes it queues (the rig driver)', async () => {
+    cloudListing.files = [{ path: 'One Piece/Volume 1.cbz' }, { path: 'catalog.json' }];
+    // Asked for while the pass has queued nothing yet: it is still reading.
+    void reconcileMissingMetadataFiles();
+    expect(seriesFileWritesPending()).toBe(true);
+    await settleSeriesFileWrites();
+    // Written by the settle (no timer was let run), and nothing left behind.
+    expect(writtenTitles()).toEqual(['One Piece']);
+    expect(seriesFileWritesPending()).toBe(false);
   });
 
   it('never throws out of the fire-and-forget call sites', async () => {

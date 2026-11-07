@@ -2,6 +2,7 @@ import { writable } from 'svelte/store';
 import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
+import { addMutations, removeMutations } from '../../listing-mutations';
 import { onedriveProvider } from './onedrive-provider';
 
 class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
@@ -9,7 +10,8 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
   // subscribers get incremental mutations coalesced — see CoalescedCacheStore.
   private cache = new CoalescedCacheStore<CloudFileMetadata[]>();
   private isFetchingStore = writable<boolean>(false);
-  private fetchingFlag = false;
+  /** The listing in flight; every fetch() meanwhile joins it. */
+  private fetchPromise: Promise<void> | null = null;
   private loadedFlag = false;
 
   get store() {
@@ -20,12 +22,27 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
     return this.isFetchingStore;
   }
 
-  async fetch(): Promise<void> {
-    if (this.fetchingFlag) return;
-    if (!onedriveProvider.isAuthenticated()) return;
+  fetch(): Promise<void> {
+    // Join a listing in flight: every caller reads the cache next, and one
+    // that returned at once would read the listing from before it. A joined
+    // listing is as fresh as when it BEGAN: writes made since ride it via the
+    // replay, but a remote change after that waits for the next listing.
+    if (this.fetchPromise) return this.fetchPromise;
+    if (!onedriveProvider.isAuthenticated()) return Promise.resolve();
 
-    this.fetchingFlag = true;
     this.isFetchingStore.set(true);
+    const run: Promise<void> = this.load().finally(() => {
+      if (this.fetchPromise !== run) return; // cleared meanwhile
+      this.fetchPromise = null;
+      this.isFetchingStore.set(false);
+    });
+    this.fetchPromise = run;
+    return run;
+  }
+
+  private async load(): Promise<void> {
+    // Uploads and deletes made while the walk runs are replayed onto its map.
+    const listing = this.cache.beginListing();
     try {
       const volumes = await onedriveProvider.listCloudVolumes();
       const cacheMap = new Map<string, CloudFileMetadata[]>();
@@ -38,7 +55,8 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
           cacheMap.set(seriesTitle, [volume]);
         }
       }
-      this.cache.set(cacheMap);
+      // A clear() meanwhile (sign-out): this listing is a dead account's.
+      if (!listing.install(cacheMap)) return;
       this.loadedFlag = true;
       console.log(
         `✅ OneDrive cache populated with ${volumes.length} files in ${cacheMap.size} series`
@@ -46,8 +64,7 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
     } catch (error) {
       console.error('Failed to fetch OneDrive cache:', error);
     } finally {
-      this.fetchingFlag = false;
-      this.isFetchingStore.set(false);
+      listing.abandon();
     }
   }
 
@@ -85,13 +102,19 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
     return result;
   }
 
+  revision(): object {
+    return this.cache.revision();
+  }
+
   clear(): void {
     this.cache.set(new Map());
     this.loadedFlag = false;
+    this.fetchPromise = null;
+    this.isFetchingStore.set(false);
   }
 
   isFetching(): boolean {
-    return this.fetchingFlag;
+    return this.fetchPromise !== null;
   }
 
   isLoaded(): boolean {
@@ -99,38 +122,11 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
   }
 
   add(path: string, metadata: CacheAddMetadata<CloudFileMetadata>): void {
-    this.cache.update((cache) => {
-      const newCache = new Map(cache);
-      const seriesTitle = path.split('/')[0];
-      const existing = newCache.get(seriesTitle);
-      if (existing) {
-        const index = existing.findIndex((f) => f.fileId === metadata.fileId);
-        if (index >= 0) {
-          newCache.set(seriesTitle, [
-            ...existing.slice(0, index),
-            metadata,
-            ...existing.slice(index + 1)
-          ]);
-        } else {
-          newCache.set(seriesTitle, [...existing, metadata]);
-        }
-      } else {
-        newCache.set(seriesTitle, [metadata]);
-      }
-      return newCache;
-    });
+    this.cache.update(...addMutations(path, metadata));
   }
 
   removeById(fileId: string): void {
-    this.cache.update((cache) => {
-      const newCache = new Map(cache);
-      for (const [path, files] of newCache.entries()) {
-        const filtered = files.filter((f) => f.fileId !== fileId);
-        if (filtered.length === 0) newCache.delete(path);
-        else if (filtered.length !== files.length) newCache.set(path, filtered);
-      }
-      return newCache;
-    });
+    this.cache.update(...removeMutations(fileId));
   }
 
   update(fileId: string, updates: Partial<CloudFileMetadata>): void {

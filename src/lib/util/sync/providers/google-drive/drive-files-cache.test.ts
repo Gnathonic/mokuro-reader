@@ -2,11 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./api-client', () => ({
   driveApiClient: {
-    listFiles: vi.fn()
-  }
+    listFiles: vi.fn(),
+    getFileMetadata: vi.fn(async () => ({ id: 'MY_DRIVE' })),
+    getStartPageToken: vi.fn(async () => 'start-token')
+  },
+  escapeNameForDriveQuery: vi.fn((name: string) => name),
+  isDriveAuthFailure: (error: unknown) => (error as { kind?: unknown })?.kind === 'auth'
 }));
 
-vi.mock('../../folder-deduplicator', () => ({
+vi.mock('../../folder-deduplicator', async (importOriginal) => ({
+  // The real compareByAge: the root choice must order exactly as dedup keeps.
+  ...(await importOriginal<typeof import('../../folder-deduplicator')>()),
   folderDeduplicator: {
     deduplicateAll: vi.fn().mockResolvedValue({ groupsMerged: 0 })
   }
@@ -14,16 +20,22 @@ vi.mock('../../folder-deduplicator', () => ({
 
 vi.mock('./google-drive-provider', () => ({
   googleDriveProvider: {
+    type: 'google-drive',
     isAuthenticated: vi.fn(() => false),
-    getFolderOperations: vi.fn(() => ({}))
+    getFolderOperations: vi.fn(() => ({})),
+    adoptListedReaderFolder: vi.fn(),
+    // No marker in the library unless a test serves one.
+    readControlFile: vi.fn(async () => null)
   }
 }));
 
-import { driveApiClient } from './api-client';
+import { driveApiClient, escapeNameForDriveQuery } from './api-client';
 import { folderDeduplicator } from '../../folder-deduplicator';
 import { googleDriveProvider } from './google-drive-provider';
 import { driveFilesCache } from './drive-files-cache';
 import { CACHE_MUTATION_COALESCE_MS } from '../../coalesced-cache-store';
+import { COLD_START_GRACE_S, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
+import { servedMarker } from '$lib/catalog/__fixtures__/bunko-marker';
 
 describe('driveFilesCache', () => {
   beforeEach(() => {
@@ -554,8 +566,8 @@ describe('driveFilesCache emission coalescing', () => {
 /**
  * `runDeduplication` re-enters `fetchAllFiles` whenever a merge happened. That
  * is fine while dedup converges, and an unbounded whole-account refetch engine
- * when duplicate folders keep being created between passes — a Drive-only
- * failure mode, since no other provider runs a dedup pass at all.
+ * when duplicate folders keep being created between passes. (MEGA's pass is
+ * bounded the same way in mega-cache.)
  */
 describe('driveFilesCache dedup refetch', () => {
   it('stops re-entering the fetch once the merge count refuses to settle', async () => {
@@ -596,6 +608,122 @@ describe('driveFilesCache dedup refetch', () => {
     // ...and the chain really did engage: a bound that never fired would
     // prove nothing.
     expect(fetches).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * A cloud-direct Bunko holding the lease with `dedup: true` merges duplicate
+ * folders itself (with the same keep-newer rule); a second merger racing it
+ * on the same folders would only fight over the moves. The reader steps
+ * aside while that holder is FRESH, and takes over again once it is not.
+ */
+describe('driveFilesCache dedup under a cloud-direct Bunko', () => {
+  const marker = servedMarker(Date.parse('2026-10-29T12:00:00.000Z'));
+  /** Bunko's clock at its last heartbeat: a cold read then sees a fresh holder. */
+  const heartbeat = Date.parse(marker.heartbeat_at);
+  let now = heartbeat;
+  const readControlFile = googleDriveProvider.readControlFile as unknown as ReturnType<
+    typeof vi.fn
+  >;
+  const deduplicateAll = folderDeduplicator.deduplicateAll as unknown as ReturnType<typeof vi.fn>;
+
+  function serve(body: unknown) {
+    readControlFile.mockResolvedValue({
+      etag: 'm1',
+      nodes: [{ id: 'marker', etag: 'm1', blob: new Blob([JSON.stringify(body)]) }]
+    });
+  }
+
+  async function fetchAndSettle() {
+    await driveFilesCache.fetch();
+    // Drain the fire-and-forget dedup chain (dynamic imports + microtasks).
+    for (let round = 0; round < 10; round++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    now = heartbeat;
+    resetCloudBunkoMarkersForTest(() => now);
+    driveFilesCache.clear();
+    vi.mocked(driveApiClient.listFiles).mockReset().mockResolvedValue([]);
+    vi.mocked(googleDriveProvider.isAuthenticated).mockReturnValue(true);
+    deduplicateAll.mockReset().mockResolvedValue({ groupsMerged: 0 });
+    readControlFile.mockReset().mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.mocked(googleDriveProvider.isAuthenticated).mockReturnValue(false);
+    readControlFile.mockReset().mockResolvedValue(null);
+    resetCloudBunkoMarkersForTest();
+    localStorage.clear();
+  });
+
+  it("skips its own dedup while Bunko's fresh lease holder merges duplicates", async () => {
+    expect(marker.dedup).toBe(true);
+    serve(marker);
+
+    await fetchAndSettle();
+
+    expect(readControlFile).toHaveBeenCalled();
+    expect(deduplicateAll).not.toHaveBeenCalled();
+  });
+
+  it('runs its own dedup when the holder does not merge duplicates', async () => {
+    serve({ ...marker, dedup: false });
+
+    await fetchAndSettle();
+
+    expect(deduplicateAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs its own dedup again once the holder went stale', async () => {
+    serve(marker);
+    await fetchAndSettle();
+    expect(deduplicateAll).not.toHaveBeenCalled();
+
+    // The marker never moved again. Read cold (no change seen), it is stale
+    // once ttl + the cold-start grace has passed since its own heartbeat.
+    const staleAt = heartbeat + (marker.ttl_s + COLD_START_GRACE_S) * 1000;
+    now = staleAt - 1000;
+    await fetchAndSettle();
+    expect(deduplicateAll).not.toHaveBeenCalled();
+
+    now = staleAt;
+    await fetchAndSettle();
+
+    expect(deduplicateAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes under the listing's root once Bunko has merged away the one it pinned", async () => {
+    // A missed lookup minted a second root and the provider pinned it; Bunko
+    // merged it into the older one and trashed it, so the next listing shows
+    // only the older. Skipping dedup also skips the merge's root confirmation,
+    // so the listing itself must re-point the write root.
+    serve(marker);
+    vi.mocked(driveApiClient.listFiles).mockResolvedValue([
+      {
+        id: 'older-root',
+        name: 'mokuro-reader',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: ['MY_DRIVE'],
+        createdTime: '2026-01-01T00:00:00.000Z'
+      }
+    ] as never);
+    const adopt = vi.mocked(googleDriveProvider.adoptListedReaderFolder);
+    adopt.mockClear();
+
+    await fetchAndSettle();
+
+    expect(deduplicateAll).not.toHaveBeenCalled();
+    expect(adopt).toHaveBeenCalledWith('older-root');
+  });
+
+  it('runs its own dedup when there is no marker at all', async () => {
+    await fetchAndSettle();
+
+    expect(deduplicateAll).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -640,5 +768,288 @@ describe('add() for ROOT config files', () => {
 
     expect(cache.get('Berserk/Vol 1.cbz')?.fileId).toBe('cbz-1');
     expect(cache.get('Vol 1.cbz')).toBeNull();
+  });
+});
+
+/**
+ * Which `mokuro-reader` folder is the write root when there are several: one
+ * directly in My Drive first, then the oldest, then the smaller id — the same
+ * folder FolderDeduplicator keeps, and the same order MEGA and bunko use. The
+ * LAST one listed (the old rule) depends on Drive's paging order.
+ */
+describe('driveFilesCache reader folder choice', () => {
+  const FOLDER_MIME = 'application/vnd.google-apps.folder';
+  const roots = {
+    nestedOlder: {
+      id: 'nested-older',
+      name: 'mokuro-reader',
+      mimeType: FOLDER_MIME,
+      parents: ['backup'],
+      createdTime: '2026-01-01T00:00:00.000Z'
+    },
+    topNewer: {
+      id: 'top-newer',
+      name: 'mokuro-reader',
+      mimeType: FOLDER_MIME,
+      parents: ['MY_DRIVE'],
+      createdTime: '2026-03-01T00:00:00.000Z'
+    },
+    topOldest: {
+      id: 'top-oldest',
+      name: 'mokuro-reader',
+      mimeType: FOLDER_MIME,
+      parents: ['MY_DRIVE'],
+      createdTime: '2026-02-01T00:00:00.000Z'
+    }
+  };
+  const TOP_LEVEL_QUERY =
+    "'root' in parents and name='mokuro-reader' and mimeType='application/vnd.google-apps.folder' and trashed=false";
+  type Fixture = (typeof roots)[keyof typeof roots];
+  // The account listing answers everything; the 'root' in parents query
+  // answers the folders directly in My Drive, as Drive would.
+  const listing = (items: Fixture[]) =>
+    vi
+      .mocked(driveApiClient.listFiles)
+      .mockImplementation(async (query: string) =>
+        query === TOP_LEVEL_QUERY
+          ? items.filter((item) => item.parents?.[0] === 'MY_DRIVE')
+          : (items as never)
+      );
+  const topLevelQueries = () =>
+    vi.mocked(driveApiClient.listFiles).mock.calls.filter(([query]) => query === TOP_LEVEL_QUERY);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    driveFilesCache.clear();
+    // Under the app's drive.file scope, files.get('root') is a 404: the
+    // choice must not depend on it.
+    vi.mocked(driveApiClient.getFileMetadata).mockRejectedValue(
+      Object.assign(new Error('File not found: root.'), { status: 404 })
+    );
+    // No dedup pass (and so no refetch) behind these fetches.
+    vi.mocked(googleDriveProvider.isAuthenticated).mockReturnValue(false);
+  });
+
+  it('is the oldest top-level folder, whatever the listing order', async () => {
+    const { nestedOlder, topNewer, topOldest } = roots;
+    for (const order of [
+      [nestedOlder, topNewer, topOldest],
+      [topOldest, topNewer, nestedOlder],
+      [topNewer, nestedOlder, topOldest]
+    ]) {
+      driveFilesCache.clear();
+      listing(order);
+      await driveFilesCache.fetch();
+      expect(await driveFilesCache.getReaderFolderId()).toBe('top-oldest');
+    }
+    expect(driveApiClient.getFileMetadata).not.toHaveBeenCalled();
+  });
+
+  it('finds My Drive by query once per session, and only when there is a choice', async () => {
+    listing([roots.topOldest]);
+    await driveFilesCache.fetch();
+    expect(topLevelQueries()).toHaveLength(0);
+
+    listing([roots.nestedOlder, roots.topOldest]);
+    await driveFilesCache.fetch();
+    await driveFilesCache.fetch();
+    // The second fetch knows My Drive's id from the first answer's parents.
+    expect(topLevelQueries()).toHaveLength(1);
+    expect(await driveFilesCache.getReaderFolderId()).toBe('top-oldest');
+  });
+
+  it("asks again while no top-level root has told it My Drive's id", async () => {
+    listing([
+      roots.nestedOlder,
+      { ...roots.nestedOlder, id: 'nested-newer', createdTime: roots.topNewer.createdTime }
+    ]);
+    await driveFilesCache.fetch();
+    expect(await driveFilesCache.getReaderFolderId()).toBe('nested-older');
+
+    listing([roots.nestedOlder, roots.topNewer]);
+    await driveFilesCache.fetch();
+    expect(topLevelQueries()).toHaveLength(2);
+    expect(await driveFilesCache.getReaderFolderId()).toBe('top-newer');
+  });
+
+  it('remembers that a listing has no top-level root instead of asking on every pick', async () => {
+    listing([
+      roots.nestedOlder,
+      { ...roots.nestedOlder, id: 'nested-newer', createdTime: roots.topNewer.createdTime }
+    ]);
+    await driveFilesCache.fetch();
+    await driveFilesCache.fetch();
+    await driveFilesCache.pickReaderFolder([
+      roots.nestedOlder,
+      { ...roots.nestedOlder, id: 'nested-newer', createdTime: roots.topNewer.createdTime }
+    ]);
+
+    // The same roots under the same parents: the answer cannot have changed.
+    expect(topLevelQueries()).toHaveLength(1);
+    expect(await driveFilesCache.getReaderFolderId()).toBe('nested-older');
+  });
+
+  it('asks Drive for the reader folder by its ESCAPED name', async () => {
+    listing([roots.nestedOlder, roots.topOldest]);
+    await driveFilesCache.fetch();
+    expect(escapeNameForDriveQuery).toHaveBeenCalledWith('mokuro-reader');
+  });
+
+  // When the 'root' in parents query fails, Drive could not be asked which
+  // roots are top-level; the pick must not hand the session an older nested
+  // root (GoogleDriveProvider copies the pick into its sticky readerFolderId).
+  describe('when Drive cannot be asked which roots are top-level', () => {
+    const failing = (items: Fixture[]) =>
+      vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: string) => {
+        if (query === TOP_LEVEL_QUERY) throw new Error('offline');
+        return items as never;
+      });
+    const backup = {
+      id: 'backup',
+      name: 'Backup',
+      mimeType: FOLDER_MIME,
+      parents: ['MY_DRIVE'],
+      createdTime: '2025-01-01T00:00:00.000Z'
+    };
+
+    it('ranks a root whose parent the app can see as nested, then by age and id', async () => {
+      failing([
+        { ...roots.topOldest, id: 'b', createdTime: roots.nestedOlder.createdTime },
+        { ...roots.nestedOlder, id: 'a' },
+        backup,
+        roots.topNewer
+      ]);
+
+      await driveFilesCache.fetch();
+
+      // 'a' is older, but its parent is a listed folder: not top-level.
+      expect(await driveFilesCache.getReaderFolderId()).toBe('b');
+    });
+
+    it('falls back to the oldest, then the smaller id, when no parent is listed', async () => {
+      failing([
+        { ...roots.topOldest, id: 'b', createdTime: roots.nestedOlder.createdTime },
+        { ...roots.nestedOlder, id: 'a' },
+        roots.topNewer
+      ]);
+
+      await driveFilesCache.fetch();
+
+      expect(await driveFilesCache.getReaderFolderId()).toBe('a');
+    });
+
+    it("keeps the session's write root while it is still listed", async () => {
+      listing([roots.topNewer]);
+      await driveFilesCache.fetch();
+      expect(await driveFilesCache.getReaderFolderId()).toBe('top-newer');
+
+      // An older nested root appears (its parent unseen), and the query fails.
+      failing([roots.nestedOlder, roots.topNewer]);
+      await driveFilesCache.fetch();
+      expect(await driveFilesCache.getReaderFolderId()).toBe('top-newer');
+
+      // Gone from the listing: the pick starts over.
+      failing([
+        roots.nestedOlder,
+        { ...roots.nestedOlder, id: 'nested-newer', createdTime: roots.topNewer.createdTime }
+      ]);
+      await driveFilesCache.fetch();
+      expect(await driveFilesCache.getReaderFolderId()).toBe('nested-older');
+    });
+
+    it('reports the pick as unconfirmed, so dedup does not trust it', async () => {
+      failing([roots.nestedOlder, roots.topNewer]);
+      expect(await driveFilesCache.pickReaderFolder([roots.nestedOlder, roots.topNewer])).toEqual({
+        id: 'nested-older',
+        topLevelKnown: false
+      });
+
+      listing([roots.nestedOlder, roots.topNewer]);
+      expect(await driveFilesCache.pickReaderFolder([roots.nestedOlder, roots.topNewer])).toEqual({
+        id: 'top-newer',
+        topLevelKnown: true
+      });
+    });
+  });
+
+  it('a clear() during the top-level query does not drop the next query in flight', async () => {
+    const deferred = () => {
+      let resolve!: (v: Fixture[]) => void;
+      const promise = new Promise<Fixture[]>((r) => (resolve = r));
+      return { promise, resolve };
+    };
+    const first = deferred();
+    const second = deferred();
+    const answers = [first.promise, second.promise];
+    vi.mocked(driveApiClient.listFiles).mockImplementation(async (query: string) => {
+      if (query === TOP_LEVEL_QUERY) return (await answers.shift()!) as never;
+      return [] as never;
+    });
+    const pair = [roots.nestedOlder, roots.topNewer];
+
+    const p1 = driveFilesCache.pickReaderFolder(pair);
+    driveFilesCache.clear();
+    const p2 = driveFilesCache.pickReaderFolder(pair);
+    first.resolve([roots.topNewer]);
+    await p1;
+    // The second query is still in flight; a third pick must join it, not
+    // start another because the first one's settlement wiped the field.
+    const p3 = driveFilesCache.pickReaderFolder(pair);
+    second.resolve([roots.topNewer]);
+    await Promise.all([p2, p3]);
+
+    expect(topLevelQueries()).toHaveLength(2);
+  });
+
+  it('uses a moved (nested) library when it is the only one', async () => {
+    listing([roots.nestedOlder]);
+    await driveFilesCache.fetch();
+    expect(await driveFilesCache.getReaderFolderId()).toBe('nested-older');
+  });
+});
+
+describe('driveFilesCache history segments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    driveFilesCache.clear();
+  });
+
+  it('caches history/<device>/<file> at its full path, and add() agrees', async () => {
+    (driveApiClient.listFiles as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'reader', name: 'mokuro-reader', mimeType: 'application/vnd.google-apps.folder' },
+      {
+        id: 'hist',
+        name: 'history',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: ['reader']
+      },
+      {
+        id: 'dev',
+        name: 'dev-a',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: ['hist']
+      },
+      {
+        id: 'seg',
+        name: '2026-10.events',
+        mimeType: 'application/octet-stream',
+        parents: ['dev'],
+        modifiedTime: '2026-10-03T00:00:00.000Z',
+        size: '42'
+      }
+    ]);
+    await driveFilesCache.fetch();
+    expect(driveFilesCache.get('history/dev-a/2026-10.events')?.fileId).toBe('seg');
+
+    driveFilesCache.add('history/dev-b/2026-10.events', {
+      provider: 'google-drive',
+      fileId: 'up',
+      name: '2026-10.events',
+      path: 'history/dev-b/2026-10.events',
+      modifiedTime: '2026-10-04T00:00:00.000Z',
+      size: 7,
+      modifiedTimeProvisional: true
+    } as never);
+    expect(driveFilesCache.get('history/dev-b/2026-10.events')?.fileId).toBe('up');
   });
 });

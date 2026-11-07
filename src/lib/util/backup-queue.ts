@@ -3,16 +3,33 @@ import type { VolumeMetadata } from '$lib/types';
 import type { WorkerTask } from './worker-pool';
 import { getBackupUiBridge } from './backup-ui';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
-import type { BackupProviderType, ServerOcrQueued, SyncProvider } from './sync/provider-interface';
+import type {
+  BackupProviderType,
+  ProviderStatus,
+  ServerOcrQueued,
+  SyncProvider
+} from './sync/provider-interface';
 import { isPseudoProvider, exportProvider } from './sync/provider-interface';
-import { accountCanAddFiles, CANNOT_ADD_FILES_MESSAGE } from './sync/account-capabilities';
 import {
+  accountCanAddFiles,
+  accountCanAddToSeries,
+  CANNOT_ADD_FILES_MESSAGE,
+  CANNOT_ADD_TO_SERIES_MESSAGE,
+  closedSeriesNotice,
+  OWNERSHIP_REFRESH_MAX_AGE_MS
+} from './sync/account-capabilities';
+import {
+  cancelPoolTasks,
   getFileProcessingPool,
   incrementPoolUsers,
   decrementPoolUsers
 } from './file-processing-pool';
+import { registerUploadCanceller } from './sync/upload-cancellation';
 import { downloadFileBlob } from './volume-sidecars';
 import { stampLayersSynced, type LayerUploadSnapshot } from '$lib/metadata/layer-sync';
+import { personalLayerAccount } from '$lib/catalog/mokuro-hash';
+import { freshGateStatus } from '$lib/util/sync/identity-gates';
+import { uploadVolumeFiles } from './volume-upload-order';
 import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
 import {
   cancelScheduledSeriesFileWrite,
@@ -20,12 +37,14 @@ import {
   scheduleSeriesFileWrite
 } from '$lib/metadata/series-file-sync';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
 import {
   recordUploadedPrimarySidecar,
   recordUploadedPrimarySidecarBlob
 } from '$lib/catalog/mokuro-upload-record';
 import { clearUploadFailure, recordUploadFailure } from './upload-failures';
+import { isStorageFullFailure, storageFullMessage } from './sync/core/storage-full';
 import { getUploadWorkerCredentials, prepareSeriesUploadTarget } from './upload-worker-credentials';
 
 export interface SidecarOptions {
@@ -83,13 +102,28 @@ interface WorkerUploadCompleteData {
 
 /**
  * The server queued the archive for OCR: watch the volume on that server's
- * queue file (`server-ocr-queue.ts`), which starts polling at once.
+ * queue file (`server-ocr-queue.ts`), which starts polling at once. A cloud
+ * upload answers nothing about OCR; while a cloud-direct Bunko's marker is
+ * fresh on that library the volume is watched on its queue file instead
+ * (`watchCloudUpload` checks the marker and does nothing without one).
  */
 async function rememberServerOcr(
   item: Pick<BackupQueueItem, 'volumeUuid' | 'seriesTitle' | 'volumeTitle'>,
   serverOcr: ServerOcrQueued | undefined
 ): Promise<void> {
-  if (!serverOcr) return;
+  if (!serverOcr) {
+    try {
+      const { watchCloudUpload } = await import('$lib/catalog/server-ocr-queue');
+      await watchCloudUpload({
+        volumeUuid: item.volumeUuid,
+        series: item.seriesTitle,
+        volume: item.volumeTitle
+      });
+    } catch (error) {
+      console.debug('[Backup] Could not watch the cloud Bunko queue:', error);
+    }
+    return;
+  }
   try {
     const { watchUploadedVolume } = await import('$lib/catalog/server-ocr-queue');
     await watchUploadedVolume({
@@ -108,6 +142,26 @@ const queueStore = writable<BackupQueueItem[]>([]);
 
 // Track if this queue is currently using the shared pool
 let processingStarted = false;
+
+/** The end of the run in flight (`finishBackupRun` from `checkAndTerminatePool`), or null. */
+let runEnding: Promise<void> | null = null;
+
+/**
+ * Per provider, how many times its uploads were cancelled
+ * (`cancelBackupsForProvider`). An item compares the count it started under
+ * at each await, so work already past the queue when the cancel landed stops
+ * there instead of reaching the pool.
+ */
+const cancelGenerations = new Map<string, number>();
+
+/**
+ * The run in flight had its uploads cancelled (a logout): its drain ends
+ * without the run-end listing and metadata writes. They would list and write
+ * an account that is being logged out, and a listing landing after the
+ * logout cleared the caches would fill them with that account's files again.
+ * Cleared when the drain happens, and when a new cloud upload joins the run.
+ */
+let skipRunEnd = false;
 
 /**
  * Is a backup/export run currently draining the queue?
@@ -155,18 +209,26 @@ queueStore.subscribe((queue) => {
 });
 
 /**
- * Add a single volume to the backup queue
+ * What `queueVolumeForBackup` did with a volume:
+ * - `added`: queued by THIS call;
+ * - `already-queued`: it was queued for this provider already (nothing new —
+ *   announcing it as added over-reports a second Backup press);
+ * - `refused`: skipped. The queue told the user why itself, and a caller's
+ *   own snackbar would wipe that notice out of the snackbar's one slot.
  */
+export type QueueBackupResult = 'added' | 'already-queued' | 'refused';
+
+/** Add a single volume to the backup queue (see {@link QueueBackupResult}). */
 export function queueVolumeForBackup(
   volume: VolumeMetadata,
   providerInstance?: SyncProvider,
   sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: false }
-): void {
+): QueueBackupResult {
   // Nothing to upload for a volume whose pages are not on this device (a
   // metadata-only row, or a cloud placeholder that never was).
   if (!isVolumeInstalled(volume)) {
     console.warn('Skipping backup of a volume that is not installed:', volume.volume_title);
-    return;
+    return 'refused';
   }
 
   // Get default provider if not specified
@@ -174,7 +236,7 @@ export function queueVolumeForBackup(
   if (!targetProvider) {
     console.warn('No cloud provider available for backup');
     getBackupUiBridge().notify('Please connect to a cloud storage provider first');
-    return;
+    return 'refused';
   }
 
   // An account the server lets sync progress but not add files (bunko
@@ -182,7 +244,23 @@ export function queueVolumeForBackup(
   if (!accountCanAddFiles(targetProvider.getStatus?.())) {
     console.info('Skipping backup: this account cannot add files on this server');
     getBackupUiBridge().notify(CANNOT_ADD_FILES_MESSAGE);
-    return;
+    return 'refused';
+  }
+
+  // The folder the cloud already holds for this series, in ITS spelling:
+  // a server that merged `one piece/` into `One Piece/` would otherwise be
+  // handed the losing folder again. The exact title when the cloud has it
+  // (or has no such series). Not gated on bunko: on plain storage too, a
+  // title with no exact folder joins the folder folding onto it instead of
+  // minting a second spelling beside it.
+  const seriesTitle = unifiedCloudManager.resolveCloudFolderTitle(volume.series_title);
+
+  // bunko 0.8: another account owns this series, so every file would be
+  // refused. (A series backup filters these out first, with one notice.)
+  if (!accountCanAddToSeries(targetProvider.getStatus?.(), seriesTitle)) {
+    console.info(`Skipping backup: another account owns '${seriesTitle}' on this server`);
+    getBackupUiBridge().notify(CANNOT_ADD_TO_SERIES_MESSAGE);
+    return 'refused';
   }
 
   const queue = get(queueStore);
@@ -194,12 +272,12 @@ export function queueVolumeForBackup(
 
   if (isDuplicate) {
     console.log(`Volume ${volume.volume_title} already in backup queue for ${targetProvider.type}`);
-    return;
+    return 'already-queued';
   }
 
   const queueItem: BackupQueueItem = {
     volumeUuid: volume.volume_uuid,
-    seriesTitle: volume.series_title,
+    seriesTitle,
     volumeTitle: volume.volume_title,
     provider: targetProvider.type,
     uploadConcurrencyLimit: targetProvider.uploadConcurrencyLimit,
@@ -212,6 +290,7 @@ export function queueVolumeForBackup(
 
   // Always call processQueue to handle newly added items
   processQueue();
+  return 'added';
 }
 
 /**
@@ -257,36 +336,77 @@ export function queueVolumeForExport(
   processQueue();
 }
 
+/** What a series backup request did: volumes now in the queue, and those skipped as closed. */
+export interface SeriesBackupQueued {
+  /** Volumes this call added to the queue. */
+  queued: number;
+  /** Volumes that were in the queue already (a second Backup press). */
+  alreadyQueued: number;
+  closed: number;
+}
+
+function volumeCount(n: number): string {
+  return `${n} volume${n === 1 ? '' : 's'}`;
+}
+
 /**
- * Add multiple volumes to the backup queue
+ * Add multiple volumes to the backup queue. The queue gives the request's ONE
+ * notice itself ("Added N", plus what it skipped): the snackbar has a single
+ * slot, so a caller's own "Added N" shown after it erased the skip notice.
+ * `alreadyBackedUp` is the caller's count of volumes it left out as backed up.
  */
 export function queueSeriesVolumesForBackup(
   volumes: VolumeMetadata[],
   providerInstance?: SyncProvider,
-  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: false }
-): void {
+  sidecarOptions: SidecarOptions = { includeSidecars: true, embedSidecarsInArchive: false },
+  { alreadyBackedUp = 0 }: { alreadyBackedUp?: number } = {}
+): SeriesBackupQueued {
+  const nothing: SeriesBackupQueued = { queued: 0, alreadyQueued: 0, closed: 0 };
   // Get default provider if not specified
   const targetProvider = providerInstance || unifiedCloudManager.getDefaultProvider();
   if (!targetProvider) {
     console.warn('No cloud provider available for backup');
     getBackupUiBridge().notify('Please connect to a cloud storage provider first');
-    return;
+    return nothing;
   }
 
   if (volumes.length === 0) {
     console.warn('No volumes to queue for backup');
-    return;
+    return nothing;
   }
 
   // One notice for the whole series, not one per volume.
   if (!accountCanAddFiles(targetProvider.getStatus?.())) {
     console.info('Skipping backup: this account cannot add files on this server');
     getBackupUiBridge().notify(CANNOT_ADD_FILES_MESSAGE);
-    return;
+    return nothing;
   }
 
+  // bunko 0.8: the volumes of series another account owns are skipped, with
+  // ONE notice for all of them rather than one per volume.
+  const status = targetProvider.getStatus?.();
+  const closed = volumes.filter(
+    (volume) =>
+      isVolumeInstalled(volume) &&
+      !accountCanAddToSeries(
+        status,
+        unifiedCloudManager.resolveCloudFolderTitle(volume.series_title)
+      )
+  );
+  const closedNotice =
+    closed.length > 0
+      ? closedSeriesNotice(
+          new Set(closed.map((volume) => normalizeVolumeTitleKey(volume.series_title))).size,
+          closed.length
+        )
+      : '';
+  if (closed.length > 0) {
+    console.info(`Skipping backup of ${closed.length} volume(s) in series other accounts own`);
+  }
+  const open = closed.length > 0 ? volumes.filter((volume) => !closed.includes(volume)) : volumes;
+
   // Sort alphabetically by series title first, then by volume title
-  const sorted = [...volumes].sort((a, b) => {
+  const sorted = [...open].sort((a, b) => {
     const seriesCompare = a.series_title.localeCompare(b.series_title, undefined, {
       numeric: true,
       sensitivity: 'base'
@@ -300,8 +420,35 @@ export function queueSeriesVolumesForBackup(
     });
   });
 
-  // Add each volume individually (duplicate check happens in queueVolumeForBackup)
-  sorted.forEach((volume) => queueVolumeForBackup(volume, targetProvider, sidecarOptions));
+  // Add each volume individually (duplicate check happens in queueVolumeForBackup).
+  // Only what THIS call added counts as added: a second Backup press finds
+  // the first press's volumes still queued.
+  let queued = 0;
+  let alreadyQueued = 0;
+  for (const volume of sorted) {
+    const result = queueVolumeForBackup(volume, targetProvider, sidecarOptions);
+    if (result === 'added') queued++;
+    else if (result === 'already-queued') alreadyQueued++;
+  }
+
+  let notice = '';
+  if (queued > 0) {
+    const aside = [
+      ...(alreadyBackedUp > 0 ? [`${alreadyBackedUp} already backed up`] : []),
+      ...(alreadyQueued > 0 ? [`${alreadyQueued} already queued`] : [])
+    ];
+    notice =
+      `Added ${volumeCount(queued)} to backup queue` +
+      (aside.length > 0 ? ` (${aside.join(', ')})` : '');
+  } else if (alreadyQueued > 0) {
+    notice = `${volumeCount(alreadyQueued)} already in backup queue`;
+  }
+  if (notice || closedNotice) {
+    getBackupUiBridge().notify(
+      notice && closedNotice ? `${notice}. ${closedNotice}` : notice || closedNotice
+    );
+  }
+  return { queued, alreadyQueued, closed: closed.length };
 }
 
 /**
@@ -353,10 +500,18 @@ function handleBackupError(
   item: BackupQueueItem,
   processId: string,
   errorMessage: string,
-  detail?: string
+  detail?: string,
+  kind?: string
 ): void {
-  const reason = detail?.trim() || errorMessage;
   const isCloud = !isPseudoProvider(item.provider);
+  // A worker hands back text, not the provider's typed QUOTA_EXCEEDED: give a
+  // full account the same actionable wording the main-thread upload raises.
+  // The rest of the queue still runs; whether a full account should pause it
+  // is a separate decision.
+  const reason =
+    isCloud && isStorageFullFailure({ kind, error: errorMessage })
+      ? storageFullMessage(item.provider)
+      : detail?.trim() || errorMessage;
   const ui = getBackupUiBridge();
   if (isCloud) {
     recordUploadFailure({
@@ -402,6 +557,38 @@ const seriesNeedingIndexWrite = new Set<string>();
  * by the index writes that run first.
  */
 let uploadedThisRun = false;
+
+/**
+ * Series whose queued volumes this run dropped because another account came
+ * to own them (bunko 0.8) — one notice per series per run, not per volume.
+ */
+const closedSeriesSkippedThisRun = new Set<string>();
+
+/**
+ * Has `seriesTitle` closed to this account (bunko 0.8 series owners)? Only
+ * that: an account that lost the right to add files at all keeps today's
+ * per-volume failures rather than a notice naming the wrong reason.
+ */
+function seriesClosed(status: ProviderStatus | undefined, seriesTitle: string): boolean {
+  return accountCanAddFiles(status) && !accountCanAddToSeries(status, seriesTitle);
+}
+
+/** A queued item whose series another account owns now: dropped, never an "Upload failed". */
+function skipClosedSeriesItem(item: BackupQueueItem, processId: string): void {
+  const key = normalizeVolumeTitleKey(item.seriesTitle);
+  if (!closedSeriesSkippedThisRun.has(key)) {
+    closedSeriesSkippedThisRun.add(key);
+    const reason = CANNOT_ADD_TO_SERIES_MESSAGE;
+    getBackupUiBridge().notify(
+      `Skipped ${item.seriesTitle}: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`
+    );
+  }
+  console.info(`[Backup] skipped ${item.volumeTitle}: another account owns ${item.seriesTitle}`);
+  queueStore.update((q) =>
+    q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
+  );
+  getBackupUiBridge().removeProgress(processId);
+}
 
 /** Note that this run uploaded a volume of `seriesTitle`. */
 export function noteSeriesNeedingIndexWrite(seriesTitle: string): void {
@@ -449,6 +636,7 @@ async function writeSeriesIndexesForRun(): Promise<void> {
  * and starting it afterwards makes the run strictly write-then-read.
  */
 export async function finishBackupRun(): Promise<void> {
+  closedSeriesSkippedThisRun.clear();
   await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
   // That fetch IS the whole-account listing the metadata writers need. Stamping
   // it makes them reuse it, instead of every run paying for a second one.
@@ -479,12 +667,83 @@ async function checkAndTerminatePool(): Promise<void> {
     decrementPoolUsers();
     processingStarted = false;
 
+    if (skipRunEnd) {
+      skipRunEnd = false;
+      console.log('[Backup Queue] Uploads cancelled; run ended without a listing');
+      return;
+    }
+
     // Replace the optimistic cache entries with real server data, write this
     // run's series.json files against that listing, then let the index refresh
     // read them back.
     console.log('[Backup Queue] All uploads complete, refreshing cloud cache...');
-    await finishBackupRun();
+    const ending = finishBackupRun();
+    runEnding = ending;
+    try {
+      await ending;
+    } finally {
+      if (runEnding === ending) runEnding = null;
+    }
     console.log('[Backup Queue] Cloud cache refreshed with server data');
+  }
+}
+
+/**
+ * Cancel every backup to `provider`: the items still queued, the ones on their
+ * way to the pool, and the uploads in flight (their workers are terminated,
+ * see `WorkerPool.cancelTasks`; the sidecar backfill's uploads share the same
+ * pool key and go too). Nothing is recorded as an upload failure: the user
+ * did not lose an upload, they ended the session it belonged to. Exports and
+ * other providers' uploads keep running.
+ *
+ * Called on an explicit logout (through `upload-cancellation.ts`), before the
+ * provider ends its session.
+ */
+export function cancelBackupsForProvider(
+  provider: BackupProviderType,
+  reason = 'Upload cancelled'
+): void {
+  cancelGenerations.set(provider, (cancelGenerations.get(provider) ?? 0) + 1);
+
+  const dropped = get(queueStore).filter((item) => item.provider === provider);
+  if (dropped.length > 0) {
+    queueStore.update((q) => q.filter((item) => item.provider !== provider));
+    for (const item of dropped) getBackupUiBridge().removeProgress(`backup-${item.volumeUuid}`);
+  }
+
+  if (!isPseudoProvider(provider)) {
+    // The run's pending metadata writes are for the account being left.
+    seriesNeedingIndexWrite.clear();
+    uploadedThisRun = false;
+    closedSeriesSkippedThisRun.clear();
+    if (processingStarted) skipRunEnd = true;
+  }
+
+  const cancelled = cancelPoolTasks((task) => task.provider === `${provider}:upload`, reason);
+  if (dropped.length > 0 || cancelled > 0) {
+    console.log(
+      `[Backup Queue] Cancelled ${provider} uploads: ${dropped.length} queued item(s), ${cancelled} pool task(s)`
+    );
+  }
+  void checkAndTerminatePool();
+}
+
+registerUploadCanceller((provider, reason) => cancelBackupsForProvider(provider, reason));
+
+/**
+ * Resolves once nothing is queued or uploading AND the last run has ended —
+ * its listing, `series.json` and `catalog.json` writes done (or skipped). An
+ * upload alone leaving the queue is not the end: the run's metadata writes
+ * come after it.
+ */
+export async function backupQueueSettled(): Promise<void> {
+  for (;;) {
+    if (runEnding) {
+      await runEnding.catch(() => {});
+      continue;
+    }
+    if (get(queueStore).length === 0 && !processingStarted) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
 }
 
@@ -495,6 +754,11 @@ async function checkAndTerminatePool(): Promise<void> {
 async function processBackup(item: BackupQueueItem, processId: string): Promise<void> {
   // Check if this is an export operation (pseudo-provider)
   const isExport = isPseudoProvider(item.provider);
+
+  // Cancelled (`cancelBackupsForProvider`) since this item started: it has
+  // already left the queue, so it just stops.
+  const generation = cancelGenerations.get(item.provider) ?? 0;
+  const cancelledSinceStart = () => (cancelGenerations.get(item.provider) ?? 0) !== generation;
 
   // For real providers, get the active provider and validate authentication
   const provider = isExport ? null : unifiedCloudManager.getActiveProvider();
@@ -511,6 +775,11 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
   const needsMainThreadUpload = !isExport && provider !== null && !provider.supportsWorkerUpload;
 
   const pool = await getFileProcessingPool();
+  if (cancelledSinceStart()) {
+    getBackupUiBridge().removeProgress(processId);
+    await checkAndTerminatePool();
+    return;
+  }
 
   // Estimate volume size (rough estimate: page count * 0.5MB average per page)
   const estimatedSize = (item.volumeMetadata.page_count || 10) * 0.5 * 1024 * 1024;
@@ -533,6 +802,19 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
       `[Backup Queue] Export concurrency limit: ${effectiveConcurrencyLimit} (pool: ${pool.maxConcurrentWorkers})`
     );
   }
+
+  // The series may have closed since this item was queued (an identity
+  // refresh after another volume's 403): drop it before reserving memory.
+  if (!isExport && seriesClosed(provider!.getStatus?.(), item.seriesTitle)) {
+    skipClosedSeriesItem(item, processId);
+    await checkAndTerminatePool();
+    return;
+  }
+
+  // Set by `prepareData` when the series closed while this item waited in the
+  // pool: its throw reaches `onError` (the pool's contract), which must drop
+  // the item instead of recording an upload failure.
+  let closedWhileWaiting = false;
 
   try {
     // Create worker task with lazy data loading
@@ -581,6 +863,18 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         }
 
         // Worker-driven cloud upload (Google Drive, MEGA, WebDAV)
+        // The layer gates below follow the server NOW (throttled): a bunko
+        // rolled back under an open tab would share the `edit` layer. Read
+        // before the credentials, which may create the series folder.
+        const status =
+          typeof provider!.getStatus === 'function' ? await freshGateStatus(provider!) : undefined;
+        if (seriesClosed(status, item.seriesTitle)) {
+          closedWhileWaiting = true;
+          throw new Error(`Another account owns '${item.seriesTitle}' on this server`);
+        }
+        // The pool has already rejected a cancelled task; this only keeps its
+        // late `prepareData` from asking a logged-out provider for credentials.
+        if (cancelledSinceStart()) throw new Error('Upload cancelled');
         const credentials = await getUploadWorkerCredentials(provider!, item.seriesTitle);
 
         return {
@@ -595,8 +889,13 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           embedMokuroInArchive: false,
           downloadFilename: `${item.volumeTitle}.cbz`,
           includeSidecars: item.sidecarOptions.includeSidecars,
-          // bunko: the editor's `original` snapshot stays local (`layerStaysLocal`).
-          serverCompilesMetadata: provider!.getStatus?.().serverCompilesMetadata === true
+          // bunko: the editor's `original` snapshot stays local, and the `edit`
+          // layer wherever the server would share it (`layerStaysLocal`).
+          serverCompilesMetadata: status?.serverCompilesMetadata === true,
+          editLayerSync: status?.editLayerSync,
+          // Another account's personal layer never goes into this one's overlay
+          // (only a bunko keeping one per account has two behind one path).
+          accountScope: personalLayerAccount(status ?? {})
         };
       },
       onProgress: (data) => {
@@ -650,39 +949,42 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
             const archiveBytes = new Uint8Array(data.data);
             const archiveBlob = new Blob([archiveBytes], { type: 'application/x-cbz' });
 
-            if (item.sidecarOptions.includeSidecars && data.sidecars) {
+            const sidecars = item.sidecarOptions.includeSidecars ? data.sidecars : undefined;
+            if (sidecars?.mokuro || sidecars?.thumbnail || sidecars?.layers?.length) {
               getBackupUiBridge().updateProgress(processId, 'Uploading sidecars...', 100);
-              const sidecars: Array<{ filename: string; blob: Blob }> = [];
-              if (data.sidecars.mokuro) sidecars.push(data.sidecars.mokuro);
-              for (const layer of data.sidecars.layers ?? []) sidecars.push(layer);
-              if (data.sidecars.thumbnail) sidecars.push(data.sidecars.thumbnail);
-              for (const sidecar of sidecars) {
-                const sidecarPath = `${item.seriesTitle}/${sidecar.filename}`;
-                const sent = await provider!.uploadFile(sidecarPath, sidecar.blob);
-                if (sidecar === data.sidecars.mokuro) {
-                  await recordUploadedPrimarySidecarBlob(
+            }
+            // The Worker's order: a layer bunko anchors on the archive goes after it.
+            const { archive: uploaded, layers: sentLayers } = await uploadVolumeFiles(
+              sidecars,
+              {
+                sidecar: (sidecar) =>
+                  provider!.uploadFile(`${item.seriesTitle}/${sidecar.filename}`, sidecar.blob),
+                archive: () => {
+                  getBackupUiBridge().updateProgress(processId, 'Uploading archive...', 0);
+                  return provider!.uploadFile(
+                    archivePath,
+                    archiveBlob,
+                    undefined,
+                    (loaded, total) => {
+                      if (total > 0) {
+                        getBackupUiBridge().updateProgress(
+                          processId,
+                          'Uploading archive...',
+                          Math.round((loaded / total) * 100)
+                        );
+                      }
+                    }
+                  );
+                }
+              },
+              {
+                onPrimary: (sidecar, sent) =>
+                  recordUploadedPrimarySidecarBlob(
                     item.volumeUuid,
                     provider!.type,
                     sidecar.blob,
                     sent
-                  );
-                }
-              }
-            }
-
-            getBackupUiBridge().updateProgress(processId, 'Uploading archive...', 0);
-            const uploaded = await provider!.uploadFile(
-              archivePath,
-              archiveBlob,
-              undefined,
-              (loaded, total) => {
-                if (total > 0) {
-                  getBackupUiBridge().updateProgress(
-                    processId,
-                    'Uploading archive...',
-                    Math.round((loaded / total) * 100)
-                  );
-                }
+                  )
               }
             );
 
@@ -714,11 +1016,12 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
               void stampLayersSynced(
                 item.volumeUuid,
                 provider!.type,
-                (data.sidecars?.layers ?? []).map((layer) => ({
+                sentLayers.map((layer) => ({
                   layerId: layer.layerId,
                   updatedAt: layer.updatedAt,
                   size: layer.blob.size
-                }))
+                })),
+                personalLayerAccount(provider!.getStatus?.() ?? {})
               );
             }
 
@@ -828,7 +1131,12 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
           // the rows as synced so the next listing does not push them again —
           // against the snapshot it uploaded, so an edit made meanwhile survives.
           if (item.sidecarOptions.includeSidecars) {
-            void stampLayersSynced(item.volumeUuid, provider!.type, data.layerSnapshots ?? []);
+            void stampLayersSynced(
+              item.volumeUuid,
+              provider!.type,
+              data.layerSnapshots ?? [],
+              personalLayerAccount(provider!.getStatus?.() ?? {})
+            );
           }
           // The primary sidecar the worker sent: its hash is this volume's now,
           // and one this device can vouch for in `series.json`. Before the
@@ -875,8 +1183,33 @@ async function processBackup(item: BackupQueueItem, processId: string): Promise<
         }
       },
       onError: async (data) => {
+        // Cancelled (a logout): the item already left the queue and nothing
+        // failed, so no failure record and no error notice.
+        if (data?.kind === 'cancelled' || cancelledSinceStart()) {
+          queueStore.update((q) =>
+            q.filter((i) => !(i.volumeUuid === item.volumeUuid && i.provider === item.provider))
+          );
+          getBackupUiBridge().removeProgress(processId);
+          await checkAndTerminatePool();
+          return;
+        }
+        if (closedWhileWaiting) {
+          skipClosedSeriesItem(item, processId);
+          await checkAndTerminatePool();
+          return;
+        }
         console.error(`Error backing up ${item.volumeTitle}:`, data.error);
-        handleBackupError(item, processId, data.error, data.detail);
+        // bunko 0.8 refuses uploads into a series another account owns: this
+        // session's list of those may be stale, so ask again. The volumes of
+        // the series still queued are then dropped before they upload.
+        if (
+          !isExport &&
+          /\b403\b/.test(String(data.error)) &&
+          provider!.getStatus?.().addFilesPermissions
+        ) {
+          void provider!.refreshIdentity?.({ maxAgeMs: OWNERSHIP_REFRESH_MAX_AGE_MS });
+        }
+        handleBackupError(item, processId, data.error, data.detail, data.kind);
         await checkAndTerminatePool();
       }
     };
@@ -915,6 +1248,9 @@ async function processQueue(): Promise<void> {
     if (queuedItems.length === 0) {
       return;
     }
+
+    // New cloud work joins the run: its end publishes again.
+    if (queuedItems.some((item) => !isPseudoProvider(item.provider))) skipRunEnd = false;
 
     // Mark all items as backing-up atomically
     queuedItems.forEach((item) => {

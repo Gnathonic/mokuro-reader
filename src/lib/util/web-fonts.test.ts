@@ -53,6 +53,7 @@ describe('parseFontFaceCss', () => {
 
 describe('loadWebFonts', () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.resetModules();
     document.head.innerHTML = '';
@@ -90,5 +91,18 @@ describe('loadWebFonts', () => {
     const { loadWebFonts } = await import('./web-fonts');
     await loadWebFonts('https://fonts.example/css');
     expect(document.querySelector('link[href="https://fonts.example/css"]')).not.toBeNull();
+  });
+
+  it('fetches nothing and adds no stylesheet in an interop build', async () => {
+    // The interop rig refuses every host off the machine (src/lib/interop/hermetic.ts).
+    vi.stubEnv('MODE', 'interop');
+    const fetch = vi.fn(async () => new Response(CSS));
+    vi.stubGlobal('fetch', fetch);
+    vi.stubGlobal('FontFace', class {});
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { add: () => {} } });
+    const { loadWebFonts } = await import('./web-fonts');
+    await loadWebFonts();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(document.querySelector('link[rel="stylesheet"]')).toBeNull();
   });
 });

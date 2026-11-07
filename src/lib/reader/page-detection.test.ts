@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   closestPageToCenter,
   detectHorizontalPage,
-  horizontalVisibilityRatio
+  horizontalVisibilityRatio,
+  visiblePageRange
 } from './page-detection';
 import type { RectLike } from './zoom-math';
 
@@ -120,5 +121,34 @@ describe('detectHorizontalPage', () => {
   it('returns the fallback when nothing covers the center', () => {
     const rects: RectLike[] = [{ left: 2000, top: 0, width: 400, height: 800 }];
     expect(detectHorizontalPage(container, rects, 7)).toBe(7);
+  });
+});
+
+describe('visiblePageRange', () => {
+  it('returns every page with any part inside the viewport, 1-based', () => {
+    // 1000px pages, scrolled to 3100: page 4 (3000–4000) fills the 800px viewport.
+    expect(visiblePageRange(container, verticalStrip(10, 1000, 3100), 'y')).toEqual([4, 4]);
+    // Scrolled to 3500: pages 4 and 5 both show.
+    expect(visiblePageRange(container, verticalStrip(10, 1000, 3500), 'y')).toEqual([4, 5]);
+  });
+
+  it('counts a 1px sliver as a whole page', () => {
+    // Viewport 0–800 at scroll 2201: page 3 (2000–3000) shows, page 4 starts at 799.
+    expect(visiblePageRange(container, verticalStrip(10, 1000, 2201), 'y')).toEqual([3, 4]);
+  });
+
+  it('skips missing and zero-size rects, and returns null when nothing shows', () => {
+    // Scrolled to 500: page 1 (-500–500) and page 2 (500–1500) both show; page 1's rect is missing.
+    const rects = verticalStrip(3, 1000, 500);
+    expect(visiblePageRange(container, [undefined, ...rects.slice(1)], 'y')).toEqual([2, 2]);
+    expect(visiblePageRange(container, [], 'y')).toBeNull();
+    expect(
+      visiblePageRange(container, [{ left: 0, top: 0, width: 1000, height: 0 }], 'y')
+    ).toBeNull();
+  });
+
+  it('works horizontally', () => {
+    const rects = [0, 1, 2].map((i) => ({ left: i * 600 - 300, top: 0, width: 600, height: 800 }));
+    expect(visiblePageRange(container, rects, 'x')).toEqual([1, 3]);
   });
 });

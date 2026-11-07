@@ -10,9 +10,12 @@ import {
   processVolume,
   parseMokuroFile,
   matchImagesToPages,
-  extractVolumeInfo
+  extractVolumeInfo,
+  keepRasterImages
 } from '../processing';
+import { generateThumbnail } from '$lib/catalog/thumbnails';
 import type { DecompressedVolume } from '../types';
+import { RUNNER_OUTPUT_DOCUMENT, RUNNER_OUTPUT_SEAL } from '$lib/catalog/__fixtures__/seal-vector';
 
 // Mock thumbnail generation since we can't use canvas in tests
 vi.mock('$lib/catalog/thumbnails', () => ({
@@ -119,6 +122,24 @@ describe('parseMokuroFile', () => {
     const result = await parseMokuroFile(mokuroFile);
 
     expect(result.version).toBe('0.3.0');
+  });
+
+  it('accepts a file with a leading UTF-8 BOM (rule v1 #7: tolerated on read)', async () => {
+    const body = JSON.stringify({
+      version: '0.2.1',
+      title: 'BOM Series',
+      title_uuid: 's',
+      volume: 'BOM Volume',
+      volume_uuid: 'v',
+      pages: []
+    });
+    const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(body)]);
+    const file = new File([bytes], 'bom.mokuro', { type: 'application/json' });
+
+    const result = await parseMokuroFile(file);
+
+    expect(result.series).toBe('BOM Series');
+    expect(result.volume).toBe('BOM Volume');
   });
 
   it('throws on invalid JSON', async () => {
@@ -508,5 +529,221 @@ describe('processVolume', () => {
 
     expect(localResult.metadata.sourceType).toBe('local');
     expect(cloudResult.metadata.sourceType).toBe('cloud');
+  });
+});
+
+describe('OCR provenance (ocr_engine)', () => {
+  function vectorFile(text = RUNNER_OUTPUT_DOCUMENT): File {
+    return Object.assign(new Blob([text], { type: 'application/json' }), {
+      name: 'vector.mokuro',
+      lastModified: Date.now()
+    }) as unknown as File;
+  }
+
+  it('parseMokuroFile keeps a Bunko-shaped ocr_engine block verbatim', async () => {
+    const parsed = await parseMokuroFile(vectorFile());
+    expect(parsed.ocrEngine).toEqual(JSON.parse(RUNNER_OUTPUT_DOCUMENT).ocr_engine);
+  });
+
+  it('parseMokuroFile ignores a block that is not a plain object', async () => {
+    const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+    doc.ocr_engine = ['hayai-nova'];
+    expect((await parseMokuroFile(vectorFile(JSON.stringify(doc)))).ocrEngine).toBeUndefined();
+    expect((await parseMokuroFile(createMokuroFile())).ocrEngine).toBeUndefined();
+  });
+
+  it('records the block with the digest of the file pages (the vector’s seal)', async () => {
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(),
+        imageFiles: createImageFiles(['001.jpg', '002.jpg'])
+      })
+    );
+    expect(result.metadata.ocrProvenance).toEqual({
+      engine: JSON.parse(RUNNER_OUTPUT_DOCUMENT).ocr_engine,
+      digest: RUNNER_OUTPUT_SEAL
+    });
+  });
+
+  it('computes the digest from the FILE pages when the import remaps img_path', async () => {
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(),
+        imageFiles: createImageFiles(['images/001.png', 'images/002.png'])
+      })
+    );
+    expect(result.ocrData.pages[0].img_path).not.toBe('001.jpg');
+    expect(result.metadata.ocrProvenance?.digest).toBe(RUNNER_OUTPUT_SEAL);
+  });
+
+  it('an EDITED file (with an ocr_engine left in) records its `edited` block, not the engine', async () => {
+    const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+    const edited = { by: 'mokuro-reader', at: '2026-10-01T00:00:00.000Z', base_sha256: null };
+    doc.edited = edited;
+    const parsed = await parseMokuroFile(vectorFile(JSON.stringify(doc)));
+    expect(parsed.edited).toEqual(edited);
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(JSON.stringify(doc)),
+        imageFiles: createImageFiles(['001.jpg', '002.jpg'])
+      })
+    );
+    expect(result.metadata.ocrProvenance?.edited).toEqual(edited);
+    expect(result.metadata.ocrProvenance && 'engine' in result.metadata.ocrProvenance).toBe(false);
+  });
+
+  it('a file with a stray `preserved` block is classified by its `ocr_engine`', async () => {
+    const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+    doc.preserved = { by: 'mokuro-bunko', reason: 'generation-upgrade' };
+    const parsed = await parseMokuroFile(vectorFile(JSON.stringify(doc)));
+    expect('preserved' in parsed).toBe(false);
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(JSON.stringify(doc)),
+        imageFiles: createImageFiles(['001.jpg', '002.jpg'])
+      })
+    );
+    expect(result.metadata.ocrProvenance?.engine).toEqual(doc.ocr_engine);
+    expect(result.metadata.ocrProvenance?.digest).toBe(RUNNER_OUTPUT_SEAL);
+  });
+
+  it('a file with a stray `preserved` block beside `edited` is EDITED', async () => {
+    const doc = JSON.parse(RUNNER_OUTPUT_DOCUMENT);
+    const edited = { by: 'mokuro-reader', at: '2026-10-01T00:00:00.000Z', base_sha256: null };
+    doc.edited = edited;
+    doc.preserved = { by: 'mokuro-bunko', reason: 'generation-upgrade' };
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: vectorFile(JSON.stringify(doc)),
+        imageFiles: createImageFiles(['001.jpg', '002.jpg'])
+      })
+    );
+    expect(result.metadata.ocrProvenance?.edited).toEqual(edited);
+  });
+
+  it('records nothing for a file without a block, or an image-only volume', async () => {
+    expect(
+      (await processVolume(createDecompressedVolume())).metadata.ocrProvenance
+    ).toBeUndefined();
+    const imageOnly = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: null,
+        basePath: 'My Manga/Volume 01',
+        imageFiles: createImageFiles(['001.jpg'])
+      })
+    );
+    expect(imageOnly.metadata.ocrProvenance).toBeUndefined();
+  });
+});
+
+/**
+ * Raster images only (SVG is an unsupported format). Every install path
+ * converges on `processVolume`, so this is where a page's stored type is
+ * decided: from its magic bytes, never its extension or the type it came with.
+ */
+describe('raster images only', () => {
+  const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]);
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+  const SVG =
+    '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>';
+
+  function images(entries: Array<[string, BlobPart, string?]>): Map<string, File> {
+    return new Map(entries.map(([name, body, type]) => [name, new File([body], name, { type })]));
+  }
+
+  it('types every page by its bytes and leaves out what is not raster', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { images: kept, rejected } = await keepRasterImages(
+      images([
+        ['a/page001.jpg', JPEG], // untyped, as an archive entry arrives
+        ['a/page002.jpg', PNG, 'image/jpeg'], // the extension lies
+        ['a/page003.png', SVG, 'image/png'], // an SVG dressed as a PNG
+        ['a/page004.jpg', '<html><script>1</script></html>'],
+        ['a/page005.webp', new Uint8Array(0)] // empty: nothing to sniff or run
+      ])
+    );
+
+    expect([...kept.keys()]).toEqual(['a/page001.jpg', 'a/page002.jpg', 'a/page005.webp']);
+    expect(kept.get('a/page001.jpg')!.type).toBe('image/jpeg');
+    expect(kept.get('a/page002.jpg')!.type).toBe('image/png');
+    expect(kept.get('a/page002.jpg')!.name).toBe('a/page002.jpg');
+    expect(kept.get('a/page005.webp')!.type).toBe('image/webp');
+    expect(rejected).toEqual(['a/page003.png', 'a/page004.jpg']);
+    expect(warn.mock.calls.flat().map(String).join(' ')).toContain('not a supported raster image');
+    warn.mockRestore();
+  });
+
+  it('treats an SVG page of an OCR volume as a missing page', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await processVolume(
+      createDecompressedVolume({
+        imageFiles: images([
+          ['page001.jpg', JPEG],
+          ['page002.jpg', SVG, 'image/svg+xml']
+        ])
+      })
+    );
+
+    expect(result.metadata.missingPagePaths).toEqual(['page002.jpg']);
+    expect(result.metadata.mismatchWarning).toContain('page002.jpg');
+    expect(result.ocrData.pages).toHaveLength(2);
+    for (const file of Object.values(result.fileData.files)) {
+      expect(file.type).toMatch(/^image\/(jpeg|png)$/);
+    }
+    expect(await result.fileData.files['page002.jpg'].text()).not.toContain('<svg');
+    warn.mockRestore();
+  });
+
+  it('drops an SVG page of an image-only volume', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: null,
+        imageFiles: images([
+          ['page001.jpg', JPEG],
+          ['page002.svg', SVG]
+        ])
+      })
+    );
+
+    expect(result.metadata.pageCount).toBe(1);
+    expect(Object.keys(result.fileData.files)).toEqual(['page001.jpg']);
+    expect(result.fileData.files['page001.jpg'].type).toBe('image/jpeg');
+    warn.mockRestore();
+  });
+
+  it('never keeps an SVG thumbnail sidecar, building the cover from the pages instead', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(generateThumbnail).mockClear();
+    const result = await processVolume(
+      createDecompressedVolume({
+        thumbnailSidecar: new File([SVG], 'Test Volume 01.webp', { type: 'image/webp' })
+      })
+    );
+
+    expect(generateThumbnail).toHaveBeenCalledTimes(1);
+    expect(result.metadata.thumbnail).not.toBeNull();
+    expect(await result.metadata.thumbnail!.text()).not.toContain('<svg');
+    warn.mockRestore();
+  });
+
+  it('keeps a raster thumbnail sidecar, typed by its bytes', async () => {
+    const original = (globalThis as { createImageBitmap?: unknown }).createImageBitmap;
+    (globalThis as { createImageBitmap?: unknown }).createImageBitmap = async () => ({
+      width: 250,
+      height: 350,
+      close() {}
+    });
+    try {
+      vi.mocked(generateThumbnail).mockClear();
+      const result = await processVolume(
+        createDecompressedVolume({ thumbnailSidecar: new File([PNG], 'Test Volume 01.webp') })
+      );
+      expect(generateThumbnail).not.toHaveBeenCalled();
+      expect((result.metadata.thumbnail as File).type).toBe('image/png');
+      expect(result.metadata.thumbnailWidth).toBe(250);
+    } finally {
+      (globalThis as { createImageBitmap?: unknown }).createImageBitmap = original;
+    }
   });
 });

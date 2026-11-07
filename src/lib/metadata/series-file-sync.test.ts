@@ -158,7 +158,8 @@ import {
   LISTING_TIMEOUT_MS,
   LISTING_TTL_MS,
   markListingFresh,
-  scheduleSeriesFileWrite
+  scheduleSeriesFileWrite,
+  settleSeriesFileWrites
 } from './series-file-sync';
 import { updateSeriesReadingState } from '$lib/settings/series-data';
 import { updateSeriesMetadata, unlinkSeries, upsertFromSeriesFile } from './store';
@@ -261,11 +262,15 @@ describe('series-file-sync', () => {
     scheduleSeriesFileWrite('Berserk');
     await flushSeriesFileWrites();
 
-    // One listing for the whole flush — it is a whole-account fetch, so N
+    // One listing for the whole flush — it may be a whole-account fetch, so N
     // series must not cost N of them. And never the index refresh: that pass
     // downloads sidecars, and this is a write path.
     expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
-    expect(fetchAllCloudVolumes).toHaveBeenCalledWith({ refreshIndexes: false });
+    // On Google Drive the manager takes it from the change feed (#288).
+    expect(fetchAllCloudVolumes).toHaveBeenCalledWith({
+      refreshIndexes: false,
+      fromChangeFeed: true
+    });
     expect(writeSeriesFile).toHaveBeenCalledTimes(2);
   });
 
@@ -769,6 +774,37 @@ describe('series-file-sync', () => {
     // The timer is cancelled, not merely fired early.
     await vi.advanceTimersByTimeAsync(2000);
     expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('settle runs what is queued now and waits out a write already in flight', async () => {
+    addVolume('Berserk', 'Volume 1');
+    backUp('Berserk', 'Volume 1');
+    let finish: () => void = () => {};
+    const finished: string[] = [];
+    writeSeriesFile.mockImplementation(async (title: string) => {
+      if (title === 'One Piece') await new Promise<void>((resolve) => (finish = resolve));
+      finished.push(title);
+      return 'written';
+    });
+
+    // One Piece's timer fires and its PUT hangs; Berserk is still queued.
+    scheduleSeriesFileWrite('One Piece');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(writeSeriesFile).toHaveBeenCalledTimes(1);
+    scheduleSeriesFileWrite('Berserk');
+
+    let settled = false;
+    const settle = settleSeriesFileWrites().then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(finished).toEqual(['Berserk']);
+    expect(settled).toBe(false);
+
+    finish();
+    await settle;
+    expect(finished).toEqual(['Berserk', 'One Piece']);
+    // Nothing left to fire later.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(writeSeriesFile).toHaveBeenCalledTimes(2);
   });
 
   it('cancels a pending write for one series without touching the others', async () => {

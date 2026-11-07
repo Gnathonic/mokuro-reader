@@ -1,0 +1,287 @@
+name: Interop
+
+# The reader's Drive, OneDrive and MEGA providers against Bunko's cloud
+# simulator (bunko-cloudsim), plus the check that the cloud test hooks never
+# reach a production build; and Bunko's interop rig run against this reader
+# (every party a real process: Bunko, cloudsim, rclone, a fake OCR processor).
+# Nothing here talks to a real cloud.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  # The rig, nightly, on develop, so drift on Bunko's side shows without a reader
+  # PR. A schedule runs this file as the default branch has it.
+  schedule:
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+
+# Least privilege: every job reads the repository and nothing more unless it
+# says otherwise below. (Bunko's checkouts and nightly release are public reads.)
+permissions:
+  contents: read
+
+# A new push to a PR supersedes the run on its previous head. Every other run —
+# a push, the schedule, a dispatch — is its own group (the run id): GitHub keeps
+# only ONE pending run per group and cancels it when another arrives, so a group
+# shared by commit would let a third dispatch on one commit (say after changing
+# vars.BUNKO_REF) cancel the second.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cloudsim:
+    name: Providers against cloudsim
+    # The schedule is the rig's.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    # A cold cloudsim build plus the provider suite and a production build.
+    timeout-minutes: 45
+    env:
+      # The suites throw at collection without CLOUDSIM_URL, so the job can never
+      # pass with every test skipped.
+      REQUIRE_CLOUDSIM: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check out Bunko (for cloudsim)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: Gnathonic/mokuro-bunko
+          # The default moves to `main` once 0.8 is merged there.
+          ref: ${{ vars.BUNKO_REF || '0.8/remote-storage' }}
+          path: bunko
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: bunko
+
+      - name: Build cloudsim
+        run: cargo build --release -p bunko-cloudsim --locked --manifest-path bunko/Cargo.toml
+
+      - name: Start cloudsim
+        run: |
+          # --preauth-host: jsdom drops a token on a redirect only when the host
+          # name changes (a browser does on any change of origin).
+          bunko/target/release/bunko-cloudsim --port 0 --preauth-host localhost \
+            > cloudsim.out 2> cloudsim.log &
+          for _ in $(seq 100); do
+            [ -s cloudsim.out ] && break
+            sleep 0.1
+          done
+          url=$(head -n 1 cloudsim.out | sed 's/^listening on //')
+          case "$url" in
+            http://*) ;;
+            *) echo "cloudsim did not start"; cat cloudsim.log; exit 1 ;;
+          esac
+          curl -sf "$url/_sim/health"
+          echo "CLOUDSIM_URL=$url" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The suites share one simulator and reset it, so they run one file at a time.
+      - name: Provider suite against cloudsim
+        run: npx vitest run src/lib/interop/cloudsim --no-file-parallelism
+
+      # `npm run build` ends with scripts/check-no-test-hooks.mjs, so a build that
+      # leaks a cloud test hook fails this step.
+      - name: Production build (fails if cloud test hooks leak)
+        run: npm run build
+
+      - name: Upload the cloudsim log
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: cloudsim-log
+          path: |
+            cloudsim.out
+            cloudsim.log
+
+  # Which commits the rig runs on: the PR's (or the dispatched branch's), or on the
+  # schedule develop's; each only when it has the rig driver
+  # (src/lib/interop/rig-driver.ts), which a commit from before the 0.8 work lacks.
+  # With none, the rig job shows as skipped, not failed. (hashFiles cannot
+  # decide a job's `if`: it reads a checkout, which a job condition has none of.)
+  rig-refs:
+    name: Rig targets
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      # The schedule's `git fetch` below reads this public repository anonymously.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Commits with the rig driver
+        id: targets
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          HAS_DRIVER: ${{ hashFiles('src/lib/interop/rig-driver.ts') != '' }}
+        run: |
+          targets='[]'
+          add() {
+            targets=$(jq -c --arg ref "$1" --arg name "$2" '. + [{ref: $ref, name: $name}]' <<< "$targets")
+          }
+          if [ "$EVENT" = schedule ]; then
+            for branch in develop; do
+              if git fetch -q --depth 1 origin "refs/heads/$branch" &&
+                git cat-file -e FETCH_HEAD:src/lib/interop/rig-driver.ts 2> /dev/null; then
+                add "refs/heads/$branch" "${branch//\//-}"
+              else
+                echo "$branch has no rig driver: no rig run for it"
+              fi
+            done
+          elif [ "$HAS_DRIVER" = true ]; then
+            add "$REF" "$EVENT"
+          else
+            echo "no rig driver (src/lib/interop/rig-driver.ts): the rig is skipped"
+          fi
+          echo "targets=$targets" | tee -a "$GITHUB_OUTPUT"
+
+  # One job per target and leg: Bunko's own split (its interop.yml), since one job
+  # running all 18 suite/provider pairs one after another measured 49 minutes on a
+  # developer machine (shared-google and shared-mega 12 each), too close to any
+  # single timeout on a slower runner.
+  rig:
+    name: Rig against Bunko (${{ matrix.target.name }}, ${{ matrix.leg.name }})
+    needs: rig-refs
+    if: needs.rig-refs.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    # Bunko gives a leg 45 minutes against 2-16 measured; a leg here may also have to
+    # build Bunko from source (no nightly) and always builds the reader.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.rig-refs.outputs.targets) }}
+        leg:
+          - { name: local, suites: 'dav,api', provider: local }
+          - { name: google, suites: 'bridge,direct,shared', provider: google }
+          - { name: microsoft, suites: 'bridge,direct,shared', provider: microsoft }
+          - { name: mega, suites: 'bridge,direct,shared', provider: mega }
+          - { name: rclone, suites: 'bridge,direct,shared', provider: rclone }
+          - { name: cloud, suites: cloud, provider: all }
+    env:
+      # The Bunko branch to test against; it moves to `main` once 0.8 is merged there.
+      BUNKO_REF: ${{ vars.BUNKO_REF || '0.8/remote-storage' }}
+    steps:
+      - name: Check out the reader
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ matrix.target.ref }}
+          path: reader
+          persist-credentials: false
+
+      # BUNKO_REF names a branch; the two with a nightly pre-release (Bunko's
+      # interop-nightly.yml) use it: 0.8/remote-storage -> nightly-0.8,
+      # main -> nightly. Any other branch, or a nightly with an asset missing,
+      # builds Bunko from source.
+      - name: Bunko's nightly build
+        id: nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$BUNKO_REF" in
+            0.8/remote-storage) tag=nightly-0.8 ;;
+            main) tag=nightly ;;
+            *) tag= ;;
+          esac
+          sha=
+          if [ -n "$tag" ] &&
+            gh release download "$tag" -R Gnathonic/mokuro-bunko -D bunko-bin \
+              -p 'mokuro-bunko-testing-*' -p 'bunko-cloudsim-*' -p nightly.json &&
+            [ -f bunko-bin/mokuro-bunko-testing-x86_64-linux ] &&
+            [ -f bunko-bin/bunko-cloudsim-x86_64-linux ] &&
+            sha=$(jq -er '.bunko_sha | select(test("^[0-9a-f]{40}$"))' bunko-bin/nightly.json); then
+            chmod +x bunko-bin/mokuro-bunko-testing-x86_64-linux bunko-bin/bunko-cloudsim-x86_64-linux
+            echo "Bunko $tag: $(cat bunko-bin/nightly.json)"
+          else
+            sha=
+            rm -rf bunko-bin
+            echo "::notice::no nightly Bunko build for $BUNKO_REF: building it from source"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # At the commit the nightly was built from, so the rig's runner and specs are
+      # the ones its binaries were built with.
+      - name: Check out Bunko
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: Gnathonic/mokuro-bunko
+          ref: ${{ steps.nightly.outputs.sha || env.BUNKO_REF }}
+          path: bunko
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: bunko
+
+      - name: Build Bunko from source
+        if: steps.nightly.outputs.sha == ''
+        working-directory: bunko
+        run: |
+          cargo build --release -p mokuro-bunko --no-default-features --features testing --locked
+          cargo build --release -p bunko-cloudsim --locked
+          mkdir -p ../bunko-bin
+          cp target/release/mokuro-bunko ../bunko-bin/mokuro-bunko-testing-x86_64-linux
+          cp target/release/bunko-cloudsim ../bunko-bin/bunko-cloudsim-x86_64-linux
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            reader/package-lock.json
+            bunko/interop/package-lock.json
+
+      - name: Playwright and Chromium
+        working-directory: bunko/interop
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # This leg's suites on its provider. The rig builds this checkout itself
+      # (`npm ci`, `vite build --mode interop`) and downloads its pinned rclone.
+      - name: Rig ${{ matrix.leg.suites }} on ${{ matrix.leg.provider }}
+        working-directory: bunko
+        env:
+          SUITES: ${{ matrix.leg.suites }}
+          PROVIDER: ${{ matrix.leg.provider }}
+        run: >-
+          cargo xtask interop rig "$SUITES" --provider "$PROVIDER"
+          --bin "$GITHUB_WORKSPACE/bunko-bin/mokuro-bunko-testing-x86_64-linux"
+          --cloudsim-bin "$GITHUB_WORKSPACE/bunko-bin/bunko-cloudsim-x86_64-linux"
+          --reader-dir "$GITHUB_WORKSPACE/reader"
+
+      - name: Upload the rig results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: rig-${{ matrix.target.name }}-${{ matrix.leg.name }}
+          path: bunko/target/interop/rig/
+          if-no-files-found: ignore

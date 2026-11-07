@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pageImageUrlFrom } from '$lib/reader/page-image-url';
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
@@ -13,6 +14,9 @@
   import {
     effectiveVolumeSettings,
     imageFilter,
+    pageFilter,
+    pageInkSetting,
+    pageInkLayers,
     preferredTitleLanguage,
     progress,
     settings,
@@ -26,6 +30,8 @@
   } from '$lib/settings';
   import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import RereadPromptModal from './RereadPromptModal.svelte';
+  import PositionOfferBanner from './PositionOfferBanner.svelte';
+  import LongPausePrompt from './LongPausePrompt.svelte';
   import { shouldOfferReread } from '$lib/metadata/reread';
   import { getSeriesMetadataForTitle } from '$lib/metadata/store';
   import { getSeriesReadingState } from '$lib/settings/series-data';
@@ -42,9 +48,10 @@
     getCardAgeInMin,
     extractFieldValues,
     getModelConfig,
-    blobToBase64,
+    coverImageDataUrl,
     type VolumeMetadata
   } from '$lib/anki-connect';
+  import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
   import { db } from '$lib/catalog/db';
   import { showSnackbar } from '$lib/util';
   import {
@@ -56,6 +63,7 @@
   import TextBoxPicker from './TextBoxPicker.svelte';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
+  import { recordPagedPageView } from '$lib/reader/paged-progress';
   import QuickActions from './QuickActions.svelte';
   import EditToolbar from './Edit/EditToolbar.svelte';
   import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
@@ -68,7 +76,12 @@
     primaryLayerName,
     type LayerSummary
   } from '$lib/reader/edit/layer-list';
-  import { loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
+  import { forkIntoEditLayer, loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
+  import { pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
+  import { forksOnEdit } from '$lib/reader/edit/layer-kind';
+  import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
+  import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
+  import { canPublishCuratedVolume } from '$lib/util/sync/account-capabilities';
   import { layerNamePrompt, runLayerAction, type LayerAction } from './Layers/layer-actions';
   import LayerNameModal from './Layers/LayerNameModal.svelte';
   import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
@@ -85,7 +98,26 @@
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
-  import { ImageCache } from '$lib/reader/image-cache';
+  import { ImageCache, matchFilesToPages } from '$lib/reader/image-cache';
+  import { cancelInkPrefetch, prefetchPageInk } from '$lib/reader/ink-color';
+  import { ViewTracker, viewKey } from '$lib/reading-history/view-tracker';
+  import { endedView, endedViewMs, liveView, readingPaused } from '$lib/reading-history/live-view';
+  import {
+    describeView,
+    rangeScopeKey,
+    type ContinuousRange
+  } from '$lib/reading-history/describe-view';
+  import { recordView } from '$lib/reading-history/record';
+  import { PauseWatch, livePause } from '$lib/reading-history/pause-watch';
+  import { answerPause, type PauseAnswer } from '$lib/reading-history/pause-answer';
+  import { readingStats } from '$lib/reading-history/stats-store';
+  import {
+    askOnLongPause,
+    idleSettings,
+    setAskOnLongPause,
+    widenIdleK
+  } from '$lib/settings/tracking-data';
+  import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
   import '$lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
@@ -239,16 +271,7 @@
       // Set page direction BEFORE the page changes (for animations)
       pageDirection = pageClamped > page ? 'forward' : 'backward';
 
-      const { charCount } = getCharCount(pages, pageClamped);
-      updateProgress(
-        volume.volume_uuid,
-        pageClamped,
-        charCount,
-        pageClamped === pages.length || pageClamped === pages.length - 1
-      );
-
-      // Record activity for auto-timer and auto-sync
-      activityTracker.recordActivity();
+      recordPagedPageView(volume.volume_uuid, pageClamped, pages);
     }
   }
 
@@ -462,9 +485,6 @@
   }
 
   onMount(() => {
-    // Set the timeout duration from settings
-    activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
-
     // Enter fullscreen on initial load if defaultFullscreen setting is enabled
     if ($settings.defaultFullscreen && !document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch((err) => {
@@ -487,19 +507,29 @@
     // onDestroy flush below never runs for either.
     const stopFlushOnPageHide = flushOnPageHide(() => void editSession?.flush());
 
+    const onVisibility = () => {
+      pageHidden = document.visibilityState === 'hidden';
+    };
+    const onPageHide = () => viewTracker.close(Date.now());
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+      viewTracker.close(Date.now());
+      // The live stores are module-level: never let them reach the next
+      // volume. The view just closed is recorded; a later Timer must not add
+      // it to a counted figure that already includes it.
+      endedView.set(null);
+      pauseWatch.dispose();
+      livePause.set(null);
+      readingPaused.set(false);
       stopFlushOnPageHide();
-      // Stop activity tracker when component unmounts
-      activityTracker.stop();
       // Restore overflow when leaving reader
       document.documentElement.style.overflow = '';
       window.removeEventListener('offset-spreads', onOffsetSpreads);
     };
-  });
-
-  // Update timeout duration when settings change
-  $effect(() => {
-    activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
   });
 
   // The paged viewport re-applies its base whenever the displayed content,
@@ -608,6 +638,52 @@
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
+  // Reading history: one `page` event per view, emitted when the view ends,
+  // with its long-pause answer (if any) in the same transaction.
+  // Hidden tab = no view, so a backgrounded reader never accrues dwell.
+  const viewTracker = new ViewTracker(
+    (payload, t, answer) => {
+      const { pace, idle } = get(readingStats);
+      endedView.set({
+        volume: payload.volume,
+        ms: endedViewMs(payload, answer?.count ?? null, pace, idle)
+      });
+      void recordView(payload, t, answer);
+    },
+    (open) => {
+      liveView.set(open);
+      // A new view (or none): a prompt about the last one is moot.
+      if (!open || open.since !== get(livePause)?.since) livePause.set(null);
+    }
+  );
+  // At the open view's cap the timer stops; the view counts up to its cap
+  // unless answered. Unless turned off, the long-pause prompt says so and
+  // offers "Still reading". When the pause no longer stands (view gone, or the
+  // cap grew past the time so far), the prompt goes. A cap that changed while
+  // the prompt is up (a pace change, an idle setting) refreshes what it shows.
+  const pauseWatch = new PauseWatch(
+    (pause) => {
+      if (get(askOnLongPause)) livePause.set(pause);
+    },
+    () => livePause.set(null),
+    (pause) => livePause.update((shown) => (shown ? pause : shown))
+  );
+
+  function onPauseAnswer(answer: PauseAnswer) {
+    const pause = get(livePause);
+    const open = get(liveView);
+    if (!pause || !open || open.since !== pause.since) return;
+    answerPause(pause, answer, get(readingStats).pace, get(idleSettings), {
+      split: (now, count) => viewTracker.split(now, count),
+      widenIdleK,
+      stopAsking: () => setAskOnLongPause(false),
+      notify: (message) => showSnackbar(message)
+    });
+  }
+  let pageHidden = $state(typeof document !== 'undefined' && document.visibilityState === 'hidden');
+  let continuousRange = $state<ContinuousRange | null>(null);
+  let pageCharCumulative = $derived(buildPageCharCounts(pages).cumulative);
+
   // Set of missing page paths for checking if current page is a placeholder
   let missingPagePaths = $derived(new Set(volume?.missing_page_paths || []));
 
@@ -628,7 +704,27 @@
   let editSession = $state<EditSession | null>(null);
   let editHasOriginal = $state(false);
 
-  function enterEditMode(focus?: LineRef) {
+  /** The displayed layer, when an edit of it must go into `edit` instead (`forksOnEdit`). */
+  let forkingLayer = $derived.by(() => {
+    if (!activeLayerId) return null;
+    const layer = layers.find((l) => l.layer_id === activeLayerId);
+    return layer && forksOnEdit(layer, $activeProviderStatus) ? layer : null;
+  });
+
+  /** The message when the account's own corrections are listed but could not be fetched. */
+  const OWN_EDIT_PULL_FAILED =
+    "Couldn't fetch your corrections from the cloud. Try again when connected.";
+  /** A primary entry is waiting on that fetch: a second request joins it. */
+  let primaryEditPullPending = false;
+
+  /**
+   * `fork: false` — the entry is a layer SWAP from inside the editor (L, the
+   * toolbar strip), not the user asking to edit this layer: cycling onto a
+   * shared layer must not bounce straight to `edit`, or L could never pass it.
+   * `pulled` — the account's listed `edit` overlay has been asked for already
+   * (the primary path's second pass, below).
+   */
+  function enterEditMode(focus?: LineRef, opts: { fork?: boolean; pulled?: boolean } = {}) {
     if (!volume || !volumeData || $settings.continuousScroll) return;
     if (editingBlocked) {
       showSnackbar('The original layer is read-only — pick another layer or create a copy');
@@ -642,7 +738,34 @@
       }
       return;
     }
+    if (forkingLayer) {
+      if (opts.fork === false) {
+        showSnackbar('Shared layers are read-only — press E to edit your own copy');
+      } else {
+        void forkIntoEditAndEdit(forkingLayer.layer_id, focus);
+      }
+      return;
+    }
     const uuid = volume.volume_uuid;
+    // The first save of a primary edit makes the `edit` layer from the
+    // primary (`persistPageEdit`). The account's own overlay from another
+    // device, listed but not pulled yet, must be here first — a fresh row would
+    // be newer and replace it on the next push. Same pull as a fork; a fetch
+    // that failed opens nothing.
+    if (!activeLayerId && !opts.pulled) {
+      if (primaryEditPullPending) return;
+      primaryEditPullPending = true;
+      void pullOwnEditLayerBeforeEdit(uuid).then((pull) => {
+        primaryEditPullPending = false;
+        if (volume?.volume_uuid !== uuid || activeLayerId) return;
+        if (pull === 'failed') {
+          showSnackbar(OWN_EDIT_PULL_FAILED);
+          return;
+        }
+        enterEditMode(focus, { ...opts, pulled: true });
+      });
+      return;
+    }
     const data = volumeData;
     // Edit whatever is on screen: an alternate layer's row, or the primary.
     const layerId = activeLayerId;
@@ -693,6 +816,33 @@
         });
     }
     overlaysVisible = true;
+  }
+
+  /**
+   * Editing a shared layer: copy it into the account's own `edit`
+   * layer — or keep the one there is — and edit THAT. The shared layer stays
+   * as everyone reads it. A focus (the context menu's line) carries over only
+   * into a fresh copy, whose blocks are the source's.
+   */
+  async function forkIntoEditAndEdit(sourceLayerId: string, focus?: LineRef) {
+    if (!volume) return;
+    const uuid = volume.volume_uuid;
+    try {
+      await settleEditsBeforeLayerMutation('new');
+      // The account's overlay from another device, listed but not pulled yet,
+      // is the copy to edit — a fresh fork would replace it on the next sync.
+      if ((await pullOwnEditLayerBeforeEdit(uuid)) === 'failed') {
+        showSnackbar(OWN_EDIT_PULL_FAILED);
+        return;
+      }
+      const { created } = await forkIntoEditLayer(uuid, sourceLayerId);
+      if (volume?.volume_uuid !== uuid) return;
+      reenterEditOnLayer = { layer: EDIT_LAYER_ID, focus: created ? focus : undefined };
+      updateVolumeSetting(uuid, 'ocrLayer', EDIT_LAYER_ID);
+      showSnackbar('Editing your corrections — the shared layer stays as it is');
+    } catch (error) {
+      showSnackbar(error instanceof Error ? error.message : String(error));
+    }
   }
 
   // Publish the state for the settings toggle; honour outside requests
@@ -758,13 +908,13 @@
     reenterEditOnLayer = wasEditing ? { layer: layerId } : null;
     updateVolumeSetting(volume.volume_uuid, 'ocrLayer', layerId ?? undefined);
   }
-  let reenterEditOnLayer = $state<{ layer: string | null } | null>(null);
+  let reenterEditOnLayer = $state<{ layer: string | null; focus?: LineRef } | null>(null);
   $effect(() => {
     const pending = reenterEditOnLayer;
     if (!pending || editSession || layerLoading) return;
     if (activeLayerId !== pending.layer) return;
     reenterEditOnLayer = null;
-    enterEditMode();
+    enterEditMode(pending.focus, { fork: false });
   });
 
   // Announce layer switches the same way the other reader shortcuts (T, N,
@@ -959,6 +1109,36 @@
     };
   }
 
+  // Ink color (#256): decide the pages around the one being read AHEAD, so a
+  // page mounts with its verdict settled and is inked in its first frame
+  // (MangaPage hides a page whose verdict is still pending). Both modes:
+  // `index` follows continuous scroll too. Nothing at all while ink is off —
+  // the file matching below is not even computed.
+  let inkFiles = $derived.by(() =>
+    volumeData?.files && pages.length > 0 ? matchFilesToPages(volumeData.files, pages) : null
+  );
+  $effect(() => {
+    if ($pageInkSetting === 'off') return;
+    const files = inkFiles;
+    const current = index;
+    if (!files || current < 0) return;
+    prefetchPageInk(files, current);
+    return cancelInkPrefetch;
+  });
+
+  // The print effect's controls (#256): a finished ink and paper colour per
+  // palette colour, set ONCE on the document while the effect is on; an inked
+  // page's layers pick their colour's pair (MangaPage). Nothing while off.
+  $effect(() => {
+    if ($pageInkSetting === 'off') return;
+    const vars = $pageInkLayers;
+    const root = document.documentElement.style;
+    for (const [name, value] of Object.entries(vars)) root.setProperty(name, value);
+    return () => {
+      for (const name of Object.keys(vars)) root.removeProperty(name);
+    };
+  });
+
   // Image cache for preloading
   let imageCache = new ImageCache();
   let cachedImageUrl1 = $state<string | null>(null);
@@ -1110,6 +1290,45 @@
   let charCount = $derived($settings.charCount ? getCharCount(pages, page).charCount : 0);
   let maxCharCount = $derived(getCharCount(pages).charCount);
   let charDisplay = $derived(`${charCount} / ${maxCharCount}`);
+
+  let currentView = $derived(
+    describeView({
+      volume: volume?.volume_uuid,
+      pageCharCumulative,
+      page,
+      continuous: !!$settings.continuousScroll,
+      scrollMode: effectiveScrollMode === 'horizontal' ? 'horizontal' : 'vertical',
+      showSecondPage: showSecondPage(),
+      continuousRange,
+      // Same condition the template uses to render the pages.
+      showing: !!volumeData && $progress?.[volume?.volume_uuid || 0] !== undefined,
+      viewport: { w: windowWidth, h: windowHeight }
+    })
+  );
+
+  $effect(() => {
+    viewTracker.setView(pageHidden || $readingPaused ? null : currentView, Date.now());
+  });
+
+  // Re-arm the cap watch on every view, pace or cutoff change (an effect, not
+  // a $derived: it sets a timer).
+  $effect(() => {
+    pauseWatch.update($liveView, $readingStats.pace, $readingStats.idle);
+  });
+
+  // A paused timer resumes with the next page: any new view is reading again.
+  let lastViewKey = '';
+  $effect(() => {
+    const key = currentView ? viewKey(currentView) : '';
+    if (key === lastViewKey) return;
+    lastViewKey = key;
+    readingPaused.set(false);
+  });
+
+  function handleVisibleRange(first: number, last: number) {
+    const mode = effectiveScrollMode === 'horizontal' ? 'horizontal' : 'vertical';
+    continuousRange = { scope: rangeScopeKey(volume?.volume_uuid, mode), first, last };
+  }
   let totalLineCount = $derived(getCharCount(pages).lineCount);
   run(() => {
     if (volume) {
@@ -1147,25 +1366,10 @@
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
 
-  // Extract image URL from an element by traversing up to find background-image
-  function extractImageUrlFromElement(element: HTMLElement | null): string | null {
-    if (!element) return null;
-    let current: HTMLElement | null = element;
-    while (current) {
-      const bgImage = getComputedStyle(current).backgroundImage;
-      if (bgImage && bgImage !== 'none') {
-        const match = bgImage.match(/url\(["']?(.+?)["']?\)/);
-        if (match) return match[1];
-      }
-      current = current.parentElement;
-    }
-    return null;
-  }
-
   function handleTextBoxContextMenu(data: ContextMenuData) {
     // Capture the image URL immediately while the DOM is in a known good state
     // This prevents issues when Yomitan or other extensions modify the DOM
-    const imageUrl = extractImageUrlFromElement(data.imgElement) ?? undefined;
+    const imageUrl = pageImageUrlFrom(data.imgElement) ?? undefined;
     // Prefer pageIndex from the data (set by TextBoxes), fall back to progress store
     const pageIndex =
       data.pageIndex ??
@@ -1198,11 +1402,9 @@
     // Load cover image for {cover} template support
     try {
       const dbVolume = await db.volumes.get(volume.volume_uuid);
-      if (dbVolume?.thumbnail) {
-        const coverImage = await blobToBase64(dbVolume.thumbnail);
-        if (coverImage) {
-          volumeMetadata.coverImage = coverImage;
-        }
+      const coverImage = await coverImageDataUrl(dbVolume?.thumbnail);
+      if (coverImage) {
+        volumeMetadata.coverImage = coverImage;
       }
     } catch {
       // Continue without cover image
@@ -1229,6 +1431,13 @@
     const cardMode = $settings.ankiConnectSettings.cardMode;
 
     if (cardMode === 'update') {
+      // An unconfirmed URL answers nothing, which would read as "no recent card".
+      const refusal = ankiUrlRefusal($settings.ankiConnectSettings.url);
+      if (refusal) {
+        showSnackbar(refusal);
+        return;
+      }
+
       // Update mode: fetch previous card values
       const lastCard = await getLastCardInfo();
 
@@ -1520,6 +1729,8 @@
     {layers}
     currentLayer={activeLayerId}
     primaryLayerName={primaryName}
+    canPublishLayers={canPublishCuratedVolume($activeProviderStatus, volume)}
+    layerStatus={$activeProviderStatus}
     onSelectLayer={selectLayer}
     onLayerAction={runLayerActionFromReader}
     bind:layersOpen={layerPickerOpen}
@@ -1599,6 +1810,14 @@
       {/key}
     </button>
   {/if}
+  {#if volume && pages?.length}
+    <PositionOfferBanner
+      volumeId={volume.volume_uuid}
+      pageCount={pages.length}
+      currentPage={page}
+    />
+    <LongPausePrompt onAnswer={onPauseAnswer} />
+  {/if}
   {#if notificationMessage}
     {#key notificationKey}
       <div
@@ -1612,12 +1831,14 @@
   {#if $settings.continuousScroll && volumeData?.files}
     {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader
+        --page-filter={$pageFilter}
         {pages}
         files={volumeData.files}
         {volume}
         {volumeSettings}
         currentPage={page}
         onPageChange={handleContinuousPageChange}
+        onVisibleRangeChange={handleVisibleRange}
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
@@ -1625,12 +1846,14 @@
       />
     {:else}
       <HorizontalScrollReader
+        --page-filter={$pageFilter}
         {pages}
         files={volumeData.files}
         {volume}
         {volumeSettings}
         currentPage={page}
         onPageChange={handleContinuousPageChange}
+        onVisibleRangeChange={handleVisibleRange}
         onVolumeNav={handleContinuousVolumeNav}
         onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
@@ -1639,8 +1862,9 @@
       />
     {/if}
   {:else}
-    <!-- Page-based mode -->
-    <div class="flex" style:background-color="var(--reader-bg)">
+    <!-- Page-based mode. `--page-filter` (brightness/contrast, #256) is read by
+         each page's image layer only — set once here, not per page. -->
+    <div class="flex" style:background-color="var(--reader-bg)" style:--page-filter={$pageFilter}>
       <PagedViewport
         contentSize={pagedContentSize}
         pageKey={page}

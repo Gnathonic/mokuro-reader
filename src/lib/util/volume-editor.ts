@@ -3,10 +3,12 @@
  */
 
 import { db } from '$lib/catalog/db';
-import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
+import { accountCanAddToSeries } from '$lib/util/sync/account-capabilities';
+import { ProviderError } from '$lib/util/sync/provider-interface';
 import { isImageExtension } from '$lib/import';
 import { naturalSort } from '$lib/util/natural-sort';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
+import { recordEvent } from '$lib/reading-history/record';
 import { get } from 'svelte/store';
 import { convertToWebP, generateThumbnail } from '$lib/catalog/thumbnails';
 import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
@@ -17,13 +19,20 @@ import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 
 type Volumes = Record<string, VolumeData>;
 
+/**
+ * A page that may be a generated missing-page placeholder the row does not
+ * list by path. Placeholders keep the missing page's own name (often `.jpg`)
+ * and are always PNG blobs, so the type/name mismatch was once a usable hint.
+ * It no longer is on its own: every stored page is now typed by its bytes, so
+ * a real PNG page named `001.jpg` is `image/png` too. Callers apply this only
+ * to a row that reports more missing pages than `missing_page_paths` lists
+ * ({@link hasUnlistedPlaceholders}); every other row lists its placeholders.
+ */
 function isLikelyGeneratedMissingPlaceholder(path: string, file: File): boolean {
   if (!file?.type || file.type.toLowerCase() !== 'image/png') {
     return false;
   }
 
-  // Our generated missing placeholders can keep original filename extensions (e.g. .jpg)
-  // while always being PNG blobs. Use this mismatch as a conservative legacy-data filter.
   const lowerPath = path.toLowerCase();
   return (
     lowerPath.endsWith('.jpg') ||
@@ -35,6 +44,15 @@ function isLikelyGeneratedMissingPlaceholder(path: string, file: File): boolean 
     lowerPath.endsWith('.tif') ||
     lowerPath.endsWith('.tiff')
   );
+}
+
+/**
+ * Does this row report missing pages it does not name? Every import that
+ * generates placeholders records both `missing_pages` and
+ * `missing_page_paths`, so only a damaged or partially written row can.
+ */
+function hasUnlistedPlaceholders(volume: VolumeMetadata): boolean {
+  return (volume.missing_pages ?? 0) > (volume.missing_page_paths?.length ?? 0);
 }
 
 function isCoverCandidateImage(path: string, file: File): boolean {
@@ -96,19 +114,36 @@ async function syncCoverSidecarToCloud(volumeUuid: string, thumbnailFile: File):
   if (!provider || !provider.isAuthenticated()) {
     return;
   }
-  // A progress-only account cannot add the cover file: skip, quietly.
-  if (!accountCanAddFiles(provider.getStatus())) return;
 
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {
     throw new Error(`Volume ${volumeUuid} not found`);
   }
+  // A progress-only account cannot add the cover file, nor can any account
+  // in a series another one owns (bunko 0.8): skip, quietly.
+  if (!accountCanAddToSeries(provider.getStatus(), volume.series_title)) return;
 
   const coverWebP = await convertToWebP(thumbnailFile);
-  await unifiedCloudManager.uploadFile(
-    `${volume.series_title}/${volume.volume_title}.webp`,
-    coverWebP
-  );
+  try {
+    await unifiedCloudManager.uploadFile(
+      `${volume.series_title}/${volume.volume_title}.webp`,
+      coverWebP
+    );
+  } catch (error) {
+    // A server that records series owners (bunko 0.8) refused this one file —
+    // a volume another account uploaded: the cover is saved on this device,
+    // which is what the user changed. Anywhere else a refusal may mean the
+    // server just went read-only, which the user is told about as before.
+    if (
+      error instanceof ProviderError &&
+      error.code === 'PERMISSION_DENIED' &&
+      provider.getStatus().addFilesPermissions !== undefined
+    ) {
+      console.info(`[volume-editor] the server refused the cover of ${volume.volume_title}`);
+      return;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -191,25 +226,53 @@ export function updateVolumeStats(
   updates: {
     progress?: number;
     chars?: number;
-    timeReadInMinutes?: number;
+    /**
+     * Time read, in minutes: `from` is what the stats showed when the editor
+     * opened (history + baseline), `to` what the user entered. The difference
+     * is recorded as an `adjust` event; the retired minute counter is never
+     * written.
+     */
+    timeRead?: { from: number; to: number };
     completed?: boolean;
     series_uuid?: string;
     series_title?: string;
     volume_title?: string;
   }
 ): void {
+  let timeDeltaMs = 0;
+  let charsDelta = 0;
+
   volumesWithTrash.update((prev: Volumes) => {
     const currentVolume = prev[volumeUuid] || new VolumeData();
+    if (updates.timeRead) {
+      timeDeltaMs = (updates.timeRead.to - updates.timeRead.from) * 60000;
+    }
+    // The modal re-sends `chars` as a linear estimate on every save; only a
+    // real progress edit makes its chars a user edit.
+    if (
+      updates.chars !== undefined &&
+      updates.progress !== undefined &&
+      updates.progress !== currentVolume.progress
+    ) {
+      charsDelta = updates.chars - currentVolume.chars;
+    }
+    // A stat edit is a user action and must win the next merge like a page
+    // turn does; without a fresh stamp the other device's older copy replaced
+    // it. Only a real change counts: the modal re-sends every field on save
+    // (chars as a linear re-estimate), and a rename on a device that missed a
+    // sync must not outrank reading done elsewhere. A time edit is history
+    // (an `adjust` event), not record state, so it needs no stamp.
+    const statChanged =
+      (updates.progress !== undefined && updates.progress !== currentVolume.progress) ||
+      (updates.completed !== undefined && updates.completed !== currentVolume.completed);
 
     return {
       ...prev,
       [volumeUuid]: new VolumeData({
         ...currentVolume,
+        ...(statChanged && { lastProgressUpdate: new Date().toISOString() }),
         ...(updates.progress !== undefined && { progress: updates.progress }),
         ...(updates.chars !== undefined && { chars: updates.chars }),
-        ...(updates.timeReadInMinutes !== undefined && {
-          timeReadInMinutes: updates.timeReadInMinutes
-        }),
         ...(updates.completed !== undefined && { completed: updates.completed }),
         /*
          * Unlike `updateProgress`, a `false` here is an EXPLICIT user edit in
@@ -226,6 +289,16 @@ export function updateVolumeStats(
       })
     };
   });
+
+  // Reading history: the edit is an event, so every device's stats can apply it.
+  if (timeDeltaMs !== 0 || charsDelta !== 0) {
+    void recordEvent({
+      kind: 'adjust',
+      volume: volumeUuid,
+      time_delta_ms: timeDeltaMs,
+      chars_delta: charsDelta
+    });
+  }
 }
 
 /**
@@ -294,12 +367,13 @@ export async function resetVolumeCover(volumeUuid: string): Promise<void> {
 
   // Exclude known placeholder pages generated for missing files.
   const placeholderPaths = new Set(volume.missing_page_paths || []);
+  const guessPlaceholders = hasUnlistedPlaceholders(volume);
   const compareByPageOrder = await getPageOrderComparator(volumeUuid);
   const candidatePaths = Object.keys(volumeFiles.files).filter((path) => {
     if (placeholderPaths.has(path)) return false;
     const file = volumeFiles.files[path];
     if (!isCoverCandidateImage(path, file)) return false;
-    return !isLikelyGeneratedMissingPlaceholder(path, file);
+    return !guessPlaceholders || !isLikelyGeneratedMissingPlaceholder(path, file);
   });
 
   // Prefer OCR page order, then natural filename order.
