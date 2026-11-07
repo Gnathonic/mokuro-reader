@@ -1,16 +1,28 @@
 # Changelog
 
-## [Unreleased]
+## [1.11.0] - 2026-11-07
 
 ### Added
 
 - Reading history syncs across devices (mokuro-bunko needs 0.7.8)
 - Volumes open where another device stopped (mokuro-bunko needs 0.7.8)
 - Tap "Still reading" when the timer stops on a slow page
+- Page brightness, contrast and a magazine print effect (#256)
+- Review image-only imports one series at a time (#285)
+- Google Drive stays signed in instead of reconnecting hourly
+- Sign out of Google Drive on one device, or everywhere
 - mokuro-bunko: publish your OCR fixes as shared corrections
 
 ### Changed
 
+- The timer's idle cutoff adapts to your reading speed
+- Page turns sync with much less data
+- Progress from other devices arrives sooner after opening
+- Import links name their source before adding anything
+- AnkiConnect asks before sending cards to another computer
+- Signing out of MEGA also ends the session on MEGA
+- SVG images are no longer supported
+- Shorter, up-to-date cloud provider descriptions
 - Editing shared OCR now edits your own copy
 - mokuro-bunko: your OCR fixes no longer reach other accounts
 - mokuro-bunko before 0.8: OCR fixes stay on this device
@@ -26,13 +38,18 @@
 
 ### Fixed
 
+- Mouse wheel zooms one level per notch again (#272)
+- Progress no longer jumps back after a missed sync
+- Catalog covers no longer stay blank while downloading
+- Japanese text spacing fixed after Google's font update
+- A changed cloud cover replaces the cached one
+- Text sent to Anki can no longer run as code
 - A full MEGA account no longer deletes your synced progress
 - MEGA moves emptied duplicate folders to the Rubbish Bin
 - OneDrive asks you to reconnect when its sign-in lapses
 - MEGA asks you to reconnect when its session ends
 - Series with OCR layers in the cloud can be renamed
 - WebDAV asks you to sign in again when your password stops working
-- mokuro-bunko 0.8: backups with an "Edit" OCR layer no longer fail
 - WebDAV retries a request a busy server asks to repeat
 - Progress synced while the library refreshes is no longer lost
 - Google Drive trashes duplicate folders only once they are empty
