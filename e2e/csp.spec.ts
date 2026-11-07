@@ -714,7 +714,7 @@ test.describe('CSP_MODE=enforce with the Drive auth backend', () => {
 
     const shell = await page.goto(`${origin}/#/cloud`);
     expect(shell?.headers()['content-security-policy']).toMatch(/script-src /);
-    const connect = page.getByRole('button', { name: /Stays signed in/ });
+    const connect = page.getByRole('button', { name: /Google Drive.*15GB free/ });
     await expect(connect).toBeVisible({ timeout: 30_000 });
     await connect.click();
 
