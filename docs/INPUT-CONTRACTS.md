@@ -137,12 +137,18 @@ camera into bounds and reports reading progress.
 ### Tap-to-turn zones are optional (#54)
 
 Paged mode's invisible page-turn buttons (`PageTurnZones.svelte`: the page
-margins, the bottom corners, the screen-edge strips) exist only while
-`tapPageEdgesToTurn` is on (default). Off, they are not rendered, so a click
-there lands on whatever is underneath — the page surface still toggles the
-overlays, the margins outside it are inert. Swipes, keys, wheel and quick
-actions never ran through these buttons and are unaffected. The scroll readers
-have no such zones.
+margins, the bottom corners, the screen-edge strips) turn pages only while
+`tapPageEdgesToTurn` is on (default). Off, the screen-edge strips go, but the
+margin and corner zones STAY as handler-less, `aria-hidden`
+`[data-page-turn-zone]` boxes, flush with the page (no `edgeButtonWidth`
+reach onto it). They are children of PagedViewport's camera wrapper that
+overflow it into the margins, and the wrapper is where the gesture tracker,
+the wheel listener and `touch-action: none` live — without them a swipe,
+wheel, ctrl+wheel zoom or pinch that starts beside the page would land
+outside the wrapper and do nothing (or let the browser scroll/zoom
+natively). `gestureTargetRole` classes them `interactive`, so a tap there
+neither turns the page nor toggles the overlays: the margins' taps are inert,
+their gestures unchanged. The scroll readers have no such zones.
 
 ### Swipe-to-flip is edge-gated (#186)
 

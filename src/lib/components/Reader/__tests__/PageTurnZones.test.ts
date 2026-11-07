@@ -59,12 +59,67 @@ describe('PageTurnZones', () => {
     expect(onRight).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['viewport', 'screen'] as const)('renders no %s zones when it is off', (variant) => {
+  it('renders no screen-edge strips when it is off', () => {
     store.current.set({ tapPageEdgesToTurn: false, edgeButtonWidth: 40 });
-    const { queryAllByRole, container } = setup(variant);
-    expect(queryAllByRole('button')).toHaveLength(0);
+    const { container } = setup('screen');
     expect(container.querySelector('button')).toBeNull();
+    expect(container.querySelector('[data-page-turn-zone]')).toBeNull();
   });
+
+  it('keeps the four viewport margins as inert, handler-less zones when it is off', async () => {
+    store.current.set({ tapPageEdgesToTurn: false, edgeButtonWidth: 40 });
+    const { queryAllByRole, container, onPress, onLeft, onRight } = setup('viewport');
+    expect(queryAllByRole('button')).toHaveLength(0);
+    const zones = [...container.querySelectorAll<HTMLElement>('[data-page-turn-zone]')];
+    expect(zones).toHaveLength(4);
+    // Same margin geometry as the buttons, minus the reach onto the page.
+    expect(zones.map((z) => z.className)).toEqual([
+      'fixed -left-full z-10 h-full w-full',
+      'fixed -right-full z-10 h-full w-full',
+      'fixed top-full -left-full z-10 h-screen w-[150%]',
+      'fixed top-full -right-full z-10 h-screen w-[150%]'
+    ]);
+    for (const z of zones) {
+      expect(z.getAttribute('aria-hidden')).toBe('true');
+      expect(z.style.marginLeft).toBe('');
+      expect(z.style.marginRight).toBe('');
+      await fireEvent.mouseDown(z);
+      await fireEvent.mouseUp(z);
+    }
+    expect(onPress).not.toHaveBeenCalled();
+    expect(onLeft).not.toHaveBeenCalled();
+    expect(onRight).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    'lets margin gestures bubble to the viewport wrapper (tapPageEdgesToTurn=%s)',
+    (on) => {
+      // PagedViewport's gesture tracker, wheel listener and touch-action live
+      // on its wrapper; the zones are what carry the margins inside it.
+      store.current.set({ tapPageEdgesToTurn: on, edgeButtonWidth: 40 });
+      const wrapper = document.createElement('div');
+      document.body.appendChild(wrapper);
+      render(PageTurnZones, {
+        target: wrapper,
+        props: { variant: 'viewport', onPress: vi.fn(), onLeft: vi.fn(), onRight: vi.fn() }
+      });
+      const seen: string[] = [];
+      for (const type of ['pointerdown', 'pointermove', 'pointerup', 'wheel', 'touchstart']) {
+        wrapper.addEventListener(type, () => seen.push(type));
+      }
+      const zones = wrapper.querySelectorAll(on ? 'button' : '[data-page-turn-zone]');
+      expect(zones).toHaveLength(4);
+      for (const z of zones) {
+        z.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+        z.dispatchEvent(new Event('pointermove', { bubbles: true }));
+        z.dispatchEvent(new Event('pointerup', { bubbles: true }));
+        z.dispatchEvent(new Event('wheel', { bubbles: true }));
+        z.dispatchEvent(new Event('touchstart', { bubbles: true }));
+      }
+      expect(seen).toHaveLength(20);
+      wrapper.remove();
+    }
+  );
 
   it('reacts to the setting changing while mounted', async () => {
     const { queryAllByRole } = setup('screen');
