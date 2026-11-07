@@ -14,6 +14,8 @@
    *     to restore it by hand);
    *   - the selection is kept inside the image (v1's `viewMode: 1`), see
    *     `constrainSelection`;
+   *   - a new box (`drawable`) is drawn here, not by cropperjs: from the press
+   *     clamped onto the image to the pointer, as v1 drew it (`drawnRect`);
    *   - the image never moves, zooms or turns under the pointer or the wheel —
    *     only `rotate()` turns it, a quarter at a time;
    *   - the output is cut from the image at natural size (`toCanvas`), to the
@@ -27,9 +29,11 @@
   import { onMount } from 'svelte';
   import {
     clampMove,
+    clampPoint,
     constrainSelection,
     containLayout,
     croppedCanvasPlan,
+    drawnRect,
     fullImageRect,
     layoutBounds,
     layoutMatrix,
@@ -40,6 +44,7 @@
     toImageRect,
     type CropRect,
     type ImageLayout,
+    type Point,
     type QuarterTurn
   } from '$lib/util/crop-geometry';
 
@@ -68,6 +73,7 @@
     onchange
   }: Props = $props();
 
+  let wrapperEl: HTMLDivElement;
   let canvasEl: CropperCanvas;
   let imageEl: CropperImage;
   let selectionEl: CropperSelection;
@@ -80,6 +86,11 @@
   /** True while this component moves the selection itself. */
   let placing = false;
   let readyFired = false;
+  /**
+   * The new box being drawn: where the press was, clamped onto the image, and
+   * the selection's shape when it began (what Shift keeps), in frame pixels.
+   */
+  let drawing: { anchor: Point; aspectRatio: number } | null = null;
 
   function turnedSize() {
     return image ? rotatedSize(image.naturalWidth, image.naturalHeight, rotation) : null;
@@ -161,6 +172,57 @@
     onchange?.(crop);
   }
 
+  /** A page-coordinate point (cropperjs's `pageX`/`pageY`) in frame pixels. */
+  function framePoint(pageX: number, pageY: number): Point {
+    const box = canvasEl.getBoundingClientRect();
+    return { x: pageX - (box.left + window.scrollX), y: pageY - (box.top + window.scrollY) };
+  }
+
+  interface ActionDetail {
+    action?: string;
+    relatedEvent?: { pageX: number; pageY: number; shiftKey?: boolean };
+    endX?: number;
+    endY?: number;
+  }
+
+  /*
+   * Drawing a new box. The canvas announces every gesture as `actionstart`,
+   * `action` (per pointer move) and `actionend` events; these listeners run in
+   * the capture phase on the wrapper, so before the selection's own. cropperjs
+   * would draw its first box from the raw press — wholly outside the image for
+   * a press in the margin, so `constrainSelection` refuses it — and then switch
+   * the gesture to resizing a corner of whatever selection there is, refused
+   * or not: the old crop would follow the mouse from anywhere in the frame.
+   * Instead the press is clamped onto the image and the box drawn from there,
+   * and the selection never sees the `select` gesture's moves.
+   */
+  function handleActionStart(event: Event) {
+    drawing = null;
+    const { detail } = event as CustomEvent<ActionDetail | undefined>;
+    if (!drawable || !layout || detail?.action !== 'select' || !detail.relatedEvent) return;
+    const { pageX, pageY } = detail.relatedEvent;
+    drawing = {
+      anchor: clampPoint(framePoint(pageX, pageY), layoutBounds(layout)),
+      aspectRatio: selectionEl.width / selectionEl.height
+    };
+  }
+
+  function handleAction(event: Event) {
+    const { detail } = event as CustomEvent<ActionDetail | undefined>;
+    if (!drawing || !layout || detail?.action !== 'select') return;
+    // The selection skips an action whose default is prevented.
+    event.preventDefault();
+    if (detail.endX === undefined || detail.endY === undefined) return;
+    const pointer = clampPoint(framePoint(detail.endX, detail.endY), layoutBounds(layout));
+    const shape = detail.relatedEvent?.shiftKey ? drawing.aspectRatio : undefined;
+    const rect = drawnRect(drawing.anchor, pointer, shape);
+    if (rect) commit(toImageRect(rect, layout));
+  }
+
+  function handleActionEnd() {
+    drawing = null;
+  }
+
   /**
    * The canvas swallows every wheel event (it zooms on the wheel, and calls
    * `preventDefault` even when nothing may zoom), which would stop the modal
@@ -183,10 +245,16 @@
     const resizeObserver = new ResizeObserver(() => relayout());
     resizeObserver.observe(canvasEl);
     selectionEl.addEventListener('change', handleSelectionChange);
+    wrapperEl.addEventListener('actionstart', handleActionStart, true);
+    wrapperEl.addEventListener('action', handleAction, true);
+    wrapperEl.addEventListener('actionend', handleActionEnd, true);
     return () => {
       disposed = true;
       resizeObserver.disconnect();
       selectionEl.removeEventListener('change', handleSelectionChange);
+      wrapperEl.removeEventListener('actionstart', handleActionStart, true);
+      wrapperEl.removeEventListener('action', handleAction, true);
+      wrapperEl.removeEventListener('actionend', handleActionEnd, true);
     };
   });
 
@@ -271,7 +339,12 @@
   }
 </script>
 
-<div class="image-cropper" class:large-handles={largeHandles} onwheelcapture={keepWheelFromCanvas}>
+<div
+  bind:this={wrapperEl}
+  class="image-cropper"
+  class:large-handles={largeHandles}
+  onwheelcapture={keepWheelFromCanvas}
+>
   <cropper-canvas bind:this={canvasEl} background>
     <cropper-image bind:this={imageEl} {src} {alt}></cropper-image>
     <cropper-shade hidden theme-color="rgba(0, 0, 0, 0.5)"></cropper-shade>

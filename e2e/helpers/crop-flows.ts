@@ -165,16 +165,46 @@ function expectRectClose(actual: Rect, expected: Rect, tolerance: number, what: 
   }
 }
 
-/** Drag the centre of `selector` (inside the open cropper) by (dx, dy). */
-async function drag(page: Page, selector: string, dx: number, dy: number) {
+/**
+ * Drag `selector` (inside the open cropper) by (dx, dy), pressed at its centre
+ * plus `offset` — moved inside the canvas when that is outside it: the canvas
+ * clips what lies beyond its edges (a handle on an image edge that is also the
+ * frame's), and a press there would land on whatever is above the cropper.
+ */
+async function drag(
+  page: Page,
+  selector: string,
+  dx: number,
+  dy: number,
+  offset: { x: number; y: number } = { x: 0, y: 0 }
+) {
   const box = (await page.locator(`cropper-canvas ${selector}`).first().boundingBox())!;
-  const x = box.x + box.width / 2;
-  const y = box.y + box.height / 2;
-  await page.mouse.move(x, y);
+  const frame = (await page.locator('cropper-canvas').first().boundingBox())!;
+  const inside = (v: number, start: number, size: number) =>
+    Math.min(Math.max(v, start + 2), start + size - 2);
+  const x = inside(box.x + box.width / 2 + offset.x, frame.x, frame.width);
+  const y = inside(box.y + box.height / 2 + offset.y, frame.y, frame.height);
+  await dragFromTo(page, { x, y }, { x: x + dx, y: y + dy });
+}
+
+/** Press at `from` and drag to `to`, in page pixels. */
+async function dragFromTo(
+  page: Page,
+  from: { x: number; y: number },
+  to: { x: number; y: number }
+) {
+  await page.mouse.move(from.x, from.y);
   await page.mouse.down();
-  await page.mouse.move(x + dx / 2, y + dy / 2, { steps: 4 });
-  await page.mouse.move(x + dx, y + dy, { steps: 4 });
+  const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  await page.mouse.move(mid.x, mid.y, { steps: 4 });
+  await page.mouse.move(to.x, to.y, { steps: 4 });
   await page.mouse.up();
+}
+
+/** A point in the open cropper's frame pixels, in page pixels. */
+async function framePointOnPage(page: Page, x: number, y: number) {
+  const frame = (await page.locator('cropper-canvas').first().boundingBox())!;
+  return { x: frame.x + x, y: frame.y + y };
 }
 
 async function volumeThumbnailSize(page: Page, uuid: string) {
@@ -201,25 +231,12 @@ function thumbnailFor(width: number, height: number) {
 }
 
 /**
- * The cover crop, four times over, on a `gradient` volume wider than 3:4:
- *
- *   1. the default crop is full height at 3:4, centred, and confirms to exactly
- *      that part of the page, at natural size, as a JPEG at 0.9;
- *   2. the selection dragged far past the right edge stops at it (v1 `viewMode: 1`);
- *   3. a corner dragged far past the top-left stops at the image's corner, and the
- *      output drops the fraction (937.5 px wide → 937, as cropperjs 1 did);
- *   4. "Rotate 90°" turns clockwise, refits, and keeps the selection on the turned
- *      image; "Reset" undoes it.
- *
- * Each confirm saves the cover; the stored thumbnail is checked for its size.
+ * The volume editor's cover picker for `volume`, through the series page's
+ * list view: `openCropper` opens the crop on the first page (opening the editor
+ * first if needed) and waits for it to be placed; `confirm` takes the crop and
+ * returns the canvas the cover was cut from.
  */
-export async function coverCropFlow(page: Page, volume: SyntheticVolume) {
-  const { width: W, height: H } = volume;
-  const blue = volume.colour[2];
-  expect(W / H, 'the flow needs a page wider than 3:4').toBeGreaterThan(3 / 4);
-  const cropWidth = H * 0.75;
-  const centredX = (W - cropWidth) / 2;
-
+async function coverEditor(page: Page, volume: SyntheticVolume) {
   await page.evaluate((id) => (window.location.hash = `#/series/${id}`), volume.seriesUuid);
   // The volume list's rows carry the edit button (the grid's cards do not).
   const editButton = page.locator('[title="Edit volume"]').first();
@@ -251,6 +268,31 @@ export async function coverCropFlow(page: Page, volume: SyntheticVolume) {
     await expect(picker).toBeHidden();
     return (await coverOutputs(page))[before];
   }
+
+  return { editor, openCropper, confirm };
+}
+
+/**
+ * The cover crop, four times over, on a `gradient` volume wider than 3:4:
+ *
+ *   1. the default crop is full height at 3:4, centred, and confirms to exactly
+ *      that part of the page, at natural size, as a JPEG at 0.9;
+ *   2. the selection dragged far past the right edge stops at it (v1 `viewMode: 1`);
+ *   3. a corner dragged far past the top-left stops at the image's corner, and the
+ *      output drops the fraction (937.5 px wide → 937, as cropperjs 1 did);
+ *   4. "Rotate 90°" turns clockwise, refits, and keeps the selection on the turned
+ *      image; "Reset" undoes it.
+ *
+ * Each confirm saves the cover; the stored thumbnail is checked for its size.
+ */
+export async function coverCropFlow(page: Page, volume: SyntheticVolume) {
+  const { width: W, height: H } = volume;
+  const blue = volume.colour[2];
+  expect(W / H, 'the flow needs a page wider than 3:4').toBeGreaterThan(3 / 4);
+  const cropWidth = H * 0.75;
+  const centredX = (W - cropWidth) / 2;
+
+  const { openCropper, confirm } = await coverEditor(page, volume);
 
   async function expectOutput(
     output: CanvasBlob,
@@ -362,6 +404,192 @@ export async function coverCropFlow(page: Page, volume: SyntheticVolume) {
   }
 }
 
+/**
+ * The cover crop's other gestures, on a `gradient` volume of at least two
+ * pages, wider than 3:4 (so the frame leaves a margin left and right of it):
+ *
+ *   1. a new box drawn from a press in the margin starts on the image's edge
+ *      (v1 `dragMode: 'crop'` under `viewMode: 1`), not a resize of the old one;
+ *      one drawn the other way, from the margin right of it, likewise;
+ *   2. "Copy Last Crop Zone" puts the last confirmed crop back;
+ *   3. every edge handle dragged out stops at the image's edge, and every corner
+ *      handle moves its corner by the pointer's movement;
+ *   4. a frame resize refits the image and keeps the crop on it;
+ *   5. "Append" stitches the next page on the right and crops that; "Remove
+ *      Appended" goes back to the page.
+ */
+export async function coverCropGesturesFlow(page: Page, volume: SyntheticVolume) {
+  const { width: W, height: H } = volume;
+  expect(W / H, 'the flow needs a page wider than 3:4').toBeGreaterThan(3 / 4);
+  const cropWidth = H * 0.75;
+  const centredX = (W - cropWidth) / 2;
+  const { openCropper, confirm } = await coverEditor(page, volume);
+
+  /** The selection in image pixels, and a tolerance of one CSS pixel (+ rounding). */
+  async function selectionOnImage(naturalWidth = W) {
+    const geometry = (await cropperGeometry(page))!;
+    const scale = geometry.image.width / naturalWidth;
+    return {
+      geometry,
+      scale,
+      rect: inImagePixels(geometry.selection, geometry.image, naturalWidth),
+      tolerance: 1.5 / scale
+    };
+  }
+
+  /** Press at an image point (image pixels; may be off the image) and drag to another. */
+  async function drawOnImage(from: [number, number], to: [number, number]) {
+    const { geometry, scale } = await selectionOnImage();
+    const at = ([x, y]: [number, number]) =>
+      framePointOnPage(page, geometry.image.x + x * scale, geometry.image.y + y * scale);
+    await dragFromTo(page, await at(from), await at(to));
+  }
+
+  // Confirm the default crop once: it becomes the "last crop zone".
+  let { picker, geometry } = await openCropper();
+  await confirm(picker);
+
+  ({ picker, geometry } = await openCropper());
+  const marginWidth = geometry.image.x / (geometry.image.width / W);
+  expect(marginWidth, 'the frame leaves a margin beside the page').toBeGreaterThan(40);
+
+  // 1. Drawn from the left margin, a quarter down, to the page's centre-right:
+  //    the press is clamped onto the left edge.
+  await drawOnImage([-marginWidth / 2, H * 0.25], [W * 0.5, H * 0.75]);
+  let now = await selectionOnImage();
+  expectRectClose(
+    now.rect,
+    { x: 0, y: H * 0.25, width: W * 0.5, height: H * 0.5 },
+    now.tolerance,
+    'box drawn from the left margin'
+  );
+  // From the right margin, low down, up and left onto the page.
+  await drawOnImage([W + marginWidth / 2, H * 0.6], [W * 0.3, H * 0.1]);
+  now = await selectionOnImage();
+  expectRectClose(
+    now.rect,
+    { x: W * 0.3, y: H * 0.1, width: W * 0.7, height: H * 0.5 },
+    now.tolerance,
+    'box drawn from the right margin'
+  );
+  // Inside the page, outside the selection, down and right.
+  await drawOnImage([W * 0.1, H * 0.7], [W * 0.2, H * 0.9]);
+  now = await selectionOnImage();
+  expectRectClose(
+    now.rect,
+    { x: W * 0.1, y: H * 0.7, width: W * 0.1, height: H * 0.2 },
+    now.tolerance,
+    'box drawn on the page'
+  );
+
+  // 2. Copy Last Crop Zone: the default crop confirmed above.
+  await picker.getByRole('button', { name: 'Copy Last Crop Zone' }).click();
+  now = await selectionOnImage();
+  expectRectClose(
+    now.rect,
+    { x: centredX, y: 0, width: cropWidth, height: H },
+    1,
+    'copied crop zone'
+  );
+
+  // 3. Every handle. A box clear of every edge (pressed left of the copied
+  //    crop: a press inside it would move it), then each edge dragged far out…
+  await drawOnImage([W * 0.1, H * 0.3], [W * 0.7, H * 0.7]);
+  let expected: Rect = { x: W * 0.1, y: H * 0.3, width: W * 0.6, height: H * 0.4 };
+  now = await selectionOnImage();
+  expectRectClose(now.rect, expected, now.tolerance, 'box drawn for the handles');
+  const edges: [string, number, number, Partial<Rect>][] = [
+    ['n-resize', 0, -1, { y: 0 }],
+    ['s-resize', 0, 1, { height: H }],
+    ['e-resize', 1, 0, { width: W - W * 0.1 }],
+    ['w-resize', -1, 0, { x: 0, width: W }]
+  ];
+  for (const [handle, sx, sy, change] of edges) {
+    geometry = (await cropperGeometry(page))!;
+    await drag(
+      page,
+      `cropper-handle[action="${handle}"]`,
+      sx * geometry.frame.width,
+      sy * geometry.frame.height
+    );
+    if (handle === 'n-resize') change.height = expected.y + expected.height;
+    expected = { ...expected, ...change };
+    now = await selectionOnImage();
+    expectRectClose(now.rect, expected, now.tolerance, `${handle} dragged out`);
+  }
+  expectRectClose(expected, { x: 0, y: 0, width: W, height: H }, 1e-9, 'whole page');
+  // …and each corner dragged 50 CSS pixels in.
+  const step = 50 / now.scale;
+  const corners: [string, number, number, Rect][] = [
+    ['se-resize', -1, -1, { x: 0, y: 0, width: W - step, height: H - step }],
+    ['nw-resize', 1, 1, { x: step, y: step, width: W - 2 * step, height: H - 2 * step }],
+    ['ne-resize', -1, 1, { x: step, y: 2 * step, width: W - 3 * step, height: H - 3 * step }],
+    ['sw-resize', 1, -1, { x: 2 * step, y: 2 * step, width: W - 4 * step, height: H - 4 * step }]
+  ];
+  for (const [handle, sx, sy, after] of corners) {
+    await drag(page, `cropper-handle[action="${handle}"]`, sx * 50, sy * 50);
+    now = await selectionOnImage();
+    expectRectClose(now.rect, after, 2 * now.tolerance, `${handle} dragged in`);
+  }
+
+  // 4. A frame resize refits the image; the crop stays where it was on it.
+  const kept = now.rect;
+  const viewport = page.viewportSize()!;
+  for (const size of [
+    { width: Math.round(viewport.width * 0.8), height: Math.round(viewport.height * 0.8) },
+    viewport
+  ]) {
+    const before = (await cropperGeometry(page))!.image;
+    await page.setViewportSize(size);
+    await expect
+      .poll(async () => (await cropperGeometry(page))!.image.width, {
+        message: 'the image is refitted to the resized frame'
+      })
+      .not.toBeCloseTo(before.width, 0);
+    geometry = (await cropperGeometry(page))!;
+    expect(
+      Math.min(
+        Math.abs(geometry.image.width - geometry.frame.width),
+        Math.abs(geometry.image.height - geometry.frame.height)
+      ),
+      'the image fits the frame'
+    ).toBeLessThan(1);
+    now = await selectionOnImage();
+    expectRectClose(now.rect, kept, 0.5, `crop after a resize to ${size.width}×${size.height}`);
+  }
+  const output = await confirm(picker);
+  expect(Math.abs(output.width - kept.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(output.height - kept.height)).toBeLessThanOrEqual(1);
+
+  // 5. Append the next page, then take it off again; then append and confirm.
+  ({ picker, geometry } = await openCropper());
+  const stitchedWidth = 2 * W;
+  const appended = async () => {
+    const image = (await cropperGeometry(page))?.image;
+    return image ? image.width / image.height : 0;
+  };
+  await picker.getByRole('button', { name: 'Append', exact: true }).click();
+  await expect.poll(appended).toBeCloseTo(stitchedWidth / H, 2);
+  await placedCropper(page);
+  now = await selectionOnImage(stitchedWidth);
+  expectRectClose(
+    now.rect,
+    { x: (stitchedWidth - cropWidth) / 2, y: 0, width: cropWidth, height: H },
+    1,
+    'default crop of the appended pages'
+  );
+  await picker.getByRole('button', { name: 'Remove Appended' }).click();
+  await expect.poll(appended).toBeCloseTo(W / H, 2);
+  await picker.getByRole('button', { name: 'Append', exact: true }).click();
+  await expect.poll(appended).toBeCloseTo(stitchedWidth / H, 2);
+  await placedCropper(page);
+  const stitched = await confirm(picker);
+  expect({ width: stitched.width, height: stitched.height }).toEqual({
+    width: Math.floor(cropWidth),
+    height: H
+  });
+}
+
 /** The AnkiConnect requests a flow made, by action. */
 export interface AnkiStub {
   actions: string[];
@@ -465,8 +693,10 @@ async function decodeJpeg(page: Page, base64: string) {
 
 /**
  * The Anki card crop, from a double-tap on the page's text box: the crop starts
- * on the text box (padded by `expandTextBoxBounds`), a drag far to the right
- * stops at the image's edge, and the card's picture is exactly that crop.
+ * on the text box (padded by `expandTextBoxBounds`), the large handles are the
+ * size they are drawn and resize from anywhere on them, "Preset crop to text
+ * box" switches between the whole page and the text box, a drag far to the
+ * right stops at the image's edge, and the card's picture is exactly that crop.
  * Needs `stubAnkiConnect` and `enableAnkiCapture` (and a reload) first.
  */
 export async function ankiCropFlow(page: Page, volume: SyntheticVolume, stub: AnkiStub) {
@@ -514,6 +744,64 @@ export async function ankiCropFlow(page: Page, volume: SyntheticVolume, stub: An
     textBox,
     0.5,
     'Anki crop starts on the text box'
+  );
+
+  // The large handles: 20 px corner squares, edge bars the length of their edge
+  // showing a 40 px mark. The element is the hit area: a corner grabbed 9 px off
+  // its centre (outside cropperjs's own 15 px handle) still resizes.
+  const handleStyle = await page.evaluate(() => {
+    const at = (action: string) => {
+      const handle = document.querySelector(`cropper-canvas cropper-handle[action="${action}"]`)!;
+      const box = getComputedStyle(handle);
+      const mark = getComputedStyle(handle, '::after');
+      return {
+        width: box.width,
+        height: box.height,
+        markWidth: mark.width,
+        markHeight: mark.height
+      };
+    };
+    return { se: at('se-resize'), n: at('n-resize'), e: at('e-resize') };
+  });
+  expect(handleStyle.se).toEqual({
+    width: '20px',
+    height: '20px',
+    markWidth: '20px',
+    markHeight: '20px'
+  });
+  expect(handleStyle.n.markWidth).toBe('40px');
+  expect(Math.abs(parseFloat(handleStyle.n.width) - geometry.selection.width)).toBeLessThan(0.5);
+  expect(handleStyle.e.markHeight).toBe('40px');
+  expect(Math.abs(parseFloat(handleStyle.e.height) - geometry.selection.height)).toBeLessThan(0.5);
+  await drag(page, 'cropper-handle[action="se-resize"]', 30, 20, { x: 9, y: 9 });
+  geometry = (await cropperGeometry(page))!;
+  const scale = geometry.image.width / W;
+  expectRectClose(
+    inImagePixels(geometry.selection, geometry.image, W),
+    { ...textBox, width: textBox.width + 30 / scale, height: textBox.height + 20 / scale },
+    1.5 / scale,
+    'Anki crop resized by its large corner handle'
+  );
+
+  // "Preset crop to text box" off: the whole page; on again: the text box.
+  const presetToggle = modal.getByText('Preset crop to text box');
+  await presetToggle.click();
+  await expect(modal.getByText('Full page', { exact: true })).toBeVisible();
+  geometry = (await cropperGeometry(page))!;
+  expectRectClose(
+    inImagePixels(geometry.selection, geometry.image, W),
+    { x: 0, y: 0, width: W, height: H },
+    0.5,
+    'Anki crop with the preset off'
+  );
+  await presetToggle.click();
+  await expect(modal.getByText('Cropped to text box', { exact: true })).toBeVisible();
+  geometry = (await cropperGeometry(page))!;
+  expectRectClose(
+    inImagePixels(geometry.selection, geometry.image, W),
+    textBox,
+    0.5,
+    'Anki crop with the preset on again'
   );
 
   // The wheel over the crop is the page's (the modal body scrolls), and moves

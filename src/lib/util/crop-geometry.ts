@@ -175,9 +175,9 @@ export function clampResize(rect: CropRect, bounds: CropRect): CropRect | null {
 
 /**
  * What a selection change becomes when the crop must stay inside the image:
- * a MOVE (same size) slides along the edge it hits; a RESIZE or a newly drawn
- * box stops at the edge (the part outside is cut off). Null: nothing of it is
- * inside the image, so the change is refused.
+ * a MOVE (same size) slides along the edge it hits; a RESIZE stops at the edge
+ * (the part outside is cut off). Null: nothing of it is inside the image, so
+ * the change is refused. (A newly drawn box never gets here: `drawnRect`.)
  */
 export function constrainSelection(
   next: CropRect,
@@ -186,6 +186,48 @@ export function constrainSelection(
 ): CropRect | null {
   const moved = next.width === current.width && next.height === current.height;
   return moved ? clampMove(next, bounds) : clampResize(next, bounds);
+}
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/** The point of `bounds` nearest to `point`. */
+export function clampPoint(point: Point, bounds: CropRect): Point {
+  return {
+    x: Math.min(Math.max(point.x, bounds.x), bounds.x + bounds.width),
+    y: Math.min(Math.max(point.y, bounds.y), bounds.y + bounds.height)
+  };
+}
+
+/**
+ * A box drawn from `anchor` to `pointer` (both already on the image, see
+ * `clampPoint`), in any direction — cropperjs 1's `dragMode: 'crop'` under
+ * `viewMode: 1`, which clamped the press onto the image and drew from there.
+ * With `aspectRatio` (width / height; Shift held) the box is the largest of
+ * that shape inside the dragged one, still anchored where the drag began.
+ * Null until the drag spans an area.
+ *
+ * cropperjs 2 draws from the raw press instead: a press in the margin beside
+ * the image starts a box wholly outside it, and once that first box is refused
+ * it goes on to RESIZE the existing selection, by the pointer's movement,
+ * wherever the pointer is.
+ */
+export function drawnRect(anchor: Point, pointer: Point, aspectRatio?: number): CropRect | null {
+  let width = Math.abs(pointer.x - anchor.x);
+  let height = Math.abs(pointer.y - anchor.y);
+  if (aspectRatio !== undefined && Number.isFinite(aspectRatio) && aspectRatio > 0) {
+    if (width > height * aspectRatio) width = height * aspectRatio;
+    else height = width / aspectRatio;
+  }
+  if (!(width > 0 && height > 0)) return null;
+  return {
+    x: pointer.x < anchor.x ? anchor.x - width : anchor.x,
+    y: pointer.y < anchor.y ? anchor.y - height : anchor.y,
+    width,
+    height
+  };
 }
 
 export function sameRect(a: CropRect, b: CropRect, epsilon = 1e-9): boolean {

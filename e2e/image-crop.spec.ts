@@ -3,6 +3,7 @@ import { gotoApp } from './helpers/app';
 import {
   ankiCropFlow,
   coverCropFlow,
+  coverCropGesturesFlow,
   enableAnkiCapture,
   recordCanvasBlobs,
   stubAnkiConnect
@@ -32,7 +33,18 @@ test('cover crop: default 3:4, clamped drag and resize, rotate and reset, saved 
   await coverCropFlow(page, volume);
 });
 
-test('Anki crop: starts on the text box, clamped drag, the card gets that crop', async ({
+test('cover crop: drawing from the margin, every handle, last crop zone, refit, append', async ({
+  page
+}) => {
+  test.setTimeout(180_000);
+  const volume = writeSyntheticVolume('CropGestures', 2, [0, 0, 128], pageSize);
+  await recordCanvasBlobs(page);
+  await gotoApp(page);
+  await importVolume(page, volume);
+  await coverCropGesturesFlow(page, volume);
+});
+
+test('Anki crop: starts on the text box, large handles, preset toggle, clamped drag, the card gets that crop', async ({
   page
 }) => {
   test.setTimeout(180_000);

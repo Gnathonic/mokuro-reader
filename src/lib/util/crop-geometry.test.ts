@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   clampMove,
+  clampPoint,
   clampResize,
   constrainSelection,
   containLayout,
   cropZoneToRect,
   croppedCanvasPlan,
+  drawnRect,
   initialCoverCrop,
   layoutBounds,
   layoutMatrix,
@@ -219,6 +221,71 @@ describe('clamping (the crop stays on the image)', () => {
       width: 300
     });
     expect(constrainSelection({ x: 0, y: 0, width: 50, height: 40 }, current, bounds)).toBeNull();
+  });
+});
+
+describe('drawing a new box (the cover picker)', () => {
+  const bounds = { x: 100, y: 50, width: 400, height: 300 };
+
+  it('a press in the margin starts on the image edge nearest to it', () => {
+    expect(clampPoint({ x: 20, y: 120 }, bounds)).toEqual({ x: 100, y: 120 });
+    expect(clampPoint({ x: 700, y: -40 }, bounds)).toEqual({ x: 500, y: 50 });
+    expect(clampPoint({ x: 300, y: 200 }, bounds)).toEqual({ x: 300, y: 200 });
+  });
+
+  it('draws from the margin onto the image, not a resize of the old box', () => {
+    // Pressed left of the image, dragged onto it: the box starts at the edge.
+    const anchor = clampPoint({ x: 20, y: 120 }, bounds);
+    const pointer = clampPoint({ x: 250, y: 220 }, bounds);
+    expect(drawnRect(anchor, pointer)).toEqual({ x: 100, y: 120, width: 150, height: 100 });
+  });
+
+  it('draws in every direction, and never past the image', () => {
+    const anchor = clampPoint({ x: 800, y: 400 }, bounds); // right of and below the image
+    expect(anchor).toEqual({ x: 500, y: 350 });
+    expect(drawnRect(anchor, clampPoint({ x: 350, y: 250 }, bounds))).toEqual({
+      x: 350,
+      y: 250,
+      width: 150,
+      height: 100
+    });
+    // Dragged far past the image's top-left corner: the box is the image.
+    expect(drawnRect(anchor, clampPoint({ x: -500, y: -500 }, bounds))).toEqual(bounds);
+    expect(drawnRect({ x: 300, y: 100 }, { x: 200, y: 300 })).toEqual({
+      x: 200,
+      y: 100,
+      width: 100,
+      height: 200
+    });
+  });
+
+  it('draws nothing until the drag spans an area', () => {
+    // Both still in the left margin: clamped onto the same edge.
+    const anchor = clampPoint({ x: 20, y: 120 }, bounds);
+    expect(drawnRect(anchor, clampPoint({ x: 60, y: 200 }, bounds))).toBeNull();
+    expect(drawnRect({ x: 200, y: 100 }, { x: 200, y: 100 })).toBeNull();
+  });
+
+  it('with Shift, keeps the given shape inside the dragged box, anchored', () => {
+    expect(drawnRect({ x: 100, y: 100 }, { x: 400, y: 200 }, 3 / 4)).toEqual({
+      x: 100,
+      y: 100,
+      width: 75,
+      height: 100
+    });
+    expect(drawnRect({ x: 400, y: 300 }, { x: 300, y: 0 }, 1)).toEqual({
+      x: 300,
+      y: 200,
+      width: 100,
+      height: 100
+    });
+    // A shape it cannot use is ignored.
+    expect(drawnRect({ x: 0, y: 0 }, { x: 40, y: 10 }, NaN)).toEqual({
+      x: 0,
+      y: 0,
+      width: 40,
+      height: 10
+    });
   });
 });
 
