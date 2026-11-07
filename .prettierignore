@@ -4,6 +4,7 @@ node_modules
 /.svelte-kit
 /.vercel
 /package
+/coverage
 .env
 .env.*
 !.env.example

@@ -1,15 +1,17 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { TapDiscriminator } from './tap';
 
+type TapHandler = (x: number, y: number) => void;
+
 describe('TapDiscriminator (deferred commit — scroll readers)', () => {
-  let onTap: ReturnType<typeof vi.fn>;
-  let onDoubleTap: ReturnType<typeof vi.fn>;
+  let onTap: Mock<TapHandler>;
+  let onDoubleTap: Mock<TapHandler>;
   let taps: TapDiscriminator;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    onTap = vi.fn();
-    onDoubleTap = vi.fn();
+    onTap = vi.fn<TapHandler>();
+    onDoubleTap = vi.fn<TapHandler>();
     taps = new TapDiscriminator({ onTap, onDoubleTap });
   });
 
@@ -90,14 +92,14 @@ describe('TapDiscriminator (deferred commit — scroll readers)', () => {
 });
 
 describe("TapDiscriminator (immediate commit — paged mode's native-click feel)", () => {
-  let onTap: ReturnType<typeof vi.fn>;
-  let onDoubleTap: ReturnType<typeof vi.fn>;
+  let onTap: Mock<TapHandler>;
+  let onDoubleTap: Mock<TapHandler>;
   let taps: TapDiscriminator;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    onTap = vi.fn();
-    onDoubleTap = vi.fn();
+    onTap = vi.fn<TapHandler>();
+    onDoubleTap = vi.fn<TapHandler>();
     taps = new TapDiscriminator({ commitPolicy: 'immediate', onTap, onDoubleTap });
   });
 

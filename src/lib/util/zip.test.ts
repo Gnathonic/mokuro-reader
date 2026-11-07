@@ -61,10 +61,14 @@ vi.mock('@zip.js/zip.js', () => ({
   BlobWriter: vi.fn(),
   Uint8ArrayWriter: vi.fn(),
   TextReader: vi.fn(),
-  ZipWriter: vi.fn().mockImplementation(() => ({
-    add: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]))
-  }))
+  // A `function`, not an arrow: the code under test calls `new ZipWriter(...)`,
+  // and vitest 4+ refuses `new` on an arrow implementation.
+  ZipWriter: vi.fn().mockImplementation(function () {
+    return {
+      add: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]))
+    };
+  })
 }));
 
 // Mock the DOM APIs

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import 'fake-indexeddb/auto';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
@@ -352,7 +352,7 @@ describe('VolumeItem list row resolves its own cloud cover', () => {
  */
 describe('THE GATE: the list row asks for nothing until it scrolls into view', () => {
   let observer: { gates: ObservedCoverGate[]; restore(): void };
-  let warn: ReturnType<typeof vi.spyOn>;
+  let warn: MockInstance<typeof console.warn>;
 
   beforeEach(() => {
     observer = installIntersectionObserverStub({ autoIntersect: false });

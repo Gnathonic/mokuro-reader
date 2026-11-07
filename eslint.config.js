@@ -76,6 +76,7 @@ export default [
   {
     ignores: [
       'build/',
+      'coverage/',
       '.svelte-kit/',
       '.vercel/',
       'dist/',
