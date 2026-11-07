@@ -15,6 +15,15 @@ export default defineConfig({
       // import (`consts/index.ts`) also needs the root package.json — that one
       // file, not the project's parent directory and every sibling in it.
       allow: ['package.json']
+    },
+    watch: {
+      // adapter-vercel writes `.vercel/output` at the project root on EVERY
+      // `vite build`, whatever `kit.outDir` says. Its copied HTML
+      // (static/oauth/google-callback.html) makes Vite full-reload every page
+      // a dev server has open, so a build next to a running dev server (the
+      // CSP e2e builds, or a hand-run `npm run build`) reset unrelated e2e
+      // tests mid-test and answered some page loads with a 500.
+      ignored: ['**/.vercel/**']
     }
   },
   optimizeDeps: {
