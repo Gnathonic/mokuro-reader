@@ -146,7 +146,11 @@ edge zones and the wheel are untouched. The decision is the pure
 view **at its scroll target** (`PagedCamera.verticalExtent`,
 `ScrollAnimator.restingTarget`), never the animated position — a held key's
 auto-repeat must chain from where the last step will land, or it re-scrolls
-a half-finished glide and stalls at the page's end.
+a half-finished glide and stalls at the page's end. In the continuous
+vertical strip the key acts on the first page with content hidden in its
+direction (`stripPageKeyTarget`), never the page nearest the view centre:
+beside a short page that is the wrong page — a tall page's top filling the
+screen never scrolled, and a short page after a tall one was turned past.
 
 ### Swipe-to-flip is edge-gated (#186)
 

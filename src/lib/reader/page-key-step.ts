@@ -10,7 +10,7 @@
  * those).
  *
  * The caller decides what "the page being read" is (paged mode: the shown page
- * or spread; continuous modes: the page at the viewport's centre) and measures
+ * or spread; continuous vertical: `stripPageKeyTarget`) and measures
  * the view at the scroll TARGET, not the animated position: a held key's
  * auto-repeat then chains step after step instead of re-deciding from a
  * half-finished glide (which would stall, or turn twice).
@@ -89,6 +89,51 @@ export function pageKeyStep({
     if (gap > PAGE_KEY_EPSILON_PX) by = Math.min(by, gap);
   }
   return { kind: 'scroll', by: -by };
+}
+
+/**
+ * Which page of a continuous strip a page key acts on: the FIRST page (in the
+ * key's direction) with content hidden past the view's far edge — the first
+ * page whose end is below the view for Page Down, the last page whose start
+ * is above it for Page Up. Never "the page nearest the centre": with a short
+ * page beside a tall one that is the wrong page (the short one, while the
+ * tall one fills the screen — so the key re-aligned the tall page's top and
+ * stalled), or a page whose end is already in view (so the key turned past
+ * the short page below it).
+ *
+ * `within` — the page also covers the view's NEAR edge (its start is at or
+ * above the view's start, within the epsilon): it is the page being read, and
+ * `pageKeyStep` scrolls through it. Otherwise its start is on screen or below
+ * it and the key turns ONTO it (everything before it is in view). A page
+ * `fits(i)` says the reader centres on arrival counts as read once it covers
+ * the near edge — the few px a centred near-fit hides earn no keypress.
+ *
+ * Undefined: nothing is hidden in that direction (the strip's end) — the
+ * caller turns past the last page, i.e. to the next volume.
+ */
+export function stripPageKeyTarget(
+  direction: PageKeyDirection,
+  view: AxisSpan,
+  pages: readonly (AxisSpan | undefined)[],
+  fits: (index: number) => boolean
+): { index: number; within: boolean } | undefined {
+  const forward = direction === 'forward';
+  for (
+    let i = forward ? 0 : pages.length - 1;
+    forward ? i < pages.length : i >= 0;
+    i += forward ? 1 : -1
+  ) {
+    const p = pages[i];
+    if (!p) continue;
+    const hidden = forward ? p.end - view.end : view.start - p.start;
+    if (!(hidden > PAGE_KEY_EPSILON_PX)) continue;
+    const within = forward
+      ? p.start <= view.start + PAGE_KEY_EPSILON_PX
+      : p.end >= view.end - PAGE_KEY_EPSILON_PX;
+    if (within && fits(i)) continue;
+    return { index: i, within };
+  }
+  return undefined;
 }
 
 /**

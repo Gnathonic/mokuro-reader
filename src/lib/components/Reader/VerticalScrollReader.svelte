@@ -22,7 +22,12 @@
   } from '$lib/reader/zoom-math';
   import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { volumeEdgeNav } from '$lib/reader/page-nav';
-  import { alignDelta, pageKeyStep, type AxisSpan } from '$lib/reader/page-key-step';
+  import {
+    alignDelta,
+    pageKeyStep,
+    stripPageKeyTarget,
+    type AxisSpan
+  } from '$lib/reader/page-key-step';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
@@ -340,12 +345,14 @@
 
   /**
    * Page Down / Space / Page Up with "scroll tall pages before turning" on
-   * (#283). Measured at the scroll's resting target, so a held key chains:
-   * the page at the view's centre scrolls a screenful (minus an overlap)
-   * while it continues past the view, never past a page start below the view
-   * top; once its edge is in view the page turns as before — and a backward
-   * turn onto a page taller than the screen shows its LAST screenful, so
-   * repeated Page Up walks back up through it.
+   * (#283). Measured at the scroll's resting target, so a held key chains.
+   * The key acts on the first page with content hidden in its direction
+   * (`stripPageKeyTarget` — never the page nearest the centre, which beside a
+   * short page is the wrong one): while that page covers the view it scrolls
+   * a screenful (minus an overlap), never past a page start below the view
+   * top; otherwise the key turns onto it as before — and a backward turn onto
+   * a page taller than the screen shows its LAST screenful, so repeated
+   * Page Up walks back up through it.
    */
   function pageKey(direction: 'forward' | 'backward') {
     if (!scroller || !scrollContainer) return;
@@ -358,43 +365,48 @@
     const box = scrollContainer.getBoundingClientRect();
     const shift = restY - scrollContainer.scrollTop;
     const view: AxisSpan = { start: box.top + shift, end: box.top + shift + box.height };
-    const rects = pageElements.map((el) => el?.getBoundingClientRect());
-    const spans = rects.map((r) => (r ? { start: r.top, end: r.bottom } : undefined));
-    const current = closestPageToCenter(
-      { left: box.left, width: box.width, top: view.start, height: box.height },
-      rects,
-      'y'
-    );
+    const spans = pageElements.map((el) => {
+      const r = el?.getBoundingClientRect();
+      return r ? { start: r.top, end: r.bottom } : undefined;
+    });
     const delta = direction === 'forward' ? 1 : -1;
+    const fits = pageElements.map((_, i) => pageFitsVertically(i));
+    const target = stripPageKeyTarget(direction, view, spans, (i) => fits[i]);
 
-    const span = spans[current];
-    // A page the reader itself treats as fitting (centred on arrival) turns.
-    if (span && !pageFitsVertically(current)) {
+    // Nothing hidden that way: the strip's end — turn past it (volume edge).
+    // No page measured yet (not mounted): nothing to act on.
+    if (!target) {
+      if (spans.some(Boolean)) scrollToPageVertical(direction === 'forward' ? pages.length : -1);
+      return;
+    }
+
+    let turnTo = target.index;
+    if (target.within) {
       const step = pageKeyStep({
         direction,
         view,
-        current: span,
+        current: spans[target.index]!,
         pages: spans.filter((p): p is AxisSpan => !!p),
         enabled: true
       });
       if (step.kind === 'scroll') {
         const y = Math.min(maxY, Math.max(0, restY + step.by));
-        // At the strip's end nothing is left to scroll — fall through to the turn.
+        // At the strip's end nothing is left to scroll — turn past the page.
         if (Math.abs(y - restY) >= 1) {
           scroller.scrollBy(0, y - rest.y);
           return;
         }
       }
+      turnTo = target.index + delta;
     }
 
-    const target = current + delta;
-    const targetSpan = spans[target];
-    if (direction === 'forward' || !targetSpan || pageFitsVertically(target)) {
-      scrollToPageVertical(target);
+    const turnSpan = spans[turnTo];
+    if (direction === 'forward' || !turnSpan || fits[turnTo]) {
+      scrollToPageVertical(turnTo);
       return;
     }
     // Backward onto a tall page: its last screenful.
-    const y = Math.min(maxY, Math.max(0, restY + alignDelta(view, targetSpan, 'end')));
+    const y = Math.min(maxY, Math.max(0, restY + alignDelta(view, turnSpan, 'end')));
     scroller.scrollBy(0, y - rest.y);
   }
 

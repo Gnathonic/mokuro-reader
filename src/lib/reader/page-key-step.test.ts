@@ -5,6 +5,7 @@ import {
   alignDelta,
   pageKeyStep,
   readingSpan,
+  stripPageKeyTarget,
   type AxisSpan
 } from './page-key-step';
 
@@ -210,6 +211,97 @@ describe('pageKeyStep — continuous (page boundaries)', () => {
         enabled: true
       })
     ).toEqual({ kind: 'scroll', by: STEP });
+  });
+});
+
+describe('stripPageKeyTarget — which page a key acts on in a continuous strip', () => {
+  // The review's geometry (1080 px screen, fill-width at 1920 px): a short
+  // page P (1536 px), a webtoon page A (11520 px), a short page S (768 px,
+  // fits), another short page T, 20 px gaps.
+  const H = 1080;
+  const P = { start: 0, end: 1536 };
+  const A = { start: 1556, end: 13076 };
+  const S = { start: 13096, end: 13864 };
+  const T = { start: 13884, end: 15420 };
+  const strip = [P, A, S, T];
+  const fitsH = (i: number) => strip[i].end - strip[i].start <= H * 1.05;
+  const at = (start: number): AxisSpan => ({ start, end: start + H });
+
+  it('a tall page whose top is on the view top is the page being read, not the shorter page above', () => {
+    // The page nearest the centre here is P (its centre 1220 px away, A's
+    // 5220 px): acting on P turned to A, i.e. re-aligned A's top — a stall.
+    expect(stripPageKeyTarget('forward', at(A.start), strip, fitsH)).toEqual({
+      index: 1,
+      within: true
+    });
+    // …and pageKeyStep then scrolls through it.
+    expect(
+      pageKeyStep({
+        direction: 'forward',
+        view: at(A.start),
+        current: A,
+        pages: strip,
+        enabled: true
+      })
+    ).toEqual({ kind: 'scroll', by: H * (1 - PAGE_KEY_OVERLAP) });
+  });
+
+  it("a tall page's bottom in view with a short page below: turns onto the short page, not past it", () => {
+    // A's end on the view's end, S below it. The page nearest the centre is
+    // S (944 px away; A's centre is 5220 px away), and S fits — so the old
+    // pick turned to S+1 and S was only ever partly seen.
+    expect(stripPageKeyTarget('forward', at(A.end - H), strip, fitsH)).toEqual({
+      index: 2,
+      within: false
+    });
+  });
+
+  it('a short page centred on screen with a tall page above: the next key turns onto the page below it', () => {
+    // S centred: A's tail above, T's head below.
+    const mid = (S.start + S.end) / 2 - H / 2;
+    expect(stripPageKeyTarget('forward', at(mid), strip, fitsH)).toEqual({
+      index: 3,
+      within: false
+    });
+    // Backward from there: A's top is hidden above and A covers the view top
+    // only — so the key turns onto A (its last screenful), never onto P.
+    expect(stripPageKeyTarget('backward', at(mid), strip, fitsH)).toEqual({
+      index: 1,
+      within: false
+    });
+  });
+
+  it('Page Up on a tall page scrolls up through it; at its top it turns onto the page above', () => {
+    expect(stripPageKeyTarget('backward', at(A.end - H), strip, fitsH)).toEqual({
+      index: 1,
+      within: true
+    });
+    expect(stripPageKeyTarget('backward', at(A.start), strip, fitsH)).toEqual({
+      index: 0,
+      within: false
+    });
+  });
+
+  it('a near-fit page covering the near edge counts as read', () => {
+    // A centred page 4% taller than the screen hides 22 px each side.
+    const near = { start: 0, end: H * 1.04 };
+    const next = { start: near.end + 20, end: near.end + 20 + 2 * H };
+    const pages = [near, next];
+    const fits = (i: number) => i === 0;
+    expect(stripPageKeyTarget('forward', at(H * 0.02), pages, fits)).toEqual({
+      index: 1,
+      within: false
+    });
+  });
+
+  it('nothing hidden in the key direction: undefined (the strip end)', () => {
+    expect(stripPageKeyTarget('forward', at(T.end - H), strip, fitsH)).toBeUndefined();
+    expect(stripPageKeyTarget('backward', at(0), strip, fitsH)).toBeUndefined();
+  });
+
+  it('hidden content within the epsilon does not count; unmeasured pages are skipped', () => {
+    const pages = [undefined, { start: 0, end: H + PAGE_KEY_EPSILON_PX }];
+    expect(stripPageKeyTarget('forward', at(0), pages, () => false)).toBeUndefined();
   });
 });
 

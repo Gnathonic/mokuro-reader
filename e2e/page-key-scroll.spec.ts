@@ -22,14 +22,13 @@ const TALL = { width: 1000, height: 2000 };
 const PAGE_H = (1920 / TALL.width) * TALL.height; // 3840
 const OVERFLOW = PAGE_H - VIEW_H; // 2760
 
-async function seedVolume(
-  page: Page,
-  size: { width: number; height: number },
-  settings: Record<string, unknown>
-) {
+type Size = { width: number; height: number };
+
+/** Six pages of `sizes` (one size for all), or one page per listed size. */
+async function seedVolume(page: Page, sizes: Size | Size[], settings: Record<string, unknown>) {
   await gotoApp(page);
   await page.evaluate(
-    async ({ SERIES, SERIES_UUID, VOLUME_UUID, size, settings }) => {
+    async ({ SERIES, SERIES_UUID, VOLUME_UUID, sizes, settings }) => {
       const { db } = await import('/src/lib/catalog/db.ts');
       await db.open();
       await Promise.all([
@@ -40,11 +39,13 @@ async function seedVolume(
       ]);
       const colours = ['#e0f2fe', '#fde68a', '#bbf7d0', '#fecaca', '#ddd6fe', '#fed7aa'];
       const files: Record<string, File> = {};
-      const pages = colours.map((colour, i) => {
+      const sizeList = Array.isArray(sizes) ? sizes : colours.map(() => sizes);
+      const pages = sizeList.map((size, i) => {
         const img_path = `${String(i + 1).padStart(3, '0')}.png`;
-        return { colour, img_path };
+        return { colour: colours[i % colours.length], img_path, size };
       });
       for (const p of pages) {
+        const { size } = p;
         const canvas = document.createElement('canvas');
         canvas.width = size.width;
         canvas.height = size.height;
@@ -67,15 +68,15 @@ async function seedVolume(
         // nothing to do: its row write would reload the open volume's data
         // mid-test, unmounting the pages for a moment.
         thumbnail: files[pages[0].img_path],
-        thumbnail_width: size.width,
-        thumbnail_height: size.height
+        thumbnail_width: pages[0].size.width,
+        thumbnail_height: pages[0].size.height
       });
       await db.volume_ocr.put({
         volume_uuid: VOLUME_UUID,
         pages: pages.map((p) => ({
           version: '0.3.0b',
-          img_width: size.width,
-          img_height: size.height,
+          img_width: p.size.width,
+          img_height: p.size.height,
           img_path: p.img_path,
           blocks: []
         }))
@@ -85,7 +86,7 @@ async function seedVolume(
       for (const [key, value] of Object.entries(settings))
         updateSetting(key as never, value as never);
     },
-    { SERIES, SERIES_UUID, VOLUME_UUID, size, settings }
+    { SERIES, SERIES_UUID, VOLUME_UUID, sizes, settings }
   );
 }
 
@@ -356,6 +357,84 @@ test.describe('Page keys scroll tall pages before turning (#283)', () => {
         return Math.round(s.pages[1].top - s.box.top);
       })
       .toBe(0);
+  });
+
+  test('continuous vertical, mixed heights: a tall page after a short one scrolls, and a short page after a tall one is landed on', async ({
+    page
+  }) => {
+    // Fill-width at 1920 px: P 1536 px, A (webtoon) 11520 px, S 768 px (fits,
+    // centred on arrival), T 1536 px. The page nearest the view centre is the
+    // WRONG page on both sides of A: P while A's top fills the screen (the
+    // key re-aligned A's top — a stall), S while A's bottom does (the key
+    // turned past S).
+    await seedVolume(
+      page,
+      [
+        { width: 1000, height: 800 },
+        { width: 1000, height: 6000 },
+        { width: 1000, height: 400 },
+        { width: 1000, height: 800 }
+      ],
+      {
+        continuousScroll: true,
+        scrollMode: 'vertical',
+        continuousZoomDefault: 'zoomFillScreen',
+        pageDividers: false,
+        pageKeysScrollFirst: true
+      }
+    );
+    await openReader(page);
+    const topOf = async (i: number) => {
+      const s = await stripState(page);
+      return Math.round(s.pages[i].top - s.box.top);
+    };
+    const bottomOf = async (i: number) => {
+      const s = await stripState(page);
+      return Math.round(s.pages[i].bottom - s.box.bottom);
+    };
+    const centreOf = async (i: number) => {
+      const s = await stripState(page);
+      return Math.round((s.pages[i].top + s.pages[i].bottom) / 2 - (s.box.top + s.box.bottom) / 2);
+    };
+    await expect.poll(() => topOf(0)).toBe(0);
+    const heights = (await stripState(page)).pages.map((p) => Math.round(p.bottom - p.top));
+    expect(heights).toEqual([1536, 11520, 768, 1536]);
+
+    // P is 456 px taller than the screen: one clamped step to its bottom…
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => bottomOf(0)).toBe(0);
+    // …then the turn onto A's top.
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => topOf(1)).toBe(0);
+
+    // The stall: with A's top on the screen's top the key must scroll A.
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => topOf(1)).toBe(-STEP);
+
+    // Walk A to its bottom: 10440 px hidden = 11 full steps + 45 px.
+    const overflowA = 11520 - VIEW_H;
+    for (let i = 2; i <= 11; i++) {
+      await page.keyboard.press('PageDown');
+      await expect.poll(() => topOf(1)).toBe(-i * STEP);
+    }
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => topOf(1)).toBe(-overflowA);
+
+    // A's bottom in view: the next key lands on S (centred), not past it.
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => centreOf(2)).toBe(0);
+    await expect.poll(async () => (await stripState(page)).progress).toBe(3);
+    // …and only then on T's top.
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => topOf(3)).toBe(0);
+
+    // Backward mirrors: T's top → S centred → A's LAST screenful → up A.
+    await page.keyboard.press('PageUp');
+    await expect.poll(() => centreOf(2)).toBe(0);
+    await page.keyboard.press('PageUp');
+    await expect.poll(() => bottomOf(1)).toBe(0);
+    await page.keyboard.press('PageUp');
+    await expect.poll(() => topOf(1)).toBe(-(overflowA - STEP));
   });
 
   test('continuous vertical: setting off jumps a page at a time, as before', async ({ page }) => {
