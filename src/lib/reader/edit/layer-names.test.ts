@@ -24,22 +24,33 @@ describe('layerNameForId: the shared and personal correction layers', () => {
 });
 
 describe('layer roles by id', () => {
-  it('personal = edit and edit-<n>, exact case', () => {
-    for (const id of ['edit', 'edit-2', 'edit-10']) expect(isPersonalLayerId(id)).toBe(true);
-    for (const id of ['Edit', 'edit-', 'edit-x', 'edit-2-3', 'editor', 'my-edit', 'curated']) {
+  it('personal = edit and edit-<n>, read on the folded id (rule 2, R5)', () => {
+    for (const id of ['edit', 'edit-2', 'edit-10', 'Edit', 'EDIT-2', 'ed\u{200b}it']) {
+      expect(isPersonalLayerId(id)).toBe(true);
+    }
+    for (const id of [
+      'edit-',
+      'edit-x',
+      'edit-2-3',
+      'editor',
+      'my-edit',
+      'curated',
+      'ED\u{130}T'
+    ]) {
       expect(isPersonalLayerId(id)).toBe(false);
     }
   });
 
   it('curated = curated alone', () => {
     expect(isCuratedLayerId('curated')).toBe(true);
-    for (const id of ['curated-2', 'Curated', 'curate', 'edit']) {
+    expect(isCuratedLayerId('Curated')).toBe(true);
+    for (const id of ['curated-2', 'curate', 'edit']) {
       expect(isCuratedLayerId(id)).toBe(false);
     }
   });
 
   it('a server keepsake = what bunko writes alone: a case merge’s curated-<n>, nothing else', () => {
-    // bunko sidecar names rule v1 `layer_class` ServerKeepsake.
+    // bunko sidecar names rule 2 `layer_class` Reserved.
     for (const id of ['curated-2', 'curated-10']) expect(isServerKeepsakeLayerId(id)).toBe(true);
     // `pre-upgrade…` and `previous-ocr…` are ordinary hand-made ids now (bunko
     // no longer writes or reserves them).

@@ -196,8 +196,8 @@ describe('collectLayerFiles', () => {
   });
 });
 
-describe('collectLayerFiles under sidecar names rule v1', () => {
-  it('folds stems NFC + lowercase, keeps ids as written, and files a layer under the exactly-spelled archive first', () => {
+describe('collectLayerFiles under sidecar names rule 2', () => {
+  it('folds stems and ids (fold v2), and files a layer under the exactly-spelled archive first', () => {
     const NFC = 'V\u00f3l 1';
     const NFD = 'Vo\u0301l 1';
     const files = collectLayerFiles(
@@ -210,14 +210,20 @@ describe('collectLayerFiles under sidecar names rule v1', () => {
         cloudFile('Series/Vol 3.cbz'),
         cloudFile('Series/vol 3.cbz'),
         cloudFile('Series/Vol 3.hayai.mokuro'),
-        cloudFile('Series/vol 3.hayai.mokuro')
+        cloudFile('Series/vol 3.hayai.mokuro'),
+        cloudFile('Series/Stra\u{df}e.cb\u{200b}z'),
+        cloudFile('Series/STRASSE.Edit.mokuro')
       )
     );
     expect(files.map((f) => [f.stem, f.layerId, f.file.path])).toEqual([
       [NFC, 'gcv', `Series/${NFD}.gcv.mokuro`],
+      // R5: the id is the folded last segment, as 1.10.0 read it.
+      ['Vol 2', 'gcv', 'Series/Vol 2.GCV.mokuro'],
       ['Vol 2', '2024', 'Series/Vol 2.2024.mokuro'],
       ['Vol 3', 'hayai', 'Series/Vol 3.hayai.mokuro'],
-      ['vol 3', 'hayai', 'Series/vol 3.hayai.mokuro']
+      ['vol 3', 'hayai', 'Series/vol 3.hayai.mokuro'],
+      // Full case folding joins the stems; the archive keeps its spelling.
+      ['Stra\u{df}e', 'edit', 'Series/STRASSE.Edit.mokuro']
     ]);
   });
 
@@ -229,7 +235,7 @@ describe('collectLayerFiles under sidecar names rule v1', () => {
     ];
     const owners = (fs: CloudFileMetadata[]) =>
       collectLayerFiles(listing(...fs)).map((f) => [f.stem, f.layerId]);
-    // naturalSort-first of the archives that fold alike ('O' < 'o'), not the one listed last.
+    // The code-point-smallest of the fold group ('O' < 'o'), not the one listed last.
     expect(owners(files)).toEqual([['VOL 3', 'hayai']]);
     expect(owners([...files].reverse())).toEqual([['VOL 3', 'hayai']]);
   });

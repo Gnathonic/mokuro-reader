@@ -37,7 +37,8 @@ import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
 import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
 import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
 import { recordArchiveSize } from '$lib/catalog/archive-size';
-import { foldStem, miscasedLayerStem, splitLayerSidecarName } from './sync/syncable-file';
+import { classifyMokuroSidecar } from './sync/syncable-file';
+import { foldName, splitAtDots } from './names/fold';
 import { attachLayerToVolume, readLayerFile } from '$lib/reader/edit/layer-import';
 import { pullLayersForVolume } from '$lib/metadata/layer-sync';
 import {
@@ -77,16 +78,19 @@ interface DecompressedEntry {
   cloudSidecar?: MokuroCloudAttestation;
 }
 
+const ARCHIVE_SUFFIX_RE = /\.(cbz|zip|cbr|rar|7z)$/;
+
+/** The archive's stem as written, its suffix read on the fold (sidecar names rule 2, R2). */
 function getBaseStem(basePath: string): string {
   const filename = basePath.split('/').pop() || basePath;
-  return filename.replace(/\.(cbz|zip|cbr|rar|7z)$/i, '');
+  if (!ARCHIVE_SUFFIX_RE.test(foldName(filename))) return filename;
+  return splitAtDots(filename, 1)?.raw ?? filename;
 }
 
+/** `<archive stem>.webp` in any spelling the fold joins with it. */
 function isThumbnailSidecar(filename: string, basePath: string): boolean {
-  const normalized = filename.toLowerCase();
-  if (normalized.includes('/')) return false;
-  const stem = getBaseStem(basePath).toLowerCase();
-  return normalized === `${stem}.webp`;
+  if (filename.includes('/')) return false;
+  return foldName(filename) === `${foldName(getBaseStem(basePath))}.webp`;
 }
 
 async function parseMokuroGzEntry(
@@ -343,19 +347,27 @@ async function entriesToDecompressedVolume(
 
     const normalizedFilename = normalizeFilename(entry.filename);
     const extension = normalizedFilename.toLowerCase().split('.').pop() || '';
+    const folded = foldName(normalizedFilename);
 
-    if (normalizedFilename.endsWith('.mokuro') || normalizedFilename.endsWith('.mokuro.gz')) {
+    if (folded.endsWith('.mokuro') || folded.endsWith('.mokuro.gz')) {
       // `<archive stem>.<id>.mokuro` inside the archive is an OCR LAYER of this
       // volume, never its primary — same archive-presence rule as the cloud
       // listing (`Vol 1.5.mokuro` in `Vol 1.5.cbz` splits to a stem that is
-      // not the archive's, so it stays the primary). Classified by NAME before
-      // any decoding: a rule-v1 orphan is skipped without being gunzipped
-      // (bytes that are not gzip would otherwise fail the whole install).
+      // not the archive's, so it stays the primary). Rule 2 reads ids on their
+      // fold: `Vol 1.GCV.mokuro` is layer `gcv`, as in the cloud listing.
       const layer = classifyArchiveMokuroEntry(normalizedFilename, getBaseStem(basePath));
-      if (layer && 'orphan' in layer) continue;
-      const decoded = normalizedFilename.endsWith('.gz')
-        ? await parseMokuroGzEntry(entry, normalizedFilename)
-        : new File([entry.data], normalizedFilename, { type: 'application/json' });
+      const gz = folded.endsWith('.gz');
+      let decoded: File | null;
+      try {
+        decoded = gz
+          ? await parseMokuroGzEntry(entry, normalizedFilename)
+          : new File([entry.data], normalizedFilename, { type: 'application/json' });
+      } catch (error) {
+        // A layer that will not gunzip costs that layer, never the install.
+        if (!layer) throw error;
+        console.warn(`[Download] skipped OCR layer "${normalizedFilename}":`, error);
+        continue;
+      }
       if (!decoded) continue;
       if (layer) {
         layerFiles.push({ layerId: layer.layerId, file: decoded });
@@ -364,7 +376,6 @@ async function entriesToDecompressedVolume(
         // primary beats a copy embedded in the archive — and the contract's
         // primary is `<Volume>.mokuro`, else `<Volume>.mokuro.gz`, whatever
         // order the listing returned them in.
-        const gz = normalizedFilename.endsWith('.gz');
         if (primaryIsPlainSidecar && gz && entry.cloudSidecar) continue;
         mokuroFile = decoded;
         mokuroCloud = entry.cloudSidecar;
@@ -406,20 +417,19 @@ async function entriesToDecompressedVolume(
 
 /**
  * Is a `.mokuro` entry of an archive an OCR layer of THAT archive's volume?
- * Only when it splits as `<archive stem>.<id>`. `<archive stem>.<ID>` (an id
- * miscased) is an orphan, skipped; any other `.mokuro` is the primary (or a
- * stray the pairing already tolerates). Exported for tests.
+ * Sidecar names rule 2 with the archive as the one listed volume: a layer when
+ * it reads as `<archive stem>.<id>` on its fold (the id reported folded:
+ * `Vol 1.GCV.mokuro` is layer `gcv`), never when it is the archive's own
+ * primary (`Vol 1.5.mokuro` in `Vol 1.5.cbz`). Any other `.mokuro` is the
+ * primary (or a stray the pairing already tolerates). Exported for tests.
  */
 export function classifyArchiveMokuroEntry(
   entryName: string,
   archiveStem: string
-): { layerId: string } | { orphan: true } | null {
+): { layerId: string } | null {
   const name = entryName.split('/').pop() ?? entryName;
-  const archive = foldStem(archiveStem);
-  const split = splitLayerSidecarName(name);
-  if (split) return foldStem(split.stem) === archive ? { layerId: split.layerId } : null;
-  const miscased = miscasedLayerStem(name);
-  return miscased !== null && foldStem(miscased) === archive ? { orphan: true } : null;
+  const read = classifyMokuroSidecar(name, new Set([foldName(archiveStem)]));
+  return read.kind === 'layer' ? { layerId: read.layerId } : null;
 }
 
 /**

@@ -95,40 +95,30 @@ describe('extractLayerEntries', () => {
     expect(standalone.map((l) => [l.stem, l.layerId])).toEqual([['Vol 7', 'fix']]);
   });
 
-  it('drops a miscased layer name beside its volume (a rule-v1 orphan); a volume of that name keeps it', () => {
-    const { entries, layers, standalone, skipped } = extractLayerEntries([
+  it('reads ids and stems on their fold (rule 2): a miscased id is the layer it folds to', () => {
+    const { entries, layers, standalone } = extractLayerEntries([
       entry('S/Vol 1.mokuro'),
       entry('S/Vol 1.cbz'),
       entry('S/Vol 1.GCV.mokuro'),
       entry('S/Vol 2.EN.mokuro'),
-      entry('S/Vol 2.EN.cbz')
+      entry('S/Vol 2.EN.cbz'),
+      entry('S/Stra\u{df}e.cbz'),
+      entry('S/STRASSE.Edit.mokuro'),
+      entry('Vol 3.Tr-EN.mokuro.gz')
     ]);
+    // `Vol 2.EN.mokuro` is the primary of `Vol 2.EN.cbz` (R4).
     expect(entries.map((e) => e.path)).toEqual([
       'S/Vol 1.mokuro',
       'S/Vol 1.cbz',
       'S/Vol 2.EN.mokuro',
-      'S/Vol 2.EN.cbz'
+      'S/Vol 2.EN.cbz',
+      'S/Stra\u{df}e.cbz'
     ]);
-    expect(layers).toEqual([]);
-    expect(standalone).toEqual([]);
-    expect(skipped).toEqual([expect.stringContaining('S/Vol 1.GCV.mokuro')]);
-  });
-
-  it('a miscased layer file with no sibling is dropped and reported too — never a generic orphan', () => {
-    // develop attached `Vol 1.GCV.mokuro` as layer `gcv`; rule v1 makes it an
-    // orphan, and kept for pairing it only ends as "Orphaned mokuro file".
-    const { entries, layers, standalone, skipped } = extractLayerEntries([
-      entry('S/Vol 1.GCV.mokuro'),
-      entry('Vol 2.Tr-EN.mokuro.gz'),
-      entry('S/Vol 9.mokuro')
+    expect(layers.map((l) => [l.path, l.stem, l.layerId])).toEqual([
+      ['S/Vol 1.GCV.mokuro', 'Vol 1', 'gcv'],
+      ['S/STRASSE.Edit.mokuro', 'STRASSE', 'edit']
     ]);
-    expect(entries.map((e) => e.path)).toEqual(['S/Vol 9.mokuro']);
-    expect(layers).toEqual([]);
-    expect(standalone).toEqual([]);
-    expect(skipped).toEqual([
-      expect.stringMatching(/S\/Vol 1\.GCV\.mokuro.*rule v1/),
-      expect.stringMatching(/Vol 2\.Tr-EN\.mokuro\.gz.*rule v1/)
-    ]);
+    expect(standalone.map((l) => [l.stem, l.layerId, l.gz])).toEqual([['Vol 3', 'tr-en', true]]);
   });
 });
 

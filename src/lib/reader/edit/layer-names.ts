@@ -4,6 +4,16 @@
  * layer menu names it once it has landed. Re-exported from `layers.ts`.
  */
 
+import { foldName } from '$lib/util/names/fold';
+
+/**
+ * Layer ids are read on their fold (sidecar names rule 2, R5): a listed
+ * `Vol 1.EDIT.mokuro` is layer `edit`, and `ed\u{200B}it` is `edit` too, so
+ * every predicate below folds the id it is asked about. Ids the reader stores
+ * are folded already (`classifyMokuroSidecar` reports them folded); the fold of
+ * an ASCII id is its lowercase, on a fast path.
+ */
+
 /**
  * Engines whose name is not their slug title-cased: `ppocr-manga` would read
  * "Ppocr Manga", and the engine is PP-OCR (PaddlePaddle OCR).
@@ -31,12 +41,12 @@ const PERSONAL_RE = /^edit(?:-(\d+))?$/;
 
 /** Is this one of the account's own correction layers (bunko keeps it per account)? */
 export function isPersonalLayerId(layerId: string): boolean {
-  return PERSONAL_RE.test(layerId);
+  return PERSONAL_RE.test(foldName(layerId));
 }
 
 /** Is this the library's shared `curated` layer? */
 export function isCuratedLayerId(layerId: string): boolean {
-  return layerId === CURATED_LAYER_ID;
+  return foldName(layerId) === CURATED_LAYER_ID;
 }
 
 /** `curated-<n>`: bunko's keepsake of a second, different `curated` file a case merge found. */
@@ -44,11 +54,11 @@ const CURATED_KEEPSAKE_RE = /^curated-\d+$/;
 
 /**
  * A layer only the server writes (bunko answers a client PUT with 403): the
- * `curated-<n>` a case merge keeps — its sidecar names rule v1 `layer_class`
+ * `curated-<n>` a case merge keeps — its sidecar names rule 2 `layer_class`
  * ServerKeepsake, and nothing else is.
  */
 export function isServerKeepsakeLayerId(layerId: string): boolean {
-  return CURATED_KEEPSAKE_RE.test(layerId);
+  return CURATED_KEEPSAKE_RE.test(foldName(layerId));
 }
 
 /**
@@ -68,6 +78,7 @@ const RESERVED_FAMILY_RE = /^(?:edit|curated)-\d+$/;
 
 /** Is this id reserved for a layer with a meaning of its own? */
 export function isReservedLayerId(layerId: string): boolean {
+  layerId = foldName(layerId);
   return (
     RESERVED_NAMES.has(layerId) ||
     RESERVED_PREFIXES.some((prefix) => layerId.startsWith(prefix)) ||

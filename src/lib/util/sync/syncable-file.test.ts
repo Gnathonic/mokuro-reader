@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import vendored from '$lib/interop/contract/sidecar-names.json';
+import { compareCodePoints, foldName } from '$lib/util/names/fold';
 import {
   isBestEffortMetadataPath,
   isSyncableFile,
@@ -13,10 +15,13 @@ import {
   BUNKO_MARKER_NAME,
   isBunkoControlFile,
   dedupKeepsEveryCopy,
-  foldStem,
   isReservedLayerSidecarPath,
   layerOwnerArchive,
-  miscasedLayerStem
+  cbzStemOf,
+  FolderNames,
+  sweepOwnerArchive,
+  SIDECAR_RULE,
+  type MokuroSidecarClass
 } from './syncable-file';
 
 describe('syncable-file', () => {
@@ -121,10 +126,12 @@ describe('isBestEffortMetadataPath', () => {
 });
 
 describe('bunko control files', () => {
-  it('names exactly the queue and the marker, case-sensitively', () => {
+  it('names the queue and the marker, in any spelling the fold joins (R8)', () => {
     expect(isBunkoControlFile('.mokuro-bunko.json')).toBe(true);
     expect(isBunkoControlFile('.mokuro-queue.json')).toBe(true);
-    expect(isBunkoControlFile('.MOKURO-BUNKO.JSON')).toBe(false);
+    // One entry with the marker on every host and store.
+    expect(isBunkoControlFile('.MOKURO-BUNKO.JSON')).toBe(true);
+    expect(isBunkoControlFile('.mokuro-bunko\u{200b}.json')).toBe(true);
     expect(isBunkoControlFile('mokuro-bunko.json')).toBe(false);
     expect(isBunkoControlFile('.mokuro-queue.json.bak')).toBe(false);
   });
@@ -148,7 +155,6 @@ describe('dedupKeepsEveryCopy', () => {
     expect(dedupKeepsEveryCopy('profiles.json')).toBe(false);
     expect(dedupKeepsEveryCopy('series.json')).toBe(false);
     expect(dedupKeepsEveryCopy('Vol 1.mokuro')).toBe(false);
-    expect(dedupKeepsEveryCopy('.MOKURO-BUNKO.JSON')).toBe(false);
   });
 });
 
@@ -211,206 +217,222 @@ describe('series-metadata.json stays retired', () => {
       .map(({ path }) => path);
     expect(offenders).toEqual([]);
   });
+});
 
-  describe('layer sidecars', () => {
-    const stems = cbzStemsOf(['Vol 1.cbz', 'Vol 1.5.cbz', 'Other.webp']);
+describe('layer sidecars', () => {
+  const stems = cbzStemsOf(['Vol 1.cbz', 'Vol 1.5.cbz', 'Other.webp']);
 
-    it('classifies by archive presence: primary, layer, orphan', () => {
-      expect(classifyMokuroSidecar('Vol 1.mokuro', stems)).toEqual({
-        kind: 'primary',
-        stem: 'Vol 1',
-        gz: false
-      });
-      expect(classifyMokuroSidecar('Vol 1.paddle-manga.mokuro', stems)).toEqual({
-        kind: 'layer',
-        stem: 'Vol 1',
-        layerId: 'paddle-manga',
-        gz: false
-      });
-      expect(classifyMokuroSidecar('Vol 1.tr-en.mokuro.gz', stems)).toEqual({
-        kind: 'layer',
-        stem: 'Vol 1',
-        layerId: 'tr-en',
-        gz: true
-      });
-      expect(classifyMokuroSidecar('Vol 9.gcv.mokuro', stems)).toEqual({ kind: 'orphan' });
-      expect(classifyMokuroSidecar('Vol 9.mokuro', stems)).toEqual({ kind: 'orphan' });
-      expect(classifyMokuroSidecar('Vol 1.cbz', stems)).toEqual({ kind: 'orphan' });
+  it('classifies by archive presence: primary, layer, orphan', () => {
+    expect(classifyMokuroSidecar('Vol 1.mokuro', stems)).toEqual({
+      kind: 'primary',
+      stem: 'Vol 1',
+      gz: false
     });
-
-    it('a dotted title is the primary of its own archive, and a layer only without one', () => {
-      expect(classifyMokuroSidecar('Vol 1.5.mokuro', stems)).toEqual({
-        kind: 'primary',
-        stem: 'Vol 1.5',
-        gz: false
-      });
-      expect(classifyMokuroSidecar('Vol 1.5.mokuro', cbzStemsOf(['Vol 1.cbz']))).toEqual({
-        kind: 'layer',
-        stem: 'Vol 1',
-        layerId: '5',
-        gz: false
-      });
+    expect(classifyMokuroSidecar('Vol 1.paddle-manga.mokuro', stems)).toEqual({
+      kind: 'layer',
+      stem: 'Vol 1',
+      layerId: 'paddle-manga',
+      gz: false
     });
-
-    it('an invalid id is never a layer', () => {
-      expect(classifyMokuroSidecar('Vol 1.Bad_Id.mokuro', stems)).toEqual({ kind: 'orphan' });
-      expect(splitLayerSidecarName('Vol 1.Bad_Id.mokuro')).toBeNull();
-      expect(splitLayerSidecarName('Vol 1.mokuro')).toBeNull();
-      expect(splitLayerSidecarName('.gcv.mokuro')).toBeNull();
+    expect(classifyMokuroSidecar('Vol 1.tr-en.mokuro.gz', stems)).toEqual({
+      kind: 'layer',
+      stem: 'Vol 1',
+      layerId: 'tr-en',
+      gz: true
     });
+    expect(classifyMokuroSidecar('Vol 9.gcv.mokuro', stems)).toEqual({ kind: 'orphan' });
+    expect(classifyMokuroSidecar('Vol 9.mokuro', stems)).toEqual({ kind: 'orphan' });
+    expect(classifyMokuroSidecar('Vol 1.cbz', stems)).toEqual({ kind: 'orphan' });
+  });
 
-    it('splits a standalone name and round-trips the export name', () => {
-      expect(splitLayerSidecarName('Vol 1.gcv-2.mokuro.gz')).toEqual({
-        stem: 'Vol 1',
-        layerId: 'gcv-2',
-        gz: true
-      });
-      const name = layerSidecarName('Vol 1', 'gcv');
-      expect(name).toBe('Vol 1.gcv.mokuro');
-      expect(splitLayerSidecarName(name)).toEqual({ stem: 'Vol 1', layerId: 'gcv', gz: false });
-      // The id is matched as written (rule v1 #5): an upper-case id is no id.
-      expect(splitLayerSidecarName('Vol 1.GCV.mokuro')).toBeNull();
+  it('a dotted title is the primary of its own archive, and a layer only without one', () => {
+    expect(classifyMokuroSidecar('Vol 1.5.mokuro', stems)).toEqual({
+      kind: 'primary',
+      stem: 'Vol 1.5',
+      gz: false
     });
-
-    it('names the stem of a layer file whose id is only miscased (an orphan, not a primary)', () => {
-      expect(miscasedLayerStem('Vol 1.GCV.mokuro')).toBe('Vol 1');
-      expect(miscasedLayerStem('Vol 1.Tr-En.mokuro.gz')).toBe('Vol 1');
-      // A valid id is a layer, not a miscased one; an id invalid in any case is neither.
-      expect(miscasedLayerStem('Vol 1.gcv.mokuro')).toBeNull();
-      expect(miscasedLayerStem('Vol 1.Bad_Id.mokuro')).toBeNull();
-      expect(miscasedLayerStem('Vol. 1.mokuro')).toBeNull();
-      expect(miscasedLayerStem('Vol 1.mokuro')).toBeNull();
-      expect(miscasedLayerStem('Vol 1.GCV.cbz')).toBeNull();
+    expect(classifyMokuroSidecar('Vol 1.5.mokuro', cbzStemsOf(['Vol 1.cbz']))).toEqual({
+      kind: 'layer',
+      stem: 'Vol 1',
+      layerId: '5',
+      gz: false
     });
   });
 
-  // Sidecar names rule v1 — the same rule as mokuro-bunko's
-  // `bunko_core::sidecar_names`. These are vectors of its contract file
-  // (`interop/contract/sidecar-names.json`), encoded by hand so they run
-  // without a Bunko checkout; `$lib/interop/sidecar-names.contract.test.ts`
-  // runs the file itself.
-  describe('sidecar names rule v1', () => {
-    const NFC = 'V\u00f3l 1'; // Vól 1, composed
-    const NFD = 'Vo\u0301l 1'; // Vól 1, decomposed
-    const cases: Array<{
+  it('an invalid id is never a layer', () => {
+    expect(classifyMokuroSidecar('Vol 1.Bad_Id.mokuro', stems)).toEqual({ kind: 'orphan' });
+    expect(splitLayerSidecarName('Vol 1.Bad_Id.mokuro')).toBeNull();
+    expect(splitLayerSidecarName('Vol 1.mokuro')).toBeNull();
+    expect(splitLayerSidecarName('.gcv.mokuro')).toBeNull();
+  });
+
+  it('splits a standalone name and round-trips the export name', () => {
+    expect(splitLayerSidecarName('Vol 1.gcv-2.mokuro.gz')).toEqual({
+      stem: 'Vol 1',
+      layerId: 'gcv-2',
+      gz: true
+    });
+    const name = layerSidecarName('Vol 1', 'gcv');
+    expect(name).toBe('Vol 1.gcv.mokuro');
+    expect(splitLayerSidecarName(name)).toEqual({ stem: 'Vol 1', layerId: 'gcv', gz: false });
+  });
+
+  it('reads the id on its fold and reports it folded (rule 2, R5)', () => {
+    // As Mokuro Reader 1.10.0 lowercased it, and as Bunko reads it.
+    expect(splitLayerSidecarName('Vol 1.GCV.mokuro')).toEqual({
+      stem: 'Vol 1',
+      layerId: 'gcv',
+      gz: false
+    });
+    expect(splitLayerSidecarName('Vol 1.Tr-En.MOKURO.GZ')).toEqual({
+      stem: 'Vol 1',
+      layerId: 'tr-en',
+      gz: true
+    });
+    // A zero width space is no part of the id; the stem is cut at the same dot.
+    expect(splitLayerSidecarName('V\u{200b}ol.ed\u{200b}it.mokuro')).toEqual({
+      stem: 'V\u{200b}ol',
+      layerId: 'edit',
+      gz: false
+    });
+    // I with dot above folds to i + U+0307: no id.
+    expect(splitLayerSidecarName('V.ED\u{130}T.mokuro')).toBeNull();
+  });
+
+  it('reads suffixes on the fold (R2)', () => {
+    expect(isCbzFile('V.cb\u{200b}z')).toBe(true);
+    expect(isCbzFile('V.CBZ\u{200b}')).toBe(true);
+    expect(cbzStemOf('V.cb\u{200b}z')).toBe('V');
+    expect(cbzStemOf('V.mokuro')).toBeNull();
+    expect(isSidecarFile('V.mo\u{212a}uro')).toBe(true);
+    expect(classifyMokuroSidecar('V.mo\u{212a}uro', cbzStemsOf(['V.cbz']))).toEqual({
+      kind: 'primary',
+      stem: 'V',
+      gz: false
+    });
+    expect([...cbzStemsOf(['Vo\u{301}l 1.cbz', 'Vol 1.cbr', 'Stra\u{df}e.CBZ'])]).toEqual([
+      'v\u{f3}l 1',
+      'strasse'
+    ]);
+  });
+});
+
+// Sidecar names rule 2 as mokuro-bunko states it (`interop/contract/
+// sidecar-names.json`, vendored byte for byte in `$lib/interop/contract/`;
+// `$lib/interop/sidecar-names.contract.test.ts` runs Bunko's own copy with a
+// checkout). Bunko's `bunko_core::sidecar_names` tests run the same file.
+describe('sidecar names rule 2 (the vendored contract)', () => {
+  type Expect =
+    | { kind: 'primary'; stem: string; gz: boolean }
+    | { kind: 'layer'; stem: string; layer: string; gz: boolean }
+    | { kind: 'orphan' };
+  const rule = vendored as unknown as {
+    rule: number;
+    classify: Array<{ name: string; folder: string[]; expect: Expect; why: string }>;
+    sweep: Array<{ archive: string; folder: string[]; expect: string[]; why: string }>;
+    owner: Array<{
       name: string;
       folder: string[];
-      expect: { kind: 'primary' | 'layer' | 'orphan'; stem?: string; layer?: string; gz?: boolean };
-    }> = [
-      // 1. suffixes match regardless of ASCII case
-      {
-        name: 'Vol 1.MOKURO',
-        folder: ['Vol 1.cbz'],
-        expect: { kind: 'primary', stem: 'Vol 1', gz: false }
-      },
-      {
-        name: 'Vol 1.MOKURO.GZ',
-        folder: ['Vol 1.cbz'],
-        expect: { kind: 'primary', stem: 'Vol 1', gz: true }
-      },
-      {
-        name: 'Vol 1.mokuro',
-        folder: ['Vol 1.CBZ'],
-        expect: { kind: 'primary', stem: 'Vol 1', gz: false }
-      },
-      {
-        name: 'Vol 1.edit.MOKURO',
-        folder: ['Vol 1.cbz'],
-        expect: { kind: 'layer', stem: 'Vol 1', layer: 'edit', gz: false }
-      },
-      {
-        name: 'Vol 1.gcv.mokuro.gz',
-        folder: ['Vol 1.cbz'],
-        expect: { kind: 'layer', stem: 'Vol 1', layer: 'gcv', gz: true }
-      },
-      // 2. only .cbz defines a volume stem
-      { name: 'Vol 1.mokuro', folder: ['Vol 1.cbr'], expect: { kind: 'orphan' } },
-      {
-        name: 'Vol 1.5.mokuro',
-        folder: ['Vol 1.5.zip', 'Vol 1.cbz'],
-        expect: { kind: 'layer', stem: 'Vol 1', layer: '5', gz: false }
-      },
-      // 3. stems fold as NFC then lowercase
-      {
-        name: `${NFD}.mokuro`,
-        folder: [`${NFC}.cbz`],
-        expect: { kind: 'primary', stem: NFD, gz: false }
-      },
-      {
-        name: `${NFC}.mokuro`,
-        folder: [`${NFD}.cbz`],
-        expect: { kind: 'primary', stem: NFC, gz: false }
-      },
-      {
-        name: 'vol 1.gcv.mokuro',
-        folder: ['Vol 1.cbz'],
-        expect: { kind: 'layer', stem: 'vol 1', layer: 'gcv', gz: false }
-      },
-      // 4. a primary wins over a layer reading of the same name
-      {
-        name: 'Vol 1.5.mokuro',
-        folder: ['Vol 1.cbz', 'Vol 1.5.cbz'],
-        expect: { kind: 'primary', stem: 'Vol 1.5', gz: false }
-      },
-      {
-        name: 'Vol 01.5.mokuro',
-        folder: ['Vol 01.cbz'],
-        expect: { kind: 'layer', stem: 'Vol 01', layer: '5', gz: false }
-      },
-      // 5. the id is matched exactly as written; all-digit ids are allowed
-      { name: 'Vol 1.Upper.mokuro', folder: ['Vol 1.cbz'], expect: { kind: 'orphan' } },
-      { name: 'Vol 1.EDIT.mokuro', folder: ['Vol 1.cbz'], expect: { kind: 'orphan' } },
-      {
-        name: 'Vol 1.2024.mokuro',
-        folder: ['Vol 1.cbz'],
-        expect: { kind: 'layer', stem: 'Vol 1', layer: '2024', gz: false }
-      },
-      {
-        name: `Vol 1.${'a'.repeat(32)}.mokuro`,
-        folder: ['Vol 1.cbz'],
-        expect: { kind: 'layer', stem: 'Vol 1', layer: 'a'.repeat(32), gz: false }
-      },
-      { name: `Vol 1.${'a'.repeat(33)}.mokuro`, folder: ['Vol 1.cbz'], expect: { kind: 'orphan' } },
-      { name: 'Vol 1.gcv.mokuro', folder: ['Vol 2.cbz'], expect: { kind: 'orphan' } },
-      // A case-variant archive pair: both spellings are volumes of their own.
-      {
-        name: 'vol 01.mokuro',
-        folder: ['Vol 01.cbz', 'vol 01.cbz'],
-        expect: { kind: 'primary', stem: 'vol 01', gz: false }
-      },
-      {
-        name: 'vol 01.hayai.mokuro',
-        folder: ['Vol 01.cbz', 'vol 01.cbz'],
-        expect: { kind: 'layer', stem: 'vol 01', layer: 'hayai', gz: false }
-      }
-    ];
+      display: string | null;
+      sweep: string | null;
+      why: string;
+    }>;
+    equivalent: Array<{ crafted: string[]; canonical: string[]; why: string }>;
+  };
+  const show = (s: string) =>
+    JSON.stringify(s).replace(/[^\x20-\x7e]/g, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
 
-    it.each(cases)('$name beside $folder', ({ name, folder, expect: want }) => {
+  it('is rule 2', () => {
+    expect(rule.rule).toBe(SIDECAR_RULE);
+  });
+
+  it.each(rule.classify.map((v) => [show(v.name), v] as const))(
+    'classify %s',
+    (_, { name, folder, expect: want, why }) => {
       const got = classifyMokuroSidecar(name, cbzStemsOf(folder));
-      expect(got.kind).toBe(want.kind);
-      if (got.kind === 'orphan') return;
-      expect(got.stem).toBe(want.stem);
-      expect(got.gz).toBe(want.gz);
-      if (got.kind === 'layer') expect(got.layerId).toBe(want.layer);
-    });
+      if (want.kind === 'orphan') {
+        expect(got, why).toEqual({ kind: 'orphan' });
+      } else if (want.kind === 'primary') {
+        expect(got, why).toEqual({ kind: 'primary', stem: want.stem, gz: want.gz });
+      } else {
+        expect(got, why).toEqual({
+          kind: 'layer',
+          stem: want.stem,
+          layerId: want.layer,
+          gz: want.gz
+        });
+      }
+    }
+  );
 
-    it('layerOwnerArchive: the exactly-spelled archive, else the naturalSort-first of those that fold alike — whatever the listing order', () => {
-      const archives = ['Vol 3', 'vol 3', 'VOL 3', 'Vol 4'];
-      expect(layerOwnerArchive('vol 3', archives)).toBe('vol 3');
-      expect(layerOwnerArchive('Vol 3', archives)).toBe('Vol 3');
-      // Spelled like NEITHER archive: one owner, independent of order.
-      expect(layerOwnerArchive('vOl 3', archives)).toBe('VOL 3');
-      expect(layerOwnerArchive('vOl 3', [...archives].reverse())).toBe('VOL 3');
-      expect(layerOwnerArchive(NFD, [NFC])).toBe(NFC);
-      expect(layerOwnerArchive('Vol 5', archives)).toBeUndefined();
-    });
+  it.each(rule.sweep.map((v) => [show(v.archive), v] as const))(
+    'deleting %s sweeps',
+    (_, { archive, folder, expect: want, why }) => {
+      const got = new FolderNames(folder).sweepSet(archive);
+      expect([...got].sort(compareCodePoints), why).toEqual([...want].sort(compareCodePoints));
+    }
+  );
 
-    it('foldStem is NFC then Unicode lowercase', () => {
-      expect(foldStem(NFD)).toBe(foldStem(NFC));
-      expect(foldStem(NFD)).toBe('v\u00f3l 1');
-      expect(foldStem('\u00c4RA')).toBe('\u00e4ra');
-      expect([...cbzStemsOf([`${NFD}.cbz`, 'Vol 1.cbr'])]).toEqual(['v\u00f3l 1']);
-    });
+  it.each(rule.owner.map((v) => [show(v.name), v] as const))(
+    '%s is shown with and swept by its R6 archive',
+    (_, { name, folder, display, sweep, why }) => {
+      const names = new FolderNames(folder);
+      expect(names.displayArchive(name) ?? null, why).toBe(display);
+      expect(names.sweepArchive(name) ?? null, why).toBe(sweep);
+      // The stem-level helpers every call site uses agree.
+      const archives = names.archiveStems();
+      const read = classifyMokuroSidecar(name, names.stems);
+      const stem = read.kind === 'orphan' ? (/^(.*)\.[^.]+$/.exec(name)?.[1] ?? name) : read.stem;
+      const shown = display === null ? undefined : (cbzStemOf(display) ?? undefined);
+      if (read.kind !== 'orphan') expect(layerOwnerArchive(stem, archives), why).toBe(shown);
+      const swept = sweep === null ? undefined : (cbzStemOf(sweep) ?? undefined);
+      expect(sweepOwnerArchive(name, folder), why).toBe(swept);
+    }
+  );
+
+  it.each(rule.equivalent.map((v) => [v.why, v] as const))(
+    'a crafted listing classifies as its canonical twin (%s)',
+    (_, { crafted, canonical, why }) => {
+      expect(crafted.length).toBe(canonical.length);
+      const craftedStems = cbzStemsOf(crafted);
+      const canonicalStems = cbzStemsOf(canonical);
+      expect([...craftedStems].sort(), why).toEqual([...canonicalStems].sort());
+      const folded = (c: MokuroSidecarClass) =>
+        c.kind === 'orphan'
+          ? c
+          : c.kind === 'primary'
+            ? { ...c, stem: foldName(c.stem) }
+            : { ...c, stem: foldName(c.stem) };
+      crafted.forEach((name, i) => {
+        expect(foldName(name), why).toBe(foldName(canonical[i]));
+        expect(folded(classifyMokuroSidecar(name, craftedStems)), `${why}: ${show(name)}`).toEqual(
+          folded(classifyMokuroSidecar(canonical[i], canonicalStems))
+        );
+      });
+    }
+  );
+
+  it('layerOwnerArchive: exact, else the only one, else the code-point-smallest', () => {
+    const archives = ['Vol 3', 'vol 3', 'VOL 3', 'Vol 4'];
+    expect(layerOwnerArchive('vol 3', archives)).toBe('vol 3');
+    expect(layerOwnerArchive('Vol 3', archives)).toBe('Vol 3');
+    // Spelled like NONE of the fold group: one owner, independent of order.
+    expect(layerOwnerArchive('vOl 3', archives)).toBe('VOL 3');
+    expect(layerOwnerArchive('vOl 3', [...archives].reverse())).toBe('VOL 3');
+    expect(layerOwnerArchive('Vo\u{301}l 1', ['V\u{f3}l 1'])).toBe('V\u{f3}l 1');
+    expect(layerOwnerArchive('STRASSE', ['Stra\u{df}e'])).toBe('Stra\u{df}e');
+    // Code-point order, where UTF-16 order picks the other spelling.
+    expect(layerOwnerArchive('y', ['Y\u{1bca0}', 'Y\u{ffa0}'])).toBe('Y\u{ffa0}');
+    expect(layerOwnerArchive('Vol 5', archives)).toBeUndefined();
+  });
+
+  it('sweepOwnerArchive: exact, else the only one, never a fold-only match in a group', () => {
+    expect(sweepOwnerArchive('vol 3.mokuro', ['Vol 3.cbz', 'vol 3.mokuro'])).toBe('Vol 3');
+    expect(sweepOwnerArchive('vol 3.mokuro', ['Vol 3.cbz', 'VOL 3.cbz', 'vol 3.mokuro'])).toBe(
+      undefined
+    );
+    expect(sweepOwnerArchive('VOL 3.gcv.mokuro', ['Vol 3.cbz', 'VOL 3.cbz'])).toBe('VOL 3');
+    expect(sweepOwnerArchive('Vol 3.5.mokuro', ['Vol 3.cbz', 'Vol 3.5.zip'])).toBeUndefined();
   });
 });
 
@@ -476,6 +498,8 @@ describe('isReservedLayerSidecarPath', () => {
     expect(isReservedLayerSidecarPath('S/Vol 1.curated.mokuro.gz')).toBe(true);
     expect(isReservedLayerSidecarPath('S/Vol 1.curated-2.mokuro')).toBe(true);
     expect(isReservedLayerSidecarPath('Vol 1.tr-en.mokuro')).toBe(true);
+    // Read on the folded id (rule 2, R5): a miscased `edit` is the edit layer.
+    expect(isReservedLayerSidecarPath('S/Vol 1.EDIT.mokuro')).toBe(true);
   });
 
   it('nothing else', () => {
@@ -486,7 +510,6 @@ describe('isReservedLayerSidecarPath', () => {
       'S/Vol 1.pre-upgrade.mokuro',
       'S/Vol 1.pre-upgrade-2.mokuro',
       'S/Vol 1.previous-ocr.mokuro',
-      'S/Vol 1.EDIT.mokuro',
       'S/Vol 1.edit.cbz',
       'S/series.json',
       'S/edit.mokuro'

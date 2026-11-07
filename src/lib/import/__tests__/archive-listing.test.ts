@@ -70,8 +70,8 @@ describe('planArchiveListing', () => {
     expect(plan.layerEntries.map((e) => e.path)).toEqual(['A.gcv.mokuro']);
   });
 
-  it('ignores a layer name whose id is miscased — an orphan, never the primary', async () => {
-    // Rule v1: `A.GCV.mokuro` is neither layer `gcv` nor a `.mokuro` of A.
+  it('holds a miscased layer name aside as the layer it folds to — never the primary', async () => {
+    // Rule 2, R5: `A.GCV.mokuro` is layer `gcv` of A, never a `.mokuro` of A.
     for (const order of [
       ['A.mokuro', 'A.GCV.mokuro'],
       ['A.GCV.mokuro', 'A.mokuro']
@@ -80,7 +80,9 @@ describe('planArchiveListing', () => {
         const plan = await planArchiveListing(listed(...order, page), archive('A.cbz'));
         expect(plan.mokuroPairings.map((p) => p.mokuroFile?.name)).toEqual(['A.mokuro']);
         expect(plan.imageOnlyPairings).toEqual([]);
-        expect(plan.layerEntries).toEqual([]);
+        expect(plan.layerEntries.map((e) => [e.path, e.layerId])).toEqual([
+          ['A.GCV.mokuro', 'gcv']
+        ]);
       }
     }
   });

@@ -5,6 +5,7 @@ import {
   type SeriesFile
 } from './series-file';
 import { normalizeSeriesKey } from './series-key';
+import { foldName } from '$lib/util/names/fold';
 import {
   ID_KEYS,
   TITLE_KEYS,
@@ -323,5 +324,6 @@ export function stringifyCatalogFile(file: CatalogFile): string {
 export function isCatalogFilePath(path: string): boolean {
   const trimmed = path.replace(/^\/+|\/+$/g, '');
   if (trimmed.includes('/')) return false;
-  return trimmed.toLowerCase() === CATALOG_FILE_NAME;
+  // A fixed name, recognised by its fold (sidecar names rule 2, R8).
+  return foldName(trimmed) === CATALOG_FILE_NAME;
 }

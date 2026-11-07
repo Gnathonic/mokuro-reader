@@ -283,13 +283,17 @@ describe('OCR layers riding a downloaded archive', () => {
     expect(classifyArchiveMokuroEntry('Vol 1.5.mokuro', 'Vol 1.5')).toBeNull();
     // A layer of ANOTHER volume is not this archive's layer.
     expect(classifyArchiveMokuroEntry('Vol 2.gcv.mokuro', 'Vol 1')).toBeNull();
-    // Rule v1: a miscased id is an orphan of this archive — not a layer, and
-    // not a primary either. Inside `Vol 1.GCV.cbz` it is that volume's primary.
-    expect(classifyArchiveMokuroEntry('Vol 1.GCV.mokuro', 'Vol 1')).toEqual({ orphan: true });
+    // Rule 2: a miscased id is the layer it folds to (R5). Inside
+    // `Vol 1.GCV.cbz` it is that volume's primary (R4).
+    expect(classifyArchiveMokuroEntry('Vol 1.GCV.mokuro', 'Vol 1')).toEqual({ layerId: 'gcv' });
     expect(classifyArchiveMokuroEntry('Vol 1.GCV.mokuro', 'Vol 1.GCV')).toBeNull();
+    // Stems fold too: `STRASSE.edit.mokuro` rides in `Straße.cbz`.
+    expect(classifyArchiveMokuroEntry('STRASSE.Edit.mokuro', 'Stra\u{df}e')).toEqual({
+      layerId: 'edit'
+    });
   });
 
-  it('an orphaned miscased layer entry never replaces the primary, whatever the entry order', async () => {
+  it('a miscased layer entry is that layer, never the primary (rule 2, R5)', async () => {
     vi.mocked(processVolume).mockResolvedValue(processed());
     const data = new TextEncoder().encode('{}');
     await processVolumeData(
@@ -306,12 +310,10 @@ describe('OCR layers riding a downloaded archive', () => {
       layerFiles?: Array<{ layerId: string }>;
     };
     expect(decompressed.mokuroFile?.name).toBe('Vol 1.mokuro');
-    expect(decompressed.layerFiles).toBeUndefined();
+    expect(decompressed.layerFiles?.map((l) => l.layerId)).toEqual(['gcv']);
   });
 
-  it('an orphaned miscased `.mokuro.gz` entry is skipped BEFORE it is gunzipped', async () => {
-    // Classification needs only the name; gunzipping first would spend the
-    // work and, on bytes that are not gzip, fail the whole install.
+  it('a layer `.mokuro.gz` entry that is not gzip costs that layer, never the install', async () => {
     vi.mocked(processVolume).mockClear();
     vi.mocked(processVolume).mockResolvedValue(processed());
     const data = new TextEncoder().encode('{}');

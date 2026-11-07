@@ -1,14 +1,16 @@
 /**
- * Sidecar names rule v1 as Bunko's vectors state it
+ * Sidecar names rule 2 as Bunko's vectors state it
  * (`interop/contract/sidecar-names.json`; Bunko's `bunko_core::sidecar_names`
  * runs the same file): what a listed `.mokuro` is beside the archives of its
  * folder, and which layer ids Bunko keeps per account, shares as curated, or
- * reserves — and that the reader never pushes one it refuses. The reader's hand copy (`syncable-file.test.ts`) runs
- * without a Bunko checkout; this runs Bunko's own.
+ * reserves — and that the reader never pushes one it refuses. The reader's
+ * vendored copy (`syncable-file.test.ts`, every section of the file) runs
+ * without a Bunko checkout; this runs Bunko's own, and `fold.test.ts` checks
+ * the copy is its bytes.
  */
 import { expect, it } from 'vitest';
 import { describeContractFile, sidecarNameVectors } from './contract';
-import { cbzStemsOf, classifyMokuroSidecar } from '$lib/util/sync/syncable-file';
+import { SIDECAR_RULE, cbzStemsOf, classifyMokuroSidecar } from '$lib/util/sync/syncable-file';
 import { layerIdStaysLocal } from '$lib/catalog/mokuro-hash';
 import {
   isCuratedLayerId,
@@ -19,9 +21,9 @@ import {
 
 const vectors = sidecarNameVectors();
 
-describeContractFile('sidecar-names.json', 'sidecar names rule v1 as Bunko states it', () => {
-  it('is rule 1', () => {
-    expect(vectors!.rule).toBe(1);
+describeContractFile('sidecar-names.json', 'sidecar names rule 2 as Bunko states it', () => {
+  it('is rule 2', () => {
+    expect(vectors!.rule).toBe(SIDECAR_RULE);
   });
 
   it.each(vectors?.classify ?? [])(

@@ -4,6 +4,7 @@ import { isVolumeInstalled } from '$lib/catalog/volume-state';
 import type { VolumeMetadata } from '$lib/types';
 import { generateDeterministicUUID } from '$lib/util/series-extraction';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
+import { foldName } from '$lib/util/names/fold';
 import {
   ID_KEYS,
   TITLE_KEYS,
@@ -1278,8 +1279,12 @@ export function parseSeriesFileWithReport(value: unknown): {
   return { file, entryCollapse: volumes.length < validEntries };
 }
 
-/** True when `path` points at a series sidecar (basename match, case-insensitive). */
+/**
+ * True when `path` points at a series sidecar: its basename is `series.json` in
+ * any spelling the fold joins (sidecar names rule 2, R8: `SERIES.JSON`,
+ * `ſeries.json`).
+ */
 export function isSeriesFilePath(path: string): boolean {
   const basename = path.split(/[\\/]/).pop() ?? '';
-  return basename.toLowerCase() === SERIES_FILE_NAME;
+  return foldName(basename) === SERIES_FILE_NAME;
 }

@@ -54,15 +54,15 @@ import {
 import { providerManager } from '$lib/util/sync/provider-manager';
 import { freshGateStatus, refreshGates } from '$lib/util/sync/identity-gates';
 import {
-  cbzStemsOf,
+  FolderNames,
+  cbzStemOf,
   classifyMokuroSidecar,
-  isCbzFile,
   layerOwnerArchive,
   layerSidecarName
 } from '$lib/util/sync/syncable-file';
-import { naturalSort } from '$lib/util/natural-sort';
+import { compareCodePoints } from '$lib/util/names/fold';
 import { isoToEpochSeconds } from './cloud-sidecar-stamps';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
+import { normalizeVolumeTitleKey } from './series-key';
 
 /**
  * The cloud half of OCR layers: `<Volume Title>.<layer-id>.mokuro[.gz]` files
@@ -139,22 +139,18 @@ export function collectLayerFiles(
     const oneDeep = files.filter((f) => normalizeCloudPath(f.path).split('/').length === 2);
     if (oneDeep.length === 0) continue;
     const folderTitle = normalizeCloudPath(oneDeep[0].path).split('/')[0];
-    // Every archive spelling: two archives that fold alike are two volumes.
-    const archiveSpellings = new Set(
-      oneDeep
-        .map((f) => basename(f.path))
-        .filter(isCbzFile)
-        .map((name) => name.slice(0, -4))
-    );
-    const cbzStems = cbzStemsOf(oneDeep.map((f) => basename(f.path)));
+    // Every archive spelling, cut at the dot its fold's `.cbz` starts at.
+    const folder = new FolderNames(oneDeep.map((f) => basename(f.path)));
+    const archiveSpellings = folder.archiveStems();
+    const cbzStems = folder.stems;
     const seen = new Map<string, ListedLayerFile>();
     for (const file of oneDeep) {
       const cls = classifyMokuroSidecar(basename(file.path), cbzStems);
       if (cls.kind !== 'layer') continue;
-      // ONE owner per layer file, the same one `unified-cloud-manager.ts`
-      // sweeps it with: the archive spelled exactly like the stem, else the
-      // naturalSort-first of those that fold alike (rule v1 #6) — never the
-      // archive the listing happened to return last.
+      // ONE owner per layer file (sidecar names rule 2, R6): the archive
+      // spelled exactly like the stem, else the only one of its fold, else the
+      // code-point-smallest of a fold group — never the archive the listing
+      // happened to return last. A sweep is stricter (`sweepOwnerArchive`).
       const stem = layerOwnerArchive(cls.stem, archiveSpellings) ?? cls.stem;
       const key = `${stem}\u0000${cls.layerId}`;
       const existing = seen.get(key);
@@ -675,9 +671,9 @@ function rowKey(volumeTitle: string): string {
 
 /**
  * The archive a local row is the volume OF, among a folder's archive stems as
- * listed: spelled exactly like the row's title, else the naturalSort-first of
- * those whose title folds alike — the pick `getManagedCloudFilesForVolume`
- * makes. Two archives that fold alike (`Vol 1.cbz` and `vol 1.cbz`, on
+ * listed: spelled exactly like the row's title, else the code-point-smallest
+ * of those whose title folds alike (sidecar names rule 2, R6) — the pick
+ * `getManagedCloudFilesForVolume` makes. Two archives that fold alike (`Vol 1.cbz` and `vol 1.cbz`, on
  * case-sensitive storage) are two volumes that `rowsInFolder` folds onto ONE
  * row; the row owns the layers of exactly one of them.
  */
@@ -687,7 +683,7 @@ function ownArchiveOfRow(volumeTitle: string, archiveStems: Iterable<string>): s
   for (const stem of archiveStems) {
     if (stem === volumeTitle) return stem;
     if (rowKey(stem) !== key) continue;
-    if (best === undefined || naturalSort(stem, best) < 0) best = stem;
+    if (best === undefined || compareCodePoints(stem, best) < 0) best = stem;
   }
   return best;
 }
@@ -696,8 +692,8 @@ function ownArchiveOfRow(volumeTitle: string, archiveStems: Iterable<string>): s
 function archiveSpellingsOf(files: CloudFileMetadata[]): string[] {
   const out: string[] = [];
   for (const file of files) {
-    const name = basename(file.path);
-    if (isCbzFile(name)) out.push(name.slice(0, -4));
+    const stem = cbzStemOf(basename(file.path));
+    if (stem !== null) out.push(stem);
   }
   return out;
 }
@@ -711,9 +707,9 @@ function ownArchiveInListing(
   listing: Map<string, CloudFileMetadata[]>,
   row: Pick<VolumeMetadata, 'series_title' | 'volume_title'>
 ): string | undefined {
-  const seriesKey = normalizeSeriesKey(row.series_title);
+  const seriesKey = normalizeVolumeTitleKey(row.series_title);
   for (const [folder, files] of listing) {
-    if (normalizeSeriesKey(folder) !== seriesKey) continue;
+    if (normalizeVolumeTitleKey(folder) !== seriesKey) continue;
     const own = ownArchiveOfRow(row.volume_title, archiveSpellingsOf(files));
     if (own !== undefined) return own;
   }
@@ -741,7 +737,7 @@ async function buildLocalSeriesIndex(localWork: Set<string>): Promise<LocalSerie
     const title = String(key);
     let seriesKey = folded.get(title);
     if (seriesKey === undefined) {
-      seriesKey = normalizeSeriesKey(title);
+      seriesKey = normalizeVolumeTitleKey(title);
       folded.set(title, seriesKey);
       const spellings = literals.get(seriesKey);
       if (spellings) spellings.push(title);
@@ -756,7 +752,7 @@ async function rowsInFolder(
   folderTitle: string,
   index: LocalSeriesIndex
 ): Promise<Map<string, VolumeMetadata>> {
-  const spellings = index.literals.get(normalizeSeriesKey(folderTitle));
+  const spellings = index.literals.get(normalizeVolumeTitleKey(folderTitle));
   if (!spellings) return new Map();
   const rows = (await db.volumes
     .where('series_title')
@@ -1155,7 +1151,7 @@ async function planFolder(
   index: LocalSeriesIndex
 ): Promise<Transfer[]> {
   // Nothing listed here, no local layer or tombstone in this series: done.
-  if (layerFiles.length === 0 && !index.withLocalWork.has(normalizeSeriesKey(folderTitle))) {
+  if (layerFiles.length === 0 && !index.withLocalWork.has(normalizeVolumeTitleKey(folderTitle))) {
     return [];
   }
   const rows = await rowsInFolder(folderTitle, index);
@@ -1567,11 +1563,11 @@ export async function pullLayersForVolume(
     const provider = providerManager.getActiveProvider();
     if (!provider || provider.type !== providerType) return 0;
     const listing = listingFromCache(providerType);
-    const seriesKey = normalizeSeriesKey(row.series_title);
+    const seriesKey = normalizeVolumeTitleKey(row.series_title);
     const own = ownArchiveInListing(listing, row);
     const mine = collectLayerFiles(listing).filter(
       (l) =>
-        normalizeSeriesKey(l.folderTitle) === seriesKey &&
+        normalizeVolumeTitleKey(l.folderTitle) === seriesKey &&
         l.stem === own &&
         (!only || only.includes(l.layerId))
     );
@@ -1769,9 +1765,9 @@ function locateVolumeInListing(
   listing: Map<string, CloudFileMetadata[]>,
   row: Pick<VolumeMetadata, 'series_title' | 'volume_title'>
 ): { folderTitle: string; stem: string } | null {
-  const seriesKey = normalizeSeriesKey(row.series_title);
+  const seriesKey = normalizeVolumeTitleKey(row.series_title);
   for (const [folder, files] of listing) {
-    if (normalizeSeriesKey(folder) !== seriesKey) continue;
+    if (normalizeVolumeTitleKey(folder) !== seriesKey) continue;
     const stem = ownArchiveOfRow(row.volume_title, archiveSpellingsOf(files));
     if (stem !== undefined) return { folderTitle: folder, stem };
   }
@@ -1788,12 +1784,14 @@ function listedLayerOf(
   row: Pick<VolumeMetadata, 'series_title' | 'volume_title'>,
   layerId: string
 ): ListedLayerFile | undefined {
-  const seriesKey = normalizeSeriesKey(row.series_title);
+  const seriesKey = normalizeVolumeTitleKey(row.series_title);
   const own = ownArchiveInListing(listing, row);
   if (own === undefined) return undefined;
   return collectLayerFiles(listing).find(
     (l) =>
-      normalizeSeriesKey(l.folderTitle) === seriesKey && l.stem === own && l.layerId === layerId
+      normalizeVolumeTitleKey(l.folderTitle) === seriesKey &&
+      l.stem === own &&
+      l.layerId === layerId
   );
 }
 
