@@ -13,12 +13,23 @@ const h = vi.hoisted(() => {
     provider: {
       isAuthenticated: () => true,
       listCloudVolumes: list,
+      // OneDrive's walk, with the folder map its change feed resumes from
+      // (none here: the feed is onedrive-change-feed.test.ts's).
+      listLibrary: async () => ({ files: await list(), folders: new Map(), rootId: null }),
       getFolderOperations: () => ({})
     }
   };
 });
 
 vi.mock('./onedrive/onedrive-provider', () => ({ onedriveProvider: h.provider }));
+// OneDrive takes its change-feed position before each walk.
+vi.mock('./onedrive/token-manager', () => ({
+  onedriveTokenManager: { getAccessToken: async () => 'TOKEN' }
+}));
+vi.mock('./onedrive/graph-client', () => ({
+  startDelta: async () => 'https://graph.microsoft.com/v1.0/me/drive/root/delta?token=0',
+  readDelta: async () => 'resync'
+}));
 vi.mock('./webdav/webdav-provider', () => ({ webdavProvider: h.provider }));
 vi.mock('./filesystem/filesystem-provider', () => ({ filesystemProvider: h.provider }));
 vi.mock('./mega/mega-provider', () => ({ megaProvider: h.provider }));
@@ -126,7 +137,8 @@ describe.each([
     cache.clear();
     const finish = heldListing();
     const fetched = cache.fetch();
-    expect(h.list).toHaveBeenCalledTimes(2);
+    // OneDrive walks once its change-feed position is in: not synchronously.
+    await vi.waitFor(() => expect(h.list).toHaveBeenCalledTimes(2));
     expect(get(cache.isFetchingState!)).toBe(true);
 
     finish([file('volume-data.json', 'V2')]);

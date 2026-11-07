@@ -5476,15 +5476,35 @@ describe('UnifiedCloudManager.fetchAllCloudVolumes({ fromChangeFeed }) (#288)', 
     getAllFiles.mockReturnValue([]);
   });
 
-  it('on Google Drive with a loaded listing, reads the change feed instead of walking', async () => {
-    getActiveProvider.mockReturnValue({ type: 'google-drive' });
-    getCache.mockReturnValue(cacheWithFeed(true));
+  it.each(['google-drive', 'onedrive'])(
+    'on %s with a loaded listing, reads the change feed instead of walking',
+    async (type) => {
+      getActiveProvider.mockReturnValue({ type });
+      getCache.mockReturnValue(cacheWithFeed(true));
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      await unifiedCloudManager.fetchAllCloudVolumes({
+        refreshIndexes: false,
+        fromChangeFeed: true
+      });
+
+      expect(getCache).toHaveBeenCalledWith(type);
+      expect(refreshFromChanges).toHaveBeenCalledTimes(1);
+      expect(fetchAll).not.toHaveBeenCalled();
+    }
+  );
+
+  it('a feed that could not bring the listing current rejects instead of walking', async () => {
+    getActiveProvider.mockReturnValue({ type: 'onedrive' });
+    const failing = vi.fn(async () => {
+      throw new Error('Graph 503');
+    });
+    getCache.mockReturnValue({ refreshFromChanges: failing, isLoaded: () => true });
 
     const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true });
-
-    expect(getCache).toHaveBeenCalledWith('google-drive');
-    expect(refreshFromChanges).toHaveBeenCalledTimes(1);
+    await expect(
+      unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true })
+    ).rejects.toThrow(/503/);
     expect(fetchAll).not.toHaveBeenCalled();
   });
 
@@ -5499,16 +5519,22 @@ describe('UnifiedCloudManager.fetchAllCloudVolumes({ fromChangeFeed }) (#288)', 
     expect(fetchAll).toHaveBeenCalledTimes(1);
   });
 
-  it('lists in full on every other provider', async () => {
-    getActiveProvider.mockReturnValue({ type: 'webdav' });
-    getCache.mockReturnValue(cacheWithFeed(true));
+  it.each(['webdav', 'mega', 'filesystem'])(
+    'lists in full on %s (a cache without a feed)',
+    async (type) => {
+      getActiveProvider.mockReturnValue({ type });
+      getCache.mockReturnValue({ isLoaded: () => true });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true });
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      await unifiedCloudManager.fetchAllCloudVolumes({
+        refreshIndexes: false,
+        fromChangeFeed: true
+      });
 
-    expect(refreshFromChanges).not.toHaveBeenCalled();
-    expect(fetchAll).toHaveBeenCalledTimes(1);
-  });
+      expect(refreshFromChanges).not.toHaveBeenCalled();
+      expect(fetchAll).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('a caller that did not ask for the feed always walks', async () => {
     getActiveProvider.mockReturnValue({ type: 'google-drive' });

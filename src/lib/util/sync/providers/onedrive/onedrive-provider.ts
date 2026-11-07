@@ -30,6 +30,7 @@ import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { isSyncableFile } from '../../syncable-file';
 import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
+import { listingEntry, type OneDriveFolder, type OneDriveFolderMap } from './onedrive-delta';
 
 /** Worth retrying later; a full drive (507) is not, so it is excluded. */
 const RETRYABLE_MESSAGE = /network|timed out|\b429\b|\b5(?!07)\d\d\b/i;
@@ -342,12 +343,27 @@ export class OneDriveProvider implements SyncProvider {
   }
 
   async listCloudVolumes(): Promise<CloudFileMetadata[]> {
+    return (await this.listLibrary()).files;
+  }
+
+  /**
+   * The whole library walk, with what the change feed resumes from: every
+   * folder under (and including) the mokuro folder by id, and the mokuro
+   * folder's own id — null when it does not exist yet (nothing to list, and
+   * nothing a feed could place files under). The listing cache's walk.
+   */
+  async listLibrary(): Promise<{
+    files: CloudFileMetadata[];
+    folders: OneDriveFolderMap;
+    rootId: string | null;
+  }> {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'onedrive', 'NOT_AUTHENTICATED', true);
     }
     const token = await onedriveTokenManager.getAccessToken();
 
     const results: CloudFileMetadata[] = [];
+    const folders: OneDriveFolderMap = new Map();
 
     // If the root mokuro folder doesn't exist yet, there's nothing to list.
     // Probe it once here (getItemByPath cleanly returns null on 404) rather than
@@ -357,12 +373,17 @@ export class OneDriveProvider implements SyncProvider {
     const root = await getItemByPath(token, ONEDRIVE_CONFIG.MOKURO_FOLDER);
     if (!root) {
       console.log('OneDrive mokuro folder does not exist yet; nothing to list');
-      return results;
+      return { files: results, folders, rootId: null };
     }
+    folders.set(root.id, {
+      name: root.name ?? ONEDRIVE_CONFIG.MOKURO_FOLDER,
+      parent: root.parentReference?.id,
+      path: ''
+    });
 
-    await this.walkInto(token, ONEDRIVE_CONFIG.MOKURO_FOLDER, results);
+    await this.walkInto(token, ONEDRIVE_CONFIG.MOKURO_FOLDER, results, folders, root.id);
     console.log(`✅ Listed ${results.length} files from OneDrive`);
-    return results;
+    return { files: results, folders, rootId: root.id };
   }
 
   async uploadFile(
@@ -442,23 +463,37 @@ export class OneDriveProvider implements SyncProvider {
     return uploaded;
   }
 
-  /** Every syncable file below `path`, as listing entries (relative to the mokuro folder). */
-  private async walkInto(token: string, path: string, results: CloudFileMetadata[]): Promise<void> {
+  /**
+   * Every syncable file below `path`, as listing entries (relative to the
+   * mokuro folder), and every folder on the way into `folders` (with the id of
+   * the folder at `path`, `id`) when given.
+   */
+  private async walkInto(
+    token: string,
+    path: string,
+    results: CloudFileMetadata[],
+    folders?: OneDriveFolderMap,
+    id?: string
+  ): Promise<void> {
     const children = await listChildren(token, path);
+    const relativeDir =
+      path === ONEDRIVE_CONFIG.MOKURO_FOLDER
+        ? ''
+        : path.replace(`${ONEDRIVE_CONFIG.MOKURO_FOLDER}/`, '');
+    const here: OneDriveFolder = { name: path.split('/').pop() ?? path, path: relativeDir };
     for (const item of children) {
       const childPath = path ? `${path}/${item.name}` : item.name;
       if (item.folder) {
-        await this.walkInto(token, childPath, results);
-      } else if (item.file) {
-        const relative = childPath.replace(`${ONEDRIVE_CONFIG.MOKURO_FOLDER}/`, '');
-        if (!isSyncableFile(relative)) continue;
-        results.push({
-          provider: 'onedrive',
-          fileId: item.id,
-          path: relative,
-          modifiedTime: item.lastModifiedDateTime ?? new Date().toISOString(),
-          size: item.size ?? 0
+        folders?.set(item.id, {
+          name: item.name,
+          parent: id,
+          path: relativeDir ? `${relativeDir}/${item.name}` : item.name
         });
+        await this.walkInto(token, childPath, results, folders, item.id);
+      } else if (item.file) {
+        const entry = listingEntry(item, here);
+        if (!isSyncableFile(entry.path)) continue;
+        results.push(entry);
       }
     }
   }

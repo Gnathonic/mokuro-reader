@@ -2265,7 +2265,7 @@ describe('positions.json rides every sync', () => {
   });
 });
 
-describe('the Google Drive change feed opens every sync (#288)', () => {
+describe('a listing cache with a change feed opens every sync (#288)', () => {
   const STEPS = [
     'syncVolumeData',
     'syncPositionsFile',
@@ -2285,39 +2285,43 @@ describe('the Google Drive change feed opens every sync (#288)', () => {
 
   afterEach(() => getCache.mockReset());
 
-  it('on Google Drive it runs FIRST, before anything reads the listing', async () => {
-    const order: string[] = [];
-    const refreshFromChanges = vi.fn(async () => {
-      order.push('feed');
-      return 'unchanged';
-    });
-    getCache.mockReturnValue({ refreshFromChanges });
-    const spies = stubSteps(order);
-    try {
-      expect(await svc.runProviderSync(providerOf('google-drive'), {})).toMatchObject({
-        success: true
+  it.each(['google-drive', 'onedrive'])(
+    'on %s it runs FIRST, before anything reads the listing',
+    async (type) => {
+      const order: string[] = [];
+      const refreshFromChanges = vi.fn(async () => {
+        order.push('feed');
+        return 'unchanged';
       });
-      expect(order).toEqual(['feed', ...STEPS]);
-      expect(getCache).toHaveBeenCalledWith('google-drive');
-      expect(refreshFromChanges).toHaveBeenCalledTimes(1);
-    } finally {
-      spies.forEach((spy) => spy.mockRestore());
+      getCache.mockReturnValue({ refreshFromChanges });
+      const spies = stubSteps(order);
+      try {
+        expect(await svc.runProviderSync(providerOf(type), {})).toMatchObject({
+          success: true
+        });
+        expect(order).toEqual(['feed', ...STEPS]);
+        expect(getCache).toHaveBeenCalledWith(type);
+        expect(refreshFromChanges).toHaveBeenCalledTimes(1);
+      } finally {
+        spies.forEach((spy) => spy.mockRestore());
+      }
     }
-  });
+  );
 
-  it.each(['webdav', 'mega', 'onedrive', 'filesystem'])('never on %s', async (type) => {
-    const order: string[] = [];
-    const refreshFromChanges = vi.fn(async () => 'unchanged');
-    getCache.mockReturnValue({ refreshFromChanges });
-    const spies = stubSteps(order);
-    try {
-      expect(await svc.runProviderSync(providerOf(type), {})).toMatchObject({ success: true });
-      expect(refreshFromChanges).not.toHaveBeenCalled();
-      expect(order).toEqual(STEPS);
-    } finally {
-      spies.forEach((spy) => spy.mockRestore());
+  it.each(['webdav', 'mega', 'filesystem'])(
+    'a cache without a feed (%s) syncs without one',
+    async (type) => {
+      const order: string[] = [];
+      getCache.mockReturnValue({ isLoaded: () => true });
+      const spies = stubSteps(order);
+      try {
+        expect(await svc.runProviderSync(providerOf(type), {})).toMatchObject({ success: true });
+        expect(order).toEqual(STEPS);
+      } finally {
+        spies.forEach((spy) => spy.mockRestore());
+      }
     }
-  });
+  );
 
   it('a feed that fails on auth fails the sync before any step runs', async () => {
     const order: string[] = [];

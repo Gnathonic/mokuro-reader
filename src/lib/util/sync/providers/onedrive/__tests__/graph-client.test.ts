@@ -10,7 +10,9 @@ import {
   patchItem,
   createUploadSession,
   getItemByPath,
-  getItemStamp
+  getItemStamp,
+  startDelta,
+  readDelta
 } from '../graph-client';
 import { ProviderError } from '../../../provider-interface';
 import { onedriveTokenManager } from '../token-manager';
@@ -334,5 +336,105 @@ describe('graph-client getItemStamp', () => {
       text: async () => ''
     } as Response);
     await expect(getItemStamp('TOKEN', 'x')).rejects.toThrow(/503/);
+  });
+});
+
+describe('graph-client delta (the change feed)', () => {
+  const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body }) as Response;
+  const refusal = (status: number, body: unknown) =>
+    ({
+      ok: false,
+      status,
+      statusText: 'x',
+      text: async () => JSON.stringify(body)
+    }) as Response;
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('startDelta asks root delta for token=latest, $select-ed, and returns its deltaLink', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      ok({ value: [], '@odata.deltaLink': `${BASE}/me/drive/root/delta?token=T1` })
+    );
+    expect(await startDelta('TOKEN')).toBe(`${BASE}/me/drive/root/delta?token=T1`);
+    const url = String(vi.mocked(fetch).mock.calls[0][0]);
+    expect(url.startsWith(`${BASE}/me/drive/root/delta?token=latest`)).toBe(true);
+    expect(url).toContain('$select=');
+    for (const field of ['deleted', 'parentReference', 'cTag', 'folder', 'file']) {
+      expect(url).toContain(field);
+    }
+  });
+
+  it('startDelta refuses a deltaLink to any other host (it would carry the token)', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      ok({ value: [], '@odata.deltaLink': 'https://evil.example/delta?token=T1' })
+    );
+    await expect(startDelta('TOKEN')).rejects.toThrow(/deltaLink/);
+  });
+
+  it('readDelta follows nextLink to the deltaLink, items in order', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        ok({ value: [{ id: 'a' }], '@odata.nextLink': `${BASE}/me/drive/root/delta?token=p2` })
+      )
+      .mockResolvedValueOnce(
+        ok({ value: [{ id: 'b' }], '@odata.deltaLink': `${BASE}/me/drive/root/delta?token=T2` })
+      );
+    const batch = await readDelta('TOKEN', `${BASE}/me/drive/root/delta?token=T1`, 5);
+    expect(batch).toEqual({
+      items: [{ id: 'a' }, { id: 'b' }],
+      deltaLink: `${BASE}/me/drive/root/delta?token=T2`
+    });
+    expect(vi.mocked(fetch).mock.calls.map((c) => c[0])).toEqual([
+      `${BASE}/me/drive/root/delta?token=T1`,
+      `${BASE}/me/drive/root/delta?token=p2`
+    ]);
+    expect((vi.mocked(fetch).mock.calls[1][1] as RequestInit).headers).toMatchObject({
+      Authorization: 'Bearer TOKEN'
+    });
+  });
+
+  it('a 410 Gone, or a resyncRequired code under any status, is a resync', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(refusal(410, { error: { code: 'resyncRequired' } }));
+    expect(await readDelta('TOKEN', `${BASE}/me/drive/root/delta?token=T1`, 5)).toBe('resync');
+    vi.mocked(fetch).mockResolvedValueOnce(refusal(400, { error: { code: 'resyncRequired' } }));
+    expect(await readDelta('TOKEN', `${BASE}/me/drive/root/delta?token=T1`, 5)).toBe('resync');
+  });
+
+  it('past maxPages it stops and answers too-long', async () => {
+    vi.mocked(fetch).mockImplementation(async () =>
+      ok({ value: [{ id: 'x' }], '@odata.nextLink': `${BASE}/me/drive/root/delta?token=more` })
+    );
+    expect(await readDelta('TOKEN', `${BASE}/me/drive/root/delta?token=T1`, 3)).toBe('too-long');
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+
+  it('a link to another host is never followed: resync instead', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      ok({ value: [], '@odata.nextLink': 'https://evil.example/delta?token=p2' })
+    );
+    expect(await readDelta('TOKEN', `${BASE}/me/drive/root/delta?token=T1`, 5)).toBe('resync');
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it('other refusals throw as Graph errors (a 503 retryable, a 401 auth)', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      refusal(503, { error: { code: 'serviceNotAvailable' } })
+    );
+    const err = await readDelta('TOKEN', `${BASE}/me/drive/root/delta?token=T1`, 5).catch(
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).code).toBe('GRAPH_503');
+    expect((err as ProviderError).isNetworkError).toBe(true);
+
+    vi.mocked(fetch).mockResolvedValueOnce(
+      refusal(401, { error: { code: 'InvalidAuthenticationToken' } })
+    );
+    const auth = await readDelta('TOKEN', `${BASE}/me/drive/root/delta?token=T1`, 5).catch(
+      (e: unknown) => e
+    );
+    expect((auth as ProviderError).isAuthError).toBe(true);
   });
 });

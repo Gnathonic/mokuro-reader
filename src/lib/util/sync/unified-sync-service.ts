@@ -321,14 +321,15 @@ class UnifiedSyncService {
         }
       }
 
-      // Google Drive's listing moves only when this device lists or writes, and
-      // every step below reads it: other devices' root files, their copies,
-      // their history. Its change feed brings it current first — one small
-      // request when nothing changed (a full listing when the feed cannot
-      // answer). The other providers have no feed (MEGA's tree is live).
-      if (provider.type === 'google-drive') {
-        await cacheManager.getCache(provider.type)?.refreshFromChanges?.();
-      }
+      // A listing cache moves only when this device lists or writes, and every
+      // step below reads it: other devices' root files, their copies, their
+      // history. A cache with a change feed (Google Drive's changes.list,
+      // OneDrive's delta) brings it current first — one small request when
+      // nothing changed, a full listing when the feed cannot answer. The
+      // others have none (MEGA's tree is live; WebDAV and Local Folder offer
+      // no change token).
+      const listingCache = cacheManager.getCache(provider.type);
+      if (listingCache?.refreshFromChanges) await listingCache.refreshFromChanges();
       // What the server keeps per user can change under an open tab (a bunko
       // upgrade or rollback); the per-user files below follow it. Fails quietly.
       await refreshGates(provider);
