@@ -6,6 +6,7 @@
   import { get } from 'svelte/store';
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
   import PagedViewport from './PagedViewport.svelte';
+  import PageTurnZones from './PageTurnZones.svelte';
   import { pagedZoom } from '$lib/reader/paged-zoom';
   import { spreadContentSize } from '$lib/reader/paged-zoom-layout';
   import { setInstantAnimations } from '$lib/reader/animator';
@@ -1873,32 +1874,7 @@
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
       >
-        <button
-          aria-label="Previous page (left edge)"
-          class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
-          style:margin-left={`${$settings.edgeButtonWidth}px`}
-          onmousedown={mouseDown}
-          onmouseup={left}
-        ></button>
-        <button
-          aria-label="Next page (right edge)"
-          class="fixed -right-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
-          style:margin-right={`${$settings.edgeButtonWidth}px`}
-          onmousedown={mouseDown}
-          onmouseup={right}
-        ></button>
-        <button
-          aria-label="Previous page (bottom left)"
-          class="fixed top-full -left-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
-          onmousedown={mouseDown}
-          onmouseup={left}
-        ></button>
-        <button
-          aria-label="Next page (bottom right)"
-          class="fixed top-full -right-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
-          onmousedown={mouseDown}
-          onmouseup={right}
-        ></button>
+        <PageTurnZones variant="viewport" onPress={mouseDown} onLeft={left} onRight={right} />
         <div class="grid" style:filter={$imageFilter} id="manga-panel">
           {#key page}
             <div
@@ -1943,20 +1919,7 @@
     </div>
 
     {#if !$settings.mobile}
-      <button
-        aria-label="Previous page (left edge)"
-        onmousedown={mouseDown}
-        onmouseup={left}
-        class="absolute top-0 left-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
-        style:width={`${$settings.edgeButtonWidth}px`}
-      ></button>
-      <button
-        aria-label="Next page (right edge)"
-        onmousedown={mouseDown}
-        onmouseup={right}
-        class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
-        style:width={`${$settings.edgeButtonWidth}px`}
-      ></button>
+      <PageTurnZones variant="screen" onPress={mouseDown} onLeft={left} onRight={right} />
     {/if}
   {/if}
 

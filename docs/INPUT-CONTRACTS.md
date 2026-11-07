@@ -134,6 +134,16 @@ Wheel zoom has no release event, so a fine stream settles on an idle
 timeout (`WHEEL_ZOOM_SETTLE_MS`) — that settle is what clamps the paged
 camera into bounds and reports reading progress.
 
+### Tap-to-turn zones are optional (#54)
+
+Paged mode's invisible page-turn buttons (`PageTurnZones.svelte`: the page
+margins, the bottom corners, the screen-edge strips) exist only while
+`tapPageEdgesToTurn` is on (default). Off, they are not rendered, so a click
+there lands on whatever is underneath — the page surface still toggles the
+overlays, the margins outside it are inert. Swipes, keys, wheel and quick
+actions never ran through these buttons and are unaffected. The scroll readers
+have no such zones.
+
 ### Swipe-to-flip is edge-gated (#186)
 
 A touch swipe flips the page only if no pannable content was hidden in the

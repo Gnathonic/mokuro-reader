@@ -16,7 +16,7 @@
   let isContinuous = $derived($settings.continuousScroll);
 
   // Keys hidden in continuous scroll mode (not applicable)
-  const continuousHidden = new Set<SettingsKey>(['bounds', 'mobile']);
+  const continuousHidden = new Set<SettingsKey>(['bounds', 'mobile', 'tapPageEdgesToTurn']);
 
   let toggles = $derived(
     (
@@ -39,6 +39,13 @@
         { key: 'charCount', text: 'Show character count', value: $settings.charCount },
         { key: 'bounds', text: 'Bounds', value: $settings.bounds },
         { key: 'mobile', text: 'Mobile', value: $settings.mobile },
+        {
+          key: 'tapPageEdgesToTurn',
+          text: 'Tap page edges to turn pages',
+          value: $settings.tapPageEdgesToTurn !== false,
+          description:
+            'Turn off if tapping empty space or the screen edge turns pages by accident. Swipes, keys and the wheel still work.'
+        },
         { key: 'showTimer', text: 'Show timer', value: $settings.showTimer },
         { key: 'quickActions', text: 'Show quick actions', value: $settings.quickActions },
         {

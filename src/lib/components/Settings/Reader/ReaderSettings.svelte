@@ -368,10 +368,12 @@
           bind:value={swipeThresholdValue}
         />
       </div>
-      <div>
-        <Label>Edge button width</Label>
-        <Range onchange={onWidthChange} min={1} max={100} bind:value={edgeButtonWidthValue} />
-      </div>
+      {#if $settings.tapPageEdgesToTurn !== false}
+        <div>
+          <Label>Edge button width</Label>
+          <Range onchange={onWidthChange} min={1} max={100} bind:value={edgeButtonWidthValue} />
+        </div>
+      {/if}
     {/if}
   </div>
 </AccordionItem>

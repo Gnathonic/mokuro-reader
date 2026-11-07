@@ -52,6 +52,19 @@ describe('pagedGap migration', () => {
   });
 });
 
+describe('tapPageEdgesToTurn migration (#54)', () => {
+  it('reads as on for a profile saved before the setting existed', () => {
+    const migrated = migrateProfiles({ Old: { edgeButtonWidth: 1 } } as any);
+    expect(migrated.Old.tapPageEdgesToTurn).toBe(true);
+    expect(migrated.Old.edgeButtonWidth).toBe(1);
+  });
+
+  it('keeps an explicit off', () => {
+    const migrated = migrateProfiles({ Off: { tapPageEdgesToTurn: false } } as any);
+    expect(migrated.Off.tapPageEdgesToTurn).toBe(false);
+  });
+});
+
 describe('grayscaleActive', () => {
   beforeEach(() => {
     // Known baseline: manual mode, filter off
