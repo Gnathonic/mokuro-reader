@@ -48,13 +48,13 @@
   import { cleanupLegacyEngineCredentials } from '$lib/settings/engine-credentials-cleanup';
   import { get } from 'svelte/store';
   import { loadWebFonts } from '$lib/util/web-fonts';
-  import { CLOUD_TEST_HOOKS } from '$lib/util/sync/cloud-test-hooks';
 
   if (browser) void loadWebFonts();
 
   // The interop rig's driver (`__mokuroInterop`), in a hooked build only: the
-  // constant is false in production, so the import and its chunk are dropped.
-  if (CLOUD_TEST_HOOKS && browser) {
+  // switch is a literal false in production, so the import and its chunk are
+  // dropped.
+  if (__MOKURO_TEST_HOOKS__ && browser) {
     import('$lib/interop/rig-driver')
       .then((m) => m.install())
       .catch((error) => console.error('[interop] rig driver failed to load', error));

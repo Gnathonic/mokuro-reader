@@ -2,7 +2,6 @@ import { File as MegaFile, Storage } from 'megajs';
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
-import { CLOUD_TEST_HOOKS } from '../../cloud-test-hooks';
 
 /**
  * The server timestamp of a completed-upload node, as an ISO string — the
@@ -58,7 +57,7 @@ async function getUploadStorage(session: string, gateway?: string): Promise<Stor
       options: {
         ...(parsed.options ?? {}),
         // A test build's simulator gateway, passed in the worker credentials.
-        ...(CLOUD_TEST_HOOKS && gateway ? { gateway } : {}),
+        ...(__MOKURO_TEST_HOOKS__ && gateway ? { gateway } : {}),
         keepalive: false
       }
     }) as any;
@@ -92,7 +91,7 @@ function getDownloadApi(sid: string, gateway?: string): any {
       autoload: false,
       keepalive: false,
       // A test build's simulator gateway, passed in the worker credentials.
-      ...(CLOUD_TEST_HOOKS && gateway ? { gateway } : {})
+      ...(__MOKURO_TEST_HOOKS__ && gateway ? { gateway } : {})
     } as any);
     storage.api.sid = sid;
     api = storage.api;
@@ -231,7 +230,9 @@ export const megaCore: CloudProviderCore = {
     const nodeId = requireCredentialString(credentials, 'nodeId', 'MEGA node id');
     const fileKey = requireCredentialString(credentials, 'fileKey', 'MEGA file key');
     const gateway =
-      CLOUD_TEST_HOOKS && typeof credentials.gateway === 'string' ? credentials.gateway : undefined;
+      __MOKURO_TEST_HOOKS__ && typeof credentials.gateway === 'string'
+        ? credentials.gateway
+        : undefined;
     const api = getDownloadApi(sid, gateway);
 
     return await new Promise<ArrayBuffer>((resolve, reject) => {
@@ -283,7 +284,9 @@ export const megaCore: CloudProviderCore = {
   }): Promise<UploadFileResult> {
     const session = requireCredentialString(credentials, 'megaSession', 'MEGA session');
     const gateway =
-      CLOUD_TEST_HOOKS && typeof credentials.gateway === 'string' ? credentials.gateway : undefined;
+      __MOKURO_TEST_HOOKS__ && typeof credentials.gateway === 'string'
+        ? credentials.gateway
+        : undefined;
     const storage = await getUploadStorage(session, gateway);
 
     try {

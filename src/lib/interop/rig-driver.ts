@@ -9,9 +9,9 @@
  * implementation of it. What a method returns is plain JSON (it crosses
  * `page.evaluate`).
  *
- * Loaded only by `+layout.svelte` under `CLOUD_TEST_HOOKS` (Vitest, or a
- * `vite build --mode interop`), by dynamic import, so a production build drops
- * this module; `scripts/check-no-test-hooks.mjs` bans its names from the bundle.
+ * Loaded only by `+layout.svelte` under `__MOKURO_TEST_HOOKS__`
+ * (Vitest, or a `vite build --mode interop`), by dynamic import, so a
+ * production build drops this module; `scripts/check-no-test-hooks.mjs` bans its names from the bundle.
  */
 import { derived, get } from 'svelte/store';
 import { db } from '$lib/catalog/db';

@@ -271,7 +271,6 @@ export class FilesystemProvider implements SyncProvider {
     dir: FileSystemDirectoryHandle,
     prefix: string
   ): AsyncGenerator<{ path: string; fileHandle: FileSystemFileHandle }> {
-    // @ts-expect-error — values() is defined on FileSystemDirectoryHandle at runtime; TS lib may not have it
     for await (const entry of dir.values()) {
       const entryPath = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.kind === 'directory') {
@@ -609,7 +608,6 @@ export class FilesystemProvider implements SyncProvider {
     if (!normalized) return;
     try {
       const dir = await this.resolveDirectoryHandle(normalized, { create: false });
-      // @ts-expect-error — values() is defined on FileSystemDirectoryHandle at runtime
       for await (const _entry of dir.values()) {
         void _entry;
         return; // any entry → not empty → keep

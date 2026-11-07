@@ -6,7 +6,7 @@ import type {
 } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { driveApiBase, driveUploadBase } from '../../providers/google-drive/constants';
-import { CLOUD_TEST_HOOKS, credentialBase } from '../../cloud-test-hooks';
+import { credentialBase } from '../../cloud-test-hooks';
 import {
   DriveHttpError,
   driveHttpErrorFromResponse,
@@ -198,7 +198,7 @@ export const googleDriveCore: CloudProviderCore = {
   async downloadFile({ fileId, credentials, onProgress, refreshAuth }): Promise<ArrayBuffer> {
     const withToken = renewingToken(credentials, refreshAuth);
     // A worker's bases come in its credentials (see cloudTestCredentials).
-    const api = CLOUD_TEST_HOOKS
+    const api = __MOKURO_TEST_HOOKS__
       ? credentialBase(credentials, 'driveApi', driveApiBase())
       : driveApiBase();
 
@@ -294,7 +294,7 @@ export const googleDriveCore: CloudProviderCore = {
     // (`name`, `parents`) come back with the last PUT for free — no follow-up
     // metadata request needed.
     const responseFields = 'fields=id,name,size,modifiedTime,version,parents';
-    const upload = CLOUD_TEST_HOOKS
+    const upload = __MOKURO_TEST_HOOKS__
       ? credentialBase(credentials, 'driveUpload', driveUploadBase())
       : driveUploadBase();
     const uploadBase = existingFileId

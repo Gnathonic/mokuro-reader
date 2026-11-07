@@ -8,7 +8,7 @@ import type {
   SilentRequest
 } from '@azure/msal-browser';
 import { ONEDRIVE_CONFIG } from './constants';
-import { CLOUD_TEST_HOOKS, cloudTestToken } from '../../cloud-test-hooks';
+import { cloudTestToken } from '../../cloud-test-hooks';
 
 type Msal = typeof import('@azure/msal-browser');
 
@@ -54,7 +54,7 @@ class OneDriveTokenManager {
   async initialize(): Promise<void> {
     if (!browser) return;
     // An injected token needs no MSAL: no client id, no authority to reach.
-    if (CLOUD_TEST_HOOKS ? cloudTestToken('onedrive') !== null : false) return;
+    if (__MOKURO_TEST_HOOKS__ ? cloudTestToken('onedrive') !== null : false) return;
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
@@ -114,7 +114,7 @@ class OneDriveTokenManager {
   }
 
   isAuthenticated(): boolean {
-    if (CLOUD_TEST_HOOKS && cloudTestToken('onedrive') !== null) return true;
+    if (__MOKURO_TEST_HOOKS__ && cloudTestToken('onedrive') !== null) return true;
     return this.account !== null && !!this.instance;
   }
 
@@ -208,7 +208,7 @@ class OneDriveTokenManager {
    * required (the caller should prompt the user via reauthenticate()).
    */
   async getAccessToken(): Promise<string> {
-    const injected = CLOUD_TEST_HOOKS ? cloudTestToken('onedrive') : null;
+    const injected = __MOKURO_TEST_HOOKS__ ? cloudTestToken('onedrive') : null;
     if (injected !== null) return injected;
     await this.initialize();
     if (!this.instance || !this.account || !this.msal) {
