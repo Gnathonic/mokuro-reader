@@ -7,7 +7,8 @@
 - Reading history syncs across devices (mokuro-bunko needs 0.7.8)
 - Volumes open where another device stopped (mokuro-bunko needs 0.7.8)
 - Tap "Still reading" when the timer stops on a slow page
-- Page brightness, contrast and a magazine print effect (#256)
+- Page brightness and contrast controls (#256)
+- Magazine print effect for black-and-white pages (@ChristopherFritz)
 - Review image-only imports one series at a time (#285)
 - Google Drive stays signed in instead of reconnecting hourly
 - Sign out of Google Drive on one device, or everywhere
