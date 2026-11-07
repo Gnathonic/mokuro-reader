@@ -34,6 +34,11 @@
 //                        <style>, which no hash in this policy would cover)
 //   fonts.googleapis.com the Noto Sans JP stylesheet fallback (`web-fonts.ts`)
 //   accounts.google.com/gsi/style        the stylesheet GIS adds for itself
+//   cropperjs 2 (the cover and Anki crops) styles its elements' shadow roots
+//   through constructed (adopted) stylesheets, which style-src does not govern.
+//   Only a browser without them (Safari before 16.4) gets its fallback, a
+//   <style> in each shadow root, which this policy refuses under enforce: there
+//   the crop's frame, handles and shade are unstyled (see Browsers below).
 // style-src-attr 'unsafe-inline'
 //   Svelte `style:` bindings, Flowbite and floating-ui position everything with
 //   inline style attributes. An attribute cannot run script.
@@ -74,7 +79,8 @@
 // Older Safari (iOS/iPadOS 15 devices that cannot update) ignores what it does
 // not know: under enforce it would refuse WebAssembly — in the worker policy
 // too, which vercel.json enforces whatever CSP_MODE says — and every inline
-// style attribute. Safari below 16 is knowingly unsupported under enforce;
+// style attribute. Safari below 16 is knowingly unsupported under enforce
+// (and below 16.4 the image crops lose their styles, see style-src above);
 // check one such device by hand, if one is still to be supported.
 //
 // Not allowed: the Vercel Toolbar. Vercel injects it (scripts, frames and a

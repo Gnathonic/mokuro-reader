@@ -6,7 +6,15 @@ import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { isAppViolation, type CspViolation } from '../src/lib/security/csp-violations';
 import { vercelHeadersFor } from './helpers/vercel-headers';
-import { writeSyntheticVolume, type SyntheticVolume } from './helpers/synthetic-volume';
+import { writeSyntheticVolume } from './helpers/synthetic-volume';
+import { importVolume } from './helpers/import-volume';
+import {
+  ankiCropFlow,
+  coverCropFlow,
+  enableAnkiCapture,
+  recordCanvasBlobs,
+  stubAnkiConnect
+} from './helpers/crop-flows';
 
 /**
  * The shell's Content-Security-Policy, per CSP_MODE, in a PRODUCTION build
@@ -218,38 +226,6 @@ async function boot(page: Page, origin: string) {
     .toBe('#/catalog');
 }
 
-async function importVolume(page: Page, volume: SyntheticVolume) {
-  // The navbar's upload icon (stats, progress tracker, settings, upload, cloud).
-  await page.locator('nav div.md\\:order-2 > button').nth(3).click();
-  const chooser = page.waitForEvent('filechooser');
-  await page.locator('dialog button', { hasText: 'choose files' }).click();
-  await (await chooser).setFiles([volume.mokuro, volume.cbz]);
-  await page.locator('dialog button', { hasText: /^\s*Import\s*$/ }).click();
-  // Saved = its image row exists. Read IndexedDB directly: a production build
-  // has no `/src/...` module to import.
-  await expect
-    .poll(
-      () =>
-        page.evaluate(
-          (uuid) =>
-            new Promise<boolean>((resolve) => {
-              const open = indexedDB.open('mokuro_v3');
-              open.onerror = () => resolve(false);
-              open.onsuccess = () => {
-                const db = open.result;
-                if (!db.objectStoreNames.contains('volume_files')) return resolve(false);
-                const get = db.transaction('volume_files').objectStore('volume_files').get(uuid);
-                get.onsuccess = () => resolve(get.result != null);
-                get.onerror = () => resolve(false);
-              };
-            }),
-          volume.volumeUuid
-        ),
-      { timeout: 60_000, message: 'the import never saved the volume' }
-    )
-    .toBe(true);
-}
-
 /** The colour of one screen pixel, from a 1×1 PNG screenshot (any filter type
  * reduces to the raw bytes for the first pixel of the first row). */
 async function pixel(page: Page, x: number, y: number): Promise<[number, number, number]> {
@@ -426,6 +402,37 @@ for (const mode of MODES) {
             .map((v) => `${v.context} ${v.blockedURI}`)
         )
         .toEqual([`worker ${workerPath} ${gadget}`]);
+      expect(consoleLog.csp).toEqual([]);
+    });
+
+    // cropperjs 2's elements style themselves from their shadow roots. Through
+    // constructed (adopted) stylesheets that is outside style-src altogether; a
+    // <style> in a shadow root (its fallback where those are missing) would need
+    // 'unsafe-inline'. The flows check the canvas got its styles that way.
+    test('the cover crop and the Anki crop: work, and no app violations', async ({
+      context,
+      page
+    }) => {
+      test.setTimeout(180_000);
+      const consoleLog = watchConsole(page);
+      await routeLikeVercel(context, origin);
+      await recordCanvasBlobs(page);
+      const anki = await stubAnkiConnect(page);
+      await boot(page, origin);
+      await enableAnkiCapture(page);
+      await boot(page, origin);
+      const volume = writeSyntheticVolume('CspCrop', 2, [0, 0, 128], {
+        width: 1200,
+        height: 900,
+        gradient: true
+      });
+      await importVolume(page, volume);
+
+      await coverCropFlow(page, volume);
+      await ankiCropFlow(page, volume, anki);
+
+      const appViolations = (await violations(page)).filter(isAppViolation);
+      expect(appViolations, JSON.stringify(appViolations, null, 2)).toEqual([]);
       expect(consoleLog.csp).toEqual([]);
     });
 
