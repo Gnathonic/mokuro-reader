@@ -72,7 +72,6 @@ vi.mock('$lib/util/sync/providers/filesystem/feature-detect', () => ({
 vi.mock('$lib/util/sync/providers/google-drive/auth-backend', () => ({
   backendAuthEnabled: () => true
 }));
-vi.mock('$lib/components/Devices/DevicesSettings.svelte', () => ({ default: () => {} }));
 
 import CloudView from '../CloudView.svelte';
 import { providerManager } from '$lib/util/sync';

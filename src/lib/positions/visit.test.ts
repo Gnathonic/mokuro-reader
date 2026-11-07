@@ -100,8 +100,7 @@ async function turn(page: number, after = 0, { last = page, progress = page }: V
       orientation: 'portrait',
       viewport: { w: 1, h: 1 }
     },
-    since: clock,
-    answer: null
+    since: clock
   });
   updateProgress('v', progress, progress * 300, progress === LAST_PAGE);
   await flush();
@@ -190,8 +189,7 @@ describe('look-up visits (live)', () => {
     open = { page: 40, last: 40, since: clock };
     liveView.set({
       view: { ...get(liveView)!.view, first_page: 40, last_page: 40, chars_before: 39 * 300 },
-      since: clock,
-      answer: null
+      since: clock
     });
     await land(ended);
     updateProgress('v', 40, 12_000, false);

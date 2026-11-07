@@ -411,7 +411,9 @@ describe('VolumeItem menu "Delete from cloud"', () => {
     await fireEvent.mouseDown(
       container.querySelector(`#volume-menu-${v.volume_uuid}`) as HTMLElement
     );
-    return { v, item: await findByText('Delete from cloud') };
+    // The menu opens through Flowbite's popper a few ticks later. Under a full
+    // parallel suite that took longer than findBy's default 1 s (2 of 4 runs).
+    return { v, item: await findByText('Delete from cloud', {}, { timeout: 5000 }) };
   }
 
   it('asks first, and deletes nothing on the click', async () => {

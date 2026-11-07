@@ -7,7 +7,8 @@ import { WebDavStub } from './helpers/webdav-stub';
  * time and characters come from the views the reader records, a fast flip
  * through pages is skimmed (not read), the reader timer runs on the same
  * clock and pauses, and two devices that share a server compute the same
- * figures and share the idle cutoff setting.
+ * figures and share the "Stop the timer after" setting. A page left open past
+ * that cutoff, unanswered, counts up to the cutoff.
  */
 
 const STUB = 'http://stub.test';
@@ -169,45 +170,67 @@ test('reading is counted from the views the reader records; a fast flip is skimm
   expect(result.volume.timeMs).toBeLessThan(20000);
 });
 
+/** The settings drawer with its Reader section open, from the catalog's navbar. */
+async function openTimerSettings(page: Page) {
+  await page.evaluate(() => (window.location.hash = '#/catalog'));
+  // The navbar's settings button carries no label; it follows Progress Tracker.
+  await page.locator('button[title="Progress Tracker"] + button').click();
+  const drawer = page.locator('#settings');
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole('button', { name: 'Reader', exact: true }).click();
+  await expect(drawer.getByRole('heading', { name: 'Reading timer', exact: true })).toBeVisible();
+  return drawer;
+}
+
 test('two devices compute the same figures and share the idle cutoff', async ({ browser }) => {
   const stub = new WebDavStub();
   const laptop = await device(browser, stub);
   const phone = await device(browser, stub);
 
-  // The laptop reads, and sets a manual idle cutoff.
+  // The laptop stops the timer after 15 minutes, in its settings.
+  const settings = await openTimerSettings(laptop);
+  const stopAfter = settings.getByLabel('Stop the timer after');
+  await expect(stopAfter).toHaveValue('auto');
+  await stopAfter.selectOption({ label: '15 minutes' });
+  await expect(stopAfter).toHaveValue('15');
+
+  // It has a pace (30 views of another volume at 200 ms per character), reads
+  // three pages, and leaves a fourth open 20 minutes without answering: that
+  // pause counts up to the cutoff (15 min), not the minute a page takes.
   await laptop.evaluate(async (VOL) => {
     const { recordEvent } = await import('/src/lib/reading-history/record.ts');
     const { updateProgress } = await import('/src/lib/settings/volume-data.ts');
-    const { setIdleOverride } = await import('/src/lib/settings/tracking-data.ts');
-    for (let p = 1; p <= 3; p++) {
-      await recordEvent({
+    const view = (volume: string, p: number, dwell_ms: number) =>
+      recordEvent({
         kind: 'page',
-        volume: VOL,
+        volume,
         first_page: p,
         last_page: p,
         page_chars: [300],
         chars_before: (p - 1) * 300,
-        dwell_ms: 60_000,
+        dwell_ms,
         layout: 'single',
         orientation: 'portrait',
         viewport: { w: 400, h: 800 }
       });
+    for (let p = 1; p <= 30; p++) await view('e2e-stats-pace', p, 60_000);
+    for (let p = 1; p <= 4; p++) {
+      await view(VOL, p, p === 4 ? 20 * 60_000 : 60_000);
       updateProgress(VOL, p, p * 300);
     }
-    setIdleOverride(12);
   }, VOL);
+  await expect
+    .poll(async () => (await figures(laptop)).volume.timeMs, { timeout: 15000 })
+    .toBe(3 * 60_000 + 15 * 60_000);
   await sync(laptop);
   await sync(phone);
 
+  // The phone counts the same, which it can only do on the laptop's cutoff
+  // (automatic would cap that pause at 3 × 60 s).
   await expect
     .poll(async () => (await figures(phone)).volume, { timeout: 15000 })
     .toEqual((await figures(laptop)).volume);
-  expect((await figures(phone)).volume).toMatchObject({ timeMs: 180_000, chars: 900 });
-  const override = await phone.evaluate(async () => {
-    const { idleSettings } = await import('/src/lib/settings/tracking-data.ts');
-    let value: { overrideMs: number | null } | undefined;
-    idleSettings.subscribe((s) => (value = s))();
-    return value!.overrideMs;
-  });
-  expect(override).toBe(12 * 60_000);
+  expect((await figures(phone)).volume).toMatchObject({ timeMs: 18 * 60_000, chars: 1200 });
+  const phoneSettings = await openTimerSettings(phone);
+  await expect(phoneSettings.getByLabel('Stop the timer after')).toHaveValue('15');
 });

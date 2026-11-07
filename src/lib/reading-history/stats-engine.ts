@@ -12,9 +12,12 @@ import { eventKey, lookupVisits } from './visits';
  * - **Adaptive cutoff.** A view's expected dwell is its visible characters ×
  *   one global pace (the median ms per character of recent views); its cap is
  *   `clamp(k × expected, FLOOR, CEILING)`, or the manual override. A view over
- *   its cap is a long pause: it counts TYPICAL time (`expected`, at least the
- *   floor) until the user answers, then what the latest `resolve` targeting
- *   it says (`countedDwell`) — an answer applies whatever the cap is now.
+ *   its cap is a long pause: it counts up to its cap (the released timer's
+ *   rule: time on a page stops counting at the cutoff) unless the user
+ *   answered, then what the latest `resolve` targeting it says
+ *   (`countedDwell`) — an answer applies whatever the cap is now. `typical`
+ *   answers (expected time, at least the floor) are no longer offered; ones
+ *   already recorded still count that way.
  * - **Skips.** A view faster than `SKIP_CPM` is a skip: its time counts, but
  *   it never feeds speed, and pages only skip views showed are skipped, not
  *   read.
@@ -301,11 +304,11 @@ export function typicalDwell(chars: number, pace: number | null, cap: number): n
 }
 
 /**
- * What a view's dwell counts, given the user's answer (`null` = none yet):
- * `full` all of it, `none` nothing, `typical` at most its typical time. An
- * unanswered view counts in full within its cap and typical over it
- * (provisional). An answer holds whatever the cap is now, so a pace change
- * never undoes a "don't count".
+ * What a view's dwell counts, given the user's answer (`null` = none):
+ * `full` all of it, `none` nothing, `typical` at most its typical time (an
+ * answer no longer offered, still honoured where recorded). An unanswered
+ * view counts up to its cap. An answer holds whatever the cap is now, so a
+ * pace change never undoes a "don't count".
  */
 export function countedDwell(
   dwell: number,
@@ -315,8 +318,8 @@ export function countedDwell(
 ): number {
   if (answer === 'full') return dwell;
   if (answer === 'none') return 0;
-  if (answer === 'typical' || dwell > cap) return Math.min(dwell, typical);
-  return dwell;
+  if (answer === 'typical') return Math.min(dwell, typical);
+  return Math.min(dwell, cap);
 }
 
 /**

@@ -21,15 +21,10 @@ export function viewKey(view: ViewDescriptor): string {
   return `${view.volume}|${view.first_page}|${view.last_page}|${view.layout}`;
 }
 
-/**
- * The view on screen now and when it opened (the live timer's clock).
- * `answer` is the long-pause answer preset for it (the standing default,
- * `setAnswer`): the live timer counts the open view by it. `null` = none.
- */
+/** The view on screen now and when it opened (the live timer's clock). */
 export interface OpenView {
   view: ViewDescriptor;
   since: number;
-  answer: PauseCount | null;
 }
 
 /**
@@ -38,21 +33,13 @@ export interface OpenView {
  *
  * A long-pause answer rides out with its view's event (`emit`'s third
  * argument), stamped with the time it was given, so the recorder can write the
- * page and its `resolve` in one transaction:
- * - `setAnswer` presets the open view (the standing default) — written when the
- *   view ends however it ends, one event however long the pause; `null`
- *   withdraws it (the cap grew past the time so far);
- * - `split` is a live answer: the paused view ends NOW with it, and the same
- *   view reopens at the answer time, so the time after it counts normally and
- *   a later pause on the same pages is prompted afresh.
+ * page and its `resolve` in one transaction. `split` is that live answer: the
+ * paused view ends NOW with it (or unanswered), and the same view reopens at
+ * the answer time, so the time after it counts normally and a later pause on
+ * the same pages is prompted afresh.
  */
 export class ViewTracker {
-  private open: {
-    view: ViewDescriptor;
-    key: string;
-    since: number;
-    answer: { count: PauseCount; t: number } | null;
-  } | null = null;
+  private open: { view: ViewDescriptor; key: string; since: number } | null = null;
 
   constructor(
     private readonly emit: (
@@ -77,35 +64,27 @@ export class ViewTracker {
   }
 
   /**
-   * Preset the open view's answer (the standing default), or withdraw it with
-   * `null`; no-op with nothing open, or when withdrawing nothing.
+   * End the open view with this live answer (`null`: unanswered, so it counts
+   * up to its cutoff) and reopen the same view at `now`.
    */
-  setAnswer(count: PauseCount | null, now = Date.now()): void {
-    if (!this.open) return;
-    if (count === null && this.open.answer === null) return;
-    this.open.answer = count === null ? null : { count, t: now };
-    this.onChange?.({ view: this.open.view, since: this.open.since, answer: count });
-  }
-
-  /** End the open view with this live answer and reopen the same view at `now`. */
-  split(now: number, count: PauseCount): void {
+  split(now: number, count: PauseCount | null): void {
     if (!this.open) return;
     const { view, key } = this.open;
-    this.end(now, { count, t: now });
+    this.end(now, count === null ? null : { count, t: now });
     this.start(view, key, now);
   }
 
   private start(view: ViewDescriptor, key: string, now: number): void {
-    this.open = { view, key, since: now, answer: null };
-    this.onChange?.({ view, since: now, answer: null });
+    this.open = { view, key, since: now };
+    this.onChange?.({ view, since: now });
   }
 
-  /** `live` (a split's answer) wins over the preset. */
-  private end(now: number, live: { count: PauseCount; t: number } | null = null): boolean {
+  /** `answer`: a split's live answer; a view that just ends has none. */
+  private end(now: number, answer: { count: PauseCount; t: number } | null = null): boolean {
     if (!this.open) return false;
-    const { view, since, answer } = this.open;
+    const { view, since } = this.open;
     this.open = null;
-    this.emit({ kind: 'page', ...view, dwell_ms: Math.max(0, now - since) }, since, live ?? answer);
+    this.emit({ kind: 'page', ...view, dwell_ms: Math.max(0, now - since) }, since, answer);
     return true;
   }
 }

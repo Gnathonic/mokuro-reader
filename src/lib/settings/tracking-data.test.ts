@@ -15,12 +15,12 @@ import {
   mergeDeviceLabels,
   mergeTrackingSections,
   parseTrackingSection,
-  pauseDefault,
+  askOnLongPause,
   renameDevice,
   resetIdleK,
   setDeviceClass,
   setIdleOverride,
-  setPauseDefault,
+  setAskOnLongPause,
   setTrackingStates,
   trackingState,
   unmergeDevice,
@@ -58,30 +58,43 @@ describe('parseTrackingSection', () => {
   });
 
   it('keeps a pauses entry without an idle one', () => {
-    expect(parseTrackingSection({ pauses: { default: 'typical', lastUpdated: T1 } })).toEqual({
-      pauses: { default: 'typical', lastUpdated: T1 }
+    expect(parseTrackingSection({ pauses: { ask: false, lastUpdated: T1 } })).toEqual({
+      pauses: { ask: false, lastUpdated: T1 }
     });
   });
 
   it('parses each key on its own: a junk one never takes the other with it', () => {
-    expect(parseTrackingSection({ idle: 3, pauses: { default: 'none', lastUpdated: T1 } })).toEqual(
-      {
-        pauses: { default: 'none', lastUpdated: T1 }
-      }
-    );
+    expect(parseTrackingSection({ idle: 3, pauses: { ask: false, lastUpdated: T1 } })).toEqual({
+      pauses: { ask: false, lastUpdated: T1 }
+    });
     expect(parseTrackingSection({ idle: { k: 2, lastUpdated: T1 }, pauses: 'full' })).toEqual({
       idle: { k: 2, lastUpdated: T1 }
     });
   });
 
-  it('reads a junk or missing standing default as "ask"', () => {
-    expect(parseTrackingSection({ pauses: { default: 'sometimes', lastUpdated: T1 } })).toEqual({
-      pauses: { default: null, lastUpdated: T1 }
+  it('reads a junk or missing "ask" as asking', () => {
+    expect(parseTrackingSection({ pauses: { ask: 'sometimes', lastUpdated: T1 } })).toEqual({
+      pauses: { ask: true, lastUpdated: T1 }
     });
-    expect(parseTrackingSection({ pauses: { lastUpdated: T1 } }).pauses?.default).toBeNull();
-    expect(parseTrackingSection({ pauses: { default: 'full' } }).pauses?.lastUpdated).toBe(
+    expect(parseTrackingSection({ pauses: { lastUpdated: T1 } }).pauses?.ask).toBe(true);
+    expect(parseTrackingSection({ pauses: { ask: false } }).pauses?.lastUpdated).toBe(
       new Date(0).toISOString()
     );
+  });
+
+  it('reads an older standing answer as "don\'t ask": the cutoff counts, as that build did not ask', () => {
+    for (const count of ['full', 'typical', 'none']) {
+      expect(parseTrackingSection({ pauses: { default: count, lastUpdated: T1 } })).toEqual({
+        pauses: { ask: false, lastUpdated: T1 }
+      });
+    }
+    expect(parseTrackingSection({ pauses: { default: null, lastUpdated: T1 } })).toEqual({
+      pauses: { ask: true, lastUpdated: T1 }
+    });
+    // A current entry wins over a leftover older field beside it.
+    expect(
+      parseTrackingSection({ pauses: { ask: true, default: 'none', lastUpdated: T1 } }).pauses?.ask
+    ).toBe(true);
   });
 
   it('uses the reserved key name', () => {
@@ -113,36 +126,36 @@ describe('mergeTrackingSections', () => {
     const merged = mergeTrackingSections(
       {
         idle: { override_minutes: 8, lastUpdated: T2 },
-        pauses: { default: 'full', lastUpdated: T1 }
+        pauses: { ask: true, lastUpdated: T1 }
       },
       {
         idle: { override_minutes: 15, lastUpdated: T1 },
-        pauses: { default: 'none', lastUpdated: T2 }
+        pauses: { ask: false, lastUpdated: T2 }
       }
     );
     expect(merged).toEqual({
       idle: { override_minutes: 8, lastUpdated: T2 },
-      pauses: { default: 'none', lastUpdated: T2 }
+      pauses: { ask: false, lastUpdated: T2 }
     });
   });
 
   it('a bogus pauses stamp forfeits only that key', () => {
     const raw = {
       idle: { override_minutes: 15, lastUpdated: T2 },
-      pauses: { default: 'none', lastUpdated: '2999-01-01T00:00:00.000Z' }
+      pauses: { ask: false, lastUpdated: '2999-01-01T00:00:00.000Z' }
     };
     const bogus = detectBogusTrackingKeys(raw);
     expect([...bogus]).toEqual(['pauses']);
     const merged = mergeTrackingSections(
       {
         idle: { override_minutes: 8, lastUpdated: T1 },
-        pauses: { default: 'full', lastUpdated: T1 }
+        pauses: { ask: true, lastUpdated: T1 }
       },
       parseTrackingSection(raw),
       bogus
     );
     expect(merged.idle?.override_minutes).toBe(15);
-    expect(merged.pauses?.default).toBe('full');
+    expect(merged.pauses?.ask).toBe(true);
   });
 });
 
@@ -199,34 +212,34 @@ describe('widening k', () => {
   });
 });
 
-describe('the standing pause default', () => {
-  it('is "ask" until set, then follows the setting back to "ask"', () => {
-    expect(get(pauseDefault)).toBeNull();
-    setPauseDefault('typical');
-    expect(get(pauseDefault)).toBe('typical');
-    setPauseDefault(null);
-    expect(get(pauseDefault)).toBeNull();
-    // "Ask" is an explicit choice, so it beats an older default from another device.
-    expect(get(trackingState).pauses?.default).toBeNull();
+describe('asking about long pauses', () => {
+  it('asks until turned off, then follows the setting back on', () => {
+    expect(get(askOnLongPause)).toBe(true);
+    setAskOnLongPause(false);
+    expect(get(askOnLongPause)).toBe(false);
+    setAskOnLongPause(true);
+    expect(get(askOnLongPause)).toBe(true);
+    // Turning it back on is written, so it beats an older "off" from another device.
+    expect(get(trackingState).pauses?.ask).toBe(true);
   });
 
   it('never touches the idle entry', () => {
     setTrackingStates({ idle: { k: 4, lastUpdated: T1 } });
-    setPauseDefault('none');
+    setAskOnLongPause(false);
     expect(get(trackingState).idle).toEqual({ k: 4, lastUpdated: T1 });
   });
 
   it('stamps past a future stamp already stored', () => {
-    setTrackingStates({ pauses: { default: 'full', lastUpdated: '2026-12-31T00:00:00.000Z' } });
-    setPauseDefault(null);
+    setTrackingStates({ pauses: { ask: false, lastUpdated: '2026-12-31T00:00:00.000Z' } });
+    setAskOnLongPause(true);
     expect(get(trackingState).pauses!.lastUpdated > '2026-12-31T00:00:00.000Z').toBe(true);
   });
 
   it('survives its own wire format and persists locally', () => {
-    setPauseDefault('full');
+    setAskOnLongPause(false);
     widenIdleK(5);
     const stored = JSON.parse(window.localStorage.getItem('tracking-data')!);
-    expect(stored.pauses.default).toBe('full');
+    expect(stored.pauses.ask).toBe(false);
     expect(parseTrackingSection(stored)).toEqual(get(trackingState));
   });
 });
@@ -265,8 +278,8 @@ describe('tracking.devices: parse', () => {
   it('omits devices when nothing valid is left, and never takes another key with it', () => {
     expect(parseTrackingSection({ devices: { 'legacy:vol-1': { lastUpdated: T1 } } })).toEqual({});
     expect(
-      parseTrackingSection({ devices: ['dev-a'], pauses: { default: 'full', lastUpdated: T1 } })
-    ).toEqual({ pauses: { default: 'full', lastUpdated: T1 } });
+      parseTrackingSection({ devices: ['dev-a'], pauses: { ask: false, lastUpdated: T1 } })
+    ).toEqual({ pauses: { ask: false, lastUpdated: T1 } });
   });
 
   it('drops invalid fields one by one and keeps a stamp-only entry', () => {
@@ -379,7 +392,7 @@ describe('tracking.devices: merge', () => {
   it('adds no devices key when neither side has labels', () => {
     const merged = mergeTrackingSections(
       { idle: { k: 2, lastUpdated: T1 } },
-      { pauses: { default: 'none', lastUpdated: T1 } }
+      { pauses: { ask: false, lastUpdated: T1 } }
     );
     expect('devices' in merged).toBe(false);
   });
@@ -411,14 +424,14 @@ describe('foldableTracking (duplicate volume-data.json copies)', () => {
       {
         tracking: {
           idle: { k: 9, lastUpdated: T2 },
-          pauses: { default: 'full' as const, lastUpdated: T1 }
+          pauses: { ask: false, lastUpdated: T1 }
         },
         bogus: new Set(['idle'])
       },
       { tracking: { idle: { k: 2, lastUpdated: T1 } }, bogus: new Set<string>() }
     ];
     expect(foldableTracking(copies, 0)).toEqual({
-      pauses: { default: 'full', lastUpdated: T1 }
+      pauses: { ask: false, lastUpdated: T1 }
     });
     expect(foldableTracking(copies, 1)).toEqual({ idle: { k: 2, lastUpdated: T1 } });
   });
