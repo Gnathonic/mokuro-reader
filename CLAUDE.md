@@ -1928,7 +1928,10 @@ type is not raster.
 cloud cover: surfaces through `createCoverClaims`, the series-open pass through
 `installCoversForSeries` (a candidate builder), the backfill's stale refresh with
 `{ refresh: true }`. Its ladder: fresh row thumbnail → cached in `cloud_covers` (PROMOTED
-onto the row when the volume is metadata-only AND read, `coverBelongsOnRow`) → fetch. The
+onto the row when the volume is metadata-only AND read, `coverBelongsOnRow`) → fetch. A cached cover
+whose recorded stamp is stale against the listing is fetched again (stampless rows wait for the
+14-day expiry); a rewrite at the same key reaches cards already showing it
+(`replaceCoverKeys`). The
 write queue (`cover-persist.ts`) routes by the same predicate. Never fetch or write a cover
 from anywhere else. Synced-progress rows are minted after every progress sync
 (`resolveSyncedProgress`), never from a view mount.

@@ -69,6 +69,20 @@ vi.mock('$lib/settings/volume-data', () => ({
   volumes: h.readingHistoryStore
 }));
 
+// A cover REWRITTEN at the same `cloud_covers` key is announced to the
+// resolver (the key-set watch cannot see it). Spied, real otherwise.
+const { replaceCoverKeysSpy } = vi.hoisted(() => ({ replaceCoverKeysSpy: vi.fn() }));
+vi.mock('./cover-resolver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./cover-resolver')>();
+  return {
+    ...actual,
+    replaceCoverKeys: (...a: Parameters<typeof actual.replaceCoverKeys>) => {
+      replaceCoverKeysSpy(...a);
+      return actual.replaceCoverKeys(...a);
+    }
+  };
+});
+
 import { db } from '$lib/catalog/db';
 import type { VolumeMetadata } from '$lib/types';
 import {
@@ -127,6 +141,7 @@ async function addRow(overrides: Partial<VolumeMetadata> = {}) {
 beforeEach(() => {
   _resetCoverPersistForTests();
   thumbnailCacheInvalidate.mockClear();
+  replaceCoverKeysSpy.mockClear();
   h.resetReadingHistory();
 });
 
@@ -687,5 +702,33 @@ describe('cache rows carry the cover stamp', () => {
     expect(unstamped).toBeDefined();
     expect('cover_size' in unstamped).toBe(false);
     expect('cover_modified' in unstamped).toBe(false);
+  });
+});
+
+describe('a cached cover rewritten in place', () => {
+  const PATH = 'Dr Stone/Volume 01.cbz';
+  const placeholder = {
+    volume_uuid: 'cloud-1',
+    series_title: 'Dr Stone',
+    volume_title: 'Volume 01',
+    isPlaceholder: true,
+    cloudPath: PATH
+  } as never;
+
+  it('an overwrite drops the old decode and announces the rewritten key to the resolver', async () => {
+    installCover(placeholder, coverResult('new.webp'), { size: 9 }, 'overwrite');
+    await flushPendingCoverPersists();
+
+    expect((await _getCloudCoversForTests('mega:a@b.com', [PATH])).get(PATH)?.cover_size).toBe(9);
+    expect(thumbnailCacheInvalidate).toHaveBeenCalledWith('cloud-1');
+    expect(replaceCoverKeysSpy).toHaveBeenCalledWith('mega:a@b.com', [PATH]);
+  });
+
+  it('a fill (a first arrival) announces nothing: the key watch sees new keys', async () => {
+    installCover(placeholder, coverResult());
+    await flushPendingCoverPersists();
+
+    expect(thumbnailCacheInvalidate).not.toHaveBeenCalled();
+    expect(replaceCoverKeysSpy).not.toHaveBeenCalled();
   });
 });
