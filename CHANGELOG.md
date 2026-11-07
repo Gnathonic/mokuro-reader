@@ -21,7 +21,6 @@
 - Import links name their source before adding anything
 - AnkiConnect asks before sending cards to another computer
 - Signing out of MEGA also ends the session on MEGA
-- SVG images are no longer supported
 - Shorter, up-to-date cloud provider descriptions
 - Editing shared OCR now edits your own copy
 - mokuro-bunko: your OCR fixes no longer reach other accounts
@@ -44,6 +43,7 @@
 - Japanese text spacing fixed after Google's font update
 - A changed cloud cover replaces the cached one
 - Text sent to Anki can no longer run as code
+- SVG files are no longer imported by mistake
 - A full MEGA account no longer deletes your synced progress
 - MEGA moves emptied duplicate folders to the Rubbish Bin
 - OneDrive asks you to reconnect when its sign-in lapses
