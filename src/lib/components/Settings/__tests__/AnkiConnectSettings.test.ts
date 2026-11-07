@@ -48,11 +48,11 @@ const h = vi.hoisted(() => {
         ankiConnectSettings: { ...current.ankiConnectSettings, [key]: value }
       });
     }),
-    page: createStore({ url: new URL('http://localhost:5173/') })
+    page: { url: new URL('http://localhost:5173/') }
   };
 });
 
-vi.mock('$app/stores', () => ({ page: h.page }));
+vi.mock('$app/state', () => ({ page: h.page }));
 vi.mock('$lib/settings', () => ({ settings: h.settings, updateAnkiSetting: h.updateAnkiSetting }));
 vi.mock('$lib/anki-connect', async () => ({
   // The real trust rules; only the network calls are stand-ins.

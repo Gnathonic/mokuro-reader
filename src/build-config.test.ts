@@ -7,8 +7,7 @@ import { describe, expect, it } from 'vitest';
 import pkg from '../package.json';
 import vercel from '../vercel.json';
 import lockText from '../package-lock.json?raw';
-import svelteConfig from '../svelte.config.js?raw';
-// As text: importing vite.config.ts loads esbuild, which refuses jsdom.
+// As text: importing vite.config.ts would start SvelteKit's plugin under jsdom.
 import viteConfig from '../vite.config.ts?raw';
 
 const lock = JSON.parse(lockText);
@@ -24,14 +23,25 @@ describe('production build', () => {
   it('uses the lockfile-pinned Vercel adapter, never adapter-auto', () => {
     // adapter-auto installs adapter-vercel at build time, outside the lockfile.
     expect(devDependencies['@sveltejs/adapter-auto']).toBeUndefined();
-    expect(devDependencies['@sveltejs/adapter-vercel']).toMatch(/^\^6\./);
-    expect(lock.packages['node_modules/@sveltejs/adapter-vercel']?.version).toMatch(/^6\./);
+    // adapter-vercel 7 is the major for SvelteKit 3 (it peers on kit ^3).
+    expect(devDependencies['@sveltejs/adapter-vercel']).toMatch(/^\^7\./);
+    expect(lock.packages['node_modules/@sveltejs/adapter-vercel']?.version).toMatch(/^7\./);
+    expect(lock.packages['node_modules/@sveltejs/kit']?.version).toMatch(/^3\./);
     expect(lock.packages['node_modules/@sveltejs/adapter-auto']).toBeUndefined();
 
-    expect(svelteConfig).toContain("from '@sveltejs/adapter-vercel'");
+    // Configured in the sveltekit() Vite plugin: SvelteKit 3 reads no svelte.config.js.
+    expect(viteConfig).toContain("from '@sveltejs/adapter-vercel'");
     // Without an explicit runtime the adapter derives one from the build
     // machine's Node and throws on any major Vercel does not run.
-    expect(svelteConfig).toMatch(/adapter\(\{\s*runtime:\s*'nodejs24\.x'\s*\}\)/);
+    expect(viteConfig).toMatch(/adapter\(\{\s*runtime:\s*'nodejs24\.x'\s*\}\)/);
+  });
+
+  it('overrides one peer only: @vercel/analytics on SvelteKit', () => {
+    // Every stable @vercel/analytics still peers on @sveltejs/kit ^1 || ^2. The
+    // app imports only its framework-free entry (`inject` from the package
+    // root, which imports nothing), so the peer is moot; drop the override once
+    // a stable release accepts kit 3.
+    expect(pkg.overrides).toEqual({ '@vercel/analytics': { '@sveltejs/kit': '$@sveltejs/kit' } });
   });
 
   it('builds on Node 24 and installs from the lockfile on Vercel', () => {
@@ -42,10 +52,10 @@ describe('production build', () => {
     expect(Object.keys(vercel).sort()).toEqual(['headers', 'installCommand']);
   });
 
-  it('moves kit.outDir only for the e2e specs, under one variable', () => {
+  it("moves SvelteKit's outDir only for the e2e specs, under one variable", () => {
     // e2e/csp.spec.ts and e2e/gdrive-auth-backend.spec.ts each build or serve a
     // second app in this tree; both name the same override.
-    expect(svelteConfig.match(/process\.env\.[A-Z0-9_]*OUT_DIR/g) ?? []).toEqual([
+    expect(viteConfig.match(/process\.env\.[A-Z0-9_]*OUT_DIR/g) ?? []).toEqual([
       'process.env.MOKURO_E2E_KIT_OUT_DIR',
       'process.env.MOKURO_E2E_KIT_OUT_DIR'
     ]);

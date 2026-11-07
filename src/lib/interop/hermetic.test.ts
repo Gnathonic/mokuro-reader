@@ -45,7 +45,7 @@ describe('hermeticShell', () => {
 
 describe('the server hook', () => {
   afterEach(() => {
-    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     vi.resetModules();
   });
 
@@ -66,7 +66,8 @@ describe('the server hook', () => {
   });
 
   it('serves the hermetic shell from an interop build', async () => {
-    vi.stubEnv('MODE', 'interop');
+    // What `vite build --mode interop` defines (vite.config.ts).
+    vi.stubGlobal('__MOKURO_INTEROP__', true);
     expect(await render()).toBe(hermeticShell(APP_HTML));
   });
 });

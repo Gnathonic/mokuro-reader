@@ -53,7 +53,6 @@ describe('parseFontFaceCss', () => {
 
 describe('loadWebFonts', () => {
   afterEach(() => {
-    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.resetModules();
     document.head.innerHTML = '';
@@ -95,7 +94,8 @@ describe('loadWebFonts', () => {
 
   it('fetches nothing and adds no stylesheet in an interop build', async () => {
     // The interop rig refuses every host off the machine (src/lib/interop/hermetic.ts).
-    vi.stubEnv('MODE', 'interop');
+    // What `vite build --mode interop` defines (vite.config.ts).
+    vi.stubGlobal('__MOKURO_INTEROP__', true);
     const fetch = vi.fn(async () => new Response(CSS));
     vi.stubGlobal('fetch', fetch);
     vi.stubGlobal('FontFace', class {});
