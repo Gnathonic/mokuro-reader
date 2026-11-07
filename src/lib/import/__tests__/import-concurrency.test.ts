@@ -530,7 +530,11 @@ describe('a deep link’s series.json and the imports around it (TOCTOU)', () =>
     await waitForQueue();
 
     expect(await titles()).toEqual(['Deep 01', 'Victim 02']);
-    expect(await facts('Victim')).toEqual({ anilist: 4242 });
+    // The queue reports idle BEFORE its finally applies the batch's series.json
+    // (facts, then the cached index): wait for both, or the index write lands
+    // in the next test, after its beforeEach cleared the tables.
+    await vi.waitFor(async () => expect(await facts('Victim')).toEqual({ anilist: 4242 }));
+    await vi.waitFor(async () => expect(await db.series_index.get('victim')).toBeDefined());
   });
 
   it('never lands on a series a cloud download created before the link’s archive saved', async () => {
