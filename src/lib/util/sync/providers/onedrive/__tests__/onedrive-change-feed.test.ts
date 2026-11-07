@@ -236,6 +236,60 @@ describe('OneDrive change feed (Graph delta) on the listing cache', () => {
     expect(await onedriveCache.refreshFromChanges()).toBe('unchanged');
   });
 
+  it('a folder deleted and made again at the same path in one batch keeps the new folder', async () => {
+    // Series A removed and uploaded again before this device read the feed:
+    // the old id deleted (with its files), a new id at the same name.
+    feed([
+      ...ancestors,
+      deletedItem('v1', 'SA'),
+      deletedItem('v1m', 'SA'),
+      deletedItem('SA', 'R'),
+      folderItem('SA2', 'Series A', 'R', 1),
+      fileItem('n1', 'Volume 1.cbz', 'SA2')
+    ]);
+    expect(await onedriveCache.refreshFromChanges()).toBe('applied');
+    expect(provider.listLibrary).not.toHaveBeenCalled();
+    expect(onedriveCache.getBySeries('Series A').map((f) => f.fileId)).toEqual(['n1']);
+    // The new folder is in the folder map: a later file there is placed.
+    feed([
+      ...ancestors,
+      folderItem('SA2', 'Series A', 'R', 2),
+      fileItem('n2', 'Volume 2.cbz', 'SA2')
+    ]);
+    expect(await onedriveCache.refreshFromChanges()).toBe('applied');
+    expect(paths()).toContain('Series A/Volume 2.cbz');
+    expect(provider.listLibrary).not.toHaveBeenCalled();
+  });
+
+  it('a removed folder takes its descendants by id: a re-made subtree stays, one under the old tree goes', async () => {
+    feed([
+      ...ancestors,
+      deletedItem('H', 'R'),
+      // `history` made again, with a device folder and a segment in it.
+      folderItem('H2', 'history', 'R', 1),
+      folderItem('DB', 'dev-b', 'H2', 1),
+      fileItem('hb', '2026-11.events', 'DB'),
+      // A folder under the OLD tree's dev-a: gone with it.
+      folderItem('X', 'stray', 'DA', 0)
+    ]);
+    expect(await onedriveCache.refreshFromChanges()).toBe('applied');
+    expect(paths()).toEqual([
+      'Series A/Volume 1.cbz',
+      'Series A/Volume 1.mokuro',
+      'history/dev-b/2026-11.events',
+      'volume-data.json'
+    ]);
+    // dev-b is known, the stray folder is not.
+    feed([
+      ...ancestors,
+      fileItem('hb2', '2026-12.events', 'DB'),
+      fileItem('xs', 'late.events', 'X')
+    ]);
+    expect(await onedriveCache.refreshFromChanges()).toBe('applied');
+    expect(paths()).toContain('history/dev-b/2026-12.events');
+    expect(paths().some((p) => p.includes('late.events'))).toBe(false);
+  });
+
   it('a file renamed or moved within the library gets its new path; moved out, it goes', async () => {
     feed([
       ...ancestors,
@@ -383,6 +437,26 @@ describe('OneDrive change feed (Graph delta) on the listing cache', () => {
     await walk;
     expect(await pending).toBe('reset');
     expect(paths()).not.toContain('catalog.json');
+  });
+
+  it('a walk that overtakes a feed read and FAILS leaves the snapshot: the batch is applied', async () => {
+    let release: (v: Awaited<ReturnType<typeof readDelta>>) => void = () => {};
+    vi.mocked(readDelta).mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    const pending = onedriveCache.refreshFromChanges();
+    await Promise.resolve();
+    await Promise.resolve();
+    provider.listLibrary.mockRejectedValueOnce(
+      new ProviderError('Graph 429', 'onedrive', 'GRAPH_429', false, true)
+    );
+    const walk = onedriveCache.fetch();
+    release({ items: [...ancestors, fileItem('x', 'catalog.json', 'R')], deltaLink: LINK1 });
+    await walk;
+    expect(await pending).toBe('applied');
+    expect(paths()).toContain('catalog.json');
+    // The read stepped the position on.
+    feed([...ancestors]);
+    expect(await onedriveCache.refreshFromChanges()).toBe('unchanged');
+    expect(vi.mocked(readDelta).mock.calls[1][1]).toBe(LINK1);
   });
 
   it('concurrent callers share one read', async () => {

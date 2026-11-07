@@ -189,4 +189,61 @@ describe.skipIf(!cloudsimForSuite())('OneDrive change feed (Graph delta) against
     expect(paths()).toHaveLength(12);
     expect(of(await sim.log(), 'list')).toHaveLength(0);
   });
+
+  it('a series folder deleted and uploaded again before the next read stays, at its new id', async () => {
+    const oldId = await nodeId('Series 3');
+    const gone = await otherDevice('DELETE', `/me/drive/items/${oldId}`);
+    expect(gone.status).toBe(204);
+    // The other device uploads the series again: a new folder of the same name.
+    await sim.seed('microsoft', [
+      { path: 'mokuro-reader/Series 3/Vol 1.cbz', data: 'cbz again' },
+      { path: 'mokuro-reader/Series 3/Vol 1.mokuro', data: '{"title":"again"}' }
+    ]);
+    expect(await nodeId('Series 3')).not.toBe(oldId);
+
+    expect(await cache.refreshFromChanges()).toBe('applied');
+    expect(
+      cache
+        .getBySeries('Series 3')
+        .map((f) => f.path)
+        .sort()
+    ).toEqual(['Series 3/Vol 1.cbz', 'Series 3/Vol 1.mokuro']);
+    expect(cache.get('Series 3/Vol 1.cbz')?.size).toBe('cbz again'.length);
+    expect(paths()).toHaveLength(14);
+    expect(of(await sim.log(), 'list')).toHaveLength(0);
+
+    // The new folder is known: the next change in it arrives by the feed too.
+    await sim.clearLog();
+    await sim.seed('microsoft', [{ path: 'mokuro-reader/Series 3/Vol 2.cbz', data: 'v2' }]);
+    expect(await cache.refreshFromChanges()).toBe('applied');
+    expect(paths()).toContain('Series 3/Vol 2.cbz');
+    expect(of(await sim.log(), 'list')).toHaveLength(0);
+  });
+
+  it('a walk that overtakes a feed read and is throttled leaves the batch to apply', async () => {
+    await sim.seed('microsoft', [{ path: 'mokuro-reader/Series 9/Vol 1.cbz', data: 'new' }]);
+    // The walk's first children request is throttled; the feed is not.
+    await sim.fault({
+      provider: 'microsoft',
+      method: 'GET',
+      path_has: 'children',
+      status: 429,
+      reason: 'activityLimitReached',
+      retry_after: 1,
+      times: 1
+    });
+    const read = cache.refreshFromChanges();
+    const walk = cache.fetch();
+    await walk;
+    expect(await read).toBe('applied');
+    expect(paths()).toContain('Series 9/Vol 1.cbz');
+    const log = await sim.log();
+    expect(of(log, 'list').map((e) => e.status)).toEqual([429]);
+    expect(of(log, 'changes').filter((e) => e.status === 200).length).toBeGreaterThanOrEqual(2);
+
+    // The read stepped the position on: nothing new is 'unchanged', no walk.
+    await sim.clearLog();
+    expect(await cache.refreshFromChanges()).toBe('unchanged');
+    expect(of(await sim.log(), 'list')).toHaveLength(0);
+  });
 });

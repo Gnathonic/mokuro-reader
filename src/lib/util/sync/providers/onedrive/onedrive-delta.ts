@@ -163,15 +163,28 @@ export function planDelta(
   }
   // What is left has a parent outside the library: not ours.
 
-  // A removed folder takes everything under it.
+  // A removed folder takes everything under it — by ID, through the parent
+  // links, never by path: a folder deleted and made again under the same name
+  // in one batch (a series removed and uploaded again) is a NEW id at the old
+  // path, and must stay. Cached FILES do go by path (`removedPaths`): the
+  // batch's own puts, applied after, bring the new folder's files back.
   const removedPaths: string[] = [];
   if (gone.size > 0) {
-    for (const id of gone) {
-      const folder = folders.get(id);
-      if (folder) removedPaths.push(folder.path);
+    const removed = new Set<string>();
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [id, folder] of folders) {
+        if (removed.has(id)) continue;
+        if (gone.has(id) || (folder.parent !== undefined && removed.has(folder.parent))) {
+          removed.add(id);
+          grew = true;
+        }
+      }
     }
-    for (const [id, folder] of folders) {
-      if (removedPaths.some((path) => isUnder(folder.path, path))) folders.delete(id);
+    for (const id of removed) {
+      if (gone.has(id)) removedPaths.push(folders.get(id)!.path);
+      folders.delete(id);
     }
   }
 

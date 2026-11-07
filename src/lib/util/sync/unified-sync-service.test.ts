@@ -2455,6 +2455,54 @@ describe('a listing cache with a change feed opens every sync (#288)', () => {
       spies.forEach((spy) => spy.mockRestore());
     }
   });
+
+  it('a feed whose fallback walk fails (not auth) is logged; every step still runs', async () => {
+    const order: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getCache.mockReturnValue({
+      refreshFromChanges: vi.fn(async () => {
+        throw new ProviderError(
+          'Graph 429 Too Many Requests',
+          'onedrive',
+          'GRAPH_429',
+          false,
+          true
+        );
+      })
+    });
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(providerOf('onedrive'), {})).toMatchObject({
+        success: true
+      });
+      expect(order).toEqual(STEPS);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    ['a ProviderError auth failure', new ProviderError('Graph 401', 'onedrive', 'GRAPH_401', true)],
+    ["Drive's kind: 'auth'", Object.assign(new Error('Authentication error'), { kind: 'auth' })]
+  ])('%s still fails the sync before any step runs', async (_what, failure) => {
+    const order: string[] = [];
+    getCache.mockReturnValue({
+      refreshFromChanges: vi.fn(async () => {
+        throw failure;
+      })
+    });
+    const spies = stubSteps(order);
+    try {
+      expect(await svc.runProviderSync(providerOf('onedrive'), {})).toMatchObject({
+        success: false
+      });
+      expect(order).toEqual([]);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
 });
 
 describe('quickMergeVolumeData — the quick tier, before any listing', () => {

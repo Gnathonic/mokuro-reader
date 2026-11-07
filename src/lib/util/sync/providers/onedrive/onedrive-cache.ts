@@ -58,6 +58,8 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
   private isFetchingStore = writable<boolean>(false);
   /** The listing in flight (true = installed); every fetch() meanwhile joins it. */
   private fetchPromise: Promise<boolean> | null = null;
+  /** The newest walk started (settled or not), for a feed read it overtook. */
+  private latestWalk: Promise<boolean> | null = null;
   private loadedFlag = false;
   /** Why the last full walk failed, for a feed refresh that had to fall back to it. */
   private lastLoadError: unknown = null;
@@ -114,7 +116,24 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
       this.isFetchingStore.set(false);
     });
     this.fetchPromise = run;
+    this.latestWalk = run;
     return run;
+  }
+
+  /**
+   * Whether the newest walk installed its listing, once it settled — the
+   * newest one, should another start while waiting. For a feed read a walk
+   * overtook: it may only be dropped for a walk that took its place.
+   */
+  private async latestWalkResult(): Promise<boolean> {
+    let walk: Promise<boolean> | null;
+    let installed = false;
+    do {
+      walk = this.latestWalk;
+      if (!walk) return false;
+      installed = await walk;
+    } while (walk !== this.latestWalk);
+    return installed;
   }
 
   private async load(): Promise<boolean> {
@@ -207,7 +226,9 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
    *   failed feed read, a batch it could not place exactly (a folder renamed
    *   or moved, one moved in with contents, the mokuro folder removed), or a
    *   last full walk over a day old (`CHANGE_FEED_MAX_AGE_MS`). Also when a
-   *   walk overtook this read (the read is dropped: the walk is newer).
+   *   walk overtook this read and installed (the read is dropped: the walk
+   *   is newer); one that failed leaves the snapshot this batch continues,
+   *   and the batch is applied after all.
    *
    * Never toggles `isFetchingState` or `loadedFlag`, and runs one at a time:
    * concurrent callers share the read. Throws after an AUTH failure, and when
@@ -256,9 +277,20 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
     if (generation !== this.generation) return 'reset';
     if (epoch !== this.fetchEpoch) {
       // A walk started meanwhile: it is newer than this batch, and its own
-      // position reads again whatever this batch held.
-      if (this.fetchPromise) await this.fetchPromise;
-      return 'reset';
+      // position reads again whatever this batch held — once it installs.
+      const installed = await this.latestWalkResult();
+      if (generation !== this.generation) return 'reset';
+      if (installed) return 'reset';
+      // It failed (a throttled or failed `children` request) and installed
+      // nothing: the cache is still the snapshot at `link`, which this batch
+      // continues — apply it. Anything else moved the position: the cache is
+      // not current, and a caller about to prune against it must hear so.
+      if (this.deltaLink !== link || !this.loadedFlag) {
+        throw (
+          this.lastLoadError ??
+          new ProviderError('OneDrive listing was not installed', 'onedrive', 'LISTING_FAILED')
+        );
+      }
     }
     if (batch === 'resync') return this.listInFull('Graph no longer knows the position (410)');
     if (batch === 'too-long') return this.listInFull(`more than ${maxPages} pages of changes`);
@@ -359,6 +391,7 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
     this.cache.set(new Map());
     this.loadedFlag = false;
     this.fetchPromise = null;
+    this.latestWalk = null;
     this.feedPromise = null;
     this.isFetchingStore.set(false);
     this.generation += 1;

@@ -200,6 +200,22 @@ interface SyncFlight {
  * authenticated cloud providers. Works with the SyncProvider interface,
  * making it provider-agnostic.
  */
+/**
+ * Did a listing refresh fail on AUTH — a token rejected or a session that
+ * must sign in again? Each provider's own marker: `isAuthError` on a
+ * `ProviderError`, Drive's `kind: 'auth'`, MSAL's interaction-required error,
+ * and the "not authenticated"/"authentication expired" messages they throw.
+ */
+function isListingAuthFailure(error: unknown): boolean {
+  if (error instanceof ProviderError) return error.isAuthError;
+  if ((error as { kind?: unknown } | null)?.kind === 'auth') return true;
+  return (
+    error instanceof Error &&
+    (error.name === 'InteractionRequiredAuthError' ||
+      /not authenticated|authentication expired/i.test(error.message))
+  );
+}
+
 class UnifiedSyncService {
   private isSyncingStore = writable<boolean>(false);
   /** Provider syncs in progress (a running flight and its follow-up count once); `isSyncing` is "any". */
@@ -300,6 +316,30 @@ class UnifiedSyncService {
     });
   }
 
+  /**
+   * The sync's opening change-feed read. Only an AUTH failure fails the sync
+   * (every step below would fail the same way). Anything else — a library
+   * walk the feed fell back to and that failed (throttled, offline) — is
+   * logged and the sync goes on with the listing as it stands: progress,
+   * positions, profiles and goals need a few control files, not the library.
+   * The metadata writers keep their own guard: `ensureFreshCloudListing`
+   * reads the feed again and refuses to prune against a listing it could not
+   * bring current.
+   */
+  private async refreshListingFromChanges(provider: SyncProvider): Promise<void> {
+    const listingCache = cacheManager.getCache(provider.type);
+    if (!listingCache?.refreshFromChanges) return;
+    try {
+      await listingCache.refreshFromChanges();
+    } catch (error) {
+      if (isListingAuthFailure(error) || !provider.isAuthenticated()) throw error;
+      console.warn(
+        `[sync] ${provider.name} listing could not be brought current; syncing with the listing as it stands:`,
+        error
+      );
+    }
+  }
+
   private async runProviderSync(
     provider: SyncProvider,
     options: SyncOptions
@@ -328,8 +368,7 @@ class UnifiedSyncService {
       // nothing changed, a full listing when the feed cannot answer. The
       // others have none (MEGA's tree is live; WebDAV and Local Folder offer
       // no change token).
-      const listingCache = cacheManager.getCache(provider.type);
-      if (listingCache?.refreshFromChanges) await listingCache.refreshFromChanges();
+      await this.refreshListingFromChanges(provider);
       // What the server keeps per user can change under an open tab (a bunko
       // upgrade or rollback); the per-user files below follow it. Fails quietly.
       await refreshGates(provider);
