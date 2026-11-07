@@ -255,7 +255,7 @@ async function importVolume(page: Page, volume: SyntheticVolume) {
 async function pixel(page: Page, x: number, y: number): Promise<[number, number, number]> {
   const png = await page.screenshot({ clip: { x, y, width: 1, height: 1 } });
   const idat: Buffer[] = [];
-  for (let at = 8; at < png.length; ) {
+  for (let at = 8; at < png.length;) {
     const length = png.readUInt32BE(at);
     const type = png.toString('latin1', at + 4, at + 8);
     if (type === 'IDAT') idat.push(png.subarray(at + 8, at + 8 + length));

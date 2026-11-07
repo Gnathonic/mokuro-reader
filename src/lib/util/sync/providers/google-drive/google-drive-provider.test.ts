@@ -1057,9 +1057,8 @@ describe('GoogleDriveProvider worker credentials and their renewal', () => {
   });
 
   it('a backend that is down is a transient failure, never the 401', async () => {
-    const { answerAuthRefresh, isTransientAuthRefreshError } = await import(
-      '$lib/util/worker-auth-refresh'
-    );
+    const { answerAuthRefresh, isTransientAuthRefreshError } =
+      await import('$lib/util/worker-auth-refresh');
     vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({ kind: 'transient' } as never);
     await expect(googleDriveProvider.refreshedWorkerCredentials('Bearer OLD')).rejects.toSatisfy(
       isTransientAuthRefreshError

@@ -129,8 +129,7 @@ export async function legacyCarriedBy(providerType: string, db: HistoryDexie): P
   const local = await legacyEvents(db).count();
   if (local === 0) return true;
   const mark = (await db.history_meta.get(`uploaded:${providerType}:legacy`))?.value as
-    | { count: number }
-    | undefined;
+    { count: number } | undefined;
   return (mark?.count ?? 0) >= local;
 }
 

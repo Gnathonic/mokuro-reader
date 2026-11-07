@@ -47,9 +47,8 @@ describe.skipIf(!cloudsimForSuite())('MEGA provider against cloudsim', () => {
     restoreFetch = fetchWithoutForeignSignals();
     setCloudTestBases(sim.bases());
     localStorage.removeItem('mega_session');
-    ({ MegaProvider: MegaProviderClass } = await import(
-      '$lib/util/sync/providers/mega/mega-provider'
-    ));
+    ({ MegaProvider: MegaProviderClass } =
+      await import('$lib/util/sync/providers/mega/mega-provider'));
     await sim.megaAccount(ACCOUNT, EMAIL, PASSWORD);
     await sim.seed(
       'mega',

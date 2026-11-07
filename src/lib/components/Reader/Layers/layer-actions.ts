@@ -30,14 +30,7 @@ import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
 import { CANNOT_PUBLISH_CURATED_MESSAGE } from '$lib/util/sync/account-capabilities';
 
 export type LayerAction =
-  | 'new'
-  | 'rename'
-  | 'promote'
-  | 'export'
-  | 'delete'
-  | 'publish'
-  | 'unpublish'
-  | 'copy-to-edit';
+  'new' | 'rename' | 'promote' | 'export' | 'delete' | 'publish' | 'unpublish' | 'copy-to-edit';
 export type LayerSource = 'copy' | 'empty';
 
 export interface LayerNamePrompt {

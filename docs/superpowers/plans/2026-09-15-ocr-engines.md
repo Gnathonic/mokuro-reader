@@ -51,9 +51,8 @@ describe('engine credentials', () => {
   });
 
   it('reads and writes each key through localStorage only', async () => {
-    const { engineCredentials, setEngineCredential, ENGINE_STORAGE_KEYS } = await import(
-      './credentials'
-    );
+    const { engineCredentials, setEngineCredential, ENGINE_STORAGE_KEYS } =
+      await import('./credentials');
     setEngineCredential('googleKey', 'g-123');
     setEngineCredential('openaiBaseUrl', 'https://api.example.com/v1');
     expect(get(engineCredentials).googleKey).toBe('g-123');

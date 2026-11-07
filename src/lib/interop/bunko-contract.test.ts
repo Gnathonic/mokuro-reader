@@ -684,9 +684,8 @@ describeContract('PROPFIND answers as Bunko gives them', () => {
     // The generic reading of that Allow agrees: the library folder is a
     // collection, and its Allow names a collection write method (DELETE or
     // MOVE; PUT and MKCOL only where the account may write, from 0.8).
-    const { allowHeaderPermitsCollectionWrite } = await import(
-      '$lib/util/sync/providers/webdav/webdav-provider'
-    );
+    const { allowHeaderPermitsCollectionWrite } =
+      await import('$lib/util/sync/providers/webdav/webdav-provider');
     expect(allowHeaderPermitsCollectionWrite(allow)).toBe(true);
     expect(await provider.checkWritePermissions(SERVER)).toBe(true);
     expect(answers.calls.map((c) => c.method)).toEqual(['PROPFIND', 'OPTIONS']);

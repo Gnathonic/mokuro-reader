@@ -54,9 +54,8 @@ describe('backfillCompletedAt', () => {
   });
 
   it('finds the completing turn in reading history once the record has none', async () => {
-    const { _resetHistoryTurns, _setHistoryTurnsForTest } = await import(
-      '$lib/reading-history/turns-store'
-    );
+    const { _resetHistoryTurns, _setHistoryTurnsForTest } =
+      await import('$lib/reading-history/turns-store');
     const turn = Date.parse('2025-06-01T00:00:00.000Z');
     volumesWithTrash.set({
       v1: new VolumeData({

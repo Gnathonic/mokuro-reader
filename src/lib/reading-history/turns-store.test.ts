@@ -113,9 +113,8 @@ describe('projected turns store', () => {
   });
 
   it('restart and position events bump the version and announce, but re-project nothing', async () => {
-    const { getVolumeEvents, onHistoryChanged, volumeEventsVersion } = await import(
-      './turns-store'
-    );
+    const { getVolumeEvents, onHistoryChanged, volumeEventsVersion } =
+      await import('./turns-store');
     await appendEvent(db, view('v', 1), 1000);
     await loadHistoryTurns(db);
     const emissions: Array<Map<string, unknown>> = [];

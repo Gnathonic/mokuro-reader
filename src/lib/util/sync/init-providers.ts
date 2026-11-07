@@ -16,9 +16,8 @@ import type { SyncProvider, ProviderType } from './provider-interface';
 export async function loadProvider(type: ProviderType): Promise<SyncProvider> {
   switch (type) {
     case 'google-drive': {
-      const { googleDriveProvider } = await import(
-        './providers/google-drive/google-drive-provider'
-      );
+      const { googleDriveProvider } =
+        await import('./providers/google-drive/google-drive-provider');
       return googleDriveProvider;
     }
     case 'mega': {

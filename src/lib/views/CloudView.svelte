@@ -964,8 +964,8 @@
               {/snippet}
               <div class="flex flex-col gap-2">
                 <span>
-                  <span class="font-medium">Permission needed:</span> Reconnect to grant the browser
-                  access to the folder you chose previously.
+                  <span class="font-medium">Permission needed:</span> Reconnect to grant the browser access
+                  to the folder you chose previously.
                 </span>
                 <Button
                   size="xs"
@@ -986,8 +986,8 @@
               {/snippet}
               <div class="flex flex-col gap-2">
                 <span>
-                  <span class="font-medium">Session expired:</span> Silent refresh failed. Reconnect
-                  to continue syncing.
+                  <span class="font-medium">Session expired:</span> Silent refresh failed. Reconnect to
+                  continue syncing.
                 </span>
                 <Button
                   size="xs"

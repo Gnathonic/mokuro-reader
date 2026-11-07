@@ -151,8 +151,7 @@ const MONTH_FILE_RE = /^(\d{4})-(0[1-9]|1[0-2])\.events$/;
 const DEVICE_ID_RE = /^[A-Za-z0-9-]{1,64}$/;
 
 export type HistoryPath =
-  | { device: string; kind: 'month'; month: string }
-  | { device: string; kind: 'device' };
+  { device: string; kind: 'month'; month: string } | { device: string; kind: 'device' };
 
 /** UTC `YYYY-MM`: the same month on every device, whatever its timezone. */
 export function historyMonthOf(t: number): string {

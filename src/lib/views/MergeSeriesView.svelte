@@ -176,8 +176,7 @@
       </Alert>
     {:else if conflicts.length === 0}
       <Alert color="green">
-        <strong>Great news!</strong> No series conflicts were found. All your series have consistent
-        UUIDs.
+        <strong>Great news!</strong> No series conflicts were found. All your series have consistent UUIDs.
       </Alert>
     {:else}
       <!-- Conflicts List -->

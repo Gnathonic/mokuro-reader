@@ -166,8 +166,8 @@
       <p class="text-sm text-amber-600 dark:text-amber-400">{editGate.reason}</p>
     {:else if folderTag}
       <p class="text-xs text-gray-500 dark:text-gray-400">
-        Folder tag <span class="font-medium">({folderTag})</span> left out of the search; it becomes
-        the series tag on link if none is set.
+        Folder tag <span class="font-medium">({folderTag})</span> left out of the search; it becomes the
+        series tag on link if none is set.
       </p>
     {/if}
 

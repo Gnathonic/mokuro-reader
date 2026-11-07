@@ -313,12 +313,7 @@ const ORIGINAL_LAYER = 'original';
  * - `skipped` — not installed (any more), or already exactly these bytes.
  */
 export type CloudPrimaryOutcome =
-  | 'upgraded'
-  | 'layered'
-  | 'recorded'
-  | 'kept'
-  | 'mismatch'
-  | 'skipped';
+  'upgraded' | 'layered' | 'recorded' | 'kept' | 'mismatch' | 'skipped';
 
 export interface CloudPrimaryOcr {
   /** The provider the sidecar is listed on (else `cloud.provider`). */
