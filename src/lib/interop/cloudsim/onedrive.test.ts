@@ -61,12 +61,10 @@ describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () =>
     restoreXhr = sendBlobsAsBytes();
     restoreFetch = fetchWithoutForeignSignals();
     setCloudTestBases(sim.bases());
-    const { OneDriveProvider } = await import(
-      '$lib/util/sync/providers/onedrive/onedrive-provider'
-    );
-    ({ onedriveTokenManager: tokenManager } = await import(
-      '$lib/util/sync/providers/onedrive/token-manager'
-    ));
+    const { OneDriveProvider } =
+      await import('$lib/util/sync/providers/onedrive/onedrive-provider');
+    ({ onedriveTokenManager: tokenManager } =
+      await import('$lib/util/sync/providers/onedrive/token-manager'));
     provider = new OneDriveProvider();
     await sim.seed('microsoft', [
       { path: 'mokuro-reader/Series A/Vol 1.cbz', data: VOLUME },

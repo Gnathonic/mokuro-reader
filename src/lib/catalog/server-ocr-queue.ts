@@ -847,8 +847,7 @@ export async function fetchWithQueueAuth(
       return null;
     }
     const fresh = (await requestInitFor(queueUrl, auth))?.headers as
-      | Record<string, string>
-      | undefined;
+      Record<string, string> | undefined;
     const retryHeaders = { ...sent };
     if (fresh?.Authorization) retryHeaders.Authorization = fresh.Authorization;
     else delete retryHeaders.Authorization;

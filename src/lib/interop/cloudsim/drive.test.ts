@@ -58,9 +58,8 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
     restoreXhr = sendBlobsAsBytes();
     installGapiRestShim(sim.bases().driveApi);
     setCloudTestBases(sim.bases());
-    ({ googleDriveProvider: provider } = await import(
-      '$lib/util/sync/providers/google-drive/google-drive-provider'
-    ));
+    ({ googleDriveProvider: provider } =
+      await import('$lib/util/sync/providers/google-drive/google-drive-provider'));
     ({ tokenManager } = await import('$lib/util/sync/providers/google-drive/token-manager'));
     await sim.seed('google', [
       { path: 'mokuro-reader/Series A/Vol 1.cbz', data: VOLUME },

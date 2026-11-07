@@ -1,9 +1,5 @@
 export type MigrationPhase =
-  | 'counting'
-  | 'loading_series'
-  | 'writing_volume'
-  | 'deleting_source'
-  | 'complete';
+  'counting' | 'loading_series' | 'writing_volume' | 'deleting_source' | 'complete';
 
 export interface MigrationProgress {
   phase: MigrationPhase;

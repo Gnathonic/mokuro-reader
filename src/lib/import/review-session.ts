@@ -17,8 +17,7 @@ import type { GroupNaming, ReviewGroup } from './image-only-review';
  * the import also skips the steps it would only raise later (#285).
  */
 export type GroupDecision =
-  | { action: 'import'; naming: GroupNaming }
-  | { action: 'skip'; all?: true };
+  { action: 'import'; naming: GroupNaming } | { action: 'skip'; all?: true };
 export type OnGroupDecision = (groupId: string, decision: GroupDecision) => void;
 
 export interface ReviewSessionState {

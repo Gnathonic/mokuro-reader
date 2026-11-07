@@ -1101,8 +1101,7 @@ export type SeriesReadingStatePatch = Partial<Omit<SeriesReadingState, 'lastUpda
  * silently undo the other's edit.
  */
 export type SeriesReadingStatePatchInput =
-  | SeriesReadingStatePatch
-  | ((existing: SeriesReadingState) => SeriesReadingStatePatch);
+  SeriesReadingStatePatch | ((existing: SeriesReadingState) => SeriesReadingStatePatch);
 
 function emptyState(): SeriesReadingState {
   return { read_count: 0, lastUpdated: new Date(0).toISOString() };
@@ -2229,8 +2228,7 @@ vi.mock('$lib/settings/series-data', () => ({
     (
       key: string,
       patch:
-        | Record<string, unknown>
-        | ((existing: Record<string, unknown>) => Record<string, unknown>)
+        Record<string, unknown> | ((existing: Record<string, unknown>) => Record<string, unknown>)
     ) => {
       const states = h.seriesReadingState.get();
       const existing = states[key] ?? { read_count: 0, lastUpdated: new Date(0).toISOString() };
@@ -2846,12 +2844,10 @@ test.describe('series-metadata.json retirement', () => {
     page
   }) => {
     const result = await page.evaluate(async () => {
-      const { buildSeriesFile, parseSeriesFile, stringifySeriesFile } = await import(
-        '/src/lib/metadata/series-file.ts'
-      );
-      const { updateSeriesMetadata, upsertFromSeriesFile } = await import(
-        '/src/lib/metadata/store.ts'
-      );
+      const { buildSeriesFile, parseSeriesFile, stringifySeriesFile } =
+        await import('/src/lib/metadata/series-file.ts');
+      const { updateSeriesMetadata, upsertFromSeriesFile } =
+        await import('/src/lib/metadata/store.ts');
       const { db } = await import('/src/lib/catalog/db.ts');
 
       // A library that linked the series AND nudged its shelf.
@@ -2913,9 +2909,8 @@ test.describe('series-metadata.json retirement', () => {
   }) => {
     const fired = await page.evaluate(async () => {
       const { registerIndexChangeListener } = await import('/src/lib/metadata/store.ts');
-      const { scheduleSpineOffsetWrite, flushSpineOffsetWrites } = await import(
-        '/src/lib/metadata/spine-offsets.ts'
-      );
+      const { scheduleSpineOffsetWrite, flushSpineOffsetWrites } =
+        await import('/src/lib/metadata/spine-offsets.ts');
 
       const seen: string[] = [];
       const off = registerIndexChangeListener((title: string) => seen.push(title));
@@ -2945,9 +2940,8 @@ test.describe('series-metadata.json retirement', () => {
       .toBe('#/catalog');
 
     const after = await page.evaluate(async () => {
-      const { getSeriesReadingState, SERIES_SECTION_KEY } = await import(
-        '/src/lib/settings/series-data.ts'
-      );
+      const { getSeriesReadingState, SERIES_SECTION_KEY } =
+        await import('/src/lib/settings/series-data.ts');
       const { parseVolumesFromJson } = await import('/src/lib/settings/volume-data.ts');
       const state = getSeriesReadingState('dr stone');
       // The section must never read back as a volume.
@@ -3002,9 +2996,8 @@ test.describe('series-metadata.json retirement', () => {
 
   test('series-metadata.json is not a syncable root file any more', async ({ page }) => {
     const verdict = await page.evaluate(async () => {
-      const { isRootConfigFile, isSyncableFile } = await import(
-        '/src/lib/util/sync/syncable-file.ts'
-      );
+      const { isRootConfigFile, isSyncableFile } =
+        await import('/src/lib/util/sync/syncable-file.ts');
       let mergeModuleGone = false;
       try {
         await import('/src/lib/metadata/merge.ts');

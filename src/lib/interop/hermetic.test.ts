@@ -54,8 +54,7 @@ describe('the server hook', () => {
     const { handle } = await import('../../hooks.server');
     const resolve = vi.fn(async (_event: unknown, opts?: { transformPageChunk?: unknown }) => {
       const transform = opts?.transformPageChunk as
-        | ((input: { html: string; done: boolean }) => string)
-        | undefined;
+        ((input: { html: string; done: boolean }) => string) | undefined;
       return new Response(transform ? transform({ html: APP_HTML, done: true }) : APP_HTML);
     });
     const response = await handle({ event: {} as never, resolve: resolve as never });

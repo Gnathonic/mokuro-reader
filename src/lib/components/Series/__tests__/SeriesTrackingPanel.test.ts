@@ -100,8 +100,7 @@ vi.mock('$lib/settings/series-data', () => ({
     (
       key: string,
       patch:
-        | Record<string, unknown>
-        | ((existing: Record<string, unknown>) => Record<string, unknown>)
+        Record<string, unknown> | ((existing: Record<string, unknown>) => Record<string, unknown>)
     ) => {
       const states = h.seriesReadingState.get();
       const existing = states[key] ?? { read_count: 0, lastUpdated: new Date(0).toISOString() };

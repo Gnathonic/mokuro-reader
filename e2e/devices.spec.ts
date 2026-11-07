@@ -217,9 +217,8 @@ test.describe('devices through sync', () => {
     const laptop = await device(browser, stub);
     await installVolume(laptop);
     const phoneLabel = await phone.evaluate(async () => {
-      const { readDeviceEnv, detectDeviceFacts } = await import(
-        '/src/lib/reading-history/device-facts.ts'
-      );
+      const { readDeviceEnv, detectDeviceFacts } =
+        await import('/src/lib/reading-history/device-facts.ts');
       const { generatedLabel } = await import('/src/lib/reading-history/devices.ts');
       return generatedLabel(detectDeviceFacts(readDeviceEnv()));
     });

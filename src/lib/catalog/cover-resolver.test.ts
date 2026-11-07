@@ -619,7 +619,12 @@ describe('replaceCoverKeys: a cover rewritten under the same key', () => {
     expect(seen.at(-1)).toMatchObject({ width: 300 });
     expect(await handle.current!.file.text()).toBe(await NEW_FILE().text());
     expect(handle.current!.url).not.toBe(oldUrl);
-    expect(revoked).toContain(oldUrl);
+    // The old URL is revoked on a LATER task than the swap (`replaceValue`'s
+    // setTimeout), so an <img> repaints before losing its source. How many
+    // ticks the swap itself takes depends on the fake IndexedDB's scheduling
+    // and on the runner (coverage on a CI runner was slower than two ticks):
+    // wait for the revoke, not for a tick count.
+    await vi.waitFor(() => expect(revoked).toContain(oldUrl));
     await expect(handle.ready).resolves.toMatchObject({ width: 300 });
     handle.release();
   });
