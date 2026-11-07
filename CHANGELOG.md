@@ -4,9 +4,9 @@
 
 ### Added
 
-- Reading history syncs across devices (mokuro-bunko needs 0.8)
+- Reading history syncs across devices (mokuro-bunko needs 0.7.8)
 - Reading stats per device, under names you choose
-- Volumes open where another device stopped (mokuro-bunko needs 0.8)
+- Volumes open where another device stopped (mokuro-bunko needs 0.7.8)
 - "Still reading?" after a long pause
 - mokuro-bunko: publish your OCR fixes as shared corrections
 

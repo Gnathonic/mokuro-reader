@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('$app/environment', () => ({ browser: true }));
 vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
@@ -10,7 +10,14 @@ vi.mock('$lib/util/sync/providers/google-drive/token-manager', () => ({
     // round-trip without other subscribe() call sites (which invoke the
     // returned unsubscribe immediately) breaking.
     token: { subscribe: vi.fn((cb: (v: string) => void) => (cb('TOKEN'), () => {})) },
-    needsAttention: { subscribe: (cb: (v: boolean) => void) => (cb(false), () => {}) }
+    needsAttention: { subscribe: (cb: (v: boolean) => void) => (cb(false), () => {}) },
+    // The implicit flow (no auth backend): the held token, nothing renewed.
+    getAccessToken: vi.fn(async () => 'TOKEN'),
+    isBackendMode: vi.fn(() => false),
+    renewRejectedToken: vi.fn(async () => ({ kind: 'failed' })),
+    connectViaBackend: vi.fn(),
+    reconnect: vi.fn(),
+    logout: vi.fn(async () => {})
   }
 }));
 vi.mock('$lib/util/sync/providers/google-drive/api-client', () => ({
@@ -63,8 +70,9 @@ import { driveApiClient } from '$lib/util/sync/providers/google-drive/api-client
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
 import { driveFilesCache } from '$lib/util/sync/providers/google-drive/drive-files-cache';
 import { providerManager } from '../../provider-manager';
-import { ProviderError } from '../../provider-interface';
+import { isLoginCancelled, ProviderError } from '../../provider-interface';
 import { driveStorageFullError } from '../../core/providers/drive-http';
+import { setActiveProviderKey } from '../../provider-detection';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const JSON_MIME = 'application/json';
@@ -258,6 +266,100 @@ describe('GoogleDriveProvider login() with the token already there', () => {
       return () => {};
     });
     await expect(googleDriveProvider.login()).resolves.toBeUndefined();
+  });
+});
+
+describe('GoogleDriveProvider.logout() scope', () => {
+  it('this device only by default: the token manager is not asked to sign out everywhere', async () => {
+    await googleDriveProvider.logout();
+    expect(tokenManager.logout).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(tokenManager.logout).mock.calls[0][0]?.everywhere).not.toBe(true);
+  });
+
+  it('passes an explicit everywhere through', async () => {
+    await googleDriveProvider.logout({ everywhere: true });
+    expect(tokenManager.logout).toHaveBeenCalledWith({ everywhere: true });
+  });
+
+  it('answers what the token manager said, so the cloud page never claims a revoke that failed', async () => {
+    const said = { copyMayStillWork: false, revoked: false, pendingEverywhere: true };
+    vi.mocked(tokenManager.logout).mockResolvedValueOnce(said);
+    expect(await googleDriveProvider.logout({ everywhere: true })).toEqual(said);
+  });
+});
+
+describe('GoogleDriveProvider login() through the auth backend', () => {
+  beforeEach(() => {
+    vi.mocked(tokenManager.isBackendMode).mockReturnValue(true);
+    vi.mocked(tokenManager.requestNewToken).mockClear();
+    vi.mocked(tokenManager.connectViaBackend).mockReset();
+    vi.mocked(setActiveProviderKey).mockClear();
+  });
+  afterEach(() => {
+    vi.mocked(tokenManager.isBackendMode).mockReturnValue(false);
+    vi.unstubAllGlobals();
+  });
+
+  it('a live session reconnects without the popup', async () => {
+    vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('connected');
+    await googleDriveProvider.login();
+    expect(tokenManager.requestNewToken).not.toHaveBeenCalled();
+    expect(setActiveProviderKey).toHaveBeenCalledWith('google-drive');
+  });
+
+  it('no backend here: the popup sign-in, as before', async () => {
+    vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('popup');
+    await googleDriveProvider.login();
+    expect(tokenManager.requestNewToken).toHaveBeenCalledWith(true);
+  });
+
+  it('may leave the page only once the user has acted on it', async () => {
+    vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('connected');
+    vi.stubGlobal('navigator', { userActivation: { hasBeenActive: false, isActive: false } });
+    await googleDriveProvider.login();
+    expect(tokenManager.connectViaBackend).toHaveBeenLastCalledWith(false);
+    vi.stubGlobal('navigator', { userActivation: { hasBeenActive: true, isActive: false } });
+    await googleDriveProvider.login();
+    // Sticky, not transient: the chunk a click loads may outlast the click.
+    expect(tokenManager.connectViaBackend).toHaveBeenLastCalledWith(true);
+  });
+
+  it('Back from Google’s page (the cloud page restored from bfcache) is a quiet cancel', async () => {
+    vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('redirecting');
+    const login = googleDriveProvider.login();
+    const settled = login.then(
+      () => 'resolved',
+      (error: unknown) => error
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    // A page shown fresh (not from the cache) says nothing about the sign-in.
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    const error = await settled;
+    expect(isLoginCancelled(error)).toBe(true);
+    expect(tokenManager.requestNewToken).not.toHaveBeenCalled();
+  });
+
+  it('a redirect that never leaves the page fails after 30 s, as an error to show', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(tokenManager.connectViaBackend).mockResolvedValue('redirecting');
+      const settled = googleDriveProvider.login().then(
+        () => 'resolved',
+        (error: unknown) => error
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
+      const error = await settled;
+      expect(isLoginCancelled(error)).toBe(false);
+      expect((error as Error).message).toMatch(/did not open/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reauthenticate (a cloud-page button) is the interactive reconnect', async () => {
+    await googleDriveProvider.reauthenticate();
+    expect(tokenManager.reconnect).toHaveBeenCalled();
   });
 });
 
@@ -911,5 +1013,127 @@ describe('GoogleDriveProvider quick-tier reads (no account-wide listing)', () =>
       .mock.calls.filter(([q]) => q.startsWith("name='mokuro-reader'"));
     expect(readerLookups).toHaveLength(1);
     download.mockRestore();
+  });
+});
+
+describe('GoogleDriveProvider worker credentials and their renewal', () => {
+  beforeEach(() => {
+    vi.mocked(tokenManager.getAccessToken).mockClear();
+    vi.mocked(tokenManager.renewRejectedToken).mockReset();
+  });
+
+  it('hands a worker a token good for at least 15 minutes', async () => {
+    await googleDriveProvider.getWorkerDownloadCredentials('f');
+    await googleDriveProvider.getWorkerUploadCredentials();
+    expect(vi.mocked(tokenManager.getAccessToken).mock.calls).toEqual([
+      [15 * 60 * 1000],
+      [15 * 60 * 1000]
+    ]);
+  });
+
+  it('a worker’s refused token is renewed on the main thread (worker-auth-refresh)', async () => {
+    const { answerAuthRefresh } = await import('$lib/util/worker-auth-refresh');
+    vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({
+      kind: 'renewed',
+      token: 'NEW'
+    } as never);
+    const answer = await answerAuthRefresh({
+      type: 'auth-refresh',
+      requestId: 7,
+      provider: 'google-drive',
+      staleAuthorization: 'Bearer OLD'
+    });
+    expect(tokenManager.renewRejectedToken).toHaveBeenCalledWith('OLD');
+    expect(answer).toEqual({
+      type: 'auth-refresh-result',
+      requestId: 7,
+      credentials: expect.objectContaining({ accessToken: 'NEW' })
+    });
+  });
+
+  it('nothing to renew with: null, and the 401 stands', async () => {
+    vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({ kind: 'failed' } as never);
+    expect(await googleDriveProvider.refreshedWorkerCredentials('Bearer OLD')).toBeNull();
+  });
+
+  it('a backend that is down is a transient failure, never the 401', async () => {
+    const { answerAuthRefresh, isTransientAuthRefreshError } = await import(
+      '$lib/util/worker-auth-refresh'
+    );
+    vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({ kind: 'transient' } as never);
+    await expect(googleDriveProvider.refreshedWorkerCredentials('Bearer OLD')).rejects.toSatisfy(
+      isTransientAuthRefreshError
+    );
+    const answer = await answerAuthRefresh({
+      type: 'auth-refresh',
+      requestId: 8,
+      provider: 'google-drive',
+      staleAuthorization: 'Bearer OLD'
+    });
+    expect(answer).toMatchObject({ credentials: null, transient: true });
+  });
+});
+
+describe('GoogleDriveProvider.getStorageQuota()', () => {
+  const quota = { result: { storageQuota: { usage: '100', limit: '1000' } } };
+  const refused = { status: 401, result: { error: { code: 401, message: 'Invalid Credentials' } } };
+  let aboutGet: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    aboutGet = vi.fn();
+    vi.stubGlobal('gapi', { client: { drive: { about: { get: aboutGet } } } });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('asks the token manager for a live token before it calls Drive (backend mode renews one)', async () => {
+    aboutGet.mockResolvedValue(quota);
+
+    expect(await googleDriveProvider.getStorageQuota()).toEqual({
+      used: 100,
+      total: 1000,
+      available: 900
+    });
+    expect(tokenManager.getAccessToken).toHaveBeenCalled();
+    expect(vi.mocked(tokenManager.getAccessToken).mock.invocationCallOrder[0]).toBeLessThan(
+      aboutGet.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('a 401 renews the refused token and sends the request once more', async () => {
+    aboutGet.mockRejectedValueOnce(refused).mockResolvedValueOnce(quota);
+    vi.mocked(tokenManager.renewRejectedToken).mockResolvedValueOnce({
+      kind: 'renewed',
+      token: 'NEW'
+    } as never);
+
+    expect(await googleDriveProvider.getStorageQuota()).toMatchObject({ used: 100 });
+    expect(tokenManager.renewRejectedToken).toHaveBeenCalledWith('TOKEN');
+    expect(aboutGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries only once: a second 401 fails the call', async () => {
+    aboutGet.mockRejectedValue(refused);
+    vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({
+      kind: 'renewed',
+      token: 'NEW'
+    } as never);
+
+    await expect(googleDriveProvider.getStorageQuota()).rejects.toMatchObject({
+      code: 'QUOTA_FETCH_FAILED'
+    });
+    expect(tokenManager.renewRejectedToken).toHaveBeenCalledTimes(1);
+    expect(aboutGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('no renewal to be had: the 401 stands, nothing sent again', async () => {
+    aboutGet.mockRejectedValue(refused);
+    vi.mocked(tokenManager.renewRejectedToken).mockResolvedValue({ kind: 'failed' } as never);
+
+    await expect(googleDriveProvider.getStorageQuota()).rejects.toMatchObject({
+      code: 'QUOTA_FETCH_FAILED'
+    });
+    expect(aboutGet).toHaveBeenCalledTimes(1);
   });
 });

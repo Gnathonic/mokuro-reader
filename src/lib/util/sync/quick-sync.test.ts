@@ -60,7 +60,7 @@ describe('runQuickSync', () => {
     expect(p.deleteFile).not.toHaveBeenCalled();
   });
 
-  it('history stays off where the server cannot keep it per user (bunko < 0.8)', async () => {
+  it('history stays off where the server cannot keep it per user (bunko < 0.7.8)', async () => {
     const p = provider({ serverCompilesMetadata: true });
     expect((await runQuickSync(p)).history).toBe('off');
     expect(p.listFolder).not.toHaveBeenCalled();

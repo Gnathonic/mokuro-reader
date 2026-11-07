@@ -518,9 +518,11 @@ describe('withCloudBunkoStatus: per-user gates from the holder', () => {
     ['0.9.2', ['history/'], true, false],
     ['0.8.0', ['positions.json'], false, true],
     ['0.8.0', [], false, false],
+    ['0.7.8', ALL, true, true],
+    ['0.7.7', ALL, false, true],
     ['0.7.3', ALL, false, true],
     // The contract sentinel (README "Sentinels": bunko_version is normalized
-    // too) is below 0.8.0: a replayed blessed marker folds history OFF even
+    // too) is below 0.7.8: a replayed blessed marker folds history OFF even
     // though it lists history/, so a replay must inject its version (C19).
     ['0.0.0', ALL, false, true],
     ['', ALL, false, true]

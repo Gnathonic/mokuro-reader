@@ -32,7 +32,12 @@ import {
 import { sha256Hex } from '$lib/catalog/mokuro-hash';
 import { uploadVolumeFiles } from '$lib/util/volume-upload-order';
 import { mayBeImageType } from '$lib/util/image-content-type';
+import { assertNoRedirectEscape } from '$lib/util/link-safety';
 import { workerFailureKind, type WorkerFailureKind } from '$lib/util/sync/core/storage-full';
+import { forwardWorkerCspViolations } from '$lib/security/csp-violations';
+
+// A violation here fires on this worker, where the page's buffer cannot see it.
+forwardWorkerCspViolations();
 
 // Define the worker context
 const ctx: Worker = self as any;
@@ -470,6 +475,9 @@ async function downloadFromUrl(
   onProgress?: (loaded: number, total: number) => void
 ): Promise<{ data: ArrayBuffer; contentType?: string }> {
   const response = await fetch(url, { cache: 'no-store' });
+  // Every URL here came from a deep link (or its manifest), which the user
+  // confirmed by host: a redirect may not take it somewhere that was not shown.
+  assertNoRedirectEscape(url, response);
   if (!response.ok) {
     throw new Error(`HTTP download failed: ${response.status}`);
   }

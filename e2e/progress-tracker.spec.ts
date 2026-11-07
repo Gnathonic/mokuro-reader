@@ -220,8 +220,10 @@ test.describe('progress tracker', () => {
       }
     });
 
-    await page.reload();
-    await page.waitForTimeout(1500);
+    // A fresh boot of the seeded state, waited for until the router owns the
+    // URL: a fixed sleep after reload() raced SvelteKit's start(), whose
+    // replaceState could wipe the hash set right after it.
+    await gotoApp(page);
     await goHash(page, '#/progress-tracker');
 
     const counts = await page.evaluate(async () => {
@@ -300,8 +302,10 @@ test.describe('progress tracker', () => {
       }
     });
 
-    await page.reload();
-    await page.waitForTimeout(1500);
+    // A fresh boot of the seeded state, waited for until the router owns the
+    // URL: a fixed sleep after reload() raced SvelteKit's start(), whose
+    // replaceState could wipe the hash set right after it.
+    await gotoApp(page);
     await goHash(page, '#/progress-tracker');
 
     const card = page.locator('.volume-card', { hasText: 'Not on device' });
@@ -343,8 +347,10 @@ test.describe('progress tracker', () => {
     }
     await seedReadingState(page, records);
 
-    await page.reload();
-    await page.waitForTimeout(1500);
+    // A fresh boot of the seeded state, waited for until the router owns the
+    // URL: a fixed sleep after reload() raced SvelteKit's start(), whose
+    // replaceState could wipe the hash set right after it.
+    await gotoApp(page);
     await goHash(page, '#/progress-tracker');
 
     const cards = await page.locator('.volume-card').count();
@@ -384,8 +390,10 @@ test.describe('progress tracker', () => {
     });
     await page.waitForTimeout(500);
 
-    await page.reload();
-    await page.waitForTimeout(1500);
+    // A fresh boot of the seeded state, waited for until the router owns the
+    // URL: a fixed sleep after reload() raced SvelteKit's start(), whose
+    // replaceState could wipe the hash set right after it.
+    await gotoApp(page);
 
     const afterReload = await page.evaluate(
       () => JSON.parse(window.localStorage.getItem('volumes') || '{}').v1?.completedAt

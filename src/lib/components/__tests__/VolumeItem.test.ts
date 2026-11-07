@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterAll, afterEach, beforeAll, beforeEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -361,6 +361,81 @@ describe('VolumeItem hover + Delete', () => {
       cloudState.authenticated = false;
       cloudState.lookup = null;
     }
+  });
+});
+
+describe('VolumeItem menu "Delete from cloud"', () => {
+  // Flowbite's popper calls the Popover API as its menu's intro starts; jsdom
+  // has none, and the missing method surfaced as an uncaught error that fails
+  // the run although every assertion passed.
+  const popoverMethods = ['showPopover', 'hidePopover', 'togglePopover'] as const;
+  const stubbed: (typeof popoverMethods)[number][] = [];
+  beforeAll(() => {
+    for (const name of popoverMethods) {
+      if (typeof HTMLElement.prototype[name] === 'function') continue;
+      Object.defineProperty(HTMLElement.prototype, name, {
+        configurable: true,
+        writable: true,
+        value: () => {}
+      });
+      stubbed.push(name);
+    }
+  });
+  afterAll(() => {
+    for (const name of stubbed.splice(0)) {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(promptConfirmation).mockClear();
+    vi.mocked(showSnackbar).mockClear();
+    vi.mocked(unifiedCloudManager.deleteManagedVolume).mockReset();
+    vi.mocked(unifiedCloudManager.deleteFile).mockReset();
+    cloudState.authenticated = false;
+    cloudState.files = new Map();
+  });
+
+  async function openMenu() {
+    const v = volume();
+    cloudState.authenticated = true;
+    cloudState.files = new Map([
+      [
+        v.series_title,
+        [{ path: `${v.series_title}/${v.volume_title}.cbz`, provider: 'webdav', fileId: 'f1' }]
+      ]
+    ]);
+    const { container, findByText } = render(VolumeItem, { props: { volume: v, variant: 'grid' } });
+    // Flowbite's popper opens a click-triggered menu on mousedown.
+    await fireEvent.mouseDown(
+      container.querySelector(`#volume-menu-${v.volume_uuid}`) as HTMLElement
+    );
+    return { v, item: await findByText('Delete from cloud') };
+  }
+
+  it('asks first, and deletes nothing on the click', async () => {
+    const { item } = await openMenu();
+    await fireEvent.click(item);
+
+    expect(promptConfirmation).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(promptConfirmation).mock.calls[0][0]).toBe('Delete Vol 1 from cloud?');
+    expect(unifiedCloudManager.deleteManagedVolume).not.toHaveBeenCalled();
+    expect(unifiedCloudManager.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('deletes the volume with its sidecars only once the user says yes', async () => {
+    const { v, item } = await openMenu();
+    await fireEvent.click(item);
+    await (vi.mocked(promptConfirmation).mock.calls[0][1] as () => Promise<void>)();
+
+    expect(unifiedCloudManager.deleteManagedVolume).toHaveBeenCalledWith(
+      v.series_title,
+      v.volume_title,
+      v.volume_uuid
+    );
+    expect(unifiedCloudManager.deleteFile).not.toHaveBeenCalled();
+    expect(showSnackbar).toHaveBeenCalledWith('Deleted from cloud');
   });
 });
 

@@ -110,10 +110,28 @@ const { recordUploadFailure, clearUploadFailure } = vi.hoisted(() => ({
 }));
 vi.mock('$lib/util/upload-failures', () => ({ recordUploadFailure, clearUploadFailure }));
 
+// Stands in for `WorkerPool.cancelTasks`: rejects the captured tasks it
+// matches as cancelled, the way the real pool does.
+const cancelPoolTasks = vi.hoisted(() =>
+  vi.fn((matches: (task: Record<string, any>) => boolean, reason?: string) => {
+    let count = 0;
+    for (const task of capturedTasks.splice(0)) {
+      if (!matches(task)) {
+        capturedTasks.push(task);
+        continue;
+      }
+      count++;
+      void task.onError?.({ type: 'error', fileId: task.id, error: reason, kind: 'cancelled' });
+    }
+    return count;
+  })
+);
+const decrementPoolUsers = vi.hoisted(() => vi.fn());
 vi.mock('$lib/util/file-processing-pool', () => ({
   getFileProcessingPool: async () => ({ addTask: addTaskMock, maxConcurrentWorkers: 4 }),
   incrementPoolUsers: vi.fn(),
-  decrementPoolUsers: vi.fn()
+  decrementPoolUsers,
+  cancelPoolTasks
 }));
 
 vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
@@ -136,9 +154,11 @@ vi.mock('$lib/catalog/server-ocr-queue', () => ({ watchUploadedVolume, watchClou
 
 import type { VolumeMetadata } from '$lib/types';
 import { downloadFileBlob } from './volume-sidecars';
+import { cancelProviderUploads } from './sync/upload-cancellation';
 import {
   backupQueue,
   backupQueueSettled,
+  cancelBackupsForProvider,
   finishBackupRun,
   noteSeriesNeedingIndexWrite,
   queueVolumeForBackup,
@@ -1444,5 +1464,111 @@ describe('a series another account owns on the server', () => {
     await capturedTasks[0].onError({ type: 'error', error: 'WebDAV upload failed: 403' });
     expect(provider.refreshIdentity).not.toHaveBeenCalled();
     expect(recordUploadFailure).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("cancelling a provider's uploads (explicit logout)", () => {
+  function volume(uuid: string): VolumeMetadata {
+    return {
+      volume_uuid: uuid,
+      series_uuid: 'series-1',
+      series_title: 'Ippo',
+      volume_title: `Volume ${uuid}`,
+      mokuro_version: '0.4.11',
+      page_count: 200,
+      character_count: 5000,
+      page_char_counts: [],
+      metadata_only: undefined
+    };
+  }
+  const mega = { type: 'mega', uploadConcurrencyLimit: 6, supportsWorkerUpload: true };
+  const sidecars = { includeSidecars: false, embedSidecarsInArchive: false };
+
+  let items: Array<{ volumeUuid: string; provider: string }> = [];
+  let unsubscribe = () => {};
+  beforeEach(async () => {
+    // Earlier suites leave uploads parked in the stand-in pool forever; this
+    // one needs the queue empty and its run ended.
+    capturedTasks.length = 0;
+    for (const provider of ['webdav', 'filesystem', 'export-for-download'] as const) {
+      cancelBackupsForProvider(provider);
+    }
+    await backupQueueSettled();
+    capturedTasks.length = 0;
+    calls.length = 0;
+    vi.clearAllMocks();
+    unsubscribe = backupQueue.subscribe((q) => (items = q));
+    getActiveProvider.mockReturnValue(mega);
+  });
+  afterEach(() => {
+    unsubscribe();
+    getActiveProvider.mockReturnValue(null);
+  });
+
+  it('drops the uploads in flight without recording a failure, and the run ends without a listing', async () => {
+    queueVolumeForBackup(volume('c-1'), mega as never, sidecars);
+    queueVolumeForBackup(volume('c-2'), mega as never, sidecars);
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(2));
+
+    await cancelProviderUploads('mega', 'Upload cancelled: logged out of MEGA');
+
+    expect(cancelPoolTasks).toHaveBeenCalledTimes(1);
+    const [matches] = cancelPoolTasks.mock.calls[0];
+    expect(matches({ provider: 'mega:upload' })).toBe(true);
+    expect(matches({ provider: 'mega:download' })).toBe(false);
+    expect(matches({ provider: 'webdav:upload' })).toBe(false);
+    await vi.waitFor(() => expect(items).toEqual([]));
+    expect(recordUploadFailure).not.toHaveBeenCalled();
+    expect(bridge.notifyError).not.toHaveBeenCalled();
+    expect(bridge.removeProgress).toHaveBeenCalledWith('backup-c-1');
+    expect(bridge.removeProgress).toHaveBeenCalledWith('backup-c-2');
+    await backupQueueSettled();
+    // The run released the pool but listed and wrote nothing for the account
+    // being logged out.
+    expect(decrementPoolUsers).toHaveBeenCalledTimes(1);
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
+    expect(writeSeriesFile).not.toHaveBeenCalled();
+    expect(flushCatalogFileWrites).not.toHaveBeenCalled();
+  });
+
+  it('drops a volume still waiting in the queue before it reaches the pool', async () => {
+    queueVolumeForBackup(volume('w-1'), mega as never, sidecars);
+    // Synchronously: the queue has not handed it to the pool yet.
+    cancelBackupsForProvider('mega');
+
+    expect(items).toEqual([]);
+    await backupQueueSettled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(capturedTasks).toHaveLength(0);
+    expect(recordUploadFailure).not.toHaveBeenCalled();
+  });
+
+  it("leaves another provider's queue alone", async () => {
+    const webdav = { type: 'webdav', uploadConcurrencyLimit: 2, supportsWorkerUpload: true };
+    getActiveProvider.mockReturnValue(webdav);
+    queueVolumeForBackup(volume('o-1'), webdav as never, sidecars);
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+
+    cancelBackupsForProvider('mega');
+
+    expect(items.map((i) => i.volumeUuid)).toEqual(['o-1']);
+    expect(capturedTasks).toHaveLength(1);
+    // Finish it the ordinary way, so the run ends as usual.
+    await capturedTasks[0].onError({ type: 'error', error: 'offline' });
+    expect(recordUploadFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('a later run after the cancel ends with its listing again', async () => {
+    queueVolumeForBackup(volume('l-1'), mega as never, sidecars);
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    cancelBackupsForProvider('mega');
+    await backupQueueSettled();
+    expect(fetchAllCloudVolumes).not.toHaveBeenCalled();
+
+    queueVolumeForBackup(volume('l-2'), mega as never, sidecars);
+    await vi.waitFor(() => expect(capturedTasks).toHaveLength(1));
+    await capturedTasks[0].onError({ type: 'error', error: 'offline' });
+    await backupQueueSettled();
+    expect(fetchAllCloudVolumes).toHaveBeenCalledTimes(1);
   });
 });

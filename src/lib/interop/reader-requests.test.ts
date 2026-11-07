@@ -457,7 +457,7 @@ describeContract('uploads', () => {
  * corrections. Sent through the upload every WebDAV write takes — the provider
  * hands it each path (`webdav-core.ts`, main thread and Workers alike). The
  * history gate is not derived from the recorded identity: Bunko's fixtures
- * report the sentinel version, which is below 0.8.0 (C19). These records show
+ * report the sentinel version, which is below 0.7.8 (C19). These records show
  * what the reader sends once the gate is on.
  */
 describeContract('history and corrections (a registered account)', () => {

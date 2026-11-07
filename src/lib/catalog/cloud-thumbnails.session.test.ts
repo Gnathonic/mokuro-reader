@@ -12,7 +12,9 @@ const cloud = vi.hoisted(() => {
   let n = 0;
   const downloadFile = vi.fn(async () => {
     n++;
-    return new Blob([`bytes-${n}`], { type: 'image/webp' });
+    // Real PNG magic: a cover is typed by its bytes, and anything else is refused.
+    const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
+    return new Blob([new Uint8Array(png), `bytes-${n}`], { type: 'image/webp' });
   });
   return { downloadFile };
 });

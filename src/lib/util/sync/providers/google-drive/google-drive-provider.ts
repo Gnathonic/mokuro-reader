@@ -6,14 +6,20 @@ import type {
   CloudFileMetadata,
   DriveFileMetadata,
   FileStamp,
+  LogoutOptions,
+  LogoutResult,
   StorageQuota,
   UploadFileResult
 } from '../../provider-interface';
-import { ProviderError } from '../../provider-interface';
+import { isLoginCancelled, LOGIN_CANCELLED, ProviderError } from '../../provider-interface';
 import { isCbzFile, isSidecarFile, isRootConfigFile, isSyncableFile } from '../../syncable-file';
 import { isHistoryFileName } from '$lib/reading-history/paths';
 import { driveHistoryPath } from './drive-history-path';
 import { tokenManager } from '$lib/util/sync/providers/google-drive/token-manager';
+import {
+  registerWorkerAuthRefresher,
+  TransientAuthRefreshError
+} from '$lib/util/worker-auth-refresh';
 import { waitFor } from '$lib/util/store-wait';
 import {
   driveApiClient,
@@ -39,6 +45,7 @@ import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
 import {
+  classifyDriveFailure,
   driveFailureOf,
   isDriveRateLimit,
   isQuotaExceededError,
@@ -52,6 +59,26 @@ const CONTROL_ROOTS_TTL_MS = 10 * 60 * 1000;
 const CONTROL_ROOTS_RECHECK_MS = 60 * 1000;
 /** Roots named in one control-file `files.list` (`'<id>' in parents or …`). */
 const CONTROL_ROOTS_PER_QUERY = 25;
+/**
+ * A worker's transfer outlives the call that started it, so its token must too:
+ * credentials handed to a worker are good for at least this long (backend mode
+ * renews the token first when not). A worker that still meets a 401 asks the
+ * main thread for a fresh one (`refreshedWorkerCredentials`).
+ */
+const WORKER_TOKEN_MIN_VALIDITY_MS = 15 * 60 * 1000;
+
+/**
+ * Has the user interacted with this page at all (sticky activation)? A
+ * sign-in that leaves the page must never start before that: not at boot, not
+ * from code that runs on its own. Sticky rather than transient on purpose: the
+ * provider chunk a click loads first can outlast the few seconds a click's
+ * transient activation lasts. Unknown (no User Activation API) counts as yes.
+ */
+function userHasActed(): boolean {
+  const activation = (globalThis.navigator as { userActivation?: { hasBeenActive: boolean } })
+    ?.userActivation;
+  return activation ? activation.hasBeenActive : true;
+}
 
 /**
  * Metadata for a file selected from the Google Drive file picker
@@ -71,6 +98,31 @@ interface PickedFile {
  * Wraps existing Google Drive integration into the unified SyncProvider interface.
  * This allows Drive to work alongside MEGA and WebDAV providers.
  */
+
+/** How long a sign-in redirect may take to leave the page before it counts as failed. */
+const REDIRECT_TIMEOUT_MS = 30_000;
+
+/**
+ * After starting the full-page sign-in: true if this page is shown again from
+ * the back/forward cache (the user pressed Back on Google's page), false if it
+ * is still here after REDIRECT_TIMEOUT_MS without having left.
+ */
+function signInPageReturned(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const onShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      done(true);
+    };
+    const timer = setTimeout(() => done(false), REDIRECT_TIMEOUT_MS);
+    function done(returned: boolean) {
+      clearTimeout(timer);
+      window.removeEventListener('pageshow', onShow);
+      resolve(returned);
+    }
+    window.addEventListener('pageshow', onShow);
+  });
+}
+
 class GoogleDriveProvider implements SyncProvider {
   readonly type = 'google-drive' as const;
   readonly name = 'Google Drive';
@@ -119,12 +171,33 @@ class GoogleDriveProvider implements SyncProvider {
     providerManager.updateStatus();
   }
 
-  private getAccessToken(): string {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
-    return token;
+  /** A token to send now (backend mode renews one about to expire). */
+  private getAccessToken(minValidityMs?: number): Promise<string> {
+    return tokenManager.getAccessToken(minValidityMs);
+  }
+
+  /**
+   * Fresh credentials for a transfer whose token Drive refused (a worker's,
+   * through `worker-auth-refresh.ts`, or this thread's core call): a token
+   * another request already renewed, else one renewed now through the auth
+   * backend. Null when there is none (the 401 stands, as it always did);
+   * transient when the backend cannot renew right now.
+   */
+  async refreshedWorkerCredentials(
+    staleAuthorization: string
+  ): Promise<Record<string, unknown> | null> {
+    const stale = staleAuthorization.replace(/^Bearer\s+/i, '');
+    const renewal = await tokenManager.renewRejectedToken(stale);
+    if (renewal.kind === 'transient') {
+      throw new TransientAuthRefreshError(
+        'Google Drive sign-in renewal is temporarily unavailable - will retry later'
+      );
+    }
+    if (renewal.kind !== 'renewed') return null;
+    return {
+      accessToken: renewal.token,
+      ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {})
+    };
   }
 
   isAuthenticated(): boolean {
@@ -213,6 +286,8 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   async login(): Promise<void> {
+    // A sign-in may leave the page only once the user has acted on it.
+    const interactive = userHasActed();
     try {
       if (!browser) {
         throw new Error('Google Drive auth only works in browser');
@@ -239,6 +314,33 @@ class GoogleDriveProvider implements SyncProvider {
       // Initialize Drive API if needed (this also initializes the token client)
       await driveApiClient.initialize();
 
+      // The auth backend: a live session cookie reconnects at once; otherwise
+      // the page leaves for Google's consent screen and the next load
+      // finishes the sign-in (`tokenManager.restoreSession`).
+      if (tokenManager.isBackendMode()) {
+        const outcome = await tokenManager.connectViaBackend(interactive);
+        if (outcome === 'connected') {
+          setActiveProviderKey('google-drive');
+          console.log('✅ Google Drive reconnected through its session');
+          return;
+        }
+        if (outcome === 'redirecting') {
+          // The page is navigating away; this settles only if it did not, or
+          // if the user came BACK to this very page (Back on Google's screen
+          // restores it from the back/forward cache): that is a cancel, not a
+          // failure to report.
+          if (await signInPageReturned()) {
+            throw new ProviderError(
+              'Google Drive sign-in cancelled',
+              'google-drive',
+              LOGIN_CANCELLED
+            );
+          }
+          throw new Error('Google sign-in did not open');
+        }
+        // 'popup': the backend is not there: the implicit sign-in below.
+      }
+
       // Request OAuth token with full consent screen (initial login)
       tokenManager.requestNewToken(true);
 
@@ -253,6 +355,7 @@ class GoogleDriveProvider implements SyncProvider {
       setActiveProviderKey('google-drive');
       console.log('✅ Google Drive login successful');
     } catch (error) {
+      if (isLoginCancelled(error)) throw error;
       throw new ProviderError(
         `Google Drive login failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'google-drive',
@@ -262,19 +365,26 @@ class GoogleDriveProvider implements SyncProvider {
     }
   }
 
-  async logout(): Promise<void> {
+  /**
+   * This device only, unless `everywhere` (see `tokenManager.logout`): a
+   * provider switch or the plain Log out must never revoke the Google grant
+   * that other devices and a mokuro-bunko server may share.
+   */
+  async logout(options?: LogoutOptions): Promise<LogoutResult> {
     // Use full logout (clears token + auth history) not just clearToken
-    await tokenManager.logout();
+    const result = await tokenManager.logout(options);
     this.setReaderFolderId(null);
     this.resetControlFileState();
     this.initializePromise = null; // Reset initialization state
     // Clear the active provider key
     clearActiveProviderKey();
     console.log('Google Drive logged out');
+    return result;
   }
 
+  /** The user asked to reconnect (a cloud-page button). */
   async reauthenticate(): Promise<void> {
-    tokenManager.reAuthenticate();
+    tokenManager.reconnect();
   }
 
   // CONTROL FILES (cloud-direct Bunko marker, queue)
@@ -603,7 +713,7 @@ class GoogleDriveProvider implements SyncProvider {
       const existingFileId = await findFile(fileName, targetFolderId);
 
       // Upload (create or update) via shared provider core.
-      const token = this.getAccessToken();
+      const token = await this.getAccessToken();
       if (!token) {
         throw new Error('No access token available');
       }
@@ -617,7 +727,8 @@ class GoogleDriveProvider implements SyncProvider {
         },
         mimeType,
         existingFileId: existingFileId || undefined,
-        onProgress
+        onProgress,
+        refreshAuth: (stale) => this.refreshedWorkerCredentials(stale)
       });
 
       // Update file description if provided
@@ -834,14 +945,15 @@ class GoogleDriveProvider implements SyncProvider {
     const fileId = file.fileId;
 
     try {
-      const token = this.getAccessToken();
+      const token = await this.getAccessToken();
       if (!token) {
         throw new Error('No access token available');
       }
       const data = await this.cloudCore.downloadFile({
         fileId,
         credentials: { accessToken: token },
-        onProgress: onProgress || (() => {})
+        onProgress: onProgress || (() => {}),
+        refreshAuth: (stale) => this.refreshedWorkerCredentials(stale)
       });
       const blob = new Blob([data], { type: 'application/zip' });
       console.log(`✅ Downloaded file from Google Drive (${fileId})`);
@@ -1155,10 +1267,7 @@ class GoogleDriveProvider implements SyncProvider {
           const readerFolderId = await this.ensureReaderFolder();
 
           // Get access token
-          let token = '';
-          tokenManager.token.subscribe((value) => {
-            token = value;
-          })();
+          const token = await this.getAccessToken();
 
           if (!token) {
             throw new Error('No access token available');
@@ -1351,11 +1460,27 @@ class GoogleDriveProvider implements SyncProvider {
     await this.ensureInitialized();
 
     try {
-      const response = await withDriveRetry(() =>
-        gapi.client.drive.about.get({
-          fields: 'storageQuota'
-        })
-      );
+      // A raw gapi call, outside `driveApiClient`: it gets that client's token
+      // handling here — a token with time left first (backend mode renews one
+      // about to expire), and a 401 renewed and sent once more.
+      const aboutGet = () =>
+        withDriveRetry(() =>
+          gapi.client.drive.about.get({
+            fields: 'storageQuota'
+          })
+        );
+      const sentWith = await this.getAccessToken();
+      let response: Awaited<ReturnType<typeof aboutGet>>;
+      try {
+        response = await aboutGet();
+      } catch (error) {
+        const failure = driveFailureOf(error);
+        if (failure?.status === undefined) throw error;
+        if (classifyDriveFailure(failure.status, failure.reason) !== 'auth') throw error;
+        const renewal = await tokenManager.renewRejectedToken(sentWith);
+        if (renewal.kind !== 'renewed') throw error;
+        response = await aboutGet();
+      }
 
       const quota = response.result.storageQuota;
       if (!quota) {
@@ -1738,10 +1863,7 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
+    const token = await this.getAccessToken(WORKER_TOKEN_MIN_VALIDITY_MS);
     return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 
@@ -1751,15 +1873,17 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
-    let token = '';
-    tokenManager.token.subscribe((value) => {
-      token = value;
-    })();
+    const token = await this.getAccessToken(WORKER_TOKEN_MIN_VALIDITY_MS);
     return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
   }
 }
 
 export const googleDriveProvider = new GoogleDriveProvider();
+
+// Workers never renew a token themselves: a 401 in any of them comes here.
+registerWorkerAuthRefresher('google-drive', (stale) =>
+  googleDriveProvider.refreshedWorkerCredentials(stale)
+);
 
 // Self-register cache when module is loaded
 cacheManager.registerCache('google-drive', driveFilesCache);

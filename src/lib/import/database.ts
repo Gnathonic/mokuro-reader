@@ -84,6 +84,14 @@ export interface SavedVolumeData {
  *   volume would read as un-backed-up and renames would miss its files).
  *   Legacy titles get sanitized later, at rename time, where the rename
  *   machinery moves the cloud files along with the title.
+ * @param options.beforeWrite - Runs INSIDE the save's transaction, once the row
+ *   is final (titles included, after a reinstall kept its stored ones) and
+ *   before anything is written. A check made here and the write are one
+ *   transaction, so nothing can land between them. When it is given, the
+ *   transaction also spans `series_metadata` and `series_index`, which it may
+ *   read. It may await ONLY Dexie operations on those tables and the volume
+ *   tables: any other await lets the transaction commit early, and the write
+ *   then fails with `TransactionInactiveError`. If it throws, nothing is saved.
  * @returns The exact objects committed — see {@link SavedVolumeData}. A cloud
  *   download feeds these straight to the import-time sidecar backfill
  *   (`queueSidecarBackfillFromImport`) so it can serialize the `.mokuro` from
@@ -92,7 +100,10 @@ export interface SavedVolumeData {
  */
 export async function saveVolume(
   volume: ProcessedVolume,
-  options?: { preserveTitles?: boolean }
+  options?: {
+    preserveTitles?: boolean;
+    beforeWrite?: (row: VolumeMetadata) => Promise<void>;
+  }
 ): Promise<SavedVolumeData> {
   const { metadata, ocrData, fileData } = volume;
   const canonicalVolumeUuid = metadata.volumeUuid;
@@ -146,8 +157,13 @@ export async function saveVolume(
   // serialized from (see `SavedVolumeData`).
   const pagesForDb = ocrData.pages.map(({ cumulativeChars, ...page }) => page);
 
-  // Write to all 3 tables atomically
-  await db.transaction('rw', [db.volumes, db.volume_ocr, db.volume_files], async () => {
+  // Write to all 3 tables atomically. A `beforeWrite` check reads the series
+  // tables too, so they join the transaction only then.
+  const beforeWrite = options?.beforeWrite;
+  const tables = beforeWrite
+    ? [db.volumes, db.volume_ocr, db.volume_files, db.series_metadata, db.series_index]
+    : [db.volumes, db.volume_ocr, db.volume_files];
+  await db.transaction('rw', tables, async () => {
     const [existingVolume, existingOcr, existingFiles] = await Promise.all([
       db.volumes.get(canonicalVolumeUuid),
       db.volume_ocr.get(canonicalVolumeUuid),
@@ -158,15 +174,6 @@ export async function saveVolume(
     // save is the reinstall, and it fills that row.
     if (existingVolume && isVolumeInstalled(existingVolume)) {
       throw new Error(`Volume ${canonicalVolumeUuid} already exists in database`);
-    }
-
-    // Clean up stale rows left behind by an interrupted delete before re-importing.
-    if (existingOcr) {
-      await db.volume_ocr.delete(canonicalVolumeUuid);
-    }
-
-    if (existingFiles) {
-      await db.volume_files.delete(canonicalVolumeUuid);
     }
 
     if (existingVolume) {
@@ -193,6 +200,21 @@ export async function saveVolume(
       if (!volumeMetadata.archive_size && existingVolume.archive_size) {
         volumeMetadata.archive_size = existingVolume.archive_size;
       }
+    }
+
+    // The row is final here; nothing has been written yet.
+    if (beforeWrite) await beforeWrite(volumeMetadata);
+
+    // Clean up stale rows left behind by an interrupted delete before re-importing.
+    if (existingOcr) {
+      await db.volume_ocr.delete(canonicalVolumeUuid);
+    }
+
+    if (existingFiles) {
+      await db.volume_files.delete(canonicalVolumeUuid);
+    }
+
+    if (existingVolume) {
       // `put` replaces the whole row, which is what clears `metadata_only`:
       // a row written together with its files is installed by definition.
       await db.volumes.put(volumeMetadata);

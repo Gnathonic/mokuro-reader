@@ -125,13 +125,13 @@ src/
 
 Located in `src/lib/util/sync/`, the app supports multiple cloud storage providers:
 
-| Provider     | Auth Method                     | Status                |
-| ------------ | ------------------------------- | --------------------- |
-| Google Drive | OAuth2 implicit flow            | Full support          |
-| MEGA         | Email/password (+ optional 2FA) | Full support          |
-| WebDAV       | URL + credentials               | Full support          |
-| OneDrive     | MSAL (OAuth2 auth code + PKCE)  | Full support          |
-| Local Folder | Directory picker (no account)   | Desktop Chromium only |
+| Provider     | Auth Method                                                        | Status                |
+| ------------ | ------------------------------------------------------------------ | --------------------- |
+| Google Drive | OAuth2 implicit flow, or auth code + PKCE through the auth backend | Full support          |
+| MEGA         | Email/password (+ optional 2FA)                                    | Full support          |
+| WebDAV       | URL + credentials                                                  | Full support          |
+| OneDrive     | MSAL (OAuth2 auth code + PKCE)                                     | Full support          |
+| Local Folder | Directory picker (no account)                                      | Desktop Chromium only |
 
 **Architecture:**
 
@@ -142,7 +142,23 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
 
 **Google Drive specifics** (`providers/google-drive/`):
 
-- Uses OAuth2 implicit flow (access tokens only, ~1 hour expiry)
+- Uses OAuth2 implicit flow (access tokens only, ~1 hour expiry) — unless the build sets
+  `VITE_GDRIVE_AUTH_BACKEND=true`: then ONE sign-in (PKCE, full-page redirect to the static
+  `static/oauth/google-callback.html`) and silent renewals through
+  `src/routes/api/gdrive/{session,refresh,logout}` (server logic in `src/lib/server/gdrive-auth/`;
+  the refresh token lives sealed in an HttpOnly cookie, optionally bound to a device key). Read
+  tokens through `tokenManager.getAccessToken(minValidityMs)`, never the store or localStorage;
+  only `tokenManager.reconnect()` (a user's click) may start a sign-in; `getTimeUntilExpiry()`
+  is null while the session can renew. A flag-set build whose server cannot serve the routes
+  falls back to the implicit flow for that tab. Full design, env vars, error vocabulary and
+  runbook: `docs/gdrive-auth-backend.md`.
+- Sign-out is THIS DEVICE ONLY by default (Log out, provider switch, `providerManager.logout()`):
+  no Google revoke, because Google revokes per Cloud project and would sign out every other
+  device and any mokuro-bunko server sharing the grant. Backend mode clears the cookie and
+  deletes the device key (a bound cookie's copy can no longer refresh). Only the confirmed
+  "Sign out everywhere…" passes `logout({ everywhere: true })` and revokes; a provider switch
+  never does. A device sign-out that cannot neutralise copies (unbound session, `GDRIVE_POP=off`)
+  answers `invalidated: false`, and the cloud page's snackbar says a copy could still work.
 - `escapeNameForDriveQuery()` must be used for file/folder names in API queries
 - Broad queries + client-side filtering is the correct pattern (Google scopes by app permissions)
 - Every Drive HTTP failure is classified by `core/providers/drive-http.ts` from the body's
@@ -1886,6 +1902,26 @@ must not break. Highlights:
   hit-testing), `e2e/line-grid.spec.ts` (grid, rotation, hit-testing, turned cells, editing
   a tilted line), `e2e/char-offsets.spec.ts` (original mode, viewer and editor).
 
+### Images are raster only
+
+SVG is an unsupported format. Every page, cover and thumbnail ends up behind a
+`blob:` URL on the app's origin, served with the Blob's own `type`, so an
+`image/svg+xml` or `text/html` Blob (or an untyped one the browser sniffs as
+HTML) runs its script as the app when the user picks "Open image in new tab".
+`src/lib/util/raster-image.ts` is the rule: a stored image's type comes ONLY
+from its magic bytes (`toRasterImageFile`, `sniffRasterImageType`), for the
+formats in `IMAGE_MIME_TYPES` — never from a remote `Content-Type` or a file
+extension — and anything else is refused, never stored. `processVolume` types
+every page and the thumbnail sidecar that way (non-raster pages become missing
+pages); deep-link covers and cloud covers go through the same call. On the
+way out, thumbnail/cover surfaces and the Anki `{cover}` field go through
+`displayableCoverBlob` (a raster-typed Blob as is, an untyped one — older
+archive imports stored thumbnail sidecars untyped — under a raster label, any
+explicit non-raster type never), page object URLs are minted from a
+raster-labelled view (`displayableImageBlob`, for pages stored untyped by older
+builds), and `processThumbnails` re-types or drops any stored thumbnail whose
+type is not raster.
+
 ### Cloud covers
 
 `requestCover(vol)` (`src/lib/catalog/cover-service.ts`) is the only way anything obtains a
@@ -1904,7 +1940,7 @@ from anywhere else. Synced-progress rows are minted after every progress sync
 
 **Always add `relative z-10` to action button containers in modals.**
 
-Night mode applies a CSS `filter` to `<dialog>` elements (see `app.html`). The `filter` property creates a new stacking context, which resets all z-index relationships inside the dialog. Without explicit z-index, scrollable containers (`overflow: auto/scroll`) can capture click events instead of sibling button containers.
+Night mode applies a CSS `filter` to `<dialog>` elements (see `src/lib/styles/night-mode.css`). The `filter` property creates a new stacking context, which resets all z-index relationships inside the dialog. Without explicit z-index, scrollable containers (`overflow: auto/scroll`) can capture click events instead of sibling button containers.
 
 ```svelte
 <!-- ✅ Correct - buttons will be clickable even with night mode filter -->
@@ -1934,6 +1970,11 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 ```
 
 - `VITE_GDRIVE_*`: required only for Google Drive sync.
+- `VITE_GDRIVE_AUTH_BACKEND=true` + the server-only `GDRIVE_CLIENT_SECRET`,
+  `GDRIVE_SESSION_KEY` (`openssl rand -base64 32`), optional `GDRIVE_SESSION_KEY_PREV`,
+  `GDRIVE_CLIENT_ID` (falls back to `VITE_GDRIVE_CLIENT_ID`) and `GDRIVE_POP=off`: the Drive
+  auth backend (`docs/gdrive-auth-backend.md`). Secrets never take a `VITE_`/`PUBLIC_` prefix;
+  `npm run build` fails if one set in its env shows up in the output.
 - `VITE_ONEDRIVE_CLIENT_ID`: required only for OneDrive sync. Register an
   Azure AD app (any Microsoft account tenant, "common" authority) and add the
   deploy origin as a **Single-page application** redirect URI. Scopes used:
@@ -1943,6 +1984,67 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   Register an AniList API client (implicit grant) whose redirect URL is the deploy
   origin with a trailing slash. Searching/linking series needs no key.
 - MEGA, WebDAV, and Local Folder require no env vars.
+- `CSP_MODE` (build time, NOT a `VITE_` var — read by `svelte.config.js`):
+  `off` (default) | `report-only` | `enforce`. See "Security headers and CSP".
+  Any other value fails the build.
+
+### Security headers and CSP
+
+- **`vercel.json`** sends `X-Content-Type-Options: nosniff`, `X-Frame-Options:
+SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
+  `same-origin`: it severs the GIS popup) and a `Permissions-Policy` denying
+  unused device features (never microphone — Migaku —, clipboard, fullscreen,
+  wake lock, share, local-network/loopback) on every path but `/api/` and
+  `/oauth/` (those get their own rules; keep one header name per path). Both of
+  those carry `Cache-Control: no-store`, `Referrer-Policy: no-referrer` and their
+  own `nosniff`; `/api/` a `default-src 'none'; frame-ancestors 'none'` CSP, and
+  the Drive sign-in callback (`/oauth/`) `X-Frame-Options: DENY`, `noindex` and an
+  ENFORCED CSP (whatever `CSP_MODE` says) allowing only its own same-origin
+  script — `google-callback.js` fetches nothing, styles nothing and has no
+  inline code; keep it that way or widen that one policy with evidence. The
+  module workers (`/_app/immutable/workers/*`) get their own CSP: a worker does
+  not inherit the page's. That one is NOT phased by `CSP_MODE` — it is enforced
+  from the first deploy. No global `Referrer-Policy` (the Drive API key's
+  referrer restriction needs the origin).
+- **The shell's CSP** is `kit.csp` (`src/lib/security/csp-policy.js`, mode
+  `hash` — never nonces on a CDN-cached shell), phased by `CSP_MODE`. Every
+  source in it is justified there; add a third-party host only with the same
+  evidence, and NEVER bare `accounts.google.com` / `www.gstatic.com` in
+  `script-src` (JSONP/AngularJS bypass gadgets — exact paths only). Report-only
+  carries `report-to csp-noop` (kit 500s every page without one) and no
+  Reporting-Endpoints header: reports go nowhere. No inline `<style>`/`<script>`
+  in `app.html` (kit hashes only its own): styles go in a stylesheet. No
+  `default-src` (it would only refuse the https: media extensions inject).
+  `frame-src` carries `login.live.com` beside `login.microsoftonline.com`: MSAL's
+  silent-renewal iframe sends a personal account through it. Safari below 16
+  (`'wasm-unsafe-eval'`, `style-src-attr`) is knowingly unsupported under
+  enforce.
+- **Vercel Toolbar**: injected into preview deployments (beta), refused by the
+  policy. Turn it off for previews in the Vercel project settings rather than
+  widening the policy — beta must enforce exactly what production does.
+- **Violations** are kept in an in-page ring buffer (`csp-violations.ts`,
+  installed by `src/hooks.client.ts`): `__mokuroCspViolations()` in the console.
+  A violation inside a worker fires on the worker, so every app worker calls
+  `forwardWorkerCspViolations()` first thing (BroadcastChannel
+  `mokuro-csp-violations`, entries `context: 'worker <path>'`); a new app worker
+  must too. Third-party blob:/data: workers (zip.js codecs, pica) are not
+  covered. `isAppViolation` is for the automated spec only: checking a device
+  by hand, ANY entry recorded while Yomitan or Migaku is active — extension-
+  attributed ones included — blocks enforcement until it is allowed or shown
+  harmless (Chrome exempts an extension's own loads, so what does fire is its
+  main-world injection, exactly what enforce would break).
+- **The Google scripts** (gapi, GIS) load on demand (`google-scripts.ts`): when
+  Drive is the active provider at boot, and when the cloud page mounts —
+  never first inside the Connect click (the GIS popup needs its activation).
+  Each waiter waits for its own script only (`loadGapiScript` for the Drive
+  client and Picker, `loadGisScript` for the token client): with the auth
+  backend GIS is just the popup fallback, and a blocked GIS must not take the
+  Drive client down. The backend's sign-in (a full-page `location.assign` to
+  Google) and renewals (`fetch('/api/gdrive/…')`, `connect-src 'self'`) need
+  no Google script and nothing beyond the shell policy.
+- `e2e/csp.spec.ts` builds each mode (own `MOKURO_E2E_KIT_OUT_DIR`), re-applies
+  `vercel.json`'s headers, and requires zero app violations through boot,
+  import, reader, OCR text, settings, night mode and the cloud page.
 
 ## Testing
 
@@ -2021,7 +2123,8 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   spec counts the writes a sync caused without waiting out the 2 s debounce.
 - An interop build reaches no host off the machine but the ones the config names: the rig
   refuses every other request and FAILS the spec that made it (only `apis.google.com/js/api.js`
-  and `accounts.google.com/gsi/client`, which `app.html` loads, are answered, empty). So
+  and `accounts.google.com/gsi/client`, which `google-scripts.ts` injects on demand, are
+  answered, empty). So
   `src/lib/interop/hermetic.ts` (`INTEROP_BUILD`, MODE interop only — Vitest keeps it off) skips
   the Noto Sans JP web font, and `src/hooks.server.ts` serves the shell without `app.html`'s
   other absolute addresses (the font host's preconnects, the jidoujisho icon). A new third-party

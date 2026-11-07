@@ -117,10 +117,12 @@
     }
   }
 
-  // Google Drive specific: Manual token refresh handler
+  // Google Drive specific: Manual token refresh handler. A click: the one
+  // place a sign-in may start (`reconnect`; the same re-auth as before unless
+  // the auth backend is in use).
   function handleTokenRefresh() {
     if (isGoogleDrive && providerState.isAuthenticated) {
-      tokenManager.reAuthenticate();
+      tokenManager.reconnect();
       showSnackbar(`Refreshing ${providerDisplayName} session...`);
     }
   }

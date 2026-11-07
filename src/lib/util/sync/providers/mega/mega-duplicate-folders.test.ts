@@ -271,6 +271,123 @@ describe('T5 (V4): one unexpected server-change packet does not freeze the tree'
 
     expect(server.openPolls()).toBe(0);
   });
+
+  it('logging out ends the session on the server (real megajs sends sml for its sid)', async () => {
+    const provider = await restoredProvider();
+    const before = server.requests.length;
+
+    await provider.logout();
+    await provider.whenServerLogoutSettled();
+
+    const sent = server.requests.slice(before);
+    expect(sent.filter((req) => req.body.a === 'sml').map((req) => req.sid)).toEqual([CLIENT_SID]);
+    expect(localStorage.getItem('mega_session')).toBeNull();
+  });
+
+  it('a tree refresh on the live session never ends it', async () => {
+    const provider = await restoredProvider();
+
+    await (provider as any).reinitialize();
+
+    expect(server.requests.some((req) => req.body.a === 'sml')).toBe(false);
+    expect(provider.isAuthenticated()).toBe(true);
+  });
+});
+
+describe('a logout with requests in flight (megajs never answers them after close)', () => {
+  /** The client session's next mkdir (a `p` creating a folder). */
+  const holdNextMkdir = () =>
+    server.hold((req) => req.sid === CLIENT_SID && req.body.a === 'p' && req.body.n?.[0]?.t === 1);
+
+  it('a series mkdir in flight fails, and the next login uploads to that series', async () => {
+    const provider = await restoredProvider();
+    const held = holdNextMkdir();
+    // The first upload of a new series: the backup creates its folder.
+    const preparing = provider.prepareUploadTarget('Ippo');
+    await held.arrived;
+
+    await provider.logout();
+    await expect(preparing).rejects.toMatchObject({ code: 'LOGGED_OUT' });
+
+    // Back in on the same page: the ended session's mkdir is not joined.
+    localStorage.setItem('mega_session', JSON.stringify(server.sessionBlob()));
+    await provider.restorePersistedSession();
+    expect(provider.isAuthenticated()).toBe(true);
+    await provider.uploadFile('Ippo/Ippo 01.cbz', bytes());
+
+    const tree = await server.tree();
+    expect(tree.count('mokuro-reader/Ippo')).toBe(1);
+    expect(tree.count('mokuro-reader/Ippo/Ippo 01.cbz')).toBe(1);
+    held.release();
+  });
+
+  it('a library mkdir in flight does not hang the next login', async () => {
+    // An empty drive: the startup restore creates the library folder.
+    localStorage.setItem('mega_session', JSON.stringify(server.sessionBlob()));
+    const held = holdNextMkdir();
+    const provider = new MegaProvider();
+    providers.push(provider);
+    await held.arrived;
+
+    await provider.logout();
+    await provider.whenReady();
+    // That mkdir never answered here; let the server forget it too, so the
+    // next login's tree has no library either and must create one itself.
+    for (const [handle, node] of server.nodes) {
+      if (node.t === 1 && node.p === server.rootHandle) server.nodes.delete(handle);
+    }
+
+    localStorage.setItem('mega_session', JSON.stringify(server.sessionBlob()));
+    await provider.restorePersistedSession();
+    expect(provider.isAuthenticated()).toBe(true);
+    expect((await server.tree()).count('mokuro-reader')).toBe(1);
+    held.release();
+  });
+
+  it('a download in flight rejects instead of hanging', async () => {
+    const other = await server.otherDevice();
+    await other.put('mokuro-reader/volume-data.json', '{}');
+    const provider = await restoredProvider();
+    const [file] = await provider.listCloudVolumes(true);
+    const held = server.hold((req) => req.sid === CLIENT_SID && req.body.a === 'g');
+    const downloading = provider.downloadFile(file);
+    await held.arrived;
+
+    await provider.logout();
+
+    await expect(downloading).rejects.toMatchObject({ code: 'LOGGED_OUT' });
+    held.release();
+  });
+
+  it('a tree load in flight rejects instead of hanging', async () => {
+    const provider = await restoredProvider();
+    const held = server.holdNextFullLoad();
+    const listing = provider.listCloudVolumes(false);
+    await held.arrived;
+
+    await provider.logout();
+
+    await expect(listing).rejects.toMatchObject({ code: 'LIST_FAILED' });
+    held.release();
+  });
+
+  it('a logout during the startup restore is a clean logout, not an expired session', async () => {
+    localStorage.setItem('mega_session', JSON.stringify(server.sessionBlob()));
+    const held = server.holdNextFullLoad();
+    const provider = new MegaProvider();
+    providers.push(provider);
+    await held.arrived;
+
+    await provider.logout();
+    await provider.whenReady();
+    held.release();
+    await server.flush();
+
+    expect(provider.isAuthenticated()).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(false);
+    expect(provider.getLastUsername()).toBeNull();
+    expect(localStorage.getItem('active_cloud_provider')).toBeNull();
+  });
 });
 
 describe('T6 (V5): writers and the deduplicator agree on which root is the library', () => {

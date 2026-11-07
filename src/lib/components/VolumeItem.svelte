@@ -47,7 +47,6 @@
   import PositionOfferChip from './PositionOfferChip.svelte';
   import BackupButton from './BackupButton.svelte';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-  import { PROVIDER_SHORT_LABELS } from '$lib/util/sync/provider-display';
   import { providerManager } from '$lib/util/sync';
   import { backupQueue } from '$lib/util/backup-queue';
   import { downloadQueue } from '$lib/util/download-queue';
@@ -79,6 +78,7 @@
   import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
   import { isTypingTarget } from '$lib/util/series-editor-shortcut';
   import { onDestroy } from 'svelte';
+  import { displayableCoverBlob } from '$lib/util/raster-image';
   import { get } from 'svelte/store';
 
   interface Props {
@@ -301,7 +301,7 @@
 
   function getThumbnailKey(volumeUuid: string, thumbnail?: File): string | undefined {
     if (!thumbnail) return undefined;
-    return `${volumeUuid}:${thumbnail.size}:${thumbnail.lastModified}`;
+    return `${volumeUuid}:${thumbnail.size}:${thumbnail.lastModified}:${thumbnail.type}`;
   }
 
   $effect(() => {
@@ -318,8 +318,10 @@
     }
 
     thumbnailKey = nextKey;
-    if (!liveVolume?.thumbnail) return;
-    thumbnailUrl = URL.createObjectURL(liveVolume.thumbnail);
+    // Raster covers only — see `displayableCoverBlob`.
+    const cover = displayableCoverBlob(liveVolume?.thumbnail);
+    if (!cover) return;
+    thumbnailUrl = URL.createObjectURL(cover);
   });
 
   onDestroy(() => {
@@ -632,6 +634,12 @@
     };
   });
 
+  /**
+   * Delete this volume's cloud copy, and only that — every surface that does
+   * (shift+Delete, the placeholder's button, the menu's "Delete from cloud")
+   * comes through here: the server's permission rules first, then a question,
+   * since a cloud delete is permanent and one click never does it.
+   */
   async function onCloudDeleteOnly() {
     const target = deletableCloudFile;
     if (!target || isReadOnlyMode) {
@@ -643,11 +651,25 @@
       showSnackbar(permitted.reason ?? "This account can't delete this on this server");
       return;
     }
+    // Captured now: `cloudFile` is a $derived that empties once the delete
+    // refreshes the listing. A volume the listing shows under its own titles
+    // goes with its sidecars (`deleteManagedVolume`); one only its own cloud
+    // fields still point at (a placeholder a `Series:` description renamed)
+    // can only be deleted as the one file it names.
+    const managed = cloudFile !== null && cloudFile !== undefined;
     const providerName =
       target.provider === 'google-drive' ? 'Drive' : target.provider === 'mega' ? 'MEGA' : 'cloud';
     promptConfirmation(`Delete ${volName} from ${providerName}?`, async () => {
       try {
-        await unifiedCloudManager.deleteFile(target);
+        if (managed) {
+          await unifiedCloudManager.deleteManagedVolume(
+            volume.series_title,
+            volume.volume_title,
+            volume.volume_uuid
+          );
+        } else {
+          await unifiedCloudManager.deleteFile(target);
+        }
         showSnackbar(`Deleted from ${providerName}`);
       } catch (error) {
         console.error('Failed to delete from cloud:', error);
@@ -705,23 +727,9 @@
   async function onBackupClicked(e?: Event) {
     e?.stopPropagation();
 
-    // If already backed up, delete from cloud
+    // Already backed up: the menu item reads "Delete from cloud", and asks first.
     if (isBackedUp && cloudFile) {
-      // Capture provider before the await: cloudFile is a $derived that becomes
-      // undefined once the delete refreshes the cache.
-      const providerType = cloudFile.provider;
-      try {
-        await unifiedCloudManager.deleteManagedVolume(
-          volume.series_title,
-          volume.volume_title,
-          volume.volume_uuid
-        );
-        const providerName = PROVIDER_SHORT_LABELS[providerType];
-        showSnackbar(`Deleted from ${providerName}`);
-      } catch (error) {
-        console.error('Delete failed:', error);
-        showSnackbar(`Delete failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      }
+      await onCloudDeleteOnly();
       return;
     }
 

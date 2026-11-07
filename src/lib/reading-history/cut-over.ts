@@ -114,7 +114,7 @@ export async function cutOverLegacyTurns(
  * `legacy.events` is confirmed uploaded, the file is their only cloud copy.
  * Native views travel as this device's own months; put into the file too,
  * they would come back through the merge as turns and be converted into
- * legacy events. Where it cannot carry history at all (mokuro-bunko < 0.8,
+ * legacy events. Where it cannot carry history at all (mokuro-bunko < 0.7.8,
  * read-only), the file is the only copy that reaches other devices, so every
  * projected turn rides exactly as before the cut-over.
  */

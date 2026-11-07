@@ -94,7 +94,7 @@ afterEach(() => {
 
 /**
  * What every `/login/api/me` of a 0.8 Bunko reports beside the account. The
- * version is the fixtures' sentinel: it sits below 0.8.0 on purpose, so a
+ * version is the fixtures' sentinel: it sits below 0.7.8 on purpose, so a
  * history gate derived from a recorded identity is OFF (C19) — a test that
  * needs it on sets it itself.
  */
@@ -781,7 +781,7 @@ describeContract('a registered account as Bunko reports it', () => {
       canAddFiles: false,
       canModifyDelete: false
     });
-    // The sentinel version is below 0.8.0: off here, whatever Bunko keeps (C19).
+    // The sentinel version is below 0.7.8: off here, whatever Bunko keeps (C19).
     expect(status.historySync).toBe(false);
     expect(canPublishCurated(status, 'Contract Series')).toBe(false);
   });

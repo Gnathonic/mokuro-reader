@@ -2,6 +2,7 @@ import type { Readable, Subscriber, Unsubscriber } from 'svelte/store';
 import { db } from './db';
 import { activeAccountScope, normalizeCachePath } from './cloud-cache-key';
 import type { CloudCover } from './cloud-covers';
+import { rasterOrNull } from '$lib/util/raster-image';
 
 /**
  * ONE CARD, ONE COVER, ONE KEYED READ.
@@ -219,7 +220,9 @@ function settle(entry: CoverEntry, row: CloudCover | undefined): void {
   // lines instead of a row-identity comparison, an object-URL revoke and a
   // replacement branch. A row rewritten under the same key reaches a held
   // value through {@link replaceCoverKeys} instead, which owns replacement.
-  const next = row ? makeResolved(entry, row) : undefined;
+  // A cached cover whose type is not a raster one is never shown (SVG is
+  // unsupported: as an object URL it would run as the app in a new tab).
+  const next = row && rasterOrNull(row.thumbnail) ? makeResolved(entry, row) : undefined;
   if (next !== undefined) entry.value = next;
 
   // A refresh that arrived DURING this read is not answered by this row. The
@@ -559,7 +562,8 @@ function startRewriteRead(entry: CoverEntry): void {
   const land = (row: CloudCover | undefined): void => {
     if (entries.get(entry.key) !== entry) return;
     entry.reading = false;
-    if (row) replaceValue(entry, row);
+    // Never swap in a non-raster cover (see settle): the old picture stays.
+    if (row && rasterOrNull(row.thumbnail)) replaceValue(entry, row);
     if (entry.pendingRewrite) {
       entry.pendingRewrite = false;
       startRewriteRead(entry);

@@ -13,9 +13,11 @@ vi.mock('./providers/anilist', async () => {
 import { anilistRequest, AniListError } from './providers/anilist';
 import { showSnackbar } from '$lib/util/snackbar';
 import {
+  ANILIST_LOGIN_MARKER_TTL_MS,
   anilistUser,
   buildAniListAuthorizeUrl,
-  consumeAniListReturnHash,
+  clearAniListLoginMarker,
+  consumeAniListLoginMarker,
   disconnectAniList,
   getAniListToken,
   handleAniListCallbackHash,
@@ -146,6 +148,28 @@ describe('handleAniListCallbackHash', () => {
     expect(showSnackbar).toHaveBeenCalledWith('AniList session expired — reconnect in Settings');
   });
 
+  it('names the connected account once the Viewer lookup resolves', async () => {
+    // A forged callback would connect someone else's account: saying whose
+    // account it is makes that visible at once.
+    vi.mocked(anilistRequest).mockResolvedValue({ Viewer: { id: 42, name: 'nathan' } });
+    await handleAniListCallbackHash('#access_token=tok&token_type=Bearer&expires_in=3600');
+    expect(showSnackbar).toHaveBeenCalledWith('Connected to AniList as nathan');
+  });
+
+  it('still says it connected when the Viewer lookup could not name the account', async () => {
+    vi.mocked(anilistRequest).mockRejectedValue(new AniListError('NETWORK', 'offline'));
+    await handleAniListCallbackHash('#access_token=tok&token_type=Bearer&expires_in=3600');
+    expect(showSnackbar).toHaveBeenCalledWith('Connected to AniList');
+  });
+
+  it('keeps the token lifetime AniList gave it (a year by default)', async () => {
+    vi.mocked(anilistRequest).mockResolvedValue({ Viewer: { id: 42, name: 'nathan' } });
+    const before = Date.now();
+    await handleAniListCallbackHash('#access_token=tok&token_type=Bearer');
+    const expiresAt = Number(localStorage.getItem('anilist_token_expires_at'));
+    expect(expiresAt).toBeGreaterThanOrEqual(before + 365 * 24 * 60 * 60 * 1000);
+  });
+
   it('disconnect clears everything', async () => {
     vi.mocked(anilistRequest).mockResolvedValue({ Viewer: { id: 1, name: 'x' } });
     await handleAniListCallbackHash('#access_token=tok&token_type=Bearer&expires_in=3600');
@@ -242,11 +266,60 @@ describe('anilistConnected', () => {
   });
 });
 
-describe('return hash', () => {
+describe('return hash (the login marker)', () => {
+  const marker = (hash: string, at: number) =>
+    sessionStorage.setItem('anilist_return', JSON.stringify({ hash, at }));
+
+  beforeEach(() => sessionStorage.clear());
+  afterEach(() => vi.useRealTimers());
+
   it('consumes the saved return hash once', () => {
+    marker('#/series/One%20Piece', Date.now());
+    expect(consumeAniListLoginMarker()).toEqual({
+      state: 'started',
+      hash: '#/series/One%20Piece'
+    });
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
+  });
+
+  it('is still good just under 10 minutes after the login started', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_800_000_000_000);
+    marker('#/catalog', Date.now());
+    vi.setSystemTime(1_800_000_000_000 + ANILIST_LOGIN_MARKER_TTL_MS - 1);
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'started', hash: '#/catalog' });
+  });
+
+  it('proves nothing once 10 minutes have passed, and is removed all the same', () => {
+    // An abandoned login: a forged callback opened later in the tab must not
+    // be able to complete it. It is told apart from no login at all, so a
+    // user who just took too long hears that, and lands back where they were.
+    expect(ANILIST_LOGIN_MARKER_TTL_MS).toBe(10 * 60 * 1000);
+    vi.useFakeTimers();
+    vi.setSystemTime(1_800_000_000_000);
+    marker('#/series/One%20Piece', Date.now());
+    vi.setSystemTime(1_800_000_000_000 + ANILIST_LOGIN_MARKER_TTL_MS + 1);
+    expect(consumeAniListLoginMarker()).toEqual({
+      state: 'expired',
+      hash: '#/series/One%20Piece'
+    });
+    expect(sessionStorage.getItem('anilist_return')).toBeNull();
+  });
+
+  it('a marker from the future or without its timestamp proves nothing', () => {
+    marker('#/catalog', Date.now() + 60_000);
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
+    // The old bare-string marker, or anything else not written by this code.
     sessionStorage.setItem('anilist_return', '#/series/One%20Piece');
-    expect(consumeAniListReturnHash()).toBe('#/series/One%20Piece');
-    expect(consumeAniListReturnHash()).toBeNull();
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
+    sessionStorage.setItem('anilist_return', JSON.stringify({ hash: '#/catalog' }));
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
+  });
+
+  it('clearAniListLoginMarker forgets a pending login', () => {
+    marker('#/catalog', Date.now());
+    clearAniListLoginMarker();
+    expect(consumeAniListLoginMarker()).toEqual({ state: 'none' });
   });
 });
 
@@ -282,8 +355,12 @@ describe('startAniListLogin', () => {
   it('saves the current hash and navigates to the authorize URL', () => {
     vi.stubEnv('VITE_ANILIST_CLIENT_ID', '123');
     window.location.hash = '#/series/One%20Piece';
+    const before = Date.now();
     startAniListLogin();
-    expect(sessionStorage.getItem('anilist_return')).toBe('#/series/One%20Piece');
+    const saved = JSON.parse(sessionStorage.getItem('anilist_return') ?? 'null');
+    expect(saved.hash).toBe('#/series/One%20Piece');
+    expect(saved.at).toBeGreaterThanOrEqual(before);
+    expect(saved.at).toBeLessThanOrEqual(Date.now());
     expect(assignMock).toHaveBeenCalledWith(
       'https://anilist.co/api/v2/oauth/authorize?client_id=123&response_type=token'
     );

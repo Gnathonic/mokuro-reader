@@ -779,7 +779,7 @@ export class WebDAVProvider implements SyncProvider {
           : 'Not configured',
       isReadOnly: this._isReadOnly,
       serverCompilesMetadata: this._serverCompilesMetadata,
-      // mokuro-bunko keeps reading history per user only from 0.8.0, and only
+      // mokuro-bunko keeps reading history per user only from 0.7.8, and only
       // when it lists `history/` per user; otherwise `history/` lands in the
       // shared library. Plain WebDAV: no limit.
       historySync: this._serverCompilesMetadata

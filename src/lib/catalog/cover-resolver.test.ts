@@ -646,6 +646,22 @@ describe('replaceCoverKeys: a cover rewritten under the same key', () => {
     handle.release();
   });
 
+  it('never shows a rewritten cover that is not a raster image, and keeps the old picture', async () => {
+    await putCloudCovers([cover()]);
+    const handle = acquireCover(PATH);
+    const old = await handle.ready;
+    const svg = new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'c.svg', {
+      type: 'image/svg+xml'
+    });
+    await db.cloud_covers.put(cover({ thumbnail: svg, width: 300 }));
+    replaceCoverKeys(SCOPE, [PATH]);
+    await flush();
+    expect(handle.current).toMatchObject({ width: 250 });
+    expect(handle.current!.url).toBe(old!.url);
+    expect(revoked).not.toContain(old!.url);
+    handle.release();
+  });
+
   it('honours a rewrite announced while the first read is still in flight', async () => {
     await putCloudCovers([cover()]);
     const realGet = db.cloud_covers.get.bind(db.cloud_covers);
