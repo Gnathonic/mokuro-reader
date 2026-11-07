@@ -34,7 +34,11 @@ const fakeInstance = {
 };
 
 vi.mock('@azure/msal-browser', () => ({
-  PublicClientApplication: vi.fn(() => fakeInstance),
+  // A `function`, not an arrow: token-manager calls `new PublicClientApplication()`,
+  // and vitest 4+ refuses `new` on an arrow implementation.
+  PublicClientApplication: vi.fn(function () {
+    return fakeInstance;
+  }),
   BrowserAuthError: FakeBrowserAuthError,
   InteractionRequiredAuthError: FakeInteractionRequiredAuthError
 }));

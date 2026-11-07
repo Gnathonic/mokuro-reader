@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { installIntersectionObserverStub } from '$lib/catalog/__tests__/intersection-observer-stub';
@@ -61,7 +61,7 @@ function cloudVolume(over: Partial<VolumeMetadata> = {}): VolumeMetadata {
 }
 
 let observer: ReturnType<typeof installIntersectionObserverStub>;
-let warn: ReturnType<typeof vi.spyOn>;
+let warn: MockInstance<typeof console.warn>;
 
 /** Past the effect flush. */
 async function settle(): Promise<void> {
