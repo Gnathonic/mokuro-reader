@@ -1,7 +1,7 @@
-// The Content-Security-Policy of the HTML shell, as SvelteKit's `kit.csp`.
+// The Content-Security-Policy of the HTML shell, as SvelteKit's `csp` option.
 //
-// Plain JavaScript (JSDoc-typed) because `svelte.config.js` imports it: Node
-// loads that file directly, before Vite or any TypeScript tooling runs.
+// Plain JavaScript (JSDoc-typed); vite.config.ts hands it to the `sveltekit()`
+// plugin.
 //
 // The phase is chosen at BUILD time by the `CSP_MODE` environment variable:
 //
@@ -100,8 +100,8 @@
 // report-uri instead: every report would be a serverless function invocation.
 
 /** @typedef {'off' | 'report-only' | 'enforce'} CspMode */
-/** @typedef {NonNullable<NonNullable<import('@sveltejs/kit').KitConfig['csp']>['directives']>} CspDirectives */
-/** @typedef {NonNullable<import('@sveltejs/kit').KitConfig['csp']>} KitCsp */
+/** @typedef {NonNullable<NonNullable<import('@sveltejs/kit/vite').Config['csp']>['directives']>} CspDirectives */
+/** @typedef {NonNullable<import('@sveltejs/kit/vite').Config['csp']>} KitCsp */
 
 /** @type {readonly CspMode[]} */
 export const CSP_MODES = ['off', 'report-only', 'enforce'];
@@ -165,7 +165,7 @@ export function cspDirectives() {
 }
 
 /**
- * `kit.csp` for a mode. Always `mode: 'hash'`: the default, `'auto'`, would
+ * SvelteKit's `csp` option for a mode. Always `mode: 'hash'`: the default, `'auto'`, would
  * use nonces on the server-rendered shell.
  *
  * @param {CspMode} mode

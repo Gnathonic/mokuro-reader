@@ -87,10 +87,9 @@ class ThumbnailCache {
     this.workerWarmupUntil = Date.now() + 3000;
 
     for (let i = 0; i < numWorkers; i++) {
-      const worker = new Worker(
-        new URL('$lib/workers/thumbnail-decode-worker.ts', import.meta.url),
-        { type: 'module' }
-      );
+      const worker = new Worker(new URL('../workers/thumbnail-decode-worker.ts', import.meta.url), {
+        type: 'module'
+      });
 
       worker.onmessage = (event: MessageEvent<DecodeResponse>) => {
         const { id, bitmap, error } = event.data;

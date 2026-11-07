@@ -38,7 +38,7 @@ import {
   encodeMegaKey,
   type MegaSessionBlob
 } from './mega-session';
-import { CLOUD_TEST_HOOKS, megaGatewayOption } from '../../cloud-test-hooks';
+import { megaGatewayOption } from '../../cloud-test-hooks';
 import { cancelProviderUploads } from '../../upload-cancellation';
 
 /**
@@ -528,7 +528,7 @@ export class MegaProvider implements SyncProvider {
             secondFactorCode,
             autoload: false,
             keepalive: false,
-            ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {})
+            ...(__MOKURO_TEST_HOOKS__ ? megaGatewayOption() : {})
           } as any,
           (error: Error | null) => (error ? reject(error) : resolve(s))
         );
@@ -649,7 +649,7 @@ export class MegaProvider implements SyncProvider {
         ...(blob as any),
         options: {
           ...((blob as any).options ?? {}),
-          ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {}),
+          ...(__MOKURO_TEST_HOOKS__ ? megaGatewayOption() : {}),
           keepalive: false
         }
       });
@@ -674,7 +674,7 @@ export class MegaProvider implements SyncProvider {
       ...(blob as any),
       options: {
         ...((blob as any).options ?? {}),
-        ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {}),
+        ...(__MOKURO_TEST_HOOKS__ ? megaGatewayOption() : {}),
         keepalive: false
       }
     });
@@ -2234,7 +2234,10 @@ export class MegaProvider implements SyncProvider {
     if (!browser) return {};
     const session = localStorage.getItem(STORAGE_KEYS.SESSION);
     if (!session) return {};
-    return { megaSession: session, ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {}) };
+    return {
+      megaSession: session,
+      ...(__MOKURO_TEST_HOOKS__ ? megaGatewayOption() : {})
+    };
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<Record<string, any>> {
@@ -2267,7 +2270,7 @@ export class MegaProvider implements SyncProvider {
       sid: this.storage.sid,
       nodeId: node.nodeId,
       fileKey: encodeMegaKey(node.key as Uint8Array),
-      ...(CLOUD_TEST_HOOKS ? megaGatewayOption() : {})
+      ...(__MOKURO_TEST_HOOKS__ ? megaGatewayOption() : {})
     };
   }
 

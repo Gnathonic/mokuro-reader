@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build && node scripts/check-no-test-hooks.mjs && node scripts/check-no-server-secrets.mjs",
+    "build": "vite build && node scripts/check-no-test-hooks.mjs && node scripts/check-no-server-secrets.mjs && node scripts/check-service-worker.mjs",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
@@ -22,9 +22,9 @@
     "@changesets/changelog-github": "^0.5.2",
     "@changesets/cli": "^2.29.8",
     "@playwright/test": "^1.64.1",
-    "@sveltejs/adapter-vercel": "^6.3.4",
-    "@sveltejs/kit": "^2.70.2",
-    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@sveltejs/adapter-vercel": "^7.0.2",
+    "@sveltejs/kit": "^3.1.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tailwindcss/forms": "^0.5.11",
     "@tailwindcss/typography": "^0.5.20",
     "@tailwindcss/vite": "^4.3.3",
@@ -54,12 +54,12 @@
     "prettier-plugin-svelte": "^4.1.1",
     "prettier-plugin-tailwindcss": "^0.8.1",
     "sass": "^1.107.1",
-    "svelte": "^5.56.4",
+    "svelte": "^5.57.3",
     "svelte-check": "^4.7.7",
     "tailwindcss": "^4.3.3",
     "tslib": "^2.9.1",
-    "typescript": "^5.5.0",
-    "vite": "^6.4.5",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.5",
     "vitest": "^5.0.5"
   },
   "type": "module",
@@ -79,6 +79,11 @@
     "pica": "^9.0.1",
     "svelte-easy-crop": "^5.0.1",
     "webdav": "^5.11.0"
+  },
+  "overrides": {
+    "@vercel/analytics": {
+      "@sveltejs/kit": "$@sveltejs/kit"
+    }
   },
   "pnpm": {
     "onlyBuiltDependencies": [

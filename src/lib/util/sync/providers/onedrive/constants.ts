@@ -1,4 +1,4 @@
-import { CLOUD_TEST_HOOKS, cloudBase } from '../../cloud-test-hooks';
+import { cloudBase } from '../../cloud-test-hooks';
 
 export const ONEDRIVE_CONFIG = {
   CLIENT_ID: import.meta.env.VITE_ONEDRIVE_CLIENT_ID as string | undefined,
@@ -18,7 +18,7 @@ export const ONEDRIVE_CONFIG = {
 
 /** The Graph base (`/me/drive/...` follows), read per request. */
 export function graphBase(): string {
-  return CLOUD_TEST_HOOKS
+  return __MOKURO_TEST_HOOKS__
     ? cloudBase('graph', ONEDRIVE_CONFIG.GRAPH_BASE_URL)
     : ONEDRIVE_CONFIG.GRAPH_BASE_URL;
 }

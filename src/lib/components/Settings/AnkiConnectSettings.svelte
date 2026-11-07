@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { settings, updateAnkiSetting } from '$lib/settings';
   import {
     AccordionItem,
@@ -132,7 +132,7 @@
     <!-- Setup Instructions -->
     <Helper>
       To use AnkiConnect integration, add this reader (<code class="text-primary-500"
-        >{$page.url.origin}</code
+        >{page.url.origin}</code
       >) to your AnkiConnect <b class="text-primary-500">webCorsOriginList</b> setting.
     </Helper>
 

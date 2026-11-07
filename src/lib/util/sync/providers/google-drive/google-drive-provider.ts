@@ -43,7 +43,7 @@ import {
 import { getCloudProviderCore } from '../../core/cloud-provider-core-registry';
 import { ControlNodeCache, readControlNodes } from '../../control-file-read';
 import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
-import { CLOUD_TEST_HOOKS, cloudTestCredentials } from '../../cloud-test-hooks';
+import { cloudTestCredentials } from '../../cloud-test-hooks';
 import {
   classifyDriveFailure,
   driveFailureOf,
@@ -196,7 +196,7 @@ class GoogleDriveProvider implements SyncProvider {
     if (renewal.kind !== 'renewed') return null;
     return {
       accessToken: renewal.token,
-      ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {})
+      ...(__MOKURO_TEST_HOOKS__ ? cloudTestCredentials() : {})
     };
   }
 
@@ -1863,7 +1863,10 @@ class GoogleDriveProvider implements SyncProvider {
 
   async getWorkerUploadCredentials(): Promise<Record<string, any>> {
     const token = await this.getAccessToken(WORKER_TOKEN_MIN_VALIDITY_MS);
-    return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
+    return {
+      accessToken: token,
+      ...(__MOKURO_TEST_HOOKS__ ? cloudTestCredentials() : {})
+    };
   }
 
   async prepareUploadTarget(seriesTitle: string): Promise<Record<string, any>> {
@@ -1873,7 +1876,10 @@ class GoogleDriveProvider implements SyncProvider {
 
   async getWorkerDownloadCredentials(_fileId: string): Promise<Record<string, any>> {
     const token = await this.getAccessToken(WORKER_TOKEN_MIN_VALIDITY_MS);
-    return { accessToken: token, ...(CLOUD_TEST_HOOKS ? cloudTestCredentials() : {}) };
+    return {
+      accessToken: token,
+      ...(__MOKURO_TEST_HOOKS__ ? cloudTestCredentials() : {})
+    };
   }
 }
 

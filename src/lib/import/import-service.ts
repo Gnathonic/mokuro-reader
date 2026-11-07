@@ -518,7 +518,7 @@ async function streamExtractAllVolumes(
     const taskId = generateUUID();
 
     // Create a dedicated worker for streaming
-    const worker = new Worker(new URL('$lib/workers/unified-file-worker.ts', import.meta.url), {
+    const worker = new Worker(new URL('../workers/unified-file-worker.ts', import.meta.url), {
       type: 'module'
     });
 

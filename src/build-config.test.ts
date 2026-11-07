@@ -7,31 +7,50 @@ import { describe, expect, it } from 'vitest';
 import pkg from '../package.json';
 import vercel from '../vercel.json';
 import lockText from '../package-lock.json?raw';
-import svelteConfig from '../svelte.config.js?raw';
-// As text: importing vite.config.ts loads esbuild, which refuses jsdom.
+// As text: importing vite.config.ts would start SvelteKit's plugin under jsdom.
 import viteConfig from '../vite.config.ts?raw';
+import hooksClient from './hooks.client.ts?raw';
 
 const lock = JSON.parse(lockText);
 const devDependencies: Record<string, string | undefined> = pkg.devDependencies;
 
 describe('production build', () => {
-  it('fails when a cloud test hook or a server secret reaches the bundle', () => {
+  it('fails when a cloud test hook or a server secret reaches the bundle, or the worker cannot install', () => {
     expect(pkg.scripts.build).toBe(
-      'vite build && node scripts/check-no-test-hooks.mjs && node scripts/check-no-server-secrets.mjs'
+      'vite build && node scripts/check-no-test-hooks.mjs && node scripts/check-no-server-secrets.mjs && node scripts/check-service-worker.mjs'
     );
+  });
+
+  it('registers the service worker itself, never through SvelteKit', () => {
+    // SvelteKit 3 registers its worker as `{ type: 'module' }` in every build,
+    // which a browser without module service workers rejects. The app does it,
+    // classic in production (src/lib/util/sw-register.ts).
+    expect(viteConfig).toMatch(/serviceWorker:\s*\{\s*register:\s*false\s*\}/);
+    expect(hooksClient).toMatch(/^registerServiceWorker\(\);$/m);
   });
 
   it('uses the lockfile-pinned Vercel adapter, never adapter-auto', () => {
     // adapter-auto installs adapter-vercel at build time, outside the lockfile.
     expect(devDependencies['@sveltejs/adapter-auto']).toBeUndefined();
-    expect(devDependencies['@sveltejs/adapter-vercel']).toMatch(/^\^6\./);
-    expect(lock.packages['node_modules/@sveltejs/adapter-vercel']?.version).toMatch(/^6\./);
+    // adapter-vercel 7 is the major for SvelteKit 3 (it peers on kit ^3).
+    expect(devDependencies['@sveltejs/adapter-vercel']).toMatch(/^\^7\./);
+    expect(lock.packages['node_modules/@sveltejs/adapter-vercel']?.version).toMatch(/^7\./);
+    expect(lock.packages['node_modules/@sveltejs/kit']?.version).toMatch(/^3\./);
     expect(lock.packages['node_modules/@sveltejs/adapter-auto']).toBeUndefined();
 
-    expect(svelteConfig).toContain("from '@sveltejs/adapter-vercel'");
+    // Configured in the sveltekit() Vite plugin: SvelteKit 3 reads no svelte.config.js.
+    expect(viteConfig).toContain("from '@sveltejs/adapter-vercel'");
     // Without an explicit runtime the adapter derives one from the build
     // machine's Node and throws on any major Vercel does not run.
-    expect(svelteConfig).toMatch(/adapter\(\{\s*runtime:\s*'nodejs24\.x'\s*\}\)/);
+    expect(viteConfig).toMatch(/adapter\(\{\s*runtime:\s*'nodejs24\.x'\s*\}\)/);
+  });
+
+  it('overrides one peer only: @vercel/analytics on SvelteKit', () => {
+    // Every stable @vercel/analytics still peers on @sveltejs/kit ^1 || ^2. The
+    // app imports only its framework-free entry (`inject` from the package
+    // root, which imports nothing), so the peer is moot; drop the override once
+    // a stable release accepts kit 3.
+    expect(pkg.overrides).toEqual({ '@vercel/analytics': { '@sveltejs/kit': '$@sveltejs/kit' } });
   });
 
   it('builds on Node 24 and installs from the lockfile on Vercel', () => {
@@ -42,13 +61,15 @@ describe('production build', () => {
     expect(Object.keys(vercel).sort()).toEqual(['headers', 'installCommand']);
   });
 
-  it('moves kit.outDir only for the e2e specs, under one variable', () => {
+  it("moves SvelteKit's outDir only for the e2e specs, under one variable", () => {
     // e2e/csp.spec.ts and e2e/gdrive-auth-backend.spec.ts each build or serve a
     // second app in this tree; both name the same override.
-    expect(svelteConfig.match(/process\.env\.[A-Z0-9_]*OUT_DIR/g) ?? []).toEqual([
-      'process.env.MOKURO_E2E_KIT_OUT_DIR',
+    expect(viteConfig.match(/process\.env\.[A-Z0-9_]*OUT_DIR/g) ?? []).toEqual([
       'process.env.MOKURO_E2E_KIT_OUT_DIR'
     ]);
+    // Through the helper that also keeps the shared generated tsconfig on the
+    // default outDir (src/lib/build/e2e-kit-out-dir.test.ts).
+    expect(viteConfig).toContain('...e2eKitOutDir(process.env.MOKURO_E2E_KIT_OUT_DIR)');
   });
 });
 

@@ -111,6 +111,21 @@ src/
 
 **Routing:** The app uses a hash-based router (`$lib/util/hash-router.ts`) with views loaded dynamically from `$lib/views/`. Routes like `#/series/uuid` or `#/reader/uuid` are handled client-side.
 
+**Imports and config (SvelteKit 3):** `$lib` stays for now. SvelteKit 3 no longer provides it;
+`vite.config.ts` keeps it through kit's deprecated `alias` option (`alias: { $lib: 'src/lib' }`),
+which also generates the tsconfig `paths`, so write imports as before (`$lib/catalog/db`, no
+extension). `$app/environment` and `$env/dynamic/private` are deprecated too and kept likewise
+(kit 3 ships no types for them: `src/kit-deprecated-modules.d.ts` supplies them).
+The move to `#lib` subpath imports and `$app/env` is issue #359, done later so it does not
+conflict with every open branch. A worker's `new URL(…, import.meta.url)` stays relative.
+SvelteKit's options live in `vite.config.ts` (`sveltekit({...})`); there is no
+`svelte.config.js`. The app registers its own service worker (`$lib/util/sw-register.ts`, from
+`hooks.client.ts`) with SvelteKit's registration off: SvelteKit 3 registers it
+`{ type: 'module' }` in every build, the app CLASSIC in production, as SvelteKit 2 did.
+`scripts/check-service-worker.mjs` (part of `npm run build`) runs the built worker and fails if
+it no longer parses as a classic script or if a path it precaches is missing from the output
+(`addAll` is all-or-nothing: no client could install).
+
 ### State Management
 
 - **Svelte Stores**: Primary state management (writable, derived, readable stores)
@@ -1978,7 +1993,9 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   `GDRIVE_SESSION_KEY` (`openssl rand -base64 32`), optional `GDRIVE_SESSION_KEY_PREV`,
   `GDRIVE_CLIENT_ID` (falls back to `VITE_GDRIVE_CLIENT_ID`) and `GDRIVE_POP=off`: the Drive
   auth backend (`docs/gdrive-auth-backend.md`). Secrets never take a `VITE_`/`PUBLIC_` prefix;
-  `npm run build` fails if one set in its env shows up in the output.
+  `npm run build` fails if one set in its env shows up in the output. Every server variable is
+  declared (private, dynamic, optional) in `src/env.ts`: SvelteKit 3's `$env/dynamic/private`
+  exposes only declared variables, so an undeclared one reads as unset on every server.
 - `VITE_ONEDRIVE_CLIENT_ID`: required only for OneDrive sync. Register an
   Azure AD app (any Microsoft account tenant, "common" authority) and add the
   deploy origin as a **Single-page application** redirect URI. Scopes used:
@@ -1988,7 +2005,7 @@ VITE_ANILIST_CLIENT_ID=your_anilist_client_id
   Register an AniList API client (implicit grant) whose redirect URL is the deploy
   origin with a trailing slash. Searching/linking series needs no key.
 - MEGA, WebDAV, and Local Folder require no env vars.
-- `CSP_MODE` (build time, NOT a `VITE_` var — read by `svelte.config.js`):
+- `CSP_MODE` (build time, NOT a `VITE_` var — read by `vite.config.ts`):
   `off` (default) | `report-only` | `enforce`. See "Security headers and CSP".
   Any other value fails the build.
 
@@ -2010,7 +2027,7 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
   not inherit the page's. That one is NOT phased by `CSP_MODE` — it is enforced
   from the first deploy. No global `Referrer-Policy` (the Drive API key's
   referrer restriction needs the origin).
-- **The shell's CSP** is `kit.csp` (`src/lib/security/csp-policy.js`, mode
+- **The shell's CSP** is SvelteKit's `csp` option (`src/lib/security/csp-policy.js`, mode
   `hash` — never nonces on a CDN-cached shell), phased by `CSP_MODE`. Every
   source in it is justified there; add a third-party host only with the same
   evidence, and NEVER bare `accounts.google.com` / `www.gstatic.com` in
@@ -2087,8 +2104,13 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
 - mokuro-bunko's rig (`cargo xtask interop rig`, `interop/e2e/rig/`) builds this reader with
   `vite build --mode interop` and drives it through `globalThis.__mokuroInterop` (API v1: connect,
   sync, library, progress, rename/delete, edit/Publish/layer selection, provider/control/history
-  status). `+layout.svelte` installs it only under `CLOUD_TEST_HOOKS`, and
+  status). `+layout.svelte` installs it only under `__MOKURO_TEST_HOOKS__`, and
   `scripts/check-no-test-hooks.mjs` bans its names from the production bundle.
+- Every test-hook guard reads `__MOKURO_TEST_HOOKS__` (the `test` and `interop` modes) or
+  `__MOKURO_INTEROP__` (`interop` only) — boolean `define`s (`vite.config.ts`) — where the guarded
+  code is, never through an imported constant: Rolldown folds such a constant only after it splits
+  chunks, so the hooks a guard called stay exported from a shared chunk, and a guarded `import()`
+  keeps its chunk, in the production build.
 - Each method calls the stores and functions the UI calls for that action (the cloud screen's
   connect, `syncProgress`, the volume editor's rename, the card's delete, the paged page turn —
   `reader/paged-progress.ts`, shared with `Reader.svelte` —, the editor persist path, the layer
@@ -2129,7 +2151,7 @@ SAMEORIGIN`, `Cross-Origin-Opener-Policy: same-origin-allow-popups` (never
   refuses every other request and FAILS the spec that made it (only `apis.google.com/js/api.js`
   and `accounts.google.com/gsi/client`, which `google-scripts.ts` injects on demand, are
   answered, empty). So
-  `src/lib/interop/hermetic.ts` (`INTEROP_BUILD`, MODE interop only — Vitest keeps it off) skips
+  `src/lib/interop/hermetic.ts` (`__MOKURO_INTEROP__`, the interop mode only — Vitest keeps it off) skips
   the Noto Sans JP web font, and `src/hooks.server.ts` serves the shell without `app.html`'s
   other absolute addresses (the font host's preconnects, the jidoujisho icon). A new third-party
   fetch needs the same treatment, or the rig fails.

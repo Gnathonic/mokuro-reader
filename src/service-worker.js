@@ -1,5 +1,7 @@
 /// <reference types="@sveltejs/kit" />
-import { build, files, version } from '$service-worker';
+import { version } from '$app/environment';
+import { assets, immutable } from '$app/manifest';
+import { resolve } from '$app/paths';
 
 // Create a unique cache name for this deployment
 const CACHE = `cache-${version}`;
@@ -14,9 +16,11 @@ function bypassesWorker(pathname) {
   return pathname.startsWith('/api/') || pathname.startsWith('/oauth/');
 }
 
+// `$app/manifest` paths are relative to the base path: resolve them to the
+// absolute pathnames the `fetch` handler compares `url.pathname` against.
 const ASSETS = [
-  ...build, // the app itself
-  ...files // everything in `static`
+  ...immutable.map((file) => resolve(file.path)), // the app itself
+  ...assets.map((file) => resolve(file.path)) // everything in `static`
 ].filter((path) => !bypassesWorker(path));
 
 self.addEventListener('install', (event) => {
@@ -82,7 +86,7 @@ self.addEventListener('fetch', (event) => {
   async function respond() {
     const cache = await caches.open(CACHE);
 
-    // `build`/`files` can always be served from the cache
+    // `immutable`/`assets` can always be served from the cache
     if (ASSETS.includes(url.pathname)) {
       const cachedResponse = await cache.match(url.pathname);
       if (cachedResponse) {

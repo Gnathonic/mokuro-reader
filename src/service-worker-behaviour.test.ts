@@ -1,4 +1,25 @@
+// src/service-worker.js, tested from beside it: SvelteKit counts every
+// `src/service-worker.*` file as part of the worker, which the app's
+// tsconfig must exclude, so this test is not named after it.
 import { describe, it, expect, vi, beforeAll } from 'vitest';
+
+// What SvelteKit hands a built worker: the deployment's version, the build's
+// immutable files and everything in `static`, as paths relative to the base
+// path, which `resolve` makes absolute (the base path is empty here).
+// Mocked, so this test cannot see the REAL precache list: the post-build gate
+// scripts/check-service-worker.mjs runs the built worker and checks every path
+// it precaches is deployed (src/check-service-worker.test.ts).
+vi.mock('$app/environment', () => ({ version: 'test-version' }));
+vi.mock('$app/manifest', () => ({
+  immutable: [{ path: '_app/immutable/entry/app.js' }],
+  assets: [
+    { path: 'favicon.png' },
+    { path: 'oauth/google-callback.html' },
+    { path: 'oauth/google-callback.js' }
+  ],
+  prerendered: []
+}));
+vi.mock('$app/paths', () => ({ resolve: (path: string) => `/${path}` }));
 
 type FetchHandler = (event: {
   request: Request;

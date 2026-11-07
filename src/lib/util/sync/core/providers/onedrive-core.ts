@@ -3,7 +3,7 @@ import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { ONEDRIVE_CONFIG, graphBase } from '../../providers/onedrive/constants';
 import { parseNextExpectedRange } from '../../providers/onedrive/upload-session';
-import { CLOUD_TEST_HOOKS, credentialBase } from '../../cloud-test-hooks';
+import { credentialBase } from '../../cloud-test-hooks';
 import {
   MAX_RETRY_ATTEMPTS,
   backoffDelayMs,
@@ -105,7 +105,7 @@ export const onedriveCore: CloudProviderCore = {
       'OneDrive access token'
     );
     // A worker's bases come in its credentials (see cloudTestCredentials).
-    const graph = CLOUD_TEST_HOOKS
+    const graph = __MOKURO_TEST_HOOKS__
       ? credentialBase(credentials, 'graph', graphBase())
       : graphBase();
 
@@ -153,7 +153,7 @@ export const onedriveCore: CloudProviderCore = {
       ? `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${seriesTitle}`
       : ONEDRIVE_CONFIG.MOKURO_FOLDER;
     const targetPath = `${folderPath}/${filename}`;
-    const graph = CLOUD_TEST_HOOKS
+    const graph = __MOKURO_TEST_HOOKS__
       ? credentialBase(credentials, 'graph', graphBase())
       : graphBase();
 
