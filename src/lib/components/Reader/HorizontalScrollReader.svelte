@@ -26,6 +26,7 @@
   } from '$lib/reader/zoom-math';
   import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { volumeEdgeNav } from '$lib/reader/page-nav';
+  import { alignDelta, pageKeyStep, readingSpan, type AxisSpan } from '$lib/reader/page-key-step';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
@@ -349,6 +350,83 @@
     scroller.scrollToElement(el, 'center', 'center', options);
   }
 
+  /** The pages navigateToPage shows together with `pageIdx` (when they fit). */
+  function spreadIndices(pageIdx: number): number[] {
+    if (volumeSettings.hasCover && pageIdx === 0) return [0];
+    const neighbor = pageIdx + 1 < pages.length ? pageIdx + 1 : pageIdx - 1;
+    if (neighbor < 0 || (volumeSettings.hasCover && neighbor === 0)) return [pageIdx];
+    return [Math.min(pageIdx, neighbor), Math.max(pageIdx, neighbor)];
+  }
+
+  /**
+   * A spread on the reading axis (mirrored in RTL), with whether it fits the
+   * screen by navigateToPage's own rule (which then centres it). Undefined
+   * when a page of it is not in this volume.
+   */
+  function measureSpread(pageIdx: number): { span: AxisSpan; fits: boolean } | undefined {
+    if (!scrollContainer) return undefined;
+    const rects = spreadIndices(pageIdx).map((i) => pageElements[i]?.getBoundingClientRect());
+    if (rects.length === 0 || rects.some((r) => !r)) return undefined;
+    const left = Math.min(...rects.map((r) => r!.left));
+    const right = Math.max(...rects.map((r) => r!.right));
+    const width = rects.reduce((sum, r) => sum + r!.width, 0);
+    return {
+      span: readingSpan(left, right, rtl),
+      fits: width <= scrollContainer.clientWidth + 2
+    };
+  }
+
+  /**
+   * Page Down / Space / Page Up with "scroll tall pages before turning" on
+   * (#283) — the vertical reader's rule along the strip: a spread wider than
+   * the screen scrolls a screenful (minus an overlap) in reading direction
+   * before the usual spread step turns it, and a turn onto a spread wider than
+   * the screen opens it at its reading start (forward) or end (backward)
+   * instead of centring it — the start would be off screen. Measured at the
+   * scroll's resting target, so a held key chains.
+   */
+  function pageKey(direction: 'forward' | 'backward', current: number, turnTarget: number) {
+    if (!scroller || !scrollContainer) return;
+    motion.beforeNav?.();
+    const rest = scroller.restingTarget();
+    // scrollLeft runs 0 → +range in LTR, 0 → −range in RTL.
+    const range = Math.max(0, scrollContainer.scrollWidth - scrollContainer.clientWidth);
+    const clampX = (x: number) =>
+      rtl ? Math.min(0, Math.max(-range, x)) : Math.min(range, Math.max(0, x));
+    const restX = clampX(rest.x);
+    // Page rects are at the LIVE scroll position; shift the view to where the
+    // scroll is heading instead of re-measuring mid-glide.
+    const box = scrollContainer.getBoundingClientRect();
+    const left = box.left + (restX - scrollContainer.scrollLeft);
+    const view = readingSpan(left, left + box.width, rtl);
+    /** Screen-x scroll target for a reading-axis move of `by` from rest. */
+    const moved = (by: number) => clampX(restX + (rtl ? -by : by));
+
+    const spread = measureSpread(current);
+    if (spread && !spread.fits) {
+      const step = pageKeyStep({ direction, view, current: spread.span, enabled: true });
+      if (step.kind === 'scroll') {
+        const x = moved(step.by);
+        if (Math.abs(x - restX) >= 1) {
+          // Not a page change: keep navTarget through the scroll's settle.
+          navIsKeyboard = true;
+          scroller.scrollBy(x - rest.x, 0);
+          return;
+        }
+      }
+    }
+
+    const next = measureSpread(turnTarget);
+    if (!next || next.fits) {
+      navigateToPage(turnTarget);
+      return;
+    }
+    navTarget = turnTarget;
+    navIsKeyboard = true;
+    const x = moved(alignDelta(view, next.span, direction === 'forward' ? 'start' : 'end'));
+    scroller.scrollBy(x - rest.x, 0);
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (keyboardShouldIgnore(e.target)) return;
     if (!scrollContainer) return;
@@ -382,14 +460,16 @@
         e.preventDefault();
         // Jump 1 from cover page, 2 otherwise
         const fwd = volumeSettings.hasCover && current === 0 ? 1 : 2;
-        navigateToPage(current + fwd);
+        if ($settings.pageKeysScrollFirst) pageKey('forward', current, current + fwd);
+        else navigateToPage(current + fwd);
         break;
       }
       case 'PageUp': {
         e.preventDefault();
         // Jump 1 when landing on cover page, 2 otherwise
         const back = volumeSettings.hasCover && current <= 2 ? 1 : 2;
-        navigateToPage(current - back);
+        if ($settings.pageKeysScrollFirst) pageKey('backward', current, current - back);
+        else navigateToPage(current - back);
         break;
       }
       case 'Home':

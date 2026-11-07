@@ -22,6 +22,7 @@
   } from '$lib/reader/zoom-math';
   import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { volumeEdgeNav } from '$lib/reader/page-nav';
+  import { alignDelta, pageKeyStep, type AxisSpan } from '$lib/reader/page-key-step';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
@@ -337,6 +338,66 @@
     scroller.scrollToElement(el, 'center', pageFitsVertically(pageIdx) ? 'center' : 'start');
   }
 
+  /**
+   * Page Down / Space / Page Up with "scroll tall pages before turning" on
+   * (#283). Measured at the scroll's resting target, so a held key chains:
+   * the page at the view's centre scrolls a screenful (minus an overlap)
+   * while it continues past the view, never past a page start below the view
+   * top; once its edge is in view the page turns as before — and a backward
+   * turn onto a page taller than the screen shows its LAST screenful, so
+   * repeated Page Up walks back up through it.
+   */
+  function pageKey(direction: 'forward' | 'backward') {
+    if (!scroller || !scrollContainer) return;
+    motion.beforeNav?.();
+    const rest = scroller.restingTarget();
+    const maxY = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+    const restY = Math.min(maxY, Math.max(0, rest.y));
+    // Page rects are measured at the LIVE scroll position; shift the view to
+    // where the scroll is heading instead of re-measuring mid-glide.
+    const box = scrollContainer.getBoundingClientRect();
+    const shift = restY - scrollContainer.scrollTop;
+    const view: AxisSpan = { start: box.top + shift, end: box.top + shift + box.height };
+    const rects = pageElements.map((el) => el?.getBoundingClientRect());
+    const spans = rects.map((r) => (r ? { start: r.top, end: r.bottom } : undefined));
+    const current = closestPageToCenter(
+      { left: box.left, width: box.width, top: view.start, height: box.height },
+      rects,
+      'y'
+    );
+    const delta = direction === 'forward' ? 1 : -1;
+
+    const span = spans[current];
+    // A page the reader itself treats as fitting (centred on arrival) turns.
+    if (span && !pageFitsVertically(current)) {
+      const step = pageKeyStep({
+        direction,
+        view,
+        current: span,
+        pages: spans.filter((p): p is AxisSpan => !!p),
+        enabled: true
+      });
+      if (step.kind === 'scroll') {
+        const y = Math.min(maxY, Math.max(0, restY + step.by));
+        // At the strip's end nothing is left to scroll — fall through to the turn.
+        if (Math.abs(y - restY) >= 1) {
+          scroller.scrollBy(0, y - rest.y);
+          return;
+        }
+      }
+    }
+
+    const target = current + delta;
+    const targetSpan = spans[target];
+    if (direction === 'forward' || !targetSpan || pageFitsVertically(target)) {
+      scrollToPageVertical(target);
+      return;
+    }
+    // Backward onto a tall page: its last screenful.
+    const y = Math.min(maxY, Math.max(0, restY + alignDelta(view, targetSpan, 'end')));
+    scroller.scrollBy(0, y - rest.y);
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (keyboardShouldIgnore(e.target)) return;
     if (!scrollContainer) return;
@@ -377,11 +438,13 @@
       case 'PageDown':
       case ' ':
         e.preventDefault();
-        scrollToPageVertical(detectCurrentPage() + 1);
+        if ($settings.pageKeysScrollFirst) pageKey('forward');
+        else scrollToPageVertical(detectCurrentPage() + 1);
         break;
       case 'PageUp':
         e.preventDefault();
-        scrollToPageVertical(detectCurrentPage() - 1);
+        if ($settings.pageKeysScrollFirst) pageKey('backward');
+        else scrollToPageVertical(detectCurrentPage() - 1);
         break;
       case 'Home':
         e.preventDefault();

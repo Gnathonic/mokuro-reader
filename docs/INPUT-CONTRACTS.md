@@ -134,6 +134,20 @@ Wheel zoom has no release event, so a fine stream settles on an idle
 timeout (`WHEEL_ZOOM_SETTLE_MS`) — that settle is what clamps the paged
 camera into bounds and reports reading progress.
 
+### Page keys scroll a tall page before turning (#283)
+
+With the `pageKeysScrollFirst` profile setting on (the default), Page Down /
+Space / Page Up scroll content taller than the screen — wider, in the
+horizontal strip — a screenful at a time (12.5% overlap) and turn only once
+its far edge is in view; a backward turn opens the previous page at its end.
+Off reproduces the old always-turn paths exactly. Arrow keys, taps, swipes,
+edge zones and the wheel are untouched. The decision is the pure
+`pageKeyStep` (`src/lib/reader/page-key-step.ts`); every surface feeds it the
+view **at its scroll target** (`PagedCamera.verticalExtent`,
+`ScrollAnimator.restingTarget`), never the animated position — a held key's
+auto-repeat must chain from where the last step will land, or it re-scrolls
+a half-finished glide and stalls at the page's end.
+
 ### Swipe-to-flip is edge-gated (#186)
 
 A touch swipe flips the page only if no pannable content was hidden in the
