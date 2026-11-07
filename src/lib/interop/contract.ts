@@ -8,11 +8,16 @@
  * a seeded server); the reader's tests parse those instead of hand-written
  * JSON. The reader records the requests it sends (`recordRequest`) into
  * `interop/contract/reader/*.json`, which Bunko replays (`contract_replay`).
- * Two rule files both sides run as vectors sit beside them: the content seal
- * (`seal/*.json`, `sealVectors`) and sidecar names rule v1
- * (`sidecar-names.json`, `sidecarNameVectors`).
+ * Rule files both sides run as vectors sit beside them: the content seal
+ * (`seal/*.json`, `sealVectors`), sidecar names rule 2 (`sidecar-names.json`,
+ * `sidecarNameVectors`) and fold v2 (`fold.json`, `fold-table.json`).
  *
- * The fixtures are read from a Bunko checkout, never copied into this repo:
+ * The fold and rule 2 are the one exception to "never copied": the app folds
+ * names with `fold-table.json`, so `scripts/vendor-contract.mjs` copies those
+ * three files, byte for byte, into `src/lib/interop/contract/`; the reader's
+ * unit tests run the copies and, with a checkout, check they are its bytes.
+ *
+ * Everything else is read from a Bunko checkout, never copied into this repo:
  * `BUNKO_REPO` (CI), else a sibling `mokuro-webdav-library` checkout that holds
  * this contract (`CONTRACT_BASELINE`). A `BUNKO_REPO` that lacks part of the
  * baseline is an error naming what it lacks. Without a checkout the contract
@@ -21,6 +26,7 @@
  * Test-only: never import this from app code.
  */
 import { describe } from 'vitest';
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { basicAuthHeader } from '$lib/util/base64';
@@ -131,6 +137,8 @@ export function contractDir(): string | null {
  */
 export const CONTRACT_BASELINE = [
   'seal',
+  'fold.json',
+  'fold-table.json',
   'sidecar-names.json',
   'bunko/curated-put-refused.json',
   'bunko/history-put.json',
@@ -312,6 +320,30 @@ export interface SidecarNameVectors {
     class: 'personal' | 'curated' | 'server-keepsake' | 'reserved' | 'other';
   }>;
   sweep: Array<{ archive: string; folder: string[]; expect: string[]; why: string }>;
+}
+
+/**
+ * The bytes of `file` as vendored into this repo (`src/lib/interop/contract/`,
+ * `scripts/vendor-contract.mjs`): the fold tables and rule 2's vectors.
+ */
+export function vendoredContractBytes(file: string): Uint8Array {
+  return readFileSync(join(REPO_ROOT, 'src', 'lib', 'interop', 'contract', file));
+}
+
+/** The bytes of `interop/contract/<file>` in the Bunko checkout (see `contractDir`). */
+export function bunkoContractBytes(file: string): Uint8Array {
+  const dir = contractDir();
+  if (!dir) throw new Error('no Bunko contract (see describeContract)');
+  return readFileSync(join(dir, file));
+}
+
+/** An incremental SHA-256 (text is hashed as UTF-8), for digests over big inputs. */
+export function sha256Stream(): { update(data: string | Uint8Array): void; hex(): string } {
+  const hash = createHash('sha256');
+  return {
+    update: (data) => void hash.update(data),
+    hex: () => hash.digest('hex')
+  };
 }
 
 /** The vectors, or null without them (read while vitest collects, as `sealVectors`). */

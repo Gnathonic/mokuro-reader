@@ -13,3 +13,6 @@ pnpm-lock.yaml
 package-lock.json
 yarn.lock
 .superpowers/
+
+# Bunko's contract files, vendored byte for byte (scripts/vendor-contract.mjs)
+src/lib/interop/contract/

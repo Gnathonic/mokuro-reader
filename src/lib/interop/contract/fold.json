@@ -1,0 +1,597 @@
+{
+  "fold": 2,
+  "ucd": "17.0.0",
+  "table_sha256": "9d1775f9d6ec877be20340f517e2ce845079cd34054c19eacf50316c8278abd2",
+  "digest": {
+    "probes": "for every Unicode scalar value c in order: F(c), F('a'+c), F(c+U+0301), each UTF-8 and LF-terminated",
+    "sha256": "514c90188c5bdd4d8f68878655ce52a6788dbbefec567899ccfe173a2016fe72"
+  },
+  "vectors": [
+    {
+      "in": "Kingdom",
+      "out": "kingdom",
+      "why": "ASCII: its lowercase"
+    },
+    {
+      "in": "Kingdom/Vol 1.CBZ",
+      "out": "kingdom/vol 1.cbz",
+      "why": "ASCII path"
+    },
+    {
+      "in": "Stra\u00dfe",
+      "out": "strasse",
+      "why": "sharp s folds to ss"
+    },
+    {
+      "in": "STRASSE",
+      "out": "strasse",
+      "why": "ASCII"
+    },
+    {
+      "in": "\u1e9e",
+      "out": "ss",
+      "why": "capital sharp s"
+    },
+    {
+      "in": "\u017f",
+      "out": "s",
+      "why": "long s"
+    },
+    {
+      "in": "\u03c2",
+      "out": "\u03c3",
+      "why": "final sigma folds to sigma"
+    },
+    {
+      "in": "\u03a3",
+      "out": "\u03c3",
+      "why": "capital sigma"
+    },
+    {
+      "in": "\u039f\u0394\u039f\u03a3",
+      "out": "\u03bf\u03b4\u03bf\u03c3",
+      "why": "no context: the last sigma is a sigma"
+    },
+    {
+      "in": "\u039f\u0394\u039f\u03a3.gcv",
+      "out": "\u03bf\u03b4\u03bf\u03c3.gcv",
+      "why": "and before a dot too"
+    },
+    {
+      "in": "\u039f\u0394\u039f\u03c2.gcv",
+      "out": "\u03bf\u03b4\u03bf\u03c3.gcv",
+      "why": "a final small sigma is a sigma"
+    },
+    {
+      "in": "\u212a",
+      "out": "k",
+      "why": "Kelvin sign is k"
+    },
+    {
+      "in": "\u0131",
+      "out": "i",
+      "why": "dotless i: uppercase I, so i"
+    },
+    {
+      "in": "I",
+      "out": "i",
+      "why": "ASCII"
+    },
+    {
+      "in": "\u0130",
+      "out": "i\u0307",
+      "why": "I with dot above: i + combining dot above"
+    },
+    {
+      "in": "i\u0307",
+      "out": "i\u0307",
+      "why": "already folded"
+    },
+    {
+      "in": "\ufb01",
+      "out": "fi",
+      "why": "fi ligature: fi"
+    },
+    {
+      "in": "\u01c5",
+      "out": "\u01c6",
+      "why": "titlecase digraph"
+    },
+    {
+      "in": "\u0345",
+      "out": "\u03b9",
+      "why": "ypogegrammeni: iota"
+    },
+    {
+      "in": "\u1f80",
+      "out": "\u1f00\u03b9",
+      "why": "Greek with ypogegrammeni"
+    },
+    {
+      "in": "\u2126",
+      "out": "\u03c9",
+      "why": "Ohm sign: omega"
+    },
+    {
+      "in": "Pok\u00e9mon",
+      "out": "pok\u00e9mon",
+      "why": "NFC input"
+    },
+    {
+      "in": "POKE\u0301MON",
+      "out": "pok\u00e9mon",
+      "why": "NFD input folds to NFC"
+    },
+    {
+      "in": "\u304c",
+      "out": "\u304c",
+      "why": "ga"
+    },
+    {
+      "in": "\u304b\u3099",
+      "out": "\u304c",
+      "why": "ka + voiced mark composes"
+    },
+    {
+      "in": "\uf900",
+      "out": "\u8c48",
+      "why": "a CJK compatibility ideograph decomposes canonically"
+    },
+    {
+      "in": "\ud55c\uae00",
+      "out": "\ud55c\uae00",
+      "why": "Hangul syllables stay composed"
+    },
+    {
+      "in": "\u1112\u1161\u11ab",
+      "out": "\ud55c",
+      "why": "conjoining jamo compose"
+    },
+    {
+      "in": "Vol\u200b1",
+      "out": "vol1",
+      "why": "zero width space"
+    },
+    {
+      "in": "Vol\u200d1",
+      "out": "vol1",
+      "why": "zero width joiner"
+    },
+    {
+      "in": "Vol\u200e1",
+      "out": "vol1",
+      "why": "left-to-right mark"
+    },
+    {
+      "in": "Vol1\ufe0f",
+      "out": "vol1",
+      "why": "variation selector 16"
+    },
+    {
+      "in": "Vol\u20601",
+      "out": "vol1",
+      "why": "word joiner"
+    },
+    {
+      "in": "E\u034f\u0301",
+      "out": "\u00e9",
+      "why": "grapheme joiner between a letter and its accent: the accent still joins"
+    },
+    {
+      "in": "Vol\u31641",
+      "out": "vol1",
+      "why": "Hangul filler"
+    },
+    {
+      "in": "SER\u00adIES.json",
+      "out": "series.json",
+      "why": "soft hyphen"
+    },
+    {
+      "in": "Vol1\udb40\udd00",
+      "out": "vol1",
+      "why": "variation selector 17"
+    },
+    {
+      "in": "\ufeffVol1",
+      "out": "vol1",
+      "why": "byte order mark"
+    },
+    {
+      "in": "a\u0600b",
+      "out": "a\u0600b",
+      "why": "Arabic number sign is not default-ignorable"
+    },
+    {
+      "in": "a\u00a0b",
+      "out": "a\u00a0b",
+      "why": "no-break space is kept"
+    },
+    {
+      "in": "Q.ed\u200bit.edit.cbz",
+      "out": "q.edit.edit.cbz",
+      "why": "a reserved-layer hider"
+    },
+    {
+      "in": "Q.cura\u200bted.curated.cbz",
+      "out": "q.curated.curated.cbz",
+      "why": "a curated hider"
+    },
+    {
+      "in": "V.ed\u0131t.curated.cbz",
+      "out": "v.edit.curated.cbz",
+      "why": "dotless i in a layer id"
+    },
+    {
+      "in": "X\u200b.curated.cbz",
+      "out": "x.curated.cbz",
+      "why": "zero width space in a stem"
+    },
+    {
+      "in": "X\u200b.cbz",
+      "out": "x.cbz",
+      "why": "zero width space before the suffix"
+    },
+    {
+      "in": "X.5\u200b.cbz",
+      "out": "x.5.cbz",
+      "why": "after a digit id"
+    },
+    {
+      "in": "\u039f\u0394\u039f\u03c2.gcv.cbz",
+      "out": "\u03bf\u03b4\u03bf\u03c3.gcv.cbz",
+      "why": "final sigma before a layer id"
+    },
+    {
+      "in": "Cafe\u0301.gcv.cbz",
+      "out": "caf\u00e9.gcv.cbz",
+      "why": "NFD stem"
+    },
+    {
+      "in": "STRASSE.curated.cbz",
+      "out": "strasse.curated.cbz",
+      "why": "ASCII"
+    },
+    {
+      "in": "Stra\u00dfe.curated.cbz",
+      "out": "strasse.curated.cbz",
+      "why": "sharp s stem"
+    },
+    {
+      "in": "S/STRASSE.mokuro",
+      "out": "s/strasse.mokuro",
+      "why": "a path"
+    },
+    {
+      "in": "V.EDIT.mokuro",
+      "out": "v.edit.mokuro",
+      "why": "ASCII id case"
+    },
+    {
+      "in": "V.ed\u200bit.mokuro",
+      "out": "v.edit.mokuro",
+      "why": "zero width space in an id"
+    },
+    {
+      "in": "V.e\u034fdit.mokuro",
+      "out": "v.edit.mokuro",
+      "why": "grapheme joiner in an id"
+    },
+    {
+      "in": "V.edit-\u200b2.mokuro",
+      "out": "v.edit-2.mokuro",
+      "why": "zero width space in a counted id"
+    },
+    {
+      "in": "V.mo\u212auro",
+      "out": "v.mokuro",
+      "why": "a suffix spelled with a Kelvin sign"
+    },
+    {
+      "in": "V.cb\u200bz",
+      "out": "v.cbz",
+      "why": "a suffix with a zero width space"
+    },
+    {
+      "in": "V.cbz\u200b",
+      "out": "v.cbz",
+      "why": "a zero width space after the suffix"
+    },
+    {
+      "in": "V.\u212aanji.cbz",
+      "out": "v.kanji.cbz",
+      "why": "Kelvin sign in an id"
+    },
+    {
+      "in": "\u017feries.json",
+      "out": "series.json",
+      "why": "a fixed name"
+    },
+    {
+      "in": "series\u200b.json",
+      "out": "series.json",
+      "why": "a fixed name"
+    },
+    {
+      "in": "Vol\u017f.curated.cbz",
+      "out": "vols.curated.cbz",
+      "why": "long s in a stem"
+    },
+    {
+      "in": "\u0131X.curated.cbz",
+      "out": "ix.curated.cbz",
+      "why": "dotless i in a stem"
+    },
+    {
+      "in": "\ud83d\ude00",
+      "out": "\ud83d\ude00",
+      "why": "astral, no case"
+    },
+    {
+      "in": "\uff21",
+      "out": "\uff41",
+      "why": "fullwidth A folds to fullwidth a"
+    }
+  ],
+  "same": [
+    {
+      "a": "Kingdom",
+      "b": "KINGDOM",
+      "why": "ASCII case"
+    },
+    {
+      "a": "Stra\u00dfe",
+      "b": "STRASSE",
+      "why": "full case folding"
+    },
+    {
+      "a": "Stra\u00dfe",
+      "b": "strasse",
+      "why": "full case folding"
+    },
+    {
+      "a": "\u1e9e",
+      "b": "ss",
+      "why": "capital sharp s"
+    },
+    {
+      "a": "\u017f.cbz",
+      "b": "s.cbz",
+      "why": "long s"
+    },
+    {
+      "a": "\u039f\u0394\u039f\u03a3",
+      "b": "\u03bf\u03b4\u03bf\u03c2",
+      "why": "sigma, either form"
+    },
+    {
+      "a": "\u03bf\u03b4\u03bf\u03c2",
+      "b": "\u03bf\u03b4\u03bf\u03c3",
+      "why": "final sigma"
+    },
+    {
+      "a": "\u039f\u0394\u039f\u03a3.gcv",
+      "b": "\u03bf\u03b4\u03bf\u03c3.gcv",
+      "why": "no context"
+    },
+    {
+      "a": "\u212a",
+      "b": "k",
+      "why": "Kelvin sign"
+    },
+    {
+      "a": "\u0131",
+      "b": "I",
+      "why": "an uppercase table joins dotless i with I"
+    },
+    {
+      "a": "\u0131",
+      "b": "i",
+      "why": "and so with i"
+    },
+    {
+      "a": "\u0130",
+      "b": "i\u0307",
+      "why": "I with dot above"
+    },
+    {
+      "a": "\ufb01le",
+      "b": "FILE",
+      "why": "ligature"
+    },
+    {
+      "a": "Pok\u00e9mon",
+      "b": "POKE\u0301MON",
+      "why": "NFC and NFD"
+    },
+    {
+      "a": "\u304c",
+      "b": "\u304b\u3099",
+      "why": "kana voiced mark"
+    },
+    {
+      "a": "\u01f1",
+      "b": "\u01f3",
+      "why": "DZ digraph"
+    },
+    {
+      "a": "\u0345",
+      "b": "\u03b9",
+      "why": "ypogegrammeni"
+    },
+    {
+      "a": "Vol\u200b1",
+      "b": "Vol1",
+      "why": "zero width space"
+    },
+    {
+      "a": "Vol1\ufe0f",
+      "b": "VOL1",
+      "why": "variation selector"
+    },
+    {
+      "a": "E\u034f\u0301",
+      "b": "\u00e9",
+      "why": "grapheme joiner"
+    },
+    {
+      "a": "Q.ed\u200bit.edit.cbz",
+      "b": "q.edit.edit.cbz",
+      "why": "leak: reserved-layer hider"
+    },
+    {
+      "a": "V.ed\u0131t.curated.cbz",
+      "b": "v.edit.curated.cbz",
+      "why": "leak: dotless i"
+    },
+    {
+      "a": "X\u200b.curated.cbz",
+      "b": "x.curated.cbz",
+      "why": "leak: zero width space stem"
+    },
+    {
+      "a": "Cafe\u0301.gcv.cbz",
+      "b": "caf\u00e9.gcv.cbz",
+      "why": "leak: NFD"
+    },
+    {
+      "a": "\u039f\u0394\u039f\u03c2.gcv.cbz",
+      "b": "\u03bf\u03b4\u03bf\u03c3.gcv.cbz",
+      "why": "leak: final sigma"
+    },
+    {
+      "a": "V.EDIT.mokuro",
+      "b": "V.edit.mokuro",
+      "why": "id case"
+    },
+    {
+      "a": "V.ed\u200bit.mokuro",
+      "b": "V.edit.mokuro",
+      "why": "zero width space id"
+    },
+    {
+      "a": "V.mo\u212auro",
+      "b": "v.mokuro",
+      "why": "Kelvin suffix"
+    },
+    {
+      "a": "V.cb\u200bz",
+      "b": "V.cbz",
+      "why": "zero width space suffix"
+    },
+    {
+      "a": "\u017feries.json",
+      "b": "series.json",
+      "why": "fixed name"
+    }
+  ],
+  "different": [
+    {
+      "a": "a",
+      "b": "b",
+      "why": "different letters"
+    },
+    {
+      "a": "Vol 1",
+      "b": "Vol 2",
+      "why": "different numbers"
+    },
+    {
+      "a": "a\u0600b",
+      "b": "ab",
+      "why": "Arabic number sign is kept"
+    },
+    {
+      "a": "a\u00a0b",
+      "b": "a b",
+      "why": "no-break space is not a space"
+    },
+    {
+      "a": "a\u00a0b",
+      "b": "ab",
+      "why": "nor nothing"
+    },
+    {
+      "a": "e",
+      "b": "\u00e9",
+      "why": "an accent counts"
+    },
+    {
+      "a": "\u304b",
+      "b": "\u304c",
+      "why": "a voiced mark counts"
+    },
+    {
+      "a": "\u0131",
+      "b": "\u0130",
+      "why": "dotless i and I with dot above"
+    },
+    {
+      "a": "Vol 1",
+      "b": "Vol  1",
+      "why": "whitespace counts in names"
+    },
+    {
+      "a": "\ud83d\ude00",
+      "b": "\uff21",
+      "why": "unrelated"
+    },
+    {
+      "a": "V.edit.mokuro",
+      "b": "V.edit-2.mokuro",
+      "why": "a counted id"
+    }
+  ],
+  "series_key": [
+    {
+      "in": "  Dr   Stone ",
+      "out": "dr stone",
+      "why": "trim, then collapse"
+    },
+    {
+      "in": "Dr\tStone",
+      "out": "dr stone",
+      "why": "a tab is whitespace"
+    },
+    {
+      "in": "A\u3000\u001cB",
+      "out": "a b",
+      "why": "ideographic space and an information separator"
+    },
+    {
+      "in": "A \u200b B",
+      "out": "a b",
+      "why": "a zero width space inside whitespace is dropped first"
+    },
+    {
+      "in": "\ufeffDr Stone",
+      "out": "dr stone",
+      "why": "byte order mark"
+    },
+    {
+      "in": "Stra\u00dfe",
+      "out": "strasse",
+      "why": "the fold"
+    },
+    {
+      "in": "STRASSE",
+      "out": "strasse",
+      "why": "the fold"
+    },
+    {
+      "in": "A\u00a0B",
+      "out": "a b",
+      "why": "no-break space is whitespace for series keys"
+    },
+    {
+      "in": "A\u2003\u2003B",
+      "out": "a b",
+      "why": "em spaces"
+    },
+    {
+      "in": "\u3000",
+      "out": "",
+      "why": "only whitespace"
+    }
+  ]
+}
