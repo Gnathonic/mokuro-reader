@@ -1,0 +1,1919 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Keyboard shortcuts settings: mockup (#55)</title>
+    <style>
+      :root {
+        --bg: #030712;
+        --panel: #1f2937;
+        --line: #374151;
+        --line2: #4b5563;
+        --text: #f9fafb;
+        --muted: #9ca3af;
+        --dim: #6b7280;
+        --chip: #111827;
+        --primary: #ef562f;
+        --primary2: #fe795d;
+        --amber: #fbbf24;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.45 system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          'Noto Sans JP',
+          sans-serif;
+      }
+      button {
+        font: inherit;
+        cursor: pointer;
+      }
+      .page-head {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 22px 20px 6px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      .sub {
+        color: var(--muted);
+        margin: 0 0 12px;
+        max-width: 900px;
+      }
+      .switch {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .switch button {
+        background: #111827;
+        color: #e5e7eb;
+        border: 1px solid var(--line2);
+        border-radius: 8px;
+        padding: 6px 12px;
+        font-size: 13px;
+      }
+      .switch button[aria-pressed='true'] {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: #fff;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 18px;
+        color: var(--muted);
+        font-size: 12.5px;
+        align-items: center;
+      }
+      .legend span {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .co {
+        display: inline-flex;
+        flex: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: var(--primary);
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+      }
+      .stage {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 28px;
+        justify-content: center;
+        padding: 14px 20px 28px;
+        align-items: flex-start;
+      }
+      .variant {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .variant[hidden] {
+        display: none;
+      }
+      .vlabel {
+        font-weight: 600;
+        font-size: 15px;
+      }
+      .vlabel small {
+        display: block;
+        font-weight: 400;
+        color: var(--muted);
+        font-size: 12.5px;
+        max-width: 560px;
+      }
+      .rec {
+        color: var(--primary2);
+        font-weight: 600;
+      }
+      .screen {
+        position: relative;
+        display: flex;
+        border: 1px solid #000;
+        border-radius: 10px;
+        overflow: hidden;
+        background: #2a2a2a;
+      }
+      .screen.a {
+        width: 600px;
+      }
+      .screen.b {
+        width: 860px;
+        flex-direction: column;
+        align-items: center;
+      }
+      .manga {
+        flex: 1;
+        position: relative;
+        min-height: 300px;
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        padding: 28px 16px;
+      }
+      .screen.b .manga {
+        position: absolute;
+        inset: 0;
+        padding: 40px;
+      }
+      .pg {
+        position: relative;
+        width: 100%;
+        max-width: 230px;
+        aspect-ratio: 0.7;
+        background: #e9e6df;
+        border-radius: 2px;
+        box-shadow: 0 2px 12px #0008;
+      }
+      .screen.b .pg {
+        max-width: 420px;
+        margin: 0 auto;
+      }
+      .pg i {
+        position: absolute;
+        border: 2px solid #2b2b2b;
+      }
+      .pg b {
+        position: absolute;
+        width: 5px;
+        background: repeating-linear-gradient(#333 0 6px, transparent 6px 9px);
+      }
+      .dim {
+        position: absolute;
+        inset: 0;
+        background: rgba(17, 24, 39, 0.6);
+      }
+      .drawer {
+        position: relative;
+        z-index: 1;
+        width: 360px;
+        flex: none;
+        background: var(--panel);
+        padding: 16px;
+        border-left: 1px solid var(--line);
+      }
+      .drawer h5 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 0 10px;
+        font-size: 16px;
+      }
+      .gear {
+        width: 16px;
+        height: 16px;
+      }
+      .acc {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 13px 0;
+        border-bottom: 1px solid var(--line);
+        color: #d1d5db;
+        font-weight: 500;
+      }
+      .acc.open {
+        color: #fff;
+        border-bottom-color: transparent;
+      }
+      .acc.open .chev {
+        transform: rotate(180deg);
+      }
+      .chev {
+        width: 12px;
+        height: 12px;
+        color: var(--muted);
+      }
+      .acc-body {
+        padding: 2px 0 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .meta {
+        font-size: 12.5px;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .meta b {
+        color: #e5e7eb;
+        font-weight: 600;
+      }
+      .meta a {
+        color: var(--primary2);
+        text-decoration: none;
+      }
+      .touch {
+        font-size: 12px;
+        color: var(--muted);
+        border: 1px dashed var(--line2);
+        border-radius: 6px;
+        padding: 4px 8px;
+        margin: 0 0 8px;
+      }
+      .ann {
+        float: right;
+        margin-left: 8px;
+        color: var(--primary2);
+        font-size: 11px;
+      }
+      .input {
+        width: 100%;
+        background: #374151;
+        border: 1px solid var(--line2);
+        border-radius: 8px;
+        padding: 7px 10px;
+        color: #fff;
+        font: inherit;
+        font-size: 13px;
+      }
+      .input::placeholder {
+        color: #9ca3af;
+      }
+      .group {
+        margin-top: 12px;
+      }
+      .group-h {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        font-size: 11px;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--muted);
+        padding: 0 0 4px 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      .gnote {
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .row {
+        padding: 8px 6px 8px 8px;
+        border-left: 3px solid transparent;
+      }
+      .row + .row {
+        border-top: 1px solid rgba(55, 65, 81, 0.55);
+      }
+      .row.mod {
+        border-left-color: var(--primary);
+      }
+      .row.active {
+        background: rgba(239, 86, 47, 0.06);
+      }
+      .top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .label {
+        color: #fff;
+        font-weight: 500;
+      }
+      .reset {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--primary2);
+        background: none;
+        border: 0;
+        padding: 0;
+      }
+      .desc {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 1px;
+      }
+      .tag {
+        display: inline-block;
+        font-size: 10.5px;
+        line-height: 16px;
+        border: 1px solid var(--line2);
+        color: #d1d5db;
+        border-radius: 999px;
+        padding: 0 6px;
+        margin-left: 5px;
+      }
+      .desc .tag:first-child {
+        margin-left: 0;
+      }
+      .keys {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+        align-items: center;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 28px;
+        justify-content: center;
+        height: 24px;
+        padding: 0 7px;
+        background: var(--chip);
+        border: 1px solid var(--line2);
+        border-bottom-width: 2px;
+        border-radius: 6px;
+        font:
+          12px/1 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        color: #e5e7eb;
+      }
+      .chip.arrow {
+        font:
+          17px/1 system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      .chip.user {
+        border-color: rgba(254, 121, 93, 0.65);
+      }
+      .chip.locked {
+        color: var(--muted);
+      }
+      .chip.pending {
+        border-style: dashed;
+        border-color: var(--amber);
+        color: #fde68a;
+      }
+      .x {
+        border: 0;
+        background: none;
+        color: var(--muted);
+        padding: 0 0 0 2px;
+        font-size: 14px;
+        line-height: 1;
+      }
+      .x:hover {
+        color: #fff;
+      }
+      .lock {
+        width: 11px;
+        height: 11px;
+      }
+      .add {
+        height: 24px;
+        padding: 0 8px;
+        border: 1px dashed var(--line2);
+        border-radius: 6px;
+        background: none;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .add:hover {
+        color: #fff;
+        border-color: #9ca3af;
+      }
+      .notset {
+        font-size: 12px;
+        color: var(--dim);
+        font-style: italic;
+        border: 1px dashed var(--line);
+        padding: 2px 8px;
+        border-radius: 6px;
+      }
+      .capture {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 24px;
+        padding: 0 10px;
+        border: 1px solid var(--primary);
+        border-radius: 6px;
+        color: #fff;
+        font-size: 12px;
+        background: rgba(239, 86, 47, 0.14);
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+      .capture small {
+        color: #fecaca;
+        font-size: 11px;
+      }
+      @keyframes pulse {
+        50% {
+          box-shadow: 0 0 0 4px rgba(239, 86, 47, 0.2);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .capture {
+          animation: none;
+        }
+      }
+      .note {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        margin-top: 6px;
+        font-size: 12px;
+        border-radius: 6px;
+      }
+      .note .ico {
+        width: 13px;
+        height: 13px;
+        flex: none;
+      }
+      .note > span:first-of-type {
+        flex: 1 1 160px;
+        min-width: 0;
+      }
+      .note.conflict {
+        background: rgba(251, 191, 36, 0.08);
+        border: 1px solid rgba(251, 191, 36, 0.4);
+        color: #fde68a;
+        padding: 6px 8px;
+      }
+      .note.conflict b {
+        color: #fff;
+      }
+      .note.warn {
+        color: #fcd34d;
+      }
+      .note-btns {
+        display: flex;
+        gap: 6px;
+        margin-left: auto;
+      }
+      .nb {
+        font-size: 12px;
+        border-radius: 6px;
+        padding: 2px 10px;
+        border: 1px solid var(--line2);
+        background: #111827;
+        color: #e5e7eb;
+      }
+      .nb.primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: #fff;
+      }
+      .fixed {
+        margin-top: 14px;
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      .fixed summary {
+        cursor: pointer;
+        color: #d1d5db;
+        padding: 4px 0;
+      }
+      .fixed ul {
+        margin: 4px 0 0;
+        padding-left: 18px;
+      }
+      .fixed b {
+        color: #e5e7eb;
+        font-weight: 600;
+      }
+      .btn {
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-size: 13px;
+        border: 1px solid var(--primary);
+        background: none;
+        color: var(--primary2);
+      }
+      .btn.full {
+        width: 100%;
+        margin-top: 12px;
+      }
+      .btn.light {
+        border-color: var(--line2);
+        color: #e5e7eb;
+      }
+      .btn.primary {
+        background: var(--primary);
+        color: #fff;
+      }
+      .drawer-btns {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        margin-top: 8px;
+      }
+      .drawer-btns .btn.full {
+        margin-top: 8px;
+      }
+      .modal {
+        position: relative;
+        z-index: 1;
+        width: 780px;
+        margin: 30px 0;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        box-shadow: 0 20px 50px #000a;
+      }
+      .modal-h {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--line);
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .close {
+        background: none;
+        border: 0;
+        color: var(--muted);
+        font-size: 20px;
+        line-height: 1;
+      }
+      .modal-b {
+        padding: 14px 18px;
+      }
+      .modal-f {
+        position: relative;
+        z-index: 10;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 12px 18px;
+        border-top: 1px solid var(--line);
+      }
+      .cols-h {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 54px;
+        gap: 14px;
+        font-size: 11px;
+        color: var(--dim);
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        margin-top: 12px;
+        padding-left: 11px;
+      }
+      .row.wide {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 54px;
+        gap: 4px 14px;
+        align-items: start;
+      }
+      .row.wide .keys {
+        margin-top: 0;
+      }
+      .row.wide .rcol {
+        text-align: right;
+      }
+      .row.wide .span {
+        grid-column: 1/-1;
+      }
+      .row.wide .span:empty {
+        display: none;
+      }
+      .opener {
+        width: 360px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 4px 16px 14px;
+      }
+      .opener-row {
+        padding: 4px 0;
+      }
+      .extra {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 0 20px 40px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 16px;
+        width: 400px;
+      }
+      .card h3 {
+        margin: 0 0 4px;
+        font-size: 14px;
+      }
+      .card .desc {
+        margin-bottom: 10px;
+      }
+      .select {
+        width: 100%;
+        background: #374151;
+        border: 1px solid var(--line2);
+        border-radius: 8px;
+        padding: 7px 10px;
+        color: #fff;
+        font: inherit;
+        font-size: 13px;
+      }
+      .lbl {
+        display: block;
+        font-size: 13px;
+        color: #fff;
+        margin-bottom: 6px;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 8px 0;
+        font-size: 13px;
+      }
+      .sw {
+        width: 36px;
+        height: 20px;
+        border-radius: 999px;
+        background: #4b5563;
+        position: relative;
+        flex: none;
+      }
+      .sw::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #fff;
+      }
+      .sw.on {
+        background: var(--primary);
+      }
+      .sw.on::after {
+        left: 18px;
+      }
+      .hint {
+        margin-left: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .foot {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 0 20px 30px;
+        color: var(--dim);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="page-head">
+      <h1>Keyboard shortcuts: settings mockup (#55)</h1>
+      <p class="sub">
+        Static mockup in the app's dark theme. Spec: <code>2026-11-07-key-bindings-design.md</code>.
+        Key labels follow a US layout here; the app shows the user's own keys. The example user
+        added A and D for page turns, unbound "Remove from device", moved Black &amp; white to
+        Shift+G, and is mid-capture on two rows.
+      </p>
+      <div class="switch" role="group" aria-label="Layout">
+        <button data-show="both" aria-pressed="true">Side by side</button>
+        <button data-show="A" aria-pressed="false">A: drawer section (recommended)</button>
+        <button data-show="B" aria-pressed="false">B: modal</button>
+      </div>
+      <div class="legend">
+        <span><span class="co">1</span>Modified row: accent bar, user chips, Reset</span>
+        <span><span class="co">2</span>Capturing a key</span>
+        <span><span class="co">3</span>Conflict at capture</span>
+        <span><span class="co">4</span>New action, not set by default (#202)</span>
+        <span><span class="co">5</span>Unbound by the user (Reset brings Delete back)</span>
+        <span><span class="co">6</span>Shift/Alt warning</span>
+        <span><span class="co">7</span>Locked key</span>
+      </div>
+    </header>
+    <main class="stage">
+      <section class="variant" id="varA">
+        <div class="vlabel">
+          A · Section in the settings drawer <span class="rec">recommended</span>
+          <small
+            >A new accordion item after Reader. Rows stack so they fit the drawer at its narrowest.
+            Keys pressed inside <code>#settings</code> never reach the reader.</small
+          >
+        </div>
+        <div class="screen a">
+          <div class="manga" aria-hidden="true">
+            <div class="pg">
+              <i style="left: 6%; top: 4%; width: 88%; height: 30%"></i
+              ><i style="left: 6%; top: 37%; width: 42%; height: 28%"></i
+              ><i style="left: 52%; top: 37%; width: 42%; height: 28%"></i
+              ><i style="left: 6%; top: 68%; width: 88%; height: 28%"></i
+              ><b style="right: 12%; top: 8%; height: 18%"></b
+              ><b style="right: 20%; top: 8%; height: 12%"></b
+              ><b style="left: 18%; top: 42%; height: 16%"></b>
+            </div>
+          </div>
+          <div class="dim"></div>
+          <aside class="drawer" aria-label="Settings drawer">
+            <h5>
+              <svg class="gear" viewBox="0 0 20 20" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M10 6.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7ZM8.6 1h2.8l.5 2.3 1.6.9 2.2-.8 1.4 2.4-1.8 1.6v1.8l1.8 1.6-1.4 2.4-2.2-.8-1.6.9-.5 2.3H8.6l-.5-2.3-1.6-.9-2.2.8-1.4-2.4 1.8-1.6V8.4L2.9 6.8l1.4-2.4 2.2.8 1.6-.9L8.6 1Z"
+                /></svg
+              >Settings
+            </h5>
+            <div class="acc">
+              <span>Quick access</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="acc">
+              <span>Reader</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="acc open">
+              <span>Keyboard shortcuts</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="acc-body">
+              <div class="meta">
+                Saved in profile <b>Desktop</b> ·
+                <a href="#" onclick="return false">Copy to all profiles</a>
+              </div>
+              <div class="touch">
+                <span class="ann">touch screens only</span>Shortcuts need a hardware keyboard.
+              </div>
+              <input class="input" placeholder="Filter actions" aria-label="Filter actions" />
+              <div class="group">
+                <div class="group-h"><span>Pages</span></div>
+                <div class="row mod">
+                  <div class="top">
+                    <span class="label">Page left</span><span class="co" title="State 1">1</span
+                    ><button class="reset">Reset</button>
+                  </div>
+                  <div class="desc">
+                    Next page in right-to-left books<span class="tag">Paged</span
+                    ><span class="tag">Horizontal</span>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">←</kbd
+                    ><span class="chip user" title="Added by you"
+                      >A<button class="x" aria-label="Remove A">×</button></span
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row mod">
+                  <div class="top">
+                    <span class="label">Page right</span><button class="reset">Reset</button>
+                  </div>
+                  <div class="desc">
+                    Previous page in right-to-left books<span class="tag">Paged</span
+                    ><span class="tag">Horizontal</span>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">→</kbd
+                    ><span class="chip user" title="Added by you"
+                      >D<button class="x" aria-label="Remove D">×</button></span
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Previous page</span></div>
+                  <div class="desc">Reading order</div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">PageUp</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row active">
+                  <div class="top">
+                    <span class="label">Next page</span><span class="co" title="State 3">3</span>
+                  </div>
+                  <div class="desc">Reading order</div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">PageDown</kbd
+                    ><kbd class="chip" title="Default">Space</kbd
+                    ><span class="chip pending arrow">↓</span>
+                  </div>
+                  <div class="note conflict">
+                    <svg class="ico" viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M8 1.5 15 14H1L8 1.5Zm-.75 4.5v4h1.5V6h-1.5Zm0 5v1.5h1.5V11h-1.5Z"
+                        fill="currentColor"
+                      /></svg
+                    ><span><b>↓</b> is already <b>Scroll down</b>.</span
+                    ><span class="note-btns"
+                      ><button class="nb primary">Replace</button
+                      ><button class="nb">Cancel</button></span
+                    >
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">First page</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Home</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Last page</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">End</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Previous volume</span></div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row active">
+                  <div class="top">
+                    <span class="label">Next volume</span><span class="co" title="State 2">2</span>
+                  </div>
+                  <div class="keys">
+                    <span class="capture" aria-live="polite"
+                      >Press a key… <small>Esc cancels</small></span
+                    >
+                  </div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>Scrolling</span></div>
+                <div class="row">
+                  <div class="top"><span class="label">Scroll up</span></div>
+                  <div class="desc">Pans a zoomed page. Continuous: half a screen</div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">↑</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Scroll down</span></div>
+                  <div class="desc">Pans a zoomed page. Continuous: half a screen</div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">↓</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Scroll left</span></div>
+                  <div class="desc"><span class="tag">Vertical</span></div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">←</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Scroll right</span></div>
+                  <div class="desc"><span class="tag">Vertical</span></div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">→</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>View</span></div>
+                <div class="row">
+                  <div class="top"><span class="label">Fullscreen</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">F</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Cycle zoom mode</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Z</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Zoom to fit</span></div>
+                  <div class="desc"><span class="tag">Paged</span></div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Cycle page mode</span></div>
+                  <div class="desc">Scroll mode in continuous</div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">P</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Continuous scroll</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">V</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Offset spreads</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">O</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">First page is cover</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">C</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Page dividers</span></div>
+                  <div class="desc"><span class="tag">Continuous</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">M</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Show/hide reader controls</span></div>
+                  <div class="desc">What a tap does</div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top">
+                    <span class="label">Show/hide reading timer</span
+                    ><span class="co" title="State 4">4</span>
+                  </div>
+                  <div class="desc">Requested in #202</div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>OCR</span></div>
+                <div class="row">
+                  <div class="top"><span class="label">Always show OCR</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">T</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Next OCR layer</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">L</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Edit OCR text</span></div>
+                  <div class="desc">Paged mode only</div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">E</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>Filters</span></div>
+                <div class="row">
+                  <div class="top"><span class="label">Invert colors</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">I</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Night mode</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">N</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row mod">
+                  <div class="top">
+                    <span class="label">Black &amp; white</span
+                    ><span class="co" title="State 6">6</span><button class="reset">Reset</button>
+                  </div>
+                  <div class="keys">
+                    <span class="chip user" title="Added by you"
+                      >Shift+G<button class="x" aria-label="Remove Shift+G">×</button></span
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="note warn">
+                    <svg class="ico" viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M8 1.5 15 14H1L8 1.5Zm-.75 4.5v4h1.5V6h-1.5Zm0 5v1.5h1.5V11h-1.5Z"
+                        fill="currentColor"
+                      /></svg
+                    ><span>Dictionary pop-ups often scan while Shift or Alt is held.</span>
+                  </div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h">
+                  <span>Edit mode</span><span class="gnote">While editing OCR</span>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Undo</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Ctrl+Z</kbd
+                    ><kbd class="chip" title="Default">Meta+Z</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Redo</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Ctrl+Shift+Z</kbd
+                    ><kbd class="chip" title="Default">Meta+Shift+Z</kbd
+                    ><kbd class="chip" title="Default">Ctrl+Y</kbd
+                    ><kbd class="chip" title="Default">Meta+Y</kbd>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Delete selected boxes</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Delete</kbd
+                    ><kbd class="chip" title="Default">Backspace</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top">
+                    <span class="label">Step back</span><span class="co" title="State 7">7</span>
+                  </div>
+                  <div class="desc">Draw tool, then selection, then leave</div>
+                  <div class="keys">
+                    <span class="chip locked" title="Locked"
+                      >Esc<svg class="lock" viewBox="0 0 16 16" aria-hidden="true">
+                        <path
+                          d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2h.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h.5Zm1.5 0h4V5a2 2 0 0 0-4 0v2Z"
+                          fill="currentColor"
+                        /></svg
+                    ></span>
+                  </div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h">
+                  <span>Library</span><span class="gnote">While the pointer is over a card</span>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Edit series</span></div>
+                  <div class="desc"><span class="tag">Series card</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">E</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Remove series</span></div>
+                  <div class="desc"><span class="tag">Series card</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Delete</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Edit volume</span></div>
+                  <div class="desc"><span class="tag">Volume</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">E</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Change cover</span></div>
+                  <div class="desc"><span class="tag">Volume</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">C</kbd><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row mod">
+                  <div class="top">
+                    <span class="label">Remove from device</span
+                    ><span class="co" title="State 5">5</span><button class="reset">Reset</button>
+                  </div>
+                  <div class="desc"><span class="tag">Volume</span></div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="top"><span class="label">Delete cloud copy</span></div>
+                  <div class="desc"><span class="tag">Volume</span></div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Shift+Delete</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>General</span></div>
+                <div class="row">
+                  <div class="top"><span class="label">Back</span></div>
+                  <div class="desc">Leave the reader or page</div>
+                  <div class="keys">
+                    <span class="chip locked" title="Locked"
+                      >Esc<svg class="lock" viewBox="0 0 16 16" aria-hidden="true">
+                        <path
+                          d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2h.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h.5Zm1.5 0h4V5a2 2 0 0 0-4 0v2Z"
+                          fill="currentColor"
+                        /></svg></span
+                    ><button class="add">+ Add</button>
+                  </div>
+                </div>
+              </div>
+              <details class="fixed">
+                <summary>Not changeable</summary>
+                <ul>
+                  <li><b>Esc</b> closes dialogs and pop-up menus</li>
+                  <li>
+                    <b>Enter</b>, <b>Esc</b>, <b>Backspace</b> inside text fields and the OCR line
+                    editor
+                  </li>
+                  <li><b>←</b> <b>→</b> on the focused series shelf</li>
+                  <li>
+                    Tap, double-tap (Anki capture on a text box), drag, pinch, swipe, edge zones
+                  </li>
+                  <li><b>Ctrl+wheel</b> zoom, <b>Ctrl+Shift+wheel</b> page gap</li>
+                  <li>
+                    Library: <b>Shift+wheel</b>, <b>Shift+Alt+wheel</b>,
+                    <b>Shift+right-click</b> shelf alignment
+                  </li>
+                </ul>
+              </details>
+              <button class="btn outline full">Reset all shortcuts</button>
+            </div>
+            <div class="acc">
+              <span>Profiles</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="acc">
+              <span>Anki Connect</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="acc">
+              <span>Catalog</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="acc">
+              <span>Metadata</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="acc">
+              <span>Appearance</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="acc">
+              <span>Stats</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="acc">
+              <span>About</span
+              ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  fill="none"
+                />
+              </svg>
+            </div>
+            <div class="drawer-btns">
+              <button class="btn outline full">Reset</button
+              ><button class="btn light full">Close</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+      <section class="variant" id="varB">
+        <div class="vlabel">
+          B · Modal opened from the drawer
+          <small
+            >One line per action, more room for descriptions. Needs its own key guard and one more
+            click.</small
+          >
+        </div>
+        <div class="opener">
+          <div class="acc open">
+            <span>Reader</span
+            ><svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M2.5 4.5 6 8l3.5-3.5" stroke="currentColor" stroke-width="1.6" fill="none" />
+            </svg>
+          </div>
+          <div class="opener-row"><span class="desc">… reader settings …</span></div>
+          <button class="btn outline full">Keyboard shortcuts…</button>
+          <div class="desc" style="margin-top: 6px">
+            B adds this button to the Reader section and opens the modal.
+          </div>
+        </div>
+        <div class="screen b">
+          <div class="manga" aria-hidden="true">
+            <div class="pg">
+              <i style="left: 6%; top: 4%; width: 88%; height: 30%"></i
+              ><i style="left: 6%; top: 37%; width: 42%; height: 28%"></i
+              ><i style="left: 52%; top: 37%; width: 42%; height: 28%"></i
+              ><i style="left: 6%; top: 68%; width: 88%; height: 28%"></i
+              ><b style="right: 12%; top: 8%; height: 18%"></b
+              ><b style="right: 20%; top: 8%; height: 12%"></b
+              ><b style="left: 18%; top: 42%; height: 16%"></b>
+            </div>
+          </div>
+          <div class="dim"></div>
+          <div class="modal" role="dialog" aria-label="Keyboard shortcuts">
+            <div class="modal-h">
+              <span>Keyboard shortcuts</span><button class="close" aria-label="Close">×</button>
+            </div>
+            <div class="modal-b">
+              <div class="meta">
+                Saved in profile <b>Desktop</b> ·
+                <a href="#" onclick="return false">Copy to all profiles</a>
+              </div>
+              <div class="touch">
+                <span class="ann">touch screens only</span>Shortcuts need a hardware keyboard.
+              </div>
+              <input class="input" placeholder="Filter actions" aria-label="Filter actions" />
+              <div class="cols-h"><span>Action</span><span>Keys</span><span></span></div>
+              <div class="group">
+                <div class="group-h"><span>Pages</span></div>
+                <div class="row wide mod">
+                  <div>
+                    <div class="top">
+                      <span class="label">Page left</span><span class="co" title="State 1">1</span>
+                    </div>
+                    <div class="desc">
+                      Next page in right-to-left books<span class="tag">Paged</span
+                      ><span class="tag">Horizontal</span>
+                    </div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">←</kbd
+                    ><span class="chip user" title="Added by you"
+                      >A<button class="x" aria-label="Remove A">×</button></span
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"><button class="reset">Reset</button></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide mod">
+                  <div>
+                    <div class="top"><span class="label">Page right</span></div>
+                    <div class="desc">
+                      Previous page in right-to-left books<span class="tag">Paged</span
+                      ><span class="tag">Horizontal</span>
+                    </div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">→</kbd
+                    ><span class="chip user" title="Added by you"
+                      >D<button class="x" aria-label="Remove D">×</button></span
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"><button class="reset">Reset</button></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Previous page</span></div>
+                    <div class="desc">Reading order</div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">PageUp</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide active">
+                  <div>
+                    <div class="top">
+                      <span class="label">Next page</span><span class="co" title="State 3">3</span>
+                    </div>
+                    <div class="desc">Reading order</div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">PageDown</kbd
+                    ><kbd class="chip" title="Default">Space</kbd
+                    ><span class="chip pending arrow">↓</span>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span">
+                    <div class="note conflict">
+                      <svg class="ico" viewBox="0 0 16 16" aria-hidden="true">
+                        <path
+                          d="M8 1.5 15 14H1L8 1.5Zm-.75 4.5v4h1.5V6h-1.5Zm0 5v1.5h1.5V11h-1.5Z"
+                          fill="currentColor"
+                        /></svg
+                      ><span><b>↓</b> is already <b>Scroll down</b>.</span
+                      ><span class="note-btns"
+                        ><button class="nb primary">Replace</button
+                        ><button class="nb">Cancel</button></span
+                      >
+                    </div>
+                  </div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">First page</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Home</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Last page</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">End</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Previous volume</span></div>
+                  </div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide active">
+                  <div>
+                    <div class="top">
+                      <span class="label">Next volume</span
+                      ><span class="co" title="State 2">2</span>
+                    </div>
+                  </div>
+                  <div class="keys">
+                    <span class="capture" aria-live="polite"
+                      >Press a key… <small>Esc cancels</small></span
+                    >
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>Scrolling</span></div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Scroll up</span></div>
+                    <div class="desc">Pans a zoomed page. Continuous: half a screen</div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">↑</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Scroll down</span></div>
+                    <div class="desc">Pans a zoomed page. Continuous: half a screen</div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">↓</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Scroll left</span></div>
+                    <div class="desc"><span class="tag">Vertical</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">←</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Scroll right</span></div>
+                    <div class="desc"><span class="tag">Vertical</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip arrow" title="Default">→</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>View</span></div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Fullscreen</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">F</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Cycle zoom mode</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Z</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Zoom to fit</span></div>
+                    <div class="desc"><span class="tag">Paged</span></div>
+                  </div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Cycle page mode</span></div>
+                    <div class="desc">Scroll mode in continuous</div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">P</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Continuous scroll</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">V</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Offset spreads</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">O</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">First page is cover</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">C</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Page dividers</span></div>
+                    <div class="desc"><span class="tag">Continuous</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">M</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Show/hide reader controls</span></div>
+                    <div class="desc">What a tap does</div>
+                  </div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top">
+                      <span class="label">Show/hide reading timer</span
+                      ><span class="co" title="State 4">4</span>
+                    </div>
+                    <div class="desc">Requested in #202</div>
+                  </div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>OCR</span></div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Always show OCR</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">T</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Next OCR layer</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">L</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Edit OCR text</span></div>
+                    <div class="desc">Paged mode only</div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">E</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>Filters</span></div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Invert colors</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">I</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Night mode</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">N</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide mod">
+                  <div>
+                    <div class="top">
+                      <span class="label">Black &amp; white</span
+                      ><span class="co" title="State 6">6</span>
+                    </div>
+                  </div>
+                  <div class="keys">
+                    <span class="chip user" title="Added by you"
+                      >Shift+G<button class="x" aria-label="Remove Shift+G">×</button></span
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"><button class="reset">Reset</button></div>
+                  <div class="span">
+                    <div class="note warn">
+                      <svg class="ico" viewBox="0 0 16 16" aria-hidden="true">
+                        <path
+                          d="M8 1.5 15 14H1L8 1.5Zm-.75 4.5v4h1.5V6h-1.5Zm0 5v1.5h1.5V11h-1.5Z"
+                          fill="currentColor"
+                        /></svg
+                      ><span>Dictionary pop-ups often scan while Shift or Alt is held.</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h">
+                  <span>Edit mode</span><span class="gnote">While editing OCR</span>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Undo</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Ctrl+Z</kbd
+                    ><kbd class="chip" title="Default">Meta+Z</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Redo</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Ctrl+Shift+Z</kbd
+                    ><kbd class="chip" title="Default">Meta+Shift+Z</kbd
+                    ><kbd class="chip" title="Default">Ctrl+Y</kbd
+                    ><kbd class="chip" title="Default">Meta+Y</kbd>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Delete selected boxes</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Delete</kbd
+                    ><kbd class="chip" title="Default">Backspace</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top">
+                      <span class="label">Step back</span><span class="co" title="State 7">7</span>
+                    </div>
+                    <div class="desc">Draw tool, then selection, then leave</div>
+                  </div>
+                  <div class="keys">
+                    <span class="chip locked" title="Locked"
+                      >Esc<svg class="lock" viewBox="0 0 16 16" aria-hidden="true">
+                        <path
+                          d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2h.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h.5Zm1.5 0h4V5a2 2 0 0 0-4 0v2Z"
+                          fill="currentColor"
+                        /></svg
+                    ></span>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h">
+                  <span>Library</span><span class="gnote">While the pointer is over a card</span>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Edit series</span></div>
+                    <div class="desc"><span class="tag">Series card</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">E</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Remove series</span></div>
+                    <div class="desc"><span class="tag">Series card</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Delete</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Edit volume</span></div>
+                    <div class="desc"><span class="tag">Volume</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">E</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Change cover</span></div>
+                    <div class="desc"><span class="tag">Volume</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">C</kbd><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide mod">
+                  <div>
+                    <div class="top">
+                      <span class="label">Remove from device</span
+                      ><span class="co" title="State 5">5</span>
+                    </div>
+                    <div class="desc"><span class="tag">Volume</span></div>
+                  </div>
+                  <div class="keys">
+                    <span class="notset">Not set</span><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"><button class="reset">Reset</button></div>
+                  <div class="span"></div>
+                </div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Delete cloud copy</span></div>
+                    <div class="desc"><span class="tag">Volume</span></div>
+                  </div>
+                  <div class="keys">
+                    <kbd class="chip" title="Default">Shift+Delete</kbd
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-h"><span>General</span></div>
+                <div class="row wide">
+                  <div>
+                    <div class="top"><span class="label">Back</span></div>
+                    <div class="desc">Leave the reader or page</div>
+                  </div>
+                  <div class="keys">
+                    <span class="chip locked" title="Locked"
+                      >Esc<svg class="lock" viewBox="0 0 16 16" aria-hidden="true">
+                        <path
+                          d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2h.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h.5Zm1.5 0h4V5a2 2 0 0 0-4 0v2Z"
+                          fill="currentColor"
+                        /></svg></span
+                    ><button class="add">+ Add</button>
+                  </div>
+                  <div class="rcol"></div>
+                  <div class="span"></div>
+                </div>
+              </div>
+              <details class="fixed">
+                <summary>Not changeable</summary>
+                <ul>
+                  <li><b>Esc</b> closes dialogs and pop-up menus</li>
+                  <li>
+                    <b>Enter</b>, <b>Esc</b>, <b>Backspace</b> inside text fields and the OCR line
+                    editor
+                  </li>
+                  <li><b>←</b> <b>→</b> on the focused series shelf</li>
+                  <li>
+                    Tap, double-tap (Anki capture on a text box), drag, pinch, swipe, edge zones
+                  </li>
+                  <li><b>Ctrl+wheel</b> zoom, <b>Ctrl+Shift+wheel</b> page gap</li>
+                  <li>
+                    Library: <b>Shift+wheel</b>, <b>Shift+Alt+wheel</b>,
+                    <b>Shift+right-click</b> shelf alignment
+                  </li>
+                </ul>
+              </details>
+            </div>
+            <div class="modal-f">
+              <button class="btn outline">Reset all shortcuts</button
+              ><button class="btn primary">Done</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <section class="extra">
+      <div class="card">
+        <h3>Phase 3 · Mouse wheel (paged), in the Reader section</h3>
+        <div class="desc">Replaces the "Swap mouse wheel scroll/zoom" toggle. Same in A and B.</div>
+        <label class="lbl" for="wheel">Mouse wheel (paged)</label>
+        <select id="wheel" class="select">
+          <option>Pans the page (Ctrl+wheel zooms)</option>
+          <option>Zooms (Ctrl+wheel pans)</option>
+          <option selected>Turns pages (Ctrl+wheel zooms)</option>
+        </select>
+        <div class="desc" style="margin-top: 8px">
+          Wheel down = next page, up = previous. A zoomed page pans to its edge first.
+        </div>
+      </div>
+      <div class="card">
+        <h3>Live hints elsewhere in Settings</h3>
+        <div class="desc">Every "(V)"-style hint reads the live binding. Unbound: no hint.</div>
+        <div class="toggle">
+          <span class="sw"></span>Continuous scroll<span class="hint">(V)</span>
+        </div>
+        <div class="toggle">
+          <span class="sw on"></span>Always show OCR<span class="hint">(T)</span>
+        </div>
+        <div class="toggle"><span class="sw"></span>Edit OCR text<span class="hint">(E)</span></div>
+        <div class="toggle">
+          <span class="sw"></span>Show timer<span class="hint" title="No key set">&nbsp;</span>
+        </div>
+        <div class="desc">Black &amp; white card: "Manual (Shift+G)".</div>
+      </div>
+    </section>
+    <p class="foot">Mockup only: buttons do nothing except the layout switch.</p>
+    <script>
+      (function () {
+        var btns = document.querySelectorAll('[data-show]');
+        function show(v) {
+          document.getElementById('varA').hidden = v === 'B';
+          document.getElementById('varB').hidden = v === 'A';
+          btns.forEach(function (b) {
+            b.setAttribute('aria-pressed', String(b.dataset.show === v));
+          });
+        }
+        btns.forEach(function (b) {
+          b.addEventListener('click', function () {
+            show(b.dataset.show);
+          });
+        });
+      })();
+    </script>
+  </body>
+</html>
