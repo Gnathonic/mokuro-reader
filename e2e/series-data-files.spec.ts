@@ -363,12 +363,10 @@ test.describe('record and file shape', () => {
     page
   }) => {
     const result = await page.evaluate(async () => {
-      const { buildSeriesFile, parseSeriesFile, stringifySeriesFile } = await import(
-        '/src/lib/metadata/series-file.ts'
-      );
-      const { updateSeriesMetadata, upsertFromSeriesFile } = await import(
-        '/src/lib/metadata/store.ts'
-      );
+      const { buildSeriesFile, parseSeriesFile, stringifySeriesFile } =
+        await import('/src/lib/metadata/series-file.ts');
+      const { updateSeriesMetadata, upsertFromSeriesFile } =
+        await import('/src/lib/metadata/store.ts');
       const { db } = await import('/src/lib/catalog/db.ts');
       const { getSpineOffsets } = await import('/src/lib/metadata/spine-offsets.ts');
 
@@ -463,12 +461,10 @@ test.describe('record and file shape', () => {
     page
   }) => {
     const fired = await page.evaluate(async () => {
-      const { registerIndexChangeListener, registerFactsChangeListener } = await import(
-        '/src/lib/metadata/store.ts'
-      );
-      const { scheduleSpineOffsetWrite, flushSpineOffsetWrites } = await import(
-        '/src/lib/metadata/spine-offsets.ts'
-      );
+      const { registerIndexChangeListener, registerFactsChangeListener } =
+        await import('/src/lib/metadata/store.ts');
+      const { scheduleSpineOffsetWrite, flushSpineOffsetWrites } =
+        await import('/src/lib/metadata/spine-offsets.ts');
 
       const index: string[] = [];
       const facts: string[] = [];
@@ -505,9 +501,8 @@ test.describe('record and file shape', () => {
       .toBe('#/catalog');
 
     const after = await page.evaluate(async () => {
-      const { getSeriesReadingState, SERIES_SECTION_KEY } = await import(
-        '/src/lib/settings/series-data.ts'
-      );
+      const { getSeriesReadingState, SERIES_SECTION_KEY } =
+        await import('/src/lib/settings/series-data.ts');
       const { parseVolumesFromJson } = await import('/src/lib/settings/volume-data.ts');
       const state = getSeriesReadingState('dr stone');
       // The section must never read back as a volume.
@@ -564,9 +559,8 @@ test.describe('record and file shape', () => {
 
   test('series-metadata.json is not a syncable root file any more', async ({ page }) => {
     const verdict = await page.evaluate(async () => {
-      const { isRootConfigFile, isSyncableFile } = await import(
-        '/src/lib/util/sync/syncable-file.ts'
-      );
+      const { isRootConfigFile, isSyncableFile } =
+        await import('/src/lib/util/sync/syncable-file.ts');
       let mergeModuleGone = false;
       try {
         await import('/src/lib/metadata/merge.ts');
@@ -630,9 +624,8 @@ test.describe('Local Folder provider (OPFS)', () => {
 
     // A shelf nudge, through the same debounced writer the catalog card uses.
     await page.evaluate(async () => {
-      const { scheduleSpineOffsetWrite, flushSpineOffsetWrites } = await import(
-        '/src/lib/metadata/spine-offsets.ts'
-      );
+      const { scheduleSpineOffsetWrite, flushSpineOffsetWrites } =
+        await import('/src/lib/metadata/spine-offsets.ts');
       scheduleSpineOffsetWrite('Offset Series', {
         spineOffset: 12,
         volumeOffsets: { 'off-1': -30 }
@@ -695,9 +688,8 @@ test.describe('Local Folder provider (OPFS)', () => {
     // An explicit zero is a reset, not "no opinion": it suppresses what the file
     // publishes and disappears from the republished file.
     await page.evaluate(async () => {
-      const { scheduleSpineOffsetWrite, flushSpineOffsetWrites } = await import(
-        '/src/lib/metadata/spine-offsets.ts'
-      );
+      const { scheduleSpineOffsetWrite, flushSpineOffsetWrites } =
+        await import('/src/lib/metadata/spine-offsets.ts');
       // "Reset all", as the shelf sends it: the volumes on screen go with it,
       // so an INHERITED offset is suppressed too, not just this library's own.
       scheduleSpineOffsetWrite('Offset Series', {

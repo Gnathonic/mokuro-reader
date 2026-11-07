@@ -266,9 +266,8 @@ async function seedCatalogIndex(
 ) {
   await page.evaluate(
     async ({ raw, provider }) => {
-      const { parseCatalogFile, catalogEntryToSeriesFile } = await import(
-        '/src/lib/metadata/catalog-file.ts'
-      );
+      const { parseCatalogFile, catalogEntryToSeriesFile } =
+        await import('/src/lib/metadata/catalog-file.ts');
       const { upsertFromSeriesFile } = await import('/src/lib/metadata/store.ts');
       const { db } = await import('/src/lib/catalog/db.ts');
       const parsed = parseCatalogFile(raw)!;
@@ -546,9 +545,8 @@ test.describe('catalog.json', () => {
   test('the catalog_index cache only refetches when size or mtime moves', async ({ page }) => {
     await seedCatalogIndex(page);
     const observed = await page.evaluate(async () => {
-      const { catalogNeedsRefresh, getCatalogIndex } = await import(
-        '/src/lib/metadata/catalog-index.ts'
-      );
+      const { catalogNeedsRefresh, getCatalogIndex } =
+        await import('/src/lib/metadata/catalog-index.ts');
       const cached = await getCatalogIndex();
       const same = { size: 123, modifiedTime: '2026-08-23T00:00:00.000Z' };
       return {
@@ -706,9 +704,8 @@ test.describe('write tolerance', () => {
   test('the compiled metadata files are classified as best-effort', async ({ page }) => {
     await boot(page);
     const flags = await page.evaluate(async () => {
-      const { isBestEffortMetadataPath, isRootConfigFile } = await import(
-        '/src/lib/util/sync/syncable-file.ts'
-      );
+      const { isBestEffortMetadataPath, isRootConfigFile } =
+        await import('/src/lib/util/sync/syncable-file.ts');
       return {
         catalog: isBestEffortMetadataPath('catalog.json'),
         series: isBestEffortMetadataPath('Dr Stone/series.json'),

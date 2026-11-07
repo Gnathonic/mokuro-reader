@@ -2016,9 +2016,7 @@ export async function publishCuratedLayer(volumeUuid: string): Promise<CuratedPu
  * changed), or failed (nothing changed: no provider to remove it from).
  */
 export type CuratedUnpublishOutcome =
-  | Exclude<CloudLayerDeleteOutcome, 'kept-shared'>
-  | 'refused'
-  | 'failed';
+  Exclude<CloudLayerDeleteOutcome, 'kept-shared'> | 'refused' | 'failed';
 
 /**
  * Unpublish: remove the library's shared corrections for everyone — every

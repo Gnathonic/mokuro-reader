@@ -262,9 +262,8 @@ describe('VolumeData.completedAt', () => {
   });
 
   it('dates a SECOND reading, so a re-read counts toward the new period', async () => {
-    const { _resetHistoryTurns, _setHistoryTurnsForTest } = await import(
-      '$lib/reading-history/turns-store'
-    );
+    const { _resetHistoryTurns, _setHistoryTurnsForTest } =
+      await import('$lib/reading-history/turns-store');
     vi.useFakeTimers();
     try {
       // Write-once meant a volume finished in 2025, paged back to the start and

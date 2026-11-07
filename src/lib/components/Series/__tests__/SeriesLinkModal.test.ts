@@ -45,8 +45,8 @@ vi.mock('$lib/metadata/providers/anilist', async () => {
 });
 
 const updateSeriesMetadata = vi.fn();
-const getSeriesMetadataForTitle = vi.fn(
-  (..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined)
+const getSeriesMetadataForTitle = vi.fn((..._args: unknown[]): Promise<unknown> =>
+  Promise.resolve(undefined)
 );
 vi.mock('$lib/metadata/store', () => ({
   updateSeriesMetadata: (...args: unknown[]) => updateSeriesMetadata(...args),

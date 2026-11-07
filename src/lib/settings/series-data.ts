@@ -54,8 +54,7 @@ export type SeriesReadingStatePatch = Partial<Omit<SeriesReadingState, 'lastUpda
  * silently undo the other's edit.
  */
 export type SeriesReadingStatePatchInput =
-  | SeriesReadingStatePatch
-  | ((existing: SeriesReadingState) => SeriesReadingStatePatch);
+  SeriesReadingStatePatch | ((existing: SeriesReadingState) => SeriesReadingStatePatch);
 
 function emptyState(): SeriesReadingState {
   return { read_count: 0, lastUpdated: new Date(0).toISOString() };

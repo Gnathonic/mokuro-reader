@@ -71,9 +71,7 @@ export interface LogoutAnswer {
 
 /** What renewing a token Drive refused came to. */
 export type TokenRenewal =
-  | { kind: 'renewed'; token: string }
-  | { kind: 'transient' }
-  | { kind: 'failed' };
+  { kind: 'renewed'; token: string } | { kind: 'transient' } | { kind: 'failed' };
 
 /**
  * The interop rig's stand-in for a GIS token client: a request answers with the

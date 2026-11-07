@@ -44,25 +44,25 @@ Copied verbatim from the spec; every task's requirements implicitly include thes
 
 ## File Structure
 
-| File                                                                                                            | Responsibility                                                                                                            |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| File                                                                                                            | Responsibility                                                                                                           |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `src/lib/metadata/catalog-file.ts` (new)                                                                        | `catalog.json` types, build (union+prune), parse/sanitize, compact serializer, path test, entry↔`SeriesFile` conversions |
-| `src/lib/metadata/catalog-index.ts` (new)                                                                       | `catalog_index` Dexie accessors, liveQuery store, `catalogNeedsRefresh`                                                   |
-| `src/lib/metadata/catalog-index-sync.ts` (new)                                                                  | Read half: listing-driven fetch/merge/prune of `catalog.json`, coalesced + provider-bound                                 |
-| `src/lib/metadata/catalog-file-sync.ts` (new)                                                                   | Write half: debounced client production, gated on writable + non-bunko + fresh listing                                    |
-| `src/lib/metadata/series-open.ts` (new)                                                                         | `openSeries()` — single-series refresh → materialize → install covers                                                     |
-| `src/lib/metadata/hole-patch.ts` (new)                                                                          | Progress records referencing unknown series → `openSeries()`                                                              |
-| `src/lib/catalog/materialize.ts` (new)                                                                          | Index entries → metadata-only `volumes` rows (local wins, shadow rules)                                                   |
-| `src/lib/catalog/cover-install.ts` (new)                                                                        | Lazy per-volume cover sidecar → inlined `thumbnail` on the row                                                            |
-| `src/lib/components/CatalogNameCard.svelte` (new)                                                               | Name-only catalog card (no volumes, no cover)                                                                             |
-| `src/lib/metadata/series-index.ts`                                                                              | + `sourceStampChanged()` extracted from `indexNeedsRefresh` (shared stamp comparison)                                     |
-| `src/lib/metadata/series-file-sync.ts`                                                                          | Export the coalesced listing refresh; debug-level failure logs                                                            |
-| `src/lib/util/sync/syncable-file.ts`                                                                            | `catalog.json` in the root-config allowlist; `isBestEffortMetadataPath()`                                                 |
-| `src/lib/util/sync/unified-cloud-manager.ts`                                                                    | `writeCatalogFile()`, `refreshSeriesIndexForSeries()`, catalog-index key move/delete                                      |
-| `src/lib/util/sync/provider-interface.ts` / `unified-provider-state.ts` / `providers/webdav/webdav-provider.ts` | `serverCompilesMetadata` flag; no read-only demotion on metadata writes                                                   |
-| `src/lib/catalog/db-v3.ts`                                                                                      | Dexie version 4: `catalog_index: 'series_key'`                                                                            |
-| `src/lib/catalog/catalog.ts` / `src/lib/catalog/index.ts` / `src/lib/components/Catalog.svelte`                 | Name-only series in the join, search and rendering                                                                        |
-| `src/lib/views/SeriesView.svelte`                                                                               | Series-open hook + pending state                                                                                          |
+| `src/lib/metadata/catalog-index.ts` (new)                                                                       | `catalog_index` Dexie accessors, liveQuery store, `catalogNeedsRefresh`                                                  |
+| `src/lib/metadata/catalog-index-sync.ts` (new)                                                                  | Read half: listing-driven fetch/merge/prune of `catalog.json`, coalesced + provider-bound                                |
+| `src/lib/metadata/catalog-file-sync.ts` (new)                                                                   | Write half: debounced client production, gated on writable + non-bunko + fresh listing                                   |
+| `src/lib/metadata/series-open.ts` (new)                                                                         | `openSeries()` — single-series refresh → materialize → install covers                                                    |
+| `src/lib/metadata/hole-patch.ts` (new)                                                                          | Progress records referencing unknown series → `openSeries()`                                                             |
+| `src/lib/catalog/materialize.ts` (new)                                                                          | Index entries → metadata-only `volumes` rows (local wins, shadow rules)                                                  |
+| `src/lib/catalog/cover-install.ts` (new)                                                                        | Lazy per-volume cover sidecar → inlined `thumbnail` on the row                                                           |
+| `src/lib/components/CatalogNameCard.svelte` (new)                                                               | Name-only catalog card (no volumes, no cover)                                                                            |
+| `src/lib/metadata/series-index.ts`                                                                              | + `sourceStampChanged()` extracted from `indexNeedsRefresh` (shared stamp comparison)                                    |
+| `src/lib/metadata/series-file-sync.ts`                                                                          | Export the coalesced listing refresh; debug-level failure logs                                                           |
+| `src/lib/util/sync/syncable-file.ts`                                                                            | `catalog.json` in the root-config allowlist; `isBestEffortMetadataPath()`                                                |
+| `src/lib/util/sync/unified-cloud-manager.ts`                                                                    | `writeCatalogFile()`, `refreshSeriesIndexForSeries()`, catalog-index key move/delete                                     |
+| `src/lib/util/sync/provider-interface.ts` / `unified-provider-state.ts` / `providers/webdav/webdav-provider.ts` | `serverCompilesMetadata` flag; no read-only demotion on metadata writes                                                  |
+| `src/lib/catalog/db-v3.ts`                                                                                      | Dexie version 4: `catalog_index: 'series_key'`                                                                           |
+| `src/lib/catalog/catalog.ts` / `src/lib/catalog/index.ts` / `src/lib/components/Catalog.svelte`                 | Name-only series in the join, search and rendering                                                                       |
+| `src/lib/views/SeriesView.svelte`                                                                               | Series-open hook + pending state                                                                                         |
 
 ---
 
@@ -4488,9 +4488,8 @@ test.describe('write tolerance', () => {
   test('the compiled metadata files are classified as best-effort', async ({ page }) => {
     await page.goto('/');
     const flags = await page.evaluate(async () => {
-      const { isBestEffortMetadataPath, isRootConfigFile } = await import(
-        '/src/lib/util/sync/syncable-file.ts'
-      );
+      const { isBestEffortMetadataPath, isRootConfigFile } =
+        await import('/src/lib/util/sync/syncable-file.ts');
       return {
         catalog: isBestEffortMetadataPath('catalog.json'),
         series: isBestEffortMetadataPath('Dr Stone/series.json'),

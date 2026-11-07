@@ -457,9 +457,8 @@ class UnifiedSyncService {
         // server-side but still present in a stale provider cache — so a
         // not-found copy must not discard the readable copies with it.
         const downloads = await Promise.allSettled(
-          volumeDataFiles.map(
-            async (file): Promise<CloudVolumeDataFile> =>
-              this.parseVolumeDataCopy(await this.blobToJson(await readRootFile(provider, file)))
+          volumeDataFiles.map(async (file): Promise<CloudVolumeDataFile> =>
+            this.parseVolumeDataCopy(await this.blobToJson(await readRootFile(provider, file)))
           )
         );
 

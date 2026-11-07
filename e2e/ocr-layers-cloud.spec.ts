@@ -470,9 +470,8 @@ test.describe('OCR layers in the cloud (stubbed WebDAV)', () => {
     // The installed file as bunko wrote it: block + a real seal over its pages.
     const engine = await page.evaluate(async (uuid) => {
       const { db } = await import('/src/lib/catalog/db.ts');
-      const { contentDigest, provenanceFromParsed } = await import(
-        '/src/lib/catalog/ocr-provenance.ts'
-      );
+      const { contentDigest, provenanceFromParsed } =
+        await import('/src/lib/catalog/ocr-provenance.ts');
       const pages = (await db.volume_ocr.get(uuid))!.pages;
       const recipe = { id: 'hayai-nova', revision: 2, created: '2026-10-29T00:00:00Z' };
       const sealed = { ...recipe, seal: (await contentDigest(recipe, pages))! };

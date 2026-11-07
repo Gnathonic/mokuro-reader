@@ -1639,8 +1639,7 @@ describe('sidecar backfill — the deferred feed uploads through the worker pool
 
     const entryFor = (path: string) =>
       cacheAdd.mock.calls.find((call) => call[0] === path)?.[1] as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
 
     // Server mtime present: cached as server truth.
     expect(entryFor('Legacy Series/Volume 01.mokuro')).toMatchObject({

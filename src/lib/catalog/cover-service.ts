@@ -562,8 +562,7 @@ async function materializeBatch(
     // the foreign row this series' cover.
     const seriesKey = normalizeSeriesKey(seriesTitle);
     const rows = (await db.volumes.bulkGet(entries.map((e) => e.volume_uuid))) as (
-      | VolumeMetadata
-      | undefined
+      VolumeMetadata | undefined
     )[];
     queued.forEach((q, i) => {
       const existing = rows[i];

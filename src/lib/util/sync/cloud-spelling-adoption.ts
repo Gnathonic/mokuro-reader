@@ -139,9 +139,8 @@ export async function adoptCloudSeriesSpellings(
   if (plans.length === 0) return [];
 
   // Deferred: series-rename imports the cloud manager, which imports this.
-  const { commitLocalSeriesRename, generateRenameSeriesPreview } = await import(
-    '$lib/util/series-rename'
-  );
+  const { commitLocalSeriesRename, generateRenameSeriesPreview } =
+    await import('$lib/util/series-rename');
   const committed: CloudSpellingAdoption[] = [];
   for (const plan of plans) {
     // The provider may have changed while the rows were read.

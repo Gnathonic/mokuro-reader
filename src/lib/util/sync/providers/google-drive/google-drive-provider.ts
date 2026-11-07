@@ -985,9 +985,8 @@ class GoogleDriveProvider implements SyncProvider {
       await driveApiClient.deleteFile(fileId);
 
       // Update cache
-      const { driveFilesCache } = await import(
-        '$lib/util/sync/providers/google-drive/drive-files-cache'
-      );
+      const { driveFilesCache } =
+        await import('$lib/util/sync/providers/google-drive/drive-files-cache');
       driveFilesCache.removeById(fileId);
 
       console.log(`✅ Deleted file from Google Drive (${fileId})`);

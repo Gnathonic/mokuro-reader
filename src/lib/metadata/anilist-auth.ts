@@ -185,9 +185,7 @@ export async function handleAniListCallbackHash(hash: string): Promise<boolean> 
  * from the future, proves nothing about when the login started).
  */
 export type AniListLoginMarker =
-  | { state: 'started'; hash: string }
-  | { state: 'expired'; hash: string }
-  | { state: 'none' };
+  { state: 'started'; hash: string } | { state: 'expired'; hash: string } | { state: 'none' };
 
 /** Read the marker startAniListLogin() saved, and clear it (one use). */
 export function consumeAniListLoginMarker(): AniListLoginMarker {

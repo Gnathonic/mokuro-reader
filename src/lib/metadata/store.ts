@@ -24,8 +24,7 @@ export type SeriesMetadataPatch = Partial<
  * resolved inside the write transaction instead.
  */
 export type SeriesMetadataPatchInput =
-  | SeriesMetadataPatch
-  | ((existing: SeriesMetadata) => SeriesMetadataPatch);
+  SeriesMetadataPatch | ((existing: SeriesMetadata) => SeriesMetadataPatch);
 
 /** Drop `undefined` values so "cleared" fields disappear from IndexedDB and JSON. */
 function stripUndefined<T extends object>(obj: T): T {
