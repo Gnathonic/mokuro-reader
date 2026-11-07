@@ -119,7 +119,12 @@ extension). `$app/environment` and `$env/dynamic/private` are deprecated too and
 The move to `#lib` subpath imports and `$app/env` is issue #359, done later so it does not
 conflict with every open branch. A worker's `new URL(…, import.meta.url)` stays relative.
 SvelteKit's options live in `vite.config.ts` (`sveltekit({...})`); there is no
-`svelte.config.js`.
+`svelte.config.js`. The app registers its own service worker (`$lib/util/sw-register.ts`, from
+`hooks.client.ts`) with SvelteKit's registration off: SvelteKit 3 registers it
+`{ type: 'module' }` in every build, the app CLASSIC in production, as SvelteKit 2 did.
+`scripts/check-service-worker.mjs` (part of `npm run build`) runs the built worker and fails if
+it no longer parses as a classic script or if a path it precaches is missing from the output
+(`addAll` is all-or-nothing: no client could install).
 
 ### State Management
 

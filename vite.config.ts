@@ -72,6 +72,12 @@ export default defineConfig({
       // tab visibility, which no option turns off.
       version: { pollInterval: 0 },
 
+      // SvelteKit 3 registers the service worker as `{ type: 'module' }` in
+      // every build (2 did only in dev), which a browser without module service
+      // workers rejects. The app registers it itself, classic in production:
+      // src/lib/util/sw-register.ts.
+      serviceWorker: { register: false },
+
       inspector: true
     }),
     tailwindcss(),

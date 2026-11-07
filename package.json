@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build && node scripts/check-no-test-hooks.mjs && node scripts/check-no-server-secrets.mjs",
+    "build": "vite build && node scripts/check-no-test-hooks.mjs && node scripts/check-no-server-secrets.mjs && node scripts/check-service-worker.mjs",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",

@@ -9,15 +9,24 @@ import vercel from '../vercel.json';
 import lockText from '../package-lock.json?raw';
 // As text: importing vite.config.ts would start SvelteKit's plugin under jsdom.
 import viteConfig from '../vite.config.ts?raw';
+import hooksClient from './hooks.client.ts?raw';
 
 const lock = JSON.parse(lockText);
 const devDependencies: Record<string, string | undefined> = pkg.devDependencies;
 
 describe('production build', () => {
-  it('fails when a cloud test hook or a server secret reaches the bundle', () => {
+  it('fails when a cloud test hook or a server secret reaches the bundle, or the worker cannot install', () => {
     expect(pkg.scripts.build).toBe(
-      'vite build && node scripts/check-no-test-hooks.mjs && node scripts/check-no-server-secrets.mjs'
+      'vite build && node scripts/check-no-test-hooks.mjs && node scripts/check-no-server-secrets.mjs && node scripts/check-service-worker.mjs'
     );
+  });
+
+  it('registers the service worker itself, never through SvelteKit', () => {
+    // SvelteKit 3 registers its worker as `{ type: 'module' }` in every build,
+    // which a browser without module service workers rejects. The app does it,
+    // classic in production (src/lib/util/sw-register.ts).
+    expect(viteConfig).toMatch(/serviceWorker:\s*\{\s*register:\s*false\s*\}/);
+    expect(hooksClient).toMatch(/^registerServiceWorker\(\);$/m);
   });
 
   it('uses the lockfile-pinned Vercel adapter, never adapter-auto', () => {

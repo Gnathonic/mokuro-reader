@@ -472,6 +472,20 @@ for (const mode of MODES) {
     test('the service worker registers under the policy', async ({ browser }) => {
       const context = await browser.newContext({ serviceWorkers: 'allow' });
       const page = await context.newPage();
+      // Every registration the page makes, with its options. A production
+      // build registers ONE classic worker (src/lib/util/sw-register.ts):
+      // SvelteKit 3's own registration is `{ type: 'module' }`, which a browser
+      // without module service workers rejects.
+      await page.addInitScript(() => {
+        const calls: unknown[] = [];
+        (window as unknown as { __e2eSwRegistrations: unknown[] }).__e2eSwRegistrations = calls;
+        const container = navigator.serviceWorker;
+        const register = container.register.bind(container);
+        container.register = (url, options) => {
+          calls.push({ url: String(url), options: options ?? null });
+          return register(url, options);
+        };
+      });
       const consoleLog = watchConsole(page);
       await boot(page, origin);
       const scope = await page.evaluate(async () => {
@@ -479,6 +493,15 @@ for (const mode of MODES) {
         return registration.scope;
       });
       expect(scope).toBe(`${origin}/`);
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { __e2eSwRegistrations: unknown[] }).__e2eSwRegistrations
+        )
+      ).toEqual([{ url: '/service-worker.js', options: { type: 'classic' } }]);
+      // The classic worker installed: precached, active, controlling this origin.
+      await expect
+        .poll(() => page.evaluate(async () => (await navigator.serviceWorker.ready).active?.state))
+        .toBe('activated');
       expect((await violations(page)).filter(isAppViolation)).toEqual([]);
       expect(consoleLog.csp).toEqual([]);
       await context.close();
