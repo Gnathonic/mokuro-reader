@@ -716,8 +716,6 @@ test.describe('CSP_MODE=enforce with the Drive auth backend', () => {
     expect(shell?.headers()['content-security-policy']).toMatch(/script-src /);
     const connect = page.getByRole('button', { name: /Google Drive.*15GB free/ });
     await expect(connect).toBeVisible({ timeout: 30_000 });
-    // Only the popup build tells you it signs in again every hour.
-    await expect(connect).not.toContainText('Signs in again hourly');
     await connect.click();
 
     await expect.poll(storedToken, { timeout: 60_000 }).toBe('ya29.csp-1');

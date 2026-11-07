@@ -100,46 +100,25 @@
   // Provider display names (shared module keeps all provider maps in sync)
   const providerNames: Record<ProviderType, string> = PROVIDER_LABELS;
 
-  // Provider info. Every provider stays signed in (Drive through the auth
-  // backend), so staying signed in is not a selling point of any one of them;
-  // only Drive without the backend says otherwise (its card and the
-  // re-authenticate toggle below). Storage figures are the providers' own free
-  // tiers as of 2026-11: Google 15 GB shared with Gmail/Photos, MEGA a 20 GB
-  // permanent base (welcome bonuses expire), OneDrive 5 GB shared with
-  // Outlook.com attachments (Microsoft 365 Basic is 100 GB, not 1 TB).
+  // Provider info. Free tiers as of 2026-11.
   const providerInfo = {
     'google-drive': {
-      items: [
-        '15GB free, shared with Gmail and Google Photos',
-        'Back up from the app, download on any device',
-        'Sees only the files this app saves, not the rest of your Drive'
-      ]
+      items: ['15GB free (shared with Gmail)', 'Only sees files this app saves']
     },
     mega: {
-      items: ['20GB free storage', 'End-to-end encryption', 'Two-factor sign-in supported']
+      items: ['20GB free', 'End-to-end encrypted', 'Two-factor sign-in']
     },
     webdav: {
       items: [
-        'Mokuro-Bunko, Nextcloud, ownCloud, a NAS, or any WebDAV server',
-        'Servers other than Mokuro-Bunko must allow this site (CORS)',
-        'On your own server, your files stay with you'
+        'Mokuro-Bunko, Nextcloud, a NAS, or any WebDAV server',
+        'Other servers need CORS enabled'
       ]
     },
     filesystem: {
-      items: [
-        'Reads and writes real files in a folder you pick',
-        'Works offline — no account needed',
-        'Best for bulk import/export on this device',
-        'Chromium browsers only (Chrome, Edge, etc.)'
-      ]
+      items: ['A folder on this device', 'Offline, no account', 'Chromium browsers only']
     },
     onedrive: {
-      items: [
-        '5GB free, shared with Outlook.com attachments; more with Microsoft 365',
-        'Works with personal (outlook.com) and work or school accounts',
-        'Some work or school accounts need an admin to allow the app',
-        'Encrypted in transit and at rest'
-      ]
+      items: ['5GB free (shared with Outlook)', 'Personal or work/school accounts']
     }
   };
 
@@ -753,9 +732,7 @@
               {/if}
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">Google Drive</div>
-                <div class="text-sm text-gray-400">
-                  15GB free{gdriveStaysSignedIn ? '' : ' • Signs in again hourly'}
-                </div>
+                <div class="text-sm text-gray-400">15GB free</div>
               </div>
             </div>
           </button>
@@ -855,9 +832,7 @@
               <div class="flex h-8 w-8 items-center justify-center text-2xl">W</div>
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">WebDAV</div>
-                <div class="text-sm text-gray-400">
-                  Mokuro-Bunko, Nextcloud, NAS, any WebDAV server
-                </div>
+                <div class="text-sm text-gray-400">Mokuro-Bunko, Nextcloud, NAS</div>
               </div>
             </div>
           </button>
