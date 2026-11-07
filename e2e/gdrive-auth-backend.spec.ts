@@ -324,9 +324,10 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, a
 
   await test.step('sign in: a full-page round trip through the callback page', async () => {
     await page.goto(`${origin}/#/cloud`);
-    // The backend build says so on the provider card.
-    const connect = page.getByRole('button', { name: /Stays signed in/ });
+    const connect = page.getByRole('button', { name: /Google Drive.*15GB free/ });
     await expect(connect).toBeVisible({ timeout: 60_000 });
+    // Only the popup build tells you it signs in again every hour.
+    await expect(connect).not.toContainText('Signs in again hourly');
     await connect.click();
 
     await expect.poll(() => storedToken(page), { timeout: 60_000 }).toBe('ya29.e2e-1');
@@ -483,8 +484,10 @@ test('one sign-in, a bound HttpOnly cookie, silent renewal, a device sign-out, a
   });
 
   await test.step('signing in again binds the new session to a NEW device key', async () => {
-    const connect = page.getByRole('button', { name: /Stays signed in/ });
+    const connect = page.getByRole('button', { name: /Google Drive.*15GB free/ });
     await expect(connect).toBeVisible({ timeout: 60_000 });
+    // Only the popup build tells you it signs in again every hour.
+    await expect(connect).not.toContainText('Signs in again hourly');
     await connect.click();
     await expect.poll(() => storedToken(page), { timeout: 60_000 }).toMatch(/^ya29\.e2e-\d+$/);
     expect(google.pkceVerified).toBe(2);

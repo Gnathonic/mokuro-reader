@@ -100,28 +100,29 @@
   // Provider display names (shared module keeps all provider maps in sync)
   const providerNames: Record<ProviderType, string> = PROVIDER_LABELS;
 
-  // Provider info
+  // Provider info. Every provider stays signed in (Drive through the auth
+  // backend), so staying signed in is not a selling point of any one of them;
+  // only Drive without the backend says otherwise (its card and the
+  // re-authenticate toggle below). Storage figures are the providers' own free
+  // tiers as of 2026-11: Google 15 GB shared with Gmail/Photos, MEGA a 20 GB
+  // permanent base (welcome bonuses expire), OneDrive 5 GB shared with
+  // Outlook.com attachments (Microsoft 365 Basic is 100 GB, not 1 TB).
   const providerInfo = {
     'google-drive': {
       items: [
-        'Up to 15GB free storage',
-        'Seamless Google account integration',
-        'Back up from app, download on any device',
-        'Auto re-authentication support'
+        '15GB free, shared with Gmail and Google Photos',
+        'Back up from the app, download on any device',
+        'Sees only the files this app saves, not the rest of your Drive'
       ]
     },
     mega: {
-      items: [
-        '20GB free storage',
-        'End-to-end encryption',
-        'Persistent login (no re-authentication needed)'
-      ]
+      items: ['20GB free storage', 'End-to-end encryption', 'Two-factor sign-in supported']
     },
     webdav: {
       items: [
-        'Compatible with Mokuro-Bunko, Nextcloud, ownCloud, and NAS devices',
-        'Persistent login (no re-authentication needed)',
-        'Self-hosted and private'
+        'Mokuro-Bunko, Nextcloud, ownCloud, a NAS, or any WebDAV server',
+        'Servers other than Mokuro-Bunko must allow this site (CORS)',
+        'On your own server, your files stay with you'
       ]
     },
     filesystem: {
@@ -134,9 +135,9 @@
     },
     onedrive: {
       items: [
-        'Free 5GB personal storage; 1TB+ for Microsoft 365 subscribers',
-        'Works with personal accounts (outlook.com) and work/school accounts',
-        'Persistent login (no re-authentication needed)',
+        '5GB free, shared with Outlook.com attachments; more with Microsoft 365',
+        'Works with personal (outlook.com) and work or school accounts',
+        'Some work or school accounts need an admin to allow the app',
         'Encrypted in transit and at rest'
       ]
     }
@@ -753,9 +754,7 @@
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">Google Drive</div>
                 <div class="text-sm text-gray-400">
-                  Up to 15GB free • {gdriveStaysSignedIn
-                    ? 'Stays signed in'
-                    : 'Automatic hourly re-auth'}
+                  15GB free{gdriveStaysSignedIn ? '' : ' • Signs in again hourly'}
                 </div>
               </div>
             </div>
@@ -774,7 +773,7 @@
               <div class="flex h-8 w-8 items-center justify-center text-2xl">M</div>
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">MEGA</div>
-                <div class="text-sm text-gray-400">20GB free • Persistent login</div>
+                <div class="text-sm text-gray-400">20GB free • End-to-end encrypted</div>
               </div>
             </div>
           </button>
@@ -839,9 +838,7 @@
                 <div class="flex h-8 w-8 items-center justify-center text-2xl">O</div>
                 <div class="flex-1 text-left">
                   <div class="text-lg font-semibold">OneDrive</div>
-                  <div class="text-sm text-gray-400">
-                    5GB free • Personal or work/school • Persistent login
-                  </div>
+                  <div class="text-sm text-gray-400">5GB free • Personal or work/school</div>
                 </div>
               </div>
             </button>
@@ -859,7 +856,7 @@
               <div class="flex-1 text-left">
                 <div class="text-lg font-semibold">WebDAV</div>
                 <div class="text-sm text-gray-400">
-                  Mokuro-Bunko, Nextcloud, NAS • Persistent login
+                  Mokuro-Bunko, Nextcloud, NAS, any WebDAV server
                 </div>
               </div>
             </div>
