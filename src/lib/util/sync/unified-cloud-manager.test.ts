@@ -5536,6 +5536,27 @@ describe('UnifiedCloudManager.fetchAllCloudVolumes({ fromChangeFeed }) (#288)', 
     }
   );
 
+  // The throttled history/ listing (history-listing-refresh.ts) freshens one
+  // folder: a metadata writer about to prune against the listing must still
+  // get the whole library walked, however recently history/ was patched.
+  it.each(['webdav', 'filesystem'])(
+    'a history patch on %s is no feed: the writers still get a full listing',
+    async (type) => {
+      getActiveProvider.mockReturnValue({ type });
+      const beginHistoryPatch = vi.fn();
+      getCache.mockReturnValue({ isLoaded: () => true, beginHistoryPatch });
+
+      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      await unifiedCloudManager.fetchAllCloudVolumes({
+        refreshIndexes: false,
+        fromChangeFeed: true
+      });
+
+      expect(fetchAll).toHaveBeenCalledTimes(1);
+      expect(beginHistoryPatch).not.toHaveBeenCalled();
+    }
+  );
+
   it('a caller that did not ask for the feed always walks', async () => {
     getActiveProvider.mockReturnValue({ type: 'google-drive' });
     getCache.mockReturnValue(cacheWithFeed(true));

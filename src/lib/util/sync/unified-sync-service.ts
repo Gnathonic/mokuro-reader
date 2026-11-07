@@ -1217,11 +1217,23 @@ class UnifiedSyncService {
     try {
       const cache = cacheManager.getCache(provider.type);
       if (!cache?.isLoaded?.() || cache.isFetching?.()) return;
-      const listing = cache.getAllFiles().filter((f) => isHistoryFilePath(f.path));
       const [{ syncHistory }, { historyDb }] = await Promise.all([
         import('$lib/reading-history/history-sync'),
         import('$lib/reading-history/history-db')
       ]);
+      // Without a change feed (WebDAV, Local Folder) the cached listing holds
+      // `history/` as of the last full walk: list that folder again when it
+      // is due, so another device's months arrive mid-session. History only —
+      // never a stand-in for a full listing (history-listing-refresh.ts).
+      if (cache.beginHistoryPatch) {
+        const { refreshHistoryListing } = await import('./history-listing-refresh');
+        await refreshHistoryListing(provider, cache, async () => {
+          const { getOrCreateDeviceId } = await import('$lib/reading-history/record');
+          return getOrCreateDeviceId(historyDb());
+        });
+        if (!cache.isLoaded()) return; // cleared meanwhile (sign-out)
+      }
+      const listing = cache.getAllFiles().filter((f) => isHistoryFilePath(f.path));
       const result = await syncHistory(provider, listing, historyDb(), {
         force: !options.silent,
         onUploaded: (path, bytes, uploaded) =>

@@ -94,6 +94,12 @@ vi.mock('$lib/reading-history/history-sync', () => ({
     s.historySync ?? !s.serverCompilesMetadata
 }));
 
+// This device's history id, for the history listing's own-entry rule.
+vi.mock('$lib/reading-history/record', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/reading-history/record')>()),
+  getOrCreateDeviceId: vi.fn(async () => 'dev-own')
+}));
+
 vi.mock('$lib/positions/positions-sync', () => ({
   syncPositions: vi.fn(async () => ({ adopted: [], deferred: [], uploaded: false }))
 }));
@@ -1648,6 +1654,115 @@ describe('reading history rides every sync', () => {
     await expect(
       svc.syncReadingHistory({ type: 'mega' } as SyncProvider, {})
     ).resolves.toBeUndefined();
+  });
+
+  describe('without a change feed, history/ is listed again when due (#288)', () => {
+    const seg = (device: string, month: string) => ({
+      provider: 'webdav' as const,
+      fileId: `/mokuro-reader/history/${device}/${month}.events`,
+      path: `history/${device}/${month}.events`,
+      modifiedTime: '2026-11-01T00:00:00.000Z',
+      size: 10
+    });
+
+    afterEach(async () => {
+      const { _setHistoryRefreshIntervalForTests } = await import('./history-listing-refresh');
+      _setHistoryRefreshIntervalForTests();
+    });
+
+    /** A WebDAV-shaped listing cache: real store, real history patch, an old full listing. */
+    async function webdavLike(files: CloudFileMetadata[]) {
+      const { CoalescedCacheStore } = await import('./coalesced-cache-store');
+      const { beginHistoryPatch } = await import('./listing-mutations');
+      const store = new CoalescedCacheStore<CloudFileMetadata[]>();
+      store.set(new Map([['history', files]]));
+      const fetch = vi.fn();
+      return {
+        fetch,
+        isLoaded: () => true,
+        isFetching: () => false,
+        getAll: () => [],
+        get: () => null,
+        getAllFiles: () => [...store.read().values()].flat(),
+        add: vi.fn(),
+        beginHistoryPatch: () => beginHistoryPatch(store, Date.now() - 10 * 60_000)
+      };
+    }
+
+    it("another device's new month reaches the history pass, once per interval, no full listing", async () => {
+      const { syncHistory } = await import('$lib/reading-history/history-sync');
+      vi.mocked(syncHistory).mockClear();
+      const cache = await webdavLike([seg('dev-a', '2026-10'), seg('dev-own', '2026-11')]);
+      getCache.mockReturnValue(cache);
+      const listFolder = vi.fn(async () => [
+        seg('dev-a', '2026-10'),
+        seg('dev-a', '2026-11'),
+        seg('dev-own', '2026-11')
+      ]);
+      const provider = {
+        type: 'webdav',
+        name: 'WebDAV',
+        listFolder,
+        getStatus: () => ({}),
+        isAuthenticated: () => true
+      } as unknown as SyncProvider;
+
+      await svc.syncReadingHistory(provider, { silent: true });
+      await svc.syncReadingHistory(provider, { silent: true });
+
+      expect(listFolder).toHaveBeenCalledExactlyOnceWith('history');
+      expect(cache.fetch).not.toHaveBeenCalled();
+      const passed = vi.mocked(syncHistory).mock.calls.map((c) => c[1].map((f) => f.path).sort());
+      expect(passed).toEqual([
+        [
+          'history/dev-a/2026-10.events',
+          'history/dev-a/2026-11.events',
+          'history/dev-own/2026-11.events'
+        ],
+        [
+          'history/dev-a/2026-10.events',
+          'history/dev-a/2026-11.events',
+          'history/dev-own/2026-11.events'
+        ]
+      ]);
+    });
+
+    it('a failed history listing still runs the pass on the cached listing', async () => {
+      const { syncHistory } = await import('$lib/reading-history/history-sync');
+      vi.mocked(syncHistory).mockClear();
+      getCache.mockReturnValue(await webdavLike([seg('dev-a', '2026-10')]));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const provider = {
+        type: 'webdav',
+        listFolder: vi.fn(async () => {
+          throw new Error('503');
+        }),
+        getStatus: () => ({})
+      } as unknown as SyncProvider;
+
+      await svc.syncReadingHistory(provider, {});
+
+      expect(vi.mocked(syncHistory).mock.calls[0][1].map((f) => f.path)).toEqual([
+        'history/dev-a/2026-10.events'
+      ]);
+      warn.mockRestore();
+    });
+
+    it('a cache without a history patch (Drive, OneDrive, MEGA) is never listed', async () => {
+      const listFolder = vi.fn(async () => []);
+      getCache.mockReturnValue({
+        isLoaded: () => true,
+        isFetching: () => false,
+        getAllFiles: () => [seg('dev-a', '2026-10')]
+      });
+      for (const type of ['google-drive', 'onedrive', 'mega']) {
+        await svc.syncReadingHistory(
+          { type, listFolder, getStatus: () => ({}) } as unknown as SyncProvider,
+          {}
+        );
+      }
+      expect(listFolder).not.toHaveBeenCalled();
+    });
   });
 
   it('skips while the listing has not loaded', async () => {

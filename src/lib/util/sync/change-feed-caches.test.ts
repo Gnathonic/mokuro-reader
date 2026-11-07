@@ -26,4 +26,18 @@ describe('change feeds by cache', () => {
       expect('refreshFromChanges' in cache).toBe(false);
     }
   });
+
+  it('WebDAV and Local Folder patch history/ instead — never a feed (history-listing-refresh.ts)', async () => {
+    const { webdavCache } = await import('./providers/webdav/webdav-cache');
+    const { filesystemCache } = await import('./providers/filesystem/filesystem-cache');
+    const { onedriveCache } = await import('./providers/onedrive/onedrive-cache');
+    const { megaCache } = await import('./providers/mega/mega-cache');
+    const { driveFilesCache } = await import('./providers/google-drive/drive-files-cache');
+    for (const cache of [webdavCache, filesystemCache]) {
+      expect(typeof cache.beginHistoryPatch).toBe('function');
+    }
+    for (const cache of [driveFilesCache, onedriveCache, megaCache]) {
+      expect('beginHistoryPatch' in cache).toBe(false);
+    }
+  });
 });

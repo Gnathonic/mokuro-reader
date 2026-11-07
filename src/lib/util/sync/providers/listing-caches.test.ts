@@ -204,3 +204,122 @@ describe.each([
     expect(cache.isLoaded()).toBe(false);
   });
 });
+
+// `history/` alone, between full listings (history-listing-refresh.ts): the
+// caches of the providers without a change feed.
+describe.each([
+  ['webdav', webdavCache],
+  ['filesystem', filesystemCache]
+] as [ProviderType, CloudCache<CloudFileMetadata>][])('%s history patch', (name, cache) => {
+  const OWN = 'dev-own';
+  const seg = (device: string, month: string, stamp: Partial<CloudFileMetadata> = {}) =>
+    file(`history/${device}/${month}.events`, `/mokuro-reader/history/${device}/${month}`, stamp);
+
+  beforeEach(() => {
+    h.list.mockReset();
+    cache.clear();
+    provider = name;
+  });
+
+  async function listed(files: CloudFileMetadata[]): Promise<void> {
+    h.list.mockResolvedValueOnce(files);
+    await cache.fetch();
+  }
+
+  it("replaces other devices' entries and keeps this device's own newer receipts", async () => {
+    await listed([
+      seg('dev-a', '2026-10'),
+      seg('dev-gone', '2026-09'),
+      seg(OWN, '2026-11', { size: 5 }),
+      // A series that happens to be called "history" is not history.
+      file('history/Vol 1.cbz', 'CBZ'),
+      file('volume-data.json', 'V1')
+    ]);
+    const patch = cache.beginHistoryPatch!();
+    // This device's upload lands while the PROPFIND runs: its receipt is newer.
+    cache.add!(seg(OWN, '2026-11').path, {
+      ...seg(OWN, '2026-11', { size: 9, modifiedTime: '2026-11-07T10:00:00.000Z' }),
+      modifiedTimeProvisional: false
+    });
+
+    expect(
+      patch.apply(
+        [
+          seg('dev-a', '2026-10', { size: 30, modifiedTime: '2026-11-07T09:00:00.000Z' }),
+          seg('dev-a', '2026-11'),
+          seg('dev-b', '2026-11'),
+          seg(OWN, '2026-11', { size: 5 }), // the PROPFIND's older view of this device's month
+          file(`history/${OWN}/device.json`, 'OWN-FACTS') // on the server, not held
+        ],
+        OWN
+      )
+    ).toBe('applied');
+
+    const byPath = new Map(cache.getAllFiles().map((f) => [f.path, f]));
+    expect(byPath.get('history/dev-a/2026-10.events')).toMatchObject({ size: 30 });
+    expect(byPath.has('history/dev-a/2026-11.events')).toBe(true);
+    expect(byPath.has('history/dev-b/2026-11.events')).toBe(true);
+    expect(byPath.has('history/dev-gone/2026-09.events'), 'removed remotely').toBe(false);
+    expect(byPath.get(`history/${OWN}/2026-11.events`)).toMatchObject({ size: 9 });
+    expect(byPath.has(`history/${OWN}/device.json`)).toBe(true);
+    expect(byPath.has('history/Vol 1.cbz')).toBe(true);
+    expect(byPath.has('volume-data.json')).toBe(true);
+  });
+
+  it('a listing that changes nothing keeps the cache identity and publishes nothing', async () => {
+    await listed([seg('dev-a', '2026-10'), seg(OWN, '2026-10')]);
+    const before = cache.revision!();
+    const patch = cache.beginHistoryPatch!();
+    // The listing need not hold this device's own files, nor in the same order.
+    expect(patch.apply([seg('dev-a', '2026-10')], OWN)).toBe('unchanged');
+    expect(cache.revision!()).toBe(before);
+    expect((cache.store as unknown as { hasPendingPublish(): boolean }).hasPendingPublish()).toBe(
+      false
+    );
+  });
+
+  it('a patch applied while a full listing is in flight yields to that walk', async () => {
+    await listed([seg('dev-a', '2026-10')]);
+    const finish = heldListing();
+    const fetched = cache.fetch();
+    const patch = cache.beginHistoryPatch!();
+    expect(patch.apply([seg('dev-a', '2026-10'), seg('dev-a', '2026-11')], OWN)).toBe('applied');
+    expect(cache.has('history/dev-a/2026-11.events')).toBe(true);
+    // The walk read history/ itself: its view wins, whichever is newer.
+    finish([seg('dev-a', '2026-10', { size: 77 })]);
+    await fetched;
+
+    expect(cache.getAllFiles()).toMatchObject([{ path: 'history/dev-a/2026-10.events', size: 77 }]);
+  });
+
+  it('a patch begun before a full install or a clear installs nothing', async () => {
+    await listed([seg('dev-a', '2026-10')]);
+    const beforeInstall = cache.beginHistoryPatch!();
+    await listed([seg('dev-a', '2026-10'), file('volume-data.json', 'V1')]);
+    expect(beforeInstall.apply([seg('dev-a', '2026-11')], OWN)).toBe('superseded');
+    expect(cache.has('history/dev-a/2026-11.events')).toBe(false);
+
+    const beforeClear = cache.beginHistoryPatch!();
+    cache.clear();
+    expect(beforeClear.apply([seg('dev-a', '2026-11')], OWN)).toBe('superseded');
+    expect(cache.getAllFiles()).toEqual([]);
+  });
+
+  it('reports when its last full listing was installed', async () => {
+    expect(cache.beginHistoryPatch!().listedAt).toBe(0);
+    const before = Date.now();
+    await listed([]);
+    expect(cache.beginHistoryPatch!().listedAt).toBeGreaterThanOrEqual(before);
+    cache.clear();
+    expect(cache.beginHistoryPatch!().listedAt).toBe(0);
+  });
+});
+
+describe('caches with a change feed or a live tree take no history patch', () => {
+  it.each([
+    ['onedrive', onedriveCache],
+    ['mega', megaCache]
+  ] as [string, CloudCache][])('%s', (_name, cache) => {
+    expect('beginHistoryPatch' in cache).toBe(false);
+  });
+});

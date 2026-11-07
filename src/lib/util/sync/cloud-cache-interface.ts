@@ -1,5 +1,6 @@
 import type { Readable } from 'svelte/store';
 import type { CloudFileMetadata, ProviderType, UploadFileResult } from './provider-interface';
+import type { HistoryListingPatch } from './listing-mutations';
 
 /**
  * Cloud Cache Interface
@@ -157,6 +158,19 @@ export interface CloudCache<T = any> {
    * no change token.
    */
   refreshFromChanges?(): Promise<ChangeFeedResult>;
+
+  /**
+   * Open a patch of `history/` alone into this cache — the history freshness
+   * a cache WITHOUT a change feed gets between full listings
+   * (`history-listing-refresh.ts`: a throttled `SyncProvider.listFolder`).
+   * Begun before the folder is listed; its `apply` drops the listing if the
+   * cache was replaced meanwhile. OPTIONAL, and never on a cache that has
+   * {@link refreshFromChanges} (its feed already carries `history/`): WebDAV
+   * and Local Folder have it. It is NOT a change feed — it says nothing about
+   * series folders, so nothing that needs the whole listing current may
+   * treat it as one.
+   */
+  beginHistoryPatch?(): HistoryListingPatch;
 
   /**
    * Clear all cached data

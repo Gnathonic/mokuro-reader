@@ -375,3 +375,47 @@ describe('FilesystemProvider.statFile (conditional root-file reads)', () => {
     expect(await provider.statFile(listed)).toBeNull();
   });
 });
+
+describe('the throttled history/ listing on a real folder (#288)', () => {
+  it("another device's new month (a sync tool delivered it) reaches the cache without a walk", async () => {
+    const { filesystemProvider } = await import('../filesystem-provider');
+    const { filesystemCache } = await import('../filesystem-cache');
+    const { refreshHistoryListing, _setHistoryRefreshIntervalForTests } = await import(
+      '../../../history-listing-refresh'
+    );
+    const root = new FakeDirHandle('');
+    await seedFile(root, 'Series/v1.cbz', 'CBZ');
+    await seedFile(root, 'history/dev-a/2026-10.events', 'A-OCT');
+    await seedFile(root, 'history/dev-own/2026-11.events', 'OWN-NOV');
+    (filesystemProvider as unknown as { rootHandle: unknown }).rootHandle = root;
+    filesystemCache.clear();
+    await filesystemCache.fetch();
+
+    // Meanwhile Syncthing (or Dropbox) delivers another device's new month —
+    // and a new series, which a history-only listing must not pick up.
+    await seedFile(root, 'history/dev-a/2026-11.events', 'A-NOVEMBER');
+    await seedFile(root, 'Other Series/v1.cbz', 'CBZ');
+    const walk = vi.spyOn(filesystemProvider, 'listCloudVolumes');
+    _setHistoryRefreshIntervalForTests(0);
+    try {
+      expect(
+        await refreshHistoryListing(filesystemProvider, filesystemCache, async () => 'dev-own')
+      ).toBe('applied');
+
+      expect(walk).not.toHaveBeenCalled();
+      const entry = filesystemCache.get('history/dev-a/2026-11.events');
+      // The entry the full listing would hold: the history pass's stamps survive the next walk.
+      const { [0]: listed } = (await filesystemProvider.listCloudVolumes()).filter(
+        (f) => f.path === 'history/dev-a/2026-11.events'
+      );
+      expect(entry).toEqual(listed);
+      expect(filesystemCache.has('Other Series/v1.cbz')).toBe(false);
+      expect(filesystemCache.has('history/dev-own/2026-11.events')).toBe(true);
+    } finally {
+      walk.mockRestore();
+      _setHistoryRefreshIntervalForTests();
+      filesystemCache.clear();
+      (filesystemProvider as unknown as { rootHandle: unknown }).rootHandle = null;
+    }
+  });
+});

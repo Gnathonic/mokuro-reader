@@ -60,6 +60,7 @@ export class CoalescedCacheStore<V> {
   private published: Writable<Map<string, V>>;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private revisionToken: object = {};
+  private setCount = 0;
   /** The listing a fetch has open, and the updates made since it began. */
   private listing: { updates: ((map: Map<string, V>) => Map<string, V>)[] } | null = null;
 
@@ -86,6 +87,16 @@ export class CoalescedCacheStore<V> {
    */
   revision(): object {
     return this.revisionToken;
+  }
+
+  /**
+   * A counter bumped by every {@link set} — a full install or a clear — and
+   * never by an {@link update}. What a patch begun before an await checks
+   * after it: a different generation means the map it was meant for is gone
+   * (`beginHistoryPatch`, `listing-mutations.ts`).
+   */
+  generation(): number {
+    return this.setCount;
   }
 
   /**
@@ -135,6 +146,7 @@ export class CoalescedCacheStore<V> {
   set(map: Map<string, V>): void {
     this.listing = null;
     this.cancelPending();
+    this.setCount++;
     this.state = map;
     this.revisionToken = {};
     this.published.set(map);
