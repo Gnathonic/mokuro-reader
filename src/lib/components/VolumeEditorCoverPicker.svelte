@@ -9,16 +9,16 @@
     RASTER_IMAGE_TYPES,
     sniffRasterBlob
   } from '$lib/util/raster-image';
-  import Cropper from 'cropperjs';
-  import 'cropperjs/dist/cropper.css';
+  import ImageCropper from './ImageCropper.svelte';
+  import {
+    cropZoneToRect,
+    initialCoverCrop,
+    rectToCropZone,
+    roundCropData,
+    type CropZone
+  } from '$lib/util/crop-geometry';
 
-  interface CropTemplate {
-    xPercent: number;
-    yPercent: number;
-    widthPercent: number;
-    heightPercent: number;
-    aspectRatio: number;
-  }
+  type CropTemplate = CropZone;
 
   interface SelectionContext {
     pageIndex: number | null;
@@ -55,7 +55,7 @@
   // Cropping state
   let showCropper = $state(false);
   let cropImage = $state<string | null>(null);
-  let cropper: Cropper | null = null;
+  let cropper = $state<ImageCropper | undefined>();
   let generatedCropImageUrl = $state<string | null>(null);
   let appendedPageIndex = $state<number | null>(null);
   let appendCandidateIndex = $state<number | null>(null);
@@ -91,9 +91,6 @@
     }
     if (generatedCropImageUrl) {
       URL.revokeObjectURL(generatedCropImageUrl);
-    }
-    if (cropper) {
-      cropper.destroy();
     }
   });
 
@@ -252,86 +249,22 @@
     appendedPageIndex = null;
   }
 
-  function initCropper(img: HTMLImageElement) {
-    const setup = () => {
-      // Destroy existing cropper if any
-      if (cropper) {
-        cropper.destroy();
-      }
-
-      const imageWidth = img.naturalWidth;
-      const imageHeight = img.naturalHeight;
-      const imageAspect = imageWidth / imageHeight;
-      const targetAspect = 3 / 4;
-
-      // Determine if we should use 3:4 or full image
-      const useTargetAspect = imageAspect >= targetAspect;
-
-      cropper = new Cropper(img, {
-        viewMode: 1, // Keep crop box constrained to the actual image
-        dragMode: 'crop',
-        autoCropArea: 1, // Start with full coverage
-        restore: false,
-        guides: true,
-        center: true,
-        highlight: false,
-        movable: false,
-        zoomable: false,
-        zoomOnWheel: false,
-        zoomOnTouch: false,
-        cropBoxMovable: true,
-        cropBoxResizable: true,
-        toggleDragModeOnDblclick: false,
-        initialAspectRatio: useTargetAspect ? targetAspect : imageAspect,
-        aspectRatio: NaN, // Free-form resizing (no locked aspect)
-        ready() {
-          if (!cropper) return;
-
-          if (useTargetAspect) {
-            // Set crop box to full height with 3:4 aspect, centered
-            const containerData = cropper.getContainerData();
-            const imageData = cropper.getImageData();
-
-            // Calculate crop box dimensions at full height
-            const cropHeight = imageData.height;
-            const cropWidth = cropHeight * targetAspect;
-            const left = imageData.left + (imageData.width - cropWidth) / 2;
-            const top = imageData.top;
-
-            cropper.setCropBoxData({
-              left,
-              top,
-              width: cropWidth,
-              height: cropHeight
-            });
-          }
-          // Otherwise autoCropArea: 1 already selects the full image
-        }
-      });
-    };
-
-    if (img.complete && img.naturalWidth > 0) {
-      setup();
-    } else {
-      img.onload = setup;
-    }
+  /** The crop as a JPEG at 0.9, at the image's natural resolution. */
+  async function croppedCoverFile(): Promise<File | null> {
+    const canvas = cropper?.toCanvas();
+    if (!canvas) return null;
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.9)
+    );
+    return blob ? new File([blob], 'cover.jpg', { type: 'image/jpeg' }) : null;
   }
 
   async function handleCropConfirm() {
     if (!cropper) return;
 
     try {
-      const canvas = cropper.getCroppedCanvas({
-        imageSmoothingEnabled: true,
-        imageSmoothingQuality: 'high'
-      });
-
-      const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, 'image/jpeg', 0.9)
-      );
-
-      if (blob) {
-        const file = new File([blob], 'cover.jpg', { type: 'image/jpeg' });
+      const file = await croppedCoverFile();
+      if (file) {
         onSelect(file, {
           pageIndex: selectedPageIndex,
           cropZone: getCurrentCropZone()
@@ -344,10 +277,6 @@
   }
 
   function handleCropCancel() {
-    if (cropper) {
-      cropper.destroy();
-      cropper = null;
-    }
     clearGeneratedCropImage();
     appendedPageIndex = null;
     showCropper = false;
@@ -355,10 +284,6 @@
   }
 
   function handleClose() {
-    if (cropper) {
-      cropper.destroy();
-      cropper = null;
-    }
     clearGeneratedCropImage();
     appendedPageIndex = null;
     open = false;
@@ -370,106 +295,29 @@
   }
 
   function handleRotate90() {
-    if (!cropper) return;
-    cropper.rotate(90);
-
-    // Recenter rotated image canvas in the cropper viewport.
-    const container = cropper.getContainerData();
-    const canvas = cropper.getCanvasData();
-    cropper.setCanvasData({
-      ...canvas,
-      left: (container.width - canvas.width) / 2,
-      top: (container.height - canvas.height) / 2
-    });
+    cropper?.rotate();
   }
 
   function getCurrentCropZone() {
-    if (!cropper) return null;
-    const data = cropper.getData(true);
-    const imageData = cropper.getImageData();
-    const naturalWidth = imageData.naturalWidth;
-    const naturalHeight = imageData.naturalHeight;
-
-    if (!naturalWidth || !naturalHeight || !data.width || !data.height) {
-      return null;
-    }
-
-    return {
-      xPercent: data.x / naturalWidth,
-      yPercent: data.y / naturalHeight,
-      widthPercent: data.width / naturalWidth,
-      heightPercent: data.height / naturalHeight,
-      aspectRatio: data.width / data.height
-    };
+    const crop = cropper?.getCrop();
+    const size = cropper?.getImageSize();
+    if (!crop || !size) return null;
+    return rectToCropZone(roundCropData(crop), size.width, size.height);
   }
 
   function applyLastCropZone() {
-    if (!cropper || !lastCropZone) return;
-
-    const imageData = cropper.getImageData();
-    const imageWidth = imageData.naturalWidth;
-    const imageHeight = imageData.naturalHeight;
-
-    if (!imageWidth || !imageHeight) return;
-
-    const aspectRatio = Math.max(lastCropZone.aspectRatio, 0.0001);
-    const widthFromPercent = Math.max(lastCropZone.widthPercent * imageWidth, 1);
-    const heightFromPercent = Math.max(lastCropZone.heightPercent * imageHeight, 1);
-
-    // Preserve crop aspect ratio while staying close to stored relative size.
-    let width = widthFromPercent;
-    let height = width / aspectRatio;
-    if (height > heightFromPercent) {
-      height = heightFromPercent;
-      width = height * aspectRatio;
-    }
-
-    // Clamp crop size to image bounds while preserving aspect ratio.
-    const maxWidthByHeight = imageHeight * aspectRatio;
-    const maxWidth = Math.min(imageWidth, maxWidthByHeight);
-    if (width > maxWidth) {
-      width = maxWidth;
-      height = width / aspectRatio;
-    }
-
-    const maxHeight = imageWidth / aspectRatio;
-    if (height > imageHeight) {
-      height = imageHeight;
-      width = height * aspectRatio;
-    } else if (height > maxHeight) {
-      height = maxHeight;
-      width = height * aspectRatio;
-    }
-
-    // Apply relative origin and clamp so the crop always fits in the image.
-    const clampedX = Math.min(Math.max(lastCropZone.xPercent * imageWidth, 0), imageWidth - width);
-    const clampedY = Math.min(
-      Math.max(lastCropZone.yPercent * imageHeight, 0),
-      imageHeight - height
-    );
-
-    cropper.setData({
-      x: clampedX,
-      y: clampedY,
-      width,
-      height
-    });
+    const size = cropper?.getImageSize();
+    if (!cropper || !lastCropZone || !size) return;
+    const rect = cropZoneToRect(lastCropZone, size.width, size.height);
+    if (rect) cropper.setCrop(rect);
   }
 
   async function handleCropConfirmAndNext() {
     if (!cropper || !onSelectAndNext) return;
 
     try {
-      const canvas = cropper.getCroppedCanvas({
-        imageSmoothingEnabled: true,
-        imageSmoothingQuality: 'high'
-      });
-      const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, 'image/jpeg', 0.9)
-      );
-
-      if (blob) {
-        const file = new File([blob], 'cover.jpg', { type: 'image/jpeg' });
+      const file = await croppedCoverFile();
+      if (file) {
         onSelectAndNext(file, {
           pageIndex: selectedPageIndex,
           cropZone: getCurrentCropZone()
@@ -513,14 +361,14 @@
       <h3 class="mb-4 text-xl font-semibold text-gray-900 dark:text-white">Crop Cover</h3>
 
       <div
-        class="cropper-container relative mb-4 h-[70dvh] w-full overflow-hidden rounded-lg bg-gray-900"
+        class="cover-crop-area relative mb-4 h-[70dvh] w-full overflow-hidden rounded-lg bg-gray-900"
       >
         {#key cropImage}
-          <img
+          <ImageCropper
+            bind:this={cropper}
             src={cropImage}
-            alt="Crop preview"
-            class="cropper-image block max-w-full"
-            use:initCropper
+            initialCrop={initialCoverCrop}
+            drawable
           />
         {/key}
       </div>
@@ -630,10 +478,6 @@
 </Modal>
 
 <style>
-  .cropper-container :global(.cropper-container) {
-    height: 100% !important;
-  }
-
   /* Expand modal width */
   :global(.cover-picker-modal) {
     max-width: calc(100vw - 3rem) !important;

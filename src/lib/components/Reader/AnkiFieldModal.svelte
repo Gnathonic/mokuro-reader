@@ -23,14 +23,14 @@
   import { slide } from 'svelte/transition';
   import AnkiTemplateField from '$lib/components/Reader/AnkiTemplateField.svelte';
   import { isMobilePlatform } from '$lib/util/platform';
-  import { onMount, onDestroy } from 'svelte';
-  import CropperJS from 'cropperjs';
-  import 'cropperjs/dist/cropper.css';
+  import { onMount } from 'svelte';
+  import ImageCropper from '$lib/components/ImageCropper.svelte';
+  import { roundCropData, type CropRect } from '$lib/util/crop-geometry';
 
   let open = $state(false);
   let pixels: Pixels | undefined = undefined;
   let loading = $state(false);
-  let cropper: CropperJS | null = null;
+  let cropper = $state<ImageCropper | undefined>();
 
   // Note type fields from AnkiConnect
   let noteFields = $state<string[]>([]);
@@ -424,140 +424,23 @@
     });
   });
 
-  onDestroy(() => {
-    if (cropper) {
-      cropper.destroy();
-      cropper = null;
-    }
-  });
-
-  function initCropperElement(img: HTMLImageElement) {
-    let resizeObserver: ResizeObserver | null = null;
-    let savedCropData: CropperJS.Data | null = null;
-    let isResizing = false;
-
-    // Clamp crop data to image bounds
-    const clampToImage = (data: CropperJS.Data): CropperJS.Data => {
-      const imgWidth = img.naturalWidth;
-      const imgHeight = img.naturalHeight;
-
-      let { x, y, width, height } = data;
-
-      // Clamp position to keep crop within image
-      x = Math.max(0, Math.min(x, imgWidth - width));
-      y = Math.max(0, Math.min(y, imgHeight - height));
-
-      // If crop is larger than image, constrain it
-      if (width > imgWidth) {
-        width = imgWidth;
-        x = 0;
-      }
-      if (height > imgHeight) {
-        height = imgHeight;
-        y = 0;
-      }
-
-      return { ...data, x, y, width, height };
-    };
-
-    const setup = () => {
-      if (cropper) {
-        cropper.destroy();
-      }
-
-      const textBox = $cropperStore?.textBox;
-
-      cropper = new CropperJS(img, {
-        viewMode: 0, // No restrictions - we clamp bounds ourselves
-        dragMode: 'none', // Disable dragging image around
-        autoCropArea: 1,
-        restore: false,
-        guides: true,
-        center: true,
-        highlight: false,
-        zoomOnWheel: false,
-        cropBoxMovable: true,
-        cropBoxResizable: true,
-        toggleDragModeOnDblclick: false,
-        aspectRatio: NaN,
-        ready() {
-          if (cropEnabled && textBox && cropper) {
-            const [xmin, ymin, xmax, ymax] = textBox;
-            cropper.setData({
-              x: xmin,
-              y: ymin,
-              width: xmax - xmin,
-              height: ymax - ymin
-            });
-          }
-          updatePixels();
-
-          // Set up resize observer after cropper is ready
-          const container = img.closest('.cropper-container');
-          if (container) {
-            resizeObserver = new ResizeObserver(() => {
-              if (!cropper || isResizing) return;
-              isResizing = true;
-
-              // Save current crop data in image coordinates
-              savedCropData = cropper.getData(true);
-
-              // Let cropper resize
-              requestAnimationFrame(() => {
-                if (cropper && savedCropData) {
-                  // Restore crop data after resize, clamped to bounds
-                  cropper.setData(clampToImage(savedCropData));
-                }
-                isResizing = false;
-              });
-            });
-            resizeObserver.observe(container);
-          }
-        },
-        crop() {
-          if (!isResizing) {
-            updatePixels();
-            // Clamp to bounds after user interaction
-            if (cropper) {
-              const data = cropper.getData(true);
-              const clamped = clampToImage(data);
-              if (
-                data.x !== clamped.x ||
-                data.y !== clamped.y ||
-                data.width !== clamped.width ||
-                data.height !== clamped.height
-              ) {
-                cropper.setData(clamped);
-              }
-            }
-          }
-        }
-      });
-    };
-
-    if (img.complete && img.naturalWidth > 0) {
-      setup();
-    } else {
-      img.onload = setup;
-    }
-
-    // Return cleanup function for Svelte action
-    return {
-      destroy() {
-        resizeObserver?.disconnect();
-      }
-    };
+  /** The text box's rectangle, in page pixels, or null when the modal has none. */
+  function textBoxRect(): CropRect | null {
+    const textBox = $cropperStore?.textBox;
+    if (!textBox) return null;
+    const [xmin, ymin, xmax, ymax] = textBox;
+    return { x: xmin, y: ymin, width: xmax - xmin, height: ymax - ymin };
   }
 
-  function updatePixels() {
-    if (!cropper) return;
-    const data = cropper.getData(true);
-    pixels = {
-      x: data.x,
-      y: data.y,
-      width: data.width,
-      height: data.height
-    };
+  // The crop starts on the whole page; preset to the text box when cropping is on.
+  function handleCropperReady() {
+    const rect = textBoxRect();
+    if (cropEnabled && rect) cropper?.setCrop(rect);
+  }
+
+  // What the card gets: the crop in whole page pixels (cropperjs 1's `getData(true)`).
+  function handleCropChange(crop: CropRect) {
+    pixels = roundCropData(crop);
   }
 
   function handleBackdropMousedown(ev: MouseEvent & { currentTarget: HTMLDialogElement }) {
@@ -577,10 +460,6 @@
   }
 
   function close() {
-    if (cropper) {
-      cropper.destroy();
-      cropper = null;
-    }
     loading = false;
     fieldValues = {};
     fieldTemplates = {};
@@ -597,14 +476,9 @@
     updateAnkiSetting('cropImage', cropEnabled);
 
     // If enabling crop and we have a textbox, set the crop area
-    if (cropEnabled && cropper && $cropperStore?.textBox) {
-      const [xmin, ymin, xmax, ymax] = $cropperStore.textBox;
-      cropper.setData({
-        x: xmin,
-        y: ymin,
-        width: xmax - xmin,
-        height: ymax - ymin
-      });
+    const rect = textBoxRect();
+    if (cropEnabled && cropper && rect) {
+      cropper.setCrop(rect);
     } else if (!cropEnabled && cropper) {
       // Reset to full image
       cropper.reset();
@@ -824,13 +698,16 @@
                 class="border-t border-gray-300 px-3 py-3 dark:border-gray-600"
                 transition:slide={{ duration: 150 }}
               >
-                <div class="cropper-container">
-                  <img
-                    src={$cropperStore.image}
-                    alt="Crop preview"
-                    class="cropper-image block max-w-full"
-                    use:initCropperElement
-                  />
+                <div class="anki-crop-area">
+                  {#key $cropperStore.image}
+                    <ImageCropper
+                      bind:this={cropper}
+                      src={$cropperStore.image}
+                      largeHandles
+                      onready={handleCropperReady}
+                      onchange={handleCropChange}
+                    />
+                  {/key}
                 </div>
                 <div class="mt-2">
                   <Toggle size="small" bind:checked={cropEnabled} onchange={handleCropToggle}>
@@ -1061,80 +938,11 @@
 </Modal>
 
 <style>
-  .cropper-container {
+  .anki-crop-area {
     position: relative;
     height: 40dvh;
     overflow: hidden;
     border-radius: 0.5rem;
     background: #111827;
-  }
-
-  .cropper-container :global(.cropper-container) {
-    height: 100% !important;
-  }
-
-  /* Make resize handles larger and easier to grab */
-  .cropper-container :global(.cropper-point) {
-    width: 20px !important;
-    height: 20px !important;
-    opacity: 1 !important;
-  }
-
-  .cropper-container :global(.cropper-point.point-nw) {
-    top: -10px !important;
-    left: -10px !important;
-  }
-
-  .cropper-container :global(.cropper-point.point-ne) {
-    top: -10px !important;
-    right: -10px !important;
-  }
-
-  .cropper-container :global(.cropper-point.point-sw) {
-    bottom: -10px !important;
-    left: -10px !important;
-  }
-
-  .cropper-container :global(.cropper-point.point-se) {
-    bottom: -10px !important;
-    right: -10px !important;
-  }
-
-  .cropper-container :global(.cropper-point.point-n) {
-    width: 40px !important;
-    height: 20px !important;
-    top: -10px !important;
-    left: 50% !important;
-    margin-left: -20px !important;
-  }
-
-  .cropper-container :global(.cropper-point.point-s) {
-    width: 40px !important;
-    height: 20px !important;
-    bottom: -10px !important;
-    top: auto !important;
-    left: 50% !important;
-    margin-left: -20px !important;
-  }
-
-  .cropper-container :global(.cropper-point.point-e) {
-    height: 40px !important;
-    width: 20px !important;
-    right: -10px !important;
-    left: auto !important;
-    top: 50% !important;
-    margin-top: -20px !important;
-  }
-
-  .cropper-container :global(.cropper-point.point-w) {
-    height: 40px !important;
-    width: 20px !important;
-    left: -10px !important;
-    top: 50% !important;
-    margin-top: -20px !important;
-  }
-
-  .cropper-container :global(.cropper-line) {
-    background-color: rgba(59, 130, 246, 0.5) !important;
   }
 </style>
