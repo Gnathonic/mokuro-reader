@@ -14,15 +14,15 @@
     readingPaused,
     type EndedView
   } from '$lib/reading-history/live-view';
-  import { typicalDwell, viewCap } from '$lib/reading-history/stats-engine';
+  import { viewCap } from '$lib/reading-history/stats-engine';
 
   /**
    * Time read in this volume, live (phase 3a, one clock): the counted reading
-   * history plus the view on screen now, its dwell up to the idle cap. Past
-   * the cap the timer stops while the prompt asks, or counts as an answer says
-   * (phase 3b, `OpenView.answer`; views that just ended via `endedView`) and
-   * shows "Idle" unless "Count all" keeps it counting. Clicking pauses: the
-   * view ends and nothing counts until the next page or a second click.
+   * history plus the view on screen now, its dwell up to the idle cap, plus
+   * views that just ended (`endedView`). Past the cap the timer stops and
+   * shows "Idle"; "Still reading" splits the view, so the timer runs again.
+   * Clicking pauses: the view ends and nothing counts until the next page or
+   * a second click.
    */
   interface Props {
     volumeId: string;
@@ -41,7 +41,6 @@
   let open = $derived($liveView?.view.volume === volumeId ? $liveView : null);
   let chars = $derived(open ? open.view.page_chars.reduce((sum, c) => sum + c, 0) : 0);
   let cap = $derived(open ? viewCap(chars, $readingStats.pace, $readingStats.idle) : 0);
-  let typical = $derived(open ? typicalDwell(chars, $readingStats.pace, cap) : 0);
   let counted = $derived(figuresFor($readingStats, volumeId, $volumes[volumeId]).timeMs);
 
   // Views that just ended are on their way into the stats (recorded, then
@@ -66,16 +65,10 @@
     });
   });
   let pendingMs = $derived(pending && pending.base === counted ? pending.ms : 0);
-  let shown = $derived(
-    liveMinutes(counted + pendingMs, open, now, cap, typical, open?.answer ?? null)
-  );
+  let shown = $derived(liveMinutes(counted + pendingMs, open, now, cap));
 
   let status = $derived(
-    $readingPaused || !open
-      ? 'Paused'
-      : now - open.since > cap && open.answer !== 'full'
-        ? 'Idle'
-        : 'Active'
+    $readingPaused || !open ? 'Paused' : now - open.since > cap ? 'Idle' : 'Active'
   );
 
   let timeEstimate = $derived.by(() => {

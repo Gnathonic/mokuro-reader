@@ -11,10 +11,6 @@
     type VolumeSpeedData
   } from '$lib/util/reading-speed-history';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
-  import { pauseVolumeTitle } from '$lib/reading-history/pause-review';
-  import LongPausesCard from '$lib/components/Stats/LongPausesCard.svelte';
-  import DeviceStatsCard from '$lib/components/Stats/DeviceStatsCard.svelte';
-  import SecondDeviceBanner from '$lib/components/Stats/SecondDeviceBanner.svelte';
   import {
     volumes,
     deleteVolume as deleteVolumeStats,
@@ -1119,8 +1115,6 @@
 
 <div class="min-h-[90svh] w-full p-4">
   <h1 class="mb-6 text-3xl font-bold">Reading Speed History</h1>
-  <!-- Asks to name this device once a second one has reading (phase 4) -->
-  <SecondDeviceBanner />
 
   {#if !hasReadingData && $volumeSpeedData.length === 0}
     <!-- Empty State Message - No reading activity at all -->
@@ -1216,12 +1210,6 @@
         </div>
       </Card>
     </div>
-
-    <!-- Long pauses to review (phase 3b); renders nothing when there are none -->
-    <LongPausesCard titleOf={(volume) => pauseVolumeTitle(volume, $catalogStore, $volumes)} />
-
-    <!-- Reading per device (phase 4); renders nothing for a single device -->
-    <DeviceStatsCard />
 
     <!-- Achievement Badges -->
     <Card class="mb-6 w-full max-w-none p-6">

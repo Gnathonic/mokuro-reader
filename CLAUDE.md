@@ -1603,9 +1603,9 @@ must hold:
 
 - A view counts its raw dwell up to its CAP: `clamp(k × chars_visible × pace,
 60 s, 30 min)`, pace = median ms/char of the newest 500 views (≥ 30 needed,
-  else 5 min), or the synced manual override. Over the cap the reader ASKS
-  (phase 3b, below); unanswered, it counts TYPICAL time (`expected`, at least
-  the floor), provisionally.
+  else 5 min), or the synced manual override. Over the cap it counts the CAP
+  unless answered (phase 3b, below) — the released timer's rule (time on a
+  page stopped counting at the cutoff). Never default to "typical" time.
 - A view faster than 1500 cpm is a SKIP: its time counts, never its speed; a
   page only skip views showed is skimmed, not read (`skippedChars`, shown apart).
   Per pass (split at `restart`) a page's characters count once.
@@ -1627,8 +1627,8 @@ freeze) + history after` (`figuresFor`, via the engine's per-volume
 - `timeReadInMinutes` is frozen: parsed, never written. The volume editor
   edits the derived time and records the difference as an `adjust` event (no
   record stamp). The reader timer is that figure plus the open view counted by
-  the same rule (`countedDwell`: up to its cap, or as a standing long-pause
-  default counts it); clicking it ends the view until the next page.
+  the same rule (`countedDwell`: up to its cap); clicking it ends the view
+  until the next page.
 - Recent speed = the newest 8 h of counted reading, by time (no per-volume
   window); under 30 min, completed volumes' BASELINES fill in. A series' own
   speed (≥ 60 min of its reading) drives its time left (`series-speeds.ts`,
@@ -1637,14 +1637,16 @@ freeze) + history after` (`figuresFor`, via the engine's per-volume
   `volume-data.json` (`tracking-data.ts`), per key newest-wins with the
   series section's clamp + forfeit-on-bogus and raw upload comparison.
 
-**Long pauses (phase 3b).** A view that reaches its cap is ASKED about, never
-guessed: `pause-watch.ts` arms one timer at `since + cap` (re-armed when the
-pace, `k` or the override moves) and `LongPausePrompt.svelte` asks, non-modal,
-above the page — never inside `Timer.svelte`, whose markup hides with the HUD.
-Rules that must hold:
+**Long pauses (phase 3b).** A view that reaches its cap stops the timer and
+counts the cap unless the user says otherwise. `pause-watch.ts` arms one timer
+at `since + cap` (re-armed when the pace, `k` or the override moves) and, while
+`tracking.pauses.ask` is on (the default), `LongPausePrompt.svelte` says so,
+non-modal, above the page — never inside `Timer.svelte`, whose markup hides
+with the HUD. Nothing NEEDS an answer. Rules that must hold:
 
 - An answer is a `resolve` event (`volume`, `target: [device, seq]`, `count`
-  = `full` | `typical` | `none`), kind 5 inside segment format 1. `volume` is
+  = `full` | `typical` | `none`; `typical` is no longer offered, but recorded
+  ones still count), kind 5 inside segment format 1. `volume` is
   the target's, so everything keyed by volume (turns store, codec, index)
   handles it unchanged. The latest answer per target wins in event order
   (t, device, seq) on every device; nothing is ever edited.
@@ -1654,8 +1656,9 @@ Rules that must hold:
   later event, so a page turn or close loses no answer; the continuation earns
   no new characters (a page counts once per pass).
 - `countedDwell` is the one rule for engine and live timer: `full` = the raw
-  dwell, `none` = 0, `typical` or unanswered-over-cap = typical. Live, an
-  unanswered view STOPS at its cap while the prompt asks; a view that just
+  dwell, `none` = 0, `typical` = typical, unanswered = up to the cap. Live, an
+  open view STOPS at its cap (every answer splits it, so the open view is
+  never answered); a view that just
   ended adds `endedViewMs` (what the stats will count) until the stats move,
   so the timer is exact both ways — no dip on a page turn, and no kept
   minutes after "Don't count" (it used to only ever rise). An answer
@@ -1668,16 +1671,19 @@ Rules that must hold:
 floor`: its time reflects the floor, not pace — fitting `k` to one tap on a
   one-bubble page raised every other page's cap ~5.5×). `k` shares
   `tracking.idle`'s stamp with the override; Settings shows the widening with
-  a Reset.
-- Two minutes past the cap the prompt shows how long the page has been open:
-  count all / typical / none. Unanswered (turn, hide, pause click, close) the
-  pause counts typical and is listed PROVISIONAL on the reading-speed page
-  (`pause-review.ts`, `LongPausesCard.svelte`), where any answer can change.
-- "Always do this" appears once 3 pauses are answered — DERIVED from the
-  answers across every volume and device, never stored. The standing default
-  is `tracking.pauses` (its own key and stamp), written as a view's answer
-  when the view ENDS, only for views that reached the cap while it was set —
-  never backwards over the review list.
+  a Reset (only while automatic: a fixed cutoff is never stretched).
+- The prompt's copy and buttons (`pause-answer.ts` `PauseAnswer`, one pure
+  function for all of them): at the cap "No page turn for N, so the timer
+  stopped." → Still reading, Close (= keep), Don't ask again; two minutes past
+  it "This page was open M. N counted." → Keep N, Count all M, Count none,
+  Don't ask again. Keep and Close split the view UNANSWERED; Don't ask again
+  is Keep plus `setAskOnLongPause(false)`. A page turn, hide or pause click
+  ends the view unanswered. There is no review list and no standing answer:
+  `tracking.pauses` is `{ ask, lastUpdated }` (its own key and stamp); an
+  older build's `{ default }` reads as `ask: false` when one was set.
+- Settings show both as one "Reading timer" card (`ReadingTimerSetting.svelte`):
+  "Stop the timer after" (Automatic or fixed minutes) and "Ask if I'm still
+  reading".
 - Converted `legacy:` views are never prompted; over the cap they still count
   nothing, and a `resolve` aimed at one is ignored.
 - `e2e/long-pauses.spec.ts` drives all of it on Playwright's page clock
@@ -1744,18 +1750,16 @@ merged_into?, lastUpdated}`, `tracking-data.ts`) — never in `device.json`,
   recounts. "Before history" = legacy views + the pre-history baseline, so rows
   sum to the page's totals; volume-editor `adjust`s are an "Edits" row. Both
   hidden at zero, neither renamable. Speed shows only with ≥ 30 min of samples.
-- One edit component (`DeviceNameField.svelte`), three entry points: the
-  "Devices" block on `#/cloud` (`DevicesSettings.svelte`, once ≥ 2 raw ids are
-  known, so an unmerge stays reachable), inline rename in the reading-speed
-  page's per-device card (`DeviceStatsCard.svelte`, ≥ 2 groups with native
-  events) and `SecondDeviceBanner.svelte` under that page's heading (same rule,
-  this device unnamed, `localStorage` `device-banner:dismissed` unset — per
-  browser). The banner stays as "Saved." after naming until closed (no layout
-  motion). A single-device user sees none of them.
+- NO device UI for now (owner, 2026-11-07): the cloud page's Devices block,
+  the reading-speed page's per-device card and its "name this device?"
+  banner were removed as clutter. Readable labels and a clean "where you
+  read" breakdown are wishlisted. The data layer stays — labels still parse,
+  merge and sync (`tracking-data.ts` setters included), and `deviceStats` is
+  a lazy store nothing subscribes to — so a later UI starts from real data.
 - The position offer names the offering device by its label ("on Pixel 8");
   a device this one knows nothing about keeps "on another device".
-- `e2e/devices.spec.ts` drives all of it: two browser contexts plus a third
-  device planted on the WebDAV stub (`device.json` + an encoded month).
+- `e2e/devices.spec.ts` drives the offer's device name: browser contexts on
+  the WebDAV stub (`device.json` + an encoded month).
 
 **Cloud (phase 2a).** Each device uploads ONLY its own events, one file per UTC
 month, `history/<device>/<YYYY-MM>.events` (deflated, versioned rows —

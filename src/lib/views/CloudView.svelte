@@ -26,7 +26,6 @@
   import { isLoginCancelled } from '$lib/util/sync/provider-interface';
   import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
   import { backendAuthEnabled } from '$lib/util/sync/providers/google-drive/auth-backend';
-  import DevicesSettings from '$lib/components/Devices/DevicesSettings.svelte';
   import { parseCloudLinkPrefill, type CloudLinkPrefill } from '$lib/util/link-safety';
   import { preloadGoogleScripts } from '$lib/util/sync/providers/google-drive/google-scripts';
 
@@ -1220,9 +1219,6 @@
                 <p class="text-sm text-gray-500">Storage information unavailable</p>
               {/if}
             </div>
-
-            <!-- Devices: names, types and merges (renders nothing until 2 devices are known) -->
-            <DevicesSettings />
 
             <!-- Provider info box -->
             <div class="mt-4 rounded-lg bg-gray-800 p-4">

@@ -10,8 +10,7 @@
   import { Toggle } from 'flowbite-svelte';
   import ScheduledFilterCard from './ScheduledFilterCard.svelte';
   import PageAdjustCard from './PageAdjustCard.svelte';
-  import IdleCutoffSetting from './IdleCutoffSetting.svelte';
-  import LongPauseSetting from './LongPauseSetting.svelte';
+  import ReadingTimerSetting from './ReadingTimerSetting.svelte';
   import { editModeActive, requestEditMode } from '$lib/reader/edit/edit-mode';
 
   let isContinuous = $derived($settings.continuousScroll);
@@ -127,6 +126,4 @@
 <!-- Page brightness / contrast — the images only, never the OCR text -->
 <PageAdjustCard />
 
-<IdleCutoffSetting />
-
-<LongPauseSetting />
+<ReadingTimerSetting />

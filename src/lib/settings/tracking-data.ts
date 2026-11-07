@@ -20,10 +20,11 @@ export type { DeviceLabel };
  *   long-pause prompt raises it, `widenIdleK`). The two share one stamp, so
  *   a widen and an override edit made on two devices between syncs keep only
  *   the newer of the two.
- * - `pauses`: the standing answer to long-pause prompts. `default: null` =
- *   ask. When set, prompts stop and each view that reaches its cap while open
- *   is written with that answer — from then on, never backwards. Its own key,
- *   so it merges apart from `idle`.
+ * - `pauses`: whether the reader asks "Still reading?" when a page reaches
+ *   its cutoff (`ask`, on unless turned off). Off, a long pause simply counts
+ *   up to the cutoff. Its own key, so it merges apart from `idle`. Builds
+ *   before `ask` stored a standing answer here instead (`default`); one that
+ *   was set reads as `ask: false` — the cutoff now counts, without a prompt.
  * - `devices`: the user's labels for reading devices, keyed by device id —
  *   a name, a corrected class, `merged_into` another device. A MAP, so it
  *   merges per device id (`mergeDeviceLabels`), and its bogus keys are
@@ -44,8 +45,8 @@ export interface IdleEntry {
 }
 
 export interface PausesEntry {
-  /** `null` = ask (explicitly chosen, so it beats an older default). */
-  default: PauseCount | null;
+  /** Ask "Still reading?" at the cutoff. Written either way, so a turn back on beats an older off. */
+  ask: boolean;
   lastUpdated: string;
 }
 
@@ -89,10 +90,9 @@ function parseIdle(value: Record<string, unknown>): IdleEntry {
 }
 
 function parsePauses(value: Record<string, unknown>): PausesEntry {
-  return {
-    default: isPauseCount(value.default) ? value.default : null,
-    lastUpdated: normalizeUpdatedAt(value.lastUpdated) ?? EPOCH
-  };
+  // An older build's standing answer (`default`) meant "never ask".
+  const ask = typeof value.ask === 'boolean' ? value.ask : !isPauseCount(value.default);
+  return { ask, lastUpdated: normalizeUpdatedAt(value.lastUpdated) ?? EPOCH };
 }
 
 /** Trimmed and cut to `DEVICE_NAME_MAX` characters (not UTF-16 units); `undefined` when empty. */
@@ -321,12 +321,12 @@ export function resetIdleK(): void {
   editIdle({ k: DEFAULT_K });
 }
 
-/** The standing answer to long-pause prompts, or `null` to be asked. */
-export function setPauseDefault(count: PauseCount | null): void {
+/** Ask "Still reading?" when a page reaches its cutoff, or never (the cutoff counts). */
+export function setAskOnLongPause(ask: boolean): void {
   const state = get(trackingState);
   trackingState.set({
     ...state,
-    pauses: { default: count, lastUpdated: nextStamp(state.pauses?.lastUpdated) }
+    pauses: { ask, lastUpdated: nextStamp(state.pauses?.lastUpdated) }
   });
 }
 
@@ -417,10 +417,10 @@ export const idleSettings: Readable<IdleSettings> = derived(trackingState, ($sta
   overrideMs: $state.idle?.override_minutes ? $state.idle.override_minutes * 60_000 : null
 }));
 
-/** The standing long-pause answer; `null` = ask. */
-export const pauseDefault: Readable<PauseCount | null> = derived(
+/** The reader asks "Still reading?" at the cutoff. */
+export const askOnLongPause: Readable<boolean> = derived(
   trackingState,
-  ($state) => $state.pauses?.default ?? null
+  ($state) => $state.pauses?.ask ?? true
 );
 
 /** The user's device labels by raw device id (merges unresolved: see `resolveDevice`). */

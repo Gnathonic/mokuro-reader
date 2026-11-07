@@ -109,13 +109,12 @@
   } from '$lib/reading-history/describe-view';
   import { recordView } from '$lib/reading-history/record';
   import { PauseWatch, livePause } from '$lib/reading-history/pause-watch';
-  import { answerPause } from '$lib/reading-history/pause-answer';
+  import { answerPause, type PauseAnswer } from '$lib/reading-history/pause-answer';
   import { readingStats } from '$lib/reading-history/stats-store';
-  import type { PauseCount } from '$lib/reading-history/types';
   import {
+    askOnLongPause,
     idleSettings,
-    pauseDefault,
-    setPauseDefault,
+    setAskOnLongPause,
     widenIdleK
   } from '$lib/settings/tracking-data';
   import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
@@ -657,33 +656,27 @@
       if (!open || open.since !== get(livePause)?.since) livePause.set(null);
     }
   );
-  // At the open view's cap a standing default answers silently (written when
-  // the view ends); otherwise the "Still reading?" prompt asks. When the pause
-  // no longer stands (view gone, or the cap grew past the time so far), the
-  // prompt goes and a preset is withdrawn — re-applied if the cap is reached
-  // again. A cap or typical time that changed while the prompt is up (a pace
-  // change, an idle setting) refreshes what it shows.
+  // At the open view's cap the timer stops; the view counts up to its cap
+  // unless answered. Unless turned off, the long-pause prompt says so and
+  // offers "Still reading". When the pause no longer stands (view gone, or the
+  // cap grew past the time so far), the prompt goes. A cap that changed while
+  // the prompt is up (a pace change, an idle setting) refreshes what it shows.
   const pauseWatch = new PauseWatch(
     (pause) => {
-      const preset = get(pauseDefault);
-      if (preset) viewTracker.setAnswer(preset);
-      else livePause.set(pause);
+      if (get(askOnLongPause)) livePause.set(pause);
     },
-    () => {
-      livePause.set(null);
-      viewTracker.setAnswer(null);
-    },
+    () => livePause.set(null),
     (pause) => livePause.update((shown) => (shown ? pause : shown))
   );
 
-  function onPauseAnswer(count: PauseCount, opts: { stillReading: boolean; always: boolean }) {
+  function onPauseAnswer(answer: PauseAnswer) {
     const pause = get(livePause);
     const open = get(liveView);
     if (!pause || !open || open.since !== pause.since) return;
-    answerPause(pause, count, opts, get(readingStats).pace, get(idleSettings), {
-      split: (now, answer) => viewTracker.split(now, answer),
+    answerPause(pause, answer, get(readingStats).pace, get(idleSettings), {
+      split: (now, count) => viewTracker.split(now, count),
       widenIdleK,
-      setPauseDefault,
+      stopAsking: () => setAskOnLongPause(false),
       notify: (message) => showSnackbar(message)
     });
   }

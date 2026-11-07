@@ -2044,9 +2044,9 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
     expect(result.tracking.idle.override_minutes).toBe(8);
   });
 
-  it('round-trips the standing pause default through the file', async () => {
-    const pauses = { default: 'typical', lastUpdated: T2 };
-    setTrackingStates({ pauses: { default: 'typical', lastUpdated: T2 } });
+  it('round-trips the long-pause question setting through the file', async () => {
+    const pauses = { ask: false, lastUpdated: T2 };
+    setTrackingStates({ pauses: { ask: false, lastUpdated: T2 } });
     stubCache([fileMeta('only')]);
     const first = provider(file(undefined));
     await svc.syncVolumeData(first.provider);
@@ -2062,22 +2062,22 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
     expect(second.uploads).toHaveLength(0);
   });
 
-  it('merges the pause default and the idle cutoff apart', async () => {
+  it('merges the long-pause question and the idle cutoff apart', async () => {
     setTrackingStates({
       idle: { override_minutes: 12, lastUpdated: T2 },
-      pauses: { default: 'full', lastUpdated: T1 }
+      pauses: { ask: true, lastUpdated: T1 }
     });
     stubCache([fileMeta('only')]);
     const { uploads, provider: p } = provider(
       file({
         idle: { override_minutes: 20, lastUpdated: T1 },
-        pauses: { default: 'none', lastUpdated: T2 }
+        pauses: { ask: false, lastUpdated: T2 }
       })
     );
     await svc.syncVolumeData(p);
     const expected = {
       idle: { override_minutes: 12, lastUpdated: T2 },
-      pauses: { default: 'none', lastUpdated: T2 }
+      pauses: { ask: false, lastUpdated: T2 }
     };
     expect(get(trackingState)).toEqual(expected);
     expect(uploads).toHaveLength(1);
@@ -2093,11 +2093,11 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
           f.fileId === 'first'
             ? {
                 idle: { override_minutes: 4, lastUpdated: T2 },
-                pauses: { default: 'full', lastUpdated: T1 }
+                pauses: { ask: true, lastUpdated: T1 }
               }
             : {
                 idle: { override_minutes: 8, lastUpdated: T1 },
-                pauses: { default: 'none', lastUpdated: T2 }
+                pauses: { ask: false, lastUpdated: T2 }
               }
         )
       )
@@ -2105,7 +2105,7 @@ describe('the tracking section of volume-data.json (idle cutoff)', () => {
     const result = await svc.downloadVolumeDataFile(p);
     expect(result.tracking).toEqual({
       idle: { override_minutes: 4, lastUpdated: T2 },
-      pauses: { default: 'none', lastUpdated: T2 }
+      pauses: { ask: false, lastUpdated: T2 }
     });
   });
 

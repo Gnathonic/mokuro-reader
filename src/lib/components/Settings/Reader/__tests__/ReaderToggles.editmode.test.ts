@@ -95,11 +95,15 @@ describe('ReaderToggles — Edit OCR text', () => {
   });
 });
 
-describe('ReaderToggles — long pauses', () => {
-  it('carries the long-pause setting right after the idle cutoff', () => {
-    const { getByLabelText } = render(ReaderToggles);
-    const cutoff = getByLabelText('Automatic idle cutoff');
-    const pauses = getByLabelText('When a page stays open past the cutoff');
-    expect(cutoff.compareDocumentPosition(pauses) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+describe('ReaderToggles — reading timer', () => {
+  it('carries the cutoff and the long-pause question as one "Reading timer" group', () => {
+    const { getByRole, getByLabelText, queryByLabelText } = render(ReaderToggles);
+    expect(getByRole('heading', { name: 'Reading timer' })).toBeTruthy();
+    const cutoff = getByLabelText('Stop the timer after');
+    const ask = getByLabelText('Ask if I’m still reading');
+    expect(cutoff.compareDocumentPosition(ask) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The controls it replaced are gone.
+    expect(queryByLabelText('Automatic idle cutoff')).toBeNull();
+    expect(queryByLabelText('When a page stays open past the cutoff')).toBeNull();
   });
 });

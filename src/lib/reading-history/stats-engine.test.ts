@@ -156,13 +156,14 @@ describe('countVolume', () => {
     expect(totals.samples).toEqual([{ end: 60_000, ms: 60_000, chars: 400 }]);
   });
 
-  it('counts a view left open overnight as typical time, not hours', () => {
+  it('counts a view left open overnight up to its cutoff, not hours', () => {
+    // 400 chars at 200 ms/char: expected 80 s, so the cutoff is k = 3 times that.
     const totals = countVolume(prepareVolume([view(0, 1, [400], 8 * 60 * MIN)]), pace, AUTO);
-    expect(totals.timeMs).toBe(400 * pace);
+    expect(totals.timeMs).toBe(3 * 400 * pace);
     expect(totals.readChars).toBe(400);
   });
 
-  it('gives an art-only page the floor as its typical time when left open', () => {
+  it('gives an art-only page the floor as its cutoff when left open', () => {
     const totals = countVolume(prepareVolume([view(0, 1, [0], 60 * MIN)]), pace, AUTO);
     expect(totals.timeMs).toBe(FLOOR_MS);
   });
@@ -321,11 +322,11 @@ describe('look-up visits', () => {
 });
 
 describe('countedDwell', () => {
-  it('counts all, typical or nothing as answered, and typical while unanswered over the cap', () => {
+  it('counts all, typical or nothing as answered, and up to the cap while unanswered', () => {
     expect(countedDwell(10 * MIN, 4 * MIN, 80_000, 'full')).toBe(10 * MIN);
     expect(countedDwell(10 * MIN, 4 * MIN, 80_000, 'typical')).toBe(80_000);
     expect(countedDwell(10 * MIN, 4 * MIN, 80_000, 'none')).toBe(0);
-    expect(countedDwell(10 * MIN, 4 * MIN, 80_000, null)).toBe(80_000);
+    expect(countedDwell(10 * MIN, 4 * MIN, 80_000, null)).toBe(4 * MIN);
   });
 
   it('counts an unanswered view within its cap in full, and typical never above the dwell', () => {
@@ -406,7 +407,7 @@ describe('long-pause answers (resolve events)', () => {
   it('ignores an answer aimed at no view', () => {
     const v = long();
     const stray = resolve(8 * 60 * MIN, ['dev-z', 99], 'none');
-    expect(countVolume(prepareVolume([v, stray]), pace, AUTO).timeMs).toBe(80_000);
+    expect(countVolume(prepareVolume([v, stray]), pace, AUTO).timeMs).toBe(240_000);
   });
 
   it('drops answers a forget hides, even one whose view is after the horizon', () => {
@@ -422,13 +423,13 @@ describe('long-pause answers (resolve events)', () => {
       skewed
     ];
     const totals = countVolume(prepareVolume(events), pace, AUTO);
-    expect(totals.timeMs).toBe(80_000);
+    expect(totals.timeMs).toBe(240_000);
     expect(totals.pauses.map((p) => [p.seq, p.answer])).toEqual([[w.seq, null]]);
   });
 
   it('lists long pauses and answered views in time order, with what each counted', () => {
     const a = view(0, 1, [400], MIN); // within its cap, unanswered: not listed
-    const b = view(10 * MIN, 5, [400, 100], 8 * 60 * MIN); // provisional
+    const b = view(10 * MIN, 5, [400, 100], 8 * 60 * MIN); // unanswered: its cap
     const c = view(9 * 60 * MIN, 7, [400], 20 * MIN); // answered: all
     const d = view(10 * 60 * MIN, 8, [400], 2 * MIN); // under its cap, answered: typical
     const events = [
@@ -449,7 +450,7 @@ describe('long-pause answers (resolve events)', () => {
         dwell: 8 * 60 * MIN,
         cap: 300_000,
         typical: 100_000,
-        counted: 100_000,
+        counted: 300_000,
         answer: null
       },
       {
@@ -476,7 +477,7 @@ describe('long-pause answers (resolve events)', () => {
       }
     ];
     expect(totals.pauses).toEqual(expected);
-    expect(totals.timeMs).toBe(60_000 + 100_000 + 20 * MIN + 80_000);
+    expect(totals.timeMs).toBe(60_000 + 300_000 + 20 * MIN + 80_000);
   });
 });
 
@@ -511,7 +512,7 @@ describe('long-pause answers: review focus', () => {
     expect(without.readChars).toBe(800);
     expect(answered.readChars).toBe(without.readChars);
     expect(answered.skippedChars).toBe(without.skippedChars);
-    expect(without.timeMs).toBe(80_000 + MIN);
+    expect(without.timeMs).toBe(240_000 + MIN);
     expect(answered.timeMs).toBe(MIN);
     expect(answered.pauses.map((p) => [p.seq, p.answer])).toEqual([[v1.seq, 'none']]);
   });
