@@ -34,6 +34,12 @@ import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 /** Worth retrying later; a full drive (507) is not, so it is excluded. */
 const RETRYABLE_MESSAGE = /network|timed out|\b429\b|\b5(?!07)\d\d\b/i;
 
+/** The upload session was refused because a folder on its path is gone (`onedrive-core`). */
+function isMissingParentFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /upload session: 404\b/.test(message);
+}
+
 export class OneDriveProvider implements SyncProvider {
   readonly type = 'onedrive' as const;
   readonly name = 'OneDrive';
@@ -112,6 +118,8 @@ export class OneDriveProvider implements SyncProvider {
     // populated the account during initialize(). Skip the redirect dance and
     // finalize the connection.
     await onedriveTokenManager.initialize();
+    // A login may be another account's: no folder id of the last one holds.
+    this.forgetFolderIds();
     if (onedriveTokenManager.isAuthenticated()) {
       try {
         await this.ensureMokuroFolder();
@@ -150,6 +158,7 @@ export class OneDriveProvider implements SyncProvider {
     // logoutRedirect() navigates the window away and nothing after it runs.
     clearActiveProviderKey();
     this.controlCache.clear();
+    this.forgetFolderIds();
     console.log('OneDrive logged out');
     await onedriveTokenManager.logout();
   }
@@ -162,6 +171,33 @@ export class OneDriveProvider implements SyncProvider {
   // a new series must not each POST createFolder — Graph 409s on the losers.
   private mokuroFolderPromise: Promise<string> | null = null;
   private seriesFolderPromises = new Map<string, Promise<string>>();
+
+  /**
+   * Folder ids an upload already resolved this session, by path under the
+   * mokuro folder (`''` = the mokuro folder itself) — the OneDrive form of
+   * WebDAV's `mokuroFolderReady`. Without it every upload paid a
+   * `getItemByPath` per folder level before its upload session, and the
+   * page-turn path (positions.json, a history segment) uploads constantly.
+   *
+   * Only uploads trust it: listings never read it, so a folder another
+   * device deleted is noticed by the next listing, and an upload into one
+   * (its session 404s on the missing parent) forgets the memo and resolves
+   * the folders again once ({@link uploadFile}). Forgotten whenever folders
+   * may have moved here: login, logout, any failed upload, a folder delete,
+   * prune or rename, a file rename.
+   */
+  private folderIds = new Map<string, string>();
+  /** Bumped by {@link forgetFolderIds}: a lookup that began before it records nothing. */
+  private folderIdsEpoch = 0;
+
+  private forgetFolderIds(): void {
+    this.folderIds.clear();
+    this.folderIdsEpoch += 1;
+  }
+
+  private rememberFolderId(path: string, id: string, epoch: number): void {
+    if (epoch === this.folderIdsEpoch) this.folderIds.set(path, id);
+  }
 
   /**
    * createFolder uses conflictBehavior 'fail'; if ANOTHER client (worker,
@@ -182,16 +218,24 @@ export class OneDriveProvider implements SyncProvider {
     }
   }
 
-  private async ensureMokuroFolder(): Promise<string> {
+  /** The mokuro folder's id, created when missing; `memo: false` asks the server again. */
+  private async ensureMokuroFolder(memo = true): Promise<string> {
+    const known = memo ? this.folderIds.get('') : undefined;
+    if (known) return known;
+    const epoch = this.folderIdsEpoch;
     const token = await onedriveTokenManager.getAccessToken();
     const existing = await getItemByPath(token, ONEDRIVE_CONFIG.MOKURO_FOLDER);
-    if (existing) return existing.id;
+    if (existing) {
+      this.rememberFolderId('', existing.id, epoch);
+      return existing.id;
+    }
 
     if (this.mokuroFolderPromise) return this.mokuroFolderPromise;
     this.mokuroFolderPromise = (async () => {
       try {
         const id = await this.createFolderTolerant('', ONEDRIVE_CONFIG.MOKURO_FOLDER);
         console.log(`Created ${ONEDRIVE_CONFIG.MOKURO_FOLDER} folder in OneDrive`);
+        this.rememberFolderId('', id, epoch);
         return id;
       } finally {
         this.mokuroFolderPromise = null;
@@ -200,24 +244,33 @@ export class OneDriveProvider implements SyncProvider {
     return this.mokuroFolderPromise;
   }
 
-  private async ensureSeriesFolder(seriesTitle: string): Promise<string> {
+  /** A series (or `history/<device>`) folder's id, created when missing; see {@link ensureMokuroFolder}. */
+  private async ensureSeriesFolder(seriesTitle: string, memo = true): Promise<string> {
+    const known = memo ? this.folderIds.get(seriesTitle) : undefined;
+    if (known) return known;
+    const epoch = this.folderIdsEpoch;
     const token = await onedriveTokenManager.getAccessToken();
     const path = `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${seriesTitle}`;
     const existing = await getItemByPath(token, path);
-    if (existing) return existing.id;
+    if (existing) {
+      this.rememberFolderId(seriesTitle, existing.id, epoch);
+      return existing.id;
+    }
 
     const inFlight = this.seriesFolderPromises.get(seriesTitle);
     if (inFlight) return inFlight;
 
     const promise = (async () => {
       try {
-        await this.ensureMokuroFolder();
+        await this.ensureMokuroFolder(memo);
         // One folder per segment: Graph refuses a `/` in an item name, and
         // reading history lives two levels deep (history/<device>).
         let parent: string = ONEDRIVE_CONFIG.MOKURO_FOLDER;
+        let relative = '';
         let id = '';
         for (const segment of seriesTitle.split('/')) {
           const here = `${parent}/${segment}`;
+          relative = relative ? `${relative}/${segment}` : segment;
           const existingSegment = await getItemByPath(
             await onedriveTokenManager.getAccessToken(),
             here
@@ -225,6 +278,7 @@ export class OneDriveProvider implements SyncProvider {
           id = existingSegment
             ? existingSegment.id
             : await this.createFolderTolerant(parent, segment);
+          this.rememberFolderId(relative, id, epoch);
           parent = here;
         }
         return id;
@@ -322,8 +376,37 @@ export class OneDriveProvider implements SyncProvider {
     }
     const seriesTitle = path.split('/').slice(0, -1).join('/');
     const filename = path.split('/').pop() ?? path;
-    if (seriesTitle) await this.ensureSeriesFolder(seriesTitle);
-    else await this.ensureMokuroFolder();
+    const fromMemo = this.folderIds.has(seriesTitle);
+    try {
+      return await this.uploadInto(seriesTitle, filename, path, blob, onProgress, true);
+    } catch (error) {
+      // Any failure forgets the folder ids: the next upload resolves them again.
+      this.forgetFolderIds();
+      // The memo's folder may have been deleted by another device since: its
+      // upload session 404s on the missing parent. Resolve (and re-create) the
+      // folders once and upload again — what the upload did before the memo.
+      if (fromMemo && isMissingParentFailure(error)) {
+        try {
+          return await this.uploadInto(seriesTitle, filename, path, blob, onProgress, false);
+        } catch (retryError) {
+          this.forgetFolderIds();
+          throw retryError;
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async uploadInto(
+    seriesTitle: string,
+    filename: string,
+    path: string,
+    blob: UploadPayload,
+    onProgress: ((loaded: number, total: number) => void) | undefined,
+    memo: boolean
+  ): Promise<UploadFileResult> {
+    if (seriesTitle) await this.ensureSeriesFolder(seriesTitle, memo);
+    else await this.ensureMokuroFolder(memo);
 
     const credentials = await this.getWorkerUploadCredentials();
     const blobToUpload =
@@ -476,32 +559,19 @@ export class OneDriveProvider implements SyncProvider {
     }
     const normalizedNew = newPath.replace(/^\/+|\/+$/g, '');
     if (file.path === normalizedNew) return file;
-
     const token = await onedriveTokenManager.getAccessToken();
     const newFilename = normalizedNew.split('/').pop() ?? normalizedNew;
     const newParent = normalizedNew.split('/').slice(0, -1).join('/');
-    const destFolderPath = newParent
-      ? `${ONEDRIVE_CONFIG.MOKURO_FOLDER}/${newParent}`
-      : ONEDRIVE_CONFIG.MOKURO_FOLDER;
 
-    if (newParent) {
-      await this.ensureSeriesFolder(newParent);
-    } else {
-      await this.ensureMokuroFolder();
-    }
-
-    const destParentItem = await getItemByPath(token, destFolderPath);
-    if (!destParentItem) {
-      throw new ProviderError(
-        `Destination folder '${destFolderPath}' could not be resolved`,
-        'onedrive',
-        'NOT_FOUND'
-      );
-    }
+    // The destination folder as the server has it now (never the upload
+    // memo: a rename is rare, and a stale id would move the file nowhere).
+    const destParentId = newParent
+      ? await this.ensureSeriesFolder(newParent, false)
+      : await this.ensureMokuroFolder(false);
 
     const updated = await patchItem(token, file.fileId, {
       name: newFilename,
-      parentReference: { id: destParentItem.id }
+      parentReference: { id: destParentId }
     });
 
     return {
@@ -553,6 +623,8 @@ export class OneDriveProvider implements SyncProvider {
       name: newName,
       parentReference: { id: destParentItem.id }
     });
+    // Every folder id under the old path moved with it.
+    this.forgetFolderIds();
 
     const all = await this.listCloudVolumes();
     return all.filter((f) => f.path.startsWith(`${normalizedNew}/`));
@@ -569,6 +641,7 @@ export class OneDriveProvider implements SyncProvider {
     const item = await getItemByPath(token, path);
     if (!item) return;
     await deleteItem(token, item.id);
+    this.forgetFolderIds();
     console.log(`✅ Deleted series folder '${seriesTitle}' from OneDrive`);
   }
 
@@ -589,6 +662,7 @@ export class OneDriveProvider implements SyncProvider {
       const children = await listChildren(token, path);
       if (children.length > 0) return;
       await deleteItem(token, item.id);
+      this.forgetFolderIds();
       console.log(`✅ Pruned empty series folder '${normalized}' from OneDrive`);
     } catch (error) {
       console.warn(`Could not prune OneDrive folder '${normalized}':`, error);
@@ -615,10 +689,13 @@ export class OneDriveProvider implements SyncProvider {
    */
   async prepareUploadTarget(seriesTitle: string): Promise<void> {
     if (!this.isAuthenticated()) return;
+    // Asks the server, never the folder-id memo: a worker's upload fails out
+    // of reach of uploadFile's missing-parent retry, and one lookup is nothing
+    // beside the archive it precedes. What it finds refreshes the memo.
     if (seriesTitle) {
-      await this.ensureSeriesFolder(seriesTitle);
+      await this.ensureSeriesFolder(seriesTitle, false);
     } else {
-      await this.ensureMokuroFolder();
+      await this.ensureMokuroFolder(false);
     }
   }
 
