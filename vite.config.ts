@@ -5,6 +5,7 @@ import { defineConfig } from 'vitest/config';
 import type { Plugin } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import { kitCsp, parseCspMode } from './src/lib/security/csp-policy.js';
+import { e2eKitOutDir } from './src/lib/build/e2e-kit-out-dir.ts';
 
 // Node loads this file, but the TypeScript program it shares with the app has
 // no Node types (a browser app: `@types/node` would retype `setTimeout` and the
@@ -63,8 +64,10 @@ export default defineConfig({
       // dev server set this (e2e/csp.spec.ts: one build per CSP_MODE;
       // e2e/gdrive-auth-backend.spec.ts: a dev server with the auth backend on).
       // Their generated files must not overwrite the first server's: that
-      // full-reloads every page open there.
-      ...(process.env.MOKURO_E2E_KIT_OUT_DIR ? { outDir: process.env.MOKURO_E2E_KIT_OUT_DIR } : {}),
+      // full-reloads every page open there. It also keeps the one generated
+      // file SvelteKit 3 writes outside outDir, the project's shared
+      // node_modules/$app/tsconfig.json, as the default outDir has it.
+      ...e2eKitOutDir(process.env.MOKURO_E2E_KIT_OUT_DIR),
 
       // No hourly `_app/version.json` poll (SvelteKit 3's default; 2 had none).
       // Nothing reads `updated`: a new deployment reaches the reader through the

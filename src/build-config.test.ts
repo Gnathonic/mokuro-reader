@@ -65,9 +65,11 @@ describe('production build', () => {
     // e2e/csp.spec.ts and e2e/gdrive-auth-backend.spec.ts each build or serve a
     // second app in this tree; both name the same override.
     expect(viteConfig.match(/process\.env\.[A-Z0-9_]*OUT_DIR/g) ?? []).toEqual([
-      'process.env.MOKURO_E2E_KIT_OUT_DIR',
       'process.env.MOKURO_E2E_KIT_OUT_DIR'
     ]);
+    // Through the helper that also keeps the shared generated tsconfig on the
+    // default outDir (src/lib/build/e2e-kit-out-dir.test.ts).
+    expect(viteConfig).toContain('...e2eKitOutDir(process.env.MOKURO_E2E_KIT_OUT_DIR)');
   });
 });
 
