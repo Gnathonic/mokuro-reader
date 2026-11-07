@@ -39,7 +39,16 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
     const t = await sim.token('google');
     accessToken = t.access_token;
     setCloudTestToken('google', { access_token: t.access_token, expires_in: t.expires_in });
-    await provider.login();
+    const granted = vi.spyOn(tokenManager, 'setToken');
+    try {
+      await provider.login();
+      // login() settles on whatever token is already held (an expired one, after
+      // a test that expired it), so the grant it asked for can still be in
+      // flight and would land inside the next test: wait for it here.
+      await vi.waitFor(() => expect(granted).toHaveBeenCalled());
+    } finally {
+      granted.mockRestore();
+    }
   }
 
   async function listed(): Promise<CloudFileMetadata[]> {
@@ -303,11 +312,17 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
       return v;
     };
     const reauth = vi.spyOn(tokenManager, 'reAuthenticate');
+    const granted = vi.spyOn(tokenManager, 'setToken');
     try {
       await sim.revoke(accessToken);
       await sim.clearLog();
       // The first 401 re-grants the same token (a one-off would now work)...
       await expect(provider.readControlFile('catalog.json')).rejects.toBeInstanceOf(ProviderError);
+      // The read rejects as soon as its re-auth STARTS, and the re-grant lands
+      // a timer later. A second 401 inside that gap is dropped as a duplicate
+      // of the re-auth in flight, so it would never reach the gone-grant
+      // refusal below: wait for the re-grant first.
+      await vi.waitFor(() => expect(granted).toHaveBeenCalledTimes(1));
       expect(attention()).toBe(false);
       // ...the second is a gone grant: refused, token cleared, banner up.
       await expect(provider.readControlFile('catalog.json')).rejects.toBeInstanceOf(ProviderError);
@@ -323,6 +338,7 @@ describe.skipIf(!cloudsimForSuite())('Google Drive provider against cloudsim', (
       expect((await sim.log()).length).toBe(calls);
     } finally {
       reauth.mockRestore();
+      granted.mockRestore();
       await signIn();
     }
   });
