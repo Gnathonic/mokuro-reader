@@ -4,10 +4,13 @@
   import {
     askOnLongPause,
     idleSettings,
+    markReadPolicy,
     resetIdleK,
     setAskOnLongPause,
     setIdleOverride,
-    trackingState
+    setMarkReadPolicy,
+    trackingState,
+    type MarkReadPolicy
   } from '$lib/settings/tracking-data';
 
   /**
@@ -22,7 +25,15 @@
    *   simply counts up to the cutoff, as an unanswered one does.
    * - "Still reading" answers stretch the automatic cutoff (`k`). Shown, with
    *   Reset, only while automatic: a fixed cutoff is never stretched.
+   * - "When I mark a volume as read" (#224): what happens to pages this app
+   *   never saw read — ask (the default), count them, or don't. A stats
+   *   policy, so the user's and synced like the rest, never a profile's.
    */
+  const MARK_READ_OPTIONS: Array<{ value: MarkReadPolicy; label: string }> = [
+    { value: 'ask', label: 'Ask each time' },
+    { value: 'count', label: 'Count them' },
+    { value: 'skip', label: 'Don’t count them' }
+  ];
   const AUTO = 'auto';
   const PRESET_MINUTES = [2, 3, 5, 10, 15, 20, 30, 45, 60];
 
@@ -83,5 +94,27 @@
         cutoff is counted.
       </p>
     </div>
+    <fieldset>
+      <legend class="mb-1 text-sm text-gray-900 dark:text-white">
+        When I mark a volume as read, pages not read here:
+      </legend>
+      <div class="flex flex-wrap gap-x-4">
+        {#each MARK_READ_OPTIONS as option (option.value)}
+          <label class="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="mark-read-policy"
+              value={option.value}
+              checked={$markReadPolicy === option.value}
+              onchange={() => setMarkReadPolicy(option.value)}
+            />
+            {option.label}
+          </label>
+        {/each}
+      </div>
+      <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+        Counted pages add characters and estimated time to your stats. They never change your speed.
+      </p>
+    </fieldset>
   </div>
 </div>
