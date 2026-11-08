@@ -119,7 +119,11 @@ as `/index.js`, a `.svelte` file or asset as it is, a `?query` after the extensi
 `$app/env` (not the deprecated `$app/environment`), and the server env from
 `$app/env/private` (not `$env/dynamic/private`). A worker's `new URL(…, import.meta.url)` stays
 relative: `#lib` in a URL is a fragment. A branch still carrying `$lib` imports runs
-`node scripts/migrate-lib-subpath.mjs | xargs -r npx prettier --write` (idempotent; issue #359).
+`node scripts/migrate-lib-subpath.mjs | xargs -r npx prettier --write` (idempotent; issue #359;
+it only REPORTS `$env/dynamic/private`, whose replacement is `import * as env`, a hand fix).
+`src/migrate-lib-subpath.test.ts` runs its `--check` on the repo, so any old specifier fails
+`npm test` — including one in a `vi.mock` string, where `$app/environment` still resolves (to
+a module nothing imports) and the mock would silently never apply.
 SvelteKit's options live in `vite.config.ts` (`sveltekit({...})`); there is no
 `svelte.config.js`. The app registers its own service worker (`src/lib/util/sw-register.ts`, from
 `hooks.client.ts`) with SvelteKit's registration off: SvelteKit 3 registers it

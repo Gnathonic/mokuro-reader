@@ -15,6 +15,11 @@
 //   '$lib/x/foo.ts?worker'     -> '#lib/x/foo.ts?worker'   (extension, query kept)
 //   '$app/environment'         -> '$app/env'
 //
+// `$env/dynamic/private` is reported, never rewritten: its replacement is a
+// different import SHAPE (`import { env } from '$env/dynamic/private'` becomes
+// `import * as env from '$app/env/private'`, and a `vi.mock` of it returns the
+// variables themselves), so it is fixed by hand.
+//
 // What it deliberately does NOT do (gotchas from the trial run on #359):
 // - It matches each quoted string on its own, never a greedy span across a
 //   line, so two specifiers on one line both rewrite correctly.
@@ -38,8 +43,14 @@
 // It is idempotent: a second run changes nothing. A branch that still has
 // `$lib` imports after #359 landed (rebased onto it, or merged it in) runs it
 // again, formats the touched files, and commits the result. Specifiers it
-// cannot resolve (a typo, a file that does not exist) are left as they are and
-// reported; the run then exits 1.
+// cannot resolve (a typo, a file that does not exist, even one written with
+// its extension) are left as they are and reported; the run then exits 1.
+//
+// src/migrate-lib-subpath.test.ts runs it on fixture trees, and runs `--check`
+// on this repository: a `$lib`, `$app/environment` or `$env/dynamic/private`
+// specifier that comes back fails `npm test` — also in a `vi.mock` string,
+// where the two deprecated modules still resolve (to modules nothing imports
+// any more), so the mock would silently never apply.
 //
 // No dependencies beyond Node itself.
 
@@ -62,12 +73,15 @@ const OLD = '$' + 'lib';
 const NEW = '#' + 'lib';
 const OLD_ENV = '$' + 'app/environment';
 const NEW_ENV = '$' + 'app/env';
+const OLD_PRIVATE = '$' + 'env/dynamic/private';
+const NEW_PRIVATE = '$' + 'app/env/private';
 
 /**
- * One quoted string at a time: the quote, `$lib` or `$app/environment`, then
- * anything but that quote, a backslash or a line break, then the same quote.
+ * One quoted string at a time: the quote, `$lib`, `$app/environment` or
+ * `$env/dynamic/private`, then (`$lib` only) anything but that quote, a
+ * backslash or a line break, then the same quote.
  */
-const SPECIFIER = /(['"])(\$lib(?:\/[^'"\\\n]*)?|\$app\/environment)\1/g;
+const SPECIFIER = /(['"])(\$lib(?:\/[^'"\\\n]*)?|\$app\/environment|\$env\/dynamic\/private)\1/g;
 
 /** `new URL(` right before the string (whitespace allowed). */
 const URL_CALL = /new\s+URL\(\s*$/;
@@ -83,8 +97,10 @@ function rewriteLib(spec) {
   const sub = path === OLD ? '' : path.slice(OLD.length + 1).replace(/\/+$/, '');
   const target = join(LIB_DIR, sub);
   let out;
-  if (sub !== '' && (/\.[jt]s$/.test(sub) || isFile(target))) {
-    out = sub; // already has its extension (.js/.ts), or names a file (.svelte, .css, an asset)
+  if (sub !== '' && isFile(target)) {
+    out = sub; // names a file as it is (.ts, .js, .svelte, .css, an asset)
+  } else if (sub !== '' && sub.endsWith('.js') && isFile(target.slice(0, -3) + '.ts')) {
+    out = sub; // already the `.js` name of a `.ts` source
   } else if (sub !== '' && (isFile(target + '.ts') || isFile(target + '.js'))) {
     out = sub + '.js'; // a module: TypeScript and Vite map `.js` onto the `.ts` source
   } else if (isFile(join(target, 'index.ts')) || isFile(join(target, 'index.js'))) {
@@ -121,6 +137,13 @@ function transform(file, text) {
           `${where}: ${match} is a URL (new URL(..., import.meta.url)): make it relative`
         );
       }
+      return match;
+    }
+    if (spec === OLD_PRIVATE) {
+      problems.push(
+        `${where}: ${match} is now ${quote}${NEW_PRIVATE}${quote}, imported as a namespace ` +
+          `(import * as env from ${quote}${NEW_PRIVATE}${quote}): change it by hand`
+      );
       return match;
     }
     if (spec === OLD_ENV) {
