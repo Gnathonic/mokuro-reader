@@ -127,6 +127,7 @@ describe('page brightness / contrast (#256)', () => {
   beforeEach(() => {
     updateSetting('pageBrightness', 100);
     updateSetting('pageContrast', 100);
+    updateSetting('pageAdjustEnabled', true);
   });
 
   it('defaults both to 100 on a profile that predates them', () => {
@@ -153,6 +154,27 @@ describe('page brightness / contrast (#256)', () => {
   it('pageFilter follows the active profile', () => {
     updateSetting('pageBrightness', 130);
     updateSetting('pageContrast', 150);
+    expect(get(pageFilter)).toBe('brightness(130%) contrast(150%)');
+  });
+
+  it('switches on by default, and keeps a stored off (#362)', () => {
+    const out = migrateProfiles({
+      Old: { pageBrightness: 130 } as any,
+      Off: { pageBrightness: 130, pageAdjustEnabled: false } as any,
+      Junk: { pageAdjustEnabled: 'no' } as any
+    });
+    expect(out.Old.pageAdjustEnabled).toBe(true);
+    expect(out.Off.pageAdjustEnabled).toBe(false);
+    expect(out.Off.pageBrightness).toBe(130);
+    expect(out.Junk.pageAdjustEnabled).toBe(true);
+  });
+
+  it('pageFilter is none while switched off, and the values come back on (#362)', () => {
+    updateSetting('pageBrightness', 130);
+    updateSetting('pageContrast', 150);
+    updateSetting('pageAdjustEnabled', false);
+    expect(get(pageFilter)).toBe('none');
+    updateSetting('pageAdjustEnabled', true);
     expect(get(pageFilter)).toBe('brightness(130%) contrast(150%)');
   });
 

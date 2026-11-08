@@ -1,3 +1,11 @@
+<script lang="ts" module>
+  // Where the drawer was scrolled to, per context (the reader's drawer holds
+  // other sections than the catalog's), for this page session (#363: the page
+  // image controls sit at the bottom of the reader section, and the drawer is
+  // rebuilt — scrolled to the top — every time it opens).
+  const savedScrollTop = new Map<string, number>();
+</script>
+
 <script lang="ts">
   import { Accordion, Button, Drawer } from 'flowbite-svelte';
   import { UserSettingsSolid } from 'flowbite-svelte-icons';
@@ -15,6 +23,7 @@
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
   import AppearanceSettings from './AppearanceSettings.svelte';
+  import { pageAdjustPreviewing } from '$lib/reader/page-adjust-preview';
 
   let transitionParams = {
     x: 320,
@@ -56,6 +65,21 @@
     }
   }
 
+  // Reopen where the user left off. The dialog focuses its first control on
+  // open (a microtask, which scrolls that control into view), so the restore
+  // waits a frame to land after it.
+  function rememberScroll(dlg: HTMLElement) {
+    const key = isReader() ? 'reader' : 'app';
+    const saved = savedScrollTop.get(key) ?? 0;
+    const raf = saved > 0 ? requestAnimationFrame(() => (dlg.scrollTop = saved)) : 0;
+    const onScroll = () => savedScrollTop.set(key, dlg.scrollTop);
+    dlg.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      dlg.removeEventListener('scroll', onScroll);
+    };
+  }
+
   // Close drawer on navigation (hash route change)
   let previousViewType = $state($currentView.type);
   $effect(() => {
@@ -77,6 +101,8 @@
   id="settings"
   outsideclose={false}
   onmousedown={handleBackdropMousedown}
+  data-page-preview={$pageAdjustPreviewing ? '' : undefined}
+  {@attach rememberScroll}
 >
   <h5
     id="drawer-label"
@@ -105,3 +131,12 @@
     </div>
   </div>
 </Drawer>
+
+<style>
+  /* While a page image slider is being adjusted (#363) the page behind the
+     drawer is what the user is judging: no dimming. Colour only — nothing
+     moves, the drawer stays where it is. */
+  :global(dialog#settings[data-page-preview]::backdrop) {
+    background-color: transparent;
+  }
+</style>

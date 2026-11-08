@@ -55,6 +55,40 @@ describe('PageAdjustCard (#256)', () => {
     expect(mocks.updateSetting).toHaveBeenCalledWith('pageBrightness', 100);
   });
 
+  it('switches the adjustment off and on without touching the values (#362)', async () => {
+    const { getByRole } = render(PageAdjustCard);
+    const toggle = getByRole('checkbox', { name: /Brightness & contrast/ }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    await fireEvent.click(toggle);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageAdjustEnabled', false);
+    expect(mocks.updateSetting).not.toHaveBeenCalledWith('pageBrightness', expect.anything());
+
+    store.set({ ...base, pageAdjustEnabled: false });
+    await tick();
+    expect(toggle.checked).toBe(false);
+    mocks.updateSetting.mockClear();
+    await fireEvent.click(toggle);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageAdjustEnabled', true);
+  });
+
+  it('moving a slider while switched off switches the adjustment back on (#362)', async () => {
+    store.set({ ...base, pageAdjustEnabled: false });
+    const { getByLabelText } = render(PageAdjustCard);
+    const brightness = getByLabelText('Brightness: 130%') as HTMLInputElement;
+    brightness.value = '140';
+    await fireEvent.input(brightness);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageBrightness', 140);
+    expect(mocks.updateSetting).toHaveBeenCalledWith('pageAdjustEnabled', true);
+  });
+
+  it('a slider move while on writes only the value', async () => {
+    const { getByLabelText } = render(PageAdjustCard);
+    const brightness = getByLabelText('Brightness: 130%') as HTMLInputElement;
+    brightness.value = '140';
+    await fireEvent.input(brightness);
+    expect(mocks.updateSetting).toHaveBeenCalledTimes(1);
+  });
+
   it('offers ink color off/auto/seven colors, showing the stored choice', () => {
     const { getByLabelText } = render(PageAdjustCard);
     const select = getByLabelText(/Magazine print effect/) as HTMLSelectElement;
