@@ -57,6 +57,17 @@ describe('ReaderToggles — Tap page edges to turn pages (#54)', () => {
     expect(mocks.updateSetting).toHaveBeenCalledWith('tapPageEdgesToTurn', true);
   });
 
+  it('does not promise page-turn gestures the reader lacks without Mobile', () => {
+    // Swipe-to-flip runs only with `mobile` on (PagedViewport's onPanEnd) and
+    // the paged wheel pans/zooms, never turns — a Desktop-profile tablet user
+    // reading "swipes still work" would turn this off and be left with no
+    // touch page turn at all.
+    const { getByText } = render(ReaderToggles);
+    const text = getByText(/turns pages by accident/).textContent ?? '';
+    expect(text).toMatch(/swipes do only with Mobile on/);
+    expect(text).not.toMatch(/wheel/i);
+  });
+
   it('is hidden in continuous scroll, which has no tap-to-turn zones', () => {
     mocks.store.update((s: Record<string, unknown>) => ({ ...s, continuousScroll: true }));
     const { queryByLabelText } = render(ReaderToggles);

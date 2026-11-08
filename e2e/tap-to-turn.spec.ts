@@ -111,6 +111,24 @@ function marginTarget(page: Page) {
   return targetAt(page, MARGIN);
 }
 
+/**
+ * A quick rightward touch swipe from the left margin. RTL (the default): a
+ * swipe to the right reveals the left side, i.e. the next page.
+ */
+async function swipeRightFromMargin(page: Page) {
+  const cdp = await page.context().newCDPSession(page);
+  const at = (x: number) => [{ x, y: MARGIN.y, id: 1 }];
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: at(MARGIN.x) });
+  for (let step = 1; step <= 6; step++) {
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: at(MARGIN.x + step * 120)
+    });
+  }
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await cdp.detach();
+}
+
 const BUTTON = { tag: 'button', zone: false, inWrapper: true };
 const INERT_ZONE = { tag: 'div', zone: true, inWrapper: true };
 
@@ -260,19 +278,20 @@ test.describe('tap page edges to turn pages (#54)', () => {
       expect(await shownPages(page)).toEqual([0]);
       expect(await marginTarget(page)).toEqual({ tag: 'div', zone: true, inWrapper: true });
 
-      // A quick rightward swipe from the left margin. RTL (the default): a
-      // swipe to the right reveals the left side, i.e. the next page.
-      const cdp = await page.context().newCDPSession(page);
-      const at = (x: number) => [{ x, y: MARGIN.y, id: 1 }];
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: at(MARGIN.x) });
-      for (let step = 1; step <= 6; step++) {
-        await cdp.send('Input.dispatchTouchEvent', {
-          type: 'touchMove',
-          touchPoints: at(MARGIN.x + step * 120)
-        });
-      }
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await swipeRightFromMargin(page);
       await expect.poll(() => shownPages(page)).toEqual([1]);
+    });
+
+    // The toggle's description promises swipes only "with Mobile on": swipe-to-
+    // flip is a Mobile feature, so this is the state a Desktop-profile tablet
+    // user is left in after turning tap-to-turn off — keys still turn.
+    test('off, Mobile off: the same swipe does not turn the page', async ({ page }) => {
+      await setup(page, { mobile: false, tapPageEdgesToTurn: false });
+      expect(await shownPages(page)).toEqual([0]);
+      expect(await marginTarget(page)).toEqual(INERT_ZONE);
+
+      await expectNoTurn(page, () => swipeRightFromMargin(page));
+      await expectTurnTo(page, () => page.keyboard.press('ArrowLeft'), [1]);
     });
   });
 

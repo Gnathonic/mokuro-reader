@@ -44,7 +44,7 @@
           text: 'Tap page edges to turn pages',
           value: $settings.tapPageEdgesToTurn !== false,
           description:
-            'Turn off if tapping empty space or the screen edge turns pages by accident. Swipes, keys and the wheel still work.'
+            'Turn off if tapping empty space or the screen edge turns pages by accident. Keys and quick actions still turn pages; swipes do only with Mobile on.'
         },
         { key: 'showTimer', text: 'Show timer', value: $settings.showTimer },
         { key: 'quickActions', text: 'Show quick actions', value: $settings.quickActions },

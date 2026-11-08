@@ -170,8 +170,11 @@ export type Settings = {
    * Tapping or clicking the page margins and screen edges turns the page (#54).
    * Off for devices with physical page-turn buttons, where a tap on empty
    * space (e.g. dismissing a dictionary popup) must not move the page.
-   * Swipes, keyboard, wheel and quick actions are unaffected. Absent in
-   * profiles saved before the setting existed, which migrate to on.
+   * Keyboard and quick-action page turns are unaffected, and so is
+   * swipe-to-flip — which only exists with `mobile` on, so with both off a
+   * touch screen has no page-turn gesture left. (The paged wheel pans and
+   * zooms; it never turned pages.) Absent in profiles saved before the
+   * setting existed, which migrate to on.
    */
   tapPageEdgesToTurn: boolean;
   showTimer: boolean;
