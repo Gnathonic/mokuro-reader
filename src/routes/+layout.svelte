@@ -33,6 +33,9 @@
   import { initCatalogFileSync } from '$lib/metadata/catalog-file-sync';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView } from '$lib/util/hash-router';
+  import { dispatchKey } from '$lib/keys/dispatch';
+  import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
+  import { anyModalOpen } from '$lib/util/delete-shortcut';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
   import { retirePreviousOcrLayers } from '$lib/catalog/retired-previous-ocr';
@@ -98,22 +101,26 @@
     return initGoalsLifecycle();
   });
 
-  // Handle global Escape key for back navigation
+  // Back (Escape, plus any extra keys bound to `app.back` — #55) everywhere
+  // except the reader, which owns its own keyboard (Reader.svelte). One owner
+  // per view: SeriesView no longer listens. Not from a field, the settings
+  // panel or a popover (`keyboardShouldIgnore`), and not while a dialog is up
+  // — Escape there closes the dialog, and only the dialog.
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === 'Escape') {
-      // Don't interfere with Escape on inputs or textareas
-      const target = event.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-        return;
+    const view = get(currentView);
+    if (view.type === 'reader') return;
+    if (keyboardShouldIgnore(event.target) || anyModalOpen()) return;
+    dispatchKey(
+      event,
+      { scopes: ['app'] },
+      {
+        'app.back': () => {
+          // Nothing above the catalog: decline, so the key keeps its default.
+          if (view.type === 'catalog') return false;
+          navigateBack();
+        }
       }
-
-      // Only navigate back if not already on catalog
-      const view = get(currentView);
-      if (view.type !== 'catalog') {
-        event.preventDefault();
-        navigateBack();
-      }
-    }
+    );
   }
 
   // Handle migration completion

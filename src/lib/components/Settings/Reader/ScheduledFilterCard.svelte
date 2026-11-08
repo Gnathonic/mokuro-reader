@@ -7,23 +7,30 @@
   } from '$lib/settings';
   import { Toggle, Label } from 'flowbite-svelte';
   import TimePicker from '../TimePicker.svelte';
+  import type { ActionId } from '$lib/keys/actions';
+  import { keyHints } from '$lib/keys/live';
 
   let {
     title,
     enableLabel,
-    hotkeyHint,
+    hotkeyAction,
     settingKey,
     scheduleKey,
     active
   }: {
     title: string;
     enableLabel: string;
-    hotkeyHint: string;
+    /** The shortcut that toggles the manual filter; its live key is shown. */
+    hotkeyAction: ActionId;
     settingKey: 'nightMode' | 'invertColors' | 'grayscale';
     scheduleKey: ScheduleSettingKey;
     active: boolean;
   } = $props();
 
+  // The live key for the manual toggle (#55); no hint when it is unbound.
+  let manualLabel = $derived(
+    $keyHints(hotkeyAction) ? `Manual (${$keyHints(hotkeyAction)})` : 'Manual'
+  );
   let mode = $derived($settings[scheduleKey].enabled ? 'scheduled' : 'manual');
   // Unique radio-group name so multiple cards on the page stay independent.
   let groupName = $derived(`${scheduleKey}-mode`);
@@ -60,7 +67,7 @@
         onchange={() => setMode('manual')}
         class="h-4 w-4 text-primary-600"
       />
-      <span class="text-sm text-gray-700 dark:text-gray-300">Manual ({hotkeyHint})</span>
+      <span class="text-sm text-gray-700 dark:text-gray-300">{manualLabel}</span>
     </label>
     <label class="flex cursor-pointer items-center gap-2">
       <input

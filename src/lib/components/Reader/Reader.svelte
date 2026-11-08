@@ -10,6 +10,9 @@
   import { spreadContentSize } from '$lib/reader/paged-zoom-layout';
   import { setInstantAnimations } from '$lib/reader/animator';
   import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
+  import { dispatchKey, type KeyHandler } from '$lib/keys/dispatch';
+  import { keyHint } from '$lib/keys/live';
+  import type { AppActionId, EditActionId, ReaderActionId, ReaderMode } from '$lib/keys/actions';
   import { toggleFullScreen } from '$lib/util/fullscreen';
   import {
     effectiveVolumeSettings,
@@ -230,6 +233,15 @@
     changePage(calculateBackwardTarget(page, pageNavContext()), ingoreTimeOut);
   }
 
+  /** The series' volume before (-1) or after (1) this one, if any. */
+  function adjacentVolume(delta: -1 | 1) {
+    if (!volume) return undefined;
+    const seriesVolumes = $currentSeries || [];
+    const currentVolumeIndex = seriesVolumes.findIndex((v) => v.volume_uuid === volume.volume_uuid);
+    if (currentVolumeIndex < 0) return undefined;
+    return seriesVolumes[currentVolumeIndex + delta];
+  }
+
   function changePage(newPage: number, ingoreTimeOut = false) {
     const end = new Date();
     const clickDuration = ingoreTimeOut ? 0 : end.getTime() - start?.getTime();
@@ -247,21 +259,13 @@
       // AND trying to go further in that direction
       if (newPage < 1 && page === 1) {
         // Already on first page, trying to go back - navigate to previous volume
-        let seriesVolumes = $currentSeries || [];
-        const currentVolumeIndex = seriesVolumes.findIndex(
-          (v) => v.volume_uuid === volume.volume_uuid
-        );
-        const previousVolume = seriesVolumes[currentVolumeIndex - 1];
+        const previousVolume = adjacentVolume(-1);
         if (previousVolume) nav.toReader(volume.series_uuid, previousVolume.volume_uuid);
         else nav.toSeries(volume.series_uuid);
         return;
       } else if (newPage > pages.length && page === pages.length) {
         // Already on last page, trying to go forward - navigate to next volume
-        let seriesVolumes = $currentSeries || [];
-        const currentVolumeIndex = seriesVolumes.findIndex(
-          (v) => v.volume_uuid === volume.volume_uuid
-        );
-        const nextVolume = seriesVolumes[currentVolumeIndex + 1];
+        const nextVolume = adjacentVolume(1);
         if (nextVolume) nav.toReader(volume.series_uuid, nextVolume.volume_uuid);
         else nav.toSeries(volume.series_uuid);
         return;
@@ -288,12 +292,131 @@
     }
   }
 
+  // ---- Keyboard (#55) -------------------------------------------------
+  // Every shortcut resolves through the action registry ($lib/keys); this
+  // listener is the reader's ONLY keyboard owner — the scroll readers expose
+  // `keyAction(id)` instead of listening themselves. See
+  // docs/INPUT-CONTRACTS.md "Keyboard".
+
+  let verticalReader = $state<ReturnType<typeof VerticalScrollReader>>();
+  let horizontalReader = $state<ReturnType<typeof HorizontalScrollReader>>();
+
+  /** The layout the keys act in: paged, or the continuous reader on screen. */
+  function keyMode(): ReaderMode {
+    return $settings.continuousScroll
+      ? (effectiveScrollMode as 'vertical' | 'horizontal')
+      : 'paged';
+  }
+
+  /** Continuous mode: let the mounted scroll reader act; false = not its key. */
+  function scrollReaderKey(id: ReaderActionId): boolean {
+    const reader = keyMode() === 'vertical' ? verticalReader : horizontalReader;
+    return reader?.keyAction(id) ?? false;
+  }
+
+  /** Open the previous/next volume of the series (the page-edge rule's lookup). */
+  function stepVolume(delta: -1 | 1) {
+    if (!volume) return;
+    const target = adjacentVolume(delta);
+    if (target) nav.toReader(volume.series_uuid, target.volume_uuid);
+    else showNotification(delta < 0 ? 'First volume' : 'Last volume', 'volume-edge');
+  }
+
+  function toggleTimer() {
+    const next = !$settings.showTimer;
+    updateSetting('showTimer', next);
+    showNotification(next ? 'Timer On' : 'Timer Off', 'timer-toggle');
+  }
+
+  const keyHandlers = {
+    'reader.page-left': () =>
+      keyMode() === 'paged' ? left(null, true) : scrollReaderKey('reader.page-left'),
+    'reader.page-right': () =>
+      keyMode() === 'paged' ? right(null, true) : scrollReaderKey('reader.page-right'),
+    'reader.page-prev': () =>
+      keyMode() === 'paged' ? navigateBackward(true) : scrollReaderKey('reader.page-prev'),
+    'reader.page-next': () =>
+      keyMode() === 'paged' ? navigateForward(true) : scrollReaderKey('reader.page-next'),
+    'reader.page-first': () =>
+      keyMode() === 'paged' ? changePage(1, true) : scrollReaderKey('reader.page-first'),
+    'reader.page-last': () => {
+      if (keyMode() !== 'paged') return scrollReaderKey('reader.page-last');
+      if (pages) changePage(pages.length, true);
+    },
+    'reader.volume-prev': () => stepVolume(-1),
+    'reader.volume-next': () => stepVolume(1),
+    'reader.scroll-up': () =>
+      keyMode() === 'paged' ? $pagedZoom?.scrollImage('up') : scrollReaderKey('reader.scroll-up'),
+    'reader.scroll-down': () =>
+      keyMode() === 'paged'
+        ? $pagedZoom?.scrollImage('down')
+        : scrollReaderKey('reader.scroll-down'),
+    'reader.scroll-left': () => scrollReaderKey('reader.scroll-left'),
+    'reader.scroll-right': () => scrollReaderKey('reader.scroll-right'),
+    'reader.fullscreen': () => toggleFullScreen(),
+    'reader.zoom-mode': () => rotateZoomMode(),
+    'reader.zoom-fit': () => $pagedZoom?.zoomFitToScreen(),
+    'reader.page-mode': () => ($settings.continuousScroll ? rotateScrollMode() : rotatePageMode()),
+    'reader.continuous': () => toggleContinuousScroll(),
+    'reader.offset-spreads': () => offsetSpreads(),
+    'reader.cover': () => {
+      if (volume) toggleHasCover(volume.volume_uuid);
+    },
+    'reader.dividers': () => {
+      const newVal = !$settings.pageDividers;
+      updateSetting('pageDividers', newVal);
+      showNotification(newVal ? 'Dividers On' : 'Dividers Off', 'page-dividers');
+    },
+    'reader.controls': () => {
+      overlaysVisible = !overlaysVisible;
+    },
+    'reader.timer': () => toggleTimer(),
+    'reader.ocr-always': () => {
+      const next = !$settings.alwaysShowOCR;
+      updateSetting('alwaysShowOCR', next);
+      showNotification(
+        next ? 'Always Show OCR: On' : 'Always Show OCR: Off',
+        'always-show-ocr-toggle'
+      );
+    },
+    'reader.ocr-layer': () => cycleLayer(),
+    'reader.edit-mode': () => toggleEditMode(),
+    'reader.invert': () =>
+      toggleScheduledFilter('invertColors', 'invertColorsSchedule', 'Invert', 'invert'),
+    'reader.night': () =>
+      toggleScheduledFilter('nightMode', 'nightModeSchedule', 'Night Mode', 'nightmode'),
+    'reader.grayscale': () =>
+      toggleScheduledFilter('grayscale', 'grayscaleSchedule', 'B&W', 'grayscale'),
+    'edit.undo': () => {
+      if (!editSession) return false;
+      editSession.undo(editActivePage);
+    },
+    'edit.redo': () => {
+      if (!editSession) return false;
+      editSession.redo(editActivePage);
+    },
+    'edit.delete': () => {
+      // No selection: the key falls through to the reader's bindings.
+      if (!editSession || editSession.selection.length === 0) return false;
+      editSession.deleteSelected();
+    },
+    'edit.back': () => {
+      const s = editSession;
+      if (!s) return false;
+      if (s.tool === 'draw') s.tool = 'select';
+      else if (s.selection.length > 0) s.clearSelection();
+      else void exitEditMode();
+    },
+    'app.back': () => navigateBack()
+  } satisfies Record<ReaderActionId | EditActionId | AppActionId, KeyHandler>;
+
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
     // The re-read prompt modal owns the keyboard while it's open: its buttons
     // live inside a native <dialog>, and keydowns still bubble past it up to
     // this window listener, so without this guard Escape would both close the
-    // modal AND fire navigateBack() below, and arrow keys / Space would page
-    // the reader underneath it.
+    // modal AND navigate back, and the page keys would page the reader
+    // underneath it. (This is the reader's only key listener, continuous
+    // scroll included, so this one return covers every layout.)
     if (rereadPromptOpen) {
       return;
     }
@@ -314,174 +437,11 @@
     if (keyboardShouldIgnore(event.target)) {
       return;
     }
-
-    if (editSession) {
-      const s = editSession;
-      const ctrl = event.ctrlKey || event.metaKey;
-      if (ctrl && event.code === 'KeyZ') {
-        event.preventDefault();
-        if (event.shiftKey) s.redo(editActivePage);
-        else s.undo(editActivePage);
-        return;
-      }
-      if (ctrl && event.code === 'KeyY') {
-        event.preventDefault();
-        s.redo(editActivePage);
-        return;
-      }
-      if ((event.code === 'Delete' || event.code === 'Backspace') && s.selection.length > 0) {
-        event.preventDefault();
-        s.deleteSelected();
-        return;
-      }
-      if (event.code === 'Escape') {
-        event.preventDefault();
-        if (s.tool === 'draw') s.tool = 'select';
-        else if (s.selection.length > 0) s.clearSelection();
-        else void exitEditMode();
-        return;
-      }
-    }
-
-    const action = event.code || event.key;
-
-    // For letter keys and nav keys, ignore if any modifier key is pressed
-    // (e.g., Ctrl+C for copy, Shift+Arrow for text selection)
-    const isLetterKey = action.startsWith('Key');
-    const isNavKey = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(
-      action
+    dispatchKey(
+      event,
+      { scopes: editSession ? ['edit', 'reader', 'app'] : ['reader', 'app'], mode: keyMode() },
+      keyHandlers
     );
-    if (
-      (isLetterKey || isNavKey) &&
-      (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey)
-    ) {
-      return;
-    }
-
-    // Keys that should prevent default browser scrolling behavior
-    const scrollKeys = [
-      'ArrowLeft',
-      'ArrowRight',
-      'ArrowUp',
-      'ArrowDown',
-      'PageUp',
-      'PageDown',
-      'Home',
-      'End',
-      'Space'
-    ];
-
-    if (scrollKeys.includes(action)) {
-      event.preventDefault();
-    }
-
-    // In continuous scroll mode, let ContinuousScrollReader handle navigation keys
-    if ($settings.continuousScroll) {
-      const continuousModeKeys = [
-        'ArrowLeft',
-        'ArrowRight',
-        'ArrowUp',
-        'ArrowDown',
-        'PageUp',
-        'PageDown',
-        'Space',
-        'Home',
-        'End'
-      ];
-      if (continuousModeKeys.includes(action)) {
-        return;
-      }
-    }
-
-    switch (action) {
-      case 'ArrowLeft':
-        left(event, true);
-        return;
-      case 'ArrowUp':
-        $pagedZoom?.scrollImage('up');
-        return;
-      case 'PageUp':
-        navigateBackward(true);
-        return;
-      case 'ArrowRight':
-        right(event, true);
-        return;
-      case 'ArrowDown':
-        $pagedZoom?.scrollImage('down');
-        return;
-      case 'PageDown':
-      case 'Space':
-        navigateForward(true);
-        return;
-      case 'Home':
-        changePage(1, true);
-        return;
-      case 'End':
-        if (pages) {
-          changePage(pages.length, true);
-        }
-        return;
-      case 'KeyF':
-        toggleFullScreen();
-        return;
-      case 'KeyI':
-        toggleScheduledFilter('invertColors', 'invertColorsSchedule', 'Invert', 'invert');
-        return;
-      case 'KeyN':
-        toggleScheduledFilter('nightMode', 'nightModeSchedule', 'Night Mode', 'nightmode');
-        return;
-      case 'KeyG':
-        toggleScheduledFilter('grayscale', 'grayscaleSchedule', 'B&W', 'grayscale');
-        return;
-      case 'KeyC':
-        if (volume) {
-          toggleHasCover(volume.volume_uuid);
-        }
-        return;
-      case 'KeyP':
-        if ($settings.continuousScroll) {
-          rotateScrollMode();
-        } else {
-          rotatePageMode();
-        }
-        return;
-      case 'KeyO':
-        offsetSpreads();
-        return;
-      case 'KeyZ':
-        rotateZoomMode();
-        return;
-      case 'KeyM':
-        if ($settings.continuousScroll) {
-          const newVal = !$settings.pageDividers;
-          updateSetting('pageDividers', newVal);
-          showNotification(newVal ? 'Dividers On' : 'Dividers Off', 'page-dividers');
-        }
-        return;
-      case 'KeyT': {
-        const next = !$settings.alwaysShowOCR;
-        updateSetting('alwaysShowOCR', next);
-        showNotification(
-          next ? 'Always Show OCR: On' : 'Always Show OCR: Off',
-          'always-show-ocr-toggle'
-        );
-        return;
-      }
-      case 'KeyV':
-        toggleContinuousScroll();
-        return;
-      case 'KeyE':
-        toggleEditMode();
-        return;
-      case 'KeyL':
-        cycleLayer();
-        return;
-      case 'Escape':
-        navigateBack();
-        return;
-      default:
-        break;
-    }
   }
 
   onMount(() => {
@@ -740,7 +700,12 @@
     }
     if (forkingLayer) {
       if (opts.fork === false) {
-        showSnackbar('Shared layers are read-only — press E to edit your own copy');
+        const editKey = keyHint('reader.edit-mode');
+        showSnackbar(
+          editKey
+            ? `Shared layers are read-only — press ${editKey} to edit your own copy`
+            : 'Shared layers are read-only — edit mode makes your own copy'
+        );
       } else {
         void forkIntoEditAndEdit(forkingLayer.layer_id, focus);
       }
@@ -1831,6 +1796,7 @@
   {#if $settings.continuousScroll && volumeData?.files}
     {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader
+        bind:this={verticalReader}
         --page-filter={$pageFilter}
         {pages}
         files={volumeData.files}
@@ -1846,6 +1812,7 @@
       />
     {:else}
       <HorizontalScrollReader
+        bind:this={horizontalReader}
         --page-filter={$pageFilter}
         {pages}
         files={volumeData.files}
@@ -1870,6 +1837,7 @@
         pageKey={page}
         rtl={volumeSettings.rightToLeft ?? true}
         onPageFlip={(side) => (side === 'left' ? left(null, true) : right(null, true))}
+        onWheelPage={(dir) => (dir === 'forward' ? navigateForward(true) : navigateBackward(true))}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
       >

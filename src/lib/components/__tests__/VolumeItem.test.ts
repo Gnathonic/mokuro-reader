@@ -518,9 +518,10 @@ describe('VolumeItem drawing a cloud-only placeholder', () => {
     await fireEvent.keyDown(window, { key: 'Delete' });
 
     expect(promptConfirmation).not.toHaveBeenCalled();
-    // Silence would read as a broken shortcut; say which key does mean the cloud copy.
+    // Silence would read as a broken shortcut; say which key does mean the cloud
+    // copy — the live binding (#55), Shift+Delete by default.
     expect(showSnackbar).toHaveBeenCalledWith(
-      'Nothing on this device to remove — shift+Delete deletes the cloud copy'
+      'Nothing on this device to remove — Shift+Delete deletes the cloud copy'
     );
   });
 

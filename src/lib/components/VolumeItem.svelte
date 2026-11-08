@@ -74,9 +74,10 @@
   import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
-  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { anyModalOpen, libraryShortcutAllowed } from '$lib/util/delete-shortcut';
+  import { dispatchKey } from '$lib/keys/dispatch';
+  import { keyHint } from '$lib/keys/live';
   import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
-  import { isTypingTarget } from '$lib/util/series-editor-shortcut';
   import { onDestroy } from 'svelte';
   import { displayableCoverBlob } from '$lib/util/raster-image';
   import { get } from 'svelte/store';
@@ -678,46 +679,46 @@
     });
   }
 
-  // Keyboard shortcuts when hovering over a volume
+  // Keyboard shortcuts when hovering over a volume — through the keymap (#55).
   let isHovered = $state(false);
 
   $effect(() => {
     if (!isHovered) return;
 
     function handleKeydown(e: KeyboardEvent) {
-      if (isTypingTarget(document.activeElement)) return;
-
-      // Delete goes through the shared rule (auto-repeat and already-open modals are what
-      // would otherwise stack a second confirmation behind the first). Shift still means
-      // "the cloud copy only", exactly as before.
-      if (e.key === 'Delete') {
-        if (!shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())) return;
-        e.preventDefault();
-        if (e.shiftKey) {
-          onCloudDeleteOnly();
-        } else if (isPlaceholderRow) {
-          // Nothing on this device to delete. The cloud copy is deletable, but
-          // never from the shortcut that means "remove my local copy" — say
-          // which key does mean it rather than swallowing the press.
-          showSnackbar('Nothing on this device to remove — shift+Delete deletes the cloud copy');
-        } else {
-          onDeleteClicked();
-        }
-        return;
-      }
-
-      switch (e.key) {
-        case 'e':
-          e.preventDefault();
+      // Hover, no field focused, no modal up (auto-repeat and already-open
+      // modals are what would otherwise stack a second confirmation).
+      if (!libraryShortcutAllowed(e, isHovered, document.activeElement, anyModalOpen())) return;
+      dispatchKey(
+        e,
+        { scopes: ['library.volume'] },
+        {
           // The editor reads pages and rewrites OCR; there are none here.
-          if (!isNotInstalled) onEditClicked();
-          break;
-        case 'c':
-          e.preventDefault();
+          'library.volume-edit': () => {
+            if (!isNotInstalled) onEditClicked();
+          },
           // Picking a cover means picking a page. Same reason.
-          if (!isNotInstalled) onChangeCover();
-          break;
-      }
+          'library.volume-cover': () => {
+            if (!isNotInstalled) onChangeCover();
+          },
+          'library.volume-remove': () => {
+            if (isPlaceholderRow) {
+              // Nothing on this device to delete. The cloud copy is deletable,
+              // but never from the shortcut that means "remove my local copy" —
+              // say which key does mean it rather than swallowing the press.
+              const cloudKey = keyHint('library.volume-delete-cloud');
+              showSnackbar(
+                cloudKey
+                  ? `Nothing on this device to remove — ${cloudKey} deletes the cloud copy`
+                  : 'Nothing on this device to remove — the menu deletes the cloud copy'
+              );
+            } else {
+              onDeleteClicked();
+            }
+          },
+          'library.volume-delete-cloud': () => void onCloudDeleteOnly()
+        }
+      );
     }
 
     window.addEventListener('keydown', handleKeydown);

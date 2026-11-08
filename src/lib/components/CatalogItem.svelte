@@ -21,8 +21,8 @@
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
   import { promptSeriesEditor } from '$lib/util/modals';
-  import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
-  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { anyModalOpen, libraryShortcutAllowed } from '$lib/util/delete-shortcut';
+  import { dispatchKey } from '$lib/keys/dispatch';
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { seriesIndexMap } from '$lib/metadata/series-index';
@@ -313,21 +313,23 @@
 
   function handleKeyChange(e: KeyboardEvent) {
     if (!isHovered) return;
-    if (e.type === 'keydown' && shouldOpenSeriesEditor(e, isHovered, document.activeElement)) {
-      e.preventDefault();
-      if (volume) promptSeriesEditor(volume.series_title);
-      return;
-    }
-    // Hover + Delete raises the series page's own "Remove manga" dialog — the same
-    // prompt, with the same forget/cloud checkboxes. Shift is left alone: the card has
-    // no cloud-only delete to map it to.
+    // Hover shortcuts resolve through the keymap (#55): Edit series (E) and
+    // Remove series (Delete) — the series page's own "Remove manga" dialog,
+    // with the same forget/cloud checkboxes.
     if (
       e.type === 'keydown' &&
-      !e.shiftKey &&
-      shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())
+      libraryShortcutAllowed(e, isHovered, document.activeElement, anyModalOpen()) &&
+      dispatchKey(
+        e,
+        { scopes: ['library.series'] },
+        {
+          'library.series-edit': () => {
+            if (volume) promptSeriesEditor(volume.series_title);
+          },
+          'library.series-remove': () => void promptSeriesRemoval(seriesVolumes)
+        }
+      )
     ) {
-      e.preventDefault();
-      void promptSeriesRemoval(seriesVolumes);
       return;
     }
     updateModifierState(e);

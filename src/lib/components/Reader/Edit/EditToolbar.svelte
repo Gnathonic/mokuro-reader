@@ -4,6 +4,7 @@
   import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
   import { nextLayerId, prevLayerId, type LayerSummary } from '$lib/reader/edit/layer-list';
   import type { EditToolbarDock } from '$lib/settings/misc';
+  import { keyHints } from '$lib/keys/live';
   import {
     ChevronDownOutline,
     ChevronLeftOutline,
@@ -19,6 +20,11 @@
     TrashBinOutline,
     UndoOutline
   } from 'flowbite-svelte-icons';
+
+  /** "Label (key)" with the live binding, or just the label when unbound. */
+  function withKey(label: string, key: string): string {
+    return key ? `${label} (${key})` : label;
+  }
 
   interface Props {
     session: EditSession;
@@ -116,7 +122,7 @@
   <button
     class={btn}
     aria-label="Delete"
-    title="Delete selected (Del)"
+    title={withKey('Delete selected', $keyHints('edit.delete'))}
     disabled={selected.length === 0}
     onclick={() => session.deleteSelected()}
   >
@@ -162,7 +168,7 @@
   <button
     class={btn}
     aria-label="Undo"
-    title="Undo (Ctrl+Z)"
+    title={withKey('Undo', $keyHints('edit.undo'))}
     disabled={!session.canUndo(pageIndex)}
     onclick={() => session.undo(pageIndex)}
   >
@@ -171,7 +177,7 @@
   <button
     class={btn}
     aria-label="Redo"
-    title="Redo (Ctrl+Shift+Z)"
+    title={withKey('Redo', $keyHints('edit.redo'))}
     disabled={!session.canRedo(pageIndex)}
     onclick={() => session.redo(pageIndex)}
   >
@@ -197,7 +203,7 @@
     <button
       class={btn}
       aria-label="Next layer"
-      title="Next OCR layer (L)"
+      title={withKey('Next OCR layer', $keyHints('reader.ocr-layer'))}
       disabled={!hasLayers}
       onclick={() => onSelectLayer?.(nextLayerId(currentLayer, layers))}
     >
@@ -224,7 +230,12 @@
       <RestoreWindowOutline />
     </button>
   {/if}
-  <button class={btn} aria-label="Exit edit mode" title="Exit edit mode (Esc)" onclick={onExit}>
+  <button
+    class={btn}
+    aria-label="Exit edit mode"
+    title={withKey('Exit edit mode', $keyHints('edit.back'))}
+    onclick={onExit}
+  >
     <CloseOutline />
   </button>
 </div>

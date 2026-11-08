@@ -1,17 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { anyModalOpen, shouldTriggerDelete } from './delete-shortcut';
-
-function keyEvent(overrides: Partial<KeyboardEvent> = {}): KeyboardEvent {
-  return {
-    key: 'Delete',
-    repeat: false,
-    ctrlKey: false,
-    metaKey: false,
-    altKey: false,
-    shiftKey: false,
-    ...overrides
-  } as KeyboardEvent;
-}
+import { anyModalOpen, libraryShortcutAllowed } from './delete-shortcut';
 
 function elementWithTag(tag: string, contentEditable = false): Element {
   const el = document.createElement(tag);
@@ -21,47 +9,44 @@ function elementWithTag(tag: string, contentEditable = false): Element {
   return el;
 }
 
-describe('shouldTriggerDelete', () => {
-  it('is true when hovered, key is Delete, no repeat, no modal, focus outside a field', () => {
-    expect(shouldTriggerDelete(keyEvent(), true, null, false)).toBe(true);
+const onBody = { target: document.body } as Pick<KeyboardEvent, 'target'>;
+
+describe('libraryShortcutAllowed', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('is true when hovered, no modal, focus outside a field', () => {
+    expect(libraryShortcutAllowed(onBody, true, null, false)).toBe(true);
+    expect(libraryShortcutAllowed(onBody, true, elementWithTag('div'), false)).toBe(true);
   });
 
   it('is false when not hovered', () => {
-    expect(shouldTriggerDelete(keyEvent(), false, null, false)).toBe(false);
+    expect(libraryShortcutAllowed(onBody, false, null, false)).toBe(false);
   });
 
-  it('is false for any other key', () => {
-    expect(shouldTriggerDelete(keyEvent({ key: 'Backspace' }), true, null, false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent({ key: 'd' }), true, null, false)).toBe(false);
-  });
-
-  it('ignores auto-repeat, so holding the key cannot stack dialogs', () => {
-    expect(shouldTriggerDelete(keyEvent({ repeat: true }), true, null, false)).toBe(false);
-  });
-
-  it('is false while a modal is already open', () => {
-    expect(shouldTriggerDelete(keyEvent(), true, null, true)).toBe(false);
-  });
-
-  it('is false when ctrl, meta or alt is held', () => {
-    expect(shouldTriggerDelete(keyEvent({ ctrlKey: true }), true, null, false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent({ metaKey: true }), true, null, false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent({ altKey: true }), true, null, false)).toBe(false);
-  });
-
-  it('leaves shift to the caller (a volume reads it as "cloud copy only")', () => {
-    expect(shouldTriggerDelete(keyEvent({ shiftKey: true }), true, null, false)).toBe(true);
+  it('is false while a modal is already open (no stacked dialogs)', () => {
+    expect(libraryShortcutAllowed(onBody, true, null, true)).toBe(false);
   });
 
   it('is false while a text field has focus', () => {
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('input'), false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('textarea'), false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('select'), false)).toBe(false);
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('div', true), false)).toBe(false);
+    for (const el of [
+      elementWithTag('input'),
+      elementWithTag('textarea'),
+      elementWithTag('select'),
+      elementWithTag('div', true)
+    ]) {
+      expect(libraryShortcutAllowed(onBody, true, el, false)).toBe(false);
+    }
   });
 
-  it('is true when focus is on a non-typing element', () => {
-    expect(shouldTriggerDelete(keyEvent(), true, elementWithTag('div'), false)).toBe(true);
+  it('is false for a key pressed inside the settings panel or a popover', () => {
+    document.body.innerHTML =
+      '<div id="settings"><button id="a">x</button></div><div data-popover><button id="b">y</button></div>';
+    const inSettings = { target: document.getElementById('a') } as Pick<KeyboardEvent, 'target'>;
+    const inPopover = { target: document.getElementById('b') } as Pick<KeyboardEvent, 'target'>;
+    expect(libraryShortcutAllowed(inSettings, true, null, false)).toBe(false);
+    expect(libraryShortcutAllowed(inPopover, true, null, false)).toBe(false);
   });
 });
 

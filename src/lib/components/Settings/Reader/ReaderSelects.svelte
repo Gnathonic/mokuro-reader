@@ -2,6 +2,7 @@
   import { Label, Select } from 'flowbite-svelte';
   import type { SettingsKey, ContinuousZoomMode } from '$lib/settings';
   import { settings, updateSetting } from '$lib/settings';
+  import KeyHint from '../Keys/KeyHint.svelte';
 
   let isContinuous = $derived($settings.continuousScroll);
 
@@ -57,7 +58,7 @@
 <div>
   <Label class="text-gray-900 dark:text-white">
     On page zoom:
-    <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Z)</span>
+    <KeyHint id="reader.zoom-mode" />
   </Label>
   {#if isContinuous}
     <Select

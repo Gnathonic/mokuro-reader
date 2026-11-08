@@ -20,7 +20,8 @@
     wheelIntentIsGapAdjust,
     wheelIntentIsZoom
   } from '$lib/reader/zoom-math';
-  import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
+  import { gestureTargetRole } from '$lib/reader/input/gesture-target';
+  import type { ReaderActionId } from '$lib/keys/actions';
   import { volumeEdgeNav } from '$lib/reader/page-nav';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
@@ -337,60 +338,57 @@
     scroller.scrollToElement(el, 'center', pageFitsVertically(pageIdx) ? 'center' : 'start');
   }
 
-  function handleKeydown(e: KeyboardEvent) {
-    if (keyboardShouldIgnore(e.target)) return;
-    if (!scrollContainer) return;
+  /**
+   * A keyboard action, resolved by Reader.svelte (the reader's only key
+   * listener — #55). Returns false for an action this layout does not do,
+   * so the key keeps its browser default.
+   */
+  export function keyAction(id: ReaderActionId): boolean {
+    if (!scrollContainer) return false;
 
-    // In fit-to-screen, pages fit viewport — arrows page.
-    // In fit-to-width/original, pages can be taller — arrows pan.
+    // In fit-to-screen, pages fit viewport — up/down page.
+    // In fit-to-width/original, pages can be taller — up/down pan.
     const shouldPanVertically = zoomMode !== 'zoomFitToScreen';
 
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
+    switch (id) {
+      case 'reader.scroll-down':
         if (shouldPanVertically) {
           motion.beforeNav?.();
           scroller?.scrollBy(0, viewportHeight * 0.5);
         } else {
           scrollToPageVertical(detectCurrentPage() + 1);
         }
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
+        return true;
+      case 'reader.scroll-up':
         if (shouldPanVertically) {
           motion.beforeNav?.();
           scroller?.scrollBy(0, -viewportHeight * 0.5);
         } else {
           scrollToPageVertical(detectCurrentPage() - 1);
         }
-        break;
-      case 'ArrowLeft':
-        e.preventDefault();
+        return true;
+      case 'reader.scroll-left':
         motion.beforeNav?.();
         scroller?.scrollBy(-viewportWidth * 0.5, 0);
-        break;
-      case 'ArrowRight':
-        e.preventDefault();
+        return true;
+      case 'reader.scroll-right':
         motion.beforeNav?.();
         scroller?.scrollBy(viewportWidth * 0.5, 0);
-        break;
-      case 'PageDown':
-      case ' ':
-        e.preventDefault();
+        return true;
+      case 'reader.page-next':
         scrollToPageVertical(detectCurrentPage() + 1);
-        break;
-      case 'PageUp':
-        e.preventDefault();
+        return true;
+      case 'reader.page-prev':
         scrollToPageVertical(detectCurrentPage() - 1);
-        break;
-      case 'Home':
-        e.preventDefault();
+        return true;
+      case 'reader.page-first':
         scrollToPageVertical(0);
-        break;
-      case 'End':
-        e.preventDefault();
+        return true;
+      case 'reader.page-last':
         scrollToPageVertical(pages.length - 1);
-        break;
+        return true;
+      default:
+        return false;
     }
   }
 
@@ -548,7 +546,7 @@
   });
 </script>
 
-<svelte:window onkeydown={handleKeydown} onresize={handleResize} />
+<svelte:window onresize={handleResize} />
 
 <div
   bind:this={outerDiv}

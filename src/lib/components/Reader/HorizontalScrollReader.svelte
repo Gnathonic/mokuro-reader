@@ -24,7 +24,8 @@
     wheelIntentIsGapAdjust,
     wheelIntentIsZoom
   } from '$lib/reader/zoom-math';
-  import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
+  import { gestureTargetRole } from '$lib/reader/input/gesture-target';
+  import type { ReaderActionId } from '$lib/keys/actions';
   import { volumeEdgeNav } from '$lib/reader/page-nav';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
@@ -349,57 +350,54 @@
     scroller.scrollToElement(el, 'center', 'center', options);
   }
 
-  function handleKeydown(e: KeyboardEvent) {
-    if (keyboardShouldIgnore(e.target)) return;
-    if (!scrollContainer) return;
+  /**
+   * A keyboard action, resolved by Reader.svelte (the reader's only key
+   * listener — #55). Returns false for an action this layout does not do,
+   * so the key keeps its browser default.
+   */
+  export function keyAction(id: ReaderActionId): boolean {
+    if (!scrollContainer) return false;
 
     // Always use navTarget — it's authoritative.
     // Set by navigateToPage() on keyboard nav, synced by manual scroll.
     const current = navTarget;
     const leftDelta = rtl ? 1 : -1;
 
-    switch (e.key) {
-      case 'ArrowLeft':
-        e.preventDefault();
+    switch (id) {
+      case 'reader.page-left':
         navigateToPage(current + leftDelta);
-        break;
-      case 'ArrowRight':
-        e.preventDefault();
+        return true;
+      case 'reader.page-right':
         navigateToPage(current - leftDelta);
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
+        return true;
+      case 'reader.scroll-up':
         motion.beforeNav?.();
         scroller?.scrollBy(0, -viewportHeight * 0.5);
-        break;
-      case 'ArrowDown':
-        e.preventDefault();
+        return true;
+      case 'reader.scroll-down':
         motion.beforeNav?.();
         scroller?.scrollBy(0, viewportHeight * 0.5);
-        break;
-      case 'PageDown':
-      case ' ': {
-        e.preventDefault();
+        return true;
+      case 'reader.page-next': {
         // Jump 1 from cover page, 2 otherwise
         const fwd = volumeSettings.hasCover && current === 0 ? 1 : 2;
         navigateToPage(current + fwd);
-        break;
+        return true;
       }
-      case 'PageUp': {
-        e.preventDefault();
+      case 'reader.page-prev': {
         // Jump 1 when landing on cover page, 2 otherwise
         const back = volumeSettings.hasCover && current <= 2 ? 1 : 2;
         navigateToPage(current - back);
-        break;
+        return true;
       }
-      case 'Home':
-        e.preventDefault();
+      case 'reader.page-first':
         navigateToPage(0);
-        break;
-      case 'End':
-        e.preventDefault();
+        return true;
+      case 'reader.page-last':
         navigateToPage(pages.length - 1);
-        break;
+        return true;
+      default:
+        return false;
     }
   }
 
@@ -571,7 +569,7 @@
   });
 </script>
 
-<svelte:window onkeydown={handleKeydown} onresize={handleResize} />
+<svelte:window onresize={handleResize} />
 
 <div
   bind:this={outerDiv}

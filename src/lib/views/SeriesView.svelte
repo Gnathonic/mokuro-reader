@@ -10,7 +10,7 @@
   import { volumes, progress, settings } from '$lib/settings';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import { seriesSpeeds } from '$lib/reading-history/series-speeds';
-  import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
+  import { nav, routeParams } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
     CloudArrowUpOutline,
@@ -618,17 +618,7 @@
       );
     }
 
-    function handleKeydown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        navigateBack();
-      }
-    }
-
-    window.addEventListener('keydown', handleKeydown);
-
-    return () => {
-      window.removeEventListener('keydown', handleKeydown);
-    };
+    // Escape (Back) is +layout.svelte's: one owner per view (#55).
   });
 </script>
 

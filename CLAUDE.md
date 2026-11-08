@@ -526,9 +526,25 @@ rows above, downloads nothing, and every volume keeps its progress and actions
 either way.
 
 **Catalog card shortcuts**: hovering a card and pressing `E` opens the series
-editor (`series-editor-shortcut.ts`); hovering and pressing `Delete` raises the
-series removal dialog (`delete-shortcut.ts`). Both are document-level `keydown`
-listeners gated on hover + no modal open + focus not on a typing target.
+editor; hovering and pressing `Delete` raises the series removal dialog (volumes:
+`E` editor, `C` cover, `Delete` / `Shift+Delete`). They are registry actions
+(`library.*` in `src/lib/keys/actions.ts`, rebindable — see "Keyboard
+shortcuts" below), dispatched by the hovered card's window `keydown` listener
+and gated by `libraryShortcutAllowed` (`delete-shortcut.ts`: hover + no modal
+open + focus not on a typing target, the settings panel or a popover).
+
+**Keyboard shortcuts (#55)**: every shortcut is an entry in the action
+registry (`src/lib/keys/actions.ts` — ids are stored, never rename one) and
+resolves through `dispatchKey` against the active profile's
+`Settings.keyBindings` (SPARSE: absent id = defaults, `[]` = unbound; synced in
+`profiles.json`; `migrateProfiles` checks shape only and keeps unknown ids).
+Chords are `KeyboardEvent.code` with exact modifiers. Reader.svelte is the
+reader's ONLY key listener (the scroll readers expose `keyAction(id)`); a new
+reader/edit action needs a registry entry plus a handler in Reader's
+`keyHandlers` map, which `satisfies` the id union so a missing handler fails
+type-check. UI key hints read the live binding (`KeyHint.svelte`,
+`$keyHints(id)`), never a literal. Contracts: docs/INPUT-CONTRACTS.md
+"Keyboard".
 
 ## Important Patterns
 

@@ -9,8 +9,8 @@
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
   import { promptSeriesEditor } from '$lib/util/modals';
-  import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
-  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { anyModalOpen, libraryShortcutAllowed } from '$lib/util/delete-shortcut';
+  import { dispatchKey } from '$lib/keys/dispatch';
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { isSeriesFinished, isVolumeFinished } from '$lib/util/volume-helpers';
@@ -153,20 +153,22 @@
     nav.toSeries(navId);
   }
 
-  // Hover + "e" opens the series editor for this card (mirrors CatalogItem / VolumeItem).
+  // Hover shortcuts (mirrors CatalogItem / VolumeItem), through the keymap (#55).
   let isHovered = $state(false);
 
   function handleKeydown(e: KeyboardEvent) {
-    if (shouldOpenSeriesEditor(e, isHovered, document.activeElement)) {
-      e.preventDefault();
-      if (volume) promptSeriesEditor(volume.series_title);
-      return;
-    }
-    // Hover + Delete raises the series page's own "Remove manga" dialog (see CatalogItem).
-    if (!e.shiftKey && shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())) {
-      e.preventDefault();
-      void promptSeriesRemoval(sortedVolumes);
-    }
+    if (!libraryShortcutAllowed(e, isHovered, document.activeElement, anyModalOpen())) return;
+    dispatchKey(
+      e,
+      { scopes: ['library.series'] },
+      {
+        'library.series-edit': () => {
+          if (volume) promptSeriesEditor(volume.series_title);
+        },
+        // The series page's own "Remove manga" dialog (see CatalogItem).
+        'library.series-remove': () => void promptSeriesRemoval(sortedVolumes)
+      }
+    );
   }
 
   $effect(() => {

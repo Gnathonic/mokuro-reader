@@ -154,18 +154,64 @@ Zoom settles carry a `SettleReason` (`zoom-controller.ts`): only
 `'gesture'`/`'interrupt'` settles report reading progress; `'nav'` and
 `'reset'` settles are superseded by whatever caused them.
 
+### Keyboard: one registry, one resolver (#55)
+
+Every shortcut is an entry in the action registry (`src/lib/keys/actions.ts`)
+and resolves through `dispatchKey` (`src/lib/keys/dispatch.ts`) against the
+active profile's keymap (`Settings.keyBindings`, sparse — `{}` is the
+defaults; `src/lib/keys/keymap.ts`). Nothing else compares keys by hand at a
+shortcut site (`src/lib/keys/source-lint.test.ts` holds the line).
+
+- **Reader.svelte is the reader's only keyboard listener**, continuous scroll
+  included. Its guard prelude (re-read prompt open → layer UI →
+  `keyboardShouldIgnore`) runs first; then it dispatches with scopes
+  `edit → reader → app` while editing, else `reader → app`, and the layout
+  (`paged` / `vertical` / `horizontal`) as the mode. In continuous mode the
+  page and scroll actions call the mounted scroll reader's `keyAction(id)`;
+  the scroll readers have no key listener of their own. A modal that must
+  stop page keys therefore needs no key list: Reader returns early.
+- **Exact modifiers.** A chord (`Ctrl+Alt+Shift+Meta+<code>`) matches only the
+  identical modifier set, so a Shift held for dictionary scanning is inert
+  unless the user binds a Shift chord.
+- **Position, not character**: `KeyboardEvent.code`, with `e.key` only for an
+  empty code and for Numpad keys with NumLock off.
+- **Dropped before matching**: bare modifiers, IME composition
+  (`isComposing` / keyCode 229), and events already `defaultPrevented` — an
+  extension or another handler took the key.
+- `preventDefault()` only on a match; a handler returning `false` declines and
+  the key falls through (`edit.delete` with nothing selected).
+- Toggles, Back and library actions ignore auto-repeat.
+- **One Back owner per view**: Reader in the reader, `+layout.svelte`
+  elsewhere (never from a field, the settings panel, a popover, or under an
+  open dialog). Library hover keys are dispatched by the hovered card.
+- Element-level handlers stay outside the keymap: text fields, the OCR line
+  editor, the page-number input, modal Escape captures, the layer picker and
+  name prompt, the spine shelf's arrows.
+
+### Wheel page turns are edge-gated per stream (#55)
+
+With "Mouse wheel: Turns pages" (`wheelTurnsPages`, paged only), a plain
+vertical wheel turns pages in reading order (`src/lib/reader/input/wheel-page.ts`).
+Like a swipe (#186), a stream that could still pan in its direction **when it
+began** pans for its whole length; a stream ends after the
+`WHEEL_STREAM_IDLE_MS` gap or on a direction flip. A notched wheel turns one
+page per notch; a fine stream one page per stream. Ctrl/meta+wheel still zooms
+(a fine one is a pinch, #259), shift+wheel and a horizontal wheel still pan,
+and the gap chord is untouched. A turn opens with the paged gate's
+`beforeNav`.
+
 ## Per-surface policy matrix
 
-| Policy         | PagedViewport                        | Scroll readers                          |
-| -------------- | ------------------------------------ | --------------------------------------- |
-| Capture        | deferred (at drag threshold)         | immediate (at pan press)                |
-| Pan deltas     | incremental → `camera.adjustView`    | totals → absolute scroll from baselines |
-| Text-box pan   | suppressed for mouse/pen only        | suppressed for all pointer types        |
-| Pinch survivor | keeps panning                        | ignored until fresh press               |
-| Tap commit     | immediate                            | deferred (300 ms)                       |
-| Swipe-to-flip  | yes (mobile setting, edge-gated)     | no (panning is the scroll)              |
-| Wheel          | zoom, gap, or camera glide           | zoom, gap, or (native/strip) scroll     |
-| Wheel zoom     | continuous (fine) / ladder (notched) | continuous (fine) / ladder (notched)    |
+| Policy         | PagedViewport                         | Scroll readers                          |
+| -------------- | ------------------------------------- | --------------------------------------- |
+| Capture        | deferred (at drag threshold)          | immediate (at pan press)                |
+| Pan deltas     | incremental → `camera.adjustView`     | totals → absolute scroll from baselines |
+| Text-box pan   | suppressed for mouse/pen only         | suppressed for all pointer types        |
+| Pinch survivor | keeps panning                         | ignored until fresh press               |
+| Tap commit     | immediate                             | deferred (300 ms)                       |
+| Swipe-to-flip  | yes (mobile setting, edge-gated)      | no (panning is the scroll)              |
+| Wheel          | zoom, gap, camera glide, or page turn | zoom, gap, or (native/strip) scroll     |
+| Wheel zoom     | continuous (fine) / ladder (notched)  | continuous (fine) / ladder (notched)    |
 
 Ctrl/meta+shift+wheel is the page-gap adjustment chord on every surface
 (paged writes `pagedGap`; scroll readers write `scrollGap` and sync

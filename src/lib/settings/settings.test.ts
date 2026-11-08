@@ -320,3 +320,69 @@ describe('notOnDeviceDisplay removal', () => {
     expect(out.Test.catalogSettings.stackCount).toBe(2);
   });
 });
+
+describe('key bindings (#55)', () => {
+  it('defaults to {} (today’s keys) and wheelTurnsPages off', () => {
+    const out = migrateProfiles({ Test: {} as any });
+    expect(out.Test.keyBindings).toEqual({});
+    expect(out.Test.wheelTurnsPages).toBe(false);
+  });
+
+  it('checks shape only: a non-object becomes {}, a non-array entry is dropped', () => {
+    expect(migrateProfiles({ T: { keyBindings: 'KeyA' } as any }).T.keyBindings).toEqual({});
+    expect(migrateProfiles({ T: { keyBindings: [['KeyA']] } as any }).T.keyBindings).toEqual({});
+    expect(
+      migrateProfiles({
+        T: { keyBindings: { 'reader.night': 'KeyN', 'reader.page-left': [] } } as any
+      }).T.keyBindings
+    ).toEqual({ 'reader.page-left': [] });
+    expect(migrateProfiles({ T: { wheelTurnsPages: 'yes' } as any }).T.wheelTurnsPages).toBe(false);
+  });
+
+  it('keeps unknown ids and unparseable chords: an older client cannot erase a newer one’s', () => {
+    const newer = { 'reader.page-left': ['KeyA'], 'future.action': ['Hyper+KeyQ'] };
+    // An older client reads the profile, edits something else, writes it back.
+    const read = migrateProfiles({ T: { keyBindings: newer } as any });
+    const written = { ...read.T, nightMode: true };
+    const roundTrip = migrateProfiles({ T: JSON.parse(JSON.stringify(written)) });
+    expect(roundTrip.T.keyBindings).toEqual(newer);
+  });
+});
+
+describe('copyKeyBindingsToAllProfiles (#55)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('writes the current map into every live profile and touches each one', async () => {
+    const {
+      copyKeyBindingsToAllProfiles,
+      createProfile,
+      deleteProfile,
+      changeProfile,
+      profilesWithTrash
+    } = await import('./settings');
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    createProfile('KeysA');
+    createProfile('KeysGone');
+    deleteProfile('KeysGone');
+    changeProfile('Desktop');
+    updateSetting('keyBindings', { 'reader.page-left': ['KeyA'] });
+
+    vi.setSystemTime(new Date('2026-02-01T00:00:00Z'));
+    copyKeyBindingsToAllProfiles();
+    const all = get(profilesWithTrash);
+    for (const name of ['Desktop', 'Mobile', 'KeysA']) {
+      expect(all[name].keyBindings, name).toEqual({ 'reader.page-left': ['KeyA'] });
+      expect(all[name].lastUpdated, name).toBe('2026-02-01T00:00:00.000Z');
+    }
+    // A tombstone stays a tombstone.
+    expect(all.KeysGone.deletedOn).toBeTruthy();
+    expect(all.KeysGone.keyBindings).toEqual({});
+    // Copies, not one shared object.
+    expect(all.KeysA.keyBindings).not.toBe(all.Desktop.keyBindings);
+  });
+});
