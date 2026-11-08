@@ -240,11 +240,27 @@ Located in `src/lib/util/sync/`, the app supports multiple cloud storage provide
   no feed request (no position either) until the next login / cache clear; a 400 on
   `changes.list` is a refused POSITION only (the full fetch takes a fresh one). The feed
   never toggles `fetching`/`loaded`. It runs at the top of
-  `runProviderSync` (Drive only, before volume data), and metadata writers'
+  `runProviderSync` (every cache that has one, before volume data), and metadata writers'
   `ensureFreshCloudListing` takes it via `fetchAllCloudVolumes({ fromChangeFeed: true })`
   once the cache is loaded; the backup run's single post-run listing stays. Unverified
   without a real account: whether `drive.file` scope shows another device's writes and
   folder moves in the feed — the full-fetch fallback covers any feed failure.
+
+**Every provider: receipts and change feeds** (#288). An upload is confirmed by its own
+response: a success status, and the stored size the response reports must equal the bytes
+sent (`confirmUploadReceipt`, `core/upload-receipt.ts` — Drive `fields=size`, OneDrive's
+finished item, the new MEGA node, Local Folder's `getFile()`; a WebDAV PUT reports none,
+bunko's `X-Mokuro-Size` is checked in `webdav-upload.ts`). Content hashes are not compared
+(no streaming WebCrypto digest; TLS + bunko's `Content-Digest` cover transit). A WebDAV PUT
+without an `ETag` is never followed by a stat (`webdav-provider.ts`: another device's write
+in between would be bound to our bytes). Other devices' writes reach the listing through the
+cache's `refreshFromChanges`, gated on the method alone: Drive `changes.list`, OneDrive Graph
+root `delta` (`onedrive-delta.ts`), MEGA the sc push stream megajs already applies to the
+session's tree (`megaCache.refreshFromChanges`: no request while the poll runs —
+`treeVersion()` says whether the listing is behind — a full tree load when it does not, and
+a reject if that load did not bring the poll back). WebDAV and Local Folder have no change
+token: their sync lists `history/` alone, throttled (`history-listing-refresh.ts`), and
+series folders wait for the next full listing.
 
 **Provider status is published, never polled.** The navbar's reconnect banner, the cloud
 screen and every read-only gate read `providerManager.status`, which moves only when

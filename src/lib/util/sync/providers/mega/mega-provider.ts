@@ -267,6 +267,14 @@ export class MegaProvider implements SyncProvider {
   /** Bumped on logout/expiry so a load that lands afterwards starts no poll. */
   private sessionEpoch = 0;
   /**
+   * Moves whenever the tree the session holds may have: every node event the
+   * sc stream (or our own write) applies, every full load swapped in, every
+   * session started or ended. The listing cache compares it to the value it
+   * last listed at (`megaCache.refreshFromChanges`). Never reset: monotonic
+   * across sessions, so no two trees share a value.
+   */
+  private treeChanges = 0;
+  /**
    * Main-thread megajs requests in flight (see `raceLogout`), each by the
    * function that rejects it. A logout rejects them all before it closes the
    * session: megajs drops every response that arrives after `close()` without
@@ -325,10 +333,33 @@ export class MegaProvider implements SyncProvider {
       this.vanishedControlHandles.clear(); // give a skipped node another chance
       this.scheduleControlNotify(name, storage);
     };
+    const changed = () => {
+      if (this.storage === storage) this.treeChanges++;
+    };
     for (const event of ['add', 'move', 'delete', 'update']) {
+      storage.on(event, changed);
       storage.on(event, schedule);
       storage.on(event, onNode);
     }
+  }
+
+  /**
+   * The tree's change count (see `treeChanges`): equal values mean the tree
+   * has not moved in between. Read it BEFORE listing, so a change landing
+   * during the listing leaves the listing marked behind.
+   */
+  treeVersion(): number {
+    return this.treeChanges;
+  }
+
+  /**
+   * Does the tree follow the server right now? Only while the sc long-poll
+   * runs: it applies every change made anywhere on the account (#288 — MEGA's
+   * change feed is this push stream). A poll that died and gave up recovering
+   * (`recoverServerChanges`) leaves the tree frozen until the next full load.
+   */
+  hasLiveServerChanges(): boolean {
+    return this.isAuthenticated() && this.stopServerChanges !== null;
   }
 
   private scheduleControlNotify(name: string, storage: any): void {
@@ -457,6 +488,7 @@ export class MegaProvider implements SyncProvider {
    */
   private startSessionEpoch(): void {
     this.sessionEpoch++;
+    this.treeChanges++;
     this.treeRefresh = null;
     this.scRecoveryAttempt = 0;
   }
@@ -875,6 +907,7 @@ export class MegaProvider implements SyncProvider {
             return;
           }
           if (!snapshot) return;
+          this.treeChanges++; // a whole new tree, swapped in without events
           this.settleSnapshot(storage, response.f, previous.files, knownBefore);
           if (response.sn && epoch === this.sessionEpoch) {
             this.startServerChanges(storage, response.sn);

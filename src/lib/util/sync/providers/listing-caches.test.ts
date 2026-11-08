@@ -16,7 +16,10 @@ const h = vi.hoisted(() => {
       // OneDrive's walk, with the folder map its change feed resumes from
       // (none here: the feed is onedrive-change-feed.test.ts's).
       listLibrary: async () => ({ files: await list(), folders: new Map(), rootId: null }),
-      getFolderOperations: () => ({})
+      getFolderOperations: () => ({}),
+      // MEGA's live-tree stamp (its feed is mega-change-feed.test.ts's).
+      treeVersion: () => 0,
+      hasLiveServerChanges: () => true
     }
   };
 });

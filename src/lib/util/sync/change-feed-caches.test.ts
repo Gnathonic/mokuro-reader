@@ -13,16 +13,17 @@ vi.mock('./providers/filesystem/filesystem-provider', () => ({ filesystemProvide
 vi.mock('./providers/onedrive/onedrive-provider', () => ({ onedriveProvider: {} }));
 
 describe('change feeds by cache', () => {
-  it('OneDrive has one (Graph delta)', async () => {
+  it('OneDrive (Graph delta) and MEGA (the sc push stream) have one', async () => {
     const { onedriveCache } = await import('./providers/onedrive/onedrive-cache');
+    const { megaCache } = await import('./providers/mega/mega-cache');
     expect(typeof onedriveCache.refreshFromChanges).toBe('function');
+    expect(typeof megaCache.refreshFromChanges).toBe('function');
   });
 
-  it('MEGA, WebDAV and Local Folder have none', async () => {
-    const { megaCache } = await import('./providers/mega/mega-cache');
+  it('WebDAV and Local Folder have none', async () => {
     const { webdavCache } = await import('./providers/webdav/webdav-cache');
     const { filesystemCache } = await import('./providers/filesystem/filesystem-cache');
-    for (const cache of [megaCache, webdavCache, filesystemCache]) {
+    for (const cache of [webdavCache, filesystemCache]) {
       expect('refreshFromChanges' in cache).toBe(false);
     }
   });

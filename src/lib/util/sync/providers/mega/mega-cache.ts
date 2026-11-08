@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { CacheAddMetadata, CloudCache } from '../../cloud-cache-interface';
+import type { CacheAddMetadata, ChangeFeedResult, CloudCache } from '../../cloud-cache-interface';
 import type { CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import { addMutations, removeMutations } from '../../listing-mutations';
@@ -29,6 +29,12 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   private loadedFlag = false;
   /** Refetches in a row that a dedup run asked for (see runDeduplication). */
   private dedupRefetches = 0;
+  /**
+   * The provider's `treeVersion()` the installed listing was read at, or -1:
+   * equal to the provider's current value = the listing shows the tree as it
+   * stands (`refreshFromChanges`).
+   */
+  private listedAt = -1;
 
   get store() {
     // Return Map grouped by series for efficient series-based operations
@@ -79,6 +85,8 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
   private async load(skipReinitialize: boolean): Promise<void> {
     // Uploads and deletes made while the tree reloads are replayed onto its map.
     const listing = this.cache.beginListing();
+    // Read before listing: a change landing meanwhile leaves this one behind.
+    const treeVersion = megaProvider.treeVersion();
     try {
       // Query MEGA provider (which reads from its internal storage.files cache)
       const volumes = await megaProvider.listCloudVolumes(skipReinitialize);
@@ -100,6 +108,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
       // A clear() meanwhile (sign-out): this listing is a dead account's.
       if (!listing.install(cacheMap)) return;
       this.loadedFlag = true;
+      this.listedAt = treeVersion;
       console.log(
         `✅ MEGA cache populated with ${volumes.length} files in ${cacheMap.size} series`
       );
@@ -204,9 +213,44 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
     return this.cache.revision();
   }
 
+  /**
+   * MEGA's change feed is the sc push stream (#288): the session's tree
+   * already holds every change made anywhere on the account, applied by
+   * megajs as the server pushes it, and a debounced rebuild follows each one
+   * (`attachChangeListeners`). So bringing the listing current costs no
+   * request — `'unchanged'` when the tree has not moved since the listing
+   * was read, else a rebuild from the live tree (`'applied'`), joined if one
+   * is already running. Only a poll that is not running (died and gave up
+   * recovering) means the tree may be frozen: then the whole tree is loaded
+   * again (`'reset'`), and a load that did not bring the poll back REJECTS —
+   * a metadata writer about to prune against the listing must never be told
+   * a frozen tree is current (`ensureFreshCloudListing`).
+   */
+  async refreshFromChanges(): Promise<ChangeFeedResult> {
+    let result: ChangeFeedResult = 'applied';
+    if (!megaProvider.hasLiveServerChanges()) {
+      await this.fetch(false);
+      if (!megaProvider.hasLiveServerChanges()) {
+        throw new Error('MEGA listing could not be brought current: no live server-change stream');
+      }
+      result = 'reset';
+    } else if (this.listedAt === megaProvider.treeVersion() && !this.running) {
+      return 'unchanged';
+    }
+    // A listing read before the latest change (a rebuild already running, or
+    // the reload above, which counts its own swap): rebuild from the live tree
+    // until it caught up. It does at once unless changes keep landing — then
+    // the newest listing stands, and the debounced rebuild follows them.
+    for (let pass = 0; pass < 3 && this.listedAt !== megaProvider.treeVersion(); pass++) {
+      await this.fetch(true);
+    }
+    return result;
+  }
+
   clear(): void {
     this.cache.set(new Map());
     this.loadedFlag = false;
+    this.listedAt = -1;
     // The next fetch lists the new account rather than joining the old one's.
     this.running = null;
     this.runningReloads = false;

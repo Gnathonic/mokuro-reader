@@ -364,10 +364,10 @@ class UnifiedSyncService {
       // A listing cache moves only when this device lists or writes, and every
       // step below reads it: other devices' root files, their copies, their
       // history. A cache with a change feed (Google Drive's changes.list,
-      // OneDrive's delta) brings it current first — one small request when
-      // nothing changed, a full listing when the feed cannot answer. The
-      // others have none (MEGA's tree is live; WebDAV and Local Folder offer
-      // no change token).
+      // OneDrive's delta, MEGA's sc push stream) brings it current first — one
+      // small request (none on MEGA) when nothing changed, a full listing when
+      // the feed cannot answer. WebDAV and Local Folder have none (no change
+      // token).
       await this.refreshListingFromChanges(provider);
       // What the server keeps per user can change under an open tab (a bunko
       // upgrade or rollback); the per-user files below follow it. Fails quietly.

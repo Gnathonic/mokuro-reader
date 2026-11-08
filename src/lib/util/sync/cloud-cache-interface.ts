@@ -151,11 +151,12 @@ export interface CloudCache<T = any> {
    * {@link fetch} whenever the feed cannot answer (`'reset'`). Never toggles
    * the fetching/loaded state, and leaves the cache untouched (same identity)
    * when nothing changed. Rejects when it could not bring the cache current
-   * (an auth failure; OneDrive also when the full listing it fell back to
-   * failed). OPTIONAL — the callers gate on the method, never on the provider
-   * type: Google Drive's cache (`changes.list`) and OneDrive's (Graph root
-   * `delta`) have one; MEGA's tree is live, and WebDAV and Local Folder offer
-   * no change token.
+   * (an auth failure; OneDrive and MEGA also when the full listing they fell
+   * back to failed). OPTIONAL — the callers gate on the method, never on the
+   * provider type: Google Drive's cache (`changes.list`), OneDrive's (Graph
+   * root `delta`) and MEGA's (the sc push stream, already applied to the
+   * session's tree — no request) have one; WebDAV and Local Folder offer no
+   * change token.
    */
   refreshFromChanges?(): Promise<ChangeFeedResult>;
 
