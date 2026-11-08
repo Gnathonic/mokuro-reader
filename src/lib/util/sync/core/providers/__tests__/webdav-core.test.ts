@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const uploadFileWithClient = vi.hoisted(() => vi.fn());
-vi.mock('$lib/util/sync/providers/webdav/webdav-upload', async (importOriginal) => {
+vi.mock('#lib/util/sync/providers/webdav/webdav-upload.js', async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import('$lib/util/sync/providers/webdav/webdav-upload')>();
+    await importOriginal<typeof import('#lib/util/sync/providers/webdav/webdav-upload.js')>();
   return {
     ...actual,
     ensureFoldersExist: vi.fn(async () => {}),
@@ -20,7 +20,7 @@ vi.mock('webdav', () => ({
 }));
 
 import { webdavCore } from '../webdav-core';
-import { WebdavUploadError } from '$lib/util/sync/providers/webdav/webdav-upload';
+import { WebdavUploadError } from '#lib/util/sync/providers/webdav/webdav-upload.js';
 
 const credentials = { webdavUrl: 'https://bunko.example/dav', webdavPassword: 'pw' };
 

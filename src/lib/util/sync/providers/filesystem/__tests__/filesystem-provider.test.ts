@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Constructor should not attempt to restore a stored handle in tests.
-vi.mock('$app/environment', () => ({ browser: false }));
+vi.mock('$app/env', () => ({ browser: false }));
 
 import { FilesystemProvider } from '../filesystem-provider';
 import { ProviderError } from '../../../provider-interface';

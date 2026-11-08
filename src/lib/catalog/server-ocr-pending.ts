@@ -1,6 +1,6 @@
 import { readable, writable, type Readable } from 'svelte/store';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { layerNameForId } from '$lib/reader/edit/layer-names';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { layerNameForId } from '#lib/reader/edit/layer-names.js';
 
 /**
  * What the volume views show of a server's OCR queue — the light half of

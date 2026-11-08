@@ -1,5 +1,5 @@
-import { db } from '$lib/catalog/db';
-import { accountCanAddFiles, canPublishCurated } from '$lib/util/sync/account-capabilities';
+import { db } from '#lib/catalog/db.js';
+import { accountCanAddFiles, canPublishCurated } from '#lib/util/sync/account-capabilities.js';
 import {
   deleteLayerRows,
   getLayerMeta,
@@ -12,26 +12,26 @@ import {
   patchLayerMeta,
   putLayerWithPages,
   updateLayerMeta
-} from '$lib/catalog/layer-store';
-import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
+} from '#lib/catalog/layer-store.js';
+import type { Page, VolumeMetadata, VolumeOcrLayer } from '#lib/types/index.js';
 import {
   isCorrectionsLayerId,
   layerKindForId,
   layerNameForId,
   servedEngineOf,
   titleCasedLayerId
-} from '$lib/reader/edit/layers';
-import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
+} from '#lib/reader/edit/layers.js';
+import { alignLayerPages } from '#lib/reader/edit/layer-page-align.js';
 import {
   CURATED_LAYER_ID,
   EDIT_LAYER_ID,
   isCuratedLayerId,
   isPersonalLayerId
-} from '$lib/reader/edit/layer-names';
-import { editLayerEpoch } from '$lib/reader/edit/edit-layer-epoch';
-import { isCloudModelOutput } from '$lib/reader/edit/layer-kind';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
+} from '#lib/reader/edit/layer-names.js';
+import { editLayerEpoch } from '#lib/reader/edit/edit-layer-epoch.js';
+import { isCloudModelOutput } from '#lib/reader/edit/layer-kind.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { buildPageCharCounts } from '#lib/catalog/page-char-counts.js';
 import {
   layerIdStaysLocal,
   layerStaysLocal,
@@ -39,28 +39,28 @@ import {
   personalLayerAccount,
   syncedForOtherAccount,
   type LayerTarget
-} from '$lib/catalog/mokuro-hash';
-import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
-import { editBaseSeal } from '$lib/catalog/ocr-provenance';
-import { cacheManager } from '$lib/util/sync/cache-manager';
-import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
+} from '#lib/catalog/mokuro-hash.js';
+import { buildLayerMokuroMetadata } from '#lib/util/mokuro-metadata.js';
+import { editBaseSeal } from '#lib/catalog/ocr-provenance.js';
+import { cacheManager } from '#lib/util/sync/cache-manager.js';
+import { uploadCacheEntry } from '#lib/util/sync/cloud-cache-interface.js';
 import {
   ProviderError,
   type CloudFileMetadata,
   type ProviderStatus,
   type ProviderType,
   type SyncProvider
-} from '$lib/util/sync/provider-interface';
-import { providerManager } from '$lib/util/sync/provider-manager';
-import { freshGateStatus, refreshGates } from '$lib/util/sync/identity-gates';
+} from '#lib/util/sync/provider-interface.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
+import { freshGateStatus, refreshGates } from '#lib/util/sync/identity-gates.js';
 import {
   cbzStemsOf,
   classifyMokuroSidecar,
   isCbzFile,
   layerOwnerArchive,
   layerSidecarName
-} from '$lib/util/sync/syncable-file';
-import { naturalSort } from '$lib/util/natural-sort';
+} from '#lib/util/sync/syncable-file.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
 import { isoToEpochSeconds } from './cloud-sidecar-stamps';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from './series-key';
 

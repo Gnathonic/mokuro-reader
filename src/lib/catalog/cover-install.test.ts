@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_cover_install_test') };
 });
 
@@ -29,7 +29,7 @@ const getActiveProvider = vi.fn(() => ({
   // without one it drops the cover rather than blending accounts.
   getStatus: () => ({ isAuthenticated: true, accountScope: 'webdav:a@b.com' })
 }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     getAllCloudVolumes: () => getAllCloudVolumes(),
     getActiveProvider: () => getActiveProvider()
@@ -37,7 +37,7 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 }));
 
 // The Worker-backed decode cache is orthogonal to what this file asserts.
-vi.mock('$lib/catalog/thumbnail-cache', () => ({
+vi.mock('#lib/catalog/thumbnail-cache.js', () => ({
   thumbnailCache: { invalidate: vi.fn() }
 }));
 
@@ -61,18 +61,18 @@ const history = vi.hoisted(() => {
     }
   };
 });
-vi.mock('$lib/settings/volume-data', () => ({ volumes: history.store }));
+vi.mock('#lib/settings/volume-data.js', () => ({ volumes: history.store }));
 
 const fetchCloudThumbnail = vi.fn(async (_volume: unknown) => ({
   file: new File(['img'], 'Volume 1.webp', { type: 'image/webp' }),
   width: 210,
   height: 297
 }));
-vi.mock('$lib/catalog/cloud-thumbnails', () => ({
+vi.mock('#lib/catalog/cloud-thumbnails.js', () => ({
   fetchCloudThumbnail: (v: unknown) => fetchCloudThumbnail(v as never)
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { _getCloudCoversForTests } from './cloud-covers';
 import { _resetCoverPersistForTests } from './cover-persist';
 import { _resetCoverServiceForTests, _setRetryDelaysForTests } from './cover-service';

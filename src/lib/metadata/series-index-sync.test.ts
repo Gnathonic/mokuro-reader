@@ -1,21 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
+import type { CloudVolumeWithProvider } from '#lib/util/sync/unified-cloud-manager.js';
 import type { SeriesIndexRecord } from './series-index';
 
 const getActiveProvider = vi.fn();
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { getActiveProvider }
 }));
 
 // The table itself is exercised in series-index.test.ts; here only the calls matter.
-vi.mock('$lib/catalog/db', () => ({ db: {} }));
+vi.mock('#lib/catalog/db.js', () => ({ db: {} }));
 
 const listSeriesIndexes = vi.fn(async (): Promise<SeriesIndexRecord[]> => []);
 const putSeriesIndexes = vi.fn(async (_recs: SeriesIndexRecord[]) => {});
 const deleteSeriesIndex = vi.fn(async (_key: string) => {});
-vi.mock('$lib/metadata/series-index', async () => {
-  const actual = await vi.importActual<typeof import('$lib/metadata/series-index')>(
-    '$lib/metadata/series-index'
+vi.mock('#lib/metadata/series-index.js', async () => {
+  const actual = await vi.importActual<typeof import('#lib/metadata/series-index.js')>(
+    '#lib/metadata/series-index.js'
   );
   return {
     // The real size/mtime comparison decides what gets re-downloaded.
@@ -28,13 +28,13 @@ vi.mock('$lib/metadata/series-index', async () => {
 
 // The OCR upgrade pass the refresh hands its refreshed series to (loaded on demand).
 const requestOcrUpgradePass = vi.fn(async (_provider: string, _series: unknown[]) => {});
-vi.mock('$lib/catalog/ocr-upgrade-pass', () => ({
+vi.mock('#lib/catalog/ocr-upgrade-pass.js', () => ({
   requestOcrUpgradePass: (provider: string, series: unknown[]) =>
     requestOcrUpgradePass(provider, series)
 }));
 
 const upsertFromSeriesFile = vi.fn(async (_title: string, _file: unknown) => {});
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   upsertFromSeriesFile: (title: string, file: unknown) => upsertFromSeriesFile(title, file)
 }));
 

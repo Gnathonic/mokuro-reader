@@ -7,7 +7,7 @@ import {
   confirmationPopupStore,
   promptConfirmation,
   promptConfirmationWith
-} from '$lib/util/modals';
+} from '#lib/util/modals.js';
 
 beforeEach(() => {
   localStorage.clear();

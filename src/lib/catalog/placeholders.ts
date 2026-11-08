@@ -1,17 +1,17 @@
-import type { VolumeMetadata } from '$lib/types';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
-import type { CloudVolumeWithProvider } from '$lib/util/sync/unified-cloud-manager';
-import { browser } from '$app/environment';
-import { generateDeterministicUUID } from '$lib/util/series-extraction';
-import { enqueueCloudOcrUpgrade } from '$lib/catalog/cloud-ocr-upgrade';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
+import type { CloudVolumeWithProvider } from '#lib/util/sync/unified-cloud-manager.js';
+import { browser } from '$app/env';
+import { generateDeterministicUUID } from '#lib/util/series-extraction.js';
+import { enqueueCloudOcrUpgrade } from '#lib/catalog/cloud-ocr-upgrade.js';
 import {
   isArchiveSize,
   isSeriesFilePath,
   type SeriesFileVolume,
   entryMokuroVersion
-} from '$lib/metadata/series-file';
-import type { SeriesIndexRecord } from '$lib/metadata/series-index';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+} from '#lib/metadata/series-file.js';
+import type { SeriesIndexRecord } from '#lib/metadata/series-index.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 
 /**
  * The identity of one archive across the sources that spell it differently: a

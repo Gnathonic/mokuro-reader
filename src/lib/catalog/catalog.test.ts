@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
-import type { SeriesMetadata } from '$lib/metadata/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import type { SeriesMetadata } from '#lib/metadata/types.js';
 import {
   deriveSeriesFromVolumes,
   partitionCatalogSeries,

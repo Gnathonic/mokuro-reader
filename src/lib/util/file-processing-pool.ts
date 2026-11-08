@@ -15,8 +15,8 @@
  */
 
 import { WorkerPool, type WorkerTask } from './worker-pool';
-import UnifiedFileWorker from '$lib/workers/unified-file-worker.ts?worker';
-import { miscSettings } from '$lib/settings/misc';
+import UnifiedFileWorker from '#lib/workers/unified-file-worker.ts?worker';
+import { miscSettings } from '#lib/settings/misc.js';
 import { sharedMemoryManager } from './shared-memory-manager';
 
 // Singleton state

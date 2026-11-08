@@ -2,8 +2,8 @@ import type {
   CloudFileMetadata,
   ProviderType,
   SyncProvider
-} from '$lib/util/sync/provider-interface';
-import { providerManager } from '$lib/util/sync/provider-manager';
+} from '#lib/util/sync/provider-interface.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
 import { catalogNeedsRefresh, getCatalogIndex, putCatalogIndex } from './catalog-index';
 import {
   catalogEntryToSeriesFile,
@@ -219,7 +219,7 @@ async function healFactsBehindCatalog(file: CatalogFile, provider: SyncProvider)
     if (file.series.length === 0) return;
     const [{ db }, { hasSeriesFacts }, { factsStamp }, { normalizeVolumeTitleKey }] =
       await Promise.all([
-        import('$lib/catalog/db'),
+        import('#lib/catalog/db.js'),
         import('./series-file'),
         import('./store'),
         import('./series-key')
@@ -230,7 +230,7 @@ async function healFactsBehindCatalog(file: CatalogFile, provider: SyncProvider)
     const entryStampByKey = new Map(
       file.series.map((entry) => [normalizeVolumeTitleKey(entry.series_title), entry.updated_at])
     );
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     const behind: string[] = [];
     for (const record of locals) {

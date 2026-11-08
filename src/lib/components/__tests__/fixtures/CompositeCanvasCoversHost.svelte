@@ -14,7 +14,7 @@
    * still, so a redraw after {@link Props.control}'s setter runs can only have come from
    * the canvas tracking `covers` itself.
    */
-  import type { VolumeMetadata } from '$lib/types';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   import CompositeCanvas from '../../CompositeCanvas.svelte';
 
   interface Props {

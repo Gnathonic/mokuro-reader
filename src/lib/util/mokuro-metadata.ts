@@ -1,5 +1,5 @@
-import type { VolumeMetadata } from '$lib/types';
-import { carriedProvenance } from '$lib/catalog/ocr-provenance';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { carriedProvenance } from '#lib/catalog/ocr-provenance.js';
 
 /**
  * The .mokuro JSON the app writes (sidecars, CBZ-embedded, exports).

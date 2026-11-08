@@ -3,7 +3,7 @@
  * fixture `marker-active` (`interop/contract/bunko/`, see `$lib/interop/contract`),
  * or, without a Bunko checkout, the snapshot below.
  */
-import { bunkoBody } from '$lib/interop/contract';
+import { bunkoBody } from '#lib/interop/contract.js';
 
 /**
  * `marker-active`'s body as exported (sentinel times and ids), in its key order.

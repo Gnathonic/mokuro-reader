@@ -22,24 +22,24 @@
  */
 
 import { get } from 'svelte/store';
-import { liveView } from '$lib/reading-history/live-view';
-import { getVolumeEvents, onHistoryChanged } from '$lib/reading-history/turns-store';
-import type { ReadingEvent } from '$lib/reading-history/types';
+import { liveView } from '#lib/reading-history/live-view.js';
+import { getVolumeEvents, onHistoryChanged } from '#lib/reading-history/turns-store.js';
+import type { ReadingEvent } from '#lib/reading-history/types.js';
 import {
   LOOKUP_MAX_READ_PAGES,
   VISIT_GAP_MS,
   isLookupVisit,
   pagesReadAway,
   type ViewLike
-} from '$lib/reading-history/visits';
+} from '#lib/reading-history/visits.js';
 import {
   registerCompletionHold,
   registerPositionListener,
   releaseHeldCompletion,
   restoreVolumePosition,
   volumesWithTrash
-} from '$lib/settings/volume-data';
-import { stampMs } from '$lib/util/volume-helpers';
+} from '#lib/settings/volume-data.js';
+import { stampMs } from '#lib/util/volume-helpers.js';
 import { newestUploaded, unwatchEscapes, watchEscapes } from './escapes';
 import { noteReaderTurned } from './reader-open';
 

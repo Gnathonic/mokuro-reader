@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import AnkiTemplateField from '../AnkiTemplateField.svelte';
-import { escapeFieldText } from '$lib/anki-connect/field-html';
+import { escapeFieldText } from '#lib/anki-connect/field-html.js';
 
 afterEach(() => cleanup());
 

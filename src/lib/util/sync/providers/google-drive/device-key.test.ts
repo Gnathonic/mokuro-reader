@@ -12,7 +12,7 @@ import {
   loadDeviceKey,
   signProof
 } from './device-key';
-import { checkProof, jwkThumbprint, parseProof } from '$lib/server/gdrive-auth/pop';
+import { checkProof, jwkThumbprint, parseProof } from '#lib/server/gdrive-auth/pop.js';
 
 const ORIGIN = 'https://reader.example';
 

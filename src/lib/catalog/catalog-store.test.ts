@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * The `catalog` store re-groups, re-resolves display titles for and re-sorts the whole
@@ -115,7 +115,7 @@ const {
 // is set, the call parks its resolution in `toArrayResolvers` instead of
 // settling immediately, so a test can hold a read open across a coalesce window
 // and settle it later via `resolveNextToArray`.
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       toArray: () => {
@@ -163,23 +163,23 @@ vi.mock('dexie', () => ({
     }
   })
 }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { cloudFiles }
 }));
 // Only the cloud scan is stubbed; the path index and the cloud-field lookup a
 // metadata-only row is decorated with are the real ones.
-vi.mock('$lib/catalog/placeholders', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/catalog/placeholders')>();
+vi.mock('#lib/catalog/placeholders.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/catalog/placeholders.js')>();
   return { ...actual, generatePlaceholders };
 });
-vi.mock('$lib/util/hash-router', () => ({ routeParams }));
-vi.mock('$lib/util/download-volume-repair', () => ({
+vi.mock('#lib/util/hash-router.js', () => ({ routeParams }));
+vi.mock('#lib/util/download-volume-repair.js', () => ({
   getLegacyImageOnlyVolumeUuid: () => undefined
 }));
-vi.mock('$lib/metadata/store', () => ({ seriesMetadataMap }));
-vi.mock('$lib/metadata/series-index', () => ({ seriesIndexMap }));
-vi.mock('$lib/catalog/catalog', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/catalog/catalog')>();
+vi.mock('#lib/metadata/store.js', () => ({ seriesMetadataMap }));
+vi.mock('#lib/metadata/series-index.js', () => ({ seriesIndexMap }));
+vi.mock('#lib/catalog/catalog.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#lib/catalog/catalog.js')>();
   return { ...actual, deriveSeriesFromVolumes: vi.fn(actual.deriveSeriesFromVolumes) };
 });
 
@@ -190,9 +190,9 @@ import {
   VOLUMES_EMISSION_COALESCE_MS,
   VOLUMES_RETRY_BASE_MS,
   VOLUMES_RETRY_MAX_MS
-} from '$lib/catalog';
-import { deriveSeriesFromVolumes } from '$lib/catalog/catalog';
-import { updateCatalogSetting, updateSetting } from '$lib/settings/settings';
+} from '#lib/catalog/index.js';
+import { deriveSeriesFromVolumes } from '#lib/catalog/catalog.js';
+import { updateCatalogSetting, updateSetting } from '#lib/settings/settings.js';
 
 /**
  * The gate/resolver state below is module-scoped and shared by every test in

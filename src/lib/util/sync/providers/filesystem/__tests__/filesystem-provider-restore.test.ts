@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Restore tests exercise the real constructor path (browser + supported API),
 // unlike filesystem-provider.test.ts which pins browser:false to skip it.
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 vi.mock('../feature-detect', () => ({
   isFilesystemProviderSupported: vi.fn(() => true)

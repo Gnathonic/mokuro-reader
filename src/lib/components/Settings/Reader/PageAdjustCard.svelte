@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settings, updateSetting } from '$lib/settings';
+  import { settings, updateSetting } from '#lib/settings/index.js';
   import { Button, Label, Range, Select } from 'flowbite-svelte';
   import {
     INK_COLOR_NAMES,
@@ -19,14 +19,14 @@
     inkLayerColor,
     sanitizeInkColor,
     type InkColorSetting
-  } from '$lib/reader/ink-color';
+  } from '#lib/reader/ink-color.js';
   import {
     PAGE_ADJUST_DEFAULT,
     PAGE_ADJUST_MAX,
     PAGE_ADJUST_MIN,
     PAGE_ADJUST_STEP,
     clampPageAdjust
-  } from '$lib/reader/page-filter';
+  } from '#lib/reader/page-filter.js';
 
   // Page images only (#256): washed-out scans. The OCR text is never filtered.
   // (Ink color below does recolour the OCR text, to match the ink.)

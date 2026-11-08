@@ -5,14 +5,14 @@
 
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { devices } from '$lib/reading-history/device-stats';
-  import { offerDeviceName, type PositionOffer } from '$lib/reading-history/position-offer';
+  import { devices } from '#lib/reading-history/device-stats.js';
+  import { offerDeviceName, type PositionOffer } from '#lib/reading-history/position-offer.js';
   import {
     answerPosition,
     markPrompted,
     positionPlan,
     shouldPrompt
-  } from '$lib/reading-history/position-store';
+  } from '#lib/reading-history/position-store.js';
 
   /**
    * "You also read to page N on Pixel 8" (phase 2c; the device is named since

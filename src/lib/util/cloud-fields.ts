@@ -1,6 +1,6 @@
-import type { VolumeMetadata } from '$lib/types';
-import { isVolumeInstalled, needsDownload } from '$lib/catalog/volume-state';
-import { isArchiveSize } from '$lib/metadata/series-file';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { isVolumeInstalled, needsDownload } from '#lib/catalog/volume-state.js';
+import { isArchiveSize } from '#lib/metadata/series-file.js';
 import type { ProviderType } from './sync/provider-interface';
 
 /**

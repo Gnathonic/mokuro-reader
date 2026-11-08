@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const uploadFileWithClient = vi.hoisted(() => vi.fn());
-vi.mock('$lib/util/sync/providers/webdav/webdav-upload', async (importOriginal) => {
+vi.mock('#lib/util/sync/providers/webdav/webdav-upload.js', async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import('$lib/util/sync/providers/webdav/webdav-upload')>();
+    await importOriginal<typeof import('#lib/util/sync/providers/webdav/webdav-upload.js')>();
   return { ...actual, ensureFoldersExist: vi.fn(async () => {}), uploadFileWithClient };
 });
 /** A webdav client whose headers are real state (createClient options, then setHeaders). */
@@ -28,9 +28,9 @@ vi.mock('webdav', () => ({
 }));
 
 import { webdavCore } from '../webdav-core';
-import { WebdavUploadError } from '$lib/util/sync/providers/webdav/webdav-upload';
-import { TransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
-import { classifyWriteError } from '$lib/util/sync/providers/webdav/webdav-errors';
+import { WebdavUploadError } from '#lib/util/sync/providers/webdav/webdav-upload.js';
+import { TransientAuthRefreshError } from '#lib/util/worker-auth-refresh.js';
+import { classifyWriteError } from '#lib/util/sync/providers/webdav/webdav-errors.js';
 
 const TOKEN_CREDS = { webdavUrl: 'https://bunko.example', webdavToken: 'old' };
 

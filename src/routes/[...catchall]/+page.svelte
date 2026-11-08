@@ -1,22 +1,22 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { initRouter, currentView, type View } from '$lib/util/hash-router';
+  import { initRouter, currentView, type View } from '#lib/util/hash-router.js';
   import { Spinner } from 'flowbite-svelte';
   import type { Component } from 'svelte';
 
   // Dynamic component imports for each view type (same as root page)
   const viewComponents: Record<View['type'], () => Promise<{ default: Component }>> = {
-    catalog: () => import('$lib/views/CatalogView.svelte'),
-    series: () => import('$lib/views/SeriesView.svelte'),
-    reader: () => import('$lib/views/ReaderView.svelte'),
-    'volume-text': () => import('$lib/views/VolumeTextView.svelte'),
-    'series-text': () => import('$lib/views/SeriesTextView.svelte'),
-    cloud: () => import('$lib/views/CloudView.svelte'),
-    upload: () => import('$lib/views/UploadView.svelte'),
-    'reading-speed': () => import('$lib/views/ReadingSpeedView.svelte'),
-    'merge-series': () => import('$lib/views/MergeSeriesView.svelte'),
-    'progress-tracker': () => import('$lib/views/ProgressTrackerView.svelte'),
-    'manage-goals': () => import('$lib/views/ManageGoalsView.svelte')
+    catalog: () => import('#lib/views/CatalogView.svelte'),
+    series: () => import('#lib/views/SeriesView.svelte'),
+    reader: () => import('#lib/views/ReaderView.svelte'),
+    'volume-text': () => import('#lib/views/VolumeTextView.svelte'),
+    'series-text': () => import('#lib/views/SeriesTextView.svelte'),
+    cloud: () => import('#lib/views/CloudView.svelte'),
+    upload: () => import('#lib/views/UploadView.svelte'),
+    'reading-speed': () => import('#lib/views/ReadingSpeedView.svelte'),
+    'merge-series': () => import('#lib/views/MergeSeriesView.svelte'),
+    'progress-tracker': () => import('#lib/views/ProgressTrackerView.svelte'),
+    'manage-goals': () => import('#lib/views/ManageGoalsView.svelte')
   };
 
   // Currently loaded component

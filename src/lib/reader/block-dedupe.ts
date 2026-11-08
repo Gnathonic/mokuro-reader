@@ -12,7 +12,7 @@
  * wins; ties keep the earlier block. Render-time dedupe fixes volumes that
  * are already imported.
  */
-import type { Block } from '$lib/types';
+import type { Block } from '#lib/types/index.js';
 
 export interface KeptBlock {
   block: Block;

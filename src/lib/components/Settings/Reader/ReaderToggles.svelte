@@ -6,12 +6,12 @@
     grayscaleActive,
     type SettingsKey,
     updateSetting
-  } from '$lib/settings';
+  } from '#lib/settings/index.js';
   import { Toggle } from 'flowbite-svelte';
   import ScheduledFilterCard from './ScheduledFilterCard.svelte';
   import PageAdjustCard from './PageAdjustCard.svelte';
   import ReadingTimerSetting from './ReadingTimerSetting.svelte';
-  import { editModeActive, requestEditMode } from '$lib/reader/edit/edit-mode';
+  import { editModeActive, requestEditMode } from '#lib/reader/edit/edit-mode.js';
 
   let isContinuous = $derived($settings.continuousScroll);
 

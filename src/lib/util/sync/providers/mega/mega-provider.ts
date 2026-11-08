@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import type {
   SyncProvider,
   ProviderCredentials,
@@ -27,8 +27,8 @@ import {
   readControlNodes,
   type ListedControlNode
 } from '../../control-file-read';
-import { withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
-import { isHistoryFileName, isHistoryFilePath } from '$lib/reading-history/paths';
+import { withCloudBunkoStatus } from '#lib/catalog/cloud-bunko-marker.js';
+import { isHistoryFileName, isHistoryFilePath } from '#lib/reading-history/paths.js';
 import type { FolderOperations, FolderInfo, FolderItem } from '../../folder-deduplicator';
 import {
   isMfaRequiredError,

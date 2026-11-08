@@ -14,21 +14,21 @@
 </script>
 
 <script lang="ts">
-  import type { VolumeMetadata } from '$lib/types';
+  import type { VolumeMetadata } from '#lib/types/index.js';
   // `volumes` is the READING RECORD store (page + `completed` per uuid), aliased because
   // this component's own `volumes` prop is the series' catalog rows.
-  import { volumes as readStates, catalogSettings } from '$lib/settings';
-  import { downloadQueue } from '$lib/util/download-queue';
-  import { nav } from '$lib/util/hash-router';
-  import { promptSeriesEditor } from '$lib/util/modals';
-  import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
-  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
-  import { promptSeriesRemoval } from '$lib/catalog/series-delete';
-  import { seriesMetadataMap } from '$lib/metadata/store';
-  import { seriesIndexMap } from '$lib/metadata/series-index';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
-  import { canEditSeriesMetadata } from '$lib/util/sync/metadata-permissions';
-  import { showSnackbar } from '$lib/util';
+  import { volumes as readStates, catalogSettings } from '#lib/settings/index.js';
+  import { downloadQueue } from '#lib/util/download-queue.js';
+  import { nav } from '#lib/util/hash-router.js';
+  import { promptSeriesEditor } from '#lib/util/modals.js';
+  import { shouldOpenSeriesEditor } from '#lib/util/series-editor-shortcut.js';
+  import { anyModalOpen, shouldTriggerDelete } from '#lib/util/delete-shortcut.js';
+  import { promptSeriesRemoval } from '#lib/catalog/series-delete.js';
+  import { seriesMetadataMap } from '#lib/metadata/store.js';
+  import { seriesIndexMap } from '#lib/metadata/series-index.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+  import { canEditSeriesMetadata } from '#lib/util/sync/metadata-permissions.js';
+  import { showSnackbar } from '#lib/util/index.js';
   import {
     clampSpineOffset,
     clampVolumeOffset,
@@ -39,12 +39,12 @@
     volumeOffsetsByIndex,
     type SpineOffsetPatch,
     type SpineOffsets
-  } from '$lib/metadata/spine-offsets';
+  } from '#lib/metadata/spine-offsets.js';
   import {
     computeStackLayout,
     hitTestStack,
     spineBadgePlacements
-  } from '$lib/util/spine-stack-layout';
+  } from '#lib/util/spine-stack-layout.js';
   import {
     CARD_BASE_HEIGHT,
     CARD_BASE_WIDTH,
@@ -53,15 +53,15 @@
     computeUniformHeight,
     getSpineCanvasDimensions,
     selectCardStackVolumes
-  } from '$lib/util/spine-stack-geometry';
+  } from '#lib/util/spine-stack-geometry.js';
   import { Spinner } from 'flowbite-svelte';
   import { DownloadSolid } from 'flowbite-svelte-icons';
   import CompositeCanvas from './CompositeCanvas.svelte';
   import DownloadBadge from './DownloadBadge.svelte';
-  import { needsDownload } from '$lib/catalog/volume-state';
-  import { sortVolumes } from '$lib/catalog/sort-volumes';
-  import { isSeriesFinished, isVolumeFinished } from '$lib/util/volume-helpers';
-  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
+  import { needsDownload } from '#lib/catalog/volume-state.js';
+  import { sortVolumes } from '#lib/catalog/sort-volumes.js';
+  import { isSeriesFinished, isVolumeFinished } from '#lib/util/volume-helpers.js';
+  import { createCoverClaims } from '#lib/catalog/cover-claims.svelte.js';
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   interface Props {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 
 const { executeRenameSeries } = vi.hoisted(() => ({ executeRenameSeries: vi.fn() }));
-vi.mock('$lib/util/series-rename', () => ({ executeRenameSeries }));
+vi.mock('#lib/util/series-rename.js', () => ({ executeRenameSeries }));
 
 import SeriesRenameField from '../SeriesRenameField.svelte';
 

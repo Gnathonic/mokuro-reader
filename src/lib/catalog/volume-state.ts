@@ -1,4 +1,4 @@
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * A volume in the catalog is in one of three states:

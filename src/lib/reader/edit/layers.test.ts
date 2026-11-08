@@ -1,21 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_layers_test') };
 });
 const scheduleLayerPush = vi.hoisted(() => vi.fn());
-vi.mock('$lib/metadata/layer-sync', () => ({ scheduleLayerPush }));
+vi.mock('#lib/metadata/layer-sync.js', () => ({ scheduleLayerPush }));
 
-import { db } from '$lib/catalog/db';
-import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '#lib/catalog/layer-store.js';
 import {
   buildLayerExportFile,
   copyIntoEditLayer,
@@ -351,7 +351,7 @@ describe('upsertLayerPages', () => {
 
   it('writes nothing for a volume that was deleted — a late flush must not resurrect its layer', async () => {
     const { upsertLayerPages } = await import('./layers');
-    const { deleteVolumeCompletely } = await import('$lib/import/database');
+    const { deleteVolumeCompletely } = await import('#lib/import/database.js');
     // The run created the layer, then the user deleted the volume mid-run.
     await upsertLayerPages('v1', 'gcv', opts(new Map([[0, pg('一')]])));
     await deleteVolumeCompletely('v1');
@@ -365,7 +365,7 @@ describe('upsertLayerPages', () => {
 
   it('writes nothing once the volume was removed from this device, and leaves the kept layer alone', async () => {
     const { upsertLayerPages } = await import('./layers');
-    const { removeVolumeFiles } = await import('$lib/import/database');
+    const { removeVolumeFiles } = await import('#lib/import/database.js');
     const before = (await upsertLayerPages('v1', 'gcv', opts(new Map([[0, pg('一')]]))))!;
     await removeVolumeFiles('v1');
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 
-vi.mock('$lib/util/download-queue', () => ({
+vi.mock('#lib/util/download-queue.js', () => ({
   downloadQueue: {
     subscribe: (fn: (v: unknown[]) => void) => {
       fn([]);
@@ -10,7 +10,7 @@ vi.mock('$lib/util/download-queue', () => ({
     queueVolume: vi.fn()
   }
 }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: {
     subscribe: (fn: (v: { processes: unknown[] }) => void) => {
       fn({ processes: [] });
@@ -18,8 +18,8 @@ vi.mock('$lib/util/progress-tracker', () => ({
     }
   }
 }));
-vi.mock('$lib/util', () => ({ showSnackbar: vi.fn(), promptConfirmation: vi.fn() }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/index.js', () => ({ showSnackbar: vi.fn(), promptConfirmation: vi.fn() }));
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { deleteFile: vi.fn() }
 }));
 // PlaceholderVolumeItem renders `PlaceholderThumbnail`, which only REQUESTS a
@@ -28,13 +28,13 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
 // load. Stubbed the same way as the other cover-drawing surfaces
 // (CatalogItem.test.ts, SeriesSpineShowcase.test.ts, VolumeItem.test.ts); no
 // test here asserts on it, this is purely keeping the module graph out.
-vi.mock('$lib/catalog/cover-service', () => ({
+vi.mock('#lib/catalog/cover-service.js', () => ({
   requestCover: vi.fn(),
   isCoverFetchTarget: vi.fn(() => false)
 }));
 
 import PlaceholderVolumeItem from '../PlaceholderVolumeItem.svelte';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 function placeholder(): VolumeMetadata {
   return {

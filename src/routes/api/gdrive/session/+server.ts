@@ -1,7 +1,7 @@
 import * as env from '$app/env/private';
 import type { Config } from '@sveltejs/adapter-vercel';
 import type { RequestHandler } from './$types';
-import { handleSession, methodNotAllowed } from '$lib/server/gdrive-auth';
+import { handleSession, methodNotAllowed } from '#lib/server/gdrive-auth/index.js';
 
 // Google is given 5 s (AbortSignal.timeout); nothing here should run longer.
 export const config: Config = { maxDuration: 10 };

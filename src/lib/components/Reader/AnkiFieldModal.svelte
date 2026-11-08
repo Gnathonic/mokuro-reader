@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { currentView } from '$lib/util/hash-router';
+  import { currentView } from '#lib/util/hash-router.js';
   import {
     cropperStore,
     closeAnkiModal,
@@ -16,16 +16,21 @@
     getModelConfig,
     type CreateCardOptions,
     type UpdateCardOptions
-  } from '$lib/anki-connect';
-  import { settings, updateAnkiSetting, type ModelConfig, type FieldMapping } from '$lib/settings';
+  } from '#lib/anki-connect/index.js';
+  import {
+    settings,
+    updateAnkiSetting,
+    type ModelConfig,
+    type FieldMapping
+  } from '#lib/settings/index.js';
   import { Badge, Button, Helper, Input, Modal, Select, Spinner, Toggle } from 'flowbite-svelte';
   import { ChevronRightOutline } from 'flowbite-svelte-icons';
   import { slide } from 'svelte/transition';
-  import AnkiTemplateField from '$lib/components/Reader/AnkiTemplateField.svelte';
-  import { isMobilePlatform } from '$lib/util/platform';
+  import AnkiTemplateField from '#lib/components/Reader/AnkiTemplateField.svelte';
+  import { isMobilePlatform } from '#lib/util/platform.js';
   import { onMount } from 'svelte';
-  import ImageCropper from '$lib/components/ImageCropper.svelte';
-  import { roundCropData, type CropRect } from '$lib/util/crop-geometry';
+  import ImageCropper from '#lib/components/ImageCropper.svelte';
+  import { roundCropData, type CropRect } from '#lib/util/crop-geometry.js';
 
   let open = $state(false);
   let pixels: Pixels | undefined = undefined;

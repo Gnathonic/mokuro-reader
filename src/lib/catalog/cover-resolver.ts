@@ -2,7 +2,7 @@ import type { Readable, Subscriber, Unsubscriber } from 'svelte/store';
 import { db } from './db';
 import { activeAccountScope, normalizeCachePath } from './cloud-cache-key';
 import type { CloudCover } from './cloud-covers';
-import { rasterOrNull } from '$lib/util/raster-image';
+import { rasterOrNull } from '#lib/util/raster-image.js';
 
 /**
  * ONE CARD, ONE COVER, ONE KEYED READ.

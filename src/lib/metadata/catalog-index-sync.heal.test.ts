@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 
 /**
  * The local→cloud half of a catalog refresh: HEALING. A local fact edit that
@@ -13,12 +13,12 @@ import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
  * schedules a catalog write for providers where this client is the producer.
  */
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db = new Dexie('catalog-index-sync-heal-test');
   db.version(1).stores({ series_metadata: 'series_key', catalog_index: 'id' });
@@ -36,14 +36,14 @@ const {
   scheduleCatalogFileWrite: vi.fn(),
   cloudVolumeTitlesFor: vi.fn()
 }));
-vi.mock('$lib/util/sync/provider-manager', () => ({ providerManager: { getActiveProvider } }));
+vi.mock('#lib/util/sync/provider-manager.js', () => ({ providerManager: { getActiveProvider } }));
 vi.mock('./series-file-sync', () => ({ scheduleSeriesFileWrite }));
 vi.mock('./catalog-file-sync', () => ({ scheduleCatalogFileWrite }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { cloudVolumeTitlesFor }
 }));
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { refreshCatalogIndex } from './catalog-index-sync';
 
 const CATALOG_STAMP = 'Wed, 27 Aug 2026 10:00:00 GMT';

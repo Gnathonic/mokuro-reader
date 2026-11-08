@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
 import ReadingTimerSetting from '../ReadingTimerSetting.svelte';
-import { askOnLongPause, setTrackingStates, trackingState } from '$lib/settings/tracking-data';
+import { askOnLongPause, setTrackingStates, trackingState } from '#lib/settings/tracking-data.js';
 
 const T1 = '2026-10-01T00:00:00.000Z';
 const STOP = 'Stop the timer after';

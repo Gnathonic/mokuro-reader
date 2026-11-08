@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 vi.mock('./mega-cache', () => ({ megaCache: { fetch: vi.fn() } }));
 vi.mock('../../cache-manager', () => ({
   cacheManager: { clearAll: vi.fn(), registerCache: vi.fn() }
@@ -88,7 +88,10 @@ vi.mock('megajs', () => {
 
 import { MegaProvider } from './mega-provider';
 import { megaCache } from './mega-cache';
-import { ingestMarkerRead, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
+import {
+  ingestMarkerRead,
+  resetCloudBunkoMarkersForTest
+} from '#lib/catalog/cloud-bunko-marker.js';
 
 beforeEach(() => {
   vi.clearAllMocks();

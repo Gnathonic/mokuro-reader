@@ -23,7 +23,7 @@
 import { describe } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { basicAuthHeader } from '$lib/util/base64';
+import { basicAuthHeader } from '#lib/util/base64.js';
 
 /** The reader repo's root (this file is `src/lib/interop/contract.ts`). */
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');

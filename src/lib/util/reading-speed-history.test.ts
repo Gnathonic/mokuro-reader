@@ -25,7 +25,7 @@ const calculateReadingSpeedStats = (
 ) => calculateStats(rows, speed, all, recordFigures, personalized);
 
 // Mock the updateVolumeMetadata function to avoid side effects
-vi.mock('$lib/settings/volume-data', () => ({
+vi.mock('#lib/settings/volume-data.js', () => ({
   updateVolumeMetadata: vi.fn()
 }));
 

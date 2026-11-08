@@ -9,14 +9,14 @@ import 'fake-indexeddb/auto';
  * writes through `applyCloudPrimaryOcr`.
  */
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
-  const { declareMokuroSchema } = await import('$lib/catalog/db-schema');
+  const { declareMokuroSchema } = await import('#lib/catalog/db-schema.js');
   const db: any = new Dexie('ocr-upgrade-pass-test');
   declareMokuroSchema(db);
   return { db };
 });
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
 
 const cloud = vi.hoisted(() => {
   const state = {
@@ -55,26 +55,26 @@ const cloud = vi.hoisted(() => {
   return { state, provider, downloadFile };
 });
 
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { getActiveProvider: () => cloud.provider }
 }));
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { getCache: () => ({ getAllFiles: () => [...cloud.state.files] }) }
 }));
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: { getActiveProvider: () => cloud.provider }
 }));
 const showSnackbar = vi.hoisted(() => vi.fn());
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar }));
 
-import { db } from '$lib/catalog/db';
-import { currentView } from '$lib/util/hash-router';
+import { db } from '#lib/catalog/db.js';
+import { currentView } from '#lib/util/hash-router.js';
 import { getLayerMeta, getLayerPages, putLayerWithPages } from './layer-store';
 import { sha256Hex } from './mokuro-hash';
 import { contentDigest } from './ocr-provenance';
-import { putSeriesIndex } from '$lib/metadata/series-index';
-import type { SeriesFileVolume } from '$lib/metadata/series-file';
-import type { Page, VolumeMetadata } from '$lib/types';
+import { putSeriesIndex } from '#lib/metadata/series-index.js';
+import type { SeriesFileVolume } from '#lib/metadata/series-file.js';
+import type { Page, VolumeMetadata } from '#lib/types/index.js';
 import {
   MAX_CONCURRENT_OCR_DOWNLOADS,
   _lastOcrUpgradeResultForTests,

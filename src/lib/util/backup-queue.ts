@@ -1,5 +1,5 @@
 import { writable, get } from 'svelte/store';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import type { WorkerTask } from './worker-pool';
 import { getBackupUiBridge } from './backup-ui';
 import { unifiedCloudManager } from './sync/unified-cloud-manager';
@@ -26,23 +26,23 @@ import {
 } from './file-processing-pool';
 import { registerUploadCanceller } from './sync/upload-cancellation';
 import { downloadFileBlob } from './volume-sidecars';
-import { stampLayersSynced, type LayerUploadSnapshot } from '$lib/metadata/layer-sync';
-import { personalLayerAccount } from '$lib/catalog/mokuro-hash';
-import { freshGateStatus } from '$lib/util/sync/identity-gates';
+import { stampLayersSynced, type LayerUploadSnapshot } from '#lib/metadata/layer-sync.js';
+import { personalLayerAccount } from '#lib/catalog/mokuro-hash.js';
+import { freshGateStatus } from '#lib/util/sync/identity-gates.js';
 import { uploadVolumeFiles } from './volume-upload-order';
-import { flushCatalogFileWrites } from '$lib/metadata/catalog-file-sync';
+import { flushCatalogFileWrites } from '#lib/metadata/catalog-file-sync.js';
 import {
   cancelScheduledSeriesFileWrite,
   markListingFresh,
   scheduleSeriesFileWrite
-} from '$lib/metadata/series-file-sync';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { recordArchiveSize } from '$lib/catalog/archive-size';
+} from '#lib/metadata/series-file-sync.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { recordArchiveSize } from '#lib/catalog/archive-size.js';
 import {
   recordUploadedPrimarySidecar,
   recordUploadedPrimarySidecarBlob
-} from '$lib/catalog/mokuro-upload-record';
+} from '#lib/catalog/mokuro-upload-record.js';
 import { clearUploadFailure, recordUploadFailure } from './upload-failures';
 import { isStorageFullFailure, storageFullMessage } from './sync/core/storage-full';
 import { getUploadWorkerCredentials, prepareSeriesUploadTarget } from './upload-worker-credentials';
@@ -113,7 +113,7 @@ async function rememberServerOcr(
 ): Promise<void> {
   if (!serverOcr) {
     try {
-      const { watchCloudUpload } = await import('$lib/catalog/server-ocr-queue');
+      const { watchCloudUpload } = await import('#lib/catalog/server-ocr-queue.js');
       await watchCloudUpload({
         volumeUuid: item.volumeUuid,
         series: item.seriesTitle,
@@ -125,7 +125,7 @@ async function rememberServerOcr(
     return;
   }
   try {
-    const { watchUploadedVolume } = await import('$lib/catalog/server-ocr-queue');
+    const { watchUploadedVolume } = await import('#lib/catalog/server-ocr-queue.js');
     await watchUploadedVolume({
       volumeUuid: item.volumeUuid,
       series: item.seriesTitle,

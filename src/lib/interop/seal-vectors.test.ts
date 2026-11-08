@@ -11,15 +11,15 @@ import 'fake-indexeddb/auto';
 // The main thread's connection on the database the export Worker's own
 // connection (`compress-volume.ts`) opens: an install here is what a rename
 // there regenerates from.
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   const db = new CatalogDexieV3();
   (db as unknown as { processThumbnails: () => Promise<void> }).processThumbnails = async () =>
     undefined;
   return { db };
 });
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   generateThumbnail: async () => ({
     file: new File([new Uint8Array([1])], 'thumb.webp', { type: 'image/webp' }),
     width: 10,
@@ -28,16 +28,16 @@ vi.mock('$lib/catalog/thumbnails', () => ({
 }));
 
 import { describeContractFile, sealVectors, type SealVector } from './contract';
-import { canonicalJson, contentDigest, sealInput, sealOf } from '$lib/catalog/ocr-provenance';
+import { canonicalJson, contentDigest, sealInput, sealOf } from '#lib/catalog/ocr-provenance.js';
 import {
   RUNNER_OUTPUT_DOCUMENT,
   RUNNER_OUTPUT_SEAL,
   RUNNER_OUTPUT_SEAL_INPUT
-} from '$lib/catalog/__fixtures__/seal-vector';
-import { processVolume } from '$lib/import/processing';
-import { saveVolume } from '$lib/import/database';
-import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
-import { db } from '$lib/catalog/db';
+} from '#lib/catalog/__fixtures__/seal-vector.js';
+import { processVolume } from '#lib/import/processing.js';
+import { saveVolume } from '#lib/import/database.js';
+import { generateVolumeSidecarsFromDb } from '#lib/util/compress-volume.js';
+import { db } from '#lib/catalog/db.js';
 
 const vectors = sealVectors();
 

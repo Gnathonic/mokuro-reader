@@ -1,5 +1,5 @@
 import { db } from './db';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * Every row belonging to one series, found without a full-table scan.

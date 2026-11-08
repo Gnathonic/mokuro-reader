@@ -12,7 +12,7 @@
    * component when it switches to another series.
    */
   import { Button, Label, Spinner } from 'flowbite-svelte';
-  import { executeRenameSeries } from '$lib/util/series-rename';
+  import { executeRenameSeries } from '#lib/util/series-rename.js';
 
   let {
     seriesTitle,

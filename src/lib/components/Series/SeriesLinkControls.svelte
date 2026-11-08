@@ -11,16 +11,16 @@
    */
   import { Button, Badge } from 'flowbite-svelte';
   import { ArrowUpRightFromSquareOutline } from 'flowbite-svelte-icons';
-  import { seriesMetadataMap, updateSeriesMetadata, unlinkSeries } from '$lib/metadata/store';
-  import { normalizeSeriesKey } from '$lib/metadata/series-key';
-  import { resolveDisplayBase } from '$lib/metadata/display-title';
-  import { preferredTitleLanguage } from '$lib/settings/settings';
-  import { getLinkTargets } from '$lib/metadata/link-targets';
+  import { seriesMetadataMap, updateSeriesMetadata, unlinkSeries } from '#lib/metadata/store.js';
+  import { normalizeSeriesKey } from '#lib/metadata/series-key.js';
+  import { resolveDisplayBase } from '#lib/metadata/display-title.js';
+  import { preferredTitleLanguage } from '#lib/settings/settings.js';
+  import { getLinkTargets } from '#lib/metadata/link-targets.js';
   import {
     activeMetadataPermissions,
     canEditSeriesMetadata
-  } from '$lib/util/sync/metadata-permissions';
-  import { showSnackbar } from '$lib/util';
+  } from '#lib/util/sync/metadata-permissions.js';
+  import { showSnackbar } from '#lib/util/index.js';
   import SeriesLinkModal from './SeriesLinkModal.svelte';
 
   let {

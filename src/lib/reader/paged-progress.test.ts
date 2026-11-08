@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
 const updateProgress = vi.fn();
 const recordActivity = vi.fn();
-vi.mock('$lib/settings/volume-data', () => ({ updateProgress }));
-vi.mock('$lib/util/activity-tracker', () => ({ activityTracker: { recordActivity } }));
+vi.mock('#lib/settings/volume-data.js', () => ({ updateProgress }));
+vi.mock('#lib/util/activity-tracker.js', () => ({ activityTracker: { recordActivity } }));
 
 const { recordPagedPageView } = await import('./paged-progress');
 

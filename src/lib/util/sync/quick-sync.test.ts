@@ -8,12 +8,12 @@ vi.mock('./unified-sync-service', () => ({
 const probePositions = vi.hoisted(() =>
   vi.fn(async () => ({ adopted: ['v'], deferred: [], uploaded: false }))
 );
-vi.mock('$lib/positions/positions-sync', () => ({ probePositions }));
+vi.mock('#lib/positions/positions-sync.js', () => ({ probePositions }));
 const importHistory = vi.hoisted(() =>
   vi.fn(async (_provider: unknown, _listing: CloudFileMetadata[], _db: unknown) => 7)
 );
-vi.mock('$lib/reading-history/history-sync', () => ({ importHistory }));
-vi.mock('$lib/reading-history/history-db', () => ({ historyDb: () => ({}) }));
+vi.mock('#lib/reading-history/history-sync.js', () => ({ importHistory }));
+vi.mock('#lib/reading-history/history-db.js', () => ({ historyDb: () => ({}) }));
 
 import { _resetQuickSyncForTests, runQuickSync } from './quick-sync';
 

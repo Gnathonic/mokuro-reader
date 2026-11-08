@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { naturalSort } from '$lib/util/natural-sort';
+import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
 import { unifiedSyncService } from './unified-sync-service';
 import type { CloudFileMetadata } from './provider-interface';
 
@@ -13,7 +13,7 @@ const cacheGet = vi.fn((_path: string): unknown => null);
 /** The active cache's revision token; `null` (no memo) unless a test pins one. */
 const cacheRevision = vi.fn((): object | null => null);
 
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: {
     fetchAll,
     getBySeries,
@@ -26,13 +26,13 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
   }
 }));
 
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: {
     getActiveProvider
   }
 }));
 
-vi.mock('$lib/util/sync/unified-sync-service', () => ({
+vi.mock('#lib/util/sync/unified-sync-service.js', () => ({
   unifiedSyncService: {
     isSyncing: { subscribe: vi.fn() },
     syncProvider: vi.fn()
@@ -40,7 +40,7 @@ vi.mock('$lib/util/sync/unified-sync-service', () => ({
 }));
 
 const generateSidecars = vi.fn();
-vi.mock('$lib/util/compress-volume', () => ({
+vi.mock('#lib/util/compress-volume.js', () => ({
   generateVolumeSidecarsFromDb: (...args: unknown[]) => generateSidecars(...args)
 }));
 
@@ -60,13 +60,13 @@ function stampedLayer(volumeUuid: string, layerId: string, file: CloudFileMetada
     cloud: { provider: file.provider, size: file.size, synced_at: '2026-01-01T00:00:00.000Z' }
   };
 }
-vi.mock('$lib/catalog/layer-store', () => ({
+vi.mock('#lib/catalog/layer-store.js', () => ({
   getLayerMeta: async (_db: unknown, uuid: string, layerId: string) =>
     ((await layerRows()) as { volume_uuid: string; layer_id: string }[]).find(
       (l) => l.volume_uuid === uuid && l.layer_id === layerId
     )
 }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: {
       toArray: () => localVolumes(),
@@ -121,7 +121,7 @@ const foldedMetaRows = async (): Promise<Array<Record<string, unknown>>> =>
     folded_key: normalizeVolumeTitleKey((meta as { series_title: string }).series_title)
   }));
 
-vi.mock('$lib/metadata/store', () => ({
+vi.mock('#lib/metadata/store.js', () => ({
   getSeriesMetadataForTitle: (title: string) => getSeriesMetadataForTitle(title),
   getAllSeriesMetadata: () => getAllSeriesMetadata(),
   getSeriesMetadataByFoldedTitle: async (title: string) => {
@@ -140,9 +140,9 @@ const getSeriesIndex = vi.fn(async (_key: string): Promise<unknown> => undefined
 const putSeriesIndex = vi.fn(async (_rec: unknown) => {});
 const deleteSeriesIndex = vi.fn(async (_key: string) => {});
 const moveSeriesIndexKey = vi.fn(async (_old: string, _next: string) => {});
-vi.mock('$lib/metadata/series-index', async () => {
-  const actual = await vi.importActual<typeof import('$lib/metadata/series-index')>(
-    '$lib/metadata/series-index'
+vi.mock('#lib/metadata/series-index.js', async () => {
+  const actual = await vi.importActual<typeof import('#lib/metadata/series-index.js')>(
+    '#lib/metadata/series-index.js'
   );
   return {
     // indexNeedsRefresh stays REAL — the size/mtime comparison is the thing
@@ -162,9 +162,9 @@ const catalogCache = vi.fn(async (): Promise<unknown> => undefined);
 const dropCatalogEntries = vi.fn(async (_keys: string[]) => {});
 const moveCatalogIndexKey = vi.fn(async (_old: string, _next: string) => {});
 const putCatalogIndex = vi.fn(async (_rec: { file: { series: unknown[] } }) => {});
-vi.mock('$lib/metadata/catalog-index', async () => {
-  const actual = await vi.importActual<typeof import('$lib/metadata/catalog-index')>(
-    '$lib/metadata/catalog-index'
+vi.mock('#lib/metadata/catalog-index.js', async () => {
+  const actual = await vi.importActual<typeof import('#lib/metadata/catalog-index.js')>(
+    '#lib/metadata/catalog-index.js'
   );
   return {
     // The real size/mtime comparison decides whether the write re-reads first.
@@ -177,30 +177,30 @@ vi.mock('$lib/metadata/catalog-index', async () => {
 });
 
 const refreshSeriesIndexes = vi.fn(async (_map: unknown, _providerType?: string) => {});
-vi.mock('$lib/metadata/series-index-sync', () => ({
+vi.mock('#lib/metadata/series-index-sync.js', () => ({
   refreshSeriesIndexes: (map: unknown, providerType: string) =>
     refreshSeriesIndexes(map, providerType)
 }));
 
 const resolveSyncedProgress = vi.fn(async () => {});
-vi.mock('$lib/metadata/hole-patch', () => ({
+vi.mock('#lib/metadata/hole-patch.js', () => ({
   resolveSyncedProgress: () => resolveSyncedProgress()
 }));
 const sweepInstalledVolumesForSidecarBackfill = vi.fn(async (_files?: unknown) => {});
-vi.mock('$lib/util/sync/sidecar-backfill', () => ({
+vi.mock('#lib/util/sync/sidecar-backfill.js', () => ({
   sweepInstalledVolumesForSidecarBackfill: (files?: unknown) =>
     sweepInstalledVolumesForSidecarBackfill(files)
 }));
 const adoptCloudSeriesSpellings = vi.fn(
   async (_files?: unknown, _providerType?: string): Promise<unknown[]> => []
 );
-vi.mock('$lib/util/sync/cloud-spelling-adoption', () => ({
+vi.mock('#lib/util/sync/cloud-spelling-adoption.js', () => ({
   adoptCloudSeriesSpellings: (files: unknown, providerType: string) =>
     adoptCloudSeriesSpellings(files, providerType)
 }));
 
 const refreshCatalogIndex = vi.fn(async (_map: unknown, _providerType?: string) => {});
-vi.mock('$lib/metadata/catalog-index-sync', () => ({
+vi.mock('#lib/metadata/catalog-index-sync.js', () => ({
   refreshCatalogIndex: (map: unknown, providerType: string) =>
     refreshCatalogIndex(map, providerType)
 }));
@@ -209,10 +209,10 @@ const reconcileMissingMetadataFiles = vi.fn(async (_files?: unknown) => {});
 const markListingFresh = vi.fn();
 const scheduleSeriesFileWrite = vi.fn();
 const scheduleCatalogFileWrite = vi.fn();
-vi.mock('$lib/metadata/catalog-file-sync', () => ({
+vi.mock('#lib/metadata/catalog-file-sync.js', () => ({
   scheduleCatalogFileWrite: () => scheduleCatalogFileWrite()
 }));
-vi.mock('$lib/metadata/series-file-sync', () => ({
+vi.mock('#lib/metadata/series-file-sync.js', () => ({
   reconcileMissingMetadataFiles: (files?: unknown) => reconcileMissingMetadataFiles(files),
   markListingFresh: () => markListingFresh(),
   scheduleSeriesFileWrite: (title: string, options?: unknown) =>
@@ -302,7 +302,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -326,7 +326,7 @@ describe('UnifiedCloudManager rename operations', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
     ).rejects.toMatchObject({
@@ -357,7 +357,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{"title":"New Series"}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const changed = await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -430,7 +430,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{"stale":true}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -454,7 +454,7 @@ describe('UnifiedCloudManager rename operations', () => {
       pages: [{ blocks: [{ lines: ['しんしい'] }] }]
     });
     // That file is the one `updated-ocr` holds: no upgrade pass fetches it again.
-    const { sha256Hex } = await import('$lib/catalog/mokuro-hash');
+    const { sha256Hex } = await import('#lib/catalog/mokuro-hash.js');
     expect(volumesUpdate).toHaveBeenCalledWith('uuid-1', {
       updated_ocr_sha256: await sha256Hex(blob)
     });
@@ -485,7 +485,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{"stale":true}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
     ).rejects.toThrow();
@@ -521,7 +521,7 @@ describe('UnifiedCloudManager rename operations', () => {
       }
     ] as CloudFileMetadata[];
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const managed = unifiedCloudManager
       .getManagedCloudFilesForVolume('Old Series', 'Volume 1')
       .map((f) => f.path);
@@ -554,7 +554,7 @@ describe('UnifiedCloudManager rename operations', () => {
     ];
     let files = pair;
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const managed = (volume: string) =>
       unifiedCloudManager.getManagedCloudFilesForVolume('S', volume).map((f) => f.path);
     // Two archives that fold alike are two volumes: each keeps its own layers.
@@ -579,7 +579,7 @@ describe('UnifiedCloudManager rename operations', () => {
     });
     let files = [file('S/Vol 3.cbz'), file('S/VOL 3.cbz'), file('S/vol 3.hayai.mokuro')];
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const managed = (volume: string) =>
       unifiedCloudManager.getManagedCloudFilesForVolume('S', volume).map((f) => f.path);
     // The same owner layer sync files it under (`layerOwnerArchive`): the
@@ -611,7 +611,7 @@ describe('UnifiedCloudManager rename operations', () => {
     generateSidecars.mockResolvedValue({
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
     });
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const changed = await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -666,7 +666,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume('S', 'Foo', 'S', 'Bar', 'uuid-foo');
 
     expect(provider.renameFile).toHaveBeenCalledWith(gcv, 'S/Bar.gcv.mokuro');
@@ -709,7 +709,7 @@ describe('UnifiedCloudManager rename operations', () => {
         mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
       });
 
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
       expect(
         (
           await unifiedCloudManager.getSweepableCloudFilesForVolume(dbSeries, dbTitle, 'uuid-v')
@@ -744,7 +744,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume('S', 'Foo', 'S', 'Bar', 'uuid-foo');
 
     expect(provider.renameFile).toHaveBeenCalledWith(gcv, 'S/Bar.gcv.mokuro');
@@ -768,7 +768,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume('S', 'Foo', 'S', 'Bar', 'uuid-foo');
 
     expect(provider.renameFile).toHaveBeenCalledWith(gcv, 'S/Bar.gcv.mokuro');
@@ -798,7 +798,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Bar.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('S', 'Foo', 'S', 'Bar', 'uuid-foo', { overwrite: true })
     ).rejects.toMatchObject({ name: 'ProviderError', code: 'TARGET_EXISTS' });
@@ -814,7 +814,7 @@ describe('UnifiedCloudManager rename operations', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
     ).rejects.toMatchObject({ name: 'ProviderError', code: 'READ_ONLY' });
@@ -831,7 +831,7 @@ describe('UnifiedCloudManager rename operations', () => {
     getBySeries.mockReturnValue([]);
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
     ).resolves.toBe(0);
@@ -861,7 +861,7 @@ describe('UnifiedCloudManager rename operations', () => {
     getCache.mockReturnValue(cache);
     generateSidecars.mockResolvedValue({}); // no mokuro for image-only
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const changed = await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -888,7 +888,7 @@ describe('UnifiedCloudManager rename operations', () => {
     getCache.mockReturnValue(cache);
     generateSidecars.mockResolvedValue({}); // OCR data missing → no fresh mokuro
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
     ).rejects.toMatchObject({ name: 'ProviderError', code: 'SIDECAR_REGEN_FAILED' });
@@ -918,7 +918,7 @@ describe('UnifiedCloudManager rename operations', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
     ).rejects.toMatchObject({
@@ -956,7 +956,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
     ).rejects.toThrow('404');
@@ -995,7 +995,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const changed = await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -1065,7 +1065,7 @@ describe('UnifiedCloudManager rename operations', () => {
     // without its main may be treated as owing OCR by a server that acts on
     // what it finds, so the archive moves only once every sidecar is in place.
     const { log } = orderedRenameSetup();
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -1098,7 +1098,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob([main]) }
     });
     const provider = getActiveProvider();
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -1122,7 +1122,7 @@ describe('UnifiedCloudManager rename operations', () => {
     localVolumes.mockResolvedValue([
       { volume_uuid: 'uuid-1', series_title: 'Old Series', volume_title: 'Volume 1' }
     ]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X');
     expect(log).toEqual([
       'move Old Series/Volume 1.mokuro -> New Series/Volume X.mokuro',
@@ -1134,7 +1134,7 @@ describe('UnifiedCloudManager rename operations', () => {
 
   it('a retry after a failed archive move moves only the archive, then drops the stale main', async () => {
     const { state, log } = orderedRenameSetup({ archive: 1 });
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const rename = () =>
       unifiedCloudManager.renameVolume(
         'Old Series',
@@ -1164,7 +1164,7 @@ describe('UnifiedCloudManager rename operations', () => {
 
   it('a retry after a failed cover move moves the cover and the archive, then drops the stale main', async () => {
     const { state, log } = orderedRenameSetup({ cover: 1 });
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const rename = () =>
       unifiedCloudManager.renameVolume(
         'Old Series',
@@ -1229,7 +1229,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('Old Series', 'Volume 1', 'New Series', 'Volume X', 'uuid-1')
     ).rejects.toMatchObject({ name: 'ProviderError', code: 'TARGET_EXISTS' });
@@ -1267,7 +1267,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameVolume('Old Series', 'Volume 1', composedNew, 'Volume X', 'uuid-1')
     ).rejects.toMatchObject({ name: 'ProviderError', code: 'TARGET_EXISTS' });
@@ -1305,7 +1305,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const changed = await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -1337,7 +1337,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -1360,7 +1360,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume X.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume(
       'Old Series',
       'Volume 1',
@@ -1421,7 +1421,7 @@ describe('UnifiedCloudManager rename operations', () => {
     );
     getCache.mockReturnValue(cache);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.renameSeries('Original Series', 'Renamed Series');
 
     expect(result.changed).toBe(2);
@@ -1466,7 +1466,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{"title":"New Series"}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -1527,7 +1527,7 @@ describe('UnifiedCloudManager rename operations', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameSeries('Old Series', 'New Series', [
         { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
@@ -1579,7 +1579,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{"title":"New Series"}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -1620,7 +1620,7 @@ describe('UnifiedCloudManager rename operations', () => {
     getCache.mockReturnValue(cache);
     layerRows.mockResolvedValue([{ volume_uuid: 'uuid-1', layer_id: 'gcv' }]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameSeries('Old Series', 'New Series', [
         { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
@@ -1661,7 +1661,7 @@ describe('UnifiedCloudManager rename operations', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -1698,7 +1698,7 @@ describe('UnifiedCloudManager rename operations', () => {
     getCache.mockReturnValue(cache);
     generateSidecars.mockResolvedValue({}); // OCR data missing → no fresh .mokuro
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -1754,7 +1754,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'Volume 1.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameSeries('Old Series', 'New Series', [
         { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' } // Volume 2 is cloud-only
@@ -1801,7 +1801,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'x.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' },
       { volumeUuid: 'uuid-2', volumeTitle: 'Volume 2' }
@@ -1844,7 +1844,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'x.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(
       unifiedCloudManager.renameSeries('Old Series', 'New Series', [
         { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' } // Volume 2 is cloud-only
@@ -1901,7 +1901,7 @@ describe('UnifiedCloudManager rename operations', () => {
       mokuro: { filename: 'x.mokuro', blob: new Blob(['{}']) }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' },
       { volumeUuid: 'uuid-2', volumeTitle: 'Volume 2' }
@@ -1933,7 +1933,7 @@ describe('metadata maintenance on delete', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteManagedVolume('Old Series', 'Volume 1');
 
     expect(scheduleSeriesFileWrite.mock.calls.map((c) => c[0])).toContain('Old Series');
@@ -1947,7 +1947,7 @@ describe('metadata maintenance on delete', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteSeriesFolder('Old Series');
 
     expect(scheduleCatalogFileWrite).toHaveBeenCalled();
@@ -1981,7 +1981,7 @@ describe('series delete counts volumes, not files', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.deleteSeriesFolder('S');
 
     expect(provider.deleteFile).toHaveBeenCalledTimes(files.length);
@@ -1999,14 +1999,14 @@ describe('series delete counts volumes, not files', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.deleteSeriesFolder('S');
 
     expect(result).toEqual({ succeeded: 1, failed: 1 });
   });
 
   it('a REFUSED folder delete (bunko uploader) falls back to deleting the files it owns', async () => {
-    const { ProviderError } = await import('$lib/util/sync/provider-interface');
+    const { ProviderError } = await import('#lib/util/sync/provider-interface.js');
     const provider = makeRenameProvider({
       deleteSeriesFolder: vi.fn(async () => {
         throw new ProviderError('403 Forbidden', 'webdav', 'FOLDER_DELETE_REFUSED');
@@ -2021,7 +2021,7 @@ describe('series delete counts volumes, not files', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.deleteSeriesFolder('S');
 
     expect(provider.deleteFile).toHaveBeenCalledTimes(files.length);
@@ -2036,7 +2036,7 @@ describe('series delete counts volumes, not files', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.deleteSeriesFolder('S');
 
     expect(result).toEqual({ succeeded: 2, failed: 0 });
@@ -2071,7 +2071,7 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(cache);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteManagedVolume('S', 'Vol 1');
 
     // Only Vol 1's three files (not Vol 2), and the .cbz archive is deleted LAST.
@@ -2113,7 +2113,7 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(cache);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteManagedVolume('S', 'Vol 1');
 
     expect(deleted).toContain('S/Vol 1.gcv.mokuro');
@@ -2159,7 +2159,7 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
         listing.filter((f) => f.path.startsWith(`${s}/`))
       );
       getCache.mockReturnValue({ removeById: vi.fn() });
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
       await unifiedCloudManager.deleteManagedVolume('S', 'Foo');
       return deleted;
     }
@@ -2242,7 +2242,7 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
         files.filter((f) => f.path.startsWith(`${s}/`))
       );
       getCache.mockReturnValue({ removeById: vi.fn() });
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
       await unifiedCloudManager.deleteManagedVolume('S', 'Fóo');
       expect(deleted).toContain(nfdGcv.path);
       expect(deleted).not.toContain(nfdLookAlike.path);
@@ -2262,7 +2262,7 @@ describe('UnifiedCloudManager.deleteManagedVolume', () => {
     getBySeries.mockImplementation((s: string) => files.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(cache);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.deleteManagedVolume('S', 'Vol 1')).rejects.toThrow(
       /Failed to delete 1 of 3/
     );
@@ -2346,7 +2346,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
 
     expect(provider.uploadFile).toHaveBeenCalledWith(
@@ -2402,7 +2402,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       parser: 1
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
 
     expect(provider.downloadFile).not.toHaveBeenCalled();
@@ -2451,7 +2451,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       parser: 1
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
 
     expect(provider.downloadFile).toHaveBeenCalledTimes(1);
@@ -2505,7 +2505,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       parser: 1
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
 
     expect(provider.downloadFile).toHaveBeenCalledTimes(1);
@@ -2531,7 +2531,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
     getSeriesIndex.mockResolvedValue(undefined);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     // The live per-completion write, mid-run. Nothing to re-read: the listing
     // shows no series.json yet, so the write costs no network read of its own.
@@ -2595,7 +2595,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile(decomposed)).toBe('written');
 
     const file = await uploadedSeriesFile(provider);
@@ -2636,7 +2636,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile(composed)).toBe('written');
 
     // The path IS the folder: written under the spelling the cloud actually has,
@@ -2664,7 +2664,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     );
     getAllFiles.mockImplementation(() => listing);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const first = unifiedCloudManager.resolveCloudFolderTitle('One Piece');
     listing = [...listing].reverse();
     const second = unifiedCloudManager.resolveCloudFolderTitle('One Piece');
@@ -2688,7 +2688,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     );
     getAllFiles.mockReturnValue(listing);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect([...unifiedCloudManager.cloudVolumeTitlesFor(composed)]).toEqual(['Volume 1']);
     // A series the cloud does not hold at all still reports nothing.
     expect(unifiedCloudManager.cloudVolumeTitlesFor('Berserk').size).toBe(0);
@@ -2740,7 +2740,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
         [records.b.series_key]: records.b
       });
 
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
       expect(await unifiedCloudManager.writeSeriesFile(decomposed)).toBe('written');
 
       const file = await uploadedSeriesFile(provider);
@@ -2784,7 +2784,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile(decomposed)).toBe('written');
 
     const file = await uploadedSeriesFile(provider);
@@ -2808,7 +2808,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getBySeries.mockReturnValue([cloudFile(`${decomposed}/Volume 1.cbz`)]);
     localVolumes.mockResolvedValue([volume(composed, 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile(decomposed)).toBe('written');
 
     const file = await uploadedSeriesFile(provider);
@@ -2849,7 +2849,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       parser: 1
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.writeSeriesFile('One Piece');
 
     const file = await uploadedSeriesFile(provider);
@@ -2878,7 +2878,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       parser: 1
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
 
     expect(provider.uploadFile).not.toHaveBeenCalled();
@@ -2893,7 +2893,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getBySeries.mockReturnValue([cloudFile('One Piece/series.json', { fileId: 'sj', size: 42 })]);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
 
     expect(provider.uploadFile).not.toHaveBeenCalled();
@@ -2906,7 +2906,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('read-only');
     expect(provider.uploadFile).not.toHaveBeenCalled();
     expect(putSeriesIndex).not.toHaveBeenCalled();
@@ -2919,7 +2919,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getBySeries.mockReturnValue([]);
     localVolumes.mockResolvedValue([]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
     expect(provider.uploadFile).not.toHaveBeenCalled();
   });
@@ -2928,7 +2928,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getActiveProvider.mockReturnValue(null);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
     expect(putSeriesIndex).not.toHaveBeenCalled();
   });
@@ -2940,7 +2940,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1', { isPlaceholder: true })]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
     expect(provider.uploadFile).not.toHaveBeenCalled();
   });
@@ -2957,7 +2957,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getBySeries.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
     expect(provider.uploadFile).not.toHaveBeenCalled();
     expect(putSeriesIndex).not.toHaveBeenCalled();
@@ -2979,7 +2979,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     ]);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
     expect(provider.uploadFile).not.toHaveBeenCalled();
   });
@@ -3018,7 +3018,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getActiveProvider.mockReturnValue(provider);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     // 1. The sidecar-backfill upload shape (`unifiedCloudManager.uploadFile`).
     await unifiedCloudManager.uploadFile('One Piece/Volume 1.mokuro', new Blob(['x']));
@@ -3056,7 +3056,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getActiveProvider.mockReturnValue(provider);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
     const file = await uploadedSeriesFile(provider);
     expect(file.volumes[0].mokuro_modified).toBe(
@@ -3079,7 +3079,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getActiveProvider.mockReturnValue(provider);
     localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.uploadFile('One Piece/Volume 1.mokuro', new Blob(['x']));
 
     // The cache entry carries the SERVER's time — not the client clock — and
@@ -3154,7 +3154,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
         })
       ]);
 
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
       expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
       expect(provider.uploadFile).not.toHaveBeenCalled();
     });
@@ -3178,7 +3178,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       getSeriesMetadataForTitle.mockResolvedValue(meta);
       getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
 
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
       expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
       expect((await uploadedSeriesFile(provider)).synonyms).toEqual(['OP']);
     });
@@ -3200,7 +3200,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       getSeriesMetadataForTitle.mockResolvedValue(meta);
       getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
 
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
       expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
       expect((await uploadedSeriesFile(provider)).volumes[0].offset).toBe(12);
     });
@@ -3230,7 +3230,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
       resetRecord();
 
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
       expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
       expect((await uploadedSeriesFile(provider)).spine_offset).toBe(0);
       // The cache keeps the file as built: a 0 there would read as an opinion.
@@ -3247,7 +3247,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
       localVolumes.mockResolvedValue([volume('One Piece', 'Volume 1')]);
       resetRecord();
 
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
       expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('skipped');
       expect(provider.uploadFile).not.toHaveBeenCalled();
     });
@@ -3277,7 +3277,7 @@ describe('UnifiedCloudManager.writeSeriesFile', () => {
     getSeriesMetadataForTitle.mockResolvedValue(meta);
     getAllSeriesMetadata.mockResolvedValue({ 'one piece': meta });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
     expect(Object.hasOwn(await uploadedSeriesFile(provider), 'spine_offset')).toBe(false);
   });
@@ -3347,7 +3347,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -3404,7 +3404,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -3453,7 +3453,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -3495,7 +3495,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -3545,7 +3545,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -3586,7 +3586,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     mutableCache(state);
     getAllFiles.mockImplementation(() => state);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteManagedVolume(composed, 'Volume 1');
 
     const deleted = provider.deleteFile.mock.calls.map(
@@ -3636,7 +3636,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     mutableCache(state);
     getAllFiles.mockImplementation(() => state);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteManagedVolume(composedSeries, composedVolume);
 
     const deleted = provider.deleteFile.mock.calls.map(
@@ -3674,7 +3674,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     mutableCache(state);
     getAllFiles.mockImplementation(() => state);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteManagedVolume('One Piece', 'Vol 1');
 
     const deleted = provider.deleteFile.mock.calls.map(
@@ -3715,7 +3715,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     getAllFiles.mockImplementation(() => state);
     getCache.mockReturnValue(loadedCache());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteSeriesFolder(composed);
 
     expect(deleted).toContain(`${decomposed}/series.json`);
@@ -3763,7 +3763,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameSeries(composedOld, 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -3807,7 +3807,7 @@ describe('UnifiedCloudManager series.json on rename and delete', () => {
     getBySeries.mockImplementation((s: string) => state.filter((f) => f.path.startsWith(`${s}/`)));
     getCache.mockReturnValue(cache);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.deleteSeriesFolder('One Piece');
 
     expect(deleted).toContain('One Piece/series.json');
@@ -3874,7 +3874,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
     getActiveProvider.mockReturnValue(makeRenameProvider());
     getAllFiles.mockReturnValue([file('One Piece/Volume 1.cbz'), file('One Piece/series.json')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.fetchAllCloudVolumes();
 
     expect(fetchAll).toHaveBeenCalled();
@@ -3904,7 +3904,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
     getAllFiles.mockImplementation(() => state);
     generateSidecars.mockResolvedValue({});
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume('One Piece', 'Volume 1', 'Naruto', 'Volume 1', 'uuid-1');
 
     expect(fetchAll).toHaveBeenCalled();
@@ -3923,7 +3923,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
     getAllFiles.mockImplementation(() => state);
     generateSidecars.mockResolvedValue({});
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameSeries('Old Series', 'New Series', [
       { volumeUuid: 'uuid-1', volumeTitle: 'Volume 1' }
     ]);
@@ -3991,7 +3991,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
       parser: 1
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
 
     const uploaded = await uploadedJson(provider);
@@ -4024,7 +4024,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(await unifiedCloudManager.writeSeriesFile('One Piece')).toBe('written');
 
     expect(putSeriesIndex).toHaveBeenCalledWith(
@@ -4047,7 +4047,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
       file('One Piece/series.json', { fileId: 'sj' })
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteManagedVolume('One Piece', 'Volume 1');
 
     expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
@@ -4067,7 +4067,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
       file('One Piece/series.json', { fileId: 'sj' })
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteManagedVolume('One Piece', 'Volume 1');
 
     expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'cbz-1' }));
@@ -4084,7 +4084,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
       file('One Piece/series.json', { fileId: 'sj' })
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.deleteManagedVolume('One Piece', 'Volume 1');
 
     expect(provider.deleteFile).not.toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
@@ -4100,7 +4100,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
     ]);
     generateSidecars.mockResolvedValue({});
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume('One Piece', 'Volume 1', 'Naruto', 'Volume 1', 'uuid-1');
 
     expect(provider.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
@@ -4118,7 +4118,7 @@ describe('UnifiedCloudManager series.json lifecycle', () => {
     ]);
     generateSidecars.mockResolvedValue({});
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.renameVolume('One Piece', 'Volume 1', 'One Piece', 'Vol 1', 'uuid-1');
 
     expect(provider.deleteFile).not.toHaveBeenCalledWith(expect.objectContaining({ fileId: 'sj' }));
@@ -4234,14 +4234,14 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
 
   it('skips entirely on a server-compiled provider', async () => {
     getActiveProvider.mockReturnValue(provider({ serverCompilesMetadata: true }));
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('server-compiled');
     expect(uploadFile).not.toHaveBeenCalled();
   });
 
   it('skips on a read-only provider', async () => {
     getActiveProvider.mockReturnValue(provider({ isReadOnly: true }));
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('read-only');
     expect(uploadFile).not.toHaveBeenCalled();
   });
@@ -4249,7 +4249,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
   it('skips when the listing shows no series folders', async () => {
     getActiveProvider.mockReturnValue(provider());
     getAllFiles.mockReturnValue([]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
     expect(uploadFile).not.toHaveBeenCalled();
   });
@@ -4261,7 +4261,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     // Pruning the catalog against that blanks the library for every other device.
     getActiveProvider.mockReturnValue(provider());
     getCache.mockReturnValue(loadedCache({ isLoaded: () => false }));
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
     expect(uploadFile).not.toHaveBeenCalled();
   });
@@ -4281,7 +4281,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
       }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
 
     const [path, blob] = uploadFile.mock.calls.at(-1)!;
@@ -4337,7 +4337,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
       }
     });
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
 
     const [, blob] = uploadFile.mock.calls.at(-1)!;
@@ -4398,7 +4398,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     // device and makes them all re-download a file that did not change.
     getActiveProvider.mockReturnValue(noOpRebuildProvider());
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
     expect(uploadFile).not.toHaveBeenCalled();
   });
@@ -4419,7 +4419,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     });
 
     try {
-      const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+      const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
       await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('skipped');
       expect(p.downloadFile).toHaveBeenCalledTimes(1);
@@ -4444,7 +4444,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     getAllFiles.mockReturnValue(listing.filter((f) => f.path !== 'catalog.json'));
     catalogCache.mockResolvedValue(cachedCatalog(['Dr Stone', 'Other']));
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
     expect(uploadFile).toHaveBeenCalled();
   });
@@ -4459,7 +4459,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
     const stale = { modifiedTime: '2026-08-01T00:00:00.000Z' };
     catalogCache.mockResolvedValue(cachedCatalog(['Dr Stone', 'Other'], stale));
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.writeCatalogFile()).resolves.toBe('written');
     expect(uploadFile).toHaveBeenCalled();
   });
@@ -4467,7 +4467,7 @@ describe('UnifiedCloudManager.writeCatalogFile', () => {
   it('re-stamps the cache with the published copy, dropping a series that left', async () => {
     getActiveProvider.mockReturnValue(provider());
     catalogCache.mockResolvedValue(cachedCatalog(['Gone']));
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.writeCatalogFile();
 
     const stamped = putCatalogIndex.mock.calls.at(-1)![0] as {
@@ -4556,7 +4556,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
     const cached = cachedRecord();
     getSeriesIndex.mockResolvedValue(cached);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
 
     expect(provider.downloadFile).not.toHaveBeenCalled();
@@ -4577,7 +4577,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
       cachedRecord({ source: { ...cachedRecord().source, size: 42 } })
     );
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
 
     expect(provider.downloadFile).toHaveBeenCalledTimes(1);
@@ -4615,7 +4615,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
     listSeriesFolder(files);
     getAllFiles.mockReturnValue(files);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.refreshSeriesIndexForSeries(composed);
 
     expect(result?.volumes).toEqual(SERIES_JSON.volumes);
@@ -4645,7 +4645,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
       cachedRecord({ source: { ...cachedRecord().source, provider: 'gdrive' } })
     );
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
 
     expect(provider.downloadFile).toHaveBeenCalledTimes(1);
@@ -4663,7 +4663,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
     const cached = cachedRecord({ source: { ...cachedRecord().source, size: 42 } });
     getSeriesIndex.mockResolvedValue(cached);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.refreshSeriesIndexForSeries('One Piece')).resolves.toBe(
       cached.file
     );
@@ -4680,7 +4680,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
     getActiveProvider.mockReturnValue(provider);
     listSeriesFolder([cloudFile('One Piece/series.json', { fileId: 'sj' })]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const result = await unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
 
     expect(provider.downloadFile).not.toHaveBeenCalled();
@@ -4698,7 +4698,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexForSeries', () => {
       cloudFile('One Piece/series.json')
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(unifiedCloudManager.cloudVolumeTitlesFor('One Piece')).toEqual(
       new Set(['Volume 1', 'Volume 2'])
     );
@@ -4726,7 +4726,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
     const files = [cloudFile('One Piece/Volume 1.cbz'), cloudFile('One Piece/Volume 1.mokuro')];
     getAllFiles.mockReturnValue(files);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     unifiedCloudManager.refreshSeriesIndexesInBackground();
     // Behind the spelling adoption (see below), so a turn or two later.
     await vi.waitFor(() => expect(reconcileMissingMetadataFiles).toHaveBeenCalled());
@@ -4740,7 +4740,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
     getActiveProvider.mockReturnValue(makeRenameProvider());
     getAllFiles.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     unifiedCloudManager.refreshSeriesIndexesInBackground();
 
     // Without the stamp the debounced write opens 2 s later with a second
@@ -4750,7 +4750,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
 
   it('does not backfill without a provider or without a listing', async () => {
     getActiveProvider.mockReturnValue(null);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     unifiedCloudManager.refreshSeriesIndexesInBackground();
     expect(reconcileMissingMetadataFiles).not.toHaveBeenCalled();
 
@@ -4765,7 +4765,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
     getAllFiles.mockReturnValue([cloudFile('One Piece/Volume 1.cbz')]);
     reconcileMissingMetadataFiles.mockRejectedValueOnce(new Error('boom'));
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(() => unifiedCloudManager.refreshSeriesIndexesInBackground()).not.toThrow();
   });
 
@@ -4781,7 +4781,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
       new Promise<unknown[]>((resolve) => (release = () => resolve([])))
     );
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     unifiedCloudManager.refreshSeriesIndexesInBackground();
 
     expect(adoptCloudSeriesSpellings).toHaveBeenCalledWith(files, 'webdav');
@@ -4805,7 +4805,7 @@ describe('UnifiedCloudManager.refreshSeriesIndexesInBackground', () => {
     adoptCloudSeriesSpellings.mockRejectedValueOnce(new Error('boom'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     unifiedCloudManager.refreshSeriesIndexesInBackground();
 
     await vi.waitFor(() => expect(sweepInstalledVolumesForSidecarBackfill).toHaveBeenCalled());
@@ -4841,7 +4841,7 @@ describe('existsInCloud / getCloudFile resolve the cloud spelling', () => {
   it('finds a volume under a case-merged folder', async () => {
     const archive = cloudFile('One Piece/Vol 1.cbz');
     listing([archive, cloudFile('One Piece/Vol 1.mokuro')]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(true);
     expect(unifiedCloudManager.getCloudFile('one piece', 'vol 1')).toBe(archive);
@@ -4852,13 +4852,13 @@ describe('existsInCloud / getCloudFile resolve the cloud spelling', () => {
   it('answers the exact path first', async () => {
     const exact = cloudFile('one piece/Vol 1.cbz');
     listing([cloudFile('One Piece/Vol 1.cbz'), exact]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(exact);
   });
 
   it('never answers with a sidecar', async () => {
     listing([cloudFile('One Piece/Vol 1.mokuro')]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(unifiedCloudManager.existsInCloud('one piece', 'Vol 1')).toBe(false);
   });
 });
@@ -4890,7 +4890,7 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
     const revision = {};
     cacheRevision.mockImplementation(() => revision);
     listing([cloudFile('One Piece/Vol 1.cbz'), cloudFile('Berserk/Vol 1.cbz')]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     for (let i = 0; i < 50; i++) {
       expect(unifiedCloudManager.existsInCloud(`Local ${i}`, 'Vol 1')).toBe(false);
@@ -4913,7 +4913,7 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
     cacheRevision.mockImplementation(() => revision);
     const archives = Array.from({ length: 200 }, (_, i) => cloudFile(`One Piece/Vol ${i + 1}.cbz`));
     listing([...archives, ...archives.map((a) => cloudFile(a.path.replace(/\.cbz$/, '.mokuro')))]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     // The device still spells the series `one piece`: every exact path misses.
     for (let i = 0; i < 200; i++) {
@@ -4928,7 +4928,7 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
     const foldedName = cloudFile('One Piece/vol 1.cbz');
     const nested = cloudFile('One Piece/extras/Vol 2.cbz');
     listing([foldedName, exactName, nested]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     // The exact filename inside the resolved folder wins over one that merely folds alike.
     expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(exactName);
@@ -4950,7 +4950,7 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
     const inPicked = cloudFile(`${picked}/Vol 1.cbz`);
     const inOther = cloudFile(`${other}/Vol 2.cbz`);
     listing([inPicked, inOther]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe(picked);
     expect(unifiedCloudManager.getCloudFile('one piece', 'Vol 1')).toBe(inPicked);
@@ -4963,7 +4963,7 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
   it('a title with a slash still takes the full lookup', async () => {
     const archive = cloudFile('One Piece/extras/Vol 2.cbz');
     listing([cloudFile('One Piece/Vol 1.cbz'), archive]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(unifiedCloudManager.getCloudFile('one piece', 'extras/Vol 2')).toBe(archive);
     expect(getBySeries).toHaveBeenCalled();
   });
@@ -4971,7 +4971,7 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
   it('rebuilds when the cache changes', async () => {
     cacheRevision.mockImplementation(() => ({ first: true }));
     listing([cloudFile('Berserk/Vol 1.cbz')]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('one piece');
 
     // An upload's `cache.add` is a new revision: the folder it created is
@@ -4989,7 +4989,7 @@ describe('folded lookups read a per-listing index, not the whole listing per cal
       cloudFile('one piece/Vol 3.cbz'),
       cloudFile('Nested/sub/Vol 1.cbz')
     ]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(unifiedCloudManager.resolveCloudFolderTitle('one piece')).toBe('one piece');
     expect(unifiedCloudManager.resolveCloudFolderTitle('One piece')).toBe(
       ['ONE  PIECE', 'One Piece', 'one piece'].sort(naturalSort)[0]
@@ -5023,7 +5023,7 @@ describe('blindUploadFile — the write-and-forget upload', () => {
       }))
     };
     getActiveProvider.mockReturnValue(provider);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     const uploaded = await unifiedCloudManager.blindUploadFile('S/V.mokuro', new Blob(['x']));
 
@@ -5054,7 +5054,7 @@ describe('blindUploadFile — the write-and-forget upload', () => {
       uploadFile: vi.fn(async () => ({ fileId: 'plain-1' }))
     };
     getActiveProvider.mockReturnValue(provider);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     const uploaded = await unifiedCloudManager.blindUploadFile('S/V.webp', new Blob(['xy']));
 
@@ -5078,8 +5078,8 @@ describe('blindUploadFile — the write-and-forget upload', () => {
       downloadFile: vi.fn(async () => new Blob(['{}']))
     };
     getActiveProvider.mockReturnValue(provider);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
-    const { readRootFile, clearRootFileMemo } = await import('$lib/util/sync/root-file-memo');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
+    const { readRootFile, clearRootFileMemo } = await import('#lib/util/sync/root-file-memo.js');
     clearRootFileMemo();
 
     await unifiedCloudManager.blindUploadFile('positions.json', new Blob(['{}']));
@@ -5104,7 +5104,7 @@ describe('blindUploadFile — the write-and-forget upload', () => {
       blindUploadFile: vi.fn(async () => ({ fileId: 'wrong' }))
     };
     getActiveProvider.mockReturnValue(provider);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     const uploaded = await unifiedCloudManager.uploadFile('S/V.cbz', new Blob(['x']));
 
@@ -5188,7 +5188,7 @@ describe('UnifiedCloudManager.previewSeriesFileBuild (the heal preview)', () => 
       }
     ]);
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const preview = await unifiedCloudManager.previewSeriesFileBuild(
       'One Piece',
       publishedWithZeroVol2
@@ -5210,7 +5210,7 @@ describe('UnifiedCloudManager.previewSeriesFileBuild (the heal preview)', () => 
   });
 
   it('returns undefined behind every write gate: read-only provider, unloaded cache, archiveless folder', async () => {
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
 
     getActiveProvider.mockReturnValue(
       previewProvider({ getStatus: vi.fn(() => ({ isReadOnly: true })) })
@@ -5288,7 +5288,7 @@ describe('the raw-doubles flag on cached records (raw_entry_collapse)', () => {
       downloadFile: vi.fn(async () => new Blob([body]))
     });
     getBySeries.mockReturnValue([file('One Piece/Vol 1.cbz'), file('One Piece/series.json', 50)]);
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     return unifiedCloudManager.refreshSeriesIndexForSeries('One Piece');
   }
 
@@ -5318,12 +5318,12 @@ describe('the series-index refresh is retained for the post-sync resolution', ()
   });
 
   it('resolves immediately when no refresh is running', async () => {
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await expect(unifiedCloudManager.whenSeriesIndexesSettled()).resolves.toBeUndefined();
   });
 
   it('waits for the refresh the last listing started', async () => {
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     let release!: () => void;
     refreshSeriesIndexes.mockReturnValueOnce(new Promise<void>((resolve) => (release = resolve)));
     unifiedCloudManager.refreshSeriesIndexesInBackground();
@@ -5342,7 +5342,7 @@ describe('the series-index refresh is retained for the post-sync resolution', ()
   });
 
   it('never rejects, even when the refresh does', async () => {
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     refreshSeriesIndexes.mockRejectedValueOnce(new Error('boom'));
     unifiedCloudManager.refreshSeriesIndexesInBackground();
     await expect(unifiedCloudManager.whenSeriesIndexesSettled()).resolves.toBeUndefined();
@@ -5363,7 +5363,7 @@ describe("a listing's background work settles as a whole (the rig driver's settl
   };
 
   it('resolves at once when no listing started any', async () => {
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     expect(unifiedCloudManager.listingWorkPending()).toBe(false);
     await expect(unifiedCloudManager.whenListingWorkSettled()).resolves.toBeUndefined();
   });
@@ -5371,7 +5371,7 @@ describe("a listing's background work settles as a whole (the rig driver's settl
   it('waits for the backfill that runs behind the spelling adoption', async () => {
     // The reconcile schedules the series.json writes a sync's caller never sees:
     // they must be queued before anyone settles the writes.
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     let adopted!: () => void;
     let reconciled!: () => void;
     adoptCloudSeriesSpellings.mockReturnValueOnce(
@@ -5398,7 +5398,7 @@ describe("a listing's background work settles as a whole (the rig driver's settl
   });
 
   it('waits for the work a later listing started meanwhile', async () => {
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     let first!: () => void;
     let second!: () => void;
     refreshSeriesIndexes
@@ -5418,7 +5418,7 @@ describe("a listing's background work settles as a whole (the rig driver's settl
   });
 
   it('never rejects, even when the work does', async () => {
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     reconcileMissingMetadataFiles.mockRejectedValueOnce(new Error('boom'));
     refreshCatalogIndex.mockRejectedValueOnce(new Error('boom'));
@@ -5435,7 +5435,7 @@ describe('syncProgress starts progress resolution behind its result', () => {
   });
 
   it('runs resolveSyncedProgress after a successful sync, without waiting for it', async () => {
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     let release!: () => void;
     resolveSyncedProgress.mockReturnValueOnce(new Promise<void>((resolve) => (release = resolve)));
     vi.mocked(unifiedSyncService.syncProvider).mockResolvedValue({ success: true } as never);
@@ -5454,7 +5454,7 @@ describe('syncProgress starts progress resolution behind its result', () => {
   });
 
   it('does not start resolution after a failed sync, and never lets it reject', async () => {
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     vi.mocked(unifiedSyncService.syncProvider).mockResolvedValue({ success: false } as never);
     await unifiedCloudManager.syncProgress();
     expect(resolveSyncedProgress).not.toHaveBeenCalled();
@@ -5480,7 +5480,7 @@ describe('UnifiedCloudManager.fetchAllCloudVolumes({ fromChangeFeed }) (#288)', 
     getActiveProvider.mockReturnValue({ type: 'google-drive' });
     getCache.mockReturnValue(cacheWithFeed(true));
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true });
 
     expect(getCache).toHaveBeenCalledWith('google-drive');
@@ -5492,7 +5492,7 @@ describe('UnifiedCloudManager.fetchAllCloudVolumes({ fromChangeFeed }) (#288)', 
     getActiveProvider.mockReturnValue({ type: 'google-drive' });
     getCache.mockReturnValue(cacheWithFeed(false));
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true });
 
     expect(refreshFromChanges).not.toHaveBeenCalled();
@@ -5503,7 +5503,7 @@ describe('UnifiedCloudManager.fetchAllCloudVolumes({ fromChangeFeed }) (#288)', 
     getActiveProvider.mockReturnValue({ type: 'webdav' });
     getCache.mockReturnValue(cacheWithFeed(true));
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false, fromChangeFeed: true });
 
     expect(refreshFromChanges).not.toHaveBeenCalled();
@@ -5514,7 +5514,7 @@ describe('UnifiedCloudManager.fetchAllCloudVolumes({ fromChangeFeed }) (#288)', 
     getActiveProvider.mockReturnValue({ type: 'google-drive' });
     getCache.mockReturnValue(cacheWithFeed(true));
 
-    const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+    const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
     await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: false });
 
     expect(refreshFromChanges).not.toHaveBeenCalled();

@@ -12,9 +12,9 @@
  */
 import { liveQuery } from 'dexie';
 import { readable, type Readable } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { listLayerMetas } from '$lib/catalog/layer-store';
-import type { VolumeOcrLayer, VolumeOcrLayerKind } from '$lib/types';
+import { db } from '#lib/catalog/db.js';
+import { listLayerMetas } from '#lib/catalog/layer-store.js';
+import type { VolumeOcrLayer, VolumeOcrLayerKind } from '#lib/types/index.js';
 import { ORIGINAL_LAYER_ID } from './edit-persist';
 
 export interface LayerSummary {

@@ -1,7 +1,7 @@
 <!-- src/lib/components/ThemeController.svelte -->
 <script lang="ts">
-  import { activeTheme } from '$lib/settings';
-  import { browser } from '$app/environment';
+  import { activeTheme } from '#lib/settings/index.js';
+  import { browser } from '$app/env';
   import { onDestroy } from 'svelte';
 
   // Track which custom properties we set last time so we can clear stale ones

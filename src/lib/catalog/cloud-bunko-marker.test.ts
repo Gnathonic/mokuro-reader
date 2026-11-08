@@ -3,7 +3,7 @@ import type {
   ControlFileResult,
   ProviderStatus,
   SyncProvider
-} from '$lib/util/sync/provider-interface';
+} from '#lib/util/sync/provider-interface.js';
 import {
   cloudBunkoHolder,
   cloudBunkoMergesDuplicates,
@@ -20,8 +20,11 @@ import {
   clearCloudBunkoMarkers,
   type MarkerNodeRecord
 } from './cloud-bunko-marker';
-import { EPOCH_MS, editExisting } from '$lib/interop/contract';
-import { positionsReadAllowed, positionsWriteAllowed } from '$lib/positions/positions-capability';
+import { EPOCH_MS, editExisting } from '#lib/interop/contract.js';
+import {
+  positionsReadAllowed,
+  positionsWriteAllowed
+} from '#lib/positions/positions-capability.js';
 import { servedMarker } from './__fixtures__/bunko-marker';
 
 const T0 = Date.parse('2026-10-12T10:00:00Z');

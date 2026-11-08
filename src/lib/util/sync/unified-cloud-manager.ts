@@ -10,17 +10,17 @@ import {
 } from './provider-interface';
 import { unifiedSyncService, type SyncOptions, type SyncResult } from './unified-sync-service';
 import { cacheManager } from './cache-manager';
-import { HISTORY_FOLDER } from '$lib/reading-history/paths';
+import { HISTORY_FOLDER } from '#lib/reading-history/paths.js';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { noteRootFileUpload } from './root-file-memo';
 import { providerManager } from './provider-manager';
-import { generateVolumeSidecarsFromDb } from '$lib/util/compress-volume';
-import { isMetadataOnly } from '$lib/catalog/volume-state';
-import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
-import { naturalSort } from '$lib/util/natural-sort';
-import { db } from '$lib/catalog/db';
-import { getLayerMeta } from '$lib/catalog/layer-store';
-import type { VolumeMetadata, VolumeOcrLayer } from '$lib/types';
+import { generateVolumeSidecarsFromDb } from '#lib/util/compress-volume.js';
+import { isMetadataOnly } from '#lib/catalog/volume-state.js';
+import { volumesForFoldedSeriesTitle } from '#lib/catalog/volumes-by-series.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
+import { db } from '#lib/catalog/db.js';
+import { getLayerMeta } from '#lib/catalog/layer-store.js';
+import type { VolumeMetadata, VolumeOcrLayer } from '#lib/types/index.js';
 import {
   FACTLESS_UPDATED_AT,
   SERIES_FILE_NAME,
@@ -35,8 +35,8 @@ import {
   type SeriesFile,
   type SeriesFileVolume,
   stringifySeriesFile
-} from '$lib/metadata/series-file';
-import { buildCloudSidecarStamps } from '$lib/metadata/cloud-sidecar-stamps';
+} from '#lib/metadata/series-file.js';
+import { buildCloudSidecarStamps } from '#lib/metadata/cloud-sidecar-stamps.js';
 import {
   CATALOG_FILE_NAME,
   buildCatalogFile,
@@ -46,15 +46,15 @@ import {
   parseCatalogFile,
   stringifyCatalogFile,
   type CatalogFile
-} from '$lib/metadata/catalog-file';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+} from '#lib/metadata/catalog-file.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 import {
   getSeriesMetadataByFoldedTitle,
   getSeriesMetadataByFoldedTitles,
   getSeriesMetadataForTitle,
   upsertFromSeriesFile
-} from '$lib/metadata/store';
-import type { SeriesMetadata } from '$lib/metadata/types';
+} from '#lib/metadata/store.js';
+import type { SeriesMetadata } from '#lib/metadata/types.js';
 import {
   deleteSeriesIndex,
   getSeriesIndex,
@@ -62,28 +62,28 @@ import {
   moveSeriesIndexKey,
   putSeriesIndex,
   type SeriesIndexRecord
-} from '$lib/metadata/series-index';
+} from '#lib/metadata/series-index.js';
 import {
   catalogNeedsRefresh,
   dropCatalogEntries,
   getCatalogIndex,
   moveCatalogIndexKey,
   putCatalogIndex
-} from '$lib/metadata/catalog-index';
-import { refreshSeriesIndexes } from '$lib/metadata/series-index-sync';
+} from '#lib/metadata/catalog-index.js';
+import { refreshSeriesIndexes } from '#lib/metadata/series-index-sync.js';
 // Deferred-use import into the module cycle hole-patch → unified-cloud-manager
 // → hole-patch (the resolver reads this manager's listing state). Safe for the
 // same reason the existing unified-cloud-manager ↔ series-file-sync cycle is:
 // nothing on either side calls across at module-init time, only from inside
 // function bodies.
-import { resolveSyncedProgress } from '$lib/metadata/hole-patch';
-import { refreshCatalogIndex } from '$lib/metadata/catalog-index-sync';
-import { markListingFresh, reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';
+import { resolveSyncedProgress } from '#lib/metadata/hole-patch.js';
+import { refreshCatalogIndex } from '#lib/metadata/catalog-index-sync.js';
+import { markListingFresh, reconcileMissingMetadataFiles } from '#lib/metadata/series-file-sync.js';
 import { sweepInstalledVolumesForSidecarBackfill } from './sidecar-backfill';
-import { syncLayersFromListing } from '$lib/metadata/layer-sync';
+import { syncLayersFromListing } from '#lib/metadata/layer-sync.js';
 import { adoptCloudSeriesSpellings } from './cloud-spelling-adoption';
-import { recordUploadedPrimarySidecarBlob } from '$lib/catalog/mokuro-upload-record';
-import { sha256Hex } from '$lib/catalog/mokuro-hash';
+import { recordUploadedPrimarySidecarBlob } from '#lib/catalog/mokuro-upload-record.js';
+import { sha256Hex } from '#lib/catalog/mokuro-hash.js';
 import {
   cbzStemsOf,
   classifyMokuroSidecar,
@@ -827,8 +827,8 @@ class UnifiedCloudManager {
   ): Promise<void> {
     try {
       const [{ scheduleSeriesFileWrite }, { scheduleCatalogFileWrite }] = await Promise.all([
-        import('$lib/metadata/series-file-sync'),
-        import('$lib/metadata/catalog-file-sync')
+        import('#lib/metadata/series-file-sync.js'),
+        import('#lib/metadata/catalog-file-sync.js')
       ]);
       for (const title of new Set(seriesTitles.filter((t): t is string => !!t))) {
         scheduleSeriesFileWrite(title);
@@ -1379,7 +1379,7 @@ class UnifiedCloudManager {
     volumeTitle: string
   ): Promise<Blob> {
     // Lazily: the OCR-upgrade module sits on top of the sync stack.
-    const { decodeMokuroSidecar } = await import('$lib/catalog/cloud-ocr-upgrade');
+    const { decodeMokuroSidecar } = await import('#lib/catalog/cloud-ocr-upgrade.js');
     const decoded = await decodeMokuroSidecar(file.path, await provider.downloadFile(file));
     if (!decoded) {
       throw new ProviderError(
@@ -2717,7 +2717,7 @@ class UnifiedCloudManager {
       this.startProgressResolution();
       // A record from a device still on the minute counter gets its
       // pre-history snapshot (a no-op once each record has one).
-      void import('$lib/reading-history/stats-store')
+      void import('#lib/reading-history/stats-store.js')
         .then(({ freezeLegacyBaselines }) => freezeLegacyBaselines())
         .catch((error) => console.debug('[reading-history] baselines skipped:', error));
     }

@@ -1,6 +1,6 @@
 import { derived, type Readable } from 'svelte/store';
-import { volumes as catalogVolumes } from '$lib/catalog';
-import type { ReadingSpeedResult } from '$lib/util/reading-speed';
+import { volumes as catalogVolumes } from '#lib/catalog/index.js';
+import type { ReadingSpeedResult } from '#lib/util/reading-speed.js';
 import { DEFAULT_SPEED, readingStats, seriesReadingSpeed } from './stats-store';
 
 /**

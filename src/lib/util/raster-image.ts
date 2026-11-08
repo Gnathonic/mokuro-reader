@@ -17,7 +17,7 @@
  * the import allowlist. A test keeps the two sets equal.
  */
 
-import { IMAGE_EXTENSIONS, IMAGE_MIME_TYPES } from '$lib/import/types';
+import { IMAGE_EXTENSIONS, IMAGE_MIME_TYPES } from '#lib/import/types.js';
 
 export const RASTER_IMAGE_TYPES = [
   'image/jpeg',

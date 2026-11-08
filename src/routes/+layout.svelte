@@ -1,53 +1,53 @@
 <script lang="ts">
   import '../app.css';
   // After app.css, the cascade position its inline <style> in app.html had.
-  import '$lib/styles/night-mode.css';
-  import { browser, dev } from '$app/environment';
+  import '#lib/styles/night-mode.css';
+  import { browser, dev } from '$app/env';
   import { inject } from '@vercel/analytics';
-  import { scrubAnalyticsEvent } from '$lib/util/analytics-scrub';
+  import { scrubAnalyticsEvent } from '#lib/util/analytics-scrub.js';
   import { onMount } from 'svelte';
-  import NavBar from '$lib/components/NavBar.svelte';
-  import Snackbar from '$lib/components/Snackbar.svelte';
-  import ConfirmationPopup from '$lib/components/ConfirmationPopup.svelte';
-  import ExtractionModal from '$lib/components/ExtractionModal.svelte';
-  import ImageOnlyReviewDialog from '$lib/components/ImageOnlyReviewDialog.svelte';
-  import ImportMismatchModal from '$lib/components/ImportMismatchModal.svelte';
-  import WebDAVErrorModal from '$lib/components/WebDAVErrorModal.svelte';
-  import MissingFilesModal from '$lib/components/MissingFilesModal.svelte';
-  import VolumeEditorModal from '$lib/components/VolumeEditorModal.svelte';
-  import SeriesEditorModal from '$lib/components/Series/SeriesEditorModal.svelte';
-  import AnkiFieldModal from '$lib/components/Reader/AnkiFieldModal.svelte';
-  import ImportPreparingModal from '$lib/components/ImportPreparingModal.svelte';
-  import ProgressTracker from '$lib/components/ProgressTracker.svelte';
-  import NightModeFilter from '$lib/components/NightModeFilter.svelte';
-  import ThemeController from '$lib/components/ThemeController.svelte';
-  import GlobalDropZone from '$lib/components/GlobalDropZone.svelte';
-  import MigrationBlocker from '$lib/components/MigrationBlocker.svelte';
-  import SwUpdateBanner from '$lib/components/SwUpdateBanner.svelte';
-  import { initializeProviders } from '$lib/util/sync/init-providers';
-  import { foregroundSync } from '$lib/util/sync/foreground-sync';
-  import { activityTracker } from '$lib/util/activity-tracker';
-  import { initFileHandler } from '$lib/util/file-handler';
-  import { initProgressTracker } from '$lib/metadata/progress-tracker';
-  import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
-  import { initCatalogFileSync } from '$lib/metadata/catalog-file-sync';
-  import { initSwUpdateDetection } from '$lib/util/sw-update';
-  import { navigateBack, currentView } from '$lib/util/hash-router';
-  import { checkMigrationNeeded } from '$lib/catalog/migration';
-  import { startThumbnailProcessing } from '$lib/catalog/db';
-  import { retirePreviousOcrLayers } from '$lib/catalog/retired-previous-ocr';
-  import { historyDb } from '$lib/reading-history/history-db';
-  import { loadHistoryTurns } from '$lib/reading-history/turns-store';
-  import { getOrCreateDeviceId } from '$lib/reading-history/record';
+  import NavBar from '#lib/components/NavBar.svelte';
+  import Snackbar from '#lib/components/Snackbar.svelte';
+  import ConfirmationPopup from '#lib/components/ConfirmationPopup.svelte';
+  import ExtractionModal from '#lib/components/ExtractionModal.svelte';
+  import ImageOnlyReviewDialog from '#lib/components/ImageOnlyReviewDialog.svelte';
+  import ImportMismatchModal from '#lib/components/ImportMismatchModal.svelte';
+  import WebDAVErrorModal from '#lib/components/WebDAVErrorModal.svelte';
+  import MissingFilesModal from '#lib/components/MissingFilesModal.svelte';
+  import VolumeEditorModal from '#lib/components/VolumeEditorModal.svelte';
+  import SeriesEditorModal from '#lib/components/Series/SeriesEditorModal.svelte';
+  import AnkiFieldModal from '#lib/components/Reader/AnkiFieldModal.svelte';
+  import ImportPreparingModal from '#lib/components/ImportPreparingModal.svelte';
+  import ProgressTracker from '#lib/components/ProgressTracker.svelte';
+  import NightModeFilter from '#lib/components/NightModeFilter.svelte';
+  import ThemeController from '#lib/components/ThemeController.svelte';
+  import GlobalDropZone from '#lib/components/GlobalDropZone.svelte';
+  import MigrationBlocker from '#lib/components/MigrationBlocker.svelte';
+  import SwUpdateBanner from '#lib/components/SwUpdateBanner.svelte';
+  import { initializeProviders } from '#lib/util/sync/init-providers.js';
+  import { foregroundSync } from '#lib/util/sync/foreground-sync.js';
+  import { activityTracker } from '#lib/util/activity-tracker.js';
+  import { initFileHandler } from '#lib/util/file-handler.js';
+  import { initProgressTracker } from '#lib/metadata/progress-tracker.js';
+  import { initSeriesFileSync } from '#lib/metadata/series-file-sync.js';
+  import { initCatalogFileSync } from '#lib/metadata/catalog-file-sync.js';
+  import { initSwUpdateDetection } from '#lib/util/sw-update.js';
+  import { navigateBack, currentView } from '#lib/util/hash-router.js';
+  import { checkMigrationNeeded } from '#lib/catalog/migration/index.js';
+  import { startThumbnailProcessing } from '#lib/catalog/db.js';
+  import { retirePreviousOcrLayers } from '#lib/catalog/retired-previous-ocr.js';
+  import { historyDb } from '#lib/reading-history/history-db.js';
+  import { loadHistoryTurns } from '#lib/reading-history/turns-store.js';
+  import { getOrCreateDeviceId } from '#lib/reading-history/record.js';
   import {
     detectDeviceFacts,
     readDeviceEnv,
     touchDeviceRecord
-  } from '$lib/reading-history/device-facts';
-  import { initGoalsLifecycle } from '$lib/goals';
-  import { cleanupLegacyEngineCredentials } from '$lib/settings/engine-credentials-cleanup';
+  } from '#lib/reading-history/device-facts.js';
+  import { initGoalsLifecycle } from '#lib/goals/index.js';
+  import { cleanupLegacyEngineCredentials } from '#lib/settings/engine-credentials-cleanup.js';
   import { get } from 'svelte/store';
-  import { loadWebFonts } from '$lib/util/web-fonts';
+  import { loadWebFonts } from '#lib/util/web-fonts.js';
 
   if (browser) void loadWebFonts();
 
@@ -55,7 +55,7 @@
   // switch is a literal false in production, so the import and its chunk are
   // dropped.
   if (__MOKURO_TEST_HOOKS__ && browser) {
-    import('$lib/interop/rig-driver')
+    import('#lib/interop/rig-driver.js')
       .then((m) => m.install())
       .catch((error) => console.error('[interop] rig driver failed to load', error));
   }
@@ -154,9 +154,9 @@
     // positions.json: mark this device's position changes and push them after
     // page turns settle. Started at once, so no turn goes unmarked.
     void Promise.all([
-      import('$lib/positions/positions-local'),
-      import('$lib/positions/positions-sync'),
-      import('$lib/positions/visit')
+      import('#lib/positions/positions-local.js'),
+      import('#lib/positions/positions-sync.js'),
+      import('#lib/positions/visit.js')
     ])
       .then(([{ initPositionTracking }, { initPositionPush }, { initVisitTracking }]) => {
         initPositionTracking();
@@ -170,18 +170,18 @@
     // cut-over strips nothing unless that load succeeded.
     loadHistoryTurns(historyDb())
       .catch((error) => console.warn('[reading-history] could not load history turns:', error))
-      .then(() => import('$lib/reading-history/cut-over'))
+      .then(() => import('#lib/reading-history/cut-over.js'))
       .then(({ cutOverLegacyTurns }) => cutOverLegacyTurns(historyDb()))
       .catch((error) => console.warn('[reading-history] cut-over failed:', error))
       // Cross-device position offers (phase 2c): watch history once it is loaded.
-      .then(() => import('$lib/reading-history/position-store'))
+      .then(() => import('#lib/reading-history/position-store.js'))
       .then(({ initPositionOffers }) => initPositionOffers(historyDb()))
       .catch((error) => console.warn('[reading-history] position offers failed:', error));
 
     // Reading stats from history (phase 3a). Each record's reading from
     // before history is frozen into a snapshot right away (it needs no
     // events: history from before the freeze is set against it as it arrives).
-    void import('$lib/reading-history/stats-store')
+    void import('#lib/reading-history/stats-store.js')
       .then(({ initReadingStats, freezeLegacyBaselines }) => {
         freezeLegacyBaselines();
         initReadingStats();
@@ -195,7 +195,7 @@
     );
 
     // Prune expired cloud cover cache, fire-and-forget
-    void import('$lib/catalog/cloud-covers')
+    void import('#lib/catalog/cloud-covers.js')
       .then((m) => m.pruneExpiredCloudCovers())
       .catch((error) => console.debug('[cloud-covers] prune skipped:', error));
 
@@ -208,12 +208,13 @@
       // only while a volume of interest is pending. After the providers, so
       // the connected server is known and can authenticate.
       .finally(() => {
-        void import('$lib/catalog/server-ocr-queue')
+        void import('#lib/catalog/server-ocr-queue.js')
           .then((m) => {
             // A cloud Bunko finished volumes: pick up their new sidecars
             // (the listing's index refresh runs the OCR upgrade + layer pull).
             m.setQueueRelistHook(async () => {
-              const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+              const { unifiedCloudManager } =
+                await import('#lib/util/sync/unified-cloud-manager.js');
               await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true });
             });
             return m.startServerOcrQueue();

@@ -15,7 +15,7 @@ import {
   type Fixture,
   type Seed
 } from './contract';
-import { basicAuthHeader } from '$lib/util/base64';
+import { basicAuthHeader } from '#lib/util/base64.js';
 
 /** A file test over a fake checkout holding `files` under `<root>/interop/contract/`. */
 function holding(root: string, files: string[]) {

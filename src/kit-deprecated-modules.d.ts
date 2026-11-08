@@ -5,7 +5,7 @@
 // https://github.com/Gnathonic/mokuro-reader/issues/359. Delete this file then.
 
 /** Deprecated: the same four values as `$app/env`. */
-declare module '$app/environment' {
+declare module '$app/env' {
   export const browser: boolean;
   export const dev: boolean;
   export const building: boolean;

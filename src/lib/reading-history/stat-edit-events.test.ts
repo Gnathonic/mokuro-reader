@@ -1,19 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$lib/reading-history/record', () => ({
+vi.mock('#lib/reading-history/record.js', () => ({
   recordEvent: vi.fn(() => Promise.resolve(null)),
   onEventsRecorded: vi.fn(() => () => {})
 }));
 
-import { recordEvent } from '$lib/reading-history/record';
-import { updateVolumeStats } from '$lib/util/volume-editor';
+import { recordEvent } from '#lib/reading-history/record.js';
+import { updateVolumeStats } from '#lib/util/volume-editor.js';
 import {
   archiveAndResetVolumes,
   clearOrphanedVolumeData,
   deleteVolume,
   updateProgress,
   volumesWithTrash
-} from '$lib/settings/volume-data';
+} from '#lib/settings/volume-data.js';
 
 const recorded = vi.mocked(recordEvent);
 
@@ -102,7 +102,8 @@ describe('stat edits record history events', () => {
   });
 
   it('mark unread / mark read answer any cross-device position offer up to now', async () => {
-    const { markVolumeAsUnread, markVolumeAsComplete } = await import('$lib/settings/volume-data');
+    const { markVolumeAsUnread, markVolumeAsComplete } =
+      await import('#lib/settings/volume-data.js');
     updateProgress('vol-a', 30, 300);
     recorded.mockClear();
     const before = Date.now();

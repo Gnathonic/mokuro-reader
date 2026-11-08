@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { thumbnailCache, type CacheEntry } from '$lib/catalog/thumbnail-cache';
+  import { thumbnailCache, type CacheEntry } from '#lib/catalog/thumbnail-cache.js';
 
   interface Props {
     volumeUuid: string;

@@ -23,13 +23,13 @@ import 'fake-indexeddb/auto';
  * contracts, it makes them unwritable.
  */
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_op_counter_test') };
 });
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { countIdbOps } from './idb-op-counter';
 
 const SCOPE = 'webdav:op-counter';

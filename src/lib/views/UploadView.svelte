@@ -5,22 +5,22 @@
     htmlDownloadProvider,
     getUploadParamsFromLocation,
     parseHtmlDownloadRequest
-  } from '$lib/import';
-  import { db } from '$lib/catalog/db';
-  import { installedUuids, pickCoverTarget } from '$lib/import/cover-sidecar';
-  import { importDeepLinkedArchive, localSeriesKeys } from '$lib/import/deep-link-import';
-  import { buildLinkImportPrompt, linkDisplayName } from '$lib/import/link-import-prompt';
-  import { thumbnailCache } from '$lib/catalog/thumbnail-cache';
+  } from '#lib/import/index.js';
+  import { db } from '#lib/catalog/db.js';
+  import { installedUuids, pickCoverTarget } from '#lib/import/cover-sidecar.js';
+  import { importDeepLinkedArchive, localSeriesKeys } from '#lib/import/deep-link-import.js';
+  import { buildLinkImportPrompt, linkDisplayName } from '#lib/import/link-import-prompt.js';
+  import { thumbnailCache } from '#lib/catalog/thumbnail-cache.js';
   import {
     confirmationPopupStore,
     normalizeFilename,
     promptConfirmationWith,
     showSnackbar
-  } from '$lib/util';
-  import { requestPersistentStorage } from '$lib/util/upload';
-  import { nav } from '$lib/util/hash-router';
-  import { progressTrackerStore } from '$lib/util/progress-tracker';
-  import { toRasterImageFile } from '$lib/util/raster-image';
+  } from '#lib/util/index.js';
+  import { requestPersistentStorage } from '#lib/util/upload.js';
+  import { nav } from '#lib/util/hash-router.js';
+  import { progressTrackerStore } from '#lib/util/progress-tracker.js';
+  import { toRasterImageFile } from '#lib/util/raster-image.js';
   import { onDestroy, onMount } from 'svelte';
 
   const uploadParams = getUploadParamsFromLocation(window.location.search, window.location.hash);

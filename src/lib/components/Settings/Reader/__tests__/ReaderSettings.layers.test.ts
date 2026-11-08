@@ -9,7 +9,7 @@ const runLayerAction = vi.hoisted(() =>
 );
 const loadLayerPages = vi.hoisted(() => vi.fn(async () => null));
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable, readable } = await import('svelte/store');
   return {
     settings: writable({
@@ -29,15 +29,15 @@ vi.mock('$lib/settings', async () => {
     nightModeActive: readable(false)
   };
 });
-vi.mock('$lib/util', () => ({ isReader: () => true, showSnackbar: vi.fn() }));
-vi.mock('$lib/util/hash-router', () => ({ routeParams: readable({ volume: 'v1' }) }));
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/util/index.js', () => ({ isReader: () => true, showSnackbar: vi.fn() }));
+vi.mock('#lib/util/hash-router.js', () => ({ routeParams: readable({ volume: 'v1' }) }));
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volume_ocr: { get: vi.fn(async () => undefined) },
     volumes: { get: vi.fn(async () => ({ mokuro_version: '0.2.2' })) }
   }
 }));
-vi.mock('$lib/reader/edit/layer-list', () => ({
+vi.mock('#lib/reader/edit/layer-list.js', () => ({
   primaryLayerName: (v: string | undefined) => (v ? `mokuro ${v}` : 'mokuro'),
   layerSummaries: () =>
     readable([
@@ -46,11 +46,11 @@ vi.mock('$lib/reader/edit/layer-list', () => ({
       { layer_id: 'fix', name: 'Fix', kind: 'edit', updated_at: 'x' }
     ])
 }));
-vi.mock('$lib/reader/edit/layers', () => ({
+vi.mock('#lib/reader/edit/layers.js', () => ({
   LAYER_KIND_LABEL: { original: 'Original', edit: 'Edit', ocr: 'OCR', translation: 'Translation' },
   loadLayerPages
 }));
-vi.mock('$lib/components/Reader/Layers/layer-actions', () => ({ runLayerAction }));
+vi.mock('#lib/components/Reader/Layers/layer-actions.js', () => ({ runLayerAction }));
 vi.mock('../ReaderSelects.svelte', async () => {
   const mod = await import('./__stub__/Empty.svelte');
   return { default: mod.default };
@@ -63,7 +63,7 @@ vi.mock('../ReaderToggles.svelte', async () => {
 import ReaderSettings from '../ReaderSettings.svelte';
 // The REAL registry: the settings panel reaches the reader's edit session
 // through it, so the test registers a hook the way `Reader.svelte` does.
-import { registerBeforeLayerMutation } from '$lib/reader/edit/reader-edit-rules';
+import { registerBeforeLayerMutation } from '#lib/reader/edit/reader-edit-rules.js';
 
 afterEach(() => {
   cleanup();
@@ -106,7 +106,7 @@ describe('ReaderSettings — OCR layers', () => {
   });
 
   it('a displayed TRANSLATION layer cannot be promoted: the button is disabled and says why', async () => {
-    const { volumes } = (await import('$lib/settings')) as unknown as {
+    const { volumes } = (await import('#lib/settings/index.js')) as unknown as {
       volumes: { set: (v: unknown) => void };
     };
     volumes.set({ v1: { progress: 1, settings: { ocrLayer: 'english' } } });
@@ -126,7 +126,7 @@ describe('ReaderSettings — OCR layers', () => {
   });
 
   it('offers no Delete on the shared curated layer (Unpublish is the layer menu’s)', async () => {
-    const { volumes } = (await import('$lib/settings')) as unknown as {
+    const { volumes } = (await import('#lib/settings/index.js')) as unknown as {
       volumes: { set: (v: unknown) => void };
     };
     volumes.set({ v1: { progress: 1, settings: { ocrLayer: 'curated' } } });

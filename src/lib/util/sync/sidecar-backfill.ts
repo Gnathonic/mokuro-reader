@@ -1,22 +1,22 @@
-import { db } from '$lib/catalog/db';
-import { activeAccountScope } from '$lib/catalog/cloud-cache-key';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { noteUploadedPrimarySidecar } from '$lib/catalog/mokuro-upload-record';
-import { sha256Hex } from '$lib/catalog/mokuro-hash';
-import type { VolumeMetadata } from '$lib/types';
+import { db } from '#lib/catalog/db.js';
+import { activeAccountScope } from '#lib/catalog/cloud-cache-key.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { noteUploadedPrimarySidecar } from '#lib/catalog/mokuro-upload-record.js';
+import { sha256Hex } from '#lib/catalog/mokuro-hash.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import {
   groupSeriesSidecarFiles,
   hasCoverSidecarExtension,
   type SeriesSidecarFiles
-} from '$lib/metadata/cloud-sidecar-stamps';
-import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
+} from '#lib/metadata/cloud-sidecar-stamps.js';
+import { hasWritableNonServerProvider } from '#lib/metadata/series-backfill.js';
+import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
 import {
   buildVolumeSidecarsFromData,
   loadVolumeSidecars,
   type VolumeSidecarFiles
-} from '$lib/util/volume-sidecars';
-import { downloadQueue } from '$lib/util/download-queue';
+} from '#lib/util/volume-sidecars.js';
+import { downloadQueue } from '#lib/util/download-queue.js';
 import { cacheManager } from './cache-manager';
 import { uploadCacheEntry } from './cloud-cache-interface';
 import { isCbzFile } from './syncable-file';

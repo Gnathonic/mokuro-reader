@@ -127,7 +127,7 @@ function applyInteropConfig(raw: unknown): void {
   if (typeof onedrive === 'string') setCloudTestToken('onedrive', onedrive);
   const driveApi = config.bases?.driveApi;
   if (config.gapiShim && driveApi) {
-    void import('$lib/interop/gapi-rest-shim')
+    void import('#lib/interop/gapi-rest-shim.js')
       .then((m) => m.installGapiRestShim(driveApi))
       .catch((error) => console.error('[cloud-test-hooks] gapi shim failed to load:', error));
   }

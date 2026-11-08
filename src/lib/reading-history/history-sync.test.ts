@@ -5,7 +5,7 @@ import { appendEvent, getOrCreateDeviceId } from './record';
 import { encodeSegment } from './segment-codec';
 import { historySegmentPath, historyDeviceFilePath, historyLegacyFilePath } from './paths';
 import { importHistory, syncHistory } from './history-sync';
-import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
+import type { CloudFileMetadata, SyncProvider } from '#lib/util/sync/provider-interface.js';
 import type { ReadingEvent } from './types';
 
 const OCT = Date.UTC(2026, 9, 3);

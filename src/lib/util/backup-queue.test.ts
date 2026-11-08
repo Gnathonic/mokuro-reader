@@ -63,7 +63,7 @@ const {
   };
 });
 
-vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
+vi.mock('#lib/util/sync/unified-cloud-manager.js', () => ({
   unifiedCloudManager: {
     fetchAllCloudVolumes,
     writeSeriesFile,
@@ -81,8 +81,8 @@ vi.mock('$lib/util/sync/unified-cloud-manager', () => ({
   }
 }));
 
-vi.mock('$lib/metadata/catalog-file-sync', () => ({ flushCatalogFileWrites }));
-vi.mock('$lib/metadata/series-file-sync', () => ({
+vi.mock('#lib/metadata/catalog-file-sync.js', () => ({ flushCatalogFileWrites }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({
   markListingFresh,
   scheduleSeriesFileWrite,
   cancelScheduledSeriesFileWrite
@@ -90,9 +90,9 @@ vi.mock('$lib/metadata/series-file-sync', () => ({
 
 // Best-effort and DB-backed in the real module; irrelevant to the scheduling
 // behavior under test here, so stubbed out rather than wired to a fake DB.
-vi.mock('$lib/catalog/archive-size', () => ({ recordArchiveSize: vi.fn(async () => {}) }));
+vi.mock('#lib/catalog/archive-size.js', () => ({ recordArchiveSize: vi.fn(async () => {}) }));
 
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { getCache: () => ({ add: vi.fn() }) }
 }));
 
@@ -103,12 +103,12 @@ const bridge = vi.hoisted(() => ({
   notify: vi.fn(),
   notifyError: vi.fn()
 }));
-vi.mock('$lib/util/backup-ui', () => ({ getBackupUiBridge: () => bridge }));
+vi.mock('#lib/util/backup-ui.js', () => ({ getBackupUiBridge: () => bridge }));
 const { recordUploadFailure, clearUploadFailure } = vi.hoisted(() => ({
   recordUploadFailure: vi.fn(),
   clearUploadFailure: vi.fn()
 }));
-vi.mock('$lib/util/upload-failures', () => ({ recordUploadFailure, clearUploadFailure }));
+vi.mock('#lib/util/upload-failures.js', () => ({ recordUploadFailure, clearUploadFailure }));
 
 // Stands in for `WorkerPool.cancelTasks`: rejects the captured tasks it
 // matches as cancelled, the way the real pool does.
@@ -127,32 +127,32 @@ const cancelPoolTasks = vi.hoisted(() =>
   })
 );
 const decrementPoolUsers = vi.hoisted(() => vi.fn());
-vi.mock('$lib/util/file-processing-pool', () => ({
+vi.mock('#lib/util/file-processing-pool.js', () => ({
   getFileProcessingPool: async () => ({ addTask: addTaskMock, maxConcurrentWorkers: 4 }),
   incrementPoolUsers: vi.fn(),
   decrementPoolUsers,
   cancelPoolTasks
 }));
 
-vi.mock('$lib/util/volume-sidecars', () => ({ downloadFileBlob: vi.fn() }));
+vi.mock('#lib/util/volume-sidecars.js', () => ({ downloadFileBlob: vi.fn() }));
 // Only `prepareData` for a worker-driven upload reaches this; the real one
 // talks to the provider.
-vi.mock('$lib/util/upload-worker-credentials', () => ({
+vi.mock('#lib/util/upload-worker-credentials.js', () => ({
   getUploadWorkerCredentials: vi.fn(async () => ({})),
   prepareSeriesUploadTarget: vi.fn(async () => {})
 }));
 const stampLayersSynced = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('$lib/metadata/layer-sync', () => ({ stampLayersSynced }));
+vi.mock('#lib/metadata/layer-sync.js', () => ({ stampLayersSynced }));
 const uploadRecord = vi.hoisted(() => ({
   recordUploadedPrimarySidecar: vi.fn(async () => {}),
   recordUploadedPrimarySidecarBlob: vi.fn(async () => {})
 }));
-vi.mock('$lib/catalog/mokuro-upload-record', () => uploadRecord);
+vi.mock('#lib/catalog/mokuro-upload-record.js', () => uploadRecord);
 const watchUploadedVolume = vi.hoisted(() => vi.fn(async () => {}));
 const watchCloudUpload = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('$lib/catalog/server-ocr-queue', () => ({ watchUploadedVolume, watchCloudUpload }));
+vi.mock('#lib/catalog/server-ocr-queue.js', () => ({ watchUploadedVolume, watchCloudUpload }));
 
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { downloadFileBlob } from './volume-sidecars';
 import { cancelProviderUploads } from './sync/upload-cancellation';
 import {

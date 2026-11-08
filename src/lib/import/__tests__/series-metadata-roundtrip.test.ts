@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { parseMokuroFile } from '../processing';
-import { buildMokuroMetadata } from '$lib/util/mokuro-metadata';
-import { buildSeriesFile, parseSeriesFile } from '$lib/metadata/series-file';
-import { createEmptySeriesMetadata } from '$lib/metadata/types';
-import type { VolumeMetadata } from '$lib/types';
+import { buildMokuroMetadata } from '#lib/util/mokuro-metadata.js';
+import { buildSeriesFile, parseSeriesFile } from '#lib/metadata/series-file.js';
+import { createEmptySeriesMetadata } from '#lib/metadata/types.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 const volume: VolumeMetadata = {
   mokuro_version: '0.2.1',

@@ -1,11 +1,11 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
-import type { VolumeMetadata } from '$lib/types';
-import { providerManager } from '$lib/util/sync/provider-manager';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
-import { isCbzFile } from '$lib/util/sync/syncable-file';
+import { db } from '#lib/catalog/db.js';
+import { volumesForFoldedSeriesTitle } from '#lib/catalog/volumes-by-series.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
+import { isCbzFile } from '#lib/util/sync/syncable-file.js';
 import { isCatalogFilePath } from './catalog-file';
 import { scheduleCatalogFileWrite } from './catalog-file-sync';
 import {

@@ -4,7 +4,7 @@
  * import it.
  */
 
-import { isCuratedLayerId, isPersonalLayerId } from '$lib/reader/edit/layer-names';
+import { isCuratedLayerId, isPersonalLayerId } from '#lib/reader/edit/layer-names.js';
 import type { VolumeSidecarBlobData, VolumeSidecarBlobResult } from './compress-volume';
 
 type LayerSidecar = NonNullable<VolumeSidecarBlobResult['layers']>[number];

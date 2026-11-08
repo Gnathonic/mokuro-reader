@@ -1,8 +1,8 @@
-import { showSnackbar } from '$lib/util';
+import { showSnackbar } from '#lib/util/index.js';
 import { writable } from 'svelte/store';
 import { blobToBase64, imageResize, type VolumeMetadata } from '.';
-import type { Settings } from '$lib/settings/settings';
-import type { Page, Block } from '$lib/types';
+import type { Settings } from '#lib/settings/settings.js';
+import type { Page, Block } from '#lib/types/index.js';
 
 /**
  * Expands a text block's bounding box by a percentage of page dimensions.

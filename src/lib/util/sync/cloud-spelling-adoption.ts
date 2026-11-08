@@ -20,10 +20,10 @@
  * folder — evidence the folder IS this series, not a namesake.
  */
 
-import { db } from '$lib/catalog/db';
-import { normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { isVolumeOpen } from '$lib/util/hash-router';
-import type { VolumeMetadata } from '$lib/types';
+import { db } from '#lib/catalog/db.js';
+import { normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import { isVolumeOpen } from '#lib/util/hash-router.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import type { CloudFileMetadata, ProviderType } from './provider-interface';
 import { providerManager } from './provider-manager';
 import { isCbzFile } from './syncable-file';
@@ -140,7 +140,7 @@ export async function adoptCloudSeriesSpellings(
 
   // Deferred: series-rename imports the cloud manager, which imports this.
   const { commitLocalSeriesRename, generateRenameSeriesPreview } =
-    await import('$lib/util/series-rename');
+    await import('#lib/util/series-rename.js');
   const committed: CloudSpellingAdoption[] = [];
   for (const plan of plans) {
     // The provider may have changed while the rows were read.

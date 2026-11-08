@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { Button, Modal, Spinner, Fileupload } from 'flowbite-svelte';
-  import { getVolumeFiles } from '$lib/util/volume-editor';
-  import { showSnackbar } from '$lib/util';
+  import { getVolumeFiles } from '#lib/util/volume-editor.js';
+  import { showSnackbar } from '#lib/util/index.js';
   import {
     displayableImageBlob,
     RASTER_FORMAT_NAMES,
     RASTER_IMAGE_TYPES,
     sniffRasterBlob
-  } from '$lib/util/raster-image';
+  } from '#lib/util/raster-image.js';
   import ImageCropper from './ImageCropper.svelte';
   import {
     cropZoneToRect,
@@ -16,7 +16,7 @@
     rectToCropZone,
     roundCropData,
     type CropZone
-  } from '$lib/util/crop-geometry';
+  } from '#lib/util/crop-geometry.js';
 
   type CropTemplate = CropZone;
 

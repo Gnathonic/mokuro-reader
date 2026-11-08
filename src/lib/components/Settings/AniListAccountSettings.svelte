@@ -8,10 +8,10 @@
     disconnectAniList,
     getAniListClientId,
     startAniListLogin
-  } from '$lib/metadata/anilist-auth';
-  import { syncAllSeriesNow, type SyncAllTally } from '$lib/metadata/progress-tracker';
-  import { catalogSettings, updateCatalogSetting } from '$lib/settings/settings';
-  import { showSnackbar } from '$lib/util/snackbar';
+  } from '#lib/metadata/anilist-auth.js';
+  import { syncAllSeriesNow, type SyncAllTally } from '#lib/metadata/progress-tracker.js';
+  import { catalogSettings, updateCatalogSetting } from '#lib/settings/settings.js';
+  import { showSnackbar } from '#lib/util/snackbar.js';
 
   // Env-derived and constant for the life of the tab; the script body runs
   // once per component instance, so this needs no reactivity.

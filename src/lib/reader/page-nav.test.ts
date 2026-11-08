@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { calculateForwardTarget, calculateBackwardTarget, type PageNavContext } from './page-nav';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 
 const portrait = () => ({ img_width: 800, img_height: 1200 }) as Page;
 const wide = () => ({ img_width: 2000, img_height: 1200 }) as Page;

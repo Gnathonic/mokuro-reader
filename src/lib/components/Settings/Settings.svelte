@@ -2,9 +2,9 @@
   import { Accordion, Button, Drawer } from 'flowbite-svelte';
   import { UserSettingsSolid } from 'flowbite-svelte-icons';
   import { sineIn } from 'svelte/easing';
-  import { resetSettings } from '$lib/settings';
-  import { isReader, promptConfirmation } from '$lib/util';
-  import { currentView } from '$lib/util/hash-router';
+  import { resetSettings } from '#lib/settings/index.js';
+  import { isReader, promptConfirmation } from '#lib/util/index.js';
+  import { currentView } from '#lib/util/hash-router.js';
   import AnkiConnectSettings from './AnkiConnectSettings.svelte';
   import ReaderSettings from './Reader/ReaderSettings.svelte';
   import Profiles from './Profiles/Profiles.svelte';

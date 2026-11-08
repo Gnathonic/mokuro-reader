@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Button, Modal, Label, Select, Helper } from 'flowbite-svelte';
-  import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
-  import { getNextResetTime, formatRelativeResetTime } from '$lib/goals';
+  import { miscSettings, updateMiscSetting } from '#lib/settings/misc.js';
+  import { getNextResetTime, formatRelativeResetTime } from '#lib/goals/index.js';
 
   interface Props {
     open?: boolean;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 /**
  * The install step of a download: what lands on the row once the archive is
@@ -24,7 +24,7 @@ const {
   filesGet: vi.fn(async () => undefined as unknown)
 }));
 
-vi.mock('$lib/catalog/db', () => ({
+vi.mock('#lib/catalog/db.js', () => ({
   db: {
     volumes: { get: volumesGet, update: volumesUpdate },
     volume_ocr: { get: ocrGet },
@@ -50,7 +50,7 @@ vi.mock('./sync/providers/google-drive/drive-files-cache', () => ({ driveFilesCa
 vi.mock('./sync/unified-cloud-manager', () => ({
   unifiedCloudManager: { getCloudVolume: vi.fn(), refreshCloudFiles: vi.fn() }
 }));
-vi.mock('$lib/import', () => ({
+vi.mock('#lib/import/index.js', () => ({
   processVolume,
   saveVolume,
   deleteVolumeCompletely,
@@ -58,7 +58,7 @@ vi.mock('$lib/import', () => ({
   isImageExtension: () => true,
   getImageMimeType: () => 'image/jpeg'
 }));
-vi.mock('$lib/catalog/stranded-rows', () => ({
+vi.mock('#lib/catalog/stranded-rows.js', () => ({
   dropStrandedMetadataOnlyRow: vi.fn(async () => {})
 }));
 
@@ -69,15 +69,15 @@ const { hasWritableNonServerProvider, scheduleSeriesFileWrite } = vi.hoisted(() 
   hasWritableNonServerProvider: vi.fn(() => false),
   scheduleSeriesFileWrite: vi.fn((_title: string) => {})
 }));
-vi.mock('$lib/metadata/series-backfill', () => ({ hasWritableNonServerProvider }));
-vi.mock('$lib/metadata/series-file-sync', () => ({ scheduleSeriesFileWrite }));
+vi.mock('#lib/metadata/series-backfill.js', () => ({ hasWritableNonServerProvider }));
+vi.mock('#lib/metadata/series-file-sync.js', () => ({ scheduleSeriesFileWrite }));
 const { attachLayerToVolume, readLayerFile, pullLayersForVolume } = vi.hoisted(() => ({
   attachLayerToVolume: vi.fn(async () => ({})),
   readLayerFile: vi.fn(async () => ({ pages: [{ img_width: 1 }] })),
   pullLayersForVolume: vi.fn(async () => 0)
 }));
-vi.mock('$lib/reader/edit/layer-import', () => ({ attachLayerToVolume, readLayerFile }));
-vi.mock('$lib/metadata/layer-sync', () => ({ pullLayersForVolume }));
+vi.mock('#lib/reader/edit/layer-import.js', () => ({ attachLayerToVolume, readLayerFile }));
+vi.mock('#lib/metadata/layer-sync.js', () => ({ pullLayersForVolume }));
 
 import { classifyArchiveMokuroEntry, processVolumeData } from './download-queue';
 
@@ -125,7 +125,7 @@ afterEach(async () => {
   vi.mocked(deleteVolumeCompletely).mockClear();
   // The OCR/file rows are what `shouldReplaceDownloadedVolume` reads: a test that seeds
   // them must not decide the next test's install path.
-  const { db } = await import('$lib/catalog/db');
+  const { db } = await import('#lib/catalog/db.js');
   vi.mocked(db.volume_ocr.get).mockReset();
   vi.mocked(db.volume_ocr.get).mockResolvedValue(undefined as never);
   vi.mocked(db.volume_files.get).mockReset();
@@ -161,7 +161,7 @@ describe('installing a downloaded volume', () => {
     vi.mocked(volumesGet).mockResolvedValue({
       ...placeholder({ isPlaceholder: undefined, mokuro_version: '0.4.11' })
     } as VolumeMetadata);
-    const { db } = await import('$lib/catalog/db');
+    const { db } = await import('#lib/catalog/db.js');
     vi.mocked(db.volume_ocr.get).mockResolvedValue({ volume_uuid: 'uuid-1', pages: [] } as never);
     vi.mocked(db.volume_files.get).mockResolvedValue({ volume_uuid: 'uuid-1', files: {} } as never);
 
@@ -251,7 +251,7 @@ describe('the install trigger — a finished install schedules its series.json w
     vi.mocked(volumesGet).mockResolvedValue({
       ...placeholder({ isPlaceholder: undefined, mokuro_version: '0.4.11' })
     } as VolumeMetadata);
-    const { db } = await import('$lib/catalog/db');
+    const { db } = await import('#lib/catalog/db.js');
     vi.mocked(db.volume_ocr.get).mockResolvedValue({ volume_uuid: 'uuid-1', pages: [] } as never);
     vi.mocked(db.volume_files.get).mockResolvedValue({ volume_uuid: 'uuid-1', files: {} } as never);
 

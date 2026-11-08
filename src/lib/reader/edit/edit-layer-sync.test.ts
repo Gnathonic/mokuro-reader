@@ -5,24 +5,24 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import type { Page } from '$lib/types';
-import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
+import type { Page } from '#lib/types/index.js';
+import type { CloudFileMetadata } from '#lib/util/sync/provider-interface.js';
 
-vi.mock('$lib/catalog/thumbnails', () => ({ generateThumbnail: vi.fn() }));
-vi.mock('$lib/util/progress-tracker', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({ generateThumbnail: vi.fn() }));
+vi.mock('#lib/util/progress-tracker.js', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }
 }));
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_edit_layer_sync_test') };
 });
 const getActiveProvider = vi.fn();
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { getActiveProvider: () => getActiveProvider() }
 }));
 let cachedFiles: CloudFileMetadata[] = [];
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: {
     getCache: () => ({
       add: vi.fn(),
@@ -33,8 +33,8 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
   }
 }));
 
-import { db } from '$lib/catalog/db';
-import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { clearAllLayers, getLayerWithPages, putLayerWithPages } from '#lib/catalog/layer-store.js';
 import {
   LAYER_PUSH_DEBOUNCE_MS,
   cancelScheduledLayerPushForTest,
@@ -42,11 +42,11 @@ import {
   pullOwnEditLayerBeforeEdit,
   resetEditLayerMigrationForTest,
   syncLayersFromListing
-} from '$lib/metadata/layer-sync';
+} from '#lib/metadata/layer-sync.js';
 import { persistPageEdit } from './edit-persist';
 import { promoteLayer, createLayer } from './layers';
 import { mainSidecarPagesForCloud } from './edit-persist';
-import { contentDigest, provenanceFromParsed } from '$lib/catalog/ocr-provenance';
+import { contentDigest, provenanceFromParsed } from '#lib/catalog/ocr-provenance.js';
 
 const SHA = 'cd'.repeat(32);
 

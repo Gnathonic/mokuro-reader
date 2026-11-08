@@ -33,8 +33,8 @@
  */
 
 import type { ProviderStatus } from './provider-interface';
-import { historySyncAllowed } from '$lib/reading-history/history-capability';
-import { positionsWriteAllowed } from '$lib/positions/positions-capability';
+import { historySyncAllowed } from '#lib/reading-history/history-capability.js';
+import { positionsWriteAllowed } from '#lib/positions/positions-capability.js';
 
 /**
  * The record fields a page turn writes that `positions.json` carries to the

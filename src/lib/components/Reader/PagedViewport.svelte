@@ -1,16 +1,16 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { onDestroy, onMount } from 'svelte';
-  import { settings, updateSetting } from '$lib/settings';
-  import { PagedCamera } from '$lib/reader/paged-camera';
-  import { ContinuousZoomController } from '$lib/reader/zoom-controller';
-  import type { Size } from '$lib/reader/paged-zoom-layout';
+  import { settings, updateSetting } from '#lib/settings/index.js';
+  import { PagedCamera } from '#lib/reader/paged-camera.js';
+  import { ContinuousZoomController } from '#lib/reader/zoom-controller.js';
+  import type { Size } from '#lib/reader/paged-zoom-layout.js';
   import {
     applyPagedBase,
     createSessionState,
     doubleTapTarget,
     pagedLevels
-  } from '$lib/reader/paged-zoom-session';
+  } from '#lib/reader/paged-zoom-session.js';
   import {
     GAP_WHEEL_STEP_SIZE,
     MAX_PAGE_GAP,
@@ -20,13 +20,13 @@
     normalizeWheelDelta,
     wheelIntentIsGapAdjust,
     wheelIntentIsZoom
-  } from '$lib/reader/zoom-math';
-  import { pagedZoom, type PagedZoomApi } from '$lib/reader/paged-zoom';
-  import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
-  import { gestureTargetRole } from '$lib/reader/input/gesture-target';
-  import { TapDiscriminator } from '$lib/reader/input/tap';
-  import { classifySwipe } from '$lib/reader/input/swipe';
-  import type { MotionGate } from '$lib/reader/input/motion-gate';
+  } from '#lib/reader/zoom-math.js';
+  import { pagedZoom, type PagedZoomApi } from '#lib/reader/paged-zoom.js';
+  import { PointerGestureTracker, zoomGestureConfig } from '#lib/reader/input/pointer-tracker.js';
+  import { gestureTargetRole } from '#lib/reader/input/gesture-target.js';
+  import { TapDiscriminator } from '#lib/reader/input/tap.js';
+  import { classifySwipe } from '#lib/reader/input/swipe.js';
+  import type { MotionGate } from '#lib/reader/input/motion-gate.js';
 
   interface Props {
     /** Native pixel size of the displayed page or pair — from page data, not DOM. */

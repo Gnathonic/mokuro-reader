@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 
 const h = vi.hoisted(() => {
   function createStore<T>(initial: T) {
@@ -53,17 +53,20 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock('$app/state', () => ({ page: h.page }));
-vi.mock('$lib/settings', () => ({ settings: h.settings, updateAnkiSetting: h.updateAnkiSetting }));
-vi.mock('$lib/anki-connect', async () => ({
+vi.mock('#lib/settings/index.js', () => ({
+  settings: h.settings,
+  updateAnkiSetting: h.updateAnkiSetting
+}));
+vi.mock('#lib/anki-connect/index.js', async () => ({
   // The real trust rules; only the network calls are stand-ins.
-  ...(await vi.importActual<typeof import('$lib/anki-connect/url-trust')>(
-    '$lib/anki-connect/url-trust'
+  ...(await vi.importActual<typeof import('#lib/anki-connect/url-trust.js')>(
+    '#lib/anki-connect/url-trust.js'
   )),
   fetchConnectionData: vi.fn(async () => null),
   openConfigureModal: vi.fn()
 }));
 
-import { resetAnkiUrlTrustForTest } from '$lib/anki-connect/url-trust';
+import { resetAnkiUrlTrustForTest } from '#lib/anki-connect/url-trust.js';
 import AnkiConnectSettings from '../AnkiConnectSettings.svelte';
 
 async function opened(url: string) {

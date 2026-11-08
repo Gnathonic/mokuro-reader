@@ -7,17 +7,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { get } from 'svelte/store';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { CatalogDexieV3 } =
-    await vi.importActual<typeof import('$lib/catalog/db-v3')>('$lib/catalog/db-v3');
+    await vi.importActual<typeof import('#lib/catalog/db-v3.js')>('#lib/catalog/db-v3.js');
   return { db: new CatalogDexieV3('mokuro_v3_server_ocr_queue_test') };
 });
 const upgradeOcrFromSidecarBlob = vi.hoisted(() => vi.fn());
-vi.mock('$lib/catalog/cloud-ocr-upgrade', () => ({ upgradeOcrFromSidecarBlob }));
+vi.mock('#lib/catalog/cloud-ocr-upgrade.js', () => ({ upgradeOcrFromSidecarBlob }));
 const importFetchedLayers = vi.hoisted(() => vi.fn());
-vi.mock('$lib/metadata/layer-sync', () => ({ importFetchedLayers }));
+vi.mock('#lib/metadata/layer-sync.js', () => ({ importFetchedLayers }));
 const getActiveProvider = vi.hoisted(() => vi.fn(() => null as unknown));
-vi.mock('$lib/util/sync/provider-manager', async () => {
+vi.mock('#lib/util/sync/provider-manager.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     providerManager: {
@@ -28,9 +28,9 @@ vi.mock('$lib/util/sync/provider-manager', async () => {
   };
 });
 
-import { db } from '$lib/catalog/db';
-import { providerManager } from '$lib/util/sync/provider-manager';
-import { clearAllLayers } from '$lib/catalog/layer-store';
+import { db } from '#lib/catalog/db.js';
+import { providerManager } from '#lib/util/sync/provider-manager.js';
+import { clearAllLayers } from '#lib/catalog/layer-store.js';
 import { queueFixture } from './__fixtures__/mokuro-queue';
 import type { Writable } from 'svelte/store';
 import { markVolumeShown, serverOcrQueueStatus, volumeQueueKey } from './server-ocr-pending';

@@ -1,8 +1,8 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { get } from 'svelte/store';
-import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
+import { volumesWithPlaceholders as catalogVolumes } from '#lib/catalog/index.js';
 import { volumesWithTrash } from '../settings/volume-data';
-import { currentView, type View } from '$lib/util/hash-router';
+import { currentView, type View } from '#lib/util/hash-router.js';
 import { backfillCompletedAt } from './completed-at-backfill';
 import { customGoals, goalTargets, rollForwardStaleSelection } from './goals-data';
 import { pruneDeadlinesForDeletedVolumes } from './goal-settings';
@@ -10,7 +10,7 @@ import { getCustomPeriod, getPeriodForSelection } from './periods';
 import { finalizeGoalSnapshot } from './snapshots';
 import { _goalSnapshots, buildGoalSnapshotKey } from './snapshots-store';
 import type { GoalSelection } from './types';
-import { historyTurnsReady } from '$lib/reading-history/turns-store';
+import { historyTurnsReady } from '#lib/reading-history/turns-store.js';
 
 function isVolumeView(view: View) {
   return view.type === 'reader' || view.type === 'volume-text';

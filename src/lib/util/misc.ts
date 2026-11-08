@@ -1,6 +1,6 @@
 import { get } from 'svelte/store';
 import { showSnackbar } from './snackbar';
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { currentView } from './hash-router';
 
 export function clamp(num: number, min: number, max: number) {

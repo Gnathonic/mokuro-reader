@@ -24,17 +24,17 @@ const fetchHandler = vi.hoisted(() => {
   return state;
 });
 
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/util/sync/core/cloud-provider-core-registry', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/util/sync/core/cloud-provider-core-registry.js', () => ({
   getCloudProviderCore: () => ({ uploadFile: vi.fn(), downloadFile: vi.fn() })
 }));
-vi.mock('$lib/util/sync/provider-manager', () => ({
+vi.mock('#lib/util/sync/provider-manager.js', () => ({
   providerManager: { updateStatus: vi.fn() }
 }));
-vi.mock('$lib/util/sync/cache-manager', () => ({
+vi.mock('#lib/util/sync/cache-manager.js', () => ({
   cacheManager: { registerCache: vi.fn() }
 }));
-vi.mock('$lib/util/sync/providers/webdav/webdav-cache', () => ({ webdavCache: {} }));
+vi.mock('#lib/util/sync/providers/webdav/webdav-cache.js', () => ({ webdavCache: {} }));
 
 import {
   describeContract,
@@ -47,26 +47,26 @@ import {
   type Fixture,
   type ReaderExpect
 } from './contract';
-import { fetchServerIdentity } from '$lib/util/sync/providers/webdav/identity';
+import { fetchServerIdentity } from '#lib/util/sync/providers/webdav/identity.js';
 import {
   requestBunkoToken,
   revokeBunkoToken,
   tokenLabel
-} from '$lib/util/sync/providers/webdav/bunko-token';
-import { loadVolumeManifest } from '$lib/import/deep-link-manifest';
-import { httpQueueSource, parseQueueFile } from '$lib/catalog/server-ocr-queue';
+} from '#lib/util/sync/providers/webdav/bunko-token.js';
+import { loadVolumeManifest } from '#lib/import/deep-link-manifest.js';
+import { httpQueueSource, parseQueueFile } from '#lib/catalog/server-ocr-queue.js';
 import {
   contentDigestOf,
   uploadFileWithClient
-} from '$lib/util/sync/providers/webdav/webdav-upload';
-import { webdavAuthorization } from '$lib/util/sync/core/providers/webdav-authorization';
-import { webdavCore } from '$lib/util/sync/core/providers/webdav-core';
-import { layerSidecarName } from '$lib/util/sync/syncable-file';
-import { historyMonthOf, historySegmentPath } from '$lib/reading-history/paths';
-import { buildLayerMokuroMetadata } from '$lib/util/mokuro-metadata';
-import { buildPageCharCounts } from '$lib/catalog/page-char-counts';
-import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
-import type { VolumeMetadata } from '$lib/types';
+} from '#lib/util/sync/providers/webdav/webdav-upload.js';
+import { webdavAuthorization } from '#lib/util/sync/core/providers/webdav-authorization.js';
+import { webdavCore } from '#lib/util/sync/core/providers/webdav-core.js';
+import { layerSidecarName } from '#lib/util/sync/syncable-file.js';
+import { historyMonthOf, historySegmentPath } from '#lib/reading-history/paths.js';
+import { buildLayerMokuroMetadata } from '#lib/util/mokuro-metadata.js';
+import { buildPageCharCounts } from '#lib/catalog/page-char-counts.js';
+import { EDIT_LAYER_ID } from '#lib/reader/edit/layer-names.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
 
 const SERVER = 'https://bunko.example';
 /** The bearer token the tests hold for `reader` (recorded as `bearer:reader`). */
@@ -255,7 +255,7 @@ async function signedIn(user = 'reader', me = 'login-me-basic') {
     fx(me)
   ]);
   fetchHandler.impl = answers.fetch;
-  const { WebDAVProvider } = await import('$lib/util/sync/providers/webdav/webdav-provider');
+  const { WebDAVProvider } = await import('#lib/util/sync/providers/webdav/webdav-provider.js');
   localStorage.clear();
   const provider = new WebDAVProvider() as any;
   await provider.whenReady();

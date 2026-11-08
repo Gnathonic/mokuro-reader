@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 import { alignLayerPages } from './layer-page-align';
 
 function pg(img_path: string, text?: string, extra: Partial<Page> = {}): Page {

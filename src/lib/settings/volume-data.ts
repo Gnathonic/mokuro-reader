@@ -1,18 +1,18 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { derived, get, writable, readable } from 'svelte/store';
 import {
   getHistoryLegacyTurns,
   getHistoryTurns,
   historyTurns
-} from '$lib/reading-history/turns-store';
-import { unionTurns } from '$lib/util/sync/volume-record-merge';
+} from '#lib/reading-history/turns-store.js';
+import { unionTurns } from '#lib/util/sync/volume-record-merge.js';
 import { settings as globalSettings } from './settings';
-import { db } from '$lib/catalog/db';
-import type { VolumeMetadata } from '$lib/types';
-import { hasFreshPassSince } from '$lib/util/volume-helpers';
+import { db } from '#lib/catalog/db.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { hasFreshPassSince } from '#lib/util/volume-helpers.js';
 import { SERIES_SECTION_KEY } from './series-data';
 import { TRACKING_SECTION_KEY } from './tracking-data';
-import { recordEvent } from '$lib/reading-history/record';
+import { recordEvent } from '#lib/reading-history/record.js';
 
 // Deep equality check for settings objects
 function settingsEqual(

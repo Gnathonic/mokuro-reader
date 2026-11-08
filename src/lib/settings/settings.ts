@@ -1,10 +1,10 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { derived, get, readable, writable, type Readable } from 'svelte/store';
-import { isMobilePlatform } from '$lib/util/platform';
+import { isMobilePlatform } from '#lib/util/platform.js';
 import { PRESETS, resolveTheme, type ResolvedTheme } from './theme';
-import { isDisplayTitleLanguage } from '$lib/metadata/sanitize';
-import type { DisplayTitleLanguage } from '$lib/metadata/types';
-import { clampPageAdjust, pageFilterCss, PAGE_ADJUST_DEFAULT } from '$lib/reader/page-filter';
+import { isDisplayTitleLanguage } from '#lib/metadata/sanitize.js';
+import type { DisplayTitleLanguage } from '#lib/metadata/types.js';
+import { clampPageAdjust, pageFilterCss, PAGE_ADJUST_DEFAULT } from '#lib/reader/page-filter.js';
 import {
   INK_STRENGTH_DEFAULT,
   PAPER_AGE_DEFAULT,
@@ -15,7 +15,7 @@ import {
   inkLayerVars,
   sanitizeInkColor,
   type InkColorSetting
-} from '$lib/reader/ink-color';
+} from '#lib/reader/ink-color.js';
 
 export type FontSize =
   | 'auto'

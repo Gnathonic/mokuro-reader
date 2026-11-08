@@ -4,7 +4,7 @@ const { deleteRetired } = vi.hoisted(() => ({ deleteRetired: vi.fn() }));
 
 vi.mock('./db', () => ({ db: { name: 'test-db' } }));
 vi.mock('./layer-store', () => ({ deleteRetiredPreviousOcrLayers: deleteRetired }));
-vi.mock('$lib/settings/volume-data', async () => {
+vi.mock('#lib/settings/volume-data.js', async () => {
   const { writable } = await import('svelte/store');
   return {
     volumesWithTrash: writable({

@@ -1,10 +1,10 @@
-import { progressTrackerStore } from '$lib/util/progress-tracker';
-import { showSnackbar } from '$lib/util/snackbar';
-import { promptMissingFiles } from '$lib/util/modals';
+import { progressTrackerStore } from '#lib/util/progress-tracker.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { promptMissingFiles } from '#lib/util/modals.js';
 import { appendReviewGroups, type OnGroupDecision } from './review-session';
 import type { ReviewGroup } from './image-only-review';
-import type { MissingFilesInfo } from '$lib/util/modals';
-export type { MissingFilesInfo } from '$lib/util/modals';
+import type { MissingFilesInfo } from '#lib/util/modals.js';
+export type { MissingFilesInfo } from '#lib/util/modals.js';
 
 export interface ImportUiBridge {
   addProgress(processId: string, description: string, status: string, progress: number): void;

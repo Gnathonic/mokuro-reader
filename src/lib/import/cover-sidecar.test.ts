@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { VolumeMetadata } from '$lib/types';
+import type { VolumeMetadata } from '#lib/types/index.js';
 import { installedUuids, pickCoverTarget } from './cover-sidecar';
 
 function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {

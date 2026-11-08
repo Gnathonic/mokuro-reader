@@ -1,5 +1,5 @@
-import type { Page } from '$lib/types';
-import type { PageViewMode } from '$lib/settings';
+import type { Page } from '#lib/types/index.js';
+import type { PageViewMode } from '#lib/settings/index.js';
 
 /**
  * Detects if a page is a wide spread (2-page spread in one image)

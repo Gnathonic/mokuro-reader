@@ -39,10 +39,10 @@ import type {
   ControlFileResult,
   ProviderStatus,
   SyncProvider
-} from '$lib/util/sync/provider-interface';
-import { BUNKO_MARKER_NAME } from '$lib/util/sync/syncable-file';
-import { bunkoSupportsHistory } from '$lib/util/sync/providers/webdav/bunko-version';
-import { POSITIONS_FILE_NAME } from '$lib/positions/positions-file';
+} from '#lib/util/sync/provider-interface.js';
+import { BUNKO_MARKER_NAME } from '#lib/util/sync/syncable-file.js';
+import { bunkoSupportsHistory } from '#lib/util/sync/providers/webdav/bunko-version.js';
+import { POSITIONS_FILE_NAME } from '#lib/positions/positions-file.js';
 
 /** Files a marker may say Bunko compiles. */
 export const COMPILED_METADATA_FILES = ['series.json', 'catalog.json'] as const;

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 vi.mock('./mega-cache', () => ({ megaCache: { fetch: vi.fn(async () => {}) } }));
 vi.mock('../../cache-manager', () => ({
   cacheManager: { clearAll: vi.fn(), registerCache: vi.fn() }

@@ -1,4 +1,4 @@
-import type { ProviderType } from '$lib/util/sync/provider-interface';
+import type { ProviderType } from '#lib/util/sync/provider-interface.js';
 
 export type Block = {
   box: number[];
@@ -86,7 +86,7 @@ export interface VolumeMetadata {
    * stamps still match this one. Cleared whenever the hash is set from bytes
    * that did not come from a listed cloud file.
    */
-  mokuro_sha256_cloud?: import('$lib/catalog/mokuro-hash').MokuroCloudAttestation;
+  mokuro_sha256_cloud?: import('#lib/catalog/mokuro-hash.js').MokuroCloudAttestation;
 
   /**
    * The provenance blocks (`ocr_engine`, or an EDITED file's `edited`) of the
@@ -99,7 +99,7 @@ export interface VolumeMetadata {
    * regenerated primary carries a block only while its pages reproduce that
    * entry's digest — the reader never mints one. Not indexed (no schema version).
    */
-  ocr_provenance?: import('$lib/catalog/ocr-provenance').OcrProvenance[];
+  ocr_provenance?: import('#lib/catalog/ocr-provenance.js').OcrProvenance[];
 
   /**
    * Edited volumes only: the newest cloud primary OCR (by `mokuro_sha256`) the

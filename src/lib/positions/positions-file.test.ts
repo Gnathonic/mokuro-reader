@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FUTURE_TOLERANCE_MS } from '$lib/metadata/sanitize';
+import { FUTURE_TOLERANCE_MS } from '#lib/metadata/sanitize.js';
 import {
   POSITION_WINDOW_MS,
   composePositionsFile,

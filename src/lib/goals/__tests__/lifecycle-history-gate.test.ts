@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 const { catalog, readyGate, backfill } = vi.hoisted(() => {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => (resolve = r));
@@ -10,7 +10,7 @@ const { catalog, readyGate, backfill } = vi.hoisted(() => {
     backfill: vi.fn()
   };
 });
-vi.mock('$lib/catalog', () => ({
+vi.mock('#lib/catalog/index.js', () => ({
   volumesWithPlaceholders: {
     subscribe(fn: (v: unknown) => void) {
       catalog.subs.push(fn);
@@ -19,7 +19,7 @@ vi.mock('$lib/catalog', () => ({
     }
   }
 }));
-vi.mock('$lib/reading-history/turns-store', async () => {
+vi.mock('#lib/reading-history/turns-store.js', async () => {
   const { readable } = await import('svelte/store');
   return {
     historyTurnsReady: () => readyGate.promise,

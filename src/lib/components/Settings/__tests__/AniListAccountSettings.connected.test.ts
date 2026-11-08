@@ -10,8 +10,8 @@ import { fireEvent, render } from '@testing-library/svelte';
 // `connected` was computed as `!!$anilistUser || !!getAniListToken()`
 // (a store read OR'd with a non-reactive localStorage read) and `$anilistUser`
 // was already null in the token-only state, so the derived never re-ran.
-vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/settings/settings', () => ({
+vi.mock('$app/env', () => ({ browser: true }));
+vi.mock('#lib/settings/settings.js', () => ({
   catalogSettings: {
     subscribe(fn: (v: { pushProgressToAniList: boolean }) => void) {
       fn({ pushProgressToAniList: true });
@@ -20,10 +20,10 @@ vi.mock('$lib/settings/settings', () => ({
   },
   updateCatalogSetting: vi.fn()
 }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
 // "Sync all linked series now" pulls the tracker, which pulls IndexedDB and the
 // (mocked-out) settings store at module load. This file is about the auth UI.
-vi.mock('$lib/metadata/progress-tracker', () => ({
+vi.mock('#lib/metadata/progress-tracker.js', () => ({
   syncAllSeriesNow: vi.fn(async () => ({
     pushed: 0,
     nothing: 0,
@@ -33,17 +33,17 @@ vi.mock('$lib/metadata/progress-tracker', () => ({
     total: 0
   }))
 }));
-vi.mock('$lib/metadata/providers/anilist', async () => {
+vi.mock('#lib/metadata/providers/anilist.js', async () => {
   // Keep the real AniListError class (needed to simulate a failed Viewer
   // lookup) while replacing only the network call itself.
-  const actual = await vi.importActual<typeof import('$lib/metadata/providers/anilist')>(
-    '$lib/metadata/providers/anilist'
+  const actual = await vi.importActual<typeof import('#lib/metadata/providers/anilist.js')>(
+    '#lib/metadata/providers/anilist.js'
   );
   return { ...actual, anilistRequest: vi.fn() };
 });
 
-import { anilistRequest, AniListError } from '$lib/metadata/providers/anilist';
-import { handleAniListCallbackHash } from '$lib/metadata/anilist-auth';
+import { anilistRequest, AniListError } from '#lib/metadata/providers/anilist.js';
+import { handleAniListCallbackHash } from '#lib/metadata/anilist-auth.js';
 import AniListAccountSettings from '../AniListAccountSettings.svelte';
 
 describe('AniListAccountSettings (real anilist-auth module)', () => {

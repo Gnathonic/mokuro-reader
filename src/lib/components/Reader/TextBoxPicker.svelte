@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Button, Helper, Modal, Spinner } from 'flowbite-svelte';
-  import type { Page } from '$lib/types';
+  import type { Page } from '#lib/types/index.js';
   import {
     expandTextBoxBounds,
     extractFieldValues,
@@ -11,10 +11,10 @@
     openUpdateModal,
     sendQuickCapture,
     type VolumeMetadata
-  } from '$lib/anki-connect';
-  import { ankiUrlRefusal } from '$lib/anki-connect/url-trust';
-  import { settings } from '$lib/settings';
-  import { showSnackbar } from '$lib/util';
+  } from '#lib/anki-connect/index.js';
+  import { ankiUrlRefusal } from '#lib/anki-connect/url-trust.js';
+  import { settings } from '#lib/settings/index.js';
+  import { showSnackbar } from '#lib/util/index.js';
   import { onMount } from 'svelte';
   import { textBoxPickerStore } from './text-box-picker';
 

@@ -51,7 +51,7 @@ describe('the "already backed up" branch backfills the metadata files', () => {
     it(`${file} — ${fn} reconciles before telling the user there is nothing to do`, () => {
       const source = read(file);
       expect(source).toContain(
-        "import { reconcileMissingMetadataFiles } from '$lib/metadata/series-file-sync';"
+        "import { reconcileMissingMetadataFiles } from '#lib/metadata/series-file-sync.js';"
       );
 
       const branch = earlyReturnBranch(source, fn);

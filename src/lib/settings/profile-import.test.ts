@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { confirmAnkiUrl, resetAnkiUrlTrustForTest } from '$lib/anki-connect/url-trust';
+import { confirmAnkiUrl, resetAnkiUrlTrustForTest } from '#lib/anki-connect/url-trust.js';
 import { migrateProfiles, type Profiles } from './settings';
 import {
   importNotice,

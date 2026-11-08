@@ -18,7 +18,7 @@
  */
 
 import { readable, type Readable } from 'svelte/store';
-import { stampMs } from '$lib/util/volume-helpers';
+import { stampMs } from '#lib/util/volume-helpers.js';
 import type { ReadingEvent } from './types';
 
 const STORAGE_KEY = 'reading-history:remote-reads';

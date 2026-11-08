@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { swUpdateAvailable, applySwUpdate, dismissSwUpdate } from '$lib/util/sw-update';
-  import { latestRelease, fetchLatestRelease } from '$lib/util/release-notes';
-  import { READER_VERSION } from '$lib/consts';
+  import { swUpdateAvailable, applySwUpdate, dismissSwUpdate } from '#lib/util/sw-update.js';
+  import { latestRelease, fetchLatestRelease } from '#lib/util/release-notes.js';
+  import { READER_VERSION } from '#lib/consts/index.js';
   import { onMount } from 'svelte';
 
   let showReleaseNotes = $state(false);

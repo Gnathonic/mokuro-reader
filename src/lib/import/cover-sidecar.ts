@@ -1,6 +1,6 @@
-import type { VolumeMetadata } from '$lib/types';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
-import { normalizeFilename } from '$lib/util/misc';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
+import { normalizeFilename } from '#lib/util/misc.js';
 
 function normalizeTitle(value: string): string {
   return normalizeFilename(value).trim().toLowerCase();

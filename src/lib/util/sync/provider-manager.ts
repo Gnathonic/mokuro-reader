@@ -8,7 +8,10 @@ import type {
 } from './provider-interface';
 import { cacheManager } from './cache-manager';
 import { getConfiguredProviderType, clearActiveProviderKey } from './provider-detection';
-import { clearCloudBunkoMarkers, onCloudBunkoMarkerChange } from '$lib/catalog/cloud-bunko-marker';
+import {
+  clearCloudBunkoMarkers,
+  onCloudBunkoMarkerChange
+} from '#lib/catalog/cloud-bunko-marker.js';
 
 /**
  * How many times one `updateStatus()` call may recompute because a subscriber

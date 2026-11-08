@@ -3,7 +3,7 @@
  * `Page`, replacing only the block objects it changed. `EditSession` layers
  * history and persistence on top; nothing here touches the DOM or Dexie.
  */
-import type { Block, Page } from '$lib/types';
+import type { Block, Page } from '#lib/types/index.js';
 import {
   boxContainingQuads,
   clampBox,

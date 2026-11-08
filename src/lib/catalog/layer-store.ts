@@ -36,7 +36,7 @@ import type {
   VolumeOcrLayer,
   VolumeOcrLayerPages,
   VolumeOcrLayerWithPages
-} from '$lib/types';
+} from '#lib/types/index.js';
 import { isUntouchedUpgradeLayer } from './mokuro-hash';
 
 export const LAYER_META_TABLE = 'volume_ocr_layers';

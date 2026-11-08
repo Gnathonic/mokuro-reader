@@ -13,12 +13,15 @@ import {
   extractVolumeInfo,
   keepRasterImages
 } from '../processing';
-import { generateThumbnail } from '$lib/catalog/thumbnails';
+import { generateThumbnail } from '#lib/catalog/thumbnails.js';
 import type { DecompressedVolume } from '../types';
-import { RUNNER_OUTPUT_DOCUMENT, RUNNER_OUTPUT_SEAL } from '$lib/catalog/__fixtures__/seal-vector';
+import {
+  RUNNER_OUTPUT_DOCUMENT,
+  RUNNER_OUTPUT_SEAL
+} from '#lib/catalog/__fixtures__/seal-vector.js';
 
 // Mock thumbnail generation since we can't use canvas in tests
-vi.mock('$lib/catalog/thumbnails', () => ({
+vi.mock('#lib/catalog/thumbnails.js', () => ({
   generateThumbnail: vi.fn().mockResolvedValue({
     file: new File([], 'thumbnail.jpg'),
     width: 200,
@@ -457,7 +460,7 @@ describe('processVolume', () => {
     await processVolume(input);
 
     // Check that generateThumbnail was called with the cover image
-    const { generateThumbnail } = await import('$lib/catalog/thumbnails');
+    const { generateThumbnail } = await import('#lib/catalog/thumbnails.js');
     expect(generateThumbnail).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'cover.jpg'
@@ -481,7 +484,7 @@ describe('processVolume', () => {
     await processVolume(input);
 
     // Check that generateThumbnail was called with the cover image
-    const { generateThumbnail } = await import('$lib/catalog/thumbnails');
+    const { generateThumbnail } = await import('#lib/catalog/thumbnails.js');
     expect(generateThumbnail).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'COVER_IMAGE.png'

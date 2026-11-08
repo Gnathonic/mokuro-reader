@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { toggleFullScreen } from '$lib/util/fullscreen';
-  import { pagedZoom } from '$lib/reader/paged-zoom';
-  import { settings, volumes, updateSetting } from '$lib/settings';
+  import { toggleFullScreen } from '#lib/util/fullscreen.js';
+  import { pagedZoom } from '#lib/reader/paged-zoom.js';
+  import { settings, volumes, updateSetting } from '#lib/settings/index.js';
   import {
     ArrowLeftOutline,
     ArrowRightOutline,
@@ -13,13 +13,13 @@
     PlusOutline
   } from 'flowbite-svelte-icons';
   import LayerPicker from './Layers/LayerPicker.svelte';
-  import type { LayerSummary } from '$lib/reader/edit/layer-list';
+  import type { LayerSummary } from '#lib/reader/edit/layer-list.js';
   import type { LayerAction } from './Layers/layer-actions';
-  import type { VolumeMetadata } from '$lib/anki-connect';
+  import type { VolumeMetadata } from '#lib/anki-connect/index.js';
   import { showTextBoxPicker } from './text-box-picker';
-  import type { Page } from '$lib/types';
+  import type { Page } from '#lib/types/index.js';
   import { onDestroy } from 'svelte';
-  import { displayableImageBlob } from '$lib/util/raster-image';
+  import { displayableImageBlob } from '#lib/util/raster-image.js';
 
   interface Props {
     left: (_e: any, ingoreTimeOut?: boolean) => void;

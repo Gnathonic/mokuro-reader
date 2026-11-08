@@ -1,26 +1,26 @@
-import { db } from '$lib/catalog/db';
-import { resolveBunkoLink } from '$lib/util/bunko-links';
-import { fetchWithRetryAfter } from '$lib/util/sync/providers/webdav/webdav-retry-after';
-import { getLayerMeta } from '$lib/catalog/layer-store';
-import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
-import { isVolumeInstalled } from '$lib/catalog/volume-state';
+import { db } from '#lib/catalog/db.js';
+import { resolveBunkoLink } from '#lib/util/bunko-links.js';
+import { fetchWithRetryAfter } from '#lib/util/sync/providers/webdav/webdav-retry-after.js';
+import { getLayerMeta } from '#lib/catalog/layer-store.js';
+import { volumesForFoldedSeriesTitle } from '#lib/catalog/volumes-by-series.js';
+import { isVolumeInstalled } from '#lib/catalog/volume-state.js';
 import {
   confineManifestToOrigins,
   loadVolumeManifest,
   type ManifestPendingJob,
   type VolumeManifest
-} from '$lib/import/deep-link-manifest';
-import type { FetchedLayerFile } from '$lib/metadata/layer-sync';
-import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import type { VolumeMetadata } from '$lib/types';
-import { assertNoRedirectEscape } from '$lib/util/link-safety';
-import type { ProviderType, SyncProvider } from '$lib/util/sync/provider-interface';
-import { QUEUE_FILE_NAME } from '$lib/util/sync/syncable-file';
+} from '#lib/import/deep-link-manifest.js';
+import type { FetchedLayerFile } from '#lib/metadata/layer-sync.js';
+import { normalizeSeriesKey, normalizeVolumeTitleKey } from '#lib/metadata/series-key.js';
+import type { VolumeMetadata } from '#lib/types/index.js';
+import { assertNoRedirectEscape } from '#lib/util/link-safety.js';
+import type { ProviderType, SyncProvider } from '#lib/util/sync/provider-interface.js';
+import { QUEUE_FILE_NAME } from '#lib/util/sync/syncable-file.js';
 import {
   authFromCredentials,
   bearerOf,
   webdavAuthorization
-} from '$lib/util/sync/core/providers/webdav-authorization';
+} from '#lib/util/sync/core/providers/webdav-authorization.js';
 import {
   isVolumeShown,
   queueStatusStore,
@@ -968,7 +968,7 @@ async function pullManifestFiles(
   if (manifest.ocr && wantsPrimary(row)) {
     const blob = await fetchBlob(manifest.ocr.url, init, 'OCR file', target, linkDriven);
     if (blob) {
-      const { upgradeOcrFromSidecarBlob } = await import('$lib/catalog/cloud-ocr-upgrade');
+      const { upgradeOcrFromSidecarBlob } = await import('#lib/catalog/cloud-ocr-upgrade.js');
       try {
         await upgradeOcrFromSidecarBlob(row.volume_uuid, manifest.ocr.url, blob);
       } catch (error) {
@@ -991,7 +991,7 @@ async function pullManifestFiles(
     });
   }
   if (fetched.length === 0) return;
-  const { importFetchedLayers } = await import('$lib/metadata/layer-sync');
+  const { importFetchedLayers } = await import('#lib/metadata/layer-sync.js');
   await importFetchedLayers(row.volume_uuid, source, fetched);
 }
 
@@ -1099,9 +1099,10 @@ const pollers = new Map<string, QueuePoller>();
  * once (vitest 3 hands the second of two concurrent imports of a mocked
  * module the unmocked one).
  */
-let providerManagerImport: Promise<typeof import('$lib/util/sync/provider-manager')> | null = null;
-function providerManagerModule(): Promise<typeof import('$lib/util/sync/provider-manager')> {
-  return (providerManagerImport ??= import('$lib/util/sync/provider-manager'));
+let providerManagerImport: Promise<typeof import('#lib/util/sync/provider-manager.js')> | null =
+  null;
+function providerManagerModule(): Promise<typeof import('#lib/util/sync/provider-manager.js')> {
+  return (providerManagerImport ??= import('#lib/util/sync/provider-manager.js'));
 }
 /** The SERVER pollers that read as the connected WebDAV account (`auth: 'webdav'`). */
 const webdavAuthPollers = new Set<string>();
@@ -1285,7 +1286,7 @@ export function setQueueRelistHook(hook: (() => Promise<void>) | null): void {
 
 async function relist(): Promise<void> {
   if (relistHook) return relistHook();
-  const { unifiedCloudManager } = await import('$lib/util/sync/unified-cloud-manager');
+  const { unifiedCloudManager } = await import('#lib/util/sync/unified-cloud-manager.js');
   await unifiedCloudManager.fetchAllCloudVolumes({ refreshIndexes: true });
 }
 
@@ -1442,7 +1443,7 @@ class CloudCompletions {
       } catch (error) {
         console.debug('[OCR queue] Could not request the OCR upgrade pass:', error);
       }
-      const { pullLayersForVolume } = await import('$lib/metadata/layer-sync');
+      const { pullLayersForVolume } = await import('#lib/metadata/layer-sync.js');
       for (const [key, done] of entries) {
         try {
           const row = await localRowFor(key, done.series, done.volume);

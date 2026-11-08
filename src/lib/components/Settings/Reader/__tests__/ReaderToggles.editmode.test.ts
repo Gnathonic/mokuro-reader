@@ -13,7 +13,7 @@ const settingsStore = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/settings', async () => {
+vi.mock('#lib/settings/index.js', async () => {
   const { writable, readable } = await import('svelte/store');
   const store = writable<Record<string, unknown>>({
     defaultFullscreen: false,
@@ -54,7 +54,7 @@ vi.mock('../ScheduledFilterCard.svelte', async () => {
 });
 
 import ReaderToggles from '../ReaderToggles.svelte';
-import { editModeActive, editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
+import { editModeActive, editModeRequest, setEditModeActive } from '#lib/reader/edit/edit-mode.js';
 
 afterEach(() => {
   cleanup();

@@ -2,17 +2,17 @@
   import { onMount } from 'svelte';
   import { Button } from 'flowbite-svelte';
   import { CloseOutline } from 'flowbite-svelte-icons';
-  import { locateVolume, storedTitle } from '$lib/import/image-only-naming';
+  import { locateVolume, storedTitle } from '#lib/import/image-only-naming.js';
   import {
     canonicalSeriesTitle,
     nameGroup,
     type LibrarySeries,
     type NamingMode,
     type ReviewGroup
-  } from '$lib/import/image-only-review';
-  import { existingVolumeCount } from '$lib/import/library-series';
-  import type { GroupDecision } from '$lib/import/review-session';
-  import { updateMiscSetting } from '$lib/settings/misc';
+  } from '#lib/import/image-only-review.js';
+  import { existingVolumeCount } from '#lib/import/library-series.js';
+  import type { GroupDecision } from '#lib/import/review-session.js';
+  import { updateMiscSetting } from '#lib/settings/misc.js';
 
   interface Props {
     group: ReviewGroup;

@@ -15,8 +15,8 @@
 import type { FileEntry, PairedSource } from './types';
 import { isArchiveExtension, isImageExtension, isMokuroExtension, isSystemFile } from './types';
 import { pairMokuroWithSources } from './pairing';
-import { isSeriesFilePath } from '$lib/metadata/series-file';
-import { extractLayerEntries, type ExtractedLayerEntry } from '$lib/reader/edit/layer-import';
+import { isSeriesFilePath } from '#lib/metadata/series-file.js';
+import { extractLayerEntries, type ExtractedLayerEntry } from '#lib/reader/edit/layer-import.js';
 
 /** One archive entry as listed: `data` is empty unless its bytes were extracted. */
 export interface ListedEntry {

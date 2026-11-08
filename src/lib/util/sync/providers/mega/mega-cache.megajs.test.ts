@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 vi.mock('../../cache-manager', () => ({
   cacheManager: { clearAll: vi.fn(), registerCache: vi.fn() }
 }));
@@ -11,8 +11,11 @@ import { megaCache } from './mega-cache';
 import { megaProvider } from './mega-provider';
 import { FakeMegaServer } from './mega-fake-server';
 import { folderDeduplicator } from '../../folder-deduplicator';
-import { COLD_START_GRACE_S, resetCloudBunkoMarkersForTest } from '$lib/catalog/cloud-bunko-marker';
-import { servedMarker } from '$lib/catalog/__fixtures__/bunko-marker';
+import {
+  COLD_START_GRACE_S,
+  resetCloudBunkoMarkersForTest
+} from '#lib/catalog/cloud-bunko-marker.js';
+import { servedMarker } from '#lib/catalog/__fixtures__/bunko-marker.js';
 
 let server: FakeMegaServer;
 

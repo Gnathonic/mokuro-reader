@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 
-vi.mock('$lib/catalog/db', async () => {
+vi.mock('#lib/catalog/db.js', async () => {
   const { default: Dexie } = await import('dexie');
   const db = new Dexie('stranded-rows-test');
   db.version(1).stores({
@@ -14,7 +14,7 @@ vi.mock('$lib/catalog/db', async () => {
   return { db };
 });
 
-import { db } from '$lib/catalog/db';
+import { db } from '#lib/catalog/db.js';
 import { dropStrandedMetadataOnlyRow } from './stranded-rows';
 
 function row(overrides: Record<string, unknown> = {}) {

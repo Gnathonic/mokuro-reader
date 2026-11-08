@@ -16,25 +16,25 @@
  */
 
 import { get } from 'svelte/store';
-import { db } from '$lib/catalog/db';
-import { devices } from '$lib/reading-history/device-stats';
-import { historyDb } from '$lib/reading-history/history-db';
-import { offerDeviceName } from '$lib/reading-history/position-offer';
-import { getOrCreateDeviceId } from '$lib/reading-history/record';
+import { db } from '#lib/catalog/db.js';
+import { devices } from '#lib/reading-history/device-stats.js';
+import { historyDb } from '#lib/reading-history/history-db.js';
+import { offerDeviceName } from '#lib/reading-history/position-offer.js';
+import { getOrCreateDeviceId } from '#lib/reading-history/record.js';
 import {
   adoptPosition,
   registerPositionListener,
   volumesWithTrash
-} from '$lib/settings/volume-data';
-import { showSnackbar } from '$lib/util/snackbar';
-import { isVolumeComplete, stampMs } from '$lib/util/volume-helpers';
-import { cacheManager } from '$lib/util/sync/cache-manager';
-import { uploadCacheEntry } from '$lib/util/sync/cloud-cache-interface';
-import { noteRootFileUpload, readRootFile } from '$lib/util/sync/root-file-memo';
-import { providerTokenValid, syncReady } from '$lib/util/sync/foreground-sync';
-import { freshGateStatus } from '$lib/util/sync/identity-gates';
-import type { CloudFileMetadata, SyncProvider } from '$lib/util/sync/provider-interface';
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+} from '#lib/settings/volume-data.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
+import { isVolumeComplete, stampMs } from '#lib/util/volume-helpers.js';
+import { cacheManager } from '#lib/util/sync/cache-manager.js';
+import { uploadCacheEntry } from '#lib/util/sync/cloud-cache-interface.js';
+import { noteRootFileUpload, readRootFile } from '#lib/util/sync/root-file-memo.js';
+import { providerTokenValid, syncReady } from '#lib/util/sync/foreground-sync.js';
+import { freshGateStatus } from '#lib/util/sync/identity-gates.js';
+import type { CloudFileMetadata, SyncProvider } from '#lib/util/sync/provider-interface.js';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 import {
   POSITIONS_FILE_NAME,
   composePositionsFile,
@@ -44,7 +44,7 @@ import {
   type PositionsMap
 } from './positions-file';
 import { positionsReadAllowed, positionsWriteAllowed } from './positions-capability';
-import { noteRemoteRead } from '$lib/reading-history/remote-reads';
+import { noteRemoteRead } from '#lib/reading-history/remote-reads.js';
 import { noteUploaded } from './escapes';
 import { noteCloudPositions } from './positions-cloud';
 import { clearChanged, ownChangedEntries } from './positions-local';

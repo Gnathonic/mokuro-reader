@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Page } from '$lib/types';
+import type { Page } from '#lib/types/index.js';
 import { fitPagesToVolume, sameOcrPages } from './ocr-upgrade-pages';
 
 function page(img_path: string, text: string, extra: Partial<Page> = {}): Page {

@@ -11,11 +11,11 @@ vi.mock('./token-manager', () => ({
     token: { subscribe: (cb: (v: string) => void) => (cb(tk.value), () => {}) }
   }
 }));
-vi.mock('$lib/settings/misc', async () => {
+vi.mock('#lib/settings/misc.js', async () => {
   const { writable } = await import('svelte/store');
   return { miscSettings: writable({ gdriveAutoReAuth: true }) };
 });
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: vi.fn() }));
 
 import { escapeNameForDriveQuery, driveApiClient, isDriveAuthFailure } from './api-client';
 import { tokenManager } from './token-manager';

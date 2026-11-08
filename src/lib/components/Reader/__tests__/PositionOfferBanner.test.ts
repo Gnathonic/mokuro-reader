@@ -2,25 +2,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { writable } from 'svelte/store';
-import type { DeviceView } from '$lib/reading-history/devices';
+import type { DeviceView } from '#lib/reading-history/devices.js';
 
 const state = vi.hoisted(() => ({
   plan: null as unknown as import('svelte/store').Writable<Record<string, unknown>>,
   devices: null as unknown as import('svelte/store').Writable<
-    Map<string, import('$lib/reading-history/devices').DeviceView>
+    Map<string, import('#lib/reading-history/devices.js').DeviceView>
   >,
   prompt: true
 }));
 const answerPosition = vi.hoisted(() => vi.fn(async () => {}));
 const markPrompted = vi.hoisted(() => vi.fn());
 
-vi.mock('$lib/reading-history/position-store', () => ({
+vi.mock('#lib/reading-history/position-store.js', () => ({
   positionPlan: () => state.plan,
   shouldPrompt: () => state.prompt,
   markPrompted,
   answerPosition
 }));
-vi.mock('$lib/reading-history/device-stats', () => ({
+vi.mock('#lib/reading-history/device-stats.js', () => ({
   devices: {
     subscribe: (run: (value: Map<string, DeviceView>) => void) => state.devices.subscribe(run)
   }

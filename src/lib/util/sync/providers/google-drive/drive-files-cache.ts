@@ -7,12 +7,12 @@ import type { DriveFileMetadata } from '../../provider-interface';
 import { isRootConfigFile, isSidecarFile } from '../../syncable-file';
 import { compareByAge } from '../../folder-deduplicator';
 import type { DriveChange, DriveFile } from './constants';
-import { HISTORY_FOLDER, isHistoryFileName } from '$lib/reading-history/paths';
+import { HISTORY_FOLDER, isHistoryFileName } from '#lib/reading-history/paths.js';
 import { driveHistoryPath } from './drive-history-path';
 import {
   cloudBunkoMergesDuplicates,
   refreshCloudBunkoMarker
-} from '$lib/catalog/cloud-bunko-marker';
+} from '#lib/catalog/cloud-bunko-marker.js';
 
 /**
  * In-memory representation of Google Drive's mokuro-reader folder state

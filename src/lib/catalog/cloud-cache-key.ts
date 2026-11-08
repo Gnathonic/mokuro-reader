@@ -1,4 +1,4 @@
-import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
+import { unifiedCloudManager } from '#lib/util/sync/unified-cloud-manager.js';
 
 /**
  * Cloud paths as a cache key. Folded exactly as far as identity allows and no

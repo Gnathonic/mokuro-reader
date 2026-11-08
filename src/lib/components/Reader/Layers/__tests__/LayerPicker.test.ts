@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 
-vi.mock('$lib/catalog/db', () => ({ db: {} }));
+vi.mock('#lib/catalog/db.js', () => ({ db: {} }));
 
 import LayerPicker from '../LayerPicker.svelte';
 

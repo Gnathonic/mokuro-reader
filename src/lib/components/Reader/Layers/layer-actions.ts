@@ -5,8 +5,8 @@
  * `LayerNameModal` (mounted once by the reader) renders.
  */
 import { readonly, writable } from 'svelte/store';
-import type { Page, VolumeOcrLayerKind } from '$lib/types';
-import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '$lib/reader/edit/layer-kind';
+import type { Page, VolumeOcrLayerKind } from '#lib/types/index.js';
+import { TRANSLATION_PROMOTE_BLOCKED, isTranslationLayer } from '#lib/reader/edit/layer-kind.js';
 import {
   buildLayerExportFile as realBuildLayerExportFile,
   copyIntoEditLayer as realCopyIntoEditLayer,
@@ -14,10 +14,10 @@ import {
   deleteLayer as realDeleteLayer,
   promoteLayer as realPromoteLayer,
   renameLayer as realRenameLayer
-} from '$lib/reader/edit/layers';
-import { downloadFileBlob } from '$lib/util/volume-sidecars';
-import { promptConfirmation } from '$lib/util/modals';
-import { showSnackbar } from '$lib/util/snackbar';
+} from '#lib/reader/edit/layers.js';
+import { downloadFileBlob } from '#lib/util/volume-sidecars.js';
+import { promptConfirmation } from '#lib/util/modals.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
 import {
   clearPendingLayerDelete as realClearPendingLayerDelete,
   deleteCloudLayerFile as realDeleteCloudLayerFile,
@@ -25,9 +25,9 @@ import {
   publishCuratedLayer as realPublishCuratedLayer,
   unpublishCuratedLayer as realUnpublishCuratedLayer,
   type CloudLayerDeleteOutcome
-} from '$lib/metadata/layer-sync';
-import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
-import { CANNOT_PUBLISH_CURATED_MESSAGE } from '$lib/util/sync/account-capabilities';
+} from '#lib/metadata/layer-sync.js';
+import { EDIT_LAYER_ID } from '#lib/reader/edit/layer-names.js';
+import { CANNOT_PUBLISH_CURATED_MESSAGE } from '#lib/util/sync/account-capabilities.js';
 
 export type LayerAction =
   'new' | 'rename' | 'promote' | 'export' | 'delete' | 'publish' | 'unpublish' | 'copy-to-edit';

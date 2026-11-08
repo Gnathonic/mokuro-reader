@@ -1,4 +1,4 @@
-import { HISTORY_FOLDER, isHistoryFilePath } from '$lib/reading-history/paths';
+import { HISTORY_FOLDER, isHistoryFilePath } from '#lib/reading-history/paths.js';
 
 /**
  * Drive lists the whole account flat; every other file type is cached by its

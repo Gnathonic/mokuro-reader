@@ -27,7 +27,7 @@ import type {
   TocDirectorySource
 } from './types';
 import { categorizeFile, parseFilePath, isSystemFile } from './types';
-import { generateUUID } from '$lib/util/uuid';
+import { generateUUID } from '#lib/util/uuid.js';
 
 /**
  * Result of the pairing operation

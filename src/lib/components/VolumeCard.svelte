@@ -1,15 +1,15 @@
 <script lang="ts">
-  import { nav } from '$lib/util/hash-router';
-  import { downloadQueue } from '$lib/util/download-queue';
-  import { needsDownload } from '$lib/catalog/volume-state';
-  import { getCloudFileId, getCloudProvider } from '$lib/util/cloud-fields';
-  import { showSnackbar } from '$lib/util/snackbar';
-  import type { VolumeMetadata } from '$lib/types';
-  import VolumeProgressBar from '$lib/components/VolumeProgressBar.svelte';
-  import VolumeDeadline from '$lib/components/VolumeDeadline.svelte';
-  import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
+  import { nav } from '#lib/util/hash-router.js';
+  import { downloadQueue } from '#lib/util/download-queue.js';
+  import { needsDownload } from '#lib/catalog/volume-state.js';
+  import { getCloudFileId, getCloudProvider } from '#lib/util/cloud-fields.js';
+  import { showSnackbar } from '#lib/util/snackbar.js';
+  import type { VolumeMetadata } from '#lib/types/index.js';
+  import VolumeProgressBar from '#lib/components/VolumeProgressBar.svelte';
+  import VolumeDeadline from '#lib/components/VolumeDeadline.svelte';
+  import { createCoverClaims } from '#lib/catalog/cover-claims.svelte.js';
   import { untrack } from 'svelte';
-  import { displayableCoverBlob } from '$lib/util/raster-image';
+  import { displayableCoverBlob } from '#lib/util/raster-image.js';
 
   interface Props {
     volumeId: string;

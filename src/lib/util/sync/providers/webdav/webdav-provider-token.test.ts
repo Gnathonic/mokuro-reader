@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchServerIdentity } from './identity';
-import { basicAuthHeader } from '$lib/util/base64';
+import { basicAuthHeader } from '#lib/util/base64.js';
 
 /**
  * Bearer tokens on a mokuro-bunko WebDAV session: issued at connect, held in
@@ -33,7 +33,7 @@ const { mockClient, clientHeaders, mockCore, createClientMock, snackbar } = vi.h
   return { mockClient, clientHeaders, mockCore, createClientMock, snackbar };
 });
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 vi.mock('webdav', () => ({
   createClient: createClientMock,
   AuthType: { Auto: 'auto', Digest: 'digest', None: 'none', Password: 'password', Token: 'token' }
@@ -48,10 +48,10 @@ vi.mock('../../core/cloud-provider-core-registry', () => ({
 vi.mock('../../provider-manager', () => ({ providerManager: { updateStatus: vi.fn() } }));
 vi.mock('../../cache-manager', () => ({ cacheManager: { registerCache: vi.fn() } }));
 vi.mock('./webdav-cache', () => ({ webdavCache: {} }));
-vi.mock('$lib/util/snackbar', () => ({ showSnackbar: snackbar }));
+vi.mock('#lib/util/snackbar.js', () => ({ showSnackbar: snackbar }));
 
 import { WebDAVProvider } from './webdav-provider';
-import { answerAuthRefresh, TransientAuthRefreshError } from '$lib/util/worker-auth-refresh';
+import { answerAuthRefresh, TransientAuthRefreshError } from '#lib/util/worker-auth-refresh.js';
 
 const identityMock = vi.mocked(fetchServerIdentity);
 const SERVER = 'https://host';

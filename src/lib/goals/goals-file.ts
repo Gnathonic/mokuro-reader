@@ -15,7 +15,7 @@
  * into every sync test.
  */
 
-import { FUTURE_TOLERANCE_MS, isRecord, normalizeUpdatedAt } from '$lib/metadata/sanitize';
+import { FUTURE_TOLERANCE_MS, isRecord, normalizeUpdatedAt } from '#lib/metadata/sanitize.js';
 
 export const GOALS_FILE_NAME = 'goals.json';
 

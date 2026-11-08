@@ -1,11 +1,11 @@
 import { historySyncAllowed } from './history-capability';
 import Dexie from 'dexie';
-import { sourceStampChanged } from '$lib/metadata/series-index';
+import { sourceStampChanged } from '#lib/metadata/series-index.js';
 import type {
   CloudFileMetadata,
   SyncProvider,
   UploadFileResult
-} from '$lib/util/sync/provider-interface';
+} from '#lib/util/sync/provider-interface.js';
 import type { HistoryDexie } from './history-db';
 import {
   LEGACY_DEVICE_PREFIX,

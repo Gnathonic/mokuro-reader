@@ -19,17 +19,21 @@ import type {
   PairedSource,
   ArchiveSource
 } from './types';
-import { generateThumbnail } from '$lib/catalog/thumbnails';
-import { sha256Hex } from '$lib/catalog/mokuro-hash';
-import { provenanceOfFile, type OcrProvenance } from '$lib/catalog/ocr-provenance';
+import { generateThumbnail } from '#lib/catalog/thumbnails.js';
+import { sha256Hex } from '#lib/catalog/mokuro-hash.js';
+import { provenanceOfFile, type OcrProvenance } from '#lib/catalog/ocr-provenance.js';
 import {
   extractSeriesName,
   extractTitlesFromPath,
   generateDeterministicUUID
-} from '$lib/util/series-extraction';
-import { generateUUID } from '$lib/util/uuid';
-import { naturalSort } from '$lib/util/natural-sort';
-import { RASTER_FORMAT_NAMES, rasterTypeForName, toRasterImageFile } from '$lib/util/raster-image';
+} from '#lib/util/series-extraction.js';
+import { generateUUID } from '#lib/util/uuid.js';
+import { naturalSort } from '#lib/util/natural-sort.js';
+import {
+  RASTER_FORMAT_NAMES,
+  rasterTypeForName,
+  toRasterImageFile
+} from '#lib/util/raster-image.js';
 
 // ============================================
 // TYPES

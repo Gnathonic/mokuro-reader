@@ -6,8 +6,8 @@
  * @see https://developer.chrome.com/docs/capabilities/web-apis/file-handling
  */
 
-import { describeImportOutcome, importFiles } from '$lib/import';
-import { showSnackbar } from '$lib/util/snackbar';
+import { describeImportOutcome, importFiles } from '#lib/import/index.js';
+import { showSnackbar } from '#lib/util/snackbar.js';
 
 // Extend the Window interface for the File Handling API
 declare global {
