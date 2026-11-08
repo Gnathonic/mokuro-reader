@@ -241,6 +241,33 @@ describe('VolumeEditorModal reading progress (#224)', () => {
     expect(editor.updateVolumeStats.mock.calls[0][1].charsRead).toEqual({ from: 1234, to: 0 });
   });
 
+  it('Reset All un-reads a finished volume; a plain save leaves the flag alone', async () => {
+    editor.getVolumeData.mockResolvedValue({
+      metadata: meta,
+      stats: new VolumeData({ progress: 100, chars: 5000, completed: true })
+    });
+    const first = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(progressInput()).not.toBeNull());
+    await fireEvent.click(first.getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    expect(editor.updateVolumeStats.mock.calls[0][1].completed).toBeUndefined();
+    closeVolumeEditor();
+    cleanup();
+    editor.updateVolumeStats.mockClear();
+
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(progressInput()).not.toBeNull());
+    await fireEvent.click(getByText('Reset All'));
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    expect(editor.updateVolumeStats.mock.calls[0][1]).toMatchObject({
+      progress: 0,
+      completed: false
+    });
+  });
+
   it('shows what marking read counted, with Remove', async () => {
     readingStats.store.set({
       ready: true,

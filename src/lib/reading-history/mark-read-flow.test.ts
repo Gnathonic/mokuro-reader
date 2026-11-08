@@ -249,6 +249,22 @@ describe('markRead: one volume (#224)', () => {
     expect(kinds('a')).toContain('retract');
   });
 
+  it('an implausible page count (a damaged series.json) marks, but counts nothing', async () => {
+    setMarkReadPolicy('count');
+    const huge = {
+      ...volume('a', 'Vol 1', 1),
+      page_count: 250_000,
+      character_count: 250_000,
+      page_char_counts: undefined
+    } as unknown as VolumeMetadata;
+    await markRead(huge);
+    expect(get(markReadSheet)).toBeNull();
+    await settle();
+    expect(get(volumesWithTrash).a).toMatchObject({ progress: 250_000, completed: true });
+    expect(kinds('a')).not.toContain('credit');
+    expect(lastSnackbar().message).toBe('Marked Vol 1 as read');
+  });
+
   it('a page bound limits the credit to pages not read here up to it', async () => {
     await readPages('a', 1, 2);
     const done = markRead(volume('a', 'Vol 1'));

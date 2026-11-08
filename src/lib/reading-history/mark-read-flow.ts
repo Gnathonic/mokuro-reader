@@ -27,6 +27,7 @@ import {
   type CreditSpeed
 } from './credit';
 import { recordEvent } from './record';
+import { MAX_CREDIT_RUN } from './segment-codec';
 import {
   flushReadingStats,
   pagesNotReadHere,
@@ -124,12 +125,16 @@ async function settledStats() {
 export async function prepareSheetVolume(volume: VolumeMetadata): Promise<SheetVolume> {
   const stats = await settledStats();
   const pageCount = volume.page_count ?? 0;
+  // A page count no credit could carry (a damaged `series.json` gave a
+  // placeholder 250,000 pages) still marks, but counts no pages: nothing is
+  // listed per page for it, and no segment could hold the run.
+  const countable = pageCount > 0 && pageCount <= MAX_CREDIT_RUN;
   const counted = volume.page_char_counts?.length === pageCount;
   const ocr =
-    !counted && pageCount > 0 && isVolumeInstalled(volume)
+    !counted && countable && isVolumeInstalled(volume)
       ? await db.volume_ocr.get(volume.volume_uuid).catch(() => undefined)
       : undefined;
-  const pageChars = pageCharsOf(volume, ocr?.pages);
+  const pageChars = countable ? pageCharsOf(volume, ocr?.pages) : [];
   const record = get(volumesWithTrash)[volume.volume_uuid];
   return {
     uuid: volume.volume_uuid,
@@ -140,7 +145,7 @@ export async function prepareSheetVolume(volume: VolumeMetadata): Promise<SheetV
         ? volume.character_count
         : pageChars.reduce((n, c) => n + c, 0) || undefined,
     pageChars,
-    notRead: pageCount > 0 ? pagesNotReadHere(stats, volume.volume_uuid, pageCount, record) : []
+    notRead: countable ? pagesNotReadHere(stats, volume.volume_uuid, pageCount, record) : []
   };
 }
 
@@ -171,7 +176,7 @@ function commit(items: MarkReadItem[], message: string): void {
 function creditItem(v: SheetVolume, upTo: number, ms: number): MarkReadItem['credit'] {
   const { pages, page_chars, chars } = creditPages(v.notRead, v.pageChars, upTo);
   if (pages.length === 0 || chars <= 0) return undefined;
-  return { pages, page_chars, time_ms: Math.max(0, Math.round(ms)) };
+  return { pages, page_chars, time_ms: Number.isFinite(ms) ? Math.max(0, Math.round(ms)) : 0 };
 }
 
 /** "Mark as read" on one volume: ask, count or skip by the user's setting. */

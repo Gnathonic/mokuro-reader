@@ -93,6 +93,55 @@ describe('markVolumesRead (#224)', () => {
     }
   });
 
+  it.each([
+    [
+      'the tab is hidden',
+      () => {
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      }
+    ],
+    ['the page is closed', () => window.dispatchEvent(new Event('pagehide'))]
+  ])('a held completion is announced when %s inside the Undo window', async (_label, leave) => {
+    const heard: string[] = [];
+    const stop = registerCompletionListener((id) => heard.push(id));
+    try {
+      const action = markVolumesRead([{ volume: 'a', pageCount: 10, credit }]);
+      expect(heard).toEqual([]);
+      leave();
+      expect(heard).toEqual(['a']);
+      // Announced once: the snackbar's own timeout later adds nothing.
+      action.release();
+      expect(heard).toEqual(['a']);
+    } finally {
+      stop();
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    }
+  });
+
+  it('the Undo still works after the tab was hidden', async () => {
+    updateProgress('a', 3, 30);
+    const action = markVolumesRead([{ volume: 'a', pageCount: 10, credit }]);
+    window.dispatchEvent(new Event('pagehide'));
+    await action.undo();
+    expect(record('a')).toMatchObject({ progress: 3, chars: 30, completed: false });
+    expect(payloads().filter((p) => p.kind === 'retract')).toHaveLength(1);
+  });
+
+  it('nothing is announced on hide after an Undo or a release', async () => {
+    const heard: string[] = [];
+    const stop = registerCompletionListener((id) => heard.push(id));
+    try {
+      await markVolumesRead([{ volume: 'a', pageCount: 10 }]).undo();
+      markVolumesRead([{ volume: 'b', pageCount: 10 }]).release();
+      expect(heard).toEqual(['b']);
+      window.dispatchEvent(new Event('pagehide'));
+      expect(heard).toEqual(['b']);
+    } finally {
+      stop();
+    }
+  });
+
   it('a batch undoes as one', async () => {
     updateProgress('a', 3, 30);
     const action = markVolumesRead([

@@ -58,8 +58,11 @@ describe('pageCharsOf', () => {
 });
 
 describe('creditSpeed: the estimate', () => {
-  /** A series volume with `minutes` of reading at 300 chars/min. */
-  function series(minutes: number): Map<string, VolumeTotals> {
+  /** A series volume with `minutes` of reading at `charsAt(i)` chars a minute (300). */
+  function series(
+    minutes: number,
+    charsAt: (i: number) => number = () => 300
+  ): Map<string, VolumeTotals> {
     const events: ReadingEvent[] = Array.from({ length: minutes }, (_, i) => ({
       device: 'd',
       seq: i + 1,
@@ -68,7 +71,7 @@ describe('creditSpeed: the estimate', () => {
       volume: 'v1',
       first_page: i + 1,
       last_page: i + 1,
-      page_chars: [300],
+      page_chars: [charsAt(i)],
       chars_before: 0,
       dwell_ms: MIN,
       layout: 'single',
@@ -84,6 +87,16 @@ describe('creditSpeed: the estimate', () => {
       source: 'series',
       rough: false
     });
+  });
+
+  it('a series speed that rounds to 0 is no speed: never an Infinity estimate', () => {
+    // 70 minutes of near-wordless pages: 18 characters, 0.26 chars/min.
+    const stats = stateWith(series(70, (i) => (i % 4 === 0 ? 1 : 0)));
+    const speed = creditSpeed(stats, ['v1'], recent(150, 'high'));
+    expect(speed).toEqual({ charsPerMinute: 150, source: 'recent', rough: false });
+    expect(Number.isFinite(estimateMinutes(9412, speed)!)).toBe(true);
+    const none = { charsPerMinute: 0.3, confidence: 'high' as const, isPersonalized: true };
+    expect(creditSpeed(stats, ['v1'], { ...none, sessionsUsed: 1 })).toBeNull();
   });
 
   it('without an hour of the series, the recent speed; rough under 4 hours', () => {

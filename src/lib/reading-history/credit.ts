@@ -63,13 +63,16 @@ export function creditSpeed(
   seriesVolumeIds: string[],
   recent: ReadingSpeedResult
 ): CreditSpeed | null {
-  const own = seriesSpeed(stats, seriesVolumeIds);
-  if (own && own.charsPerMinute > 0) {
-    return { charsPerMinute: Math.round(own.charsPerMinute), source: 'series', rough: false };
+  // A speed is whole characters a minute, at least 1: one that rounds to 0
+  // (an hour of near-wordless pages) would estimate `chars / 0` = Infinity.
+  const own = Math.round(seriesSpeed(stats, seriesVolumeIds)?.charsPerMinute ?? 0);
+  if (own >= 1) {
+    return { charsPerMinute: own, source: 'series', rough: false };
   }
-  if (recent.isPersonalized && recent.confidence !== 'none' && recent.charsPerMinute > 0) {
+  const recentSpeed = Math.round(recent.charsPerMinute);
+  if (recent.isPersonalized && recent.confidence !== 'none' && recentSpeed >= 1) {
     return {
-      charsPerMinute: recent.charsPerMinute,
+      charsPerMinute: recentSpeed,
       source: 'recent',
       rough: recent.confidence === 'low'
     };
@@ -81,6 +84,7 @@ export function creditSpeed(
 export function estimateMinutes(chars: number, speed: CreditSpeed | null): number | null {
   if (!speed) return null;
   if (chars <= 0) return 0;
+  if (!(speed.charsPerMinute > 0)) return null;
   return Math.ceil(chars / speed.charsPerMinute);
 }
 

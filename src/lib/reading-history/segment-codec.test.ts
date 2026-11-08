@@ -430,7 +430,20 @@ describe('segment codec', () => {
       ['page 0', { pages: [0, 1], page_chars: [1, 1] }],
       ['no pages', { pages: [], page_chars: [] }],
       ['chars that do not match the pages', { pages: [1, 2], page_chars: [1] }],
-      ['a negative time', { time_ms: -1 }]
+      ['a negative time', { time_ms: -1 }],
+      // JSON writes Infinity and NaN as null: every other device would refuse the month.
+      ['an Infinity time', { time_ms: Infinity }],
+      ['a NaN time', { time_ms: NaN }],
+      ['a non-finite page char', { pages: [1, 2], page_chars: [1, Infinity] }],
+      ['a negative page char', { pages: [1, 2], page_chars: [1, -1] }],
+      // The decoder refuses a run of 100,000 pages or more.
+      [
+        'a run longer than the decoder takes',
+        {
+          pages: Array.from({ length: 100_001 }, (_, i) => i + 1),
+          page_chars: new Array(100_001).fill(0)
+        }
+      ]
     ])('refuses to write a credit with %s', async (_label, patch) => {
       await expect(
         encodeSegment(DEV, '2026-10', [{ ...credit, ...patch } as ReadingEvent])
@@ -457,6 +470,16 @@ describe('segment codec', () => {
       ['a retract of seq 0', { targets: ['d'], rows: [[7, 1, T, 0, 0, 0]] }]
     ])('refuses %s', async (_label, body) => {
       await expect(decodeSegment(await raw(body))).rejects.toThrow(SegmentFormatError);
+    });
+
+    it('the longest run it writes is one the decoder takes back', async () => {
+      const long = {
+        ...credit,
+        pages: Array.from({ length: 100_000 }, (_, i) => i + 1),
+        page_chars: new Array(100_000).fill(1)
+      } as ReadingEvent;
+      const { events: out } = await decodeSegment(await encodeSegment(DEV, '2026-10', [long]));
+      expect(out).toEqual([long]);
     });
 
     it('still reads every existing format-1 segment', async () => {

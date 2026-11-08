@@ -224,19 +224,36 @@ test('the sheet counts the pages not read here; Undo returns to the page; the st
   await page.getByRole('button', { name: /Adjust/ }).click();
   await page.getByTestId('mark-read-up-to').fill('50');
   await expect(estimate).toContainText('10 pages · 1,000 characters · about 10 min');
-  await page.getByTestId('mark-read-minutes').fill('15');
-  await expect(estimate).toContainText('10 pages · 1,000 characters · 15 min');
+  // Minutes past 59 carry into the hours: what the field shows is what counts.
+  await page.getByTestId('mark-read-hours').fill('0');
+  await page.getByTestId('mark-read-minutes').fill('90');
+  await expect(estimate).toContainText('10 pages · 1,000 characters · 1 h 30 min');
   await page.getByTestId('mark-read-count').click();
   await expect
     .poll(async () => (await figures(page, VOL1)).credit)
-    .toEqual({ timeMs: 15 * MIN, chars: 1000 });
+    .toEqual({ timeMs: 90 * MIN, chars: 1000 });
 
   // The stats page: the counted part named under the tiles, Recent Speed unmoved.
   await page.evaluate(() => (window.location.hash = '#/reading-speed'));
   await expect(page.getByTestId('credit-chars')).toHaveText('1,000 counted when marked read');
-  await expect(page.getByTestId('credit-time')).toHaveText('15 min counted when marked read');
+  await expect(page.getByTestId('credit-time')).toHaveText('1h 30m counted when marked read');
   const recent = page.locator('p', { hasText: 'Recent Speed' }).locator('..');
   await expect(recent).toContainText('100');
+
+  // The editor's Reset All un-reads too: the card's menu says so.
+  await openSeries(page);
+  const menuItem = (name: string) => page.getByRole('button', { name, exact: true });
+  await page.locator(`#volume-menu-${VOL1}`).click();
+  await expect(menuItem('Mark as unread')).toBeVisible();
+  await menuItem('Edit').click();
+  await page.getByRole('button', { name: 'Reset All' }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect
+    .poll(async () => await figures(page, VOL1))
+    .toMatchObject({ progress: 0, completed: false });
+  await page.locator(`#volume-menu-${VOL1}`).click();
+  await expect(menuItem('Mark as read')).toBeVisible();
+  await expect(menuItem('Mark as unread')).toHaveCount(0);
 });
 
 test('phone: a bottom sheet; the bulk sheet from the series menu and "up to here"; Don’t ask again', async ({

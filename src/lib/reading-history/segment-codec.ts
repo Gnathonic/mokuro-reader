@@ -1,5 +1,6 @@
 import { legacyDeviceFor } from './paths';
 import type {
+  CreditPayload,
   EventPayload,
   Layout,
   Orientation,
@@ -147,10 +148,7 @@ export async function encodeSegment(
         ];
       case 'credit':
         credits = true;
-        if (e.page_chars.length !== e.pages.length || !(e.time_ms >= 0)) {
-          throw new SegmentFormatError('malformed credit');
-        }
-        return [6, ...head, vol(e.volume), e.time_ms, pageRuns(e.pages), [...e.page_chars]];
+        return [6, ...head, vol(e.volume), e.time_ms, creditRuns(e), [...e.page_chars]];
       case 'retract':
         credits = true;
         return [7, ...head, vol(e.volume), targets.index(e.target[0]), e.target[1]];
@@ -326,11 +324,27 @@ export async function decodeSegment(
   return { header, events };
 }
 
+/** The longest run of pages a credit row may hold (`last - first` stays under it). */
+export const MAX_CREDIT_RUN = 100_000;
+
 /**
- * A credit's pages as `[first, last, …]` runs. They must be whole, positive
- * and strictly ascending — the decoder could not give back anything else.
+ * A credit's pages as `[first, last, …]` runs, refusing any credit the decoder
+ * would not give back: pages whole, positive, strictly ascending and in runs
+ * shorter than `MAX_CREDIT_RUN`; one finite, non-negative character count per
+ * page; a finite, non-negative time. Every other device refuses a whole
+ * device-month over one bad row, permanently (events are never edited), so
+ * `appendEvent` runs this before a credit is stored and the encoder again.
  */
-function pageRuns(pages: number[]): number[] {
+export function creditRuns(
+  credit: Pick<CreditPayload, 'pages' | 'page_chars' | 'time_ms'>
+): number[] {
+  const { pages, page_chars, time_ms } = credit;
+  if (!Number.isFinite(time_ms) || time_ms < 0) {
+    throw new SegmentFormatError('credit time must be finite and non-negative');
+  }
+  if (page_chars.length !== pages.length || page_chars.some((c) => !Number.isFinite(c) || c < 0)) {
+    throw new SegmentFormatError('credit page chars do not match its pages');
+  }
   if (pages.length === 0) throw new SegmentFormatError('a credit with no pages');
   const runs: number[] = [];
   let previous = 0;
@@ -340,6 +354,9 @@ function pageRuns(pages: number[]): number[] {
     }
     if (runs.length > 0 && page === previous + 1) runs[runs.length - 1] = page;
     else runs.push(page, page);
+    if (runs[runs.length - 1] - runs[runs.length - 2] >= MAX_CREDIT_RUN) {
+      throw new SegmentFormatError('credit run longer than any volume');
+    }
     previous = page;
   }
   return runs;
@@ -360,7 +377,7 @@ function expandRuns(value: unknown): number[] {
       throw new SegmentFormatError('malformed credit runs');
     }
     // A run longer than any volume is a hostile file, not a credit.
-    if (last - first >= 100_000) throw new SegmentFormatError('malformed credit runs');
+    if (last - first >= MAX_CREDIT_RUN) throw new SegmentFormatError('malformed credit runs');
     for (let page = first; page <= last; page++) pages.push(page);
     previous = last;
   }

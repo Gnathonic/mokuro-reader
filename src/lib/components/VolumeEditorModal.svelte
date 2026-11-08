@@ -74,7 +74,7 @@
    * deducted pages that were never read.
    */
   let charsRead = $state(0);
-  /** "Reset All" asks the save to zero the characters as well as the time. */
+  /** "Reset All" asks the save to zero the characters as well as the time, and un-read. */
   let resetChars = $state(false);
   /** Each page's characters and the pages not read here (`prepareSheetVolume`). */
   let sheetVolume = $state<SheetVolume | null>(null);
@@ -426,7 +426,9 @@
         progress,
         chars: positionChars,
         timeRead: { from: loadedMinutes, to: timeReadInMinutes },
-        ...(resetChars && { charsRead: { from: charsRead, to: 0 } }),
+        // Reset All un-reads too: the card's check follows the stored flag
+        // (`isVolumeFinished`), so page 0 alone would leave it showing read.
+        ...(resetChars && { charsRead: { from: charsRead, to: 0 }, completed: false }),
         series_uuid: finalSeriesUuid,
         series_title: finalSeriesTitle,
         volume_title: volumeTitle

@@ -142,6 +142,18 @@ describe('MarkReadSheet: one volume', () => {
     expect(estimate()).toContain('about 17 min');
   });
 
+  it('typed minutes past 59 carry into the hours, never silently capped', async () => {
+    render(MarkReadSheet);
+    const answer = open();
+    await tick();
+    await fireEvent.click(screen.getByText(/Adjust/));
+    await fireEvent.input(screen.getByTestId('mark-read-hours'), { target: { value: '0' } });
+    await fireEvent.input(screen.getByTestId('mark-read-minutes'), { target: { value: '90' } });
+    expect(estimate()).toContain('42 pages · 4,200 characters · 1 h 30 min');
+    await fireEvent.click(screen.getByTestId('mark-read-count'));
+    expect(answer.mock.calls[0][0]).toMatchObject({ count: true, typedMinutes: 90 });
+  });
+
   it('low data: no time shown as if it were the user’s, an optional empty time field', async () => {
     render(MarkReadSheet);
     const answer = open({ speed: null });

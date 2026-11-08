@@ -1158,6 +1158,31 @@ export function markVolumesRead(items: MarkReadItem[]): MarkReadAction {
   }
   const credits = Promise.all(recorded);
   let settled = false;
+  /** Stop holding: announce what is still completed (`announce`) or drop it. */
+  const endHold = (announce: boolean) => {
+    stopHold?.();
+    stopHold = null;
+    if (typeof window !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+    }
+    if (announce) for (const volume of held) releaseHeldCompletion(volume);
+    held.clear();
+  };
+  // A held completion lives in memory only (as a look-up visit's does): a
+  // phone that switches app or closes the tab inside the Undo window freezes
+  // or kills the page before the snackbar's timer runs. Going out of view
+  // hands the completions on; the Undo itself stays usable, and an Undo after
+  // that still puts the record back (AniList keeps the completion, as it did
+  // when a mark was announced at once).
+  const onPageHide = () => endHold(true);
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') endHold(true);
+  };
+  if (typeof window !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+  }
   return {
     credits,
     async undo() {
@@ -1167,18 +1192,13 @@ export function markVolumesRead(items: MarkReadItem[]): MarkReadAction {
       for (const [volume, snapshot] of snapshots) {
         restoreVolumePosition(volume, snapshot, stamp, { announce: true });
       }
-      stopHold?.();
-      stopHold = null;
-      held.clear();
+      endHold(false);
       await retractEvents(await credits);
     },
     release() {
       if (settled) return;
       settled = true;
-      stopHold?.();
-      stopHold = null;
-      for (const volume of held) releaseHeldCompletion(volume);
-      held.clear();
+      endHold(true);
     }
   };
 }

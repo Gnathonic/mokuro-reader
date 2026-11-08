@@ -69,8 +69,10 @@
     const n = Math.floor(Number(text));
     return Number.isFinite(n) && n > 0 ? n : 0;
   };
+  // Minutes past 59 carry into the hours (0 h 90 min is 1 h 30 min): the field
+  // shows what was typed, so what is credited must be that too.
   let chosenMinutes = $derived(
-    typed ? parseField(typedHours) * 60 + Math.min(59, parseField(typedMinutes)) : null
+    typed ? parseField(typedHours) * 60 + parseField(typedMinutes) : null
   );
   let shownHours = $derived(
     typed ? typedHours : estimate === null ? '' : String(Math.floor(estimate / 60))
@@ -300,7 +302,6 @@
               <input
                 type="number"
                 min="0"
-                max="59"
                 inputmode="numeric"
                 class="h-11 w-16 rounded-lg border-gray-300 bg-white px-2 text-sm dark:border-gray-600 dark:bg-gray-700"
                 aria-label="Minutes"
