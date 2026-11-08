@@ -829,8 +829,9 @@ function finishSettled(completedAt: string | undefined, now: number): boolean {
  * end (or "Mark as read") re-dated it into the current goal period. The page
  * still moves — the reader stands where the user left it — but the flag and
  * the pass's characters hold until the reader is genuinely reading the volume
- * again (`hasFreshPassSince` against the page count: back to its first half
- * and through a quarter of its pages since it was finished). Only the explicit
+ * again (`hasFreshPassSince` against the page count: one stretch of reading,
+ * begun in its first half, through a quarter of its pages since it was
+ * finished — look-ups on separate visits never add up to one). Only the explicit
  * un-reads (Mark as unread, Restart series, forget), which return the page to
  * 0, end a finish otherwise.
  *
@@ -926,11 +927,19 @@ export function updateProgress(
      * no better in the other direction: a real cover-to-cover re-read kept its
      * old date and counted for nothing.
      */
+    // Against the page count when the caller knows it, as the flag above and
+    // the goals' partial credit measure: the completing page may be the
+    // second-to-last, and a quarter of it can be one page less than a quarter
+    // of the volume — a revisit the flag held, re-dated on the next turn.
     const newCompletion =
       completed &&
-      (currentVolume.completed
-        ? startedFreshPassSince(volume, currentVolume, currentVolume.completedAt, progress, false)
-        : startedFreshPassSince(volume, currentVolume, currentVolume.completedAt, progress));
+      startedFreshPassSince(
+        volume,
+        currentVolume,
+        currentVolume.completedAt,
+        pageCount ?? progress,
+        !currentVolume.completed
+      );
     becameCompleted = completed && (!currentVolume.completed || newCompletion);
 
     return {
@@ -950,10 +959,13 @@ export function updateProgress(
          * page-number input in ReaderSettings.svelte — so a false here
          * frequently means "the caller said nothing", not "the user un-read
          * this". The three paths that genuinely un-read a volume clear it.
+         *
+         * Nor is a date ever made up for a finish that has none (from before
+         * completion dates, after the one-time backfill): reaching the end of
+         * it again is not when it was read, and today's date would pile it
+         * into the current goal period. A first finish is a new completion.
          */
-        completedAt: newCompletion
-          ? nowIso
-          : (currentVolume.completedAt ?? (completed ? nowIso : undefined)),
+        completedAt: newCompletion ? nowIso : currentVolume.completedAt,
         lastProgressUpdate: nowIso
       })
     };

@@ -140,6 +140,96 @@ describe('#304 revisiting a finished volume', () => {
   });
 });
 
+describe('#304 coming back to a finished volume again and again', () => {
+  const DAY = 24 * 60 * 60_000;
+  /** One sitting's views at 20 s a page, `days` after the revisit day. */
+  const sittingAt = (pages: number[], days: number): PageTurn[] =>
+    pages.map((page, i) => [REVISIT + days * DAY + i * 20_000, page, charsAt(page)]);
+
+  it('separate look-ups never un-finish, credit or re-date it', () => {
+    finishedLastYear();
+    const announced: string[] = [];
+    const stop = registerCompletionListener((volume) => announced.push(volume));
+    try {
+      // February, April, June: each opens where the last one stopped, jumps to
+      // a scene and reads there — 20 + 30 + 12 pages, more than a quarter in all.
+      const turns = [
+        ...sittingAt([PAGES, ...range(30, 50)], 0),
+        ...sittingAt([50, ...range(100, 130)], 60),
+        ...sittingAt([130, ...range(60, 72)], 120)
+      ];
+      _setHistoryTurnsForTest(new Map([['v', turns]]));
+      vi.setSystemTime(REVISIT + 120 * DAY + turns.length * 20_000);
+      updateProgress('v', 73, charsAt(73), false, PAGES);
+
+      const record = get(volumes).v;
+      expect(record.completed).toBe(true);
+      expect(record.chars).toBe(charsAt(PAGES));
+      expect(partialProgressInPeriod(record, PAGES, YEAR_START, YEAR_END)).toBe(0);
+
+      // And flipped forward to the end again: the old finish, not announced.
+      vi.setSystemTime(Date.now() + 60_000);
+      updateProgress('v', PAGES, charsAt(PAGES), true, PAGES);
+      expect(get(volumes).v.completedAt).toBe(FINISHED);
+      expect(announced).toEqual([]);
+    } finally {
+      stop();
+    }
+  });
+});
+
+describe('#304 one rule against the page count', () => {
+  it('a finish held on the way is not re-dated on the second-to-last page', () => {
+    // 201 pages: a quarter is 51. 50 pages read since the finish hold the flag,
+    // and must not re-date it when the reader lands on page 200 (= the end).
+    const pages = 201;
+    volumesWithTrash.set({
+      v: new VolumeData({
+        progress: pages,
+        chars: charsAt(pages),
+        completed: true,
+        completedAt: FINISHED,
+        lastProgressUpdate: FINISHED
+      })
+    });
+    viewed(range(1, 51));
+    vi.setSystemTime(REVISIT + 51 * 20_000);
+    updateProgress('v', 52, charsAt(52), false, pages);
+    expect(get(volumes).v.completed).toBe(true);
+    expect(partialProgressInPeriod(get(volumes).v, pages, YEAR_START, YEAR_END)).toBe(0);
+
+    updateProgress('v', 200, charsAt(200), true, pages);
+    expect(get(volumes).v.completedAt).toBe(FINISHED);
+  });
+});
+
+describe('#304 a finish with no date', () => {
+  it('is not dated today by flipping to the end again', () => {
+    // Finished before completion dates, after this device's one-time backfill.
+    volumesWithTrash.set({
+      v: new VolumeData({ progress: PAGES, chars: charsAt(PAGES), completed: true })
+    });
+    const announced: string[] = [];
+    const stop = registerCompletionListener((volume) => announced.push(volume));
+    try {
+      updateProgress('v', 30, charsAt(30), false, PAGES);
+      viewed([30, 31]);
+      vi.setSystemTime(REVISIT + 60_000);
+      updateProgress('v', PAGES, charsAt(PAGES), true, PAGES);
+      expect(get(volumes).v.completed).toBe(true);
+      expect(get(volumes).v.completedAt).toBeUndefined();
+      expect(announced).toEqual([]);
+    } finally {
+      stop();
+    }
+  });
+
+  it('a first finish is still dated', () => {
+    updateProgress('v', PAGES, charsAt(PAGES), true, PAGES);
+    expect(get(volumes).v.completedAt).toBe(new Date(REVISIT).toISOString());
+  });
+});
+
 describe('#304 a finish that has not settled yet', () => {
   it('is taken back by paging away from the end within minutes, keeping its date', () => {
     // A slip of the slider to the end, or the end of a look-up the visit may

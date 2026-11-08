@@ -243,4 +243,62 @@ describe('hasFreshPassSince (#304)', () => {
   it('a page counts once', () => {
     expect(hasFreshPassSince(turns([...range(1, 26), ...range(1, 26)]), SINCE, 200)).toBe(false);
   });
+
+  /** `pages` read at 20 s a page, starting `atMs` after the completion. */
+  const sitting = (pages: number[], atMs: number, stepMs = 20_000) =>
+    pages.map(
+      (page, i) => [SINCE + atMs + i * stepMs, page, page * 10] as [number, number, number]
+    );
+  const DAY = 24 * 60 * 60_000;
+
+  it('separate look-ups never add up to a pass, however many pages they read in all', () => {
+    // Each visit opens where the last one left off, jumps to a scene, reads a
+    // little there and is closed: 20 + 30 + 12 pages read, 50 needed.
+    const lookUps = [
+      ...sitting([200, ...range(30, 50)], DAY),
+      ...sitting([50, ...range(100, 130)], 60 * DAY),
+      ...sitting([130, ...range(60, 72)], 120 * DAY)
+    ];
+    expect(hasFreshPassSince(lookUps, SINCE, 200)).toBe(false);
+  });
+
+  it('skimming forward from where an old sitting stopped does not pick its reading up', () => {
+    const lookUps = [
+      ...sitting([200, ...range(30, 50)], DAY),
+      // Opened at p.50 again, flipped forward a page a second to a scene, read there.
+      ...sitting(range(50, 99), 60 * DAY, 1_000),
+      ...sitting(range(100, 131), 60 * DAY + 50_000)
+    ];
+    expect(hasFreshPassSince(lookUps, SINCE, 200)).toBe(false);
+  });
+
+  it('a re-read picked up where it was left off is one pass across sittings', () => {
+    // A 400-page volume read 40 pages an evening: no single sitting reads 100.
+    const evenings = [0, 1, 2].flatMap((n) =>
+      sitting(n === 0 ? range(1, 40) : range(40 * n, 40 * (n + 1)), (n + 1) * DAY)
+    );
+    expect(hasFreshPassSince(evenings, SINCE, 400)).toBe(true);
+    expect(hasFreshPassSince(evenings.slice(0, 82), SINCE, 400)).toBe(false);
+  });
+
+  it('a glance back a few pages does not end the pass', () => {
+    const reading = turns([...range(1, 30), 27, 28, 29, 30, ...range(31, 52)]);
+    expect(hasFreshPassSince(reading, SINCE, 200)).toBe(true);
+  });
+
+  it('a spread turn reads both of its pages', () => {
+    // Two-page spreads, 2 → 60: 60 pages of 200 read, a quarter is 50.
+    const spreads = turns(Array.from({ length: 30 }, (_, i) => 2 + i * 2));
+    expect(hasFreshPassSince(spreads, SINCE, 200)).toBe(true);
+  });
+
+  it('pages flipped past quickly do not break a pass read in one sitting', () => {
+    // A fight scene turned in a second a page, mid re-read.
+    const reading = [
+      ...sitting(range(1, 30), 1),
+      ...sitting(range(31, 40), 1 + 30 * 20_000, 1_000),
+      ...sitting(range(41, 70), 1 + 30 * 20_000 + 10_000)
+    ];
+    expect(hasFreshPassSince(reading, SINCE, 200)).toBe(true);
+  });
 });
