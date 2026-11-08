@@ -12,19 +12,21 @@ const stats = vi.hoisted(() => {
   return {
     release: () => release(),
     readingStatsReady: vi.fn(() => gate),
+    chars: 0,
     figuresFor: vi.fn((state: { ready: boolean }) => ({
       minutes: state.ready ? 60 : 5,
       timeMs: 0,
-      chars: 0,
+      chars: stats.chars,
       skippedChars: 0,
-      lastReadAt: null
+      lastReadAt: null,
+      credit: { timeMs: 0, chars: 0 }
     }))
   };
 });
 const readingStats = vi.hoisted(() => ({ store: null as unknown as ReturnType<typeof writable> }));
 vi.mock('$lib/reading-history/stats-store', async () => {
   const { writable } = await import('svelte/store');
-  readingStats.store = writable({ ready: false });
+  readingStats.store = writable({ ready: false, byVolume: new Map() });
   return {
     readingStats: readingStats.store,
     readingStatsReady: stats.readingStatsReady,
@@ -52,6 +54,32 @@ vi.mock('$lib/util', () => ({ showSnackbar: vi.fn() }));
 vi.mock('$lib/util/sync/provider-interface', () => ({ ProviderError: class extends Error {} }));
 vi.mock('$lib/util/sync/account-capabilities', () => ({ renameRefusalMessage: () => null }));
 vi.mock('../VolumeEditorCoverPicker.svelte', () => ({ default: () => {} }));
+// #224: the editor's "Count pages read elsewhere…" and Remove go through the flow.
+const flow = vi.hoisted(() => ({
+  notRead: [] as number[],
+  prepareSheetVolume: vi.fn(),
+  countReadElsewhere: vi.fn(async (_v: unknown, _upTo: number) => true),
+  removeCredits: vi.fn(async (_v: string) => ({
+    removed: 'Removed 38 min counted',
+    undo: vi.fn(async () => {})
+  })),
+  markReadSheetOpen: vi.fn(() => false)
+}));
+vi.mock('$lib/reading-history/mark-read-flow', () => ({
+  prepareSheetVolume: flow.prepareSheetVolume,
+  countReadElsewhere: flow.countReadElsewhere,
+  removeCredits: flow.removeCredits,
+  markReadSheetOpen: flow.markReadSheetOpen
+}));
+flow.prepareSheetVolume.mockImplementation(
+  async (m: { volume_uuid: string; volume_title: string; page_count: number }) => ({
+    uuid: m.volume_uuid,
+    title: m.volume_title,
+    pageCount: m.page_count,
+    pageChars: Array.from({ length: m.page_count }, () => 50),
+    notRead: flow.notRead
+  })
+);
 
 import VolumeEditorModal from '../VolumeEditorModal.svelte';
 import { promptVolumeEditor, closeVolumeEditor } from '$lib/util/modals';
@@ -83,7 +111,7 @@ describe('VolumeEditorModal time read', () => {
     await waitFor(() => expect(editor.getVolumeData).toHaveBeenCalled());
 
     // The stats finish their first pass only now.
-    readingStats.store.set({ ready: true });
+    readingStats.store.set({ ready: true, byVolume: new Map() });
     stats.release();
     await waitFor(() => expect(hours()).not.toBeNull());
     const shownHours = hours()!.value;
@@ -150,5 +178,106 @@ describe('VolumeEditorModal cover preview', () => {
     await waitFor(() => expect(hours()).not.toBeNull());
     expect(preview()).toBeNull();
     expect(globalThis.URL.createObjectURL).not.toHaveBeenCalled();
+  });
+});
+
+describe('VolumeEditorModal reading progress (#224)', () => {
+  const MIN = 60_000;
+  const meta = {
+    volume_uuid: 'vol-1',
+    series_uuid: 's1',
+    series_title: 'Series',
+    volume_title: 'Vol 1',
+    page_count: 100
+  };
+  beforeEach(() => {
+    stats.release();
+    stats.chars = 1234;
+    flow.notRead = [];
+    readingStats.store.set({ ready: true, byVolume: new Map() });
+    editor.updateVolumeStats.mockClear();
+    flow.countReadElsewhere.mockClear();
+    flow.removeCredits.mockClear();
+    editor.getVolumeData.mockResolvedValue({
+      metadata: meta,
+      stats: new VolumeData({ progress: 10, chars: 500 })
+    });
+  });
+  afterEach(() => {
+    stats.chars = 0;
+    closeVolumeEditor();
+    cleanup();
+  });
+
+  const progressInput = () => document.querySelector('#progress') as HTMLInputElement;
+  const text = (id: string) =>
+    document.querySelector(`[data-testid="${id}"]`)?.textContent?.replace(/\s+/g, ' ').trim();
+
+  it('shows the characters the stats count; a page edit moves the position and records no characters', async () => {
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(progressInput()).not.toBeNull());
+    expect(text('editor-chars')).toBe('1,234 / 5,000');
+    await fireEvent.input(progressInput(), { target: { value: '4' } });
+    // Still the stats' figure: the page is a position, not reading.
+    expect(text('editor-chars')).toBe('1,234 / 5,000');
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    const update = editor.updateVolumeStats.mock.calls[0][1];
+    expect(update.progress).toBe(4);
+    // The record's position count: 4 pages of 50 characters.
+    expect(update.chars).toBe(200);
+    expect(update.charsRead).toBeUndefined();
+  });
+
+  it('Reset All zeroes the characters too, as an explicit edit', async () => {
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(progressInput()).not.toBeNull());
+    await fireEvent.click(getByText('Reset All'));
+    expect(text('editor-chars')).toBe('0 / 5,000');
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(editor.updateVolumeStats).toHaveBeenCalled());
+    expect(editor.updateVolumeStats.mock.calls[0][1].charsRead).toEqual({ from: 1234, to: 0 });
+  });
+
+  it('shows what marking read counted, with Remove', async () => {
+    readingStats.store.set({
+      ready: true,
+      byVolume: new Map([
+        [
+          'vol-1',
+          {
+            pass: 0,
+            credits: [
+              { device: 'd', seq: 3, t: 0, pass: 0, ms: 38 * MIN, chars: 9412, pages: [1, 2, 3] }
+            ]
+          }
+        ]
+      ])
+    });
+    const { getByText } = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(text('editor-credit')).toContain('Counted when marked read'));
+    expect(text('editor-credit')).toContain(
+      'Counted when marked read: 38 min · 9,412 characters (3 pages)'
+    );
+    await fireEvent.click(getByText('Remove'));
+    await waitFor(() => expect(flow.removeCredits).toHaveBeenCalledWith('vol-1'));
+    await waitFor(() => expect(text('editor-credit')).toContain('Removed 38 min counted.'));
+    expect(getByText('Undo')).toBeTruthy();
+  });
+
+  it('offers "Count pages read elsewhere…" up to the current page only when those pages hold text', async () => {
+    flow.notRead = [20, 21];
+    const first = render(VolumeEditorModal);
+    promptVolumeEditor('vol-1');
+    await waitFor(() => expect(progressInput()).not.toBeNull());
+    // Pages 20–21 are past page 10.
+    expect(document.querySelector('[data-testid="editor-count-elsewhere"]')).toBeNull();
+    await fireEvent.input(progressInput(), { target: { value: '30' } });
+    await fireEvent.click(first.getByText('Count pages read elsewhere…'));
+    await waitFor(() => expect(flow.countReadElsewhere).toHaveBeenCalled());
+    expect(flow.countReadElsewhere.mock.calls[0][1]).toBe(30);
   });
 });

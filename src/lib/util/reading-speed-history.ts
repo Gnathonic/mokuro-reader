@@ -23,14 +23,35 @@ export interface VolumeSpeedData {
 /**
  * A volume's time and characters as the stats count them — from reading
  * history plus its pre-history baseline (`figuresFor` in the stats store).
+ * `credit` is what "mark as read" counted for pages not read in the app
+ * (#224): inside the totals, but never part of a speed.
  */
 export type FiguresOf = (
   volumeId: string,
   data: Record<string, any>
-) => { timeMs: number; chars: number; skippedChars: number };
+) => {
+  timeMs: number;
+  chars: number;
+  skippedChars: number;
+  credit?: { timeMs: number; chars: number };
+};
+
+/** Figures without what "mark as read" counted: the reading this app measured. */
+function measured(figures: ReturnType<FiguresOf>): { timeMs: number; chars: number } {
+  return {
+    timeMs: Math.max(0, figures.timeMs - (figures.credit?.timeMs ?? 0)),
+    chars: Math.max(0, figures.chars - (figures.credit?.chars ?? 0))
+  };
+}
 
 export interface ReadingSpeedStats {
+  /** Everything counted, "mark as read" credits included. */
   totalTimeMinutes: number;
+  /** Of the totals, what "mark as read" counted (#224) — shown apart. */
+  creditTimeMinutes: number;
+  creditChars: number;
+  /** Time this app measured (credits left out): what the data countdown waits for. */
+  measuredTimeMinutes: number;
   /** Characters on pages only skimmed past (never counted as read). */
   totalSkippedChars: number;
   averageSpeed: number;
@@ -80,7 +101,9 @@ export function processVolumeSpeedData(
       continue;
     }
 
-    const figures = figuresOf(volumeId, data);
+    // Speed is measured reading only: a credited volume plots its measured
+    // part, and one counted wholly by "mark as read" is not plotted (#224).
+    const figures = measured(figuresOf(volumeId, data));
 
     // Must have character data
     if (figures.chars === 0) {
@@ -208,18 +231,27 @@ export function calculateReadingSpeedStats(
   let allCharsRead = 0;
   let allVolumesTime = 0;
   let allSkipped = 0;
+  let creditTime = 0;
+  let creditChars = 0;
+  let measuredTime = 0;
+  let measuredChars = 0;
 
   for (const [volumeId, data] of Object.entries(allVolumesData)) {
     // Skip entries with empty/invalid volume IDs (bug from null timer)
     if (!volumeId) continue;
 
     const figures = figuresOf(volumeId, data);
+    const own = measured(figures);
     allVolumesTime += figures.timeMs / 60_000;
     // Count chars from ALL volumes (not just completed)
     allCharsRead += figures.chars;
     allSkipped += figures.skippedChars;
+    creditTime += (figures.credit?.timeMs ?? 0) / 60_000;
+    creditChars += figures.credit?.chars ?? 0;
+    measuredTime += own.timeMs / 60_000;
+    measuredChars += own.chars;
 
-    if (data.completed && figures.chars > 0) {
+    if (data.completed && own.chars > 0) {
       allCompletedCount++;
     }
   }
@@ -227,6 +259,9 @@ export function calculateReadingSpeedStats(
   if (volumeData.length === 0 && allCharsRead === 0 && allVolumesTime === 0) {
     return {
       totalTimeMinutes: 0,
+      creditTimeMinutes: 0,
+      creditChars: 0,
+      measuredTimeMinutes: 0,
       totalSkippedChars: allSkipped,
       averageSpeed: 0,
       currentSpeed: currentPersonalizedSpeed,
@@ -238,9 +273,9 @@ export function calculateReadingSpeedStats(
     };
   }
 
-  // Use totals from all volumes (not just completed)
-  const totalTime = allVolumesTime;
-  const totalChars = allCharsRead;
+  // The tiles show everything counted; the badges reward measured reading only.
+  const totalTime = measuredTime;
+  const totalChars = measuredChars;
   const avgSpeed =
     volumeData.length > 0
       ? volumeData.reduce((sum, v) => sum + v.charsPerMinute, 0) / volumeData.length
@@ -409,12 +444,15 @@ export function calculateReadingSpeedStats(
   }
 
   return {
-    totalTimeMinutes: totalTime,
+    totalTimeMinutes: allVolumesTime,
+    creditTimeMinutes: creditTime,
+    creditChars,
+    measuredTimeMinutes: measuredTime,
     totalSkippedChars: allSkipped,
     averageSpeed: avgSpeed,
     currentSpeed: currentPersonalizedSpeed,
     volumesCompleted: volumeData.length,
-    totalCharsRead: totalChars,
+    totalCharsRead: allCharsRead,
     speedTrend,
     speedTrendLabel,
     badges

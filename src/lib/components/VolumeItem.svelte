@@ -12,11 +12,10 @@
     deleteVolume as deleteVolumeStats,
     progress,
     volumes as readingVolumes,
-    settings,
-    markVolumeAsComplete,
-    markVolumeAsUnread
+    settings
   } from '$lib/settings';
-  import { volumes as catalogVolumes } from '$lib/catalog';
+  import { currentSeries, volumes as catalogVolumes } from '$lib/catalog';
+  import { markRead, markReadBulk, markUnread } from '$lib/reading-history/mark-read-flow';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import { seriesSpeeds } from '$lib/reading-history/series-speeds';
@@ -24,7 +23,7 @@
   import { promptConfirmation, showSnackbar } from '$lib/util';
   import { promptExtraction } from '$lib/util/modals';
   import { zipManga } from '$lib/util/zip';
-  import { getCurrentPage, getProgressDisplay, isVolumeComplete } from '$lib/util/volume-helpers';
+  import { getCurrentPage, getProgressDisplay, isVolumeFinished } from '$lib/util/volume-helpers';
   import { ListgroupItem, Dropdown, DropdownItem, Badge, Button, Spinner } from 'flowbite-svelte';
   import {
     CheckCircleSolid,
@@ -118,11 +117,10 @@
   });
   let currentPage = $derived(getCurrentPage(volume.volume_uuid, $progress));
   let progressDisplay = $derived(getProgressDisplay(currentPage, volume.page_count));
-  // Completion reads the RAW page, not the display default of 1: "page 1 of 1" with no
-  // progress record at all is a volume nobody has opened (see isVolumeComplete).
-  let isComplete = $derived(
-    isVolumeComplete($progress?.[volume.volume_uuid] ?? 0, volume.page_count)
-  );
+  // The app's one completion rule (#224): the stored flag OR the raw page. Progress
+  // alone lost the check when the editor lowered the page of a volume marked read,
+  // while the catalog (which asks the same rule) still said finished.
+  let isComplete = $derived(isVolumeFinished(volume, volumeData));
 
   // Check if this is an image-only volume (no mokuro OCR data)
   let isImageOnly = $derived(volume.mokuro_version === '');
@@ -482,19 +480,19 @@
 
     return parts.length > 0 ? parts.join(' ') : null;
   });
+  // "Mark as read" asks about the pages this app never saw read (#224, mark-read-flow).
   function onToggleStatusClicked(e?: Event) {
     e?.stopPropagation();
-    if (isComplete) {
-      markVolumeAsUnread(volume_uuid);
-      showSnackbar(`Marked ${volName} as unread`);
-    } else {
-      if (volume.page_count) {
-        markVolumeAsComplete(volume_uuid, volume.page_count, totalChars);
-        showSnackbar(`Marked ${volName} as read`);
-      } else {
-        showSnackbar('Error: Missing page count data');
-      }
-    }
+    closeMenu();
+    const target = { ...liveVolume, page_count: liveVolume.page_count || volume.page_count };
+    if (isComplete) void markUnread(target);
+    else void markRead(target);
+  }
+
+  function onMarkReadUpToHere(e?: Event) {
+    e?.stopPropagation();
+    closeMenu();
+    void markReadBulk(get(currentSeries) ?? [], volume_uuid);
   }
   async function onDeleteClicked(e?: Event) {
     e?.stopPropagation();
@@ -1029,6 +1027,13 @@
             <span class="flex-1 text-left">Mark as unread</span>
           </DropdownItem>
         {/if}
+        <DropdownItem
+          onclick={onMarkReadUpToHere}
+          class="flex w-full items-center text-gray-700 dark:text-gray-200"
+        >
+          <CheckCircleOutline class="me-2 h-5 w-5 flex-shrink-0" />
+          <span class="flex-1 text-left">Mark as read up to here</span>
+        </DropdownItem>
         <DropdownItem
           onclick={onDeleteClicked}
           class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"

@@ -13,6 +13,7 @@ import { hasFreshPassSince } from '$lib/util/volume-helpers';
 import { SERIES_SECTION_KEY } from './series-data';
 import { TRACKING_SECTION_KEY } from './tracking-data';
 import { recordEvent } from '$lib/reading-history/record';
+import type { CreditPayload, ReadingEvent } from '$lib/reading-history/types';
 
 // Deep equality check for settings objects
 function settingsEqual(
@@ -1090,6 +1091,149 @@ export function markVolumeAsUnread(volumeUuid: string) {
       [volumeUuid]: new VolumeData({ ...current, completedAt: undefined })
     };
   });
+}
+
+/** What a volume's record held before a mark or an un-read, for its Undo. */
+type PositionSnapshot = {
+  progress: number;
+  chars: number;
+  completed: boolean;
+  completedAt?: string;
+};
+
+function positionSnapshot(volume: string): PositionSnapshot {
+  const current = get(_volumesInternal)[volume];
+  return {
+    progress: current?.progress ?? 0,
+    chars: current?.chars ?? 0,
+    completed: current?.completed ?? false,
+    completedAt: current?.completedAt
+  };
+}
+
+/** A credit as recorded, without the fields the history adds. */
+export type CreditFields = Omit<CreditPayload, 'kind' | 'volume'>;
+
+export interface MarkReadItem {
+  volume: string;
+  pageCount: number;
+  totalChars?: number;
+  /**
+   * Pages this app never saw read, counted as read (#224): recorded as a
+   * `credit` beside the mark. The mark itself is the same either way.
+   */
+  credit?: CreditFields;
+}
+
+export interface MarkReadAction {
+  /** Settles with the stored credit events (`null` where none was recorded). */
+  credits: Promise<Array<ReadingEvent | null>>;
+  /**
+   * Put every volume back where it was (fresh stamp, announced) and retract
+   * the credits. Once; nothing after `release`.
+   */
+  undo(): Promise<void>;
+  /** The Undo is gone: completions held while it showed are announced now. */
+  release(): void;
+}
+
+/**
+ * "Mark as read" for one volume or a batch (#224). Each mark is exactly
+ * `markVolumeAsComplete`; a credit is recorded beside it. While the Undo is
+ * on screen the completions are held (`registerCompletionHold`, as look-up
+ * visits do), so an undone mark never reaches AniList: `release` hands them
+ * on, `undo` drops them.
+ */
+export function markVolumesRead(items: MarkReadItem[]): MarkReadAction {
+  const held = new Set(items.map((item) => item.volume));
+  let stopHold: (() => void) | null = registerCompletionHold((volume) => held.has(volume));
+  const snapshots = new Map<string, PositionSnapshot>();
+  const recorded: Array<Promise<ReadingEvent | null>> = [];
+  for (const item of items) {
+    snapshots.set(item.volume, positionSnapshot(item.volume));
+    markVolumeAsComplete(item.volume, item.pageCount, item.totalChars);
+    if (item.credit) {
+      recorded.push(recordEvent({ kind: 'credit', volume: item.volume, ...item.credit }));
+    }
+  }
+  const credits = Promise.all(recorded);
+  let settled = false;
+  return {
+    credits,
+    async undo() {
+      if (settled) return;
+      settled = true;
+      const stamp = Date.now();
+      for (const [volume, snapshot] of snapshots) {
+        restoreVolumePosition(volume, snapshot, stamp, { announce: true });
+      }
+      stopHold?.();
+      stopHold = null;
+      held.clear();
+      await retractEvents(await credits);
+    },
+    release() {
+      if (settled) return;
+      settled = true;
+      stopHold?.();
+      stopHold = null;
+      for (const volume of held) releaseHeldCompletion(volume);
+      held.clear();
+    }
+  };
+}
+
+/** A live credit of the current pass, as un-read retracts it. */
+export interface RetractableCredit {
+  target: [device: string, seq: number];
+  /** Its recorded fields, so Undo can record the same credit again. */
+  fields: CreditFields;
+}
+
+export interface UnreadAction {
+  /** Put the record back as it was and record the same credits again. Once. */
+  undo(): Promise<void>;
+}
+
+/**
+ * "Mark as unread" (`markVolumeAsUnread`) that also retracts the current
+ * pass's credits (#224): the credit was part of the mark, and un-reading is
+ * the mark's inverse. Real reading time stays.
+ */
+export function markVolumeUnread(volume: string, credits: RetractableCredit[]): UnreadAction {
+  const snapshot = positionSnapshot(volume);
+  markVolumeAsUnread(volume);
+  for (const credit of credits) {
+    void recordEvent({ kind: 'retract', volume, target: credit.target });
+  }
+  let undone = false;
+  return {
+    async undo() {
+      if (undone) return;
+      undone = true;
+      restoreVolumePosition(volume, snapshot, Date.now(), { announce: true });
+      await Promise.all(
+        credits.map((credit) => recordEvent({ kind: 'credit', volume, ...credit.fields }))
+      );
+    }
+  };
+}
+
+/** Retract recorded credits (Undo, the editor's Remove). */
+export async function retractEvents(credits: Array<ReadingEvent | null>): Promise<void> {
+  await Promise.all(
+    credits.flatMap((event) =>
+      event && event.kind === 'credit'
+        ? [
+            recordEvent({
+              kind: 'retract',
+              volume: event.volume,
+              target: [event.device, event.seq]
+            })
+          ]
+        : []
+    )
+  );
 }
 
 /**

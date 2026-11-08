@@ -14,13 +14,23 @@
     calculateVolumeCharacterCount,
     getNextVolumeUuidInSeries
   } from '$lib/util/volume-editor';
+  import {
+    countReadElsewhere,
+    markReadSheetOpen,
+    prepareSheetVolume,
+    removeCredits,
+    type SheetVolume
+  } from '$lib/reading-history/mark-read-flow';
+  import { creditPages, currentPassCredits, formatMinutes } from '$lib/reading-history/credit';
   import { showSnackbar } from '$lib/util';
   import { sanitizeRenameTitle } from '$lib/util/sanitize-title';
   import { ProviderError } from '$lib/util/sync/provider-interface';
   import { renameRefusalMessage } from '$lib/util/sync/account-capabilities';
   import type { VolumeMetadata } from '$lib/types';
   import { get } from 'svelte/store';
+  import { volumesWithTrash } from '$lib/settings/volume-data';
   import { figuresFor, readingStats, readingStatsReady } from '$lib/reading-history/stats-store';
+  import { isVolumeFinished } from '$lib/util/volume-helpers';
   import VolumeEditorCoverPicker from './VolumeEditorCoverPicker.svelte';
   import {
     RASTER_FORMAT_NAMES,
@@ -57,8 +67,43 @@
   let pageCount = $state(0);
   let missingPagePaths = $state<string[]>([]);
 
-  // Derived characters read based on progress
-  let chars = $derived(pageCount > 0 ? Math.round((progress / pageCount) * characterCount) : 0);
+  /**
+   * Characters read, as the stats count them (history + baseline, credits
+   * included). A page edit moves the POSITION only (#224): the old linear
+   * estimate here recorded the difference as reading, and after a mark it
+   * deducted pages that were never read.
+   */
+  let charsRead = $state(0);
+  /** "Reset All" asks the save to zero the characters as well as the time. */
+  let resetChars = $state(false);
+  /** Each page's characters and the pages not read here (`prepareSheetVolume`). */
+  let sheetVolume = $state<SheetVolume | null>(null);
+  /** The record says finished (stored flag or page): "up to" defaults to the last page. */
+  let finished = $state(false);
+  /** What the current pass's credits count (the "Counted when marked read" line). */
+  let counted = $state<{ ms: number; chars: number; pages: number } | null>(null);
+  /** The last Remove, offered back until the editor closes. */
+  let removedUndo = $state<{ text: string; undo: () => Promise<void> } | null>(null);
+  let creditBusy = $state(false);
+
+  /** The record's position count: characters of the pages before `progress`, not reading. */
+  let positionChars = $derived.by(() => {
+    const chars = sheetVolume?.pageChars;
+    if (!chars || chars.length === 0) {
+      return pageCount > 0 ? Math.round((progress / pageCount) * characterCount) : 0;
+    }
+    let sum = 0;
+    for (let i = 0; i < Math.min(progress, chars.length); i++) sum += chars[i];
+    return sum;
+  });
+
+  /** "Count pages read elsewhere…" counts pages not read here up to this page. */
+  let elsewhereUpTo = $derived(finished ? pageCount : Math.max(0, Math.min(progress, pageCount)));
+  let canCountElsewhere = $derived(
+    !!sheetVolume &&
+      elsewhereUpTo > 0 &&
+      creditPages(sheetVolume.notRead, sheetVolume.pageChars, elsewhereUpTo).chars > 0
+  );
 
   // Sync time fields to/from timeReadInMinutes
   function updateTimeFromMinutes(totalMinutes: number) {
@@ -98,6 +143,8 @@
 
     function handleKeydown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
+        // The mark-read sheet on top takes its own Escape.
+        if (markReadSheetOpen()) return;
         e.stopPropagation();
         e.preventDefault();
         handleClose();
@@ -152,13 +199,15 @@
       characterCount = await calculateVolumeCharacterCount(volumeUuid);
 
       progress = data.stats.progress || 0;
+      finished = isVolumeFinished(data.metadata, data.stats);
+      resetChars = false;
+      removedUndo = null;
       // A save records the DIFFERENCE from the time shown here, so it must be
       // the counted figure: before the stats' first pass the history half is
       // empty and the baseline alone would make every edit overshoot.
       await readingStatsReady();
-      timeReadInMinutes = figuresFor(get(readingStats), volumeUuid, data.stats).minutes;
-      loadedMinutes = timeReadInMinutes;
-      updateTimeFromMinutes(timeReadInMinutes);
+      sheetVolume = await prepareSheetVolume(data.metadata);
+      loadFigures(true);
 
       isNewSeries = false;
       newSeriesName = '';
@@ -183,6 +232,73 @@
       showSnackbar('Failed to load volume data');
     } finally {
       loading = false;
+    }
+  }
+
+  /**
+   * Re-read the counted figures (after open, Count or Remove). The time field
+   * follows them unless the user has typed a time of their own, which is kept;
+   * either way the save records the difference from the NEW figure.
+   */
+  function loadFigures(initial: boolean) {
+    const stats = get(readingStats);
+    const record = get(volumesWithTrash)[volumeUuid];
+    const figures = figuresFor(stats, volumeUuid, record);
+    const userTyped = !initial && timeReadInMinutes !== loadedMinutes;
+    loadedMinutes = figures.minutes;
+    if (!userTyped) {
+      timeReadInMinutes = figures.minutes;
+      updateTimeFromMinutes(timeReadInMinutes);
+    }
+    charsRead = figures.chars;
+    const credits = currentPassCredits(stats, volumeUuid);
+    const ms = credits.reduce((n, c) => n + c.ms, 0);
+    const chars = credits.reduce((n, c) => n + c.chars, 0);
+    const pages = credits.reduce((n, c) => n + c.pages.length, 0);
+    counted = ms > 0 || chars > 0 ? { ms, chars, pages } : null;
+  }
+
+  async function refreshAfterCredit() {
+    if (originalMetadata) sheetVolume = await prepareSheetVolume(originalMetadata);
+    loadFigures(false);
+  }
+
+  async function handleCountElsewhere() {
+    if (!originalMetadata || creditBusy) return;
+    creditBusy = true;
+    try {
+      if (await countReadElsewhere(originalMetadata, elsewhereUpTo)) {
+        removedUndo = null;
+        await refreshAfterCredit();
+      }
+    } finally {
+      creditBusy = false;
+    }
+  }
+
+  async function handleRemoveCredits() {
+    if (creditBusy) return;
+    creditBusy = true;
+    try {
+      const result = await removeCredits(volumeUuid);
+      if (result) {
+        removedUndo = { text: result.removed, undo: result.undo };
+        await refreshAfterCredit();
+      }
+    } finally {
+      creditBusy = false;
+    }
+  }
+
+  async function handleUndoRemove() {
+    if (!removedUndo || creditBusy) return;
+    creditBusy = true;
+    try {
+      await removedUndo.undo();
+      removedUndo = null;
+      await refreshAfterCredit();
+    } finally {
+      creditBusy = false;
     }
   }
 
@@ -308,8 +424,9 @@
       // Update localStorage stats
       updateVolumeStats(volumeUuid, {
         progress,
-        chars,
+        chars: positionChars,
         timeRead: { from: loadedMinutes, to: timeReadInMinutes },
+        ...(resetChars && { charsRead: { from: charsRead, to: 0 } }),
         series_uuid: finalSeriesUuid,
         series_title: finalSeriesTitle,
         volume_title: volumeTitle
@@ -336,6 +453,8 @@
     timeReadInMinutes = 0;
     timeHours = 0;
     timeMinutes = 0;
+    // Reset ALL: the characters read go to zero too (an explicit edit, recorded on save).
+    resetChars = true;
   }
 
   async function handleResetCover() {
@@ -591,8 +710,10 @@
             <div>
               <Label class="mb-1 text-gray-500">Characters Read</Label>
               <div class="flex items-center gap-2 py-2">
-                <span class="text-sm text-gray-600 dark:text-gray-400">
-                  {(chars ?? 0).toLocaleString()} / {(characterCount ?? 0).toLocaleString()}
+                <span class="text-sm text-gray-600 dark:text-gray-400" data-testid="editor-chars">
+                  {(resetChars ? 0 : charsRead).toLocaleString()} / {(
+                    characterCount ?? 0
+                  ).toLocaleString()}
                 </span>
               </div>
             </div>
@@ -622,6 +743,42 @@
               </div>
             </div>
           </div>
+
+          <!-- What "mark as read" counted for pages not read here (#224). -->
+          <div class="mt-3 space-y-2 text-sm" data-testid="editor-credit">
+            {#if counted}
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="text-gray-600 dark:text-gray-400">
+                  Counted when marked read: {formatMinutes(counted.ms / 60_000)} · {counted.chars.toLocaleString()}
+                  characters ({counted.pages.toLocaleString()} page{counted.pages === 1 ? '' : 's'})
+                </span>
+                <Button
+                  size="xs"
+                  color="light"
+                  onclick={handleRemoveCredits}
+                  disabled={creditBusy}
+                  data-testid="editor-credit-remove">Remove</Button
+                >
+              </div>
+            {/if}
+            {#if removedUndo}
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="text-gray-600 dark:text-gray-400">{removedUndo.text}.</span>
+                <Button size="xs" color="light" onclick={handleUndoRemove} disabled={creditBusy}
+                  >Undo</Button
+                >
+              </div>
+            {/if}
+            {#if canCountElsewhere}
+              <Button
+                size="xs"
+                color="light"
+                onclick={handleCountElsewhere}
+                disabled={creditBusy}
+                data-testid="editor-count-elsewhere">Count pages read elsewhere…</Button
+              >
+            {/if}
+          </div>
         </div>
 
         <!-- Missing Pages Section (only shown if there are missing pages) -->
@@ -644,8 +801,8 @@
           </div>
         {/if}
 
-        <!-- Actions -->
-        <div class="flex justify-end gap-2">
+        <!-- Actions. relative z-10: night mode's filter on <dialog> resets stacking (CLAUDE.md). -->
+        <div class="relative z-10 flex justify-end gap-2">
           <Button color="alternative" onclick={handleCancel} disabled={saving}>Cancel</Button>
           <Button color="primary" onclick={handleSave} disabled={saving}>
             {#if saving}
