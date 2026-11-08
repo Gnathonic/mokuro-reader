@@ -621,10 +621,12 @@ describe('MegaProvider ghost-node handling', () => {
       name: 'mokuro-reader',
       directory: true,
       children: [],
-      upload: vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
+      upload: vi.fn((_opts: any, buf: Uint8Array, cb: (e: Error | null, f?: any) => void) => {
         // `timestamp` (epoch seconds) is the SERVER's stamp on the completed
         // node — the same field listCloudVolumes maps to `modifiedTime`.
-        queueMicrotask(() => cb(null, { nodeId: 'fresh-node', timestamp: 1_780_000_000, size: 3 }));
+        queueMicrotask(() =>
+          cb(null, { nodeId: 'fresh-node', timestamp: 1_780_000_000, size: buf.length })
+        );
       })
     } as any;
   }
@@ -773,6 +775,25 @@ describe('MegaProvider ghost-node handling', () => {
     expect(folder.upload.mock.invocationCallOrder[0]).toBeLessThan(
       old.delete.mock.invocationCallOrder[0]
     );
+  });
+
+  // #288: the new node's own size confirms the upload. A node holding other
+  // than the bytes sent fails it, and the good old copy stays.
+  it('uploadFile fails when the new node reports another size, and keeps the old copy', async () => {
+    const folder = makeMokuroFolder();
+    folder.upload.mockImplementation(
+      (_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
+        queueMicrotask(() => cb(null, { nodeId: 'short-node', timestamp: 1_780_000_000, size: 2 }));
+      }
+    );
+    const old = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, old });
+
+    await expect(
+      provider.uploadFile('volume-data.json', new Uint8Array([1, 2, 3]))
+    ).rejects.toMatchObject({ code: 'UPLOAD_FAILED', message: /stored 2 of 3 bytes/ });
+    expect(folder.upload).toHaveBeenCalledOnce();
+    expect(old.delete).not.toHaveBeenCalled();
   });
 
   // The new copy landed: a refused delete of an old one leaves a duplicate a

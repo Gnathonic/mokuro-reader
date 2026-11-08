@@ -115,7 +115,66 @@ describe('Google Drive upload receipt', () => {
   });
 });
 
+describe('Google Drive upload receipt — confirmed by its size (#288)', () => {
+  it('fails an upload whose final response reports another size than was sent', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('', { status: 200, headers: { Location: 'https://upload.test/session' } })
+    );
+    xhrAnswers = [
+      {
+        status: 200,
+        body: JSON.stringify({ id: 'file-1', size: '2', modifiedTime: '2026-11-02T10:00:00Z' })
+      }
+    ];
+    await expect(
+      googleDriveCore.uploadFile({
+        seriesTitle: '',
+        filename: 'volume-data.json',
+        blob: new Blob(['abc']),
+        credentials: { accessToken: 't', seriesFolderId: 'reader-root' }
+      })
+    ).rejects.toThrow(/not confirmed: the server stored 2 of 3 bytes/);
+    // One session, one PUT: a spent session is never sent again.
+    expect(xhrOpened).toHaveLength(1);
+  });
+
+  it('passes a response that names no size (the status is all it confirms)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('', { status: 200, headers: { Location: 'https://upload.test/session' } })
+    );
+    xhrAnswers = [{ status: 200, body: JSON.stringify({ id: 'file-1' }) }];
+    await expect(
+      googleDriveCore.uploadFile({
+        seriesTitle: '',
+        filename: 'volume-data.json',
+        blob: new Blob(['abc']),
+        credentials: { accessToken: 't', seriesFolderId: 'reader-root' }
+      })
+    ).resolves.toMatchObject({ fileId: 'file-1' });
+  });
+});
+
 describe('OneDrive upload receipt', () => {
+  it('fails an upload whose finished item reports another size than was sent (#288)', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ uploadUrl: 'https://upload.test/s' }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'item-1', size: 4, cTag: '"c:{E},2"' }), {
+          status: 201
+        })
+      );
+    await expect(
+      onedriveCore.uploadFile({
+        seriesTitle: '',
+        filename: 'volume-data.json',
+        blob: new Blob(['abc']),
+        credentials: { accessToken: 't' }
+      })
+    ).rejects.toThrow(/not confirmed: the server stored 4 of 3 bytes/);
+  });
+
   it('is the final driveItem cTag (content only), else its eTag', async () => {
     expect(oneDriveRevision({ cTag: 'c1', eTag: 'e1' })).toBe('c1');
     expect(oneDriveRevision({ eTag: 'e1' })).toBe('e1');

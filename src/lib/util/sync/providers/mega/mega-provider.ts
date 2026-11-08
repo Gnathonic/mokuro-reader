@@ -39,6 +39,7 @@ import {
   type MegaSessionBlob
 } from './mega-session';
 import { megaGatewayOption } from '../../cloud-test-hooks';
+import { confirmUploadReceipt } from '../../core/upload-receipt';
 import { cancelProviderUploads } from '../../upload-cancellation';
 
 /**
@@ -1602,6 +1603,9 @@ export class MegaProvider implements SyncProvider {
               });
             }
           });
+          // Confirmed by the new node's own size (#288) — before the old
+          // copies go, so a short write never costs the cloud its good copy.
+          confirmUploadReceipt(uploadResult, buffer.length, 'MEGA');
           // Do NOT remove the old copies from storage.files manually — the sc
           // stream delivers the delete and megajs applies it. A copy can also be
           // a ghost — deleted server-side but never evicted from storage.files

@@ -376,13 +376,39 @@ describe('FilesystemProvider.statFile (conditional root-file reads)', () => {
   });
 });
 
+describe('FilesystemProvider.uploadFile receipt (#288)', () => {
+  it("is the written file's own size and lastModified", async () => {
+    const root = new FakeDirHandle('');
+    const provider = makeProvider(root);
+    const uploaded = await provider.uploadFile('volume-data.json', new Blob(['{"a":2}']));
+    expect(uploaded).toMatchObject({ fileId: 'volume-data.json', size: 7 });
+    expect(typeof uploaded.modifiedTime).toBe('string');
+  });
+
+  it('fails a write the file does not hold in full', async () => {
+    const root = new FakeDirHandle('');
+    const provider = makeProvider(root);
+    // A short write: the stream drops the last byte.
+    const write = FakeWritable.prototype.write;
+    FakeWritable.prototype.write = async function (this: FakeWritable, data: BlobPart) {
+      return write.call(this, (data as Blob).slice(0, -1));
+    };
+    try {
+      await expect(provider.uploadFile('volume-data.json', new Blob(['{"a":2}']))).rejects.toThrow(
+        /stored 6 of 7 bytes/
+      );
+    } finally {
+      FakeWritable.prototype.write = write;
+    }
+  });
+});
+
 describe('the throttled history/ listing on a real folder (#288)', () => {
   it("another device's new month (a sync tool delivered it) reaches the cache without a walk", async () => {
     const { filesystemProvider } = await import('../filesystem-provider');
     const { filesystemCache } = await import('../filesystem-cache');
-    const { refreshHistoryListing, _setHistoryRefreshIntervalForTests } = await import(
-      '../../../history-listing-refresh'
-    );
+    const { refreshHistoryListing, _setHistoryRefreshIntervalForTests } =
+      await import('../../../history-listing-refresh');
     const root = new FakeDirHandle('');
     await seedFile(root, 'Series/v1.cbz', 'CBZ');
     await seedFile(root, 'history/dev-a/2026-10.events', 'A-OCT');

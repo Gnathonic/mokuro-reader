@@ -1,3 +1,4 @@
+import { confirmUploadReceipt } from '../upload-receipt';
 import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type {
   CloudCoreAuthRefresher,
@@ -311,7 +312,7 @@ export const googleDriveCore: CloudProviderCore = {
     // is reported, or the tray sits at 0 % for the whole of it.
     let sessionUri: string | null = null;
     let offset = 0;
-    return await withDriveRetry(
+    const receipt = await withDriveRetry(
       async () => {
         if (sessionUri) {
           const state = await querySession(sessionUri, blob.size);
@@ -334,5 +335,8 @@ export const googleDriveCore: CloudProviderCore = {
           onRetry?.({ attempt, attempts, delayMs, reason: retryReason(failure) })
       }
     );
+    // Confirmed by the final response's own `size` (#288). Never retried: the
+    // session is spent, and its file is what a next upload replaces.
+    return confirmUploadReceipt(receipt, blob.size, 'Google Drive');
   }
 };

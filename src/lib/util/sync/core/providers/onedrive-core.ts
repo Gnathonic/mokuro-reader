@@ -1,5 +1,6 @@
 import { ProviderError, type UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
+import { confirmUploadReceipt } from '../upload-receipt';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { ONEDRIVE_CONFIG, graphBase } from '../../providers/onedrive/constants';
 import { parseNextExpectedRange } from '../../providers/onedrive/upload-session';
@@ -319,15 +320,20 @@ export const onedriveCore: CloudProviderCore = {
         size: typeof finalItem.size === 'number' ? finalItem.size : undefined
       };
     }
-    return {
-      fileId: finalItem.id,
-      modifiedTime:
-        typeof finalItem.lastModifiedDateTime === 'string'
-          ? finalItem.lastModifiedDateTime
-          : undefined,
-      size: typeof finalItem.size === 'number' ? finalItem.size : undefined,
-      // The same token `statFile` compares: cTag (content only), else eTag.
-      ...(oneDriveRevision(finalItem) ? { revision: oneDriveRevision(finalItem) } : {})
-    };
+    // Confirmed by the finished item's own `size` (#288).
+    return confirmUploadReceipt(
+      {
+        fileId: finalItem.id,
+        modifiedTime:
+          typeof finalItem.lastModifiedDateTime === 'string'
+            ? finalItem.lastModifiedDateTime
+            : undefined,
+        size: typeof finalItem.size === 'number' ? finalItem.size : undefined,
+        // The same token `statFile` compares: cTag (content only), else eTag.
+        ...(oneDriveRevision(finalItem) ? { revision: oneDriveRevision(finalItem) } : {})
+      },
+      blob.size,
+      'OneDrive'
+    );
   }
 };
