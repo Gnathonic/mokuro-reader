@@ -233,6 +233,14 @@ export function updateVolumeStats(
      * written.
      */
     timeRead?: { from: number; to: number };
+    /**
+     * Characters read: `from` what the stats showed when the editor opened,
+     * `to` what the user set ("Reset All" sets 0). The difference is recorded
+     * as an `adjust`. A page edit is NOT a characters edit (#224): the
+     * record's `chars` is the position's count, and a mark-as-read set it to
+     * the whole volume's — the difference was never reading.
+     */
+    charsRead?: { from: number; to: number };
     completed?: boolean;
     series_uuid?: string;
     series_title?: string;
@@ -247,19 +255,13 @@ export function updateVolumeStats(
     if (updates.timeRead) {
       timeDeltaMs = (updates.timeRead.to - updates.timeRead.from) * 60000;
     }
-    // The modal re-sends `chars` as a linear estimate on every save; only a
-    // real progress edit makes its chars a user edit.
-    if (
-      updates.chars !== undefined &&
-      updates.progress !== undefined &&
-      updates.progress !== currentVolume.progress
-    ) {
-      charsDelta = updates.chars - currentVolume.chars;
+    if (updates.charsRead) {
+      charsDelta = updates.charsRead.to - updates.charsRead.from;
     }
     // A stat edit is a user action and must win the next merge like a page
     // turn does; without a fresh stamp the other device's older copy replaced
     // it. Only a real change counts: the modal re-sends every field on save
-    // (chars as a linear re-estimate), and a rename on a device that missed a
+    // (chars as the position's count), and a rename on a device that missed a
     // sync must not outrank reading done elsewhere. A time edit is history
     // (an `adjust` event), not record state, so it needs no stamp.
     const statChanged =

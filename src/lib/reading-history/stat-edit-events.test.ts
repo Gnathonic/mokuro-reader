@@ -23,12 +23,32 @@ beforeEach(() => {
 });
 
 describe('stat edits record history events', () => {
-  it('volume editor: records the time delta against the time the stats showed, and chars', () => {
+  it('volume editor: records the time delta against the time the stats showed; a page edit is no chars', () => {
     updateVolumeStats('vol-a', { timeRead: { from: 0, to: 30 }, progress: 10, chars: 1000 });
     updateVolumeStats('vol-a', { timeRead: { from: 32, to: 45 }, progress: 9, chars: 900 });
     expect(recorded.mock.calls.map((c) => c[0])).toEqual([
-      { kind: 'adjust', volume: 'vol-a', time_delta_ms: 30 * 60000, chars_delta: 1000 },
-      { kind: 'adjust', volume: 'vol-a', time_delta_ms: 13 * 60000, chars_delta: -100 }
+      { kind: 'adjust', volume: 'vol-a', time_delta_ms: 30 * 60000, chars_delta: 0 },
+      { kind: 'adjust', volume: 'vol-a', time_delta_ms: 13 * 60000, chars_delta: 0 }
+    ]);
+  });
+
+  it('volume editor: lowering the page after "mark as read" deducts no reading (#224 bug 1)', async () => {
+    const { markVolumeAsComplete } = await import('$lib/settings/volume-data');
+    // Marked read: the record now holds the volume's full count as its chars.
+    markVolumeAsComplete('vol-a', 180, 40_000);
+    recorded.mockClear();
+    updateVolumeStats('vol-a', { progress: 138, chars: 30_000 });
+    expect(recorded.mock.calls.map((c) => c[0]).filter((p) => p.kind === 'adjust')).toEqual([]);
+    // The position moved, and only the position.
+    volumesWithTrash.subscribe((all) => {
+      expect(all['vol-a']).toMatchObject({ progress: 138, chars: 30_000, completed: true });
+    })();
+  });
+
+  it('volume editor: an explicit characters edit is recorded as given', () => {
+    updateVolumeStats('vol-a', { charsRead: { from: 5000, to: 0 } });
+    expect(recorded.mock.calls.map((c) => c[0])).toEqual([
+      { kind: 'adjust', volume: 'vol-a', time_delta_ms: 0, chars_delta: -5000 }
     ]);
   });
 
@@ -81,13 +101,11 @@ describe('stat edits record history events', () => {
     expect(recorded).not.toHaveBeenCalled();
   });
 
-  it('volume editor: a progress change records its chars delta', () => {
+  it('volume editor: a progress change moves the position and records no chars (#224)', () => {
     updateProgress('vol-a', 58, 9400);
     recorded.mockClear();
     updateVolumeStats('vol-a', { progress: 60, chars: 9900 });
-    expect(recorded.mock.calls.map((c) => c[0])).toEqual([
-      { kind: 'adjust', volume: 'vol-a', time_delta_ms: 0, chars_delta: 500 }
-    ]);
+    expect(recorded).not.toHaveBeenCalled();
   });
 
   it('delete orphaned data: forget for each volume that existed', () => {
