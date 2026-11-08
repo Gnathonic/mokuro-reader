@@ -256,9 +256,18 @@ without an `ETag` is never followed by a stat (`webdav-provider.ts`: another dev
 in between would be bound to our bytes). Other devices' writes reach the listing through the
 cache's `refreshFromChanges`, gated on the method alone: Drive `changes.list`, OneDrive Graph
 root `delta` (`onedrive-delta.ts`), MEGA the sc push stream megajs already applies to the
-session's tree (`megaCache.refreshFromChanges`: no request while the poll runs —
-`treeVersion()` says whether the listing is behind — a full tree load when it does not, and
-a reject if that load did not bring the poll back). WebDAV and Local Folder have no change
+session's tree (`megaCache.refreshFromChanges`: no request while the poll runs and answered
+within `SC_QUIET_MS` — `treeVersion()` says whether the listing is behind. megajs puts no
+timeout on the long-poll, so one hung on a dead connection would freeze the tree without
+ever erroring: a quiet poll is PROBED by restarting it from its last sequence number
+(`confirmServerChanges`, one sc request; a live server answers at once). A dead poll, an
+unanswered probe, or a tree loaded over `CHANGE_FEED_MAX_AGE_MS` ago → a full tree load,
+and a reject if that load did not bring the poll back or no listing was installed;
+`statFile` vouches only while the poll is trusted). The sync's opening read passes
+`feedOnly`: a provider that refused its feed for the session (OneDrive 403/501) is not
+walked there — writers still are, under their TTL. A MEGA upload whose new node fails the
+size check deletes that node (best-effort): left as the newest duplicate it would abort
+every later root-file read. WebDAV and Local Folder have no change
 token: their sync lists `history/` alone, throttled (`history-listing-refresh.ts`), and
 series folders wait for the next full listing.
 

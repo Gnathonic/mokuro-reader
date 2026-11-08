@@ -11,8 +11,8 @@ vi.mock('../../cache-manager', () => ({
 // that tree — no request — and loads the whole tree again only when the
 // stream is not running. The REAL cache over the REAL provider singleton and
 // REAL megajs; only MEGA's HTTP is fake (mega-fake-server.ts).
-import { megaCache } from './mega-cache';
-import { megaProvider } from './mega-provider';
+import { CHANGE_FEED_MAX_AGE_MS, megaCache } from './mega-cache';
+import { megaProvider, SC_PROBE_TIMEOUT_MS, SC_QUIET_MS } from './mega-provider';
 import { CLIENT_SID, FakeMegaServer } from './mega-fake-server';
 
 let server: FakeMegaServer;
@@ -24,6 +24,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  megaProvider.scQuietMs = SC_QUIET_MS;
+  megaProvider.scProbeTimeoutMs = SC_PROBE_TIMEOUT_MS;
   vi.restoreAllMocks();
   await megaProvider.logout();
   server.uninstall();
@@ -121,5 +123,88 @@ describe('megaCache.refreshFromChanges (the sc push stream)', () => {
 
     await expect(megaCache.refreshFromChanges()).rejects.toThrow(/could not be brought current/);
     expect(paths()).toEqual(['Ippo/Ippo 01.cbz']);
+  });
+
+  // megajs puts no timeout on the long-poll: one left on a half-open
+  // connection (a laptop that slept) never settles and never errors, so
+  // "the poll runs" alone would vouch for a frozen tree forever — and a
+  // metadata writer would prune another device's new volumes against it.
+  describe('a poll that has gone quiet', () => {
+    /** Every poll counts as quiet: each refresh probes it. */
+    const quiet = () => {
+      megaProvider.scQuietMs = 0;
+    };
+
+    it('is probed by restarting it, which brings in what the hung one missed', async () => {
+      await (await server.otherDevice()).put('mokuro-reader/Ippo/Ippo 01.cbz');
+      await listedSession();
+      server.hangPolls(); // the open poll sits on a dead connection
+      await (await server.otherDevice()).put('mokuro-reader/Ippo/Ippo 02.cbz');
+      await server.flush();
+      expect(paths()).toEqual(['Ippo/Ippo 01.cbz']); // never reached this tree
+      quiet();
+      const loadsBefore = fullLoads();
+
+      expect(await megaCache.refreshFromChanges()).toBe('applied');
+      expect(paths()).toEqual(['Ippo/Ippo 01.cbz', 'Ippo/Ippo 02.cbz']);
+      expect(fullLoads()).toBe(loadsBefore);
+      expect(server.openPolls()).toBe(1); // the hung one was aborted, not stacked
+    });
+
+    it('costs one sc request on a quiet, healthy account, and no reload', async () => {
+      server.waitWhenCaughtUp = true; // real MEGA: a caught-up poll gets a wait URL
+      await (await server.otherDevice()).put('mokuro-reader/Ippo/Ippo 01.cbz');
+      await listedSession();
+      await server.flush();
+      await megaCache.refreshFromChanges();
+      quiet();
+      const loadsBefore = fullLoads();
+      const pollsBefore = server.scPolls;
+      const revision = megaCache.revision();
+
+      expect(await megaCache.refreshFromChanges()).toBe('unchanged');
+      expect(server.scPolls).toBe(pollsBefore + 1);
+      expect(fullLoads()).toBe(loadsBefore);
+      expect(megaCache.revision()).toBe(revision);
+    });
+
+    it('loads the whole tree again when the restarted poll does not answer either', async () => {
+      await (await server.otherDevice()).put('mokuro-reader/Ippo/Ippo 01.cbz');
+      await listedSession();
+      server.hangPolls(undefined, { newOnesToo: true });
+      await (await server.otherDevice()).put('mokuro-reader/Ippo/Ippo 02.cbz');
+      await server.flush();
+      quiet();
+      megaProvider.scProbeTimeoutMs = 20;
+      const loadsBefore = fullLoads();
+
+      expect(await megaCache.refreshFromChanges()).toBe('reset');
+      expect(fullLoads()).toBe(loadsBefore + 1);
+      expect(paths()).toEqual(['Ippo/Ippo 01.cbz', 'Ippo/Ippo 02.cbz']);
+    });
+  });
+
+  it('loads the whole tree again once a day, whatever the stream says', async () => {
+    await (await server.otherDevice()).put('mokuro-reader/Ippo/Ippo 01.cbz');
+    await listedSession();
+    const loadedAt = megaProvider.treeLoadedAt();
+    expect(loadedAt).toBeGreaterThan(0);
+    const loadsBefore = fullLoads();
+    vi.spyOn(Date, 'now').mockReturnValue(loadedAt + CHANGE_FEED_MAX_AGE_MS + 1);
+
+    expect(await megaCache.refreshFromChanges()).toBe('reset');
+    expect(fullLoads()).toBe(loadsBefore + 1);
+  });
+
+  it('rejects when the tree moved and no rebuild could be installed', async () => {
+    await (await server.otherDevice()).put('mokuro-reader/Ippo/Ippo 01.cbz');
+    await listedSession();
+    await (await server.otherDevice()).put('mokuro-reader/Ippo/Ippo 02.cbz');
+    await server.flush();
+    // Every rebuild fails transiently (each fetch logs and swallows its error).
+    vi.spyOn(megaProvider, 'listCloudVolumes').mockRejectedValue(new Error('Failed to fetch'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(megaCache.refreshFromChanges()).rejects.toThrow(/could not be brought current/);
   });
 });

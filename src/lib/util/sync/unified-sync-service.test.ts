@@ -2404,7 +2404,7 @@ describe('a listing cache with a change feed opens every sync (#288)', () => {
     'on %s it runs FIRST, before anything reads the listing',
     async (type) => {
       const order: string[] = [];
-      const refreshFromChanges = vi.fn(async () => {
+      const refreshFromChanges = vi.fn(async (_options?: { feedOnly?: boolean }) => {
         order.push('feed');
         return 'unchanged';
       });
@@ -2417,6 +2417,8 @@ describe('a listing cache with a change feed opens every sync (#288)', () => {
         expect(order).toEqual(['feed', ...STEPS]);
         expect(getCache).toHaveBeenCalledWith(type);
         expect(refreshFromChanges).toHaveBeenCalledTimes(1);
+        // The sync needs a few root files, never a walk in a refused feed's place.
+        expect(refreshFromChanges).toHaveBeenCalledWith({ feedOnly: true });
       } finally {
         spies.forEach((spy) => spy.mockRestore());
       }

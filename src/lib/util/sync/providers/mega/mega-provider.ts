@@ -40,6 +40,7 @@ import {
 } from './mega-session';
 import { megaGatewayOption } from '../../cloud-test-hooks';
 import { confirmUploadReceipt } from '../../core/upload-receipt';
+import { deleteMegaNodeBestEffort } from '../../core/providers/mega-node-cleanup';
 import { cancelProviderUploads } from '../../upload-cancellation';
 
 /**
@@ -187,6 +188,17 @@ function sameNode(a: any, b: any): boolean {
 const SC_RECOVERY_ATTEMPTS = 6;
 
 /**
+ * How long the sc poll may go without answering before the tree is no longer
+ * taken on trust (`confirmServerChanges`). A long-poll's fetch has no timeout
+ * in megajs: one left on a half-open connection (a laptop that slept, a NAT
+ * that dropped the flow) never settles and never errors, so "the poll is
+ * running" alone cannot tell a quiet account from a frozen tree.
+ */
+export const SC_QUIET_MS = 60_000;
+/** How long a probe's restarted poll gets to answer before the tree counts as frozen. */
+export const SC_PROBE_TIMEOUT_MS = 15_000;
+
+/**
  * Smart retry wrapper for MEGA operations that may fail due to stale cache
  * When two devices sync back and forth, file IDs change but local cache is stale
  * This wrapper detects ENOENT errors, refreshes the cache, and retries once
@@ -295,6 +307,20 @@ export class MegaProvider implements SyncProvider {
    * the whole tree once a second forever.
    */
   private scRecoveryAttempt = 0;
+  /**
+   * The running poll's last sign of life (started, or answered: a new
+   * sequence number, or a wait the server handed out because it had nothing
+   * newer), its sequence number then, and whoever waits for its next answer
+   * (`confirmServerChanges`). 0 / null when no poll runs.
+   */
+  private scLastActivityAt = 0;
+  private scLastSn: string | null = null;
+  private scAnswerWaiters = new Set<(answered: boolean) => void>();
+  /** When the session last swapped a whole tree in (a full load); 0 = never. */
+  private lastTreeLoadAt = 0;
+  /** Test hooks: the quiet window and the probe's answer timeout (ms). */
+  scQuietMs = SC_QUIET_MS;
+  scProbeTimeoutMs = SC_PROBE_TIMEOUT_MS;
 
   // Control files (`.mokuro-bunko.json`, `.mokuro-queue.json`) are read from the
   // live tree: bodies cached per node handle, change listeners fed by the same
@@ -360,6 +386,58 @@ export class MegaProvider implements SyncProvider {
    */
   hasLiveServerChanges(): boolean {
     return this.isAuthenticated() && this.stopServerChanges !== null;
+  }
+
+  /**
+   * Is the tree current by the poll's own evidence, with no request? It runs
+   * and answered (or started) within `scQuietMs` — a sync's opening
+   * `refreshFromChanges` probes a quiet poll first (`confirmServerChanges`),
+   * so inside a sync this holds unless the poll could not be confirmed.
+   */
+  serverChangesTrusted(): boolean {
+    return this.hasLiveServerChanges() && Date.now() - this.scLastActivityAt < this.scQuietMs;
+  }
+
+  /** When the session last loaded the whole tree (epoch ms; 0 = not this session). */
+  treeLoadedAt(): number {
+    return this.lastTreeLoadAt;
+  }
+
+  /**
+   * Can the tree be trusted as current RIGHT NOW? Yes while the sc poll runs
+   * and answered (or started) within `scQuietMs`. A poll quiet for longer is
+   * either an account nothing happened on or a long-poll hung on a dead
+   * connection — megajs puts no timeout on it, so it would never error. The
+   * probe tells them apart for one small request: restart the poll from its
+   * last sequence number. A live server answers at once — with every change
+   * since then, applied to the tree before this resolves, or with a wait URL
+   * (nothing newer). `false` when no poll runs, or the restarted one did not
+   * answer within `scProbeTimeoutMs`: the caller must load the tree again.
+   */
+  async confirmServerChanges(): Promise<boolean> {
+    if (!this.hasLiveServerChanges()) return false;
+    if (this.serverChangesTrusted()) return true;
+    const storage = this.storage;
+    const sn = this.scLastSn;
+    if (!storage || !sn) return false;
+    const answer = new Promise<boolean>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (answered: boolean) => {
+        if (timer) clearTimeout(timer);
+        this.scAnswerWaiters.delete(settle);
+        resolve(answered);
+      };
+      this.scAnswerWaiters.add(settle);
+      timer = setTimeout(() => settle(false), this.scProbeTimeoutMs);
+    });
+    this.startServerChanges(storage, sn);
+    const answered = await answer;
+    return answered && this.storage === storage && this.hasLiveServerChanges();
+  }
+
+  /** Tell everyone waiting on the poll's next answer (`confirmServerChanges`). */
+  private settleScAnswerWaiters(answered: boolean): void {
+    for (const settle of [...this.scAnswerWaiters]) settle(answered);
   }
 
   private scheduleControlNotify(name: string, storage: any): void {
@@ -465,6 +543,8 @@ export class MegaProvider implements SyncProvider {
   private endSession(): void {
     this.startSessionEpoch();
     this.stopServerChanges?.();
+    this.settleScAnswerWaiters(false);
+    this.lastTreeLoadAt = 0;
     this.storage = null;
     this.mokuroFolder = null;
     // A mkdir of the ended session must not be joined by the next one: after
@@ -908,6 +988,7 @@ export class MegaProvider implements SyncProvider {
           }
           if (!snapshot) return;
           this.treeChanges++; // a whole new tree, swapped in without events
+          if (epoch === this.sessionEpoch) this.lastTreeLoadAt = Date.now();
           this.settleSnapshot(storage, response.f, previous.files, knownBefore);
           if (response.sn && epoch === this.sessionEpoch) {
             this.startServerChanges(storage, response.sn);
@@ -1059,19 +1140,34 @@ export class MegaProvider implements SyncProvider {
    * superseded, and forwards its packets to the api's (single) sc handler.
    */
   private startServerChanges(storage: any, sn: string): void {
-    this.stopServerChanges?.();
+    // Superseded, not ended: detached first so its stop leaves anyone waiting
+    // for the poll's next answer to this one (`confirmServerChanges`).
+    const previous = this.stopServerChanges;
+    this.stopServerChanges = null;
+    previous?.();
     const api = storage.api;
     const megajsApi = Object.getPrototypeOf(api);
     const poll = Object.create(api);
     let current = true;
     let lastSn = sn;
+    this.scLastActivityAt = Date.now();
+    this.scLastSn = sn;
     const answered = () => {
-      if (current) this.scRecoveryAttempt = 0;
+      if (!current) return;
+      this.scRecoveryAttempt = 0;
+      this.scLastActivityAt = Date.now();
+      this.scLastSn = lastSn;
+      // A batch's packets are applied before megajs pulls the next number.
+      this.settleScAnswerWaiters(true);
     };
     const stop = () => {
       current = false;
       poll.sn?.abort?.(); // megajs keeps the open request's AbortController there
-      if (this.stopServerChanges === stop) this.stopServerChanges = null;
+      if (this.stopServerChanges === stop) {
+        this.stopServerChanges = null;
+        // Ended (an error, a logout): whoever waits gets no answer from it.
+        this.settleScAnswerWaiters(false);
+      }
     };
     // megajs pulls a NEW sequence number, or waits, only after a poll answered.
     poll.pull = function (...args: unknown[]) {
@@ -1594,6 +1690,7 @@ export class MegaProvider implements SyncProvider {
           // Upload new file. The completed node's `timestamp` is the SERVER's
           // epoch-seconds stamp — the same field `listCloudVolumes` maps to
           // `modifiedTime` — so the result can carry a real server mtime.
+          let newNode: any = null;
           const uploadResult = await new Promise<UploadFileResult>((resolve, reject) => {
             const uploadStream = targetFolder.upload(
               {
@@ -1605,6 +1702,7 @@ export class MegaProvider implements SyncProvider {
                 if (error) {
                   reject(error);
                 } else {
+                  newNode = file;
                   const fileId = file?.nodeId || file?.id || '';
                   if (onProgress) {
                     onProgress(buffer.length, buffer.length);
@@ -1638,7 +1736,16 @@ export class MegaProvider implements SyncProvider {
           });
           // Confirmed by the new node's own size (#288) — before the old
           // copies go, so a short write never costs the cloud its good copy.
-          confirmUploadReceipt(uploadResult, buffer.length, 'MEGA');
+          // The short node itself goes (best-effort): left as the newest
+          // same-name copy, every root-file read would download it beside
+          // the good one, fail to parse it, and abort the sync before the
+          // upload that would clean it up.
+          try {
+            confirmUploadReceipt(uploadResult, buffer.length, 'MEGA');
+          } catch (error) {
+            await deleteMegaNodeBestEffort(newNode);
+            throw error;
+          }
           // Do NOT remove the old copies from storage.files manually — the sc
           // stream delivers the delete and megajs applies it. A copy can also be
           // a ghost — deleted server-side but never evicted from storage.files
@@ -1717,10 +1824,12 @@ export class MegaProvider implements SyncProvider {
    * mints a new node, so the node id is the revision; a node that is gone, or
    * no longer live, is gone.
    *
-   * Only while that poll RUNS. One that died and gave up recovering (offline
-   * past its backoff, `recoverServerChanges`) leaves the tree frozen: another
+   * Only while that poll RUNS and answers. One that died and gave up
+   * recovering (offline past its backoff, `recoverServerChanges`), or one
+   * hung on a dead connection that the sync's opening probe could not
+   * confirm (`serverChangesTrusted`), leaves the tree frozen: another
    * device's replace deletes the node this tree still holds linked, and a
-   * stat would vouch for it on every sync. So without a poll this throws, and
+   * stat would vouch for it on every sync. So then this throws, and
    * the root-file read downloads instead (`root-file-memo.ts`) — where a gone
    * node fails ENOENT, and the sync's not-found path reloads the tree.
    */
@@ -1728,7 +1837,7 @@ export class MegaProvider implements SyncProvider {
     if (!this.isAuthenticated()) {
       throw new ProviderError('Not authenticated', 'mega', 'NOT_AUTHENTICATED', true);
     }
-    if (!this.stopServerChanges) {
+    if (!this.serverChangesTrusted()) {
       throw new ProviderError(
         'MEGA server-change stream is not running; the tree may be stale',
         'mega',

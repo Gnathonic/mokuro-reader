@@ -324,13 +324,17 @@ class UnifiedSyncService {
    * positions, profiles and goals need a few control files, not the library.
    * The metadata writers keep their own guard: `ensureFreshCloudListing`
    * reads the feed again and refuses to prune against a listing it could not
-   * bring current.
+   * bring current. (Google Drive's feed already resolved after a failed
+   * fallback listing before this — its full listing swallows its own errors —
+   * so for Drive only the auth rethrow was ever observable.) `feedOnly`: a
+   * provider that refused its feed for the session is not walked in its
+   * place here (OneDrive; see `ChangeFeedOptions`).
    */
   private async refreshListingFromChanges(provider: SyncProvider): Promise<void> {
     const listingCache = cacheManager.getCache(provider.type);
     if (!listingCache?.refreshFromChanges) return;
     try {
-      await listingCache.refreshFromChanges();
+      await listingCache.refreshFromChanges({ feedOnly: true });
     } catch (error) {
       if (isListingAuthFailure(error) || !provider.isAuthenticated()) throw error;
       console.warn(

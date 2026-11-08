@@ -40,6 +40,21 @@ export type CacheAddMetadata<T> = T & { modifiedTimeProvisional: boolean };
  */
 export type ChangeFeedResult = 'unchanged' | 'applied' | 'reset';
 
+/** How far a {@link CloudCache.refreshFromChanges} caller needs the listing current. */
+export interface ChangeFeedOptions {
+  /**
+   * Read the feed where there is one, but never list the whole library in
+   * its place when the provider refused the feed for the session (a lasting
+   * 403/501): answer `'unchanged'` from the listing as it stands. The sync's
+   * opening read (`runProviderSync`): progress, positions, profiles and goals
+   * need a few root files, not the library, and before the feed existed that
+   * sync never walked. Writers that prune against the listing never pass it.
+   * Honoured by OneDrive, whose fallback is a walk of one request per folder;
+   * the other caches ignore it.
+   */
+  feedOnly?: boolean;
+}
+
 /**
  * The cache entry ONE successful upload earns — the single rule for
  * post-upload cache maintenance, shared by every uploader
@@ -158,7 +173,7 @@ export interface CloudCache<T = any> {
    * session's tree — no request) have one; WebDAV and Local Folder offer no
    * change token.
    */
-  refreshFromChanges?(): Promise<ChangeFeedResult>;
+  refreshFromChanges?(options?: ChangeFeedOptions): Promise<ChangeFeedResult>;
 
   /**
    * Open a patch of `history/` alone into this cache — the history freshness

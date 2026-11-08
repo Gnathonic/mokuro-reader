@@ -708,7 +708,10 @@ describe('MegaProvider ghost-node handling', () => {
    * running says so. (A real one runs from every full-tree load.)
    */
   function pollRunning(provider: MegaProvider): void {
-    (provider as unknown as { stopServerChanges: () => void }).stopServerChanges = vi.fn();
+    Object.assign(provider as unknown as Record<string, unknown>, {
+      stopServerChanges: vi.fn(),
+      scLastActivityAt: Date.now()
+    });
   }
 
   // A poll that gave up (offline past its recovery backoff) leaves the tree
@@ -746,6 +749,14 @@ describe('MegaProvider ghost-node handling', () => {
     await expect(provider.statFile(listed)).rejects.toThrow(/server-change/i);
     await readRootFile(provider, listed);
     expect(download).toHaveBeenCalledTimes(2);
+
+    // Poll running but silent past the quiet window (a long-poll hung on a
+    // dead connection never errors): no stat either, until a probe or a
+    // reload confirms it (confirmServerChanges).
+    pollRunning(provider);
+    (provider as unknown as { scLastActivityAt: number }).scLastActivityAt =
+      Date.now() - provider.scQuietMs - 1;
+    await expect(provider.statFile(listed)).rejects.toThrow(/server-change/i);
     clearRootFileMemo();
   });
 
@@ -778,12 +789,23 @@ describe('MegaProvider ghost-node handling', () => {
   });
 
   // #288: the new node's own size confirms the upload. A node holding other
-  // than the bytes sent fails it, and the good old copy stays.
-  it('uploadFile fails when the new node reports another size, and keeps the old copy', async () => {
+  // than the bytes sent fails it, and the good old copy stays — the ONLY
+  // copy: the short node goes, or every root-file read would download it as
+  // the newest duplicate, fail to parse it, and abort the sync before the
+  // upload that would clean it up.
+  it('uploadFile fails when the new node reports another size, keeps the old copy, drops the short one', async () => {
     const folder = makeMokuroFolder();
+    const shortNode = {
+      nodeId: 'short-node',
+      timestamp: 1_780_000_000,
+      size: 2,
+      delete: vi.fn((_permanent: boolean, cb: (e: Error | null) => void) =>
+        queueMicrotask(() => cb(null))
+      )
+    };
     folder.upload.mockImplementation(
       (_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
-        queueMicrotask(() => cb(null, { nodeId: 'short-node', timestamp: 1_780_000_000, size: 2 }));
+        queueMicrotask(() => cb(null, shortNode));
       }
     );
     const old = makeFile('volume-data.json', folder);
@@ -794,6 +816,8 @@ describe('MegaProvider ghost-node handling', () => {
     ).rejects.toMatchObject({ code: 'UPLOAD_FAILED', message: /stored 2 of 3 bytes/ });
     expect(folder.upload).toHaveBeenCalledOnce();
     expect(old.delete).not.toHaveBeenCalled();
+    expect(shortNode.delete).toHaveBeenCalledOnce();
+    expect(shortNode.delete.mock.calls[0][0]).toBe(true); // permanently, not to the trash
   });
 
   // The new copy landed: a refused delete of an old one leaves a duplicate a

@@ -3,6 +3,7 @@ import type { UploadFileResult } from '$lib/util/sync/provider-interface';
 import type { CloudProviderCore } from '../cloud-provider-core-types';
 import { requireCredentialString } from '../cloud-provider-core-types';
 import { confirmUploadReceipt } from '../upload-receipt';
+import { deleteMegaNodeBestEffort } from './mega-node-cleanup';
 
 /**
  * The server timestamp of a completed-upload node, as an ISO string — the
@@ -360,17 +361,24 @@ export const megaCore: CloudProviderCore = {
       // Confirmed by the new node's own size (#288). The content's integrity
       // code (MAC) megajs writes into the node key is checked on download,
       // not here. Every upload mints a new node, so its id is the revision —
-      // the same token `statFile` reports.
-      return confirmUploadReceipt(
-        {
-          fileId: uploadedFileId,
-          revision: uploadedFileId,
-          modifiedTime: megaNodeModifiedTime(uploadedFile),
-          size: typeof nodeSize === 'number' && Number.isFinite(nodeSize) ? nodeSize : undefined
-        },
-        blob.size,
-        'MEGA'
-      );
+      // the same token `statFile` reports. An unconfirmed node is removed
+      // (best-effort): left behind, it is the newest same-name copy, the one
+      // every other device downloads.
+      try {
+        return confirmUploadReceipt(
+          {
+            fileId: uploadedFileId,
+            revision: uploadedFileId,
+            modifiedTime: megaNodeModifiedTime(uploadedFile),
+            size: typeof nodeSize === 'number' && Number.isFinite(nodeSize) ? nodeSize : undefined
+          },
+          blob.size,
+          'MEGA'
+        );
+      } catch (error) {
+        await deleteMegaNodeBestEffort(uploadedFile);
+        throw error;
+      }
     } catch (error: any) {
       throw new Error(`MEGA upload failed: ${error.message || error}`);
     }

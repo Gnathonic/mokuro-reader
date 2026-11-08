@@ -13,6 +13,14 @@ import {
 const MAX_DEDUP_REFETCHES = 2;
 
 /**
+ * How long the sc stream may stand in for a full tree load — the same safety
+ * net as Google Drive's and OneDrive's `CHANGE_FEED_MAX_AGE_MS`: whatever the
+ * stream could ever miss (a packet megajs could not apply, a bug in our own
+ * replay guards) is corrected at least this often.
+ */
+export const CHANGE_FEED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
  * MEGA Cache Wrapper
  *
  * Returns Map<seriesTitle, CloudFileMetadata[]> for efficient series-based operations.
@@ -35,6 +43,8 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
    * stands (`refreshFromChanges`).
    */
   private listedAt = -1;
+  /** Listings installed so far (see `refreshFromChanges`: did a fetch land?). */
+  private installs = 0;
 
   get store() {
     // Return Map grouped by series for efficient series-based operations
@@ -109,6 +119,7 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
       if (!listing.install(cacheMap)) return;
       this.loadedFlag = true;
       this.listedAt = treeVersion;
+      this.installs++;
       console.log(
         `✅ MEGA cache populated with ${volumes.length} files in ${cacheMap.size} series`
       );
@@ -218,20 +229,30 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
    * already holds every change made anywhere on the account, applied by
    * megajs as the server pushes it, and a debounced rebuild follows each one
    * (`attachChangeListeners`). So bringing the listing current costs no
-   * request — `'unchanged'` when the tree has not moved since the listing
-   * was read, else a rebuild from the live tree (`'applied'`), joined if one
-   * is already running. Only a poll that is not running (died and gave up
-   * recovering) means the tree may be frozen: then the whole tree is loaded
-   * again (`'reset'`), and a load that did not bring the poll back REJECTS —
-   * a metadata writer about to prune against the listing must never be told
-   * a frozen tree is current (`ensureFreshCloudListing`).
+   * request while the poll answers — `'unchanged'` when the tree has not
+   * moved since the listing was read, else a rebuild from the live tree
+   * (`'applied'`), joined if one is already running. A poll quiet for a while
+   * is probed first — one small request (`confirmServerChanges`): megajs puts
+   * no timeout on the long-poll, so one hung on a dead connection would
+   * otherwise freeze the tree without ever erroring. A poll that is not
+   * running, a probe nobody answered, or a tree loaded over a day ago
+   * (`CHANGE_FEED_MAX_AGE_MS`) means the whole tree is loaded again
+   * (`'reset'`).
+   *
+   * REJECTS whenever the listing could not be brought current: a reload that
+   * did not bring the poll back, or no listing installed at all although the
+   * tree moved (each fetch logs and swallows its own failure). A metadata
+   * writer about to prune against the listing must never be told a frozen or
+   * stale one is current (`ensureFreshCloudListing`).
    */
   async refreshFromChanges(): Promise<ChangeFeedResult> {
+    const installsBefore = this.installs;
     let result: ChangeFeedResult = 'applied';
-    if (!megaProvider.hasLiveServerChanges()) {
+    const tooOld = Date.now() - megaProvider.treeLoadedAt() > CHANGE_FEED_MAX_AGE_MS;
+    if (tooOld || !(await megaProvider.confirmServerChanges())) {
       await this.fetch(false);
-      if (!megaProvider.hasLiveServerChanges()) {
-        throw new Error('MEGA listing could not be brought current: no live server-change stream');
+      if (this.installs === installsBefore || !megaProvider.hasLiveServerChanges()) {
+        throw new Error('MEGA listing could not be brought current: the tree did not reload');
       }
       result = 'reset';
     } else if (this.listedAt === megaProvider.treeVersion() && !this.running) {
@@ -243,6 +264,9 @@ class MegaCacheManager implements CloudCache<CloudFileMetadata> {
     // the newest listing stands, and the debounced rebuild follows them.
     for (let pass = 0; pass < 3 && this.listedAt !== megaProvider.treeVersion(); pass++) {
       await this.fetch(true);
+    }
+    if (this.installs === installsBefore && this.listedAt !== megaProvider.treeVersion()) {
+      throw new Error('MEGA listing could not be brought current: no listing was installed');
     }
     return result;
   }

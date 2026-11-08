@@ -400,6 +400,38 @@ describe('OneDrive change feed (Graph delta) on the listing cache', () => {
     expect(provider.listLibrary).toHaveBeenCalledTimes(2);
   });
 
+  // The sync's opening read passes feedOnly: progress and root files need no
+  // library walk, and before the feed existed the OneDrive sync never walked.
+  // A 403 tenant would otherwise walk the whole library on every sync.
+  it('feedOnly: with the feed refused for the session, the sync opens without a walk', async () => {
+    vi.mocked(readDelta).mockRejectedValueOnce(
+      new ProviderError('Graph 403', 'onedrive', 'GRAPH_403')
+    );
+    provider.listLibrary.mockResolvedValue(library());
+    expect(await onedriveCache.refreshFromChanges({ feedOnly: true })).toBe('reset');
+    expect(provider.listLibrary).toHaveBeenCalledTimes(1);
+
+    now += FULL_LISTING_REUSE_MS + 1;
+    expect(await onedriveCache.refreshFromChanges({ feedOnly: true })).toBe('unchanged');
+    expect(provider.listLibrary).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(readDelta)).toHaveBeenCalledTimes(1);
+    // A writer about to prune still gets its walk.
+    expect(await onedriveCache.refreshFromChanges()).toBe('reset');
+    expect(provider.listLibrary).toHaveBeenCalledTimes(2);
+  });
+
+  it('feedOnly still reads a live feed, and still walks with no position at all', async () => {
+    feed([]);
+    expect(await onedriveCache.refreshFromChanges({ feedOnly: true })).toBe('unchanged');
+    expect(vi.mocked(readDelta)).toHaveBeenCalledTimes(1);
+
+    onedriveCache.clear(); // sign-out / account switch: nothing listed
+    provider.listLibrary.mockResolvedValue(library());
+    vi.mocked(startDelta).mockResolvedValue(LINK0);
+    expect(await onedriveCache.refreshFromChanges({ feedOnly: true })).toBe('reset');
+    expect(provider.listLibrary).toHaveBeenCalledTimes(1);
+  });
+
   it('no mokuro folder at the walk: no position, so the next refresh walks', async () => {
     onedriveCache.clear();
     provider.listLibrary.mockResolvedValue({ files: [], folders: new Map(), rootId: null });

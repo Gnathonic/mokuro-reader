@@ -1,5 +1,10 @@
 import { writable } from 'svelte/store';
-import type { CacheAddMetadata, ChangeFeedResult, CloudCache } from '../../cloud-cache-interface';
+import type {
+  CacheAddMetadata,
+  ChangeFeedOptions,
+  ChangeFeedResult,
+  CloudCache
+} from '../../cloud-cache-interface';
 import { ProviderError, type CloudFileMetadata } from '../../provider-interface';
 import { CoalescedCacheStore } from '../../coalesced-cache-store';
 import { addMutations, removeMutations } from '../../listing-mutations';
@@ -234,8 +239,17 @@ class OneDriveCacheManager implements CloudCache<CloudFileMetadata> {
    * concurrent callers share the read. Throws after an AUTH failure, and when
    * the walk it fell back to failed: the cache is then NOT current, and a
    * caller about to prune against it (`ensureFreshCloudListing`) must hear so.
+   *
+   * `feedOnly` (the sync's opening read): with the feed refused for the
+   * session, `'unchanged'` from the listing as it stands rather than a walk —
+   * else every sync on such an account would walk the library, where the
+   * sync before the feed existed never did. Decided before joining a read in
+   * flight, so a writer never shares a feed-only answer.
    */
-  refreshFromChanges(): Promise<ChangeFeedResult> {
+  refreshFromChanges(options?: ChangeFeedOptions): Promise<ChangeFeedResult> {
+    if (options?.feedOnly && this.feedUnavailable && this.loadedFlag) {
+      return Promise.resolve('unchanged');
+    }
     if (this.feedPromise) return this.feedPromise;
     const run = this.readChangeFeed().finally(() => {
       if (this.feedPromise === run) this.feedPromise = null;
