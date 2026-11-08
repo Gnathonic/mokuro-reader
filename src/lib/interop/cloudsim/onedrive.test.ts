@@ -134,9 +134,8 @@ describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () =>
   });
 
   it('uploads resolve their folders once: no getItemByPath after the first upload into each', async () => {
-    const { OneDriveProvider } = await import(
-      '$lib/util/sync/providers/onedrive/onedrive-provider'
-    );
+    const { OneDriveProvider } =
+      await import('$lib/util/sync/providers/onedrive/onedrive-provider');
     // A fresh session's provider: nothing remembered yet.
     const fresh = new OneDriveProvider();
     const lookups = async () =>
@@ -161,9 +160,8 @@ describe.skipIf(!cloudsimForSuite())('OneDrive provider against cloudsim', () =>
   });
 
   it('a remembered folder another device deleted is re-created by the next upload', async () => {
-    const { OneDriveProvider } = await import(
-      '$lib/util/sync/providers/onedrive/onedrive-provider'
-    );
+    const { OneDriveProvider } =
+      await import('$lib/util/sync/providers/onedrive/onedrive-provider');
     const fresh = new OneDriveProvider();
     await fresh.uploadFile('Series Gone/Vol 1.mokuro', new Blob(['{}']));
     const folder = (await sim.tree('microsoft')).find((n) => n.name === 'Series Gone');

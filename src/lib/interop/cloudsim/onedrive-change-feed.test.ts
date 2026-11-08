@@ -64,9 +64,8 @@ describe.skipIf(!cloudsimForSuite())('OneDrive change feed (Graph delta) against
     restoreFetch = fetchWithoutForeignSignals();
     setCloudTestBases(sim.bases());
     ({ onedriveCache: cache } = await import('$lib/util/sync/providers/onedrive/onedrive-cache'));
-    ({ onedriveProvider: provider } = await import(
-      '$lib/util/sync/providers/onedrive/onedrive-provider'
-    ));
+    ({ onedriveProvider: provider } =
+      await import('$lib/util/sync/providers/onedrive/onedrive-provider'));
   });
 
   beforeEach(async () => {
