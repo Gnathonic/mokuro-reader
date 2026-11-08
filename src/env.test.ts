@@ -1,5 +1,5 @@
 /**
- * `$env/dynamic/private` exposes exactly what src/env.ts declares: a variable the
+ * `$app/env/private` exposes exactly what src/env.ts declares: a variable the
  * Drive auth backend reads but nobody declared is `undefined` on every server,
  * and the backend answers 501 forever. And a secret declared `public` or
  * `static` would be shipped to the browser or inlined into the build.

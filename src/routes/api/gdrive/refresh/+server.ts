@@ -1,4 +1,4 @@
-import { env } from '$env/dynamic/private';
+import * as env from '$app/env/private';
 import type { Config } from '@sveltejs/adapter-vercel';
 import type { RequestHandler } from './$types';
 import { handleRefresh, methodNotAllowed } from '$lib/server/gdrive-auth';

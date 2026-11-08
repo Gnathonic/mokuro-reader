@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // After `npm run build`: no server-only secret may appear in the build output.
-// The Drive auth backend reads its secrets at RUNTIME ($env/dynamic/private,
+// The Drive auth backend reads its secrets at RUNTIME ($app/env/private,
 // variables declared in src/env.ts), so a build is never supposed to contain
 // them. A `static: true` or `public: true` declaration, a `VITE_` prefix or a
 // stray `define` would inline one, and the client output is public. Every
