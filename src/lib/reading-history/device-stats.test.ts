@@ -27,6 +27,7 @@ import {
 import {
   BEFORE_HISTORY,
   EDITS,
+  MARKED_READ,
   deviceStats,
   devices,
   knownDevices,
@@ -279,6 +280,30 @@ describe('deviceStats', () => {
     ]);
     expect(stats.totalTimeMs).toBe(0);
     expect(stats.totalChars).toBe(0);
+  });
+
+  it('puts what "mark as read" counted on its own row, so the rows still add up (#224)', async () => {
+    setRecords({ v1: {} });
+    const credit: ReadingEvent = {
+      device: 'dev-b',
+      seq: ++seq,
+      t: MIN,
+      kind: 'credit',
+      volume: 'v1',
+      pages: [2, 3],
+      page_chars: [100, 200],
+      time_ms: 6 * MIN
+    };
+    await record([view('dev-a', 'v1', 0, 1, 300, 2 * MIN), credit]);
+    const stats = get(deviceStats);
+    expect(stats.rows.map((r) => [r.key, r.kind, r.timeMs, r.readChars])).toEqual([
+      ['dev-a', 'device', 2 * MIN, 300],
+      [MARKED_READ, 'marked-read', 6 * MIN, 300]
+    ]);
+    expect(stats.totalTimeMs).toBe(8 * MIN);
+    expect(stats.totalChars).toBe(600);
+    // A device that only credited is no reading device.
+    expect(stats.nativeGroups).toBe(1);
   });
 
   it('has no Before history or Edits row when they hold nothing', async () => {

@@ -105,7 +105,7 @@ describe('segment codec', () => {
 
   it('rejects a newer format it cannot read', async () => {
     const json = JSON.stringify({
-      format: 2,
+      format: 3,
       device: DEV,
       month: '2026-10',
       first_seq: 1,
@@ -116,7 +116,7 @@ describe('segment codec', () => {
     });
     const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
     const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
-    await expect(decodeSegment(bytes)).rejects.toThrow(/format 2/);
+    await expect(decodeSegment(bytes)).rejects.toThrow(/format 3/);
   });
 
   describe('rejects decodable files with malformed cells', () => {
@@ -357,6 +357,114 @@ describe('segment codec', () => {
       await expect(encodeSegment(DEV, 'legacy', [resolves[0]], { legacy: true })).rejects.toThrow(
         SegmentFormatError
       );
+    });
+  });
+  describe('credit and retract (kinds 6 and 7, format 2)', () => {
+    const credit: ReadingEvent = {
+      device: DEV,
+      seq: 12,
+      t: T + 70000,
+      kind: 'credit',
+      volume: 'vol-1',
+      pages: [3, 4, 5, 9, 11, 12],
+      page_chars: [10, 0, 22, 7, 31, 4],
+      time_ms: 38 * 60000
+    };
+    const retract: ReadingEvent = {
+      device: DEV,
+      seq: 13,
+      t: T + 71000,
+      kind: 'retract',
+      volume: 'vol-1',
+      target: ['dev-b', 40]
+    };
+
+    async function raw(body: Record<string, unknown>): Promise<Uint8Array> {
+      const json = JSON.stringify({
+        format: 2,
+        device: DEV,
+        month: '2026-10',
+        first_seq: 1,
+        last_seq: 1,
+        count: 1,
+        volumes: ['vol-1'],
+        ...body
+      });
+      const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+
+    it('round-trips both kinds, beside every other kind', async () => {
+      const all = [...events, credit, retract];
+      const bytes = await encodeSegment(DEV, '2026-10', all);
+      const { header, events: out } = await decodeSegment(bytes);
+      expect(header).toMatchObject({ format: 2, first_seq: 4, last_seq: 13, count: 7 });
+      expect(out).toEqual(all);
+    });
+
+    it('collapses consecutive pages into runs and dictionaries the target device', async () => {
+      const json = await inflate(await encodeSegment(DEV, '2026-10', [credit, retract]));
+      expect(json.format).toBe(2);
+      expect(json.targets).toEqual(['dev-b']);
+      expect(json.rows).toEqual([
+        [6, 12, T + 70000, 0, 38 * 60000, [3, 5, 9, 9, 11, 12], [10, 0, 22, 7, 31, 4]],
+        [7, 1, 1000, 0, 0, 40]
+      ]);
+    });
+
+    it('writes format 1 when a segment holds neither kind, format 2 when it holds either', async () => {
+      expect((await inflate(await encodeSegment(DEV, '2026-10', events))).format).toBe(1);
+      expect((await inflate(await encodeSegment(DEV, '2026-10', [credit]))).format).toBe(2);
+      expect((await inflate(await encodeSegment(DEV, '2026-10', [retract]))).format).toBe(2);
+    });
+
+    it('a credit of characters only (time 0) round-trips', async () => {
+      const charsOnly = { ...credit, time_ms: 0 } as ReadingEvent;
+      const { events: out } = await decodeSegment(await encodeSegment(DEV, '2026-10', [charsOnly]));
+      expect(out).toEqual([charsOnly]);
+    });
+
+    it.each([
+      ['pages out of order', { pages: [4, 3], page_chars: [1, 1] }],
+      ['a repeated page', { pages: [3, 3], page_chars: [1, 1] }],
+      ['page 0', { pages: [0, 1], page_chars: [1, 1] }],
+      ['no pages', { pages: [], page_chars: [] }],
+      ['chars that do not match the pages', { pages: [1, 2], page_chars: [1] }],
+      ['a negative time', { time_ms: -1 }]
+    ])('refuses to write a credit with %s', async (_label, patch) => {
+      await expect(
+        encodeSegment(DEV, '2026-10', [{ ...credit, ...patch } as ReadingEvent])
+      ).rejects.toThrow(SegmentFormatError);
+    });
+
+    it.each([
+      ['a credit in a format-1 segment', { format: 1, rows: [[6, 1, T, 0, 0, [1, 1], [5]]] }],
+      [
+        'a retract in a format-1 segment',
+        { format: 1, targets: ['d'], rows: [[7, 1, T, 0, 0, 3]] }
+      ],
+      ['a credit in a legacy segment', { legacy: true, rows: [[6, 1, T, 0, 0, [1, 1], [5]]] }],
+      ['runs of odd length', { rows: [[6, 1, T, 0, 0, [1, 2, 4], [5, 5, 5]]] }],
+      ['runs that overlap', { rows: [[6, 1, T, 0, 0, [1, 3, 3, 4], [1, 1, 1, 1, 1]]] }],
+      ['runs that touch', { rows: [[6, 1, T, 0, 0, [1, 2, 3, 4], [1, 1, 1, 1]]] }],
+      ['a reversed run', { rows: [[6, 1, T, 0, 0, [3, 1], [1, 1, 1]]] }],
+      ['empty runs', { rows: [[6, 1, T, 0, 0, [], []]] }],
+      ['chars that do not match the runs', { rows: [[6, 1, T, 0, 0, [1, 3], [1, 1]]] }],
+      ['a negative page char', { rows: [[6, 1, T, 0, 0, [1, 1], [-1]]] }],
+      ['a negative time', { rows: [[6, 1, T, 0, -5, [1, 1], [1]]] }],
+      ['a huge run', { rows: [[6, 1, T, 0, 0, [1, 1e9], [1]]] }],
+      ['a retract with no target dictionary', { rows: [[7, 1, T, 0, 0, 3]] }],
+      ['a retract of seq 0', { targets: ['d'], rows: [[7, 1, T, 0, 0, 0]] }]
+    ])('refuses %s', async (_label, body) => {
+      await expect(decodeSegment(await raw(body))).rejects.toThrow(SegmentFormatError);
+    });
+
+    it('still reads every existing format-1 segment', async () => {
+      const { header, events: out } = await decodeSegment(
+        await encodeSegment(DEV, '2026-10', events)
+      );
+      expect(header.format).toBe(1);
+      expect(out).toEqual(events);
     });
   });
 });

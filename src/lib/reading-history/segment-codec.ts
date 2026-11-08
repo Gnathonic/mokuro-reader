@@ -21,17 +21,29 @@ import type {
  *   3 forget  [3, dSeq, dT, vol, before]
  *   4 position [4, dSeq, dT, vol, answer (0 jump, 1 stay, 2 reset), through, page]
  *   5 resolve [5, dSeq, dT, vol, target device, target seq, count (0 full, 1 typical, 2 none)]
+ *   6 credit  [6, dSeq, dT, vol, time_ms, runs[], page_chars[]]      (format 2 only)
+ *   7 retract [7, dSeq, dT, vol, target device, target seq]          (format 2 only)
  *
  * `target device` indexes a second dictionary, `targets`, written only when
- * the segment holds a resolve (so a segment without one keeps its bytes).
- * Resolves live in month segments only: a legacy device never answers.
+ * the segment holds a resolve or a retract (so a segment without one keeps
+ * its bytes). Resolves, credits and retracts live in month segments only: a
+ * legacy device never answers, credits or retracts. A credit's `runs` are
+ * `[first, last, …]` pairs of its (ascending) pages, so consecutive pages
+ * collapse into one pair; `page_chars` lists every page's characters in order.
  *
  * A new event kind or field AFTER a release is a new `format`; a reader refuses
  * formats it does not know (the importer keeps the old stamp, so an updated app
  * retries). Format 1 was settled before any release read segments, `position`
- * (kind 4) and `resolve` (kind 5) included.
+ * (kind 4) and `resolve` (kind 5) included. Format 2 adds `credit` and
+ * `retract` (#224) and is written ONLY for a segment that holds one of them:
+ * every other segment stays format 1, byte for byte, so an app that knows
+ * only format 1 misses nothing but the device-months that hold a credit, and
+ * picks those up once it updates.
  */
 export const HISTORY_SEGMENT_FORMAT = 1;
+/** The format of a segment that holds a `credit` or `retract` row. */
+export const CREDIT_SEGMENT_FORMAT = 2;
+const READABLE_FORMATS: readonly number[] = [HISTORY_SEGMENT_FORMAT, CREDIT_SEGMENT_FORMAT];
 
 export interface SegmentHeader {
   format: number;
@@ -86,6 +98,8 @@ export async function encodeSegment(
   let prevSeq = 0;
   let prevT = 0;
   let prevDevice = '';
+  /** A credit or retract row makes this a format-2 segment. */
+  let credits = false;
   const rows: Row[] = sorted.map((e) => {
     const owner = legacy ? legacyDeviceFor(e.volume) : device;
     if (e.device !== owner) {
@@ -131,11 +145,20 @@ export async function encodeSegment(
           e.target[1],
           COUNTS.indexOf(e.count)
         ];
+      case 'credit':
+        credits = true;
+        if (e.page_chars.length !== e.pages.length || !(e.time_ms >= 0)) {
+          throw new SegmentFormatError('malformed credit');
+        }
+        return [6, ...head, vol(e.volume), e.time_ms, pageRuns(e.pages), [...e.page_chars]];
+      case 'retract':
+        credits = true;
+        return [7, ...head, vol(e.volume), targets.index(e.target[0]), e.target[1]];
     }
   });
 
   const header: SegmentHeader = {
-    format: HISTORY_SEGMENT_FORMAT,
+    format: credits ? CREDIT_SEGMENT_FORMAT : HISTORY_SEGMENT_FORMAT,
     device,
     month,
     first_seq: legacy ? 0 : (sorted[0]?.seq ?? 0),
@@ -168,9 +191,10 @@ export async function decodeSegment(
     throw new SegmentFormatError(`unreadable segment: ${String(error)}`);
   }
   if (!parsed || typeof parsed !== 'object') throw new SegmentFormatError('not a segment');
-  if (parsed.format !== HISTORY_SEGMENT_FORMAT) {
+  if (!READABLE_FORMATS.includes(parsed.format)) {
     throw new SegmentFormatError(`unsupported segment format ${parsed.format}`);
   }
+  const format2 = parsed.format === CREDIT_SEGMENT_FORMAT;
   const { device, month, first_seq, last_seq, count, volumes, rows } = parsed;
   if (
     typeof device !== 'string' ||
@@ -256,6 +280,27 @@ export async function decodeSegment(
         payload = { kind: 'resolve', volume, target: [targetDevice, targetSeq], count };
         break;
       }
+      case 6: {
+        if (legacy || !format2) throw new SegmentFormatError('credit outside a format-2 segment');
+        const time_ms = num(row[4]);
+        if (time_ms < 0) throw new SegmentFormatError('negative credit time');
+        const pages = expandRuns(row[5]);
+        const page_chars = numbers(row[6]);
+        if (page_chars.length !== pages.length || page_chars.some((c) => c < 0)) {
+          throw new SegmentFormatError('credit page chars do not match its pages');
+        }
+        payload = { kind: 'credit', volume, pages, page_chars, time_ms };
+        break;
+      }
+      case 7: {
+        if (legacy || !format2) throw new SegmentFormatError('retract outside a format-2 segment');
+        const targetDevice = targets[int(row[4])];
+        if (!targetDevice) throw new SegmentFormatError('unknown target device');
+        const targetSeq = int(row[5]);
+        if (targetSeq <= 0) throw new SegmentFormatError('target seq must be positive');
+        payload = { kind: 'retract', volume, target: [targetDevice, targetSeq] };
+        break;
+      }
       default:
         throw new SegmentFormatError(`unknown event kind ${row[0]}`);
     }
@@ -279,6 +324,47 @@ export async function decodeSegment(
     ...(legacy && { legacy: true as const })
   };
   return { header, events };
+}
+
+/**
+ * A credit's pages as `[first, last, …]` runs. They must be whole, positive
+ * and strictly ascending — the decoder could not give back anything else.
+ */
+function pageRuns(pages: number[]): number[] {
+  if (pages.length === 0) throw new SegmentFormatError('a credit with no pages');
+  const runs: number[] = [];
+  let previous = 0;
+  for (const page of pages) {
+    if (!Number.isSafeInteger(page) || page <= previous) {
+      throw new SegmentFormatError('credit pages must be positive and strictly ascending');
+    }
+    if (runs.length > 0 && page === previous + 1) runs[runs.length - 1] = page;
+    else runs.push(page, page);
+    previous = page;
+  }
+  return runs;
+}
+
+/** `pageRuns` back into pages, refusing anything `pageRuns` would not write. */
+function expandRuns(value: unknown): number[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length % 2 !== 0) {
+    throw new SegmentFormatError('malformed credit runs');
+  }
+  const pages: number[] = [];
+  let previous = 0;
+  for (let i = 0; i < value.length; i += 2) {
+    const first = int(value[i]);
+    const last = int(value[i + 1]);
+    // Adjacent runs would have been one: `first` must leave a gap.
+    if (first <= previous + (i > 0 ? 1 : 0) || last < first) {
+      throw new SegmentFormatError('malformed credit runs');
+    }
+    // A run longer than any volume is a hostile file, not a credit.
+    if (last - first >= 100_000) throw new SegmentFormatError('malformed credit runs');
+    for (let page = first; page <= last; page++) pages.push(page);
+    previous = last;
+  }
+  return pages;
 }
 
 /** A string table for a segment's header: each distinct value once, rows hold its index. */

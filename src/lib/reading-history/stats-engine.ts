@@ -35,6 +35,14 @@ import { eventKey, lookupVisits } from './visits';
  * - **Look-ups** (`visits.ts`). The views of a look-up visit that showed no
  *   page of its home view count their time but are skips: no characters
  *   read, no speed sample. Its home views count as any other.
+ * - **Credits** (#224: "Mark as read" counting pages not read in the app)
+ *   fill the gaps, and real reading always wins. Taken in time order, a
+ *   credit CLAIMS each of its pages that no counting view read in its pass
+ *   and no earlier credit claimed; its characters are the claimed pages',
+ *   its time `time_ms × claimed chars / its declared chars`. A claimed page
+ *   is not skimmed. Credits never touch views: samples, the pace, pauses and
+ *   first/last read are the same with or without them. A `retract` cancels
+ *   its target whatever the order the two arrive in.
  */
 
 export const DEFAULT_K = 3;
@@ -88,8 +96,25 @@ export interface PreparedView {
   answer: PauseCount | null;
 }
 
+/** A live (not retracted) credit, in its pass. */
+export interface PreparedCredit {
+  t: number;
+  device: string;
+  seq: number;
+  pass: number;
+  /** Its pages and their characters, as recorded. */
+  pages: Array<[page: number, chars: number]>;
+  timeMs: number;
+  /** Σ of its pages' characters, as recorded. */
+  declaredChars: number;
+}
+
 export interface PreparedVolume {
   views: PreparedView[];
+  /** Live credits, in time order (ties by device, then seq). */
+  credits: PreparedCredit[];
+  /** The latest pass (restarts so far). */
+  pass: number;
   /** Volume-editor edits, in time order, with the device that made each. */
   adjusts: Array<{ t: number; ms: number; chars: number; device: string }>;
   /** This volume's newest views usable for the pace, `[t, ms per char]`, newest first. */
@@ -123,8 +148,9 @@ export interface Pause {
 
 /**
  * One device's share of a volume (phase 4). The parts sum to the volume:
- * Σ (`timeMs` + `adjustMs`) = `VolumeTotals.timeMs`, Σ (`readChars` +
- * `adjustChars`) = `readChars`, Σ `skippedChars` = `skippedChars`. A page's
+ * Σ (`timeMs` + `adjustMs` + `creditMs`) = `VolumeTotals.timeMs`,
+ * Σ (`readChars` + `adjustChars` + `creditChars`) = `readChars`,
+ * Σ `skippedChars` = `skippedChars`. A page's
  * characters go to the device whose view credited them (first view wins).
  */
 export interface DeviceTotals {
@@ -138,6 +164,9 @@ export interface DeviceTotals {
   /** Its volume-editor edits — kept apart: they are not reading. */
   adjustMs: number;
   adjustChars: number;
+  /** What its credits ("mark as read") claimed — kept apart: not measured reading. */
+  creditMs: number;
+  creditChars: number;
   /** Earliest view start and latest view end; `null` when it only edited. */
   firstReadAt: number | null;
   lastReadAt: number | null;
@@ -165,6 +194,26 @@ export interface VolumeTotals {
    * converted turn under the one key `LEGACY_DEVICE_PREFIX`.
    */
   byDevice: Map<string, DeviceTotals>;
+  /** What credits claimed — also inside `timeMs` and `readChars`. */
+  creditMs: number;
+  creditChars: number;
+  /** Every live credit with what it claims now (possibly nothing), oldest first. */
+  credits: CreditTotals[];
+  /** The latest pass. */
+  pass: number;
+  /** The latest pass's pages read by a counting view or claimed by a credit. */
+  passRead: Set<number>;
+}
+
+export interface CreditTotals {
+  device: string;
+  seq: number;
+  t: number;
+  pass: number;
+  /** Effective: what it claims now that real reading took its share. */
+  ms: number;
+  chars: number;
+  pages: number[];
 }
 
 export interface SpeedEstimate {
@@ -190,9 +239,13 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   // `live` is in time order (ties by device, then seq), so the last answer
   // set for a view is the latest — the same on every device.
   const answers = new Map<string, PauseCount>();
+  // Retracts are a set: their order, and a repeat, do not matter.
+  const retracted = new Set<string>();
   for (const e of live) {
     if (e.kind === 'resolve')
       answers.set(pauseKey({ device: e.target[0], seq: e.target[1] }), e.count);
+    else if (e.kind === 'retract')
+      retracted.add(pauseKey({ device: e.target[0], seq: e.target[1] }));
   }
 
   const native = live.filter(
@@ -215,11 +268,26 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
   }
 
   const views: PreparedView[] = [];
+  const credits: PreparedCredit[] = [];
   const adjusts: PreparedVolume['adjusts'] = [];
   let pass = 0;
   for (const e of live) {
     if (e.kind === 'restart') {
       pass++;
+      continue;
+    }
+    if (e.kind === 'credit') {
+      if (retracted.has(pauseKey(e))) continue;
+      const pages = e.pages.map((page, i): [number, number] => [page, e.page_chars[i] ?? 0]);
+      credits.push({
+        t: e.t,
+        device: e.device,
+        seq: e.seq,
+        pass,
+        pages,
+        timeMs: e.time_ms,
+        declaredChars: pages.reduce((sum, [, c]) => sum + c, 0)
+      });
       continue;
     }
     if (e.kind === 'adjust') {
@@ -259,7 +327,7 @@ export function prepareVolume(events: ReadingEvent[]): PreparedVolume {
     paceTail.push([v.t, v.dwell / v.chars]);
   }
   paceTail.sort((a, b) => b[0] - a[0]);
-  return { views, adjusts, paceTail };
+  return { views, credits, pass, adjusts, paceTail };
 }
 
 /** Median ms per character over the newest usable views of every volume. */
@@ -402,6 +470,21 @@ export function countVolume(
   for (const { view, reads } of counted) {
     if (reads) for (const [page] of view.pages) readPages.add(`${view.pass}|${page}`);
   }
+  // Credits fill what no counting view read, oldest first: each page once.
+  const claimed = new Set<string>();
+  const creditParts: Array<{ credit: PreparedCredit; pages: number[]; chars: number }> = [];
+  for (const credit of prepared.credits) {
+    const pages: number[] = [];
+    let chars = 0;
+    for (const [page, c] of credit.pages) {
+      const key = `${credit.pass}|${page}`;
+      if (readPages.has(key) || claimed.has(key)) continue;
+      claimed.add(key);
+      pages.push(page);
+      chars += c;
+    }
+    creditParts.push({ credit, pages, chars });
+  }
   const skippedSeen = new Set<string>();
   const byDevice = new Map<string, DeviceTotals>();
   for (const { view, ms, reads } of counted) {
@@ -413,7 +496,7 @@ export function countVolume(
         if (credited.has(key)) continue;
         credited.add(key);
         fresh += chars;
-      } else if (view.skip && !readPages.has(key) && !skippedSeen.has(key)) {
+      } else if (view.skip && !readPages.has(key) && !claimed.has(key) && !skippedSeen.has(key)) {
         skippedSeen.add(key);
         skimmed += chars;
       }
@@ -432,6 +515,29 @@ export function countVolume(
       part.sampleMs += ms;
       part.sampleChars += fresh;
     }
+  }
+  let creditMs = 0;
+  let creditChars = 0;
+  const credits: CreditTotals[] = [];
+  for (const { credit, pages, chars } of creditParts) {
+    const ms = creditShare(credit, pages.length, chars);
+    creditMs += ms;
+    creditChars += chars;
+    timeMs += ms;
+    readChars += chars;
+    entries.push([credit.t, ms, chars, 0]);
+    const part = deviceTotals(byDevice, credit.device);
+    part.creditMs += ms;
+    part.creditChars += chars;
+    credits.push({
+      device: credit.device,
+      seq: credit.seq,
+      t: credit.t,
+      pass: credit.pass,
+      ms,
+      chars,
+      pages
+    });
   }
   for (const a of prepared.adjusts) {
     timeMs += a.ms;
@@ -454,6 +560,12 @@ export function countVolume(
 
   let newestSampleEnd = -Infinity;
   for (const sample of samples) if (sample.end > newestSampleEnd) newestSampleEnd = sample.end;
+  const passRead = new Set<number>();
+  const passPrefix = `${prepared.pass}|`;
+  for (const key of readPages)
+    if (key.startsWith(passPrefix)) passRead.add(Number(key.slice(passPrefix.length)));
+  for (const key of claimed)
+    if (key.startsWith(passPrefix)) passRead.add(Number(key.slice(passPrefix.length)));
   return {
     timeMs,
     readChars,
@@ -463,8 +575,23 @@ export function countVolume(
     timeline,
     samples,
     pauses,
-    byDevice
+    byDevice,
+    creditMs,
+    creditChars,
+    credits,
+    pass: prepared.pass,
+    passRead
   };
+}
+
+/**
+ * A credit's time for what it still claims: its time × claimed chars / its
+ * declared chars (by pages when it declared none — an art-only credit).
+ */
+function creditShare(credit: PreparedCredit, claimedPages: number, claimedChars: number): number {
+  if (claimedPages === credit.pages.length) return credit.timeMs;
+  if (credit.declaredChars > 0) return (credit.timeMs * claimedChars) / credit.declaredChars;
+  return credit.pages.length > 0 ? (credit.timeMs * claimedPages) / credit.pages.length : 0;
 }
 
 /** The running share of `device` (converted turns all share one key), created empty. */
@@ -480,6 +607,8 @@ function deviceTotals(byDevice: Map<string, DeviceTotals>, device: string): Devi
       sampleChars: 0,
       adjustMs: 0,
       adjustChars: 0,
+      creditMs: 0,
+      creditChars: 0,
       firstReadAt: null,
       lastReadAt: null
     };
