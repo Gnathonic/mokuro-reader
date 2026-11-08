@@ -188,6 +188,20 @@ test('the backdrop stops dimming the page while a slider is adjusted (#363)', as
   await expect.poll(() => backdropColour(page)).toBe('rgba(0, 0, 0, 0)');
   await page.keyboard.press('Tab');
   await expect.poll(() => backdropColour(page)).toBe(dimmed);
+
+  // The on/off switch: each flip shows the page undimmed for a moment, so
+  // on and off can be compared from inside the drawer — then dims again.
+  const toggle = page.getByRole('checkbox', { name: /Brightness & contrast/ });
+  const toggleLabel = page.locator('#settings label').filter({ has: toggle });
+  await toggleLabel.scrollIntoViewIfNeeded();
+  await toggleLabel.click();
+  await expect(toggle).not.toBeChecked();
+  expect(await backdropColour(page)).toBe('rgba(0, 0, 0, 0)');
+  const [rFlipped] = await pixel(page, probe.x, probe.y);
+  expect(rFlipped).toBeGreaterThan(GREY[0] - 10);
+  await shot(page, '363-4-toggle-flip-undimmed');
+  await expect.poll(() => backdropColour(page), { timeout: 4000 }).toBe(dimmed);
+  expect(await page.locator('#settings').boundingBox()).toEqual(drawerBox);
 });
 
 test('the drawer reopens where it was scrolled to (#363)', async ({ page }) => {
@@ -208,4 +222,22 @@ test('the drawer reopens where it was scrolled to (#363)', async ({ page }) => {
     .poll(() => page.evaluate(() => document.querySelector('dialog#settings')!.scrollTop))
     .toBe(scrolled);
   await expect(slider).toBeInViewport();
+
+  // Keyboard focus came back with the view: it sits on a control the user can
+  // see, so the first Tab moves on from there instead of snapping the drawer
+  // back to the top where the dialog first put focus.
+  const focusedInView = () =>
+    page.evaluate(() => {
+      const dlg = document.querySelector('dialog#settings')!;
+      const el = document.activeElement as HTMLElement | null;
+      if (!el || !dlg.contains(el) || el === dlg) return false;
+      const d = dlg.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      return r.bottom > d.top && r.top < d.bottom;
+    });
+  await expect.poll(focusedInView).toBe(true);
+  await page.keyboard.press('Tab');
+  await expect.poll(focusedInView).toBe(true);
+  const afterTab = await page.evaluate(() => document.querySelector('dialog#settings')!.scrollTop);
+  expect(Math.abs(afterTab - scrolled)).toBeLessThan(200);
 });

@@ -24,6 +24,7 @@
   import QuickAccess from './QuickAccess.svelte';
   import AppearanceSettings from './AppearanceSettings.svelte';
   import { pageAdjustPreviewing } from '$lib/reader/page-adjust-preview';
+  import { focusFirstInView } from '$lib/util/focus-in-view';
 
   let transitionParams = {
     x: 320,
@@ -67,11 +68,19 @@
 
   // Reopen where the user left off. The dialog focuses its first control on
   // open (a microtask, which scrolls that control into view), so the restore
-  // waits a frame to land after it.
+  // waits a frame to land after it — and then brings keyboard focus along to
+  // a control in the restored view: left at the top, the first Tab would
+  // scroll the drawer straight back there.
   function rememberScroll(dlg: HTMLElement) {
     const key = isReader() ? 'reader' : 'app';
     const saved = savedScrollTop.get(key) ?? 0;
-    const raf = saved > 0 ? requestAnimationFrame(() => (dlg.scrollTop = saved)) : 0;
+    const raf =
+      saved > 0
+        ? requestAnimationFrame(() => {
+            dlg.scrollTop = saved;
+            focusFirstInView(dlg);
+          })
+        : 0;
     const onScroll = () => savedScrollTop.set(key, dlg.scrollTop);
     dlg.addEventListener('scroll', onScroll, { passive: true });
     return () => {

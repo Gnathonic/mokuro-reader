@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { get } from 'svelte/store';
 
 const mocks = vi.hoisted(() => ({ updateSetting: vi.fn() }));
 
@@ -13,6 +14,7 @@ vi.mock('$lib/settings', async () => {
 });
 
 import PageAdjustCard from '../PageAdjustCard.svelte';
+import { pageAdjustPreviewing } from '$lib/reader/page-adjust-preview';
 import { settings } from '$lib/settings';
 import type { Writable } from 'svelte/store';
 
@@ -69,6 +71,22 @@ describe('PageAdjustCard (#256)', () => {
     mocks.updateSetting.mockClear();
     await fireEvent.click(toggle);
     expect(mocks.updateSetting).toHaveBeenCalledWith('pageAdjustEnabled', true);
+  });
+
+  it('flipping the switch clears the dim for a moment, so the change can be judged (#363)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByRole, unmount } = render(PageAdjustCard);
+      const toggle = getByRole('checkbox', { name: /Brightness & contrast/ });
+      expect(get(pageAdjustPreviewing)).toBe(false);
+      await fireEvent.click(toggle);
+      expect(get(pageAdjustPreviewing)).toBe(true);
+      vi.runAllTimers();
+      expect(get(pageAdjustPreviewing)).toBe(false);
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('moving a slider while switched off switches the adjustment back on (#362)', async () => {

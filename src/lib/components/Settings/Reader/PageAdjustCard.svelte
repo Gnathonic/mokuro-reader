@@ -28,7 +28,7 @@
     clampPageAdjust,
     sanitizePageAdjustEnabled
   } from '$lib/reader/page-filter';
-  import { previewWhileAdjusting } from '$lib/reader/page-adjust-preview';
+  import { previewAfterChange, previewWhileAdjusting } from '$lib/reader/page-adjust-preview';
 
   // Page images only (#256): washed-out scans. The OCR text is never filtered.
   // (Ink color below does recolour the OCR text, to match the ink.)
@@ -112,6 +112,7 @@
       size="small"
       checked={adjustEnabled}
       onchange={() => updateSetting('pageAdjustEnabled', !adjustEnabled)}
+      {@attach previewAfterChange}
     >
       Brightness &amp; contrast
       <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(B)</span>

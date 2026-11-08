@@ -51,3 +51,19 @@ export function pageFilterCss(
   if (b === PAGE_ADJUST_DEFAULT && c === PAGE_ADJUST_DEFAULT) return 'none';
   return `brightness(${b}%) contrast(${c}%)`;
 }
+
+/**
+ * The reader's notice for the `B` key: the new state, and — when switching on
+ * with both values at 100% — a hint that "on" changes nothing yet, so the key
+ * does not look broken.
+ */
+export function pageAdjustToggleMessage(
+  enabled: boolean,
+  brightness: unknown,
+  contrast: unknown
+): string {
+  const unset =
+    clampPageAdjust(brightness) === PAGE_ADJUST_DEFAULT &&
+    clampPageAdjust(contrast) === PAGE_ADJUST_DEFAULT;
+  return `Brightness/Contrast ${enabled ? 'On' : 'Off'}${enabled && unset ? ' (both at 100%)' : ''}`;
+}

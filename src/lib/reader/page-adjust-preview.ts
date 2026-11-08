@@ -4,8 +4,9 @@
  * The page image sliders sit in the settings drawer, a modal `<dialog>` whose
  * backdrop dims the page behind it — exactly the page the user is trying to
  * judge. While a slider is held (pointer down → up/cancel) or being stepped
- * from the keyboard (an adjusting key → blur), `pageAdjustPreviewing` is true
- * and the drawer drops its backdrop's tint (`Settings.svelte`). Nothing moves
+ * from the keyboard (an adjusting key → blur), and for a moment after the
+ * on/off switch is flipped, `pageAdjustPreviewing` is true and the drawer drops
+ * its backdrop's tint (`Settings.svelte`). Nothing moves
  * or resizes: only the backdrop's colour changes.
  */
 import { writable, type Readable } from 'svelte/store';
@@ -36,28 +37,34 @@ function mark(node: HTMLElement, on: boolean): void {
 
 /**
  * Attachment for a slider (`{@attach previewWhileAdjusting}`): reports it as
- * adjusting from pointer down until the pointer is released anywhere, and from
- * an adjusting key until it loses focus.
+ * adjusting from pointer down until THAT pointer is released anywhere (another
+ * finger or the mouse lifting elsewhere does not end the drag), and from an
+ * adjusting key until it loses focus.
  */
 export function previewWhileAdjusting(node: HTMLElement): () => void {
-  let pointer = false;
+  const pointers = new Set<number>();
   let keyboard = false;
-  const sync = () => mark(node, pointer || keyboard);
+  const sync = () => mark(node, pointers.size > 0 || keyboard);
 
-  const endPointer = () => {
-    window.removeEventListener('pointerup', endPointer, true);
-    window.removeEventListener('pointercancel', endPointer, true);
-    pointer = false;
-    sync();
+  const listen = (on: boolean) => {
+    if (on) {
+      window.addEventListener('pointerup', endPointer, true);
+      window.addEventListener('pointercancel', endPointer, true);
+    } else {
+      window.removeEventListener('pointerup', endPointer, true);
+      window.removeEventListener('pointercancel', endPointer, true);
+    }
   };
+  function endPointer(e: PointerEvent) {
+    if (!pointers.delete(e.pointerId)) return;
+    if (pointers.size === 0) listen(false);
+    sync();
+  }
   const onPointerDown = (e: PointerEvent) => {
     // A secondary mouse button opens a context menu, it does not drag.
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (!pointer) {
-      window.addEventListener('pointerup', endPointer, true);
-      window.addEventListener('pointercancel', endPointer, true);
-    }
-    pointer = true;
+    if (pointers.size === 0) listen(true);
+    pointers.add(e.pointerId);
     sync();
   };
   const onKeyDown = (e: KeyboardEvent) => {
@@ -77,9 +84,33 @@ export function previewWhileAdjusting(node: HTMLElement): () => void {
     node.removeEventListener('pointerdown', onPointerDown);
     node.removeEventListener('keydown', onKeyDown);
     node.removeEventListener('blur', onBlur);
-    window.removeEventListener('pointerup', endPointer, true);
-    window.removeEventListener('pointercancel', endPointer, true);
+    listen(false);
+    pointers.clear();
     // The drawer closing mid-drag must not leave the backdrop clear forever.
+    mark(node, false);
+  };
+}
+
+/** How long the page stays undimmed after the on/off switch is flipped. */
+export const PREVIEW_AFTER_CHANGE_MS = 1500;
+
+/**
+ * Attachment for the brightness/contrast on/off switch: a flip changes the
+ * page at once, so the backdrop stops dimming it for a moment after each
+ * change — long enough to compare, restarted by every flip, so flipping back
+ * and forth stays undimmed throughout.
+ */
+export function previewAfterChange(node: HTMLElement): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onChange = () => {
+    clearTimeout(timer);
+    mark(node, true);
+    timer = setTimeout(() => mark(node, false), PREVIEW_AFTER_CHANGE_MS);
+  };
+  node.addEventListener('change', onChange);
+  return () => {
+    node.removeEventListener('change', onChange);
+    clearTimeout(timer);
     mark(node, false);
   };
 }

@@ -1,10 +1,6 @@
 <script lang="ts">
   import { pageImageUrlFrom } from '$lib/reader/page-image-url';
-  import {
-    PAGE_ADJUST_DEFAULT,
-    clampPageAdjust,
-    sanitizePageAdjustEnabled
-  } from '$lib/reader/page-filter';
+  import { pageAdjustToggleMessage, sanitizePageAdjustEnabled } from '$lib/reader/page-filter';
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
@@ -1579,11 +1575,8 @@
   function togglePageAdjust() {
     const next = !sanitizePageAdjustEnabled($settings.pageAdjustEnabled);
     updateSetting('pageAdjustEnabled', next);
-    const unset =
-      clampPageAdjust($settings.pageBrightness) === PAGE_ADJUST_DEFAULT &&
-      clampPageAdjust($settings.pageContrast) === PAGE_ADJUST_DEFAULT;
     showNotification(
-      `Brightness/Contrast ${next ? 'On' : 'Off'}${next && unset ? ' (both at 100%)' : ''}`,
+      pageAdjustToggleMessage(next, $settings.pageBrightness, $settings.pageContrast),
       'page-adjust-toggle'
     );
   }
