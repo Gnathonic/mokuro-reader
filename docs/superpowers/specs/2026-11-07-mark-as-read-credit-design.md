@@ -97,9 +97,9 @@ Either way it's marked read and counts for your goals.
 - **Adjust ▾** opens two fields:
   - `Time [0] h [38] min`
   - `Count up to page [180]`, which limits the credit to pages not read here up to that page.
-  The characters line updates live from the pages. Characters are an exact OCR count, not an
-  estimate, so the user never types them. Time re-estimates when the page bound moves, unless the
-  user has typed a time. Once they have, a "Use estimate" link appears.
+    The characters line updates live from the pages. Characters are an exact OCR count, not an
+    estimate, so the user never types them. Time re-estimates when the page bound moves, unless the
+    user has typed a time. Once they have, a "Use estimate" link appears.
 - **Don't ask again.** When ticked, the button pressed becomes the setting (Count or Don't count).
   A helper line appears: "Change this in Settings → Reader → Reading timer."
 - Initial focus is on **Don't count**, which is today's behaviour.
@@ -312,24 +312,24 @@ This lives in `stats-engine.ts`.
 
 ### 8. Files
 
-| File | Change |
-| --- | --- |
-| `reading-history/types.ts` | `CreditPayload`, `RetractPayload` |
-| `reading-history/segment-codec.ts` | kinds 6/7, format 2 only when present, accept 1 and 2 |
-| `reading-history/stats-engine.ts` | credits in `prepareVolume`/`countVolume`; new totals fields |
-| `reading-history/stats-store.ts` | `figures.credit`; `pagesNotReadHere(stats, volume, pageCount, record)` |
-| `reading-history/credit.ts` (new) | per-page chars, `estimateCredit`, `recordCredit`, `retractCredits` |
-| `reading-history/device-stats.ts` | `marked-read` row |
-| `settings/volume-data.ts` | `markVolumesRead` (snapshots, credits, undo handle); unread retracts |
-| `settings/tracking-data.ts` | `markRead` entry |
-| `util/snackbar.ts` + its component | optional `{ label, onClick }` action |
-| `components/MarkReadSheet.svelte` (new) | single, bulk and editor modes |
-| `components/VolumeItem.svelte` | open the sheet; `isVolumeFinished`; "Mark as read up to here" |
-| `views/SeriesView.svelte` | series-menu item |
-| `components/VolumeEditorModal.svelte`, `util/volume-editor.ts` | counted line, Remove, Count…; no chars delta from progress |
-| `components/Settings/Reader/ReadingTimerSetting.svelte` | the setting |
-| `util/reading-speed-history.ts`, `views/ReadingSpeedView.svelte` | measured-only speed; sub-lines |
-| `docs/superpowers/specs/2026-10-02-reading-history-event-log-design.md` | the two kinds and format 2 |
+| File                                                                    | Change                                                                 |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `reading-history/types.ts`                                              | `CreditPayload`, `RetractPayload`                                      |
+| `reading-history/segment-codec.ts`                                      | kinds 6/7, format 2 only when present, accept 1 and 2                  |
+| `reading-history/stats-engine.ts`                                       | credits in `prepareVolume`/`countVolume`; new totals fields            |
+| `reading-history/stats-store.ts`                                        | `figures.credit`; `pagesNotReadHere(stats, volume, pageCount, record)` |
+| `reading-history/credit.ts` (new)                                       | per-page chars, `estimateCredit`, `recordCredit`, `retractCredits`     |
+| `reading-history/device-stats.ts`                                       | `marked-read` row                                                      |
+| `settings/volume-data.ts`                                               | `markVolumesRead` (snapshots, credits, undo handle); unread retracts   |
+| `settings/tracking-data.ts`                                             | `markRead` entry                                                       |
+| `util/snackbar.ts` + its component                                      | optional `{ label, onClick }` action                                   |
+| `components/MarkReadSheet.svelte` (new)                                 | single, bulk and editor modes                                          |
+| `components/VolumeItem.svelte`                                          | open the sheet; `isVolumeFinished`; "Mark as read up to here"          |
+| `views/SeriesView.svelte`                                               | series-menu item                                                       |
+| `components/VolumeEditorModal.svelte`, `util/volume-editor.ts`          | counted line, Remove, Count…; no chars delta from progress             |
+| `components/Settings/Reader/ReadingTimerSetting.svelte`                 | the setting                                                            |
+| `util/reading-speed-history.ts`, `views/ReadingSpeedView.svelte`        | measured-only speed; sub-lines                                         |
+| `docs/superpowers/specs/2026-10-02-reading-history-event-log-design.md` | the two kinds and format 2                                             |
 
 ### 9. Tests
 

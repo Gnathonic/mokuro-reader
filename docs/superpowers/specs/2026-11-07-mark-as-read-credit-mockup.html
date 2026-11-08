@@ -1,508 +1,1385 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mark as read: counting pages not read here (#224) — mockup</title>
-<style>
-  :root {
-    --bg: #111827; --surface: #1f2937; --surface2: #374151; --border: #4b5563;
-    --text: #f3f4f6; --muted: #9ca3af; --dim: #6b7280;
-    --primary: #ef562f; --primary-h: #eb4f27; --primary-l: #fe795d;
-    --green: #31c48d; --green-d: #0e9f6e; --blue: #3f83f8; --purple: #ac94fa; --orange: #ff8a4c;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: #0b1220; color: var(--text);
-    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", sans-serif;
-  }
-  header.page { padding: 20px 28px 8px; }
-  header.page h1 { font-size: 20px; margin: 0 0 4px; }
-  header.page p { margin: 0; color: var(--muted); max-width: 920px; }
-  .tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 28px; }
-  .tabs button, .sub button {
-    background: var(--surface); color: var(--muted); border: 1px solid var(--surface2);
-    border-radius: 8px; padding: 7px 12px; font: inherit; cursor: pointer;
-  }
-  .tabs button.on, .sub button.on { color: var(--text); border-color: var(--primary); background: #2a1d1a; }
-  main { padding: 8px 28px 40px; }
-  .row { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
-  .col { display: flex; flex-direction: column; gap: 10px; }
-  .label { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
-  .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 999px; }
-  .tag.rec { background: #0e9f6e33; color: var(--green); border: 1px solid #0e9f6e88; }
-  .tag.alt { background: #4b556344; color: var(--muted); border: 1px solid var(--border); }
-  .tag.new { background: #ef562f22; color: var(--primary-l); border: 1px solid #ef562f66; margin-left: 6px; }
-  .sub { display: flex; gap: 6px; flex-wrap: wrap; }
-  .sub button { padding: 4px 9px; font-size: 12px; }
-  .notes { max-width: 360px; color: var(--muted); font-size: 12.5px; margin: 0; padding-left: 18px; }
-  .notes li { margin: 3px 0; }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mark as read: counting pages not read here (#224) — mockup</title>
+    <style>
+      :root {
+        --bg: #111827;
+        --surface: #1f2937;
+        --surface2: #374151;
+        --border: #4b5563;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --dim: #6b7280;
+        --primary: #ef562f;
+        --primary-h: #eb4f27;
+        --primary-l: #fe795d;
+        --green: #31c48d;
+        --green-d: #0e9f6e;
+        --blue: #3f83f8;
+        --purple: #ac94fa;
+        --orange: #ff8a4c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #0b1220;
+        color: var(--text);
+        font:
+          14px/1.45 system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          'Hiragino Sans',
+          'Noto Sans JP',
+          sans-serif;
+      }
+      header.page {
+        padding: 20px 28px 8px;
+      }
+      header.page h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      header.page p {
+        margin: 0;
+        color: var(--muted);
+        max-width: 920px;
+      }
+      .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 12px 28px;
+      }
+      .tabs button,
+      .sub button {
+        background: var(--surface);
+        color: var(--muted);
+        border: 1px solid var(--surface2);
+        border-radius: 8px;
+        padding: 7px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
+      .tabs button.on,
+      .sub button.on {
+        color: var(--text);
+        border-color: var(--primary);
+        background: #2a1d1a;
+      }
+      main {
+        padding: 8px 28px 40px;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 28px;
+        align-items: flex-start;
+      }
+      .col {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .label {
+        font-weight: 600;
+        font-size: 15px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .tag {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 999px;
+      }
+      .tag.rec {
+        background: #0e9f6e33;
+        color: var(--green);
+        border: 1px solid #0e9f6e88;
+      }
+      .tag.alt {
+        background: #4b556344;
+        color: var(--muted);
+        border: 1px solid var(--border);
+      }
+      .tag.new {
+        background: #ef562f22;
+        color: var(--primary-l);
+        border: 1px solid #ef562f66;
+        margin-left: 6px;
+      }
+      .sub {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .sub button {
+        padding: 4px 9px;
+        font-size: 12px;
+      }
+      .notes {
+        max-width: 360px;
+        color: var(--muted);
+        font-size: 12.5px;
+        margin: 0;
+        padding-left: 18px;
+      }
+      .notes li {
+        margin: 3px 0;
+      }
 
-  /* Phone frame */
-  .phone {
-    width: 360px; height: 700px; border-radius: 26px; border: 1px solid var(--surface2);
-    background: var(--bg); overflow: hidden; position: relative; box-shadow: 0 10px 40px #0008;
-  }
-  .appbar { height: 44px; display: flex; align-items: center; justify-content: space-between;
-    padding: 0 14px; border-bottom: 1px solid var(--surface); color: var(--muted); font-size: 13px; }
-  .series-head { padding: 12px 14px 8px; }
-  .series-head h2 { margin: 0; font-size: 17px; }
-  .series-head .meta { color: var(--muted); font-size: 12px; }
-  .toolbar { display: flex; gap: 6px; padding: 4px 14px 10px; position: relative; }
-  .tb { background: var(--surface); border: 1px solid var(--surface2); border-radius: 8px; height: 34px;
-    min-width: 34px; display: grid; place-items: center; color: var(--muted); font-size: 13px; padding: 0 9px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 14px; }
-  .card { border: 2px solid transparent; border-radius: 10px; padding: 7px; background: #1f293766; position: relative; }
-  .card.done { border-color: var(--green); }
-  .cover { width: 100%; height: 170px; border-radius: 6px; display: grid; place-items: center; font-size: 34px;
-    font-weight: 700; color: #fff9; }
-  .c1 { background: linear-gradient(160deg, #5b6b8c, #2b3550); }
-  .c2 { background: linear-gradient(160deg, #8c5b6b, #502b35); }
-  .c3 { background: linear-gradient(160deg, #5b8c7a, #2b5046); }
-  .c4 { background: linear-gradient(160deg, #8c7a5b, #50452b); }
-  .card .t { font-size: 12.5px; margin-top: 6px; font-weight: 600; }
-  .card .p { font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
-  .check { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--dim); display: inline-block; }
-  .check.on { background: var(--green); border-color: var(--green); position: relative; }
-  .check.on::after { content: ""; position: absolute; left: 4px; top: 1px; width: 3px; height: 7px;
-    border: solid #111827; border-width: 0 2px 2px 0; transform: rotate(45deg); }
-  .dots { position: absolute; right: 12px; bottom: 54px; width: 26px; height: 26px; border-radius: 50%;
-    background: #1f2937cc; display: grid; place-items: center; color: #fff; font-size: 14px; }
+      /* Phone frame */
+      .phone {
+        width: 360px;
+        height: 700px;
+        border-radius: 26px;
+        border: 1px solid var(--surface2);
+        background: var(--bg);
+        overflow: hidden;
+        position: relative;
+        box-shadow: 0 10px 40px #0008;
+      }
+      .appbar {
+        height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--surface);
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .series-head {
+        padding: 12px 14px 8px;
+      }
+      .series-head h2 {
+        margin: 0;
+        font-size: 17px;
+      }
+      .series-head .meta {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 6px;
+        padding: 4px 14px 10px;
+        position: relative;
+      }
+      .tb {
+        background: var(--surface);
+        border: 1px solid var(--surface2);
+        border-radius: 8px;
+        height: 34px;
+        min-width: 34px;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        font-size: 13px;
+        padding: 0 9px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        padding: 0 14px;
+      }
+      .card {
+        border: 2px solid transparent;
+        border-radius: 10px;
+        padding: 7px;
+        background: #1f293766;
+        position: relative;
+      }
+      .card.done {
+        border-color: var(--green);
+      }
+      .cover {
+        width: 100%;
+        height: 170px;
+        border-radius: 6px;
+        display: grid;
+        place-items: center;
+        font-size: 34px;
+        font-weight: 700;
+        color: #fff9;
+      }
+      .c1 {
+        background: linear-gradient(160deg, #5b6b8c, #2b3550);
+      }
+      .c2 {
+        background: linear-gradient(160deg, #8c5b6b, #502b35);
+      }
+      .c3 {
+        background: linear-gradient(160deg, #5b8c7a, #2b5046);
+      }
+      .c4 {
+        background: linear-gradient(160deg, #8c7a5b, #50452b);
+      }
+      .card .t {
+        font-size: 12.5px;
+        margin-top: 6px;
+        font-weight: 600;
+      }
+      .card .p {
+        font-size: 11.5px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .check {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 1.5px solid var(--dim);
+        display: inline-block;
+      }
+      .check.on {
+        background: var(--green);
+        border-color: var(--green);
+        position: relative;
+      }
+      .check.on::after {
+        content: '';
+        position: absolute;
+        left: 4px;
+        top: 1px;
+        width: 3px;
+        height: 7px;
+        border: solid #111827;
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+      }
+      .dots {
+        position: absolute;
+        right: 12px;
+        bottom: 54px;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: #1f2937cc;
+        display: grid;
+        place-items: center;
+        color: #fff;
+        font-size: 14px;
+      }
 
-  /* Overlay + sheet */
-  .backdrop { position: absolute; inset: 0; background: #000a; }
-  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--surface);
-    border-top-left-radius: 16px; border-top-right-radius: 16px; padding: 14px 16px 16px;
-    border-top: 1px solid var(--surface2); max-height: 92%; overflow: auto; }
-  .grab { width: 38px; height: 4px; border-radius: 4px; background: var(--border); margin: 0 auto 10px; }
-  .sheet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-  .sheet h3 { margin: 0; font-size: 16px; }
-  .x { color: var(--muted); font-size: 20px; line-height: 1; padding: 0 2px; }
-  .sheet p { margin: 8px 0; }
-  .q { font-weight: 600; }
-  .est { background: var(--bg); border: 1px solid var(--surface2); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
-  .est-main { font-weight: 600; }
-  .est-src { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
-  .link { color: var(--primary-l); cursor: pointer; white-space: nowrap; }
-  .adjust { display: none; margin-top: 10px; border-top: 1px solid var(--surface2); padding-top: 10px; }
-  .est.open .adjust { display: block; }
-  .field { display: flex; align-items: center; gap: 6px; margin: 6px 0; flex-wrap: wrap; font-size: 13px; }
-  .field .lbl { width: 116px; color: var(--muted); }
-  .inp { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; width: 54px;
-    height: 34px; display: inline-flex; align-items: center; padding: 0 8px; color: var(--text); }
-  .inp.empty { color: var(--dim); }
-  .hint { color: var(--dim); font-size: 12px; }
-  .note { color: var(--muted); font-size: 12.5px; }
-  .chk { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; font-size: 13px; color: var(--text); }
-  .box { width: 18px; height: 18px; border-radius: 4px; border: 1.5px solid var(--border); background: var(--bg); display: inline-block; flex: none; }
-  .box.on { background: var(--primary); border-color: var(--primary); position: relative; }
-  .box.on::after { content: ""; position: absolute; left: 5px; top: 1px; width: 4px; height: 9px;
-    border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
-  .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; position: relative; z-index: 10; }
-  .btn { min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--border);
-    background: var(--surface2); color: var(--text); font: inherit; font-weight: 600; display: inline-flex; align-items: center; }
-  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-  .btn.focus { outline: 2px solid #9ca3af; outline-offset: 2px; }
-  .vlist { margin: 6px 0 8px; border: 1px solid var(--surface2); border-radius: 10px; overflow: hidden; }
-  .vrow { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-height: 44px; border-bottom: 1px solid var(--surface2); font-size: 13px; }
-  .vrow:last-child { border-bottom: 0; }
-  .vrow .vt { font-weight: 600; width: 50px; }
-  .vrow .vp { color: var(--muted); }
-  .vrow.off { opacity: .55; }
+      /* Overlay + sheet */
+      .backdrop {
+        position: absolute;
+        inset: 0;
+        background: #000a;
+      }
+      .sheet {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: var(--surface);
+        border-top-left-radius: 16px;
+        border-top-right-radius: 16px;
+        padding: 14px 16px 16px;
+        border-top: 1px solid var(--surface2);
+        max-height: 92%;
+        overflow: auto;
+      }
+      .grab {
+        width: 38px;
+        height: 4px;
+        border-radius: 4px;
+        background: var(--border);
+        margin: 0 auto 10px;
+      }
+      .sheet-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 10px;
+      }
+      .sheet h3 {
+        margin: 0;
+        font-size: 16px;
+      }
+      .x {
+        color: var(--muted);
+        font-size: 20px;
+        line-height: 1;
+        padding: 0 2px;
+      }
+      .sheet p {
+        margin: 8px 0;
+      }
+      .q {
+        font-weight: 600;
+      }
+      .est {
+        background: var(--bg);
+        border: 1px solid var(--surface2);
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin: 8px 0;
+      }
+      .est-main {
+        font-weight: 600;
+      }
+      .est-src {
+        color: var(--muted);
+        font-size: 12.5px;
+        margin-top: 3px;
+      }
+      .link {
+        color: var(--primary-l);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .adjust {
+        display: none;
+        margin-top: 10px;
+        border-top: 1px solid var(--surface2);
+        padding-top: 10px;
+      }
+      .est.open .adjust {
+        display: block;
+      }
+      .field {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 6px 0;
+        flex-wrap: wrap;
+        font-size: 13px;
+      }
+      .field .lbl {
+        width: 116px;
+        color: var(--muted);
+      }
+      .inp {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        width: 54px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        padding: 0 8px;
+        color: var(--text);
+      }
+      .inp.empty {
+        color: var(--dim);
+      }
+      .hint {
+        color: var(--dim);
+        font-size: 12px;
+      }
+      .note {
+        color: var(--muted);
+        font-size: 12.5px;
+      }
+      .chk {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 10px 0 4px;
+        font-size: 13px;
+        color: var(--text);
+      }
+      .box {
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        border: 1.5px solid var(--border);
+        background: var(--bg);
+        display: inline-block;
+        flex: none;
+      }
+      .box.on {
+        background: var(--primary);
+        border-color: var(--primary);
+        position: relative;
+      }
+      .box.on::after {
+        content: '';
+        position: absolute;
+        left: 5px;
+        top: 1px;
+        width: 4px;
+        height: 9px;
+        border: solid #fff;
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+      }
+      .btns {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 12px;
+        position: relative;
+        z-index: 10;
+      }
+      .btn {
+        min-height: 44px;
+        padding: 0 16px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--surface2);
+        color: var(--text);
+        font: inherit;
+        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+      }
+      .btn.primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: #fff;
+      }
+      .btn.focus {
+        outline: 2px solid #9ca3af;
+        outline-offset: 2px;
+      }
+      .vlist {
+        margin: 6px 0 8px;
+        border: 1px solid var(--surface2);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .vrow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        min-height: 44px;
+        border-bottom: 1px solid var(--surface2);
+        font-size: 13px;
+      }
+      .vrow:last-child {
+        border-bottom: 0;
+      }
+      .vrow .vt {
+        font-weight: 600;
+        width: 50px;
+      }
+      .vrow .vp {
+        color: var(--muted);
+      }
+      .vrow.off {
+        opacity: 0.55;
+      }
 
-  /* Snackbar */
-  .snack { position: absolute; left: 12px; right: 12px; bottom: 16px; background: #374151; color: var(--text);
-    border-radius: 10px; padding: 0 6px 0 14px; min-height: 48px; display: flex; align-items: center; justify-content: space-between;
-    gap: 10px; box-shadow: 0 6px 20px #0009; font-size: 13px; }
-  .snack .act { color: var(--primary-l); font-weight: 700; padding: 0 10px; min-height: 44px; display: inline-flex; align-items: center; white-space: nowrap; }
+      /* Snackbar */
+      .snack {
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: 16px;
+        background: #374151;
+        color: var(--text);
+        border-radius: 10px;
+        padding: 0 6px 0 14px;
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        box-shadow: 0 6px 20px #0009;
+        font-size: 13px;
+      }
+      .snack .act {
+        color: var(--primary-l);
+        font-weight: 700;
+        padding: 0 10px;
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+      }
 
-  /* Dropdown */
-  .dropdown { position: absolute; right: 14px; top: 42px; width: 220px; background: var(--surface);
-    border: 1px solid var(--surface2); border-radius: 8px; box-shadow: 0 10px 30px #000a; z-index: 5; padding: 4px 0; }
-  .dd { padding: 0 14px; min-height: 40px; display: flex; align-items: center; font-size: 13px; color: #e5e7eb; }
-  .dd.red { color: #f98080; }
-  .dd.hl { background: #374151; }
+      /* Dropdown */
+      .dropdown {
+        position: absolute;
+        right: 14px;
+        top: 42px;
+        width: 220px;
+        background: var(--surface);
+        border: 1px solid var(--surface2);
+        border-radius: 8px;
+        box-shadow: 0 10px 30px #000a;
+        z-index: 5;
+        padding: 4px 0;
+      }
+      .dd {
+        padding: 0 14px;
+        min-height: 40px;
+        display: flex;
+        align-items: center;
+        font-size: 13px;
+        color: #e5e7eb;
+      }
+      .dd.red {
+        color: #f98080;
+      }
+      .dd.hl {
+        background: #374151;
+      }
 
-  /* Desktop panels */
-  .panel { background: var(--bg); border: 1px solid var(--surface2); border-radius: 14px; padding: 16px; }
-  .tiles { display: grid; grid-template-columns: repeat(4, minmax(170px, 1fr)); gap: 12px; }
-  .tile { background: var(--surface); border: 1px solid var(--surface2); border-radius: 10px; padding: 14px; }
-  .tile .k { color: var(--muted); font-size: 13px; }
-  .tile .v { font-size: 22px; font-weight: 700; margin: 2px 0; }
-  .tile .s { color: var(--dim); font-size: 12px; }
-  .tile .s.cr { color: #c3b4fc; }
-  .ed { width: 420px; background: var(--surface); border: 1px solid var(--surface2); border-radius: 12px; padding: 16px; }
-  .ed h4 { margin: 0 0 10px; font-size: 14px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-  .ed .f { display: flex; justify-content: space-between; align-items: center; min-height: 38px; gap: 8px; }
-  .ed .f .lbl { color: var(--muted); }
-  .credit-box { margin-top: 10px; border: 1px dashed #ac94fa88; background: #ac94fa12; border-radius: 10px; padding: 10px 12px;
-    display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-  .credit-box .ttl { color: #c3b4fc; font-size: 12.5px; font-weight: 600; }
-  .btn.sm { min-height: 36px; padding: 0 12px; font-size: 13px; }
-  .tooltip { background: #111827; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--text); max-width: 240px; }
-  .speedrow { display: grid; grid-template-columns: 120px 110px 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--surface2); font-size: 13px; }
-  .speedrow:last-child { border-bottom: 0; }
-  .speedrow .m { color: var(--muted); }
-  .settings { width: 460px; background: var(--surface); border: 1px solid var(--surface2); border-radius: 12px; padding: 16px; }
-  .seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin: 8px 0; }
-  .seg span { flex: 1; text-align: center; padding: 10px 6px; font-size: 13px; color: var(--muted); border-right: 1px solid var(--border); }
-  .seg span:last-child { border-right: 0; }
-  .seg span.on { background: #ef562f26; color: var(--text); font-weight: 600; }
-  .mini { position: relative; width: 360px; height: 120px; border-radius: 14px; background: var(--bg); border: 1px solid var(--surface2); overflow: hidden; }
-  h3.sec { font-size: 15px; margin: 22px 0 10px; }
-  [hidden] { display: none !important; }
-</style>
-</head>
-<body>
-<header class="page">
-  <h1>Mark as read: counting pages not read here (#224)</h1>
-  <p>Static mockup for <code>2026-11-07-mark-as-read-credit-design.md</code>. All numbers are examples. Vol. 3 has 180 pages, 138 of them read in the app and 42 not, holding 9,412 characters. The series speed is 248 chars/min, so the estimate is 38 min.</p>
-</header>
+      /* Desktop panels */
+      .panel {
+        background: var(--bg);
+        border: 1px solid var(--surface2);
+        border-radius: 14px;
+        padding: 16px;
+      }
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(170px, 1fr));
+        gap: 12px;
+      }
+      .tile {
+        background: var(--surface);
+        border: 1px solid var(--surface2);
+        border-radius: 10px;
+        padding: 14px;
+      }
+      .tile .k {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .tile .v {
+        font-size: 22px;
+        font-weight: 700;
+        margin: 2px 0;
+      }
+      .tile .s {
+        color: var(--dim);
+        font-size: 12px;
+      }
+      .tile .s.cr {
+        color: #c3b4fc;
+      }
+      .ed {
+        width: 420px;
+        background: var(--surface);
+        border: 1px solid var(--surface2);
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .ed h4 {
+        margin: 0 0 10px;
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .ed .f {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        min-height: 38px;
+        gap: 8px;
+      }
+      .ed .f .lbl {
+        color: var(--muted);
+      }
+      .credit-box {
+        margin-top: 10px;
+        border: 1px dashed #ac94fa88;
+        background: #ac94fa12;
+        border-radius: 10px;
+        padding: 10px 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+      }
+      .credit-box .ttl {
+        color: #c3b4fc;
+        font-size: 12.5px;
+        font-weight: 600;
+      }
+      .btn.sm {
+        min-height: 36px;
+        padding: 0 12px;
+        font-size: 13px;
+      }
+      .tooltip {
+        background: #111827;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 12px;
+        color: var(--text);
+        max-width: 240px;
+      }
+      .speedrow {
+        display: grid;
+        grid-template-columns: 120px 110px 1fr;
+        gap: 10px;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--surface2);
+        font-size: 13px;
+      }
+      .speedrow:last-child {
+        border-bottom: 0;
+      }
+      .speedrow .m {
+        color: var(--muted);
+      }
+      .settings {
+        width: 460px;
+        background: var(--surface);
+        border: 1px solid var(--surface2);
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .seg {
+        display: flex;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        margin: 8px 0;
+      }
+      .seg span {
+        flex: 1;
+        text-align: center;
+        padding: 10px 6px;
+        font-size: 13px;
+        color: var(--muted);
+        border-right: 1px solid var(--border);
+      }
+      .seg span:last-child {
+        border-right: 0;
+      }
+      .seg span.on {
+        background: #ef562f26;
+        color: var(--text);
+        font-weight: 600;
+      }
+      .mini {
+        position: relative;
+        width: 360px;
+        height: 120px;
+        border-radius: 14px;
+        background: var(--bg);
+        border: 1px solid var(--surface2);
+        overflow: hidden;
+      }
+      h3.sec {
+        font-size: 15px;
+        margin: 22px 0 10px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="page">
+      <h1>Mark as read: counting pages not read here (#224)</h1>
+      <p>
+        Static mockup for <code>2026-11-07-mark-as-read-credit-design.md</code>. All numbers are
+        examples. Vol. 3 has 180 pages, 138 of them read in the app and 42 not, holding 9,412
+        characters. The series speed is 248 chars/min, so the estimate is 38 min.
+      </p>
+    </header>
 
-<nav class="tabs" data-tabs="main">
-  <button class="on" data-state="single">1 · Single volume: ask first vs quiet first</button>
-  <button data-state="bulk">2 · Series / bulk</button>
-  <button data-state="low">3 · Little reading data</button>
-  <button data-state="stats">4 · How it shows in stats</button>
-</nav>
+    <nav class="tabs" data-tabs="main">
+      <button class="on" data-state="single">1 · Single volume: ask first vs quiet first</button>
+      <button data-state="bulk">2 · Series / bulk</button>
+      <button data-state="low">3 · Little reading data</button>
+      <button data-state="stats">4 · How it shows in stats</button>
+    </nav>
 
-<main>
-<!-- ======================= 1. SINGLE ======================= -->
-<section data-in="main" data-state="single">
-  <div class="row">
-    <!-- A: ask first -->
-    <div class="col">
-      <div class="label">A · Ask first <span class="tag rec">Recommended</span></div>
-      <div class="sub" data-tabs="a">
-        <button class="on" data-state="a1">1 Sheet</button>
-        <button data-state="a2">2 Adjust open</button>
-        <button data-state="a3">3 After "Count them"</button>
-      </div>
-      <div class="phone">
-        <div class="appbar"><span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span></div>
-        <div class="series-head"><h2>星の旅</h2><div class="meta">5 volumes · 2 read</div></div>
-        <div class="toolbar"><span class="tb">☁</span><span class="tb">🗑</span><span class="tb">⇅</span><span class="tb">▦</span><span class="tb">⋮</span></div>
-        <div class="grid">
-          <div class="card done"><div class="cover c1">一</div><div class="t">Vol. 1</div><div class="p"><span class="check on"></span>182 / 182</div></div>
-          <div class="card done"><div class="cover c2">二</div><div class="t">Vol. 2</div><div class="p"><span class="check on"></span>176 / 176</div></div>
-          <div class="card" data-in="a" data-state="a1"><div class="cover c3">三</div><div class="t">Vol. 3</div><div class="p"><span class="check"></span>138 / 180 · ~38 min left</div></div>
-          <div class="card" data-in="a" data-state="a2" hidden><div class="cover c3">三</div><div class="t">Vol. 3</div><div class="p"><span class="check"></span>138 / 180 · ~38 min left</div></div>
-          <div class="card done" data-in="a" data-state="a3" hidden><div class="cover c3">三</div><div class="t">Vol. 3</div><div class="p"><span class="check on"></span>180 / 180 · 2 h 47 min</div></div>
-          <div class="card"><div class="cover c4">四</div><div class="t">Vol. 4</div><div class="p"><span class="check"></span>Not started</div></div>
-        </div>
+    <main>
+      <!-- ======================= 1. SINGLE ======================= -->
+      <section data-in="main" data-state="single">
+        <div class="row">
+          <!-- A: ask first -->
+          <div class="col">
+            <div class="label">A · Ask first <span class="tag rec">Recommended</span></div>
+            <div class="sub" data-tabs="a">
+              <button class="on" data-state="a1">1 Sheet</button>
+              <button data-state="a2">2 Adjust open</button>
+              <button data-state="a3">3 After "Count them"</button>
+            </div>
+            <div class="phone">
+              <div class="appbar">
+                <span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span>
+              </div>
+              <div class="series-head">
+                <h2>星の旅</h2>
+                <div class="meta">5 volumes · 2 read</div>
+              </div>
+              <div class="toolbar">
+                <span class="tb">☁</span><span class="tb">🗑</span><span class="tb">⇅</span
+                ><span class="tb">▦</span><span class="tb">⋮</span>
+              </div>
+              <div class="grid">
+                <div class="card done">
+                  <div class="cover c1">一</div>
+                  <div class="t">Vol. 1</div>
+                  <div class="p"><span class="check on"></span>182 / 182</div>
+                </div>
+                <div class="card done">
+                  <div class="cover c2">二</div>
+                  <div class="t">Vol. 2</div>
+                  <div class="p"><span class="check on"></span>176 / 176</div>
+                </div>
+                <div class="card" data-in="a" data-state="a1">
+                  <div class="cover c3">三</div>
+                  <div class="t">Vol. 3</div>
+                  <div class="p"><span class="check"></span>138 / 180 · ~38 min left</div>
+                </div>
+                <div class="card" data-in="a" data-state="a2" hidden>
+                  <div class="cover c3">三</div>
+                  <div class="t">Vol. 3</div>
+                  <div class="p"><span class="check"></span>138 / 180 · ~38 min left</div>
+                </div>
+                <div class="card done" data-in="a" data-state="a3" hidden>
+                  <div class="cover c3">三</div>
+                  <div class="t">Vol. 3</div>
+                  <div class="p"><span class="check on"></span>180 / 180 · 2 h 47 min</div>
+                </div>
+                <div class="card">
+                  <div class="cover c4">四</div>
+                  <div class="t">Vol. 4</div>
+                  <div class="p"><span class="check"></span>Not started</div>
+                </div>
+              </div>
 
-        <!-- a1 / a2: sheet -->
-        <div data-in="a" data-state="a1">
-          <div class="backdrop"></div>
-          <div class="sheet">
-            <div class="grab"></div>
-            <div class="sheet-head"><h3>Mark “Vol. 3” as read</h3><span class="x">×</span></div>
-            <p>42 of its 180 pages weren’t read in this app.</p>
-            <p class="q">Count them in your stats?</p>
-            <div class="est">
-              <div class="est-main">42 pages · 9,412 characters · about 38 min</div>
-              <div class="est-src">At your speed in this series, 248 chars/min. <span class="link" data-toggle-adjust>Adjust ▾</span></div>
-              <div class="adjust">
-                <div class="field"><span class="lbl">Time</span><span class="inp">0</span> h <span class="inp">38</span> min</div>
-                <div class="field"><span class="lbl">Count up to page</span><span class="inp">180</span><span class="hint">pages 139–180</span></div>
+              <!-- a1 / a2: sheet -->
+              <div data-in="a" data-state="a1">
+                <div class="backdrop"></div>
+                <div class="sheet">
+                  <div class="grab"></div>
+                  <div class="sheet-head">
+                    <h3>Mark “Vol. 3” as read</h3>
+                    <span class="x">×</span>
+                  </div>
+                  <p>42 of its 180 pages weren’t read in this app.</p>
+                  <p class="q">Count them in your stats?</p>
+                  <div class="est">
+                    <div class="est-main">42 pages · 9,412 characters · about 38 min</div>
+                    <div class="est-src">
+                      At your speed in this series, 248 chars/min.
+                      <span class="link" data-toggle-adjust>Adjust ▾</span>
+                    </div>
+                    <div class="adjust">
+                      <div class="field">
+                        <span class="lbl">Time</span><span class="inp">0</span> h
+                        <span class="inp">38</span> min
+                      </div>
+                      <div class="field">
+                        <span class="lbl">Count up to page</span><span class="inp">180</span
+                        ><span class="hint">pages 139–180</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p class="note">Either way it’s marked read and counts for your goals.</p>
+                  <div class="chk"><span class="box"></span>Don’t ask again</div>
+                  <div class="btns">
+                    <span class="btn focus">Don’t count</span
+                    ><span class="btn primary">Count them</span>
+                  </div>
+                </div>
+              </div>
+              <div data-in="a" data-state="a2" hidden>
+                <div class="backdrop"></div>
+                <div class="sheet">
+                  <div class="grab"></div>
+                  <div class="sheet-head">
+                    <h3>Mark “Vol. 3” as read</h3>
+                    <span class="x">×</span>
+                  </div>
+                  <p>42 of its 180 pages weren’t read in this app.</p>
+                  <p class="q">Count them in your stats?</p>
+                  <div class="est open">
+                    <div class="est-main">30 pages · 6,705 characters · about 28 min</div>
+                    <div class="est-src">
+                      At your speed in this series, 248 chars/min.
+                      <span class="link" data-toggle-adjust>Adjust ▴</span>
+                    </div>
+                    <div class="adjust">
+                      <div class="field">
+                        <span class="lbl">Time</span><span class="inp">0</span> h
+                        <span class="inp">28</span> min
+                      </div>
+                      <div class="field">
+                        <span class="lbl">Count up to page</span><span class="inp">168</span
+                        ><span class="hint">pages 139–168</span>
+                      </div>
+                      <div class="hint">
+                        The last 12 pages are left out. Characters are counted from the text, so
+                        only the time is an estimate.
+                      </div>
+                    </div>
+                  </div>
+                  <p class="note">Either way it’s marked read and counts for your goals.</p>
+                  <div class="chk"><span class="box on"></span>Don’t ask again</div>
+                  <div class="hint" style="margin-left: 26px">
+                    Change this in Settings → Reader → Reading timer.
+                  </div>
+                  <div class="btns">
+                    <span class="btn">Don’t count</span><span class="btn primary">Count them</span>
+                  </div>
+                </div>
+              </div>
+              <div data-in="a" data-state="a3" hidden>
+                <div class="snack">
+                  <span>Marked Vol. 3 as read · counted 38 min</span><span class="act">Undo</span>
+                </div>
               </div>
             </div>
-            <p class="note">Either way it’s marked read and counts for your goals.</p>
-            <div class="chk"><span class="box"></span>Don’t ask again</div>
-            <div class="btns"><span class="btn focus">Don’t count</span><span class="btn primary">Count them</span></div>
+            <ul class="notes">
+              <li>
+                The sheet appears only when the pages not read here hold some text. Otherwise the
+                mark happens at once, as today.
+              </li>
+              <li>
+                Both buttons mark the volume read, so either answer is one tap. ×, Escape or the
+                backdrop cancels and nothing is written.
+              </li>
+              <li>“Don’t ask again” saves the button you press as the setting.</li>
+              <li>
+                Undo puts the volume back on page 138 and removes the credit. AniList is held until
+                the snackbar closes.
+              </li>
+              <li>
+                The default focus is “Don’t count” (today’s behaviour). There are no modifier or
+                arrow keys, and every button is at least 44 px.
+              </li>
+            </ul>
           </div>
-        </div>
-        <div data-in="a" data-state="a2" hidden>
-          <div class="backdrop"></div>
-          <div class="sheet">
-            <div class="grab"></div>
-            <div class="sheet-head"><h3>Mark “Vol. 3” as read</h3><span class="x">×</span></div>
-            <p>42 of its 180 pages weren’t read in this app.</p>
-            <p class="q">Count them in your stats?</p>
-            <div class="est open">
-              <div class="est-main">30 pages · 6,705 characters · about 28 min</div>
-              <div class="est-src">At your speed in this series, 248 chars/min. <span class="link" data-toggle-adjust>Adjust ▴</span></div>
-              <div class="adjust">
-                <div class="field"><span class="lbl">Time</span><span class="inp">0</span> h <span class="inp">28</span> min</div>
-                <div class="field"><span class="lbl">Count up to page</span><span class="inp">168</span><span class="hint">pages 139–168</span></div>
-                <div class="hint">The last 12 pages are left out. Characters are counted from the text, so only the time is an estimate.</div>
+
+          <!-- B: quiet first -->
+          <div class="col">
+            <div class="label">B · Quiet first <span class="tag alt">Alternative</span></div>
+            <div class="sub" data-tabs="b">
+              <button class="on" data-state="b1">1 Mark → offer</button>
+              <button data-state="b2">2 After tapping the offer</button>
+            </div>
+            <div class="phone">
+              <div class="appbar">
+                <span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span>
+              </div>
+              <div class="series-head">
+                <h2>星の旅</h2>
+                <div class="meta">5 volumes · 3 read</div>
+              </div>
+              <div class="toolbar">
+                <span class="tb">☁</span><span class="tb">🗑</span><span class="tb">⇅</span
+                ><span class="tb">▦</span><span class="tb">⋮</span>
+              </div>
+              <div class="grid">
+                <div class="card done">
+                  <div class="cover c1">一</div>
+                  <div class="t">Vol. 1</div>
+                  <div class="p"><span class="check on"></span>182 / 182</div>
+                </div>
+                <div class="card done">
+                  <div class="cover c2">二</div>
+                  <div class="t">Vol. 2</div>
+                  <div class="p"><span class="check on"></span>176 / 176</div>
+                </div>
+                <div class="card done" data-in="b" data-state="b1">
+                  <div class="cover c3">三</div>
+                  <div class="t">Vol. 3</div>
+                  <div class="p"><span class="check on"></span>180 / 180 · 2 h 9 min</div>
+                </div>
+                <div class="card done" data-in="b" data-state="b2" hidden>
+                  <div class="cover c3">三</div>
+                  <div class="t">Vol. 3</div>
+                  <div class="p"><span class="check on"></span>180 / 180 · 2 h 47 min</div>
+                </div>
+                <div class="card">
+                  <div class="cover c4">四</div>
+                  <div class="t">Vol. 4</div>
+                  <div class="p"><span class="check"></span>Not started</div>
+                </div>
+              </div>
+              <div data-in="b" data-state="b1">
+                <div class="snack">
+                  <span>Marked Vol. 3 as read</span
+                  ><span class="act">Count 42 pages · ~38 min</span>
+                </div>
+              </div>
+              <div data-in="b" data-state="b2" hidden>
+                <div class="snack">
+                  <span>Counted 42 pages · 38 min · 9,412 chars</span><span class="act">Undo</span>
+                </div>
               </div>
             </div>
-            <p class="note">Either way it’s marked read and counts for your goals.</p>
-            <div class="chk"><span class="box on"></span>Don’t ask again</div>
-            <div class="hint" style="margin-left:26px">Change this in Settings → Reader → Reading timer.</div>
-            <div class="btns"><span class="btn">Don’t count</span><span class="btn primary">Count them</span></div>
+            <ul class="notes">
+              <li>Nothing changes until the user taps the offer, so marking costs no extra tap.</li>
+              <li>
+                The offer lasts 8 s. On a phone it is easy to miss, and anyone who wants credit by
+                default has to find the setting.
+              </li>
+              <li>
+                After that, the only way to credit is the editor’s “Count pages read elsewhere…”.
+              </li>
+              <li>
+                Everything below the UI is the same under A or B: the events, the engine, Undo,
+                un-read and the editor.
+              </li>
+            </ul>
           </div>
         </div>
-        <div data-in="a" data-state="a3" hidden>
-          <div class="snack"><span>Marked Vol. 3 as read · counted 38 min</span><span class="act">Undo</span></div>
-        </div>
-      </div>
-      <ul class="notes">
-        <li>The sheet appears only when the pages not read here hold some text. Otherwise the mark happens at once, as today.</li>
-        <li>Both buttons mark the volume read, so either answer is one tap. ×, Escape or the backdrop cancels and nothing is written.</li>
-        <li>“Don’t ask again” saves the button you press as the setting.</li>
-        <li>Undo puts the volume back on page 138 and removes the credit. AniList is held until the snackbar closes.</li>
-        <li>The default focus is “Don’t count” (today’s behaviour). There are no modifier or arrow keys, and every button is at least 44 px.</li>
-      </ul>
-    </div>
+      </section>
 
-    <!-- B: quiet first -->
-    <div class="col">
-      <div class="label">B · Quiet first <span class="tag alt">Alternative</span></div>
-      <div class="sub" data-tabs="b">
-        <button class="on" data-state="b1">1 Mark → offer</button>
-        <button data-state="b2">2 After tapping the offer</button>
-      </div>
-      <div class="phone">
-        <div class="appbar"><span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span></div>
-        <div class="series-head"><h2>星の旅</h2><div class="meta">5 volumes · 3 read</div></div>
-        <div class="toolbar"><span class="tb">☁</span><span class="tb">🗑</span><span class="tb">⇅</span><span class="tb">▦</span><span class="tb">⋮</span></div>
-        <div class="grid">
-          <div class="card done"><div class="cover c1">一</div><div class="t">Vol. 1</div><div class="p"><span class="check on"></span>182 / 182</div></div>
-          <div class="card done"><div class="cover c2">二</div><div class="t">Vol. 2</div><div class="p"><span class="check on"></span>176 / 176</div></div>
-          <div class="card done" data-in="b" data-state="b1"><div class="cover c3">三</div><div class="t">Vol. 3</div><div class="p"><span class="check on"></span>180 / 180 · 2 h 9 min</div></div>
-          <div class="card done" data-in="b" data-state="b2" hidden><div class="cover c3">三</div><div class="t">Vol. 3</div><div class="p"><span class="check on"></span>180 / 180 · 2 h 47 min</div></div>
-          <div class="card"><div class="cover c4">四</div><div class="t">Vol. 4</div><div class="p"><span class="check"></span>Not started</div></div>
-        </div>
-        <div data-in="b" data-state="b1">
-          <div class="snack"><span>Marked Vol. 3 as read</span><span class="act">Count 42 pages · ~38 min</span></div>
-        </div>
-        <div data-in="b" data-state="b2" hidden>
-          <div class="snack"><span>Counted 42 pages · 38 min · 9,412 chars</span><span class="act">Undo</span></div>
-        </div>
-      </div>
-      <ul class="notes">
-        <li>Nothing changes until the user taps the offer, so marking costs no extra tap.</li>
-        <li>The offer lasts 8 s. On a phone it is easy to miss, and anyone who wants credit by default has to find the setting.</li>
-        <li>After that, the only way to credit is the editor’s “Count pages read elsewhere…”.</li>
-        <li>Everything below the UI is the same under A or B: the events, the engine, Undo, un-read and the editor.</li>
-      </ul>
-    </div>
-  </div>
-</section>
-
-<!-- ======================= 2. BULK ======================= -->
-<section data-in="main" data-state="bulk" hidden>
-  <div class="row">
-    <div class="col">
-      <div class="label">Series / bulk <span class="tag rec">Recommended</span></div>
-      <div class="sub" data-tabs="k">
-        <button class="on" data-state="k1">1 Series menu</button>
-        <button data-state="k0">1b Card menu</button>
-        <button data-state="k2">2 Sheet (from “up to here” on Vol. 5)</button>
-        <button data-state="k3">3 After</button>
-      </div>
-      <div class="phone">
-        <div class="appbar"><span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span></div>
-        <div class="series-head"><h2>空の図書館</h2><div class="meta">6 volumes · 0 read</div></div>
-        <div class="toolbar"><span class="tb">☁</span><span class="tb">🗑</span><span class="tb">⇅</span><span class="tb">▦</span><span class="tb" style="border-color:var(--primary)">⋮</span>
-          <div class="dropdown" data-in="k" data-state="k1">
-            <div class="dd red">Delete from cloud</div>
-            <div class="dd">Extract</div>
-            <div class="dd">View text</div>
-            <div class="dd hl">Mark volumes as read… <span class="tag new">new</span></div>
+      <!-- ======================= 2. BULK ======================= -->
+      <section data-in="main" data-state="bulk" hidden>
+        <div class="row">
+          <div class="col">
+            <div class="label">Series / bulk <span class="tag rec">Recommended</span></div>
+            <div class="sub" data-tabs="k">
+              <button class="on" data-state="k1">1 Series menu</button>
+              <button data-state="k0">1b Card menu</button>
+              <button data-state="k2">2 Sheet (from “up to here” on Vol. 5)</button>
+              <button data-state="k3">3 After</button>
+            </div>
+            <div class="phone">
+              <div class="appbar">
+                <span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span>
+              </div>
+              <div class="series-head">
+                <h2>空の図書館</h2>
+                <div class="meta">6 volumes · 0 read</div>
+              </div>
+              <div class="toolbar">
+                <span class="tb">☁</span><span class="tb">🗑</span><span class="tb">⇅</span
+                ><span class="tb">▦</span
+                ><span class="tb" style="border-color: var(--primary)">⋮</span>
+                <div class="dropdown" data-in="k" data-state="k1">
+                  <div class="dd red">Delete from cloud</div>
+                  <div class="dd">Extract</div>
+                  <div class="dd">View text</div>
+                  <div class="dd hl">Mark volumes as read… <span class="tag new">new</span></div>
+                </div>
+              </div>
+              <div class="grid">
+                <div class="card" data-in="k" data-state="k1">
+                  <div class="cover c1">一</div>
+                  <div class="t">Vol. 1</div>
+                  <div class="p"><span class="check"></span>Not started</div>
+                </div>
+                <div class="card" data-in="k" data-state="k1">
+                  <div class="cover c2">二</div>
+                  <div class="t">Vol. 2</div>
+                  <div class="p"><span class="check"></span>Not started</div>
+                </div>
+                <div class="card" data-in="k" data-state="k0" hidden>
+                  <div class="cover c1">一</div>
+                  <div class="t">Vol. 1</div>
+                  <div class="p"><span class="check"></span>Not started</div>
+                </div>
+                <div class="card" data-in="k" data-state="k0" hidden>
+                  <div class="cover c2">五</div>
+                  <div class="t">Vol. 5</div>
+                  <div class="p"><span class="check"></span>Not started</div>
+                  <span class="dots">⋮</span>
+                  <div class="dropdown" style="top: auto; bottom: 32px; right: -4px; width: 206px">
+                    <div class="dd">Edit</div>
+                    <div class="dd">View text</div>
+                    <div class="dd">Extract</div>
+                    <div class="dd" style="color: #31c48d">Mark as read</div>
+                    <div class="dd hl" style="color: #31c48d">
+                      Mark as read up to here <span class="tag new">new</span>
+                    </div>
+                    <div class="dd red">Remove from this device</div>
+                  </div>
+                </div>
+                <div class="card" data-in="k" data-state="k2" hidden>
+                  <div class="cover c1">一</div>
+                  <div class="t">Vol. 1</div>
+                  <div class="p"><span class="check"></span>Not started</div>
+                </div>
+                <div class="card" data-in="k" data-state="k2" hidden>
+                  <div class="cover c2">二</div>
+                  <div class="t">Vol. 2</div>
+                  <div class="p"><span class="check"></span>Not started</div>
+                </div>
+                <div class="card done" data-in="k" data-state="k3" hidden>
+                  <div class="cover c1">一</div>
+                  <div class="t">Vol. 1</div>
+                  <div class="p"><span class="check on"></span>182 / 182 · 2 h 47 min</div>
+                </div>
+                <div class="card done" data-in="k" data-state="k3" hidden>
+                  <div class="cover c2">二</div>
+                  <div class="t">Vol. 2</div>
+                  <div class="p"><span class="check on"></span>176 / 176 · 2 h 41 min</div>
+                </div>
+              </div>
+              <div data-in="k" data-state="k2" hidden>
+                <div class="backdrop"></div>
+                <div class="sheet">
+                  <div class="grab"></div>
+                  <div class="sheet-head">
+                    <h3>Mark volumes as read</h3>
+                    <span class="x">×</span>
+                  </div>
+                  <div class="vlist">
+                    <div class="vrow">
+                      <span class="box on"></span><span class="vt">Vol. 1</span
+                      ><span class="vp">182 pages not read here</span>
+                    </div>
+                    <div class="vrow">
+                      <span class="box on"></span><span class="vt">Vol. 2</span
+                      ><span class="vp">176 pages not read here</span>
+                    </div>
+                    <div class="vrow">
+                      <span class="box on"></span><span class="vt">Vol. 3</span
+                      ><span class="vp">42 of 180 not read here</span>
+                    </div>
+                    <div class="vrow">
+                      <span class="box on"></span><span class="vt">Vol. 4</span
+                      ><span class="vp">188 pages not read here</span>
+                    </div>
+                    <div class="vrow">
+                      <span class="box on"></span><span class="vt">Vol. 5</span
+                      ><span class="vp">180 pages not read here</span>
+                    </div>
+                    <div class="vrow off">
+                      <span class="box"></span><span class="vt">Vol. 6</span
+                      ><span class="vp">174 pages not read here</span>
+                    </div>
+                  </div>
+                  <div class="est">
+                    <div class="est-main">
+                      5 volumes · 768 pages · 176,912 characters · about 11 h 55 min
+                    </div>
+                    <div class="est-src">
+                      At your speed in this series, 248 chars/min.
+                      <span class="link">Adjust ▾</span>
+                    </div>
+                  </div>
+                  <p class="note">Either way they’re marked read and count for your goals.</p>
+                  <div class="btns">
+                    <span class="btn focus">Don’t count</span
+                    ><span class="btn primary">Count them</span>
+                  </div>
+                </div>
+              </div>
+              <div data-in="k" data-state="k3" hidden>
+                <div class="snack">
+                  <span>Marked 5 volumes as read · counted 11 h 55 min</span
+                  ><span class="act">Undo</span>
+                </div>
+              </div>
+            </div>
+            <ul class="notes">
+              <li>
+                There are two ways in, and both open one sheet. “Mark volumes as read…” pre-checks
+                every unfinished volume. “Mark as read up to here” pre-checks the volumes up to that
+                card.
+              </li>
+              <li>
+                Tapping a row toggles it. There is no Shift-click range, because Shift is a
+                dictionary-extension key.
+              </li>
+              <li>
+                The bulk sheet always asks, because it is open anyway. The setting only picks which
+                button has focus.
+              </li>
+              <li>
+                In bulk, Adjust sets one total time, which is split across the volumes by their
+                characters. Each volume gets its own credit event, and one Undo reverts the batch.
+              </li>
+            </ul>
           </div>
         </div>
-        <div class="grid">
-          <div class="card" data-in="k" data-state="k1"><div class="cover c1">一</div><div class="t">Vol. 1</div><div class="p"><span class="check"></span>Not started</div></div>
-          <div class="card" data-in="k" data-state="k1"><div class="cover c2">二</div><div class="t">Vol. 2</div><div class="p"><span class="check"></span>Not started</div></div>
-          <div class="card" data-in="k" data-state="k0" hidden><div class="cover c1">一</div><div class="t">Vol. 1</div><div class="p"><span class="check"></span>Not started</div></div>
-          <div class="card" data-in="k" data-state="k0" hidden><div class="cover c2">五</div><div class="t">Vol. 5</div><div class="p"><span class="check"></span>Not started</div><span class="dots">⋮</span>
-            <div class="dropdown" style="top:auto; bottom:32px; right:-4px; width:206px">
-              <div class="dd">Edit</div><div class="dd">View text</div><div class="dd">Extract</div>
-              <div class="dd" style="color:#31c48d">Mark as read</div>
-              <div class="dd hl" style="color:#31c48d">Mark as read up to here <span class="tag new">new</span></div>
-              <div class="dd red">Remove from this device</div>
+      </section>
+
+      <!-- ======================= 3. LOW DATA ======================= -->
+      <section data-in="main" data-state="low" hidden>
+        <div class="row">
+          <div class="col">
+            <div class="label">
+              No estimate yet <span class="tag alt">under 30 min of reading</span>
+            </div>
+            <div class="phone" style="height: 470px">
+              <div class="appbar">
+                <span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span>
+              </div>
+              <div class="backdrop" style="top: 44px"></div>
+              <div class="sheet">
+                <div class="grab"></div>
+                <div class="sheet-head">
+                  <h3>Mark “Vol. 3” as read</h3>
+                  <span class="x">×</span>
+                </div>
+                <p>42 of its 180 pages weren’t read in this app.</p>
+                <p class="q">Count them in your stats?</p>
+                <div class="est">
+                  <div class="est-main">42 pages · 9,412 characters</div>
+                  <div class="est-src">Not enough reading here yet to estimate your time.</div>
+                  <div class="field" style="margin-top: 8px">
+                    <span class="lbl">Time (optional)</span><span class="inp empty">–</span> h
+                    <span class="inp empty">–</span> min
+                  </div>
+                  <div class="hint">Leave it empty to count the characters only.</div>
+                </div>
+                <p class="note">Either way it’s marked read and counts for your goals.</p>
+                <div class="chk"><span class="box"></span>Don’t ask again</div>
+                <div class="btns">
+                  <span class="btn focus">Don’t count</span
+                  ><span class="btn primary">Count them</span>
+                </div>
+              </div>
+            </div>
+            <ul class="notes">
+              <li>
+                The 100 chars/min fallback (<code>DEFAULT_SPEED</code>) is never shown as the user’s
+                speed.
+              </li>
+              <li>
+                If the setting is “Count them”, this case credits characters only, and the snackbar
+                says “no time added”.
+              </li>
+            </ul>
+          </div>
+          <div class="col">
+            <div class="label">
+              Rough estimate <span class="tag alt">30 min – 4 h of reading</span>
+            </div>
+            <div class="phone" style="height: 470px">
+              <div class="appbar">
+                <span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span>
+              </div>
+              <div class="backdrop" style="top: 44px"></div>
+              <div class="sheet">
+                <div class="grab"></div>
+                <div class="sheet-head">
+                  <h3>Mark “Vol. 3” as read</h3>
+                  <span class="x">×</span>
+                </div>
+                <p>42 of its 180 pages weren’t read in this app.</p>
+                <p class="q">Count them in your stats?</p>
+                <div class="est">
+                  <div class="est-main">42 pages · 9,412 characters · about 45 min</div>
+                  <div class="est-src">
+                    At your recent speed, 210 chars/min (rough estimate).
+                    <span class="link">Adjust ▾</span>
+                  </div>
+                </div>
+                <p class="note">Either way it’s marked read and counts for your goals.</p>
+                <div class="chk"><span class="box"></span>Don’t ask again</div>
+                <div class="btns">
+                  <span class="btn focus">Don’t count</span
+                  ><span class="btn primary">Count them</span>
+                </div>
+              </div>
+            </div>
+            <ul class="notes">
+              <li>
+                Speeds are tried in order. First the series’ own speed, which needs 60 min of recent
+                reading in the series. Then the recent speed, at “low” confidence or better. Then no
+                estimate.
+              </li>
+              <li>
+                The label always names its source, and at “low” confidence it adds “rough estimate”.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================= 4. STATS ======================= -->
+      <section data-in="main" data-state="stats" hidden>
+        <h3 class="sec">Volume card (series page)</h3>
+        <div class="row">
+          <div style="width: 170px">
+            <div class="card done">
+              <div class="cover c3">三</div>
+              <div class="t">Vol. 3</div>
+              <div class="p"><span class="check on"></span>180 / 180 · 2 h 47 min</div>
             </div>
           </div>
-          <div class="card" data-in="k" data-state="k2" hidden><div class="cover c1">一</div><div class="t">Vol. 1</div><div class="p"><span class="check"></span>Not started</div></div>
-          <div class="card" data-in="k" data-state="k2" hidden><div class="cover c2">二</div><div class="t">Vol. 2</div><div class="p"><span class="check"></span>Not started</div></div>
-          <div class="card done" data-in="k" data-state="k3" hidden><div class="cover c1">一</div><div class="t">Vol. 1</div><div class="p"><span class="check on"></span>182 / 182 · 2 h 47 min</div></div>
-          <div class="card done" data-in="k" data-state="k3" hidden><div class="cover c2">二</div><div class="t">Vol. 2</div><div class="p"><span class="check on"></span>176 / 176 · 2 h 41 min</div></div>
-        </div>
-        <div data-in="k" data-state="k2" hidden>
-          <div class="backdrop"></div>
-          <div class="sheet">
-            <div class="grab"></div>
-            <div class="sheet-head"><h3>Mark volumes as read</h3><span class="x">×</span></div>
-            <div class="vlist">
-              <div class="vrow"><span class="box on"></span><span class="vt">Vol. 1</span><span class="vp">182 pages not read here</span></div>
-              <div class="vrow"><span class="box on"></span><span class="vt">Vol. 2</span><span class="vp">176 pages not read here</span></div>
-              <div class="vrow"><span class="box on"></span><span class="vt">Vol. 3</span><span class="vp">42 of 180 not read here</span></div>
-              <div class="vrow"><span class="box on"></span><span class="vt">Vol. 4</span><span class="vp">188 pages not read here</span></div>
-              <div class="vrow"><span class="box on"></span><span class="vt">Vol. 5</span><span class="vp">180 pages not read here</span></div>
-              <div class="vrow off"><span class="box"></span><span class="vt">Vol. 6</span><span class="vp">174 pages not read here</span></div>
+          <div class="col">
+            <div class="tooltip">
+              2 h 47 min read<br /><span style="color: #c3b4fc"
+                >38 min of it counted when marked read</span
+              >
             </div>
-            <div class="est">
-              <div class="est-main">5 volumes · 768 pages · 176,912 characters · about 11 h 55 min</div>
-              <div class="est-src">At your speed in this series, 248 chars/min. <span class="link">Adjust ▾</span></div>
+            <ul class="notes">
+              <li>The card shows the total. The tooltip gives the split.</li>
+              <li>
+                The check comes from <code>isVolumeFinished</code>, so editing stats can never clear
+                it.
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <h3 class="sec">Volume editor: reading stats</h3>
+        <div class="row">
+          <div class="ed">
+            <h4>Reading stats</h4>
+            <div class="f">
+              <span class="lbl">Current page</span><span><span class="inp">180</span> / 180</span>
             </div>
-            <p class="note">Either way they’re marked read and count for your goals.</p>
-            <div class="btns"><span class="btn focus">Don’t count</span><span class="btn primary">Count them</span></div>
+            <div class="f">
+              <span class="lbl">Time read</span
+              ><span><span class="inp">2</span> h <span class="inp">47</span> min</span>
+            </div>
+            <div class="f">
+              <span class="lbl">Characters read</span><span>41,350 / 41,350</span>
+            </div>
+            <div class="credit-box">
+              <div>
+                <div class="ttl">Counted when marked read</div>
+                <div>38 min · 9,412 characters (42 pages)</div>
+              </div>
+              <span class="btn sm">Remove</span>
+            </div>
+          </div>
+          <div class="ed">
+            <h4>Reading stats (no credit yet)</h4>
+            <div class="f">
+              <span class="lbl">Current page</span><span><span class="inp">180</span> / 180</span>
+            </div>
+            <div class="f">
+              <span class="lbl">Time read</span
+              ><span><span class="inp">2</span> h <span class="inp">9</span> min</span>
+            </div>
+            <div class="f">
+              <span class="lbl">Characters read</span><span>31,938 / 41,350</span>
+            </div>
+            <div style="margin-top: 10px">
+              <span class="btn sm">Count pages read elsewhere…</span>
+            </div>
+            <div class="hint" style="margin-top: 6px">
+              This opens the same sheet, titled “Count reading done elsewhere”. “Up to page” starts
+              at the current page.
+            </div>
           </div>
         </div>
-        <div data-in="k" data-state="k3" hidden>
-          <div class="snack"><span>Marked 5 volumes as read · counted 11 h 55 min</span><span class="act">Undo</span></div>
-        </div>
-      </div>
-      <ul class="notes">
-        <li>There are two ways in, and both open one sheet. “Mark volumes as read…” pre-checks every unfinished volume. “Mark as read up to here” pre-checks the volumes up to that card.</li>
-        <li>Tapping a row toggles it. There is no Shift-click range, because Shift is a dictionary-extension key.</li>
-        <li>The bulk sheet always asks, because it is open anyway. The setting only picks which button has focus.</li>
-        <li>In bulk, Adjust sets one total time, which is split across the volumes by their characters. Each volume gets its own credit event, and one Undo reverts the batch.</li>
-      </ul>
-    </div>
-  </div>
-</section>
+        <ul class="notes" style="max-width: 860px; margin-top: 8px">
+          <li>“Characters read” shows the stats’ own figure, not progress ÷ pages × characters.</li>
+          <li>
+            A page edit moves the position only. It no longer writes a characters adjustment (bug 1
+            in the spec).
+          </li>
+          <li>
+            “Time read” stays as it is: it shows the total, and saving records the difference.
+          </li>
+        </ul>
 
-<!-- ======================= 3. LOW DATA ======================= -->
-<section data-in="main" data-state="low" hidden>
-  <div class="row">
-    <div class="col">
-      <div class="label">No estimate yet <span class="tag alt">under 30 min of reading</span></div>
-      <div class="phone" style="height:470px">
-        <div class="appbar"><span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span></div>
-        <div class="backdrop" style="top:44px"></div>
-        <div class="sheet">
-          <div class="grab"></div>
-          <div class="sheet-head"><h3>Mark “Vol. 3” as read</h3><span class="x">×</span></div>
-          <p>42 of its 180 pages weren’t read in this app.</p>
-          <p class="q">Count them in your stats?</p>
-          <div class="est">
-            <div class="est-main">42 pages · 9,412 characters</div>
-            <div class="est-src">Not enough reading here yet to estimate your time.</div>
-            <div class="field" style="margin-top:8px"><span class="lbl">Time (optional)</span><span class="inp empty">–</span> h <span class="inp empty">–</span> min</div>
-            <div class="hint">Leave it empty to count the characters only.</div>
+        <h3 class="sec">Reading speed page</h3>
+        <div class="tiles" style="max-width: 900px">
+          <div class="tile">
+            <div class="k">Recent Speed</div>
+            <div class="v">248</div>
+            <div class="s">chars/min — credit never moves this</div>
           </div>
-          <p class="note">Either way it’s marked read and counts for your goals.</p>
-          <div class="chk"><span class="box"></span>Don’t ask again</div>
-          <div class="btns"><span class="btn focus">Don’t count</span><span class="btn primary">Count them</span></div>
-        </div>
-      </div>
-      <ul class="notes">
-        <li>The 100 chars/min fallback (<code>DEFAULT_SPEED</code>) is never shown as the user’s speed.</li>
-        <li>If the setting is “Count them”, this case credits characters only, and the snackbar says “no time added”.</li>
-      </ul>
-    </div>
-    <div class="col">
-      <div class="label">Rough estimate <span class="tag alt">30 min – 4 h of reading</span></div>
-      <div class="phone" style="height:470px">
-        <div class="appbar"><span>‹ Catalog</span><span>Mokuro Reader</span><span>⚙</span></div>
-        <div class="backdrop" style="top:44px"></div>
-        <div class="sheet">
-          <div class="grab"></div>
-          <div class="sheet-head"><h3>Mark “Vol. 3” as read</h3><span class="x">×</span></div>
-          <p>42 of its 180 pages weren’t read in this app.</p>
-          <p class="q">Count them in your stats?</p>
-          <div class="est">
-            <div class="est-main">42 pages · 9,412 characters · about 45 min</div>
-            <div class="est-src">At your recent speed, 210 chars/min (rough estimate). <span class="link">Adjust ▾</span></div>
+          <div class="tile">
+            <div class="k">Characters Read</div>
+            <div class="v">1.2M</div>
+            <div class="s">1,234,567 total</div>
+            <div class="s cr">9,412 counted when marked read</div>
+            <div class="s">3,210 skimmed (not counted)</div>
           </div>
-          <p class="note">Either way it’s marked read and counts for your goals.</p>
-          <div class="chk"><span class="box"></span>Don’t ask again</div>
-          <div class="btns"><span class="btn focus">Don’t count</span><span class="btn primary">Count them</span></div>
+          <div class="tile">
+            <div class="k">Volumes Completed</div>
+            <div class="v">47</div>
+            <div class="s">(41 tracked)</div>
+          </div>
+          <div class="tile">
+            <div class="k">Total Time</div>
+            <div class="v">98h 12m</div>
+            <div class="s cr">38 min counted when marked read</div>
+          </div>
         </div>
-      </div>
-      <ul class="notes">
-        <li>Speeds are tried in order. First the series’ own speed, which needs 60 min of recent reading in the series. Then the recent speed, at “low” confidence or better. Then no estimate.</li>
-        <li>The label always names its source, and at “low” confidence it adds “rough estimate”.</li>
-      </ul>
-    </div>
-  </div>
-</section>
+        <div class="panel" style="max-width: 900px; margin-top: 12px">
+          <div class="speedrow" style="color: var(--muted); font-size: 12px">
+            <span>Volume</span><span>Speed</span><span>From</span>
+          </div>
+          <div class="speedrow">
+            <span>星の旅 Vol. 3</span><span>248 chars/min</span
+            ><span class="m"
+              >2 h 9 min · 31,938 chars measured (the 38 min counted is left out)</span
+            >
+          </div>
+          <div class="speedrow">
+            <span>空の図書館 Vol. 1</span><span class="m">not plotted</span
+            ><span class="m">all of it counted when marked read: no measured reading</span>
+          </div>
+        </div>
+        <ul class="notes" style="max-width: 860px; margin-top: 8px">
+          <li>
+            These all use measured reading only: speed, average, trend, badges and “tracked”. Totals
+            include the counted part, shown on its own line like “skimmed”.
+          </li>
+        </ul>
 
-<!-- ======================= 4. STATS ======================= -->
-<section data-in="main" data-state="stats" hidden>
-  <h3 class="sec">Volume card (series page)</h3>
-  <div class="row">
-    <div style="width:170px"><div class="card done"><div class="cover c3">三</div><div class="t">Vol. 3</div><div class="p"><span class="check on"></span>180 / 180 · 2 h 47 min</div></div></div>
-    <div class="col"><div class="tooltip">2 h 47 min read<br><span style="color:#c3b4fc">38 min of it counted when marked read</span></div>
-      <ul class="notes"><li>The card shows the total. The tooltip gives the split.</li><li>The check comes from <code>isVolumeFinished</code>, so editing stats can never clear it.</li></ul></div>
-  </div>
+        <h3 class="sec">Setting (Settings → Reader → Reading timer)</h3>
+        <div class="settings">
+          <div style="font-weight: 600">When I mark a volume as read, pages not read here:</div>
+          <div class="seg">
+            <span class="on">Ask each time</span><span>Count them</span
+            ><span>Don’t count them</span>
+          </div>
+          <div class="hint">
+            Counted pages add characters and estimated time to your stats. They never change your
+            speed.
+          </div>
+          <div class="hint" style="margin-top: 6px">
+            This is stored with “Still reading?” in the tracking settings, so it is the same on
+            every device and every profile.
+          </div>
+        </div>
 
-  <h3 class="sec">Volume editor: reading stats</h3>
-  <div class="row">
-    <div class="ed">
-      <h4>Reading stats</h4>
-      <div class="f"><span class="lbl">Current page</span><span><span class="inp">180</span> / 180</span></div>
-      <div class="f"><span class="lbl">Time read</span><span><span class="inp">2</span> h <span class="inp">47</span> min</span></div>
-      <div class="f"><span class="lbl">Characters read</span><span>41,350 / 41,350</span></div>
-      <div class="credit-box">
-        <div><div class="ttl">Counted when marked read</div><div>38 min · 9,412 characters (42 pages)</div></div>
-        <span class="btn sm">Remove</span>
-      </div>
-    </div>
-    <div class="ed">
-      <h4>Reading stats (no credit yet)</h4>
-      <div class="f"><span class="lbl">Current page</span><span><span class="inp">180</span> / 180</span></div>
-      <div class="f"><span class="lbl">Time read</span><span><span class="inp">2</span> h <span class="inp">9</span> min</span></div>
-      <div class="f"><span class="lbl">Characters read</span><span>31,938 / 41,350</span></div>
-      <div style="margin-top:10px"><span class="btn sm">Count pages read elsewhere…</span></div>
-      <div class="hint" style="margin-top:6px">This opens the same sheet, titled “Count reading done elsewhere”. “Up to page” starts at the current page.</div>
-    </div>
-  </div>
-  <ul class="notes" style="max-width:860px; margin-top:8px">
-    <li>“Characters read” shows the stats’ own figure, not progress ÷ pages × characters.</li>
-    <li>A page edit moves the position only. It no longer writes a characters adjustment (bug 1 in the spec).</li>
-    <li>“Time read” stays as it is: it shows the total, and saving records the difference.</li>
-  </ul>
+        <h3 class="sec">Mark as unread</h3>
+        <div class="mini">
+          <div class="snack">
+            <span>Marked Vol. 3 as unread · removed 38 min counted</span
+            ><span class="act">Undo</span>
+          </div>
+        </div>
+        <ul class="notes" style="max-width: 860px; margin-top: 8px">
+          <li>
+            Unread takes back the credit the mark made. Time really read in the app stays, as today.
+          </li>
+          <li>
+            If the user later reads a credited page in the app, that page moves from the credit to
+            the real reading. Nothing is counted twice.
+          </li>
+        </ul>
+      </section>
+    </main>
 
-  <h3 class="sec">Reading speed page</h3>
-  <div class="tiles" style="max-width:900px">
-    <div class="tile"><div class="k">Recent Speed</div><div class="v">248</div><div class="s">chars/min — credit never moves this</div></div>
-    <div class="tile"><div class="k">Characters Read</div><div class="v">1.2M</div><div class="s">1,234,567 total</div><div class="s cr">9,412 counted when marked read</div><div class="s">3,210 skimmed (not counted)</div></div>
-    <div class="tile"><div class="k">Volumes Completed</div><div class="v">47</div><div class="s">(41 tracked)</div></div>
-    <div class="tile"><div class="k">Total Time</div><div class="v">98h 12m</div><div class="s cr">38 min counted when marked read</div></div>
-  </div>
-  <div class="panel" style="max-width:900px; margin-top:12px">
-    <div class="speedrow" style="color:var(--muted); font-size:12px"><span>Volume</span><span>Speed</span><span>From</span></div>
-    <div class="speedrow"><span>星の旅 Vol. 3</span><span>248 chars/min</span><span class="m">2 h 9 min · 31,938 chars measured (the 38 min counted is left out)</span></div>
-    <div class="speedrow"><span>空の図書館 Vol. 1</span><span class="m">not plotted</span><span class="m">all of it counted when marked read: no measured reading</span></div>
-  </div>
-  <ul class="notes" style="max-width:860px; margin-top:8px">
-    <li>These all use measured reading only: speed, average, trend, badges and “tracked”. Totals include the counted part, shown on its own line like “skimmed”.</li>
-  </ul>
-
-  <h3 class="sec">Setting (Settings → Reader → Reading timer)</h3>
-  <div class="settings">
-    <div style="font-weight:600">When I mark a volume as read, pages not read here:</div>
-    <div class="seg"><span class="on">Ask each time</span><span>Count them</span><span>Don’t count them</span></div>
-    <div class="hint">Counted pages add characters and estimated time to your stats. They never change your speed.</div>
-    <div class="hint" style="margin-top:6px">This is stored with “Still reading?” in the tracking settings, so it is the same on every device and every profile.</div>
-  </div>
-
-  <h3 class="sec">Mark as unread</h3>
-  <div class="mini"><div class="snack"><span>Marked Vol. 3 as unread · removed 38 min counted</span><span class="act">Undo</span></div></div>
-  <ul class="notes" style="max-width:860px; margin-top:8px">
-    <li>Unread takes back the credit the mark made. Time really read in the app stays, as today.</li>
-    <li>If the user later reads a credited page in the app, that page moves from the credit to the real reading. Nothing is counted twice.</li>
-  </ul>
-</section>
-</main>
-
-<script>
-  // State switching: a [data-tabs=G] bar shows the [data-in=G] elements whose data-state matches.
-  document.querySelectorAll('[data-tabs]').forEach(function (bar) {
-    var group = bar.getAttribute('data-tabs');
-    bar.querySelectorAll('button').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        bar.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === btn); });
-        var state = btn.getAttribute('data-state');
-        document.querySelectorAll('[data-in="' + group + '"]').forEach(function (el) {
-          el.hidden = el.getAttribute('data-state') !== state;
+    <script>
+      // State switching: a [data-tabs=G] bar shows the [data-in=G] elements whose data-state matches.
+      document.querySelectorAll('[data-tabs]').forEach(function (bar) {
+        var group = bar.getAttribute('data-tabs');
+        bar.querySelectorAll('button').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            bar.querySelectorAll('button').forEach(function (b) {
+              b.classList.toggle('on', b === btn);
+            });
+            var state = btn.getAttribute('data-state');
+            document.querySelectorAll('[data-in="' + group + '"]').forEach(function (el) {
+              el.hidden = el.getAttribute('data-state') !== state;
+            });
+          });
         });
       });
-    });
-  });
-  // "Adjust" opens and closes its own estimate box.
-  document.querySelectorAll('[data-toggle-adjust]').forEach(function (link) {
-    link.addEventListener('click', function () {
-      var est = link.closest('.est');
-      var open = est.classList.toggle('open');
-      link.textContent = open ? 'Adjust ▴' : 'Adjust ▾';
-    });
-  });
-</script>
-</body>
+      // "Adjust" opens and closes its own estimate box.
+      document.querySelectorAll('[data-toggle-adjust]').forEach(function (link) {
+        link.addEventListener('click', function () {
+          var est = link.closest('.est');
+          var open = est.classList.toggle('open');
+          link.textContent = open ? 'Adjust ▴' : 'Adjust ▾';
+        });
+      });
+    </script>
+  </body>
 </html>
