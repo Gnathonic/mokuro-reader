@@ -1,3 +1,5 @@
+import { READ_DWELL_MS } from '$lib/reading-history/visits';
+
 /**
  * Utility functions for volume state and display logic
  */
@@ -12,6 +14,9 @@ export function stampMs(iso: string | undefined | null): number {
   const t = Date.parse(iso);
   return Number.isNaN(t) ? 0 : t;
 }
+
+/** The share of a volume's pages a fresh pass turns through (`hasFreshPassSince`). */
+export const FRESH_PASS_MIN_SHARE = 0.25;
 
 /**
  * Is this volume read through?
@@ -30,18 +35,31 @@ export function stampMs(iso: string | undefined | null): number {
  * Did the reader start a NEW PASS through this volume after `sinceMs` — as
  * opposed to revisiting a bit of one they had already finished?
  *
- * The measure is how far back they went, against a reference page (the volume's
- * length, or the page they have just finished on). At or before the halfway
- * mark is a pass; anything nearer the end is a revisit.
+ * A pass reaches back to the first half of the volume (against a reference
+ * page: its length, or the page they have just finished on) and then READS ON:
+ * at least `FRESH_PASS_MIN_SHARE` of the reference in distinct pages, each
+ * arrived at by a forward turn and stayed on for `READ_DWELL_MS` (its dwell is
+ * the gap to the next turn). Anything nearer the end is a revisit, and so is
+ * looking a scene up (#304): a jump back, paging backwards to find it, a few
+ * pages read there, flipping forward again to the end. Distance alone — one
+ * turn in the first half — re-dated a volume finished last year the moment
+ * somebody checked something on page 30 and later went back to the end: it
+ * moved into this year's goal and lost its real date on every device.
  *
- * THE SAME QUESTION decides two things that must not disagree: whether a
- * completion gets a new date (`updateProgress`), and whether in-period reading
- * earns fractional goal credit (`partialProgressInPeriod`). When they used
- * different rules, a re-read begun past the halfway mark accrued credit while
- * it was in progress and lost all of it at the final page turn — reading more
- * pages made the goal go DOWN.
+ * Distinct pages, as partial goal credit counts them
+ * (`calculatePartialVolumeProgressInPeriod`). A spread is one turn, so a
+ * two-page reader crosses the share at about half the volume.
  *
- * @param pageTurns the volume's `recentPageTurns`
+ * THE SAME QUESTION decides three things that must not disagree: whether a
+ * completion gets a new date (`updateProgress`), whether a finished volume the
+ * reader has paged back in is being read again (`updateProgress`, the flag),
+ * and whether in-period reading earns fractional goal credit
+ * (`partialProgressInPeriod`). When they used different rules, a re-read begun
+ * past the halfway mark accrued credit while it was in progress and lost all
+ * of it at the final page turn — reading more pages made the goal go DOWN.
+ * More reading only ever turns this from "no" to "yes".
+ *
+ * @param pageTurns the volume's `recentPageTurns`, in time order
  * @param sinceMs epoch ms of the completion this pass would supersede
  * @param referencePage the volume's page count, or the completing page
  */
@@ -50,7 +68,22 @@ export function hasFreshPassSince(
   sinceMs: number,
   referencePage: number
 ): boolean {
-  return pageTurns.some(([timestamp, page]) => timestamp > sinceMs && page * 2 <= referencePage);
+  const needed = Math.max(1, Math.ceil(referencePage * FRESH_PASS_MIN_SHARE));
+  let reachedFirstHalf = false;
+  const read = new Set<number>();
+  for (let i = 0; i < pageTurns.length; i++) {
+    const [timestamp, page] = pageTurns[i];
+    if (!(timestamp > sinceMs)) continue;
+    if (page * 2 <= referencePage) reachedFirstHalf = true;
+    // Reading near the end before going back does not count toward the pass.
+    if (!reachedFirstHalf) continue;
+    const previous = pageTurns[i - 1];
+    const next = pageTurns[i + 1];
+    const forward = !previous || page > previous[1];
+    if (forward && next && next[0] - timestamp >= READ_DWELL_MS) read.add(page);
+    if (read.size >= needed) return true;
+  }
+  return false;
 }
 
 export function isVolumeComplete(currentPage: number, pageCount: number): boolean {

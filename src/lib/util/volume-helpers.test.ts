@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  hasFreshPassSince,
   isVolumeComplete,
   isVolumeFinished,
   isSeriesFinished,
@@ -191,5 +192,55 @@ describe('isSeriesFinished', () => {
   it('treats a missing reading record as unread', () => {
     expect(isSeriesFinished([vol('a')], {})).toBe(false);
     expect(isSeriesFinished([vol('a')], undefined)).toBe(false);
+  });
+});
+
+describe('hasFreshPassSince (#304)', () => {
+  const SINCE = 1_000;
+  /** One turn per page, `stepMs` apart (20 s: read; 1 s: flipped through). */
+  const turns = (pages: number[], stepMs = 20_000) =>
+    pages.map((page, i) => [SINCE + 1 + i * stepMs, page, page * 10] as [number, number, number]);
+  const range = (from: number, to: number) =>
+    Array.from({ length: Math.abs(to - from) + 1 }, (_, i) => (to >= from ? from + i : from - i));
+
+  it('a look back at an early page is no pass, however far back it went', () => {
+    expect(hasFreshPassSince(turns([30]), SINCE, 200)).toBe(false);
+    expect(hasFreshPassSince(turns([1, 2, 3, 30, 31, 200]), SINCE, 200)).toBe(false);
+  });
+
+  it('a pass reaches the first half, then reads on through a quarter of the pages', () => {
+    // A page is read when the reader stayed on it until the next turn; the last
+    // turn has no next one yet.
+    expect(hasFreshPassSince(turns(range(1, 50)), SINCE, 200)).toBe(false);
+    expect(hasFreshPassSince(turns(range(1, 51)), SINCE, 200)).toBe(true);
+    // Started in the first half, read on past it.
+    expect(hasFreshPassSince(turns(range(90, 141)), SINCE, 200)).toBe(true);
+  });
+
+  it('paging backwards to find a scene is no reading', () => {
+    expect(hasFreshPassSince(turns(range(200, 20)), SINCE, 200)).toBe(false);
+  });
+
+  it('flipping forward through pages is no reading', () => {
+    expect(hasFreshPassSince(turns(range(20, 200), 1_000), SINCE, 200)).toBe(false);
+  });
+
+  it('reading near the end, then a jump back, is no pass', () => {
+    expect(hasFreshPassSince(turns([...range(120, 190), 10]), SINCE, 200)).toBe(false);
+  });
+
+  it('reading near the end is a revisit, however much of it', () => {
+    expect(hasFreshPassSince(turns(range(101, 200)), SINCE, 200)).toBe(false);
+  });
+
+  it('only turns after the completion count', () => {
+    const before = range(1, 100).map(
+      (page) => [SINCE - 100_000 + page * 20_000 - 2_000_000, page, 0] as [number, number, number]
+    );
+    expect(hasFreshPassSince(before, SINCE, 200)).toBe(false);
+  });
+
+  it('a page counts once', () => {
+    expect(hasFreshPassSince(turns([...range(1, 26), ...range(1, 26)]), SINCE, 200)).toBe(false);
   });
 });
