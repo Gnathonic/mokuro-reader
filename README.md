@@ -92,23 +92,25 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 
 ## ⌨️ Keyboard Shortcuts
 
-| Key                     | Action                                                 |
-| ----------------------- | ------------------------------------------------------ |
-| `N`                     | Toggle night mode                                      |
-| `I`                     | Toggle color inversion                                 |
-| `P`                     | Toggle page mode (single/dual)                         |
-| `C`                     | Toggle cover display                                   |
-| `Z`                     | Toggle zoom mode                                       |
-| `F`                     | Toggle fullscreen                                      |
-| `E`                     | Open the editor for the hovered catalog card or volume |
-| `Esc`                   | Exit current volume (or exit series if on series page) |
-| `←` / `→`               | Navigate to previous/next page                         |
-| `↑` / `↓`               | Pan view up/down                                       |
-| `Space` / `PageDown`    | Next page                                              |
-| `PageUp`                | Previous page                                          |
-| `Home`                  | Jump to first page                                     |
-| `End`                   | Jump to last page                                      |
-| `Ctrl` + `Scroll Wheel` | Zoom in/out                                            |
+| Key                     | Action                                                         |
+| ----------------------- | -------------------------------------------------------------- |
+| `N`                     | Toggle night mode                                              |
+| `I`                     | Toggle color inversion                                         |
+| `P`                     | Toggle page mode (single/dual)                                 |
+| `C`                     | Toggle cover display                                           |
+| `Z`                     | Toggle zoom mode                                               |
+| `F`                     | Toggle fullscreen                                              |
+| `E`                     | Open the editor for the hovered catalog card or volume         |
+| `Esc`                   | Exit current volume (or exit series if on series page)         |
+| `←` / `→`               | Navigate to previous/next page                                 |
+| `↑` / `↓`               | Pan view up/down                                               |
+| `Space` / `PageDown`    | Next page — a page taller than the screen scrolls down first ¹ |
+| `PageUp`                | Previous page — a tall page scrolls up first ¹                 |
+| `Home`                  | Jump to first page                                             |
+| `End`                   | Jump to last page                                              |
+| `Ctrl` + `Scroll Wheel` | Zoom in/out                                                    |
+
+¹ Shows the rest of the page a screenful at a time and turns once its end is in view; the previous page opens at its end. Turn off **Page Up/Down scroll tall pages before turning** in the reader settings to always turn at once.
 
 ## 🚀 Usage
 

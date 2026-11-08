@@ -25,10 +25,15 @@ const OVERFLOW = PAGE_H - VIEW_H; // 2760
 type Size = { width: number; height: number };
 
 /** Six pages of `sizes` (one size for all), or one page per listed size. */
-async function seedVolume(page: Page, sizes: Size | Size[], settings: Record<string, unknown>) {
+async function seedVolume(
+  page: Page,
+  sizes: Size | Size[],
+  settings: Record<string, unknown>,
+  volumeSettings: Record<string, unknown> = {}
+) {
   await gotoApp(page);
   await page.evaluate(
-    async ({ SERIES, SERIES_UUID, VOLUME_UUID, sizes, settings }) => {
+    async ({ SERIES, SERIES_UUID, VOLUME_UUID, sizes, settings, volumeSettings }) => {
       const { db } = await import('/src/lib/catalog/db.ts');
       await db.open();
       await Promise.all([
@@ -82,11 +87,13 @@ async function seedVolume(page: Page, sizes: Size | Size[], settings: Record<str
         }))
       });
       await db.volume_files.put({ volume_uuid: VOLUME_UUID, files });
-      const { updateSetting } = await import('/src/lib/settings/index.ts');
+      const { updateSetting, updateVolumeSetting } = await import('/src/lib/settings/index.ts');
       for (const [key, value] of Object.entries(settings))
         updateSetting(key as never, value as never);
+      for (const [key, value] of Object.entries(volumeSettings))
+        updateVolumeSetting(VOLUME_UUID, key as never, value);
     },
-    { SERIES, SERIES_UUID, VOLUME_UUID, sizes, settings }
+    { SERIES, SERIES_UUID, VOLUME_UUID, sizes, settings, volumeSettings }
   );
 }
 
@@ -158,6 +165,35 @@ function stripState(page: Page) {
 }
 
 const near = (a: number, b: number, tol = 2) => Math.abs(a - b) <= tol;
+
+/**
+ * Page `i`'s edges against the scroll container's: 0 = flush, positive top /
+ * left = inside the view, positive bottom / right = hidden past the view.
+ */
+async function edgesOf(page: Page, i: number) {
+  const s = await stripState(page);
+  const p = s.pages[i];
+  return {
+    top: Math.round(p.top - s.box.top),
+    bottom: Math.round(p.bottom - s.box.bottom),
+    left: Math.round(p.left - s.box.left),
+    right: Math.round(p.right - s.box.right)
+  };
+}
+
+/** Paged mode: every shown page's index and top edge, in page order. */
+function pagedSpread(page: Page) {
+  return page.evaluate(() => {
+    const els = [...document.querySelectorAll<HTMLElement>('#manga-panel [data-page-index]')];
+    if (els.length === 0) return null;
+    return els
+      .map((el) => ({
+        index: Number(el.dataset.pageIndex),
+        top: Math.round(el.getBoundingClientRect().top)
+      }))
+      .sort((a, b) => a.index - b.index);
+  });
+}
 
 test.describe('Page keys scroll tall pages before turning (#283)', () => {
   test('paged fit-to-width: scrolls down through the page, then turns; Page Up opens the previous page at its bottom', async ({
@@ -510,8 +546,254 @@ test.describe('Page keys scroll tall pages before turning (#283)', () => {
     await expect
       .poll(async () => before - (await stripState(page)).scrollLeft)
       .toBe(width * (1 - 0.125));
-    // Page Up walks back to the spread's reading start.
+    // Page Up walks back to the spread's reading start…
     await page.keyboard.press('PageUp');
     await expect.poll(async () => (await stripState(page)).scrollLeft).toBe(before);
+    // …and from there turns back onto the cover — wider than the screen, so
+    // it opens at its reading END (its left edge, in RTL), not centred.
+    await page.keyboard.press('PageUp');
+    await expect.poll(async () => (await edgesOf(page, 0)).left).toBe(0);
+  });
+
+  test('continuous horizontal LTR: scrolls rightward through a wide spread; Page Up opens the previous spread at its end', async ({
+    page
+  }) => {
+    await seedVolume(
+      page,
+      { width: 3000, height: 1000 },
+      {
+        continuousScroll: true,
+        scrollMode: 'horizontal',
+        continuousZoomDefault: 'zoomFillScreen',
+        pageDividers: false,
+        pageKeysScrollFirst: true
+      },
+      { rightToLeft: false }
+    );
+    await openReader(page);
+    // The cover shows alone, centred: 660 px hidden on each side.
+    await expect.poll(async () => (await edgesOf(page, 0)).left).toBe(-660);
+
+    // Forward in LTR is RIGHTWARD: the cover's right part comes into view…
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => (await edgesOf(page, 0)).right).toBe(0);
+    // …then the spread [1, 2] opens at its reading start (page 1's left edge).
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => (await edgesOf(page, 1)).left).toBe(0);
+    await expect.poll(async () => (await stripState(page)).progress).toBe(2);
+    const before = (await stripState(page)).scrollLeft;
+    await page.keyboard.press('PageDown');
+    await expect
+      .poll(async () => (await stripState(page)).scrollLeft - before)
+      .toBe(1920 * (1 - 0.125));
+
+    // Backward: up the spread to its start, then onto the cover at its END.
+    await page.keyboard.press('PageUp');
+    await expect.poll(async () => (await stripState(page)).scrollLeft).toBe(before);
+    await page.keyboard.press('PageUp');
+    await expect.poll(async () => (await edgesOf(page, 0)).right).toBe(0);
+    // …and walks back along it, clamped at its start.
+    await page.keyboard.press('PageUp');
+    await expect.poll(async () => (await edgesOf(page, 0)).left).toBe(0);
+  });
+
+  test('continuous horizontal: setting off steps a spread at a time, centred, as before', async ({
+    page
+  }) => {
+    await seedVolume(
+      page,
+      { width: 3000, height: 1000 },
+      {
+        continuousScroll: true,
+        scrollMode: 'horizontal',
+        continuousZoomDefault: 'zoomFillScreen',
+        pageDividers: false,
+        pageKeysScrollFirst: false
+      }
+    );
+    await openReader(page);
+    await expect.poll(async () => (await edgesOf(page, 0)).right).toBe(660);
+    // The cover's hidden sides are skipped: page 1 opens centred.
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => (await edgesOf(page, 1)).right).toBe(660);
+    await expect.poll(async () => (await stripState(page)).progress).toBe(2);
+    await page.keyboard.press('PageUp');
+    await expect.poll(async () => (await edgesOf(page, 0)).right).toBe(660);
+  });
+
+  test('continuous horizontal, pages taller than the screen (original size): scrolls down a spread before stepping along the strip', async ({
+    page
+  }) => {
+    // 800×2600 at native size: 1520 px taller than the 1080 px screen. Spreads
+    // of two (1600 px) fit the width, so only the vertical axis overflows.
+    const overflow = 2600 - VIEW_H;
+    await seedVolume(
+      page,
+      { width: 800, height: 2600 },
+      {
+        continuousScroll: true,
+        scrollMode: 'horizontal',
+        continuousZoomDefault: 'zoomOriginal',
+        pageDividers: false,
+        pageKeysScrollFirst: true
+      }
+    );
+    await openReader(page);
+    // The cover opens centred: 760 px hidden above and below. Page Down
+    // shows its bottom (one step, clamped) instead of turning.
+    await expect.poll(async () => (await edgesOf(page, 0)).bottom).toBe(overflow / 2);
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => (await edgesOf(page, 0)).bottom).toBe(0);
+    expect([0, 1]).toContain((await stripState(page)).progress);
+
+    // The turn: spread [1, 2] centred along the strip, at its TOP.
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => (await edgesOf(page, 1)).top).toBe(0);
+    let s = await stripState(page);
+    const pairCentre =
+      (Math.min(s.pages[1].left, s.pages[2].left) + Math.max(s.pages[1].right, s.pages[2].right)) /
+      2;
+    expect(near(pairCentre, (s.box.left + s.box.right) / 2)).toBe(true);
+    await expect.poll(async () => (await stripState(page)).progress).toBe(2);
+
+    // Down it — a screenful, then the rest — before the next turn.
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => (await edgesOf(page, 1)).top).toBe(-STEP);
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => (await edgesOf(page, 1)).top).toBe(-overflow);
+    expect((await stripState(page)).progress).toBe(2);
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => (await edgesOf(page, 3)).top).toBe(0);
+    await expect.poll(async () => (await stripState(page)).progress).toBe(4);
+
+    // Backward: the previous spread opens at its BOTTOM, then walks up it.
+    await page.keyboard.press('PageUp');
+    await expect.poll(async () => (await edgesOf(page, 1)).bottom).toBe(0);
+    await expect.poll(async () => (await stripState(page)).progress).toBe(2);
+    await page.keyboard.press('PageUp');
+    await expect.poll(async () => (await edgesOf(page, 1)).top).toBe(-(overflow - STEP));
+    await page.keyboard.press('PageUp');
+    await expect.poll(async () => (await edgesOf(page, 1)).top).toBe(0);
+    s = await stripState(page);
+    expect(s.progress).toBe(2);
+  });
+
+  test('continuous horizontal, a page wider AND taller than the screen: read in rows — down, then along back at the top, then turn', async ({
+    page
+  }) => {
+    // 3000×2000 at native size, RTL: 1080 px wider and 920 px taller than
+    // the screen, so the lone cover opens centred with 540 px hidden on each
+    // side and 460 px above and below.
+    await seedVolume(
+      page,
+      { width: 3000, height: 2000 },
+      {
+        continuousScroll: true,
+        scrollMode: 'horizontal',
+        continuousZoomDefault: 'zoomOriginal',
+        pageDividers: false,
+        pageKeysScrollFirst: true
+      }
+    );
+    await openReader(page);
+    await expect
+      .poll(async () => {
+        const e = await edgesOf(page, 0);
+        return [e.right, e.bottom];
+      })
+      .toEqual([540, 460]);
+
+    // Down first…
+    await page.keyboard.press('PageDown');
+    await expect
+      .poll(async () => {
+        const e = await edgesOf(page, 0);
+        return [e.right, e.bottom];
+      })
+      .toEqual([540, 0]);
+    // …then along in reading direction (leftward), back at the top…
+    await page.keyboard.press('PageDown');
+    await expect
+      .poll(async () => {
+        const e = await edgesOf(page, 0);
+        return [e.left, e.top];
+      })
+      .toEqual([0, 0]);
+    // …down that column…
+    await page.keyboard.press('PageDown');
+    await expect.poll(async () => (await edgesOf(page, 0)).bottom).toBe(0);
+    // …and only then the turn: page 1 at its reading start (right) and top.
+    await page.keyboard.press('PageDown');
+    await expect
+      .poll(async () => {
+        const e = await edgesOf(page, 1);
+        return [e.right, e.top];
+      })
+      .toEqual([0, 0]);
+    await expect.poll(async () => (await stripState(page)).progress).toBe(2);
+
+    // Page Up turns back onto the cover's LAST view: reading end, bottom.
+    await page.keyboard.press('PageUp');
+    await expect
+      .poll(async () => {
+        const e = await edgesOf(page, 0);
+        return [e.left, e.bottom];
+      })
+      .toEqual([0, 0]);
+    // …and walks it backwards: up, then back along at the bottom.
+    await page.keyboard.press('PageUp');
+    await expect.poll(async () => (await edgesOf(page, 0)).top).toBe(0);
+    await page.keyboard.press('PageUp');
+    await expect
+      .poll(async () => {
+        const e = await edgesOf(page, 0);
+        return [e.right, e.bottom];
+      })
+      .toEqual([0, 0]);
+  });
+
+  test('paged dual-page fit-to-width: scrolls down a spread; Page Up opens the previous spread, and the cover, at the bottom', async ({
+    page
+  }) => {
+    // Seven 1000×2000 pages, cover alone: [0] [1 2] [3 4] [5 6]. A spread of
+    // two at fit-to-width is 1920×1920 (840 px hidden); the lone cover is
+    // 1920×3840, as in single mode.
+    await seedVolume(
+      page,
+      [...Array(7)].map(() => TALL),
+      {
+        continuousScroll: false,
+        singlePageView: 'dual',
+        zoomDefault: 'zoomFitToWidth',
+        pageKeysScrollFirst: true
+      }
+    );
+    await openReader(page);
+    await expect.poll(() => pagedSpread(page)).toEqual([{ index: 0, top: 0 }]);
+
+    for (const top of [-STEP, -2 * STEP, -OVERFLOW]) {
+      await page.keyboard.press('PageDown');
+      await expect.poll(() => pagedSpread(page)).toEqual([{ index: 0, top }]);
+    }
+    await page.keyboard.press('PageDown');
+    const spread = (i: number, top: number) => [
+      { index: i, top },
+      { index: i + 1, top }
+    ];
+    await expect.poll(() => pagedSpread(page)).toEqual(spread(1, 0));
+    // 840 px hidden: one clamped step, then the turn.
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => pagedSpread(page)).toEqual(spread(1, -840));
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => pagedSpread(page)).toEqual(spread(3, 0));
+
+    // Page Up at a spread's top: the previous SPREAD at its bottom…
+    await page.keyboard.press('PageUp');
+    await expect.poll(() => pagedSpread(page)).toEqual(spread(1, -840));
+    await page.keyboard.press('PageUp');
+    await expect.poll(() => pagedSpread(page)).toEqual(spread(1, 0));
+    // …and the cover (a one-page step back) at its bottom too.
+    await page.keyboard.press('PageUp');
+    await expect.poll(() => pagedSpread(page)).toEqual([{ index: 0, top: -OVERFLOW }]);
   });
 });

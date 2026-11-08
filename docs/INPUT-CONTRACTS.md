@@ -137,9 +137,13 @@ camera into bounds and reports reading progress.
 ### Page keys scroll a tall page before turning (#283)
 
 With the `pageKeysScrollFirst` profile setting on (the default), Page Down /
-Space / Page Up scroll content taller than the screen — wider, in the
-horizontal strip — a screenful at a time (12.5% overlap) and turn only once
-its far edge is in view; a backward turn opens the previous page at its end.
+Space / Page Up scroll content taller than the screen a screenful at a time
+(12.5% overlap) and turn only once its far edge is in view; a backward turn
+opens the previous page at its end. The horizontal strip applies it on both
+axes, in reading order: down a spread taller than the screen (original size,
+or a user zoom), then along one wider than the screen — back at its top for
+each new column — then the spread step; a turn onto an oversized spread opens
+it at its reading start and top (backward: end and bottom), never centred.
 Off reproduces the old always-turn paths exactly. Arrow keys, taps, swipes,
 edge zones and the wheel are untouched. The decision is the pure
 `pageKeyStep` (`src/lib/reader/page-key-step.ts`); every surface feeds it the

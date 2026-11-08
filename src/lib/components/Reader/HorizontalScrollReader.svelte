@@ -26,7 +26,13 @@
   } from '$lib/reader/zoom-math';
   import { gestureTargetRole, keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { volumeEdgeNav } from '$lib/reader/page-nav';
-  import { alignDelta, pageKeyStep, readingSpan, type AxisSpan } from '$lib/reader/page-key-step';
+  import {
+    alignDelta,
+    PAGE_KEY_EPSILON_PX,
+    pageKeyStep,
+    readingSpan,
+    type AxisSpan
+  } from '$lib/reader/page-key-step';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
@@ -359,72 +365,114 @@
   }
 
   /**
-   * A spread on the reading axis (mirrored in RTL), with whether it fits the
-   * screen by navigateToPage's own rule (which then centres it). Undefined
-   * when a page of it is not in this volume.
+   * A spread on the reading axis (mirrored in RTL) and on the cross axis
+   * (screen y), with whether it fits the screen's width by navigateToPage's
+   * own rule (which then centres it) and whether it is taller than the screen
+   * (original size, or a user zoom). Undefined when a page of it is not in
+   * this volume.
    */
-  function measureSpread(pageIdx: number): { span: AxisSpan; fits: boolean } | undefined {
+  function measureSpread(
+    pageIdx: number
+  ): { span: AxisSpan; cross: AxisSpan; fits: boolean; tall: boolean } | undefined {
     if (!scrollContainer) return undefined;
     const rects = spreadIndices(pageIdx).map((i) => pageElements[i]?.getBoundingClientRect());
     if (rects.length === 0 || rects.some((r) => !r)) return undefined;
     const left = Math.min(...rects.map((r) => r!.left));
     const right = Math.max(...rects.map((r) => r!.right));
+    const top = Math.min(...rects.map((r) => r!.top));
+    const bottom = Math.max(...rects.map((r) => r!.bottom));
     const width = rects.reduce((sum, r) => sum + r!.width, 0);
     return {
       span: readingSpan(left, right, rtl),
-      fits: width <= scrollContainer.clientWidth + 2
+      cross: { start: top, end: bottom },
+      fits: width <= scrollContainer.clientWidth + 2,
+      tall: bottom - top > scrollContainer.clientHeight + PAGE_KEY_EPSILON_PX
     };
   }
 
   /**
    * Page Down / Space / Page Up with "scroll tall pages before turning" on
-   * (#283) — the vertical reader's rule along the strip: a spread wider than
-   * the screen scrolls a screenful (minus an overlap) in reading direction
-   * before the usual spread step turns it, and a turn onto a spread wider than
-   * the screen opens it at its reading start (forward) or end (backward)
-   * instead of centring it — the start would be off screen. Measured at the
-   * scroll's resting target, so a held key chains.
+   * (#283) — the vertical reader's rule, on both axes of the strip, in reading
+   * order: down a spread taller than the screen first (original size, or a
+   * user zoom), then along a spread wider than the screen a screenful at a
+   * time — back at its top — and only then the usual spread step. A turn
+   * onto a spread wider than the screen opens it at its reading start
+   * (forward) or end (backward) instead of centring it, and onto one taller
+   * than the screen at its top (forward) or bottom (backward) — the part the
+   * reader continues from would be off screen. Page Up mirrors every step.
+   * Measured at the scroll's resting target, so a held key chains.
    */
   function pageKey(direction: 'forward' | 'backward', current: number, turnTarget: number) {
     if (!scroller || !scrollContainer) return;
     motion.beforeNav?.();
+    const forward = direction === 'forward';
     const rest = scroller.restingTarget();
     // scrollLeft runs 0 → +range in LTR, 0 → −range in RTL.
-    const range = Math.max(0, scrollContainer.scrollWidth - scrollContainer.clientWidth);
+    const rangeX = Math.max(0, scrollContainer.scrollWidth - scrollContainer.clientWidth);
     const clampX = (x: number) =>
-      rtl ? Math.min(0, Math.max(-range, x)) : Math.min(range, Math.max(0, x));
+      rtl ? Math.min(0, Math.max(-rangeX, x)) : Math.min(rangeX, Math.max(0, x));
+    const rangeY = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+    const clampY = (y: number) => Math.min(rangeY, Math.max(0, y));
     const restX = clampX(rest.x);
+    const restY = clampY(rest.y);
     // Page rects are at the LIVE scroll position; shift the view to where the
     // scroll is heading instead of re-measuring mid-glide.
     const box = scrollContainer.getBoundingClientRect();
     const left = box.left + (restX - scrollContainer.scrollLeft);
+    const top = box.top + (restY - scrollContainer.scrollTop);
     const view = readingSpan(left, left + box.width, rtl);
+    const viewY: AxisSpan = { start: top, end: top + box.height };
     /** Screen-x scroll target for a reading-axis move of `by` from rest. */
     const moved = (by: number) => clampX(restX + (rtl ? -by : by));
+    /**
+     * Scroll-y target that shows a tall spread's top (forward) or bottom
+     * (backward) — where reading it continues from; a spread that fits the
+     * height keeps today's y.
+     */
+    const crossEdge = (s: { cross: AxisSpan; tall: boolean }) =>
+      s.tall ? clampY(restY + alignDelta(viewY, s.cross, forward ? 'start' : 'end')) : restY;
+    const scrollTo = (x: number, y: number) => scroller!.scrollBy(x - rest.x, y - rest.y);
 
     const spread = measureSpread(current);
-    if (spread && !spread.fits) {
-      const step = pageKeyStep({ direction, view, current: spread.span, enabled: true });
-      if (step.kind === 'scroll') {
-        const x = moved(step.by);
-        if (Math.abs(x - restX) >= 1) {
+    if (spread) {
+      // Down (up) the spread first…
+      const down = pageKeyStep({ direction, view: viewY, current: spread.cross, enabled: true });
+      if (down.kind === 'scroll') {
+        const y = clampY(restY + down.by);
+        if (Math.abs(y - restY) >= 1) {
           // Not a page change: keep navTarget through the scroll's settle.
           navIsKeyboard = true;
-          scroller.scrollBy(x - rest.x, 0);
+          scrollTo(restX, y);
           return;
+        }
+      }
+      // …then along it, back at its top (bottom) for the next column.
+      if (!spread.fits) {
+        const step = pageKeyStep({ direction, view, current: spread.span, enabled: true });
+        if (step.kind === 'scroll') {
+          const x = moved(step.by);
+          if (Math.abs(x - restX) >= 1) {
+            navIsKeyboard = true;
+            scrollTo(x, crossEdge(spread));
+            return;
+          }
         }
       }
     }
 
     const next = measureSpread(turnTarget);
-    if (!next || next.fits) {
+    if (!next || (next.fits && !next.tall)) {
       navigateToPage(turnTarget);
       return;
     }
     navTarget = turnTarget;
     navIsKeyboard = true;
-    const x = moved(alignDelta(view, next.span, direction === 'forward' ? 'start' : 'end'));
-    scroller.scrollBy(x - rest.x, 0);
+    // Along the strip: centred like navigateToPage when it fits, else at its
+    // reading start (end).
+    const dx = next.fits
+      ? (next.span.start + next.span.end - view.start - view.end) / 2
+      : alignDelta(view, next.span, forward ? 'start' : 'end');
+    scrollTo(moved(dx), crossEdge(next));
   }
 
   function handleKeydown(e: KeyboardEvent) {
