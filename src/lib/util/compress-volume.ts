@@ -196,7 +196,7 @@ function getDatabase(): Dexie {
     // divergence between them is silent data loss (see `db-schema.ts`).
     //
     // `db-schema.ts` imports nothing at runtime, so this does NOT pull the
-    // main-thread graph `db-v3.ts` carries ($app/environment, the progress
+    // main-thread graph `db-v3.ts` carries ($app/env, the progress
     // tracker, the thumbnail generator) into the Worker bundle.
     workerDb = new Dexie(MOKURO_DB_NAME);
     declareMokuroSchema(workerDb);
