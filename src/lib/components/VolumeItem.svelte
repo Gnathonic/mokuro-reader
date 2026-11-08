@@ -2,8 +2,14 @@
   // Shared across all VolumeItem instances to ensure only one dropdown is open at a time
   const menuCloseCallbacks = new Set<() => void>();
 
-  function closeAllMenus() {
-    menuCloseCallbacks.forEach((cb) => cb());
+  /**
+   * Close every OTHER card's menu. Never the one being opened: the popper opens
+   * its own on mousedown after a debounce (~200 ms), so a press held longer
+   * than that (a slow tap, or a busy page) opened the menu and this click
+   * closed it again on release.
+   */
+  function closeAllMenus(except?: () => void) {
+    menuCloseCallbacks.forEach((cb) => cb !== except && cb());
   }
 </script>
 
@@ -938,7 +944,7 @@
         onclick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          closeAllMenus();
+          closeAllMenus(closeMenu);
         }}
       >
         <DotsVerticalOutline class="h-4 w-4 text-white" />
