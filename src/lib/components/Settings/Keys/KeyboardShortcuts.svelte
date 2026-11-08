@@ -95,7 +95,13 @@
         Shortcuts need a hardware keyboard.
       </p>
     {/if}
-    <Input size="sm" type="search" placeholder="Filter actions" bind:value={filter} />
+    <Input
+      size="sm"
+      type="search"
+      placeholder="Filter actions"
+      aria-label="Filter keyboard shortcuts"
+      bind:value={filter}
+    />
 
     {#each groups as { group, actions: list } (group)}
       <section class="mt-2">

@@ -164,9 +164,13 @@
         onStart={() => {
           message = null;
           pending = null;
+          announce = 'Press a key. Escape cancels.';
           onCaptureChange(true);
         }}
-        onCancel={() => onCaptureChange(false)}
+        onCancel={() => {
+          announce = 'Recording cancelled.';
+          onCaptureChange(false);
+        }}
         onChord={captured}
       />
     {/if}

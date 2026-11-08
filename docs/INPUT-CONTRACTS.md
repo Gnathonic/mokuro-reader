@@ -194,11 +194,19 @@ With "Mouse wheel: Turns pages" (`wheelTurnsPages`, paged only), a plain
 vertical wheel turns pages in reading order (`src/lib/reader/input/wheel-page.ts`).
 Like a swipe (#186), a stream that could still pan in its direction **when it
 began** pans for its whole length; a stream ends after the
-`WHEEL_STREAM_IDLE_MS` gap or on a direction flip. A notched wheel turns one
-page per notch; a fine stream one page per stream. Ctrl/meta+wheel still zooms
-(a fine one is a pinch, #259), shift+wheel and a horizontal wheel still pan,
-and the gap chord is untouched. A turn opens with the paged gate's
-`beforeNav`.
+`WHEEL_STREAM_IDLE_MS` gap, on a direction flip, or — notched — on a turn, so
+the next notch gates on the NEW page's edges (a spin onto a page taller than
+the viewport pans it rather than skipping it). A notched wheel turns one page
+per notch; a fine stream one page per stream (its momentum never re-gates).
+Only a wheel RUN's first turn may leave the volume (`WheelRun`: events with no
+idle gap, shared across the remount a volume change does); a run that left is
+swallowed until idle, so a flick's leftover notches neither overshoot the
+book's end nor page the next volume. Ctrl/meta+wheel still zooms (a fine one
+is a pinch, #259), shift+wheel and a horizontal wheel still pan, and the gap
+chord is untouched. A turn opens with the paged gate's `beforeNav`. "Turns
+pages" also beats the swap in the continuous readers (`wheelSwapsZoom`): a
+profile with both flags on (an older client toggled the swap) never zooms on a
+plain wheel.
 
 ## Per-surface policy matrix
 

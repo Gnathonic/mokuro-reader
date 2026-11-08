@@ -45,8 +45,10 @@ describe('KeyboardShortcuts', () => {
   });
 
   it('filters by action name', async () => {
-    const { container, getByPlaceholderText } = render(KeyboardShortcuts, { open: true });
-    await fireEvent.input(getByPlaceholderText('Filter actions'), { target: { value: 'timer' } });
+    const { container, getByLabelText } = render(KeyboardShortcuts, { open: true });
+    await fireEvent.input(getByLabelText('Filter keyboard shortcuts'), {
+      target: { value: 'timer' }
+    });
     await tick();
     const rows = [...container.querySelectorAll('[data-key-action]')].map((r) =>
       r.getAttribute('data-key-action')

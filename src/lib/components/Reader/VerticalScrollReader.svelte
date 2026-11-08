@@ -18,7 +18,8 @@
     gapWheelSteps,
     normalizeWheelDelta,
     wheelIntentIsGapAdjust,
-    wheelIntentIsZoom
+    wheelIntentIsZoom,
+    wheelSwapsZoom
   } from '$lib/reader/zoom-math';
   import { gestureTargetRole } from '$lib/reader/input/gesture-target';
   import type { ReaderActionId } from '$lib/keys/actions';
@@ -426,7 +427,7 @@
     }
     const modifier = e.ctrlKey || e.metaKey;
 
-    if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior, fine)) {
+    if (wheelIntentIsZoom(modifier, wheelSwapsZoom($settings), fine)) {
       e.preventDefault();
       motion.beforeZoom();
       zoomController.wheelZoom(e, fine);

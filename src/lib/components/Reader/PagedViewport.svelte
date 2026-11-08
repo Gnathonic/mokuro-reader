@@ -19,7 +19,8 @@
     gapWheelSteps,
     normalizeWheelDelta,
     wheelIntentIsGapAdjust,
-    wheelIntentIsZoom
+    wheelIntentIsZoom,
+    wheelSwapsZoom
   } from '$lib/reader/zoom-math';
   import { pagedZoom, type PagedZoomApi } from '$lib/reader/paged-zoom';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
@@ -51,9 +52,12 @@
     onGapChange?: (px: number) => void;
     /**
      * "Mouse wheel: turns pages" (#55) asked for a page in READING order —
-     * Reader maps it, like a keyboard Next/Previous page.
+     * Reader maps it, like a keyboard Next/Previous page. `opensRun`: the
+     * wheel's first turn since it went idle, the only one that may leave the
+     * volume. Return true when the turn LEFT the volume: the rest of that
+     * wheel run is swallowed.
      */
-    onWheelPage?: (direction: 'forward' | 'backward') => void;
+    onWheelPage?: (direction: 'forward' | 'backward', opensRun: boolean) => boolean;
     children?: Snippet;
   }
 
@@ -190,7 +194,7 @@
     const modifier = e.ctrlKey || e.metaKey;
     // Turns pages wins over the swap: ctrl+wheel zooms, the plain wheel turns.
     const turnsPages = $settings.wheelTurnsPages && !!onWheelPage;
-    const swap = $settings.swapWheelBehavior && !turnsPages;
+    const swap = turnsPages ? false : wheelSwapsZoom($settings);
     if (wheelIntentIsZoom(modifier, swap, fine)) {
       e.preventDefault();
       motion.beforeZoom();
@@ -204,7 +208,7 @@
         e.preventDefault();
         if (action !== 'hold') {
           motion.beforeNav?.();
-          onWheelPage?.(action);
+          if (onWheelPage?.(action, wheelPages.turnOpensRun)) wheelPages.closeRun();
         }
         return;
       }

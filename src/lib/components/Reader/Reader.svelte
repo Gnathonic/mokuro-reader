@@ -233,6 +233,24 @@
     changePage(calculateBackwardTarget(page, pageNavContext()), ingoreTimeOut);
   }
 
+  /**
+   * "Mouse wheel: turns pages" (#55). Only a wheel run's FIRST turn may leave
+   * the volume (next/previous volume, or out to the series): a notched flick
+   * sends several notches, and the leftovers must not overshoot the book's
+   * end. Returns true when this turn left the volume.
+   */
+  function wheelPage(direction: 'forward' | 'backward', opensRun: boolean): boolean {
+    if (!pages) return false;
+    const leaves =
+      direction === 'forward'
+        ? page === pages.length && calculateForwardTarget(page, pageNavContext()) > pages.length
+        : page === 1 && calculateBackwardTarget(page, pageNavContext()) < 1;
+    if (leaves && !opensRun) return false;
+    if (direction === 'forward') navigateForward(true);
+    else navigateBackward(true);
+    return leaves;
+  }
+
   /** The series' volume before (-1) or after (1) this one, if any. */
   function adjacentVolume(delta: -1 | 1) {
     if (!volume) return undefined;
@@ -1837,7 +1855,7 @@
         pageKey={page}
         rtl={volumeSettings.rightToLeft ?? true}
         onPageFlip={(side) => (side === 'left' ? left(null, true) : right(null, true))}
-        onWheelPage={(dir) => (dir === 'forward' ? navigateForward(true) : navigateBackward(true))}
+        onWheelPage={wheelPage}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
       >

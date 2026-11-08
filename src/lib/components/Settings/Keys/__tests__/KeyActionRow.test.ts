@@ -47,6 +47,24 @@ describe('KeyActionRow', () => {
     expect(chips(container)).toEqual(['ArrowRight']);
   });
 
+  it('announces recording to screen readers, and its cancel', async () => {
+    const { container } = render(RowHarness, { id: 'reader.page-right', onSaved: vi.fn() });
+    const live = () => container.querySelector('[aria-live="polite"]')!.textContent;
+    await fireEvent.click(container.querySelector('[data-key-capture]')!);
+    await tick();
+    expect(live()).toBe('Press a key. Escape cancels.');
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        code: 'Escape',
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true
+      })
+    );
+    await tick();
+    expect(live()).toBe('Recording cancelled.');
+  });
+
   it('Escape cancels recording without saving', async () => {
     const saved = vi.fn();
     const { container, queryByText } = render(RowHarness, {

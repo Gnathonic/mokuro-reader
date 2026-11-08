@@ -344,3 +344,246 @@ test('mouse wheel: turns pages, one per notch; a zoomed page pans to its edge fi
   await page.mouse.wheel(0, 100);
   await expectPage(page, 3);
 });
+
+test('mouse wheel: a spin onto a tall page pans it instead of skipping it (#55 review)', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  // Fit to width on a landscape viewport: every 600×900 page is taller than
+  // the screen and opens at its top.
+  const volume = await setup(page, 'KeyWheelTall', {
+    wheelTurnsPages: true,
+    zoomDefault: 'zoomFitToWidth'
+  });
+  await openReader(page, volume);
+  await expectPage(page, 1);
+  const pageEl = page.locator('#manga-panel [data-page-index]').last();
+  await page.mouse.move(960, 540);
+
+  // Pan page 1 to its bottom in one stream, then pause.
+  for (let i = 0; i < 12; i++) {
+    await page.mouse.wheel(0, 400);
+    await page.waitForTimeout(60);
+  }
+  await expectStays(page, 1);
+  await page.waitForTimeout(600);
+
+  // One spin of four notches, 50 ms apart: the first turns to page 2, the
+  // rest pan page 2 — they must not turn to 3, 4 and 5 unseen.
+  for (let i = 0; i < 4; i++) {
+    await page.mouse.wheel(0, 100);
+    await page.waitForTimeout(50);
+  }
+  await expectStays(page, 2);
+  const top = (await pageEl.boundingBox())!.y;
+  expect(top).toBeLessThan(-20);
+});
+
+test('mouse wheel: a flick never runs past the volume’s ends; a fresh notch does', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyWheelEdge', { wheelTurnsPages: true });
+  await openReader(page, volume);
+  await page.mouse.move(960, 540);
+  const flick = async (deltaY: number) => {
+    for (let i = 0; i < 3; i++) {
+      await page.mouse.wheel(0, deltaY);
+      await page.waitForTimeout(50);
+    }
+  };
+
+  // Backward from page 2: one turn to page 1, the leftovers stay in the book.
+  await page.keyboard.press('ArrowLeft');
+  await expectPage(page, 2);
+  await page.waitForTimeout(400);
+  await flick(-100);
+  await expectStays(page, 1);
+  expect(await page.evaluate(() => location.hash)).toMatch(/^#\/reader\//);
+
+  // Forward from the second-to-last page: the same at the end.
+  await page.keyboard.press('End');
+  await expectPage(page, PAGES);
+  await page.keyboard.press('ArrowRight');
+  await expectPage(page, PAGES - 1);
+  await page.waitForTimeout(400);
+  await flick(100);
+  await expectStays(page, PAGES);
+  expect(await page.evaluate(() => location.hash)).toMatch(/^#\/reader\//);
+
+  // After a pause, a deliberate notch leaves the volume (no next volume: the
+  // series page), like Next page on the last page.
+  await page.waitForTimeout(600);
+  await page.mouse.wheel(0, 100);
+  await expect.poll(() => page.evaluate(() => location.hash)).toMatch(/^#\/series\//);
+});
+
+test('LTR: the arrows follow the reading direction', async ({ page }) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyLtr', {
+    volumeDefaults: { singlePageView: 'single', rightToLeft: false, hasCover: true }
+  });
+  await openReader(page, volume);
+  await expectPage(page, 1);
+  await page.keyboard.press('ArrowRight');
+  await expectPage(page, 2);
+  await page.keyboard.press('ArrowRight');
+  await expectPage(page, 3);
+  await page.keyboard.press('ArrowLeft');
+  await expectPage(page, 2);
+  // Reading-order keys are direction-free.
+  await page.keyboard.press('PageDown');
+  await expectPage(page, 3);
+  await page.keyboard.press('Space');
+  await expectPage(page, 4);
+  await page.keyboard.press('PageUp');
+  await expectPage(page, 3);
+});
+
+test('continuous horizontal: page keys step the strip through the reader’s one listener', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyHorizontal', {
+    continuousScroll: true,
+    scrollMode: 'horizontal'
+  });
+  await openReader(page, volume);
+  await expectPage(page, 1);
+  // RTL: ← is forward one page, → back one.
+  await page.keyboard.press('ArrowLeft');
+  await expectPage(page, 2);
+  await page.keyboard.press('ArrowLeft');
+  await expectPage(page, 3);
+  await page.keyboard.press('ArrowRight');
+  await expectPage(page, 2);
+  // PageDown / PageUp step a spread.
+  await page.keyboard.press('PageDown');
+  await expectPage(page, 4);
+  await page.keyboard.press('PageUp');
+  await expectPage(page, 2);
+  await page.keyboard.press('End');
+  await expectPage(page, PAGES);
+  await page.keyboard.press('Home');
+  await expectPage(page, 1);
+});
+
+test('edit mode: Escape clears the selection first and stays in the reader', async ({ page }) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyEditEsc');
+  await openReader(page, volume);
+  await page.keyboard.press('e');
+  await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
+  const block = page.locator('.editBlock').first();
+  await block.click();
+  await expect(page.locator('.editBlock.selected')).toHaveCount(1);
+
+  // One level per press: the selection…
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.editBlock.selected')).toHaveCount(0);
+  await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
+  expect(await page.evaluate(() => location.hash)).toMatch(/^#\/reader\//);
+  // …then edit mode…
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-edit-toolbar]')).toBeHidden();
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => location.hash)).toMatch(/^#\/reader\//);
+  // …then the reader.
+  await page.keyboard.press('Escape');
+  await expect.poll(() => page.evaluate(() => location.hash)).toMatch(/^#\/series\//);
+});
+
+test('Escape under a plain confirmation dialog closes it only — Back does not fire', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyConfirmEsc');
+  // The series page (the layout owns Back there).
+  await page.evaluate((s) => (window.location.hash = `#/series/${s}`), volume.seriesUuid);
+  const item = page.getByText(`${volume.seriesTitle} 01`, { exact: true }).first();
+  await expect(item).toBeVisible({ timeout: 30000 });
+  await item.hover();
+  // Delete on a hovered volume asks through promptConfirmation — a dialog
+  // with NO capture-phase Escape of its own, so only the layout's open-dialog
+  // guard keeps Back from firing too.
+  // flowbite's Dialog re-asserts `open` from the dialog's async `toggle` event,
+  // so an Escape landing before that event (a few ms after showModal — only a
+  // script is that fast) is undone and the dialog stays. Wait for it.
+  await page.evaluate(() => {
+    const w = window as unknown as { __dialogShown?: boolean };
+    w.__dialogShown = false;
+    document.addEventListener(
+      'toggle',
+      (e) => {
+        if ((e as ToggleEvent).newState === 'open') w.__dialogShown = true;
+      },
+      true
+    );
+  });
+  await page.keyboard.press('Delete');
+  await expect(page.locator('dialog[open]')).toHaveCount(1);
+  await expect(page.locator('dialog[open]')).toContainText('Remove');
+  await page.waitForFunction(
+    () => (window as unknown as { __dialogShown?: boolean }).__dialogShown
+  );
+  // The dialog opens focused on its checkbox — an input, which the layout's
+  // typing-target guard already ignores. On a BUTTON (tabbed to, or a popup
+  // without a checkbox) only the open-dialog guard is left.
+  const no = page.locator('dialog[open] button', { hasText: /^\s*No\s*$/ });
+  await no.focus();
+  await expect(no).toBeFocused();
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  // Back did not fire (it would also have cancelled the Escape, so the dialog
+  // would still be open)…
+  expect(await page.evaluate(() => location.hash)).toMatch(/^#\/series\//);
+  // …and the dialog closed.
+  await expect(page.locator('dialog[open]')).toHaveCount(0);
+  // Nothing was removed: the volume is still there.
+  await expect(item).toBeVisible();
+});
+
+test('re-read prompt open: a rebound page key does not page continuous scroll underneath', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyReread', {
+    continuousScroll: true,
+    scrollMode: 'vertical',
+    keyBindings: { 'reader.page-next': ['PageDown', 'Space', 'KeyS'] }
+  });
+  // The whole (one-volume) series read: opening its first volume offers a re-read.
+  await page.evaluate(
+    (v) =>
+      localStorage.setItem(
+        'volumes',
+        JSON.stringify({
+          [v.volumeUuid]: {
+            progress: 2,
+            completed: true,
+            lastProgressUpdate: new Date().toISOString(),
+            series_title: v.seriesTitle,
+            volume_title: `${v.seriesTitle} 01`
+          }
+        })
+      ),
+    volume
+  );
+  await page.reload();
+  await gotoApp(page);
+  await openReader(page, volume);
+  await expect(page.getByText('Start a re-read?')).toBeVisible({ timeout: 10000 });
+  const before = await currentPage(page);
+  await page.keyboard.press('s');
+  await page.keyboard.press('PageDown');
+  await expectStays(page, before);
+  await expect(page.getByText('Start a re-read?')).toBeVisible();
+  // Escape is the prompt's: it closes, and the reader stays.
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('Start a re-read?')).toBeHidden();
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => location.hash)).toMatch(/^#\/reader\//);
+  // With the prompt gone the rebound key pages again.
+  await page.keyboard.press('s');
+  await expectPage(page, before + 1);
+});
