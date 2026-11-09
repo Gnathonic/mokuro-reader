@@ -1,7 +1,10 @@
 # Key bindings: rebind or unbind every shortcut (#55)
 
 Status: proposed design, 2026-11-07. Read against `origin/develop` b905a92a.
+Sections 1-15 are built (draft PR #370). Section 17, added 2026-11-09, extends
+the work to every control, with icons and a registry-driven quick menu.
 Mockup: `2026-11-07-key-bindings-mockup.html` (same folder).
+Target list for section 17: `2026-11-08-binding-targets.html` (same folder).
 
 ## 1. Problem
 
@@ -498,21 +501,718 @@ with a hardware keyboard.
 
 ## 16. Decisions for the owner
 
+All eight are answered. Each took option (a), and that is what draft PR #370
+built; section 17 widens number 5.
+
 1. **Section 9 changes at defaults:** (a) accept all, recommended;
    (b) keep Shift+Space as Next page (add it to the defaults);
    (c) make Shift+Space Previous page, the browser convention.
+   **Answered: (a).** Built; pinned by the second table in
+   `defaults-golden.test.ts`.
 2. **Settings layout:** (a) section in the drawer, recommended;
    (b) modal opened from the drawer.
+   **Answered: (a).** Built as the "Keyboard shortcuts" accordion item.
 3. **Wheel turns pages (#55):** (a) phase 3 of this work, recommended;
    (b) its own issue later.
+   **Answered: (a).** Built (`wheelTurnsPages`, the "Mouse wheel" select).
 4. **Scope:** (a) per profile with "Copy to all profiles", recommended;
    (b) per profile only; (c) one user-level map outside profiles.
+   **Answered: (a).** Built. Section 17 stores the quick-menu selection the
+   same way.
 5. **New unbound actions in v1:** (a) timer, reader controls, zoom to fit,
    previous/next volume, recommended; (b) timer only.
+   **Answered: (a), then widened.** The five are built. Section 17 makes
+   every control on the target list an action.
 6. **Presets:** (a) none in v1, recommended; (b) one "No arrow keys"
    preset (A/D page left/right, W/S scroll).
+   **Answered: (a).** No presets.
 7. **Library keys by position:** (a) yes, like the reader, recommended;
    (b) keep `e.key` for the library only.
+   **Answered: (a).** Built.
 8. **Fixed gestures** (catalog Shift/Alt+wheel, the gap chord, taps):
    (a) stay fixed, listed read-only, recommended; (b) rebindable in a later
    round.
+   **Answered: (a).** Built (`FIXED_INPUTS`), and restated on the target
+   list: the spine-offset gestures stay fixed.
+
+## 17. Extension: every control, icons, quick menu
+
+Added 2026-11-09. Read against this branch at 4c302b67. The target list is
+`2026-11-08-binding-targets.html`: 119 rows, 98 marked Y. Only Y rows get
+actions.
+
+### 17.1 Owner decisions
+
+From the target list's Decisions section and the owner's answers:
+
+1. **C and O.** ONE action, "Spreads offset", default O. C is freed: no
+   default, nothing answers it in the reader. The cover toggle only shifted
+   the pairing as a side effect, and it is the less useful of the two. The
+   owner would rather need neither key: pairing that is right without help is
+   a follow-up, not this work.
+2. **P and Z.** Unchanged. V picks the layout type (paged or continuous). P
+   changes how the current type lays out, and Z changes its zoom. Each stays
+   ONE mode-aware cycle action. Folding P into V as a six-way rotation was
+   considered and not taken. The per-setting Next, Previous and Set-to actions
+   exist too, unbound.
+3. **Night, invert, black & white while scheduled.** The key shows today's
+   schedule message, and the message carries a "Set to manual" button.
+4. **Quick menu outside the reader.** Stays reader-only. Library and series
+   actions are bindable with no quick-menu option. A library quick menu is
+   acceptable later, not in v1.
+5. **Text-box actions under the pointer.** Deferred past v1. "Copy whole page
+   text" is in.
+6. **Open settings.** Yes, with one shared open-state store.
+7. Every row left on "maybe" is bindable, unbound by default.
+
+Rules that hold throughout:
+
+- This is rebinding. Every action can be unbound or given other keys. A new
+  action ships unbound unless its row has a key today.
+- Auto stays the default. `keyBindings: {}` and `quickMenu: {}` are today's
+  keys and today's quick menu. Nothing asks the user to configure anything.
+- A destructive command is bindable. Its key calls the button's own handler,
+  so the confirmation dialog still opens.
+- Feedback for a key press goes through the reader's in-overlay notification.
+  Outside the reader it uses the snackbar.
+
+### 17.2 Three kinds of target
+
+| Kind    | Source                      | Actions                                             |
+| ------- | --------------------------- | --------------------------------------------------- |
+| Setting | a setting definition (data) | generated: see the table below                      |
+| Command | one registry entry, by hand | one action, handler at the site that owns its state |
+| Cycle   | by hand (P, Z, L)           | one mode-aware action, behaviour unchanged          |
+
+Generated actions per setting kind:
+
+| Setting kind | Actions                                     | Repeat          |
+| ------------ | ------------------------------------------- | --------------- |
+| toggle       | Toggle                                      | no              |
+| list         | Next, Previous, one "Set to X" per option   | no              |
+| slider       | Step up, Step down, Reset (by its own step) | up and down yes |
+
+**Setting definitions.** Option lists exist in six Svelte components today
+(`ReaderSelects`, `ReaderSettings`, `ReaderToggles`, `PageAdjustCard`,
+`CatalogSettings`, `ProgressTrackerView`) and nowhere as data. A new module,
+`src/lib/settings/setting-defs.ts`, holds one definition per bindable setting.
+The components import their option lists from it, so each list exists once
+and the generator never copies one.
+
+```ts
+type SettingDef = {
+  id: string; // stable token used in action ids, never renamed
+  label: string; // "Paged zoom"
+  group: ActionGroup;
+  scope: KeyScope;
+  modes?: readonly ReaderMode[];
+  icon: IconName;
+  menu: 'off' | 'never'; // may it be put on the quick menu?
+  read(ctx: SettingCtx): unknown;
+  write(ctx: SettingCtx, value: unknown): void;
+} & (
+  | { kind: 'toggle'; actionId?: string; schedule?: ScheduleSettingKey }
+  | { kind: 'list'; options: Options | ((ctx: SettingCtx) => Options); wrap?: boolean }
+  | {
+      kind: 'slider';
+      min: number;
+      max: number;
+      step: number;
+      reset: number;
+      format(v: number): string;
+    }
+);
+```
+
+- `read`/`write` come from one helper per settings home: profile
+  (`updateSetting`), Anki (`updateAnkiSetting`), catalog
+  (`updateCatalogSetting`), device (`updateMiscSetting`), open volume
+  (`updateVolumeSetting`, with `ctx.volumeId`). A definition overrides them
+  when the control does more than store a value:
+  - Mouse wheel: three options over two booleans (`wheelTurnsPages`,
+    `swapWheelBehavior`).
+  - Anki double-tap: a toggle over `triggerMethod` (`doubleTap`/`both` = on).
+  - Stacking preset: `applyPreset`, which writes eight catalog settings. It
+    moves out of `CatalogSettings.svelte` into the definition's module.
+  - Hide completed volumes: also switches the preset to Custom, as the
+    control does.
+  - Theme: "Set to Custom" only selects Custom. It does not re-seed the
+    custom colours the way a click on the swatch does, because a key must
+    not overwrite a palette.
+- Slider steps and limits are the existing constants (`PAGE_ADJUST_*`,
+  `INK_STRENGTH_*`, `PAPER_*`, `MAX_PAGE_GAP`). The gap step is one wheel
+  notch, `100 / GAP_WHEEL_STEP_SIZE` = 5 px, not a second number.
+- A list wraps round by default. Font size does not (`wrap: false`): Next
+  stops at 60, Previous stops at auto.
+- Series sort and series view are component state in `SeriesView.svelte`
+  with their own localStorage keys. They move into a small store
+  (`src/lib/settings/series-view-prefs.ts`, same keys) so a definition can
+  read and write them.
+- Settings controls that copy a value into local state at mount
+  (`AnkiConnectSettings`: `cardMode`, `doubleTapEnabled`) must follow the
+  store instead, or the drawer shows a stale value after a key press.
+- The cycle buttons on the catalog, the series page and the progress tracker
+  call the definition's Next, so a button and a key walk the same order.
+
+**Generation.** `src/lib/keys/generate.ts` turns the definitions into
+`KeyActionDef`s. `src/lib/keys/setting-actions.ts` is the ONE handler for all
+of them: it reads the definition, computes the next value, writes it and
+announces it ("Brightness: 110%", "Paged zoom: Fit to width", "Bold font:
+On"). No listener site has a per-setting handler.
+
+Profiles are the one dynamic list: its "Set to" actions are rebuilt when the
+set of profile names changes (a primitive key derived from the `profiles`
+store, so other profile writes rebuild nothing).
+
+### 17.3 Ids
+
+Ids are stored in synced profiles, so they are permanent.
+
+| Kind           | Id                                                  |
+| -------------- | --------------------------------------------------- |
+| Command, cycle | `<area>.<name>`, as today (`reader.goto-page`)      |
+| Toggle         | `set.<def>.toggle`                                  |
+| List           | `set.<def>.next`, `set.<def>.prev`                  |
+| List option    | `set.<def>.to.<option>`                             |
+| Slider         | `set.<def>.up`, `set.<def>.down`, `set.<def>.reset` |
+| Profile option | `set.profile.to.<profile name>`                     |
+
+- `<def>` is the definition's `id`: kebab-case, no dots, chosen by hand and
+  never derived from a label or a storage key.
+- `<option>` is the stored value itself (`zoomFitToScreen`, `SMART`, `9`).
+  Stored values are already permanent. Everything after `.to.` is the option,
+  so a profile name with dots or spaces parses.
+- **Pinned ids.** Seven actions that exist today ARE a setting's toggle.
+  Their definitions carry `actionId`, so they keep their id, key and stored
+  bindings: `reader.continuous`, `reader.dividers`, `reader.timer`,
+  `reader.ocr-always`, `reader.night`, `reader.invert`, `reader.grayscale`.
+- Removing an option or a definition retires its ids. A retired or unknown id
+  stays in storage and is ignored, as section 7 says.
+- A profile that is renamed or deleted leaves its "Set to" binding behind,
+  inert. After a profile switch the keymap is the new profile's own.
+- `generated-ids-golden.test.ts` holds the full generated id list. An id that
+  changes or disappears fails it.
+
+**Migration of the old C and O ids.** `reader.offset-spreads` stays, with its
+default O; only its label changes to "Spreads offset". `reader.cover` is
+retired. No released build ever stored it; the fold below covers profiles
+written by builds of this branch, and is the pattern for any later
+retirement.
+
+- `RETIRED_ACTIONS = { 'reader.cover': { into: 'reader.offset-spreads', dropped: ['KeyC'] } }`
+  in `keymap.ts`, applied by `sanitizeKeyBindings` (so on load and on every
+  merged profile).
+- No stored entry: nothing to do. C simply has no action.
+- Stored `[]`: the entry is deleted.
+- Stored chords: `KeyC` is dropped (C is freed for everyone). Any other
+  chord is added to `reader.offset-spreads` (its stored list, else its
+  default O), up to the stored-chord cap. Then the entry is deleted.
+- The fold is deterministic and does not touch `lastUpdated`, like the other
+  shape migrations, so two devices converge without a write.
+
+### 17.4 Scopes and context
+
+| Scope            | Live in                        | Shadows     | Listener         |
+| ---------------- | ------------------------------ | ----------- | ---------------- |
+| `edit`           | reader, while editing          | reader, app | `Reader.svelte`  |
+| `reader`         | reader (per mode)              |             | `Reader.svelte`  |
+| `library.series` | catalog, card under pointer    | library     | `+layout.svelte` |
+| `library`        | catalog                        |             | `+layout.svelte` |
+| `library.volume` | series page, row under pointer | series      | `+layout.svelte` |
+| `series`         | series page                    |             | `+layout.svelte` |
+| `tracker`        | progress tracker               |             | `+layout.svelte` |
+| `text`           | volume and series text views   |             | `+layout.svelte` |
+| `series-editor`  | the series editor dialog       |             | `+layout.svelte` |
+| `app`            | everywhere but under a dialog  |             | both             |
+
+Order of trying: `edit`, `reader`, `app` in the reader; the hovered card's
+scope, the view's scope, `app` elsewhere.
+
+- **Relations.** Two actions on one chord: same scope with a shared mode is
+  a conflict. So is `app` against any scope it is live with, except `edit`
+  (as today). A scope against one it shadows is a note at capture, not a
+  prompt: "While a volume is under the pointer, E edits the volume first."
+  Scopes that are never live together (reader and library, catalog and
+  series page, the dialog and anything) do not relate. The table above is
+  data in `actions.ts`; `chordRelation` reads it.
+- **Modes.** A generated action takes its definition's `modes`. Page view
+  mode, paged zoom, page transition, paged gap, Bounds and Mobile are live in
+  Paged only. Scroll mode, continuous zoom, dividers and the scroll gap are
+  live in the continuous modes only. So "Set paged zoom to Fit" and "Set
+  continuous zoom to Fit" can share a key.
+- **P and Z** stay `reader.page-mode` and `reader.zoom-mode`, live in all
+  modes, each cycling the current mode's setting.
+- **One listener outside the reader.** Views and hovered cards stop owning
+  window listeners. `src/lib/keys/providers.ts` keeps one handler map per
+  scope: `provideKeyHandlers(scope, handlers)` returns its own disposer, and
+  the newest provider of a scope wins. `+layout.svelte` dispatches
+  `[hover scope if provided, view scope, 'app']`. A card provides its scope
+  while hovered; a view provides its scope while mounted. The guards run once
+  in the layout: not from a typing target, the settings panel or a popover.
+- **Dialogs.** While any dialog is open the layout dispatches only a provided
+  dialog scope (`series-editor`), never `app`. `SeriesEditorModal` provides
+  its handlers only while it is the top dialog (not while its link modal or a
+  confirmation is over it), the same test its Escape capture uses.
+- **The reader** keeps its own listener and guard prelude. Handlers resolve
+  in this order: the reader's typed map, the shared app map
+  (`src/lib/keys/app-actions.ts`), the generated-setting handler. New in
+  step B: the reader's listener also returns while any dialog is open, as the
+  library's already does. With confirm-dialog commands bindable, a second
+  press must not stack a dialog or act under one.
+- **Types.** Hand-registered ids stay a literal union, and every site's map is
+  `satisfies Record<…>`, so an entry without a handler fails type-check.
+  Generated ids are `` `set.${string}` `` plus the pinned literals; a unit test
+  checks each resolves.
+
+### 17.5 Feedback and the scheduled filters
+
+- `src/lib/keys/announce.ts`: `announce(message, key, action?)`. The reader
+  registers its notification while mounted; otherwise the snackbar shows the
+  message.
+- The seven pinned toggles have a toast today. They keep one, in the
+  generated wording: "Page dividers: On" where it said "Dividers On".
+  Cosmetic.
+- An action that cannot run says why ("AnkiConnect is off", "Not available
+  for the primary layer", "Select two boxes to merge") instead of doing
+  nothing.
+- **Scheduled filter.** `reader.night`, `reader.invert` and
+  `reader.grayscale` carry `schedule` on their definition. With the schedule
+  on, the key changes nothing and announces today's message ("Night Mode is
+  on automatic schedule"; the definition keeps today's three names for it),
+  with one button: **Set to manual**.
+  - The button turns the schedule off and keeps what is on screen: the manual
+    value takes the schedule's current state. The next press of the key then
+    toggles it. The settings card's radio is unchanged.
+  - `showNotification(message, key, action?)`. A notification with a button
+    stays 5 s instead of 2 and while the pointer or focus is on it. It never
+    takes focus. The button is a real `<button>`, which the gesture layer
+    already treats as interactive, so a tap on it neither turns the page nor
+    toggles the controls.
+  - It shows the same way when the action is run from the quick menu, which
+    is how a touch device reaches it.
+
+### 17.6 Storage: the quick-menu selection
+
+```ts
+// Settings (settings.ts), default {}
+quickMenu: Record<string /* action id */, boolean>;
+```
+
+- Sparse, like `keyBindings`. Absent id = the default (on for the eight
+  default ids, off for the rest). `true` = shown, `false` = hidden. A write
+  that equals the default deletes the entry, so a changed default reaches
+  everyone who has not chosen.
+- Profile field. Same whole-profile newest-wins merge, same
+  `updateSetting` touch.
+- `sanitizeQuickMenu` in `migrateProfiles`: a non-object becomes `{}`, a
+  non-boolean entry is dropped. Unknown ids are KEPT. An id whose action can
+  never be on the menu is ignored when the menu is built.
+- "Copy to all profiles" copies both maps. "Reset all shortcuts" and "Reset
+  quick menu" are separate.
+- No Dexie or file version change.
+
+### 17.7 The quick menu
+
+The reader's quick-actions menu renders from the registry.
+
+- **Eligible:** scope `reader`, `edit` or `app`, and not marked never. Never:
+  Open quick menu, Show quick actions button, the Mouse wheel list, the five
+  "Open …" navigation actions, and every library, series, volume-row,
+  series-editor, tracker and text-view action.
+- **Default set and order** is one list in `src/lib/keys/quick-menu.ts`,
+  top to bottom as today: OCR layers, Edit OCR text, Add image to Anki, Add
+  image 2 to Anki, Fullscreen, Zoom to fit, Page right, Page left. A user's
+  additions follow in registry order. No reordering in v1.
+- **Page left and Page right, not Next and Previous.** The target list puts
+  Next page and Previous page on the menu and calls that today's menu.
+  Today's two buttons call `left()` and `right()`: they are physical. In a
+  right-to-left book (the default) a "Next page" entry drawn as → would turn
+  the other way from today's → button. So the defaults are the physical
+  pair, with today's arrows. Next page and Previous page are available, off.
+  Changing this is two entries in the default list.
+- **State.** `Reader.svelte` answers, for the ids on the menu only: hidden
+  (not live in this mode; Anki off; no second page; no layers and not
+  editing), disabled with a reason (Edit in continuous scroll or on the
+  read-only original), on/off for a toggle, and a badge. One `$derived` in
+  the reader, which is a single instance.
+- **Badges** tell apart actions that share an icon: `+`, `−`, `0` for a
+  slider's three, `›` and `‹` for Next and Previous, up to three letters of
+  the option for a Set-to, `1` and `2` for the Anki pair as today.
+- A tap runs the same handler the key runs.
+- "Open quick menu" (`reader.quick-menu`) opens it by key even when the
+  button is hidden. The OCR layer picker is opened by `reader.ocr-layers` and
+  renders whenever it is open, not only while the menu button shows.
+- More entries than fit one column wrap into further columns toward the
+  centre of the screen.
+- Open settings on the menu is the same action as the key.
+
+### 17.8 The settings-open store
+
+- `src/lib/settings/settings-open.ts`: `settingsOpen`, a writable boolean.
+  `uploadModalOpen` sits beside it for the "Open upload" action.
+- The drawer is mounted twice today, by `NavBar` (always mounted, hidden in
+  the reader) and by the reader's `SettingsButton`, each with its own flag.
+  Both mounts stay, because `Settings.svelte` reads `isReader()`
+  non-reactively to choose reader or library content. Each binds to the
+  store through a function binding
+  and shows only in its own context: NavBar's outside the reader, the
+  reader's inside it. One flag, never two drawers.
+- The NavBar button, the reader's settings button, the key (`app.settings`)
+  and the quick menu all set the store. The drawer's own close paths clear
+  it.
+
+### 17.9 The settings section at 250 actions
+
+253 actions with two profiles: 170 generated, 83 by hand. The section lists
+TARGETS, about 130, not actions.
+
+- **Title:** "Shortcuts and quick menu".
+- **Groups** follow the target list's areas: Reader: navigation, view, image,
+  text, this volume, edit mode, OCR layers; App; Library; Series page; Volume
+  row; Series editor; Other views. Each is a collapsed disclosure showing its
+  count and how many rows are changed. Collapsed groups mount no rows.
+- **Rows.** A command or a toggle is one row: icon, label, keys, quick-menu
+  switch. A list or a slider is one row for the setting; it opens to its
+  actions (Next, Previous, each Set-to; or Step up, Step down, Reset). A
+  closed setting row says what is inside: "2 keys · 1 on the quick menu".
+  Nothing bound is ever invisible.
+- **Search** matches the label, the setting, an option name, the area and a
+  bound key's label. A search opens every group and setting with a match and
+  hides the rest.
+- **Filters:** Has a key · Changed · On the quick menu.
+- **Quick-menu switch** per row, absent where the action can never be on the
+  menu. Above the list: "Quick menu: 8 actions", with Reset.
+- **Touch.** The one-line note becomes "Keys need a hardware keyboard. The
+  quick menu works by touch." The quick-menu switches work without one.
+- A conflict's amber icon also shows on a closed group or setting that holds
+  it.
+- Rows keep `$derived` to their own chords. The keymap, the conflict map and
+  the menu selection are each derived once in the section.
+
+### 17.10 Every Y row
+
+"On branch" says whether the control exists here. Handler sites: R =
+`Reader.svelte`; G = the generated-setting handler; A = `app-actions.ts`;
+others are named. Rows marked SKIP or DEFER are in 17.11.
+
+**Reader: navigation**
+
+| Row                    | Actions                                                      | Site | On branch                                          |
+| ---------------------- | ------------------------------------------------------------ | ---- | -------------------------------------------------- |
+| Next page              | `reader.page-next` (exists)                                  | R    | yes                                                |
+| Previous page          | `reader.page-prev` (exists)                                  | R    | yes                                                |
+| Page left / Page right | `reader.page-left`, `reader.page-right`                      | R    | yes; menu default, see 17.7                        |
+| First page, Last page  | `reader.page-first`, `reader.page-last`                      | R    | yes                                                |
+| Scroll image up / down | `reader.scroll-up`, `-down`, `-left`, `-right`               | R    | yes                                                |
+| Next / Previous volume | `reader.volume-next`, `reader.volume-prev`                   | R    | yes                                                |
+| Back / close reader    | `app.back` (Esc locked)                                      | R    | yes                                                |
+| Go to page…            | `reader.goto-page` (new)                                     | R    | popover yes; opens it and focuses the number field |
+| Wheel turns pages      | `set.wheel.next`, `.prev`, `.to.pan`, `.to.zoom`, `.to.turn` | G    | select yes; menu never                             |
+
+**Reader: view**
+
+| Row                        | Actions                                        | Site | On branch                                                          |
+| -------------------------- | ---------------------------------------------- | ---- | ------------------------------------------------------------------ |
+| Fullscreen                 | `reader.fullscreen` (exists)                   | R    | yes                                                                |
+| Zoom to fit (now)          | `reader.zoom-fit` (exists; now all modes)      | R    | yes; continuous sets the zoom mode to fit, as the menu button does |
+| Zoom in / Zoom out         | `reader.zoom-in`, `reader.zoom-out` (new)      | R    | no control; one ladder step at the screen centre, see 17.11        |
+| Show/hide reader controls  | `reader.controls` (exists)                     | R    | yes                                                                |
+| Open settings              | `app.settings` (new)                           | A    | button yes; store in 17.8                                          |
+| Open quick menu            | `reader.quick-menu` (new)                      | R    | button yes; menu never                                             |
+| Page view mode             | `set.page-view.*` (3 options)                  | G    | yes                                                                |
+| Continuous scroll          | `reader.continuous` (pinned)                   | G    | yes                                                                |
+| Scroll mode                | `set.scroll-mode.*` (3)                        | G    | yes                                                                |
+| On page zoom (paged)       | `set.zoom-paged.*` (5)                         | G    | yes                                                                |
+| Continuous zoom            | `set.zoom-continuous.*` (3)                    | G    | yes                                                                |
+| P, Z                       | `reader.page-mode`, `reader.zoom-mode` (exist) | R    | yes                                                                |
+| Page dividers              | `reader.dividers` (pinned)                     | G    | yes                                                                |
+| Page transition            | `set.page-transition.*` (4)                    | G    | yes                                                                |
+| Bounds                     | `set.bounds.toggle`                            | G    | yes                                                                |
+| Show page number           | `set.page-number.toggle`                       | G    | yes                                                                |
+| Show character count       | `set.char-count.toggle`                        | G    | yes                                                                |
+| Show timer                 | `reader.timer` (pinned)                        | G    | yes                                                                |
+| Show quick actions button  | `set.quick-actions.toggle`                     | G    | yes; menu never                                                    |
+| Disable animations         | `set.no-animations.toggle`                     | G    | yes                                                                |
+| Mobile mode                | `set.mobile.toggle`                            | G    | yes                                                                |
+| Paged gap                  | `set.paged-gap.up`, `.down`, `.reset`          | G    | yes; 5 px                                                          |
+| Scroll gap                 | `set.scroll-gap.up`, `.down`, `.reset`         | G    | yes; 5 px                                                          |
+| Tap page edges (#54)       | SKIP                                           |      | no                                                                 |
+| Page Up/Down scroll (#283) | SKIP                                           |      | no                                                                 |
+
+**Reader: image**
+
+| Row                     | Actions                                                     | Site | On branch                                          |
+| ----------------------- | ----------------------------------------------------------- | ---- | -------------------------------------------------- |
+| Night mode              | `reader.night` (pinned, schedule)                           | G    | yes                                                |
+| Invert colors           | `reader.invert` (pinned, schedule)                          | G    | yes                                                |
+| Black & white           | `reader.grayscale` (pinned, schedule)                       | G    | yes                                                |
+| Image adjustment (#362) | SKIP                                                        |      | no                                                 |
+| Brightness              | `set.brightness.up`, `.down`, `.reset`                      | G    | yes                                                |
+| Contrast                | `set.contrast.up`, `.down`, `.reset`                        | G    | yes                                                |
+| Magazine print effect   | `set.ink-color.*` (9)                                       | G    | yes                                                |
+| Ink strength, tint, age | `set.ink-strength.*`, `set.paper-tint.*`, `set.paper-age.*` | G    | yes; announces "(print effect off)" when it is off |
+
+**Reader: text**
+
+| Row                         | Actions                                          | Site | On branch                                                          |
+| --------------------------- | ------------------------------------------------ | ---- | ------------------------------------------------------------------ |
+| OCR enabled                 | `set.ocr.toggle`                                 | G    | yes                                                                |
+| Always show OCR             | `reader.ocr-always` (pinned)                     | G    | yes                                                                |
+| Text box borders            | `set.text-borders.toggle`                        | G    | yes                                                                |
+| Bold font                   | `set.bold.toggle`                                | G    | yes                                                                |
+| Font size                   | `set.font-size.*` (15, no wrap)                  | G    | yes                                                                |
+| Custom text box menu        | `set.text-menu.toggle`                           | G    | yes                                                                |
+| Copy whole page text        | `reader.copy-page-text` (new)                    | R    | no control; the displayed layer's page or spread, in reading order |
+| Add image to Anki / image 2 | `reader.anki-image`, `reader.anki-image-2` (new) | R    | yes (menu buttons)                                                 |
+
+**Reader: this volume**
+
+| Row                       | Actions                                                                                                    | Site | On branch                           |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- | ---- | ----------------------------------- |
+| Right to left             | `set.rtl.toggle`                                                                                           | G    | yes                                 |
+| First page is cover       | `reader.offset-spreads` "Spreads offset", O                                                                | R    | yes; `reader.cover` retired         |
+| OCR layer                 | `reader.ocr-layer` (exists, L), `reader.ocr-layer-prev` (new), `reader.ocr-layers` (new, opens the picker) | R    | yes; the picker is the menu default |
+| Set OCR layer to primary  | `reader.ocr-layer-primary` (new)                                                                           | R    | yes (picker row)                    |
+| Mark volume read / unread | DEFER                                                                                                      |      | no control in the reader            |
+| Timer pause / resume      | `reader.timer-pause` (new)                                                                                 | R    | yes (click on the timer)            |
+
+**Reader: edit**
+
+| Row                                | Actions                                                                                                   | Site | On branch                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------- | ---- | ------------------------------------------------------------ |
+| Edit mode                          | `reader.edit-mode` (exists)                                                                               | R    | yes                                                          |
+| Undo / Redo                        | `edit.undo`, `edit.redo` (exist)                                                                          | R    | yes                                                          |
+| Delete selected                    | `edit.delete` (exists)                                                                                    | R    | yes                                                          |
+| Step back                          | `edit.back` (exists, Esc locked)                                                                          | R    | yes                                                          |
+| Draw new box                       | `edit.draw-tool` (new)                                                                                    | R    | yes                                                          |
+| Merge / Split / Place lines / Flip | `edit.merge`, `edit.split`, `edit.place-lines`, `edit.flip` (new)                                         | R    | yes; same enablement as the toolbar                          |
+| Revert page                        | `edit.revert-page` (new)                                                                                  | R    | yes; already one undoable commit                             |
+| Move edit toolbar                  | `set.toolbar-dock.*` (2)                                                                                  | G    | yes                                                          |
+| Layer commands                     | `layer.new`, `.rename`, `.promote`, `.publish`, `.unpublish`, `.copy-to-edit`, `.export`, `.delete` (new) | R    | yes; act on the displayed layer under the picker's own rules |
+
+**App**
+
+| Row               | Actions                                                                                                              | Site | On branch       |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------- | ---- | --------------- |
+| Profile           | `set.profile.next`, `.prev`, `.to.<name>`                                                                            | G    | yes             |
+| Theme             | `set.theme.*` (9 presets and Custom)                                                                                 | G    | yes             |
+| Sync progress now | `app.sync` (new)                                                                                                     | A    | yes             |
+| Open: five places | `app.open-catalog`, `app.open-reading-speed`, `app.open-progress-tracker`, `app.open-upload`, `app.open-cloud` (new) | A    | yes; menu never |
+| Anki: double-tap  | `set.anki-double-tap.toggle` (reader scope)                                                                          | G    | yes             |
+| Anki: card mode   | `set.anki-card-mode.*` (2, reader scope)                                                                             | G    | yes             |
+
+**Library** (catalog page; menu never)
+
+| Row                      | Actions                                  | Site                    | On branch |
+| ------------------------ | ---------------------------------------- | ----------------------- | --------- |
+| Focus search             | `library.focus-search` (new)             | `Catalog.svelte`        | yes       |
+| Gallery layout           | `set.gallery-layout.*` (2)               | G                       | yes       |
+| Gallery sort             | `set.gallery-sort.*` (3)                 | G                       | yes       |
+| Hide completed volumes   | `set.hide-completed.toggle`              | G                       | yes       |
+| Stacking preset          | `set.stacking.*` (4)                     | G                       | yes       |
+| Preferred title language | `set.title-language.*` (3)               | G                       | yes       |
+| Card: open series        | `library.series-open` (new)              | the two card components | yes       |
+| Card: series editor      | `library.series-edit` (exists, E)        | the two card components | yes       |
+| Card: remove series      | `library.series-remove` (exists, Delete) | the two card components | yes       |
+
+**Series page and volume row** (menu never)
+
+| Row                                                | Actions                                                                                           | Site                | On branch                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------- | -------------------------------------------------------------- |
+| Edit series                                        | `series.edit` (new)                                                                               | `SeriesView.svelte` | yes                                                            |
+| Series sort                                        | `set.series-sort.*` (3)                                                                           | G                   | yes                                                            |
+| Series view                                        | `set.series-view.*` (2)                                                                           | G                   | yes                                                            |
+| Download all / Backup remaining                    | `series.download-all`, `series.backup` (new)                                                      | `SeriesView.svelte` | yes                                                            |
+| Remove / Delete from provider / Clean duplicates   | `series.remove`, `series.delete-cloud`, `series.clean-duplicates` (new)                           | `SeriesView.svelte` | yes; each confirms                                             |
+| Extract… / View series text                        | `series.extract`, `series.text` (new)                                                             | `SeriesView.svelte` | yes                                                            |
+| Back                                               | `app.back`                                                                                        | `+layout.svelte`    | yes                                                            |
+| Row: open in reader                                | `library.volume-open` (new)                                                                       | `VolumeItem.svelte` | yes                                                            |
+| Row: volume editor                                 | `library.volume-edit` (exists, E)                                                                 | `VolumeItem.svelte` | yes                                                            |
+| Row: change cover                                  | `library.volume-cover` (exists, C)                                                                | `VolumeItem.svelte` | yes                                                            |
+| Row: delete / cloud copy                           | `library.volume-remove`, `library.volume-delete-cloud` (exist)                                    | `VolumeItem.svelte` | yes                                                            |
+| Row: mark read / unread                            | `library.volume-read` (new)                                                                       | `VolumeItem.svelte` | yes; the button's own handler, so #224's sheet arrives with it |
+| Row: download / backup / retry / delete from cloud | `library.volume-download`, `library.volume-backup` (new); delete is `library.volume-delete-cloud` | `VolumeItem.svelte` | yes; see 17.11                                                 |
+| Row: view text / extract                           | `library.volume-text`, `library.volume-extract` (new)                                             | `VolumeItem.svelte` | yes                                                            |
+
+**Series editor and other views** (menu never)
+
+| Row                            | Actions                                                                             | Site                         | On branch |
+| ------------------------------ | ----------------------------------------------------------------------------------- | ---------------------------- | --------- |
+| Next unlinked / without titles | `series-editor.next-unlinked`, `series-editor.next-untitled` (new)                  | `SeriesEditorModal.svelte`   | yes       |
+| Tracker: three lists           | `set.tracker-target.*` (2), `set.tracker-sort.*` (5), `set.tracker-completed.*` (2) | G                            | yes       |
+| Tracker: current period        | `tracker.current-period` (new)                                                      | `ProgressTrackerView.svelte` | yes       |
+| Text views: copy               | `text.copy` (new)                                                                   | the two text views           | yes       |
+| Text views: back               | `app.back`                                                                          | `+layout.svelte`             | yes       |
+
+**Icons.** Every action has one; the registry stores the
+flowbite-svelte-icons NAME, and `src/lib/keys/icons.ts` maps names to
+components (`satisfies Record<IconName, Component>`, so a missing import
+fails type-check). All names on the target list exist in the installed
+package. A row's icon serves all its actions, except:
+
+- Page left / Page right take `ArrowLeftOutline` / `ArrowRightOutline`
+  (today's menu glyphs); Next / Previous page take `ChevronRightOutline` /
+  `ChevronLeftOutline`.
+- Scroll: `ArrowUpOutline`, `ArrowDownOutline`, `AngleLeftOutline`,
+  `AngleRightOutline`.
+- Undo `UndoOutline`, Redo `RedoOutline`. Zoom in `ZoomInOutline`, zoom out
+  `ZoomOutOutline`.
+- Merge `MergeCellsOutline`, Split `SplitCellsOutline`, Place lines
+  `AlignJustifyOutline`, Flip `SortHorizontalOutline`.
+- Layer commands take the picker's own: new `CirclePlusOutline`, rename
+  `EditOutline`, promote `ArrowUpOutline`, publish `UploadOutline`, unpublish
+  `CloseCircleOutline`, copy `FileCopyOutline`, export `DownloadOutline`,
+  delete `TrashBinOutline`.
+- Open: `HomeOutline`, `ChartLineUpOutline`, `CalendarMonthOutline`,
+  `UploadOutline`, `CloudArrowUpOutline` (the NavBar's own).
+- Mouse wheel has no icon on the list: `SortOutline`.
+
+### 17.11 Skipped, deferred, flagged
+
+**Skipped: the setting is not on this branch.** Add after the PR merges; each
+is one definition.
+
+- Tap page edges to turn (#54): toggle.
+- Page Up/Down scroll first (#283): toggle.
+- Image adjustment on/off (#362): toggle, and a ninth default quick-menu
+  entry.
+
+**Deferred.**
+
+- Reader: Mark volume read / unread. There is no such control in the reader
+  here, and the row is defined by #224's sheet, which is on its own branch.
+  Without the sheet, one press moves the OPEN volume's progress to the last
+  page (read) or to zero (unread, which also clears the completion date),
+  with no confirmation. Add it with #224. The volume-row action is in.
+
+**Flagged: built, with a decision the list did not make.**
+
+- Quick-menu defaults are Page left and Page right, not Next and Previous
+  (17.7).
+- OCR layer is three actions. The menu default is the picker, because that
+  is today's button.
+- Volume row "Backup / Retry upload / Delete from cloud" is one menu item
+  today whose meaning follows the volume's state. The Backup key only ever
+  backs up or retries: on a backed-up volume it says so. Deleting stays on
+  `library.volume-delete-cloud`, which confirms.
+- A command's key applies the same test its button's `{#if}` or `disabled`
+  applies, then calls the button's handler. `onDeleteFromCloud` on the series
+  page, for one, trusts its template for the read-only check.
+- Zoom in and Zoom out need a `zoomStep(direction)` on the paged zoom API
+  and on both scroll readers: the notched-wheel ladder step, anchored at the
+  screen centre, behind the surface's motion gate.
+- Revert page needs no new undo: it is a history commit already.
+- "Set theme to Custom" does not re-seed the custom colours.
+- The gap step is 5 px (one wheel notch); the list suggested 4.
+- Mouse wheel gets list actions; its row has no icon and it is never on the
+  menu.
+- "Open upload" opens the upload dialog, as the NavBar button does.
+- A binding to "Set profile to X" outlives a rename of X, inert.
+- The section in step A is long (one row per action) until step C groups it.
+
+Nothing on the list was judged impossible to bind.
+
+### 17.12 Build order
+
+Three steps. Each leaves `npm run check`, `npm run lint` and `npm test`
+green.
+
+**A. Generation, icons, storage.**
+
+- `setting-defs.ts` and the components reading their lists from it; the
+  series view-prefs store; Anki controls following the store.
+- `generate.ts`, `setting-actions.ts`, `announce.ts`; `icon` and menu
+  eligibility on every action; `icons.ts`.
+- Scopes as data, `chordRelation` from the table, the keymap carrying its own
+  action list, profile actions rebuilt on a name change.
+- `Reader.svelte` and `+layout.svelte` resolve generated actions. The seven
+  pinned toggles leave the reader's hand-written map.
+- C and O: `reader.cover` retired, the fold, the label, the hint on the cover
+  toggle removed.
+- The notification's button and the three schedule guards.
+- `settings-open.ts` and both drawer mounts on it.
+- `quickMenu` in `Settings`, its shape check, the copy to all profiles.
+- Until step B, a page-scope key that a hovered card also uses resolves
+  page-first; step B makes it hover-first.
+
+**B. Commands.**
+
+- `providers.ts`; the layout as the one listener outside the reader; the
+  three card components provide instead of listening.
+- The 52 new commands in 17.10, each with its handler at the named site and
+  the shared enablement test extracted beside its button:
+  `layerActionAvailable` (next to `layerRowActions`), `editCommandState`
+  (toolbar and keys), the series page's and volume row's `can…` tests.
+- `app-actions.ts`; `zoomStep`; the page popover and the quick menu openable
+  by key; the picker rendering whenever it is open.
+- The reader's listener stands down while a dialog is open.
+
+**C. Quick menu and the section.**
+
+- `quick-menu.ts`; `QuickActions.svelte` rendering from the registry with
+  state, badges and wrapping.
+- The per-profile quick-menu switch; the section regrouped, searchable and
+  folded as in 17.9.
+
+### 17.13 Tests
+
+Step A, unit:
+
+- `setting-defs.test.ts`: unique ids and options; each default is one of its
+  options; slider reset inside its range.
+- `generate.test.ts` and `generated-ids-golden.test.ts`: the id scheme; the
+  pinned ids; every generated id resolves to a definition and an operation.
+- `setting-actions.test.ts`: toggle; Next and Previous with and without wrap;
+  Set-to; step up and down clamped at the ends; reset; the announcement text;
+  a volume setting with no volume declines; the schedule guard changes nothing
+  and returns the button; the button keeps the on-screen state.
+- `actions.test.ts`: every action has an icon in the map; nothing outside
+  `reader`, `edit` and `app` is menu-eligible; every action that is not in
+  the pre-extension golden table has no default chord.
+- `keymap.test.ts`: the `reader.cover` fold (absent, `[]`, `[C]`, `[C, X]`,
+  `[X]` with a customised O); relations across the new scopes; profile
+  actions appear and disappear with the profile list.
+- `defaults-golden.test.ts`: iterates the full list; C in the reader is a
+  listed change; O still offsets.
+- `migrateProfiles`: `quickMenu` shape; unknown ids kept; copy to all
+  profiles copies both maps.
+- Source lint: the six components hold no `{ value, name }` option literals
+  for a defined setting.
+- Component: the notification button renders, acts and does not take focus;
+  in each context exactly one drawer opens from the store.
+
+Step B, unit:
+
+- `providers.test.ts`: provide and dispose; newest wins; hover before page
+  before app on a shared chord; a dialog scope alone while a dialog is open.
+- The extracted tests: layer availability per layer kind; edit command state
+  per selection; the Backup key never deletes; page text order for single,
+  spread, right-to-left and left-to-right.
+- `source-lint.test.ts` gains the new sites.
+- Type-level: each site's map `satisfies` its scope's ids.
+
+Step C:
+
+- `quick-menu.test.ts`: `{}` gives today's eight in today's order; sparse
+  edits; a never id is ignored; the mode filter.
+- Component: the menu renders its items, badges and disabled reasons and
+  runs the action; the section's groups, search, filters, folded setting
+  rows with their "inside" summary, the switch hidden where never, the touch
+  note.
+
+E2E (Playwright via `/verify`, dedicated `E2E_PORT`): bind a generated action
+and press it; add an action to the quick menu, reload, switch profile; N with
+the schedule on shows the button and the button sets manual; C does nothing
+and O offsets; a hovered volume's E still opens the volume editor with a
+series-page action on E as well.
+
+### 17.14 Changes at defaults
+
+1. C no longer toggles the first-page-is-cover setting. O does, as "Spreads
+   offset".
+2. Seven toggle toasts take the common wording ("Page dividers: On").
+3. In the reader, keys stand down while a dialog is open.
+4. The quick menu's Fullscreen, Zoom to fit and Edit buttons take the target
+   list's icons (`ExpandOutline`, `MinimizeOutline`, `PenOutline`).
+
+Everything else is new and unbound.
