@@ -29,8 +29,8 @@ const TODAY = [
   'reader.anki-image-2',
   'reader.fullscreen',
   'reader.zoom-fit',
-  'reader.page-right',
-  'reader.page-left'
+  'reader.page-next',
+  'reader.page-prev'
 ];
 
 describe('the default quick menu', () => {
@@ -42,6 +42,29 @@ describe('the default quick menu', () => {
   it('{} and a missing map both give today’s menu in today’s order', () => {
     expect(quickMenuIds({}, all)).toEqual(TODAY);
     expect(quickMenuIds(undefined, all)).toEqual(TODAY);
+  });
+
+  // The owner's list: Next page and Previous page are on the menu, the
+  // physical pair is available and off.
+  it('holds Next page and Previous page, not the physical pair', () => {
+    expect(QUICK_MENU_DEFAULT).toContain('reader.page-next');
+    expect(QUICK_MENU_DEFAULT).toContain('reader.page-prev');
+    expect(QUICK_MENU_DEFAULT).not.toContain('reader.page-left');
+    expect(QUICK_MENU_DEFAULT).not.toContain('reader.page-right');
+    expect(isOnMenu({}, def('reader.page-left'))).toBe(false);
+    expect(menuEligible(def('reader.page-left'))).toBe(true);
+    expect(def('reader.page-next').icon).toBe('ArrowRightOutline');
+    expect(def('reader.page-prev').icon).toBe('ArrowLeftOutline');
+    expect(def('reader.page-left').icon).toBe('ChevronLeftOutline');
+    expect(def('reader.page-right').icon).toBe('ChevronRightOutline');
+  });
+
+  // Every default is live in every layout: nobody loses a button they did
+  // not switch off by turning continuous scroll on.
+  it('is the same menu in paged, vertical and horizontal', () => {
+    for (const mode of ['paged', 'vertical', 'horizontal'] as const) {
+      expect(quickMenuIds({}, all, mode), mode).toEqual(TODAY);
+    }
   });
 });
 
@@ -77,16 +100,16 @@ describe('sparse edits', () => {
   });
 
   it('additions follow the defaults, in registry order whatever order they were added in', () => {
-    const menu = { 'set.bold.toggle': true, 'reader.page-next': true, 'app.settings': true };
+    const menu = { 'set.bold.toggle': true, 'reader.page-left': true, 'app.settings': true };
     const ids = quickMenuIds(menu, all);
     expect(ids.slice(0, 8)).toEqual(TODAY);
     const added = ids.slice(8);
     expect(added).toEqual(
       all
         .map((a) => a.id)
-        .filter((id) => ['set.bold.toggle', 'reader.page-next', 'app.settings'].includes(id))
+        .filter((id) => ['set.bold.toggle', 'reader.page-left', 'app.settings'].includes(id))
     );
-    expect(added).toEqual(['reader.page-next', 'app.settings', 'set.bold.toggle']);
+    expect(added).toEqual(['reader.page-left', 'app.settings', 'set.bold.toggle']);
   });
 
   it('true on a default changes nothing; unknown ids and never ids are ignored', () => {
@@ -129,14 +152,14 @@ describe('sparse edits', () => {
     const menu = { 'reader.fullscreen': false, 'set.bold.toggle': true, 'reader.zoom-fit': true };
     expect(isOnMenu(menu, def('reader.fullscreen'))).toBe(false);
     expect(isOnMenu(menu, def('set.bold.toggle'))).toBe(true);
-    expect(isOnMenu(menu, def('reader.page-left'))).toBe(true);
+    expect(isOnMenu(menu, def('reader.page-next'))).toBe(true);
     expect(isOnMenu(menu, def('set.ocr.toggle'))).toBe(false);
     expect(isOnMenu({ 'reader.quick-menu': true }, def('reader.quick-menu'))).toBe(false);
     expect(isMenuChanged(menu, def('reader.fullscreen'))).toBe(true);
     expect(isMenuChanged(menu, def('set.bold.toggle'))).toBe(true);
     // Stored, but equal to the default: not a change.
     expect(isMenuChanged(menu, def('reader.zoom-fit'))).toBe(false);
-    expect(isMenuChanged(menu, def('reader.page-left'))).toBe(false);
+    expect(isMenuChanged(menu, def('reader.page-next'))).toBe(false);
   });
 
   it('the shape check keeps booleans, unknown ids included, and drops the rest', () => {
@@ -154,7 +177,9 @@ describe('the mode filter', () => {
     'set.zoom-paged.next': true,
     'set.zoom-continuous.next': true,
     'edit.undo': true,
-    'reader.scroll-left': true
+    'reader.scroll-left': true,
+    'reader.page-left': true,
+    'reader.page-right': true
   };
 
   it('keeps only what is live in the layout', () => {
@@ -170,9 +195,12 @@ describe('the mode filter', () => {
     expect(vertical).toContain('reader.scroll-left');
     expect(vertical).not.toContain('set.zoom-paged.next');
     expect(vertical).not.toContain('edit.undo');
-    // Page left and right are not vertical scroll's keys, so not its buttons either.
+    // Page left and right are not vertical scroll's keys, so not its buttons
+    // either — when the user added them. The defaults turn pages there.
     expect(vertical).not.toContain('reader.page-left');
     expect(vertical).not.toContain('reader.page-right');
+    expect(vertical).toContain('reader.page-next');
+    expect(vertical).toContain('reader.page-prev');
     expect(vertical).toContain('reader.edit-mode');
 
     const horizontal = quickMenuIds(menu, all, 'horizontal');
@@ -204,6 +232,7 @@ describe('badges', () => {
 describe('the menu items', () => {
   const base: QuickMenuState = {
     mode: 'paged',
+    forward: 'right',
     editing: false,
     ankiEnabled: true,
     hasSecondPage: true,
@@ -217,6 +246,7 @@ describe('the menu items', () => {
   it('carry the action’s label and icon, today’s Anki badges, and nothing disabled', () => {
     const list = items({});
     expect(ids(list)).toEqual(TODAY);
+    // (`base` reads left to right, where every entry draws its action's own icon.)
     for (const item of list) {
       expect(item.label, item.id).toBe(def(item.id).label);
       expect(item.icon, item.id).toBe(def(item.id).icon);
@@ -288,6 +318,45 @@ describe('the menu items', () => {
     // A step keeps the menu open for the next tap; anything else closes it.
     expect(item('set.brightness.up').keepOpen).toBe(true);
     expect(item('set.bold.toggle').keepOpen).toBe(false);
-    expect(list.find((i) => i.id === 'reader.page-left')?.keepOpen).toBe(false);
+    expect(list.find((i) => i.id === 'reader.page-next')?.keepOpen).toBe(false);
+  });
+
+  // The menu's two arrows always point where the page goes: in a
+  // right-to-left book Next page turns toward the left, as the ← button it
+  // replaces did. Only the glyph follows the book; the action and its name
+  // do not.
+  it('draw Next page and Previous page as the direction they turn', () => {
+    const arrows = (state: Partial<QuickMenuState>) => {
+      const list = items({ 'reader.page-left': true, 'reader.page-right': true }, state);
+      const icon = (id: string) => list.find((i) => i.id === id)?.icon;
+      return {
+        next: icon('reader.page-next'),
+        prev: icon('reader.page-prev'),
+        left: icon('reader.page-left'),
+        right: icon('reader.page-right')
+      };
+    };
+    expect(arrows({ forward: 'right' })).toEqual({
+      next: 'ArrowRightOutline',
+      prev: 'ArrowLeftOutline',
+      left: 'ChevronLeftOutline',
+      right: 'ChevronRightOutline'
+    });
+    // Right to left: mirrored. The physical pair never moves.
+    expect(arrows({ forward: 'left' })).toEqual({
+      next: 'ArrowLeftOutline',
+      prev: 'ArrowRightOutline',
+      left: 'ChevronLeftOutline',
+      right: 'ChevronRightOutline'
+    });
+    expect(arrows({ mode: 'horizontal', forward: 'left' }).next).toBe('ArrowLeftOutline');
+    // Vertical scroll: down the strip and back up.
+    const vertical = arrows({ mode: 'vertical', forward: 'down' });
+    expect(vertical.next).toBe('ArrowDownOutline');
+    expect(vertical.prev).toBe('ArrowUpOutline');
+    // The names stay the action's.
+    const list = items({}, { forward: 'left' });
+    expect(list.find((i) => i.id === 'reader.page-next')?.label).toBe('Next page');
+    expect(list.find((i) => i.id === 'reader.page-prev')?.label).toBe('Previous page');
   });
 });

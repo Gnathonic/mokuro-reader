@@ -76,6 +76,8 @@
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import { recordPagedPageView } from '$lib/reader/paged-progress';
+  import { toggleVolumeRead } from '$lib/reader/volume-read';
+  import { isVolumeComplete } from '$lib/util/volume-helpers';
   import QuickActions from './QuickActions.svelte';
   import EditToolbar from './Edit/EditToolbar.svelte';
   import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
@@ -394,6 +396,7 @@
     'reader.quick-menu': () => {
       quickMenuOpen = !quickMenuOpen;
     },
+    'reader.volume-read': () => markReadOrUnread(),
     'reader.timer-pause': () => toggleTimerPause(),
     'reader.page-mode': () => ($settings.continuousScroll ? rotateScrollMode() : rotatePageMode()),
     'reader.offset-spreads': () => offsetSpreads(),
@@ -504,6 +507,8 @@
     const ctx = { volumeId: volume?.volume_uuid };
     return quickMenuItems(quickMenuIds(s.quickMenu, actions.values(), mode), actions, {
       mode,
+      // Where Next page goes on screen: the menu draws its two arrows that way.
+      forward: mode === 'vertical' ? 'down' : volumeSettings.rightToLeft ? 'left' : 'right',
       editing: !!session,
       ankiEnabled: !!s.ankiConnectSettings?.enabled,
       hasSecondPage: !useSinglePage && !!imageCache.getFile(index + 1),
@@ -518,7 +523,9 @@
           ? session
             ? session.tool === 'draw'
             : undefined
-          : settingToggleOn(action, ctx)
+          : action.id === 'reader.volume-read'
+            ? volumeRead
+            : settingToggleOn(action, ctx)
     });
   });
 
@@ -621,6 +628,22 @@
     }
     const result = applySettingOp(settingDef('zoom-continuous'), 'to', {}, 'zoomFitToScreen');
     if (result.done) showNotification(result.message, result.key);
+  }
+
+  /**
+   * "Mark volume read / unread" for the open volume: the volume row's button,
+   * on its own test (`reader/volume-read.ts`). The page on screen follows the
+   * progress record: the last page, or back to the start.
+   */
+  function markReadOrUnread() {
+    if (!volume) return;
+    const change = toggleVolumeRead(
+      volume.volume_uuid,
+      $progress?.[volume.volume_uuid] ?? 0,
+      pages.length || volume.page_count,
+      maxCharCount
+    );
+    if (change) showNotification(`Marked as ${change}`, 'volume-read');
   }
 
   /** What a click on the reading timer does. The next page resumes it either way. */
@@ -860,6 +883,11 @@
   });
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
+  // The volume counts as read (the row button's test). One boolean, read by
+  // the quick menu only while "Mark this volume read or unread" is on it.
+  let volumeRead = $derived(
+    isVolumeComplete($progress?.[volume?.volume_uuid || ''] ?? 0, pages.length)
+  );
 
   // Reading history: one `page` event per view, emitted when the view ends,
   // with its long-pause answer (if any) in the same transaction.

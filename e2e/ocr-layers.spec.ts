@@ -86,7 +86,7 @@ async function openQuickActions(page: Page) {
   const menu = page.getByLabel('Quick actions menu');
   await menu.click();
   // The menu toggles; make sure it is open (the Edit item is always there).
-  if (!(await page.getByLabel('Page right', { exact: true }).isVisible())) await menu.click();
+  if (!(await page.getByLabel('Next page', { exact: true }).isVisible())) await menu.click();
 }
 
 async function enterEditMode(page: Page) {

@@ -130,6 +130,7 @@
             aria-label={item.label}
             aria-pressed={item.active}
             data-quick-action={item.id}
+            data-quick-action-icon={item.icon}
             class="relative flex h-12 w-12 items-center justify-center rounded-full text-gray-300 shadow-lg focus:outline-none disabled:opacity-40 {item.active
               ? 'bg-primary-700 hover:bg-primary-600 disabled:hover:bg-primary-700'
               : 'bg-gray-700 hover:bg-gray-600 disabled:hover:bg-gray-700'}"

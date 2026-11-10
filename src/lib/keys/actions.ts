@@ -208,7 +208,7 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: PAGED_HORIZONTAL,
     defaults: ['ArrowLeft'],
-    icon: 'ArrowLeftOutline',
+    icon: 'ChevronLeftOutline',
     menu: 'off',
     repeat: true
   },
@@ -220,7 +220,7 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: PAGED_HORIZONTAL,
     defaults: ['ArrowRight'],
-    icon: 'ArrowRightOutline',
+    icon: 'ChevronRightOutline',
     menu: 'off',
     repeat: true
   },
@@ -232,7 +232,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['PageUp'],
-    icon: 'ChevronLeftOutline',
+    // The left-to-right glyph; the quick menu mirrors it in a right-to-left book.
+    icon: 'ArrowLeftOutline',
     menu: 'off',
     repeat: true
   },
@@ -244,7 +245,7 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['PageDown', 'Space'],
-    icon: 'ChevronRightOutline',
+    icon: 'ArrowRightOutline',
     menu: 'off',
     repeat: true
   },
@@ -470,6 +471,22 @@ export const KEY_ACTIONS = [
     defaults: [],
     icon: 'DotsVerticalOutline',
     menu: 'never',
+    repeat: false
+  },
+  {
+    // The owner's row "Mark volume read / unread", for the OPEN volume: the
+    // volume row's button (`library.volume-read`) under the same rule. After
+    // #224 merges it goes through that sheet (`reader/volume-read.ts`).
+    id: 'reader.volume-read',
+    label: 'Mark this volume read or unread',
+    description:
+      'Mark the open volume read (its last page), or unread when it already is (back to the start).',
+    group: 'volume',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'CheckCircleOutline',
+    menu: 'off',
     repeat: false
   },
   {

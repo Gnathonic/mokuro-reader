@@ -616,6 +616,8 @@ function notification(page: Page) {
 
 async function filterShortcuts(page: Page, text: string) {
   await page.locator('[data-keyboard-shortcuts] input[type="search"]').fill(text);
+  // A search is applied a pause after the last keystroke: wait for THIS one.
+  await expect(page.locator('[data-keyboard-shortcuts]')).toHaveAttribute('data-key-search', text);
 }
 
 async function bind(page: Page, id: string, key: string) {
@@ -784,7 +786,9 @@ test('C is freed and O offsets the spreads; a stored reader.cover folds into O',
   await expect(row(page, 'reader.offset-spreads').locator('[data-key-chip="O"]')).toBeVisible();
   await filterShortcuts(page, 'cover');
   await expect(page.locator('[data-key-action="reader.cover"]')).toHaveCount(0);
-  // The cover toggle in the drawer stays, without a key hint.
+  // The cover toggle in the drawer stays, without a key hint. (One section
+  // is open at a time: back to Reader, which opening the shortcuts closed.)
+  await page.locator('#settings h2 button', { hasText: /^\s*Reader\s*$/ }).click();
   const coverToggle = page.locator('#settings label', { hasText: 'First page is cover' });
   await expect(coverToggle).toBeVisible();
   await expect(coverToggle.locator('[data-key-hint]')).toHaveCount(0);
@@ -816,6 +820,9 @@ test('N on a schedule: the message carries “Set to manual”, which keeps what
   });
   await openReader(page, volume);
   await expectPage(page, 1);
+  // The notice's lifetime runs on the page's clock, which this test moves:
+  // no sleeping through it. (Exact lifetimes: ReaderNotification.test.ts.)
+  await page.clock.install();
 
   await page.keyboard.press('n');
   await expect(notification(page)).toContainText('Night Mode is on automatic schedule');
@@ -832,11 +839,22 @@ test('N on a schedule: the message carries “Set to manual”, which keeps what
   await expectPage(page, 2);
 
   // With a button it outlives a plain message's 2 s…
-  await page.waitForTimeout(3000);
+  await page.clock.runFor(3000);
   await expect(button).toBeVisible();
-  // …and stays for as long as the pointer is on it (well past its 5 s).
+  // …and stays for as long as the REAL pointer is on it, however long that is…
   await notification(page).hover();
-  await page.waitForTimeout(6000);
+  await page.clock.runFor(60_000);
+  await expect(button).toBeVisible();
+  // …then runs out once the pointer has left.
+  await page.mouse.move(200, 700);
+  await page.clock.runFor(60_000);
+  await expect(notification(page)).toHaveCount(0);
+  // The hold went with it: the same message again takes its own time, unheld.
+  await page.keyboard.press('n');
+  await expect(button).toBeVisible();
+  await page.clock.runFor(60_000);
+  await expect(notification(page)).toHaveCount(0);
+  await page.keyboard.press('n');
   await expect(button).toBeVisible();
 
   // The button: schedule off, and night mode stays ON (what is on screen).
@@ -861,6 +879,52 @@ test('N on a schedule: the message carries “Set to manual”, which keeps what
   await page.locator('button.reader-hud.right-3').click();
   await expect(page.locator('dialog#settings')).toBeVisible();
   await expect(page.locator('#settings', { hasText: 'Night mode' })).toBeVisible();
+});
+
+test('Mark this volume read or unread: by key and from the quick menu, on the row button’s rule', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  // Ships unbound and off the menu: this profile bound it and switched it on.
+  const volume = await setup(page, 'KeyMarkRead', {
+    keyBindings: { 'reader.volume-read': ['KeyR'] },
+    quickMenu: { 'reader.volume-read': true }
+  });
+  const stored = () =>
+    page.evaluate((uuid) => {
+      const v = JSON.parse(localStorage.getItem('volumes') ?? '{}')[uuid];
+      return v ? { progress: v.progress, completed: !!v.completed } : null;
+    }, volume.volumeUuid);
+  await openReader(page, volume);
+  await expectPage(page, 1);
+  await page.keyboard.press('ArrowLeft');
+  await expectPage(page, 2);
+
+  // Read: the last page, finished — what the row's button does.
+  await page.keyboard.press('r');
+  await expect(notification(page)).toHaveText('Marked as read');
+  await expectPage(page, PAGES);
+  await expect.poll(stored).toEqual({ progress: PAGES, completed: true });
+  // The menu entry is the same toggle and shows the state.
+  await menuButton(page).click();
+  await expect(menuEntry(page, 'reader.volume-read')).toHaveAttribute('aria-pressed', 'true');
+  await expect(menuEntry(page, 'reader.volume-read')).toHaveAttribute(
+    'aria-label',
+    'Mark this volume read or unread'
+  );
+  // Unread: back to the start.
+  await menuEntry(page, 'reader.volume-read').click();
+  await expect(notification(page)).toHaveText('Marked as unread');
+  await expectPage(page, 1);
+  await expect.poll(async () => (await stored())?.completed).toBe(false);
+  await menuButton(page).click();
+  await expect(menuEntry(page, 'reader.volume-read')).toHaveAttribute('aria-pressed', 'false');
+
+  // Listed under "Reader: this volume", with the key this profile gave it.
+  await openShortcuts(page);
+  await filterShortcuts(page, 'this volume read');
+  await expect(row(page, 'reader.volume-read').locator('[data-key-chip="R"]')).toBeVisible();
+  await expect(page.locator('[data-key-group="volume"]')).toContainText('Reader: this volume');
 });
 
 test('one settings-open flag: each button opens exactly one drawer, in its own context', async ({
@@ -1411,9 +1475,27 @@ const DEFAULT_MENU = [
   'reader.edit-mode',
   'reader.fullscreen',
   'reader.zoom-fit',
-  'reader.page-right',
-  'reader.page-left'
+  'reader.page-next',
+  'reader.page-prev'
 ];
+const menuIcon = (page: Page, id: string) =>
+  menuEntry(page, id).getAttribute('data-quick-action-icon');
+/**
+ * The menu button's LAYOUT box. It turns 45° while the menu is open, and a
+ * turned square's bounds are 10 px wider each side than the button — and
+ * moving, for the 0.3 s the turn takes. Its centre does not move.
+ */
+const menuButtonBox = (page: Page) =>
+  menuButton(page).evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const { offsetWidth: width, offsetHeight: height } = el as HTMLElement;
+    return {
+      x: r.left + r.width / 2 - width / 2,
+      y: r.top + r.height / 2 - height / 2,
+      width,
+      height
+    };
+  });
 
 async function switchOnMenu(page: Page, id: string) {
   const toggle = row(page, id).locator('[data-quick-menu-switch]');
@@ -1425,7 +1507,8 @@ test('quick menu at defaults is today’s menu, and each entry runs its key’s 
   page
 }) => {
   test.setTimeout(150_000);
-  const volume = await setup(page, 'KeyMenuDefaults');
+  // Vertical, so that V below lands in vertical scroll whatever the window's shape.
+  const volume = await setup(page, 'KeyMenuDefaults', { scrollMode: 'vertical' });
   await openReader(page, volume);
   await expectPage(page, 1);
   expect(await profileSetting(page, 'quickMenu')).toEqual({});
@@ -1433,25 +1516,29 @@ test('quick menu at defaults is today’s menu, and each entry runs its key’s 
   await menuButton(page).click();
   expect(await menuIds(page)).toEqual(DEFAULT_MENU);
   // Named by their actions, in a single column above the menu's own button.
-  await expect(menuEntry(page, 'reader.page-left')).toHaveAttribute('aria-label', 'Page left');
-  await expect(menuEntry(page, 'reader.page-left')).toHaveAttribute('title', 'Page left');
+  await expect(menuEntry(page, 'reader.page-next')).toHaveAttribute('aria-label', 'Next page');
+  await expect(menuEntry(page, 'reader.page-next')).toHaveAttribute('title', 'Next page');
+  await expect(menuEntry(page, 'reader.page-prev')).toHaveAttribute('aria-label', 'Previous page');
+  // A right-to-left book: each arrow points where its page turn goes.
+  expect(await menuIcon(page, 'reader.page-next')).toBe('ArrowLeftOutline');
+  expect(await menuIcon(page, 'reader.page-prev')).toBe('ArrowRightOutline');
   const xs = await menuEntries(page).evaluateAll((els) =>
     els.map((el) => Math.round(el.getBoundingClientRect().left))
   );
-  const buttonX = Math.round((await menuButton(page).boundingBox())!.x);
+  const buttonX = Math.round((await menuButtonBox(page)).x);
   expect(new Set(xs)).toEqual(new Set([buttonX]));
   const ys = await menuEntries(page).evaluateAll((els) =>
     els.map((el) => el.getBoundingClientRect().top)
   );
   expect(ys).toEqual([...ys].sort((a, b) => a - b));
-  expect(ys[ys.length - 1]).toBeLessThan((await menuButton(page).boundingBox())!.y);
+  expect(ys[ys.length - 1]).toBeLessThan((await menuButtonBox(page)).y);
 
-  // Page left is the physical button it always was: forward in a right-to-left book.
-  await menuEntry(page, 'reader.page-left').click();
+  // Next page and Previous page, as the owner's list has them.
+  await menuEntry(page, 'reader.page-next').click();
   await expectPage(page, 2);
   await expect(menuEntries(page)).toHaveCount(0);
   await menuButton(page).click();
-  await menuEntry(page, 'reader.page-right').click();
+  await menuEntry(page, 'reader.page-prev').click();
   await expectPage(page, 1);
 
   // Edit: the same toggle E is. Pressed while editing.
@@ -1465,13 +1552,28 @@ test('quick menu at defaults is today’s menu, and each entry runs its key’s 
   await page.keyboard.press('Escape');
   await expect(page.locator('[data-edit-toolbar]')).toHaveCount(0);
 
-  // Continuous scroll: Edit says why it is off; vertical scroll has no Page left or right.
+  // Continuous VERTICAL scroll: the same menu — nobody loses the two page
+  // buttons by turning it on — with Edit saying why it is off.
   await page.keyboard.press('v');
+  await expect.poll(() => profileSetting(page, 'continuousScroll')).toBe(true);
   await expect(menuEntry(page, 'reader.edit-mode')).toBeDisabled();
   await expect(menuEntry(page, 'reader.edit-mode')).toHaveAttribute(
     'title',
     'Edit is available in paged mode only'
   );
+  expect(await menuIds(page)).toEqual(DEFAULT_MENU);
+  // Down the strip and back up, and the arrows say so.
+  expect(await menuIcon(page, 'reader.page-next')).toBe('ArrowDownOutline');
+  expect(await menuIcon(page, 'reader.page-prev')).toBe('ArrowUpOutline');
+  await menuEntry(page, 'reader.page-next').click();
+  await expectPage(page, 2);
+  await menuButton(page).click();
+  await menuEntry(page, 'reader.page-next').click();
+  await expectPage(page, 3);
+  await menuButton(page).click();
+  await menuEntry(page, 'reader.page-prev').click();
+  await expectPage(page, 2);
+  expect(await profileSetting(page, 'quickMenu')).toEqual({});
 });
 
 test('quick menu: an action switched on in the section shows, runs, survives a reload, and is the profile’s own', async ({
@@ -1532,8 +1634,8 @@ test('quick menu: an action switched on in the section shows, runs, survives a r
   const expected = [
     'reader.edit-mode',
     'reader.zoom-fit',
-    'reader.page-right',
-    'reader.page-left',
+    'reader.page-next',
+    'reader.page-prev',
     'set.zoom-paged.to.zoomFitToWidth',
     'set.brightness.up',
     'set.bold.toggle'
@@ -1602,12 +1704,36 @@ test('quick menu: a scheduled filter’s tap shows the message with “Set to ma
     quickMenu: { 'reader.night': true }
   });
   await openReader(page, volume);
+  const button = notification(page).locator('button', { hasText: 'Set to manual' });
+
+  // A phone's width: the message with its button fits the screen — the
+  // message wraps, the button stays whole and inside the edges.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await menuButton(page).click();
+  await menuEntry(page, 'reader.night').click();
+  await expect(button).toBeVisible();
+  const box = (await notification(page).boundingBox())!;
+  const tap = (await button.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  expect(tap.x).toBeGreaterThanOrEqual(box.x);
+  expect(tap.x + tap.width).toBeLessThanOrEqual(box.x + box.width);
+  // Centred, and one line of button: it did not wrap.
+  expect(Math.abs(box.x + box.width / 2 - 195)).toBeLessThanOrEqual(1);
+  expect(tap.height).toBeLessThan(40);
+  await expect(notification(page)).toContainText('Night Mode is on automatic schedule');
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  // On a wide screen it is one line, as it always was.
+  await menuButton(page).click();
+  await menuEntry(page, 'reader.night').click();
+  await expect(button).toBeVisible();
+  expect((await notification(page).boundingBox())!.height).toBeLessThan(48);
+
   await menuButton(page).click();
   // On by schedule: the entry shows what is on screen.
   await expect(menuEntry(page, 'reader.night')).toHaveAttribute('aria-pressed', 'true');
   await menuEntry(page, 'reader.night').click();
   await expect(notification(page)).toContainText('Night Mode is on automatic schedule');
-  const button = notification(page).locator('button', { hasText: 'Set to manual' });
   await expect(button).toBeVisible();
   expect(await profileSetting(page, 'nightMode')).toBe(false);
   await button.click();
@@ -1628,8 +1754,8 @@ test('quick menu: more entries than one column holds wrap toward the centre, all
 }) => {
   test.setTimeout(150_000);
   const extra = [
-    'reader.page-next',
-    'reader.page-prev',
+    'reader.page-left',
+    'reader.page-right',
     'reader.page-first',
     'reader.page-last',
     'reader.zoom-in',
@@ -1667,7 +1793,7 @@ test('quick menu: more entries than one column holds wrap toward the centre, all
       };
     })
   );
-  const main = (await menuButton(page).boundingBox())!;
+  const main = await menuButtonBox(page);
   // Everything is on screen and nothing overlaps the menu's own button.
   for (const b of boxes) {
     expect(b.left, b.id!).toBeGreaterThanOrEqual(0);

@@ -17,10 +17,13 @@ import type { IconName } from './icon-names';
 export type QuickMenuSelection = Record<string, boolean>;
 
 /**
- * The default menu, TOP TO BOTTOM — today's eight buttons in today's order.
- * Page right and Page left are the physical pair (today's → and ← buttons),
- * not Next and Previous: in a right-to-left book a "Next page" entry drawn
- * as → would turn the other way from the button it replaces (spec 17.7).
+ * The default menu, TOP TO BOTTOM — the owner's list (the rows marked for
+ * the menu), in the order of the eight buttons it replaces. The last two are
+ * Next page and Previous page, as that list has them: live in EVERY layout,
+ * so vertical scroll keeps its two page buttons. The physical pair (Page
+ * left, Page right) is available and off. An entry's arrow is drawn the way
+ * it turns (`PAGE_TURN_ICONS`), so in a right-to-left book the ← button
+ * still turns toward the left (spec 17.7).
  *
  * After the #362 PR merges, its image-adjustment toggle joins this list.
  */
@@ -31,8 +34,8 @@ export const QUICK_MENU_DEFAULT: readonly string[] = [
   'reader.anki-image-2',
   'reader.fullscreen',
   'reader.zoom-fit',
-  'reader.page-right',
-  'reader.page-left'
+  'reader.page-next',
+  'reader.page-prev'
 ];
 
 const DEFAULT_SET: ReadonlySet<string> = new Set(QUICK_MENU_DEFAULT);
@@ -153,9 +156,33 @@ export function menuBadge(action: KeyActionDef): string | undefined {
   }
 }
 
+/** Where the next page is on screen: the reading direction, or down the vertical strip. */
+export type TurnDirection = 'right' | 'left' | 'down';
+
+/**
+ * Next page and Previous page as the menu draws them. The registry's icons
+ * are the left-to-right pair; on the menu the arrow points where the page
+ * actually goes, so nobody taps → and moves left. Only the glyph: the action,
+ * its name and its row in the settings stay the same.
+ */
+const PAGE_TURN_ICONS: Readonly<Record<string, Readonly<Record<TurnDirection, IconName>>>> = {
+  'reader.page-next': {
+    right: 'ArrowRightOutline',
+    left: 'ArrowLeftOutline',
+    down: 'ArrowDownOutline'
+  },
+  'reader.page-prev': {
+    right: 'ArrowLeftOutline',
+    left: 'ArrowRightOutline',
+    down: 'ArrowUpOutline'
+  }
+};
+
 /** What the reader knows that decides how an entry shows. */
 export interface QuickMenuState {
   mode: ReaderMode;
+  /** Where "Next page" goes on screen in this layout and this book. */
+  forward: TurnDirection;
   /** OCR edit mode is on. */
   editing: boolean;
   ankiEnabled: boolean;
@@ -213,7 +240,7 @@ export function quickMenuItems(
     const item: QuickMenuItem = {
       id,
       label: action.label,
-      icon: action.icon,
+      icon: PAGE_TURN_ICONS[id]?.[state.forward] ?? action.icon,
       keepOpen: action.setting?.op === 'up' || action.setting?.op === 'down' || STEPS.has(id)
     };
 

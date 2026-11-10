@@ -134,6 +134,57 @@ describe('ReaderNotification', () => {
     expect(onDone).toHaveBeenCalledOnce();
   });
 
+  it('a hold dies with the notice it was on: the same message later takes its 5 s', async () => {
+    const onDone = vi.fn();
+    const { container, rerender } = render(ReaderNotification, { notice: withButton(), onDone });
+    await fireEvent.pointerEnter(container.querySelector('[data-reader-notification]')!);
+    // Replaced under the pointer (no pointerleave), then the replacement runs out.
+    await rerender({ notice: notice({ message: 'Bold font: Off' }), onDone });
+    await vi.advanceTimersByTimeAsync(NOTICE_MS);
+    expect(onDone).toHaveBeenCalledOnce();
+    await rerender({ notice: null, onDone });
+    // The pointer went elsewhere without crossing a notice. The same message again:
+    await rerender({ notice: withButton(), onDone });
+    await vi.advanceTimersByTimeAsync(NOTICE_WITH_ACTION_MS - 1);
+    expect(onDone).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onDone).toHaveBeenCalledTimes(2);
+  });
+
+  it('a hold dies when its notice goes away with nothing replacing it', async () => {
+    const onDone = vi.fn();
+    const { container, rerender } = render(ReaderNotification, { notice: withButton(), onDone });
+    await fireEvent.pointerEnter(container.querySelector('[data-reader-notification]')!);
+    // Escape, a page leaving the reader: the notice is cleared from outside.
+    await rerender({ notice: null, onDone });
+    await rerender({ notice: withButton(), onDone });
+    await vi.advanceTimersByTimeAsync(NOTICE_WITH_ACTION_MS);
+    expect(onDone).toHaveBeenCalledOnce();
+  });
+
+  it('a repeat of the held message under the pointer stays held', async () => {
+    const onDone = vi.fn();
+    const { container, rerender } = render(ReaderNotification, { notice: withButton(), onDone });
+    await fireEvent.pointerEnter(container.querySelector('[data-reader-notification]')!);
+    // The key again while the pointer is on the notice: same element, still under it.
+    await rerender({ notice: withButton(), onDone });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it('wraps inside the screen instead of running past its edges', () => {
+    const { container } = render(ReaderNotification, { notice: withButton(), onDone: vi.fn() });
+    const box = container.querySelector('[data-reader-notification]')!;
+    // Sized by its content up to the screen less a margin; the message may
+    // wrap, the button never does (measured at 390 px in e2e/key-bindings).
+    expect(box.className).toContain('w-max');
+    expect(box.className).toContain('max-w-[calc(100vw-1.5rem)]');
+    expect(box.querySelector('p')!.className).not.toContain('whitespace-nowrap');
+    const button = box.querySelector('button')!;
+    expect(button.className).toContain('whitespace-nowrap');
+    expect(button.className).toContain('shrink-0');
+  });
+
   it('a plain message is not held by the pointer', async () => {
     const onDone = vi.fn();
     const { container } = render(ReaderNotification, { notice: notice(), onDone });

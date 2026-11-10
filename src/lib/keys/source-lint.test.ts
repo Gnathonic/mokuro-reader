@@ -204,7 +204,11 @@ describe('the quick menu and its section are registry-driven', () => {
     expect(section).toContain(
       'let menuIds = $derived(quickMenuIds(quickMenu, actionMap.values()));'
     );
-    expect(section).toContain('let groups = $derived(groupTargets(targets, facts, filter));');
+    expect(section).toContain('let matched = $derived(groupTargets(targets, facts, filter));');
+    // A search or a filter never mounts the whole registry: the result is cut once, here.
+    expect(section).toContain(
+      'let limited = $derived(filtering && !showAll ? limitGroups(matched, MATCH_LIMIT) : null);'
+    );
     // A closed group mounts no rows.
     expect(section).toContain('{#if groupOpen}');
     for (const [name, text] of [

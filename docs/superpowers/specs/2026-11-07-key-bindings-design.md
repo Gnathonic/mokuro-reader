@@ -784,8 +784,10 @@ scope, the view's scope, `app` elsewhere.
     value takes the schedule's current state. The next press of the key then
     toggles it. The settings card's radio is unchanged.
   - `showNotification(message, key, action?)`. A notification with a button
-    stays 5 s instead of 2 and while the pointer or focus is on it. It never
-    takes focus. The button is a real `<button>`, which the gesture layer
+    stays 5 s instead of 2 and while the pointer or focus is on it (the hold
+    ends with the notice it was on). It is as wide as its content up to the
+    screen less a margin; on a phone the message wraps and the button does
+    not. It never takes focus. The button is a real `<button>`, which the gesture layer
     already treats as interactive, so a tap on it neither turns the page nor
     toggles the controls.
   - It shows the same way when the action is run from the quick menu, which
@@ -821,15 +823,20 @@ The reader's quick-actions menu renders from the registry.
   series-editor, tracker and text-view action.
 - **Default set and order** is one list in `src/lib/keys/quick-menu.ts`,
   top to bottom as today: OCR layers, Edit OCR text, Add image to Anki, Add
-  image 2 to Anki, Fullscreen, Zoom to fit, Page right, Page left. A user's
-  additions follow in registry order. No reordering in v1.
-- **Page left and Page right, not Next and Previous.** The target list puts
-  Next page and Previous page on the menu and calls that today's menu.
-  Today's two buttons call `left()` and `right()`: they are physical. In a
-  right-to-left book (the default) a "Next page" entry drawn as → would turn
-  the other way from today's → button. So the defaults are the physical
-  pair, with today's arrows. Next page and Previous page are available, off.
-  Changing this is two entries in the default list.
+  image 2 to Anki, Fullscreen, Zoom to fit, Next page, Previous page. A
+  user's additions follow in registry order. No reordering in v1.
+- **Next page and Previous page, as the target list has them.** Both are
+  live in every layout, so the default menu is the same in paged, vertical
+  and horizontal: vertical scroll keeps its two page buttons. Page left and
+  Page right (the physical pair) are available, off.
+- **The two arrows point where the page goes.** The buttons this replaces
+  called `left()` and `right()`: they were physical, and in a right-to-left
+  book (the default) → turned back. So that nobody taps → and moves left,
+  the menu draws Next page and Previous page by the direction they turn in
+  the layout and the book on screen (`QuickMenuState.forward`): → and ← left
+  to right, ← and → right to left, ↓ and ↑ in vertical scroll. Only the
+  glyph follows; the action, its name and its settings row do not. Not on
+  the target list, which gives the left-to-right pair.
 - **State.** `Reader.svelte` answers, for the ids on the menu only: hidden
   (not live in this mode; Anki off; no second page; no layers and not
   editing), disabled with a reason (Edit in continuous scroll or on the
@@ -863,7 +870,7 @@ The reader's quick-actions menu renders from the registry.
 
 ### 17.9 The settings section at 250 actions
 
-253 actions with two profiles: 170 generated, 83 by hand. The section lists
+254 actions with two profiles: 170 generated, 84 by hand. The section lists
 TARGETS, about 130, not actions.
 
 - **Title:** "Shortcuts and quick menu".
@@ -878,8 +885,14 @@ TARGETS, about 130, not actions.
   Nothing bound is ever invisible.
 - **Search** matches the label, the setting, an option name, the area and a
   bound key's label. A search opens every group and setting with a match and
-  hides the rest.
+  hides the rest. It is applied 150 ms after the last keystroke.
 - **Filters:** Has a key · Changed · On the quick menu.
+- **A search or a filter mounts at most 60 action rows** (`MATCH_LIMIT`),
+  with "Showing the first 60 of N matching actions. Show all" under them:
+  one letter matches most of the registry. While one is up, the group and
+  setting headers are disabled (they cannot fold what it holds open), and a
+  row whose keys or menu choice the user changes stays listed until the
+  search or the filters change, whatever the change did to it.
 - **Quick-menu switch** per row, absent where the action can never be on the
   menu. Above the list: "Quick menu: 8 actions", with Reset.
 - **Touch.** The one-line note becomes "Keys need a hardware keyboard. The
@@ -899,9 +912,9 @@ others are named. Rows marked SKIP or DEFER are in 17.11.
 
 | Row                    | Actions                                                      | Site | On branch                                          |
 | ---------------------- | ------------------------------------------------------------ | ---- | -------------------------------------------------- |
-| Next page              | `reader.page-next` (exists)                                  | R    | yes                                                |
-| Previous page          | `reader.page-prev` (exists)                                  | R    | yes                                                |
-| Page left / Page right | `reader.page-left`, `reader.page-right`                      | R    | yes; menu default, see 17.7                        |
+| Next page              | `reader.page-next` (exists)                                  | R    | yes; menu default, see 17.7                        |
+| Previous page          | `reader.page-prev` (exists)                                  | R    | yes; menu default                                  |
+| Page left / Page right | `reader.page-left`, `reader.page-right`                      | R    | yes; off the menu by default                       |
 | First page, Last page  | `reader.page-first`, `reader.page-last`                      | R    | yes                                                |
 | Scroll image up / down | `reader.scroll-up`, `-down`, `-left`, `-right`               | R    | yes                                                |
 | Next / Previous volume | `reader.volume-next`, `reader.volume-prev`                   | R    | yes                                                |
@@ -973,7 +986,7 @@ others are named. Rows marked SKIP or DEFER are in 17.11.
 | First page is cover       | `reader.offset-spreads` "Spreads offset", O                                                                | R    | yes; `reader.cover` retired         |
 | OCR layer                 | `reader.ocr-layer` (exists, L), `reader.ocr-layer-prev` (new), `reader.ocr-layers` (new, opens the picker) | R    | yes; the picker is the menu default |
 | Set OCR layer to primary  | `reader.ocr-layer-primary` (new)                                                                           | R    | yes (picker row)                    |
-| Mark volume read / unread | DEFER                                                                                                      |      | no control in the reader            |
+| Mark volume read / unread | `reader.volume-read` (new)                                                                                 | R    | the volume row's button, see 17.11  |
 | Timer pause / resume      | `reader.timer-pause` (new)                                                                                 | R    | yes (click on the timer)            |
 
 **Reader: edit**
@@ -1050,9 +1063,9 @@ components (`satisfies Record<IconName, Component>`, so a missing import
 fails type-check). All names on the target list exist in the installed
 package. A row's icon serves all its actions, except:
 
-- Page left / Page right take `ArrowLeftOutline` / `ArrowRightOutline`
-  (today's menu glyphs); Next / Previous page take `ChevronRightOutline` /
-  `ChevronLeftOutline`.
+- Next / Previous page take `ArrowRightOutline` / `ArrowLeftOutline` (the
+  list's; the quick menu mirrors them by reading direction, 17.7); Page left
+  / Page right take `ChevronLeftOutline` / `ChevronRightOutline`.
 - Scroll: `ArrowUpOutline`, `ArrowDownOutline`, `AngleLeftOutline`,
   `AngleRightOutline`.
 - Undo `UndoOutline`, Redo `RedoOutline`. Zoom in `ZoomInOutline`, zoom out
@@ -1077,18 +1090,21 @@ is one definition.
 - Image adjustment on/off (#362): toggle, and a ninth default quick-menu
   entry.
 
-**Deferred.**
+**To rewire when #224 merges.**
 
-- Reader: Mark volume read / unread. There is no such control in the reader
-  here, and the row is defined by #224's sheet, which is on its own branch.
-  Without the sheet, one press moves the OPEN volume's progress to the last
-  page (read) or to zero (unread, which also clears the completion date),
-  with no confirmation. Add it with #224. The volume-row action is in.
+- Reader: Mark volume read / unread is `reader.volume-read`, unbound and off
+  the menu. The row says it goes through #224's sheet, which is on its own
+  branch. Until then it does what the volume row's button does today, on the
+  same test (`reader/volume-read.ts`): one press moves the OPEN volume to its
+  last page and marks it finished, or — when it is finished, which is the last
+  page or the one before — back to zero, clearing the completion date. No
+  confirmation, as on the row. The page on screen follows. When #224 merges,
+  route that one function through the sheet, as the row's handler is.
 
 **Flagged: built, with a decision the list did not make.**
 
-- Quick-menu defaults are Page left and Page right, not Next and Previous
-  (17.7).
+- The quick menu draws Next page and Previous page as the direction they
+  turn (17.7).
 - OCR layer is three actions. The menu default is the picker, because that
   is today's button.
 - Volume row "Backup / Retry upload / Delete from cloud" is one menu item
@@ -1164,7 +1180,7 @@ is one definition.
     picker and "Set to primary" stay under This volume, where the list has
     them. An `app` action has ONE row, under App: Back and Open settings are
     not repeated under the reader and the series page.
-  - The rows are `targets.ts`: 131 targets for 253 actions. A search matches
+  - The rows are `targets.ts`: 132 targets for 254 actions. A search matches
     every word against the action's label, its setting, its option, its area
     and the labels of its keys (locked keys included). Under a search or a
     filter the group headers do not fold; the header's count is the group's
@@ -1175,12 +1191,11 @@ is one definition.
     a changed quick-menu choice.
   - "Quick menu: N actions" counts the profile's menu across layouts. A given
     layout can show fewer.
-  - **Vertical scroll has no Page left / Page right on the menu.** Those two
-    actions are not live there (their keys scroll sideways), and the menu
-    shows only what is live in the layout. Before, the two buttons were drawn
-    in every layout. Next page and Previous page can be switched on for it.
-  - In horizontal scroll the two buttons step the strip, as their keys do;
-    before, they called the paged turn.
+  - The menu shows only what is live in the layout. Every default is live in
+    all three. Page left and Page right, when a user adds them, are absent in
+    vertical scroll (their keys scroll sideways there).
+  - In horizontal scroll Next page and Previous page step the strip, as
+    their keys do; before, the two buttons called the paged turn.
   - The Edit entry is named "Edit OCR text" and shows as pressed while
     editing; it said "Exit edit mode" there. While a layer is loading its
     reason is "The layer is still loading".
@@ -1225,7 +1240,7 @@ green.
 
 - `providers.ts`; the layout as the one listener outside the reader; the
   three card components provide instead of listening.
-- The 52 new commands in 17.10, each with its handler at the named site and
+- The 53 new commands in 17.10, each with its handler at the named site and
   the shared enablement test extracted beside its button:
   `layerActionAvailable` (next to `layerRowActions`), `editCommandState`
   (toolbar and keys), the series page's and volume row's `can…` tests.
@@ -1279,8 +1294,10 @@ Step B, unit:
 
 Step C:
 
-- `quick-menu.test.ts`: `{}` gives today's eight in today's order; sparse
-  edits; a never id is ignored; the mode filter.
+- `quick-menu.test.ts`: `{}` gives today's eight in today's order, the same
+  in every layout; sparse edits; a never id is ignored; the mode filter; the
+  page arrows by reading direction.
+- `targets.test.ts`: a kept row survives each filter; the 60-row cut.
 - Component: the menu renders its items, badges and disabled reasons and
   runs the action; the section's groups, search, filters, folded setting
   rows with their "inside" summary, the switch hidden where never, the touch
@@ -1300,8 +1317,12 @@ series-page action on E as well.
 3. In the reader, keys stand down while a dialog is open.
 4. The quick menu's Fullscreen, Zoom to fit and Edit buttons take the target
    list's icons (`ExpandOutline`, `MinimizeOutline`, `PenOutline`), and every
-   entry is named by its action ("Page right", "Edit OCR text").
-5. In vertical scroll the quick menu has no Page left and Page right; in
-   horizontal scroll they step the strip (17.11, step C).
+   entry is named by its action ("Fullscreen", "Edit OCR text"; Edit shows as
+   pressed while editing).
+5. The quick menu's two page buttons are Next page and Previous page, in
+   every layout. In a right-to-left book the upper one is ← (next) and the
+   lower → (previous): each arrow still turns the way it points, in the
+   other order. In horizontal scroll they step the strip; in vertical scroll
+   they are ↓ and ↑ (17.7).
 
 Everything else is new and unbound.

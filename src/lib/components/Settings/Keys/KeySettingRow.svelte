@@ -25,6 +25,12 @@
     changed?: boolean;
     /** One of its actions shares a key with another action. */
     conflict?: boolean;
+    /**
+     * A search or a filter holds the row open: the header cannot fold it, so
+     * it is disabled — as the group headers are — rather than a control that
+     * says "expanded" and does nothing when pressed.
+     */
+    locked?: boolean;
     onToggle: () => void;
     children: Snippet;
   }
@@ -37,6 +43,7 @@
     open,
     changed = false,
     conflict = false,
+    locked = false,
     onToggle,
     children
   }: Props = $props();
@@ -50,8 +57,9 @@
 >
   <button
     type="button"
-    class="flex w-full items-center gap-2 py-2 pr-1 pl-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700/50"
+    class="flex w-full items-center gap-2 py-2 pr-1 pl-2 text-left enabled:hover:bg-gray-100 dark:enabled:hover:bg-gray-700/50"
     aria-expanded={open}
+    disabled={locked}
     onclick={onToggle}
   >
     <Icon class="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />

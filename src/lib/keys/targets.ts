@@ -86,6 +86,14 @@ export interface TargetFilter {
   hasKey: boolean;
   changed: boolean;
   onMenu: boolean;
+  /**
+   * Actions the user changed while this search and these filters were up.
+   * They stay listed whatever the change did to them: removing a row's last
+   * key under "Has a key" must not take the row from under the press (focus,
+   * and the row's own announcement of what happened, would go with it). The
+   * section clears it when the search or a filter changes.
+   */
+  keep?: ReadonlySet<string>;
 }
 
 export const NO_FILTER: TargetFilter = { query: '', hasKey: false, changed: false, onMenu: false };
@@ -214,6 +222,7 @@ export function groupTargets(
     if (filtering) {
       const label = group.label;
       actions = target.actions.filter((action) => {
+        if (filter.keep?.has(action.id)) return true;
         if (filter.hasKey && chordsOf(facts, action).length === 0) return false;
         if (
           filter.changed &&
@@ -244,4 +253,48 @@ export function groupTargets(
     const group = groups.get(id);
     return group && group.rows.length > 0 ? [group] : [];
   });
+}
+
+/**
+ * The most action rows a search or a filter mounts at once. One letter
+ * matches most of the registry, and each row is a component with its own
+ * derived chords and a capture listener: without a cap the first keystroke
+ * mounted all 250, which is what the collapsed groups exist to avoid. About
+ * two opened groups' worth, and above what "Has a key" and "On the quick
+ * menu" list at defaults, so those are whole.
+ */
+export const MATCH_LIMIT = 60;
+
+export interface LimitedGroups {
+  groups: TargetGroup[];
+  /** Action rows in `groups`. */
+  shown: number;
+  /** Action rows the filter matched. */
+  total: number;
+}
+
+/**
+ * The first `limit` action rows of a filtered result, in its own order: whole
+ * groups and rows while they fit, then a folded setting's first actions. A
+ * result that fits is returned as it is. The groups keep their counts.
+ */
+export function limitGroups(groups: TargetGroup[], limit: number): LimitedGroups {
+  let total = 0;
+  for (const group of groups) for (const row of group.rows) total += row.actions.length;
+  if (total <= limit) return { groups, shown: total, total };
+
+  const out: TargetGroup[] = [];
+  let left = limit;
+  for (const group of groups) {
+    if (left <= 0) break;
+    const rows: TargetRow[] = [];
+    for (const row of group.rows) {
+      if (left <= 0) break;
+      const actions = row.actions.length > left ? row.actions.slice(0, left) : row.actions;
+      left -= actions.length;
+      rows.push(actions === row.actions ? row : { ...row, actions });
+    }
+    out.push({ ...group, rows });
+  }
+  return { groups: out, shown: limit - left, total };
 }

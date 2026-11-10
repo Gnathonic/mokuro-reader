@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { ExclamationCircleSolid } from 'flowbite-svelte-icons';
   import { SCOPES, type ActionId, type KeyActionDef, type KeyScope } from '$lib/keys/actions';
   import { assessCapture } from '$lib/keys/capture';
@@ -140,8 +141,26 @@
     announce = `${labelOf(chord)} moved to ${action.label}.`;
   }
 
+  let rowEl: HTMLDivElement | undefined = $state();
+
+  /**
+   * A chip's × and Reset go away with what they did. When the press came
+   * from inside the row, keep the keyboard there (on "+ Add") instead of
+   * letting focus fall to the page behind the drawer.
+   */
+  async function keepFocus() {
+    if (!rowEl?.contains(document.activeElement)) return;
+    await tick();
+    if (!rowEl || rowEl.contains(document.activeElement)) return;
+    (
+      rowEl.querySelector<HTMLElement>('[data-key-capture]') ??
+      rowEl.querySelector<HTMLElement>('button')
+    )?.focus();
+  }
+
   function remove(chord: string) {
     message = null;
+    void keepFocus();
     onSave(removeChord(bindings, action, chord));
     announce = `${labelOf(chord)} removed from ${action.label}.`;
   }
@@ -149,12 +168,14 @@
   function reset() {
     message = null;
     pending = null;
+    void keepFocus();
     onSave(resetAction(bindings, action));
     announce = `${action.label} reset.`;
   }
 </script>
 
 <div
+  bind:this={rowEl}
   class="border-l-[3px] py-2 pr-1 pl-2 {modified || menuChanged
     ? 'border-l-primary-600'
     : 'border-l-transparent'}"

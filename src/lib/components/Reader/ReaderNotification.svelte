@@ -16,6 +16,8 @@
 </script>
 
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   /**
    * The reader's in-overlay notification: what every hotkey announces
    * through (#55, spec 17.5).
@@ -41,6 +43,18 @@
   // pointerleave, and must not inherit the hold.
   let heldKey = $state<string | null>(null);
 
+  // A hold ends with the element it was on. `{#key}` swaps that element (and
+  // a cleared notice removes it) without a pointerleave or focusout, so the
+  // key would otherwise outlive its notice and the NEXT notice with the same
+  // key would get no timer at all. Declared before the timer's effect, so
+  // that one already sees the hold gone.
+  $effect(() => {
+    const key = notice?.key ?? null;
+    untrack(() => {
+      if (heldKey !== null && heldKey !== key) heldKey = null;
+    });
+  });
+
   $effect(() => {
     const current = notice;
     if (!current || heldKey === current.key) return;
@@ -64,8 +78,11 @@
 {#if notice}
   <!-- Keyed: extensions that rewrite text must not carry one message into the next. -->
   {#key notice.key}
+    <!-- `w-max` up to the screen less a margin: one line while it fits (a box
+         at `left: 50%` would otherwise shrink to half the screen), wrapping the
+         message, never the button, on a phone. -->
     <div
-      class="fixed top-5 left-1/2 z-20 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-gray-900 px-4 py-2 text-white shadow-lg transition-opacity"
+      class="fixed top-5 left-1/2 z-20 flex w-max max-w-[calc(100vw-1.5rem)] -translate-x-1/2 items-center gap-3 rounded-lg bg-gray-900 px-4 py-2 text-white shadow-lg transition-opacity"
       style="backdrop-filter: blur(8px); background-color: rgba(17, 24, 39, 0.9);"
       role="status"
       data-reader-notification={notice.key}
@@ -74,12 +91,12 @@
       onfocusin={() => hold(true)}
       onfocusout={() => hold(false)}
     >
-      <p class="text-sm font-medium whitespace-nowrap">{notice.message}</p>
+      <p class="text-sm font-medium">{notice.message}</p>
       {#if notice.action}
         {@const action = notice.action}
         <button
           type="button"
-          class="rounded-md bg-white/15 px-2 py-0.5 text-sm font-medium whitespace-nowrap hover:bg-white/25"
+          class="shrink-0 rounded-md bg-white/15 px-2 py-0.5 text-sm font-medium whitespace-nowrap hover:bg-white/25"
           data-reader-notification-action
           onmousedown={(e) => e.preventDefault()}
           onclick={() => run(action)}>{action.label}</button

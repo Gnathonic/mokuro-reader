@@ -1,4 +1,10 @@
+<script lang="ts" module>
+  /** The pause after the last keystroke before a search is applied. */
+  export const SEARCH_DELAY_MS = 150;
+</script>
+
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { AccordionItem, Input } from 'flowbite-svelte';
   import {
     ChevronDownOutline,
@@ -30,6 +36,8 @@
     groupTargets,
     isFiltering,
     labelWithin,
+    limitGroups,
+    MATCH_LIMIT,
     type KeyTarget,
     type TargetFacts
   } from '$lib/keys/targets';
@@ -45,12 +53,47 @@
    * Everything that spans rows — the keymap, the conflict map, the quick-menu
    * selection, what is changed, what a search matches — is derived ONCE here
    * (`targets.ts`); a row derives only its own chords.
+   *
+   * A search or a filter lists what matches, opened. It is applied a pause
+   * after the last keystroke and mounts at most `MATCH_LIMIT` action rows
+   * ("Show all" lifts that): one letter matches most of the registry, and
+   * mounting it all on the first keystroke is what the closed groups avoid.
    */
 
-  // `open` only for tests and deep links; the drawer opens it like any other section.
-  let { open = false }: { open?: boolean } = $props();
+  // `open` only for tests and deep links; the drawer opens it like any other
+  // section. `searchDelay` only for tests (0 applies a search at once).
+  let { open = false, searchDelay = SEARCH_DELAY_MS }: { open?: boolean; searchDelay?: number } =
+    $props();
 
+  /** What the search box holds. */
   let query = $state('');
+  /** What the list is searched by: `query`, once the typing pauses. */
+  let applied = $state('');
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Rows changed under the current search and filters stay listed until
+  // those change: taking a row's last key off under "Has a key" must not pull
+  // the row from under the press (`TargetFilter.keep`).
+  let touched = $state<string[]>([]);
+  /** The user asked for the whole result of the current search and filters. */
+  let showAll = $state(false);
+
+  /** Change the search or a filter: what belonged to the last one goes. */
+  function refilter(change: () => void) {
+    change();
+    touched = [];
+    showAll = false;
+  }
+
+  function setQuery(value: string) {
+    query = value;
+    clearTimeout(searchTimer);
+    // Clearing the box only folds everything away: nothing to wait for.
+    if (searchDelay <= 0 || !value.trim()) refilter(() => (applied = value));
+    else searchTimer = setTimeout(() => refilter(() => (applied = value)), searchDelay);
+  }
+  onDestroy(() => clearTimeout(searchTimer));
+
   let onlyWithKey = $state(false);
   let onlyChanged = $state(false);
   let onlyOnMenu = $state(false);
@@ -99,13 +142,22 @@
   });
 
   let filter = $derived({
-    query,
+    query: applied,
     hasKey: onlyWithKey,
     changed: onlyChanged,
-    onMenu: onlyOnMenu
+    onMenu: onlyOnMenu,
+    keep: new Set(touched)
   });
   let filtering = $derived(isFiltering(filter));
-  let groups = $derived(groupTargets(targets, facts, filter));
+  let matched = $derived(groupTargets(targets, facts, filter));
+  let limited = $derived(filtering && !showAll ? limitGroups(matched, MATCH_LIMIT) : null);
+  let groups = $derived(limited?.groups ?? matched);
+  let hidden = $derived(limited ? limited.total - limited.shown : 0);
+
+  /** The user changed `id`'s keys or menu choice: keep its row under this search and these filters. */
+  function touch(id: string) {
+    if (filtering && !touched.includes(id)) touched.push(id);
+  }
 
   let keysCustomised = $derived(Object.keys(bindings).length > 0);
   let menuCustomised = $derived(facts.menuChanged.size > 0);
@@ -162,16 +214,22 @@
     conflictsWith={conflicts.get(action.id as ActionId)}
     capturing={capturingId === action.id}
     onCaptureChange={(on) => (capturingId = on ? action.id : null)}
-    onSave={save}
+    onSave={(next) => {
+      touch(action.id);
+      save(next);
+    }}
     menu={menuEligible(action) ? facts.onMenu.has(action.id) : undefined}
     menuChanged={facts.menuChanged.has(action.id)}
-    onMenuChange={(on) => setOnMenu(action, on)}
+    onMenuChange={(on) => {
+      touch(action.id);
+      setOnMenu(action, on);
+    }}
   />
 {/snippet}
 
 <AccordionItem {open}>
   {#snippet header()}Shortcuts and quick menu{/snippet}
-  <div class="flex flex-col gap-2 text-sm" data-keyboard-shortcuts>
+  <div class="flex flex-col gap-2 text-sm" data-keyboard-shortcuts data-key-search={applied}>
     <p class="text-xs text-gray-500 dark:text-gray-400">
       Saved in profile <b class="text-gray-900 dark:text-white">{$currentProfile}</b>
       {#if profileCount > 1}
@@ -196,7 +254,7 @@
       type="search"
       placeholder="Search actions, settings, options, keys"
       aria-label="Search shortcuts"
-      bind:value={query}
+      bind:value={() => query, setQuery}
     />
     <div class="flex flex-wrap gap-1.5" role="group" aria-label="Show only">
       {#each FILTERS as f (f.label)}
@@ -206,7 +264,7 @@
           class="rounded-full border px-2 py-0.5 text-xs {f.get()
             ? 'border-primary-600 bg-primary-600 text-white'
             : 'border-gray-300 text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700'}"
-          onclick={() => f.set(!f.get())}>{f.label}</button
+          onclick={() => refilter(() => f.set(!f.get()))}>{f.label}</button
         >
       {/each}
     </div>
@@ -275,7 +333,9 @@
                   open={settingOpen}
                   changed={row.changed}
                   conflict={row.conflict}
+                  locked={filtering}
                   onToggle={() => {
+                    // Disabled while locked; a synthetic click still gets here.
                     if (!filtering) openSettings[row.target.key] = !openSettings[row.target.key];
                   }}
                 >
@@ -292,9 +352,23 @@
       </section>
     {:else}
       <p class="text-xs text-gray-500 dark:text-gray-400" data-key-no-match>
-        {#if query.trim()}No action matches “{query.trim()}”.{:else}No action matches these filters.{/if}
+        {#if applied.trim()}No action matches “{applied.trim()}”.{:else}No action matches these
+          filters.{/if}
       </p>
     {/each}
+    {#if hidden > 0 && limited}
+      <p
+        class="relative z-10 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-gray-300"
+        data-key-more
+      >
+        <span>Showing the first {limited.shown} of {limited.total} matching actions.</span>
+        <button
+          type="button"
+          class="text-primary-600 hover:underline dark:text-primary-500"
+          onclick={() => (showAll = true)}>Show all</button
+        >
+      </p>
+    {/if}
 
     <details class="mt-2 text-xs text-gray-600 dark:text-gray-400">
       <summary class="cursor-pointer select-none">Not changeable</summary>

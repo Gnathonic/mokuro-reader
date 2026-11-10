@@ -25,6 +25,7 @@ const ACTIONS = new Map(allActions().map((a) => [a.id, a]));
 function entries(menu: QuickMenuSelection = {}, state: Partial<QuickMenuState> = {}) {
   const full: QuickMenuState = {
     mode: 'paged',
+    forward: 'left',
     editing: false,
     ankiEnabled: true,
     hasSecondPage: true,
@@ -183,8 +184,8 @@ describe('QuickActions — drawn from the registry (#55 step C)', () => {
       'reader.anki-image-2',
       'reader.fullscreen',
       'reader.zoom-fit',
-      'reader.page-right',
-      'reader.page-left'
+      'reader.page-next',
+      'reader.page-prev'
     ]);
     for (const id of utils.shown()) {
       const button = utils.container.querySelector(`[data-quick-action="${id}"]`)!;
@@ -233,8 +234,8 @@ describe('QuickActions — drawn from the registry (#55 step C)', () => {
       'reader.anki-image',
       'reader.anki-image-2',
       'reader.zoom-fit',
-      'reader.page-right',
-      'reader.page-left'
+      'reader.page-next',
+      'reader.page-prev'
     ]);
     const badge = (id: string) =>
       utils.container
@@ -303,8 +304,8 @@ describe('QuickActions — drawn from the registry (#55 step C)', () => {
       'reader.edit-mode',
       'reader.fullscreen',
       'reader.zoom-fit',
-      'reader.page-right',
-      'reader.page-left'
+      'reader.page-next',
+      'reader.page-prev'
     ]);
     utils.parent.items = entries({}, { hasSecondPage: false });
     flushSync();

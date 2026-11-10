@@ -88,6 +88,41 @@ describe('KeyActionRow', () => {
     expect(getByText('Not set')).toBeTruthy();
   });
 
+  it('a removed chip’s × and Reset leave focus in the row, on "+ Add"', async () => {
+    const { container, getByLabelText, getByText } = render(RowHarness, {
+      id: 'reader.fullscreen',
+      onSaved: vi.fn()
+    });
+    const add = () => container.querySelector('[data-key-capture]');
+    const remove = getByLabelText('Remove KeyF from Fullscreen');
+    remove.focus();
+    await fireEvent.click(remove);
+    await tick();
+    await tick();
+    expect(remove.isConnected).toBe(false);
+    expect(document.activeElement).toBe(add());
+
+    const reset = getByText('Reset');
+    reset.focus();
+    await fireEvent.click(reset);
+    await tick();
+    await tick();
+    expect(reset.isConnected).toBe(false);
+    expect(document.activeElement).toBe(add());
+  });
+
+  it('a press from outside the row (a touch, a script) does not pull focus into it', async () => {
+    const outside = document.createElement('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    const { getByLabelText } = render(RowHarness, { id: 'reader.fullscreen', onSaved: vi.fn() });
+    await fireEvent.click(getByLabelText('Remove KeyF from Fullscreen'));
+    await tick();
+    await tick();
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
   it('a conflict asks Replace or Cancel; Replace moves the key', async () => {
     const saved = vi.fn();
     const { container, getByText, queryByText } = render(RowHarness, {

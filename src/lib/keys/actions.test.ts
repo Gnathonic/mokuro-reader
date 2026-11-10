@@ -18,9 +18,9 @@ const hand = KEY_ACTIONS as readonly KeyActionDef[];
 const all = allActions();
 
 describe('the hand-registered actions', () => {
-  it('has 83 actions with unique ids and labels: 31 from before the commands, 52 commands', () => {
-    expect(hand).toHaveLength(83);
-    expect(COMMANDS).toHaveLength(52);
+  it('has 84 actions with unique ids and labels: 31 from before the commands, 53 commands', () => {
+    expect(hand).toHaveLength(84);
+    expect(COMMANDS).toHaveLength(53);
     expect(new Set(hand.map((a) => a.id)).size).toBe(hand.length);
     expect(new Set(hand.map((a) => a.label)).size).toBe(hand.length);
   });
@@ -67,7 +67,7 @@ describe('the hand-registered actions', () => {
 });
 
 /**
- * The 52 commands of spec 17.10 (step B): id, scope, icon, and whether the
+ * The 53 commands of spec 17.10 (step B): id, scope, icon, and whether the
  * quick menu may ever hold it. Ids are stored in synced profiles, so a row
  * that changes here is a binding somebody loses.
  */
@@ -77,6 +77,8 @@ const COMMANDS: [id: string, scope: KeyScope, icon: string, menu: 'off' | 'never
   ['reader.zoom-in', 'reader', 'ZoomInOutline', 'off'],
   ['reader.zoom-out', 'reader', 'ZoomOutOutline', 'off'],
   ['reader.quick-menu', 'reader', 'DotsVerticalOutline', 'never'],
+  // The owner's row "Reader: this volume / Mark volume read / unread".
+  ['reader.volume-read', 'reader', 'CheckCircleOutline', 'off'],
   ['reader.timer-pause', 'reader', 'CirclePauseOutline', 'off'],
   ['reader.ocr-layer-prev', 'reader', 'LayersOutline', 'off'],
   ['reader.ocr-layers', 'reader', 'LayersOutline', 'off'],
@@ -140,7 +142,7 @@ const BEFORE_COMMANDS = 31;
 describe('the commands (spec 17.10)', () => {
   const byId = new Map(hand.map((a) => [a.id as string, a]));
 
-  it('are exactly the 52 ids of the table, and nothing else was added', () => {
+  it('are exactly the 53 ids of the table, and nothing else was added', () => {
     expect(new Set(COMMANDS.map(([id]) => id)).size).toBe(COMMANDS.length);
     for (const [id] of COMMANDS) expect(byId.has(id), id).toBe(true);
     expect(hand.length - COMMANDS.length).toBe(BEFORE_COMMANDS);

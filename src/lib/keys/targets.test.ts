@@ -10,6 +10,8 @@ import {
   groupTargets,
   isFiltering,
   labelWithin,
+  limitGroups,
+  MATCH_LIMIT,
   NO_FILTER,
   type TargetFacts
 } from './targets';
@@ -257,7 +259,8 @@ describe('filters', () => {
     const f = facts({}, { 'set.brightness.up': true, 'reader.fullscreen': false });
     const ids = shownIds(groupTargets(targets, f, { ...NO_FILTER, onMenu: true }));
     expect(ids).toContain('set.brightness.up');
-    expect(ids).toContain('reader.page-left');
+    expect(ids).toContain('reader.page-next');
+    expect(ids).not.toContain('reader.page-left');
     expect(ids).not.toContain('reader.fullscreen');
     expect(ids).toHaveLength(8);
   });
@@ -268,6 +271,120 @@ describe('filters', () => {
     expect(shownIds(groups)).toEqual(['set.brightness.up']);
     // The group still knows how many rows it has in all.
     expect(groups[0].count).toBeGreaterThan(1);
+  });
+});
+
+describe('a row the user changed under a filter stays listed', () => {
+  // Removing Fullscreen's last key under "Has a key" used to drop the row
+  // mid-press: focus fell to the page and the row's announcement went with it.
+  it('Has a key: the action whose last key was removed is kept, and only that one', () => {
+    const f = facts({ 'reader.fullscreen': [] });
+    const without = shownIds(groupTargets(targets, f, { ...NO_FILTER, hasKey: true }));
+    expect(without).not.toContain('reader.fullscreen');
+    const kept = shownIds(
+      groupTargets(targets, f, {
+        ...NO_FILTER,
+        hasKey: true,
+        keep: new Set(['reader.fullscreen'])
+      })
+    );
+    expect(kept).toContain('reader.fullscreen');
+    expect(kept).not.toContain('reader.goto-page');
+    expect(kept.filter((id) => id !== 'reader.fullscreen')).toEqual(without);
+  });
+
+  it('Changed and On the quick menu keep it too, and so does a search on its key’s label', () => {
+    const keep = new Set(['reader.fullscreen']);
+    // Reset under "Changed": nothing is changed any more.
+    expect(shownIds(groupTargets(targets, facts(), { ...NO_FILTER, changed: true, keep }))).toEqual(
+      ['reader.fullscreen']
+    );
+    // Switched off under "On the quick menu".
+    const off = facts({}, { 'reader.fullscreen': false });
+    expect(shownIds(groupTargets(targets, off, { ...NO_FILTER, onMenu: true }))).not.toContain(
+      'reader.fullscreen'
+    );
+    expect(shownIds(groupTargets(targets, off, { ...NO_FILTER, onMenu: true, keep }))).toContain(
+      'reader.fullscreen'
+    );
+    // Found by its key's label, then the key was removed.
+    const unbound = facts({ 'reader.goto-page': [] });
+    expect(
+      shownIds(
+        groupTargets(targets, unbound, {
+          ...NO_FILTER,
+          query: 'qqq',
+          keep: new Set(['reader.goto-page'])
+        })
+      )
+    ).toEqual(['reader.goto-page']);
+  });
+
+  it('a folded setting keeps the one action, among its matches', () => {
+    const f = facts({ 'set.zoom-paged.next': ['KeyX'] });
+    const groups = groupTargets(targets, f, {
+      ...NO_FILTER,
+      hasKey: true,
+      keep: new Set(['set.zoom-paged.prev'])
+    });
+    const zoom = rowsOf(groups).find((r) => r.target.key === 'setting:zoom-paged')!;
+    expect(zoom.actions.map((a) => a.id)).toEqual(['set.zoom-paged.next', 'set.zoom-paged.prev']);
+  });
+
+  it('means nothing without a filter', () => {
+    const keep = new Set(['reader.fullscreen']);
+    expect(isFiltering({ ...NO_FILTER, keep })).toBe(false);
+    expect(shownIds(groupTargets(targets, facts(), { ...NO_FILTER, keep }))).toHaveLength(
+      all.length
+    );
+  });
+});
+
+describe('the cap on what a search mounts', () => {
+  const actionRows = (groups: ReturnType<typeof groupTargets>) => shownIds(groups).length;
+  const search = (query: string) => groupTargets(targets, facts(), { ...NO_FILTER, query });
+
+  it('one letter matches most of the registry; the cut keeps the first MATCH_LIMIT action rows', () => {
+    const groups = search('e');
+    expect(actionRows(groups)).toBeGreaterThan(150);
+    const cut = limitGroups(groups, MATCH_LIMIT);
+    expect(cut.total).toBe(actionRows(groups));
+    expect(cut.shown).toBe(MATCH_LIMIT);
+    expect(actionRows(cut.groups)).toBe(MATCH_LIMIT);
+    // The same rows, in the same order, from the top.
+    expect(shownIds(cut.groups)).toEqual(shownIds(groups).slice(0, MATCH_LIMIT));
+    // No empty group or row is left behind, and the groups keep their own counts.
+    for (const g of cut.groups) {
+      expect(g.rows.length, g.group).toBeGreaterThan(0);
+      for (const r of g.rows) expect(r.actions.length, r.target.key).toBeGreaterThan(0);
+      expect(g.count).toBe(groups.find((x) => x.group === g.group)!.count);
+    }
+  });
+
+  it('cuts a folded setting’s actions mid-row rather than dropping the row', () => {
+    const groups = search('font size');
+    const size = actionRows(groups);
+    expect(size).toBeGreaterThan(10);
+    const cut = limitGroups(groups, 5);
+    expect(shownIds(cut.groups)).toEqual(shownIds(groups).slice(0, 5));
+    expect(cut).toMatchObject({ shown: 5, total: size });
+  });
+
+  it('leaves a result that fits alone: the same groups, nothing hidden', () => {
+    const groups = search('brightness');
+    const cut = limitGroups(groups, MATCH_LIMIT);
+    expect(cut.groups).toBe(groups);
+    expect(cut.shown).toBe(cut.total);
+  });
+
+  it('holds what the defaults’ filters list, so "Has a key" and "On the quick menu" are whole', () => {
+    const f = facts();
+    for (const filter of [
+      { ...NO_FILTER, hasKey: true },
+      { ...NO_FILTER, onMenu: true }
+    ]) {
+      expect(actionRows(groupTargets(targets, f, filter))).toBeLessThanOrEqual(MATCH_LIMIT);
+    }
   });
 });
 
