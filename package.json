@@ -38,7 +38,7 @@
     "@vitest/coverage-v8": "^5.0.5",
     "autoprefixer": "^10.6.2",
     "caniuse-lite": "^1.0.30001747",
-    "eslint": "^9.21.0",
+    "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.0.2",
     "eslint-plugin-svelte": "^3.23.1",
     "fake-indexeddb": "^6.2.7",
