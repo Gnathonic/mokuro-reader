@@ -388,6 +388,13 @@
       case 'reader.page-last':
         scrollToPageVertical(pages.length - 1);
         return true;
+      // One step of the notched-wheel ladder at the screen centre (#55),
+      // through the same gate a wheel notch passes.
+      case 'reader.zoom-in':
+      case 'reader.zoom-out':
+        motion.beforeZoom();
+        zoomController.cycleZoom(id === 'reader.zoom-in' ? 1 : -1);
+        return true;
       default:
         return false;
     }

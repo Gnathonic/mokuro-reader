@@ -252,9 +252,17 @@
     );
   }
 
+  function zoomStep(direction: 1 | -1) {
+    // One ladder step at the viewport centre, behind the same gate a wheel
+    // notch passes: a pan in flight must not fight the zoom's anchor.
+    motion.beforeZoom();
+    controller.cycleZoom(direction);
+  }
+
   const api: PagedZoomApi = {
     scrollImage,
-    zoomFitToScreen
+    zoomFitToScreen,
+    zoomStep
   };
 
   // ============================================================

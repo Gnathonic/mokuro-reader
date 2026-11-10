@@ -9,11 +9,15 @@ import { describe, expect, it } from 'vitest';
 
 const SOURCES = import.meta.glob<string>(
   [
-    '/src/lib/components/Reader/{Reader,VerticalScrollReader,HorizontalScrollReader,PagedViewport,RereadPromptModal}.svelte',
-    '/src/lib/components/{CatalogItem,CatalogListItem,VolumeItem}.svelte',
-    '/src/lib/views/SeriesView.svelte',
+    '/src/lib/components/Reader/{Reader,VerticalScrollReader,HorizontalScrollReader,PagedViewport,RereadPromptModal,QuickActions}.svelte',
+    '/src/lib/components/Reader/Edit/EditToolbar.svelte',
+    '/src/lib/components/Reader/Layers/LayerPicker.svelte',
+    '/src/lib/components/{Catalog,CatalogItem,CatalogListItem,VolumeItem,NavBar}.svelte',
+    '/src/lib/components/Series/SeriesEditorModal.svelte',
+    '/src/lib/views/{SeriesView,ProgressTrackerView,VolumeTextView,SeriesTextView}.svelte',
     '/src/routes/+layout.svelte',
-    '/src/lib/util/{delete-shortcut,series-editor-shortcut}.ts'
+    '/src/lib/util/{delete-shortcut,series-editor-shortcut}.ts',
+    '/src/lib/keys/{app-actions,providers,outside-reader}.ts'
   ],
   { query: '?raw', import: 'default', eager: true }
 );
@@ -24,6 +28,19 @@ const MIGRATED = [
   'src/lib/components/Reader/HorizontalScrollReader.svelte',
   'src/lib/components/Reader/PagedViewport.svelte',
   'src/lib/components/Reader/RereadPromptModal.svelte',
+  // The sites that gained a command handler in step B (spec 17.10).
+  'src/lib/components/Reader/QuickActions.svelte',
+  'src/lib/components/Reader/Edit/EditToolbar.svelte',
+  'src/lib/components/Reader/Layers/LayerPicker.svelte',
+  'src/lib/components/Catalog.svelte',
+  'src/lib/components/NavBar.svelte',
+  'src/lib/components/Series/SeriesEditorModal.svelte',
+  'src/lib/views/ProgressTrackerView.svelte',
+  'src/lib/views/VolumeTextView.svelte',
+  'src/lib/views/SeriesTextView.svelte',
+  'src/lib/keys/app-actions.ts',
+  'src/lib/keys/providers.ts',
+  'src/lib/keys/outside-reader.ts',
   'src/lib/components/CatalogItem.svelte',
   'src/lib/components/CatalogListItem.svelte',
   'src/lib/components/VolumeItem.svelte',
@@ -38,7 +55,11 @@ const ALLOWED: Record<string, string[]> = {
   // The page-number field's Enter.
   'src/lib/components/Reader/Reader.svelte': ["if (e.key === 'Enter') {"],
   // The re-read prompt's own Escape capture (a modal, outside the keymap).
-  'src/lib/components/Reader/RereadPromptModal.svelte': ["if (e.key === 'Escape') {"]
+  'src/lib/components/Reader/RereadPromptModal.svelte': ["if (e.key === 'Escape') {"],
+  // The layer picker's own Escape (it opens without taking focus).
+  'src/lib/components/Reader/Layers/LayerPicker.svelte': ["if (event.key === 'Escape') {"],
+  // The series editor's own Escape capture (a dialog, outside the keymap).
+  'src/lib/components/Series/SeriesEditorModal.svelte': ["if (e.key !== 'Escape') return;"]
 };
 
 const RAW_KEY_MATCH =
@@ -54,6 +75,77 @@ describe('no hand-written key matching outside the keymap', () => {
       .filter((line) => RAW_KEY_MATCH.test(line))
       .filter((line) => !(ALLOWED[file] ?? []).includes(line));
     expect(offending).toEqual([]);
+  });
+});
+
+/**
+ * ONE keyboard listener outside the reader (#55, spec 17.4). A view or a card
+ * that resolved keys itself would be tried in whatever order the listeners
+ * happened to attach — which is how a page-scope key used to beat the card
+ * under the pointer. So every site outside the reader PROVIDES a typed
+ * handler map (`providers.ts`) and only `+layout.svelte` dispatches.
+ */
+const PROVIDERS: [file: string, scope: string][] = [
+  ['src/lib/components/Catalog.svelte', 'library'],
+  ['src/lib/components/CatalogItem.svelte', 'library.series'],
+  ['src/lib/components/CatalogListItem.svelte', 'library.series'],
+  ['src/lib/components/VolumeItem.svelte', 'library.volume'],
+  ['src/lib/views/SeriesView.svelte', 'series'],
+  ['src/lib/views/ProgressTrackerView.svelte', 'tracker'],
+  ['src/lib/views/VolumeTextView.svelte', 'text'],
+  ['src/lib/views/SeriesTextView.svelte', 'text'],
+  ['src/lib/components/Series/SeriesEditorModal.svelte', 'series-editor']
+];
+
+/** A handler map checked against its scope's ids: `satisfies Record<…ActionId…, KeyHandler>`. */
+const TYPED_MAP = /satisfies Record<[^>]*ActionId[^>]*>?[^>]*, KeyHandler>/;
+
+describe('one key listener outside the reader', () => {
+  it.each(PROVIDERS)('%s provides %s and resolves no key itself', (file, scope) => {
+    const text = SOURCES[`/${file}`];
+    expect(text, `${file} not found`).toBeTypeOf('string');
+    expect(text).toContain(`provideKeyHandlers('${scope}', {`);
+    expect(TYPED_MAP.test(text), 'its map must be `satisfies Record<its ids, KeyHandler>`').toBe(
+      true
+    );
+    expect(text).not.toContain('dispatchKey(');
+    expect(text).not.toContain('OutsideReader(');
+  });
+
+  it('only the series card keeps a key listener, for its Shift / Alt modifier state', () => {
+    const listening = PROVIDERS.map(([file]) => file).filter((file) =>
+      /addEventListener\(\s*'key(down|up)'|<svelte:(window|document)[^>]*onkey/.test(
+        SOURCES[`/${file}`]
+      )
+    );
+    // CatalogItem: the shelf-alignment indicators. SeriesEditorModal: its Escape capture.
+    expect(listening.sort()).toEqual([
+      'src/lib/components/CatalogItem.svelte',
+      'src/lib/components/Series/SeriesEditorModal.svelte'
+    ]);
+    const card = SOURCES['/src/lib/components/CatalogItem.svelte'];
+    expect(card).toContain('updateModifierState(e)');
+  });
+
+  it('the layout dispatches, guarded once, and the reader stands down under a dialog', () => {
+    const layout = SOURCES['/src/routes/+layout.svelte'];
+    expect(layout).toContain('handleKeydownOutsideReader(event, {');
+    expect(layout).not.toContain('dispatchKey(');
+    const listener = SOURCES['/src/lib/keys/outside-reader.ts'];
+    expect(listener).toContain('shortcutAllowed(event, document.activeElement)');
+    expect(listener).toContain('dialogOpen: anyModalOpen()');
+    expect(layout).toContain('satisfies Record<AppActionId, KeyHandler>');
+    const reader = SOURCES['/src/lib/components/Reader/Reader.svelte'];
+    expect(reader).toContain('if (anyModalOpen()) {');
+    expect(reader).toContain(
+      "satisfies Record<ReaderActionId | EditActionId | 'app.back', KeyHandler>"
+    );
+    // Both sites answer the shared app commands from the one map.
+    expect(layout).toContain('...appKeyHandlers');
+    expect(reader).toContain('appKeyHandlers as Partial<Record<string, KeyHandler>>');
+    expect(SOURCES['/src/lib/keys/app-actions.ts']).toContain(
+      'satisfies Record<AppCommandId, KeyHandler>'
+    );
   });
 });
 

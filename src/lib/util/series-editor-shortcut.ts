@@ -1,6 +1,6 @@
-// Guard shared by the library's hover shortcuts (series editor, delete, volume
-// editor, cover). WHICH key does what is the keymap's business ($lib/keys, #55);
-// this only answers "may a library shortcut fire at all right now".
+// Guard shared by every shortcut outside the reader (the layout's one key
+// listener, #55). WHICH key does what is the keymap's business ($lib/keys);
+// this only answers "is focus somewhere that types".
 
 /** Is focus somewhere that swallows keys — a field, or any contentEditable? */
 export function isTypingTarget(el: Element | null): boolean {

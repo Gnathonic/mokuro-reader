@@ -166,7 +166,8 @@ describe('the full list', () => {
     const all = allActions();
     const fromDefs = all.filter((a: KeyActionDef) => a.setting);
     expect(fromDefs.map((a) => a.id)).toEqual(generated.map((a) => a.id));
-    expect(all.length - fromDefs.length).toBe(31);
-    expect(all.slice(0, 31).every((a) => !a.setting)).toBe(true);
+    // 31 from before the commands, and the 52 commands of spec 17.10.
+    expect(all.length - fromDefs.length).toBe(83);
+    expect(all.slice(0, 83).every((a) => !a.setting)).toBe(true);
   });
 });

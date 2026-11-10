@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { anyModalOpen, libraryShortcutAllowed } from './delete-shortcut';
+import { anyModalOpen, shortcutAllowed } from './delete-shortcut';
 
 function elementWithTag(tag: string, contentEditable = false): Element {
   const el = document.createElement(tag);
@@ -11,22 +11,15 @@ function elementWithTag(tag: string, contentEditable = false): Element {
 
 const onBody = { target: document.body } as Pick<KeyboardEvent, 'target'>;
 
-describe('libraryShortcutAllowed', () => {
+describe('shortcutAllowed', () => {
   afterEach(() => {
     document.body.innerHTML = '';
   });
 
-  it('is true when hovered, no modal, focus outside a field', () => {
-    expect(libraryShortcutAllowed(onBody, true, null, false)).toBe(true);
-    expect(libraryShortcutAllowed(onBody, true, elementWithTag('div'), false)).toBe(true);
-  });
-
-  it('is false when not hovered', () => {
-    expect(libraryShortcutAllowed(onBody, false, null, false)).toBe(false);
-  });
-
-  it('is false while a modal is already open (no stacked dialogs)', () => {
-    expect(libraryShortcutAllowed(onBody, true, null, true)).toBe(false);
+  it('is true with focus outside a field', () => {
+    expect(shortcutAllowed(onBody, null)).toBe(true);
+    expect(shortcutAllowed(onBody, elementWithTag('div'))).toBe(true);
+    expect(shortcutAllowed(onBody, elementWithTag('button'))).toBe(true);
   });
 
   it('is false while a text field has focus', () => {
@@ -36,7 +29,7 @@ describe('libraryShortcutAllowed', () => {
       elementWithTag('select'),
       elementWithTag('div', true)
     ]) {
-      expect(libraryShortcutAllowed(onBody, true, el, false)).toBe(false);
+      expect(shortcutAllowed(onBody, el)).toBe(false);
     }
   });
 
@@ -45,9 +38,13 @@ describe('libraryShortcutAllowed', () => {
       '<div id="settings"><button id="a">x</button></div><div data-popover><button id="b">y</button></div>';
     const inSettings = { target: document.getElementById('a') } as Pick<KeyboardEvent, 'target'>;
     const inPopover = { target: document.getElementById('b') } as Pick<KeyboardEvent, 'target'>;
-    expect(libraryShortcutAllowed(inSettings, true, null, false)).toBe(false);
-    expect(libraryShortcutAllowed(inPopover, true, null, false)).toBe(false);
+    expect(shortcutAllowed(inSettings, null)).toBe(false);
+    expect(shortcutAllowed(inPopover, null)).toBe(false);
   });
+
+  // "Hovered" and "no dialog open" are no longer this guard's: a card provides
+  // its handlers only while hovered, and under a dialog only the dialog's own
+  // scope is tried (`keys/providers.test.ts`).
 });
 
 describe('anyModalOpen', () => {

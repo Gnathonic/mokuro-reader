@@ -952,3 +952,430 @@ test('outside the reader: a page-scope action fires on its page only, announced 
   expect(await page.evaluate(() => localStorage.getItem('series-view-mode'))).toBe('list');
   await expect(page.locator('button', { hasText: /^\s*Grid\s*$/ }).first()).toBeVisible();
 });
+
+// ---------------------------------------------------------------------------
+// Commands (spec 17.10, step B): every control a key can reach, each behind
+// its own button's test, and ONE key listener outside the reader.
+// ---------------------------------------------------------------------------
+
+const notice = (page: Page) => page.locator('[data-reader-notification]');
+const snackbar = (page: Page) => page.locator('[role="alert"]');
+const openDialogs = (page: Page) => page.locator('dialog[open]');
+const pageWidth = async (page: Page) =>
+  (await page.locator('[data-page-index]').first().boundingBox())!.width;
+
+test('reader commands by key: go to page, zoom steps, quick menu, layer picker, copy, timer, settings', async ({
+  page,
+  context
+}) => {
+  test.setTimeout(180_000);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const volume = await setup(page, 'KeyCommands', {
+    keyBindings: {
+      'reader.goto-page': ['KeyJ'],
+      'reader.zoom-in': ['Equal'],
+      'reader.zoom-out': ['Minus'],
+      'reader.zoom-fit': ['Digit0'],
+      'reader.quick-menu': ['KeyQ'],
+      'reader.ocr-layers': ['KeyK'],
+      'reader.ocr-layer-prev': ['Shift+KeyL'],
+      'reader.ocr-layer-primary': ['KeyH'],
+      'reader.copy-page-text': ['KeyY'],
+      'reader.anki-image': ['KeyA'],
+      'reader.anki-image-2': ['KeyB'],
+      'reader.timer-pause': ['KeyU'],
+      'reader.controls': ['KeyC'],
+      'layer.rename': ['KeyR'],
+      'app.settings': ['KeyS'],
+      'app.sync': ['KeyD']
+    }
+  });
+  await openReader(page, volume);
+  await expectPage(page, 1);
+
+  // Go to page: the page popover, its number field focused and selected.
+  const field = page.locator('input[type="number"]');
+  await expect(field).toHaveCount(0);
+  await page.keyboard.press('j');
+  await expect(field).toBeFocused();
+  await page.keyboard.type('4');
+  await page.keyboard.press('Enter');
+  await expectPage(page, 4);
+  // Opened by the key, so Enter puts it away: back to reading.
+  await expect(field).toHaveCount(0);
+  await page.keyboard.press('ArrowRight');
+  await expectPage(page, 3);
+  // With the controls hidden it brings them back first.
+  await page.keyboard.press('c');
+  await expect(page.locator('#page-num')).toHaveCount(0);
+  await page.keyboard.press('j');
+  await expect(field).toBeFocused();
+  await expect(page.locator('#page-num')).toBeVisible();
+  await page.keyboard.type('1');
+  await page.keyboard.press('Enter');
+  await expectPage(page, 1);
+
+  // Zoom in / out: one ladder step, anchored at the screen centre.
+  const fit = await pageWidth(page);
+  await page.keyboard.press('Equal');
+  await expect.poll(() => pageWidth(page), { timeout: 5000 }).toBeGreaterThan(fit * 1.1);
+  await page.waitForTimeout(400);
+  const zoomed = await page.locator('[data-page-index]').first().boundingBox();
+  expect(Math.abs(zoomed!.x + zoomed!.width / 2 - 960)).toBeLessThan(6);
+  await page.keyboard.press('Equal');
+  await expect.poll(() => pageWidth(page), { timeout: 5000 }).toBeGreaterThan(zoomed!.width * 1.1);
+  await page.waitForTimeout(400);
+  const twice = await pageWidth(page);
+  await page.keyboard.press('Minus');
+  await expect.poll(() => pageWidth(page), { timeout: 5000 }).toBeLessThan(twice * 0.95);
+  // Zoom to fit: the whole page again.
+  await page.keyboard.press('Digit0');
+  await expect
+    .poll(async () => Math.abs((await pageWidth(page)) - fit), { timeout: 5000 })
+    .toBeLessThan(2);
+  await expectStays(page, 1);
+
+  // Quick menu: opened and closed by the key…
+  const fitButton = page.getByLabel('Zoom to fit');
+  await expect(fitButton).toHaveCount(0);
+  await page.keyboard.press('q');
+  await expect(fitButton).toBeVisible();
+  await page.keyboard.press('q');
+  await expect(fitButton).toHaveCount(0);
+  // …also while its button is hidden with the controls.
+  await page.keyboard.press('c');
+  await expect(page.getByLabel('Quick actions menu')).toHaveCount(0);
+  await page.keyboard.press('q');
+  await expect(fitButton).toBeVisible();
+  await expect(page.getByLabel('Quick actions menu')).toBeVisible();
+  await page.keyboard.press('q');
+  await expect(page.getByLabel('Quick actions menu')).toHaveCount(0);
+
+  // The layer picker opens by key with the controls still hidden, owns the
+  // keyboard while it is up, and Escape closes it — and only it.
+  const picker = page.locator('[role="dialog"][aria-label="OCR layers"]');
+  await page.keyboard.press('k');
+  await expect(picker).toBeVisible();
+  await page.keyboard.press('ArrowLeft');
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Escape');
+  await expect(picker).toHaveCount(0);
+  expect(await page.evaluate(() => location.hash)).toMatch(/^#\/reader\//);
+  await page.keyboard.press('c');
+  await expect(page.locator('#page-num')).toBeVisible();
+  // The arrow under the picker turned nothing.
+  expect(await currentPage(page)).toBe(1);
+
+  // Copy page text: the page on screen, to the clipboard.
+  await page.keyboard.press('y');
+  await expect(notice(page)).toContainText('Copied the page text');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(volume.text);
+
+  // A command that cannot run says why.
+  await page.keyboard.press('a');
+  await expect(notice(page)).toContainText('AnkiConnect is off');
+  await page.keyboard.press('b');
+  await expect(notice(page)).toContainText('AnkiConnect is off');
+  await page.keyboard.press('Shift+L');
+  await expect(notice(page)).toContainText('No OCR layers for this volume');
+  await page.keyboard.press('r');
+  await expect(notice(page)).toContainText('Not available for the primary layer');
+  await page.keyboard.press('h');
+  await expect(notice(page)).toContainText('OCR Layer:');
+  await page.keyboard.press('d');
+  await expect(notice(page)).toContainText('Connect cloud storage to sync progress');
+
+  // The timer: what a click on it does.
+  await page.keyboard.press('u');
+  await expect(notice(page)).toContainText('Reading timer: Paused');
+  await page.keyboard.press('u');
+  await expect(notice(page)).toContainText('Reading timer: Running');
+
+  // Open settings: the one flag, the reader's drawer. Keys stand down under it.
+  await page.keyboard.press('s');
+  await expect(page.locator('dialog#settings[open]')).toHaveCount(1);
+  await page.keyboard.press('ArrowLeft');
+  await expectStays(page, 1);
+  await closeDrawer(page);
+  await page.keyboard.press('ArrowLeft');
+  await expectPage(page, 2);
+});
+
+test('Add image to Anki: the keys and the quick menu buttons run one handler', async ({ page }) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyAnki', {
+    singlePageView: 'dual',
+    keyBindings: { 'reader.anki-image': ['KeyA'], 'reader.anki-image-2': ['KeyB'] }
+  });
+  // AnkiConnect on (the picker itself talks to nothing until a box is chosen).
+  await page.evaluate(() => {
+    const profiles = JSON.parse(localStorage.getItem('profiles') ?? '{}');
+    const id = localStorage.getItem('currentProfile') ?? 'Desktop';
+    profiles[id].ankiConnectSettings = { ...profiles[id].ankiConnectSettings, enabled: true };
+    localStorage.setItem('profiles', JSON.stringify(profiles));
+  });
+  await page.reload();
+  await openReader(page, volume);
+  const picker = page.locator('dialog[open]', { hasText: 'Select Text Box' });
+  const cancel = page.locator('dialog[open] button', { hasText: /^\s*Cancel\s*$/ });
+
+  // The cover stands alone: there is no second page to add.
+  await expectPage(page, 1);
+  await page.keyboard.press('b');
+  await expect(notice(page)).toContainText('There is no second page on screen');
+  await expect(openDialogs(page)).toHaveCount(0);
+
+  // A spread: each key opens the text box picker on its page.
+  await page.keyboard.press('ArrowLeft');
+  await expectPage(page, 2);
+  await page.keyboard.press('a');
+  await expect(picker).toBeVisible();
+  // Under the picker the reader's keys stand down: no second picker, no page turn.
+  await cancel.focus();
+  await page.keyboard.press('b');
+  await page.keyboard.press('ArrowLeft');
+  await page.waitForTimeout(400);
+  await expect(openDialogs(page)).toHaveCount(1);
+  await cancel.click();
+  await expect(openDialogs(page)).toHaveCount(0);
+  await expectPage(page, 2);
+  await page.keyboard.press('b');
+  await expect(picker).toBeVisible();
+  await cancel.click();
+  await expect(openDialogs(page)).toHaveCount(0);
+
+  // The quick menu's two buttons are the same handler.
+  await page.getByLabel('Quick actions menu').click();
+  await page.getByLabel('Add image 2 to Anki').click();
+  await expect(picker).toBeVisible();
+  await cancel.click();
+  await expect(openDialogs(page)).toHaveCount(0);
+  await page.getByLabel('Quick actions menu').click();
+  await page.getByLabel('Add image to Anki', { exact: true }).click();
+  await expect(picker).toBeVisible();
+});
+
+test('reader commands by key: layer and edit commands, dialogs never stack, continuous zoom', async ({
+  page
+}) => {
+  test.setTimeout(180_000);
+  const volume = await setup(page, 'KeyLayerEdit', {
+    continuousZoomDefault: 'zoomFillScreen',
+    keyBindings: {
+      'layer.new': ['KeyW'],
+      'layer.delete': ['KeyX'],
+      'layer.rename': ['KeyR'],
+      'layer.promote': ['KeyY'],
+      'edit.merge': ['KeyJ'],
+      'edit.draw-tool': ['KeyD'],
+      'edit.flip': ['KeyK'],
+      'edit.revert-page': ['KeyU'],
+      'reader.zoom-in': ['Equal'],
+      'reader.zoom-fit': ['Digit0']
+    }
+  });
+  await openReader(page, volume);
+  await expectPage(page, 1);
+
+  // New layer: the picker's own name prompt. The reader's keys stand down under it.
+  await page.keyboard.press('w');
+  await expect(openDialogs(page)).toHaveCount(1);
+  await page.locator('dialog[open] input[aria-label="Layer name"]').fill('Scratch');
+  await page.getByLabel('Confirm layer name').click();
+  await expect(openDialogs(page)).toHaveCount(0);
+  // (The switch is announced before the new row's name has loaded.)
+  await expect(notice(page)).toContainText(/OCR Layer: scratch/i);
+
+  // Delete layer asks first. A second press cannot stack another question
+  // behind it, and no key acts on the page under the dialog.
+  await page.keyboard.press('x');
+  await expect(openDialogs(page)).toHaveCount(1);
+  await expect(openDialogs(page)).toContainText('Delete layer "Scratch"?');
+  const no = page.locator('dialog[open] button', { hasText: /^\s*No\s*$/ });
+  await no.focus();
+  await page.keyboard.press('x');
+  await page.keyboard.press('w');
+  await page.keyboard.press('ArrowLeft');
+  await page.waitForTimeout(400);
+  await expect(openDialogs(page)).toHaveCount(1);
+  expect(await currentPage(page)).toBe(1);
+  await no.click();
+  await expect(openDialogs(page)).toHaveCount(0);
+
+  // Promote: the same rule, through the confirmation; declined, nothing changes.
+  await page.keyboard.press('y');
+  await expect(openDialogs(page)).toContainText('Replace this volume');
+  await page.locator('dialog[open] button', { hasText: /^\s*No\s*$/ }).click();
+  await expect(openDialogs(page)).toHaveCount(0);
+
+  // Rename: the prompt opens on the displayed layer's name.
+  await page.keyboard.press('r');
+  await expect(page.locator('dialog[open] input[aria-label="Layer name"]')).toHaveValue('Scratch');
+  await page.locator('dialog[open] button', { hasText: /^\s*Cancel\s*$/ }).click();
+  await expect(openDialogs(page)).toHaveCount(0);
+
+  // Edit commands: the toolbar's own enablement, said out loud when it is off.
+  await page.keyboard.press('e');
+  await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
+  await page.keyboard.press('j');
+  await expect(notice(page)).toContainText('Select two or more boxes to merge');
+  await page.keyboard.press('k');
+  await expect(notice(page)).toContainText('Select a box to flip its writing mode');
+  await page.keyboard.press('u');
+  await expect(notice(page)).toContainText('No original to revert to');
+  const draw = page.getByLabel('Draw new box');
+  await expect(draw).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.press('d');
+  await expect(draw).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('d');
+  await expect(draw).toHaveAttribute('aria-pressed', 'false');
+  // With a box selected, Flip runs — one undoable edit.
+  await expect(page.getByLabel('Undo', { exact: true })).toBeDisabled();
+  await page.locator('.editBlock').first().click();
+  await expect(page.locator('.editBlock.selected')).toHaveCount(1);
+  await page.keyboard.press('k');
+  await expect(page.getByLabel('Undo', { exact: true })).toBeEnabled();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-edit-toolbar]')).toBeHidden();
+
+  // Continuous scroll: Zoom to fit sets the zoom mode (there is no transient
+  // view there), announced like any setting; Zoom in steps the strip's zoom.
+  await page.keyboard.press('v');
+  await expect.poll(() => profileSetting(page, 'continuousScroll')).toBe(true);
+  expect(await profileSetting(page, 'continuousZoomDefault')).toBe('zoomFillScreen');
+  await page.keyboard.press('Digit0');
+  await expect.poll(() => profileSetting(page, 'continuousZoomDefault')).toBe('zoomFitToScreen');
+  await expect(notice(page)).toContainText('Continuous zoom: Fit to screen');
+  await page.waitForTimeout(600);
+  const before = await pageWidth(page);
+  await page.keyboard.press('Equal');
+  await expect.poll(() => pageWidth(page), { timeout: 5000 }).toBeGreaterThan(before * 1.1);
+});
+
+test('one listener outside the reader: the card under the pointer, then the page, then app', async ({
+  page,
+  context
+}) => {
+  test.setTimeout(180_000);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const volume = await setup(page, 'KeyLibrary', {
+    keyBindings: {
+      'library.focus-search': ['Slash'],
+      // One chord on a card's action and on the page's: the card goes first.
+      'library.series-open': ['KeyO'],
+      'set.gallery-layout.next': ['KeyO'],
+      // …and on a volume row's and the series page's.
+      'series.edit': ['KeyE'],
+      'library.volume-text': ['KeyT'],
+      'series.text': ['KeyT'],
+      'library.volume-read': ['KeyR'],
+      'library.volume-backup': ['KeyB'],
+      'series-editor.next-unlinked': ['KeyN'],
+      'app.open-progress-tracker': ['KeyP'],
+      'text.copy': ['KeyC'],
+      'tracker.current-period': ['KeyC']
+    }
+  });
+  const hash = () => page.evaluate(() => location.hash);
+  const seriesLink = page.locator('a[href^="#/series/"]').first();
+  const away = () => page.mouse.move(5, 300);
+
+  // Focus search — and the key's own character is not typed into it.
+  const search = page.locator('input[type="search"]').first();
+  await expect(search).toBeVisible({ timeout: 30000 });
+  await away();
+  await page.keyboard.press('Slash');
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue('');
+  await page.locator('body').click({ position: { x: 5, y: 400 } });
+
+  // O with nothing under the pointer is the catalog's own action…
+  await away();
+  expect(await miscSetting(page, 'galleryLayout')).toBe('grid');
+  await page.keyboard.press('o');
+  await expect.poll(() => miscSetting(page, 'galleryLayout')).toBe('list');
+  // …and with a series row under it (list layout), the row's: open the series.
+  await seriesLink.hover();
+  await page.keyboard.press('o');
+  await expect.poll(hash).toMatch(/^#\/series\//);
+  expect(await miscSetting(page, 'galleryLayout')).toBe('list');
+  await away();
+  await page.keyboard.press('Escape');
+  await expect.poll(hash).toBe('#/catalog');
+  // The same on a grid card.
+  await away();
+  await page.keyboard.press('o');
+  await expect.poll(() => miscSetting(page, 'galleryLayout')).toBe('grid');
+  await seriesLink.hover();
+  await page.keyboard.press('o');
+  await expect.poll(hash).toMatch(/^#\/series\//);
+  expect(await miscSetting(page, 'galleryLayout')).toBe('grid');
+
+  // The series page. E with nothing under the pointer: the series editor.
+  const item = page.getByText(`${volume.seriesTitle} 01`, { exact: true }).first();
+  await expect(item).toBeVisible({ timeout: 30000 });
+  await away();
+  await page.keyboard.press('e');
+  await expect(openDialogs(page)).toHaveCount(1);
+  await expect(openDialogs(page)).toContainText('Titles & AniList');
+  // Under the dialog only ITS keys work: Next unlinked answers (there is no
+  // other series), an app key and the page's keys do not.
+  await page.locator('dialog[open] button[data-autofocus]').focus();
+  await page.keyboard.press('n');
+  await expect(snackbar(page).last()).toContainText('No other series is missing its AniList link');
+  await page.keyboard.press('p');
+  await page.keyboard.press('t');
+  await page.waitForTimeout(400);
+  expect(await hash()).toMatch(/^#\/series\/[^/]+$/);
+  await expect(openDialogs(page)).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(openDialogs(page)).toHaveCount(0);
+  expect(await hash()).toMatch(/^#\/series\/[^/]+$/);
+
+  // E with a volume under the pointer is still the VOLUME editor.
+  await item.hover();
+  await page.keyboard.press('e');
+  await expect(openDialogs(page)).toContainText('Edit Volume');
+  await page.locator('dialog[open] button', { hasText: /^\s*Cancel\s*$/ }).click();
+  await expect(openDialogs(page)).toHaveCount(0);
+
+  // Row commands: the buttons' own handlers and tests.
+  await item.hover();
+  await page.keyboard.press('r');
+  await expect(snackbar(page).last()).toContainText(`Marked ${volume.seriesTitle} 01 as read`);
+  await page.keyboard.press('r');
+  await expect(snackbar(page).last()).toContainText(`Marked ${volume.seriesTitle} 01 as unread`);
+  await page.keyboard.press('b');
+  await expect(snackbar(page).last()).toContainText('Connect cloud storage to back up');
+  // T: the hovered volume's text, not the series'.
+  await page.keyboard.press('t');
+  await expect.poll(hash).toMatch(/^#\/reader\/[^/]+\/[^/]+\/text$/);
+  await expect(page.locator('button', { hasText: 'Copy All Text' })).toBeVisible({
+    timeout: 30000
+  });
+  await away();
+  await page.keyboard.press('c');
+  await expect(page.locator('button', { hasText: 'Copied!' })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(volume.text);
+
+  // T on the series page with nothing under the pointer: the series' text.
+  await page.evaluate((s) => (window.location.hash = `#/series/${s}`), volume.seriesUuid);
+  await expect(item).toBeVisible({ timeout: 30000 });
+  await away();
+  await page.keyboard.press('t');
+  await expect.poll(hash).toMatch(/^#\/series\/[^/]+\/text$/);
+  await expect(page.locator('button', { hasText: 'Copy All Text' })).toBeVisible({
+    timeout: 30000
+  });
+  await page.keyboard.press('c');
+  await expect(page.locator('button', { hasText: 'Copied!' })).toBeVisible();
+
+  // An app action from anywhere, and the tracker's own.
+  await page.keyboard.press('p');
+  await expect.poll(hash).toBe('#/progress-tracker');
+  // Views load on demand: the tracker provides its keys once it is mounted.
+  await expect(page.locator('h1', { hasText: 'Progress Tracker' })).toBeVisible({ timeout: 30000 });
+  await page.keyboard.press('c');
+  await expect(snackbar(page).last()).toContainText('Already on a period that is still open');
+});

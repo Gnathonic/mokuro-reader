@@ -1121,6 +1121,41 @@ is one definition.
 - The series page still reads its two localStorage keys when it mounts
   (`refreshSeriesViewPrefs`), so a choice made in another tab applies as it
   did before the store.
+- As built in step B:
+  - The provider registry (`providers.ts`) holds no dispatch code, so a card
+    that renders N times imports only the registry's types. The listener body
+    is `handleKeydownOutsideReader` in `outside-reader.ts`; component tests
+    install that same function (`keys/__tests__/layout-listener.ts`).
+  - `libraryShortcutAllowed` became `shortcutAllowed` (no `hovered`, no
+    `modalOpen`: a card provides only while hovered, and the dialog rule is
+    the dispatcher's).
+  - Row icons are the list's, one per row, also where one action of a row
+    reads oddly under it: Back up series carries `DownloadOutline`, Download
+    volume `CloudArrowUpOutline`, View series text `FileExportOutline`,
+    Extract volume `FileLinesOutline`. These actions are never on the quick
+    menu, so the icon shows in the settings section only. Changing one is one
+    word in `actions.ts`.
+  - "Clean duplicates" by key works in both series views. Its button is drawn
+    in the list view only, which is where the banner sits, not a rule.
+  - The series page's keys decline (the press falls through) while no series
+    is drawn: loading, or not found.
+  - A hidden-controls press of "Open quick menu" shows the menu AND its
+    button, so a touch can close it. Hiding the controls closes the menu and
+    the picker (before, a menu left open came back open with the controls).
+  - `L` with no layers announces through the reader's notification, like the
+    other hotkeys; it used the snackbar.
+  - "Go to page…" opened by key closes the popover on Enter. Opened by a
+    click it stays open, as before.
+  - "Open settings" opens; it does not toggle. Under the open drawer every
+    key stands down.
+  - "Sync progress now" announces "Syncing progress…" when it starts; the
+    result is the sync's own report.
+  - Edit commands that run (merge, split, place lines, flip, revert) are not
+    announced: the page shows them. The draw tool is ("Draw new box: On").
+  - "Tracker: current period" applies the button's test (the period on screen
+    has ended); otherwise it says the period is still open.
+  - `app.open-upload` also works in the reader, where the dialog opens over
+    the page.
 
 Nothing on the list was judged impossible to bind.
 

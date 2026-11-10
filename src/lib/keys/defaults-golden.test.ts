@@ -20,6 +20,8 @@ type Ctx =
   | 'catalog'
   | 'series-page'
   | 'tracker'
+  | 'text'
+  | 'series-editor'
   | 'app';
 
 const CONTEXTS: Record<Ctx, { scopes: KeyScope[]; mode?: ReaderMode }> = {
@@ -27,12 +29,16 @@ const CONTEXTS: Record<Ctx, { scopes: KeyScope[]; mode?: ReaderMode }> = {
   vertical: { scopes: ['reader', 'app'], mode: 'vertical' },
   horizontal: { scopes: ['reader', 'app'], mode: 'horizontal' },
   edit: { scopes: ['edit', 'reader', 'app'], mode: 'paged' },
-  'series-card': { scopes: ['library.series'] },
-  volume: { scopes: ['library.volume'] },
-  // The layout's listener outside the reader: the view's page scope, then app.
+  // The layout's ONE listener outside the reader (`providers.ts`): the card
+  // under the pointer, the view's page scope, then app.
+  'series-card': { scopes: ['library.series', 'library', 'app'] },
+  volume: { scopes: ['library.volume', 'series', 'app'] },
   catalog: { scopes: ['library', 'app'] },
   'series-page': { scopes: ['series', 'app'] },
   tracker: { scopes: ['tracker', 'app'] },
+  text: { scopes: ['text', 'app'] },
+  // Under the series editor dialog: its own scope and nothing else.
+  'series-editor': { scopes: ['series-editor'] },
   app: { scopes: ['app'] }
 };
 
@@ -148,6 +154,10 @@ const GOLDEN: [Ctx, Press, ActionId][] = [
   ['volume', { code: 'KeyC', key: 'c' }, 'library.volume-cover'],
   ['volume', { code: 'Delete' }, 'library.volume-remove'],
   ['volume', { code: 'Delete', shift: true }, 'library.volume-delete-cloud'],
+  // Back still works with a card under the pointer: the card has no Escape.
+  ['series-card', { code: 'Escape' }, 'app.back'],
+  ['volume', { code: 'Escape' }, 'app.back'],
+  ['text', { code: 'Escape' }, 'app.back'],
   // Everywhere else
   ['app', { code: 'Escape' }, 'app.back']
 ];
@@ -305,9 +315,26 @@ describe('the whole registry at defaults', () => {
 
   it('no key does anything new outside the reader', () => {
     const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((l) => `Key${l}`);
-    for (const ctx of ['catalog', 'series-page', 'tracker', 'app'] as const) {
+    for (const ctx of ['catalog', 'series-page', 'tracker', 'text', 'app'] as const) {
       for (const code of letters) expect(resolve(ctx, { code }), `${ctx} ${code}`).toBeNull();
       expect(resolve(ctx, { code: 'Escape' }), ctx).toBe('app.back');
     }
+  });
+
+  it('a hovered card adds only the keys it always had', () => {
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((l) => `Key${l}`);
+    const had: Record<string, string[]> = { 'series-card': ['KeyE'], volume: ['KeyE', 'KeyC'] };
+    for (const ctx of ['series-card', 'volume'] as const) {
+      for (const code of letters) {
+        const hit = resolve(ctx, { code });
+        if (had[ctx].includes(code)) expect(hit, `${ctx} ${code}`).not.toBeNull();
+        else expect(hit, `${ctx} ${code}`).toBeNull();
+      }
+    }
+  });
+
+  it('under the series editor nothing is bound, and Escape is the dialog’s own', () => {
+    const codes = ['Escape', 'Delete', 'Enter', 'KeyE', 'KeyN'];
+    for (const code of codes) expect(resolve('series-editor', { code }), code).toBeNull();
   });
 });

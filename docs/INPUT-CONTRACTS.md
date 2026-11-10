@@ -184,13 +184,37 @@ and nothing resolves an id against a module-level table.
   which, and which are never live together. `chordRelation` reads the table.
 
 - **Reader.svelte is the reader's only keyboard listener**, continuous scroll
-  included. Its guard prelude (re-read prompt open → layer UI →
-  `keyboardShouldIgnore`) runs first; then it dispatches with scopes
-  `edit → reader → app` while editing, else `reader → app`, and the layout
-  (`paged` / `vertical` / `horizontal`) as the mode. In continuous mode the
-  page and scroll actions call the mounted scroll reader's `keyAction(id)`;
-  the scroll readers have no key listener of their own. A modal that must
-  stop page keys therefore needs no key list: Reader returns early.
+  included. Its guard prelude (re-read prompt open → ANY `<dialog>` open →
+  layer UI → `keyboardShouldIgnore`) runs first; then it dispatches with
+  scopes `edit → reader → app` while editing, else `reader → app`, and the
+  layout (`paged` / `vertical` / `horizontal`) as the mode. Handlers resolve
+  in this order: the reader's typed map, the shared app map
+  (`src/lib/keys/app-actions.ts`), the generated-setting handler. In
+  continuous mode the page, scroll and zoom-step actions call the mounted
+  scroll reader's `keyAction(id)`; the scroll readers have no key listener of
+  their own. A modal that must stop page keys therefore needs no key list:
+  Reader returns early. Standing down under every dialog is what keeps a
+  second press of a confirming command ("Delete layer") from stacking another
+  question, and any key from acting on the page under one.
+- **A command's key is its button, behind its button's test.** The key calls
+  the handler the control calls and first applies the test that shows or
+  enables the control — shared, never copied: `editCommandState` (the edit
+  toolbar), `layerActionAvailable` (the layer picker's rows; the layer keys
+  act on the DISPLAYED layer), the series page's `can…` values,
+  `volume-row-commands.ts` (the volume row). So a destructive command still
+  opens its confirmation, and a command that cannot run says why ("Select two
+  or more boxes to merge", "Not available for the primary layer") in the
+  reader's notification — the snackbar outside the reader — instead of doing
+  nothing.
+- **Zoom in / Zoom out** are one step of the notched-wheel ladder at the
+  screen centre (`ContinuousZoomController.cycleZoom`), behind the surface's
+  `MotionGate.beforeZoom` — what one wheel notch does, without a pointer.
+- **Opened by key.** The page popover (`reader.goto-page`: the controls are
+  shown, the popover opens through `bind:isOpen`, its number field is focused
+  and selected), the quick menu (`reader.quick-menu`) and the layer picker
+  (`reader.ocr-layers`) open by key. The menu and the picker render whenever
+  they are open, also while the menu's button is hidden; hiding the controls
+  puts both away.
 - **Exact modifiers.** A chord (`Ctrl+Alt+Shift+Meta+<code>`) matches only the
   identical modifier set, so a Shift held for dictionary scanning is inert
   unless the user binds a Shift chord.
@@ -202,12 +226,22 @@ and nothing resolves an id against a module-level table.
 - `preventDefault()` only on a match; a handler returning `false` declines and
   the key falls through (`edit.delete` with nothing selected).
 - Toggles, Back and library actions ignore auto-repeat.
-- **One Back owner per view**: Reader in the reader, `+layout.svelte`
-  elsewhere (never from a field, the settings panel, a popover, or under an
-  open dialog). Outside the reader the layout dispatches the view's page scope
-  (`library`, `series`, `tracker`, `text`), then `app`. Library hover keys are
-  still dispatched by the hovered card, AFTER the layout's listener: a
-  page-scope key that a hovered card also uses resolves to the page.
+- **One listener outside the reader**: `+layout.svelte`, through
+  `handleKeydownOutsideReader` (`src/lib/keys/outside-reader.ts`). No view and
+  no card listens for shortcuts. Each PROVIDES its scope's handlers while it
+  is live (`provideKeyHandlers`, `src/lib/keys/providers.ts`; the newest
+  provider of a scope wins, a disposer removes only its own): a view while
+  mounted (`library`, `series`, `tracker`, `text`), a card while the pointer
+  is on it (`library.series`, `library.volume`), the series editor while it
+  is the top dialog (`series-editor`). The listener tries, in order, the card
+  under the pointer, the view's scope, then `app` (Back, the shared app
+  commands, the generated setting actions). So a key shared by a hovered
+  volume and the series page goes to the volume. The guards run once, there:
+  never from a field, the settings panel or a popover; and while a dialog is
+  open only a provided dialog scope is tried — never `app`, never the page.
+  (`CatalogItem` keeps a key listener for its Shift / Alt shelf-alignment
+  indicators: a modifier state, not a shortcut.)
+- **One Back owner per view**: Reader in the reader, the layout elsewhere.
 - Element-level handlers stay outside the keymap: text fields, the OCR line
   editor, the page-number input, modal Escape captures, the layer picker and
   name prompt, the spine shelf's arrows.

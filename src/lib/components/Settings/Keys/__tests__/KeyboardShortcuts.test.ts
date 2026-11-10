@@ -64,7 +64,8 @@ describe('KeyboardShortcuts', () => {
     const rows = [...container.querySelectorAll('[data-key-action]')].map((r) =>
       r.getAttribute('data-key-action')
     );
-    expect(rows).toEqual(['reader.timer']);
+    // The command (pause or resume) and the setting's toggle (show the timer).
+    expect(rows).toEqual(['reader.timer-pause', 'reader.timer']);
   });
 
   it('finds a generated action by its setting’s name, and every action under it', async () => {

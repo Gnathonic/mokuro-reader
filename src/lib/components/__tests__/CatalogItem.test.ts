@@ -138,6 +138,7 @@ vi.mock('$lib/metadata/spine-offsets', async (importOriginal) => {
 
 import { tick } from 'svelte';
 import CatalogItem from '../CatalogItem.svelte';
+import { installLayoutKeyListener } from '$lib/keys/__tests__/layout-listener';
 import type { VolumeMetadata } from '$lib/types';
 import type { SeriesMetadata } from '$lib/metadata/types';
 import { flushSpineOffsetWrites, volumeOffsetsByIndex } from '$lib/metadata/spine-offsets';
@@ -192,6 +193,15 @@ function getCard(container: HTMLElement): HTMLElement {
 beforeEach(() => {
   requestCoverMock.mockClear();
 });
+
+// The card's shortcuts are PROVIDED to the app's one key listener outside the
+// reader (#55): each test runs under that listener, installed as the layout
+// installs it on this page.
+let stopLayoutKeys: () => void = () => {};
+beforeEach(() => {
+  stopLayoutKeys = installLayoutKeyListener('library');
+});
+afterEach(() => stopLayoutKeys());
 
 describe('CatalogItem hover + "e" opens the series editor', () => {
   beforeEach(() => {

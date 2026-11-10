@@ -15,6 +15,9 @@
   } from '$lib/settings/series-view-prefs';
   import { optionName } from '$lib/settings/setting-defs';
   import { stepSetting } from '$lib/keys/setting-actions';
+  import { provideKeyHandlers } from '$lib/keys/providers';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { ScopeActionId } from '$lib/keys/actions';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import { seriesSpeeds } from '$lib/reading-history/series-speeds';
   import { nav, routeParams } from '$lib/util/hash-router';
@@ -593,6 +596,114 @@
     if (seriesId) nav.toSeriesText(seriesId);
   }
 
+  function editSeries() {
+    promptSeriesEditor(seriesTitle);
+  }
+
+  // ---- What this page's buttons offer right now (#55). ONE set of tests:
+  // the template shows or disables each button on its `can…` value, and the
+  // key bound to the same command checks the same value before it calls the
+  // button's own handler — so a key can never run what the page does not
+  // offer, and every confirmation still opens. ----
+
+  /** Which page is drawn: volumes on this device, or a series that is cloud-only so far. */
+  let hasLocalVolumes = $derived(manga.length > 0 && !!mangaStats);
+  let placeholderOnly = $derived(!hasLocalVolumes && placeholders.length > 0);
+
+  let canBackup = $derived(hasLocalVolumes && isCloudReady && !allBackedUp && !isReadOnlyMode);
+  let canRemove = $derived(hasLocalVolumes);
+  let canDeleteFromCloud = $derived(
+    hasLocalVolumes
+      ? isCloudReady && anyBackedUp && !isReadOnlyMode
+      : placeholderOnly && hasAnyProvider && !isReadOnlyMode
+  );
+  let canExtract = $derived(hasLocalVolumes && !loading);
+  let canViewText = $derived(hasLocalVolumes);
+  let canDownloadAll = $derived(
+    hasAnyProvider && (hasLocalVolumes ? showCloudSection : placeholderOnly)
+  );
+  let canCleanDuplicates = $derived(
+    hasLocalVolumes && hasDuplicates && hasAnyProvider && !isReadOnlyMode
+  );
+
+  /** Why a cloud write cannot run, when it is the connection's fault. */
+  function cloudBlocked(): string | null {
+    if (!hasAnyProvider) return 'Connect cloud storage first';
+    if (isReadOnlyMode) return 'This cloud connection is read-only';
+    if (!cacheHasLoaded) return 'Cloud status is still loading';
+    return null;
+  }
+
+  /**
+   * A page command by key: its button's handler behind its button's test.
+   * Not this page's key at all while no series is drawn (loading, not found):
+   * the press then falls through.
+   */
+  function pageCommand(can: boolean, why: () => string, run: () => void): boolean | void {
+    if (!hasLocalVolumes && !placeholderOnly) return false;
+    if (can) run();
+    else showSnackbar(why());
+  }
+
+  // Provided to the layout's one key listener while this page is mounted; a
+  // hovered volume's own actions are tried first.
+  onMount(() =>
+    provideKeyHandlers('series', {
+      'series.edit': () =>
+        pageCommand(
+          true,
+          () => '',
+          () => editSeries()
+        ),
+      'series.download-all': () =>
+        pageCommand(
+          canDownloadAll,
+          () =>
+            hasAnyProvider ? 'Nothing to download' : 'Sign in to a cloud storage provider first',
+          () => void downloadAllPlaceholders()
+        ),
+      'series.backup': () =>
+        pageCommand(
+          canBackup,
+          () =>
+            hasLocalVolumes
+              ? (cloudBlocked() ?? 'All volumes already backed up')
+              : 'Nothing on this device to back up',
+          () => void backupSeries()
+        ),
+      'series.remove': () =>
+        pageCommand(
+          canRemove,
+          () => 'Nothing on this device to remove',
+          () => onDelete()
+        ),
+      'series.delete-cloud': () =>
+        pageCommand(
+          canDeleteFromCloud,
+          () => cloudBlocked() ?? `No backups found in ${providerDisplayName}`,
+          () => void onDeleteFromCloud()
+        ),
+      'series.clean-duplicates': () =>
+        pageCommand(
+          canCleanDuplicates,
+          () => cloudBlocked() ?? `No duplicate ${providerDisplayName} files found`,
+          () => void cleanCloudDuplicates()
+        ),
+      'series.extract': () =>
+        pageCommand(
+          canExtract,
+          () => (loading ? 'Already extracting' : 'Nothing on this device to extract'),
+          () => void onExtract()
+        ),
+      'series.text': () =>
+        pageCommand(
+          canViewText,
+          () => 'Nothing on this device to read',
+          () => goToSeriesText()
+        )
+    } satisfies Record<ScopeActionId<'series'>, KeyHandler>)
+  );
+
   onMount(() => {
     // Check if cache is already loaded on mount (for navigation scenarios)
     const currentCloudFiles = unifiedCloudManager.getAllCloudVolumes();
@@ -629,7 +740,7 @@
           <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{seriesDisplayTitle}</h3>
         {/key}
         <button
-          onclick={() => promptSeriesEditor(seriesTitle)}
+          onclick={editSeries}
           class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
           title="Edit series"
         >
@@ -662,7 +773,7 @@
     <!-- Actions Row: All buttons -->
     <div class="flex flex-row items-stretch justify-end gap-2">
       <!-- Cloud buttons - hidden in read-only mode -->
-      {#if isCloudReady && !allBackedUp && !isReadOnlyMode}
+      {#if canBackup}
         <Button color="light" onclick={backupSeries} class="!min-w-0 self-stretch">
           <CloudArrowUpOutline class="me-2 h-4 w-4 shrink-0" />
           <span class="break-words"
@@ -696,7 +807,7 @@
         <DotsVerticalOutline class="h-5 w-5" />
       </Button>
       <Dropdown triggeredBy="#series-menu" placement="bottom-end">
-        {#if isCloudReady && anyBackedUp && !isReadOnlyMode}
+        {#if canDeleteFromCloud}
           <DropdownItem
             onclick={onDeleteFromCloud}
             class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"
@@ -707,7 +818,7 @@
         {/if}
         <DropdownItem
           onclick={onExtract}
-          disabled={loading}
+          disabled={!canExtract}
           class="flex w-full items-center text-gray-700 dark:text-gray-200"
         >
           <DownloadSolid class="me-2 h-5 w-5 flex-shrink-0" />
@@ -725,7 +836,7 @@
 
     {#if viewMode === 'list'}
       <Listgroup active class="h-full w-full flex-1">
-        {#if hasDuplicates && hasAnyProvider && !isReadOnlyMode}
+        {#if canCleanDuplicates}
           <div
             class="mb-4 flex items-center justify-between rounded bg-red-50 px-4 py-2 dark:bg-red-900/20"
           >
@@ -753,7 +864,7 @@
               Available in {providerDisplayName}
               {#key cloudSectionCount}<span>({cloudSectionCount})</span>{/key}
             </h4>
-            {#if hasAnyProvider}
+            {#if canDownloadAll}
               <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
                 <DownloadSolid class="me-1 h-3 w-3" />
                 Download all
@@ -798,7 +909,7 @@
               Available in {providerDisplayName}
               {#key cloudSectionCount}<span>({cloudSectionCount})</span>{/key}
             </h4>
-            {#if hasAnyProvider}
+            {#if canDownloadAll}
               <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
                 <DownloadSolid class="me-1 h-3 w-3" />
                 Download all
@@ -836,7 +947,7 @@
           </h3>
         {/key}
         <button
-          onclick={() => promptSeriesEditor(placeholders[0].series_title)}
+          onclick={editSeries}
           class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
           title="Edit series"
         >
@@ -854,7 +965,7 @@
 
     <!-- Actions Row -->
     <div class="flex flex-row items-stretch justify-end gap-2">
-      {#if hasAnyProvider}
+      {#if canDownloadAll}
         <Button color="primary" onclick={downloadAllPlaceholders} class="!min-w-0 self-stretch">
           <DownloadSolid class="me-2 h-4 w-4 shrink-0" />
           <span class="break-words">Download All</span>
@@ -880,7 +991,7 @@
         <DotsVerticalOutline class="h-5 w-5" />
       </Button>
       <Dropdown triggeredBy="#placeholder-series-menu" placement="bottom-end">
-        {#if hasAnyProvider && !isReadOnlyMode}
+        {#if canDeleteFromCloud}
           <DropdownItem
             onclick={onDeleteFromCloud}
             class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"

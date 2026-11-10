@@ -12,17 +12,16 @@ const layers = [
   { layer_id: 'english', name: 'English', kind: 'translation' as const, updated_at: 'x' }
 ];
 
-/** Mounts QuickActions with `layersOpen` bound to a parent-owned `$state`, as Reader does. */
-function mount() {
-  const parent = $state({ layersOpen: false, visible: true });
+/** Mounts QuickActions with `layersOpen` and `open` bound to parent-owned `$state`, as Reader does. */
+function mount(initial: { visible?: boolean } = {}) {
+  const parent = $state({ layersOpen: false, open: false, visible: initial.visible ?? true });
+  const onZoomFit = vi.fn();
   const utils = render(QuickActions, {
     props: {
       left: vi.fn(),
       right: vi.fn(),
-      src1: undefined,
-      src2: undefined,
-      volumeUuid: 'v1',
       layers,
+      onZoomFit,
       onSelectLayer: vi.fn(),
       onLayerAction: vi.fn(),
       get visible() {
@@ -33,10 +32,16 @@ function mount() {
       },
       set layersOpen(v: boolean) {
         parent.layersOpen = v;
+      },
+      get open() {
+        return parent.open;
+      },
+      set open(v: boolean) {
+        parent.open = v;
       }
     }
   });
-  return { parent, ...utils };
+  return { parent, onZoomFit, ...utils };
 }
 
 async function openPicker(utils: ReturnType<typeof mount>) {
@@ -71,5 +76,61 @@ describe('QuickActions — layer picker open state', () => {
     await openPicker(utils);
     utils.unmount();
     expect(utils.parent.layersOpen).toBe(false);
+  });
+});
+
+describe('QuickActions — opened by a key (#55)', () => {
+  it('publishes the menu open state, and a parent (the key) can open and close it', async () => {
+    const utils = mount();
+    expect(utils.queryByLabelText('Zoom to fit')).toBeNull();
+    utils.parent.open = true;
+    flushSync();
+    expect(utils.queryByLabelText('Zoom to fit')).not.toBeNull();
+    utils.parent.open = false;
+    flushSync();
+    expect(utils.queryByLabelText('Zoom to fit')).toBeNull();
+    // The button toggles the same state.
+    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
+    expect(utils.parent.open).toBe(true);
+  });
+
+  it('opens by key while its button is hidden, and brings the button along to close it', async () => {
+    const utils = mount({ visible: false });
+    expect(utils.queryByLabelText('Quick actions menu')).toBeNull();
+    utils.parent.open = true;
+    flushSync();
+    expect(utils.queryByLabelText('Zoom to fit')).not.toBeNull();
+    await fireEvent.click(utils.getByLabelText('Quick actions menu'));
+    expect(utils.parent.open).toBe(false);
+    expect(utils.queryByLabelText('Quick actions menu')).toBeNull();
+  });
+
+  it('renders the layer picker whenever it is open, not only while the menu button shows', () => {
+    const utils = mount({ visible: false });
+    utils.parent.layersOpen = true;
+    flushSync();
+    expect(utils.queryByRole('dialog', { name: 'OCR layers' })).not.toBeNull();
+    // Nothing else of the menu came with it.
+    expect(utils.queryByLabelText('Quick actions menu')).toBeNull();
+    expect(utils.parent.layersOpen).toBe(true);
+  });
+
+  it('hiding the controls puts an open menu away too', () => {
+    const utils = mount();
+    utils.parent.open = true;
+    flushSync();
+    utils.parent.visible = false;
+    flushSync();
+    expect(utils.parent.open).toBe(false);
+    expect(utils.queryByLabelText('Quick actions menu')).toBeNull();
+  });
+
+  it("Zoom to fit runs the reader's handler — the key's — and closes the menu", async () => {
+    const utils = mount();
+    utils.parent.open = true;
+    flushSync();
+    await fireEvent.click(utils.getByLabelText('Zoom to fit'));
+    expect(utils.onZoomFit).toHaveBeenCalledOnce();
+    expect(utils.parent.open).toBe(false);
   });
 });

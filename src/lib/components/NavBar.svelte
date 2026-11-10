@@ -17,15 +17,13 @@
   import { tokenManager } from '$lib/util/sync/providers/google-drive';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { unifiedProviderState } from '$lib/util/sync/unified-provider-state';
+  import { canSyncProgress, syncProgressNow } from '$lib/keys/app-actions';
 
   // Use $state to make these reactive
   let isReader = $state(false);
 
   // Read unified provider state synchronously
   let providerState = $derived($unifiedProviderState);
-
-  // Track if any cloud providers are configured (derived from active_cloud_provider key)
-  let hasActiveProvider = $derived(providerState?.hasActiveProvider ?? false);
 
   // Google Drive specific: Track token expiry for debug display
   let tokenMinutesLeft = $state<number | null>(null);
@@ -99,17 +97,10 @@
     nav.toProgressTracker();
   }
 
-  async function handleSync() {
-    if (isSyncing) return; // Prevent multiple simultaneous syncs
-
-    try {
-      // Sync with all authenticated providers
-      // State is managed automatically by unifiedSyncService
-      await unifiedCloudManager.syncProgress();
-    } catch (error) {
-      console.error('Manual sync failed:', error);
-      showSnackbar('Sync failed');
-    }
+  // The same sync, behind the same test, as the `app.sync` key
+  // (`keys/app-actions.ts`): state is managed by unifiedSyncService.
+  function handleSync() {
+    void syncProgressNow();
   }
 
   // Google Drive specific: Manual token refresh handler. A click: the one
@@ -231,7 +222,7 @@
           {/key}
         {/if}
       {/if}
-      {#if hasActiveProvider && !providerState.isReadOnly}
+      {#if canSyncProgress(providerState)}
         <button
           onclick={handleSync}
           class="flex h-6 w-6 items-center justify-center"

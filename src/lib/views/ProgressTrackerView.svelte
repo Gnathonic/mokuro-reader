@@ -12,6 +12,10 @@
   import { miscSettings, type ProgressTrackerSorting } from '$lib/settings';
   import { optionName } from '$lib/settings/setting-defs';
   import { stepSetting } from '$lib/keys/setting-actions';
+  import { provideKeyHandlers } from '$lib/keys/providers';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { ScopeActionId } from '$lib/keys/actions';
+  import { showSnackbar } from '$lib/util/snackbar';
   import {
     volumeDeadlines,
     getCurrentPeriodStart,
@@ -209,6 +213,17 @@
       periodKey: getCurrentPeriodKey(selection.goalType)
     });
   }
+
+  // The tracker's own key action (#55), provided to the layout's one key
+  // listener while this page is mounted. The button's test, then its handler.
+  onMount(() =>
+    provideKeyHandlers('tracker', {
+      'tracker.current-period': () => {
+        if (isGoalClosed) returnToCurrentPeriod();
+        else showSnackbar('Already on a period that is still open');
+      }
+    } satisfies Record<ScopeActionId<'tracker'>, KeyHandler>)
+  );
 
   onMount(() => {
     // Mint this year's goal the first time the tracker is opened. Deliberately

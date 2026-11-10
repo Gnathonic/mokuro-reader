@@ -12,9 +12,12 @@
   import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { dispatchKey, type KeyHandler, type KeyResolver } from '$lib/keys/dispatch';
   import { keyHint } from '$lib/keys/live';
-  import type { AppActionId, EditActionId, ReaderActionId, ReaderMode } from '$lib/keys/actions';
+  import type { EditActionId, ReaderActionId, ReaderMode } from '$lib/keys/actions';
   import { registerAnnouncer, type AnnounceAction } from '$lib/keys/announce';
-  import { runSettingAction } from '$lib/keys/setting-actions';
+  import { appKeyHandlers } from '$lib/keys/app-actions';
+  import { applySettingOp, runSettingAction } from '$lib/keys/setting-actions';
+  import { settingDef } from '$lib/settings/setting-defs';
+  import { anyModalOpen } from '$lib/util/delete-shortcut';
   import ReaderNotification, { type ReaderNotice } from './ReaderNotification.svelte';
   import { toggleFullScreen } from '$lib/util/fullscreen';
   import {
@@ -66,24 +69,33 @@
     ForwardStepSolid
   } from 'flowbite-svelte-icons';
   import TextBoxPicker from './TextBoxPicker.svelte';
+  import { showTextBoxPicker } from './text-box-picker';
+  import { displayableImageBlob } from '$lib/util/raster-image';
+  import { spreadPageIndices, spreadText } from '$lib/reader/page-text';
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import { recordPagedPageView } from '$lib/reader/paged-progress';
   import QuickActions from './QuickActions.svelte';
   import EditToolbar from './Edit/EditToolbar.svelte';
   import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
+  import {
+    editCommandState,
+    type EditCommand,
+    type EditCommandState
+  } from '$lib/reader/edit/edit-commands';
   import { ORIGINAL_LAYER_ID, hasOriginalLayer } from '$lib/reader/edit/edit-persist';
   import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
   import type { Page } from '$lib/types';
   import {
     layerSummaries,
     nextLayerId,
+    prevLayerId,
     primaryLayerName,
     type LayerSummary
   } from '$lib/reader/edit/layer-list';
   import { forkIntoEditLayer, loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
   import { pullOwnEditLayerBeforeEdit } from '$lib/metadata/layer-sync';
-  import { forksOnEdit } from '$lib/reader/edit/layer-kind';
+  import { forksOnEdit, layerActionAvailable } from '$lib/reader/edit/layer-kind';
   import { EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
   import { activeProviderStatus } from '$lib/util/sync/active-provider-status';
   import { canPublishCuratedVolume } from '$lib/util/sync/account-capabilities';
@@ -98,7 +110,7 @@
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { needsDownload } from '$lib/catalog/volume-state';
@@ -141,8 +153,10 @@
   // $lib/metadata/reread.shouldOfferReread). `rereadCheckedFor` guards this to
   // run once per reader mount for the opened volume, not on every $volumes tick.
   let rereadPromptOpen = $state(false);
-  /** The quick-actions OCR layer picker is up (bound from QuickActions). */
+  /** The OCR layer picker is up (bound from QuickActions, opened by its button or a key). */
   let layerPickerOpen = $state(false);
+  /** The quick actions menu is open (bound from QuickActions, toggled by its button or a key). */
+  let quickMenuOpen = $state(false);
   let rereadCheckedFor = $state<string | null>(null);
   let rereadDisplayTitle = $state('');
   let localSeriesVolumes = $derived(($currentSeries || []).filter((v) => !v.isPlaceholder));
@@ -362,6 +376,7 @@
     },
     'reader.volume-prev': () => stepVolume(-1),
     'reader.volume-next': () => stepVolume(1),
+    'reader.goto-page': () => void openGotoPage(),
     'reader.scroll-up': () =>
       keyMode() === 'paged' ? $pagedZoom?.scrollImage('up') : scrollReaderKey('reader.scroll-up'),
     'reader.scroll-down': () =>
@@ -372,14 +387,39 @@
     'reader.scroll-right': () => scrollReaderKey('reader.scroll-right'),
     'reader.fullscreen': () => toggleFullScreen(),
     'reader.zoom-mode': () => rotateZoomMode(),
-    'reader.zoom-fit': () => $pagedZoom?.zoomFitToScreen(),
+    'reader.zoom-fit': () => zoomToFit(),
+    'reader.zoom-in': () => zoomStep(1),
+    'reader.zoom-out': () => zoomStep(-1),
+    'reader.quick-menu': () => {
+      quickMenuOpen = !quickMenuOpen;
+    },
+    'reader.timer-pause': () => toggleTimerPause(),
     'reader.page-mode': () => ($settings.continuousScroll ? rotateScrollMode() : rotatePageMode()),
     'reader.offset-spreads': () => offsetSpreads(),
     'reader.controls': () => {
       overlaysVisible = !overlaysVisible;
     },
-    'reader.ocr-layer': () => cycleLayer(),
+    'reader.ocr-layer': () => cycleLayer(1),
+    'reader.ocr-layer-prev': () => cycleLayer(-1),
+    // While the picker is up it owns the keyboard (`layerUiKeyAction`), so
+    // this only ever opens it; Escape closes.
+    'reader.ocr-layers': () => {
+      layerPickerOpen = true;
+    },
+    'reader.ocr-layer-primary': () => showPrimaryLayer(),
+    'reader.copy-page-text': () => void copyPageText(),
+    'reader.anki-image': () => ankiImage(1),
+    'reader.anki-image-2': () => ankiImage(2),
     'reader.edit-mode': () => toggleEditMode(),
+    // The layer commands act on the DISPLAYED layer, under the picker's rules.
+    'layer.new': () => layerCommand('new'),
+    'layer.rename': () => layerCommand('rename'),
+    'layer.promote': () => layerCommand('promote'),
+    'layer.publish': () => layerCommand('publish'),
+    'layer.unpublish': () => layerCommand('unpublish'),
+    'layer.copy-to-edit': () => layerCommand('copy-to-edit'),
+    'layer.export': () => layerCommand('export'),
+    'layer.delete': () => layerCommand('delete'),
     'edit.undo': () => {
       if (!editSession) return false;
       editSession.undo(editActivePage);
@@ -400,15 +440,35 @@
       else if (s.selection.length > 0) s.clearSelection();
       else void exitEditMode();
     },
+    'edit.draw-tool': () => {
+      const s = editSession;
+      if (!s) return false;
+      s.tool = s.tool === 'draw' ? 'select' : 'draw';
+      showNotification(`Draw new box: ${s.tool === 'draw' ? 'On' : 'Off'}`, 'edit-draw-tool');
+    },
+    'edit.merge': () => editCommand('merge', (s) => s.mergeSelected()),
+    'edit.split': () =>
+      editCommand('split', (s, state) => {
+        if (state.splitLine !== null) s.splitSelected(state.splitLine);
+      }),
+    'edit.place-lines': () =>
+      editCommand('place-lines', (s, state) => {
+        if (state.single) s.placeLines(state.single.pageIndex, state.single.blockIndex);
+      }),
+    'edit.flip': () => editCommand('flip', (s) => s.flipSelected()),
+    'edit.revert-page': () => editCommand('revert-page', () => void revertCurrentPage()),
     'app.back': () => navigateBack()
-  } satisfies Record<ReaderActionId | EditActionId | AppActionId, KeyHandler>;
+  } satisfies Record<ReaderActionId | EditActionId | 'app.back', KeyHandler>;
 
   /**
-   * The reader's typed map first, then the generated setting actions — for
+   * The reader's typed map first, then the app commands every site answers
+   * the same way (`app-actions.ts`), then the generated setting actions — for
    * which the open volume is the context (Right to left is a volume setting).
    */
   const resolveKey: KeyResolver = (id, action) => {
-    const own = (keyHandlers as Partial<Record<string, KeyHandler>>)[id];
+    const own =
+      (keyHandlers as Partial<Record<string, KeyHandler>>)[id] ??
+      (appKeyHandlers as Partial<Record<string, KeyHandler>>)[id];
     if (own) return own;
     if (action.setting) return () => runSettingAction(action, { volumeId: volume?.volume_uuid });
     return undefined;
@@ -422,6 +482,13 @@
     // underneath it. (This is the reader's only key listener, continuous
     // scroll included, so this one return covers every layout.)
     if (rereadPromptOpen) {
+      return;
+    }
+    // And while ANY dialog is open, as the library's listener does. A bound
+    // command can open a confirmation ("Delete layer", "Promote layer"): a
+    // second press must not stack another one behind it, and no key may act
+    // on the page under a dialog. Every modal in the app is a `<dialog>`.
+    if (anyModalOpen()) {
       return;
     }
     // Same for the OCR layer UI. The picker opens without taking focus from
@@ -446,6 +513,145 @@
       { scopes: editSession ? ['edit', 'reader', 'app'] : ['reader', 'app'], mode: keyMode() },
       resolveKey
     );
+  }
+
+  // ---- Commands a key runs (#55). Each is its control's own handler behind
+  // its control's own test, so a key never does what the button would not; a
+  // command that cannot run says why in the reader's notification. ----
+
+  /**
+   * "Go to page…": the page popover, opened as a click on the page number
+   * opens it, with the number field focused and selected. The popover lives
+   * with the controls, so they are shown first.
+   */
+  let pagePopoverOpen = $state(false);
+  let pageInput = $state<HTMLInputElement>();
+  /** Opened by the key: Enter then also closes the popover, back to reading. */
+  let gotoPageByKey = false;
+  $effect(() => {
+    // The popover is unmounted with the controls: its flag must not outlive it.
+    if (!overlaysVisible) pagePopoverOpen = false;
+  });
+  $effect(() => {
+    if (!pagePopoverOpen) gotoPageByKey = false;
+  });
+  async function openGotoPage() {
+    overlaysVisible = true;
+    await tick(); // the popover and its trigger mount with the controls
+    pagePopoverOpen = true;
+    gotoPageByKey = true;
+    // The popover shows itself when its intro starts, a frame or two after it
+    // mounts; until then its field cannot take focus.
+    for (let attempt = 0; attempt < 30 && pagePopoverOpen; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 16));
+      const input = pageInput;
+      if (!input) continue;
+      input.focus();
+      if (document.activeElement === input) {
+        input.select();
+        return;
+      }
+    }
+  }
+
+  /** One step of the notched-wheel ladder at the screen centre, in every layout. */
+  function zoomStep(direction: 1 | -1) {
+    if (keyMode() === 'paged') $pagedZoom?.zoomStep(direction);
+    else scrollReaderKey(direction > 0 ? 'reader.zoom-in' : 'reader.zoom-out');
+  }
+
+  /**
+   * "Zoom to fit" (the key and the quick menu's button). Paged: a transient
+   * whole-page view, the mode setting untouched. Continuous has no transient
+   * equivalent — pages lay out from the mode setting — so "fit" means
+   * switching it, announced like any other setting a key changes.
+   */
+  function zoomToFit() {
+    if (keyMode() === 'paged') {
+      $pagedZoom?.zoomFitToScreen();
+      return;
+    }
+    const result = applySettingOp(settingDef('zoom-continuous'), 'to', {}, 'zoomFitToScreen');
+    if (result.done) showNotification(result.message, result.key);
+  }
+
+  /** What a click on the reading timer does. The next page resumes it either way. */
+  function toggleTimerPause() {
+    readingPaused.update((paused) => !paused);
+    showNotification(`Reading timer: ${get(readingPaused) ? 'Paused' : 'Running'}`, 'timer-pause');
+  }
+
+  /**
+   * "Copy page text": the page on screen — or the spread, in reading order —
+   * of the DISPLAYED layer, with the editor's unsaved changes while editing.
+   */
+  async function copyPageText() {
+    const spread = $settings.continuousScroll
+      ? effectiveScrollMode === 'horizontal' && continuousVisibleCount > 1
+      : showSecondPage();
+    const session = editSession;
+    const indices = spreadPageIndices(index, spread, pages.length);
+    const text = spreadText(indices, (i) => (session ? session.pageFor(i) : pages[i]));
+    if (!text) {
+      showNotification('No text on this page', 'copy-page-text');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      showNotification(
+        indices.length > 1 ? 'Copied the text of both pages' : 'Copied the page text',
+        'copy-page-text'
+      );
+    } catch {
+      showNotification("Couldn't copy: the browser refused the clipboard", 'copy-page-text');
+    }
+  }
+
+  /**
+   * "Add image to Anki" for the first (1) or second (2) page on screen: the
+   * text box picker, which then creates or updates by the card mode. The
+   * quick menu's two buttons call this too.
+   */
+  function ankiImage(which: 1 | 2) {
+    if (!volume) return;
+    if (!$settings.ankiConnectSettings.enabled) {
+      showNotification('AnkiConnect is off', 'anki-image');
+      return;
+    }
+    const i = which === 1 ? index : index + 1;
+    const src = which === 2 && useSinglePage ? undefined : imageCache.getFile(i);
+    const pageData = pages[i];
+    if (!src || !pageData) {
+      showNotification(
+        which === 2 ? 'There is no second page on screen' : 'The page image is not ready yet',
+        'anki-image'
+      );
+      return;
+    }
+    const record = $volumes[volume.volume_uuid];
+    showTextBoxPicker(
+      URL.createObjectURL(displayableImageBlob(src)),
+      pageData,
+      $settings.ankiConnectSettings.tags,
+      { seriesTitle: record?.series_title, volumeTitle: record?.volume_title },
+      i + 1
+    );
+  }
+
+  /** An edit-toolbar command by key: the toolbar's own enablement, then its action. */
+  function editCommand(
+    command: EditCommand,
+    run: (session: EditSession, state: EditCommandState) => void
+  ): boolean | void {
+    const s = editSession;
+    if (!s) return false;
+    const state = editCommandState(s, editHasOriginal);
+    const can = state[command];
+    if (!can.enabled) {
+      showNotification(can.reason, 'edit-command');
+      return;
+    }
+    run(s, state);
   }
 
   onMount(() => {
@@ -851,6 +1057,7 @@
     return index;
   });
 
+  /** The toolbar's Revert and its key. Already one undoable history commit. */
   async function revertCurrentPage() {
     if (!editSession) return;
     const ok = await editSession.revertPage(editActivePage);
@@ -910,14 +1117,29 @@
     showNotification(`OCR Layer: ${layerDisplayName(layer)}`, 'ocr-layer');
   });
 
-  /** `L`: step to the next OCR layer (Primary → layers in order → Primary). */
-  function cycleLayer() {
+  /**
+   * `L` and its reverse: step through the OCR layers (Primary → layers in
+   * order → Primary). The switch itself is announced by the watcher above.
+   */
+  function cycleLayer(direction: 1 | -1) {
     if (!volume) return;
     if (layers.length === 0) {
-      showSnackbar('No OCR layers for this volume');
+      showNotification('No OCR layers for this volume', 'ocr-layer');
       return;
     }
-    void selectLayer(nextLayerId(activeLayerId, layers));
+    const step = direction > 0 ? nextLayerId : prevLayerId;
+    void selectLayer(step(activeLayerId, layers));
+  }
+
+  /** "Set OCR layer to primary": the one layer every volume has. */
+  function showPrimaryLayer() {
+    if (!volume) return;
+    if (displayedLayerId === null) {
+      // Nothing changes, so the watcher has nothing to announce.
+      showNotification(`OCR Layer: ${primaryName}`, 'ocr-layer');
+      return;
+    }
+    void selectLayer(null);
   }
 
   /**
@@ -953,6 +1175,26 @@
       onSelectLayer: selectLayer,
       onBeforeMutate: () => settleEditsBeforeLayerMutation(action)
     });
+  }
+
+  /**
+   * A layer command by key (#55): it acts on the DISPLAYED layer, under the
+   * rules the picker draws its rows by (`layerActionAvailable`). Unavailable —
+   * the primary for anything but New included — says why. The dialogs and
+   * confirmations are `runLayerAction`'s own.
+   */
+  function layerCommand(action: LayerAction) {
+    if (!volume) return;
+    const layer = activeLayerId ? (layers.find((l) => l.layer_id === activeLayerId) ?? null) : null;
+    const can = layerActionAvailable(action, layer, {
+      canPublish: canPublishCuratedVolume($activeProviderStatus, volume),
+      status: $activeProviderStatus
+    });
+    if (!can.available) {
+      showNotification(can.reason, 'layer-command');
+      return;
+    }
+    runLayerActionFromReader(action, activeLayerId);
   }
 
   // Leaving the volume or switching to a scroll mode ends the session
@@ -1652,13 +1894,9 @@
   <QuickActions
     {left}
     {right}
-    src1={imageCache.getFile(index)}
-    src2={!useSinglePage ? imageCache.getFile(index + 1) : undefined}
-    volumeUuid={volume.volume_uuid}
-    page1={pages[index]}
-    page2={!useSinglePage ? pages[index + 1] : undefined}
-    page1Number={index + 1}
-    page2Number={!useSinglePage ? index + 2 : undefined}
+    hasSecondPage={!useSinglePage && !!imageCache.getFile(index + 1)}
+    onAnkiImage={ankiImage}
+    onZoomFit={zoomToFit}
     visible={overlaysVisible}
     onEdit={toggleEditMode}
     editEnabled={!$settings.continuousScroll && !editingBlocked && !layerLoading}
@@ -1672,6 +1910,7 @@
     onSelectLayer={selectLayer}
     onLayerAction={runLayerActionFromReader}
     bind:layersOpen={layerPickerOpen}
+    bind:open={quickMenuOpen}
   />
   <SettingsButton visible={overlaysVisible} />
   {#if editSession}
@@ -1704,6 +1943,7 @@
       trigger="click"
       triggeredBy="#page-num"
       class="z-20 w-full max-w-xs"
+      bind:isOpen={pagePopoverOpen}
     >
       <div class="flex flex-col gap-3">
         <div class="z-10 flex flex-row items-center gap-5">
@@ -1717,6 +1957,7 @@
             type="number"
             size="sm"
             bind:value={manualPage}
+            bind:elementRef={pageInput}
             onclick={onInputClick}
             onchange={onManualPageChange}
             onkeydown={(e) => {
@@ -1725,6 +1966,8 @@
                 if (e.currentTarget && 'blur' in e.currentTarget) {
                   (e.currentTarget as HTMLElement).blur();
                 }
+                // Opened by "Go to page…": the page is chosen, back to reading.
+                if (gotoPageByKey) pagePopoverOpen = false;
               }
             }}
             onblur={onManualPageChange}

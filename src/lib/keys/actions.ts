@@ -14,11 +14,15 @@
  * its actions and `setting-actions.ts` handles all of them. `registry.ts`
  * joins the two into the full list.
  *
- * Adding a command is one entry here plus its handler at the listener site
- * that owns the state it touches (Reader.svelte's handler map is
- * `satisfies Record<...>`, so a reader/edit entry without a handler fails
- * type-check). A change in what an EXISTING action does (e.g. #283's
- * scroll-before-turn for Page Up/Down) is a change to its handler only.
+ * Adding a command is one entry here plus its handler at the site that owns
+ * the state it touches: Reader.svelte's map for `reader` and `edit`,
+ * `app-actions.ts` for `app`, and for every other scope the map its view,
+ * card or dialog passes to `provideKeyHandlers` (`providers.ts`). Each map is
+ * `satisfies Record<ScopeActionId<…>, KeyHandler>`, so an entry without a
+ * handler fails type-check. A command's handler is its button's handler
+ * behind its button's own test (spec 17.11). A change in what an EXISTING
+ * action does (e.g. #283's scroll-before-turn for Page Up/Down) is a change
+ * to its handler only.
  *
  * This file stays pure data — no stores, no components: the settings store
  * imports it (through `keymap.ts`) for the shape check of stored bindings.
@@ -265,6 +269,18 @@ export const KEY_ACTIONS = [
     menu: 'off',
     repeat: false
   },
+  {
+    id: 'reader.goto-page',
+    label: 'Go to page…',
+    description: 'Open the page number field: type a page and press Enter.',
+    group: 'pages',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'FileSearchOutline',
+    menu: 'off',
+    repeat: false
+  },
   // ---- Scrolling ---------------------------------------------------------
   {
     id: 'reader.scroll-up',
@@ -343,10 +359,12 @@ export const KEY_ACTIONS = [
   {
     id: 'reader.zoom-fit',
     label: 'Zoom to fit',
-    description: 'Show the whole page without changing the zoom mode.',
+    // Paged: a transient whole-page view, the mode setting untouched.
+    // Continuous has no transient view: it sets the zoom mode to fit.
+    description: 'Show the whole page. In continuous scroll this sets the zoom mode to fit.',
     group: 'view',
     scope: 'reader',
-    modes: ['paged'],
+    modes: ALL_MODES,
     defaults: [],
     icon: 'MinimizeOutline',
     menu: 'off',
@@ -391,6 +409,54 @@ export const KEY_ACTIONS = [
     menu: 'off',
     repeat: false
   },
+  {
+    id: 'reader.zoom-in',
+    label: 'Zoom in',
+    description: 'One zoom step in, at the centre of the screen.',
+    group: 'view',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'ZoomInOutline',
+    menu: 'off',
+    repeat: true
+  },
+  {
+    id: 'reader.zoom-out',
+    label: 'Zoom out',
+    description: 'One zoom step out, at the centre of the screen.',
+    group: 'view',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'ZoomOutOutline',
+    menu: 'off',
+    repeat: true
+  },
+  {
+    id: 'reader.quick-menu',
+    label: 'Open quick menu',
+    description: 'Open or close the quick actions menu, also while its button is hidden.',
+    group: 'view',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'DotsVerticalOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'reader.timer-pause',
+    label: 'Pause or resume the timer',
+    description: 'What a click on the reading timer does: stop or resume counting time.',
+    group: 'view',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'CirclePauseOutline',
+    menu: 'off',
+    repeat: false
+  },
   // ---- OCR ---------------------------------------------------------------
   {
     id: 'reader.ocr-layer',
@@ -405,6 +471,78 @@ export const KEY_ACTIONS = [
     repeat: false
   },
   {
+    id: 'reader.ocr-layer-prev',
+    label: 'Previous OCR layer',
+    description: "Cycle through the volume's OCR layers, backwards.",
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'LayersOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'reader.ocr-layers',
+    label: 'OCR layers',
+    description: 'Open the OCR layer picker.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'LayersOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'reader.ocr-layer-primary',
+    label: 'Set OCR layer to primary',
+    description: "Show the volume's primary OCR.",
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'LayersOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'reader.copy-page-text',
+    label: 'Copy page text',
+    description: 'Copy the text of the page or spread on screen, in reading order.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'FileCopyOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'reader.anki-image',
+    label: 'Add image to Anki',
+    description: 'Pick a text box on the page and make an Anki card from it.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'ImageOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'reader.anki-image-2',
+    label: 'Add image 2 to Anki',
+    description: "The same, for a spread's second page.",
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'ImageOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
     id: 'reader.edit-mode',
     label: 'Edit OCR text',
     description: 'Enter or leave OCR edit mode (paged mode only).',
@@ -413,6 +551,103 @@ export const KEY_ACTIONS = [
     modes: ALL_MODES,
     defaults: ['KeyE'],
     icon: 'PenOutline',
+    menu: 'off',
+    repeat: false
+  },
+  // The layer commands act on the DISPLAYED layer, under the picker's own rules.
+  {
+    id: 'layer.new',
+    label: 'New layer…',
+    description: 'Create an OCR layer: a copy of what is on screen, or an empty one.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'CirclePlusOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'layer.rename',
+    label: 'Rename layer…',
+    description: 'Rename the OCR layer on screen.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'EditOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'layer.promote',
+    label: 'Promote layer to primary',
+    description: "Make the OCR layer on screen the volume's primary OCR. Asks first.",
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'ArrowUpOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'layer.publish',
+    label: 'Publish corrections',
+    description: 'Publish your corrections layer as the shared corrections. Asks first.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'UploadOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'layer.unpublish',
+    label: 'Unpublish shared corrections',
+    description: 'Remove the shared corrections for everyone. Asks first.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'CloseCircleOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'layer.copy-to-edit',
+    label: 'Copy layer to your corrections',
+    description: 'Replace your corrections layer with the layer on screen. Asks first.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'FileCopyOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'layer.export',
+    label: 'Export layer',
+    description: 'Download the OCR layer on screen as a .mokuro file.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'DownloadOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'layer.delete',
+    label: 'Delete layer',
+    description: 'Delete the OCR layer on screen. Asks first.',
+    group: 'ocr',
+    scope: 'reader',
+    modes: ALL_MODES,
+    defaults: [],
+    icon: 'TrashBinOutline',
     menu: 'off',
     repeat: false
   },
@@ -466,7 +701,101 @@ export const KEY_ACTIONS = [
     menu: 'off',
     repeat: false
   },
+  {
+    id: 'edit.draw-tool',
+    label: 'Draw new box',
+    description: 'Arm or disarm the draw tool: the next drag on the page draws a text box.',
+    group: 'edit',
+    scope: 'edit',
+    modes: ['paged'],
+    defaults: [],
+    icon: 'DrawSquareOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'edit.merge',
+    label: 'Merge boxes',
+    description: 'Merge the selected text boxes into one.',
+    group: 'edit',
+    scope: 'edit',
+    modes: ['paged'],
+    defaults: [],
+    icon: 'MergeCellsOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'edit.split',
+    label: 'Split box',
+    description: 'Split the selected box before the line chosen inside it.',
+    group: 'edit',
+    scope: 'edit',
+    modes: ['paged'],
+    defaults: [],
+    icon: 'SplitCellsOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'edit.place-lines',
+    label: 'Place lines',
+    description: 'Give the selected box one positionable line per OCR line.',
+    group: 'edit',
+    scope: 'edit',
+    modes: ['paged'],
+    defaults: [],
+    icon: 'AlignJustifyOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'edit.flip',
+    label: 'Flip writing mode',
+    description: 'Switch the selected boxes between vertical and horizontal text.',
+    group: 'edit',
+    scope: 'edit',
+    modes: ['paged'],
+    defaults: [],
+    icon: 'SortHorizontalOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'edit.revert-page',
+    label: 'Revert page',
+    description: "Restore the page's original OCR. Undo brings the edits back.",
+    group: 'edit',
+    scope: 'edit',
+    modes: ['paged'],
+    defaults: [],
+    icon: 'RefreshOutline',
+    menu: 'off',
+    repeat: false
+  },
   // ---- Library -----------------------------------------------------------
+  {
+    id: 'library.focus-search',
+    label: 'Focus search',
+    description: 'On the catalog: put the cursor in the search field.',
+    group: 'library',
+    scope: 'library',
+    defaults: [],
+    icon: 'SearchOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'library.series-open',
+    label: 'Open series',
+    description: 'With a series card under the pointer: open its page.',
+    group: 'library',
+    scope: 'library.series',
+    defaults: [],
+    icon: 'BookOpenOutline',
+    menu: 'never',
+    repeat: false
+  },
   {
     id: 'library.series-edit',
     label: 'Edit series',
@@ -533,6 +862,162 @@ export const KEY_ACTIONS = [
     menu: 'never',
     repeat: false
   },
+  {
+    id: 'library.volume-open',
+    label: 'Open volume',
+    description:
+      'With a volume under the pointer: open it in the reader, or download it when it is not on this device.',
+    group: 'library',
+    scope: 'library.volume',
+    defaults: [],
+    icon: 'BookOpenReaderOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'library.volume-read',
+    label: 'Mark volume read or unread',
+    description: 'With a volume under the pointer: mark it read, or unread when it already is.',
+    group: 'library',
+    scope: 'library.volume',
+    defaults: [],
+    icon: 'CheckCircleOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'library.volume-download',
+    label: 'Download volume',
+    description: 'With a volume under the pointer: download it from the cloud.',
+    group: 'library',
+    scope: 'library.volume',
+    defaults: [],
+    icon: 'CloudArrowUpOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'library.volume-backup',
+    label: 'Back up volume',
+    description:
+      'With a volume under the pointer: back it up to the cloud, or retry a failed upload. Never deletes.',
+    group: 'library',
+    scope: 'library.volume',
+    defaults: [],
+    icon: 'CloudArrowUpOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'library.volume-text',
+    label: 'View volume text',
+    description: 'With a volume under the pointer: open its text view.',
+    group: 'library',
+    scope: 'library.volume',
+    defaults: [],
+    icon: 'FileLinesOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'library.volume-extract',
+    label: 'Extract volume…',
+    description: 'With a volume under the pointer: export it as a file.',
+    group: 'library',
+    scope: 'library.volume',
+    defaults: [],
+    icon: 'FileLinesOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'series.edit',
+    label: 'Edit this series',
+    description: 'On a series page: open the series editor.',
+    group: 'library',
+    scope: 'series',
+    defaults: [],
+    icon: 'EditOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'series.download-all',
+    label: 'Download all volumes',
+    description: 'On a series page: download every volume that is not on this device.',
+    group: 'library',
+    scope: 'series',
+    defaults: [],
+    icon: 'DownloadOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'series.backup',
+    label: 'Back up series',
+    description: 'On a series page: back up the volumes the cloud does not have yet.',
+    group: 'library',
+    scope: 'series',
+    defaults: [],
+    icon: 'DownloadOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'series.remove',
+    label: 'Remove manga',
+    description: 'On a series page: remove the series from this device. Asks first.',
+    group: 'library',
+    scope: 'series',
+    defaults: [],
+    icon: 'TrashBinOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'series.delete-cloud',
+    label: 'Delete series from cloud',
+    description: 'On a series page: delete the cloud copy of the series. Asks first.',
+    group: 'library',
+    scope: 'series',
+    defaults: [],
+    icon: 'TrashBinOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'series.clean-duplicates',
+    label: 'Clean cloud duplicates',
+    description: 'On a series page: remove duplicate cloud files of the series. Asks first.',
+    group: 'library',
+    scope: 'series',
+    defaults: [],
+    icon: 'TrashBinOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'series.extract',
+    label: 'Extract series…',
+    description: 'On a series page: export its volumes as files.',
+    group: 'library',
+    scope: 'series',
+    defaults: [],
+    icon: 'FileExportOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'series.text',
+    label: 'View series text',
+    description: 'On a series page: open the text of the whole series.',
+    group: 'library',
+    scope: 'series',
+    defaults: [],
+    icon: 'FileExportOutline',
+    menu: 'never',
+    repeat: false
+  },
   // ---- General -----------------------------------------------------------
   {
     id: 'app.back',
@@ -544,6 +1029,128 @@ export const KEY_ACTIONS = [
     locked: ['Escape'],
     icon: 'CloseOutline',
     menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'app.settings',
+    label: 'Open settings',
+    description: 'Open the settings panel.',
+    group: 'general',
+    scope: 'app',
+    defaults: [],
+    icon: 'CogOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'app.sync',
+    label: 'Sync progress now',
+    description: 'Sync read progress with the connected cloud storage.',
+    group: 'general',
+    scope: 'app',
+    defaults: [],
+    icon: 'RefreshOutline',
+    menu: 'off',
+    repeat: false
+  },
+  {
+    id: 'app.open-catalog',
+    label: 'Open catalog',
+    description: 'Go to the catalog.',
+    group: 'general',
+    scope: 'app',
+    defaults: [],
+    icon: 'HomeOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'app.open-reading-speed',
+    label: 'Open reading speed',
+    description: 'Go to the reading speed page.',
+    group: 'general',
+    scope: 'app',
+    defaults: [],
+    icon: 'ChartLineUpOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'app.open-progress-tracker',
+    label: 'Open progress tracker',
+    description: 'Go to the progress tracker.',
+    group: 'general',
+    scope: 'app',
+    defaults: [],
+    icon: 'CalendarMonthOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'app.open-upload',
+    label: 'Open upload',
+    description: 'Open the upload dialog.',
+    group: 'general',
+    scope: 'app',
+    defaults: [],
+    icon: 'UploadOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'app.open-cloud',
+    label: 'Open cloud storage',
+    description: 'Go to the cloud storage page.',
+    group: 'general',
+    scope: 'app',
+    defaults: [],
+    icon: 'CloudArrowUpOutline',
+    menu: 'never',
+    repeat: false
+  },
+  // ---- Other views: the series editor dialog, the tracker, the text views ---
+  {
+    id: 'series-editor.next-unlinked',
+    label: 'Next unlinked series',
+    description: 'In the series editor: go to the next series without an AniList link.',
+    group: 'other',
+    scope: 'series-editor',
+    defaults: [],
+    icon: 'ForwardOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'series-editor.next-untitled',
+    label: 'Next series without titles',
+    description: 'In the series editor: go to the next series with no alternative titles.',
+    group: 'other',
+    scope: 'series-editor',
+    defaults: [],
+    icon: 'ForwardOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'tracker.current-period',
+    label: 'Back to the current period',
+    description: 'On the progress tracker: leave a closed period for the current one.',
+    group: 'other',
+    scope: 'tracker',
+    defaults: [],
+    icon: 'CalendarMonthOutline',
+    menu: 'never',
+    repeat: false
+  },
+  {
+    id: 'text.copy',
+    label: 'Copy all text',
+    description: 'In a text view: copy the whole text.',
+    group: 'other',
+    scope: 'text',
+    defaults: [],
+    icon: 'ClipboardOutline',
+    menu: 'never',
     repeat: false
   }
 ] as const satisfies readonly KeyActionDef[];
@@ -580,11 +1187,19 @@ export type PinnedActionId = keyof typeof PINNED_ACTIONS;
 export type GeneratedActionId = `set.${string}`;
 
 export type ActionId = HandActionId | PinnedActionId | GeneratedActionId;
-export type ReaderActionId = Extract<Entry, { scope: 'reader' }>['id'];
-export type EditActionId = Extract<Entry, { scope: 'edit' }>['id'];
-export type AppActionId = Extract<Entry, { scope: 'app' }>['id'];
-export type LibrarySeriesActionId = Extract<Entry, { scope: 'library.series' }>['id'];
-export type LibraryVolumeActionId = Extract<Entry, { scope: 'library.volume' }>['id'];
+/**
+ * The hand-registered ids of one scope. Every listener site's handler map is
+ * `satisfies Record<ScopeActionId<…>, KeyHandler>`, so an entry here without
+ * a handler at its site fails type-check.
+ */
+export type ScopeActionId<S extends KeyScope> = Extract<Entry, { scope: S }>['id'];
+export type ReaderActionId = ScopeActionId<'reader'>;
+export type EditActionId = ScopeActionId<'edit'>;
+export type AppActionId = ScopeActionId<'app'>;
+/** The app actions every site answers the same way (`app-actions.ts`); Back is each site's own. */
+export type AppCommandId = Exclude<AppActionId, 'app.back'>;
+export type LibrarySeriesActionId = ScopeActionId<'library.series'>;
+export type LibraryVolumeActionId = ScopeActionId<'library.volume'>;
 
 /** Whether `action` can fire in reader layout `mode` (undefined = outside the reader). */
 export function isLiveIn(action: KeyActionDef, mode: ReaderMode | undefined): boolean {

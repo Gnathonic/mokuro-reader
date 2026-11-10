@@ -33,11 +33,11 @@
   import { initCatalogFileSync } from '$lib/metadata/catalog-file-sync';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
   import { navigateBack, currentView, type View } from '$lib/util/hash-router';
-  import { dispatchKey, type KeyHandler } from '$lib/keys/dispatch';
-  import type { KeyScope } from '$lib/keys/actions';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { AppActionId, KeyScope } from '$lib/keys/actions';
+  import { appKeyHandlers } from '$lib/keys/app-actions';
+  import { handleKeydownOutsideReader } from '$lib/keys/outside-reader';
   import { runSettingAction } from '$lib/keys/setting-actions';
-  import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
-  import { anyModalOpen } from '$lib/util/delete-shortcut';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
   import { retirePreviousOcrLayers } from '$lib/catalog/retired-previous-ocr';
@@ -112,33 +112,34 @@
     'series-text': 'text'
   };
 
-  // The keyboard everywhere except the reader, which owns its own
-  // (Reader.svelte): the view's page scope, then `app` — Back (Escape, plus
-  // any extra keys bound to `app.back`, #55) and the setting actions
-  // generated from the definitions, which one handler answers. One owner per
-  // view: SeriesView does not listen. Not from a field, the settings panel or
-  // a popover (`keyboardShouldIgnore`), and not while a dialog is up — Escape
-  // there closes the dialog, and only the dialog.
+  // THE keyboard listener everywhere except the reader, which owns its own
+  // (Reader.svelte). No view and no card listens: each PROVIDES its scope's
+  // handlers while it is live (`keys/providers.ts`), and this dispatches, in
+  // order: the card under the pointer, the view's page scope, then `app` —
+  // Back (Escape, plus any extra keys bound to `app.back`, #55), the shared
+  // app commands (`keys/app-actions.ts`) and the setting actions generated
+  // from the definitions, which one handler answers.
   //
-  // Hovered cards still own their listeners (until they provide handlers
-  // here instead), and this one runs first: a page-scope key that a hovered
-  // card also uses resolves to the page.
+  // The guards run once, in `handleKeydownOutsideReader`: not from a field,
+  // the settings panel or a popover. While a dialog is up only a dialog's own
+  // provided scope is tried (the series editor, while it is the top dialog) —
+  // never `app`, never the page: Escape there closes the dialog, and only the
+  // dialog, and a second press of a confirming command cannot stack another.
   function handleKeydown(event: KeyboardEvent) {
     const view = get(currentView);
     if (view.type === 'reader') return;
-    if (keyboardShouldIgnore(event.target) || anyModalOpen()) return;
-    const pageScope = VIEW_SCOPES[view.type];
-    const own: Partial<Record<string, KeyHandler>> = {
+    const app = {
+      ...appKeyHandlers,
       'app.back': () => {
         // Nothing above the catalog: decline, so the key keeps its default.
         if (view.type === 'catalog') return false;
         navigateBack();
       }
-    };
-    dispatchKey(event, { scopes: pageScope ? [pageScope, 'app'] : ['app'] }, (id, action) => {
-      if (own[id]) return own[id];
-      if (action.setting) return () => runSettingAction(action);
-      return undefined;
+    } satisfies Record<AppActionId, KeyHandler>;
+    handleKeydownOutsideReader(event, {
+      viewScope: VIEW_SCOPES[view.type],
+      app,
+      setting: (action) => runSettingAction(action)
     });
   }
 
