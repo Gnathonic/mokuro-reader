@@ -150,6 +150,86 @@ describe('one key listener outside the reader', () => {
 });
 
 /**
+ * The quick menu is drawn from the registry (#55, spec 17.7). A button written
+ * into the menu by hand would be an action the keys cannot reach, the section
+ * cannot switch off and a profile cannot move; a row that derived the keymap
+ * or the menu selection itself would do it once per row, 250 times.
+ */
+const SECTION_SOURCES = import.meta.glob<string>(
+  '/src/lib/components/Settings/Keys/{KeyboardShortcuts,KeyActionRow,KeySettingRow}.svelte',
+  { query: '?raw', import: 'default', eager: true }
+);
+
+describe('the quick menu and its section are registry-driven', () => {
+  const menu = SOURCES['/src/lib/components/Reader/QuickActions.svelte'];
+  const reader = SOURCES['/src/lib/components/Reader/Reader.svelte'];
+
+  it('QuickActions draws its entries from the items it is given and owns no action', () => {
+    expect(menu).toContain('{#each items as item (item.id)}');
+    expect(menu).toContain('actionIcon(item.icon)');
+    expect(menu).toContain('aria-label={item.label}');
+    expect(menu).toContain('onRun?.(item.id)');
+    // Its one hand-written label, and its one imported icon, are its own button's.
+    expect([...menu.matchAll(/aria-label="([^"]+)"/g)].map((m) => m[1])).toEqual([
+      'Quick actions menu'
+    ]);
+    const icons = /import \{([^}]*)\} from 'flowbite-svelte-icons'/.exec(menu)?.[1] ?? '';
+    expect(
+      icons
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean)
+    ).toEqual(['PlusOutline']);
+    expect(menu).not.toContain('toggleFullScreen');
+    expect(menu).not.toContain('ankiConnectSettings');
+  });
+
+  it('the reader hands it ONE derived list and runs a tap through the keys’ resolver', () => {
+    expect(reader).toContain('let quickMenuEntries = $derived.by(() => {');
+    expect(reader).toContain('quickMenuItems(quickMenuIds(s.quickMenu, actions.values(), mode)');
+    expect(reader).toContain('items={quickMenuEntries}');
+    expect(reader).toContain('onRun={runAction}');
+    expect(reader).toContain('resolveKey(id as ActionId, action)?.(');
+    // Nothing of the old per-button wiring is left.
+    for (const prop of ['onAnkiImage=', 'onZoomFit=', 'onEdit=', 'editEnabled=']) {
+      expect(reader, prop).not.toContain(prop);
+    }
+  });
+
+  it('the section derives what spans rows once; a row derives only its own chords', () => {
+    const section = SECTION_SOURCES['/src/lib/components/Settings/Keys/KeyboardShortcuts.svelte'];
+    const row = SECTION_SOURCES['/src/lib/components/Settings/Keys/KeyActionRow.svelte'];
+    const setting = SECTION_SOURCES['/src/lib/components/Settings/Keys/KeySettingRow.svelte'];
+    expect(section).toContain('let conflicts = $derived(findConflicts($keymap));');
+    expect(section).toContain(
+      'let menuIds = $derived(quickMenuIds(quickMenu, actionMap.values()));'
+    );
+    expect(section).toContain('let groups = $derived(groupTargets(targets, facts, filter));');
+    // A closed group mounts no rows.
+    expect(section).toContain('{#if groupOpen}');
+    for (const [name, text] of [
+      ['KeyActionRow', row],
+      ['KeySettingRow', setting]
+    ] as const) {
+      for (const spanning of [
+        'findConflicts(',
+        'quickMenuIds(',
+        'compileKeymap(',
+        'groupTargets(',
+        'buildTargets(',
+        '$keymap',
+        '$settings'
+      ]) {
+        expect(text, `${name} must not use ${spanning}`).not.toContain(spanning);
+      }
+    }
+    // Action button rows stay clickable under the night-mode filter.
+    expect(row).toContain('class="relative z-10 mt-1.5 flex flex-wrap items-center gap-2 text-xs"');
+    expect(section).toContain('class="relative z-10 mt-2"');
+  });
+});
+
+/**
  * One list, used twice (#55, spec 17.2): a bindable setting's options live in
  * `settings/setting-defs.ts` and nowhere else. A `{ value, name }` literal in
  * one of these components would be a second copy that the key actions never

@@ -69,8 +69,15 @@ async function setup(page: Page, title: string, patch: Record<string, unknown> =
 async function openShortcuts(page: Page) {
   await page.locator('button.reader-hud.right-3').click();
   // CSS, not getByRole: roles inside flowbite's <dialog> do not resolve.
-  await page.locator('#settings button', { hasText: 'Keyboard shortcuts' }).click();
+  await page.locator('#settings button', { hasText: 'Shortcuts and quick menu' }).click();
   await expect(page.locator('[data-keyboard-shortcuts]')).toBeVisible();
+}
+
+/** Open one of the section's groups (they start collapsed, mounting no rows). */
+async function openGroup(page: Page, group: string) {
+  const header = page.locator(`[data-key-group="${group}"] h4 button`);
+  if ((await header.getAttribute('aria-expanded')) !== 'true') await header.click();
+  await expect(header).toHaveAttribute('aria-expanded', 'true');
 }
 
 async function closeDrawer(page: Page) {
@@ -170,6 +177,9 @@ test('#55: A and D bound in the settings section turn pages, survive a reload, f
   const volume = await setup(page, 'KeyRebind');
   await openReader(page, volume);
   await openShortcuts(page);
+  // Collapsed until opened: no action row is mounted yet.
+  await expect(page.locator('[data-key-action]')).toHaveCount(0);
+  await openGroup(page, 'navigation');
 
   // Escape cancels a recording — and only the recording: the drawer stays.
   await row(page, 'reader.page-left').locator('[data-key-capture]').click();
@@ -240,7 +250,8 @@ test('unbinding: a removed key does nothing and its hint disappears; Reset bring
   await expect(hint).toHaveText('(T)');
   const section = (name: string) =>
     page.locator('#settings h2 button', { hasText: new RegExp(`^\\s*${name}\\s*$`) });
-  await section('Keyboard shortcuts').click();
+  await section('Shortcuts and quick menu').click();
+  await openGroup(page, 'text');
   await page.locator('[aria-label="Remove T from Always show OCR"]').click();
   await expect(row(page, 'reader.ocr-always')).toContainText('Not set');
   // Back in the Reader section: no hint for an unbound action.
@@ -255,7 +266,12 @@ test('unbinding: a removed key does nothing and its hint disappears; Reset bring
   expect(await profileSetting(page, 'keyBindings')).toEqual({ 'reader.ocr-always': [] });
 
   await page.locator('button.reader-hud.right-3').click();
-  await section('Keyboard shortcuts').click();
+  await section('Shortcuts and quick menu').click();
+  await openGroup(page, 'text');
+  // The group says a row in it is changed.
+  await expect(page.locator('[data-key-group="text"] [data-key-group-changed]')).toHaveText(
+    '1 changed'
+  );
   await row(page, 'reader.ocr-always').locator('button', { hasText: 'Reset' }).click();
   await section('Reader').click();
   await expect(hint).toHaveText('(T)');
@@ -1378,4 +1394,305 @@ test('one listener outside the reader: the card under the pointer, then the page
   await expect(page.locator('h1', { hasText: 'Progress Tracker' })).toBeVisible({ timeout: 30000 });
   await page.keyboard.press('c');
   await expect(snackbar(page).last()).toContainText('Already on a period that is still open');
+});
+
+// ---------------------------------------------------------------------------
+// Step C: the registry-driven quick menu and the regrouped section.
+// ---------------------------------------------------------------------------
+
+const menuButton = (page: Page) => page.getByLabel('Quick actions menu');
+const menuEntries = (page: Page) => page.locator('[data-quick-action]');
+const menuEntry = (page: Page, id: string) => page.locator(`[data-quick-action="${id}"]`);
+const menuIds = (page: Page) =>
+  menuEntries(page).evaluateAll((els) => els.map((el) => el.getAttribute('data-quick-action')));
+
+/** Today's menu with AnkiConnect off and no OCR layers: what a fresh install shows. */
+const DEFAULT_MENU = [
+  'reader.edit-mode',
+  'reader.fullscreen',
+  'reader.zoom-fit',
+  'reader.page-right',
+  'reader.page-left'
+];
+
+async function switchOnMenu(page: Page, id: string) {
+  const toggle = row(page, id).locator('[data-quick-menu-switch]');
+  await toggle.click();
+  return toggle;
+}
+
+test('quick menu at defaults is today’s menu, and each entry runs its key’s handler', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyMenuDefaults');
+  await openReader(page, volume);
+  await expectPage(page, 1);
+  expect(await profileSetting(page, 'quickMenu')).toEqual({});
+
+  await menuButton(page).click();
+  expect(await menuIds(page)).toEqual(DEFAULT_MENU);
+  // Named by their actions, in a single column above the menu's own button.
+  await expect(menuEntry(page, 'reader.page-left')).toHaveAttribute('aria-label', 'Page left');
+  await expect(menuEntry(page, 'reader.page-left')).toHaveAttribute('title', 'Page left');
+  const xs = await menuEntries(page).evaluateAll((els) =>
+    els.map((el) => Math.round(el.getBoundingClientRect().left))
+  );
+  const buttonX = Math.round((await menuButton(page).boundingBox())!.x);
+  expect(new Set(xs)).toEqual(new Set([buttonX]));
+  const ys = await menuEntries(page).evaluateAll((els) =>
+    els.map((el) => el.getBoundingClientRect().top)
+  );
+  expect(ys).toEqual([...ys].sort((a, b) => a - b));
+  expect(ys[ys.length - 1]).toBeLessThan((await menuButton(page).boundingBox())!.y);
+
+  // Page left is the physical button it always was: forward in a right-to-left book.
+  await menuEntry(page, 'reader.page-left').click();
+  await expectPage(page, 2);
+  await expect(menuEntries(page)).toHaveCount(0);
+  await menuButton(page).click();
+  await menuEntry(page, 'reader.page-right').click();
+  await expectPage(page, 1);
+
+  // Edit: the same toggle E is. Pressed while editing.
+  await menuButton(page).click();
+  await menuEntry(page, 'reader.edit-mode').click();
+  await expect(page.locator('[data-edit-toolbar]')).toBeVisible();
+  await menuButton(page).click();
+  await expect(menuEntry(page, 'reader.edit-mode')).toHaveAttribute('aria-pressed', 'true');
+  // While editing, the layer picker joins the menu (as it always has).
+  expect(await menuIds(page)).toEqual(['reader.ocr-layers', ...DEFAULT_MENU]);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-edit-toolbar]')).toHaveCount(0);
+
+  // Continuous scroll: Edit says why it is off; vertical scroll has no Page left or right.
+  await page.keyboard.press('v');
+  await expect(menuEntry(page, 'reader.edit-mode')).toBeDisabled();
+  await expect(menuEntry(page, 'reader.edit-mode')).toHaveAttribute(
+    'title',
+    'Edit is available in paged mode only'
+  );
+});
+
+test('quick menu: an action switched on in the section shows, runs, survives a reload, and is the profile’s own', async ({
+  page
+}) => {
+  test.setTimeout(180_000);
+  const volume = await setup(page, 'KeyMenuAdd');
+  await openReader(page, volume);
+  await openShortcuts(page);
+  await expect(page.locator('[data-quick-menu-count]')).toContainText('Quick menu: 8 actions');
+  await expect(page.locator('#settings button', { hasText: 'Reset quick menu' })).toHaveCount(0);
+
+  // A toggle, a step and a "Set to", found by search; each row has a switch.
+  await filterShortcuts(page, 'bold font');
+  const bold = await switchOnMenu(page, 'set.bold.toggle');
+  await expect(bold).toHaveAttribute('aria-checked', 'true');
+  await filterShortcuts(page, 'brightness');
+  // The folded setting row opened for the search and lists its three actions.
+  await expect(
+    page.locator('[data-key-setting="setting:brightness"] [data-key-action]')
+  ).toHaveCount(3);
+  await switchOnMenu(page, 'set.brightness.up');
+  await filterShortcuts(page, 'fit to width');
+  await expect(page.locator('[data-key-action]')).toHaveCount(1);
+  await switchOnMenu(page, 'set.zoom-paged.to.zoomFitToWidth');
+  // A default switched off.
+  await filterShortcuts(page, 'fullscreen');
+  const full = await switchOnMenu(page, 'reader.fullscreen');
+  await expect(full).toHaveAttribute('aria-checked', 'false');
+  // An action that can never be on the menu has no switch.
+  await filterShortcuts(page, 'open quick menu');
+  await expect(row(page, 'reader.quick-menu')).toBeVisible();
+  await expect(row(page, 'reader.quick-menu').locator('[data-quick-menu-switch]')).toHaveCount(0);
+
+  await expect(page.locator('[data-quick-menu-count]')).toContainText('Quick menu: 10 actions');
+  expect(await profileSetting(page, 'quickMenu')).toEqual({
+    'set.bold.toggle': true,
+    'set.brightness.up': true,
+    'set.zoom-paged.to.zoomFitToWidth': true,
+    'reader.fullscreen': false
+  });
+  // Clearing the search folds the list away again; the closed setting row says what is inside.
+  await filterShortcuts(page, '');
+  await expect(page.locator('[data-key-action]')).toHaveCount(0);
+  await openGroup(page, 'image');
+  await expect(
+    page.locator('[data-key-setting="setting:brightness"] [data-key-setting-summary]')
+  ).toHaveText('3 actions · 1 on the quick menu');
+  await expect(page.locator('[data-key-group="image"] [data-key-group-changed]')).toHaveText(
+    '1 changed'
+  );
+  // The filter finds exactly what is on the menu.
+  await page.locator('#settings button', { hasText: /^On the quick menu$/ }).click();
+  await expect(page.locator('[data-key-action]')).toHaveCount(10);
+  await closeDrawer(page);
+
+  // The menu: the defaults in their order (minus Fullscreen), then the additions in registry order.
+  const expected = [
+    'reader.edit-mode',
+    'reader.zoom-fit',
+    'reader.page-right',
+    'reader.page-left',
+    'set.zoom-paged.to.zoomFitToWidth',
+    'set.brightness.up',
+    'set.bold.toggle'
+  ];
+  await menuButton(page).click();
+  expect(await menuIds(page)).toEqual(expected);
+  await expect(
+    menuEntry(page, 'set.brightness.up').locator('[data-quick-action-badge]')
+  ).toHaveText('+');
+  await expect(
+    menuEntry(page, 'set.zoom-paged.to.zoomFitToWidth').locator('[data-quick-action-badge]')
+  ).toHaveText('Fit');
+  await expect(menuEntry(page, 'set.bold.toggle')).toHaveAttribute('aria-pressed', 'false');
+
+  // A tap runs the generated handler: written, announced in the reader's notification.
+  await menuEntry(page, 'set.bold.toggle').click();
+  await expect(notification(page)).toHaveText('Bold font: On');
+  expect(await profileSetting(page, 'boldFont')).toBe(true);
+  await expect(menuEntries(page)).toHaveCount(0);
+  await menuButton(page).click();
+  await expect(menuEntry(page, 'set.bold.toggle')).toHaveAttribute('aria-pressed', 'true');
+  // A step keeps the menu open for the next tap.
+  await menuEntry(page, 'set.brightness.up').click();
+  await expect(notification(page)).toHaveText('Brightness: 105%');
+  await menuEntry(page, 'set.brightness.up').click();
+  await expect(notification(page)).toHaveText('Brightness: 110%');
+  expect(await profileSetting(page, 'pageBrightness')).toBe(110);
+  await expect(menuEntry(page, 'set.brightness.up')).toBeVisible();
+  await menuEntry(page, 'set.zoom-paged.to.zoomFitToWidth').click();
+  await expect(notification(page)).toHaveText('Paged zoom: Fit to width');
+  expect(await profileSetting(page, 'zoomDefault')).toBe('zoomFitToWidth');
+
+  // Reload: the selection is the profile's.
+  await page.reload();
+  await expect(page.locator('#page-num')).toContainText(`/ ${PAGES}`, { timeout: 30000 });
+  await menuButton(page).click();
+  expect(await menuIds(page)).toEqual(expected);
+
+  // Another profile has its own menu: today's.
+  await page.evaluate(() => localStorage.setItem('currentProfile', 'Mobile'));
+  await page.reload();
+  await expect(page.locator('#page-num')).toContainText(`/ ${PAGES}`, { timeout: 30000 });
+  await menuButton(page).click();
+  expect(await menuIds(page)).toEqual(DEFAULT_MENU);
+  await menuButton(page).click();
+
+  // Back on the first profile, "Reset quick menu" brings today's back and leaves the keys alone.
+  await page.evaluate(() => localStorage.setItem('currentProfile', 'Desktop'));
+  await patchProfile(page, { keyBindings: { 'reader.fullscreen': ['KeyX'] } });
+  await expect(page.locator('#page-num')).toContainText(`/ ${PAGES}`, { timeout: 30000 });
+  await openShortcuts(page);
+  await page.locator('#settings button', { hasText: 'Reset quick menu' }).click();
+  await page.locator('dialog[open] button', { hasText: /^\s*Yes\s*$/ }).click();
+  await expect.poll(() => profileSetting(page, 'quickMenu')).toEqual({});
+  expect(await profileSetting(page, 'keyBindings')).toEqual({ 'reader.fullscreen': ['KeyX'] });
+  await expect(page.locator('[data-quick-menu-count]')).toContainText('Quick menu: 8 actions');
+});
+
+test('quick menu: a scheduled filter’s tap shows the message with “Set to manual”, like its key', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyMenuSchedule', {
+    nightMode: false,
+    nightModeSchedule: { enabled: true, startTime: '00:00', endTime: '23:59' },
+    quickMenu: { 'reader.night': true }
+  });
+  await openReader(page, volume);
+  await menuButton(page).click();
+  // On by schedule: the entry shows what is on screen.
+  await expect(menuEntry(page, 'reader.night')).toHaveAttribute('aria-pressed', 'true');
+  await menuEntry(page, 'reader.night').click();
+  await expect(notification(page)).toContainText('Night Mode is on automatic schedule');
+  const button = notification(page).locator('button', { hasText: 'Set to manual' });
+  await expect(button).toBeVisible();
+  expect(await profileSetting(page, 'nightMode')).toBe(false);
+  await button.click();
+  await expect(notification(page)).toHaveText('Night mode: On (manual)');
+  expect(((await profileSetting(page, 'nightModeSchedule')) as { enabled: boolean }).enabled).toBe(
+    false
+  );
+  expect(await profileSetting(page, 'nightMode')).toBe(true);
+  // Now manual: the next tap toggles it.
+  await menuButton(page).click();
+  await menuEntry(page, 'reader.night').click();
+  await expect(notification(page)).toHaveText('Night mode: Off');
+  expect(await profileSetting(page, 'nightMode')).toBe(false);
+});
+
+test('quick menu: more entries than one column holds wrap toward the centre, all on screen', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const extra = [
+    'reader.page-next',
+    'reader.page-prev',
+    'reader.page-first',
+    'reader.page-last',
+    'reader.zoom-in',
+    'reader.zoom-out',
+    'reader.controls',
+    'reader.copy-page-text',
+    'reader.timer-pause',
+    'app.settings',
+    'app.sync',
+    'reader.night',
+    'reader.invert',
+    'reader.grayscale',
+    'set.bold.toggle',
+    'set.brightness.up',
+    'set.brightness.down',
+    'set.brightness.reset'
+  ];
+  const volume = await setup(page, 'KeyMenuWrap', {
+    quickMenu: Object.fromEntries(extra.map((id) => [id, true]))
+  });
+  await page.setViewportSize({ width: 1000, height: 560 });
+  await openReader(page, volume);
+  await menuButton(page).click();
+  await expect(menuEntries(page)).toHaveCount(DEFAULT_MENU.length + extra.length);
+
+  const boxes = await menuEntries(page).evaluateAll((els) =>
+    els.map((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        id: el.getAttribute('data-quick-action'),
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom
+      };
+    })
+  );
+  const main = (await menuButton(page).boundingBox())!;
+  // Everything is on screen and nothing overlaps the menu's own button.
+  for (const b of boxes) {
+    expect(b.left, b.id!).toBeGreaterThanOrEqual(0);
+    expect(b.top, b.id!).toBeGreaterThanOrEqual(0);
+    expect(b.right, b.id!).toBeLessThanOrEqual(1000);
+    expect(b.bottom, b.id!).toBeLessThanOrEqual(main.y);
+  }
+  // No two entries overlap.
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      const apart =
+        a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+      expect(apart, `${a.id} over ${b.id}`).toBe(true);
+    }
+  }
+  // Several columns: the first — the defaults — stays above the button, the rest go inward.
+  const columns = [...new Set(boxes.map((b) => Math.round(b.left)))].sort((a, b) => b - a);
+  expect(columns.length).toBeGreaterThan(1);
+  expect(columns[0]).toBe(Math.round(main.x));
+  for (const id of DEFAULT_MENU) {
+    expect(Math.round(boxes.find((b) => b.id === id)!.left), id).toBe(columns[0]);
+  }
+  // An entry in a further column is as tappable as any.
+  await menuEntry(page, 'set.bold.toggle').click();
+  await expect(notification(page)).toHaveText('Bold font: On');
 });

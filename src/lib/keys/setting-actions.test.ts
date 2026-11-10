@@ -17,7 +17,7 @@ import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
 import { settingDef, type SettingDefId } from '$lib/settings/setting-defs';
 import { registerAnnouncer, type AnnounceAction } from './announce';
 import { actionDef } from './registry';
-import { applySettingOp, runSettingAction, stepSetting } from './setting-actions';
+import { applySettingOp, runSettingAction, settingToggleOn, stepSetting } from './setting-actions';
 import type { ActionId } from './actions';
 
 type Said = { message: string; key: string; action?: AnnounceAction };
@@ -292,6 +292,33 @@ describe('a scheduled filter', () => {
     // The next press of the key toggles it.
     run('reader.night');
     expect(get(settings).nightMode).toBe(!on);
+  });
+
+  it('the quick menu’s pressed state shows what is on screen: the manual value, or the schedule’s', () => {
+    const on = () => settingToggleOn(actionDef('reader.night'));
+    expect(on()).toBe(false);
+    updateSetting('nightMode', true);
+    expect(on()).toBe(true);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 9, 12, 0, 0));
+    // Scheduled for an hour that is not now: off on screen, whatever the manual value says.
+    scheduleNight('03:00', '03:00');
+    expect(on()).toBe(false);
+    updateSetting('nightMode', false);
+    scheduleNight('00:00', '23:59');
+    expect(on()).toBe(true);
+  });
+
+  it('only a toggle has a pressed state, and a volume toggle needs its volume', () => {
+    expect(settingToggleOn(actionDef('set.bold.toggle'))).toBe(false);
+    updateSetting('boldFont', true);
+    expect(settingToggleOn(actionDef('set.bold.toggle'))).toBe(true);
+    updateSetting('boldFont', false);
+    expect(settingToggleOn(actionDef('set.brightness.up'))).toBeUndefined();
+    expect(settingToggleOn(actionDef('set.zoom-paged.next'))).toBeUndefined();
+    expect(settingToggleOn(actionDef('reader.fullscreen'))).toBeUndefined();
+    expect(settingToggleOn(actionDef('set.rtl.toggle'))).toBeUndefined();
+    expect(typeof settingToggleOn(actionDef('set.rtl.toggle'), { volumeId: 'v1' })).toBe('boolean');
   });
 
   it('invert and black & white keep today’s names for the message', () => {

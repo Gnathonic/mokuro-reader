@@ -1156,6 +1156,45 @@ is one definition.
     has ended); otherwise it says the period is still open.
   - `app.open-upload` also works in the reader, where the dialog opens over
     the page.
+- As built in step C:
+  - The groups are `ActionGroup` itself (`actions.ts`, `GROUP_ORDER`,
+    `GROUP_LABELS`): every action and definition names its area, so there is
+    no second mapping. Two places differ from the list's own headings. The
+    layer commands have a group of their own (17.9), and the layer cycle,
+    picker and "Set to primary" stay under This volume, where the list has
+    them. An `app` action has ONE row, under App: Back and Open settings are
+    not repeated under the reader and the series page.
+  - The rows are `targets.ts`: 131 targets for 253 actions. A search matches
+    every word against the action's label, its setting, its option, its area
+    and the labels of its keys (locked keys included). Under a search or a
+    filter the group headers do not fold; the header's count is the group's
+    whole size.
+  - A setting row's line always says how many actions it holds: "7 actions",
+    "7 actions · 2 keys · 1 on the quick menu".
+  - "Changed" (the filter, a group's count, a row's mark) is a changed key OR
+    a changed quick-menu choice.
+  - "Quick menu: N actions" counts the profile's menu across layouts. A given
+    layout can show fewer.
+  - **Vertical scroll has no Page left / Page right on the menu.** Those two
+    actions are not live there (their keys scroll sideways), and the menu
+    shows only what is live in the layout. Before, the two buttons were drawn
+    in every layout. Next page and Previous page can be switched on for it.
+  - In horizontal scroll the two buttons step the strip, as their keys do;
+    before, they called the paged turn.
+  - The Edit entry is named "Edit OCR text" and shows as pressed while
+    editing; it said "Exit edit mode" there. While a layer is loading its
+    reason is "The layer is still loading".
+  - A step keeps the menu open for the next tap: a slider's Step up and Step
+    down, Zoom in, Zoom out. Everything else closes it, as before.
+  - Badges beyond the list's: `›` `‹` on Next and Previous OCR layer, `P` on
+    Set OCR layer to primary, `+` `−` on Zoom in and Zoom out.
+  - An edit command on the menu is greyed outside edit mode ("Only in edit
+    mode") and absent in continuous scroll.
+  - A scheduled filter's entry shows what the schedule has on screen.
+  - `KeyActionDef.option` carries a "Set to" action's option name, for the
+    search and the badge.
+  - To add after their PRs merge: the three toggles of 17.11's Skipped list,
+    and the #362 toggle in `QUICK_MENU_DEFAULT` (`quick-menu.ts`).
 
 Nothing on the list was judged impossible to bind.
 
@@ -1260,6 +1299,9 @@ series-page action on E as well.
 2. Seven toggle toasts take the common wording ("Page dividers: On").
 3. In the reader, keys stand down while a dialog is open.
 4. The quick menu's Fullscreen, Zoom to fit and Edit buttons take the target
-   list's icons (`ExpandOutline`, `MinimizeOutline`, `PenOutline`).
+   list's icons (`ExpandOutline`, `MinimizeOutline`, `PenOutline`), and every
+   entry is named by its action ("Page right", "Edit OCR text").
+5. In vertical scroll the quick menu has no Page left and Page right; in
+   horizontal scroll they step the strip (17.11, step C).
 
 Everything else is new and unbound.

@@ -1,38 +1,27 @@
 <script lang="ts">
-  import { toggleFullScreen } from '$lib/util/fullscreen';
   import { settings } from '$lib/settings';
-  import {
-    ArrowLeftOutline,
-    ArrowRightOutline,
-    CompressOutline,
-    EditOutline,
-    ImageOutline,
-    LayersOutline,
-    ZoomOutOutline,
-    PlusOutline
-  } from 'flowbite-svelte-icons';
+  import { PlusOutline } from 'flowbite-svelte-icons';
+  import { actionIcon } from '$lib/keys/icons';
+  import type { QuickMenuItem } from '$lib/keys/quick-menu';
   import LayerPicker from './Layers/LayerPicker.svelte';
   import type { LayerSummary } from '$lib/reader/edit/layer-list';
   import type { LayerAction } from './Layers/layer-actions';
   import { onDestroy } from 'svelte';
 
+  /**
+   * The reader's quick menu (#55, spec 17.7). It draws what the registry and
+   * the profile's selection give it and owns no action: every entry is an
+   * action id the reader runs through the SAME resolver its keys use, so a
+   * tap and a key are one handler. What is on the menu, in what order and in
+   * what state is `quick-menu.ts` plus one `$derived` in Reader.svelte.
+   */
   interface Props {
-    left: (_e: any, ingoreTimeOut?: boolean) => void;
-    right: (_e: any, ingoreTimeOut?: boolean) => void;
-    /** A second page is on screen: "Add image 2 to Anki" has something to add. */
-    hasSecondPage?: boolean;
-    /** "Add image to Anki" for the first or second page — the reader's handler, the keys' too. */
-    onAnkiImage?: (which: 1 | 2) => void;
-    /** "Zoom to fit" — the reader's handler, the key's too. */
-    onZoomFit?: () => void;
+    /** The menu's entries, top to bottom. Read only while the menu is open. */
+    items?: QuickMenuItem[];
+    /** Run an action as its key would. */
+    onRun?: (id: string) => void;
     visible?: boolean;
-    /** OCR edit mode toggle (paged mode only — disabled otherwise). */
-    onEdit?: () => void;
-    editEnabled?: boolean;
-    /** Why Edit is disabled, when it is for a reason other than the view mode. */
-    editBlockedReason?: string;
-    editing?: boolean;
-    /** OCR layers of the volume; the picker's button shows when there are any, or in edit mode. */
+    /** OCR layers of the volume, for the picker. */
     layers?: LayerSummary[];
     currentLayer?: string | null;
     primaryLayerName?: string;
@@ -46,7 +35,7 @@
      * Whether the layer picker is up. Bindable so the reader — whose window
      * keydown handler runs before the picker's and cannot see it through the
      * event target — can stand its shortcuts down and close it on Escape, and
-     * so a key can open it (`reader.ocr-layers`, #55).
+     * so an action can open it (`reader.ocr-layers`, by key or from this menu).
      */
     layersOpen?: boolean;
     /** Whether the menu itself is open. Bindable so a key can open it (`reader.quick-menu`). */
@@ -54,16 +43,9 @@
   }
 
   let {
-    left,
-    right,
-    hasSecondPage = false,
-    onAnkiImage,
-    onZoomFit,
+    items = [],
+    onRun,
     visible = true,
-    onEdit,
-    editEnabled = false,
-    editBlockedReason,
-    editing = false,
     layers = [],
     currentLayer = null,
     primaryLayerName = 'Primary',
@@ -97,24 +79,11 @@
     open = false;
   });
 
-  function handleZoom() {
-    onZoomFit?.();
-    open = false;
-  }
-
-  function handleLeft(_e: Event) {
-    left(_e, true);
-    open = false;
-  }
-
-  function handleRight(_e: Event) {
-    right(_e, true);
-    open = false;
-  }
-
-  function handleAnki(which: 1 | 2) {
-    onAnkiImage?.(which);
-    open = false;
+  function run(item: QuickMenuItem) {
+    if (item.disabled) return;
+    // A step (brightness up, zoom in) keeps the menu up for the next tap.
+    if (!item.keepOpen) open = false;
+    onRun?.(item.id);
   }
 
   function toggleMenu() {
@@ -146,96 +115,34 @@
 <!-- Open by key (`reader.quick-menu`) shows the menu even with its button
      hidden; the button then comes with it, as the way to close it by touch. -->
 {#if buttonShown || open}
-  <div class="fixed end-3 bottom-3 z-50 flex flex-col items-center" data-quick-actions>
-    <!-- Action buttons (shown when open) -->
+  <div class="fixed end-3 bottom-3 z-50 flex flex-col items-end" data-quick-actions>
+    <!-- The entries, top to bottom. One column while it fits the screen; more
+         than that wraps into further columns toward the centre of the screen,
+         so the first column — the defaults — stays where it has always been. -->
     {#if open}
-      <div class="mb-2 flex flex-col items-center gap-2">
-        {#if layers.length > 0 || editing}
+      <div class="quick-menu-items mb-2 flex flex-col flex-wrap-reverse justify-end gap-2">
+        {#each items as item (item.id)}
+          {@const Icon = actionIcon(item.icon)}
           <button
-            onclick={() => {
-              layersOpen = !layersOpen;
-              open = false;
-            }}
-            class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-            aria-label="OCR layers"
-            title="OCR layers"
+            onclick={() => run(item)}
+            disabled={!!item.disabled}
+            title={item.disabled ?? item.label}
+            aria-label={item.label}
+            aria-pressed={item.active}
+            data-quick-action={item.id}
+            class="relative flex h-12 w-12 items-center justify-center rounded-full text-gray-300 shadow-lg focus:outline-none disabled:opacity-40 {item.active
+              ? 'bg-primary-700 hover:bg-primary-600 disabled:hover:bg-primary-700'
+              : 'bg-gray-700 hover:bg-gray-600 disabled:hover:bg-gray-700'}"
           >
-            <LayersOutline size="xl" />
-          </button>
-        {/if}
-        <button
-          onclick={() => {
-            onEdit?.();
-            open = false;
-          }}
-          disabled={!editEnabled}
-          title={editEnabled
-            ? undefined
-            : (editBlockedReason ?? 'Edit is available in paged mode only')}
-          class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none disabled:opacity-40 disabled:hover:bg-gray-700 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-          aria-label={editing ? 'Exit edit mode' : 'Edit OCR'}
-        >
-          <EditOutline size="xl" />
-        </button>
-        {#if $settings.ankiConnectSettings.enabled}
-          <button
-            onclick={() => handleAnki(1)}
-            class="relative flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-            aria-label="Add image to Anki"
-          >
-            <ImageOutline size="xl" />
-            {#if hasSecondPage}
+            <Icon size="xl" />
+            {#if item.badge}
               <span
-                class="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary-600 text-xs text-white"
-                >1</span
+                class="absolute -top-1 -right-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary-600 px-1 text-xs leading-none text-white"
+                data-quick-action-badge>{item.badge}</span
               >
             {/if}
           </button>
-        {/if}
-        {#if $settings.ankiConnectSettings.enabled && hasSecondPage}
-          <button
-            onclick={() => handleAnki(2)}
-            class="relative flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-            aria-label="Add image 2 to Anki"
-          >
-            <ImageOutline size="xl" />
-            <span
-              class="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary-600 text-xs text-white"
-              >2</span
-            >
-          </button>
-        {/if}
-        <button
-          onclick={() => {
-            toggleFullScreen();
-            open = false;
-          }}
-          class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-          aria-label="Toggle fullscreen"
-        >
-          <CompressOutline size="xl" />
-        </button>
-        <button
-          onclick={handleZoom}
-          class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-          aria-label="Zoom to fit"
-        >
-          <ZoomOutOutline size="xl" />
-        </button>
-        <button
-          onclick={handleRight}
-          class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-          aria-label="Next page"
-        >
-          <ArrowRightOutline size="xl" />
-        </button>
-        <button
-          onclick={handleLeft}
-          class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-700 text-gray-300 shadow-lg hover:bg-gray-600 focus:outline-none dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-          aria-label="Previous page"
-        >
-          <ArrowLeftOutline size="xl" />
-        </button>
+        {/each}
       </div>
     {/if}
 
@@ -250,3 +157,11 @@
     </button>
   </div>
 {/if}
+
+<style>
+  /* One column as tall as the screen allows above the menu's own button
+     (3rem + its 0.75rem inset + the gap, and a margin at the top). */
+  .quick-menu-items {
+    max-height: calc(100dvh - 5.5rem);
+  }
+</style>

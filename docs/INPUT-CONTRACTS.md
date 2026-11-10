@@ -215,6 +215,14 @@ and nothing resolves an id against a module-level table.
   (`reader.ocr-layers`) open by key. The menu and the picker render whenever
   they are open, also while the menu's button is hidden; hiding the controls
   puts both away.
+- **The quick menu owns no action.** Its entries are action ids from the
+  registry — the profile's selection (`Settings.quickMenu`, sparse; defaults
+  in `keys/quick-menu.ts`) — and a tap calls `runAction(id)` in
+  `Reader.svelte`, the SAME resolver the keyboard dispatches through. A
+  button written into `QuickActions.svelte` by hand would be an action no key
+  can reach and no profile can remove (`source-lint.test.ts` refuses one).
+  What an entry shows (hidden, disabled with its reason, pressed, badge) is
+  one `$derived` in the reader, read only while the menu is open.
 - **Exact modifiers.** A chord (`Ctrl+Alt+Shift+Meta+<code>`) matches only the
   identical modifier set, so a Shift held for dictionary scanning is inert
   unless the user binds a Shift chord.

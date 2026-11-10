@@ -116,6 +116,21 @@ export function applySettingOp(
   }
 }
 
+/**
+ * A generated TOGGLE's state as the reader shows it — for the quick menu's
+ * pressed look. A scheduled filter shows what its schedule has on screen.
+ * Undefined for anything that is not a toggle, or has nothing to act on.
+ */
+export function settingToggleOn(action: KeyActionDef, ctx: SettingCtx = {}): boolean | undefined {
+  if (action.setting?.op !== 'toggle') return undefined;
+  const def = findSettingDef(action.setting.def);
+  if (!def || def.kind !== 'toggle') return undefined;
+  if (def.available && !def.available(ctx)) return undefined;
+  const schedule = def.schedule ? get(settings)?.[def.schedule] : undefined;
+  if (schedule?.enabled) return isWithinSchedule(schedule);
+  return !!def.read(ctx);
+}
+
 /** A settings-page button: step a setting the way its key would, without the announcement. */
 export function stepSetting(id: SettingDefId, op: 'next' | 'prev', ctx: SettingCtx = {}): void {
   const def = findSettingDef(id);

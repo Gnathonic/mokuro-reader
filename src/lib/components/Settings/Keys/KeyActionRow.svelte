@@ -28,6 +28,17 @@
     labelOf: (chord: string) => string;
     onCaptureChange: (capturing: boolean) => void;
     onSave: (next: KeyBindings) => void;
+    /** The name the row shows: under its setting's row, "Next" for "Paged zoom: Next". */
+    title?: string;
+    /**
+     * Is the action on the quick menu? `undefined` = it can never be there,
+     * so the row has no switch. The section derives the selection ONCE and
+     * hands each row its own answer.
+     */
+    menu?: boolean;
+    /** The quick-menu choice differs from the default (the row's changed mark). */
+    menuChanged?: boolean;
+    onMenuChange?: (on: boolean) => void;
   }
 
   let {
@@ -38,7 +49,11 @@
     capturing,
     labelOf,
     onCaptureChange,
-    onSave
+    onSave,
+    title,
+    menu,
+    menuChanged = false,
+    onMenuChange
   }: Props = $props();
 
   let Icon = $derived(actionIcon(action.icon));
@@ -140,12 +155,14 @@
 </script>
 
 <div
-  class="border-l-[3px] py-2 pr-1 pl-2 {modified ? 'border-primary-600' : 'border-transparent'}"
+  class="border-l-[3px] py-2 pr-1 pl-2 {modified || menuChanged
+    ? 'border-l-primary-600'
+    : 'border-l-transparent'}"
   data-key-action={action.id}
 >
   <div class="flex items-center gap-2">
     <Icon class="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />
-    <span class="font-medium text-gray-900 dark:text-white">{action.label}</span>
+    <span class="font-medium text-gray-900 dark:text-white">{title ?? action.label}</span>
     {#if conflictsWith && conflictsWith.size > 0}
       <span
         class="inline-flex text-amber-500"
@@ -163,6 +180,32 @@
         class="text-xs text-primary-600 hover:underline dark:text-primary-500"
         onclick={reset}>Reset</button
       >
+    {/if}
+    {#if menu !== undefined}
+      <!-- A real switch, so it works by touch and without a keyboard. -->
+      <button
+        type="button"
+        role="switch"
+        aria-checked={menu}
+        aria-label={`Show ${action.label} on the quick menu`}
+        title="Show on quick menu"
+        data-quick-menu-switch
+        class="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[10px] tracking-wide text-gray-500 uppercase hover:bg-gray-200 dark:text-gray-400 dark:hover:bg-gray-700"
+        onclick={() => onMenuChange?.(!menu)}
+      >
+        Menu
+        <span
+          class="relative inline-block h-3.5 w-6 rounded-full transition-colors {menu
+            ? 'bg-primary-600'
+            : 'bg-gray-300 dark:bg-gray-600'}"
+        >
+          <span
+            class="absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-[left] {menu
+              ? 'left-3'
+              : 'left-0.5'}"
+          ></span>
+        </span>
+      </button>
     {/if}
   </div>
   <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">

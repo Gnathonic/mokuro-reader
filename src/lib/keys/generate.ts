@@ -58,7 +58,7 @@ export function parseSettingActionId(
 function action(
   def: SettingDef,
   op: SettingOp,
-  over: { label: string; description: string; repeat?: boolean; value?: string }
+  over: { label: string; description: string; repeat?: boolean; value?: string; option?: string }
 ): KeyActionDef {
   return {
     id: settingActionId(def, op, over.value),
@@ -72,6 +72,7 @@ function action(
     icon: def.icon,
     menu: def.menu,
     setting: { def: def.id, op, ...(over.value !== undefined ? { value: over.value } : {}) },
+    ...(over.option !== undefined ? { option: over.option } : {}),
     ...(def.kind === 'toggle' ? {} : { parent: def.id })
   };
 }
@@ -81,6 +82,7 @@ function setToActions(def: SettingDef, options: SettingOptions): KeyActionDef[] 
   return options.map((option) =>
     action(def, 'to', {
       value: option.value,
+      option: option.name,
       label: `${def.label}: Set to ${option.name}`,
       description: `Set ${def.label} to ${option.name}.`
     })

@@ -11,11 +11,12 @@
   import { setInstantAnimations } from '$lib/reader/animator';
   import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { dispatchKey, type KeyHandler, type KeyResolver } from '$lib/keys/dispatch';
-  import { keyHint } from '$lib/keys/live';
-  import type { EditActionId, ReaderActionId, ReaderMode } from '$lib/keys/actions';
+  import { keyHint, keymap } from '$lib/keys/live';
+  import type { ActionId, EditActionId, ReaderActionId, ReaderMode } from '$lib/keys/actions';
+  import { quickMenuIds, quickMenuItems } from '$lib/keys/quick-menu';
   import { registerAnnouncer, type AnnounceAction } from '$lib/keys/announce';
   import { appKeyHandlers } from '$lib/keys/app-actions';
-  import { applySettingOp, runSettingAction } from '$lib/keys/setting-actions';
+  import { applySettingOp, runSettingAction, settingToggleOn } from '$lib/keys/setting-actions';
   import { settingDef } from '$lib/settings/setting-defs';
   import { anyModalOpen } from '$lib/util/delete-shortcut';
   import ReaderNotification, { type ReaderNotice } from './ReaderNotification.svelte';
@@ -473,6 +474,53 @@
     if (action.setting) return () => runSettingAction(action, { volumeId: volume?.volume_uuid });
     return undefined;
   };
+
+  /**
+   * Run an action as its key would (#55, spec 17.7): a tap on the quick menu
+   * goes through the SAME resolver the keyboard does, so the two can never do
+   * different things — a scheduled filter's "Set to manual" message included.
+   */
+  function runAction(id: string) {
+    const action = $keymap.actions.get(id as ActionId);
+    if (!action) return;
+    resolveKey(id as ActionId, action)?.(new KeyboardEvent('keydown'));
+  }
+
+  /**
+   * The quick menu's entries: ONE list, for the ids on the profile's menu
+   * only (`quick-menu.ts`). QuickActions reads it once when it mounts and
+   * then only while the menu is open, so a closed menu costs nothing per
+   * page turn (measured: three turns and a toggle, no run).
+   */
+  let quickMenuEntries = $derived.by(() => {
+    const s = $settings;
+    // A toggle's value is read through its definition, which reads its store
+    // with `get` and so tracks nothing here: name the stores they live in.
+    void $miscSettings;
+    void volumeSettings;
+    const mode = keyMode();
+    const actions = $keymap.actions;
+    const session = editSession;
+    const ctx = { volumeId: volume?.volume_uuid };
+    return quickMenuItems(quickMenuIds(s.quickMenu, actions.values(), mode), actions, {
+      mode,
+      editing: !!session,
+      ankiEnabled: !!s.ankiConnectSettings?.enabled,
+      hasSecondPage: !useSinglePage && !!imageCache.getFile(index + 1),
+      hasLayers: layers.length > 0,
+      editBlocked: editingBlocked
+        ? 'The original layer is read-only'
+        : layerLoading
+          ? 'The layer is still loading'
+          : undefined,
+      toggleOn: (action) =>
+        action.id === 'edit.draw-tool'
+          ? session
+            ? session.tool === 'draw'
+            : undefined
+          : settingToggleOn(action, ctx)
+    });
+  });
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
     // The re-read prompt modal owns the keyboard while it's open: its buttons
@@ -1892,16 +1940,9 @@
 </svelte:head>
 {#if volume && pages && pages.length > 0 && volumeData && $progress?.[volume.volume_uuid] !== undefined}
   <QuickActions
-    {left}
-    {right}
-    hasSecondPage={!useSinglePage && !!imageCache.getFile(index + 1)}
-    onAnkiImage={ankiImage}
-    onZoomFit={zoomToFit}
+    items={quickMenuEntries}
+    onRun={runAction}
     visible={overlaysVisible}
-    onEdit={toggleEditMode}
-    editEnabled={!$settings.continuousScroll && !editingBlocked && !layerLoading}
-    editBlockedReason={editingBlocked ? 'The original layer is read-only' : undefined}
-    editing={!!editSession}
     {layers}
     currentLayer={activeLayerId}
     primaryLayerName={primaryName}
