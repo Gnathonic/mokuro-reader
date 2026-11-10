@@ -9,90 +9,19 @@
     updateCatalogSetting,
     type CatalogStackingPreset
   } from '$lib/settings/settings';
+  import { applyCatalogPreset, markCatalogPresetCustom } from '$lib/settings/catalog-presets';
+  import { listOptions } from '$lib/settings/setting-defs';
   import { nav } from '$lib/util/hash-router';
   import { isCatalog } from '$lib/util';
   import type { DisplayTitleLanguage } from '$lib/metadata/types';
 
-  const presetOptions = [
-    { value: 'compact', name: 'Compact' },
-    { value: 'default', name: 'Default' },
-    { value: 'spine', name: 'Spine Showcase' },
-    { value: 'custom', name: 'Custom' }
-  ];
-
-  const titleLanguageOptions: { value: DisplayTitleLanguage; name: string }[] = [
-    { value: 'native', name: 'Native (日本語 → romaji → English)' },
-    { value: 'english', name: 'English (→ romaji → 日本語)' },
-    { value: 'imported', name: 'As imported (folder name)' }
-  ];
-
-  // Preset configurations
-  const presets: Record<
-    Exclude<CatalogStackingPreset, 'custom'>,
-    {
-      stackCount: number;
-      horizontalStep: number;
-      verticalStep: number;
-      hideReadVolumes: boolean;
-      centerHorizontal: boolean;
-      centerVertical: boolean;
-      compactCloudSeries: boolean;
-      dropShadow: boolean;
-    }
-  > = {
-    compact: {
-      stackCount: 1,
-      horizontalStep: 0,
-      verticalStep: 0,
-      hideReadVolumes: true,
-      centerHorizontal: true,
-      centerVertical: true,
-      compactCloudSeries: false,
-      dropShadow: true
-    },
-    default: {
-      stackCount: 3,
-      horizontalStep: 11,
-      verticalStep: 5,
-      hideReadVolumes: true,
-      centerHorizontal: true,
-      centerVertical: false,
-      compactCloudSeries: false,
-      dropShadow: true
-    },
-    spine: {
-      stackCount: 0, // 0 = all volumes in series
-      horizontalStep: 11,
-      verticalStep: 0,
-      hideReadVolumes: false,
-      centerHorizontal: true,
-      centerVertical: true,
-      compactCloudSeries: true,
-      dropShadow: false
-    }
-  };
-
-  function applyPreset(preset: CatalogStackingPreset) {
-    updateCatalogSetting('stackingPreset', preset);
-    if (preset !== 'custom') {
-      const config = presets[preset];
-      updateCatalogSetting('stackCount', config.stackCount);
-      updateCatalogSetting('horizontalStep', config.horizontalStep);
-      updateCatalogSetting('verticalStep', config.verticalStep);
-      updateCatalogSetting('hideReadVolumes', config.hideReadVolumes);
-      updateCatalogSetting('centerHorizontal', config.centerHorizontal);
-      updateCatalogSetting('centerVertical', config.centerVertical);
-      updateCatalogSetting('compactCloudSeries', config.compactCloudSeries);
-      updateCatalogSetting('dropShadow', config.dropShadow);
-    }
-  }
-
-  function handleSettingChange() {
-    // When any setting changes manually, switch to custom preset
-    if ($catalogSettings?.stackingPreset !== 'custom') {
-      updateCatalogSetting('stackingPreset', 'custom');
-    }
-  }
+  // Option lists, the presets and what selecting one writes are the setting
+  // definitions' (#55), shared with the key actions.
+  const presetOptions = listOptions<CatalogStackingPreset>('stacking');
+  const titleLanguageOptions = listOptions<DisplayTitleLanguage>('title-language');
+  const applyPreset = applyCatalogPreset;
+  // When any stacking setting changes by hand, the preset becomes Custom.
+  const handleSettingChange = markCatalogPresetCustom;
 
   function onConfirm() {
     clearVolumes();

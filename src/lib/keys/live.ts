@@ -1,28 +1,47 @@
 /**
  * The active profile's keymap, compiled ONCE at module level from one
  * `settings` subscription and recompiled only when the `keyBindings`
- * reference changes. Nothing here is per component: library cards render
+ * reference changes, or the SET OF PROFILE NAMES does (each profile has a
+ * "Set profile to" action; a primitive key, so any other profile write
+ * rebuilds nothing). Nothing here is per component: library cards render
  * N times (CLAUDE.md, "Svelte 5 Reactive Performance"), so they read
  * `currentKeymap()` inside their key handler instead of deriving a store.
  */
 
 import { derived, writable, type Readable } from 'svelte/store';
-import { settings } from '$lib/settings/settings';
+import { profiles, settings } from '$lib/settings/settings';
 import type { ActionId } from './actions';
 import { formatChord } from './chord';
-import { compileKeymap, type Keymap } from './keymap';
+import { compileKeymap, type KeyBindings, type Keymap } from './keymap';
 import { initKeyLabels, isApplePlatform, keyLabelsVersion, labelForCode } from './key-labels';
+import { allActions } from './registry';
 
-let current: Keymap = compileKeymap(undefined);
-let compiledFrom: unknown = undefined;
+let compiledFrom: KeyBindings | undefined = undefined;
+let compiledNames = '';
+let current: Keymap = compileKeymap(undefined, allActions());
 const store = writable<Keymap>(current);
 
+function recompile() {
+  current = compileKeymap(compiledFrom, allActions());
+  store.set(current);
+}
+
+// Before the bindings: the first `settings` emit then compiles once, with the names known.
+profiles.subscribe((all) => {
+  const names = JSON.stringify(Object.keys(all));
+  if (names === compiledNames) return;
+  const first = compiledNames === '';
+  compiledNames = names;
+  if (!first) recompile();
+});
+
+let started = false;
 settings.subscribe((s) => {
   const bindings = s?.keyBindings;
-  if (bindings === compiledFrom) return;
+  if (started && bindings === compiledFrom) return;
+  started = true;
   compiledFrom = bindings;
-  current = compileKeymap(bindings);
-  store.set(current);
+  recompile();
 });
 
 initKeyLabels();

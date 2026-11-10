@@ -10,9 +10,12 @@
   import { spreadContentSize } from '$lib/reader/paged-zoom-layout';
   import { setInstantAnimations } from '$lib/reader/animator';
   import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
-  import { dispatchKey, type KeyHandler } from '$lib/keys/dispatch';
+  import { dispatchKey, type KeyHandler, type KeyResolver } from '$lib/keys/dispatch';
   import { keyHint } from '$lib/keys/live';
   import type { AppActionId, EditActionId, ReaderActionId, ReaderMode } from '$lib/keys/actions';
+  import { registerAnnouncer, type AnnounceAction } from '$lib/keys/announce';
+  import { runSettingAction } from '$lib/keys/setting-actions';
+  import ReaderNotification, { type ReaderNotice } from './ReaderNotification.svelte';
   import { toggleFullScreen } from '$lib/util/fullscreen';
   import {
     effectiveVolumeSettings,
@@ -28,8 +31,7 @@
     updateVolumeSetting,
     volumes,
     type VolumeSettings,
-    type ContinuousZoomMode,
-    type ScheduleSettingKey
+    type ContinuousZoomMode
   } from '$lib/settings';
   import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
   import RereadPromptModal from './RereadPromptModal.svelte';
@@ -340,12 +342,9 @@
     else showNotification(delta < 0 ? 'First volume' : 'Last volume', 'volume-edge');
   }
 
-  function toggleTimer() {
-    const next = !$settings.showTimer;
-    updateSetting('showTimer', next);
-    showNotification(next ? 'Timer On' : 'Timer Off', 'timer-toggle');
-  }
-
+  // The reader's hand-registered actions. A setting's toggle, its list steps
+  // and its slider steps are NOT here: they are generated from the setting
+  // definitions and all answered by `runSettingAction` (`resolveKey` below).
   const keyHandlers = {
     'reader.page-left': () =>
       keyMode() === 'paged' ? left(null, true) : scrollReaderKey('reader.page-left'),
@@ -375,36 +374,12 @@
     'reader.zoom-mode': () => rotateZoomMode(),
     'reader.zoom-fit': () => $pagedZoom?.zoomFitToScreen(),
     'reader.page-mode': () => ($settings.continuousScroll ? rotateScrollMode() : rotatePageMode()),
-    'reader.continuous': () => toggleContinuousScroll(),
     'reader.offset-spreads': () => offsetSpreads(),
-    'reader.cover': () => {
-      if (volume) toggleHasCover(volume.volume_uuid);
-    },
-    'reader.dividers': () => {
-      const newVal = !$settings.pageDividers;
-      updateSetting('pageDividers', newVal);
-      showNotification(newVal ? 'Dividers On' : 'Dividers Off', 'page-dividers');
-    },
     'reader.controls': () => {
       overlaysVisible = !overlaysVisible;
     },
-    'reader.timer': () => toggleTimer(),
-    'reader.ocr-always': () => {
-      const next = !$settings.alwaysShowOCR;
-      updateSetting('alwaysShowOCR', next);
-      showNotification(
-        next ? 'Always Show OCR: On' : 'Always Show OCR: Off',
-        'always-show-ocr-toggle'
-      );
-    },
     'reader.ocr-layer': () => cycleLayer(),
     'reader.edit-mode': () => toggleEditMode(),
-    'reader.invert': () =>
-      toggleScheduledFilter('invertColors', 'invertColorsSchedule', 'Invert', 'invert'),
-    'reader.night': () =>
-      toggleScheduledFilter('nightMode', 'nightModeSchedule', 'Night Mode', 'nightmode'),
-    'reader.grayscale': () =>
-      toggleScheduledFilter('grayscale', 'grayscaleSchedule', 'B&W', 'grayscale'),
     'edit.undo': () => {
       if (!editSession) return false;
       editSession.undo(editActivePage);
@@ -427,6 +402,17 @@
     },
     'app.back': () => navigateBack()
   } satisfies Record<ReaderActionId | EditActionId | AppActionId, KeyHandler>;
+
+  /**
+   * The reader's typed map first, then the generated setting actions — for
+   * which the open volume is the context (Right to left is a volume setting).
+   */
+  const resolveKey: KeyResolver = (id, action) => {
+    const own = (keyHandlers as Partial<Record<string, KeyHandler>>)[id];
+    if (own) return own;
+    if (action.setting) return () => runSettingAction(action, { volumeId: volume?.volume_uuid });
+    return undefined;
+  };
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
     // The re-read prompt modal owns the keyboard while it's open: its buttons
@@ -458,7 +444,7 @@
     dispatchKey(
       event,
       { scopes: editSession ? ['edit', 'reader', 'app'] : ['reader', 'app'], mode: keyMode() },
-      keyHandlers
+      resolveKey
     );
   }
 
@@ -479,6 +465,10 @@
     // the void.
     const onOffsetSpreads = () => offsetSpreads();
     window.addEventListener('offset-spreads', onOffsetSpreads);
+
+    // Key feedback from outside this component (the generated setting
+    // actions) shows in the reader's own notification while it is mounted.
+    const stopAnnouncing = registerAnnouncer(showNotification);
 
     // The debounced save would lose the last edits when the tab is hidden
     // (mobile browsers may kill it without another event) or unloaded; the
@@ -507,6 +497,7 @@
       // Restore overflow when leaving reader
       document.documentElement.style.overflow = '';
       window.removeEventListener('offset-spreads', onOffsetSpreads);
+      stopAnnouncing();
     };
   });
 
@@ -1331,9 +1322,8 @@
   });
 
   // Generic notification system for setting changes
-  let notificationMessage = $state<string>('');
-  let notificationKey = $state<string>('');
-  let notificationTimeout: number | undefined = undefined;
+  let notice = $state<ReaderNotice | null>(null);
+  let noticeSeq = 0;
 
   // Context menu state (rendered outside the zoom wrapper for correct positioning)
   interface ContextMenuData {
@@ -1510,44 +1500,18 @@
     }
   }
 
-  function showNotification(message: string, key: string) {
-    notificationMessage = message;
-    notificationKey = key;
-
-    // Clear existing timeout
-    if (notificationTimeout !== undefined) {
-      clearTimeout(notificationTimeout);
-    }
-
-    // Hide notification after 2 seconds
-    notificationTimeout = window.setTimeout(() => {
-      notificationMessage = '';
-      notificationKey = '';
-    }, 2000);
+  /**
+   * Show `message` in the reader's notification. `key` names the kind of
+   * message, so a repeat replaces the one on screen. `action` adds one
+   * button; the component owns how long each kind stays
+   * (`ReaderNotification.svelte`).
+   */
+  function showNotification(message: string, key: string, action?: AnnounceAction) {
+    notice = { message, key, action, seq: ++noticeSeq };
   }
 
   function handleGapChange(px: number) {
     showNotification(`Page gap: ${px}px`, 'page-gap');
-  }
-
-  // Shared toggle for the Manual/Scheduled display filters (night, invert,
-  // B&W). When the schedule owns the filter we only notify; otherwise flip
-  // the manual boolean and announce the state we just wrote. (The old code
-  // re-read $settings after updateSetting expecting a stale value — the read
-  // is synchronous, so every toast announced the OPPOSITE state.)
-  function toggleScheduledFilter(
-    settingKey: 'nightMode' | 'invertColors' | 'grayscale',
-    scheduleKey: ScheduleSettingKey,
-    label: string,
-    notifPrefix: string
-  ) {
-    if ($settings[scheduleKey].enabled) {
-      showNotification(`${label} is on automatic schedule`, `${notifPrefix}-scheduled`);
-    } else {
-      const next = !$settings[settingKey];
-      updateSetting(settingKey, next);
-      showNotification(next ? `${label} On` : `${label} Off`, `${notifPrefix}-toggle`);
-    }
   }
 
   function rotateScrollMode() {
@@ -1591,15 +1555,6 @@
     // horizontal scroll reader both derive their pairing from it.
     if (volume) toggleHasCover(volume.volume_uuid);
     showNotification('Spreads Offset', 'offset-spreads');
-  }
-
-  function toggleContinuousScroll() {
-    const newValue = !$settings.continuousScroll;
-    updateSetting('continuousScroll', newValue);
-    showNotification(
-      newValue ? 'Continuous Scroll On' : 'Continuous Scroll Off',
-      'continuous-scroll-toggle'
-    );
   }
 
   function rotateContinuousZoomMode() {
@@ -1801,16 +1756,7 @@
     />
     <LongPausePrompt onAnswer={onPauseAnswer} />
   {/if}
-  {#if notificationMessage}
-    {#key notificationKey}
-      <div
-        class="fixed top-5 left-1/2 z-20 -translate-x-1/2 rounded-lg bg-gray-900 px-4 py-2 text-white shadow-lg transition-opacity"
-        style="backdrop-filter: blur(8px); background-color: rgba(17, 24, 39, 0.9);"
-      >
-        <p class="text-sm font-medium whitespace-nowrap">{notificationMessage}</p>
-      </div>
-    {/key}
-  {/if}
+  <ReaderNotification {notice} onDone={() => (notice = null)} />
   {#if $settings.continuousScroll && volumeData?.files}
     {#if effectiveScrollMode === 'vertical'}
       <VerticalScrollReader

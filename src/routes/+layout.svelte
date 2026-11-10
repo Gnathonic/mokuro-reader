@@ -32,8 +32,10 @@
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
   import { initCatalogFileSync } from '$lib/metadata/catalog-file-sync';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
-  import { navigateBack, currentView } from '$lib/util/hash-router';
-  import { dispatchKey } from '$lib/keys/dispatch';
+  import { navigateBack, currentView, type View } from '$lib/util/hash-router';
+  import { dispatchKey, type KeyHandler } from '$lib/keys/dispatch';
+  import type { KeyScope } from '$lib/keys/actions';
+  import { runSettingAction } from '$lib/keys/setting-actions';
   import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { anyModalOpen } from '$lib/util/delete-shortcut';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
@@ -101,26 +103,43 @@
     return initGoalsLifecycle();
   });
 
-  // Back (Escape, plus any extra keys bound to `app.back` — #55) everywhere
-  // except the reader, which owns its own keyboard (Reader.svelte). One owner
-  // per view: SeriesView no longer listens. Not from a field, the settings
-  // panel or a popover (`keyboardShouldIgnore`), and not while a dialog is up
-  // — Escape there closes the dialog, and only the dialog.
+  /** The key scope of a view's own page (spec 17.4); the hovered card's scope is the card's. */
+  const VIEW_SCOPES: Partial<Record<View['type'], KeyScope>> = {
+    catalog: 'library',
+    series: 'series',
+    'progress-tracker': 'tracker',
+    'volume-text': 'text',
+    'series-text': 'text'
+  };
+
+  // The keyboard everywhere except the reader, which owns its own
+  // (Reader.svelte): the view's page scope, then `app` — Back (Escape, plus
+  // any extra keys bound to `app.back`, #55) and the setting actions
+  // generated from the definitions, which one handler answers. One owner per
+  // view: SeriesView does not listen. Not from a field, the settings panel or
+  // a popover (`keyboardShouldIgnore`), and not while a dialog is up — Escape
+  // there closes the dialog, and only the dialog.
+  //
+  // Hovered cards still own their listeners (until they provide handlers
+  // here instead), and this one runs first: a page-scope key that a hovered
+  // card also uses resolves to the page.
   function handleKeydown(event: KeyboardEvent) {
     const view = get(currentView);
     if (view.type === 'reader') return;
     if (keyboardShouldIgnore(event.target) || anyModalOpen()) return;
-    dispatchKey(
-      event,
-      { scopes: ['app'] },
-      {
-        'app.back': () => {
-          // Nothing above the catalog: decline, so the key keeps its default.
-          if (view.type === 'catalog') return false;
-          navigateBack();
-        }
+    const pageScope = VIEW_SCOPES[view.type];
+    const own: Partial<Record<string, KeyHandler>> = {
+      'app.back': () => {
+        // Nothing above the catalog: decline, so the key keeps its default.
+        if (view.type === 'catalog') return false;
+        navigateBack();
       }
-    );
+    };
+    dispatchKey(event, { scopes: pageScope ? [pageScope, 'app'] : ['app'] }, (id, action) => {
+      if (own[id]) return own[id];
+      if (action.setting) return () => runSettingAction(action);
+      return undefined;
+    });
   }
 
   // Handle migration completion

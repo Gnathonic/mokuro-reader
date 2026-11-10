@@ -8,23 +8,83 @@
  * Ids are PERMANENT: they are stored, per profile, in `profiles.json`
  * (`Settings.keyBindings`). Rename the label, never the id.
  *
- * Adding a shortcut is one entry here plus its handler at the listener site
+ * This module holds the HAND-REGISTERED actions (commands and the mode-aware
+ * cycles) and the scope table. A bindable SETTING is not an entry here: it is
+ * a definition in `settings/setting-defs.ts`, from which `generate.ts` makes
+ * its actions and `setting-actions.ts` handles all of them. `registry.ts`
+ * joins the two into the full list.
+ *
+ * Adding a command is one entry here plus its handler at the listener site
  * that owns the state it touches (Reader.svelte's handler map is
  * `satisfies Record<...>`, so a reader/edit entry without a handler fails
  * type-check). A change in what an EXISTING action does (e.g. #283's
  * scroll-before-turn for Page Up/Down) is a change to its handler only.
  *
+ * This file stays pure data — no stores, no components: the settings store
+ * imports it (through `keymap.ts`) for the shape check of stored bindings.
+ *
  * Default chords use `KeyboardEvent.code` (position, not character) — see
  * `chord.ts` for the format.
  */
 
+import type { IconName } from './icon-names';
+
 /**
- * Where an action can fire, and which actions can conflict. The reader's
- * dispatch walks `edit` → `reader` → `app` while editing, so `edit` shadows
- * the other two (a note, not a conflict); the library scopes are per card
- * kind and never live at the same time.
+ * Where an action can fire. `SCOPES` below says which scopes are live
+ * together; `chordRelation` (keymap.ts) reads it.
  */
-export type KeyScope = 'reader' | 'edit' | 'app' | 'library.series' | 'library.volume';
+export type KeyScope =
+  | 'edit'
+  | 'reader'
+  | 'library.series'
+  | 'library'
+  | 'library.volume'
+  | 'series'
+  | 'tracker'
+  | 'text'
+  | 'series-editor'
+  | 'app';
+
+export interface ScopeDef {
+  /** Where the scope is live, for the settings section. */
+  readonly label: string;
+  /**
+   * Scopes this one is tried BEFORE while both are live. Two actions on one
+   * chord across such a pair are a note at capture, not a conflict.
+   */
+  readonly shadows: readonly KeyScope[];
+  /** How the capture note starts: "While a volume is under the pointer". */
+  readonly when?: string;
+  /** Live only under a dialog, where `app` is not dispatched. */
+  readonly dialog?: true;
+}
+
+/**
+ * The scope table (spec 17.4). Order of trying: `edit`, `reader`, `app` in
+ * the reader; the hovered card's scope, the view's scope, `app` elsewhere.
+ * `app` is live with every scope that is not a dialog's; scopes that name
+ * neither each other nor `app` are never live together.
+ */
+export const SCOPES: Record<KeyScope, ScopeDef> = {
+  edit: { label: 'Edit mode', shadows: ['reader', 'app'], when: 'In edit mode' },
+  reader: { label: 'Reader', shadows: [] },
+  'library.series': {
+    label: 'Series card under the pointer',
+    shadows: ['library'],
+    when: 'While a series card is under the pointer'
+  },
+  library: { label: 'Library', shadows: [] },
+  'library.volume': {
+    label: 'Volume under the pointer',
+    shadows: ['series'],
+    when: 'While a volume is under the pointer'
+  },
+  series: { label: 'Series page', shadows: [] },
+  tracker: { label: 'Progress tracker', shadows: [] },
+  text: { label: 'Text view', shadows: [] },
+  'series-editor': { label: 'Series editor', shadows: [], dialog: true },
+  app: { label: 'Everywhere', shadows: [] }
+};
 
 /**
  * Reader layouts. Continuous `auto` resolves to `vertical` or `horizontal`
@@ -33,7 +93,10 @@ export type KeyScope = 'reader' | 'edit' | 'app' | 'library.series' | 'library.v
 export type ReaderMode = 'paged' | 'vertical' | 'horizontal';
 
 export type ActionGroup =
-  'pages' | 'scrolling' | 'view' | 'ocr' | 'filters' | 'edit' | 'library' | 'general';
+  'pages' | 'scrolling' | 'view' | 'ocr' | 'filters' | 'edit' | 'library' | 'general' | 'other';
+
+/** What a generated action does to its setting (spec 17.2). */
+export type SettingOp = 'toggle' | 'next' | 'prev' | 'to' | 'up' | 'down' | 'reset';
 
 export interface KeyActionDef {
   readonly id: string;
@@ -49,11 +112,30 @@ export interface KeyActionDef {
   readonly repeat: boolean;
   /** Chords that are always bound and cannot be removed (Escape on Back). */
   readonly locked?: readonly string[];
+  /** The flowbite-svelte-icons NAME; `icons.ts` maps it to the component. */
+  readonly icon: IconName;
+  /**
+   * May the action be put on the reader's quick menu? `off` = yes, and it is
+   * off until the profile turns it on (or the default list names it);
+   * `never` = it has no switch. Only `reader`, `edit` and `app` actions are
+   * ever eligible.
+   */
+  readonly menu: 'off' | 'never';
+  /**
+   * Set on an action GENERATED from a setting definition
+   * (`settings/setting-defs.ts`): which definition, what it does to it and,
+   * for a "Set to", the stored value. `setting-actions.ts` is the one handler.
+   */
+  readonly setting?: { readonly def: string; readonly op: SettingOp; readonly value?: string };
+  /**
+   * The definition a list's or slider's actions fold under in the settings
+   * section. A toggle is its own row and has none.
+   */
+  readonly parent?: string;
 }
 
 const ALL_MODES = ['paged', 'vertical', 'horizontal'] as const;
 const PAGED_HORIZONTAL = ['paged', 'horizontal'] as const;
-const CONTINUOUS = ['vertical', 'horizontal'] as const;
 
 export const GROUP_LABELS: Record<ActionGroup, string> = {
   pages: 'Pages',
@@ -63,7 +145,8 @@ export const GROUP_LABELS: Record<ActionGroup, string> = {
   filters: 'Filters',
   edit: 'Edit mode',
   library: 'Library',
-  general: 'General'
+  general: 'General',
+  other: 'Other views'
 };
 
 export const GROUP_ORDER: readonly ActionGroup[] = [
@@ -74,9 +157,16 @@ export const GROUP_ORDER: readonly ActionGroup[] = [
   'filters',
   'edit',
   'library',
-  'general'
+  'general',
+  'other'
 ];
 
+/**
+ * The HAND-REGISTERED actions: commands and the mode-aware cycles (P, Z, L).
+ * The full list every consumer works from is this tuple, then the actions
+ * generated from the setting definitions, then one "Set to" per profile —
+ * `registry.ts`. A compiled keymap carries the list it was built from.
+ */
 export const KEY_ACTIONS = [
   // ---- Pages -------------------------------------------------------------
   {
@@ -87,6 +177,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: PAGED_HORIZONTAL,
     defaults: ['ArrowLeft'],
+    icon: 'ArrowLeftOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -97,6 +189,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: PAGED_HORIZONTAL,
     defaults: ['ArrowRight'],
+    icon: 'ArrowRightOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -107,6 +201,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['PageUp'],
+    icon: 'ChevronLeftOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -117,6 +213,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['PageDown', 'Space'],
+    icon: 'ChevronRightOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -127,6 +225,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['Home'],
+    icon: 'ChevronDoubleLeftOutline',
+    menu: 'off',
     repeat: false
   },
   {
@@ -137,6 +237,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['End'],
+    icon: 'ChevronDoubleRightOutline',
+    menu: 'off',
     repeat: false
   },
   {
@@ -147,6 +249,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: [],
+    icon: 'BackwardStepOutline',
+    menu: 'off',
     repeat: false
   },
   {
@@ -157,6 +261,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: [],
+    icon: 'ForwardStepOutline',
+    menu: 'off',
     repeat: false
   },
   // ---- Scrolling ---------------------------------------------------------
@@ -168,6 +274,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['ArrowUp'],
+    icon: 'ArrowUpOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -179,6 +287,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['ArrowDown'],
+    icon: 'ArrowDownOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -189,6 +299,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ['vertical'],
     defaults: ['ArrowLeft'],
+    icon: 'AngleLeftOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -199,6 +311,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ['vertical'],
     defaults: ['ArrowRight'],
+    icon: 'AngleRightOutline',
+    menu: 'off',
     repeat: true
   },
   // ---- View --------------------------------------------------------------
@@ -210,6 +324,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['KeyF'],
+    icon: 'ExpandOutline',
+    menu: 'off',
     repeat: false
   },
   {
@@ -220,6 +336,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['KeyZ'],
+    icon: 'ZoomInOutline',
+    menu: 'off',
     repeat: false
   },
   {
@@ -230,6 +348,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ['paged'],
     defaults: [],
+    icon: 'MinimizeOutline',
+    menu: 'off',
     repeat: false
   },
   {
@@ -240,46 +360,23 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['KeyP'],
-    repeat: false
-  },
-  {
-    id: 'reader.continuous',
-    label: 'Continuous scroll',
-    description: 'Switch between paged and continuous scroll.',
-    group: 'view',
-    scope: 'reader',
-    modes: ALL_MODES,
-    defaults: ['KeyV'],
+    icon: 'BookOpenOutline',
+    menu: 'off',
     repeat: false
   },
   {
     id: 'reader.offset-spreads',
-    label: 'Offset spreads',
+    label: 'Spreads offset',
+    // The one action for the spread pairing. Hand-registered, not generated
+    // from the volume's "first page is cover" setting: its handler also steps
+    // the progress so the page on screen stays on screen.
     description: 'Shift which pages pair up into a spread.',
     group: 'view',
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['KeyO'],
-    repeat: false
-  },
-  {
-    id: 'reader.cover',
-    label: 'First page is cover',
-    description: 'Show the first page alone, as a cover.',
-    group: 'view',
-    scope: 'reader',
-    modes: ALL_MODES,
-    defaults: ['KeyC'],
-    repeat: false
-  },
-  {
-    id: 'reader.dividers',
-    label: 'Page dividers',
-    description: 'Lines between pages in continuous scroll.',
-    group: 'view',
-    scope: 'reader',
-    modes: CONTINUOUS,
-    defaults: ['KeyM'],
+    icon: 'BookOutline',
+    menu: 'off',
     repeat: false
   },
   {
@@ -290,29 +387,11 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: [],
-    repeat: false
-  },
-  {
-    id: 'reader.timer',
-    label: 'Show/hide reading timer',
-    description: 'The reading timer in the corner.',
-    group: 'view',
-    scope: 'reader',
-    modes: ALL_MODES,
-    defaults: [],
+    icon: 'EyeOutline',
+    menu: 'off',
     repeat: false
   },
   // ---- OCR ---------------------------------------------------------------
-  {
-    id: 'reader.ocr-always',
-    label: 'Always show OCR',
-    description: 'Keep the OCR text visible instead of on hover.',
-    group: 'ocr',
-    scope: 'reader',
-    modes: ALL_MODES,
-    defaults: ['KeyT'],
-    repeat: false
-  },
   {
     id: 'reader.ocr-layer',
     label: 'Next OCR layer',
@@ -321,6 +400,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['KeyL'],
+    icon: 'LayersOutline',
+    menu: 'off',
     repeat: false
   },
   {
@@ -331,37 +412,8 @@ export const KEY_ACTIONS = [
     scope: 'reader',
     modes: ALL_MODES,
     defaults: ['KeyE'],
-    repeat: false
-  },
-  // ---- Filters -----------------------------------------------------------
-  {
-    id: 'reader.invert',
-    label: 'Invert colors',
-    description: 'Toggle inverted page colors.',
-    group: 'filters',
-    scope: 'reader',
-    modes: ALL_MODES,
-    defaults: ['KeyI'],
-    repeat: false
-  },
-  {
-    id: 'reader.night',
-    label: 'Night mode',
-    description: 'Toggle the night mode tint.',
-    group: 'filters',
-    scope: 'reader',
-    modes: ALL_MODES,
-    defaults: ['KeyN'],
-    repeat: false
-  },
-  {
-    id: 'reader.grayscale',
-    label: 'Black & white',
-    description: 'Toggle black-and-white pages.',
-    group: 'filters',
-    scope: 'reader',
-    modes: ALL_MODES,
-    defaults: ['KeyG'],
+    icon: 'PenOutline',
+    menu: 'off',
     repeat: false
   },
   // ---- Edit mode ---------------------------------------------------------
@@ -373,6 +425,8 @@ export const KEY_ACTIONS = [
     scope: 'edit',
     modes: ['paged'],
     defaults: ['Ctrl+KeyZ', 'Meta+KeyZ'],
+    icon: 'UndoOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -383,6 +437,8 @@ export const KEY_ACTIONS = [
     scope: 'edit',
     modes: ['paged'],
     defaults: ['Ctrl+Shift+KeyZ', 'Shift+Meta+KeyZ', 'Ctrl+KeyY', 'Meta+KeyY'],
+    icon: 'RedoOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -393,6 +449,8 @@ export const KEY_ACTIONS = [
     scope: 'edit',
     modes: ['paged'],
     defaults: ['Delete', 'Backspace'],
+    icon: 'TrashBinOutline',
+    menu: 'off',
     repeat: true
   },
   {
@@ -404,6 +462,8 @@ export const KEY_ACTIONS = [
     modes: ['paged'],
     defaults: [],
     locked: ['Escape'],
+    icon: 'CloseOutline',
+    menu: 'off',
     repeat: false
   },
   // ---- Library -----------------------------------------------------------
@@ -414,6 +474,8 @@ export const KEY_ACTIONS = [
     group: 'library',
     scope: 'library.series',
     defaults: ['KeyE'],
+    icon: 'EditOutline',
+    menu: 'never',
     repeat: false
   },
   {
@@ -423,6 +485,8 @@ export const KEY_ACTIONS = [
     group: 'library',
     scope: 'library.series',
     defaults: ['Delete'],
+    icon: 'TrashBinOutline',
+    menu: 'never',
     repeat: false
   },
   {
@@ -432,6 +496,8 @@ export const KEY_ACTIONS = [
     group: 'library',
     scope: 'library.volume',
     defaults: ['KeyE'],
+    icon: 'EditOutline',
+    menu: 'never',
     repeat: false
   },
   {
@@ -441,6 +507,8 @@ export const KEY_ACTIONS = [
     group: 'library',
     scope: 'library.volume',
     defaults: ['KeyC'],
+    icon: 'ImageOutline',
+    menu: 'never',
     repeat: false
   },
   {
@@ -450,6 +518,8 @@ export const KEY_ACTIONS = [
     group: 'library',
     scope: 'library.volume',
     defaults: ['Delete'],
+    icon: 'TrashBinOutline',
+    menu: 'never',
     repeat: false
   },
   {
@@ -459,6 +529,8 @@ export const KEY_ACTIONS = [
     group: 'library',
     scope: 'library.volume',
     defaults: ['Shift+Delete'],
+    icon: 'TrashBinOutline',
+    menu: 'never',
     repeat: false
   },
   // ---- General -----------------------------------------------------------
@@ -470,30 +542,49 @@ export const KEY_ACTIONS = [
     scope: 'app',
     defaults: [],
     locked: ['Escape'],
+    icon: 'CloseOutline',
+    menu: 'off',
     repeat: false
   }
 ] as const satisfies readonly KeyActionDef[];
 
 type Entry = (typeof KEY_ACTIONS)[number];
 
-export type ActionId = Entry['id'];
+/**
+ * Seven actions that exist since the first build ARE a setting's toggle. They
+ * are generated from their definition like any other toggle, but keep the id
+ * stored bindings already use, and their default key (spec 17.3).
+ */
+export const PINNED_ACTIONS = {
+  'reader.continuous': {
+    defaults: ['KeyV'],
+    description: 'Switch between paged and continuous scroll.'
+  },
+  'reader.dividers': {
+    defaults: ['KeyM'],
+    description: 'Lines between pages in continuous scroll.'
+  },
+  'reader.timer': { defaults: [], description: 'The reading timer in the corner.' },
+  'reader.ocr-always': {
+    defaults: ['KeyT'],
+    description: 'Keep the OCR text visible instead of on hover.'
+  },
+  'reader.invert': { defaults: ['KeyI'], description: 'Toggle inverted page colors.' },
+  'reader.night': { defaults: ['KeyN'], description: 'Toggle the night mode tint.' },
+  'reader.grayscale': { defaults: ['KeyG'], description: 'Toggle black-and-white pages.' }
+} as const satisfies Record<string, { defaults: readonly string[]; description: string }>;
+
+export type HandActionId = Entry['id'];
+export type PinnedActionId = keyof typeof PINNED_ACTIONS;
+/** `set.<def>.toggle | .next | .prev | .to.<stored value> | .up | .down | .reset`. */
+export type GeneratedActionId = `set.${string}`;
+
+export type ActionId = HandActionId | PinnedActionId | GeneratedActionId;
 export type ReaderActionId = Extract<Entry, { scope: 'reader' }>['id'];
 export type EditActionId = Extract<Entry, { scope: 'edit' }>['id'];
 export type AppActionId = Extract<Entry, { scope: 'app' }>['id'];
 export type LibrarySeriesActionId = Extract<Entry, { scope: 'library.series' }>['id'];
 export type LibraryVolumeActionId = Extract<Entry, { scope: 'library.volume' }>['id'];
-
-export const ACTIONS_BY_ID: ReadonlyMap<string, KeyActionDef> = new Map(
-  KEY_ACTIONS.map((a) => [a.id, a as KeyActionDef])
-);
-
-export function isActionId(id: string): id is ActionId {
-  return ACTIONS_BY_ID.has(id);
-}
-
-export function actionDef(id: ActionId): KeyActionDef {
-  return ACTIONS_BY_ID.get(id)!;
-}
 
 /** Whether `action` can fire in reader layout `mode` (undefined = outside the reader). */
 export function isLiveIn(action: KeyActionDef, mode: ReaderMode | undefined): boolean {

@@ -9,12 +9,9 @@
   // here has no catalog row, so the plain store gave it page_count 0 and the
   // tracker dropped it from every section.
   import { volumesWithPlaceholders as catalogVolumes } from '$lib/catalog';
-  import {
-    miscSettings,
-    updateMiscSetting,
-    type ProgressTrackerSorting,
-    type CompletedVolumesViewMode
-  } from '$lib/settings';
+  import { miscSettings, type ProgressTrackerSorting } from '$lib/settings';
+  import { optionName } from '$lib/settings/setting-defs';
+  import { stepSetting } from '$lib/keys/setting-actions';
   import {
     volumeDeadlines,
     getCurrentPeriodStart,
@@ -125,23 +122,9 @@
   // Track hover state for each volume
   let hoveredVolume = $state<string | null>(null);
 
-  // Sorting configuration
-  const sortOrder: ProgressTrackerSorting[] = [
-    'last-read',
-    'pages-per-period',
-    'pages-to-goal',
-    'fewest-pages',
-    'deadline'
-  ];
-
-  const sortLabels: Record<ProgressTrackerSorting, string> = {
-    'last-read': 'Last Read',
-    'pages-per-period': 'Pages/Day',
-    'pages-to-goal': 'Pages to Goal',
-    'fewest-pages': 'Fewest Pages',
-    deadline: 'Deadline'
-  };
-
+  // The three lists (target mode, sorting, completed view), their order and
+  // their names are setting definitions (#55): these buttons step them the
+  // way a key bound to "Next" does.
   const sortTitles: Record<ProgressTrackerSorting, string> = {
     'last-read': 'Sorted by most recently read',
     'pages-per-period': 'Sorted by highest pages per day needed to reach deadline',
@@ -150,26 +133,16 @@
     deadline: 'Sorted by soonest deadline'
   };
 
-  const completedViewLabels: Record<CompletedVolumesViewMode, string> = {
-    volumes: 'Volumes',
-    series: 'Series'
-  };
-
   function cycleSorting() {
-    const currentIndex = sortOrder.indexOf($miscSettings.progressTrackerSorting);
-    const nextIndex = (currentIndex + 1) % sortOrder.length;
-    updateMiscSetting('progressTrackerSorting', sortOrder[nextIndex]);
+    stepSetting('tracker-sort', 'next');
   }
 
   function cycleTargetMode() {
-    const newMode = ($miscSettings.progressTargetMode ?? 'daily') === 'daily' ? 'weekly' : 'daily';
-    updateMiscSetting('progressTargetMode', newMode);
+    stepSetting('tracker-target', 'next');
   }
 
   function cycleCompletedVolumesViewMode() {
-    const newMode: CompletedVolumesViewMode =
-      ($miscSettings.completedVolumesViewMode ?? 'volumes') === 'volumes' ? 'series' : 'volumes';
-    updateMiscSetting('completedVolumesViewMode', newMode);
+    stepSetting('tracker-completed', 'next');
   }
 
   function openSettings() {
@@ -316,7 +289,7 @@
               class="flex h-8 items-center justify-center"
             >
               <span class="text-xs">
-                {($miscSettings.progressTargetMode ?? 'daily') === 'daily' ? 'Daily' : 'Weekly'}
+                {optionName('tracker-target', $miscSettings.progressTargetMode ?? 'daily')}
               </span>
             </Button>
             <Button
@@ -327,7 +300,9 @@
               class="flex h-8 items-center justify-center"
             >
               <SortOutline class="h-4 w-4" />
-              <span class="ml-1 text-xs">{sortLabels[$miscSettings.progressTrackerSorting]}</span>
+              <span class="ml-1 text-xs"
+                >{optionName('tracker-sort', $miscSettings.progressTrackerSorting)}</span
+              >
             </Button>
             <Button
               size="xs"
@@ -408,7 +383,10 @@
               class="flex h-8 items-center justify-center"
             >
               <span class="text-xs">
-                {completedViewLabels[$miscSettings.completedVolumesViewMode ?? 'volumes']} View
+                {optionName(
+                  'tracker-completed',
+                  $miscSettings.completedVolumesViewMode ?? 'volumes'
+                )} View
               </span>
             </Button>
           </div>

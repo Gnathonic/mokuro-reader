@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { compileKeymap } from './keymap';
+import { compileKeymap as compileOver, type KeyBindings } from './keymap';
 import { dispatchKey, type KeyEventLike } from './dispatch';
+import { allActions } from './registry';
+
+const compileKeymap = (bindings: KeyBindings) => compileOver(bindings, allActions());
 
 function event(code: string, over: Partial<KeyEventLike> = {}) {
   const e = {
@@ -112,6 +115,37 @@ describe('dispatchKey', () => {
     );
     expect(full).toHaveBeenCalledOnce();
     expect(night).not.toHaveBeenCalled();
+  });
+
+  it('accepts a resolver: the site’s own map first, a generated action after it', () => {
+    const map = compileKeymap({ 'set.bold.toggle': ['KeyB'], 'set.brightness.up': ['KeyU'] });
+    const own = { 'reader.fullscreen': vi.fn() };
+    const generated = vi.fn();
+    const seen: string[] = [];
+    const resolve = (id: string, action: { setting?: unknown }) => {
+      seen.push(id);
+      if (id in own) return own[id as keyof typeof own];
+      if (action.setting) return () => generated(id);
+      return undefined;
+    };
+    const ctx = { scopes: ['reader', 'app'] as const, mode: 'paged' as const };
+
+    expect(dispatchKey(event('KeyF'), ctx, resolve, map)).toBe('reader.fullscreen');
+    expect(own['reader.fullscreen']).toHaveBeenCalledOnce();
+    expect(dispatchKey(event('KeyB'), ctx, resolve, map)).toBe('set.bold.toggle');
+    expect(generated).toHaveBeenLastCalledWith('set.bold.toggle');
+    // A hand-registered action the resolver does not serve: not this site's key.
+    expect(dispatchKey(event('KeyZ'), ctx, resolve, map)).toBeNull();
+    expect(seen).toEqual(['reader.fullscreen', 'set.bold.toggle', 'reader.zoom-mode']);
+
+    // Repeat comes from the keymap's own action list: a toggle swallows it, a slider step fires.
+    generated.mockClear();
+    const held = event('KeyB', { repeat: true });
+    expect(dispatchKey(held, ctx, resolve, map)).toBe('set.bold.toggle');
+    expect(held.preventDefault).toHaveBeenCalledOnce();
+    expect(generated).not.toHaveBeenCalled();
+    dispatchKey(event('KeyU', { repeat: true }), ctx, resolve, map);
+    expect(generated).toHaveBeenLastCalledWith('set.brightness.up');
   });
 
   it('drops composition, bare modifiers and handled events', () => {

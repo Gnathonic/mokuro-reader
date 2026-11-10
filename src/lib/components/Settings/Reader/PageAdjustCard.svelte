@@ -1,18 +1,9 @@
 <script lang="ts">
   import { settings, updateSetting } from '$lib/settings';
+  import { listOptions, sliderDef } from '$lib/settings/setting-defs';
   import { Button, Label, Range, Select } from 'flowbite-svelte';
   import {
-    INK_COLOR_NAMES,
     INK_PALETTE,
-    INK_STRENGTH_DEFAULT,
-    INK_STRENGTH_MAX,
-    INK_STRENGTH_MIN,
-    PAPER_AGE_DEFAULT,
-    PAPER_AGE_MAX,
-    PAPER_AGE_MIN,
-    PAPER_TINT_DEFAULT,
-    PAPER_TINT_MAX,
-    PAPER_TINT_MIN,
     clampInkStrength,
     clampPaperAge,
     clampPaperTint,
@@ -20,29 +11,22 @@
     sanitizeInkColor,
     type InkColorSetting
   } from '$lib/reader/ink-color';
-  import {
-    PAGE_ADJUST_DEFAULT,
-    PAGE_ADJUST_MAX,
-    PAGE_ADJUST_MIN,
-    PAGE_ADJUST_STEP,
-    clampPageAdjust
-  } from '$lib/reader/page-filter';
+  import { clampPageAdjust } from '$lib/reader/page-filter';
+
+  // Every label, option list, limit, step and reset value below is the
+  // setting definition's (#55): the same data the key actions step by.
 
   // Page images only (#256): washed-out scans. The OCR text is never filtered.
   // (Ink color below does recolour the OCR text, to match the ink.)
   type AdjustKey = 'pageBrightness' | 'pageContrast';
 
-  const sliders: { key: AdjustKey; label: string }[] = [
-    { key: 'pageBrightness', label: 'Brightness' },
-    { key: 'pageContrast', label: 'Contrast' }
+  const sliders: { key: AdjustKey; def: ReturnType<typeof sliderDef> }[] = [
+    { key: 'pageBrightness', def: sliderDef('brightness') },
+    { key: 'pageContrast', def: sliderDef('contrast') }
   ];
 
   // Ink color for black-and-white pages (#256): colour pages are left alone.
-  const inkOptions: { value: InkColorSetting; name: string }[] = [
-    { value: 'off', name: 'Off' },
-    { value: 'auto', name: 'Auto' },
-    ...INK_COLOR_NAMES.map((c) => ({ value: c, name: c[0].toUpperCase() + c.slice(1) }))
-  ];
+  const inkOptions = listOptions<InkColorSetting>('ink-color');
   let inkColor = $derived(sanitizeInkColor($settings.pageInkColor));
 
   // The print effect's own controls: black-and-white (inked) pages only, never
@@ -50,44 +34,12 @@
   type EffectKey = 'pageInkStrength' | 'pagePaperTint' | 'pagePaperAge';
   const effectSliders: {
     key: EffectKey;
-    label: string;
-    min: number;
-    max: number;
-    step: number;
-    def: number;
+    def: ReturnType<typeof sliderDef>;
     clamp: (v: unknown) => number;
-    format: (v: number) => string;
   }[] = [
-    {
-      key: 'pageInkStrength',
-      label: 'Ink strength',
-      min: INK_STRENGTH_MIN,
-      max: INK_STRENGTH_MAX,
-      step: 5,
-      def: INK_STRENGTH_DEFAULT,
-      clamp: clampInkStrength,
-      format: (v) => (v > 0 ? `+${v}` : `${v}`)
-    },
-    {
-      key: 'pagePaperTint',
-      label: 'Paper tint',
-      min: PAPER_TINT_MIN,
-      max: PAPER_TINT_MAX,
-      step: 1,
-      def: PAPER_TINT_DEFAULT,
-      clamp: clampPaperTint,
-      format: (v) => `${v}%`
-    },
-    {
-      key: 'pagePaperAge',
-      label: 'Paper age',
-      min: PAPER_AGE_MIN,
-      max: PAPER_AGE_MAX,
-      step: 5,
-      def: PAPER_AGE_DEFAULT,
-      clamp: clampPaperAge,
-      format: (v) => `${v}`
-    }
+    { key: 'pageInkStrength', def: sliderDef('ink-strength'), clamp: clampInkStrength },
+    { key: 'pagePaperTint', def: sliderDef('paper-tint'), clamp: clampPaperTint },
+    { key: 'pagePaperAge', def: sliderDef('paper-age'), clamp: clampPaperAge }
   ];
   let swatchName = $derived(inkColor !== 'off' && inkColor !== 'auto' ? inkColor : null);
 
@@ -100,27 +52,27 @@
 <div class="mt-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
   <div class="mb-2 text-sm font-medium text-gray-900 dark:text-white">Page image</div>
   <div class="space-y-3">
-    {#each sliders as { key, label } (key)}
+    {#each sliders as { key, def } (key)}
       {@const value = clampPageAdjust($settings[key])}
       <div>
         <div class="flex items-center justify-between">
           <Label for={`page-adjust-${key}`} class="text-gray-900 dark:text-white">
-            {label}: {value}%
+            {def.label}: {def.format(value)}
           </Label>
           <Button
             size="xs"
             color="alternative"
             class="px-2 py-0.5"
-            aria-label={`Reset ${label.toLowerCase()}`}
-            disabled={value === PAGE_ADJUST_DEFAULT}
-            onclick={() => updateSetting(key, PAGE_ADJUST_DEFAULT)}>Reset</Button
+            aria-label={`Reset ${def.label.toLowerCase()}`}
+            disabled={value === def.reset}
+            onclick={() => updateSetting(key, def.reset)}>Reset</Button
           >
         </div>
         <Range
           id={`page-adjust-${key}`}
-          min={PAGE_ADJUST_MIN}
-          max={PAGE_ADJUST_MAX}
-          step={PAGE_ADJUST_STEP}
+          min={def.min}
+          max={def.max}
+          step={def.step}
           {value}
           oninput={(e: Event) => onInput(key, e)}
         />
@@ -159,25 +111,26 @@
     {#if inkColor !== 'off'}
       {#each effectSliders as slider (slider.key)}
         {@const value = slider.clamp($settings[slider.key])}
+        {@const def = slider.def}
         <div>
           <div class="flex items-center justify-between">
             <Label for={`page-effect-${slider.key}`} class="text-gray-900 dark:text-white">
-              {slider.label}: {slider.format(value)}
+              {def.label}: {def.format(value)}
             </Label>
             <Button
               size="xs"
               color="alternative"
               class="px-2 py-0.5"
-              aria-label={`Reset ${slider.label.toLowerCase()}`}
-              disabled={value === slider.def}
-              onclick={() => updateSetting(slider.key, slider.def)}>Reset</Button
+              aria-label={`Reset ${def.label.toLowerCase()}`}
+              disabled={value === def.reset}
+              onclick={() => updateSetting(slider.key, def.reset)}>Reset</Button
             >
           </div>
           <Range
             id={`page-effect-${slider.key}`}
-            min={slider.min}
-            max={slider.max}
-            step={slider.step}
+            min={def.min}
+            max={def.max}
+            step={def.step}
             {value}
             oninput={(e: Event) =>
               updateSetting(slider.key, slider.clamp(Number((e.target as HTMLInputElement).value)))}

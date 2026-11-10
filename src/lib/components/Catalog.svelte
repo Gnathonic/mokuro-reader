@@ -32,7 +32,9 @@
     DownloadSolid,
     UploadSolid
   } from 'flowbite-svelte-icons';
-  import { miscSettings, updateMiscSetting, volumes } from '$lib/settings';
+  import { miscSettings, volumes } from '$lib/settings';
+  import { optionName } from '$lib/settings/setting-defs';
+  import { stepSetting } from '$lib/keys/setting-actions';
   import { partitionCatalogSeries } from '$lib/catalog/catalog';
   import CatalogListItem from './CatalogListItem.svelte';
   import { isUpgrading } from '$lib/catalog/db';
@@ -173,22 +175,14 @@
     return provider?.name || 'cloud storage';
   });
 
+  // The layout and sort buttons step their setting definitions (#55), so a
+  // button and a key bound to "Next" walk the same order.
   function onLayout() {
-    if ($miscSettings.galleryLayout === 'list') {
-      updateMiscSetting('galleryLayout', 'grid');
-    } else {
-      updateMiscSetting('galleryLayout', 'list');
-    }
+    stepSetting('gallery-layout', 'next');
   }
 
   function onOrder() {
-    if ($miscSettings.gallerySorting === 'SMART') {
-      updateMiscSetting('gallerySorting', 'ASC');
-    } else if ($miscSettings.gallerySorting === 'ASC') {
-      updateMiscSetting('gallerySorting', 'DESC');
-    } else {
-      updateMiscSetting('gallerySorting', 'SMART');
-    }
+    stepSetting('gallery-sort', 'next');
   }
   let sortedCatalog = $derived.by(() => {
     if ($catalog === null) return [];
@@ -404,13 +398,7 @@
       >
         <SortOutline class="h-5 w-5" />
         <span class="ml-1 text-xs">
-          {#if $miscSettings.gallerySorting === 'ASC'}
-            A-Z
-          {:else if $miscSettings.gallerySorting === 'DESC'}
-            Z-A
-          {:else}
-            Smart
-          {/if}
+          {optionName('gallery-sort', $miscSettings.gallerySorting)}
         </span>
       </Button>
     </div>

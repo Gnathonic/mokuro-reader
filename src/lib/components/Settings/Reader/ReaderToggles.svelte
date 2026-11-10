@@ -7,6 +7,7 @@
     type SettingsKey,
     updateSetting
   } from '$lib/settings';
+  import { listOptions, settingDef, type WheelMode } from '$lib/settings/setting-defs';
   import { Label, Select, Toggle } from 'flowbite-svelte';
   import ScheduledFilterCard from './ScheduledFilterCard.svelte';
   import PageAdjustCard from './PageAdjustCard.svelte';
@@ -20,20 +21,16 @@
   // Mouse wheel in paged mode (#55): two stored booleans, one choice.
   // `wheelTurnsPages` wins over `swapWheelBehavior`; older clients ignore it
   // and pan, which is this select's first option.
-  type WheelMode = 'pan' | 'zoom' | 'turn';
-  const wheelModes: { value: WheelMode; name: string }[] = [
-    { value: 'pan', name: 'Pans / scrolls (Ctrl+wheel zooms)' },
-    { value: 'zoom', name: 'Zooms (Ctrl+wheel pans)' },
-    { value: 'turn', name: 'Turns pages (Ctrl+wheel zooms)' }
-  ];
+  // The options, and how a choice maps onto the two booleans, are the
+  // `wheel` setting definition's — shared with its key actions.
+  const wheelDef = settingDef('wheel');
+  const wheelModes = listOptions<WheelMode>('wheel');
   let wheelMode = $derived<WheelMode>(
     $settings.wheelTurnsPages ? 'turn' : $settings.swapWheelBehavior ? 'zoom' : 'pan'
   );
 
   function onWheelModeChange(e: Event) {
-    const next = (e.target as HTMLSelectElement).value as WheelMode;
-    updateSetting('wheelTurnsPages', next === 'turn');
-    updateSetting('swapWheelBehavior', next === 'zoom');
+    wheelDef.write({}, (e.target as HTMLSelectElement).value);
   }
 
   // Keys hidden in continuous scroll mode (not applicable)

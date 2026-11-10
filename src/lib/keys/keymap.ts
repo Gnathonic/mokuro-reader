@@ -16,7 +16,7 @@
 
 import {
   KEY_ACTIONS,
-  ACTIONS_BY_ID,
+  SCOPES,
   type ActionId,
   type KeyActionDef,
   type KeyScope,
@@ -31,6 +31,13 @@ export interface Keymap {
   readonly byScope: ReadonlyMap<KeyScope, ReadonlyMap<string, readonly ActionId[]>>;
   /** action id → its effective chords (locked first). */
   readonly chords: ReadonlyMap<ActionId, readonly string[]>;
+  /**
+   * The actions this keymap was compiled from, in registry order. The list
+   * is not a constant (one "Set to" action per profile), so everything that
+   * resolves an id — `lookup`, `findConflicts`, dispatch, capture — reads it
+   * here and never from a module-level table.
+   */
+  readonly actions: ReadonlyMap<ActionId, KeyActionDef>;
 }
 
 /** The UI's cap on chords per action (locked ones included). */
@@ -55,10 +62,20 @@ export function effectiveChords(action: KeyActionDef, bindings: KeyBindings | un
   return dedupe([...(action.locked ?? []), ...editableChords(action, bindings)]);
 }
 
-export function compileKeymap(bindings: KeyBindings | undefined): Keymap {
+/**
+ * Compile `bindings` over `actions` — the full list (`allActions()` in
+ * `registry.ts`), passed in because this module stays free of the setting
+ * stores the generated actions come from.
+ */
+export function compileKeymap(
+  bindings: KeyBindings | undefined,
+  actions: readonly KeyActionDef[]
+): Keymap {
   const byScope = new Map<KeyScope, Map<string, ActionId[]>>();
   const chords = new Map<ActionId, string[]>();
-  for (const action of KEY_ACTIONS as readonly KeyActionDef[]) {
+  const byId = new Map<ActionId, KeyActionDef>();
+  for (const action of actions) {
+    byId.set(action.id as ActionId, action);
     const list = effectiveChords(action, bindings);
     chords.set(action.id as ActionId, list);
     let scope = byScope.get(action.scope);
@@ -69,7 +86,7 @@ export function compileKeymap(bindings: KeyBindings | undefined): Keymap {
       else scope.set(chord, [action.id as ActionId]);
     }
   }
-  return { byScope, chords };
+  return { byScope, chords, actions: byId };
 }
 
 /** The actions a chord fires in `scope`, live in `mode`, registry order. */
@@ -82,7 +99,7 @@ export function lookup(
   const ids = keymap.byScope.get(scope)?.get(chord);
   if (!ids) return [];
   return ids.filter((id) => {
-    const a = ACTIONS_BY_ID.get(id)!;
+    const a = keymap.actions.get(id)!;
     return !mode || !a.modes || a.modes.includes(mode);
   });
 }
@@ -102,15 +119,17 @@ export function isModified(action: KeyActionDef, bindings: KeyBindings | undefin
 // ---------------------------------------------------------------------------
 
 /**
- * How two actions on the same chord relate.
+ * How two actions on the same chord relate. The scope table (`SCOPES` in
+ * actions.ts) is the data; this only reads it.
  *
- * - `conflict`: both could fire for one press and nothing says which — same
- *   scope (and, in the reader, a shared live mode), or `app` (live
- *   everywhere) against any scope but `edit`.
- * - `shadow`: `edit` runs first while editing, so the other one only loses
- *   that key in edit mode — a note, not a prompt.
- * - `none`: never live together (reader vs library, series vs volume cards,
- *   Page left vs Scroll left, which share no mode).
+ * - `conflict`: both could fire for one press and nothing says which — the
+ *   same scope (and, in the reader, a shared live mode), or `app` against
+ *   any scope it is live with.
+ * - `shadow`: one scope is tried before the other while both are live
+ *   (`edit` before `reader` and `app`, a hovered card before its page), so
+ *   the other one only loses that key there — a note, not a prompt.
+ * - `none`: never live together (reader vs library, catalog vs series page,
+ *   a dialog vs anything, Page left vs Scroll left, which share no mode).
  */
 export type ChordRelation = 'conflict' | 'shadow' | 'none';
 
@@ -119,15 +138,19 @@ function modesOverlap(a: KeyActionDef, b: KeyActionDef): boolean {
   return a.modes.some((m) => b.modes!.includes(m));
 }
 
+/** Of two scopes, the one tried first while both are live; null when neither shadows. */
+export function shadowingScope(a: KeyScope, b: KeyScope): KeyScope | null {
+  if (SCOPES[a].shadows.includes(b)) return a;
+  if (SCOPES[b].shadows.includes(a)) return b;
+  return null;
+}
+
 export function chordRelation(a: KeyActionDef, b: KeyActionDef): ChordRelation {
   if (a.id === b.id) return 'none';
-  const scopes = new Set([a.scope, b.scope]);
-  if (scopes.has('edit') && scopes.size === 2) {
-    if (!scopes.has('reader') && !scopes.has('app')) return 'none';
-    return modesOverlap(a, b) ? 'shadow' : 'none';
-  }
   if (a.scope === b.scope) return modesOverlap(a, b) ? 'conflict' : 'none';
-  if (scopes.has('app')) return 'conflict';
+  if (shadowingScope(a.scope, b.scope)) return modesOverlap(a, b) ? 'shadow' : 'none';
+  const other = a.scope === 'app' ? b : b.scope === 'app' ? a : null;
+  if (other) return SCOPES[other.scope].dialog ? 'none' : 'conflict';
   return 'none';
 }
 
@@ -145,8 +168,8 @@ export function findConflicts(keymap: Keymap): Map<ActionId, Set<ActionId>> {
   for (const ids of owners.values()) {
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) {
-        const a = ACTIONS_BY_ID.get(ids[i])!;
-        const b = ACTIONS_BY_ID.get(ids[j])!;
+        const a = keymap.actions.get(ids[i])!;
+        const b = keymap.actions.get(ids[j])!;
         if (chordRelation(a, b) !== 'conflict') continue;
         if (!out.has(ids[i])) out.set(ids[i], new Set());
         if (!out.has(ids[j])) out.set(ids[j], new Set());
@@ -207,10 +230,10 @@ export function replaceChord(
   bindings: KeyBindings | undefined,
   action: KeyActionDef,
   chord: string,
-  others: readonly ActionId[]
+  others: readonly KeyActionDef[]
 ): KeyBindings {
   let next: KeyBindings = { ...(bindings ?? {}) };
-  for (const id of others) next = removeChord(next, ACTIONS_BY_ID.get(id)!, chord);
+  for (const other of others) next = removeChord(next, other, chord);
   return addChord(next, action, chord);
 }
 
@@ -224,11 +247,46 @@ export const MAX_STORED_CHORDS = 8;
 export const MAX_STORED_CHORD_LENGTH = 40;
 
 /**
+ * Actions that no longer exist, and where their stored chords go (spec 17.3).
+ * `dropped` chords are freed for everyone; any other stored chord moves onto
+ * `into`. Applied by `sanitizeKeyBindings`, so on load and on every merged
+ * profile. Deterministic and stamp-free, like the other shape migrations:
+ * two devices converge without a write.
+ *
+ * `reader.cover` (C) only shifted the spread pairing as a side effect, which
+ * is what `reader.offset-spreads` (O) is for. No released build stored it;
+ * this covers profiles written by earlier builds of the branch, and is the
+ * pattern for any later retirement.
+ */
+export const RETIRED_ACTIONS: Record<string, { into: string; dropped: readonly string[] }> = {
+  'reader.cover': { into: 'reader.offset-spreads', dropped: ['KeyC'] }
+};
+
+function foldRetired(bindings: KeyBindings): KeyBindings {
+  for (const [id, { into, dropped }] of Object.entries(RETIRED_ACTIONS)) {
+    if (!(id in bindings)) continue;
+    const moved = bindings[id].filter((c) => !dropped.includes(normalizeChord(c) ?? c));
+    delete bindings[id];
+    if (moved.length === 0) continue;
+    const target = (KEY_ACTIONS as readonly KeyActionDef[]).find((a) => a.id === into);
+    const base = Array.isArray(bindings[into]) ? bindings[into] : [...(target?.defaults ?? [])];
+    const list = [...base];
+    for (const c of moved) {
+      const canon = normalizeChord(c) ?? c;
+      if (!list.some((x) => (normalizeChord(x) ?? x) === canon)) list.push(c);
+    }
+    bindings[into] = list.slice(0, MAX_STORED_CHORDS);
+  }
+  return bindings;
+}
+
+/**
  * Shape check for a synced or hand-edited `keyBindings` (`migrateProfiles`):
  * a non-object becomes `{}`, a non-array entry is dropped, a list keeps at
  * most `MAX_STORED_CHORDS` strings of at most `MAX_STORED_CHORD_LENGTH`
  * chars. Unknown ids and unparseable chords are KEPT — they may be a newer
- * client's, and `compileKeymap` ignores them.
+ * client's, and `compileKeymap` ignores them. A RETIRED id is folded into
+ * its successor (`RETIRED_ACTIONS`).
  */
 export function sanitizeKeyBindings(value: unknown): KeyBindings {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -239,5 +297,5 @@ export function sanitizeKeyBindings(value: unknown): KeyBindings {
       .filter((c): c is string => typeof c === 'string' && c.length <= MAX_STORED_CHORD_LENGTH)
       .slice(0, MAX_STORED_CHORDS);
   }
-  return out;
+  return foldRetired(out);
 }

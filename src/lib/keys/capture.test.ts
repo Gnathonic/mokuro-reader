@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { actionDef } from './actions';
-import { assessCapture } from './capture';
+import type { KeyActionDef } from './actions';
+import { assessCapture as assessOver, shadowNote } from './capture';
+import type { KeyBindings } from './keymap';
+import { actionDef, allActions } from './registry';
 import { BROWSER_ACTION_WARNING, SCAN_MODIFIER_WARNING } from './reserved';
+
+const assessCapture = (action: KeyActionDef, chord: string, bindings: KeyBindings) =>
+  assessOver(action, chord, bindings, allActions());
 
 describe('assessCapture', () => {
   const right = actionDef('reader.page-right');
@@ -72,7 +77,35 @@ describe('assessCapture', () => {
   it('a cross-scope overlap with edit mode is a note', () => {
     const v = assessCapture(actionDef('reader.night'), 'Backspace', {});
     expect(v.kind).toBe('ok');
-    if (v.kind === 'ok') expect(v.notes).toHaveLength(1);
+    if (v.kind === 'ok') {
+      expect(v.notes).toEqual([
+        'In edit mode, this key is “Delete selected boxes” before “Night mode”.'
+      ]);
+    }
+  });
+
+  it('the note names whichever scope is tried first, beyond edit mode', () => {
+    const onPage: KeyActionDef = { ...actionDef('app.back'), id: 'series.edit', scope: 'series' };
+    const page = { ...onPage, label: 'Edit series (page)', locked: undefined };
+    const row = actionDef('library.volume-edit');
+    const text =
+      'While a volume is under the pointer, this key is “Edit volume” before “Edit series (page)”.';
+    expect(shadowNote(page, row)).toBe(text);
+    expect(shadowNote(row, page)).toBe(text);
+    // Capturing E for the page action: a note about the row, not a prompt.
+    const v = assessOver(page, 'KeyE', {}, [...allActions(), page]);
+    expect(v).toEqual({ kind: 'ok', notes: [text], warnings: [] });
+  });
+
+  it('sees a generated action that already holds the chord', () => {
+    const bold = actionDef('set.bold.toggle');
+    expect(assessCapture(bold, 'KeyF', {})).toMatchObject({
+      kind: 'conflict',
+      others: ['reader.fullscreen']
+    });
+    expect(
+      assessCapture(actionDef('reader.fullscreen'), 'KeyB', { 'set.bold.toggle': ['KeyB'] })
+    ).toMatchObject({ kind: 'conflict', others: ['set.bold.toggle'] });
   });
 
   it('a chord already on the action is a duplicate', () => {

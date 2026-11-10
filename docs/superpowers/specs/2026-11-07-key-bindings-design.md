@@ -1109,6 +1109,18 @@ is one definition.
 - "Open upload" opens the upload dialog, as the NavBar button does.
 - A binding to "Set profile to X" outlives a rename of X, inert.
 - The section in step A is long (one row per action) until step C groups it.
+- As built in step A: the scroll gap's key also turns the page dividers on
+  above 0 and off at 0, as the Ctrl+Shift+wheel chord does. The definitions
+  carry three fields beyond the shape in 17.2: `description` (the action's
+  line in the section), `available(ctx)` (a volume setting with no volume)
+  and `note(ctx)` ("print effect off"). Generated labels are
+  "<Setting>: Next", "<Setting>: Previous", "<Setting>: Set to <Option>",
+  "<Setting>: Step up", "<Setting>: Step down", "<Setting>: Reset". The full
+  list lives in `src/lib/keys/registry.ts` (`allActions()`); `actions.ts`
+  cannot import the definitions, because the settings store imports it.
+- The series page still reads its two localStorage keys when it mounts
+  (`refreshSeriesViewPrefs`), so a choice made in another tab applies as it
+  did before the store.
 
 Nothing on the list was judged impossible to bind.
 

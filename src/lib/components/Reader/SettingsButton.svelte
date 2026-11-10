@@ -1,5 +1,6 @@
 <script lang="ts">
-  import Settings from '$lib/components/Settings/Settings.svelte';
+  import SettingsDrawerHost from '$lib/components/Settings/SettingsDrawerHost.svelte';
+  import { openSettings } from '$lib/settings/settings-open';
   import { UserSettingsSolid } from 'flowbite-svelte-icons';
 
   interface Props {
@@ -7,12 +8,6 @@
   }
 
   let { visible = true }: Props = $props();
-
-  let settingsOpen = $state(false);
-
-  function openSettings() {
-    settingsOpen = true;
-  }
 </script>
 
 {#if visible}
@@ -24,4 +19,4 @@
   </button>
 {/if}
 
-<Settings bind:open={settingsOpen} />
+<SettingsDrawerHost context="reader" />

@@ -8,14 +8,7 @@
     updateSetting
   } from '$lib/settings';
   import { promptConfirmation, showSnackbar } from '$lib/util';
-  import {
-    FIXED_INPUTS,
-    GROUP_LABELS,
-    GROUP_ORDER,
-    KEY_ACTIONS,
-    type ActionId,
-    type KeyActionDef
-  } from '$lib/keys/actions';
+  import { FIXED_INPUTS, GROUP_LABELS, GROUP_ORDER, type ActionId } from '$lib/keys/actions';
   import { chordLabel, keymap } from '$lib/keys/live';
   import { keyLabelsVersion } from '$lib/keys/key-labels';
   import { findConflicts, type KeyBindings } from '$lib/keys/keymap';
@@ -24,12 +17,14 @@
   // `open` only for tests and deep links; the drawer opens it like any other section.
   let { open = false }: { open?: boolean } = $props();
 
-  const actions = KEY_ACTIONS as readonly KeyActionDef[];
-
   let filter = $state('');
   let capturingId = $state<string | null>(null);
 
   let bindings = $derived<KeyBindings>($settings.keyBindings ?? {});
+  // The live keymap's own list: the hand-registered actions, the ones
+  // generated from the setting definitions and one "Set to" per profile.
+  let actionMap = $derived($keymap.actions);
+  let actions = $derived([...actionMap.values()]);
   let conflicts = $derived(findConflicts($keymap));
   let customised = $derived(Object.keys(bindings).length > 0);
   let profileCount = $derived(Object.keys($profiles).length);
@@ -114,6 +109,7 @@
           {#each list as action (action.id)}
             <KeyActionRow
               {action}
+              actions={actionMap}
               {bindings}
               {labelOf}
               conflictsWith={conflicts.get(action.id as ActionId)}

@@ -8,6 +8,13 @@
   import { promptExtraction, promptSeriesEditor } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { volumes, progress, settings } from '$lib/settings';
+  import {
+    refreshSeriesViewPrefs,
+    seriesSortMode,
+    seriesViewMode
+  } from '$lib/settings/series-view-prefs';
+  import { optionName } from '$lib/settings/setting-defs';
+  import { stepSetting } from '$lib/keys/setting-actions';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import { seriesSpeeds } from '$lib/reading-history/series-speeds';
   import { nav, routeParams } from '$lib/util/hash-router';
@@ -148,25 +155,13 @@
   });
   const formatCharCount = (chars: number) => charFormatter.format(chars || 0);
 
-  // View mode state (persisted to localStorage)
-  type ViewMode = 'list' | 'grid';
-  let viewMode = $state<ViewMode>(
-    (browser && (localStorage.getItem('series-view-mode') as ViewMode)) || 'grid'
-  );
-
-  // Sort mode state (persisted to localStorage)
-  type SortMode = 'unread-first' | 'reverse-alphabetical' | 'alphabetical';
-  let sortMode = $state<SortMode>(
-    (browser && (localStorage.getItem('series-sort-mode') as SortMode)) || 'unread-first'
-  );
-
-  // Update localStorage when modes change
-  $effect(() => {
-    if (browser) {
-      localStorage.setItem('series-view-mode', viewMode);
-      localStorage.setItem('series-sort-mode', sortMode);
-    }
-  });
+  // View and sort mode: per-device stores (`series-view-prefs.ts`, the same
+  // localStorage keys as before), so their setting definitions — and a key
+  // bound to one — read and write what this page shows. Storage is read again
+  // at each mount, as before (another tab may have changed it).
+  refreshSeriesViewPrefs();
+  let viewMode = $derived($seriesViewMode);
+  let sortMode = $derived($seriesSortMode);
 
   // Series open is a load step: refresh this series' series.json, materialize
   // its volumes, install covers. Keyed on the route param so navigating between
@@ -189,16 +184,11 @@
   });
 
   function toggleViewMode() {
-    viewMode = viewMode === 'list' ? 'grid' : 'list';
+    stepSetting('series-view', 'next');
   }
 
   function toggleSortMode() {
-    sortMode =
-      sortMode === 'unread-first'
-        ? 'alphabetical'
-        : sortMode === 'alphabetical'
-          ? 'reverse-alphabetical'
-          : 'unread-first';
+    stepSetting('series-sort', 'next');
   }
 
   /** Read through? The app's one completion rule, over this list's raw progress. */
@@ -688,15 +678,7 @@
 
       <Button color="light" onclick={toggleSortMode} class="!min-w-0 self-stretch">
         <SortOutline class="me-2 h-5 w-5 shrink-0" />
-        <span class="break-words">
-          {#if sortMode === 'unread-first'}
-            Unread first
-          {:else if sortMode === 'reverse-alphabetical'}
-            Reverse default
-          {:else}
-            Default
-          {/if}</span
-        >
+        <span class="break-words"> {optionName('series-sort', sortMode)}</span>
       </Button>
 
       <Button color="light" onclick={toggleViewMode} class="!min-w-0 self-stretch">

@@ -1,0 +1,67 @@
+/**
+ * The icons actions may name (#55). The registry stores the
+ * flowbite-svelte-icons NAME only, so `actions.ts` and the setting
+ * definitions stay plain data with no component import; `icons.ts` maps
+ * every name here to its component (`satisfies Record<IconName, …>`, so a
+ * name without an import fails type-check).
+ */
+export const ICON_NAMES = [
+  'AdjustmentsVerticalOutline',
+  'AngleLeftOutline',
+  'AngleRightOutline',
+  'ArrowDownOutline',
+  'ArrowLeftOutline',
+  'ArrowRightOutline',
+  'ArrowSortLettersOutline',
+  'ArrowUpOutline',
+  'ArrowsRepeatOutline',
+  'BackwardStepOutline',
+  'BanOutline',
+  'BookOpenOutline',
+  'BookOutline',
+  'CaptionOutline',
+  'ChartLineUpOutline',
+  'ChevronDoubleLeftOutline',
+  'ChevronDoubleRightOutline',
+  'ChevronLeftOutline',
+  'ChevronRightOutline',
+  'ClockOutline',
+  'CloseOutline',
+  'ColumnOutline',
+  'CubesStackedOutline',
+  'DotsVerticalOutline',
+  'DrawSquareOutline',
+  'EditOutline',
+  'ExpandOutline',
+  'EyeOutline',
+  'EyeSlashOutline',
+  'FileCirclePlusOutline',
+  'ForwardStepOutline',
+  'GridOutline',
+  'HorizontalLinesOutline',
+  'ImageOutline',
+  'LanguageOutline',
+  'LayersOutline',
+  'LetterBoldOutline',
+  'MessageDotsOutline',
+  'MinimizeOutline',
+  'MobilePhoneOutline',
+  'MoonOutline',
+  'ObjectsColumnOutline',
+  'OrderedListOutline',
+  'PaletteOutline',
+  'PenOutline',
+  'RedoOutline',
+  'ShuffleOutline',
+  'SortOutline',
+  'SunOutline',
+  'SwatchbookOutline',
+  'TableRowOutline',
+  'TextSizeOutline',
+  'TrashBinOutline',
+  'UndoOutline',
+  'UserSettingsOutline',
+  'ZoomInOutline'
+] as const;
+
+export type IconName = (typeof ICON_NAMES)[number];

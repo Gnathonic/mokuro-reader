@@ -9,7 +9,8 @@
     CalendarMonthOutline
   } from 'flowbite-svelte-icons';
   import { nav, isOnReader } from '$lib/util/hash-router';
-  import Settings from './Settings/Settings.svelte';
+  import SettingsDrawerHost from './Settings/SettingsDrawerHost.svelte';
+  import { openSettings, uploadModalOpen } from '$lib/settings/settings-open';
   import UploadModal from './UploadModal.svelte';
   import Icon from '$lib/assets/icon.webp';
   import { showSnackbar } from '$lib/util';
@@ -18,8 +19,6 @@
   import { unifiedProviderState } from '$lib/util/sync/unified-provider-state';
 
   // Use $state to make these reactive
-  let settingsOpen = $state(false);
-  let uploadModalOpen = $state(false);
   let isReader = $state(false);
 
   // Read unified provider state synchronously
@@ -84,12 +83,8 @@
     nav.toCatalog();
   }
 
-  function openSettings() {
-    settingsOpen = true;
-  }
-
   function openUploadModal() {
-    uploadModalOpen = true;
+    uploadModalOpen.set(true);
   }
 
   function navigateToCloud() {
@@ -166,7 +161,11 @@
       >
         <CalendarMonthOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
-      <button onclick={openSettings} class="flex h-6 w-6 items-center justify-center">
+      <button
+        onclick={openSettings}
+        class="flex h-6 w-6 items-center justify-center"
+        title="Settings"
+      >
         <UserSettingsSolid class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
       <button onclick={openUploadModal} class="flex h-6 w-6 items-center justify-center">
@@ -248,5 +247,5 @@
   </Navbar>
 </div>
 
-<Settings bind:open={settingsOpen} />
-<UploadModal bind:open={uploadModalOpen} />
+<SettingsDrawerHost context="app" />
+<UploadModal bind:open={() => $uploadModalOpen, (open) => uploadModalOpen.set(open)} />

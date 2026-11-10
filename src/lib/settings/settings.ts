@@ -17,6 +17,7 @@ import {
   type InkColorSetting
 } from '$lib/reader/ink-color';
 import { sanitizeKeyBindings, type KeyBindings } from '$lib/keys/keymap';
+import { sanitizeQuickMenu, type QuickMenuSelection } from '$lib/keys/quick-menu';
 
 export type FontSize =
   | 'auto'
@@ -204,6 +205,12 @@ export type Settings = {
    * today's keys. See `$lib/keys/keymap`.
    */
   keyBindings: KeyBindings;
+  /**
+   * Which actions are on the reader's quick menu (#55), SPARSE: action id →
+   * shown. Absent id = the default; `{}` is today's menu. See
+   * `$lib/keys/quick-menu`.
+   */
+  quickMenu: QuickMenuSelection;
   textBoxContextMenu: boolean;
   continuousScroll: boolean;
   singlePageView: PageViewMode;
@@ -358,6 +365,7 @@ const defaultSettings: Settings = {
   swapWheelBehavior: false,
   wheelTurnsPages: false,
   keyBindings: {},
+  quickMenu: {},
   textBoxContextMenu: true,
   continuousScroll: false,
   singlePageView: 'auto',
@@ -582,6 +590,7 @@ export function migrateProfiles(profiles: Profiles): Profiles {
     // Key bindings (#55): shape only. Unknown ids and chords stay — a newer
     // client's bindings must survive an older client's write-back.
     migratedProfile.keyBindings = sanitizeKeyBindings(profile.keyBindings);
+    migratedProfile.quickMenu = sanitizeQuickMenu(profile.quickMenu);
     if (typeof migratedProfile.wheelTurnsPages !== 'boolean') {
       migratedProfile.wheelTurnsPages = false;
     }
@@ -989,16 +998,23 @@ export function copyProfile(profileToCopy: string, newName: string) {
 }
 
 /**
- * "Copy to all profiles" (#55): write the current profile's key bindings into
- * every live profile. Each one is touched (`lastUpdated`), so the copy syncs.
+ * "Copy to all profiles" (#55): write the current profile's key bindings AND
+ * its quick-menu selection into every live profile. Each one is touched
+ * (`lastUpdated`), so the copy syncs.
  */
 export function copyKeyBindingsToAllProfiles() {
   _profilesInternal.update((profiles) => {
-    const source = profiles[get(currentProfile)]?.keyBindings ?? {};
+    const source = profiles[get(currentProfile)];
+    const keyBindings = source?.keyBindings ?? {};
+    const quickMenu = source?.quickMenu ?? {};
     const next: Profiles = { ...profiles };
     for (const [name, profile] of Object.entries(profiles)) {
       if (profile.deletedOn) continue;
-      next[name] = touchProfile({ ...profile, keyBindings: structuredClone(source) });
+      next[name] = touchProfile({
+        ...profile,
+        keyBindings: structuredClone(keyBindings),
+        quickMenu: structuredClone(quickMenu)
+      });
     }
     return next;
   });

@@ -9,7 +9,7 @@
  * "Keyboard".
  */
 
-import { ACTIONS_BY_ID, type ActionId, type KeyScope, type ReaderMode } from './actions';
+import type { ActionId, KeyActionDef, KeyScope, ReaderMode } from './actions';
 import { chordFromEvent } from './chord';
 import { lookup, type Keymap } from './keymap';
 import { currentKeymap } from './live';
@@ -20,6 +20,14 @@ import { currentKeymap } from './live';
  * nothing takes it, keeps its browser default.
  */
 export type KeyHandler = (e: KeyboardEvent) => boolean | void;
+
+/**
+ * A site's handlers as a function: the handler for an action, or undefined
+ * when the site does not serve it. Lets a site answer its typed map first
+ * and the generated setting actions after it (`setting-actions.ts`), which
+ * have no per-action entry anywhere.
+ */
+export type KeyResolver = (id: ActionId, action: KeyActionDef) => KeyHandler | undefined;
 
 export interface DispatchContext {
   /** Scopes to try, highest precedence first. */
@@ -53,22 +61,28 @@ export type KeyEventLike = Pick<
  * must not flicker fullscreen, holding Escape must leave one level).
  * `preventDefault()` happens only on a match.
  *
+ * `handlers` is a map, or a resolver (`KeyResolver`). The action list is
+ * the keymap's own (`Keymap.actions`).
+ *
  * Returns the action that took the key, or null.
  */
 export function dispatchKey(
   e: KeyEventLike,
   ctx: DispatchContext,
-  handlers: Partial<Record<ActionId, KeyHandler>>,
+  handlers: Partial<Record<ActionId, KeyHandler>> | KeyResolver,
   keymap: Keymap = currentKeymap()
 ): ActionId | null {
   if (e.defaultPrevented) return null;
   const chord = chordFromEvent(e);
   if (!chord) return null;
+  const resolve: KeyResolver =
+    typeof handlers === 'function' ? handlers : (id) => handlers[id] ?? undefined;
   for (const scope of ctx.scopes) {
     for (const id of lookup(keymap, scope, chord, ctx.mode)) {
-      const handler = handlers[id];
+      const action = keymap.actions.get(id)!;
+      const handler = resolve(id, action);
       if (!handler) continue;
-      if (e.repeat && !ACTIONS_BY_ID.get(id)!.repeat) {
+      if (e.repeat && !action.repeat) {
         e.preventDefault();
         return id;
       }

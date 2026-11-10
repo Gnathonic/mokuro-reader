@@ -1,7 +1,8 @@
 <script lang="ts">
   import { ExclamationCircleSolid } from 'flowbite-svelte-icons';
-  import { ACTIONS_BY_ID, type ActionId, type KeyActionDef } from '$lib/keys/actions';
+  import { SCOPES, type ActionId, type KeyActionDef, type KeyScope } from '$lib/keys/actions';
   import { assessCapture } from '$lib/keys/capture';
+  import { actionIcon } from '$lib/keys/icons';
   import { warningsFor } from '$lib/keys/reserved';
   import {
     MAX_CHORDS_PER_ACTION,
@@ -18,6 +19,8 @@
 
   interface Props {
     action: KeyActionDef;
+    /** Every action the bindings apply to (the live keymap's list). */
+    actions: ReadonlyMap<ActionId, KeyActionDef>;
     bindings: KeyBindings;
     /** Other actions this one shares a chord with (a synced or hand-edited map). */
     conflictsWith?: ReadonlySet<ActionId>;
@@ -27,10 +30,27 @@
     onSave: (next: KeyBindings) => void;
   }
 
-  let { action, bindings, conflictsWith, capturing, labelOf, onCaptureChange, onSave }: Props =
-    $props();
+  let {
+    action,
+    actions,
+    bindings,
+    conflictsWith,
+    capturing,
+    labelOf,
+    onCaptureChange,
+    onSave
+  }: Props = $props();
+
+  let Icon = $derived(actionIcon(action.icon));
 
   const MODE_LABEL = { paged: 'Paged', vertical: 'Vertical', horizontal: 'Horizontal' } as const;
+  const PAGE_SCOPES: readonly KeyScope[] = [
+    'library',
+    'series',
+    'tracker',
+    'text',
+    'series-editor'
+  ];
 
   let locked = $derived(action.locked ?? []);
   let chords = $derived(editableChords(action, bindings));
@@ -38,6 +58,8 @@
   let modified = $derived(isModified(action, bindings));
   let tags = $derived.by(() => {
     if (action.scope === 'edit') return ['Edit mode'];
+    // A page outside the reader: say which one (a card's description already does).
+    if (PAGE_SCOPES.includes(action.scope)) return [SCOPES[action.scope].label];
     if (!action.modes || action.modes.length === 3) return [];
     return action.modes.map((m) => MODE_LABEL[m]);
   });
@@ -49,7 +71,7 @@
   let announce = $state('');
 
   function otherLabels(ids: readonly ActionId[]) {
-    return ids.map((id) => `“${ACTIONS_BY_ID.get(id)?.label ?? id}”`).join(', ');
+    return ids.map((id) => `“${actions.get(id)?.label ?? id}”`).join(', ');
   }
 
   function captured(chord: string) {
@@ -57,7 +79,7 @@
     pending = null;
     message = null;
     const label = labelOf(chord);
-    const verdict = assessCapture(action, chord, bindings);
+    const verdict = assessCapture(action, chord, bindings, [...actions.values()]);
     switch (verdict.kind) {
       case 'refused':
         message = { tone: 'warn', text: `${label}: ${verdict.reason}` };
@@ -90,7 +112,14 @@
     if (!pending) return;
     const { chord, others } = pending;
     pending = null;
-    onSave(replaceChord(bindings, action, chord, others));
+    onSave(
+      replaceChord(
+        bindings,
+        action,
+        chord,
+        others.flatMap((id) => actions.get(id) ?? [])
+      )
+    );
     const warnings = warningsFor(chord);
     showNotes(warnings, warnings.length > 0);
     announce = `${labelOf(chord)} moved to ${action.label}.`;
@@ -115,6 +144,7 @@
   data-key-action={action.id}
 >
   <div class="flex items-center gap-2">
+    <Icon class="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />
     <span class="font-medium text-gray-900 dark:text-white">{action.label}</span>
     {#if conflictsWith && conflictsWith.size > 0}
       <span

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { settings, updateAnkiSetting } from '$lib/settings';
+  import { listOptions } from '$lib/settings/setting-defs';
   import {
     AccordionItem,
     Button,
@@ -48,7 +49,10 @@
   }
 
   // Card settings
-  let cardMode = $state($settings.ankiConnectSettings.cardMode);
+  // Follows the store, never a copy taken at mount: a key bound to the card
+  // mode (#55) changes it while this drawer is open.
+  let cardMode = $derived($settings.ankiConnectSettings.cardMode);
+  const cardModes = listOptions<'create' | 'update'>('anki-card-mode');
   let selectedModel = $state($settings.ankiConnectSettings.selectedModel);
 
   // Image quality settings
@@ -57,7 +61,7 @@
   let qualityField = $state($settings.ankiConnectSettings.qualityField);
 
   // Trigger settings
-  let doubleTapEnabled = $state(
+  let doubleTapEnabled = $derived(
     $settings.ankiConnectSettings.triggerMethod === 'doubleTap' ||
       $settings.ankiConnectSettings.triggerMethod === 'both'
   );
@@ -223,24 +227,17 @@
       <div>
         <Label class="mb-2 text-gray-900 dark:text-white">Card Mode:</Label>
         <div class="flex flex-wrap gap-4">
-          <Radio
-            {disabled}
-            name="cardMode"
-            value="create"
-            bind:group={cardMode}
-            onchange={() => updateAnkiSetting('cardMode', cardMode)}
-          >
-            Create new card
-          </Radio>
-          <Radio
-            {disabled}
-            name="cardMode"
-            value="update"
-            bind:group={cardMode}
-            onchange={() => updateAnkiSetting('cardMode', cardMode)}
-          >
-            Update last card (within 5 min)
-          </Radio>
+          {#each cardModes as mode (mode.value)}
+            <Radio
+              {disabled}
+              name="cardMode"
+              value={mode.value}
+              group={cardMode}
+              onchange={() => updateAnkiSetting('cardMode', mode.value)}
+            >
+              {mode.name}
+            </Radio>
+          {/each}
         </div>
         <Helper class="mt-1">
           {#if cardMode === 'create'}
@@ -322,11 +319,7 @@
       <hr />
       <h4 class="text-gray-900 dark:text-white">Trigger Settings</h4>
       <div>
-        <Toggle
-          {disabled}
-          bind:checked={doubleTapEnabled}
-          onchange={() => updateDoubleTap(doubleTapEnabled)}
-        >
+        <Toggle {disabled} bind:checked={() => doubleTapEnabled, (on) => updateDoubleTap(on)}>
           Double-tap to capture
         </Toggle>
         <Helper class="mt-1"

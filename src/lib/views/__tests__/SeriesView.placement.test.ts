@@ -65,7 +65,10 @@ vi.mock('$lib/settings/settings', () => ({
   // below), and that module's own top-level `totalStats` derived store reads
   // `settings` from THIS module — so the binding must exist here too, even
   // though nothing in this suite exercises it.
-  settings: emptyStore({})
+  settings: emptyStore({}),
+  // The live keymap (`$lib/keys/live.ts`, reached through the volume rows'
+  // key dispatch) lists one "Set profile to" action per profile.
+  profiles: emptyStore({})
 }));
 vi.mock('$lib/settings', () => ({
   deleteVolume: vi.fn(),

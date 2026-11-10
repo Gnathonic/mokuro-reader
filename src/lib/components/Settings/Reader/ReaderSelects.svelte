@@ -1,7 +1,8 @@
 <script lang="ts">
   import { Label, Select } from 'flowbite-svelte';
-  import type { SettingsKey, ContinuousZoomMode } from '$lib/settings';
+  import type { SettingsKey } from '$lib/settings';
   import { settings, updateSetting } from '$lib/settings';
+  import { listOptions } from '$lib/settings/setting-defs';
   import KeyHint from '../Keys/KeyHint.svelte';
 
   let isContinuous = $derived($settings.continuousScroll);
@@ -11,44 +12,12 @@
   let fontSizeValue = $derived($settings.fontSize);
   let pageTransitionValue = $derived($settings.pageTransition);
 
-  let zoomModes = [
-    { value: 'zoomFitToScreen', name: 'Fit to screen' },
-    { value: 'zoomFitToWidth', name: 'Fit to width' },
-    { value: 'zoomFillScreen', name: 'Fill screen' },
-    { value: 'zoomOriginal', name: 'Original size' },
-    { value: 'keepZoom', name: 'Keep zoom' }
-  ];
-
-  let continuousZoomModes = [
-    { value: 'zoomFillScreen', name: 'Fill screen' },
-    { value: 'zoomFitToScreen', name: 'Fit to screen' },
-    { value: 'zoomOriginal', name: 'Original size (1:1)' }
-  ];
-
-  let pageTransitions = [
-    { value: 'none', name: 'None' },
-    { value: 'crossfade', name: 'Crossfade' },
-    { value: 'pageTurn', name: 'Page Turn' },
-    { value: 'swipe', name: 'Swipe' }
-  ];
-
-  let fontSizes = [
-    { value: 'auto', name: 'auto' },
-    { value: 'original', name: 'original' },
-    { value: '9', name: '9' },
-    { value: '10', name: '10' },
-    { value: '11', name: '11' },
-    { value: '12', name: '12' },
-    { value: '14', name: '14' },
-    { value: '16', name: '16' },
-    { value: '18', name: '18' },
-    { value: '20', name: '20' },
-    { value: '24', name: '24' },
-    { value: '32', name: '32' },
-    { value: '40', name: '40' },
-    { value: '48', name: '48' },
-    { value: '60', name: '60' }
-  ];
+  // The option lists are the setting definitions' (#55): one list, used by
+  // these selects and by the key actions generated from it.
+  const zoomModes = listOptions('zoom-paged');
+  const continuousZoomModes = listOptions('zoom-continuous');
+  const pageTransitions = listOptions('page-transition');
+  const fontSizes = listOptions('font-size');
 
   function onSelectChange(event: Event, setting: SettingsKey) {
     updateSetting(setting, (event.target as HTMLInputElement).value);

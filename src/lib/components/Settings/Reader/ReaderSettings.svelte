@@ -14,6 +14,7 @@
     type PageViewMode,
     type VolumeSettingsKey
   } from '$lib/settings';
+  import { listOptions } from '$lib/settings/setting-defs';
   import { isReader } from '$lib/util';
   import { routeParams } from '$lib/util/hash-router';
   import { MAX_PAGE_GAP } from '$lib/reader/zoom-math';
@@ -44,17 +45,9 @@
   let volumeId = $derived($routeParams.volume);
   let volSettings = $derived(volumeId ? $effectiveVolumeSettings[volumeId] : undefined);
 
-  const scrollModes: { value: ScrollMode; name: string }[] = [
-    { value: 'auto', name: 'Match orientation' },
-    { value: 'vertical', name: 'Vertical scroll' },
-    { value: 'horizontal', name: 'Horizontal scroll' }
-  ];
-
-  const pageViewModes: { value: PageViewMode; name: string }[] = [
-    { value: 'single', name: 'Single page' },
-    { value: 'dual', name: 'Dual page' },
-    { value: 'auto', name: 'Auto (detect orientation & spreads)' }
-  ];
+  // From the setting definitions (#55): the same lists the key actions use.
+  const scrollModes = listOptions<ScrollMode>('scroll-mode');
+  const pageViewModes = listOptions<PageViewMode>('page-view');
 
   let swipeThresholdValue = $state($settings.swipeThreshold);
   let edgeButtonWidthValue = $state($settings.edgeButtonWidth);
@@ -267,7 +260,6 @@
           onchange={() => onVolumeToggle('hasCover', volSettings?.hasCover)}
         >
           First page is cover
-          <KeyHint id="reader.cover" />
         </Toggle>
       {/if}
 

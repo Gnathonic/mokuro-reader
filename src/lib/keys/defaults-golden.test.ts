@@ -5,11 +5,22 @@
  * user who never opened the shortcut settings sees different keys.
  */
 import { describe, expect, it } from 'vitest';
-import { KEY_ACTIONS, type ActionId, type KeyScope, type ReaderMode } from './actions';
+import type { ActionId, KeyScope, ReaderMode } from './actions';
 import { compileKeymap } from './keymap';
 import { dispatchKey, type KeyEventLike } from './dispatch';
+import { allActions } from './registry';
 
-type Ctx = 'paged' | 'vertical' | 'horizontal' | 'edit' | 'series-card' | 'volume' | 'app';
+type Ctx =
+  | 'paged'
+  | 'vertical'
+  | 'horizontal'
+  | 'edit'
+  | 'series-card'
+  | 'volume'
+  | 'catalog'
+  | 'series-page'
+  | 'tracker'
+  | 'app';
 
 const CONTEXTS: Record<Ctx, { scopes: KeyScope[]; mode?: ReaderMode }> = {
   paged: { scopes: ['reader', 'app'], mode: 'paged' },
@@ -18,6 +29,10 @@ const CONTEXTS: Record<Ctx, { scopes: KeyScope[]; mode?: ReaderMode }> = {
   edit: { scopes: ['edit', 'reader', 'app'], mode: 'paged' },
   'series-card': { scopes: ['library.series'] },
   volume: { scopes: ['library.volume'] },
+  // The layout's listener outside the reader: the view's page scope, then app.
+  catalog: { scopes: ['library', 'app'] },
+  'series-page': { scopes: ['series', 'app'] },
+  tracker: { scopes: ['tracker', 'app'] },
   app: { scopes: ['app'] }
 };
 
@@ -51,10 +66,12 @@ function event(p: Press): KeyEventLike & { prevented: boolean } {
   return e;
 }
 
-const keymap = compileKeymap({});
+// The FULL list: hand-registered, generated from the setting definitions, one per profile.
+const ACTIONS = allActions();
+const keymap = compileKeymap({}, ACTIONS);
 
 /** Every action has a handler that accepts — edit.delete's "has a selection" included. */
-const accepting = Object.fromEntries(KEY_ACTIONS.map((a) => [a.id, () => true])) as Record<
+const accepting = Object.fromEntries(ACTIONS.map((a) => [a.id, () => true])) as Record<
   ActionId,
   () => boolean
 >;
@@ -80,7 +97,6 @@ const GOLDEN: [Ctx, Press, ActionId][] = [
   ['paged', { code: 'KeyP', key: 'p' }, 'reader.page-mode'],
   ['paged', { code: 'KeyV', key: 'v' }, 'reader.continuous'],
   ['paged', { code: 'KeyO', key: 'o' }, 'reader.offset-spreads'],
-  ['paged', { code: 'KeyC', key: 'c' }, 'reader.cover'],
   ['paged', { code: 'KeyT', key: 't' }, 'reader.ocr-always'],
   ['paged', { code: 'KeyL', key: 'l' }, 'reader.ocr-layer'],
   ['paged', { code: 'KeyE', key: 'e' }, 'reader.edit-mode'],
@@ -151,7 +167,7 @@ describe('defaults are today’s keys', () => {
   });
 
   it('edit.delete without a selection falls through to the reader scope', () => {
-    const map = compileKeymap({ 'reader.night': ['Delete'] });
+    const map = compileKeymap({ 'reader.night': ['Delete'] }, ACTIONS);
     const handlers = { ...accepting, 'edit.delete': () => false };
     expect(dispatchKey(event({ code: 'Delete' }), CONTEXTS.edit, handlers, map)).toBe(
       'reader.night'
@@ -175,6 +191,11 @@ const CHANGED: [Ctx, Press, ActionId | null, string][] = [
   ['volume', { code: 'KeyC', key: 'c', ctrl: true }, null, '§9.4 Ctrl+C opened the cover picker'],
   ['volume', { code: 'KeyE', key: 'e', meta: true }, null, '§9.4 Cmd+E opened the editor'],
   ['volume', { code: 'KeyE', key: 'e', alt: true }, null, '§9.4 Alt+E opened the editor'],
+  // §17.14: ONE action for the spread pairing, "Spreads offset" on O. C is freed.
+  ['paged', { code: 'KeyC', key: 'c' }, null, '§17.14 C toggled first-page-is-cover'],
+  ['vertical', { code: 'KeyC', key: 'c' }, null, '§17.14 C toggled first-page-is-cover'],
+  ['horizontal', { code: 'KeyC', key: 'c' }, null, '§17.14 C toggled first-page-is-cover'],
+  ['edit', { code: 'KeyC', key: 'c' }, null, '§17.14 C toggled first-page-is-cover'],
   ['series-card', { code: 'KeyE', key: 'E' }, 'library.series-edit', '§9.5 CapsLock+E did not'],
   ['series-card', { code: 'KeyE', key: '.' }, 'library.series-edit', '§9.5 Dvorak: by position']
 ];
@@ -187,7 +208,7 @@ describe('section 9: deliberate changes at defaults', () => {
   it('§9.6 toggles, Back and library actions ignore auto-repeat; page turns repeat', () => {
     const fired: ActionId[] = [];
     const recording = Object.fromEntries(
-      KEY_ACTIONS.map((a) => [a.id, () => void fired.push(a.id)])
+      ACTIONS.map((a) => [a.id, () => void fired.push(a.id as ActionId)])
     ) as Record<ActionId, () => void>;
     for (const [ctx, code] of [
       ['paged', 'KeyF'],
@@ -211,5 +232,82 @@ describe('section 9: deliberate changes at defaults', () => {
   it('§9.9 a key an extension already handled is left alone', () => {
     const e = { ...event({ code: 'ArrowLeft' }), defaultPrevented: true };
     expect(dispatchKey(e, CONTEXTS.paged, accepting, keymap)).toBeNull();
+  });
+});
+
+// What existed before the extension (spec 17): the ONLY actions with a key at
+// defaults. Every action added since ships unbound, so `keyBindings: {}` is
+// still exactly today's keys — nothing asks the user to configure anything.
+const PRE_EXTENSION_DEFAULTS: Record<string, string[]> = {
+  'reader.page-left': ['ArrowLeft'],
+  'reader.page-right': ['ArrowRight'],
+  'reader.page-prev': ['PageUp'],
+  'reader.page-next': ['PageDown', 'Space'],
+  'reader.page-first': ['Home'],
+  'reader.page-last': ['End'],
+  'reader.scroll-up': ['ArrowUp'],
+  'reader.scroll-down': ['ArrowDown'],
+  'reader.scroll-left': ['ArrowLeft'],
+  'reader.scroll-right': ['ArrowRight'],
+  'reader.fullscreen': ['KeyF'],
+  'reader.zoom-mode': ['KeyZ'],
+  'reader.page-mode': ['KeyP'],
+  'reader.continuous': ['KeyV'],
+  'reader.offset-spreads': ['KeyO'],
+  'reader.dividers': ['KeyM'],
+  'reader.ocr-always': ['KeyT'],
+  'reader.ocr-layer': ['KeyL'],
+  'reader.edit-mode': ['KeyE'],
+  'reader.invert': ['KeyI'],
+  'reader.night': ['KeyN'],
+  'reader.grayscale': ['KeyG'],
+  'edit.undo': ['Ctrl+KeyZ', 'Meta+KeyZ'],
+  'edit.redo': ['Ctrl+Shift+KeyZ', 'Shift+Meta+KeyZ', 'Ctrl+KeyY', 'Meta+KeyY'],
+  'edit.delete': ['Delete', 'Backspace'],
+  'edit.back': ['Escape'],
+  'library.series-edit': ['KeyE'],
+  'library.series-remove': ['Delete'],
+  'library.volume-edit': ['KeyE'],
+  'library.volume-cover': ['KeyC'],
+  'library.volume-remove': ['Delete'],
+  'library.volume-delete-cloud': ['Shift+Delete'],
+  'app.back': ['Escape']
+};
+
+describe('the whole registry at defaults', () => {
+  it('only the pre-extension actions have a key, and exactly the key they had', () => {
+    const bound = Object.fromEntries(
+      [...keymap.chords].filter(([, chords]) => chords.length > 0).map(([id, c]) => [id, [...c]])
+    );
+    expect(bound).toEqual(PRE_EXTENSION_DEFAULTS);
+  });
+
+  it('every other action is unbound: no default, no locked chord', () => {
+    const fresh = ACTIONS.filter((a) => !(a.id in PRE_EXTENSION_DEFAULTS));
+    // The generated setting actions alone are well over a hundred.
+    expect(fresh.length).toBeGreaterThan(150);
+    for (const a of fresh) {
+      expect(a.defaults, a.id).toEqual([]);
+      expect(a.locked, a.id).toBeUndefined();
+    }
+  });
+
+  it('C is free in the reader and O still offsets the spreads', () => {
+    for (const ctx of ['paged', 'vertical', 'horizontal', 'edit'] as const) {
+      expect(resolve(ctx, { code: 'KeyC', key: 'c' }), ctx).toBeNull();
+      expect(resolve(ctx, { code: 'KeyO', key: 'o' }), ctx).toBe('reader.offset-spreads');
+    }
+    expect(keymap.actions.has('reader.cover' as ActionId)).toBe(false);
+    expect(keymap.actions.get('reader.offset-spreads')?.label).toBe('Spreads offset');
+    // The volume row's own C (change cover) is another scope and is untouched.
+    expect(resolve('volume', { code: 'KeyC', key: 'c' })).toBe('library.volume-cover');
+  });
+
+  it('no key does anything new outside the reader', () => {
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((l) => `Key${l}`);
+    for (const ctx of ['catalog', 'series-page', 'tracker', 'app'] as const) {
+      for (const code of letters) expect(resolve(ctx, { code }), `${ctx} ${code}`).toBeNull();
+      expect(resolve(ctx, { code: 'Escape' }), ctx).toBe('app.back');
+    }
   });
 });

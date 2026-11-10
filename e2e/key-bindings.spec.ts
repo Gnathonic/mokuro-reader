@@ -587,3 +587,368 @@ test('re-read prompt open: a rebound page key does not page continuous scroll un
   await page.keyboard.press('s');
   await expectPage(page, before + 1);
 });
+
+// ---------------------------------------------------------------------------
+// Every control bindable (spec section 17, step A): actions generated from
+// the setting definitions, the C/O change, the schedule message's button, the
+// one settings-open flag, and the page scopes outside the reader.
+// ---------------------------------------------------------------------------
+
+function notification(page: Page) {
+  return page.locator('[data-reader-notification]');
+}
+
+async function filterShortcuts(page: Page, text: string) {
+  await page.locator('[data-keyboard-shortcuts] input[type="search"]').fill(text);
+}
+
+async function bind(page: Page, id: string, key: string) {
+  await row(page, id).locator('[data-key-capture]').click();
+  await expect(row(page, id)).toContainText('Press a key');
+  await page.keyboard.press(key);
+  await expect(row(page, id).locator(`[data-key-chip="${key.toUpperCase()}"]`)).toBeVisible();
+}
+
+async function miscSetting(page: Page, key: string) {
+  return page.evaluate(
+    (k) => JSON.parse(localStorage.getItem('miscSettings') ?? '{}')[k] as unknown,
+    key
+  );
+}
+
+async function volumeHasCover(page: Page, volume: SyntheticVolume) {
+  return page.evaluate(
+    (uuid) => JSON.parse(localStorage.getItem('volumes') ?? '{}')[uuid]?.settings?.hasCover,
+    volume.volumeUuid
+  );
+}
+
+test('generated setting actions: listed unbound, bound in the section, run from the reader', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyGenerated');
+  await openReader(page, volume);
+  await openShortcuts(page);
+
+  // New actions ship unbound, each with its icon; the setting's name finds all of its actions.
+  await filterShortcuts(page, 'paged zoom');
+  await expect(page.locator('[data-key-action]')).toHaveCount(7);
+  await expect(row(page, 'set.zoom-paged.next')).toContainText('Not set');
+  await expect(row(page, 'set.zoom-paged.next').locator('svg').first()).toBeVisible();
+  await bind(page, 'set.zoom-paged.to.zoomFitToWidth', 'w');
+
+  await filterShortcuts(page, 'bold font');
+  await expect(row(page, 'set.bold.toggle')).toContainText('Not set');
+  await bind(page, 'set.bold.toggle', 'b');
+
+  await filterShortcuts(page, 'brightness');
+  await bind(page, 'set.brightness.up', 'u');
+  await bind(page, 'set.brightness.reset', 'y');
+
+  // A pinned toggle kept its id and its key.
+  await filterShortcuts(page, 'night mode');
+  await expect(row(page, 'reader.night').locator('[data-key-chip="N"]')).toBeVisible();
+  await closeDrawer(page);
+
+  expect(await profileSetting(page, 'keyBindings')).toEqual({
+    'set.zoom-paged.to.zoomFitToWidth': ['KeyW'],
+    'set.bold.toggle': ['KeyB'],
+    'set.brightness.up': ['KeyU'],
+    'set.brightness.reset': ['KeyY']
+  });
+
+  // Toggle: written, and announced in the reader's own notification.
+  await page.keyboard.press('b');
+  await expect(notification(page)).toHaveText('Bold font: On');
+  expect(await profileSetting(page, 'boldFont')).toBe(true);
+  // A held toggle does not flicker: auto-repeat is swallowed.
+  await page.keyboard.down('b');
+  await page.keyboard.down('b');
+  await page.keyboard.down('b');
+  await page.keyboard.up('b');
+  await expect(notification(page)).toHaveText('Bold font: Off');
+  expect(await profileSetting(page, 'boldFont')).toBe(false);
+
+  // Slider: one step per press, and a held key repeats.
+  await page.keyboard.press('u');
+  await expect(notification(page)).toHaveText('Brightness: 105%');
+  await page.keyboard.down('u');
+  await page.keyboard.down('u');
+  await page.keyboard.up('u');
+  await expect(notification(page)).toHaveText('Brightness: 115%');
+  expect(await profileSetting(page, 'pageBrightness')).toBe(115);
+  await page.keyboard.press('y');
+  await expect(notification(page)).toHaveText('Brightness: 100%');
+  expect(await profileSetting(page, 'pageBrightness')).toBe(100);
+
+  // Set-to: the stored value, announced by the option's name.
+  await page.keyboard.press('w');
+  await expect(notification(page)).toHaveText('Paged zoom: Fit to width');
+  expect(await profileSetting(page, 'zoomDefault')).toBe('zoomFitToWidth');
+
+  // The seven old toggles go through the same handler, in the common wording.
+  await page.keyboard.press('t');
+  await expect(notification(page)).toHaveText('Always show OCR: On');
+  await page.keyboard.press('t');
+  await expect(notification(page)).toHaveText('Always show OCR: Off');
+
+  // A plain message leaves by itself after its 2 s.
+  await expect(notification(page)).toHaveCount(0, { timeout: 4000 });
+
+  // P and Z are still ONE mode-aware cycle each.
+  await page.keyboard.press('z');
+  await expect(notification(page)).toHaveText('Fill Screen');
+  expect(await profileSetting(page, 'zoomDefault')).toBe('zoomFillScreen');
+  await page.keyboard.press('p');
+  await expect(notification(page)).toHaveText('Dual Page');
+
+  // V: continuous scroll. The paged zoom key is not live there; M (continuous only) is.
+  await page.keyboard.press('v');
+  await expect(notification(page)).toHaveText('Continuous scroll: On');
+  await expect(page.locator('[data-page-index]').first()).toBeVisible();
+  await page.keyboard.press('w');
+  await page.waitForTimeout(300);
+  expect(await profileSetting(page, 'zoomDefault')).toBe('zoomFillScreen');
+  await page.keyboard.press('m');
+  await expect(notification(page)).toHaveText('Page dividers: On');
+  expect(await profileSetting(page, 'pageDividers')).toBe(true);
+
+  // The settings drawer shows what the keys wrote (one list, used twice).
+  await page.locator('button.reader-hud.right-3').click();
+  await expect(page.locator('dialog#settings')).toBeVisible();
+  await expect(page.locator('#settings label', { hasText: 'Continuous scroll' })).toBeVisible();
+  await expect(page.locator('#settings select').first()).toBeVisible();
+  const scrollModes = await page
+    .locator('#settings select')
+    .first()
+    .locator('option')
+    .allTextContents();
+  expect(scrollModes.map((t) => t.trim()).filter((t) => t && !t.startsWith('Choose'))).toEqual([
+    'Match orientation',
+    'Vertical scroll',
+    'Horizontal scroll'
+  ]);
+  // Keys stand down while typing in the drawer.
+  await page.keyboard.press('b');
+  expect(await profileSetting(page, 'boldFont')).toBe(false);
+});
+
+test('C is freed and O offsets the spreads; a stored reader.cover folds into O', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyCoverOffset', { singlePageView: 'dual' });
+  await openReader(page, volume);
+  const before = (await volumeHasCover(page, volume)) ?? true;
+
+  // C: nothing answers it in the reader any more.
+  await page.keyboard.press('c');
+  await page.waitForTimeout(500);
+  await expect(notification(page)).toHaveCount(0);
+  expect((await volumeHasCover(page, volume)) ?? true).toBe(before);
+  // …and the key keeps its browser default.
+  const cPrevented = await page.evaluate(() => {
+    const e = new KeyboardEvent('keydown', { code: 'KeyC', key: 'c', cancelable: true });
+    window.dispatchEvent(e);
+    return e.defaultPrevented;
+  });
+  expect(cPrevented).toBe(false);
+
+  // O: "Spreads offset".
+  await page.keyboard.press('o');
+  await expect(notification(page)).toHaveText('Spreads Offset');
+  await expect.poll(() => volumeHasCover(page, volume)).toBe(!before);
+  await page.keyboard.press('o');
+  await expect.poll(() => volumeHasCover(page, volume)).toBe(before);
+
+  // The section lists one action for it, on O; no "First page is cover" action.
+  await openShortcuts(page);
+  await filterShortcuts(page, 'spreads offset');
+  await expect(row(page, 'reader.offset-spreads').locator('[data-key-chip="O"]')).toBeVisible();
+  await filterShortcuts(page, 'cover');
+  await expect(page.locator('[data-key-action="reader.cover"]')).toHaveCount(0);
+  // The cover toggle in the drawer stays, without a key hint.
+  const coverToggle = page.locator('#settings label', { hasText: 'First page is cover' });
+  await expect(coverToggle).toBeVisible();
+  await expect(coverToggle.locator('[data-key-hint]')).toHaveCount(0);
+  await closeDrawer(page);
+
+  // A profile written by an earlier build of this branch: C is dropped, X moves onto O.
+  await patchProfile(page, { keyBindings: { 'reader.cover': ['KeyC', 'KeyX'] } });
+  await expect(page.locator('#page-num')).toContainText(`/ ${PAGES}`, { timeout: 30000 });
+  expect(await profileSetting(page, 'keyBindings')).toEqual({
+    'reader.offset-spreads': ['KeyO', 'KeyX']
+  });
+  const folded = (await volumeHasCover(page, volume)) ?? true;
+  await page.keyboard.press('c');
+  await page.waitForTimeout(400);
+  expect((await volumeHasCover(page, volume)) ?? true).toBe(folded);
+  await page.keyboard.press('x');
+  await expect(notification(page)).toHaveText('Spreads Offset');
+  await expect.poll(() => volumeHasCover(page, volume)).toBe(!folded);
+});
+
+test('N on a schedule: the message carries “Set to manual”, which keeps what is on screen', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  // All day, so night mode is on by schedule whenever this runs; the manual value says off.
+  const volume = await setup(page, 'KeySchedule', {
+    nightMode: false,
+    nightModeSchedule: { enabled: true, startTime: '00:00', endTime: '23:59' }
+  });
+  await openReader(page, volume);
+  await expectPage(page, 1);
+
+  await page.keyboard.press('n');
+  await expect(notification(page)).toContainText('Night Mode is on automatic schedule');
+  const button = notification(page).locator('button', { hasText: 'Set to manual' });
+  await expect(button).toBeVisible();
+  // The key changed nothing.
+  expect(await profileSetting(page, 'nightMode')).toBe(false);
+  expect(((await profileSetting(page, 'nightModeSchedule')) as { enabled: boolean }).enabled).toBe(
+    true
+  );
+  // It never takes focus: the reader's keys keep working under it.
+  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('BODY');
+  await page.keyboard.press('ArrowLeft');
+  await expectPage(page, 2);
+
+  // With a button it outlives a plain message's 2 s…
+  await page.waitForTimeout(3000);
+  await expect(button).toBeVisible();
+  // …and stays for as long as the pointer is on it (well past its 5 s).
+  await notification(page).hover();
+  await page.waitForTimeout(6000);
+  await expect(button).toBeVisible();
+
+  // The button: schedule off, and night mode stays ON (what is on screen).
+  await button.click();
+  await expect(notification(page)).toHaveText('Night mode: On (manual)');
+  expect(await profileSetting(page, 'nightMode')).toBe(true);
+  expect(((await profileSetting(page, 'nightModeSchedule')) as { enabled: boolean }).enabled).toBe(
+    false
+  );
+  // The press neither took focus, turned the page nor left the reader.
+  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('BODY');
+  await expectStays(page, 2);
+  expect(await page.evaluate(() => location.hash)).toMatch(/^#\/reader\//);
+
+  // The next press of the key toggles it.
+  await page.keyboard.press('n');
+  await expect(notification(page)).toHaveText('Night mode: Off');
+  expect(await profileSetting(page, 'nightMode')).toBe(false);
+  await expect(notification(page).locator('button')).toHaveCount(0);
+
+  // The settings card agrees: Manual, off.
+  await page.locator('button.reader-hud.right-3').click();
+  await expect(page.locator('dialog#settings')).toBeVisible();
+  await expect(page.locator('#settings', { hasText: 'Night mode' })).toBeVisible();
+});
+
+test('one settings-open flag: each button opens exactly one drawer, in its own context', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyDrawer');
+  const open = page.locator('dialog#settings[open]');
+
+  // The library: the NavBar's button, the library's content (volume defaults).
+  await expect(open).toHaveCount(0);
+  await page.locator('nav button[title="Settings"]').click();
+  await expect(open).toHaveCount(1);
+  await expect(open).toContainText('Volume defaults');
+  await page.mouse.click(200, 540);
+  await expect(open).toHaveCount(0);
+
+  // The reader: its own button, the reader's content (per-volume settings).
+  await openReader(page, volume);
+  await page.locator('button.reader-hud.right-3').click();
+  await expect(open).toHaveCount(1);
+  await expect(open).toContainText('Per-volume settings');
+  await expect(open).not.toContainText('Volume defaults');
+
+  // Leaving the reader with it open: it closes, and the library's does not open in its place.
+  await page.evaluate(() => (window.location.hash = '#/catalog'));
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/catalog');
+  await page.waitForTimeout(600);
+  await expect(open).toHaveCount(0);
+
+  // The library's button still opens the library's drawer afterwards.
+  await page.locator('nav button[title="Settings"]').click();
+  await expect(open).toHaveCount(1);
+  await expect(open).toContainText('Volume defaults');
+});
+
+test('outside the reader: a page-scope action fires on its page only, announced by the snackbar', async ({
+  page
+}) => {
+  test.setTimeout(150_000);
+  const volume = await setup(page, 'KeyPages', {
+    keyBindings: {
+      'set.gallery-layout.next': ['KeyG'],
+      'set.series-view.next': ['KeyG'],
+      'set.series-sort.next': ['KeyS'],
+      'set.theme.to.nord': ['KeyT']
+    }
+  });
+  const toast = page.locator('[role="alert"]', { hasText: /:/ });
+
+  // Catalog: G is the gallery layout. The same order the layout button walks.
+  expect(await miscSetting(page, 'galleryLayout')).toBe('grid');
+  await page.keyboard.press('g');
+  await expect.poll(() => miscSetting(page, 'galleryLayout')).toBe('list');
+  await expect(toast.last()).toContainText('Gallery layout: List');
+  await page.keyboard.press('g');
+  await expect.poll(() => miscSetting(page, 'galleryLayout')).toBe('grid');
+  // S is the series page's: nothing here.
+  await page.keyboard.press('s');
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => localStorage.getItem('series-sort-mode'))).toBe('unread-first');
+  // Not from a text field.
+  const search = page.locator('input[type="search"], input[placeholder*="earch"]').first();
+  await search.click();
+  await page.keyboard.press('g');
+  await page.waitForTimeout(300);
+  expect(await miscSetting(page, 'galleryLayout')).toBe('grid');
+  await search.fill('');
+  await page.locator('body').click({ position: { x: 5, y: 400 } });
+
+  // An app-scope action works on every page.
+  await page.keyboard.press('t');
+  await expect.poll(() => profileSetting(page, 'theme')).toBe('nord');
+  await expect(toast.last()).toContainText('Theme: Nord');
+
+  // The series page: G is ITS view now, the gallery is untouched; S walks the sort button's order.
+  await page.evaluate((id) => (window.location.hash = `#/series/${id}`), volume.seriesUuid);
+  await expect(page.getByText(`${volume.seriesTitle} 01`, { exact: true }).first()).toBeVisible({
+    timeout: 30000
+  });
+  await page.mouse.move(5, 5);
+  expect(await page.evaluate(() => localStorage.getItem('series-view-mode'))).toBe('grid');
+  await page.keyboard.press('g');
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('series-view-mode')))
+    .toBe('list');
+  await expect(toast.last()).toContainText('Series view: List');
+  expect(await miscSetting(page, 'galleryLayout')).toBe('grid');
+
+  const sortButton = page.locator('button', { hasText: /Unread first|Default|Reverse default/ });
+  await expect(sortButton.first()).toContainText('Unread first');
+  await page.keyboard.press('s');
+  await expect(sortButton.first()).toContainText('Default');
+  await expect(toast.last()).toContainText('Series sort: Default');
+  await sortButton.first().click();
+  await expect(sortButton.first()).toContainText('Reverse default');
+  await sortButton.first().click();
+  await expect(sortButton.first()).toContainText('Unread first');
+
+  // The view survives a reload (the same localStorage keys as before).
+  await page.reload();
+  await expect(page.getByText(`${volume.seriesTitle} 01`, { exact: true }).first()).toBeVisible({
+    timeout: 30000
+  });
+  expect(await page.evaluate(() => localStorage.getItem('series-view-mode'))).toBe('list');
+  await expect(page.locator('button', { hasText: /^\s*Grid\s*$/ }).first()).toBeVisible();
+});

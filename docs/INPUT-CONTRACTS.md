@@ -156,11 +156,32 @@ Zoom settles carry a `SettleReason` (`zoom-controller.ts`): only
 
 ### Keyboard: one registry, one resolver (#55)
 
-Every shortcut is an entry in the action registry (`src/lib/keys/actions.ts`)
-and resolves through `dispatchKey` (`src/lib/keys/dispatch.ts`) against the
-active profile's keymap (`Settings.keyBindings`, sparse — `{}` is the
-defaults; `src/lib/keys/keymap.ts`). Nothing else compares keys by hand at a
-shortcut site (`src/lib/keys/source-lint.test.ts` holds the line).
+Every shortcut is an action in the registry and resolves through
+`dispatchKey` (`src/lib/keys/dispatch.ts`) against the active profile's keymap
+(`Settings.keyBindings`, sparse — `{}` is the defaults;
+`src/lib/keys/keymap.ts`). Nothing else compares keys by hand at a shortcut
+site (`src/lib/keys/source-lint.test.ts` holds the line).
+
+The registry is three lists in one (`src/lib/keys/registry.ts`): the
+hand-registered commands and cycles (`actions.ts`), the actions GENERATED from
+the setting definitions (`src/lib/settings/setting-defs.ts` → `generate.ts`:
+a toggle's Toggle, a list's Next / Previous / one "Set to" per option, a
+slider's Step up / Step down / Reset), and one "Set to" per profile. The list
+is not a constant, so a compiled keymap carries the actions it was built from
+and nothing resolves an id against a module-level table.
+
+- **One handler for every generated action**: `runSettingAction`
+  (`src/lib/keys/setting-actions.ts`) reads the definition, writes the next
+  value and announces it. No listener site has a per-setting handler; a site
+  passes `dispatchKey` a resolver that answers its own typed map first and
+  the generated handler after it.
+- **Feedback** goes through `announce` (`src/lib/keys/announce.ts`): the
+  reader's in-overlay notification while the reader is mounted, the snackbar
+  anywhere else. A notification may carry one button (a filter on its
+  schedule offers "Set to manual"); it then stays 5 s and while the pointer
+  or focus is on it, and never takes focus.
+- **Scopes are data** (`SCOPES` in `actions.ts`): which scope is tried before
+  which, and which are never live together. `chordRelation` reads the table.
 
 - **Reader.svelte is the reader's only keyboard listener**, continuous scroll
   included. Its guard prelude (re-read prompt open → layer UI →
@@ -183,7 +204,10 @@ shortcut site (`src/lib/keys/source-lint.test.ts` holds the line).
 - Toggles, Back and library actions ignore auto-repeat.
 - **One Back owner per view**: Reader in the reader, `+layout.svelte`
   elsewhere (never from a field, the settings panel, a popover, or under an
-  open dialog). Library hover keys are dispatched by the hovered card.
+  open dialog). Outside the reader the layout dispatches the view's page scope
+  (`library`, `series`, `tracker`, `text`), then `app`. Library hover keys are
+  still dispatched by the hovered card, AFTER the layout's listener: a
+  page-scope key that a hovered card also uses resolves to the page.
 - Element-level handlers stay outside the keymap: text fields, the OCR line
   editor, the page-number input, modal Escape captures, the layer picker and
   name prompt, the spine shelf's arrows.
