@@ -307,7 +307,9 @@ describe('Shortcuts and quick menu: a search mounts a bounded list', () => {
     await search(section, 'a');
     expect(rowIds(container)).toHaveLength(MATCH_LIMIT);
     expect(container.querySelector('[data-key-more]')).not.toBeNull();
-  });
+    // "Show all" mounts every matching row on purpose (150+): ~0.7 s on an idle
+    // machine, past the default 5 s on a saturated one.
+  }, 30_000);
 
   it('a search that fits shows everything and no "Show all"', async () => {
     const section = render(KeyboardShortcuts, AT_ONCE);
