@@ -18,6 +18,9 @@
   import { preferredTitleLanguage } from '$lib/settings/settings';
   import { nav, currentView } from '$lib/util/hash-router';
   import { showSnackbar } from '$lib/util';
+  import { provideKeyHandlers } from '$lib/keys/providers';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { ScopeActionId } from '$lib/keys/actions';
   import type { Series } from '$lib/catalog/catalog';
   import type { DisplayTitleLanguage, SeriesMetadata } from '$lib/metadata/types';
   import SeriesRenameField from './SeriesRenameField.svelte';
@@ -155,6 +158,32 @@
     value.onClose?.();
   }
 
+  /**
+   * This dialog is the TOP one: not while a modal opened FROM here (the AniList link
+   * picker, a confirmation) is over it. The one test for both of its keyboard rules — the
+   * Escape capture below and the keys it provides.
+   */
+  function isTopDialog(): boolean {
+    return open && !linkOpen && !$confirmationPopupStore?.open;
+  }
+
+  // The dialog's own key actions (#55). Under a dialog the layout's key listener tries
+  // ONLY a provided dialog scope — never `app`, never the page — so these are provided
+  // exactly while this is the top dialog, and withdrawn while something is over it.
+  $effect(() => {
+    if (!isTopDialog()) return;
+    return provideKeyHandlers('series-editor', {
+      'series-editor.next-unlinked': () => {
+        if (nextUnlinked) goToNextUnlinked();
+        else showSnackbar('No other series is missing its AniList link');
+      },
+      'series-editor.next-untitled': () => {
+        if (nextUntitled) goToNextUntitled();
+        else showSnackbar('No other series is missing its titles');
+      }
+    } satisfies Record<ScopeActionId<'series-editor'>, KeyHandler>);
+  });
+
   // Capture Escape so it doesn't propagate to the series page's back-navigation handler.
   // Stands down while a modal opened FROM here is on top, so Escape closes that one first.
   $effect(() => {
@@ -165,7 +194,7 @@
       // A modal opened FROM here is on top: let IT handle Escape (don't preventDefault), but
       // still stop the key from reaching the page underneath, whose bubble-phase handler would
       // navigate back to the catalog.
-      if (linkOpen || $confirmationPopupStore?.open) {
+      if (!isTopDialog()) {
         e.stopPropagation();
         return;
       }

@@ -80,24 +80,10 @@
     dismissForSession();
   }
 
-  // Reader shortcut keys that must not reach the reader/continuous-scroll
-  // readers while this modal is open. Paged-mode paging/zoom-scroll AND (in
-  // continuous-scroll mode) VerticalScrollReader/HorizontalScrollReader's own
-  // `<svelte:window onkeydown>` listeners all live at the bubble phase, so
-  // stopping propagation here (at capture) keeps every one of them from ever
-  // seeing these keys. Not `preventDefault`: a focused button (e.g. one of
-  // ours, which Flowbite auto-focuses) must still activate on Space.
-  const BLOCKED_NAV_KEYS = new Set([
-    'ArrowUp',
-    'ArrowDown',
-    'ArrowLeft',
-    'ArrowRight',
-    'PageUp',
-    'PageDown',
-    ' ',
-    'Home',
-    'End'
-  ]);
+  // No other keys need blocking here: Reader.svelte is the reader's only
+  // keyboard listener (continuous scroll included — #55) and it returns early
+  // while this prompt is open, so no shortcut, however rebound, can page the
+  // reader underneath it.
 
   // Capture Escape before it bubbles to the reader's own page-turn/back
   // shortcuts (Reader.svelte's handleShortcuts) AND the app-wide "Escape =
@@ -124,9 +110,6 @@
         e.preventDefault();
         if (!busy) dismissForSession();
         return;
-      }
-      if (BLOCKED_NAV_KEYS.has(e.key)) {
-        e.stopPropagation();
       }
     }
 

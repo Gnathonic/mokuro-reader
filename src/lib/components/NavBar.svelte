@@ -9,24 +9,21 @@
     CalendarMonthOutline
   } from 'flowbite-svelte-icons';
   import { nav, isOnReader } from '$lib/util/hash-router';
-  import Settings from './Settings/Settings.svelte';
+  import SettingsDrawerHost from './Settings/SettingsDrawerHost.svelte';
+  import { openSettings, uploadModalOpen } from '$lib/settings/settings-open';
   import UploadModal from './UploadModal.svelte';
   import Icon from '$lib/assets/icon.webp';
   import { showSnackbar } from '$lib/util';
   import { tokenManager } from '$lib/util/sync/providers/google-drive';
   import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
   import { unifiedProviderState } from '$lib/util/sync/unified-provider-state';
+  import { canSyncProgress, syncProgressNow } from '$lib/keys/app-actions';
 
   // Use $state to make these reactive
-  let settingsOpen = $state(false);
-  let uploadModalOpen = $state(false);
   let isReader = $state(false);
 
   // Read unified provider state synchronously
   let providerState = $derived($unifiedProviderState);
-
-  // Track if any cloud providers are configured (derived from active_cloud_provider key)
-  let hasActiveProvider = $derived(providerState?.hasActiveProvider ?? false);
 
   // Google Drive specific: Track token expiry for debug display
   let tokenMinutesLeft = $state<number | null>(null);
@@ -84,12 +81,8 @@
     nav.toCatalog();
   }
 
-  function openSettings() {
-    settingsOpen = true;
-  }
-
   function openUploadModal() {
-    uploadModalOpen = true;
+    uploadModalOpen.set(true);
   }
 
   function navigateToCloud() {
@@ -104,17 +97,10 @@
     nav.toProgressTracker();
   }
 
-  async function handleSync() {
-    if (isSyncing) return; // Prevent multiple simultaneous syncs
-
-    try {
-      // Sync with all authenticated providers
-      // State is managed automatically by unifiedSyncService
-      await unifiedCloudManager.syncProgress();
-    } catch (error) {
-      console.error('Manual sync failed:', error);
-      showSnackbar('Sync failed');
-    }
+  // The same sync, behind the same test, as the `app.sync` key
+  // (`keys/app-actions.ts`): state is managed by unifiedSyncService.
+  function handleSync() {
+    void syncProgressNow();
   }
 
   // Google Drive specific: Manual token refresh handler. A click: the one
@@ -166,7 +152,11 @@
       >
         <CalendarMonthOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
-      <button onclick={openSettings} class="flex h-6 w-6 items-center justify-center">
+      <button
+        onclick={openSettings}
+        class="flex h-6 w-6 items-center justify-center"
+        title="Settings"
+      >
         <UserSettingsSolid class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
       <button onclick={openUploadModal} class="flex h-6 w-6 items-center justify-center">
@@ -232,7 +222,7 @@
           {/key}
         {/if}
       {/if}
-      {#if hasActiveProvider && !providerState.isReadOnly}
+      {#if canSyncProgress(providerState)}
         <button
           onclick={handleSync}
           class="flex h-6 w-6 items-center justify-center"
@@ -248,5 +238,5 @@
   </Navbar>
 </div>
 
-<Settings bind:open={settingsOpen} />
-<UploadModal bind:open={uploadModalOpen} />
+<SettingsDrawerHost context="app" />
+<UploadModal bind:open={() => $uploadModalOpen, (open) => uploadModalOpen.set(open)} />

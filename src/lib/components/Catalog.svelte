@@ -32,7 +32,12 @@
     DownloadSolid,
     UploadSolid
   } from 'flowbite-svelte-icons';
-  import { miscSettings, updateMiscSetting, volumes } from '$lib/settings';
+  import { miscSettings, volumes } from '$lib/settings';
+  import { optionName } from '$lib/settings/setting-defs';
+  import { stepSetting } from '$lib/keys/setting-actions';
+  import { provideKeyHandlers } from '$lib/keys/providers';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { ScopeActionId } from '$lib/keys/actions';
   import { partitionCatalogSeries } from '$lib/catalog/catalog';
   import CatalogListItem from './CatalogListItem.svelte';
   import { isUpgrading } from '$lib/catalog/db';
@@ -48,6 +53,21 @@
   const CATALOG_SCROLL_Y_KEY = 'mokuro:catalog:scroll-y';
 
   let search = $state('');
+  let searchInput = $state<HTMLInputElement>();
+
+  // The catalog's own key actions (#55), provided to the layout's one key
+  // listener while this page is mounted. A hovered card's are tried first.
+  onMount(() =>
+    provideKeyHandlers('library', {
+      'library.focus-search': () => {
+        // No field while the library is empty or loading: not this key's.
+        const input = searchInput;
+        if (!input) return false;
+        input.focus();
+        input.select();
+      }
+    } satisfies Record<ScopeActionId<'library'>, KeyHandler>)
+  );
   /** True once the loading spinner has outlived {@link CATALOG_LOAD_STALL_MS}. */
   let loadStalled = $state(false);
   /** "110 of 120 GB" when the origin is under storage-quota pressure, else null. */
@@ -173,22 +193,14 @@
     return provider?.name || 'cloud storage';
   });
 
+  // The layout and sort buttons step their setting definitions (#55), so a
+  // button and a key bound to "Next" walk the same order.
   function onLayout() {
-    if ($miscSettings.galleryLayout === 'list') {
-      updateMiscSetting('galleryLayout', 'grid');
-    } else {
-      updateMiscSetting('galleryLayout', 'list');
-    }
+    stepSetting('gallery-layout', 'next');
   }
 
   function onOrder() {
-    if ($miscSettings.gallerySorting === 'SMART') {
-      updateMiscSetting('gallerySorting', 'ASC');
-    } else if ($miscSettings.gallerySorting === 'ASC') {
-      updateMiscSetting('gallerySorting', 'DESC');
-    } else {
-      updateMiscSetting('gallerySorting', 'SMART');
-    }
+    stepSetting('gallery-sort', 'next');
   }
   let sortedCatalog = $derived.by(() => {
     if ($catalog === null) return [];
@@ -382,7 +394,12 @@
   <div class="flex flex-col gap-5">
     <div class="flex w-full gap-1 py-2">
       <div class="flex-grow">
-        <Search bind:value={search} class="w-full [&>div>input]:h-10" size="md" />
+        <Search
+          bind:value={search}
+          bind:elementRef={searchInput}
+          class="w-full [&>div>input]:h-10"
+          size="md"
+        />
       </div>
       <Button
         size="sm"
@@ -404,13 +421,7 @@
       >
         <SortOutline class="h-5 w-5" />
         <span class="ml-1 text-xs">
-          {#if $miscSettings.gallerySorting === 'ASC'}
-            A-Z
-          {:else if $miscSettings.gallerySorting === 'DESC'}
-            Z-A
-          {:else}
-            Smart
-          {/if}
+          {optionName('gallery-sort', $miscSettings.gallerySorting)}
         </span>
       </Button>
     </div>

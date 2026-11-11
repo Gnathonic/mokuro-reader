@@ -288,7 +288,8 @@ export class ContinuousZoomController {
 
   /**
    * Step one level in `direction`, anchored at (x, y) or the viewport
-   * center. No production caller — this is the test seam (unit + e2e
+   * center: one wheel notch without the wheel. The Zoom in / Zoom out keys
+   * (#55) call it at the centre; it is also the test seam (unit + e2e
    * geometry suites) for stepping levels without the wheel accumulator.
    */
   cycleZoom(direction: 1 | -1, anchorX?: number, anchorY?: number): void {

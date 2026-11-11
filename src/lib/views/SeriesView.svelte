@@ -8,9 +8,19 @@
   import { promptExtraction, promptSeriesEditor } from '$lib/util/modals';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { volumes, progress, settings } from '$lib/settings';
+  import {
+    refreshSeriesViewPrefs,
+    seriesSortMode,
+    seriesViewMode
+  } from '$lib/settings/series-view-prefs';
+  import { optionName } from '$lib/settings/setting-defs';
+  import { stepSetting } from '$lib/keys/setting-actions';
+  import { provideKeyHandlers } from '$lib/keys/providers';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { ScopeActionId } from '$lib/keys/actions';
   import { figuresFor, readingStats } from '$lib/reading-history/stats-store';
   import { seriesSpeeds } from '$lib/reading-history/series-speeds';
-  import { nav, routeParams, navigateBack } from '$lib/util/hash-router';
+  import { nav, routeParams } from '$lib/util/hash-router';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import {
     CloudArrowUpOutline,
@@ -148,25 +158,13 @@
   });
   const formatCharCount = (chars: number) => charFormatter.format(chars || 0);
 
-  // View mode state (persisted to localStorage)
-  type ViewMode = 'list' | 'grid';
-  let viewMode = $state<ViewMode>(
-    (browser && (localStorage.getItem('series-view-mode') as ViewMode)) || 'grid'
-  );
-
-  // Sort mode state (persisted to localStorage)
-  type SortMode = 'unread-first' | 'reverse-alphabetical' | 'alphabetical';
-  let sortMode = $state<SortMode>(
-    (browser && (localStorage.getItem('series-sort-mode') as SortMode)) || 'unread-first'
-  );
-
-  // Update localStorage when modes change
-  $effect(() => {
-    if (browser) {
-      localStorage.setItem('series-view-mode', viewMode);
-      localStorage.setItem('series-sort-mode', sortMode);
-    }
-  });
+  // View and sort mode: per-device stores (`series-view-prefs.ts`, the same
+  // localStorage keys as before), so their setting definitions — and a key
+  // bound to one — read and write what this page shows. Storage is read again
+  // at each mount, as before (another tab may have changed it).
+  refreshSeriesViewPrefs();
+  let viewMode = $derived($seriesViewMode);
+  let sortMode = $derived($seriesSortMode);
 
   // Series open is a load step: refresh this series' series.json, materialize
   // its volumes, install covers. Keyed on the route param so navigating between
@@ -189,16 +187,11 @@
   });
 
   function toggleViewMode() {
-    viewMode = viewMode === 'list' ? 'grid' : 'list';
+    stepSetting('series-view', 'next');
   }
 
   function toggleSortMode() {
-    sortMode =
-      sortMode === 'unread-first'
-        ? 'alphabetical'
-        : sortMode === 'alphabetical'
-          ? 'reverse-alphabetical'
-          : 'unread-first';
+    stepSetting('series-sort', 'next');
   }
 
   /** Read through? The app's one completion rule, over this list's raw progress. */
@@ -603,6 +596,114 @@
     if (seriesId) nav.toSeriesText(seriesId);
   }
 
+  function editSeries() {
+    promptSeriesEditor(seriesTitle);
+  }
+
+  // ---- What this page's buttons offer right now (#55). ONE set of tests:
+  // the template shows or disables each button on its `can…` value, and the
+  // key bound to the same command checks the same value before it calls the
+  // button's own handler — so a key can never run what the page does not
+  // offer, and every confirmation still opens. ----
+
+  /** Which page is drawn: volumes on this device, or a series that is cloud-only so far. */
+  let hasLocalVolumes = $derived(manga.length > 0 && !!mangaStats);
+  let placeholderOnly = $derived(!hasLocalVolumes && placeholders.length > 0);
+
+  let canBackup = $derived(hasLocalVolumes && isCloudReady && !allBackedUp && !isReadOnlyMode);
+  let canRemove = $derived(hasLocalVolumes);
+  let canDeleteFromCloud = $derived(
+    hasLocalVolumes
+      ? isCloudReady && anyBackedUp && !isReadOnlyMode
+      : placeholderOnly && hasAnyProvider && !isReadOnlyMode
+  );
+  let canExtract = $derived(hasLocalVolumes && !loading);
+  let canViewText = $derived(hasLocalVolumes);
+  let canDownloadAll = $derived(
+    hasAnyProvider && (hasLocalVolumes ? showCloudSection : placeholderOnly)
+  );
+  let canCleanDuplicates = $derived(
+    hasLocalVolumes && hasDuplicates && hasAnyProvider && !isReadOnlyMode
+  );
+
+  /** Why a cloud write cannot run, when it is the connection's fault. */
+  function cloudBlocked(): string | null {
+    if (!hasAnyProvider) return 'Connect cloud storage first';
+    if (isReadOnlyMode) return 'This cloud connection is read-only';
+    if (!cacheHasLoaded) return 'Cloud status is still loading';
+    return null;
+  }
+
+  /**
+   * A page command by key: its button's handler behind its button's test.
+   * Not this page's key at all while no series is drawn (loading, not found):
+   * the press then falls through.
+   */
+  function pageCommand(can: boolean, why: () => string, run: () => void): boolean | void {
+    if (!hasLocalVolumes && !placeholderOnly) return false;
+    if (can) run();
+    else showSnackbar(why());
+  }
+
+  // Provided to the layout's one key listener while this page is mounted; a
+  // hovered volume's own actions are tried first.
+  onMount(() =>
+    provideKeyHandlers('series', {
+      'series.edit': () =>
+        pageCommand(
+          true,
+          () => '',
+          () => editSeries()
+        ),
+      'series.download-all': () =>
+        pageCommand(
+          canDownloadAll,
+          () =>
+            hasAnyProvider ? 'Nothing to download' : 'Sign in to a cloud storage provider first',
+          () => void downloadAllPlaceholders()
+        ),
+      'series.backup': () =>
+        pageCommand(
+          canBackup,
+          () =>
+            hasLocalVolumes
+              ? (cloudBlocked() ?? 'All volumes already backed up')
+              : 'Nothing on this device to back up',
+          () => void backupSeries()
+        ),
+      'series.remove': () =>
+        pageCommand(
+          canRemove,
+          () => 'Nothing on this device to remove',
+          () => onDelete()
+        ),
+      'series.delete-cloud': () =>
+        pageCommand(
+          canDeleteFromCloud,
+          () => cloudBlocked() ?? `No backups found in ${providerDisplayName}`,
+          () => void onDeleteFromCloud()
+        ),
+      'series.clean-duplicates': () =>
+        pageCommand(
+          canCleanDuplicates,
+          () => cloudBlocked() ?? `No duplicate ${providerDisplayName} files found`,
+          () => void cleanCloudDuplicates()
+        ),
+      'series.extract': () =>
+        pageCommand(
+          canExtract,
+          () => (loading ? 'Already extracting' : 'Nothing on this device to extract'),
+          () => void onExtract()
+        ),
+      'series.text': () =>
+        pageCommand(
+          canViewText,
+          () => 'Nothing on this device to read',
+          () => goToSeriesText()
+        )
+    } satisfies Record<ScopeActionId<'series'>, KeyHandler>)
+  );
+
   onMount(() => {
     // Check if cache is already loaded on mount (for navigation scenarios)
     const currentCloudFiles = unifiedCloudManager.getAllCloudVolumes();
@@ -618,17 +719,7 @@
       );
     }
 
-    function handleKeydown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        navigateBack();
-      }
-    }
-
-    window.addEventListener('keydown', handleKeydown);
-
-    return () => {
-      window.removeEventListener('keydown', handleKeydown);
-    };
+    // Escape (Back) is +layout.svelte's: one owner per view (#55).
   });
 </script>
 
@@ -649,7 +740,7 @@
           <h3 class="min-w-0 flex-shrink-2 px-2 text-2xl font-bold">{seriesDisplayTitle}</h3>
         {/key}
         <button
-          onclick={() => promptSeriesEditor(seriesTitle)}
+          onclick={editSeries}
           class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
           title="Edit series"
         >
@@ -682,7 +773,7 @@
     <!-- Actions Row: All buttons -->
     <div class="flex flex-row items-stretch justify-end gap-2">
       <!-- Cloud buttons - hidden in read-only mode -->
-      {#if isCloudReady && !allBackedUp && !isReadOnlyMode}
+      {#if canBackup}
         <Button color="light" onclick={backupSeries} class="!min-w-0 self-stretch">
           <CloudArrowUpOutline class="me-2 h-4 w-4 shrink-0" />
           <span class="break-words"
@@ -698,15 +789,7 @@
 
       <Button color="light" onclick={toggleSortMode} class="!min-w-0 self-stretch">
         <SortOutline class="me-2 h-5 w-5 shrink-0" />
-        <span class="break-words">
-          {#if sortMode === 'unread-first'}
-            Unread first
-          {:else if sortMode === 'reverse-alphabetical'}
-            Reverse default
-          {:else}
-            Default
-          {/if}</span
-        >
+        <span class="break-words"> {optionName('series-sort', sortMode)}</span>
       </Button>
 
       <Button color="light" onclick={toggleViewMode} class="!min-w-0 self-stretch">
@@ -724,7 +807,7 @@
         <DotsVerticalOutline class="h-5 w-5" />
       </Button>
       <Dropdown triggeredBy="#series-menu" placement="bottom-end">
-        {#if isCloudReady && anyBackedUp && !isReadOnlyMode}
+        {#if canDeleteFromCloud}
           <DropdownItem
             onclick={onDeleteFromCloud}
             class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"
@@ -735,7 +818,7 @@
         {/if}
         <DropdownItem
           onclick={onExtract}
-          disabled={loading}
+          disabled={!canExtract}
           class="flex w-full items-center text-gray-700 dark:text-gray-200"
         >
           <DownloadSolid class="me-2 h-5 w-5 flex-shrink-0" />
@@ -753,7 +836,7 @@
 
     {#if viewMode === 'list'}
       <Listgroup active class="h-full w-full flex-1">
-        {#if hasDuplicates && hasAnyProvider && !isReadOnlyMode}
+        {#if canCleanDuplicates}
           <div
             class="mb-4 flex items-center justify-between rounded bg-red-50 px-4 py-2 dark:bg-red-900/20"
           >
@@ -781,7 +864,7 @@
               Available in {providerDisplayName}
               {#key cloudSectionCount}<span>({cloudSectionCount})</span>{/key}
             </h4>
-            {#if hasAnyProvider}
+            {#if canDownloadAll}
               <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
                 <DownloadSolid class="me-1 h-3 w-3" />
                 Download all
@@ -826,7 +909,7 @@
               Available in {providerDisplayName}
               {#key cloudSectionCount}<span>({cloudSectionCount})</span>{/key}
             </h4>
-            {#if hasAnyProvider}
+            {#if canDownloadAll}
               <Button size="xs" color="blue" onclick={downloadAllPlaceholders}>
                 <DownloadSolid class="me-1 h-3 w-3" />
                 Download all
@@ -864,7 +947,7 @@
           </h3>
         {/key}
         <button
-          onclick={() => promptSeriesEditor(placeholders[0].series_title)}
+          onclick={editSeries}
           class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
           title="Edit series"
         >
@@ -882,7 +965,7 @@
 
     <!-- Actions Row -->
     <div class="flex flex-row items-stretch justify-end gap-2">
-      {#if hasAnyProvider}
+      {#if canDownloadAll}
         <Button color="primary" onclick={downloadAllPlaceholders} class="!min-w-0 self-stretch">
           <DownloadSolid class="me-2 h-4 w-4 shrink-0" />
           <span class="break-words">Download All</span>
@@ -908,7 +991,7 @@
         <DotsVerticalOutline class="h-5 w-5" />
       </Button>
       <Dropdown triggeredBy="#placeholder-series-menu" placement="bottom-end">
-        {#if hasAnyProvider && !isReadOnlyMode}
+        {#if canDeleteFromCloud}
           <DropdownItem
             onclick={onDeleteFromCloud}
             class="flex w-full items-center text-red-500 hover:!text-red-500 dark:hover:!text-red-500"

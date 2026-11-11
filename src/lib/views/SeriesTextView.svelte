@@ -9,6 +9,9 @@
   import { Spinner } from 'flowbite-svelte';
   import type { VolumeData, VolumeMetadata } from '$lib/types';
   import { onMount } from 'svelte';
+  import { provideKeyHandlers } from '$lib/keys/providers';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { ScopeActionId } from '$lib/keys/actions';
   import { personalizedReadingSpeed } from '$lib/settings/reading-speed';
   import { calculateEstimatedTime } from '$lib/util/reading-speed';
 
@@ -155,6 +158,18 @@
       estimatedTime
     };
   });
+
+  // The text view's own key action (#55), provided to the layout's one key
+  // listener while this page is mounted: the Copy button's handler, once the
+  // button is on screen.
+  onMount(() =>
+    provideKeyHandlers('text', {
+      'text.copy': () => {
+        if (!(dataLoaded && volumesData.length > 0 && seriesData)) return false;
+        void copyText();
+      }
+    } satisfies Record<ScopeActionId<'text'>, KeyHandler>)
+  );
 
   // Copy text to clipboard
   async function copyText() {

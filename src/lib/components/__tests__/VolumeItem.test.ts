@@ -151,7 +151,14 @@ vi.mock('$lib/catalog/cover-service', () => ({
 }));
 
 import VolumeItem from '../VolumeItem.svelte';
+import { installLayoutKeyListener, keymapWith } from '$lib/keys/__tests__/layout-listener';
+import { provideKeyHandlers } from '$lib/keys/providers';
 import { promptConfirmation, showSnackbar } from '$lib/util';
+import { promptExtraction, promptVolumeEditor } from '$lib/util/modals';
+import { nav } from '$lib/util/hash-router';
+import { backupQueue } from '$lib/util/backup-queue';
+import { downloadQueue } from '$lib/util/download-queue';
+import { markVolumeAsComplete } from '$lib/settings';
 import { removeVolumeFiles } from '$lib/import';
 import { unifiedCloudManager } from '$lib/util/sync/unified-cloud-manager';
 import type { VolumeMetadata } from '$lib/types';
@@ -174,6 +181,15 @@ function volume(overrides: Partial<VolumeMetadata> = {}): VolumeMetadata {
 function badges(container: HTMLElement) {
   return container.querySelectorAll('[data-testid="download-badge"]');
 }
+
+// The card's shortcuts are PROVIDED to the app's one key listener outside the
+// reader (#55): each test runs under that listener, installed as the layout
+// installs it on this page.
+let stopLayoutKeys: () => void = () => {};
+beforeEach(() => {
+  stopLayoutKeys = installLayoutKeyListener('series');
+});
+afterEach(() => stopLayoutKeys());
 
 describe('VolumeItem "needs download" badge', () => {
   afterEach(() => cleanup());
@@ -364,6 +380,170 @@ describe('VolumeItem hover + Delete', () => {
   });
 });
 
+describe('VolumeItem keys bound to its row commands (#55)', () => {
+  // None of these has a key by default: each test binds what it presses.
+  const BOUND = keymapWith({
+    'library.volume-backup': ['KeyB'],
+    'library.volume-download': ['KeyD'],
+    'library.volume-read': ['KeyR'],
+    'library.volume-text': ['KeyT'],
+    'library.volume-extract': ['KeyX'],
+    'library.volume-open': ['KeyO'],
+    // The series page has an action on E too; the volume under the pointer goes first.
+    'series.edit': ['KeyE']
+  });
+  let stopBound: () => void = () => {};
+  beforeEach(() => {
+    // Replace the file's default-keymap listener for these tests.
+    stopLayoutKeys();
+    stopBound = installLayoutKeyListener('series', BOUND);
+  });
+  afterEach(() => {
+    stopBound();
+    cleanup();
+    document.querySelectorAll('dialog').forEach((el) => el.remove());
+    vi.clearAllMocks();
+    cloudState.authenticated = false;
+    cloudState.files = new Map();
+  });
+
+  const press = (code: string) => fireEvent.keyDown(window, { code, key: code.slice(-1) });
+
+  async function hover(props: Partial<VolumeMetadata> = {}, variant: 'list' | 'grid' = 'list') {
+    const v = volume(props);
+    const { container } = render(VolumeItem, { props: { volume: v, variant } });
+    const row = container.querySelector('div') as HTMLElement;
+    await fireEvent.mouseEnter(row);
+    return { row, v };
+  }
+
+  function backedUp(v = volume()) {
+    cloudState.authenticated = true;
+    cloudState.files = new Map([
+      [
+        v.series_title,
+        [{ path: `${v.series_title}/${v.volume_title}.cbz`, provider: 'webdav', fileId: 'f1' }]
+      ]
+    ]);
+  }
+
+  it('Backup on a backed-up volume says so and NEVER deletes: no question, no delete, no upload', async () => {
+    // The menu item this key mirrors reads "Delete from cloud" in this state.
+    backedUp();
+    await hover();
+    await press('KeyB');
+
+    expect(showSnackbar).toHaveBeenCalledWith('Vol 1: Already backed up');
+    expect(promptConfirmation).not.toHaveBeenCalled();
+    expect(unifiedCloudManager.deleteManagedVolume).not.toHaveBeenCalled();
+    expect(unifiedCloudManager.deleteFile).not.toHaveBeenCalled();
+    expect(backupQueue.queueVolumeForBackup).not.toHaveBeenCalled();
+  });
+
+  it('Backup queues a volume the cloud does not have', async () => {
+    cloudState.authenticated = true;
+    const provider = vi
+      .spyOn(unifiedCloudManager, 'getDefaultProvider')
+      .mockReturnValue({} as never);
+    const { v } = await hover();
+    await press('KeyB');
+
+    expect(backupQueue.queueVolumeForBackup).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(backupQueue.queueVolumeForBackup).mock.calls[0][0]).toMatchObject({
+      volume_uuid: v.volume_uuid
+    });
+    expect(promptConfirmation).not.toHaveBeenCalled();
+    provider.mockRestore();
+  });
+
+  it('Backup says why without a connection, and for a volume that is not on this device', async () => {
+    await hover();
+    await press('KeyB');
+    expect(showSnackbar).toHaveBeenLastCalledWith('Vol 1: Connect cloud storage to back up');
+    cleanup();
+
+    cloudState.authenticated = true;
+    await hover({ metadata_only: true });
+    await press('KeyB');
+    expect(showSnackbar).toHaveBeenLastCalledWith(
+      'Vol 1: Not on this device: there is nothing to back up'
+    );
+    expect(backupQueue.queueVolumeForBackup).not.toHaveBeenCalled();
+  });
+
+  it('Download queues a volume whose pages are gone, and refuses an installed one', async () => {
+    await hover({ metadata_only: true, cloudFileId: 'f1', cloudProvider: 'webdav' } as never);
+    await press('KeyD');
+    expect(downloadQueue.queueVolume).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    await hover();
+    await press('KeyD');
+    expect(showSnackbar).toHaveBeenLastCalledWith('Vol 1: Already on this device');
+    expect(downloadQueue.queueVolume).toHaveBeenCalledTimes(1);
+  });
+
+  it('Mark read or unread runs the button’s own handler', async () => {
+    await hover();
+    await press('KeyR');
+    expect(markVolumeAsComplete).toHaveBeenCalledTimes(1);
+    expect(showSnackbar).toHaveBeenCalledWith('Marked Vol 1 as read');
+  });
+
+  it('View text and Extract need the pages; Open is the row’s click', async () => {
+    await hover();
+    await press('KeyT');
+    expect(nav.toVolumeText).toHaveBeenCalledWith('One Piece', 'uuid-1');
+    await press('KeyX');
+    expect(promptExtraction).toHaveBeenCalledTimes(1);
+    await press('KeyO');
+    expect(nav.toReader).toHaveBeenCalledWith('One Piece', 'uuid-1');
+    cleanup();
+    vi.clearAllMocks();
+
+    await hover({ metadata_only: true });
+    await press('KeyT');
+    await press('KeyX');
+    expect(nav.toVolumeText).not.toHaveBeenCalled();
+    expect(promptExtraction).not.toHaveBeenCalled();
+    expect(showSnackbar).toHaveBeenLastCalledWith('Vol 1: Not on this device: download it first');
+  });
+
+  it('E on a hovered volume opens ITS editor although the series page has an action on E too', async () => {
+    const editSeries = vi.fn();
+    const noop = () => {};
+    const dispose = provideKeyHandlers('series', {
+      'series.edit': editSeries,
+      'series.download-all': noop,
+      'series.backup': noop,
+      'series.remove': noop,
+      'series.delete-cloud': noop,
+      'series.clean-duplicates': noop,
+      'series.extract': noop,
+      'series.text': noop
+    });
+    const { row } = await hover();
+    await press('KeyE');
+    expect(promptVolumeEditor).toHaveBeenCalledWith('uuid-1');
+    expect(editSeries).not.toHaveBeenCalled();
+
+    // The pointer leaves the row: E is the page's again.
+    await fireEvent.mouseLeave(row);
+    await press('KeyE');
+    expect(editSeries).toHaveBeenCalledTimes(1);
+    expect(promptVolumeEditor).toHaveBeenCalledTimes(1);
+    dispose();
+  });
+
+  it('a row that is not hovered answers nothing', async () => {
+    render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
+    for (const code of ['KeyB', 'KeyD', 'KeyR', 'KeyT', 'KeyX', 'KeyO']) await press(code);
+    expect(showSnackbar).not.toHaveBeenCalled();
+    expect(markVolumeAsComplete).not.toHaveBeenCalled();
+    expect(nav.toReader).not.toHaveBeenCalled();
+  });
+});
+
 describe('VolumeItem menu "Delete from cloud"', () => {
   // Flowbite's popper calls the Popover API as its menu's intro starts; jsdom
   // has none, and the missing method surfaced as an uncaught error that fails
@@ -518,9 +698,10 @@ describe('VolumeItem drawing a cloud-only placeholder', () => {
     await fireEvent.keyDown(window, { key: 'Delete' });
 
     expect(promptConfirmation).not.toHaveBeenCalled();
-    // Silence would read as a broken shortcut; say which key does mean the cloud copy.
+    // Silence would read as a broken shortcut; say which key does mean the cloud
+    // copy — the live binding (#55), Shift+Delete by default.
     expect(showSnackbar).toHaveBeenCalledWith(
-      'Nothing on this device to remove — shift+Delete deletes the cloud copy'
+      'Nothing on this device to remove — Shift+Delete deletes the cloud copy'
     );
   });
 

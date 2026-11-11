@@ -16,6 +16,8 @@ import {
   sanitizeInkColor,
   type InkColorSetting
 } from '$lib/reader/ink-color';
+import { sanitizeKeyBindings, type KeyBindings } from '$lib/keys/keymap';
+import { sanitizeQuickMenu, type QuickMenuSelection } from '$lib/keys/quick-menu';
 
 export type FontSize =
   | 'auto'
@@ -192,6 +194,23 @@ export type Settings = {
   /** Print effect paper age, 0 fresh … 100 old newsprint. Inked pages only. #256 */
   pagePaperAge: number;
   swapWheelBehavior: boolean;
+  /**
+   * Paged mode: a plain vertical wheel turns pages (#55). Wins over
+   * `swapWheelBehavior` when both are on; older clients ignore it and pan.
+   */
+  wheelTurnsPages: boolean;
+  /**
+   * Rebound shortcuts (#55), SPARSE: action id → chords. Absent id = the
+   * registry's defaults (`$lib/keys/actions`), `[]` = unbound. `{}` is
+   * today's keys. See `$lib/keys/keymap`.
+   */
+  keyBindings: KeyBindings;
+  /**
+   * Which actions are on the reader's quick menu (#55), SPARSE: action id →
+   * shown. Absent id = the default; `{}` is today's menu. See
+   * `$lib/keys/quick-menu`.
+   */
+  quickMenu: QuickMenuSelection;
   textBoxContextMenu: boolean;
   continuousScroll: boolean;
   singlePageView: PageViewMode;
@@ -344,6 +363,9 @@ const defaultSettings: Settings = {
   pagePaperTint: PAPER_TINT_DEFAULT,
   pagePaperAge: PAPER_AGE_DEFAULT,
   swapWheelBehavior: false,
+  wheelTurnsPages: false,
+  keyBindings: {},
+  quickMenu: {},
   textBoxContextMenu: true,
   continuousScroll: false,
   singlePageView: 'auto',
@@ -563,6 +585,14 @@ export function migrateProfiles(profiles: Profiles): Profiles {
         base: 'dark',
         background: profile.backgroundColor
       };
+    }
+
+    // Key bindings (#55): shape only. Unknown ids and chords stay — a newer
+    // client's bindings must survive an older client's write-back.
+    migratedProfile.keyBindings = sanitizeKeyBindings(profile.keyBindings);
+    migratedProfile.quickMenu = sanitizeQuickMenu(profile.quickMenu);
+    if (typeof migratedProfile.wheelTurnsPages !== 'boolean') {
+      migratedProfile.wheelTurnsPages = false;
     }
 
     // Legacy: continuous fit-to-width was replaced by fill-screen, which
@@ -964,6 +994,29 @@ export function copyProfile(profileToCopy: string, newName: string) {
         deletedOn: undefined // Remove tombstone flag if copying a deleted profile
       })
     };
+  });
+}
+
+/**
+ * "Copy to all profiles" (#55): write the current profile's key bindings AND
+ * its quick-menu selection into every live profile. Each one is touched
+ * (`lastUpdated`), so the copy syncs.
+ */
+export function copyKeyBindingsToAllProfiles() {
+  _profilesInternal.update((profiles) => {
+    const source = profiles[get(currentProfile)];
+    const keyBindings = source?.keyBindings ?? {};
+    const quickMenu = source?.quickMenu ?? {};
+    const next: Profiles = { ...profiles };
+    for (const [name, profile] of Object.entries(profiles)) {
+      if (profile.deletedOn) continue;
+      next[name] = touchProfile({
+        ...profile,
+        keyBindings: structuredClone(keyBindings),
+        quickMenu: structuredClone(quickMenu)
+      });
+    }
+    return next;
   });
 }
 

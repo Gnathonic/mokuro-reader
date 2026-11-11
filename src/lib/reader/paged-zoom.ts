@@ -13,6 +13,11 @@ export interface PagedZoomApi {
   scrollImage(direction: 'up' | 'down'): void;
   /** QuickActions: show the whole page (fit-to-screen view, level 1). */
   zoomFitToScreen(): void;
+  /**
+   * Zoom in (1) or out (-1) one step of the notched-wheel ladder, anchored at
+   * the screen centre — what one wheel notch does, without a pointer (#55).
+   */
+  zoomStep(direction: 1 | -1): void;
 }
 
 /** Set while a paged reader is mounted; undefined in continuous mode. */

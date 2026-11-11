@@ -32,7 +32,12 @@
   import { initSeriesFileSync } from '$lib/metadata/series-file-sync';
   import { initCatalogFileSync } from '$lib/metadata/catalog-file-sync';
   import { initSwUpdateDetection } from '$lib/util/sw-update';
-  import { navigateBack, currentView } from '$lib/util/hash-router';
+  import { navigateBack, currentView, type View } from '$lib/util/hash-router';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { AppActionId, KeyScope } from '$lib/keys/actions';
+  import { appKeyHandlers } from '$lib/keys/app-actions';
+  import { handleKeydownOutsideReader } from '$lib/keys/outside-reader';
+  import { runSettingAction } from '$lib/keys/setting-actions';
   import { checkMigrationNeeded } from '$lib/catalog/migration';
   import { startThumbnailProcessing } from '$lib/catalog/db';
   import { retirePreviousOcrLayers } from '$lib/catalog/retired-previous-ocr';
@@ -99,22 +104,44 @@
     return initGoalsLifecycle();
   });
 
-  // Handle global Escape key for back navigation
-  function handleKeydown(event: KeyboardEvent) {
-    if (event.key === 'Escape') {
-      // Don't interfere with Escape on inputs or textareas
-      const target = event.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-        return;
-      }
+  /** The key scope of a view's own page (spec 17.4); the hovered card's scope is the card's. */
+  const VIEW_SCOPES: Partial<Record<View['type'], KeyScope>> = {
+    catalog: 'library',
+    series: 'series',
+    'progress-tracker': 'tracker',
+    'volume-text': 'text',
+    'series-text': 'text'
+  };
 
-      // Only navigate back if not already on catalog
-      const view = get(currentView);
-      if (view.type !== 'catalog') {
-        event.preventDefault();
+  // THE keyboard listener everywhere except the reader, which owns its own
+  // (Reader.svelte). No view and no card listens: each PROVIDES its scope's
+  // handlers while it is live (`keys/providers.ts`), and this dispatches, in
+  // order: the card under the pointer, the view's page scope, then `app` —
+  // Back (Escape, plus any extra keys bound to `app.back`, #55), the shared
+  // app commands (`keys/app-actions.ts`) and the setting actions generated
+  // from the definitions, which one handler answers.
+  //
+  // The guards run once, in `handleKeydownOutsideReader`: not from a field,
+  // the settings panel or a popover. While a dialog is up only a dialog's own
+  // provided scope is tried (the series editor, while it is the top dialog) —
+  // never `app`, never the page: Escape there closes the dialog, and only the
+  // dialog, and a second press of a confirming command cannot stack another.
+  function handleKeydown(event: KeyboardEvent) {
+    const view = get(currentView);
+    if (view.type === 'reader') return;
+    const app = {
+      ...appKeyHandlers,
+      'app.back': () => {
+        // Nothing above the catalog: decline, so the key keeps its default.
+        if (view.type === 'catalog') return false;
         navigateBack();
       }
-    }
+    } satisfies Record<AppActionId, KeyHandler>;
+    handleKeydownOutsideReader(event, {
+      viewScope: VIEW_SCOPES[view.type],
+      app,
+      setting: (action) => runSettingAction(action)
+    });
   }
 
   // Handle migration completion

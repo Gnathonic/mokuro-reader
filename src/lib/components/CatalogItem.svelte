@@ -21,8 +21,9 @@
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
   import { promptSeriesEditor } from '$lib/util/modals';
-  import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
-  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { provideKeyHandlers } from '$lib/keys/providers';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { LibrarySeriesActionId } from '$lib/keys/actions';
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { seriesMetadataMap } from '$lib/metadata/store';
   import { seriesIndexMap } from '$lib/metadata/series-index';
@@ -311,25 +312,11 @@
     }
   }
 
+  // Shift / Alt held over the card: the shelf-alignment indicators. A
+  // modifier STATE, not a shortcut — the card's shortcuts are provided to the
+  // layout's one key listener below (#55).
   function handleKeyChange(e: KeyboardEvent) {
     if (!isHovered) return;
-    if (e.type === 'keydown' && shouldOpenSeriesEditor(e, isHovered, document.activeElement)) {
-      e.preventDefault();
-      if (volume) promptSeriesEditor(volume.series_title);
-      return;
-    }
-    // Hover + Delete raises the series page's own "Remove manga" dialog — the same
-    // prompt, with the same forget/cloud checkboxes. Shift is left alone: the card has
-    // no cloud-only delete to map it to.
-    if (
-      e.type === 'keydown' &&
-      !e.shiftKey &&
-      shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())
-    ) {
-      e.preventDefault();
-      void promptSeriesRemoval(seriesVolumes);
-      return;
-    }
     updateModifierState(e);
   }
 
@@ -432,6 +419,22 @@
     }
     hoveredVolumeIndex = hitTestStack(layout, mouseX - shift, BASE_WIDTH) ?? count - 1;
   }
+
+  // The hover shortcuts (#55): while the pointer is on the card it PROVIDES
+  // its scope's handlers, and `+layout.svelte`'s listener — the only one
+  // outside the reader — tries them before the catalog's and the app's.
+  $effect(() => {
+    if (!isHovered) return;
+    return provideKeyHandlers('library.series', {
+      'library.series-open': () => openSeriesPage(),
+      'library.series-edit': () => {
+        if (volume) promptSeriesEditor(volume.series_title);
+      },
+      // The series page's own "Remove manga" dialog, with the same
+      // forget/cloud checkboxes.
+      'library.series-remove': () => void promptSeriesRemoval(seriesVolumes)
+    } satisfies Record<LibrarySeriesActionId, KeyHandler>);
+  });
 
   $effect(() => {
     if (isHovered) {
@@ -738,10 +741,16 @@
     sessionStorage.setItem(CATALOG_SCROLL_Y_KEY, String(y));
   }
 
-  async function handleClick(e: MouseEvent) {
-    e.preventDefault();
+  /** What a click on the card does; "Open series" by key too. */
+  function openSeriesPage() {
+    if (!navId) return false;
     persistCatalogScrollPosition();
     nav.toSeries(navId);
+  }
+
+  async function handleClick(e: MouseEvent) {
+    e.preventDefault();
+    openSeriesPage();
   }
 </script>
 

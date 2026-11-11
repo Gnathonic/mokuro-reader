@@ -7,12 +7,7 @@
    */
   import type { LayerSummary } from '$lib/reader/edit/layer-list';
   import { LAYER_KIND_LABEL } from '$lib/reader/edit/layers';
-  import { ORIGINAL_LAYER_ID } from '$lib/reader/edit/edit-persist';
-  import {
-    TRANSLATION_PROMOTE_BLOCKED,
-    isTranslationLayer,
-    layerRowActions
-  } from '$lib/reader/edit/layer-kind';
+  import { layerActionAvailable, type LayerCommand } from '$lib/reader/edit/layer-kind';
   import { isCuratedLayerId, isPersonalLayerId } from '$lib/reader/edit/layer-names';
   import type { LayerAction } from './layer-actions';
   import {
@@ -99,7 +94,9 @@
     </button>
   </div>
   {#each layers as layer (layer.layer_id)}
-    {@const actions = layerRowActions(layer, { canPublish, status })}
+    {@const can = (action: LayerCommand) =>
+      layerActionAvailable(action, layer, { canPublish, status })}
+    {@const promote = can('promote')}
     <div class="flex items-center">
       <button
         role="radio"
@@ -110,26 +107,30 @@
         <span class="flex-1 truncate">{layer.name}</span>
         <span class="rounded bg-gray-800 px-1 text-[10px]">{badgeOf(layer)}</span>
       </button>
+      <!-- Which buttons a row has is `layerActionAvailable`'s answer, the one
+           the keys bound to the layer commands get too. -->
       <div class="flex shrink-0">
-        {#if layer.layer_id !== ORIGINAL_LAYER_ID}
+        {#if can('rename').available}
           <button
             class={icon}
             aria-label={`Rename layer ${layer.name}`}
             title="Rename"
             onclick={() => onAction('rename', layer.layer_id)}><EditOutline size="sm" /></button
           >
-          <!-- Shown but disabled for a translation, so the tooltip can say why
-               the action every other layer has is missing here. -->
+        {/if}
+        <!-- Shown but disabled for a translation, so the tooltip can say why
+             the action every other layer has is missing here. -->
+        {#if promote.available || promote.shown}
           <button
             class={icon}
             aria-label={`Promote layer ${layer.name}`}
-            disabled={isTranslationLayer(layer)}
-            title={isTranslationLayer(layer) ? TRANSLATION_PROMOTE_BLOCKED : 'Promote to primary'}
-            onclick={() => !isTranslationLayer(layer) && onAction('promote', layer.layer_id)}
+            disabled={!promote.available}
+            title={promote.available ? 'Promote to primary' : promote.reason}
+            onclick={() => promote.available && onAction('promote', layer.layer_id)}
             ><ArrowUpOutline size="sm" /></button
           >
         {/if}
-        {#if actions.publish}
+        {#if can('publish').available}
           <button
             class={icon}
             aria-label={`Publish layer ${layer.name}`}
@@ -137,7 +138,7 @@
             onclick={() => onAction('publish', layer.layer_id)}><UploadOutline size="sm" /></button
           >
         {/if}
-        {#if actions.unpublish}
+        {#if can('unpublish').available}
           <button
             class={icon}
             aria-label={`Unpublish layer ${layer.name}`}
@@ -146,7 +147,7 @@
             ><CloseCircleOutline size="sm" /></button
           >
         {/if}
-        {#if actions.copyToEdit}
+        {#if can('copy-to-edit').available}
           <button
             class={icon}
             aria-label={`Copy layer ${layer.name} to your corrections`}
@@ -155,13 +156,15 @@
             ><FileCopyOutline size="sm" /></button
           >
         {/if}
-        <button
-          class={icon}
-          aria-label={`Export layer ${layer.name}`}
-          title="Export as .mokuro"
-          onclick={() => onAction('export', layer.layer_id)}><DownloadOutline size="sm" /></button
-        >
-        {#if actions.delete}
+        {#if can('export').available}
+          <button
+            class={icon}
+            aria-label={`Export layer ${layer.name}`}
+            title="Export as .mokuro"
+            onclick={() => onAction('export', layer.layer_id)}><DownloadOutline size="sm" /></button
+          >
+        {/if}
+        {#if can('delete').available}
           <button
             class={icon}
             aria-label={`Delete layer ${layer.name}`}

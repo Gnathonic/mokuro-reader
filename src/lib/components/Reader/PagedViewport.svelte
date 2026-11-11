@@ -19,13 +19,15 @@
     gapWheelSteps,
     normalizeWheelDelta,
     wheelIntentIsGapAdjust,
-    wheelIntentIsZoom
+    wheelIntentIsZoom,
+    wheelSwapsZoom
   } from '$lib/reader/zoom-math';
   import { pagedZoom, type PagedZoomApi } from '$lib/reader/paged-zoom';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { gestureTargetRole } from '$lib/reader/input/gesture-target';
   import { TapDiscriminator } from '$lib/reader/input/tap';
   import { classifySwipe } from '$lib/reader/input/swipe';
+  import { WheelPageTurner } from '$lib/reader/input/wheel-page';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
 
   interface Props {
@@ -48,11 +50,27 @@
     onOverlayToggle?: () => void;
     /** The gap-adjust wheel chord changed the page gap to this value (px). */
     onGapChange?: (px: number) => void;
+    /**
+     * "Mouse wheel: turns pages" (#55) asked for a page in READING order —
+     * Reader maps it, like a keyboard Next/Previous page. `opensRun`: the
+     * wheel's first turn since it went idle, the only one that may leave the
+     * volume. Return true when the turn LEFT the volume: the rest of that
+     * wheel run is swallowed.
+     */
+    onWheelPage?: (direction: 'forward' | 'backward', opensRun: boolean) => boolean;
     children?: Snippet;
   }
 
-  let { contentSize, pageKey, rtl, onPageFlip, onOverlayToggle, onGapChange, children }: Props =
-    $props();
+  let {
+    contentSize,
+    pageKey,
+    rtl,
+    onPageFlip,
+    onOverlayToggle,
+    onGapChange,
+    onWheelPage,
+    children
+  }: Props = $props();
 
   let wrapperEl: HTMLDivElement | undefined = $state();
   let viewportWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
@@ -137,9 +155,14 @@
     beforeAnimatedScroll() {
       // camera.panBy chains glides itself — only the zoom must yield.
       if (controller.isActive) controller.finishNow();
+    },
+    // A page turn started HERE (the wheel's turns-pages mode): stop what is
+    // moving the outgoing page. The turn itself is Reader's, and the new
+    // page re-applies its base through the pageKey effect.
+    beforeNav() {
+      if (controller.isActive) controller.finishNow('nav');
+      camera.stopPan();
     }
-    // No beforeNav: page turns are owned by Reader and re-apply the base
-    // through the pageKey effect.
   };
 
   const gapAccumulator = new WheelAccumulator(GAP_WHEEL_STEP_SIZE);
@@ -150,6 +173,9 @@
    * stateful, so asking it twice would double-count the stream.
    */
   const wheelStream = new WheelStreamClassifier();
+
+  /** Stream state for "Mouse wheel: turns pages" (#55). */
+  const wheelPages = new WheelPageTurner();
 
   function adjustGap(delta: number) {
     if (delta === 0) return;
@@ -166,11 +192,26 @@
       return;
     }
     const modifier = e.ctrlKey || e.metaKey;
-    if (wheelIntentIsZoom(modifier, $settings.swapWheelBehavior, fine)) {
+    // Turns pages wins over the swap: ctrl+wheel zooms, the plain wheel turns.
+    const turnsPages = $settings.wheelTurnsPages && !!onWheelPage;
+    const swap = turnsPages ? false : wheelSwapsZoom($settings);
+    if (wheelIntentIsZoom(modifier, swap, fine)) {
       e.preventDefault();
       motion.beforeZoom();
       controller.wheelZoom(e, fine);
       return;
+    }
+    // Shift+wheel is the browser's horizontal scroll — it still pans.
+    if (turnsPages && !modifier && !e.shiftKey) {
+      const action = wheelPages.step(e, fine, () => camera.verticalEdgeState());
+      if (action !== 'pan') {
+        e.preventDefault();
+        if (action !== 'hold') {
+          motion.beforeNav?.();
+          if (onWheelPage?.(action, wheelPages.turnOpensRun)) wheelPages.closeRun();
+        }
+        return;
+      }
     }
     e.preventDefault();
     motion.beforeAnimatedScroll();
@@ -211,9 +252,17 @@
     );
   }
 
+  function zoomStep(direction: 1 | -1) {
+    // One ladder step at the viewport centre, behind the same gate a wheel
+    // notch passes: a pan in flight must not fight the zoom's anchor.
+    motion.beforeZoom();
+    controller.cycleZoom(direction);
+  }
+
   const api: PagedZoomApi = {
     scrollImage,
-    zoomFitToScreen
+    zoomFitToScreen,
+    zoomStep
   };
 
   // ============================================================

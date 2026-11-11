@@ -9,8 +9,9 @@
   import { downloadQueue } from '$lib/util/download-queue';
   import { nav } from '$lib/util/hash-router';
   import { promptSeriesEditor } from '$lib/util/modals';
-  import { shouldOpenSeriesEditor } from '$lib/util/series-editor-shortcut';
-  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { provideKeyHandlers } from '$lib/keys/providers';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { LibrarySeriesActionId } from '$lib/keys/actions';
   import { promptSeriesRemoval } from '$lib/catalog/series-delete';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { isSeriesFinished, isVolumeFinished } from '$lib/util/volume-helpers';
@@ -147,32 +148,33 @@
     sessionStorage.setItem(CATALOG_SCROLL_Y_KEY, String(y));
   }
 
-  async function handleClick(e: MouseEvent) {
-    e.preventDefault();
+  /** What a click on the row does; "Open series" by key too. */
+  function openSeriesPage() {
+    if (!navId) return false;
     persistCatalogScrollPosition();
     nav.toSeries(navId);
   }
 
-  // Hover + "e" opens the series editor for this card (mirrors CatalogItem / VolumeItem).
-  let isHovered = $state(false);
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (shouldOpenSeriesEditor(e, isHovered, document.activeElement)) {
-      e.preventDefault();
-      if (volume) promptSeriesEditor(volume.series_title);
-      return;
-    }
-    // Hover + Delete raises the series page's own "Remove manga" dialog (see CatalogItem).
-    if (!e.shiftKey && shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())) {
-      e.preventDefault();
-      void promptSeriesRemoval(sortedVolumes);
-    }
+  async function handleClick(e: MouseEvent) {
+    e.preventDefault();
+    openSeriesPage();
   }
+
+  // Hover shortcuts (mirrors CatalogItem / VolumeItem), through the keymap
+  // (#55): while hovered the row PROVIDES its scope's handlers to the layout's
+  // one key listener. It does not listen itself.
+  let isHovered = $state(false);
 
   $effect(() => {
     if (!isHovered) return;
-    window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
+    return provideKeyHandlers('library.series', {
+      'library.series-open': () => openSeriesPage(),
+      'library.series-edit': () => {
+        if (volume) promptSeriesEditor(volume.series_title);
+      },
+      // The series page's own "Remove manga" dialog (see CatalogItem).
+      'library.series-remove': () => void promptSeriesRemoval(sortedVolumes)
+    } satisfies Record<LibrarySeriesActionId, KeyHandler>);
   });
 </script>
 

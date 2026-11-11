@@ -74,9 +74,18 @@
   import { createCoverClaims } from '$lib/catalog/cover-claims.svelte';
   import DownloadBadge from './DownloadBadge.svelte';
   import { needsDownload } from '$lib/catalog/volume-state';
-  import { anyModalOpen, shouldTriggerDelete } from '$lib/util/delete-shortcut';
+  import { provideKeyHandlers } from '$lib/keys/providers';
+  import type { KeyHandler } from '$lib/keys/dispatch';
+  import type { LibraryVolumeActionId } from '$lib/keys/actions';
+  import { keyHint } from '$lib/keys/live';
+  import {
+    volumeBackupCommand,
+    volumeDownloadCommand,
+    volumePagesCommand,
+    type RowCommand,
+    type VolumeRowState
+  } from '$lib/catalog/volume-row-commands';
   import { canDeleteSeriesOnServer } from '$lib/util/sync/metadata-permissions';
-  import { isTypingTarget } from '$lib/util/series-editor-shortcut';
   import { onDestroy } from 'svelte';
   import { displayableCoverBlob } from '$lib/util/raster-image';
   import { get } from 'svelte/store';
@@ -678,50 +687,73 @@
     });
   }
 
-  // Keyboard shortcuts when hovering over a volume
+  // Keyboard shortcuts when hovering over a volume — through the keymap (#55).
+  // While hovered the row PROVIDES its scope's handlers; `+layout.svelte`'s
+  // listener (the only one outside the reader, and the owner of the guards:
+  // no field focused, no modal up) tries them before the series page's own.
   let isHovered = $state(false);
+
+  /** The row as its buttons see it, read when a key is pressed (never derived per row). */
+  function rowState(): VolumeRowState {
+    return {
+      installed: !isNotInstalled,
+      hasProvider: hasAuthenticatedProvider,
+      readOnly: isReadOnlyMode,
+      cloudLoading: isCloudLoading,
+      backedUp: isBackedUp,
+      hasCloudFile: !!downloadFileId,
+      downloading: isDownloading
+    };
+  }
+
+  /** Run a row command behind its button's own test; say why when it cannot run. */
+  function rowCommand(can: RowCommand, run: () => void) {
+    if (can.run) run();
+    else showSnackbar(`${volName}: ${can.reason}`);
+  }
 
   $effect(() => {
     if (!isHovered) return;
-
-    function handleKeydown(e: KeyboardEvent) {
-      if (isTypingTarget(document.activeElement)) return;
-
-      // Delete goes through the shared rule (auto-repeat and already-open modals are what
-      // would otherwise stack a second confirmation behind the first). Shift still means
-      // "the cloud copy only", exactly as before.
-      if (e.key === 'Delete') {
-        if (!shouldTriggerDelete(e, isHovered, document.activeElement, anyModalOpen())) return;
-        e.preventDefault();
-        if (e.shiftKey) {
-          onCloudDeleteOnly();
-        } else if (isPlaceholderRow) {
-          // Nothing on this device to delete. The cloud copy is deletable, but
-          // never from the shortcut that means "remove my local copy" — say
-          // which key does mean it rather than swallowing the press.
-          showSnackbar('Nothing on this device to remove — shift+Delete deletes the cloud copy');
+    return provideKeyHandlers('library.volume', {
+      // What a click on the row does: open it, or download it when it is not here.
+      'library.volume-open': () => onOpenClicked(),
+      // The editor reads pages and rewrites OCR; there are none here.
+      'library.volume-edit': () => {
+        if (!isNotInstalled) onEditClicked();
+      },
+      // Picking a cover means picking a page. Same reason.
+      'library.volume-cover': () => {
+        if (!isNotInstalled) onChangeCover();
+      },
+      'library.volume-remove': () => {
+        if (isPlaceholderRow) {
+          // Nothing on this device to delete. The cloud copy is deletable,
+          // but never from the shortcut that means "remove my local copy" —
+          // say which key does mean it rather than swallowing the press.
+          const cloudKey = keyHint('library.volume-delete-cloud');
+          showSnackbar(
+            cloudKey
+              ? `Nothing on this device to remove — ${cloudKey} deletes the cloud copy`
+              : 'Nothing on this device to remove — the menu deletes the cloud copy'
+          );
         } else {
           onDeleteClicked();
         }
-        return;
-      }
-
-      switch (e.key) {
-        case 'e':
-          e.preventDefault();
-          // The editor reads pages and rewrites OCR; there are none here.
-          if (!isNotInstalled) onEditClicked();
-          break;
-        case 'c':
-          e.preventDefault();
-          // Picking a cover means picking a page. Same reason.
-          if (!isNotInstalled) onChangeCover();
-          break;
-      }
-    }
-
-    window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
+      },
+      'library.volume-delete-cloud': () => void onCloudDeleteOnly(),
+      // The button's own handler, so whatever it grows (#224's sheet) the key gets too.
+      'library.volume-read': () => onToggleStatusClicked(),
+      'library.volume-download': () =>
+        rowCommand(volumeDownloadCommand(rowState()), () => onDownloadClicked()),
+      // Backs up, or retries a failed upload — and nothing else. The menu
+      // item this mirrors turns into "Delete from cloud" on a backed-up
+      // volume; the key says "Already backed up" there and stops.
+      'library.volume-backup': () => rowCommand(volumeBackupCommand(rowState()), () => backUp()),
+      'library.volume-text': () =>
+        rowCommand(volumePagesCommand(rowState()), () => onViewTextClicked()),
+      'library.volume-extract': () =>
+        rowCommand(volumePagesCommand(rowState()), () => onExtractClicked())
+    } satisfies Record<LibraryVolumeActionId, KeyHandler>);
   });
 
   async function onBackupClicked(e?: Event) {
@@ -733,7 +765,11 @@
       return;
     }
 
-    // Otherwise, backup to cloud
+    backUp();
+  }
+
+  /** Queue this volume's backup (a retry is the same thing). Never deletes. */
+  function backUp() {
     const provider = unifiedCloudManager.getDefaultProvider();
     if (!provider) {
       showSnackbar('Please connect to a cloud storage provider first');

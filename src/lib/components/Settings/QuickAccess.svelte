@@ -2,6 +2,7 @@
   import { toggleFullScreen } from '$lib/util/fullscreen';
   import { isReader } from '$lib/util';
   import { navigateBack } from '$lib/util/hash-router';
+  import KeyHint from './Keys/KeyHint.svelte';
 
   import { Button } from 'flowbite-svelte';
 
@@ -25,11 +26,8 @@
 {#if isReader()}
   <div class="flex flex-col gap-2">
     <Button color="alternative" onclick={onFullscreen}
-      >Toggle fullscreen <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(F)</span
-      ></Button
+      >Toggle fullscreen <KeyHint id="reader.fullscreen" /></Button
     >
-    <Button color="alternative" onclick={onClose}
-      >Close reader <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(Esc)</span></Button
-    >
+    <Button color="alternative" onclick={onClose}>Close reader <KeyHint id="app.back" /></Button>
   </div>
 {/if}

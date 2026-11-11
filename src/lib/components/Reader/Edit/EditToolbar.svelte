@@ -2,8 +2,10 @@
   /** The edit-mode toolbar, fixed to the viewport (never scrolls with the
    * page), dockable to any edge so it never sits over what is being edited. */
   import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
+  import { editCommandState } from '$lib/reader/edit/edit-commands';
   import { nextLayerId, prevLayerId, type LayerSummary } from '$lib/reader/edit/layer-list';
   import type { EditToolbarDock } from '$lib/settings/misc';
+  import { keyHints } from '$lib/keys/live';
   import {
     ChevronDownOutline,
     ChevronLeftOutline,
@@ -19,6 +21,11 @@
     TrashBinOutline,
     UndoOutline
   } from 'flowbite-svelte-icons';
+
+  /** "Label (key)" with the live binding, or just the label when unbound. */
+  function withKey(label: string, key: string): string {
+    return key ? `${label} (${key})` : label;
+  }
 
   interface Props {
     session: EditSession;
@@ -68,28 +75,9 @@
       : (layers.find((l) => l.layer_id === currentLayer)?.name ?? currentLayer)
   );
 
-  let selected = $derived(session.selection);
-  let single = $derived(
-    selected.length === 1
-      ? session.pageFor(selected[0].pageIndex).blocks[selected[0].blockIndex]
-      : null
-  );
-  // Split happens BEFORE the selected line, so it needs a single block with a
-  // line chosen inside it that is not the first one.
-  let splitLine = $derived(
-    single && selected.length === 1 && session.selectedLine
-      ? session.selectedLine.pageIndex === selected[0].pageIndex &&
-        session.selectedLine.blockIndex === selected[0].blockIndex
-        ? session.selectedLine.lineIndex
-        : null
-      : null
-  );
-  let canSplit = $derived(
-    !!single && single.lines.length >= 2 && splitLine !== null && splitLine >= 1
-  );
-  let canPlaceLines = $derived(
-    !!single && !(single.lines_coords && single.lines_coords.length === single.lines.length)
-  );
+  // The same enablement the keys bound to these commands apply
+  // (`edit-commands.ts`): a button and its key can never disagree.
+  let commands = $derived(editCommandState(session, hasOriginal));
 
   const btn =
     'flex h-10 w-10 items-center justify-center rounded-full bg-gray-700 text-gray-200 shadow hover:bg-gray-600 focus:outline-none disabled:opacity-40 disabled:hover:bg-gray-700';
@@ -116,8 +104,8 @@
   <button
     class={btn}
     aria-label="Delete"
-    title="Delete selected (Del)"
-    disabled={selected.length === 0}
+    title={withKey('Delete selected', $keyHints('edit.delete'))}
+    disabled={!commands.delete.enabled}
     onclick={() => session.deleteSelected()}
   >
     <TrashBinOutline />
@@ -126,7 +114,7 @@
     class={btn}
     aria-label="Merge"
     title="Merge selected boxes"
-    disabled={selected.length < 2}
+    disabled={!commands.merge.enabled}
     onclick={() => session.mergeSelected()}
   >
     <ObjectsColumnOutline />
@@ -135,8 +123,8 @@
     class={btn}
     aria-label="Split"
     title="Split the box before the selected line (click a line inside the selected box first)"
-    disabled={!canSplit}
-    onclick={() => splitLine !== null && session.splitSelected(splitLine)}
+    disabled={!commands.split.enabled}
+    onclick={() => commands.splitLine !== null && session.splitSelected(commands.splitLine)}
   >
     <span class="text-xs font-bold">S</span>
   </button>
@@ -144,8 +132,9 @@
     class={btn}
     aria-label="Place lines"
     title="Give this box one positionable line per OCR line"
-    disabled={!canPlaceLines}
-    onclick={() => selected[0] && session.placeLines(selected[0].pageIndex, selected[0].blockIndex)}
+    disabled={!commands['place-lines'].enabled}
+    onclick={() =>
+      commands.single && session.placeLines(commands.single.pageIndex, commands.single.blockIndex)}
   >
     <span class="text-xs font-bold">≡</span>
   </button>
@@ -153,7 +142,7 @@
     class={btn}
     aria-label="Flip writing mode"
     title="Toggle vertical / horizontal"
-    disabled={selected.length === 0}
+    disabled={!commands.flip.enabled}
     onclick={() => session.flipSelected()}
   >
     <TextSizeOutline />
@@ -162,7 +151,7 @@
   <button
     class={btn}
     aria-label="Undo"
-    title="Undo (Ctrl+Z)"
+    title={withKey('Undo', $keyHints('edit.undo'))}
     disabled={!session.canUndo(pageIndex)}
     onclick={() => session.undo(pageIndex)}
   >
@@ -171,7 +160,7 @@
   <button
     class={btn}
     aria-label="Redo"
-    title="Redo (Ctrl+Shift+Z)"
+    title={withKey('Redo', $keyHints('edit.redo'))}
     disabled={!session.canRedo(pageIndex)}
     onclick={() => session.redo(pageIndex)}
   >
@@ -197,7 +186,7 @@
     <button
       class={btn}
       aria-label="Next layer"
-      title="Next OCR layer (L)"
+      title={withKey('Next OCR layer', $keyHints('reader.ocr-layer'))}
       disabled={!hasLayers}
       onclick={() => onSelectLayer?.(nextLayerId(currentLayer, layers))}
     >
@@ -208,7 +197,7 @@
     class={btn}
     aria-label="Revert page"
     title={`Restore page ${pageIndex + 1}'s original OCR`}
-    disabled={!hasOriginal}
+    disabled={!commands['revert-page'].enabled}
     onclick={onRevert}
   >
     <RefreshOutline />
@@ -224,7 +213,12 @@
       <RestoreWindowOutline />
     </button>
   {/if}
-  <button class={btn} aria-label="Exit edit mode" title="Exit edit mode (Esc)" onclick={onExit}>
+  <button
+    class={btn}
+    aria-label="Exit edit mode"
+    title={withKey('Exit edit mode', $keyHints('edit.back'))}
+    onclick={onExit}
+  >
     <CloseOutline />
   </button>
 </div>

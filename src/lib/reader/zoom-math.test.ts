@@ -7,6 +7,7 @@ import {
   nearestZoomLevel,
   nextZoomLevel,
   wheelIntentIsZoom,
+  wheelSwapsZoom,
   wheelIntentIsGapAdjust,
   gapWheelSteps,
   GAP_WHEEL_STEP_SIZE,
@@ -436,5 +437,15 @@ describe('wheelZoomRatio', () => {
 
   it('moves immediately for a small nudge', () => {
     expect(wheelZoomRatio(-10)).toBeCloseTo(Math.exp(10 * WHEEL_ZOOM_SENSITIVITY), 10);
+  });
+});
+
+describe('wheelSwapsZoom (#55)', () => {
+  it('"Turns pages" wins over the swap, so no surface zooms on a plain wheel', () => {
+    expect(wheelSwapsZoom({ swapWheelBehavior: true, wheelTurnsPages: false })).toBe(true);
+    // An older client turned the swap on in a profile that turns pages.
+    expect(wheelSwapsZoom({ swapWheelBehavior: true, wheelTurnsPages: true })).toBe(false);
+    expect(wheelSwapsZoom({ swapWheelBehavior: false, wheelTurnsPages: true })).toBe(false);
+    expect(wheelSwapsZoom({ swapWheelBehavior: true })).toBe(true);
   });
 });

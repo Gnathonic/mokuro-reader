@@ -7,6 +7,7 @@
   import { currentView } from '$lib/util/hash-router';
   import AnkiConnectSettings from './AnkiConnectSettings.svelte';
   import ReaderSettings from './Reader/ReaderSettings.svelte';
+  import KeyboardShortcuts from './Keys/KeyboardShortcuts.svelte';
   import Profiles from './Profiles/Profiles.svelte';
   import CatalogSettings from './CatalogSettings.svelte';
   import MetadataSettings from './MetadataSettings.svelte';
@@ -88,6 +89,7 @@
     <Accordion flush>
       <QuickAccess bind:open />
       <ReaderSettings />
+      <KeyboardShortcuts />
       {#if !isReader()}
         <VolumeDefaults />
       {/if}

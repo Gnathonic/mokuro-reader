@@ -20,6 +20,7 @@ import {
   basePosition,
   clampTranslate,
   panEdgeState,
+  panEdgeStateVertical,
   type BaseLayout,
   type Size,
   type Translate
@@ -197,6 +198,19 @@ export class PagedCamera {
     this.ty = Math.round(c.y * dpr) / dpr;
     this.syncPan();
     this.render();
+  }
+
+  /**
+   * Vertical hidden-content edge state for the wheel's page-turn gate (#55),
+   * measured where a running wheel pan is HEADING — successive notches chain
+   * their targets, so the live position lags the edge they already reach.
+   */
+  verticalEdgeState(): { canRevealUp: boolean; canRevealDown: boolean } {
+    return panEdgeStateVertical(
+      { x: this.panX.target, y: this.panY.target },
+      this.scaledSize(),
+      this.config.getViewport()
+    );
   }
 
   /** Hidden-content edge state for swipe-to-flip gating (issue #186). */

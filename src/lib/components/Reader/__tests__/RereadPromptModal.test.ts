@@ -90,25 +90,43 @@ describe('RereadPromptModal', () => {
     expect(getByText('Restart series').hasAttribute('data-autofocus')).toBe(false);
   });
 
-  it('blocks page-turn/scroll keys (e.g. ArrowRight) from reaching bubble-phase window listeners while open', () => {
-    // Reader.svelte's own shortcut handler AND VerticalScrollReader/
-    // HorizontalScrollReader's `<svelte:window onkeydown>` listeners are all
-    // bubble-phase window listeners underneath this modal. The modal's guard
-    // is a capture-phase window listener that calls stopPropagation() for
-    // these keys, so a real keydown bubbling up from inside the dialog must
-    // never reach any bubble-phase listener on window.
+  it('leaves page keys to the reader: its one key listener returns early while the prompt is open (#55)', () => {
+    // The prompt used to swallow a fixed list of nav keys (by e.key) at the
+    // capture phase, because the scroll readers listened on their own. With
+    // rebindable keys such a list is always wrong (a rebound A would page
+    // underneath it), so Reader.svelte is now the reader's ONLY key listener
+    // and it returns early while `rereadPromptOpen`. Only Escape is still
+    // the modal's own (next test).
     const bubbleListener = vi.fn();
     window.addEventListener('keydown', bubbleListener);
     render(RereadPromptModal, { props: { ...baseProps } });
 
     const event = new KeyboardEvent('keydown', {
       key: 'ArrowRight',
+      code: 'ArrowRight',
       bubbles: true,
       cancelable: true
     });
     document.body.dispatchEvent(event);
 
+    expect(bubbleListener).toHaveBeenCalledOnce();
+    expect(event.defaultPrevented).toBe(false);
+    window.removeEventListener('keydown', bubbleListener);
+  });
+
+  it("still captures Escape so it never reaches the reader's Back", () => {
+    const bubbleListener = vi.fn();
+    window.addEventListener('keydown', bubbleListener);
+    render(RereadPromptModal, { props: { ...baseProps } });
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      bubbles: true,
+      cancelable: true
+    });
+    document.body.dispatchEvent(event);
     expect(bubbleListener).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
     window.removeEventListener('keydown', bubbleListener);
   });
 });

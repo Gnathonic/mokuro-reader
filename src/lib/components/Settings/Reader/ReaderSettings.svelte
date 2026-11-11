@@ -2,6 +2,7 @@
   import { AccordionItem, Label, Range, Toggle, Select, Helper, Button } from 'flowbite-svelte';
   import ReaderSelects from './ReaderSelects.svelte';
   import ReaderToggles from './ReaderToggles.svelte';
+  import KeyHint from '$lib/components/Settings/Keys/KeyHint.svelte';
   import {
     settings,
     updateSetting,
@@ -13,6 +14,7 @@
     type PageViewMode,
     type VolumeSettingsKey
   } from '$lib/settings';
+  import { listOptions } from '$lib/settings/setting-defs';
   import { isReader } from '$lib/util';
   import { routeParams } from '$lib/util/hash-router';
   import { MAX_PAGE_GAP } from '$lib/reader/zoom-math';
@@ -43,17 +45,9 @@
   let volumeId = $derived($routeParams.volume);
   let volSettings = $derived(volumeId ? $effectiveVolumeSettings[volumeId] : undefined);
 
-  const scrollModes: { value: ScrollMode; name: string }[] = [
-    { value: 'auto', name: 'Match orientation' },
-    { value: 'vertical', name: 'Vertical scroll' },
-    { value: 'horizontal', name: 'Horizontal scroll' }
-  ];
-
-  const pageViewModes: { value: PageViewMode; name: string }[] = [
-    { value: 'single', name: 'Single page' },
-    { value: 'dual', name: 'Dual page' },
-    { value: 'auto', name: 'Auto (detect orientation & spreads)' }
-  ];
+  // From the setting definitions (#55): the same lists the key actions use.
+  const scrollModes = listOptions<ScrollMode>('scroll-mode');
+  const pageViewModes = listOptions<PageViewMode>('page-view');
 
   let swipeThresholdValue = $state($settings.swipeThreshold);
   let edgeButtonWidthValue = $state($settings.edgeButtonWidth);
@@ -166,7 +160,7 @@
       onchange={() => updateSetting('continuousScroll', !isContinuous)}
     >
       Continuous scroll
-      <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(V)</span>
+      <KeyHint id="reader.continuous" />
     </Toggle>
 
     <!-- 2. If paged: Page view mode dropdown -->
@@ -174,7 +168,7 @@
       <div>
         <Label for="page-view-mode" class="mb-2 text-gray-900 dark:text-white">
           Page view mode
-          <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(P)</span>
+          <KeyHint id="reader.page-mode" />
         </Label>
         <Select
           id="page-view-mode"
@@ -218,7 +212,7 @@
         onchange={() => updateSetting('pageDividers', !$settings.pageDividers)}
       >
         Page dividers
-        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(M)</span>
+        <KeyHint id="reader.dividers" />
       </Toggle>
       {#if $settings.pageDividers}
         <div>
@@ -266,7 +260,6 @@
           onchange={() => onVolumeToggle('hasCover', volSettings?.hasCover)}
         >
           First page is cover
-          <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(C)</span>
         </Toggle>
       {/if}
 
@@ -343,7 +336,7 @@
           onclick={() => window.dispatchEvent(new CustomEvent('offset-spreads'))}
         >
           Offset spreads
-          <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">(O)</span>
+          <KeyHint id="reader.offset-spreads" />
         </Button>
       {/if}
 

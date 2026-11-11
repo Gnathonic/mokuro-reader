@@ -118,3 +118,68 @@ describe('AnkiConnect URL confirmation', () => {
     expect(queryByTestId('anki-url-unconfirmed')).toBeNull();
   });
 });
+
+// #55: a key bound to "Anki card mode" or "Anki double-tap capture" changes the
+// setting while this drawer is open. The controls used to copy the value at
+// mount and showed a stale one afterwards.
+describe('card mode and double-tap follow the store', () => {
+  const connected = (over: Record<string, unknown> = {}) => {
+    const base = h.anki('http://127.0.0.1:8765');
+    return {
+      ankiConnectSettings: {
+        ...base.ankiConnectSettings,
+        enabled: true,
+        connectionData: { connected: true, decks: [], models: [], modelFields: {} },
+        ...over
+      }
+    };
+  };
+  const radio = (c: HTMLElement, value: string) =>
+    c.querySelector(`input[name="cardMode"][value="${value}"]`) as HTMLInputElement;
+  const doubleTapIn = (c: HTMLElement) =>
+    [...c.querySelectorAll('label')]
+      .find((label) => label.textContent?.includes('Double-tap to capture'))!
+      .querySelector('input')!;
+
+  async function openedConnected(over: Record<string, unknown> = {}) {
+    h.settings.set(connected(over));
+    const view = render(AnkiConnectSettings);
+    await fireEvent.click(view.getByText('Anki Connect'));
+    return view;
+  }
+
+  it('offers the two card modes from the setting definition', async () => {
+    const view = await openedConnected();
+    expect(view.getByText('Create new card')).toBeTruthy();
+    expect(view.getByText('Update last card (within 5 min)')).toBeTruthy();
+    expect(radio(view.container, 'create').checked).toBe(true);
+    expect(radio(view.container, 'update').checked).toBe(false);
+  });
+
+  it('a change made elsewhere (a key press) shows at once', async () => {
+    const view = await openedConnected();
+    h.settings.set(connected({ cardMode: 'update' }));
+    await waitFor(() => expect(radio(view.container, 'update').checked).toBe(true));
+    expect(radio(view.container, 'create').checked).toBe(false);
+    expect(view.getByText(/Updates the most recently created card/)).toBeTruthy();
+
+    expect(doubleTapIn(view.container).checked).toBe(false);
+    h.settings.set(connected({ cardMode: 'update', triggerMethod: 'both' }));
+    await waitFor(() => expect(doubleTapIn(view.container).checked).toBe(true));
+    h.settings.set(connected({ cardMode: 'update', triggerMethod: 'rightClick' }));
+    await waitFor(() => expect(doubleTapIn(view.container).checked).toBe(false));
+  });
+
+  it('the controls still write through to the store', async () => {
+    const view = await openedConnected();
+    await fireEvent.click(radio(view.container, 'update'));
+    expect(h.updateAnkiSetting).toHaveBeenCalledWith('cardMode', 'update');
+    await waitFor(() => expect(radio(view.container, 'update').checked).toBe(true));
+
+    await fireEvent.click(doubleTapIn(view.container));
+    expect(h.updateAnkiSetting).toHaveBeenCalledWith('triggerMethod', 'doubleTap');
+    await waitFor(() => expect(doubleTapIn(view.container).checked).toBe(true));
+    await fireEvent.click(doubleTapIn(view.container));
+    expect(h.updateAnkiSetting).toHaveBeenLastCalledWith('triggerMethod', 'neither');
+  });
+});
