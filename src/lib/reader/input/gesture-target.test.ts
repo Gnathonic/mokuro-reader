@@ -24,6 +24,11 @@ describe('gestureTargetRole', () => {
     expect(gestureTargetRole(el('<button><svg data-probe></svg></button>'))).toBe('interactive');
   });
 
+  it('classifies the inert page-turn margins as interactive, not page (#54)', () => {
+    // Off-mode PageTurnZones: a tap there must not toggle overlays or zoom.
+    expect(gestureTargetRole(el('<div data-page-turn-zone data-probe></div>'))).toBe('interactive');
+  });
+
   it('textbox wins over interactive when nested (Anki controls inside a box)', () => {
     expect(gestureTargetRole(el('<div class="textBox"><button data-probe></button></div>'))).toBe(
       'textbox'

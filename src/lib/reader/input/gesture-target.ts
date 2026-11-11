@@ -31,7 +31,11 @@
  * surface must not pan under it or take the pointer capture from it.
  *
  * **'interactive'** is reader chrome (buttons, links): taps belong to the
- * control, not to overlay toggling or zoom.
+ * control, not to overlay toggling or zoom. That includes the inert
+ * `[data-page-turn-zone]` margins PageTurnZones leaves when tap-to-turn is
+ * off (#54): they keep the margins inside the viewport so swipes, wheel and
+ * pinch still reach it, and a tap on them stays as inert as the page-turn
+ * buttons they stand in for.
  *
  * **'page'** is everything else — pannable, zoomable, tappable surface.
  *
@@ -52,7 +56,7 @@ export function gestureTargetRole(target: EventTarget | null): GestureTargetRole
   // textbox wins over interactive: controls inside a box belong to the box's
   // domain (Anki capture UI), not to reader chrome.
   if (target.closest('.textBox')) return 'textbox';
-  if (target.closest('button, [role="button"], a')) return 'interactive';
+  if (target.closest('button, [role="button"], a, [data-page-turn-zone]')) return 'interactive';
   return 'page';
 }
 
