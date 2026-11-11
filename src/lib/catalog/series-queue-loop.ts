@@ -378,22 +378,30 @@ export class SeriesQueueFollower {
 
     if (next) {
       const watched = this.watchedInSeries();
-      const stems = seriesCompletions(
-        previous === EMPTY ? null : previous,
-        next === EMPTY ? null : next,
-        {
-          sinceS,
-          watched
-        }
-      );
+      // A read that found no file is a real observation (the series owed
+      // nothing then): a file that appears afterwards with `done` entries
+      // names volumes that finished since — one queued and finished within a
+      // single write window is never listed in `vols` at all.
+      const stems = seriesCompletions(previous, next === EMPTY ? null : next, {
+        sinceS,
+        watched
+      });
       // EMPTY → EMPTY, or a first read of nothing: no completions to report.
       if (stems.length > 0) {
         this.env.onCompleted({ provider, bunkoQueueUrl, folder, stems });
       }
     }
     if (!this.oneShot && this.wantsMore(memo)) this.schedule(memo.intervalMs);
-    return { kind: 'file', file: next, block, intervalMs: memo.intervalMs };
+    const look = { kind: 'file', file: next, block, intervalMs: memo.intervalMs } as const;
+    this.lastLook = look;
+    return look;
   }
+
+  /**
+   * What the last read of this loop found (null before one landed): a watched
+   * volume's schedule reads it instead of the file while the page is open.
+   */
+  lastLook: Extract<SeriesQueueLook, { kind: 'file' }> | null = null;
 
   /**
    * The library-wide block a file is rendered under: its own `live` over a

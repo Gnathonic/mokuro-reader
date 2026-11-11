@@ -468,4 +468,35 @@ describe('completions', () => {
     });
     stop();
   });
+
+  it('a file that appears after a read found none names its done volumes, listed or not', async () => {
+    // Bunko writes a series' file only for a change it saw: a volume queued and
+    // finished within one write window appears only as a `done` entry.
+    const r = rig();
+    r.set(null);
+    const stop = await open(r);
+    expect(r.readControlFile).toHaveBeenCalledTimes(1);
+    r.set(
+      nodes({ id: 'n', etag: '1', body: body({ vols: {}, done: { 'Example Saga 04': S + 60 } }) })
+    );
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(r.readControlFile).toHaveBeenCalledTimes(2);
+    expect(r.env.onCompleted).toHaveBeenCalledTimes(1);
+    expect(r.env.onCompleted.mock.calls[0][0]).toMatchObject({
+      folder: SERIES,
+      stems: ['Example Saga 04']
+    });
+    stop();
+  });
+
+  it('a first read reports only watched volumes; the last read is kept for the watch schedule', async () => {
+    const r = rig();
+    r.set(nodes({ id: 'n', etag: '1', body: body({ done: { 'Example Saga 04': S - 60 } }) }));
+    const stop = await open(r);
+    expect(r.env.onCompleted).not.toHaveBeenCalled();
+    const last = seriesQueueFollower(SERIES)!.lastLook;
+    expect(last?.file?.vols.has('Example Saga 01')).toBe(true);
+    expect(last?.block?.batch_s).toBe(120);
+    stop();
+  });
 });

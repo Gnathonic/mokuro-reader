@@ -598,6 +598,30 @@ describe('a cloud upload is watched', () => {
     stop();
   });
 
+  it('its open page never listing it: the one scoped pull still comes, with no read of its own', async () => {
+    // Regression (rig S4/S6): with the page open the schedule read nothing, so a
+    // watched volume the series file never listed waited the page out.
+    const c = await connect(markerBody({ ttl_s: 7_200 }));
+    c.files[seriesPath] = nodes({
+      id: 's1',
+      etag: '1',
+      body: seriesBody({ vols: { 'Example Saga 04': [[0, 'q', NOW_S + 6_000]] } })
+    });
+    const sidecar = listed('Example Saga 03.mokuro', NOW + 100_000);
+    refreshSeriesFolder.mockResolvedValue(refreshed([sidecar], [sidecar.path]));
+    await watch3();
+    const stop = await followSeriesQueue(SERIES);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seriesReads(c)).toBe(1);
+    await vi.advanceTimersByTimeAsync(4 * W);
+    // Only the page's reads (one per W).
+    expect(seriesReads(c)).toBe(5);
+    await advance(SERIES_PULL_DEBOUNCE_MS);
+    expect(refreshSeriesFolder).toHaveBeenCalledTimes(1);
+    expect(watchedEntries()).toEqual([]);
+    stop();
+  });
+
   it('nothing is read while another library is connected', async () => {
     const c = await connect();
     c.files[seriesPath] = nodes({ id: 's1', etag: '1', body: seriesBody() });

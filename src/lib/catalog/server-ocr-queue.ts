@@ -1776,8 +1776,15 @@ async function lookWatchedSeries(group: WatchGroup): Promise<WatchLook> {
   } else if ((await connectedBunkoQueueUrl()) !== w.queue_url) {
     return { kind: 'wait' };
   }
-  // Its page is open: the page's loop reads it.
-  if (seriesQueueFollower(w.series)) return { kind: 'wait', retryMs: watchWindowMs(w, null) };
+  // Its page is open: the page's loop reads it, and its last read is this
+  // look too (no read of its own) — so a watched volume the file never lists
+  // still gets its one scoped pull while the page stays open.
+  const follower = seriesQueueFollower(w.series);
+  if (follower) {
+    const last = follower.lastLook;
+    if (!last?.file) return { kind: 'wait', retryMs: watchWindowMs(w, null) };
+    return watchLookOf(group, last.file, last.block, watchWindowMs(w, last.block));
+  }
   const look = await lookSeriesQueue(w.series, await seriesEnv());
   if (look.kind === 'v1') return { kind: 'handed-off' };
   if (look.kind === 'none' || !look.file) return { kind: 'wait' };
