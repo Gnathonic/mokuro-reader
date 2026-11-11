@@ -16,6 +16,7 @@ import type { VolumeMetadata } from '$lib/types';
 import { assertNoRedirectEscape } from '$lib/util/link-safety';
 import type { ProviderType, SyncProvider } from '$lib/util/sync/provider-interface';
 import { QUEUE_FILE_NAME } from '$lib/util/sync/syncable-file';
+import { validParts } from '$lib/reader/edit/ocr-label';
 import {
   authFromCredentials,
   bearerOf,
@@ -129,12 +130,15 @@ function readJob(v: unknown): QueueJob | null {
   if (kind !== 'ocr' && kind !== 'layer') return null;
   if (typeof id !== 'string' || !id) return null;
   if (state !== 'running' && state !== 'queued' && state !== 'held') return null;
+  const parts = validParts(v.parts);
   return {
     kind,
     id,
     state,
     eta: typeof eta === 'string' && Number.isFinite(Date.parse(eta)) ? eta : null,
-    progress: typeof progress === 'number' && Number.isFinite(progress) ? progress : null
+    progress: typeof progress === 'number' && Number.isFinite(progress) ? progress : null,
+    // Only names the line: malformed parts fall back to the id, the job stays.
+    ...(parts ? { parts } : {})
   };
 }
 

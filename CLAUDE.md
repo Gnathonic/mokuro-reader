@@ -675,8 +675,8 @@ keepsake — a case merge's `curated-<n>`, its copy of a second, different
 They are filed kind `edit` whatever `ocr_engine` stamp their file carries, and
 a pull never re-files one as `ocr`. `pre-upgrade*` and `previous-ocr*` are
 NOT special: bunko no longer writes or reserves them, so a layer under one of
-those ids is an ordinary hand-made layer everywhere — named from its id,
-filed by its stamp, pushed, uploaded beside a backup and deleted under the
+those ids is an ordinary hand-made layer everywhere — named by what made
+its file (below), filed by its stamp, pushed, uploaded beside a backup and deleted under the
 same rights as any other library file.
 Two capabilities say what this server does with them
 (`ProviderStatus`): `editLayerSync` is `push` when bunko's identity lists
@@ -883,6 +883,30 @@ answer a client PUT of `curated` without the right, or of `curated-<n>`, with
 403 (`pre-upgrade*` and `previous-ocr*` are ordinary layer ids, governed like
 any other hand-made layer); and (cloud-direct) write `curated: true` into the marker when the folder's
 owner may publish.
+
+**What OCR is called** (`reader/edit/ocr-label.ts`, pure). The primary and
+every layer read from a file are named by what MADE the file: its
+`ocr_engine.parts` (bunko: each tool, display order, `name` already a display
+name, `version` optional) joined as "Hayai Nova 2.5 · PP-OCR Manga 0.3"; else
+its `ocr_engine.id`'s display name (`layerNameForId`: "Hayai Nova", "PP-OCR
+Manga"); else mokuro's — `mokuro <version>`, plain `mokuro` for an image-only
+volume. Malformed `parts` (not an array of objects with a string `name`) count
+as none. The primary reads the volume's NEWEST provenance entry
+(`primaryLayerName`); a primary edited here (`ocr_edited_at`) or installed from
+an EDITED main keeps `mokuro <version>`. A layer row remembers its file's
+`ocr_parts` and `version` (`mokuro_version`, unindexed; an `edited` file
+leaves them as they were — its version is the volume's). Ids that say what a
+layer IS keep their names (corrections, `curated`, hand-made ids); an engine
+layer without parts is still named from its id; a set-aside main
+(`pre-upgrade[-n]`, `previous-ocr[-n]`) without an engine is "mokuro 0.2.2"
+from its own version ("mokuro" for a row pulled before versions were kept).
+A row the user never renamed — its name is the title-cased slug, the id's
+display name, or the current label (`isAutoNamedLayer`) — is SHOWN with the
+current label (`summarizeLayers`) and re-named on every rewrite from a file
+(`layerNameOnWrite`); a name the user typed is never touched. A pending server job
+(`server-ocr-pending.ts`) is named the same way from the queue file's
+optional per-job `parts` (malformed → dropped, the job kept), else its
+generation id — the main file's job too, never "Text".
 
 Edit mode is paged-mode only (`Reader.svelte` bails out under continuous
 scroll). It's entered by the `E` key, the quick actions menu, the settings

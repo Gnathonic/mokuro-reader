@@ -17,6 +17,8 @@ interface QueueJobDoc {
   state: string;
   eta: string | null;
   progress: number | null;
+  /** bunko 0.8: the job's tools, in `ocr_engine.parts` shape (optional). */
+  parts?: unknown;
 }
 
 interface QueueVolumeDoc {
@@ -98,4 +100,70 @@ export function queueFixture(now: number): QueueFixtureDoc {
       ])
     ]
   });
+}
+
+/** The parts of hayai-nova reading PP-OCR Manga lines, as bunko lists them. */
+export const NOVA_ON_PPOCR_PARTS = [
+  { role: 'recognizer', name: 'Hayai Nova', version: '2.5' },
+  { role: 'detector', name: 'PP-OCR Manga', version: '0.3' }
+];
+
+/**
+ * `queueFixture` plus a volume whose jobs carry bunko 0.8's optional `parts`
+ * (the tools each job will use). `parts` is ADDED to Bunko's job document, not
+ * edited in (`editExisting` refuses new fields): a server without it is the
+ * other fixtures. The last job's `parts` is malformed on purpose.
+ */
+export function queueFixtureWithParts(now: number): QueueFixtureDoc {
+  const base = queueFixture(now);
+  const at = (min: number) => new Date(now + min * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const template = base.volumes[0];
+  const job = ({ parts, ...patch }: QueueJobDoc): QueueJobDoc => ({
+    ...edit(template.jobs[0], patch),
+    parts
+  });
+  const volume = edit(template, {
+    series: 'Dr Stone',
+    volume: 'Dr Stone 03',
+    path: '/mokuro-reader/Dr%20Stone/Dr%20Stone%2003.cbz',
+    manifest: '/catalog/api/manifest?series=Dr%20Stone&volume=Dr%20Stone%2003',
+    jobs: [
+      job({
+        kind: 'ocr',
+        id: 'hayai-nova',
+        state: 'running',
+        eta: at(3),
+        progress: 0.5,
+        parts: NOVA_ON_PPOCR_PARTS
+      }),
+      job({
+        kind: 'layer',
+        id: 'ppocr-manga',
+        state: 'queued',
+        eta: at(8),
+        progress: null,
+        parts: [{ role: 'recognizer', name: 'PP-OCR Manga', version: '0.3' }]
+      }),
+      job({
+        kind: 'layer',
+        id: 'charspot-small',
+        state: 'queued',
+        eta: at(9),
+        progress: null,
+        parts: [
+          { role: 'recognizer', name: 'Charspot Small' },
+          { role: 'detector', name: 'AnimeText', version: '12x' }
+        ]
+      }),
+      job({
+        kind: 'layer',
+        id: 'nar-small',
+        state: 'queued',
+        eta: at(10),
+        progress: null,
+        parts: [{ role: 'recognizer', version: '1' }]
+      })
+    ]
+  });
+  return { ...base, volumes: [...base.volumes, volume] };
 }

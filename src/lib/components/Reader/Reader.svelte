@@ -889,7 +889,7 @@
   }
 
   // ---- layer switching and actions (the picker and the settings panel) ----
-  let primaryName = $derived(primaryLayerName(volume?.mokuro_version));
+  let primaryName = $derived(primaryLayerName(volume));
 
   function layerDisplayName(layerId: string | null): string {
     if (layerId === null) return primaryName;

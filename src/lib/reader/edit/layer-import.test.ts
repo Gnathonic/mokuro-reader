@@ -165,6 +165,31 @@ describe('attachLayerFile', () => {
     expect(await attachLayerFile(bare)).toMatchObject({ status: 'no-match' });
   });
 
+  it('names a layer by what made its file: parts, or the mokuro of a set-aside main', async () => {
+    await seed();
+    const parts = [
+      { role: 'recognizer', name: 'Hayai Nova', version: '2.5' },
+      { role: 'detector', name: 'PP-OCR Manga', version: '0.3' }
+    ];
+    const stamped = JSON.stringify({
+      ...JSON.parse(mokuro('うえ', {})),
+      ocr_engine: { id: 'hayai-nova', parts }
+    });
+    await attachLayerFile(new File([stamped], 'Vol 1.hayai-nova.mokuro'));
+    expect(await getLayerWithPages(db, 'v1', 'hayai-nova')).toMatchObject({
+      kind: 'ocr',
+      name: 'Hayai Nova 2.5 · PP-OCR Manga 0.3',
+      ocr_parts: parts
+    });
+    const original = JSON.stringify({ ...JSON.parse(mokuro('まえ', {})), version: '0.2.2' });
+    await attachLayerFile(new File([original], 'Vol 1.pre-upgrade.mokuro'));
+    expect(await getLayerWithPages(db, 'v1', 'pre-upgrade')).toMatchObject({
+      kind: 'edit',
+      name: 'mokuro 0.2.2',
+      mokuro_version: '0.2.2'
+    });
+  });
+
   it('reports invalid input and never creates a volume', async () => {
     expect(await attachLayerFile(new File(['nope'], 'Vol 1.fix.mokuro'))).toEqual({
       status: 'invalid'

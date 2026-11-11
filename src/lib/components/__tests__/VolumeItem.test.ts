@@ -739,7 +739,7 @@ describe('VolumeItem server OCR status', () => {
     expect(el.className).toContain('bottom-1');
     const text = el.innerText ?? el.textContent!;
     expect(el.textContent).toContain('Server OCR');
-    expect(el.textContent).toContain(`Text`);
+    expect(el.textContent).toContain(`Mokuro Fp16`);
     expect(el.textContent).toContain(`in ~3 min · ${hhmm(at(3))}`);
     expect(el.textContent).toContain(`Hayai Nova`);
     expect(el.textContent).toContain('+2 more');
@@ -762,21 +762,21 @@ describe('VolumeItem server OCR status', () => {
     const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
     const el = status(container);
     expect(el.textContent!.trim()).toBe(
-      'Server OCR: Text in ~3 min · Hayai Nova in ~8 min · Paddle Manga in ~14 min · Gcv queued'
+      'Server OCR: Mokuro Fp16 in ~3 min · Hayai Nova in ~8 min · Paddle Manga in ~14 min · Gcv queued'
     );
     expect(el.className).not.toContain('whitespace-nowrap');
     expect(el.className).toContain('line-clamp-2');
-    expect(el.getAttribute('aria-label')).toContain(`Text: in ~3 min, at ${hhmm(at(3))}`);
+    expect(el.getAttribute('aria-label')).toContain(`Mokuro Fp16: in ~3 min, at ${hhmm(at(3))}`);
   });
 
   for (const variant of ['list', 'grid'] as const) {
     it(`${variant}: a landed job leaves, and the whole thing goes when nothing is pending`, async () => {
       await pending(jobs);
       const { container } = render(VolumeItem, { props: { volume: volume(), variant } });
-      expect(status(container).textContent).toContain('Text');
+      expect(status(container).textContent).toContain('Mokuro Fp16');
       await pending(jobs.slice(1));
       await tick();
-      expect(status(container).textContent).not.toContain('Text ');
+      expect(status(container).textContent).not.toContain('Mokuro Fp16');
       await pending([]);
       await tick();
       expect(status(container)).toBeNull();
@@ -805,7 +805,7 @@ describe('VolumeItem server OCR status', () => {
     queueStatusStore.update((s) => ({ [key]: { ...s[key], held: { reason: 'no-processor' } } }));
     const { container } = render(VolumeItem, { props: { volume: volume(), variant: 'list' } });
     expect(status(container).textContent!.trim()).toBe(
-      `Server OCR: Text 42% · ~${hhmm(at(3))} · Hayai Nova held: no processor connected`
+      `Server OCR: Mokuro Fp16 42% · ~${hhmm(at(3))} · Hayai Nova held: no processor connected`
     );
   });
 

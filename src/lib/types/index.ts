@@ -220,6 +220,18 @@ export interface VolumeOcrLayer {
   name: string;
   kind: VolumeOcrLayerKind;
   engine?: string;
+  /**
+   * The `ocr_engine.parts` of the file the row was last read from (each tool
+   * a server's OCR was made with): what the layer is called while nobody
+   * renamed it (`ocr-label.ts`). Unindexed; absent on older rows.
+   */
+  ocr_parts?: import('$lib/reader/edit/ocr-label').OcrPart[];
+  /**
+   * That file's own `version`: names a set-aside main sidecar mokuro made
+   * (`pre-upgrade…`, `previous-ocr…` → "mokuro 0.2.2"). Unindexed; absent on
+   * older rows.
+   */
+  mokuro_version?: string;
   created_at: string;
   /** Moves on every write of the layer's pages (the pages row carries no stamp). */
   updated_at: string;

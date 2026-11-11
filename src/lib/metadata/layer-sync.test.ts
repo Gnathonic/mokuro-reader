@@ -372,7 +372,7 @@ describe('syncLayersFromListing', () => {
     expect(downloadFile).toHaveBeenCalledTimes(1);
   });
 
-  it('a pulled pre-upgrade layer is an ordinary hand-made layer: named from its id', async () => {
+  it('a pulled pre-upgrade layer is an ordinary hand-made layer, named by the mokuro that wrote it', async () => {
     await seedRow();
     downloadFile.mockResolvedValue(new Blob([mokuroJson('旧')]));
     await syncLayersFromListing(
@@ -381,8 +381,57 @@ describe('syncLayersFromListing', () => {
     );
     expect(await getLayerWithPages(db, 'v1', 'pre-upgrade')).toMatchObject({
       kind: 'edit',
-      name: 'Pre Upgrade'
+      name: 'mokuro 0.2.1',
+      mokuro_version: '0.2.1'
     });
+  });
+
+  it("a pulled server layer is named by its file's ocr_engine.parts, kept on the row", async () => {
+    await seedRow();
+    const parts = [
+      { role: 'recognizer', name: 'Charspot Small' },
+      { role: 'detector', name: 'PP-OCR Manga', version: '0.3' }
+    ];
+    downloadFile.mockResolvedValue(
+      new Blob([
+        JSON.stringify({
+          ...JSON.parse(mokuroJson('かな')),
+          ocr_engine: { id: 'charspot-small', parts }
+        })
+      ])
+    );
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.charspot-small.mokuro')),
+      'webdav'
+    );
+    expect(await getLayerWithPages(db, 'v1', 'charspot-small')).toMatchObject({
+      kind: 'ocr',
+      engine: 'charspot-small',
+      name: 'Charspot Small · PP-OCR Manga 0.3',
+      ocr_parts: parts
+    });
+  });
+
+  it('a newer copy of a layer the user renamed keeps their name', async () => {
+    await seedRow();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'pre-upgrade',
+      name: 'Old scan',
+      kind: 'edit',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      cloud: { provider: 'webdav', size: 1, modified: 1, synced_at: '2026-01-01T00:00:00.000Z' },
+      pages: [pg('旧')]
+    });
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('新')]));
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.pre-upgrade.mokuro')),
+      'webdav'
+    );
+    const row = await getLayerWithPages(db, 'v1', 'pre-upgrade');
+    expect(row!.pages[0].blocks[0].lines).toEqual(['新']);
+    expect(row).toMatchObject({ name: 'Old scan', mokuro_version: '0.2.1' });
   });
 
   it('a pulled tr-<lang> file is filed as a translation — which can never become the primary', async () => {
@@ -1005,7 +1054,9 @@ describe('a generation the server named itself', () => {
     // like any other hand-made id with a stamp.
     expect(await getLayerWithPages(db, 'v1', 'pre-upgrade')).toMatchObject({
       kind: 'ocr',
-      engine: 'hayai-nova'
+      engine: 'hayai-nova',
+      // Named by the engine that made it (no parts in this file), not "Pre Upgrade".
+      name: 'Hayai Nova'
     });
   });
 

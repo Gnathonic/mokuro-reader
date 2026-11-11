@@ -4,7 +4,13 @@ import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
 import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import { foldStem, miscasedLayerStem, splitLayerSidecarName } from '$lib/util/sync/syncable-file';
-import { layerKindForId, layerNameForId, servedEngineOf } from './layers';
+import { layerKindForId, servedEngineOf } from './layers';
+import {
+  layerFileLabelFields,
+  layerNameOnWrite,
+  makerFieldsOnWrite,
+  type LayerMakerFields
+} from './ocr-label';
 
 /**
  * Layer files arriving by hand: a `<title>.<id>.mokuro` picked in the upload
@@ -138,6 +144,8 @@ export interface ReadLayerFile {
   pages: Page[];
   /** The server engine that produced the file, when it says one did (`servedEngineOf`). */
   engine?: string;
+  /** The file's `ocr_engine.parts` and `version` (none for an edited file): name the layer (`ocr-label.ts`). */
+  made?: LayerMakerFields;
   volumeUuid?: string;
   seriesTitle?: string;
   volumeTitle?: string;
@@ -169,6 +177,7 @@ export async function readLayerFile(file: File | Blob, gz = false): Promise<Read
     return {
       pages,
       ...(servedEngineOf(json) ? { engine: servedEngineOf(json) } : {}),
+      ...(layerFileLabelFields(json) ? { made: layerFileLabelFields(json) } : {}),
       ...(typeof json.volume_uuid === 'string' ? { volumeUuid: json.volume_uuid } : {}),
       ...(typeof json.title === 'string' ? { seriesTitle: json.title } : {}),
       ...(typeof json.volume === 'string' ? { volumeTitle: json.volume } : {})
@@ -207,7 +216,12 @@ export async function attachLayerToVolume(
   volumeUuid: string,
   layerId: string,
   pages: Page[],
-  options: { passive?: boolean; engine?: string } = {}
+  options: {
+    passive?: boolean;
+    engine?: string;
+    /** The file's `ocr_engine.parts` and `version` (`readLayerFile`): name the row. */
+    made?: LayerMakerFields;
+  } = {}
 ): Promise<VolumeOcrLayer> {
   const now = new Date().toISOString();
   return db.transaction('rw', layerTables(db), async () => {
@@ -215,18 +229,22 @@ export async function attachLayerToVolume(
     const existing = await getLayerMeta(db, volumeUuid, layerId);
     if (options.passive && existing && holdsUnsyncedWork(existing)) return existing;
     const kind = existing?.kind ?? layerKindForId(layerId, options.engine);
+    // The engine the file names, not the layer's id: a server calls its
+    // generations what it likes (`hayai-nova-ctd` is still hayai-nova).
+    const engine = existing?.engine || (kind === 'ocr' ? (options.engine ?? layerId) : undefined);
+    // What made the file: the row's name follows it unless the user renamed it.
+    const made = makerFieldsOnWrite(existing, options.made);
     const layer: VolumeOcrLayer = {
       volume_uuid: volumeUuid,
       layer_id: layerId,
-      name: existing?.name ?? layerNameForId(layerId),
+      name: layerNameOnWrite(existing, {
+        layer_id: layerId,
+        ...(engine ? { engine } : {}),
+        ...made
+      }),
       kind,
-      // The engine the file names, not the layer's id: a server calls its
-      // generations what it likes (`hayai-nova-ctd` is still hayai-nova).
-      ...(existing?.engine
-        ? { engine: existing.engine }
-        : kind === 'ocr'
-          ? { engine: options.engine ?? layerId }
-          : {}),
+      ...(engine ? { engine } : {}),
+      ...made,
       created_at: existing?.created_at ?? now,
       updated_at: now,
       ...(options.passive ? { passive_at: now } : {})
@@ -282,7 +300,8 @@ export async function attachLayerFile(
   const target = await resolveLayerTarget(split.stem, read, hint);
   if (!target) return { status: 'no-match', stem: split.stem, layerId: split.layerId };
   await attachLayerToVolume(target.volume_uuid, split.layerId, read.pages, {
-    engine: read.engine
+    engine: read.engine,
+    made: read.made
   });
   return {
     status: 'attached',
@@ -318,7 +337,10 @@ export async function applyStashedLayersFor(
     try {
       const read = await readLayerFile(entry.file, entry.gz);
       if (!read) continue;
-      await attachLayerToVolume(volumeUuid, entry.layerId, read.pages, { engine: read.engine });
+      await attachLayerToVolume(volumeUuid, entry.layerId, read.pages, {
+        engine: read.engine,
+        made: read.made
+      });
       applied++;
     } catch (error) {
       console.warn(`[layer-import] could not attach '${entry.path}':`, error);
