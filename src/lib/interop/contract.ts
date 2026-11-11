@@ -232,7 +232,20 @@ export function loadSeed(): Seed {
  */
 const ISO_SENTINEL_RE = /2000-01-01([T ])00:00:00(\.0+)?(Z|[+-]00:00)?/g;
 
-/** Seconds/ms/ISO/HTTP-date sentinels moved so that the sentinel time is `now`. */
+/**
+ * How far from the epoch sentinel a number still counts as a time Bunko moved
+ * by one offset (Bunko's README: a queue file v2 and the marker's
+ * `series_queue` block keep their times' spacing, the clock's fit time on the
+ * sentinel). No other fixture number comes near it.
+ */
+const SHIFTED_WINDOW_S = 366 * 86_400;
+
+/**
+ * Seconds/ms/ISO/HTTP-date sentinels moved so that the sentinel time is `now`.
+ * A whole number of seconds (or ms) within a year of the sentinel moves by the
+ * same offset: a queue file's clock, ETAs and `done` times keep their spacing,
+ * so a clock stays strictly increasing and an ETA keeps its distance from now.
+ */
 export function rebase<T>(value: T, now: number): T {
   const utc = new Date(now).toISOString(); // YYYY-MM-DDTHH:MM:SS.mmmZ
   const http = new Date(now).toUTCString();
@@ -240,9 +253,14 @@ export function rebase<T>(value: T, now: number): T {
     const digits = frac ? (utc.slice(20, 23) + '000000000').slice(0, frac.length - 1) : '';
     return `${utc.slice(0, 10)}${sep}${utc.slice(11, 19)}${frac ? '.' + digits : ''}${zone ?? ''}`;
   };
+  const nowS = Math.floor(now / 1000);
   const walk = (v: any): any => {
-    if (v === EPOCH_S) return Math.floor(now / 1000);
+    if (v === EPOCH_S) return nowS;
     if (v === EPOCH_MS) return now;
+    if (Number.isInteger(v) && Math.abs(v - EPOCH_S) <= SHIFTED_WINDOW_S) return v - EPOCH_S + nowS;
+    if (Number.isInteger(v) && Math.abs(v - EPOCH_MS) <= SHIFTED_WINDOW_S * 1000) {
+      return v - EPOCH_MS + now;
+    }
     if (typeof v === 'string') {
       return v.replace(ISO_SENTINEL_RE, iso).split(HTTP_DATE_SENTINEL).join(http);
     }

@@ -186,7 +186,8 @@ describe('parseBunkoMarker', () => {
       state: 'active',
       compiles: ['series.json', 'catalog.json'],
       ocr: true,
-      queue: '.mokuro-queue.json',
+      // Queue file v2: no root queue file (`queue: null`).
+      queue: '',
       per_user_files: [
         'volume-data.json',
         'profiles.json',
@@ -196,8 +197,18 @@ describe('parseBunkoMarker', () => {
       ],
       curated: true,
       dedup: true,
-      // Before queue file v2's store sink (B2) Bunko's marker carries no block.
-      series_queue: null
+      // Queue file v2's store sink (B2): the library-wide queue state. The
+      // sentinel clock is rebased onto `now` at its fit time only.
+      series_queue: {
+        batch_s: 120,
+        held: { reason: 'no-processor' },
+        held_rows: [],
+        clock: [
+          [EPOCH_MS / 1000, EPOCH_MS / 1000],
+          [946771200, 946771200]
+        ],
+        clock_at: EPOCH_MS / 1000
+      }
     });
   });
 

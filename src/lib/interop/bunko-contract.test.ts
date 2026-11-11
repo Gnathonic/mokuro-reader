@@ -80,7 +80,11 @@ import { classifyWriteError } from '$lib/util/sync/providers/webdav/webdav-error
 import { webdavCore } from '$lib/util/sync/core/providers/webdav-core';
 import { ProviderError } from '$lib/util/sync/provider-interface';
 import { canPublishCurated } from '$lib/util/sync/account-capabilities';
-import { layerSidecarName } from '$lib/util/sync/syncable-file';
+import {
+  SERIES_QUEUE_FILE_NAME,
+  isSyncableFile,
+  layerSidecarName
+} from '$lib/util/sync/syncable-file';
 import { CURATED_LAYER_ID, EDIT_LAYER_ID } from '$lib/reader/edit/layer-names';
 import { parseHistoryPath } from '$lib/reading-history/paths';
 
@@ -420,6 +424,55 @@ describeContractFile(
       expect(f.request.headers?.['if-none-match']).toBe(ETAG_SENTINEL);
     });
 
+    it('the stored copy is the virtual body without `live`, trusted only under the holder', () => {
+      if (!hasContractFile('bunko/series-queue-stored.json')) return;
+      const stored = fx('series-queue-stored', EPOCH_MS);
+      expect(stored.request.file).toBe(`Contract Series/${SERIES_QUEUE_FILE_NAME}`);
+      // One renderer for both sinks: the stored body is the HTTP one minus `live`.
+      const { live, ...served } = fx('series-queue-http', EPOCH_MS).body;
+      expect(live).toBeTruthy();
+      expect(stored.body).toEqual(served);
+      expect('live' in stored.body).toBe(false);
+      const file = parseSeriesQueueFile(stored.body)!;
+      expect(file.live).toBeNull();
+      // No `live`: not Bunko's own virtual answer, so it counts only under a
+      // marker holder with that instance id, rendered under the marker's block.
+      expect(pickTrustedCopy([file], { kind: 'live' })).toBeNull();
+      const marker = parseBunkoMarker(fx('marker-active', EPOCH_MS).body)!;
+      expect(pickTrustedCopy([file], { kind: 'holder', instanceId: 'another' })).toBeNull();
+      const trusted = pickTrustedCopy([file], { kind: 'holder', instanceId: file.instance_id })!;
+      expect(trusted).toBe(file);
+      const view = describePendingOcr(
+        seriesQueueSlice(trusted, marker.series_queue).get('volume 02'),
+        NOW
+      )!;
+      expect(view.lines.map((l) => [l.fullName, l.short])).toEqual([
+        ['Hayai Nova 2.5 · PP-OCR Manga 0.3', 'held: no processor connected']
+      ]);
+    });
+
+    it('no client may write it: a PUT is 405 and names the methods that work', () => {
+      if (!hasContractFile('bunko/series-queue-put-refused.json')) return;
+      const f = fx('series-queue-put-refused');
+      expect(f.request.path).toBe(`/mokuro-reader/Contract%20Series/${SERIES_QUEUE_FILE_NAME}`);
+      expect(f.status).toBe(405);
+      const allow = fixtureHeader(f)('Allow')!
+        .split(',')
+        .map((m) => m.trim());
+      expect(allow).toContain('GET');
+      expect(allow).not.toContain('PUT');
+    });
+
+    it('a series listed through a cloud bridge leaves the stored copy out', () => {
+      if (!hasContractFile('bunko/propfind-series-depth1-cloud.json')) return;
+      const f = fx('propfind-series-depth1-cloud');
+      expect(f.request.headers?.depth).toBe('1');
+      expect(f.body_text).toContain('Volume%2002.cbz');
+      expect(f.body_text).not.toContain(SERIES_QUEUE_FILE_NAME);
+      // And the reader would never take it in a listing anyway.
+      expect(isSyncableFile(`Contract Series/${SERIES_QUEUE_FILE_NAME}`)).toBe(false);
+    });
+
     it('every job shape the renderer writes reads, and renders', () => {
       const file = parseSeriesQueueFile(seriesQueueShapes())!;
       expect([...file.vols.values()].flat().map((j) => j.state)).toEqual(['r', 'q', 'q', 'c', 'q']);
@@ -459,12 +512,25 @@ describeContract('the lease marker as Bunko writes it', () => {
   };
 
   it('an active marker: Bunko compiles the metadata files and runs the queue', () => {
-    const m = parseBunkoMarker(fx('marker-active').body)!;
+    const raw = fx('marker-active').body;
+    const m = parseBunkoMarker(raw)!;
     expect(m).not.toBeNull();
     expect(m.state).toBe('active');
     expect(m.compiles).toEqual(['series.json', 'catalog.json']);
     expect(m.ocr).toBe(true);
-    expect(m.queue).toBe('.mokuro-queue.json');
+    // Queue file v2: no root queue file is stored (`queue: null`); the
+    // library-wide state rides the `series_queue` block, naming the per-series
+    // file the reader reads.
+    expect(raw.queue).toBeNull();
+    expect(m.queue).toBe('');
+    expect(raw.series_queue).toMatchObject({ v: 2, file: SERIES_QUEUE_FILE_NAME });
+    expect(m.series_queue).toMatchObject({
+      held: { reason: 'no-processor' },
+      held_rows: [],
+      batch_s: expect.any(Number)
+    });
+    expect(m.series_queue!.clock).toHaveLength(2);
+    expect(m.series_queue!.clock_at).toBe(m.series_queue!.clock![0][1]);
     expect(m.ttl_s).toBeGreaterThan(0);
   });
 

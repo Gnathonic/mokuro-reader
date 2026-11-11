@@ -107,6 +107,11 @@ export const RIG_DRIVER_API_VERSION = 1;
  *   locally (`util/sync/cloud-spelling-adoption.ts`).
  * - `dedup`: duplicate-folder merges, stepping aside for a Bunko holder that
  *   merges itself (`util/sync/folder-deduplicator.ts`, `cloudBunkoMergesDuplicates`).
+ * - `series-queue-v2`: the OCR queue read per series, only on the series page
+ *   and for watched volumes (`<Series>/.mokuro-series-queue.json`, bunko
+ *   `docs/design/queue-file-v2.md`; `catalog/series-queue-loop.ts`,
+ *   `series-queue-watch.ts`), no root queue file on a cloud library, and a
+ *   finished volume pulled by listing its one series (`refreshSeriesFolder`).
  */
 export const RIG_CAPABILITIES: readonly string[] = [
   'history',
@@ -115,7 +120,8 @@ export const RIG_CAPABILITIES: readonly string[] = [
   'edit-layers-curated',
   'provenance',
   'case-merge-rename',
-  'dedup'
+  'dedup',
+  'series-queue-v2'
 ];
 
 export interface RigVolume {

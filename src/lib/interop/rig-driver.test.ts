@@ -397,7 +397,8 @@ describe('install()', () => {
         'edit-layers-curated',
         'provenance',
         'case-merge-rename',
-        'dedup'
+        'dedup',
+        'series-queue-v2'
       ].sort()
     );
   });
