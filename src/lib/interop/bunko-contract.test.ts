@@ -37,13 +37,15 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
 }));
 vi.mock('$lib/util/sync/providers/webdav/webdav-cache', () => ({ webdavCache: {} }));
 
-import { QUEUE_SNAPSHOT } from '$lib/catalog/__fixtures__/mokuro-queue';
+import { QUEUE_SNAPSHOT, stripQueueParts } from '$lib/catalog/__fixtures__/mokuro-queue';
+import { describePendingOcr } from '$lib/catalog/server-ocr-pending';
 import { MARKER_SNAPSHOT } from '$lib/catalog/__fixtures__/bunko-marker';
 import {
   EPOCH_MS,
   describeContract,
   fixtureFetch,
   fixtureHeader,
+  hasContract,
   loadBunkoFixture,
   loadSeed,
   type Fixture
@@ -307,9 +309,31 @@ describeContract('the volume manifest as Bunko answers it', () => {
   });
 });
 
+/**
+ * Does this checkout's queue file name its jobs' parts (Bunko 0.8)? An older
+ * checkout's does not: the snapshot is compared without them and the parts
+ * test is skipped, with a warning, rather than failing on a field that
+ * Bunko simply did not have yet.
+ */
+function bunkoQueueHasParts(): boolean {
+  const body = loadBunkoFixture('queue-file-http', { now: EPOCH_MS }).body;
+  return (body?.volumes ?? []).some((v: { jobs?: unknown[] }) =>
+    (v.jobs ?? []).some((j) => !!j && typeof j === 'object' && 'parts' in j)
+  );
+}
+
 describeContract('the snapshots used without a Bunko checkout', () => {
   it('match Bunko’s fixtures', () => {
-    expect(QUEUE_SNAPSHOT).toEqual(loadBunkoFixture('queue-file-http', { now: EPOCH_MS }).body);
+    const served = loadBunkoFixture('queue-file-http', { now: EPOCH_MS }).body;
+    if (bunkoQueueHasParts()) {
+      expect(QUEUE_SNAPSHOT).toEqual(served);
+    } else {
+      console.warn(
+        "[contract] this Bunko checkout's queue file has no job `parts` (before Bunko 0.8's): " +
+          'comparing the snapshot without them'
+      );
+      expect(stripQueueParts(QUEUE_SNAPSHOT)).toEqual(served);
+    }
     expect(MARKER_SNAPSHOT).toEqual(loadBunkoFixture('marker-active', { now: EPOCH_MS }).body);
   });
 });
@@ -356,6 +380,18 @@ describeContract('the OCR queue file as Bunko writes it', () => {
     ]);
     expect(file.volumes).toHaveLength(1);
   });
+
+  it.skipIf(!hasContract() || !bunkoQueueHasParts())(
+    "a job's parts name it as its finished file will be named",
+    () => {
+      for (const name of ['queue-file-http', 'queue-file-cloud']) {
+        const file = parseQueueFile(fx(name).body)!;
+        const view = describePendingOcr({ jobs: file.volumes[0].jobs, held: file.held }, NOW)!;
+        expect(view.lines.map((l) => l.fullName)).toEqual(['Hayai Nova 2.5 · PP-OCR Manga 0.3']);
+        expect(view.lines[0].name).toBe('Hayai Nova');
+      }
+    }
+  );
 
   it('a truncated cloud copy says so', () => {
     const file = parseQueueFile(fx('queue-file-cloud-truncated').body)!;

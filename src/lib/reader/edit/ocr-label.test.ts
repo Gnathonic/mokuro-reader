@@ -3,7 +3,9 @@ import {
   autoLayerName,
   isSetAsideLayerId,
   layerDisplayName,
-  layerFileLabelFields,
+  layerFileMaker,
+  mainMakerOfFile,
+  mainMakerOfLayer,
   layerNameOnWrite,
   makerFieldsOnWrite,
   ocrFileLabel,
@@ -124,13 +126,14 @@ describe('primaryLayerName', () => {
     expect(primaryLayerName(null)).toBe('mokuro');
   });
 
-  it('an installed EDITED main, or a primary edited here: mokuro and the version, as before', () => {
+  it('an installed EDITED main (maker unknown): mokuro and the version', () => {
     expect(
       primaryLayerName({
         mokuro_version: '0.2.5',
         ocr_provenance: [{ edited: { by: 'mokuro-reader' }, digest: DIGEST }]
       })
     ).toBe('mokuro 0.2.5');
+    // A row from before the maker was recorded, edited here: as before.
     expect(
       primaryLayerName(
         served(
@@ -139,6 +142,62 @@ describe('primaryLayerName', () => {
         )
       )
     ).toBe('mokuro 0.2.5');
+  });
+
+  it('the recorded maker of the CURRENT main wins over any provenance entry', () => {
+    const maker = mainMakerOfFile(
+      { engine: { id: 'hayai-nova', parts: NOVA_ON_PPOCR }, digest: DIGEST },
+      '0.2.5'
+    );
+    // An edited main keeps its maker's name.
+    expect(
+      primaryLayerName({
+        mokuro_version: '0.2.5',
+        ocr_edited_at: '2026-11-10T00:00:00Z',
+        ocr_maker: maker
+      })
+    ).toBe('Hayai Nova 2.5 · PP-OCR Manga 0.3');
+    // A legacy file replaced the Bunko main: the stale entry still leads the
+    // provenance list, but the maker says mokuro.
+    expect(
+      primaryLayerName(
+        served(
+          { id: 'hayai-nova', parts: NOVA_ON_PPOCR },
+          { mokuro_version: '0.2.2', ocr_maker: mainMakerOfFile(undefined, '0.2.2') }
+        )
+      )
+    ).toBe('mokuro 0.2.2');
+    // Image-only: mokuro with no version.
+    expect(
+      primaryLayerName({ mokuro_version: '', ocr_maker: mainMakerOfFile(undefined, '') })
+    ).toBe('mokuro');
+    // Malformed stored maker fields are ignored field by field.
+    expect(
+      primaryLayerName({ mokuro_version: '0.2.2', ocr_maker: { engine: 7, parts: 'x' } as never })
+    ).toBe('mokuro 0.2.2');
+  });
+
+  it('mainMakerOfFile: engine and parts, mokuro, or unknown for an EDITED file', () => {
+    expect(mainMakerOfFile({ engine: { id: 'ppocr-manga' }, digest: DIGEST }, '0.2.5')).toEqual({
+      engine: 'ppocr-manga',
+      mokuro_version: '0.2.5'
+    });
+    expect(mainMakerOfFile(undefined, ' 0.2.2 ')).toEqual({ mokuro_version: '0.2.2' });
+    expect(mainMakerOfFile({ edited: { by: 'mokuro-reader' }, digest: DIGEST }, '0.2.5')).toBe(
+      undefined
+    );
+  });
+
+  it('a promoted layer brings its maker; one that knows none leaves the main its own', () => {
+    expect(
+      mainMakerOfLayer({
+        engine: 'ppocr-manga',
+        ocr_parts: [{ name: 'PP-OCR Manga', version: '0.3' }]
+      })
+    ).toEqual({ engine: 'ppocr-manga', parts: [{ name: 'PP-OCR Manga', version: '0.3' }] });
+    expect(mainMakerOfLayer({ mokuro_version: '0.2.2' })).toEqual({ mokuro_version: '0.2.2' });
+    expect(mainMakerOfLayer({ maker_engine: 'hayai-nova' })).toEqual({ engine: 'hayai-nova' });
+    expect(mainMakerOfLayer({})).toBeUndefined();
   });
 });
 
@@ -217,6 +276,72 @@ describe('layer names', () => {
     expect(autoLayerName({ layer_id: 'my-notes', mokuro_version: '0.2.2' })).toBe('My Notes');
   });
 
+  it('v1.10.0\'s "Previous OCR" names and "Updated OCR" are the reader\'s, not the user\'s', () => {
+    const keepsake = { source_at: 'x', mokuro_version: '0.2.2' };
+    expect(layerDisplayName({ layer_id: 'previous-ocr', name: 'Previous OCR', ...keepsake })).toBe(
+      'mokuro 0.2.2'
+    );
+    expect(
+      layerDisplayName({ layer_id: 'previous-ocr-2', name: 'Previous OCR (2)', ...keepsake })
+    ).toBe('mokuro 0.2.2');
+    expect(
+      layerDisplayName({
+        layer_id: 'updated-ocr',
+        name: 'Updated OCR',
+        source_at: 'x',
+        maker_engine: 'hayai-nova',
+        ocr_parts: NOVA_ON_PPOCR
+      })
+    ).toBe('Hayai Nova 2.5 · PP-OCR Manga 0.3');
+    expect(
+      layerDisplayName({
+        layer_id: 'updated-ocr',
+        name: 'Updated OCR',
+        source_at: 'x',
+        maker_engine: 'hayai-nova'
+      })
+    ).toBe('Hayai Nova');
+    // The name only counts for its own id.
+    expect(layerDisplayName({ layer_id: 'pre-upgrade', name: 'Previous OCR', ...keepsake })).toBe(
+      'Previous OCR'
+    );
+  });
+
+  it('a name the user typed is never relabelled, even one that reads like the reader’s', () => {
+    // Renamed by hand (the rename path sets `named_by_user`).
+    expect(
+      layerDisplayName({
+        layer_id: 'pre-upgrade',
+        name: 'Pre Upgrade',
+        mokuro_version: '0.2.2',
+        cloud: {},
+        named_by_user: true
+      })
+    ).toBe('Pre Upgrade');
+    expect(
+      layerDisplayName({
+        layer_id: 'hayai-nova',
+        name: 'Hayai Nova',
+        engine: 'hayai-nova',
+        ocr_parts: NOVA_ON_PPOCR,
+        named_by_user: true
+      })
+    ).toBe('Hayai Nova');
+    // Made here by hand (no file, no cloud stamp): its name is whatever was
+    // typed, even a slug's title case.
+    expect(layerDisplayName({ layer_id: 'pre-upgrade', name: 'Pre Upgrade' })).toBe('Pre Upgrade');
+    expect(layerDisplayName({ layer_id: 'previous-ocr-2', name: 'Previous Ocr 2' })).toBe(
+      'Previous Ocr 2'
+    );
+    // ...and a rewrite from a file keeps it.
+    expect(
+      layerNameOnWrite(
+        { layer_id: 'pre-upgrade', name: 'Pre Upgrade', cloud: {}, named_by_user: true },
+        { layer_id: 'pre-upgrade', mokuro_version: '0.2.2' }
+      )
+    ).toBe('Pre Upgrade');
+  });
+
   it('a row never renamed shows its new label; a name the user typed is kept', () => {
     // Stored by an older reader: the title-cased slug.
     expect(
@@ -259,32 +384,50 @@ describe('layer names', () => {
   });
 });
 
-describe('layerFileLabelFields / makerFieldsOnWrite', () => {
-  it('reads the parts and the version a file carries', () => {
+describe('layerFileMaker / makerFieldsOnWrite', () => {
+  it('reads the parts a file carries, and the version its pages (else the file) name', () => {
     expect(
-      layerFileLabelFields({
+      layerFileMaker({
         version: '0.2.5',
         ocr_engine: { id: 'hayai-nova', parts: NOVA_ON_PPOCR }
       })
-    ).toEqual({ ocr_parts: NOVA_ON_PPOCR, mokuro_version: '0.2.5' });
-    expect(layerFileLabelFields({ version: '0.2.2', pages: [] })).toEqual({
-      mokuro_version: '0.2.2'
+    ).toEqual({ fields: { ocr_parts: NOVA_ON_PPOCR, mokuro_version: '0.2.5' }, stamped: true });
+    expect(layerFileMaker({ version: '0.2.2', pages: [] })).toEqual({
+      fields: { mokuro_version: '0.2.2' },
+      stamped: false
     });
-    expect(layerFileLabelFields({ ocr_engine: { id: 'x', parts: 'nope' } })).toEqual({});
+    // The pages' own version wins: a file the reader wrote carries the
+    // volume's top-level version over pages another mokuro made.
+    expect(
+      layerFileMaker({ version: '0.2.5', pages: [{ version: '' }, { version: '0.2.2' }] })
+    ).toEqual({ fields: { mokuro_version: '0.2.2' }, stamped: false });
+    expect(layerFileMaker({ ocr_engine: { id: 'x', parts: 'nope' } })).toEqual({
+      fields: {},
+      stamped: true
+    });
   });
 
   it('an edited file says nothing of its maker: the row keeps what it knew', () => {
     const edited = { version: '0.2.5', edited: { by: 'mokuro-reader' } };
-    expect(layerFileLabelFields(edited)).toBeUndefined();
-    expect(makerFieldsOnWrite({ mokuro_version: '0.2.2' }, layerFileLabelFields(edited))).toEqual({
+    expect(layerFileMaker(edited)).toBeUndefined();
+    expect(makerFieldsOnWrite({ mokuro_version: '0.2.2' }, layerFileMaker(edited))).toEqual({
       mokuro_version: '0.2.2'
     });
-    // A file that is not edited replaces what the row knew, absent fields included.
+  });
+
+  it('a file with no ocr_engine (one the reader wrote) never overwrites a known maker', () => {
+    const readerWritten = layerFileMaker({ version: '0.2.5', pages: [] });
+    expect(
+      makerFieldsOnWrite({ mokuro_version: '0.2.2', ocr_parts: NOVA_ON_PPOCR }, readerWritten)
+    ).toEqual({ mokuro_version: '0.2.2', ocr_parts: NOVA_ON_PPOCR });
+    // A row that knew nothing takes what the file says.
+    expect(makerFieldsOnWrite({}, readerWritten)).toEqual({ mokuro_version: '0.2.5' });
+    // A stamped file replaces what the row knew, absent fields included.
     expect(
       makerFieldsOnWrite(
         { mokuro_version: '0.2.2', ocr_parts: NOVA_ON_PPOCR },
-        layerFileLabelFields({ version: '0.2.3' })
+        layerFileMaker({ version: '0.2.6', ocr_engine: { id: 'hayai-nova' } })
       )
-    ).toEqual({ mokuro_version: '0.2.3' });
+    ).toEqual({ mokuro_version: '0.2.6' });
   });
 });

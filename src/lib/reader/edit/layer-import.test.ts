@@ -181,12 +181,35 @@ describe('attachLayerFile', () => {
       name: 'Hayai Nova 2.5 · PP-OCR Manga 0.3',
       ocr_parts: parts
     });
-    const original = JSON.stringify({ ...JSON.parse(mokuro('まえ', {})), version: '0.2.2' });
+    // mokuro writes its version at the top and on every page.
+    const parsedOriginal = JSON.parse(mokuro('まえ', {}));
+    const original = JSON.stringify({
+      ...parsedOriginal,
+      version: '0.2.2',
+      pages: parsedOriginal.pages.map((p: object) => ({ ...p, version: '0.2.2' }))
+    });
     await attachLayerFile(new File([original], 'Vol 1.pre-upgrade.mokuro'));
     expect(await getLayerWithPages(db, 'v1', 'pre-upgrade')).toMatchObject({
       kind: 'edit',
       name: 'mokuro 0.2.2',
       mokuro_version: '0.2.2'
+    });
+  });
+
+  it('a re-imported file the reader wrote (no ocr_engine) keeps the maker the row knew', async () => {
+    await seed();
+    const parts = [{ role: 'recognizer', name: 'Hayai Nova', version: '2.5' }];
+    const stamped = JSON.stringify({
+      ...JSON.parse(mokuro('うえ', {})),
+      ocr_engine: { id: 'hayai-nova', parts }
+    });
+    await attachLayerFile(new File([stamped], 'Vol 1.hayai-nova.mokuro'));
+    // The same layer as the reader exports it: no block, the volume's version.
+    const exported = JSON.stringify({ ...JSON.parse(mokuro('うえ', {})), version: '0.2.5' });
+    await attachLayerFile(new File([exported], 'Vol 1.hayai-nova.mokuro'));
+    expect(await getLayerWithPages(db, 'v1', 'hayai-nova')).toMatchObject({
+      name: 'Hayai Nova 2.5',
+      ocr_parts: parts
     });
   });
 

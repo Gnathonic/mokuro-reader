@@ -1,6 +1,6 @@
 import { readable, writable, type Readable } from 'svelte/store';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { ocrFileLabel, type OcrPart } from '$lib/reader/edit/ocr-label';
+import { ocrFileLabel, validParts, type OcrPart } from '$lib/reader/edit/ocr-label';
 
 /**
  * What the volume views show of a server's OCR queue — the light half of
@@ -153,11 +153,59 @@ function shorten(name: string): string {
   return name.length <= MAX_NAME ? name : `${name.slice(0, MAX_NAME - 1).trimEnd()}…`;
 }
 
+/**
+ * The short names a job's line may take, plainest first: with parts, the
+ * recognizer alone, then every part without versions ("Hayai Nova ·
+ * AnimeText"), then the full label; without, its full name.
+ */
+function compactNames(job: QueueJob, fullName: string): string[] {
+  const parts = validParts(job.parts);
+  if (!parts) return [fullName];
+  const names = [parts[0].name];
+  if (parts.length > 1) names.push(parts.map((p) => p.name).join(' · '));
+  names.push(fullName);
+  return names;
+}
+
+/**
+ * Each line's short name: the plainest that, cut to `MAX_NAME`, no other line
+ * of the volume shares — so "Hayai Nova 2.5 · PP-OCR Manga 0.3" and "Hayai
+ * Nova 2.5 · AnimeText 12x" never both read "Hayai Nova 2.5…". Lines that
+ * collide take their next form until they differ or have none left.
+ */
+function distinctShortNames(candidates: string[][]): string[] {
+  const level = candidates.map(() => 0);
+  const shortOf = (i: number) => shorten(candidates[i][level[i]]);
+  for (;;) {
+    const byShort = new Map<string, number[]>();
+    candidates.forEach((_, i) => {
+      const key = shortOf(i);
+      byShort.set(key, [...(byShort.get(key) ?? []), i]);
+    });
+    let bumped = false;
+    for (const group of byShort.values()) {
+      if (group.length < 2) continue;
+      for (const i of group) {
+        if (level[i] + 1 < candidates[i].length) {
+          level[i]++;
+          bumped = true;
+        }
+      }
+    }
+    if (!bumped) return candidates.map((_, i) => shortOf(i));
+  }
+}
+
 export interface PendingOcrLine {
   /** Stable per job (`kind:id`): a landed job's line leaves without disturbing the rest. */
   key: string;
-  /** What the job will make, named as the finished file will be (`ocrFileLabel`), shortened. */
+  /**
+   * What the job will make, short: its recognizer ("Hayai Nova"), with the
+   * other parts only where two lines would otherwise read the same; cut to
+   * `MAX_NAME`. Without parts, its full name cut.
+   */
   name: string;
+  /** Named as the finished file will be (`ocrFileLabel`): "Hayai Nova 2.5 · PP-OCR Manga 0.3". */
   fullName: string;
   /** Beside the name on a cover: "42% · ~08:17", "in ~3 min · 08:17", "queued", "held: …". */
   detail: string;
@@ -182,11 +230,16 @@ export interface PendingOcrView {
 
 const TITLE = 'Server OCR';
 
-function lineFor(job: QueueJob, held: QueueHeld | null, now: number): PendingOcrLine {
-  // The main file and a layer alike: the job's parts ("Hayai Nova 2.5 ·
-  // PP-OCR Manga 0.3"), else its generation's display name — never "Text".
-  const fullName = ocrFileLabel({ engine: job.id, parts: job.parts });
-  const base = { key: `${job.kind}:${job.id}`, name: shorten(fullName), fullName };
+/**
+ * The main file and a layer alike: the job's parts ("Hayai Nova 2.5 ·
+ * PP-OCR Manga 0.3"), else its generation's display name — never "Text".
+ */
+function fullNameOf(job: QueueJob): string {
+  return ocrFileLabel({ engine: job.id, parts: job.parts });
+}
+
+function lineFor(job: QueueJob, name: string, held: QueueHeld | null, now: number): PendingOcrLine {
+  const base = { key: `${job.kind}:${job.id}`, name, fullName: fullNameOf(job) };
   const { when, clock } = relativeEta(job.eta, now);
   if (job.state === 'held') {
     const text = heldText(held);
@@ -251,7 +304,8 @@ export function describePendingOcr(
 ): PendingOcrView | null {
   if (!status || status.jobs.length === 0) return null;
   const ordered = [...status.jobs].sort(soonestFirst);
-  const lines = ordered.map((job) => lineFor(job, status.held, now));
+  const names = distinctShortNames(ordered.map((job) => compactNames(job, fullNameOf(job))));
+  const lines = ordered.map((job, i) => lineFor(job, names[i], status.held, now));
   const shown = lines.length <= maxLines ? lines : lines.slice(0, maxLines - 1);
   return {
     title: TITLE,

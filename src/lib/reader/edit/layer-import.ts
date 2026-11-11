@@ -6,10 +6,10 @@ import type { Page, VolumeMetadata, VolumeOcrLayer } from '$lib/types';
 import { foldStem, miscasedLayerStem, splitLayerSidecarName } from '$lib/util/sync/syncable-file';
 import { layerKindForId, servedEngineOf } from './layers';
 import {
-  layerFileLabelFields,
+  layerFileMaker,
   layerNameOnWrite,
   makerFieldsOnWrite,
-  type LayerMakerFields
+  type LayerFileMaker
 } from './ocr-label';
 
 /**
@@ -145,7 +145,7 @@ export interface ReadLayerFile {
   /** The server engine that produced the file, when it says one did (`servedEngineOf`). */
   engine?: string;
   /** The file's `ocr_engine.parts` and `version` (none for an edited file): name the layer (`ocr-label.ts`). */
-  made?: LayerMakerFields;
+  made?: LayerFileMaker;
   volumeUuid?: string;
   seriesTitle?: string;
   volumeTitle?: string;
@@ -177,7 +177,7 @@ export async function readLayerFile(file: File | Blob, gz = false): Promise<Read
     return {
       pages,
       ...(servedEngineOf(json) ? { engine: servedEngineOf(json) } : {}),
-      ...(layerFileLabelFields(json) ? { made: layerFileLabelFields(json) } : {}),
+      ...(layerFileMaker(json) ? { made: layerFileMaker(json) } : {}),
       ...(typeof json.volume_uuid === 'string' ? { volumeUuid: json.volume_uuid } : {}),
       ...(typeof json.title === 'string' ? { seriesTitle: json.title } : {}),
       ...(typeof json.volume === 'string' ? { volumeTitle: json.volume } : {})
@@ -220,7 +220,7 @@ export async function attachLayerToVolume(
     passive?: boolean;
     engine?: string;
     /** The file's `ocr_engine.parts` and `version` (`readLayerFile`): name the row. */
-    made?: LayerMakerFields;
+    made?: LayerFileMaker;
   } = {}
 ): Promise<VolumeOcrLayer> {
   const now = new Date().toISOString();
@@ -245,6 +245,8 @@ export async function attachLayerToVolume(
       kind,
       ...(engine ? { engine } : {}),
       ...made,
+      // A name the user typed stays theirs through every rewrite.
+      ...(existing?.named_by_user ? { named_by_user: true as const } : {}),
       created_at: existing?.created_at ?? now,
       updated_at: now,
       ...(options.passive ? { passive_at: now } : {})

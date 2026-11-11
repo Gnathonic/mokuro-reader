@@ -143,9 +143,62 @@ describe('describePendingOcr (from the queue file)', () => {
       // Malformed parts: the generation's display name.
       'Nar Small'
     ]);
-    // Shortened on a line like any long name; whole in the label.
-    expect(view.lines[0].name).toBe('Hayai Nova 2.5…');
+    // A line shows the recognizer alone while no other line reads the same;
+    // the label keeps the full name.
+    expect(view.lines.map((l) => l.name)).toEqual([
+      'Hayai Nova',
+      'PP-OCR Manga',
+      'Charspot Small',
+      'Nar Small'
+    ]);
     expect(view.label).toContain('Hayai Nova 2.5 · PP-OCR Manga 0.3: running, 50% done');
+  });
+
+  it('two jobs with the same recognizer never read the same on a line', () => {
+    const nova = (id: string, detector: string, eta: number): QueueJob => ({
+      kind: id === 'hayai-nova' ? 'ocr' : 'layer',
+      id,
+      state: 'queued',
+      eta: at(eta),
+      progress: null,
+      parts: [
+        { role: 'recognizer', name: 'Hayai Nova', version: '2.5' },
+        { role: 'detector', name: detector, version: '0.3' }
+      ]
+    });
+    const view = describePendingOcr(
+      {
+        jobs: [
+          nova('hayai-nova', 'PP-OCR Manga', 1),
+          nova('hayai-nova-at', 'AnimeText', 2),
+          // Differs from the first only by its versions.
+          {
+            ...nova('hayai-nova-old', 'PP-OCR Manga', 3),
+            parts: [
+              { role: 'recognizer', name: 'Hayai Nova', version: '2.4' },
+              { role: 'detector', name: 'PP-OCR Manga', version: '0.3' }
+            ]
+          },
+          { kind: 'layer', id: 'charspot-small', state: 'queued', eta: at(4), progress: null }
+        ],
+        held: null
+      },
+      NOW
+    )!;
+    const names = view.lines.map((l) => l.name);
+    expect(names).toEqual([
+      'Hayai Nova 2.5…',
+      'Hayai Nova · An…',
+      'Hayai Nova 2.4…',
+      'Charspot Small'
+    ]);
+    expect(new Set(names).size).toBe(names.length);
+    expect(view.lines.map((l) => l.fullName)).toEqual([
+      'Hayai Nova 2.5 · PP-OCR Manga 0.3',
+      'Hayai Nova 2.5 · AnimeText 0.3',
+      'Hayai Nova 2.4 · PP-OCR Manga 0.3',
+      'Charspot Small'
+    ]);
   });
 
   it('a main-file job without parts (older bunko) is named by its generation', () => {

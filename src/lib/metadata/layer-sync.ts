@@ -23,10 +23,10 @@ import {
 import {
   autoLayerName,
   isAutoNamedLayer,
-  layerFileLabelFields,
+  layerFileMaker,
   layerNameOnWrite,
   makerFieldsOnWrite,
-  type LayerMakerFields
+  type LayerFileMaker
 } from '$lib/reader/edit/ocr-label';
 import { alignLayerPages } from '$lib/reader/edit/layer-page-align';
 import {
@@ -803,7 +803,7 @@ interface PulledLayerFile {
   /** `servedEngineOf` the file: set only for a server's OCR output, never for pushed edits. */
   engine?: string;
   /** The file's `ocr_engine.parts` and `version` (none for an edited file): name the row (`ocr-label.ts`). */
-  made?: LayerMakerFields;
+  made?: LayerFileMaker;
 }
 
 /** Decode one layer file's bytes into DB-shaped pages; null when unusable (a warning only when it throws). */
@@ -826,7 +826,7 @@ async function decodeLayerBlob(
       return page;
     });
     const engine = servedEngineOf(json);
-    const made = layerFileLabelFields(json);
+    const made = layerFileMaker(json);
     return { pages, ...(engine ? { engine } : {}), ...(made ? { made } : {}) };
   } catch (error) {
     console.warn(`[layer-sync] could not read '${label}':`, error);
@@ -984,6 +984,8 @@ async function storePulledLayer(
     kind,
     ...(engine ? { engine } : {}),
     ...made,
+    // A name the user typed stays theirs through every rewrite.
+    ...(existing?.named_by_user ? { named_by_user: true as const } : {}),
     created_at: existing?.created_at ?? now,
     updated_at: now,
     cloud: {
@@ -1999,6 +2001,7 @@ export async function publishCuratedLayer(volumeUuid: string): Promise<CuratedPu
       volume_uuid: volumeUuid,
       layer_id: CURATED_LAYER_ID,
       name: existing?.name ?? layerNameForId(CURATED_LAYER_ID),
+      ...(existing?.named_by_user ? { named_by_user: true as const } : {}),
       kind: 'edit',
       created_at: existing?.created_at ?? now,
       updated_at: now,

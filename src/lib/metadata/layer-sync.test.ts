@@ -29,6 +29,7 @@ vi.mock('$lib/util/sync/cache-manager', () => ({
 
 import { db } from '$lib/catalog/db';
 import { forksOnEdit } from '$lib/reader/edit/layer-kind';
+import { layerDisplayName } from '$lib/reader/edit/ocr-label';
 import { contentDigest, provenanceFromParsed } from '$lib/catalog/ocr-provenance';
 import { countIdbOps } from '$lib/catalog/__tests__/idb-op-counter';
 import {
@@ -432,6 +433,30 @@ describe('syncLayersFromListing', () => {
     const row = await getLayerWithPages(db, 'v1', 'pre-upgrade');
     expect(row!.pages[0].blocks[0].lines).toEqual(['新']);
     expect(row).toMatchObject({ name: 'Old scan', mokuro_version: '0.2.1' });
+  });
+
+  it('a name the user typed survives a re-pull even when it reads like the reader’s', async () => {
+    await seedRow();
+    await putLayerWithPages(db, {
+      volume_uuid: 'v1',
+      layer_id: 'pre-upgrade',
+      name: 'Pre Upgrade',
+      named_by_user: true,
+      kind: 'edit',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      cloud: { provider: 'webdav', size: 1, modified: 1, synced_at: '2026-01-01T00:00:00.000Z' },
+      pages: [pg('旧')]
+    });
+    downloadFile.mockResolvedValue(new Blob([mokuroJson('新')]));
+    await syncLayersFromListing(
+      listing(cloudFile('Series/Vol 1.cbz'), cloudFile('Series/Vol 1.pre-upgrade.mokuro')),
+      'webdav'
+    );
+    const row = await getLayerWithPages(db, 'v1', 'pre-upgrade');
+    expect(row!.pages[0].blocks[0].lines).toEqual(['新']);
+    expect(row).toMatchObject({ name: 'Pre Upgrade', named_by_user: true });
+    expect(layerDisplayName(row!)).toBe('Pre Upgrade');
   });
 
   it('a pulled tr-<lang> file is filed as a translation — which can never become the primary', async () => {

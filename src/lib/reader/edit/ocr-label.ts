@@ -8,19 +8,29 @@
  * - else its `ocr_engine.id` → that engine's display name ("Hayai Nova");
  * - else mokuro wrote it → "mokuro 0.2.2" (plain "mokuro" with no version).
  *
- * A layer's id still names it when the id says what the layer IS (an
- * account's corrections, the shared `curated`, a hand-made layer). Only a
- * set-aside main sidecar (`pre-upgrade…`, `previous-ocr…`) — whose id says
- * nothing about its maker — is named by the mokuro version when no engine
- * made it.
+ * The primary is named by the maker of the CURRENT main, recorded on the
+ * volume row whenever a main is installed, replaced or promoted
+ * (`VolumeMetadata.ocr_maker`); an edit keeps it. A layer's id still names it
+ * when the id says what the layer IS (an account's corrections, the shared
+ * `curated`, a hand-made layer). Only a set-aside main sidecar
+ * (`pre-upgrade…`, `previous-ocr…`) and the OCR upgrade's `updated-ocr` —
+ * whose ids say nothing about their maker — are named by the mokuro version
+ * when no engine made them.
  */
 import {
   isCuratedLayerId,
   isPersonalLayerId,
   isServerKeepsakeLayerId,
+  isSetAsideLayerId,
   layerNameForId,
-  titleCasedLayerId
+  PREVIOUS_OCR_ID_RE,
+  PREVIOUS_OCR_NAME_RE,
+  titleCasedLayerId,
+  UPDATED_OCR_LAYER_ID,
+  UPDATED_OCR_LAYER_NAME
 } from './layer-names';
+
+export { isSetAsideLayerId };
 
 /** One tool an OCR file was made with, as bunko's `ocr_engine.parts` lists it. */
 export interface OcrPart {
@@ -95,15 +105,75 @@ function newestEngineBlock(list: readonly unknown[] | undefined): Record<string,
 }
 
 /**
+ * What made a volume's CURRENT main OCR (`VolumeMetadata.ocr_maker`): the
+ * engine id and parts of the file's `ocr_engine`, else (mokuro wrote it) just
+ * its version. Stored when a main is installed, replaced or promoted; an edit
+ * keeps it, so an edited main is still named by what made it.
+ */
+export interface MainOcrMaker {
+  engine?: string;
+  parts?: OcrPart[];
+  /** The version the maker's file named; absent → the row's `mokuro_version`. */
+  mokuro_version?: string;
+}
+
+function trimmed(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * The maker of a main file from its provenance entry (`provenanceOfFile`) and
+ * `version`: a GENERATED file's engine and parts; nothing known for an EDITED
+ * file (undefined: the volume falls back as before); no block at all → mokuro
+ * made it.
+ */
+export function mainMakerOfFile(
+  provenance: unknown,
+  version: string | null | undefined
+): MainOcrMaker | undefined {
+  if (isPlainObject(provenance) && isPlainObject(provenance.edited)) return undefined;
+  const v = trimmed(version);
+  const engine = isPlainObject(provenance) ? provenance.engine : undefined;
+  if (isPlainObject(engine) && trimmed(engine.id)) {
+    const parts = ocrPartsOf(engine);
+    return {
+      engine: trimmed(engine.id),
+      ...(parts ? { parts } : {}),
+      ...(v ? { mokuro_version: v } : {})
+    };
+  }
+  return v ? { mokuro_version: v } : {};
+}
+
+/**
+ * The maker a layer brings when it is promoted to the main: what its file
+ * said (engine, parts, version). Undefined when the row knows nothing of a
+ * maker (the `original`, a person's corrections, a hand-made layer): those
+ * pages are the current main's, or edits on it, so its maker stays.
+ */
+export function mainMakerOfLayer(layer: {
+  engine?: string;
+  maker_engine?: string;
+  ocr_parts?: unknown;
+  mokuro_version?: string;
+}): MainOcrMaker | undefined {
+  const engine = trimmed(layer.engine) || trimmed(layer.maker_engine);
+  const parts = validParts(layer.ocr_parts);
+  const version = trimmed(layer.mokuro_version);
+  if (!engine && !parts && !version) return undefined;
+  return {
+    ...(engine ? { engine } : {}),
+    ...(parts ? { parts } : {}),
+    ...(version ? { mokuro_version: version } : {})
+  };
+}
+
+/**
  * What the primary OCR row is called in the layer picker, settings select and
- * switch toasts: the maker of the main sidecar it was installed from
- * (`ocrFileLabel`), read from the volume's newest provenance entry — the
- * `ocr_engine` block a server stamped on it. No block (a legacy mokuro file,
- * an image-only volume, an installed EDITED main) → `mokuro <version>`.
- *
- * A primary edited here (`ocr_edited_at`) is not the engine's output any more
- * — and its newest entry may be the `updated-ocr` layer's block, not its own
- * base's — so it keeps the `mokuro <version>` name it always had.
+ * switch toasts: what made the CURRENT main (`ocr_maker`, `ocrFileLabel`) —
+ * also once edited here. A volume installed before the maker was recorded
+ * falls back to its newest provenance entry while unedited, else
+ * `mokuro <version>` (an image-only volume: `mokuro`).
  */
 export function primaryLayerName(
   volume:
@@ -111,11 +181,20 @@ export function primaryLayerName(
         mokuro_version?: string | null;
         ocr_edited_at?: string;
         ocr_provenance?: readonly unknown[];
+        ocr_maker?: unknown;
       }
     | null
     | undefined
 ): string {
   if (!volume) return mokuroLabel(undefined);
+  const maker = volume.ocr_maker;
+  if (isPlainObject(maker)) {
+    return ocrFileLabel({
+      engine: trimmed(maker.engine) || undefined,
+      parts: validParts(maker.parts),
+      version: trimmed(maker.mokuro_version) || volume.mokuro_version
+    });
+  }
   const engine = volume.ocr_edited_at ? null : newestEngineBlock(volume.ocr_provenance);
   return ocrFileLabel({
     ...(engine ? { engine: engine.id as string, parts: ocrPartsOf(engine) } : {}),
@@ -123,25 +202,20 @@ export function primaryLayerName(
   });
 }
 
-/**
- * `pre-upgrade`, `previous-ocr` and their `-<n>` siblings: a volume's earlier
- * main sidecar kept beside the one that replaced it (an older bunko's
- * `<Volume>.pre-upgrade.mokuro`; reader v1.10.0's "Previous OCR"). Their id
- * says why they exist, not who made them, so they are named by their maker.
- */
-const SET_ASIDE_RE = /^(?:pre-upgrade|previous-ocr)(?:-\d+)?$/;
-
-export function isSetAsideLayerId(layerId: string): boolean {
-  return SET_ASIDE_RE.test(layerId);
-}
-
-/** What a layer row knows about the file it was read from. */
+/** What a layer row knows about the file it was read from, and how it was named. */
 export interface LayerLabelRow {
   layer_id: string;
   name: string;
   engine?: string;
+  /** The engine a file named, kept for naming only (`updated-ocr`, which is never filed by it). */
+  maker_engine?: string;
   ocr_parts?: OcrPart[];
   mokuro_version?: string;
+  /** The user typed this name (a rename, or a layer made by name): never relabelled. */
+  named_by_user?: true;
+  cloud?: unknown;
+  passive_at?: string;
+  source_at?: string;
 }
 
 function isCorrectionsId(layerId: string): boolean {
@@ -150,33 +224,68 @@ function isCorrectionsId(layerId: string): boolean {
   );
 }
 
+/** Ids that say why a layer exists, not who made it: named by their maker. */
+function isNamedByMaker(layerId: string): boolean {
+  return isSetAsideLayerId(layerId) || layerId === UPDATED_OCR_LAYER_ID;
+}
+
 /**
  * The name a layer row gets when nobody renamed it: a corrections layer by its
  * id ("Your corrections", "Shared corrections"); a file with parts by its
- * parts; a set-aside main sidecar by its maker (`ocrFileLabel`); anything else
- * by its id, as before (`layerNameForId`: "PP-OCR Manga", "Charspot Small").
+ * parts; a set-aside main sidecar or `updated-ocr` by its maker
+ * (`ocrFileLabel`); anything else by its id, as before (`layerNameForId`:
+ * "PP-OCR Manga", "Charspot Small").
  */
 export function autoLayerName(row: Omit<LayerLabelRow, 'name'>): string {
   if (isCorrectionsId(row.layer_id)) return layerNameForId(row.layer_id);
   const parts = validParts(row.ocr_parts);
   if (parts) return partsLabel(parts);
-  if (isSetAsideLayerId(row.layer_id)) {
-    return ocrFileLabel({ engine: row.engine, version: row.mokuro_version });
+  if (isNamedByMaker(row.layer_id)) {
+    return ocrFileLabel({
+      engine: row.engine || row.maker_engine,
+      version: row.mokuro_version
+    });
   }
   return layerNameForId(row.layer_id);
 }
 
 /**
- * Was this row never renamed by hand? Its name is one the reader gave it: the
- * title-cased slug (every row before engines had names — "Pre Upgrade",
- * "Ppocr Manga"), the id's display name, or the name its file gives it now.
+ * Did the row come from a file (a cloud listing, an import, an archive, the
+ * OCR upgrade, reader v1.10.0's keepsake) rather than from a person making it
+ * here? Only such a row was ever named by the reader.
+ */
+function cameFromFile(row: LayerLabelRow): boolean {
+  return (
+    !!row.cloud ||
+    !!row.engine ||
+    !!row.maker_engine ||
+    !!validParts(row.ocr_parts) ||
+    !!row.mokuro_version ||
+    row.passive_at !== undefined ||
+    row.source_at !== undefined
+  );
+}
+
+/** A name an earlier reader gave this id (before layers were named by maker). */
+function isLegacyAutoName(row: LayerLabelRow): boolean {
+  if (row.name === titleCasedLayerId(row.layer_id) || row.name === layerNameForId(row.layer_id)) {
+    return true;
+  }
+  if (PREVIOUS_OCR_ID_RE.test(row.layer_id) && PREVIOUS_OCR_NAME_RE.test(row.name)) return true;
+  return row.layer_id === UPDATED_OCR_LAYER_ID && row.name === UPDATED_OCR_LAYER_NAME;
+}
+
+/**
+ * Was this row named by the reader, never by a person? Not if the user typed
+ * its name (`named_by_user`, set by a rename or by making a layer by name),
+ * nor if it was made here rather than read from a file; else its name must be
+ * one the reader gave it — an old one (the title-cased slug "Pre Upgrade",
+ * the id's display name, v1.10.0's "Previous OCR", "Updated OCR") or the label
+ * its file gives it now.
  */
 export function isAutoNamedLayer(row: LayerLabelRow): boolean {
-  return (
-    row.name === titleCasedLayerId(row.layer_id) ||
-    row.name === layerNameForId(row.layer_id) ||
-    row.name === autoLayerName(row)
-  );
+  if (row.named_by_user || !cameFromFile(row)) return false;
+  return isLegacyAutoName(row) || row.name === autoLayerName(row);
 }
 
 /** The name to show: what the user typed, else what the row's file says made it. */
@@ -186,7 +295,7 @@ export function layerDisplayName(row: LayerLabelRow): string {
 
 /**
  * The name to store when a file (re)writes a layer row: the existing row's own
- * name when the user typed it, else the new file's (`autoLayerName`).
+ * name unless the reader gave it, else the new file's (`autoLayerName`).
  */
 export function layerNameOnWrite(
   existing: LayerLabelRow | undefined,
@@ -202,32 +311,63 @@ export interface LayerMakerFields {
   mokuro_version?: string;
 }
 
+/** A parsed layer file's maker, and whether a server stamped it (`ocr_engine`). */
+export interface LayerFileMaker {
+  fields: LayerMakerFields;
+  /** The file carries an `ocr_engine` block: it says who made it. */
+  stamped: boolean;
+}
+
+/** The version of the OCR on these pages: the first page that names one. */
+export function pagesVersion(pages: unknown): string {
+  if (!Array.isArray(pages)) return '';
+  for (const page of pages) {
+    const v = isPlainObject(page) ? trimmed(page.version) : '';
+    if (v) return v;
+  }
+  return '';
+}
+
 /**
  * What a parsed layer file says about its maker, to remember on its row:
- * `ocr_parts` (its `ocr_engine.parts`) and `mokuro_version` (its `version`).
- * Undefined for a file a person edited (an `edited` block — every edited
- * layer a reader pushes): its `version` is the volume's, not the maker's, so
- * the row keeps what it knew (`makerFieldsOnWrite`).
+ * `ocr_parts` (its `ocr_engine.parts`) and `mokuro_version` — the version its
+ * PAGES name (mokuro writes it on every page, and a file the reader writes
+ * keeps the pages' own), else the file's top-level `version`. Undefined for a
+ * file a person edited (an `edited` block): it says nothing of its maker.
  */
-export function layerFileLabelFields(json: unknown): LayerMakerFields | undefined {
+export function layerFileMaker(json: unknown): LayerFileMaker | undefined {
   if (!isPlainObject(json) || isPlainObject(json.edited)) return undefined;
   const parts = ocrPartsOf(json.ocr_engine);
-  const version = typeof json.version === 'string' ? json.version.trim() : '';
+  const version = pagesVersion(json.pages) || trimmed(json.version);
   return {
-    ...(parts ? { ocr_parts: parts } : {}),
-    ...(version ? { mokuro_version: version } : {})
+    fields: {
+      ...(parts ? { ocr_parts: parts } : {}),
+      ...(version ? { mokuro_version: version } : {})
+    },
+    stamped: isPlainObject(json.ocr_engine)
   };
 }
 
-/** The maker fields a (re)written row stores: the file's, else (an edited file) the row's own. */
+function hasMakerFields(row: LayerMakerFields | undefined): boolean {
+  return !!row && (!!validParts(row.ocr_parts) || !!trimmed(row.mokuro_version));
+}
+
+/**
+ * The maker fields a (re)written row stores. The file's — unless the file
+ * cannot say: an edited file, or one with no `ocr_engine` (a file the reader
+ * itself wrote, re-imported) over a row that already knows its maker. Then
+ * the row keeps what it knew.
+ */
 export function makerFieldsOnWrite(
   existing: LayerMakerFields | undefined,
-  fromFile: LayerMakerFields | undefined
+  file: LayerFileMaker | undefined
 ): LayerMakerFields {
-  const source = fromFile ?? existing ?? {};
+  const keep = !file || (!file.stamped && hasMakerFields(existing));
+  const source = keep ? (existing ?? {}) : file.fields;
   const parts = validParts(source.ocr_parts);
+  const version = trimmed(source.mokuro_version);
   return {
     ...(parts ? { ocr_parts: parts } : {}),
-    ...(source.mokuro_version ? { mokuro_version: source.mokuro_version } : {})
+    ...(version ? { mokuro_version: version } : {})
   };
 }

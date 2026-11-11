@@ -34,7 +34,9 @@ import { clearAllLayers } from '$lib/catalog/layer-store';
 import {
   NOVA_ON_PPOCR_PARTS,
   queueFixture,
-  queueFixtureWithParts
+  queueFixtureWithParts,
+  servedQueueFile,
+  stripQueueParts
 } from './__fixtures__/mokuro-queue';
 import type { Writable } from 'svelte/store';
 import { markVolumeShown, serverOcrQueueStatus, volumeQueueKey } from './server-ocr-pending';
@@ -130,10 +132,17 @@ describe('parseQueueFile', () => {
       { role: 'detector', name: 'AnimeText', version: '12x' }
     ]);
     expect('parts' in jobs[3]).toBe(false);
-    // A file without parts (older bunko) parses exactly as before.
-    expect(parseQueueFile(queueFixture(NOW))!.volumes[0].jobs.some((j) => 'parts' in j)).toBe(
-      false
-    );
+    // A file without parts (older bunko) parses exactly as before: Bunko's own
+    // document with every job's `parts` taken out here.
+    const older = parseQueueFile(stripQueueParts(servedQueueFile(NOW)))!;
+    expect(older.volumes.flatMap((v) => v.jobs).some((j) => 'parts' in j)).toBe(false);
+    expect(older.volumes[0].jobs[0]).toEqual({
+      kind: 'ocr',
+      id: 'hayai-nova',
+      state: 'held',
+      eta: null,
+      progress: null
+    });
   });
 });
 

@@ -19,6 +19,8 @@ import { isUntouchedUpgradeLayer, sha256Hex, type MokuroCloudAttestation } from 
 export { isUntouchedUpgradeLayer };
 import { firstImageSizeMismatch, fitPagesToVolume, sameOcrPages } from './ocr-upgrade-pages';
 import { addProvenance, provenanceOfFile, type OcrProvenance } from './ocr-provenance';
+import { UPDATED_OCR_LAYER_ID, UPDATED_OCR_LAYER_NAME } from '$lib/reader/edit/layer-names';
+import { layerNameOnWrite, mainMakerOfFile } from '$lib/reader/edit/ocr-label';
 
 /**
  * Upgrading an installed volume's OCR from the cloud's `.mokuro`/`.mokuro.gz`
@@ -209,7 +211,9 @@ export async function upgradeOcrFromSidecarBlob(
       mokuro_sha256: sha256,
       mokuro_sha256_cloud: sha256 ? cloud : undefined,
       // The primary is this file now: its block or none (like the hash).
-      ocr_provenance: provenance ? [provenance] : undefined
+      ocr_provenance: provenance ? [provenance] : undefined,
+      // ...and its maker (unknown for an EDITED file).
+      ocr_maker: mainMakerOfFile(provenance, parsed.version)
     });
     return current;
   });
@@ -291,8 +295,7 @@ export function enqueueCloudOcrUpgrade(
  * every layer push while untouched — the cloud already holds these exact pages
  * as the volume's primary sidecar.
  */
-export const UPDATED_OCR_LAYER_ID = 'updated-ocr';
-export const UPDATED_OCR_LAYER_NAME = 'Updated OCR';
+export { UPDATED_OCR_LAYER_ID, UPDATED_OCR_LAYER_NAME };
 
 /** The read-only pre-edit snapshot (`edit-persist.ts`'s `ORIGINAL_LAYER_ID`; a literal to stay out of its import cycle). */
 const ORIGINAL_LAYER = 'original';
@@ -386,10 +389,15 @@ export async function applyCloudPrimaryOcr(
     const learned = ocr.provenance
       ? { ocr_provenance: addProvenance(current.ocr_provenance, ocr.provenance) }
       : {};
+    // What made the file: the main's maker once it replaces the main.
+    const fileMaker = mainMakerOfFile(ocr.provenance, ocr.version);
     const base = {
       mokuro_sha256: ocr.sha256,
       mokuro_sha256_cloud: ocr.cloud,
-      ...learned
+      ...learned,
+      // The same pages as the main (or its pre-edit base) under a stamp that
+      // names their engine: that engine made the main.
+      ...(fileMaker?.engine ? { ocr_maker: fileMaker } : {})
     };
 
     // The OCR this volume already has, arriving as different bytes (a
@@ -418,10 +426,20 @@ export async function applyCloudPrimaryOcr(
         return 'kept';
       }
       const now = new Date().toISOString();
+      // Named by what made the cloud's file (`ocr-label.ts`), unless renamed.
+      // Its engine is kept for the name only (`maker_engine`): an `engine`
+      // would file this mirror as a server's model output.
+      const made = {
+        ...(fileMaker?.engine ? { maker_engine: fileMaker.engine } : {}),
+        ...(fileMaker?.parts ? { ocr_parts: fileMaker.parts } : {}),
+        ...(fileMaker?.mokuro_version ? { mokuro_version: fileMaker.mokuro_version } : {})
+      };
       await putLayerWithPages(db, {
         volume_uuid: volumeUuid,
         layer_id: UPDATED_OCR_LAYER_ID,
-        name: existing?.name ?? UPDATED_OCR_LAYER_NAME,
+        name: layerNameOnWrite(existing, { layer_id: UPDATED_OCR_LAYER_ID, ...made }),
+        ...made,
+        ...(existing?.named_by_user ? { named_by_user: true as const } : {}),
         kind: 'ocr',
         created_at: existing?.created_at ?? now,
         updated_at: now,
@@ -445,7 +463,11 @@ export async function applyCloudPrimaryOcr(
       mokuro_version: ocr.version || current.mokuro_version || '0.0.0',
       character_count: totalChars,
       page_char_counts: cumulative,
-      updated_ocr_sha256: undefined
+      updated_ocr_sha256: undefined,
+      // The main is this file now: named by what made it — a file without an
+      // `ocr_engine` is mokuro's, whatever the replaced main was. An EDITED
+      // file's maker is unknown: cleared, the name falls back.
+      ocr_maker: fileMaker
     });
     return 'upgraded';
   });
