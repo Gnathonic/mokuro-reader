@@ -34,6 +34,7 @@ import { markVolumeShown, serverOcrQueueStatus, volumeQueueKey } from './server-
 import {
   QueuePoller,
   cloudSourceFor,
+  connectedCloudQueueSource,
   ensureCloudPoller,
   parseQueueFile,
   resetServerOcrQueueForTest,
@@ -391,6 +392,22 @@ describe('cloudSourceFor (marker, then the holder’s queue file)', () => {
     expect(await cloudSourceFor('google-drive').read({ etag: null, file: null })).toBe(
       'unavailable'
     );
+  });
+});
+
+describe('connectedCloudQueueSource', () => {
+  it('a Local Folder reads the queue a Bunko writes into the folder', async () => {
+    const c = cloudProvider('filesystem');
+    getActiveProvider.mockReturnValue(c.provider);
+    const source = await connectedCloudQueueSource();
+    expect(source?.id).toBe('cloud:filesystem');
+    // As often as Bunko writes it for a folder library: local reads cost no requests.
+    expect(source?.minIntervalS).toBe(30);
+  });
+
+  it('a provider that cannot read control files has none', async () => {
+    getActiveProvider.mockReturnValue({ type: 'filesystem' });
+    expect(await connectedCloudQueueSource()).toBeNull();
   });
 });
 

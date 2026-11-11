@@ -7,9 +7,12 @@ import type {
   FileStamp,
   StorageQuota,
   UploadPayload,
-  UploadFileResult
+  UploadFileResult,
+  ControlFileResult
 } from '../../provider-interface';
 import { ProviderError } from '../../provider-interface';
+import { ControlNodeCache, readControlNodes } from '../../control-file-read';
+import { clearCloudBunkoMarkers, withCloudBunkoStatus } from '$lib/catalog/cloud-bunko-marker';
 import { setActiveProviderKey, clearActiveProviderKey } from '../../provider-detection';
 import { isFilesystemProviderSupported } from './feature-detect';
 import { saveRootHandle, loadRootHandle, clearRootHandle } from './handle-store';
@@ -26,6 +29,7 @@ export class FilesystemProvider implements SyncProvider {
   private rootHandle: FileSystemDirectoryHandle | null = null;
   private hasStoredHandle = false;
   private initPromise: Promise<void>;
+  private controlCache = new ControlNodeCache();
 
   constructor() {
     if (browser && isFilesystemProviderSupported()) {
@@ -44,7 +48,7 @@ export class FilesystemProvider implements SyncProvider {
   }
 
   getStatus(): ProviderStatus {
-    return {
+    return withCloudBunkoStatus(this.type, {
       isAuthenticated: this.isAuthenticated(),
       hasStoredCredentials: this.hasStoredHandle,
       needsAttention: this.hasStoredHandle && !this.isAuthenticated(),
@@ -52,8 +56,10 @@ export class FilesystemProvider implements SyncProvider {
       // gate on both, and an absent flag would pass those gates by accident
       // instead of by decision. A connected folder is writable by construction
       // — the picker asks for `readwrite` and `restoreHandle` only adopts a
-      // stored handle whose `readwrite` permission is already granted — and a
-      // local folder has no server to compile the metadata files for us.
+      // stored handle whose `readwrite` permission is already granted. This
+      // client compiles the metadata files itself, unless a cloud-direct Bunko
+      // holds the folder's lease: then `withCloudBunkoStatus` turns
+      // `serverCompilesMetadata` on from its fresh marker, as on Drive.
       isReadOnly: false,
       serverCompilesMetadata: false,
       statusMessage: this.isAuthenticated()
@@ -66,7 +72,7 @@ export class FilesystemProvider implements SyncProvider {
       // share a basename would collide, but that's an acceptable rough edge
       // versus never scoping this provider's cache at all.
       accountScope: this.rootHandle?.name ? `filesystem:${this.rootHandle.name}` : undefined
-    };
+    });
   }
 
   async login(_credentials?: ProviderCredentials): Promise<void> {
@@ -98,6 +104,10 @@ export class FilesystemProvider implements SyncProvider {
       );
     }
 
+    // A different folder is a different library: what was read of the old
+    // one's Bunko marker must not speak for the new one.
+    if (!(await this.isPreviousRoot(handle))) this.forgetControlFiles();
+
     this.rootHandle = handle;
     this.hasStoredHandle = true;
     await saveRootHandle(handle);
@@ -108,6 +118,7 @@ export class FilesystemProvider implements SyncProvider {
   async logout(): Promise<void> {
     this.rootHandle = null;
     this.hasStoredHandle = false;
+    this.forgetControlFiles();
     await clearRootHandle();
     clearActiveProviderKey();
     console.log('Filesystem provider logged out');
@@ -185,6 +196,34 @@ export class FilesystemProvider implements SyncProvider {
       await clearRootHandle().catch(() => {});
       clearActiveProviderKey();
     }
+  }
+
+  /**
+   * Is `handle` the folder this provider had before (connected, or stored and
+   * waiting for a reconnect)? False when there was none, or the old handle is
+   * dead.
+   */
+  private async isPreviousRoot(handle: FileSystemDirectoryHandle): Promise<boolean> {
+    let prev: FileSystemDirectoryHandle | null = this.rootHandle;
+    if (!prev) {
+      try {
+        prev = await loadRootHandle();
+      } catch {
+        prev = null;
+      }
+    }
+    if (!prev) return false;
+    try {
+      return await prev.isSameEntry(handle);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Forget the folder's control files: the cached bodies and its Bunko marker. */
+  private forgetControlFiles(): void {
+    this.controlCache.clear();
+    clearCloudBunkoMarkers(this.type);
   }
 
   private requireRoot(): FileSystemDirectoryHandle {
@@ -412,6 +451,50 @@ export class FilesystemProvider implements SyncProvider {
     } catch (error) {
       if ((error as { name?: string })?.name === 'NotFoundError') return [];
       throw this.toProviderError(error, 'Download', name);
+    }
+  }
+
+  // CONTROL FILES (cloud-direct Bunko marker, queue)
+
+  /**
+   * Read a control file at the library root: the picked folder, which plays
+   * the part of Drive's `mokuro-reader` folder. One local stat per read; names
+   * are unique in a folder, so there is at most one node. Its version is
+   * `lastModified:size`: unchanged means the bytes are not read again. Never
+   * creates anything; a missing file (or a folder of that name) is null.
+   */
+  async readControlFile(name: string, opts?: { ifNoneMatch?: string }): Promise<ControlFileResult> {
+    try {
+      const root = this.requireRoot();
+      let file: File;
+      try {
+        file = await (await root.getFileHandle(name, { create: false })).getFile();
+      } catch (error) {
+        const errorName = (error as { name?: string })?.name;
+        if (errorName === 'NotFoundError' || errorName === 'TypeMismatchError') {
+          this.controlCache.retain(name, []);
+          return null;
+        }
+        throw error;
+      }
+      const listed = [
+        {
+          id: name,
+          etag: `${file.lastModified}:${file.size}`,
+          modified: new Date(file.lastModified).toISOString()
+        }
+      ];
+      // A copy of the bytes, not the `File`: a cached `File` becomes
+      // unreadable once Bunko renames its next version over it.
+      return await readControlNodes(
+        name,
+        listed,
+        async () => new Blob([await file.arrayBuffer()]),
+        this.controlCache,
+        opts?.ifNoneMatch
+      );
+    } catch (error) {
+      throw this.toProviderError(error, 'Read', name);
     }
   }
 

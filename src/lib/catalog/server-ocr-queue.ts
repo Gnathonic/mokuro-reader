@@ -1272,7 +1272,8 @@ const CLOUD_MIN_INTERVAL_S: Record<ProviderType, number> = {
   'google-drive': 60,
   onedrive: 60,
   mega: 60,
-  filesystem: 300
+  // Local reads cost no requests; Bunko's own floor for a folder library is 30 s.
+  filesystem: 30
 };
 
 /** The relist a completion runs — set by the app shell (`+layout.svelte`). */
@@ -1363,7 +1364,8 @@ export function cloudSourceFor(providerType: ProviderType): CloudQueueSource {
 }
 
 /**
- * The connected provider's cloud queue source: Drive, OneDrive, MEGA, or a
+ * The connected provider's cloud queue source: Drive, OneDrive, MEGA, a Local
+ * Folder (a Bunko whose library is that folder writes its queue there), or a
  * WebDAV that is NOT a bunko server (a bunko server serves its live queue
  * over HTTP — `connectedBunkoQueueUrl`). Null without a provider that can
  * read control files.
@@ -1372,7 +1374,6 @@ export async function connectedCloudQueueSource(): Promise<CloudQueueSource | nu
   try {
     const provider = await activeProvider();
     if (!provider?.readControlFile) return null;
-    if (provider.type === 'filesystem') return null;
     if (provider.type === 'webdav' && (await connectedBunkoQueueUrl())) return null;
     return cloudSourceFor(provider.type);
   } catch {

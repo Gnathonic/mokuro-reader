@@ -822,8 +822,16 @@ describe('refreshCloudBunkoMarker', () => {
   });
 
   it('a provider that cannot read control files is a no-op', async () => {
-    const p = { type: 'filesystem' } as unknown as SyncProvider;
+    const p = { type: 'webdav' } as unknown as SyncProvider;
     expect(await refreshCloudBunkoMarker(p)).toBe(false);
-    expect(cloudBunkoStatus('filesystem')).toBeUndefined();
+    expect(cloudBunkoStatus('webdav')).toBeUndefined();
+  });
+
+  it('a filesystem provider reads the marker, in its own scope', async () => {
+    const files = { current: read({ id: '.mokuro-bunko.json', etag: '1:2', body: marker() }) };
+    const p = provider('filesystem', files);
+    expect(await refreshCloudBunkoMarker(p.provider)).toBe(true);
+    expect(cloudBunkoStatus('filesystem')?.fresh).toBe(true);
+    expect(cloudBunkoStatus('google-drive')).toBeUndefined();
   });
 });
