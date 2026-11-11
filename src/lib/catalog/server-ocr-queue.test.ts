@@ -31,7 +31,13 @@ vi.mock('$lib/util/sync/provider-manager', async () => {
 import { db } from '$lib/catalog/db';
 import { providerManager } from '$lib/util/sync/provider-manager';
 import { clearAllLayers } from '$lib/catalog/layer-store';
-import { queueFixture } from './__fixtures__/mokuro-queue';
+import {
+  NOVA_ON_PPOCR_PARTS,
+  queueFixture,
+  queueFixtureWithParts,
+  servedQueueFile,
+  stripQueueParts
+} from './__fixtures__/mokuro-queue';
 import type { Writable } from 'svelte/store';
 import { markVolumeShown, serverOcrQueueStatus, volumeQueueKey } from './server-ocr-pending';
 import {
@@ -109,6 +115,34 @@ describe('parseQueueFile', () => {
     expect(file.pending_volumes).toBeNull();
     expect(file.volumes).toHaveLength(3);
     expect(file.volumes[2].jobs).toEqual([]);
+  });
+
+  it("keeps a job's parts; malformed parts are left out, never the job", () => {
+    const file = parseQueueFile(queueFixtureWithParts(NOW))!;
+    const jobs = file.volumes[2].jobs;
+    expect(jobs.map((j) => j.id)).toEqual([
+      'hayai-nova',
+      'ppocr-manga',
+      'charspot-small',
+      'nar-small'
+    ]);
+    expect(jobs[0].parts).toEqual(NOVA_ON_PPOCR_PARTS);
+    expect(jobs[2].parts).toEqual([
+      { role: 'recognizer', name: 'Charspot Small' },
+      { role: 'detector', name: 'AnimeText', version: '12x' }
+    ]);
+    expect('parts' in jobs[3]).toBe(false);
+    // A file without parts (older bunko) parses exactly as before: Bunko's own
+    // document with every job's `parts` taken out here.
+    const older = parseQueueFile(stripQueueParts(servedQueueFile(NOW)))!;
+    expect(older.volumes.flatMap((v) => v.jobs).some((j) => 'parts' in j)).toBe(false);
+    expect(older.volumes[0].jobs[0]).toEqual({
+      kind: 'ocr',
+      id: 'hayai-nova',
+      state: 'held',
+      eta: null,
+      progress: null
+    });
   });
 });
 

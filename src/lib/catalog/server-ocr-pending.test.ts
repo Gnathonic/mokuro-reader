@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { queueFixture } from './__fixtures__/mokuro-queue';
+import { queueFixture, queueFixtureWithParts } from './__fixtures__/mokuro-queue';
+import { parseQueueFile } from './server-ocr-queue';
 import {
   describePendingOcr,
   heldText,
@@ -64,7 +65,7 @@ describe('describePendingOcr (from the queue file)', () => {
     const view = describePendingOcr({ jobs: jobsOf(0), held: null }, NOW)!;
     expect(view.title).toBe('Server OCR');
     expect(view.lines.map((l) => [l.name, l.detail])).toEqual([
-      ['Text', `42% · ~${hhmm(at(3))}`],
+      ['Mokuro Fp16', `42% · ~${hhmm(at(3))}`],
       ['Hayai Nova', `in ~8 min · ${hhmm(at(8))}`],
       ['Paddle Manga', 'queued']
     ]);
@@ -73,9 +74,9 @@ describe('describePendingOcr (from the queue file)', () => {
   it('shows a held job with the queue’s reason in plain words', () => {
     const view = describePendingOcr({ jobs: jobsOf(1), held: { reason: 'no-processor' } }, NOW)!;
     expect(view.lines.map((l) => [l.name, l.detail])).toEqual([
-      ['Text', 'held: no processor connected']
+      ['Mokuro Fp16', 'held: no processor connected']
     ]);
-    expect(view.label).toBe('Server OCR — Text: held: no processor connected');
+    expect(view.label).toBe('Server OCR — Mokuro Fp16: held: no processor connected');
   });
 
   it('running with no progress or ETA still says it is running', () => {
@@ -89,18 +90,18 @@ describe('describePendingOcr (from the queue file)', () => {
   it('keeps full names and exact clock times in the accessible label', () => {
     const view = describePendingOcr({ jobs: jobsOf(0), held: null }, NOW)!;
     expect(view.label).toBe(
-      `Server OCR — Text: running, 42% done, finishing about ${hhmm(at(3))}; ` +
+      `Server OCR — Mokuro Fp16: running, 42% done, finishing about ${hhmm(at(3))}; ` +
         `Hayai Nova: in ~8 min, at ${hhmm(at(8))}; Paddle Manga: queued, no estimate yet`
     );
   });
 
   it('reads as one line for the list view', () => {
     expect(describePendingOcr({ jobs: jobsOf(0), held: null }, NOW)!.inline).toBe(
-      `Server OCR: Text 42% · ~${hhmm(at(3))} · Hayai Nova in ~8 min · Paddle Manga queued`
+      `Server OCR: Mokuro Fp16 42% · ~${hhmm(at(3))} · Hayai Nova in ~8 min · Paddle Manga queued`
     );
   });
 
-  it('puts the primary first, then layers by ETA, unpriced last; shortens long names', () => {
+  it('lists soonest first, shortens long names', () => {
     const view = describePendingOcr(
       {
         jobs: [
@@ -120,13 +121,127 @@ describe('describePendingOcr (from the queue file)', () => {
       NOW
     )!;
     expect(view.lines.map((l) => l.name)).toEqual([
-      'Text',
+      'Mokuro Fp16',
       'Hayai Nova',
       'Paddle Manga Pp…',
       'Gcv'
     ]);
-    expect(view.shown.map((l) => l.name)).toEqual(['Text', 'Hayai Nova']);
+    expect(view.shown.map((l) => l.name)).toEqual(['Mokuro Fp16', 'Hayai Nova']);
     expect(view.more).toBe(2);
+  });
+
+  it('names every job as its finished file will be: its parts, else the generation', () => {
+    const parsed = parseQueueFile(queueFixtureWithParts(NOW))!;
+    const view = describePendingOcr({ jobs: parsed.volumes[2].jobs, held: null }, NOW)!;
+    expect(view.lines.map((l) => l.fullName)).toEqual([
+      // The main file's job: never "Text".
+      'Hayai Nova 2.5 · PP-OCR Manga 0.3',
+      // An engine that is its own detector: one part.
+      'PP-OCR Manga 0.3',
+      // A part without a version reads as its name.
+      'Charspot Small · AnimeText 12x',
+      // Malformed parts: the generation's display name.
+      'Nar Small'
+    ]);
+    // A line shows the recognizer alone while no other line reads the same;
+    // the label keeps the full name.
+    expect(view.lines.map((l) => l.name)).toEqual([
+      'Hayai Nova',
+      'PP-OCR Manga',
+      'Charspot Small',
+      'Nar Small'
+    ]);
+    expect(view.label).toContain('Hayai Nova 2.5 · PP-OCR Manga 0.3: running, 50% done');
+  });
+
+  it('two jobs with the same recognizer never read the same on a line', () => {
+    const nova = (id: string, detector: string, eta: number): QueueJob => ({
+      kind: id === 'hayai-nova' ? 'ocr' : 'layer',
+      id,
+      state: 'queued',
+      eta: at(eta),
+      progress: null,
+      parts: [
+        { role: 'recognizer', name: 'Hayai Nova', version: '2.5' },
+        { role: 'detector', name: detector, version: '0.3' }
+      ]
+    });
+    const view = describePendingOcr(
+      {
+        jobs: [
+          nova('hayai-nova', 'PP-OCR Manga', 1),
+          nova('hayai-nova-at', 'AnimeText', 2),
+          // Differs from the first only by its versions.
+          {
+            ...nova('hayai-nova-old', 'PP-OCR Manga', 3),
+            parts: [
+              { role: 'recognizer', name: 'Hayai Nova', version: '2.4' },
+              { role: 'detector', name: 'PP-OCR Manga', version: '0.3' }
+            ]
+          },
+          { kind: 'layer', id: 'charspot-small', state: 'queued', eta: at(4), progress: null }
+        ],
+        held: null
+      },
+      NOW
+    )!;
+    const names = view.lines.map((l) => l.name);
+    expect(names).toEqual([
+      'Hayai Nova 2.5…',
+      'Hayai Nova · An…',
+      'Hayai Nova 2.4…',
+      'Charspot Small'
+    ]);
+    expect(new Set(names).size).toBe(names.length);
+    expect(view.lines.map((l) => l.fullName)).toEqual([
+      'Hayai Nova 2.5 · PP-OCR Manga 0.3',
+      'Hayai Nova 2.5 · AnimeText 0.3',
+      'Hayai Nova 2.4 · PP-OCR Manga 0.3',
+      'Charspot Small'
+    ]);
+  });
+
+  it('a main-file job without parts (older bunko) is named by its generation', () => {
+    const view = describePendingOcr(
+      {
+        jobs: [{ kind: 'ocr', id: 'hayai-nova', state: 'queued', eta: null, progress: null }],
+        held: null
+      },
+      NOW
+    )!;
+    expect(view.lines[0].fullName).toBe('Hayai Nova');
+  });
+
+  it('a main-file job far off sits below a layer due sooner; running first, held and unpriced last', () => {
+    const view = describePendingOcr(
+      {
+        jobs: [
+          { kind: 'layer', id: 'gcv', state: 'queued', eta: null, progress: null },
+          { kind: 'ocr', id: 'hayai-nova', state: 'queued', eta: at(284 * 60), progress: null },
+          { kind: 'layer', id: 'nar-small', state: 'held', eta: at(1), progress: null },
+          { kind: 'layer', id: 'ppocr-manga', state: 'queued', eta: at(2), progress: null },
+          { kind: 'layer', id: 'charspot-small', state: 'running', eta: at(30), progress: 0.1 },
+          { kind: 'layer', id: 'paddle-manga', state: 'running', eta: null, progress: null },
+          { kind: 'layer', id: 'mokuro-fp16', state: 'running', eta: at(5), progress: 0.5 },
+          { kind: 'layer', id: 'tr-en', state: 'queued', eta: null, progress: null }
+        ],
+        held: null
+      },
+      NOW
+    )!;
+    expect(view.lines.map((l) => l.key)).toEqual([
+      // Running, by ETA (an unpriced one after the priced).
+      'layer:mokuro-fp16',
+      'layer:charspot-small',
+      'layer:paddle-manga',
+      // Queued, by ETA: the layer due in ~2 min above the main file in ~284 h.
+      'layer:ppocr-manga',
+      'ocr:hayai-nova',
+      // Unpriced and held, in the server's order.
+      'layer:gcv',
+      'layer:nar-small',
+      'layer:tr-en'
+    ]);
   });
 
   it('keys each line by its job so a landed job leaves in place', () => {

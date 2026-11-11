@@ -324,9 +324,10 @@ function noticeFor(result: OcrUpgradePassResult): string | null {
   if (result.upgraded > 0)
     parts.push(`Updated OCR for ${result.upgraded} ${plural(result.upgraded)}`);
   if (result.layered > 0) {
+    // The layer is named by what made the new OCR (`ocr-label.ts`), not by a
+    // fixed word, so the notice says where it went without naming it.
     parts.push(
-      `New OCR for ${result.layered} edited ${plural(result.layered)} added as the ` +
-        `"Updated OCR" layer`
+      `New OCR for ${result.layered} edited ${plural(result.layered)} added as an OCR layer`
     );
   }
   return parts.length > 0 ? parts.join('. ') : null;

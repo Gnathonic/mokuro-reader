@@ -892,7 +892,7 @@ describe('reading', () => {
     });
     expect(await install().pendingOcr('v2')).toMatchObject({
       title: 'Server OCR',
-      inline: 'Server OCR: Text queued'
+      inline: 'Server OCR: Mokuro queued'
     });
   });
 

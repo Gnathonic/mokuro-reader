@@ -1,6 +1,6 @@
 import { readable, writable, type Readable } from 'svelte/store';
 import { normalizeSeriesKey, normalizeVolumeTitleKey } from '$lib/metadata/series-key';
-import { layerNameForId } from '$lib/reader/edit/layer-names';
+import { ocrFileLabel, validParts, type OcrPart } from '$lib/reader/edit/ocr-label';
 
 /**
  * What the volume views show of a server's OCR queue — the light half of
@@ -18,6 +18,12 @@ export interface QueueJob {
   eta: string | null;
   /** 0–1 while running, else null. */
   progress: number | null;
+  /**
+   * What the job will make the OCR with, in `ocr_engine.parts` shape (bunko
+   * 0.8+): names the line as the finished file will be named. Absent from an
+   * older bunko, or dropped when malformed (the job itself stays).
+   */
+  parts?: OcrPart[];
 }
 
 /** Why the whole queue is held (plain codes only). */
@@ -147,11 +153,59 @@ function shorten(name: string): string {
   return name.length <= MAX_NAME ? name : `${name.slice(0, MAX_NAME - 1).trimEnd()}…`;
 }
 
+/**
+ * The short names a job's line may take, plainest first: with parts, the
+ * recognizer alone, then every part without versions ("Hayai Nova ·
+ * AnimeText"), then the full label; without, its full name.
+ */
+function compactNames(job: QueueJob, fullName: string): string[] {
+  const parts = validParts(job.parts);
+  if (!parts) return [fullName];
+  const names = [parts[0].name];
+  if (parts.length > 1) names.push(parts.map((p) => p.name).join(' · '));
+  names.push(fullName);
+  return names;
+}
+
+/**
+ * Each line's short name: the plainest that, cut to `MAX_NAME`, no other line
+ * of the volume shares — so "Hayai Nova 2.5 · PP-OCR Manga 0.3" and "Hayai
+ * Nova 2.5 · AnimeText 12x" never both read "Hayai Nova 2.5…". Lines that
+ * collide take their next form until they differ or have none left.
+ */
+function distinctShortNames(candidates: string[][]): string[] {
+  const level = candidates.map(() => 0);
+  const shortOf = (i: number) => shorten(candidates[i][level[i]]);
+  for (;;) {
+    const byShort = new Map<string, number[]>();
+    candidates.forEach((_, i) => {
+      const key = shortOf(i);
+      byShort.set(key, [...(byShort.get(key) ?? []), i]);
+    });
+    let bumped = false;
+    for (const group of byShort.values()) {
+      if (group.length < 2) continue;
+      for (const i of group) {
+        if (level[i] + 1 < candidates[i].length) {
+          level[i]++;
+          bumped = true;
+        }
+      }
+    }
+    if (!bumped) return candidates.map((_, i) => shortOf(i));
+  }
+}
+
 export interface PendingOcrLine {
   /** Stable per job (`kind:id`): a landed job's line leaves without disturbing the rest. */
   key: string;
-  /** "Text" for the primary, else the layer's display name, shortened. */
+  /**
+   * What the job will make, short: its recognizer ("Hayai Nova"), with the
+   * other parts only where two lines would otherwise read the same; cut to
+   * `MAX_NAME`. Without parts, its full name cut.
+   */
   name: string;
+  /** Named as the finished file will be (`ocrFileLabel`): "Hayai Nova 2.5 · PP-OCR Manga 0.3". */
   fullName: string;
   /** Beside the name on a cover: "42% · ~08:17", "in ~3 min · 08:17", "queued", "held: …". */
   detail: string;
@@ -163,12 +217,12 @@ export interface PendingOcrLine {
 
 export interface PendingOcrView {
   title: string;
-  /** Every pending job: the primary first, then by ETA, unpriced last. */
+  /** Every pending job, soonest first: running, then queued by ETA, then unpriced and held. */
   lines: PendingOcrLine[];
   /** What a compact surface shows (at most `maxLines`, counting a "+N more" line). */
   shown: PendingOcrLine[];
   more: number;
-  /** The list view's single line: "Server OCR: Text 42% · ~08:17 · Hayai Nova in ~8 min · …". */
+  /** The list view's single line: "Server OCR: Hayai Nova 42% · ~08:17 · Paddle Manga in ~8 min · …". */
   inline: string;
   /** Tooltip / aria-label: every job, its full name and exact clock time. */
   label: string;
@@ -176,9 +230,16 @@ export interface PendingOcrView {
 
 const TITLE = 'Server OCR';
 
-function lineFor(job: QueueJob, held: QueueHeld | null, now: number): PendingOcrLine {
-  const fullName = job.kind === 'ocr' ? 'Text' : layerNameForId(job.id);
-  const base = { key: `${job.kind}:${job.id}`, name: shorten(fullName), fullName };
+/**
+ * The main file and a layer alike: the job's parts ("Hayai Nova 2.5 ·
+ * PP-OCR Manga 0.3"), else its generation's display name — never "Text".
+ */
+function fullNameOf(job: QueueJob): string {
+  return ocrFileLabel({ engine: job.id, parts: job.parts });
+}
+
+function lineFor(job: QueueJob, name: string, held: QueueHeld | null, now: number): PendingOcrLine {
+  const base = { key: `${job.kind}:${job.id}`, name, fullName: fullNameOf(job) };
   const { when, clock } = relativeEta(job.eta, now);
   if (job.state === 'held') {
     const text = heldText(held);
@@ -206,6 +267,32 @@ function lineFor(job: QueueJob, held: QueueHeld | null, now: number): PendingOcr
   };
 }
 
+/** Running first, then queued with an ETA, then unpriced and held (`soonestFirst`). */
+function rankOf(job: QueueJob): number {
+  if (job.state === 'running') return 0;
+  if (job.state === 'queued' && job.eta !== null) return 1;
+  return 2;
+}
+
+function etaOf(job: QueueJob): number {
+  const t = job.eta === null ? NaN : Date.parse(job.eta);
+  return Number.isFinite(t) ? t : Infinity;
+}
+
+/**
+ * Soonest first, whatever the job makes (a main file due in days must not sit
+ * above a layer due in minutes): running jobs by ETA, then queued ones by ETA,
+ * then the unpriced and the held. Ties keep the server's order (a stable sort).
+ */
+function soonestFirst(a: QueueJob, b: QueueJob): number {
+  const rank = rankOf(a) - rankOf(b);
+  if (rank !== 0) return rank;
+  if (rankOf(a) === 2) return 0;
+  const ea = etaOf(a);
+  const eb = etaOf(b);
+  return ea === eb ? 0 : ea < eb ? -1 : 1;
+}
+
 /**
  * What the volume views say about OCR the server is still making for a volume,
  * from its entry in the queue file. Null when nothing is pending.
@@ -216,11 +303,9 @@ export function describePendingOcr(
   maxLines = 3
 ): PendingOcrView | null {
   if (!status || status.jobs.length === 0) return null;
-  const etaOf = (j: QueueJob) => (j.eta === null ? Infinity : Date.parse(j.eta));
-  const ordered = [...status.jobs].sort(
-    (a, b) => (a.kind === 'ocr' ? 0 : 1) - (b.kind === 'ocr' ? 0 : 1) || etaOf(a) - etaOf(b)
-  );
-  const lines = ordered.map((job) => lineFor(job, status.held, now));
+  const ordered = [...status.jobs].sort(soonestFirst);
+  const names = distinctShortNames(ordered.map((job) => compactNames(job, fullNameOf(job))));
+  const lines = ordered.map((job, i) => lineFor(job, names[i], status.held, now));
   const shown = lines.length <= maxLines ? lines : lines.slice(0, maxLines - 1);
   return {
     title: TITLE,
